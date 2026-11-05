@@ -77,14 +77,18 @@ pub fn ApprovalCard(agent: AgentId, folder: PathBuf, approval: Approval) -> Elem
     let pending = approval.pending.clone();
     let allow_pending = pending.clone();
     let asked = approval_text(&approval);
+    let input = approval_input(&approval);
     rsx! {
         div { class: card_class(waiting, "approval-card"),
             div { class: "card-head",
                 Icon { kind: IconKind::Warning, size: 16 }
                 span { "{heading}" }
             }
-            if approval.edit.is_none() {
+            if approval.edit.is_none() && !asked.is_empty() {
                 code { class: "approval-command mono", "{asked}" }
+            }
+            if let Some(input) = input {
+                pre { class: "approval-input mono scroll", "{input}" }
             }
             // Every row: what is allowed must show in full before it is allowed.
             if !rows.is_empty() {
@@ -132,6 +136,16 @@ fn approval_text(approval: &Approval) -> String {
         Some(serde_json::Value::String(command)) => command.clone(),
         _ => approval.summary.clone(),
     }
+}
+
+/// The whole input as indented JSON, for a tool other than a command or an edit: the daemon's
+/// one-line summary leaves most of it out, and may be empty.
+fn approval_input(approval: &Approval) -> Option<String> {
+    let shown_whole = approval.tool == COMMAND_TOOL || approval.edit.is_some();
+    if shown_whole || approval.input.is_null() {
+        return None;
+    }
+    serde_json::to_string_pretty(&approval.input).ok()
 }
 
 #[component]
@@ -329,7 +343,7 @@ pub fn PlanCard(agent: AgentId, plan: Plan) -> Element {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::PendingId;
+    use cockpit_protocol::{FileEdit, PendingId};
     use serde_json::json;
 
     use super::*;
@@ -361,5 +375,37 @@ mod tests {
             )),
             "https://example.org"
         );
+    }
+
+    #[test]
+    fn an_mcp_approval_without_a_summary_shows_its_whole_input() {
+        let mut call = approval(
+            "",
+            json!({ "pages": ["release-notes", "roadmap"], "space": "docs" }),
+        );
+        call.tool = "mcp__wiki__delete_pages".to_owned();
+
+        assert_eq!(approval_text(&call), "");
+        assert_eq!(
+            approval_input(&call).as_deref(),
+            Some(
+                "{\n  \"pages\": [\n    \"release-notes\",\n    \"roadmap\"\n  ],\n  \"space\": \"docs\"\n}"
+            )
+        );
+    }
+
+    #[test]
+    fn a_command_or_an_edit_shows_no_input_box() {
+        let command = approval("cargo test", json!({ "command": "cargo test" }));
+        let mut edit = approval("src/lib.rs", json!({ "file_path": "src/lib.rs" }));
+        edit.tool = "Edit".to_owned();
+        edit.edit = Some(FileEdit {
+            path: PathBuf::from("src/lib.rs"),
+            old_text: "old".to_owned(),
+            new_text: "new".to_owned(),
+        });
+
+        assert_eq!(approval_input(&command), None);
+        assert_eq!(approval_input(&edit), None);
     }
 }
