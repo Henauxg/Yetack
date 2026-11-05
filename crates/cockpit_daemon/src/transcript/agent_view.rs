@@ -9,8 +9,8 @@ use claude_protocol::{
     ControlRequestId, ImageBlock, ImageSource, IncomingControlRequest, IncomingRequest,
     InitializeResponse, InputLine, InterruptNotice, McpStatus, OpenWord, OutputLine, RateLimitInfo,
     ResultMessage, SessionState, SystemEvent, SystemInit, TaskNotification, TaskStarted, TaskUsage,
-    TerminalReason, ToolInput, ToolName, ToolResultBlock, ToolUseBlock, ToolUseId, Usage,
-    UserMessage as ClaudeUserMessage,
+    TerminalReason, ToolInput, ToolName, ToolResultBlock, ToolUseBlock, ToolUseId, TypedCommand,
+    Usage, UserMessage as ClaudeUserMessage,
 };
 use cockpit_protocol::{
     AgentDetails, AgentId, AgentStatus, AgentSummary, Answer, AnswerState, Approval,
@@ -20,7 +20,7 @@ use cockpit_protocol::{
     UserMessage,
 };
 use serde_json::{Map, Value};
-use strum::EnumString;
+use strum::{EnumString, IntoStaticStr, VariantArray};
 
 use crate::transcript::past_transcript::LAST_PAST_ID;
 use crate::transcript::{answers, details, notices, tools, words};
@@ -66,13 +66,18 @@ pub(crate) enum AnswerError {
 }
 
 /// `system` subtypes the view reads that `claude_protocol` leaves untyped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr, VariantArray)]
 #[strum(serialize_all = "snake_case")]
 enum UntypedSystemSubtype {
     CompactBoundary,
+    /// A local command's output, in a session file. On stdout it comes as a synthetic assistant
+    /// message.
+    LocalCommand,
 }
 
 const SUBTYPE_KEY: &str = "subtype";
+/// The text of a `local_command` line.
+const CONTENT_KEY: &str = "content";
 /// The model of an assistant message Claude Code writes itself, such as a slash command's output
 /// or an API error.
 const SYNTHETIC_MODEL: &str = "<synthetic>";
@@ -231,6 +236,22 @@ impl AgentView {
     pub(super) fn apply_session_line(&mut self, line: OutputLine) {
         match line {
             OutputLine::User(message) => self.apply_user(message, LineSource::SessionFile),
+            OutputLine::System(SystemEvent::Other(value))
+                if untyped_subtype(&value) == Some(UntypedSystemSubtype::LocalCommand) =>
+            {
+                let output = value
+                    .get(CONTENT_KEY)
+                    .and_then(Value::as_str)
+                    .and_then(claude_protocol::local_command_output);
+                if let Some(output) = output.filter(|output| !output.is_empty()) {
+                    self.push_item(
+                        None,
+                        ItemBody::Notice {
+                            text: output.to_owned(),
+                        },
+                    );
+                }
+            }
             line => {
                 // A session file holds no `result` line, so nothing follows up.
                 self.apply(line, Timestamp::from_unix_millis(0));
@@ -580,11 +601,7 @@ impl AgentView {
                 self.summary.activity = Some(format!("Retrying after API error{status}"));
             }
             SystemEvent::Other(value) => {
-                let subtype = value
-                    .get(SUBTYPE_KEY)
-                    .and_then(Value::as_str)
-                    .and_then(|subtype| subtype.parse::<UntypedSystemSubtype>().ok());
-                if let Some(UntypedSystemSubtype::CompactBoundary) = subtype {
+                if let Some(UntypedSystemSubtype::CompactBoundary) = untyped_subtype(&value) {
                     self.push_item(
                         None,
                         ItemBody::Notice {
@@ -736,6 +753,23 @@ impl AgentView {
             }
             return;
         }
+        if let Some(output) = claude_protocol::local_command_output(&text) {
+            // Shown as `/effort`'s output is, which comes as a synthetic assistant message.
+            if !output.is_empty() {
+                self.push_item(
+                    parent,
+                    ItemBody::Notice {
+                        text: output.to_owned(),
+                    },
+                );
+            }
+            return;
+        }
+        // A slash command reads as the user typed it, which is also the prompt its echo matches.
+        let text = match TypedCommand::parse(&text) {
+            Some(command) => command.to_string(),
+            None => text,
+        };
         let interrupt = text.trim().parse::<InterruptNotice>().is_ok();
         if source == LineSource::SessionFile {
             let body = if interrupt {
@@ -1060,6 +1094,10 @@ impl AgentView {
             AgentStatus::Idle
         };
     }
+}
+
+fn untyped_subtype(value: &Value) -> Option<UntypedSystemSubtype> {
+    value.get(SUBTYPE_KEY)?.as_str()?.parse().ok()
 }
 
 fn change_item(change: ItemChange) -> ItemId {
@@ -2070,6 +2108,63 @@ mod tests {
         restored.process_started(ProcessSession::Resumed);
         let next = restored.add_prompt(&prompt("Again"), PromptDelivery::Now);
         assert_eq!(next, ItemId::new(5));
+    }
+
+    #[test]
+    fn a_typed_command_reads_as_typed_and_its_echo_adds_nothing() {
+        let mut view = view();
+        view.add_prompt(&prompt("/greet world"), PromptDelivery::Now);
+
+        apply(
+            &mut view,
+            echo(
+                "<command-message>greet</command-message>\n\
+                 <command-name>/greet</command-name>\n<command-args>world</command-args>",
+            ),
+        );
+        apply(
+            &mut view,
+            echo("<command-message>review</command-message>\n<command-name>/review</command-name>"),
+        );
+
+        assert_eq!(
+            bodies(&view),
+            [
+                &user_message("/greet world".to_owned(), Vec::new()),
+                &user_message("/review".to_owned(), Vec::new()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_local_commands_output_shows_as_a_notice() {
+        let mut view = view();
+
+        apply(
+            &mut view,
+            echo("<local-command-stdout>Compacted </local-command-stdout>"),
+        );
+        apply(
+            &mut view,
+            echo("<local-command-stdout></local-command-stdout>"),
+        );
+
+        assert_eq!(
+            bodies(&view),
+            [&ItemBody::Notice {
+                text: "Compacted".to_owned()
+            }]
+        );
+    }
+
+    #[test]
+    fn untyped_system_subtypes_are_pinned() {
+        let words: Vec<&str> = UntypedSystemSubtype::VARIANTS
+            .iter()
+            .map(|&subtype| subtype.into())
+            .collect();
+
+        assert_eq!(words, ["compact_boundary", "local_command"]);
     }
 
     #[test]

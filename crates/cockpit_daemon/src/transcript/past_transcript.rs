@@ -151,6 +151,48 @@ mod tests {
     }
 
     #[test]
+    fn a_session_files_commands_read_as_typed_and_their_output_as_notices() {
+        let mut past = PastTranscript::new(PathBuf::from("/srv/work/shop"));
+
+        past.add(prompt(
+            "<command-name>/effort</command-name>\n\
+             <command-message>effort</command-message>\n<command-args>high</command-args>",
+        ));
+        past.add(line(json!({
+            "type": "system", "subtype": "local_command",
+            "content": "<local-command-stdout>Set effort level to high</local-command-stdout>"
+        })));
+        past.add(prompt(
+            "<command-name>/model</command-name>\n<command-args>sonnet</command-args>",
+        ));
+        past.add(prompt(
+            "<local-command-stdout>Set model to sonnet</local-command-stdout>",
+        ));
+        let items = past.into_items();
+
+        let bodies: Vec<&ItemBody> = items.iter().map(|item| &item.body).collect();
+        let user = |text: &str| {
+            ItemBody::UserMessage(cockpit_protocol::UserMessage {
+                text: text.to_owned(),
+                images: Vec::new(),
+                queued: false,
+            })
+        };
+        let notice = |text: &str| ItemBody::Notice {
+            text: text.to_owned(),
+        };
+        assert_eq!(
+            bodies,
+            [
+                &user("/effort high"),
+                &notice("Set effort level to high"),
+                &user("/model sonnet"),
+                &notice("Set model to sonnet"),
+            ]
+        );
+    }
+
+    #[test]
     fn a_long_session_keeps_its_newest_items_under_a_notice() {
         let mut past = PastTranscript::new(PathBuf::from("/srv/work/shop"));
 

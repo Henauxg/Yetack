@@ -14,7 +14,7 @@ use std::io::{BufReader, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use claude_protocol::{MessageOrigin, OutputLine};
+use claude_protocol::{MessageOrigin, OutputLine, TypedCommand};
 use cockpit_protocol::{ClaudeSessionId, PastSession, Timestamp, TranscriptItem};
 use serde::Deserialize;
 use serde_json::Value;
@@ -48,8 +48,6 @@ const ORIGIN_KEY: &str = "origin";
 const COST_STATE_TYPE: &str = "cost-state";
 const TOTAL_COST_KEY: &str = "totalCostUSD";
 const TOOL_RESULT_MARK: &str = "\"tool_result\"";
-/// How a slash command's prompt starts; such a prompt does not make a title.
-const COMMAND_MARK: &str = "<command-name>";
 
 /// The keys of the titles, in the order they win: one the user set, then one Claude wrote, then
 /// the last prompt and the summary.
@@ -285,7 +283,7 @@ fn title(head: &[Value], tail: &[Value]) -> Option<String> {
 
 /// The text of a prompt that makes a title: not a slash command.
 fn first_prompt(line: &Value) -> Option<String> {
-    prompt_text(line).filter(|text| !text.starts_with(COMMAND_MARK))
+    prompt_text(line).filter(|text| TypedCommand::parse(text).is_none())
 }
 
 /// The text of a user's prompt line; not a tool result or a meta line.

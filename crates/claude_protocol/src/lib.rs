@@ -45,6 +45,7 @@
 //!   `permission_suggestions`. One field reads as missing when it does not read, as in a
 //!   `result` line: the `origin` of a user message.
 
+mod command_text;
 mod content_block;
 mod context_usage;
 mod control;
@@ -60,10 +61,12 @@ mod permission;
 mod rate_limit;
 mod result_message;
 mod system_event;
+mod tagged;
 mod task_notification_text;
 mod tool_input;
 mod wire;
 
+pub use command_text::{TypedCommand, local_command_output};
 pub use content_block::{
     Base64Image, ContentBlock, ImageBlock, ImageSource, TextBlock, ThinkingBlock, ToolResultBlock,
     ToolUseBlock, UrlImage,

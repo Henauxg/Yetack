@@ -87,7 +87,7 @@ An agent's conversation is a list of `TranscriptItem`s, each with an `ItemId` an
 The daemon numbers items in transcript order, so the app can merge a history page with live appends by id.
 The kinds of item:
 
-- `UserMessage` (text, attached images), with `queued` while the agent works;
+- `UserMessage` (text, attached images), with `queued` while the agent works; a slash command shows as typed, such as `/review fix`, not as Claude Code's `command-name` wrapper;
 - `AssistantText` (markdown) and `Thinking` (folded in the app);
 - `ToolCall`: tool name, summary, input, status (running, done, failed), output, and for `Edit` and `Write` the file path with the old and new text (both left empty when either is over 1 MiB);
 - `Subagent`: a tool call whose own items carry it as `parent` (from `parent_tool_use_id`);
@@ -95,7 +95,7 @@ The kinds of item:
 - `Question`: the `AskUserQuestion` questions and options, and its answer state;
 - `Plan`: the `ExitPlanMode` plan text, and its answer state (a decision, with an optional message when Claude should keep planning);
 - `TurnEnd`: duration, usage and cost of the turn, and whether the user stopped it (`stopped`, from the `result` line's `terminal_reason`), or the error that ended it;
-- `Notice`: a line such as "Conversation compacted", or a message Claude Code writes itself (a user line whose `origin` is not `human`), such as its summary of a background task that ended.
+- `Notice`: a line such as "Conversation compacted", a local command's output such as `/effort`'s, or a message Claude Code writes itself (a user line whose `origin` is not `human`), such as its summary of a background task that ended.
 
 An answer state is `Waiting`, `Answered`, or `Cancelled` (Claude Code withdraws a pending request when the turn is interrupted).
 
