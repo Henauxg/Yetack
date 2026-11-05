@@ -18,11 +18,12 @@ use std::time::{Duration, Instant};
 use cockpit_client::{Connection, RequestError, Transport};
 use cockpit_protocol::{
     AgentId, AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState, Approval,
-    ApprovalAnswer, ApprovalDecision, CancelQueuedParams, Catchup, ClaudeSessionId, CommandKind,
-    Effort, ErrorCode, Event, EventRecord, HistoryParams, ItemBody, PendingId, PermissionMode,
-    Plan, PlanAnswer, PlanDecision, Prompt, PromptParams, Question, QuestionAnswer, ReadFileParams,
+    ApprovalAnswer, ApprovalDecision, BackgroundTaskId, CancelQueuedParams, Catchup,
+    ClaudeSessionId, CommandKind, Effort, ErrorCode, Event, EventRecord, HistoryParams, ItemBody,
+    McpRemoveParams, McpScope, McpServerParams, McpToggleParams, PendingId, PermissionMode, Plan,
+    PlanAnswer, PlanDecision, Prompt, PromptParams, Question, QuestionAnswer, ReadFileParams,
     Request, ResponseBody, Seq, SessionResumeParams, SetEffortParams, SetModeParams,
-    SetModelParams, Settings, StartParams, TranscriptItem,
+    SetModelParams, Settings, StartParams, StopTaskParams, TranscriptItem,
 };
 use tempfile::TempDir;
 
@@ -794,6 +795,46 @@ async fn files_settings_sessions_and_agent_settings() {
     };
     assert_eq!(servers[0].name, "notes");
     assert!(servers[0].tools[0].read_only);
+    let mcp_server = |enabled| {
+        Request::AgentMcpToggle(McpToggleParams {
+            agent,
+            server: "notes".to_owned(),
+            enabled,
+        })
+    };
+    assert_eq!(client.ok(mcp_server(false)).await, ResponseBody::Done);
+    let reconnect = Request::AgentMcpReconnect(McpServerParams {
+        agent,
+        server: "notes".to_owned(),
+    });
+    assert_eq!(client.ok(reconnect).await, ResponseBody::Done);
+    let stop_task = Request::AgentStopTask(StopTaskParams {
+        agent,
+        task: BackgroundTaskId::new("task-1".to_owned()),
+    });
+    assert_eq!(client.ok(stop_task).await, ResponseBody::Done);
+    let remove = |scope| {
+        Request::McpRemove(McpRemoveParams {
+            agent,
+            server: "notes".to_owned(),
+            scope,
+        })
+    };
+    assert_eq!(
+        client.ok(remove(McpScope::Project)).await,
+        ResponseBody::Done
+    );
+    assert_eq!(
+        client.error_code(remove(McpScope::Managed)).await,
+        ErrorCode::InvalidRequest
+    );
+    let ResponseBody::Commands { commands } = client
+        .ok(Request::AgentCommands(AgentParams { agent }))
+        .await
+    else {
+        panic!("expected the commands");
+    };
+    assert_eq!(commands.len(), 2);
     let ResponseBody::ContextUsage(usage) = client
         .ok(Request::AgentContextUsage(AgentParams { agent }))
         .await
