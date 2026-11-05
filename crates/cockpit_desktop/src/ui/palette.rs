@@ -139,7 +139,7 @@ pub fn Palette(agent: AgentId, origin: PaletteOrigin) -> Element {
                     MenuFilter { agent }
                 } else {
                     span { class: "mono muted", "/" }
-                    TypedFilter { agent, query }
+                    TypedFilter { query }
                 }
             }
             div { class: "palette-list scroll",
@@ -181,29 +181,20 @@ pub fn Palette(agent: AgentId, origin: PaletteOrigin) -> Element {
 }
 
 /// Shows the composer's `/` word. Opened by typing, the palette leaves the focus in the composer,
-/// whose text filters it.
+/// whose text filters it: this field only mirrors it, and gives the focus back to the composer,
+/// since a field the app writes as you type would lose keystrokes.
 #[component]
-fn TypedFilter(agent: AgentId, query: String) -> Element {
-    let cockpit: Cockpit = use_context();
+fn TypedFilter(query: String) -> Element {
     rsx! {
         input {
             class: "palette-input",
             r#type: "text",
             aria_label: "Filter commands",
             placeholder: "Type to filter commands and skills",
+            readonly: true,
+            tabindex: "-1",
             value: "{query}",
-            oninput: move |event: FormEvent| {
-                cockpit.with_drafts(|_, drafts| {
-                    drafts.palette.query = event.value();
-                    drafts.palette.highlighted = 0;
-                });
-            },
-            onkeydown: move |event: KeyboardEvent| match event.key() {
-                Key::ArrowDown => cockpit.with_drafts(|state, drafts| actions::palette_move(state, drafts, agent, Direction::Down)),
-                Key::ArrowUp => cockpit.with_drafts(|state, drafts| actions::palette_move(state, drafts, agent, Direction::Up)),
-                Key::Enter => act(cockpit, agent, None),
-                _ => {}
-            },
+            onfocus: move |_| bridge::focus_field(COMPOSER_ID),
         }
     }
 }
