@@ -3,8 +3,8 @@ use crate::tool_input::ToolName;
 
 /// A line or a body that cannot be read.
 ///
-/// Only a line that is not JSON, or a known kind whose required field is missing or has the
-/// wrong type, gives an error. The message carries serde's detail, so logging it is enough.
+/// The [crate documentation](crate) says which lines give one. The message carries serde's
+/// detail, so logging it is enough.
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
     #[error("the line is not JSON: {0}")]

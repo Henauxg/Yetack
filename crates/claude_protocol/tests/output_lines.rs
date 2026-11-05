@@ -12,8 +12,8 @@ use claude_protocol::{
     ContentBlock, ContextUsage, ControlRequestId, ControlResponse, HookOutcome, ImageSource,
     IncomingRequest, InitializeResponse, McpScope, McpServerState, McpStatus, McpTransport,
     OpenWord, OutputLine, ParseError, PermissionBehavior, PermissionDestination, PermissionMode,
-    PermissionUpdate, RateLimitStatus, RateLimitType, ResultSubtype, SessionId, SessionState,
-    SystemEvent, TaskId, TaskStatus, TerminalReason, ToolUseId, Usage,
+    PermissionUpdate, RateLimitStatus, RateLimitType, ResultMessage, ResultSubtype, SessionId,
+    SessionState, SystemEvent, TaskId, TaskStatus, TerminalReason, ToolUseId, Usage,
 };
 use serde_json::{Value, json};
 
@@ -402,6 +402,68 @@ fn result_interrupted() {
     );
     assert_eq!(result.errors, ["the turn was interrupted"]);
     assert!(result.model_usage.is_empty());
+}
+
+fn result_line(line: &str) -> ResultMessage {
+    match line.parse::<OutputLine>() {
+        Ok(OutputLine::Result(result)) => result,
+        other => panic!("{line} gave {other:?}"),
+    }
+}
+
+#[test]
+fn a_result_line_reads_a_malformed_optional_field_as_absent() {
+    let status = result_line(
+        r#"{"type":"result","subtype":"success","is_error":true,"api_error_status":"529","num_turns":3,"session_id":"00000000-0000-4000-8000-000000000001"}"#,
+    );
+    let duration = result_line(
+        r#"{"type":"result","subtype":"success","duration_ms":-5,"duration_api_ms":1200,"session_id":"00000000-0000-4000-8000-000000000001"}"#,
+    );
+    let errors = result_line(
+        r#"{"type":"result","subtype":"error_during_execution","errors":null,"terminal_reason":"aborted_tools","session_id":"00000000-0000-4000-8000-000000000001"}"#,
+    );
+
+    assert_eq!(status.api_error_status, None);
+    assert!(status.is_error);
+    assert_eq!(status.num_turns, 3);
+    assert_eq!(duration.duration, None);
+    assert_eq!(duration.api_duration, Some(Duration::from_millis(1200)));
+    assert!(errors.errors.is_empty());
+    assert_eq!(
+        errors.terminal_reason,
+        Some(OpenWord::Known(TerminalReason::AbortedTools))
+    );
+    assert_eq!(
+        errors.session_id,
+        Some(SessionId::new(
+            "00000000-0000-4000-8000-000000000001".to_owned()
+        ))
+    );
+}
+
+#[test]
+fn a_result_line_reads_a_bad_value_inside_a_field_as_no_field() {
+    let result = result_line(
+        r#"{"type":"result","subtype":"success","usage":{"output_tokens":"many"},"modelUsage":null,"permission_denials":[{"tool_name":"Bash"}],"total_cost_usd":0.5}"#,
+    );
+
+    assert_eq!(result.usage, None);
+    assert!(result.model_usage.is_empty());
+    assert!(result.permission_denials.is_empty());
+    assert_eq!(result.total_cost_usd, Some(0.5));
+}
+
+#[test]
+fn a_result_line_with_a_malformed_subtype_or_session_id_is_an_error() {
+    for line in [
+        r#"{"type":"result","subtype":7,"session_id":"00000000-0000-4000-8000-000000000001"}"#,
+        r#"{"type":"result","subtype":"success","session_id":42}"#,
+    ] {
+        match line.parse::<OutputLine>() {
+            Err(ParseError::MalformedLine { kind, .. }) => assert_eq!(kind, "result", "{line}"),
+            other => panic!("{line} gave {other:?}"),
+        }
+    }
 }
 
 #[test]

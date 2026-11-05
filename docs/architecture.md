@@ -193,11 +193,15 @@ On start the daemon reads `agents.json`, finds the last `Seq` in the logs, and r
 ## Client (`cockpit_client`)
 
 - `Transport::Local { socket }` connects to the socket.
-- `Transport::Ssh { host, remote_command }` runs `ssh -T -o BatchMode=yes -o ForwardAgent=no -- <host> '<remote_command>' bridge`.
+- `Transport::Ssh { host, remote_command }` runs `ssh -T -x -o BatchMode=yes -o ForwardAgent=no -o ClearAllForwardings=yes -- <host> '<remote_command>' bridge`.
   `BatchMode` makes a missing key fail at once instead of waiting for a password the app cannot show.
+  `ForwardAgent=no`, `-x` and `ClearAllForwardings=yes` open no agent, X11 or port forwarding to the laptop, even when the user's ssh config asks for one.
   `--` keeps ssh from reading the host or the remote command as an option, and the quotes keep the host's shell from reading anything in the remote command.
 - `Connection` sends requests and matches responses by `RequestId`, and yields events.
-- `Connection` reconnects with backoff after a drop, sending the last `Seq` it saw.
+  It reads the daemon at all times, so a response never waits behind events the app has not read.
+  Events wait for the app in a queue of 4096: when an event finds it full, the waiting events are dropped and `next_event` returns `CloseError::EventsLost`.
+- `Session` reconnects with backoff after a drop, sending the last `Seq` it saw.
+  After lost events, it reconnects without a last `Seq`, so the daemon answers with a snapshot.
 
 ## Desktop app (`cockpit_desktop`)
 
