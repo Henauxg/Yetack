@@ -17,6 +17,9 @@ use crate::ui::splitter::FILE_VIEW_ID;
 /// Unchanged lines kept around each change of the file view's diff.
 const FILE_DIFF_CONTEXT: usize = 3;
 
+/// The widths of the placeholder lines shown while the file loads, in percent of the text's width.
+const LOADING_LINE_WIDTHS: [u8; 8] = [46, 72, 64, 30, 81, 58, 69, 38];
+
 #[component]
 pub fn FileViewPanel() -> Element {
     let cockpit: Cockpit = use_context();
@@ -60,6 +63,7 @@ pub fn FileViewPanel() -> Element {
         )
     };
     let diff = view.mode == ViewMode::Diff;
+    let loading = matches!(text, Loadable::NotRequested | Loadable::Loading);
     let wrap = state.prefs.file_view.wrap;
     rsx! {
         section { id: FILE_VIEW_ID, class: "file-view", aria_label: "File view",
@@ -78,7 +82,12 @@ pub fn FileViewPanel() -> Element {
                 }
             }
             div { class: "file-bar",
-                span { class: "file-label mono", "{label}" }
+                span { class: "file-label mono",
+                    "{label}"
+                    if loading {
+                        span { class: "spinner", role: "status", aria_label: "Loading the file" }
+                    }
+                }
                 span { class: "read-only-chip", "Read-only" }
                 div { class: "segmented", role: "group", aria_label: "View mode",
                     button {
@@ -107,7 +116,11 @@ pub fn FileViewPanel() -> Element {
             div { class: if wrap { "file-body scroll mono wrap" } else { "file-body scroll mono" },
                 match text {
                     Loadable::NotRequested | Loadable::Loading => rsx! {
-                        p { class: "file-note", "Loading the file" }
+                        div { class: "file-loading", aria_hidden: true,
+                            for (index, width) in LOADING_LINE_WIDTHS.iter().enumerate() {
+                                div { key: "{index}", class: "skeleton skeleton-line", style: "width: {width}%" }
+                            }
+                        }
                     },
                     Loadable::Failed(error) => rsx! {
                         p { class: "file-note", "Cannot read the file: {error}" }

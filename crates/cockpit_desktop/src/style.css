@@ -2643,6 +2643,10 @@ html.splitting * {
   overflow-wrap: anywhere;
 }
 
+.file-label .spinner {
+  margin-left: 8px;
+}
+
 .read-only-chip {
   padding: 1px 8px;
   border-radius: 999px;
@@ -2685,6 +2689,14 @@ html.splitting * {
 .file-body .line-number {
   width: 44px;
   padding-right: 10px;
+}
+
+/* Placeholder lines where the text will be, past the line numbers. */
+.file-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 8px 14px 0 58px;
 }
 
 /* Wrapped lines keep their number on their first row. */
