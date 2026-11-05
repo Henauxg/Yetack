@@ -8,8 +8,9 @@
 //! - `garbage`: writes lines that do not parse, then answers.
 //! - `linger`: starts a child process that ignores stdin, answers "Started child <pid>", and
 //!   from then on keeps running after its stdin closes, as a `claude` that hangs.
-//! - `/rename <title>`: names the session, as Claude Code does. With `CLAUDE_CONFIG_DIR` set, it
-//!   keeps the name there, and a resumed fake restates it before it answers `initialize`.
+//! - `/rename <title>`: names the session, as Claude Code does. With `FAKE_CLAUDE_SESSION_NAMES`
+//!   set to a folder, it keeps the name there, and a resumed fake restates it before it answers
+//!   `initialize`.
 //! - anything else: answers "Echo: <prompt>".
 //!
 //! With `FAKE_CLAUDE_ARGS_FILE` set, it appends its command line to that file, one JSON array per
@@ -27,9 +28,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 const ARGS_FILE_ENV: &str = "FAKE_CLAUDE_ARGS_FILE";
-const CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
-/// The folder of `CLAUDE_CONFIG_DIR` that holds each session's name, in a file named after it.
-const SESSION_NAMES_FOLDER: &str = "fake-session-names";
+/// A folder that holds each session's name, in a file named after it.
+const SESSION_NAMES_ENV: &str = "FAKE_CLAUDE_SESSION_NAMES";
 const RESUME_INTERRUPTED_TURN_ENV: &str = "CLAUDE_CODE_RESUME_INTERRUPTED_TURN";
 /// The child of `linger`, which outlives any test.
 const LINGERING_CHILD: [&str; 2] = ["sleep", "600"];
@@ -453,14 +453,10 @@ impl<W: Write> Fake<W> {
     }
 }
 
-/// Where the name `/rename` gave a session is kept, when `CLAUDE_CONFIG_DIR` is set.
+/// Where the name `/rename` gave a session is kept, when `FAKE_CLAUDE_SESSION_NAMES` is set.
 fn session_name_file(session: &str) -> Option<PathBuf> {
-    let config = std::env::var_os(CONFIG_DIR_ENV)?;
-    Some(
-        PathBuf::from(config)
-            .join(SESSION_NAMES_FOLDER)
-            .join(session),
-    )
+    let folder = std::env::var_os(SESSION_NAMES_ENV)?;
+    Some(PathBuf::from(folder).join(session))
 }
 
 /// The string at `path` in `value`, or "".

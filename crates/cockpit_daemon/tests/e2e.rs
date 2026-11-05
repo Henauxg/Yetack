@@ -106,6 +106,10 @@ impl Setup {
             )
             .env("CLAUDE_CONFIG_DIR", self.temp.path().join("claude"))
             .env("FAKE_CLAUDE_ARGS_FILE", self.args_file())
+            .env(
+                "FAKE_CLAUDE_SESSION_NAMES",
+                self.temp.path().join("session-names"),
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(log);
