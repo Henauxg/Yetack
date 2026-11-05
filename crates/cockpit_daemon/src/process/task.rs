@@ -187,6 +187,13 @@ struct Task<T, M, W> {
 /// The hub is gone: nothing more to report.
 struct HubGone;
 
+impl<T, M, W> Drop for Task<T, M, W> {
+    /// A task that ends before `claude` does, as when the daemon stops, takes its group along.
+    fn drop(&mut self) {
+        kill_group(&mut self.child);
+    }
+}
+
 impl<T, M, W> Task<T, M, W>
 where
     T: Send + 'static,
@@ -242,7 +249,7 @@ where
             }
         };
         if ended.is_err() {
-            // Dropping the child kills it.
+            // Dropping the task kills `claude`'s group.
             return;
         }
         let notice = describe_exit(self.wait().await);
@@ -348,9 +355,7 @@ where
         if self.stop_deadline.is_some_and(|deadline| deadline <= now) {
             self.stop_deadline = None;
             tracing::warn!("claude did not exit after its stdin closed: killing it");
-            if let Err(error) = self.child.start_kill() {
-                tracing::warn!(%error, "cannot kill claude");
-            }
+            kill_group(&mut self.child);
         }
         let expired: Vec<ControlRequestId> = self
             .pending
@@ -406,8 +411,7 @@ where
             return status.ok();
         }
         tracing::warn!("claude closed its output but did not exit: killing it");
-        // An error means the process is already gone, which `wait` reports.
-        let _ = self.child.start_kill();
+        kill_group(&mut self.child);
         self.child.wait().await.ok()
     }
 
@@ -422,6 +426,26 @@ where
         if let Some(raw_log) = &mut self.raw_log {
             raw_log.append(now(), direction, line);
         }
+    }
+}
+
+/// Kills `claude` and the rest of its process group: its MCP servers and the commands it started.
+/// Does nothing once `claude` is reaped: its pid, which names the group, may then name another
+/// process.
+fn kill_group(child: &mut Child) {
+    use rustix::process::{Pid, Signal};
+
+    let group = child
+        .id()
+        .and_then(|id| i32::try_from(id).ok())
+        .and_then(Pid::from_raw);
+    let Some(group) = group else {
+        return;
+    };
+    if let Err(error) = rustix::process::kill_process_group(group, Signal::KILL) {
+        tracing::warn!(%error, "cannot kill claude's process group: killing claude alone");
+        // An error means the process is already gone, which `wait` reports.
+        let _ = child.start_kill();
     }
 }
 

@@ -6,6 +6,8 @@
 //! - `plan`: an `ExitPlanMode` call, then says whether the plan was approved.
 //! - `slow`: starts a turn and waits for an interrupt.
 //! - `garbage`: writes lines that do not parse, then answers.
+//! - `linger`: starts a child process that ignores stdin, answers "Started child <pid>", and
+//!   from then on keeps running after its stdin closes, as a `claude` that hangs.
 //! - anything else: answers "Echo: <prompt>".
 //!
 //! With `FAKE_CLAUDE_ARGS_FILE` set, it appends its arguments to that file, one JSON array per
@@ -15,11 +17,14 @@ use std::collections::VecDeque;
 use std::fs::OpenOptions;
 use std::io;
 use std::io::Write;
-use std::process::ExitCode;
+use std::process::{Command, ExitCode, Stdio};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 
 const ARGS_FILE_ENV: &str = "FAKE_CLAUDE_ARGS_FILE";
+/// The child of `linger`, which outlives any test.
+const LINGERING_CHILD: [&str; 2] = ["sleep", "600"];
 const RESUME_FLAG: &str = "--resume=";
 const MODE_FLAG: &str = "--permission-mode=";
 const MODEL_FLAG: &str = "--model=";
@@ -51,6 +56,8 @@ struct Fake<W> {
     next_id: u32,
     turn: Option<Turn>,
     queued: VecDeque<String>,
+    /// Set by `linger`: the fake no longer exits when its stdin closes.
+    lingers: bool,
 }
 
 fn main() -> ExitCode {
@@ -85,6 +92,7 @@ fn run() -> io::Result<()> {
         next_id: 1,
         turn: None,
         queued: VecDeque::new(),
+        lingers: false,
     };
     for line in io::stdin().lock().lines() {
         let line = line?;
@@ -92,6 +100,12 @@ fn run() -> io::Result<()> {
             continue;
         };
         fake.read(&line, &message)?;
+    }
+    if fake.lingers {
+        // Only a kill ends it.
+        loop {
+            std::thread::sleep(Duration::from_secs(60));
+        }
     }
     Ok(())
 }
@@ -211,6 +225,18 @@ impl<W: Write> Fake<W> {
                 self.say("Working on it.")?;
                 self.turn = Some(Turn::Slow);
                 Ok(())
+            }
+            "linger" => {
+                let [program, seconds] = LINGERING_CHILD;
+                let child = Command::new(program)
+                    .arg(seconds)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()?;
+                self.lingers = true;
+                self.say(&format!("Started child {}", child.id()))?;
+                self.end_turn()
             }
             "garbage" => {
                 writeln!(self.out, "this is not json")?;

@@ -722,6 +722,54 @@ async fn a_second_daemon_is_refused_by_the_lock() {
     setup.connect().await;
 }
 
+/// A `claude` that does not exit once its stdin closes is killed after the stop timeout, and every
+/// process it started goes with it.
+#[tokio::test]
+async fn a_stopped_agent_that_hangs_is_killed_with_its_children() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let agent = client.start(&setup.work(), "linger").await;
+    let started = client
+        .item_with(agent, |body| {
+            matches!(body, ItemBody::AssistantText { markdown } if markdown.starts_with("Started child "))
+        })
+        .await;
+    let ItemBody::AssistantText { markdown } = started.body else {
+        panic!("expected the child's pid");
+    };
+    let child: i32 = markdown["Started child ".len()..].parse().unwrap();
+    client.idle(agent).await;
+
+    client.ok(Request::AgentStop(AgentParams { agent })).await;
+
+    // The daemon kills `claude` 10 seconds after closing its stdin.
+    client
+        .summary_with(agent, |summary| summary.status == AgentStatus::Exited)
+        .await;
+    let deadline = Instant::now() + WAIT;
+    while is_running(child) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let survived = is_running(child);
+    if survived {
+        let pid = Pid::from_raw(child).unwrap();
+        rustix::process::kill_process(pid, Signal::KILL).unwrap();
+    }
+    assert!(!survived, "the child of the killed claude still runs");
+}
+
+/// Whether a process runs: it exists and is not a zombie waiting for its parent.
+fn is_running(pid: i32) -> bool {
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    // `pid (name) state ...`: the name may hold spaces and parentheses.
+    let state = stat
+        .rfind(')')
+        .and_then(|end| stat[end + 1..].split_whitespace().next());
+    state != Some("Z")
+}
+
 /// `claude`, and so the commands the agents run, keep the user's umask, here the most open one.
 /// The state folder stays private through the modes the daemon gives its files.
 #[tokio::test]
