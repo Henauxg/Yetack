@@ -1034,6 +1034,42 @@ async fn the_list_keeps_the_order_a_client_sets() {
     assert_eq!(list_order(&setup).await, [first, second]);
 }
 
+/// A close takes an agent off the list while it waits for an answer: no stop and no wait for
+/// its process come first.
+#[tokio::test]
+async fn a_close_removes_an_agent_whose_claude_runs() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let agent = client.start(&setup.work(), "approve this").await;
+    client
+        .item_with(agent, |body| pending_of(body).is_some())
+        .await;
+
+    let closed = client.ok(Request::AgentClose(AgentParams { agent })).await;
+    client
+        .wait_for(|event| {
+            matches!(event, Event::AgentRemoved { agent: removed } if *removed == agent)
+                .then_some(())
+        })
+        .await;
+    let again = client
+        .error_code(Request::AgentClose(AgentParams { agent }))
+        .await;
+
+    assert_eq!(closed, ResponseBody::Done);
+    assert_eq!(again, ErrorCode::NotFound);
+    let (_, catchup) = setup.connect_after(None).await;
+    let Catchup::Snapshot(snapshot) = catchup else {
+        panic!("expected a snapshot");
+    };
+    assert!(snapshot.agents.is_empty());
+    let log = setup
+        .state()
+        .join("events")
+        .join(format!("{}.jsonl", agent.get()));
+    assert!(!log.exists(), "the agent's log is gone");
+}
+
 #[tokio::test]
 async fn a_second_daemon_is_refused_by_the_lock() {
     let mut setup = Setup::new();

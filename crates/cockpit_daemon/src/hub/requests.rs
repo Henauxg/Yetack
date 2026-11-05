@@ -37,6 +37,7 @@ impl Hub {
             Request::AgentStop(params) => agents::respond(reply, self.stop(params.agent)),
             Request::AgentResume(params) => agents::respond(reply, self.resume(params.agent)),
             Request::AgentRemove(params) => agents::respond(reply, self.remove(params.agent)),
+            Request::AgentClose(params) => agents::respond(reply, self.close(params.agent)),
             Request::AgentHistory(params) => agents::respond(reply, self.history(params)),
             Request::AgentDetails(params) => {
                 let details = self
