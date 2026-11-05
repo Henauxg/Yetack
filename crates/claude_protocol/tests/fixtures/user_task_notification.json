@@ -1,0 +1,13 @@
+{
+  "type": "user",
+  "message": {
+    "role": "user",
+    "content": "<task-notification>\n<task-id>b7k2q</task-id>\n<tool-use-id>toolu_01Example</tool-use-id>\n<output-file>/tmp/example/tasks/b7k2q.output</output-file>\n<status>killed</status>\n<summary>Task \"Wait 60 seconds, then print finished\" was stopped by the user or by the app connected to this session</summary>\n</task-notification>"
+  },
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "parent_tool_use_id": null,
+  "uuid": "00000000-0000-4000-8000-000000000002",
+  "timestamp": "2030-01-01T10:00:00.000Z",
+  "isReplay": true,
+  "origin": { "kind": "task-notification", "runId": "example-run" }
+}

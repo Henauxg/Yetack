@@ -11,9 +11,10 @@ use std::time::{Duration, SystemTime};
 use claude_protocol::{
     ContentBlock, ContextUsage, ControlRequestId, ControlResponse, HookOutcome, ImageSource,
     IncomingRequest, InitializeResponse, McpScope, McpServerState, McpStatus, McpTransport,
-    OpenWord, OutputLine, ParseError, PermissionBehavior, PermissionDestination, PermissionMode,
-    PermissionUpdate, RateLimitStatus, RateLimitType, ResultMessage, ResultSubtype, SessionId,
-    SessionState, SystemEvent, TaskId, TaskStatus, TerminalReason, ToolUseId, Usage,
+    MessageOrigin, OpenWord, OriginKind, OutputLine, ParseError, PermissionBehavior,
+    PermissionDestination, PermissionMode, PermissionUpdate, RateLimitStatus, RateLimitType,
+    ResultMessage, ResultSubtype, SessionId, SessionState, SystemEvent, TaskId,
+    TaskNotificationText, TaskStatus, TerminalReason, ToolUseId, Usage, UserMessage,
 };
 use serde_json::{Value, json};
 
@@ -301,10 +302,60 @@ fn user_replayed_prompt() {
         panic!("not a user line");
     };
     assert!(user.is_replay);
+    assert_eq!(user.origin, None);
     let [ContentBlock::Text(text)] = user.message.content.as_slice() else {
         panic!("string content is not one text block");
     };
     assert_eq!(text.text, "Add a changelog entry for the parser");
+}
+
+#[test]
+fn user_task_notification() {
+    let OutputLine::User(user) = fixture("user_task_notification.json") else {
+        panic!("not a user line");
+    };
+    assert!(user.is_replay);
+    let origin = user.origin.expect("the line has an origin");
+    assert_eq!(origin.kind, OpenWord::Known(OriginKind::TaskNotification));
+    assert!(!origin.is_human());
+    let [ContentBlock::Text(text)] = user.message.content.as_slice() else {
+        panic!("string content is not one text block");
+    };
+    assert_eq!(
+        TaskNotificationText::parse_all(&text.text),
+        [TaskNotificationText {
+            status: Some(OpenWord::Known(TaskStatus::Killed)),
+            summary: Some(
+                "Task \"Wait 60 seconds, then print finished\" was stopped by the user or by the app connected to this session"
+                    .to_owned()
+            ),
+        }]
+    );
+}
+
+fn user_line(origin: &str) -> UserMessage {
+    let line = format!(
+        r#"{{"type":"user","message":{{"role":"user","content":"Hello"}},"origin":{origin}}}"#
+    );
+    match line.parse::<OutputLine>() {
+        Ok(OutputLine::User(user)) => user,
+        other => panic!("{line} gave {other:?}"),
+    }
+}
+
+#[test]
+fn an_origin_that_does_not_read_reads_as_none() {
+    let human = user_line(r#"{"kind":"human"}"#);
+    let new_kind = user_line(r#"{"kind":"scheduler","producer":"cron"}"#);
+
+    assert!(human.origin.as_ref().is_some_and(MessageOrigin::is_human));
+    assert_eq!(
+        new_kind.origin.map(|origin| origin.kind),
+        Some(OpenWord::Unknown("scheduler".to_owned()))
+    );
+    for odd in ["null", r#""human""#, "{}", r#"{"kind":3}"#, "[]"] {
+        assert_eq!(user_line(odd).origin, None, "{odd}");
+    }
 }
 
 #[test]

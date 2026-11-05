@@ -6,7 +6,7 @@
 )]
 
 use claude_protocol::{
-    HookOutcome, McpScope, McpServerState, McpTransport, OpenWord, PermissionBehavior,
+    HookOutcome, McpScope, McpServerState, McpTransport, OpenWord, OriginKind, PermissionBehavior,
     PermissionDestination, PermissionMode, RateLimitStatus, RateLimitType, ResultSubtype,
     SessionState, TaskStatus, TerminalReason, TodoStatus, ToolName,
 };
@@ -106,6 +106,11 @@ fn task_and_session_words_are_pinned() {
         ["idle", "running", "requires_action"]
     );
     assert_eq!(words::<HookOutcome>(), ["success", "error", "cancelled"]);
+}
+
+#[test]
+fn origin_kinds_are_pinned() {
+    assert_eq!(words::<OriginKind>(), ["human", "task-notification"]);
 }
 
 #[test]

@@ -1,9 +1,11 @@
 use serde::Deserialize;
 use serde_json::Value;
+use strum::{Display, EnumString, IntoStaticStr, VariantArray};
 
-use crate::content_block;
 use crate::content_block::ContentBlock;
 use crate::ids::{MessageUuid, SessionId, ToolUseId};
+use crate::open_word::OpenWord;
+use crate::{content_block, wire};
 
 /// An `assistant` line: one step of Claude's answer, often one content block.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -27,7 +29,8 @@ pub struct AssistantBody {
     pub usage: Option<Usage>,
 }
 
-/// A `user` line: a prompt Claude Code replays, or tool results.
+/// A `user` line: a prompt Claude Code replays, tool results, or a message Claude Code writes
+/// itself.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct UserMessage {
     pub message: UserBody,
@@ -36,11 +39,37 @@ pub struct UserMessage {
     /// A prompt echoed by `--replay-user-messages`, which shows Claude Code took it.
     #[serde(default, rename = "isReplay")]
     pub is_replay: bool,
+    /// Who wrote the message. A prompt the user typed has none, or the kind `human`. An origin
+    /// that does not read, such as one without a `kind`, reads as `None`.
+    #[serde(default, deserialize_with = "wire::default_on_error")]
+    pub origin: Option<MessageOrigin>,
     /// Claude Code's own record of the tool's result, richer than the content block: a string,
     /// or an object whose shape depends on the tool.
     pub tool_use_result: Option<Value>,
     pub session_id: Option<SessionId>,
     pub uuid: Option<MessageUuid>,
+}
+
+/// The `origin` of a `user` line.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct MessageOrigin {
+    pub kind: OpenWord<OriginKind>,
+}
+
+impl MessageOrigin {
+    /// Whether the user typed the message, rather than Claude Code writing it.
+    #[must_use]
+    pub fn is_human(&self) -> bool {
+        self.kind == OpenWord::Known(OriginKind::Human)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString, IntoStaticStr, VariantArray)]
+#[strum(serialize_all = "kebab-case")]
+pub enum OriginKind {
+    Human,
+    /// A background task ended: the text holds a `<task-notification>`.
+    TaskNotification,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

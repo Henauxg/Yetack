@@ -9,6 +9,7 @@
 mod agent_view;
 mod answers;
 mod details;
+mod notices;
 pub(crate) mod plan_usage;
 pub(crate) mod prompts;
 mod tools;

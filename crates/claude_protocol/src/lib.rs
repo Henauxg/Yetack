@@ -42,7 +42,8 @@
 //!   or optional: a string for a number, or a negative duration, is an error. So is `null`, except
 //!   in an `Option` field (`None`), in a field holding raw JSON, and in the lists that read it as
 //!   empty: the `content` of a user message or a tool result, and `can_use_tool`'s
-//!   `permission_suggestions`.
+//!   `permission_suggestions`. One field reads as missing when it does not read, as in a
+//!   `result` line: the `origin` of a user message.
 
 mod content_block;
 mod context_usage;
@@ -59,6 +60,7 @@ mod permission;
 mod rate_limit;
 mod result_message;
 mod system_event;
+mod task_notification_text;
 mod tool_input;
 mod wire;
 
@@ -81,7 +83,10 @@ pub use mcp_status::{
     McpScope, McpServerConfig, McpServerInfo, McpServerState, McpServerStatus, McpStatus, McpTool,
     McpToolAnnotations, McpTransport,
 };
-pub use message::{AssistantBody, AssistantMessage, StreamEvent, Usage, UserBody, UserMessage};
+pub use message::{
+    AssistantBody, AssistantMessage, MessageOrigin, OriginKind, StreamEvent, Usage, UserBody,
+    UserMessage,
+};
 pub use open_word::OpenWord;
 pub use output_line::OutputLine;
 pub use parse_error::ParseError;
@@ -100,6 +105,7 @@ pub use system_event::{
     SystemInit, TaskNotification, TaskPatch, TaskProgress, TaskStarted, TaskStatus, TaskUpdated,
     TaskUsage, ThinkingTokens,
 };
+pub use task_notification_text::TaskNotificationText;
 pub use tool_input::{
     AskUserQuestionInput, BashInput, EditInput, ExitPlanModeInput, Question, QuestionAnswer,
     QuestionOption, ReadInput, Todo, TodoStatus, TodoWriteInput, ToolInput, ToolName, WriteInput,

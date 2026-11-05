@@ -20,7 +20,7 @@ use cockpit_protocol::{
 use serde_json::{Map, Value};
 use strum::EnumString;
 
-use crate::transcript::{answers, details, tools, words};
+use crate::transcript::{answers, details, notices, tools, words};
 
 /// What the hub does after a line, beyond publishing the view's events.
 #[derive(Debug, Clone, PartialEq)]
@@ -600,6 +600,7 @@ impl AgentView {
         let ClaudeUserMessage {
             message: body,
             is_replay,
+            origin,
             tool_use_result,
             ..
         } = message;
@@ -620,6 +621,12 @@ impl AgentView {
             return;
         }
         let text = texts.join("\n");
+        if let Some(notices) = notices::notices(origin.as_ref(), &text) {
+            for notice in notices {
+                self.push_item(parent, ItemBody::Notice { text: notice });
+            }
+            return;
+        }
         if is_replay {
             if self.take_echo(&text) {
                 return;
@@ -1822,6 +1829,37 @@ mod tests {
             ItemBody::Notice {
                 text: COMPACTED_NOTICE.to_owned()
             }
+        );
+    }
+
+    #[test]
+    fn a_task_notification_shows_its_summary_as_a_notice() {
+        let mut view = view();
+        let summary = "Task \"Wait 60 seconds, then print finished\" was stopped by the user or by the app connected to this session";
+
+        apply(
+            &mut view,
+            json!({
+                "type": "user", "isReplay": true, "parent_tool_use_id": null,
+                "message": {"role": "user", "content": format!(
+                    "<task-notification>\n<task-id>b7k2q</task-id>\n\
+                     <tool-use-id>toolu_01Example</tool-use-id>\n\
+                     <output-file>/tmp/example/tasks/b7k2q.output</output-file>\n\
+                     <status>killed</status>\n<summary>{summary}</summary>\n</task-notification>"
+                )},
+                "origin": {"kind": "task-notification", "runId": "example-run"}
+            }),
+        );
+        apply(&mut view, echo("Typed in another app"));
+
+        assert_eq!(
+            bodies(&view),
+            [
+                &ItemBody::Notice {
+                    text: summary.to_owned()
+                },
+                &user_message("Typed in another app".to_owned(), Vec::new()),
+            ]
         );
     }
 

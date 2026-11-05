@@ -1,3 +1,4 @@
+use std::convert::Infallible;
 use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -28,14 +29,23 @@ impl<W: Copy + Into<&'static str>> Serialize for OpenWord<W> {
     }
 }
 
-impl<'de, W: FromStr> Deserialize<'de> for OpenWord<W> {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let text = String::deserialize(deserializer)?;
+impl<W: FromStr> FromStr for OpenWord<W> {
+    type Err = Infallible;
+
+    fn from_str(text: &str) -> Result<Self, Infallible> {
         let parsed: Result<W, W::Err> = text.parse();
         let word = match parsed {
             Ok(word) => Self::Known(word),
-            Err(_) => Self::Unknown(text),
+            Err(_) => Self::Unknown(text.to_owned()),
         };
+        Ok(word)
+    }
+}
+
+impl<'de, W: FromStr> Deserialize<'de> for OpenWord<W> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        let Ok(word) = text.parse::<Self>();
         Ok(word)
     }
 }

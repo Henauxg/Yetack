@@ -10,7 +10,9 @@ use std::io::{BufReader, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use claude_protocol::MessageOrigin;
 use cockpit_protocol::{ClaudeSessionId, PastSession, Timestamp};
+use serde::Deserialize;
 use serde_json::Value;
 use strum::{IntoStaticStr, VariantArray};
 
@@ -36,6 +38,7 @@ const CWD_KEY: &str = "cwd";
 const SIDECHAIN_KEY: &str = "isSidechain";
 const META_KEY: &str = "isMeta";
 const COMPACT_SUMMARY_KEY: &str = "isCompactSummary";
+const ORIGIN_KEY: &str = "origin";
 const TOOL_RESULT_MARK: &str = "\"tool_result\"";
 /// How a slash command's prompt starts; such a prompt does not make a title.
 const COMMAND_MARK: &str = "<command-name>";
@@ -175,6 +178,15 @@ fn is_prompt(line: &Value) -> bool {
         && !flag(META_KEY)
         && !flag(SIDECHAIN_KEY)
         && !flag(COMPACT_SUMMARY_KEY)
+        && !written_by_claude_code(line)
+}
+
+/// A message Claude Code writes itself, such as at the end of a background task, has an origin
+/// other than `human`.
+fn written_by_claude_code(line: &Value) -> bool {
+    line.get(ORIGIN_KEY)
+        .and_then(|origin| MessageOrigin::deserialize(origin).ok())
+        .is_some_and(|origin| !origin.is_human())
 }
 
 /// The user's prompts in the whole file, slash commands included. A tool result is a user line
@@ -323,6 +335,27 @@ mod tests {
             ]
         );
         assert_eq!(sessions[1].folder, PathBuf::from("/srv/work/shop"));
+    }
+
+    #[test]
+    fn a_message_claude_code_wrote_is_not_a_prompt() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut typed = prompt("Fix the cart total");
+        typed["origin"] = json!({"kind": "human"});
+        let mut notification = prompt(
+            "<task-notification>\n<status>completed</status>\n\
+             <summary>Background command \"make\" completed</summary>\n</task-notification>",
+        );
+        notification["origin"] = json!({"kind": "task-notification"});
+        write_session(temp.path(), "p", FIRST, &[notification, typed]);
+
+        let sessions = list(temp.path());
+
+        let summary: Vec<(&str, u32)> = sessions
+            .iter()
+            .map(|session| (session.title.as_str(), session.turns))
+            .collect();
+        assert_eq!(summary, [("Fix the cart total", 1)]);
     }
 
     #[test]
