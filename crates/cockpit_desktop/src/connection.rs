@@ -10,8 +10,9 @@ use dioxus::desktop::DesktopContext;
 use dioxus::prelude::*;
 use tokio::sync::mpsc;
 
+use crate::demo;
+use crate::notifications::Notifier;
 use crate::state::{self, AppState, Outgoing, actions};
-use crate::{demo, notifications};
 
 /// What the window was started with.
 #[derive(Debug, Clone, PartialEq)]
@@ -119,6 +120,7 @@ async fn run(
     let mut session = Session::start(transport, Backoff::default());
     let requester = session.requester().clone();
     let (opened_sender, mut opened) = mpsc::unbounded_channel::<AgentId>();
+    let mut notifier = notify.then(|| Notifier::new(opened_sender));
     loop {
         tokio::select! {
             update = session.next_update() => {
@@ -133,10 +135,8 @@ async fn run(
                 for outgoing in follow_up {
                     send(state, requester.clone(), outgoing);
                 }
-                if notify {
-                    for alert in alerts {
-                        notifications::show(alert, opened_sender.clone());
-                    }
+                if let Some(notifier) = &mut notifier {
+                    notifier.update(alerts, &state.peek());
                 }
             }
             outgoing = requests.next() => {

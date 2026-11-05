@@ -18,3 +18,6 @@ pub use transcript::{HistoryState, WaitingKind};
 pub use ui_state::{
     Block, Dialog, McpView, NewAgentForm, NewAgentTab, Popover, ToolFilter, ViewMode,
 };
+
+#[cfg(test)]
+pub(crate) use app_state::tests::{state_with, summary};
