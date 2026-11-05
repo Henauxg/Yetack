@@ -2,8 +2,8 @@ use serde::Deserialize;
 use serde_json::Value;
 use strum::{Display, EnumString, IntoStaticStr, VariantArray};
 
-use crate::error::ParseError;
 use crate::open_word::OpenWord;
+use crate::parse_error::ParseError;
 
 /// The answer to `mcp_status`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

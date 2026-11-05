@@ -5,10 +5,10 @@ use serde::Deserialize;
 use serde_json::Value;
 use strum::{Display, EnumString, IntoStaticStr, VariantArray};
 
-use crate::error::ParseError;
 use crate::ids::{HookId, MessageUuid, SessionId, TaskId, ToolUseId};
 use crate::mcp_status::McpServerState;
 use crate::open_word::OpenWord;
+use crate::parse_error::ParseError;
 use crate::permission::PermissionMode;
 use crate::wire;
 
@@ -192,7 +192,7 @@ pub enum SessionState {
 /// Claude is thinking: an estimate of the tokens it has thought so far in this step.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ThinkingTokens {
-    pub estimated_tokens: u64,
+    pub estimated_tokens: u32,
     pub session_id: Option<SessionId>,
     pub uuid: Option<MessageUuid>,
 }

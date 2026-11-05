@@ -125,6 +125,7 @@ pub enum Method {
 }
 
 impl Method {
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         self.into()
     }
@@ -275,6 +276,7 @@ struct Tagged<P> {
 }
 
 impl Request {
+    #[must_use]
     pub fn method(&self) -> Method {
         match self {
             Self::AgentStart(_) => Method::AgentStart,

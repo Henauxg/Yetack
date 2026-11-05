@@ -4,8 +4,8 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use strum::{Display, EnumString, IntoStaticStr, VariantArray};
 
-use crate::error::ParseError;
 use crate::open_word::OpenWord;
+use crate::parse_error::ParseError;
 
 /// The tools whose input this crate reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString, IntoStaticStr, VariantArray)]

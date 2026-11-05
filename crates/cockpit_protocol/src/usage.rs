@@ -13,10 +13,12 @@ use crate::time::Timestamp;
 pub struct CostUsd(f64);
 
 impl CostUsd {
+    #[must_use]
     pub fn new(dollars: f64) -> Self {
         Self(dollars)
     }
 
+    #[must_use]
     pub fn get(self) -> f64 {
         self.0
     }

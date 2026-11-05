@@ -7,7 +7,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 use serde_json::{Number, Value};
 
-use crate::error::ParseError;
+use crate::parse_error::ParseError;
 
 /// The key whose word tells lines, blocks and permission updates apart.
 pub(crate) const TYPE: &str = "type";
@@ -24,7 +24,11 @@ pub(crate) fn read<T: DeserializeOwned>(
     value: &Value,
     kind: &'static str,
 ) -> Result<T, ParseError> {
-    T::deserialize(value).map_err(|error| ParseError::MalformedLine { kind, error })
+    T::deserialize(value).map_err(|error| ParseError::MalformedLine {
+        kind,
+        request_id: None,
+        error,
+    })
 }
 
 /// Reads `null` as the default value, for lists Claude Code may send as `null`.

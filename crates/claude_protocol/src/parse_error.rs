@@ -1,3 +1,4 @@
+use crate::ids::ControlRequestId;
 use crate::tool_input::ToolName;
 
 /// A line or a body that cannot be read.
@@ -12,6 +13,9 @@ pub enum ParseError {
     #[error("malformed `{kind}` line: {error}")]
     MalformedLine {
         kind: &'static str,
+        /// Set for a `control_request` whose request does not read. Claude Code still waits for
+        /// an answer, so answer it with [`InputLine::control_error`](crate::InputLine::control_error).
+        request_id: Option<ControlRequestId>,
         error: serde_json::Error,
     },
     #[error("malformed {body} response: {error}")]
