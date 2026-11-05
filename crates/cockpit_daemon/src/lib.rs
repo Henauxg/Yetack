@@ -12,6 +12,8 @@ mod serve;
 mod server;
 mod sessions;
 mod store;
+#[cfg(test)]
+mod test_script;
 mod transcript;
 
 pub use daemon_config::{CLAUDE_PROGRAM_ENV, DaemonConfig, HOME_ENV};

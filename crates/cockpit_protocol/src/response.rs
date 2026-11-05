@@ -55,9 +55,10 @@ pub enum ResponseBody {
         commands: Vec<SlashCommand>,
     },
     /// `path` is where the file was read, absolute: the path asked for, or the file the daemon
-    /// found for it.
+    /// found for it. `None` from a daemon that predates it, which reads only the path asked for.
     File {
-        path: PathBuf,
+        #[serde(default)]
+        path: Option<PathBuf>,
         text: String,
     },
     /// Several files match the relative path asked for, and none was read. Absolute paths.

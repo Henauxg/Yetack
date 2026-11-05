@@ -30,7 +30,7 @@ const BOTTOM_THRESHOLD_PX: u16 = 40;
 const MAX_BADGE_COUNT: usize = 99;
 
 /// Waits for its settings, then keeps the chat's place. Message and field names are serde's names
-/// for `Settings` and `ScrollMessage`.
+/// for `Settings`, `ScrollCommand` and `ScrollMessage`.
 const SCRIPT: &str = r#"
 const settings = await dioxus.recv();
 let box = null;

@@ -243,7 +243,13 @@ impl Hub {
         let Some(agent) = self.agents.get_mut(&id) else {
             return;
         };
+        let model_before = agent.view.summary().model.clone();
         let follow_ups = agent.view.apply(line, state::now());
+        // A `/model` typed in the composer shows in the next turn's `system/init`: the new model
+        // has its own default effort.
+        let refresh_effort = model_before.is_some()
+            && agent.view.summary().model != model_before
+            && agent.record.effort.is_none();
         let session = agent.view.summary().session.clone();
         let session_changed = session.is_some() && session != agent.record.session;
         if session_changed {
@@ -274,6 +280,13 @@ impl Hub {
         }
         if session_changed || title_changed {
             self.save_agents();
+        }
+        if refresh_effort {
+            self.control(
+                id,
+                ControlRequest::GetSettings,
+                ControlPurpose::DefaultEffort,
+            );
         }
         self.publish(id);
     }
@@ -434,6 +447,24 @@ impl Hub {
         if agent.process.is_some() {
             return Err(errors::agent_running(id));
         }
+        self.discard(id);
+        Ok(ResponseBody::Done)
+    }
+
+    /// Removes the agent whatever its process does, interrupting a working agent's turn first.
+    /// The process handle leaves with the agent, which closes `claude`'s stdin: `claude` ends its
+    /// session file and exits, or is killed after a delay.
+    pub(super) fn close(&mut self, id: AgentId) -> Result<ResponseBody, ErrorBody> {
+        let agent = self.agents.get(&id).ok_or(errors::agent_not_found(id))?;
+        if agent.process.is_some() && agent.view.is_busy() {
+            self.control(id, ControlRequest::Interrupt, ControlPurpose::Closing);
+        }
+        self.discard(id);
+        Ok(ResponseBody::Done)
+    }
+
+    /// Takes the agent out of the hub, with its logs, and tells the clients.
+    fn discard(&mut self, id: AgentId) {
         self.agents.remove(&id);
         if let Err(error) = self.logs.remove(LogName::Agent(id)) {
             tracing::warn!(error = %errors::chain(&error), "cannot delete an agent's log");
@@ -447,7 +478,6 @@ impl Hub {
         self.replay_floor = self.last_seq;
         self.save_agents();
         self.emit(LogName::Daemon, Event::AgentRemoved { agent: id });
-        Ok(ResponseBody::Done)
     }
 
     /// Effort has no control request: `/effort <level>` goes as a prompt the transcript does not
@@ -772,6 +802,49 @@ mod tests {
         assert_eq!(relative.code, ErrorCode::InvalidRequest);
         assert_eq!(missing.code, ErrorCode::NotFound);
         assert!(hub.agents.is_empty());
+    }
+
+    /// A close takes out a running agent at once, with its log, and tells the clients.
+    #[tokio::test]
+    async fn a_close_removes_a_running_agent_and_its_log() {
+        use std::fs::Permissions;
+        use std::os::unix::fs::PermissionsExt;
+
+        use tokio::sync::mpsc;
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut hub = Hub::for_tests(&temp.path().join("state"));
+        let claude = temp.path().join("claude");
+        std::fs::write(&claude, "#!/bin/sh\nexec cat >/dev/null\n").unwrap();
+        std::fs::set_permissions(&claude, Permissions::from_mode(0o755)).unwrap();
+        hub.config.claude_program = claude;
+        let start = StartParams {
+            folder: temp.path().to_owned(),
+            title: None,
+            model: None,
+            effort: None,
+            mode: None,
+            prompt: None,
+        };
+        let Ok(ResponseBody::AgentStarted { agent }) = hub.start_agent(start) else {
+            panic!("the agent did not start");
+        };
+        let log = hub.logs.path(LogName::Agent(agent));
+        let (client, mut frames) = mpsc::channel(16);
+        hub.clients.push(client);
+
+        let closed = hub.close(agent);
+        let again = hub.close(agent).unwrap_err();
+
+        assert_eq!(closed, Ok(ResponseBody::Done));
+        assert_eq!(again.code, ErrorCode::NotFound);
+        assert!(hub.agents.is_empty());
+        assert!(!log.exists());
+        let saved = crate::store::AgentsFile::load(&hub.state.agents_file()).unwrap();
+        assert!(saved.agents.is_empty());
+        let frame = frames.try_recv().unwrap();
+        let sent = String::from_utf8_lossy(frame.as_bytes()).into_owned();
+        assert!(sent.contains(r#""type":"agent_removed""#), "{sent}");
     }
 
     /// Once stopped, the process's stdin is closed: a prompt would be shown as sent and never

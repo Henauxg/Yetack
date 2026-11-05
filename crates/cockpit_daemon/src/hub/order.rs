@@ -56,8 +56,6 @@ impl Hub {
 
 #[cfg(test)]
 mod tests {
-    use std::fs::Permissions;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
 
     use cockpit_protocol::{
@@ -69,13 +67,13 @@ mod tests {
     use super::*;
     use crate::sessions::{FoundSession, SessionPast};
     use crate::store::{AgentRecord, AgentsFile, PastFile, StateDir};
+    use crate::test_script;
 
     /// A hub whose `claude` reads its stdin and says nothing.
     fn hub(folder: &Path) -> Hub {
         let mut hub = Hub::for_tests(&folder.join("state"));
         let claude = folder.join("claude");
-        std::fs::write(&claude, "#!/bin/sh\nexec cat >/dev/null\n").unwrap();
-        std::fs::set_permissions(&claude, Permissions::from_mode(0o755)).unwrap();
+        test_script::write_script(&claude, "#!/bin/sh\nexec cat >/dev/null\n");
         hub.config.claude_program = claude;
         hub
     }
@@ -89,10 +87,10 @@ mod tests {
             mode: None,
             prompt: None,
         };
-        let Ok(ResponseBody::AgentStarted { agent }) = hub.start_agent(params) else {
-            panic!("the agent did not start");
-        };
-        agent
+        match hub.start_agent(params) {
+            Ok(ResponseBody::AgentStarted { agent }) => agent,
+            other => panic!("the agent did not start: {other:?}"),
+        }
     }
 
     fn order(hub: &Hub) -> Vec<u32> {

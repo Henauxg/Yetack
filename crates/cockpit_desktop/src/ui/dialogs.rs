@@ -1,4 +1,5 @@
-//! The agent switcher (Ctrl+K) and the new agent dialog (Ctrl+N).
+//! The agent switcher (Ctrl+K), the new agent dialog (Ctrl+N), and the question before closing
+//! an agent.
 
 use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 
@@ -52,6 +53,58 @@ pub fn Dialogs() -> Element {
                     Dialog::NewAgent(form) => rsx! {
                         NewAgentDialog { form }
                     },
+                    Dialog::CloseAgent(agent) => rsx! {
+                        CloseAgentDialog { agent }
+                    },
+                }
+            }
+        }
+    }
+}
+
+/// Says what closing the agent would lose, before it closes.
+#[component]
+fn CloseAgentDialog(agent: AgentId) -> Element {
+    let cockpit: Cockpit = use_context();
+    let question = {
+        let state = cockpit.state.read();
+        let drafts = cockpit.drafts.read();
+        let Some(entry) = state.agents.get(&agent) else {
+            return rsx! {};
+        };
+        match actions::close_warning(entry, &drafts) {
+            Some(warning) => format!("{warning} Close it?"),
+            None => format!("Close {}?", entry.summary.title),
+        }
+    };
+    rsx! {
+        div {
+            class: "dialog close-agent",
+            role: "alertdialog",
+            aria_label: "Close the agent",
+            onclick: move |event| event.stop_propagation(),
+            div { class: "dialog-head",
+                h2 { "Close the agent" }
+                span { class: "key-hint", "Ctrl Shift W" }
+            }
+            p { class: "dialog-text",
+                "{question} "
+                "Its session stays in Resume a session."
+            }
+            div { class: "dialog-actions",
+                button {
+                    class: "button",
+                    onclick: move |_| cockpit.update(|state| state.ui.dialog = None),
+                    "Cancel"
+                }
+                button {
+                    class: "button danger",
+                    onmounted: move |event| async move {
+                        // The dialog may have closed already: nothing to focus then.
+                        let _ = event.data().set_focus(true).await;
+                    },
+                    onclick: move |_| cockpit.change_with_drafts(|state, drafts| actions::close_agent(state, drafts, agent)),
+                    "Close agent"
                 }
             }
         }

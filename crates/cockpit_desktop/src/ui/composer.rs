@@ -94,14 +94,9 @@ pub fn Composer() -> Element {
     let status = summary.status;
     let draft = drafts.draft(agent).cloned().unwrap_or_default();
     let popover = state.ui.popover;
-    let working = status == AgentStatus::Working;
     let exited = status == AgentStatus::Exited;
     let buttons = EndButtons::new(status);
-    let stop_label = if working {
-        "Stop the agent (Esc)"
-    } else {
-        "Stop the agent"
-    };
+    let stop_label = "Stop the agent";
     let (cache_text, cache_low) = cache_left(summary.cache_expires_at, now());
     let cache_short = match summary
         .cache_expires_at
