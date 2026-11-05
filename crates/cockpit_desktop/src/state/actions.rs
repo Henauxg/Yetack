@@ -19,7 +19,8 @@ use super::file_edits;
 use super::requests::{Outgoing, Purpose, history_request};
 use super::transcript::HistoryState;
 use super::ui_state::{
-    Block, Dialog, FileView, NewAgentForm, NewAgentTab, Popover, Switcher, ToolFilter, ViewMode,
+    Block, Dialog, FileView, NewAgentForm, NewAgentTab, PaletteOrigin, Popover, Switcher,
+    ToolFilter, ViewMode,
 };
 
 /// What starts a slash command in the composer.
@@ -84,45 +85,46 @@ pub enum PaletteChange {
 }
 
 /// The composer's text changed. A `/` word alone filters the palette, and opens it; other text
-/// closes it. Only the drafts change: the caller applies the returned change with
-/// `change_palette`, so that a keystroke that leaves the palette as it is leaves the rest of the
-/// state alone.
+/// closes a palette opened by typing. A palette opened by the slash button has a filter field of
+/// its own, so the composer's text leaves it as it is. Only the drafts change: the caller applies
+/// the returned change with `change_palette`, so that a keystroke that leaves the palette as it
+/// is leaves the rest of the state alone.
 pub fn composer_input(
     state: &AppState,
     drafts: &mut Drafts,
     agent: AgentId,
     text: String,
 ) -> Option<PaletteChange> {
-    let open = state.ui.popover == Some(Popover::Palette);
     let command_query = text
         .strip_prefix(COMMAND_PREFIX)
         .filter(|rest| !rest.contains(char::is_whitespace));
-    let change = if let Some(query) = command_query {
-        drafts.palette = Palette {
-            query: query.to_owned(),
-            highlighted: 0,
-        };
-        (!open).then_some(PaletteChange::Open)
-    } else {
-        (open && !text.is_empty()).then_some(PaletteChange::Close)
+    let change = match (state.ui.popover, command_query) {
+        (Some(Popover::Palette(PaletteOrigin::Button)), _) => None,
+        (popover, Some(query)) => {
+            drafts.palette = Palette {
+                query: query.to_owned(),
+                highlighted: 0,
+            };
+            let typed_open = popover == Some(Popover::Palette(PaletteOrigin::Typed));
+            (!typed_open).then_some(PaletteChange::Open)
+        }
+        (Some(Popover::Palette(PaletteOrigin::Typed)), None) => Some(PaletteChange::Close),
+        (_, None) => None,
     };
     drafts.draft_mut(agent).text = text;
     change
 }
 
-/// Opening the palette asks for the commands when the agent reported none yet.
+/// Opens or closes the palette as the composer's text asks.
 pub fn change_palette(
     state: &mut AppState,
     agent: AgentId,
     change: PaletteChange,
 ) -> Vec<Outgoing> {
     match change {
-        PaletteChange::Open => {
-            state.ui.popover = Some(Popover::Palette);
-            commands_request(state, agent).into_iter().collect()
-        }
+        PaletteChange::Open => open_palette(state, agent, PaletteOrigin::Typed),
         PaletteChange::Close => {
-            if state.ui.popover == Some(Popover::Palette) {
+            if state.ui.popover == Some(Popover::Palette(PaletteOrigin::Typed)) {
                 state.ui.popover = None;
             }
             Vec::new()
@@ -130,13 +132,20 @@ pub fn change_palette(
     }
 }
 
+/// The slash button: opens the palette, or closes the one it opened.
 pub fn toggle_palette(state: &mut AppState, drafts: &mut Drafts, agent: AgentId) -> Vec<Outgoing> {
-    if state.ui.popover == Some(Popover::Palette) {
+    if state.ui.popover == Some(Popover::Palette(PaletteOrigin::Button)) {
         state.ui.popover = None;
         return Vec::new();
     }
     drafts.palette = Palette::default();
-    change_palette(state, agent, PaletteChange::Open)
+    open_palette(state, agent, PaletteOrigin::Button)
+}
+
+/// Opening the palette asks for the commands when the agent reported none yet.
+fn open_palette(state: &mut AppState, agent: AgentId, origin: PaletteOrigin) -> Vec<Outgoing> {
+    state.ui.popover = Some(Popover::Palette(origin));
+    commands_request(state, agent).into_iter().collect()
 }
 
 /// The details carry the commands; an agent that reported none yet is asked directly.
@@ -845,7 +854,10 @@ mod tests {
 
         let requests = type_text(&mut state, &mut drafts, "/rev");
 
-        assert_eq!(state.ui.popover, Some(Popover::Palette));
+        assert_eq!(
+            state.ui.popover,
+            Some(Popover::Palette(PaletteOrigin::Typed))
+        );
         assert_eq!(drafts.palette.query, "rev");
         assert_eq!(
             requests.first().map(|outgoing| outgoing.request.method()),
@@ -881,6 +893,58 @@ mod tests {
             drafts.draft(agent()).map(|draft| draft.text.as_str()),
             Some("/rev the")
         );
+    }
+
+    #[test]
+    fn erasing_the_slash_closes_a_palette_opened_by_typing() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        with_commands(&mut state, vec![command("review", "")]);
+
+        type_text(&mut state, &mut drafts, "/");
+        let opened = state.ui.popover;
+        type_text(&mut state, &mut drafts, "");
+        let erased = state.ui.popover;
+        type_text(&mut state, &mut drafts, "/re");
+        type_text(&mut state, &mut drafts, "re");
+        let slash_erased = state.ui.popover;
+
+        assert_eq!(opened, Some(Popover::Palette(PaletteOrigin::Typed)));
+        assert_eq!((erased, slash_erased), (None, None));
+    }
+
+    #[test]
+    fn a_palette_opened_by_the_button_stays_open_while_typing_until_a_pick() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        with_commands(&mut state, vec![command("review", "")]);
+        let button = Some(Popover::Palette(PaletteOrigin::Button));
+
+        toggle_palette(&mut state, &mut drafts, agent());
+        for text in ["", "Run the", "/re", ""] {
+            type_text(&mut state, &mut drafts, text);
+            assert_eq!(state.ui.popover, button, "after typing {text:?}");
+        }
+        // Its own filter field filters it, not the composer's text.
+        assert_eq!(drafts.palette.query, "");
+
+        palette_pick(&mut state, &mut drafts, agent(), None);
+        assert_eq!(state.ui.popover, None);
+    }
+
+    #[test]
+    fn the_slash_button_takes_over_a_palette_opened_by_typing() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        with_commands(&mut state, vec![command("review", "")]);
+        type_text(&mut state, &mut drafts, "/re");
+
+        toggle_palette(&mut state, &mut drafts, agent());
+        let opened = state.ui.popover;
+        toggle_palette(&mut state, &mut drafts, agent());
+
+        assert_eq!(opened, Some(Popover::Palette(PaletteOrigin::Button)));
+        assert_eq!(state.ui.popover, None);
     }
 
     #[test]

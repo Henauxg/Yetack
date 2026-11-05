@@ -25,7 +25,18 @@ pub enum Popover {
     Changes,
     Model,
     Mode,
-    Palette,
+    Palette(PaletteOrigin),
+}
+
+/// How the command palette opened, which decides when it closes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PaletteOrigin {
+    /// A `/` typed at the start of the composer. The palette closes when the composer's text no
+    /// longer starts with `/`.
+    Typed,
+    /// The composer's slash button. The palette stays open until Esc, a pick, or a click
+    /// elsewhere.
+    Button,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,6 +176,13 @@ impl UiState {
         open
     }
 
+    /// Whether a click outside the open popover closes it. The palette opened by typing `/` stays
+    /// open while you type in the composer.
+    pub fn popover_closes_on_click(&self) -> bool {
+        self.popover
+            .is_some_and(|popover| popover != Popover::Palette(PaletteOrigin::Typed))
+    }
+
     pub fn toggle_popover(&mut self, popover: Popover) {
         self.popover = if self.popover == Some(popover) {
             None
@@ -203,5 +221,21 @@ mod tests {
 
         ui.toggle_popover(Popover::Changes);
         assert_eq!(ui.popover, None);
+    }
+
+    #[test]
+    fn a_click_elsewhere_closes_the_palette_only_when_the_button_opened_it() {
+        let closes = |popover| {
+            let ui = UiState {
+                popover,
+                ..UiState::default()
+            };
+            ui.popover_closes_on_click()
+        };
+
+        assert!(closes(Some(Popover::Palette(PaletteOrigin::Button))));
+        assert!(closes(Some(Popover::Model)));
+        assert!(!closes(Some(Popover::Palette(PaletteOrigin::Typed))));
+        assert!(!closes(None));
     }
 }

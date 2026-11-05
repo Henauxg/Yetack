@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 
 use crate::bridge::use_bridge;
 use crate::connection::{Cockpit, Startup, use_clock, use_cockpit};
-use crate::state::{ConnectionState, Popover};
+use crate::state::ConnectionState;
 use crate::ui::blocks::FloatingBlocks;
 use crate::ui::composer::Composer;
 use crate::ui::dialogs::Dialogs;
@@ -25,12 +25,7 @@ pub fn App() -> Element {
         .ui
         .selected
         .is_some_and(|agent| state.ui.file_view(agent).is_some());
-    // The palette stays open while you type in the composer; clicking elsewhere closes the
-    // other popovers.
-    let closes_on_click = state
-        .ui
-        .popover
-        .is_some_and(|popover| popover != Popover::Palette);
+    let closes_on_click = state.ui.popover_closes_on_click();
     let disconnected = matches!(state.connection, ConnectionState::Disconnected { .. });
     rsx! {
         div { class: "app",

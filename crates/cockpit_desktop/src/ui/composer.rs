@@ -12,7 +12,7 @@ use crate::bridge::{self, COMPOSER_ID};
 use crate::connection::{Clock, Cockpit};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::state::actions::{Direction, ImageTooLarge};
-use crate::state::{Popover, actions};
+use crate::state::{PaletteOrigin, Popover, actions};
 use crate::ui::header::cache_left;
 use crate::ui::icons::{Icon, IconKind};
 
@@ -136,8 +136,8 @@ pub fn Composer() -> Element {
     rsx! {
         div { class: "composer-wrap",
             div { class: "composer-column",
-                if popover == Some(Popover::Palette) {
-                    CommandPalette { agent, commands: filtered, query: palette.query, highlighted: palette.highlighted }
+                if let Some(Popover::Palette(origin)) = popover {
+                    CommandPalette { agent, origin, commands: filtered, query: palette.query, highlighted: palette.highlighted }
                 }
                 if popover == Some(Popover::Model) {
                     ModelMenu { agent, model, effort }
@@ -189,7 +189,7 @@ pub fn Composer() -> Element {
                             },
                         }
                         button {
-                            class: if popover == Some(Popover::Palette) { "icon-button small active" } else { "icon-button small" },
+                            class: if popover == Some(Popover::Palette(PaletteOrigin::Button)) { "icon-button small active" } else { "icon-button small" },
                             aria_label: "Commands and skills",
                             title: "Commands and skills",
                             onclick: move |_| cockpit.change_with_drafts(|state, drafts| actions::toggle_palette(state, drafts, agent)),
@@ -312,9 +312,20 @@ async fn attach(cockpit: Cockpit, agent: AgentId, files: Vec<FileData>) {
     }
 }
 
+/// Puts the command at `index`, or the highlighted one, in the composer, and gives the composer
+/// the focus for its arguments.
+fn pick_command(cockpit: Cockpit, agent: AgentId, index: Option<usize>) {
+    cockpit.change_with_drafts(|state, drafts| {
+        actions::palette_pick(state, drafts, agent, index);
+        Vec::new()
+    });
+    bridge::focus_field(COMPOSER_ID);
+}
+
 #[component]
 fn CommandPalette(
     agent: AgentId,
+    origin: PaletteOrigin,
     commands: Vec<SlashCommand>,
     query: String,
     highlighted: usize,
@@ -330,6 +341,14 @@ fn CommandPalette(
                     aria_label: "Filter commands",
                     placeholder: "Type to filter commands and skills",
                     value: "{query}",
+                    // Opened by typing, the palette leaves the focus in the composer, whose text
+                    // filters it.
+                    onmounted: move |event| async move {
+                        if origin == PaletteOrigin::Button {
+                            // The palette may have closed already: nothing to focus then.
+                            let _ = event.data().set_focus(true).await;
+                        }
+                    },
                     oninput: move |event: FormEvent| {
                         cockpit.with_drafts(|_, drafts| {
                             drafts.palette.query = event.value();
@@ -339,10 +358,7 @@ fn CommandPalette(
                     onkeydown: move |event: KeyboardEvent| match event.key() {
                         Key::ArrowDown => cockpit.with_drafts(|state, drafts| actions::palette_move(state, drafts, agent, Direction::Down)),
                         Key::ArrowUp => cockpit.with_drafts(|state, drafts| actions::palette_move(state, drafts, agent, Direction::Up)),
-                        Key::Enter => cockpit.change_with_drafts(|state, drafts| {
-                            actions::palette_pick(state, drafts, agent, None);
-                            Vec::new()
-                        }),
+                        Key::Enter => pick_command(cockpit, agent, None),
                         _ => {}
                     },
                 }
@@ -356,10 +372,7 @@ fn CommandPalette(
                     button {
                         key: "{index}",
                         class: if index == highlighted { "palette-item highlighted" } else { "palette-item" },
-                        onclick: move |_| cockpit.change_with_drafts(|state, drafts| {
-                            actions::palette_pick(state, drafts, agent, Some(index));
-                            Vec::new()
-                        }),
+                        onclick: move |_| pick_command(cockpit, agent, Some(index)),
                         span { class: "palette-item-head",
                             span { class: "mono palette-name", "/{command.name}" }
                             span { class: "palette-kind",

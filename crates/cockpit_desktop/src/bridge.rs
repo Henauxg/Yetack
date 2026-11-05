@@ -7,7 +7,7 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::connection::Cockpit;
-use crate::state::{AppState, KeyPress, Popover, WaitingKind, actions, handle_key};
+use crate::state::{AppState, KeyPress, PaletteOrigin, Popover, WaitingKind, actions, handle_key};
 
 /// The composer's text area, whose keys the script treats apart.
 pub const COMPOSER_ID: &str = "composer";
@@ -128,6 +128,12 @@ for (let frame = 0; frame < 30; frame++) {
 }
 "#;
 
+/// Gives the focus to the field whose id it receives.
+const FOCUS_SCRIPT: &str = r#"
+const field_id = await dioxus.recv();
+document.getElementById(field_id)?.focus();
+"#;
+
 #[derive(Debug, Serialize)]
 struct FieldText {
     field_id: &'static str,
@@ -146,7 +152,8 @@ struct KeyMode {
     answer_letters: bool,
     /// 1 to 9 and Enter answer a question.
     answer_numbers: bool,
-    /// Up, Down, Enter and Tab move in the command palette.
+    /// Up, Down, Enter and Tab move in the command palette opened by typing `/`. The one the
+    /// slash button opens takes them in its own filter field.
     palette: bool,
     dialog: bool,
 }
@@ -160,7 +167,7 @@ impl KeyMode {
         Self {
             answer_letters: matches!(waiting, Some(WaitingKind::Approval | WaitingKind::Plan)),
             answer_numbers: waiting == Some(WaitingKind::Question),
-            palette: state.ui.popover == Some(Popover::Palette),
+            palette: state.ui.popover == Some(Popover::Palette(PaletteOrigin::Typed)),
             dialog: state.ui.dialog.is_some(),
         }
     }
@@ -259,6 +266,13 @@ pub fn set_field_text(field_id: &'static str, text: String) {
     let message = FieldText { field_id, text };
     if let Err(error) = script.send(message) {
         tracing::warn!("cannot fill the field {field_id}: {error}");
+    }
+}
+
+pub fn focus_field(field_id: &'static str) {
+    let script = document::eval(FOCUS_SCRIPT);
+    if let Err(error) = script.send(field_id) {
+        tracing::warn!("cannot focus the field {field_id}: {error}");
     }
 }
 
