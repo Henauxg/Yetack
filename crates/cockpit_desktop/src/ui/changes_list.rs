@@ -85,7 +85,7 @@ fn group_changes(folder: &Path, files: &[ChangedFile]) -> Vec<ChangeGroup> {
 /// The folder a file outside the agent's folder shows under: the first folder below what the two
 /// paths share. Beside "/work/app", "/work/app_feature/src/lib.rs" shows under
 /// "/work/app_feature", as "src/lib.rs".
-fn outside_root(folder: &Path, path: &Path) -> PathBuf {
+pub fn outside_root(folder: &Path, path: &Path) -> PathBuf {
     let shared = folder
         .components()
         .zip(path.components())
@@ -102,7 +102,7 @@ fn outside_root(folder: &Path, path: &Path) -> PathBuf {
 }
 
 /// A group's head: its folder's own name, as "app_feature/".
-fn root_label(root: &Path) -> String {
+pub fn root_label(root: &Path) -> String {
     match root.file_name() {
         Some(name) => format!("{}{MAIN_SEPARATOR}", name.to_string_lossy()),
         None => root.display().to_string(),
