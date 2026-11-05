@@ -88,7 +88,7 @@ pub fn conversation_markdown(entry: &AgentEntry) -> String {
                     Part::Paragraph(plan.markdown.clone()),
                 );
             }
-            ItemBody::Notice { text } => parts.push(Part::Paragraph(format!("_{text}_"))),
+            ItemBody::Notice { text, .. } => parts.push(Part::Paragraph(format!("_{text}_"))),
             ItemBody::UserMessage(_)
             | ItemBody::Thinking { .. }
             | ItemBody::Approval(_)
@@ -273,6 +273,7 @@ mod tests {
                     None,
                     ItemBody::Notice {
                         text: "Conversation compacted".to_owned(),
+                        detail: None,
                     },
                 ),
                 (None, user("Thanks", 0, false)),

@@ -565,7 +565,7 @@ mod tests {
             .map(|item| match &item.body {
                 ItemBody::UserMessage(message) => format!("user: {}", message.text),
                 ItemBody::AssistantText { markdown } => format!("text: {markdown}"),
-                ItemBody::Notice { text } => format!("notice: {text}"),
+                ItemBody::Notice { text, .. } => format!("notice: {text}"),
                 other => format!("{other:?}"),
             })
             .collect()

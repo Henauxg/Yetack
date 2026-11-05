@@ -1679,6 +1679,7 @@ mod tests {
                 parent: None,
                 body: ItemBody::Notice {
                     text: format!("notice {id}"),
+                    detail: None,
                 },
             });
         }
@@ -2954,6 +2955,7 @@ mod tests {
                     parent: None,
                     body: ItemBody::Notice {
                         text: "compacted".to_owned(),
+                        detail: None,
                     },
                 }],
                 has_older: true,

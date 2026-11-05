@@ -1116,6 +1116,7 @@ fn exited_agent(now: SystemTime) -> Sample {
             None,
             ItemBody::Notice {
                 text: "claude exited with status 0".to_owned(),
+                detail: None,
             },
         ),
     ];

@@ -79,6 +79,7 @@ fn placeholder(item: &TranscriptItem, bytes: usize) -> TranscriptItem {
         parent: item.parent,
         body: ItemBody::Notice {
             text: format!("This item is too large to show ({bytes} bytes)."),
+            detail: None,
         },
     }
 }
@@ -93,7 +94,7 @@ mod tests {
         TranscriptItem {
             id: ItemId::new(id),
             parent: None,
-            body: ItemBody::Notice { text },
+            body: ItemBody::Notice { text, detail: None },
         }
     }
 
@@ -152,7 +153,7 @@ mod tests {
         let oldest = page_within(&items, Some(ItemId::new(2)), 1, limits);
 
         assert_eq!(latest.items, items[2..]);
-        let ItemBody::Notice { text } = &large.items[0].body else {
+        let ItemBody::Notice { text, .. } = &large.items[0].body else {
             panic!("expected a placeholder, got {:?}", large.items);
         };
         assert!(text.contains("too large"), "{text}");

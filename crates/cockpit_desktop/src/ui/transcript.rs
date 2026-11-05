@@ -523,7 +523,7 @@ pub fn ItemView(
         ItemBody::TurnEnd(end) => rsx! {
             TurnEndView { end }
         },
-        ItemBody::Notice { text } => rsx! {
+        ItemBody::Notice { text, .. } => rsx! {
             p { class: "notice", "{text}" }
         },
     }
@@ -1084,6 +1084,7 @@ mod tests {
             parent: parent.map(ItemId::new),
             body: ItemBody::Notice {
                 text: String::new(),
+                detail: None,
             },
         }
     }
@@ -1421,7 +1422,8 @@ mod tests {
         assert_eq!(
             step(
                 ItemBody::Notice {
-                    text: String::new()
+                    text: String::new(),
+                    detail: None
                 },
                 false
             ),

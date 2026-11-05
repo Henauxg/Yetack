@@ -57,6 +57,7 @@ impl PastTranscript {
                 parent: None,
                 body: ItemBody::Notice {
                     text: LEFT_OUT_NOTICE.to_owned(),
+                    detail: None,
                 },
             });
         }
@@ -132,7 +133,8 @@ mod tests {
         assert_eq!(
             items[2].body,
             ItemBody::Notice {
-                text: "Stopped".to_owned()
+                text: "Stopped".to_owned(),
+                detail: None
             }
         );
         assert_eq!(
@@ -181,6 +183,7 @@ mod tests {
         };
         let notice = |text: &str| ItemBody::Notice {
             text: text.to_owned(),
+            detail: None,
         };
         assert_eq!(
             bodies,
@@ -209,7 +212,8 @@ mod tests {
                 id: ItemId::new(1),
                 parent: None,
                 body: ItemBody::Notice {
-                    text: LEFT_OUT_NOTICE.to_owned()
+                    text: LEFT_OUT_NOTICE.to_owned(),
+                    detail: None
                 },
             }
         );

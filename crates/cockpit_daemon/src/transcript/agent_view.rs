@@ -267,6 +267,7 @@ impl AgentView {
                         None,
                         ItemBody::Notice {
                             text: output.to_owned(),
+                            detail: None,
                         },
                     );
                 }
@@ -440,6 +441,7 @@ impl AgentView {
         if let Some(found) = self.item_mut(item) {
             found.body = ItemBody::Notice {
                 text: QUEUED_CANCELLED_NOTICE.to_owned(),
+                detail: None,
             };
         }
     }
@@ -565,7 +567,13 @@ impl AgentView {
         self.fail_running_calls();
         self.stop_background_tasks(Some(now));
         self.summary.activity = None;
-        self.push_item(None, ItemBody::Notice { text: notice });
+        self.push_item(
+            None,
+            ItemBody::Notice {
+                text: notice,
+                detail: None,
+            },
+        );
     }
 
     pub(crate) fn set_commands(&mut self, response: &InitializeResponse) {
@@ -662,6 +670,7 @@ impl AgentView {
                         None,
                         ItemBody::Notice {
                             text: COMPACTED_NOTICE.to_owned(),
+                            detail: None,
                         },
                     );
                 }
@@ -700,6 +709,7 @@ impl AgentView {
             None,
             ItemBody::Notice {
                 text: text.to_owned(),
+                detail: None,
             },
         );
     }
@@ -741,7 +751,13 @@ impl AgentView {
         for block in message.message.content {
             match block {
                 ContentBlock::Text(text) if synthetic && !text.text.trim().is_empty() => {
-                    self.push_item(parent, ItemBody::Notice { text: text.text });
+                    self.push_item(
+                        parent,
+                        ItemBody::Notice {
+                            text: text.text,
+                            detail: None,
+                        },
+                    );
                 }
                 ContentBlock::Text(text) if !text.text.trim().is_empty() => {
                     self.push_item(
@@ -836,7 +852,13 @@ impl AgentView {
         let text = texts.join("\n");
         if let Some(notices) = notices::notices(origin.as_ref(), &text) {
             for notice in notices {
-                self.push_item(parent, ItemBody::Notice { text: notice });
+                self.push_item(
+                    parent,
+                    ItemBody::Notice {
+                        text: notice,
+                        detail: None,
+                    },
+                );
             }
             return;
         }
@@ -847,6 +869,7 @@ impl AgentView {
                     parent,
                     ItemBody::Notice {
                         text: output.to_owned(),
+                        detail: None,
                     },
                 );
             }
@@ -862,6 +885,7 @@ impl AgentView {
             let body = if interrupt {
                 ItemBody::Notice {
                     text: PAST_STOP_NOTICE.to_owned(),
+                    detail: None,
                 }
             } else {
                 user_message(text, images)
@@ -883,7 +907,7 @@ impl AgentView {
             self.push_item(parent, user_message(text, images));
         } else {
             // Claude Code's own lines.
-            self.push_item(None, ItemBody::Notice { text });
+            self.push_item(None, ItemBody::Notice { text, detail: None });
         }
     }
 
@@ -1257,6 +1281,7 @@ fn finish_leftover(body: &mut ItemBody) {
         ItemBody::UserMessage(_) => {
             *body = ItemBody::Notice {
                 text: QUEUED_CANCELLED_NOTICE.to_owned(),
+                detail: None,
             };
         }
         ItemBody::Approval(_) | ItemBody::Question(_) | ItemBody::Plan(_) => cancel_answer(body),
@@ -2040,7 +2065,8 @@ mod tests {
         assert_eq!(
             view.items()[0].body,
             ItemBody::Notice {
-                text: QUEUED_CANCELLED_NOTICE.to_owned()
+                text: QUEUED_CANCELLED_NOTICE.to_owned(),
+                detail: None
             }
         );
     }
@@ -2198,7 +2224,8 @@ mod tests {
         assert_eq!(
             view.items()[1].body,
             ItemBody::Notice {
-                text: "claude exited with status 1".to_owned()
+                text: "claude exited with status 1".to_owned(),
+                detail: None
             }
         );
     }
@@ -2244,7 +2271,8 @@ mod tests {
         assert_eq!(
             restored.items()[3].body,
             ItemBody::Notice {
-                text: QUEUED_CANCELLED_NOTICE.to_owned()
+                text: QUEUED_CANCELLED_NOTICE.to_owned(),
+                detail: None
             }
         );
         let changed = events
@@ -2304,7 +2332,8 @@ mod tests {
         assert_eq!(
             bodies(&view),
             [&ItemBody::Notice {
-                text: "Compacted".to_owned()
+                text: "Compacted".to_owned(),
+                detail: None
             }]
         );
     }
@@ -2349,7 +2378,7 @@ mod tests {
             .map(|body| match body {
                 ItemBody::TurnEnd(end) => format!("end {}", end.cost.get()),
                 ItemBody::UserMessage(message) => format!("user {}", message.text),
-                ItemBody::Notice { text } => format!("notice {text}"),
+                ItemBody::Notice { text, .. } => format!("notice {text}"),
                 other => format!("{other:?}"),
             })
             .collect();
@@ -2459,7 +2488,8 @@ mod tests {
         assert_eq!(
             view.items()[0].body,
             ItemBody::Notice {
-                text: COMPACTED_NOTICE.to_owned()
+                text: COMPACTED_NOTICE.to_owned(),
+                detail: None
             }
         );
     }
@@ -2488,7 +2518,8 @@ mod tests {
             bodies(&view),
             [
                 &ItemBody::Notice {
-                    text: summary.to_owned()
+                    text: summary.to_owned(),
+                    detail: None
                 },
                 &user_message("Typed in another app".to_owned(), Vec::new()),
             ]
@@ -2513,7 +2544,8 @@ mod tests {
         assert_eq!(
             bodies(&view),
             [&ItemBody::Notice {
-                text: "Set effort level to low".to_owned()
+                text: "Set effort level to low".to_owned(),
+                detail: None
             }]
         );
         assert_eq!(view.summary().turns, 0);
