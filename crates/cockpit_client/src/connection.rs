@@ -59,8 +59,9 @@ impl Connection {
         }
     }
 
-    pub fn requester(&self) -> Requester {
-        self.requester.clone()
+    #[must_use]
+    pub fn requester(&self) -> &Requester {
+        &self.requester
     }
 
     pub async fn request(&self, request: Request) -> Result<ResponseBody, RequestError> {
@@ -304,7 +305,8 @@ mod tests {
     use cockpit_protocol::{AgentId, AgentParams, ErrorBody, ErrorCode, Event, ResponseResult};
 
     use super::*;
-    use crate::test_daemon::{Peer, TestDaemon, snapshot};
+    use crate::test_daemon;
+    use crate::test_daemon::{Peer, TestDaemon};
 
     fn interrupt() -> Request {
         Request::AgentInterrupt(AgentParams {
@@ -350,12 +352,12 @@ mod tests {
 
         let (connected, (_peer, last_seq)) = tokio::join!(
             Connection::connect(&transport, Some(Seq::new(5))),
-            daemon.accept_and_welcome(Catchup::Snapshot(snapshot(Some(9)))),
+            daemon.accept_and_welcome(Catchup::Snapshot(test_daemon::snapshot(Some(9)))),
         );
 
         let (_connection, catchup) = connected.unwrap();
         assert_eq!(last_seq, Some(Seq::new(5)));
-        assert_eq!(catchup, Catchup::Snapshot(snapshot(Some(9))));
+        assert_eq!(catchup, Catchup::Snapshot(test_daemon::snapshot(Some(9))));
     }
 
     #[tokio::test]

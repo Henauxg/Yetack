@@ -35,7 +35,6 @@
 mod content_block;
 mod context_usage;
 mod control;
-mod error;
 mod ids;
 mod initialize_response;
 mod input_line;
@@ -43,6 +42,7 @@ mod mcp_status;
 mod message;
 mod open_word;
 mod output_line;
+mod parse_error;
 mod permission;
 mod rate_limit;
 mod result_message;
@@ -59,7 +59,6 @@ pub use control::{
     CanUseTool, ControlCancelRequest, ControlError, ControlResponse, ControlSuccess,
     IncomingControlRequest, IncomingRequest,
 };
-pub use error::ParseError;
 pub use ids::{ControlRequestId, HookId, MessageUuid, SessionId, TaskId, ToolUseId};
 pub use initialize_response::{InitializeResponse, SlashCommand};
 pub use input_line::{
@@ -73,6 +72,7 @@ pub use mcp_status::{
 pub use message::{AssistantBody, AssistantMessage, StreamEvent, Usage, UserBody, UserMessage};
 pub use open_word::OpenWord;
 pub use output_line::OutputLine;
+pub use parse_error::ParseError;
 pub use permission::{
     DirectoriesUpdate, ModeUpdate, PermissionBehavior, PermissionDecision, PermissionDestination,
     PermissionMode, PermissionRule, PermissionUpdate, RulesUpdate,

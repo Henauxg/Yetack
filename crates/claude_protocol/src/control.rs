@@ -4,8 +4,8 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use strum::{Display, EnumString, IntoStaticStr, VariantArray};
 
-use crate::error::ParseError;
 use crate::ids::{ControlRequestId, ToolUseId};
+use crate::parse_error::ParseError;
 use crate::permission::PermissionUpdate;
 use crate::wire;
 

@@ -7,7 +7,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 use serde_json::{Number, Value};
 
-use crate::error::ParseError;
+use crate::parse_error::ParseError;
 
 /// The key whose word tells lines, blocks and permission updates apart.
 pub(crate) const TYPE: &str = "type";

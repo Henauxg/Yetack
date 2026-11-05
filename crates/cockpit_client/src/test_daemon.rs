@@ -7,7 +7,7 @@ use cockpit_protocol::{
     Request, RequestId, ResponseBody, ResponseResult, Seq, ServerMessage, Settings, Snapshot,
 };
 use tempfile::TempDir;
-use tokio::io::{AsyncWriteExt, BufReader};
+use tokio::io::BufReader;
 use tokio::net::UnixListener;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
@@ -107,6 +107,8 @@ impl Peer {
     }
 
     pub(crate) async fn send(&mut self, message: &ServerMessage) {
+        use tokio::io::AsyncWriteExt;
+
         let frame = Frame::encode(message).unwrap();
         self.writer.write_all(frame.as_bytes()).await.unwrap();
     }
@@ -129,6 +131,8 @@ impl Peer {
 
     /// Writes `line` and a newline as they are, for a line the protocol types cannot produce.
     pub(crate) async fn send_line(&mut self, line: &str) {
+        use tokio::io::AsyncWriteExt;
+
         let mut bytes = line.as_bytes().to_vec();
         bytes.push(b'\n');
         self.writer.write_all(&bytes).await.unwrap();

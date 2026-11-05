@@ -5,7 +5,7 @@
     reason = "test code: a failure is a failed test"
 )]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use claude_protocol::{
@@ -15,13 +15,16 @@ use claude_protocol::{
     PermissionUpdate, RateLimitStatus, RateLimitType, ResultSubtype, SessionId, SessionState,
     SystemEvent, TaskId, TaskStatus, TerminalReason, ToolUseId, Usage,
 };
-use serde_json::json;
+use serde_json::{Value, json};
+
+fn fixture_path(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name)
+}
 
 fn fixture(name: &str) -> OutputLine {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
-        .join(name);
-    let text = std::fs::read_to_string(&path).expect("the fixture exists");
+    let text = std::fs::read_to_string(fixture_path(name)).expect("the fixture exists");
     text.parse()
         .unwrap_or_else(|error| panic!("{name} does not parse: {error}"))
 }
@@ -37,7 +40,7 @@ fn system_event(name: &str) -> SystemEvent {
     event
 }
 
-fn success_body(name: &str) -> serde_json::Value {
+fn success_body(name: &str) -> Value {
     let OutputLine::ControlResponse(ControlResponse::Success(success)) = fixture(name) else {
         panic!("{name} is not a successful control response");
     };
@@ -530,10 +533,8 @@ fn control_request_can_use_tool() {
 
 #[test]
 fn suggestions_echo_back_as_claude_code_wrote_them() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/control_request_can_use_tool.json");
-    let raw: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let path = fixture_path("control_request_can_use_tool.json");
+    let raw: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     let OutputLine::ControlRequest(request) = fixture("control_request_can_use_tool.json") else {
         panic!("not a control_request line");
     };

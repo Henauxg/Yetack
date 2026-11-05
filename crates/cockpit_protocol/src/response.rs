@@ -88,6 +88,7 @@ pub struct ErrorBody {
 }
 
 impl ErrorBody {
+    #[must_use]
     pub fn new(code: ErrorCode, message: String) -> Self {
         Self { code, message }
     }

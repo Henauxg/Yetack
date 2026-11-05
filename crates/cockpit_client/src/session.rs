@@ -72,6 +72,7 @@ impl Session {
     /// # Panics
     ///
     /// Outside a Tokio runtime, since it spawns the session's task.
+    #[must_use]
     pub fn start(transport: Transport, backoff: Backoff) -> Self {
         let (commands_sender, commands) = mpsc::unbounded_channel();
         let (updates_sender, updates) = mpsc::channel(UPDATE_BUFFER);
@@ -83,8 +84,9 @@ impl Session {
     }
 
     /// A handle that sends requests on whichever connection is current.
-    pub fn requester(&self) -> Requester {
-        self.requester.clone()
+    #[must_use]
+    pub fn requester(&self) -> &Requester {
+        &self.requester
     }
 
     pub async fn request(&self, request: Request) -> Result<ResponseBody, RequestError> {
@@ -185,7 +187,7 @@ async fn serve(
     updates: &mpsc::Sender<SessionUpdate>,
     last_seq: &mut Option<Seq>,
 ) -> Option<CloseError> {
-    let requester = connection.requester();
+    let requester = connection.requester().clone();
     loop {
         tokio::select! {
             event = connection.next_event() => match event {
@@ -206,7 +208,8 @@ mod tests {
     use cockpit_protocol::{AgentId, AgentParams, Event};
 
     use super::*;
-    use crate::test_daemon::{TestDaemon, snapshot};
+    use crate::test_daemon;
+    use crate::test_daemon::TestDaemon;
 
     const FAST: Backoff = Backoff {
         initial: Duration::from_millis(10),
@@ -237,13 +240,13 @@ mod tests {
             SessionUpdate::Connecting { attempt: 1 }
         ));
         let (peer, last_seq) = daemon
-            .accept_and_welcome(Catchup::Snapshot(snapshot(Some(10))))
+            .accept_and_welcome(Catchup::Snapshot(test_daemon::snapshot(Some(10))))
             .await;
         assert_eq!(last_seq, None);
         let SessionUpdate::Connected(Catchup::Snapshot(received)) = next(&mut session).await else {
             panic!("expected a snapshot");
         };
-        assert_eq!(received, snapshot(Some(10)));
+        assert_eq!(received, test_daemon::snapshot(Some(10)));
         drop(peer);
         let SessionUpdate::Disconnected { error, retry_in } = next(&mut session).await else {
             panic!("expected a disconnection");
