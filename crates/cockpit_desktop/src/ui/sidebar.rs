@@ -1,4 +1,4 @@
-//! The agent list: compact two-line rows sorted by attention, and the connection's state.
+//! The agent list: compact two-line rows in the order the user sets, and the connection's state.
 
 use std::time::Instant;
 
@@ -57,7 +57,7 @@ pub fn Sidebar() -> Element {
     let cockpit: Cockpit = use_context();
     let state = cockpit.state.read();
     let rows: Vec<AgentRow> = state
-        .agents_by_attention()
+        .agents_in_order()
         .into_iter()
         .map(|entry| {
             AgentRow::new(

@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use cockpit_protocol::{
     AgentDetails, AgentId, AgentStatus, AgentSummary, PastSession, PlanUsage, Settings, Timestamp,
+    list_order,
 };
 
 use super::transcript::Transcript;
@@ -137,7 +138,14 @@ impl AppState {
         self.connection == ConnectionState::Connected
     }
 
-    /// The sidebar's order: by attention, unread first within a status, then by id.
+    /// The sidebar's order, which the user sets and the daemon keeps.
+    pub fn agents_in_order(&self) -> Vec<&AgentEntry> {
+        let mut agents: Vec<&AgentEntry> = self.agents.values().collect();
+        agents.sort_by(|left, right| list_order(left.summary.place(), right.summary.place()));
+        agents
+    }
+
+    /// The agent switcher's order: by attention, unread first within a status, then by id.
     pub fn agents_by_attention(&self) -> Vec<&AgentEntry> {
         let mut agents: Vec<&AgentEntry> = self.agents.values().collect();
         agents.sort_by_key(|entry| {
@@ -158,14 +166,14 @@ impl AppState {
         self.ui.unread.contains(&agent)
     }
 
-    /// Keeps the selection on an agent that exists, or picks the first by attention.
+    /// Keeps the selection on an agent that exists, or picks the sidebar's first.
     pub fn fix_selection(&mut self) {
         let valid = self
             .ui
             .selected
             .is_some_and(|selected| self.agents.contains_key(&selected));
         if !valid {
-            self.ui.selected = self.agents_by_attention().first().map(|entry| entry.id());
+            self.ui.selected = self.agents_in_order().first().map(|entry| entry.id());
         }
         if let Some(selected) = self.ui.selected {
             self.ui.unread.remove(&selected);
@@ -235,12 +243,34 @@ pub(crate) mod tests {
         state
     }
 
-    fn order(state: &AppState) -> Vec<u32> {
-        state
-            .agents_by_attention()
-            .iter()
-            .map(|entry| entry.id().get())
-            .collect()
+    pub(crate) fn ids(entries: &[&AgentEntry]) -> Vec<u32> {
+        entries.iter().map(|entry| entry.id().get()).collect()
+    }
+
+    /// A summary at `position` in the list.
+    pub(crate) fn placed(id: u32, status: AgentStatus, position: u32) -> AgentSummary {
+        AgentSummary {
+            position: Position::new(position),
+            ..summary(id, status)
+        }
+    }
+
+    #[test]
+    fn the_sidebar_follows_the_positions_whatever_the_status() {
+        let mut state = state_with(vec![
+            placed(1, AgentStatus::NeedsYou, 1024),
+            placed(2, AgentStatus::Exited, 3072),
+            placed(3, AgentStatus::Idle, 2048),
+        ]);
+        state.ui.unread.insert(AgentId::new(1));
+        let before = ids(&state.agents_in_order());
+
+        if let Some(entry) = state.agents.get_mut(&AgentId::new(2)) {
+            entry.summary.status = AgentStatus::Working;
+        }
+
+        assert_eq!(before, [2, 3, 1]);
+        assert_eq!(ids(&state.agents_in_order()), [2, 3, 1]);
     }
 
     #[test]
@@ -254,14 +284,14 @@ pub(crate) mod tests {
         ]);
         state.ui.unread.insert(AgentId::new(5));
 
-        assert_eq!(order(&state), [4, 3, 5, 2, 1]);
+        assert_eq!(ids(&state.agents_by_attention()), [4, 3, 5, 2, 1]);
     }
 
     #[test]
-    fn fix_selection_picks_the_first_by_attention_and_marks_it_read() {
+    fn fix_selection_picks_the_sidebars_first_and_marks_it_read() {
         let mut state = state_with(vec![
-            summary(1, AgentStatus::Idle),
-            summary(2, AgentStatus::NeedsYou),
+            placed(1, AgentStatus::NeedsYou, 1024),
+            placed(2, AgentStatus::Idle, 2048),
         ]);
         state.ui.selected = Some(AgentId::new(9));
         state.ui.unread.insert(AgentId::new(2));

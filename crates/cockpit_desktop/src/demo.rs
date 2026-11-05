@@ -150,6 +150,12 @@ const PLAN_TEXT: &str = "## Add a result cache
 3. Drop entries older than ten minutes.
 4. Add a test that evaluates the same expression twice.";
 
+/// The sidebar's order, top first, as a user arranged it: neither by id nor by status.
+const SIDEBAR_ORDER: [u32; 6] = [1, 4, 2, 5, 3, 6];
+
+/// The room between two agents' positions, as the daemon leaves it.
+const POSITION_STEP: u32 = 1024;
+
 pub fn is_requested(arguments: &[String]) -> bool {
     arguments.iter().any(|argument| argument == DEMO_FLAG)
 }
@@ -178,6 +184,12 @@ pub fn state(daemon: DaemonLabel) -> AppState {
             entry.turn_started = Instant::now().checked_sub(TURN_ELAPSED);
         }
         state.agents.insert(entry.id(), entry);
+    }
+    // The bottom agent first: positions grow towards the top.
+    for (step, id) in (1_u32..).zip(SIDEBAR_ORDER.into_iter().rev()) {
+        if let Some(entry) = state.agents.get_mut(&AgentId::new(id)) {
+            entry.summary.position = Position::new(step * POSITION_STEP);
+        }
     }
     state.plan_usage = plan_usage(now);
     state.ui.selected = Some(AgentId::new(1));
@@ -1111,6 +1123,19 @@ pub struct ParseError {
                 None,
             ]
         );
+    }
+
+    #[test]
+    fn the_sidebar_shows_the_order_the_user_set() {
+        let state = state(label());
+
+        let order: Vec<u32> = state
+            .agents_in_order()
+            .iter()
+            .map(|entry| entry.id().get())
+            .collect();
+
+        assert_eq!(order, SIDEBAR_ORDER);
     }
 
     #[test]

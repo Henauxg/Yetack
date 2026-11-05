@@ -240,7 +240,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::state::app_state::tests::{state_with, summary};
+    use crate::state::app_state::tests::{placed, state_with, summary};
 
     fn record(event: Event) -> EventRecord {
         EventRecord {
@@ -420,11 +420,11 @@ mod tests {
     }
 
     #[test]
-    fn removing_the_selected_agent_selects_the_next_by_attention() {
+    fn removing_the_selected_agent_selects_the_sidebars_first() {
         let mut state = state_with(vec![
-            summary(1, AgentStatus::Idle),
-            summary(2, AgentStatus::Working),
-            summary(3, AgentStatus::NeedsYou),
+            placed(1, AgentStatus::Idle, 1024),
+            placed(2, AgentStatus::Working, 3072),
+            placed(3, AgentStatus::NeedsYou, 2048),
         ]);
         state.ui.selected = Some(AgentId::new(3));
 

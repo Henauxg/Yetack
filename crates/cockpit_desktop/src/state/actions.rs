@@ -1077,7 +1077,8 @@ pub fn toggle_switcher(state: &mut AppState) {
     state.ui.dialog = (!open).then(|| Dialog::Switcher(Switcher::default()));
 }
 
-/// Agents whose title or folder holds the query, in the sidebar's order.
+/// Agents whose title or folder holds the query, the ones that wait for you first: the switcher
+/// finds an agent, so it ranks by attention rather than in the sidebar's order.
 pub fn filtered_agents<'state>(state: &'state AppState, query: &str) -> Vec<&'state AgentEntry> {
     let query = query.to_lowercase();
     state
