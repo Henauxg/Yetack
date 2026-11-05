@@ -376,7 +376,9 @@ fn elapsed(task: &BackgroundTask, now: SystemTime) -> Option<Duration> {
         None => now,
     };
     let start = task.started_at.to_system_time()?;
-    end.duration_since(start).ok()
+    // The daemon's clock may run ahead of the laptop's: a task that starts later than now has
+    // just started.
+    Some(end.duration_since(start).unwrap_or(Duration::ZERO))
 }
 
 fn task_meta(task: &BackgroundTask, now: SystemTime) -> String {
@@ -497,6 +499,14 @@ mod tests {
         assert_eq!(task_meta(&agent, now), "5 tool calls, 41 s");
         assert_eq!(task_meta(&command, now), "running, 41 s");
         assert_eq!(task_meta(&done, now), "Done in 12 s");
+    }
+
+    #[test]
+    fn a_task_started_by_a_clock_ahead_of_the_laptops_reads_zero_seconds() {
+        let behind = SystemTime::UNIX_EPOCH + Duration::from_secs(997);
+        let command = task(BackgroundTaskStatus::Running, BackgroundTaskKind::Command);
+
+        assert_eq!(task_meta(&command, behind), "running, 0 s");
     }
 
     /// A task started and ended that many seconds after the epoch; `ended` is `None` while it runs.
