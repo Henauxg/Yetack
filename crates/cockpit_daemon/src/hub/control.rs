@@ -27,7 +27,7 @@ impl ControlPurpose {
             }
             | Self::McpStatus(Some(reply)) => agents::respond(reply, Err(error)),
             Self::Initialize
-            | Self::ContextAfterTurn
+            | Self::ContextRefresh
             | Self::SetMode { reply: None, .. }
             | Self::McpStatus(None) => {}
         }
@@ -69,12 +69,18 @@ impl Hub {
         let view = &mut agent.view;
         let mut record_changed = false;
         let mut refresh_mcp = false;
+        let mut refresh_context = false;
         match purpose {
-            ControlPurpose::Initialize => match parse::<InitializeResponse>(result) {
-                Ok(response) => view.set_commands(&response),
-                Err(error) => tracing::warn!(agent = id.get(), error, "initialize failed"),
-            },
-            ControlPurpose::ContextAfterTurn => match parse::<ClaudeContextUsage>(result) {
+            ControlPurpose::Initialize => {
+                match parse::<InitializeResponse>(result) {
+                    Ok(response) => view.set_commands(&response),
+                    Err(error) => tracing::warn!(agent = id.get(), error, "initialize failed"),
+                }
+                // Claude Code answers both before the first prompt.
+                refresh_mcp = true;
+                refresh_context = true;
+            }
+            ControlPurpose::ContextRefresh => match parse::<ClaudeContextUsage>(result) {
                 Ok(usage) => {
                     view.set_context(&usage);
                 }
@@ -150,6 +156,13 @@ impl Hub {
                 id,
                 ControlRequest::McpStatus,
                 ControlPurpose::McpStatus(None),
+            );
+        }
+        if refresh_context {
+            self.control(
+                id,
+                ControlRequest::GetContextUsage,
+                ControlPurpose::ContextRefresh,
             );
         }
         self.publish(id);

@@ -19,11 +19,12 @@ use cockpit_client::{Connection, RequestError, Transport};
 use cockpit_protocol::{
     AgentId, AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState, Approval,
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, CancelQueuedParams, Catchup,
-    ClaudeSessionId, CommandKind, Effort, ErrorCode, Event, EventRecord, HistoryParams, ItemBody,
-    McpRemoveParams, McpScope, McpServerParams, McpToggleParams, PendingId, PermissionMode, Plan,
-    PlanAnswer, PlanDecision, Prompt, PromptParams, Question, QuestionAnswer, ReadFileParams,
-    Request, ResponseBody, Seq, SessionResumeParams, SetEffortParams, SetModeParams,
-    SetModelParams, Settings, StartParams, StopTaskParams, TranscriptItem,
+    ClaudeSessionId, CommandKind, CostUsd, Effort, ErrorCode, Event, EventRecord, HistoryParams,
+    ItemBody, ItemId, McpRemoveParams, McpScope, McpServerParams, McpServerStatus, McpToggleParams,
+    PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, Prompt, PromptParams, Question,
+    QuestionAnswer, ReadFileParams, Request, ResponseBody, Seq, SessionResumeParams,
+    SetEffortParams, SetModeParams, SetModelParams, Settings, StartParams, StopTaskParams,
+    TranscriptItem,
 };
 use rustix::process::{Pid, Signal};
 use serde_json::Value;
@@ -435,6 +436,43 @@ async fn an_agent_answers_a_prompt_and_reports_its_state() {
 }
 
 #[tokio::test]
+async fn a_new_agent_shows_its_mcp_servers_and_context_before_any_prompt() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let params = StartParams {
+        folder: setup.work(),
+        title: Some("Waits".to_owned()),
+        model: None,
+        effort: None,
+        mode: None,
+        prompt: None,
+    };
+    let ResponseBody::AgentStarted { agent } = client.ok(Request::AgentStart(params)).await else {
+        panic!("expected AgentStarted");
+    };
+
+    // The fake answers in order: the MCP status before the context usage.
+    let with_context = client
+        .summary_with(agent, |summary| summary.context_percent.is_some())
+        .await;
+    let ResponseBody::Details(details) = client
+        .ok(Request::AgentDetails(AgentParams { agent }))
+        .await
+    else {
+        panic!("expected details");
+    };
+
+    assert_eq!(with_context.context_percent, Some(2));
+    assert_eq!(with_context.turns, 0);
+    let servers: Vec<(&str, McpServerStatus)> = details
+        .mcp_servers
+        .iter()
+        .map(|server| (server.name.as_str(), server.status))
+        .collect();
+    assert_eq!(servers, [("notes", McpServerStatus::Connected)]);
+}
+
+#[tokio::test]
 async fn approvals_allow_and_deny() {
     let setup = Setup::new();
     let mut client = setup.connect().await;
@@ -614,7 +652,8 @@ async fn an_interrupt_cancels_what_waits_and_queued_prompts_follow() {
     let ItemBody::TurnEnd(end) = end.body else {
         panic!("expected a turn end");
     };
-    assert_eq!(end.error.as_deref(), Some("Interrupted"));
+    assert!(end.stopped);
+    assert_eq!(end.error, None);
     let sent = client
         .item_with(agent, |body| {
             matches!(
@@ -625,13 +664,22 @@ async fn an_interrupt_cancels_what_waits_and_queued_prompts_follow() {
         .await;
     assert_eq!(sent.id, queued.id);
     client.says(agent, "Echo: hello queued").await;
-    let users = client
-        .history(agent)
-        .await
-        .into_iter()
+    let history = client.history(agent).await;
+    let users = history
+        .iter()
         .filter(|item| matches!(item.body, ItemBody::UserMessage(_)))
         .count();
     assert_eq!(users, 2, "the echo of a sent prompt adds no item");
+    let notices: Vec<ItemId> = history
+        .iter()
+        .filter(|item| matches!(item.body, ItemBody::Notice { .. }))
+        .map(|item| item.id)
+        .collect();
+    assert_eq!(
+        notices,
+        [dropped.id],
+        "the turn end says the user stopped the turn"
+    );
 }
 
 #[tokio::test]
@@ -1049,9 +1097,12 @@ async fn files_settings_sessions_and_agent_settings() {
         "type": "user", "cwd": setup.work(),
         "message": {"role": "user", "content": "Fix the old bug"}
     });
+    let cost_line = serde_json::json!({
+        "type": "cost-state", "sessionId": SESSION_ID, "totalCostUSD": 0.5
+    });
     std::fs::write(
         project.join(format!("{SESSION_ID}.jsonl")),
-        format!("{session_line}\n"),
+        format!("{session_line}\n{cost_line}\n"),
     )
     .unwrap();
     let ResponseBody::Sessions { sessions } = client.ok(Request::SessionsList).await else {
@@ -1068,6 +1119,30 @@ async fn files_settings_sessions_and_agent_settings() {
         panic!("expected AgentStarted, got {resumed:?}");
     };
     assert_ne!(second, agent);
+    let restored = client
+        .summary_with(second, |summary| summary.cost == CostUsd::new(0.5))
+        .await;
+    assert_eq!(
+        restored.turns, 0,
+        "the session's past cost shows before any turn"
+    );
+    let past = client.history(second).await;
+    let ids: Vec<u32> = past.iter().map(|item| item.id.get()).collect();
+    assert_eq!(ids, [2001], "{past:?}");
+    assert!(
+        matches!(&past[0].body, ItemBody::UserMessage(message) if message.text == "Fix the old bug")
+    );
+    let again = client
+        .ok(Request::SessionsResume(SessionResumeParams {
+            session: ClaudeSessionId::new(SESSION_ID.to_owned()),
+        }))
+        .await;
+    assert_eq!(again, ResponseBody::AgentStarted { agent: second });
+    assert_eq!(
+        client.history(second).await,
+        past,
+        "the agent that has the session keeps its items"
+    );
     let launches = setup.wait_for_launches(2);
     let resumed_launch = launches
         .iter()

@@ -601,10 +601,14 @@ fn CompactItem(
 fn TurnEndView(end: TurnEnd) -> Element {
     let duration = format::duration(end.duration);
     let cost = format::cost(end.cost);
+    let stopped = end.stopped;
     rsx! {
         match end.error {
             Some(error) => rsx! {
-                p { class: "turn-end failed", "The turn stopped after {duration}: {error}" }
+                p { class: "turn-end failed", "The turn failed after {duration}: {error}" }
+            },
+            None if stopped => rsx! {
+                p { class: "turn-end", "Stopped after {duration}, {cost} at API prices" }
             },
             None => rsx! {
                 p { class: "turn-end", "Turn done in {duration}, {cost} at API prices" }

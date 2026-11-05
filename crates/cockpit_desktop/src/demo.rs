@@ -784,6 +784,7 @@ fn benchmark_agent(now: SystemTime) -> Sample {
                 cost: CostUsd::new(0.62),
                 usage: TokenUsage::default(),
                 error: None,
+                stopped: false,
             }),
         ),
     ];

@@ -46,6 +46,16 @@ impl FromStr for OutputLine {
 
     fn from_str(line: &str) -> Result<Self, ParseError> {
         let value: Value = serde_json::from_str(line).map_err(ParseError::NotJson)?;
+        Self::try_from(value)
+    }
+}
+
+/// Reads a line already parsed as JSON, such as a line of a session file whose other keys the
+/// caller reads too.
+impl TryFrom<Value> for OutputLine {
+    type Error = ParseError;
+
+    fn try_from(value: Value) -> Result<Self, ParseError> {
         let Some(line_type) = wire::word::<LineType>(&value, wire::TYPE) else {
             return Ok(Self::Unknown(value));
         };

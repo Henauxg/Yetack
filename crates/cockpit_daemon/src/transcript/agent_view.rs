@@ -1,26 +1,29 @@
 //! An agent as clients see it, built from the lines its `claude` writes.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use claude_protocol::{
     AssistantMessage, CanUseTool, ContentBlock, ContextUsage as ClaudeContextUsage,
     ControlRequestId, ImageBlock, ImageSource, IncomingControlRequest, IncomingRequest,
-    InitializeResponse, InputLine, McpStatus, OpenWord, OutputLine, RateLimitInfo, ResultMessage,
-    SessionState, SystemEvent, SystemInit, TaskNotification, TaskStarted, TaskUsage,
+    InitializeResponse, InputLine, InterruptNotice, McpStatus, OpenWord, OutputLine, RateLimitInfo,
+    ResultMessage, SessionState, SystemEvent, SystemInit, TaskNotification, TaskStarted, TaskUsage,
     TerminalReason, ToolInput, ToolName, ToolResultBlock, ToolUseBlock, ToolUseId, Usage,
     UserMessage as ClaudeUserMessage,
 };
 use cockpit_protocol::{
-    AgentDetails, AgentStatus, AgentSummary, Answer, AnswerState, Approval, BackgroundTask,
-    BackgroundTaskId, BackgroundTaskStatus, ClaudeSessionId, ContextUsage, CostUsd, Effort, Event,
-    Image, ItemBody, ItemId, McpServer, PendingId, PermissionMode, Plan, Prompt, Question,
-    Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, UserMessage,
+    AgentDetails, AgentId, AgentStatus, AgentSummary, Answer, AnswerState, Approval,
+    BackgroundTask, BackgroundTaskId, BackgroundTaskStatus, ClaudeSessionId, ContextUsage, CostUsd,
+    Effort, Event, Image, ItemBody, ItemId, McpServer, PendingId, PermissionMode, Plan, Prompt,
+    Question, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
+    UserMessage,
 };
 use serde_json::{Map, Value};
 use strum::EnumString;
 
-use crate::transcript::{answers, details, tools, words};
+use crate::transcript::past_transcript::LAST_PAST_ID;
+use crate::transcript::{answers, details, notices, tools, words};
 
 /// What the hub does after a line, beyond publishing the view's events.
 #[derive(Debug, Clone, PartialEq)]
@@ -36,6 +39,14 @@ pub(crate) enum FollowUp {
 pub(crate) enum PromptDelivery {
     Now,
     Queued,
+}
+
+/// Whether a process starts a new Claude session or resumes one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProcessSession {
+    New,
+    /// Claude Code restores the session's cost, and counts its total from there.
+    Resumed,
 }
 
 /// The answer to a pending item, ready to send.
@@ -66,11 +77,21 @@ const SUBTYPE_KEY: &str = "subtype";
 /// or an API error.
 const SYNTHETIC_MODEL: &str = "<synthetic>";
 const COMPACTED_NOTICE: &str = "Conversation compacted";
-const INTERRUPTED: &str = "Interrupted";
 const QUEUED_CANCELLED_NOTICE: &str = "Queued message cancelled";
+/// Where a session file shows that the user stopped a turn: it holds no turn end to say it.
+const PAST_STOP_NOTICE: &str = "Stopped";
 /// Prompts sent and not yet echoed back. Older ones are forgotten: Claude Code does not echo
 /// every prompt, such as some slash commands.
 const MAX_AWAITED_ECHOES: usize = 32;
+
+/// Where a `user` line comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LineSource {
+    /// `claude`'s stdout, which marks a prompt it echoes with `isReplay`.
+    Process,
+    /// A session file, which writes a prompt the user typed without it.
+    SessionFile,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ItemChange {
@@ -105,10 +126,14 @@ pub(crate) struct AgentView {
     /// From a prompt, or the start of a turn, until the turn's `result`.
     working: bool,
     exited: bool,
-    /// The `total_cost_usd` of the current process so far: Claude Code counts from its start.
+    /// The `total_cost_usd` of the current process so far: Claude Code counts from its start, or
+    /// from the cost it restores with a resumed session.
     process_cost: f64,
-    /// The cost of the agent's earlier processes.
+    /// The cost of the agent's earlier processes, which a resumed session's total already holds.
     cost_before_process: f64,
+    /// Until the process's first `result`, the cost a resumed session restores can still become
+    /// the first turn's base.
+    awaits_restored_cost: bool,
     awaited_echoes: VecDeque<String>,
     /// Calls per tool name, for the MCP servers' tool counts.
     tool_counts: HashMap<String, u32>,
@@ -133,6 +158,7 @@ impl AgentView {
             exited: false,
             process_cost: 0.0,
             cost_before_process: 0.0,
+            awaits_restored_cost: false,
             awaited_echoes: VecDeque::new(),
             tool_counts: HashMap::new(),
             skills: BTreeSet::new(),
@@ -174,6 +200,73 @@ impl AgentView {
         view.summary.activity = None;
         view.refresh_status();
         view
+    }
+
+    /// A view that reads a session file's lines, for their items alone. `folder` is the
+    /// session's, which tool summaries show paths relative to.
+    pub(super) fn for_session_file(folder: PathBuf) -> Self {
+        let summary = AgentSummary {
+            id: AgentId::new(0),
+            title: String::new(),
+            folder,
+            status: AgentStatus::Idle,
+            activity: None,
+            pending_count: 0,
+            model: None,
+            effort: None,
+            mode: PermissionMode::Default,
+            task_progress: None,
+            context_percent: None,
+            cache_expires_at: None,
+            turns: 0,
+            cost: CostUsd::new(0.0),
+            started_at: Timestamp::from_unix_millis(0),
+            session: None,
+        };
+        Self::new(summary, Duration::ZERO)
+    }
+
+    /// Reads one line of a session file. Its lines read as on stdout, except a prompt the user
+    /// typed, which has no `isReplay` there.
+    pub(super) fn apply_session_line(&mut self, line: OutputLine) {
+        match line {
+            OutputLine::User(message) => self.apply_user(message, LineSource::SessionFile),
+            line => {
+                // A session file holds no `result` line, so nothing follows up.
+                self.apply(line, Timestamp::from_unix_millis(0));
+            }
+        }
+    }
+
+    /// Forgets all but the newest `keep` items, and the changes no event will publish.
+    pub(super) fn keep_newest(&mut self, keep: usize) {
+        let older = self.items.len().saturating_sub(keep);
+        self.items.drain(..older);
+        self.changes.clear();
+    }
+
+    /// The items, as an ended process leaves them: what ran failed, what waited is cancelled.
+    pub(super) fn into_finished_items(self) -> Vec<TranscriptItem> {
+        let mut items = self.items;
+        for item in &mut items {
+            if is_unfinished(&item.body) {
+                finish_leftover(&mut item.body);
+            }
+        }
+        items
+    }
+
+    /// Shows a past session's items above the agent's own, which the agent numbers after
+    /// [`LAST_PAST_ID`]. A past item whose id an own item already has is left out.
+    pub(crate) fn show_past(&mut self, mut past: Vec<TranscriptItem>) {
+        let own = std::mem::take(&mut self.items);
+        if let Some(first) = own.first() {
+            past.retain(|item| item.id < first.id);
+        }
+        past.extend(own);
+        self.items = past;
+        let first_own = ItemId::new(LAST_PAST_ID.saturating_add(1));
+        self.next_item = self.next_item.max(first_own);
     }
 
     pub(crate) fn summary(&self) -> &AgentSummary {
@@ -241,7 +334,7 @@ impl AgentView {
         match line {
             OutputLine::System(event) => self.apply_system(event, now),
             OutputLine::Assistant(message) => self.apply_assistant(message, now),
-            OutputLine::User(message) => self.apply_user(message),
+            OutputLine::User(message) => self.apply_user(message, LineSource::Process),
             OutputLine::Result(result) => {
                 self.apply_result(&result);
                 follow_ups.push(FollowUp::TurnEnded);
@@ -378,13 +471,29 @@ impl AgentView {
     }
 
     /// A new `claude` process runs for the agent.
-    pub(crate) fn process_started(&mut self) {
+    pub(crate) fn process_started(&mut self, session: ProcessSession) {
         self.exited = false;
         self.working = false;
-        self.cost_before_process = self.summary.cost.get();
+        self.cost_before_process = match session {
+            ProcessSession::New => self.summary.cost.get(),
+            ProcessSession::Resumed => 0.0,
+        };
         self.process_cost = 0.0;
+        self.awaits_restored_cost = session == ProcessSession::Resumed;
         self.pending.clear();
         self.tool_calls.clear();
+    }
+
+    /// The cost Claude Code restored with a resumed session, read from the session file. It is
+    /// the base of the first turn's cost, unless a `result` came first: the first turn's cost then
+    /// counts from 0.
+    pub(crate) fn set_restored_cost(&mut self, cost: f64) {
+        if !self.awaits_restored_cost {
+            return;
+        }
+        self.awaits_restored_cost = false;
+        self.process_cost = cost;
+        self.summary.cost = CostUsd::new(self.cost_before_process + cost);
     }
 
     /// The `claude` process ended: what waited is cancelled, what ran failed.
@@ -595,11 +704,12 @@ impl AgentView {
         }
     }
 
-    fn apply_user(&mut self, message: ClaudeUserMessage) {
+    fn apply_user(&mut self, message: ClaudeUserMessage, source: LineSource) {
         let parent = self.parent_item(message.parent_tool_use_id.as_ref());
         let ClaudeUserMessage {
             message: body,
             is_replay,
+            origin,
             tool_use_result,
             ..
         } = message;
@@ -620,6 +730,28 @@ impl AgentView {
             return;
         }
         let text = texts.join("\n");
+        if let Some(notices) = notices::notices(origin.as_ref(), &text) {
+            for notice in notices {
+                self.push_item(parent, ItemBody::Notice { text: notice });
+            }
+            return;
+        }
+        let interrupt = text.trim().parse::<InterruptNotice>().is_ok();
+        if source == LineSource::SessionFile {
+            let body = if interrupt {
+                ItemBody::Notice {
+                    text: PAST_STOP_NOTICE.to_owned(),
+                }
+            } else {
+                user_message(text, images)
+            };
+            self.push_item(parent, body);
+            return;
+        }
+        // The turn end says the user stopped the turn.
+        if !is_replay && interrupt {
+            return;
+        }
         if is_replay {
             if self.take_echo(&text) {
                 return;
@@ -629,7 +761,7 @@ impl AgentView {
             // A subagent's prompt, which the agent wrote.
             self.push_item(parent, user_message(text, images));
         } else {
-            // Claude Code's own lines, such as "[Request interrupted by user]".
+            // Claude Code's own lines.
             self.push_item(None, ItemBody::Notice { text });
         }
     }
@@ -676,10 +808,13 @@ impl AgentView {
     }
 
     fn apply_result(&mut self, result: &ResultMessage) {
+        self.awaits_restored_cost = false;
         let total = result.total_cost_usd.unwrap_or(self.process_cost);
         let turn_cost = (total - self.process_cost).max(0.0);
         self.process_cost = total;
         self.summary.cost = CostUsd::new(self.cost_before_process + total);
+        // The result says it rather than the daemon's own `interrupt`, which may arrive after the
+        // turn ended.
         let interrupted = matches!(
             result.terminal_reason,
             Some(OpenWord::Known(
@@ -705,6 +840,7 @@ impl AgentView {
                 cost: CostUsd::new(turn_cost),
                 usage: token_usage(result.usage),
                 error: turn_error(result, interrupted),
+                stopped: interrupted,
             }),
         );
     }
@@ -1029,12 +1165,9 @@ fn token_usage(usage: Option<Usage>) -> TokenUsage {
     }
 }
 
-/// Why the turn failed or stopped early; `None` when it succeeded.
+/// Why the turn failed; `None` when it succeeded or the user stopped it.
 fn turn_error(result: &ResultMessage, interrupted: bool) -> Option<String> {
-    if interrupted {
-        return Some(INTERRUPTED.to_owned());
-    }
-    if !result.is_error {
+    if interrupted || !result.is_error {
         return None;
     }
     if !result.errors.is_empty() {
@@ -1202,6 +1335,7 @@ mod tests {
                         cache_read: 40,
                     },
                     error: None,
+                    stopped: false,
                 }),
             ]
         );
@@ -1521,12 +1655,17 @@ mod tests {
             &mut view,
             json!({"type": "control_cancel_request", "request_id": "req-1"}),
         );
-        apply(
-            &mut view,
-            json!({"type": "user", "message": {"role": "user", "content": [
-                {"type": "text", "text": "[Request interrupted by user]"}
-            ]}}),
-        );
+        for notice in [
+            "[Request interrupted by user for tool use]",
+            "[Request interrupted by user]",
+        ] {
+            apply(
+                &mut view,
+                json!({"type": "user", "message": {"role": "user", "content": [
+                    {"type": "text", "text": notice}
+                ]}}),
+            );
+        }
         apply(&mut view, interrupted_result());
         view.take_events();
 
@@ -1546,16 +1685,52 @@ mod tests {
                 ..
             })
         ));
-        assert!(view.items().iter().any(|item| item.body
-            == ItemBody::Notice {
-                text: "[Request interrupted by user]".to_owned()
-            }));
+        assert!(
+            !view
+                .items()
+                .iter()
+                .any(|item| matches!(item.body, ItemBody::Notice { .. })),
+            "the turn end says the user stopped the turn"
+        );
+        let ends: Vec<&TurnEnd> = view
+            .items()
+            .iter()
+            .filter_map(|item| match &item.body {
+                ItemBody::TurnEnd(end) => Some(end),
+                _ => None,
+            })
+            .collect();
+        let [end] = ends.as_slice() else {
+            panic!("expected one turn end, got {ends:?}");
+        };
+        assert!(end.stopped);
+        assert_eq!(end.error, None);
+        assert_eq!(view.summary().status, AgentStatus::Idle);
+        assert_eq!(view.summary().pending_count, 0);
+    }
+
+    #[test]
+    fn a_failed_turn_carries_its_error() {
+        let mut view = view();
+        view.add_prompt(&prompt("Refactor everything"), PromptDelivery::Now);
+
+        apply(
+            &mut view,
+            json!({
+                "type": "result", "subtype": "error_max_turns", "is_error": true,
+                "terminal_reason": "max_turns", "num_turns": 30,
+                "errors": ["Reached the maximum number of turns"]
+            }),
+        );
+
         let Some(ItemBody::TurnEnd(end)) = view.items().last().map(|item| &item.body) else {
             panic!("expected a turn end");
         };
-        assert_eq!(end.error.as_deref(), Some(INTERRUPTED));
-        assert_eq!(view.summary().status, AgentStatus::Idle);
-        assert_eq!(view.summary().pending_count, 0);
+        assert!(!end.stopped);
+        assert_eq!(
+            end.error.as_deref(),
+            Some("Reached the maximum number of turns")
+        );
     }
 
     #[test]
@@ -1703,7 +1878,7 @@ mod tests {
         apply(&mut view, result(0.75));
 
         view.process_exited("claude exited".to_owned(), now());
-        view.process_started();
+        view.process_started(ProcessSession::New);
         apply(&mut view, result(0.25));
 
         assert_eq!(view.summary().cost, CostUsd::new(1.0));
@@ -1720,6 +1895,49 @@ mod tests {
             costs,
             [CostUsd::new(0.5), CostUsd::new(0.25), CostUsd::new(0.25)]
         );
+    }
+
+    #[test]
+    fn a_resumed_session_counts_from_the_cost_claude_code_restores() {
+        let mut view = view();
+        apply(&mut view, result(0.5));
+        view.process_exited("claude exited".to_owned(), now());
+
+        view.process_started(ProcessSession::Resumed);
+        view.set_restored_cost(86.0);
+        let restored = view.summary().cost;
+        apply(&mut view, result(88.5));
+        apply(&mut view, result(89.0));
+
+        assert_eq!(restored, CostUsd::new(86.0));
+        assert_eq!(view.summary().cost, CostUsd::new(89.0));
+        assert_eq!(
+            turn_costs(&view),
+            [CostUsd::new(0.5), CostUsd::new(2.5), CostUsd::new(0.5)]
+        );
+    }
+
+    #[test]
+    fn a_restored_cost_after_the_first_result_changes_nothing() {
+        let mut view = view();
+        view.process_started(ProcessSession::Resumed);
+
+        apply(&mut view, result(88.5));
+        view.set_restored_cost(86.0);
+        apply(&mut view, result(89.0));
+
+        assert_eq!(view.summary().cost, CostUsd::new(89.0));
+        assert_eq!(turn_costs(&view), [CostUsd::new(88.5), CostUsd::new(0.5)]);
+    }
+
+    fn turn_costs(view: &AgentView) -> Vec<CostUsd> {
+        view.items()
+            .iter()
+            .filter_map(|item| match &item.body {
+                ItemBody::TurnEnd(end) => Some(end.cost),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
@@ -1803,7 +2021,7 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, Event::AgentUpdated(_)))
         );
-        restored.process_started();
+        restored.process_started(ProcessSession::Resumed);
         let next = restored.add_prompt(&prompt("Again"), PromptDelivery::Now);
         assert_eq!(next, ItemId::new(5));
     }
@@ -1822,6 +2040,37 @@ mod tests {
             ItemBody::Notice {
                 text: COMPACTED_NOTICE.to_owned()
             }
+        );
+    }
+
+    #[test]
+    fn a_task_notification_shows_its_summary_as_a_notice() {
+        let mut view = view();
+        let summary = "Task \"Wait 60 seconds, then print finished\" was stopped by the user or by the app connected to this session";
+
+        apply(
+            &mut view,
+            json!({
+                "type": "user", "isReplay": true, "parent_tool_use_id": null,
+                "message": {"role": "user", "content": format!(
+                    "<task-notification>\n<task-id>b7k2q</task-id>\n\
+                     <tool-use-id>toolu_01Example</tool-use-id>\n\
+                     <output-file>/tmp/example/tasks/b7k2q.output</output-file>\n\
+                     <status>killed</status>\n<summary>{summary}</summary>\n</task-notification>"
+                )},
+                "origin": {"kind": "task-notification", "runId": "example-run"}
+            }),
+        );
+        apply(&mut view, echo("Typed in another app"));
+
+        assert_eq!(
+            bodies(&view),
+            [
+                &ItemBody::Notice {
+                    text: summary.to_owned()
+                },
+                &user_message("Typed in another app".to_owned(), Vec::new()),
+            ]
         );
     }
 

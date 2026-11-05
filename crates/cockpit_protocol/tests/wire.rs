@@ -234,6 +234,7 @@ fn bodies() -> Vec<ItemBody> {
                 cache_read: 210_000,
             },
             error: Some("The turn reached the maximum number of turns".to_owned()),
+            stopped: false,
         }),
         ItemBody::Notice {
             text: "Conversation compacted".to_owned(),
@@ -1147,6 +1148,7 @@ fn an_approval_and_a_turn_end_on_the_wire() {
         cost: CostUsd::new(0.42),
         usage: TokenUsage::default(),
         error: None,
+        stopped: false,
     });
 
     assert_wire(
@@ -1177,8 +1179,38 @@ fn an_approval_and_a_turn_end_on_the_wire() {
             "cost": 0.42,
             "usage": {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0},
             "error": null,
+            "stopped": false,
         }),
     );
+}
+
+#[test]
+fn a_stopped_turn_end_on_the_wire_and_one_saved_without_the_field() {
+    let stopped = ItemBody::TurnEnd(TurnEnd {
+        duration: Duration::from_millis(6_100),
+        cost: CostUsd::new(0.01),
+        usage: TokenUsage::default(),
+        error: None,
+        stopped: true,
+    });
+    let saved = r#"{"type":"turn_end","duration_ms":6100,"cost":0.01,"usage":{"input":0,"output":0,"cache_creation":0,"cache_read":0},"error":"Interrupted"}"#;
+
+    assert_wire(
+        &stopped,
+        json!({
+            "type": "turn_end",
+            "duration_ms": 6_100,
+            "cost": 0.01,
+            "usage": {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0},
+            "error": null,
+            "stopped": true,
+        }),
+    );
+    let ItemBody::TurnEnd(saved) = serde_json::from_str::<ItemBody>(saved).unwrap() else {
+        panic!("not a turn end");
+    };
+    assert!(!saved.stopped);
+    assert_eq!(saved.error.as_deref(), Some("Interrupted"));
 }
 
 #[test]

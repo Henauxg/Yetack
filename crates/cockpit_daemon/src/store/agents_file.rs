@@ -31,6 +31,18 @@ pub(crate) struct AgentRecord {
     /// False once a client stopped the agent: a restarted daemon resumes only running agents.
     pub(crate) running: bool,
     pub(crate) started_at: Timestamp,
+    /// For an agent made from a past session: the part of the session file its transcript shows
+    /// above its own items. A restarted daemon reads it again.
+    #[serde(default)]
+    pub(crate) past: Option<PastFile>,
+}
+
+/// The start of a session file, as it was when an agent took the session over. Claude Code only
+/// appends to the file, so these bytes do not change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PastFile {
+    pub(crate) session: ClaudeSessionId,
+    pub(crate) bytes: u64,
 }
 
 impl Default for AgentsFile {
@@ -74,7 +86,11 @@ mod tests {
       "effort": "high",
       "mode": "acceptEdits",
       "running": true,
-      "started_at": 1000
+      "started_at": 1000,
+      "past": {
+        "session": "session-a",
+        "bytes": 52000
+      }
     }
   ]
 }
@@ -94,6 +110,10 @@ mod tests {
                 mode: Some(PermissionMode::AcceptEdits),
                 running: true,
                 started_at: Timestamp::from_unix_millis(1_000),
+                past: Some(PastFile {
+                    session: ClaudeSessionId::new("session-a".to_owned()),
+                    bytes: 52_000,
+                }),
             }],
         }
     }
@@ -107,6 +127,25 @@ mod tests {
         let file = AgentsFile::load(&path).unwrap();
 
         assert_eq!(file, sample());
+    }
+
+    #[test]
+    fn an_agent_saved_without_a_past_still_loads() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("agents.json");
+        let without_past = AGENTS_JSON.replace(
+            r#",
+      "past": {
+        "session": "session-a",
+        "bytes": 52000
+      }"#,
+            "",
+        );
+        std::fs::write(&path, without_past).unwrap();
+
+        let file = AgentsFile::load(&path).unwrap();
+
+        assert_eq!(file.agents[0].past, None);
     }
 
     #[test]

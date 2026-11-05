@@ -42,7 +42,7 @@ pub async fn serve(
 ) -> Result<(), ServeError> {
     let state = StateDir::create(&config.state_dir)?;
     let _lock = state.lock()?;
-    let restored = hub::restore(&state)?;
+    let restored = hub::restore(&state, &config.claude_config_dir)?;
     let socket = state.socket();
     let listener = server::bind(&socket).map_err(|source| ServeError::Listen {
         path: socket.clone(),

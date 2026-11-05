@@ -114,7 +114,12 @@ impl Hub {
                 generation,
                 event,
             } => self.process_event(agent, generation, event),
-            HubInput::SessionFound { session, reply } => self.resume_session(session, reply),
+            HubInput::SessionFound { found, reply } => self.resume_session(*found, reply),
+            HubInput::RestoredCost {
+                agent,
+                generation,
+                cost,
+            } => self.restored_cost(agent, generation, cost),
         }
     }
 
@@ -220,7 +225,7 @@ impl Hub {
     #[cfg(test)]
     pub(super) fn for_tests(folder: &std::path::Path) -> Self {
         let state = StateDir::create(folder).unwrap();
-        let restored = crate::hub::restore(&state).unwrap();
+        let restored = crate::hub::restore(&state, &folder.join("claude")).unwrap();
         let config = DaemonConfig {
             state_dir: folder.to_owned(),
             claude_program: folder.join("no-claude"),
