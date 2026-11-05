@@ -8,7 +8,8 @@
 //! - `garbage`: writes lines that do not parse, then answers.
 //! - `linger`: starts a child process that ignores stdin, answers "Started child <pid>", and
 //!   from then on keeps running after its stdin closes, as a `claude` that hangs.
-//! - `/rename <title>`: names the session, as Claude Code does.
+//! - `/rename <title>`: names the session, as Claude Code does. With `CLAUDE_CONFIG_DIR` set, it
+//!   keeps the name there, and a resumed fake restates it before it answers `initialize`.
 //! - anything else: answers "Echo: <prompt>".
 //!
 //! With `FAKE_CLAUDE_ARGS_FILE` set, it appends its command line to that file, one JSON array per
@@ -19,12 +20,16 @@ use std::collections::VecDeque;
 use std::fs::OpenOptions;
 use std::io;
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
 const ARGS_FILE_ENV: &str = "FAKE_CLAUDE_ARGS_FILE";
+const CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
+/// The folder of `CLAUDE_CONFIG_DIR` that holds each session's name, in a file named after it.
+const SESSION_NAMES_FOLDER: &str = "fake-session-names";
 const RESUME_INTERRUPTED_TURN_ENV: &str = "CLAUDE_CODE_RESUME_INTERRUPTED_TURN";
 /// The child of `linger`, which outlives any test.
 const LINGERING_CHILD: [&str; 2] = ["sleep", "600"];
@@ -53,6 +58,8 @@ enum Turn {
 struct Fake<W> {
     out: W,
     session: String,
+    /// Started with `--resume`: Claude Code restates the session's name as it starts.
+    resumed: bool,
     model: String,
     mode: String,
     total_cost: f64,
@@ -96,6 +103,7 @@ fn run() -> io::Result<()> {
         out: io::stdout().lock(),
         session: flag(RESUME_FLAG)
             .unwrap_or_else(|| format!("fake-session-{}", std::process::id())),
+        resumed: flag(RESUME_FLAG).is_some(),
         model: flag(MODEL_FLAG).unwrap_or_else(|| "fake-model".to_owned()),
         mode: flag(MODE_FLAG).unwrap_or_else(|| "default".to_owned()),
         total_cost: 0.0,
@@ -146,10 +154,13 @@ impl<W: Write> Fake<W> {
     fn control_request(&mut self, message: &Value) -> io::Result<()> {
         let request_id = text(message, &["request_id"]).to_owned();
         let body = match text(message, &["request", "subtype"]) {
-            "initialize" => json!({"commands": [
+            "initialize" => {
+                self.restate_session_name()?;
+                json!({"commands": [
                 {"name": "review", "description": "Review the changes", "argumentHint": ""},
                 {"name": "tidy", "description": "Tidy the code", "argumentHint": "[path]"}
-            ]}),
+                ]})
+            }
             "get_context_usage" => json!({
                 "categories": [
                     {"name": "System prompt", "tokens": 3000},
@@ -262,6 +273,12 @@ impl<W: Write> Fake<W> {
                     &json!({"type": "system", "subtype": "session_title_changed",
                                   "title": title, "session_id": self.session}),
                 )?;
+                if let Some(path) = session_name_file(&self.session) {
+                    if let Some(folder) = path.parent() {
+                        std::fs::create_dir_all(folder)?;
+                    }
+                    std::fs::write(path, title)?;
+                }
                 self.emit(&json!({"type": "assistant", "session_id": self.session, "message": {
                     "model": "<synthetic>",
                     "content": [{"type": "text", "text": format!("Session renamed to: {title}")}]
@@ -414,10 +431,36 @@ impl<W: Write> Fake<W> {
         )
     }
 
+    /// The name a `/rename` gave the resumed session, as Claude Code restates it at start.
+    fn restate_session_name(&mut self) -> io::Result<()> {
+        if !self.resumed {
+            return Ok(());
+        }
+        let Some(title) =
+            session_name_file(&self.session).and_then(|path| std::fs::read_to_string(path).ok())
+        else {
+            return Ok(());
+        };
+        self.emit(
+            &json!({"type": "system", "subtype": "session_title_changed",
+                          "title": title, "session_id": self.session}),
+        )
+    }
+
     fn emit(&mut self, message: &Value) -> io::Result<()> {
         writeln!(self.out, "{message}")?;
         self.out.flush()
     }
+}
+
+/// Where the name `/rename` gave a session is kept, when `CLAUDE_CONFIG_DIR` is set.
+fn session_name_file(session: &str) -> Option<PathBuf> {
+    let config = std::env::var_os(CONFIG_DIR_ENV)?;
+    Some(
+        PathBuf::from(config)
+            .join(SESSION_NAMES_FOLDER)
+            .join(session),
+    )
 }
 
 /// The string at `path` in `value`, or "".
