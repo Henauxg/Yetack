@@ -114,7 +114,7 @@ async fn run(
     mut requests: UnboundedReceiver<Outgoing>,
 ) {
     let mut session = Session::start(transport, Backoff::default());
-    let requester = session.requester();
+    let requester = session.requester().clone();
     let (opened_sender, mut opened) = mpsc::unbounded_channel::<AgentId>();
     loop {
         tokio::select! {
