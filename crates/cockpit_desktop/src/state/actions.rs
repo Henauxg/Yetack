@@ -566,12 +566,35 @@ pub fn rename_key(state: &mut AppState, drafts: &mut Drafts) {
             None => return,
         },
     };
-    let has_row = state
+    let place = if has_row(state, agent) {
+        wanted
+    } else {
+        TitlePlace::Header
+    };
+    start_rename_at(state, drafts, agent, place);
+}
+
+/// The filter hid the row whose title is being edited, as when the agent's status changed: the
+/// edit moves to the header with the text typed so far, as F2 opens it for an agent without a row.
+pub fn follow_hidden_title_edit(state: &mut AppState, drafts: &mut Drafts) {
+    let in_row = state
+        .ui
+        .title_edit
+        .as_ref()
+        .filter(|edit| edit.place == TitlePlace::Sidebar)
+        .map(|edit| edit.agent);
+    if let Some(agent) = in_row
+        && !has_row(state, agent)
+    {
+        start_rename_at(state, drafts, agent, TitlePlace::Header);
+    }
+}
+
+fn has_row(state: &AppState, agent: AgentId) -> bool {
+    state
         .sidebar_agents()
         .iter()
-        .any(|entry| entry.id() == agent);
-    let place = if has_row { wanted } else { TitlePlace::Header };
-    start_rename_at(state, drafts, agent, place);
+        .any(|entry| entry.id() == agent)
 }
 
 /// Only the drafts change, so that typing a title does not render the transcript again.
@@ -840,6 +863,8 @@ pub fn send_prompt(
     let draft = std::mem::take(draft);
     drafts.draft_written(agent);
     state.ui.popover = None;
+    // The script reports the bottom once its jump got there: what arrived before is not new.
+    state.ui.chat_scrolled_up.remove(&agent);
     state.ui.chat_new_from.remove(&agent);
     state.ui.chat_jumps = state.ui.chat_jumps.wrapping_add(1);
     let prompt = Prompt {
@@ -1637,7 +1662,8 @@ mod tests {
     use cockpit_client::RequestError;
     use cockpit_protocol::{
         AgentDetails, AskedQuestion, ChangedFile, CommandKind, ErrorBody, ErrorCode, HistoryPage,
-        ImageMediaType, Method, QuestionOption, ResponseBody, Timestamp, TranscriptItem,
+        ImageMediaType, Method, Position, QuestionOption, ResponseBody, Timestamp, TranscriptItem,
+        UserMessage,
     };
 
     use super::*;
@@ -1846,7 +1872,7 @@ mod tests {
         append(
             &mut state,
             5,
-            ItemBody::UserMessage(cockpit_protocol::UserMessage {
+            ItemBody::UserMessage(UserMessage {
                 text: "Also the docs".to_owned(),
                 images: Vec::new(),
                 queued: true,
@@ -1895,6 +1921,24 @@ mod tests {
         assert_eq!(after_send, None);
         assert_eq!(again, Some(ItemId::new(4)));
         assert_eq!(divider(&state), None);
+    }
+
+    /// The script reports the bottom only once its jump got there, after the send.
+    #[test]
+    fn a_send_while_scrolled_up_leaves_no_divider_above_what_arrived_meanwhile() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        append_notice(&mut state, 1);
+        chat_at_bottom(&mut state, agent(), false);
+        append(&mut state, 2, text("Done."));
+
+        type_text(&mut state, &mut drafts, "Thanks");
+        send_prompt(&mut state, &mut drafts, agent(), None);
+        let jump_shown = state.ui.chat_scrolled_up.contains_key(&agent());
+        chat_at_bottom(&mut state, agent(), true);
+
+        assert!(!jump_shown);
+        assert_eq!(new_divider(&state, agent()), None);
     }
 
     #[test]
@@ -2915,12 +2959,10 @@ mod tests {
         let mut state = ordered();
         let mut drafts = Drafts::default();
         let refused = || {
-            Err(cockpit_client::RequestError::Failed(
-                cockpit_protocol::ErrorBody::new(
-                    cockpit_protocol::ErrorCode::NotFound,
-                    "no agent 3".to_owned(),
-                ),
-            ))
+            Err(RequestError::Failed(ErrorBody::new(
+                ErrorCode::NotFound,
+                "no agent 3".to_owned(),
+            )))
         };
 
         let first = move_agent(&mut state, AgentId::new(1), Some(AgentId::new(3)));
@@ -2936,7 +2978,7 @@ mod tests {
         let after_refusal = sidebar(&state);
         let second = move_agent(&mut state, AgentId::new(1), Some(AgentId::new(2)));
         if let Some(entry) = state.agents.get_mut(&AgentId::new(1)) {
-            entry.summary.position = cockpit_protocol::Position::new(9000);
+            entry.summary.position = Position::new(9000);
         }
         for outgoing in second {
             apply_response(

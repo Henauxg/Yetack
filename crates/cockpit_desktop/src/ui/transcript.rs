@@ -16,7 +16,7 @@ use serde_json::Value;
 
 use crate::connection::{Clock, Cockpit};
 use crate::render::{Diff, Language, diff_lines};
-use crate::state::{HistoryState, actions, awaiting_approval, file_edits};
+use crate::state::{self, HistoryState, actions, file_edits};
 use crate::ui::cards::{ApprovalCard, PlanCard, QuestionCard};
 use crate::ui::chat_scroll::{self, CHAT_SCROLL_ID, ENTRY_CLASS, JumpToLatest, NewDivider};
 use crate::ui::code::{LineNumbers, diff_row};
@@ -131,7 +131,7 @@ pub fn TranscriptView() -> Element {
     let items: Vec<&TranscriptItem> = entry.transcript.items().collect();
     let loaded: BTreeSet<ItemId> = items.iter().map(|item| item.id).collect();
     let children = children_by_parent(&items);
-    let awaiting = awaiting_approval(&items);
+    let awaiting = state::awaiting_approval(&items);
     let top_items: Vec<&TranscriptItem> = items
         .iter()
         .copied()
@@ -994,7 +994,7 @@ fn SubagentView(
     };
     let nested_refs: Vec<&TranscriptItem> = nested.iter().collect();
     let by_parent = children_by_parent(&nested_refs);
-    let awaiting = awaiting_approval(&nested_refs);
+    let awaiting = state::awaiting_approval(&nested_refs);
     let children: Vec<(TranscriptItem, Vec<TranscriptItem>, bool)> = nested
         .iter()
         .filter(|item| item.parent == Some(id) && !waits_for_answer(item))

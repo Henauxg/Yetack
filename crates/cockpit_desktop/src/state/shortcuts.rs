@@ -185,7 +185,7 @@ fn card_key(state: &AppState, drafts: &mut Drafts, agent: AgentId, key: &str) ->
 mod tests {
     use cockpit_protocol::{
         AgentDetails, AgentStatus, Answer, AnswerState, Approval, AskedQuestion, CommandKind,
-        ItemBody, ItemId, PendingId, Question, QuestionOption, Request, SlashCommand,
+        ItemBody, ItemId, Method, PendingId, Question, QuestionOption, Request, SlashCommand,
         TranscriptItem,
     };
     use serde_json::Value;
@@ -555,14 +555,8 @@ mod tests {
         let method =
             |requests: &[Outgoing]| requests.first().map(|outgoing| outgoing.request.method());
         assert!(from_field.is_empty());
-        assert_eq!(
-            method(&from_composer),
-            Some(cockpit_protocol::Method::AgentMove)
-        );
-        assert_eq!(
-            method(&from_page),
-            Some(cockpit_protocol::Method::AgentMove)
-        );
+        assert_eq!(method(&from_composer), Some(Method::AgentMove));
+        assert_eq!(method(&from_page), Some(Method::AgentMove));
         assert!(behind_a_dialog.is_empty());
     }
 

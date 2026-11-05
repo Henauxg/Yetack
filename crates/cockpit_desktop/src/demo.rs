@@ -779,6 +779,7 @@ fn parser_agent(now: SystemTime) -> Sample {
             Some(TICKETS_OUTPUT),
         )
     };
+    let position_read = read_call(&Path::new(PARSER_COLUMNS_WORKTREE).join(POSITION_FILE));
     let items = vec![
         item(
             1,
@@ -869,7 +870,7 @@ fn parser_agent(now: SystemTime) -> Sample {
             edit_call("Edit", LEXER_FILE, LEXER_LINE_BEFORE, LEXER_LINE_AFTER),
         ),
         item(16, None, text(FIX_ANSWER)),
-        item(17, None, ItemBody::ToolCall(read_call(&Path::new(PARSER_COLUMNS_WORKTREE).join(POSITION_FILE)))),
+        item(17, None, ItemBody::ToolCall(position_read)),
         item(18, None, text(LOOKUP_ANSWER)),
         item(
             19,
@@ -1445,7 +1446,7 @@ fn sessions(now: SystemTime) -> Vec<PastSession> {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::ReadFileParams;
+    use cockpit_protocol::{HistoryParams, ReadFileParams};
 
     use super::*;
     use crate::state::{WaitingKind, file_edits};
@@ -1480,7 +1481,7 @@ mod tests {
     #[test]
     fn the_live_agent_has_an_older_page_to_load() {
         let state = state(label());
-        let request = Request::AgentHistory(cockpit_protocol::HistoryParams {
+        let request = Request::AgentHistory(HistoryParams {
             agent: AgentId::new(LIVE_AGENT),
             before: Some(ItemId::new(LIVE_PAGE_FIRST_ID)),
             limit: 100,

@@ -12,7 +12,7 @@ use dioxus::prelude::*;
 use crate::connection::Cockpit;
 use crate::render::{self, Diff, Language, MAX_RENDERED_LINES, diff_lines};
 use crate::state::{FileRead, Loadable, ViewMode, actions, file_edits};
-use crate::ui::changes_list::{outside_root, root_label};
+use crate::ui::changes_list;
 use crate::ui::code::{LineNumbers, diff_line, diff_row, lines_not_shown};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::splitter::FILE_VIEW_ID;
@@ -266,13 +266,13 @@ impl ShortPath {
                 rest: path.display().to_string(),
             };
         }
-        let root = outside_root(folder, &path);
+        let root = changes_list::outside_root(folder, &path);
         let rest = path.strip_prefix(&root).map_or_else(
             |_| path.display().to_string(),
             |rest| rest.display().to_string(),
         );
         Self {
-            root: Some(root_label(&root)),
+            root: Some(changes_list::root_label(&root)),
             rest,
         }
     }

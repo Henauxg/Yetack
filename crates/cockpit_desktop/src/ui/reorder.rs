@@ -1,9 +1,9 @@
 //! Dragging a sidebar row to another place in the list.
 //!
 //! The page's script follows the pointer: a lifted copy of the row moves with it, and a line
-//! between two rows shows where the row will land. Rust hears of it once, on release, with the row the dragged one
-//! goes above: a render per mouse move would make the drag lag. A press that moves less than
-//! `THRESHOLD_PX` stays a click, which selects the agent.
+//! between two rows shows where the row will land. Rust hears of it once, on release, with the
+//! row the dragged one goes above: a render per mouse move would make the drag lag. A press that
+//! moves less than `THRESHOLD_PX` stays a click, which selects the agent.
 
 use cockpit_protocol::AgentId;
 use dioxus::prelude::*;
