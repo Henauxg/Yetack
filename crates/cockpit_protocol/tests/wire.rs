@@ -199,6 +199,7 @@ fn bodies() -> Vec<ItemBody> {
             edit: None,
             reason: Some("The command deletes files".to_owned()),
             answer: AnswerState::Answered(approval_answer()),
+            tool_call: Some(ItemId::new(12)),
         }),
         ItemBody::Approval(Approval {
             pending: pending(),
@@ -208,6 +209,7 @@ fn bodies() -> Vec<ItemBody> {
             edit: Some(edit()),
             reason: None,
             answer: AnswerState::Waiting,
+            tool_call: None,
         }),
         ItemBody::Question(Question {
             pending: pending(),
@@ -1142,6 +1144,7 @@ fn an_approval_and_a_turn_end_on_the_wire() {
         edit: Some(edit()),
         reason: None,
         answer: AnswerState::Answered(approval_answer()),
+        tool_call: Some(ItemId::new(16)),
     });
     let turn_end = ItemBody::TurnEnd(TurnEnd {
         duration: Duration::from_millis(83_250),
@@ -1169,6 +1172,7 @@ fn an_approval_and_a_turn_end_on_the_wire() {
                 "state": "answered",
                 "answer": {"decision": "deny", "message": "Run only the login tests"},
             },
+            "tool_call": 16,
         }),
     );
     assert_wire(
@@ -1182,6 +1186,18 @@ fn an_approval_and_a_turn_end_on_the_wire() {
             "stopped": false,
         }),
     );
+}
+
+#[test]
+fn an_approval_saved_without_its_tool_call_still_loads() {
+    let saved = r#"{"type":"approval","pending":"toolu_01","tool":"Bash","summary":"ls","input":{"command":"ls"},"edit":null,"reason":null,"answer":{"state":"waiting"}}"#;
+
+    let ItemBody::Approval(approval) = serde_json::from_str::<ItemBody>(saved).unwrap() else {
+        panic!("not an approval");
+    };
+
+    assert_eq!(approval.tool_call, None);
+    assert_eq!(approval.answer, AnswerState::Waiting);
 }
 
 #[test]

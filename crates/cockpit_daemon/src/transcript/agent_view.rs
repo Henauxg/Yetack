@@ -890,6 +890,7 @@ impl AgentView {
                         .map(|path| format!("{} is outside the allowed folders", path.display()))
                 }),
                 answer: AnswerState::Waiting,
+                tool_call: tool_item,
             }),
         };
         // A question or a plan takes the place of its tool call's item, which says nothing more.
@@ -1493,6 +1494,51 @@ mod tests {
         assert_eq!(edits, [&empty, &empty]);
         let file = &view.details().changed_files[0];
         assert_eq!((file.lines_added, file.lines_removed), (200_000, 0));
+    }
+
+    #[test]
+    fn each_approval_names_its_own_call_among_identical_parallel_calls() {
+        let mut view = view();
+        let input = json!({"command": "touch same.txt"});
+        apply(&mut view, tool_use("t1", "Bash", input.clone()));
+        apply(&mut view, tool_use("t2", "Bash", input.clone()));
+
+        apply(
+            &mut view,
+            can_use_tool("req-2", "t2", "Bash", input.clone()),
+        );
+        apply(&mut view, can_use_tool("req-1", "t1", "Bash", input));
+
+        let calls: Vec<ItemId> = view.items()[..2].iter().map(|item| item.id).collect();
+        let links: Vec<Option<ItemId>> = view.items()[2..]
+            .iter()
+            .map(|item| match &item.body {
+                ItemBody::Approval(approval) => approval.tool_call,
+                other => panic!("expected an approval, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(links, [Some(calls[1]), Some(calls[0])]);
+    }
+
+    #[test]
+    fn an_approval_without_a_known_call_names_none() {
+        let mut view = view();
+
+        apply(
+            &mut view,
+            can_use_tool("req-1", "t9", "Bash", json!({"command": "ls"})),
+        );
+
+        let [item] = view.items() else {
+            panic!("expected one item, got {:?}", view.items());
+        };
+        assert!(matches!(
+            &item.body,
+            ItemBody::Approval(Approval {
+                tool_call: None,
+                ..
+            })
+        ));
     }
 
     #[test]

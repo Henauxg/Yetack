@@ -164,29 +164,41 @@ fn subtree(children: &Children<'_>, root: ItemId) -> Vec<TranscriptItem> {
     found
 }
 
-/// The running tool calls whose approval card waits for an answer. The protocol does not link an
-/// approval to its call, so they match on parent, tool and summary, which the daemon builds the
-/// same way for both.
+/// The running tool calls whose approval card waits for an answer. An approval names its call;
+/// one from an older daemon's log does not, and matches a call on parent, tool and summary, which
+/// the daemon builds the same way for both.
 fn awaiting_approval(items: &[&TranscriptItem]) -> BTreeSet<ItemId> {
-    let asked: BTreeSet<(Option<ItemId>, &str, &str)> = items
-        .iter()
-        .filter_map(|item| match &item.body {
-            ItemBody::Approval(approval) if approval.answer == AnswerState::Waiting => Some((
-                item.parent,
-                approval.tool.as_str(),
-                approval.summary.as_str(),
-            )),
-            _ => None,
-        })
-        .collect();
-    if asked.is_empty() {
+    let mut linked: BTreeSet<ItemId> = BTreeSet::new();
+    let mut asked: BTreeSet<(Option<ItemId>, &str, &str)> = BTreeSet::new();
+    for item in items {
+        let ItemBody::Approval(approval) = &item.body else {
+            continue;
+        };
+        if approval.answer != AnswerState::Waiting {
+            continue;
+        }
+        match approval.tool_call {
+            Some(call) => {
+                linked.insert(call);
+            }
+            None => {
+                asked.insert((
+                    item.parent,
+                    approval.tool.as_str(),
+                    approval.summary.as_str(),
+                ));
+            }
+        }
+    }
+    if linked.is_empty() && asked.is_empty() {
         return BTreeSet::new();
     }
     items
         .iter()
         .filter(|item| match &item.body {
             ItemBody::ToolCall(call) if call.status == ToolCallStatus::Running => {
-                asked.contains(&(item.parent, call.tool.as_str(), call.summary.as_str()))
+                linked.contains(&item.id)
+                    || asked.contains(&(item.parent, call.tool.as_str(), call.summary.as_str()))
             }
             _ => false,
         })
@@ -707,6 +719,7 @@ mod tests {
             edit: None,
             reason: None,
             answer,
+            tool_call: None,
         })
     }
 
@@ -771,6 +784,34 @@ mod tests {
                 removed: 1
             }
         );
+    }
+
+    #[test]
+    fn a_linked_approval_marks_only_its_own_call() {
+        let running =
+            || ItemBody::ToolCall(call("Bash", "touch same.txt", ToolCallStatus::Running));
+        let linked = |call: u32, answer| {
+            let ItemBody::Approval(approval) = approval("Bash", "touch same.txt", answer) else {
+                panic!("the helper builds an approval");
+            };
+            ItemBody::Approval(Approval {
+                tool_call: Some(ItemId::new(call)),
+                ..approval
+            })
+        };
+        let allowed = AnswerState::Answered(ApprovalAnswer {
+            decision: ApprovalDecision::Allow,
+            message: None,
+        });
+        let items = [
+            item(1, None, running()),
+            item(2, None, running()),
+            item(3, None, linked(1, allowed)),
+            item(4, None, linked(2, AnswerState::Waiting)),
+        ];
+        let refs: Vec<&TranscriptItem> = items.iter().collect();
+
+        assert_eq!(awaiting_approval(&refs), BTreeSet::from([ItemId::new(2)]));
     }
 
     #[test]
