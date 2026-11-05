@@ -94,9 +94,13 @@ pub fn ApprovalCard(agent: AgentId, folder: PathBuf, approval: Approval) -> Elem
             // Every row up to the cap, and past it a line that says how much is left out: what is
             // allowed must show before it is allowed.
             if !diff.rows.is_empty() {
-                div { class: "diff-box scroll-x approval-diff",
-                    for row in diff.rows.iter() {
-                        {diff_row(row, numbers, None)}
+                div { class: "diff-box approval-diff",
+                    div { class: "approval-diff-lines scroll-x",
+                        div { class: "diff-rows",
+                            for row in diff.rows.iter() {
+                                {diff_row(row, numbers, None)}
+                            }
+                        }
                     }
                     {lines_not_shown(diff.more)}
                 }

@@ -1379,8 +1379,20 @@ button:disabled {
   line-height: 1.65;
 }
 
+/* Its height fits its rows: only a long line scrolls it, sideways. */
 .inline-diff {
   margin-left: 15px;
+  overflow-y: hidden;
+}
+
+/* With `scrollbar-width` or `scrollbar-color` set, WebKitGTK draws overlay scrollbars that show
+   only while scrolling, so nothing tells that a line goes on. Unset, the always visible
+   `::-webkit-scrollbar` style applies. */
+.diff-box,
+.approval-diff-lines,
+.file-body {
+  scrollbar-width: auto;
+  scrollbar-color: auto;
 }
 
 .approval-diff {
@@ -1388,22 +1400,50 @@ button:disabled {
   overflow-y: auto;
 }
 
+/* A box that scrolls both ways shows a vertical scrollbar as soon as the horizontal one appears,
+   so the lines scroll sideways in a box of their own. */
+.approval-diff-lines {
+  overflow-y: hidden;
+}
+
+/* Every row as wide as the longest, so that a row's color spans the scrolled width and its gutter
+   can stick to the left edge all the way. */
+.diff-rows {
+  width: max-content;
+  min-width: 100%;
+}
+
 .diff-row {
+  --row-tint: transparent;
   display: flex;
   min-width: max-content;
   min-height: 1.65em;
+  background: var(--row-tint);
 }
 
 .diff-row.added {
-  background: rgba(46, 160, 67, 0.14);
+  --row-tint: rgba(46, 160, 67, 0.14);
 }
 
 .diff-row.removed {
-  background: rgba(248, 81, 73, 0.12);
+  --row-tint: rgba(248, 81, 73, 0.12);
 }
 
 .diff-row.marked {
-  background: rgba(246, 193, 119, 0.14);
+  --row-tint: rgba(246, 193, 119, 0.14);
+}
+
+/* The line number and sign stay in place while the text scrolls sideways under them, so the
+   gutter repeats the row's tint over an opaque color. */
+.line-gutter {
+  position: sticky;
+  left: 0;
+  flex: none;
+  display: flex;
+  background: linear-gradient(var(--row-tint), var(--row-tint)), var(--well);
+}
+
+.diff-row.marked .line-gutter {
   box-shadow: inset 3px 0 0 #f6c177;
 }
 
@@ -2605,6 +2645,21 @@ button:disabled {
 .file-body .line-number {
   width: 44px;
   padding-right: 10px;
+}
+
+/* Wrapped lines keep their number on their first row. */
+.file-body.wrap .diff-rows {
+  width: auto;
+}
+
+.file-body.wrap .diff-row {
+  min-width: 0;
+}
+
+.file-body.wrap .line-text {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .file-note {

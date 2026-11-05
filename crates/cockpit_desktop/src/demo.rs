@@ -29,6 +29,7 @@ const PLATFORM_FOLDER: &str = "/home/dev/projects/acme-platform";
 
 const ERROR_FILE: &str = "src/error.rs";
 const TEST_FILE: &str = "tests/columns.rs";
+const LEXER_FILE: &str = "src/lexer.rs";
 
 const ERROR_AFTER: &str = "/// A parse error, with where it happened.
 pub struct ParseError {
@@ -48,6 +49,34 @@ fn an_unexpected_token_reports_its_column() {
     assert_eq!(error.message, \"unexpected `*`\");
 }
 ";
+
+/// Long lines, to look at the file view's sideways scroll and its wrap toggle.
+const LEXER_TEXT: &str = "//! Splits an expression into tokens, each with the line and the column where it starts, so that the parser can point at the token an error is about.
+
+use crate::token::{Token, TokenKind};
+
+/// The characters that end a number or a name: an operator, a parenthesis, a comma, or white space between two tokens.
+const SEPARATORS: [char; 12] = ['+', '-', '*', '/', '%', '^', '(', ')', ',', ' ', '\\t', '\\n'];
+
+pub fn tokens(input: &str) -> Vec<Token> {
+    let mut tokens = Vec::new();
+    let (mut line, mut column) = (1, 1);
+    for (offset, character) in input.char_indices() {
+        if character == '\\n' {
+            line += 1;
+            column = 1;
+            continue;
+        }
+        tokens.push(Token { kind: TokenKind::from_char(character), line, column, offset, text: input[offset..offset + character.len_utf8()].to_owned() });
+        column += 1;
+    }
+    tokens
+}
+";
+
+const LEXER_LINE_BEFORE: &str = "        tokens.push(Token { kind: TokenKind::from_char(character), line, column: column - 1, offset, text: input[offset..offset + character.len_utf8()].to_owned() });\n";
+
+const LEXER_LINE_AFTER: &str = "        tokens.push(Token { kind: TokenKind::from_char(character), line, column, offset, text: input[offset..offset + character.len_utf8()].to_owned() });\n";
 
 const FAILED_TEST_OUTPUT: &str = "running 4 tests
 test lexer::tests::counts_lines ... ok
@@ -186,6 +215,8 @@ fn file_text(path: &Path) -> Option<&'static str> {
         Some(ERROR_AFTER)
     } else if relative == Path::new(TEST_FILE) {
         Some(TEST_TEXT)
+    } else if relative == Path::new(LEXER_FILE) {
+        Some(LEXER_TEXT)
     } else {
         None
     }
@@ -493,6 +524,11 @@ fn parser_agent(now: SystemTime) -> Sample {
         item(
             12,
             None,
+            edit_call("Edit", LEXER_FILE, LEXER_LINE_BEFORE, LEXER_LINE_AFTER),
+        ),
+        item(
+            13,
+            None,
             ItemBody::ToolCall(call(
                 "Bash",
                 "cargo test parser",
@@ -501,7 +537,7 @@ fn parser_agent(now: SystemTime) -> Sample {
             )),
         ),
         item(
-            13,
+            14,
             None,
             user("Also cover a token at the end of the input.", true),
         ),
@@ -549,6 +585,11 @@ fn parser_agent(now: SystemTime) -> Sample {
                 path: Path::new(PARSER_FOLDER).join(TEST_FILE),
                 lines_added: 8,
                 lines_removed: 0,
+            },
+            ChangedFile {
+                path: Path::new(PARSER_FOLDER).join(LEXER_FILE),
+                lines_added: 1,
+                lines_removed: 1,
             },
         ],
         context: Some(ContextUsage {

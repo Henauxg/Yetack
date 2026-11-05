@@ -499,6 +499,12 @@ pub fn set_view_mode(state: &mut AppState, agent: AgentId, mode: ViewMode) {
     }
 }
 
+/// Wraps the file view's long lines, or lets them scroll sideways again. The choice is saved, and
+/// holds for every agent.
+pub fn toggle_wrap(state: &mut AppState) {
+    state.prefs.file_view.wrap = !state.prefs.file_view.wrap;
+}
+
 /// Folds or unfolds a floating block, or opens its badge's popover while the file view is open.
 /// Opening the MCP servers asks Claude Code for their status.
 pub fn toggle_block(state: &mut AppState, agent: AgentId, block: Block) -> Vec<Outgoing> {
