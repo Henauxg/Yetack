@@ -3,6 +3,7 @@
 //! Rust sends it, and passes them on with the window's focus and pasted images.
 
 use cockpit_protocol::{Image, ImageMediaType};
+use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -257,6 +258,10 @@ const element_id = await dioxus.recv();
 document.getElementById(element_id)?.scrollIntoView({ block: "nearest" });
 "#;
 
+/// Answers whether the window has the focus. It runs after the blur that asks, so it sees the
+/// window's own loss of focus when that caused the blur.
+const WINDOW_FOCUSED_SCRIPT: &str = "return document.hasFocus();";
+
 /// Brings a dialog's highlighted row into view, after the render that moved the highlight.
 const SCROLL_TO_HIGHLIGHTED_SCRIPT: &str = r#"
 await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -431,6 +436,23 @@ pub fn reveal(element_id: &'static str) {
     if let Err(error) = script.send(element_id) {
         tracing::warn!("cannot scroll {element_id} into view: {error}");
     }
+}
+
+/// For a field whose edit a blur saves, such as a title being renamed: runs `save` when the focus
+/// went elsewhere in the window, and not when the window itself lost it (Alt+Tab), so the field
+/// stays open with its text. Every such field uses this rule.
+pub fn save_on_blur(save: impl FnOnce() + 'static) {
+    // Not tied to the field's component, which the save may remove.
+    spawn_forever(async move {
+        match document::eval(WINDOW_FOCUSED_SCRIPT).join::<bool>().await {
+            Ok(true) => save(),
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!("cannot tell whether the window has the focus, saving: {error}");
+                save();
+            }
+        }
+    });
 }
 
 /// For a list moved by the keyboard: its highlighted row may sit below the scrolled view.
