@@ -1131,8 +1131,9 @@ pub fn switcher_pick(state: &mut AppState, index: Option<usize>) {
 }
 
 /// Opens the new agent dialog on the last used folder, with the model, effort and permission
-/// mode of the last agent started. The past sessions are listed again, since sessions end and
-/// start while the app runs. An open dialog stays as it is: its first message field follows the
+/// mode of the last agent started. A mode the mode menu does not offer, or Plan, which is
+/// usually for a while, is not carried over. The past sessions are listed again, since sessions
+/// end and start while the app runs. An open dialog stays as it is: its first message field follows the
 /// keyboard, not the form, so a fresh form would not empty it.
 pub fn open_new_agent(state: &mut AppState) {
     if matches!(state.ui.dialog, Some(Dialog::NewAgent(_))) {
@@ -1153,7 +1154,9 @@ pub fn open_new_agent(state: &mut AppState) {
         .and_then(format::model_alias)
         .map(str::to_owned);
     let effort = last.and_then(|summary| summary.effort);
-    let mode = last.map(|summary| summary.mode);
+    let mode = last
+        .map(|summary| summary.mode)
+        .filter(|mode| MODE_CHOICES.contains(mode) && *mode != PermissionMode::Plan);
     if state.sessions != Loadable::Loading {
         state.sessions = Loadable::NotRequested;
     }
@@ -2252,6 +2255,27 @@ mod tests {
         };
         assert_eq!(form.model, None);
         assert_eq!(form.mode, Some(PermissionMode::Default));
+    }
+
+    /// Ctrl+N then Ctrl+Enter would otherwise start an agent that runs everything without
+    /// asking, in a mode the dialog never offers.
+    #[test]
+    fn the_new_agent_form_carries_over_only_a_mode_it_offers_other_than_plan() {
+        let carried = |mode| {
+            let mut last = summary(1, AgentStatus::Idle);
+            last.mode = mode;
+            let mut state = state_with(vec![last]);
+            open_new_agent(&mut state);
+            match &state.ui.dialog {
+                Some(Dialog::NewAgent(form)) => form.mode,
+                other => panic!("expected the new agent dialog, got {other:?}"),
+            }
+        };
+
+        assert_eq!(carried(PermissionMode::BypassPermissions), None);
+        assert_eq!(carried(PermissionMode::DontAsk), None);
+        assert_eq!(carried(PermissionMode::Plan), None);
+        assert_eq!(carried(PermissionMode::Auto), Some(PermissionMode::Auto));
     }
 
     #[test]
