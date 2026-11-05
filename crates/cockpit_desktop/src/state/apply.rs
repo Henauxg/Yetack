@@ -53,25 +53,36 @@ pub fn apply_update(
             Vec::new()
         }
         SessionUpdate::Event(record) => {
-            if let Event::AgentUpdated(summary) = &record.event {
-                note_turn_start(state, summary, now);
-            }
+            note_turn_start(state, &record.event, now);
             apply(state, drafts, record).into_iter().collect()
         }
     }
 }
 
 /// Keeps when the agent's turn started, for the working line's elapsed time. A turn runs while
-/// the agent works or waits for an answer.
-fn note_turn_start(state: &mut AppState, summary: &AgentSummary, now: Instant) {
-    let Some(entry) = state.agents.get_mut(&summary.id) else {
-        return;
-    };
+/// the agent works or waits for an answer. The daemon sends a queued prompt as a turn ends, so
+/// the agent works on without a pause: a turn's end starts the next one, until the agent idles.
+fn note_turn_start(state: &mut AppState, event: &Event, now: Instant) {
     let in_turn = |status| matches!(status, AgentStatus::Working | AgentStatus::NeedsYou);
-    match (in_turn(entry.summary.status), in_turn(summary.status)) {
-        (false, true) => entry.turn_started = Some(now),
-        (_, false) => entry.turn_started = None,
-        (true, true) => {}
+    match event {
+        Event::AgentUpdated(summary) => {
+            let Some(entry) = state.agents.get_mut(&summary.id) else {
+                return;
+            };
+            match (in_turn(entry.summary.status), in_turn(summary.status)) {
+                (false, true) => entry.turn_started = Some(now),
+                (_, false) => entry.turn_started = None,
+                (true, true) => {}
+            }
+        }
+        Event::TranscriptAppended { agent, item } if matches!(item.body, ItemBody::TurnEnd(_)) => {
+            if let Some(entry) = state.agents.get_mut(agent)
+                && in_turn(entry.summary.status)
+            {
+                entry.turn_started = Some(now);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -240,8 +251,8 @@ mod tests {
 
     use cockpit_client::{ConnectError, SessionError};
     use cockpit_protocol::{
-        AgentDetails, ItemId, PendingId, PlanUsage, Question, Seq, Settings, TaskProgress,
-        TranscriptItem,
+        AgentDetails, CostUsd, ItemId, PendingId, PlanUsage, Question, Seq, Settings, TaskProgress,
+        TokenUsage, TranscriptItem, TurnEnd,
     };
 
     use super::*;
@@ -565,6 +576,60 @@ mod tests {
         assert_eq!(change(AgentStatus::Working, later), Some(start));
         assert_eq!(change(AgentStatus::Idle, later), None);
         assert_eq!(change(AgentStatus::Working, later), Some(later));
+    }
+
+    /// The daemon sends a queued prompt as the turn before it ends: the agent goes on working,
+    /// and the working line counts from the end of the last turn.
+    #[test]
+    fn a_queued_prompt_starts_its_turn_when_the_last_one_ends() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        let agent = AgentId::new(1);
+        let start = Instant::now();
+        let ended = start + Duration::from_secs(360);
+        let mut update = |event, now| {
+            apply_update(
+                &mut state,
+                &mut Drafts::default(),
+                SessionUpdate::Event(record(event)),
+                now,
+            );
+            state.agents[&agent].turn_started
+        };
+        let turn_end = || TranscriptItem {
+            id: ItemId::new(9),
+            parent: None,
+            body: ItemBody::TurnEnd(TurnEnd {
+                duration: Duration::from_secs(360),
+                cost: CostUsd::new(0.4),
+                usage: TokenUsage::default(),
+                error: None,
+                stopped: false,
+            }),
+        };
+
+        update(Event::AgentUpdated(summary(1, AgentStatus::Working)), start);
+        let after_the_end = update(
+            Event::TranscriptAppended {
+                agent,
+                item: turn_end(),
+            },
+            ended,
+        );
+        let next_turn = update(
+            Event::AgentUpdated(summary(1, AgentStatus::Working)),
+            ended + Duration::from_secs(1),
+        );
+        let idle = update(Event::AgentUpdated(summary(1, AgentStatus::Idle)), ended);
+        let ended_while_idle = update(
+            Event::TranscriptAppended {
+                agent,
+                item: turn_end(),
+            },
+            ended,
+        );
+
+        assert_eq!((after_the_end, next_turn), (Some(ended), Some(ended)));
+        assert_eq!((idle, ended_while_idle), (None, None));
     }
 
     #[test]
