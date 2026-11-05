@@ -119,6 +119,14 @@ pub fn apply_catchup(state: &mut AppState, drafts: &mut Drafts, catchup: Catchup
         .ui
         .finished_tasks_unfolded
         .retain(|agent| agents.contains_key(agent));
+    state
+        .ui
+        .chat_scrolled_up
+        .retain(|agent, _| agents.contains_key(agent));
+    state
+        .ui
+        .chat_new_from
+        .retain(|agent, _| agents.contains_key(agent));
     drafts.retain_agents(|agent| agents.contains_key(&agent));
     state.fix_selection();
     actions::follow_hidden_title_edit(state, drafts);
@@ -143,6 +151,8 @@ pub fn apply(state: &mut AppState, drafts: &mut Drafts, record: EventRecord) -> 
             state.ui.unread.remove(&agent);
             state.ui.file_views.remove(&agent);
             state.ui.finished_tasks_unfolded.remove(&agent);
+            state.ui.chat_scrolled_up.remove(&agent);
+            state.ui.chat_new_from.remove(&agent);
             drafts.retain_agents(|kept| kept != agent);
             state.ui.title_edit.take_if(|edit| edit.agent == agent);
             if state.ui.selected == Some(agent) {
@@ -461,6 +471,54 @@ mod tests {
         );
 
         assert!(!drafts.questions.contains_key(&pending));
+    }
+
+    /// Ids are not reused, so a removed agent's marks would stay for the app's life.
+    #[test]
+    fn a_removed_agent_leaves_no_chat_marks() {
+        let marked = || {
+            let mut state = state_with(vec![
+                summary(1, AgentStatus::Idle),
+                summary(2, AgentStatus::Idle),
+            ]);
+            for agent in [AgentId::new(1), AgentId::new(2)] {
+                state
+                    .ui
+                    .chat_scrolled_up
+                    .insert(agent, Some(ItemId::new(3)));
+                state.ui.chat_new_from.insert(agent, ItemId::new(4));
+            }
+            state
+        };
+        let mut removed = marked();
+        let mut dropped = marked();
+
+        apply(
+            &mut removed,
+            &mut Drafts::default(),
+            record(Event::AgentRemoved {
+                agent: AgentId::new(1),
+            }),
+        );
+        apply_catchup(
+            &mut dropped,
+            &mut Drafts::default(),
+            Catchup::Snapshot(Snapshot {
+                agents: vec![summary(2, AgentStatus::Idle)],
+                plan_usage: PlanUsage::default(),
+                settings: Settings::default(),
+                last_seq: Some(Seq::new(40)),
+            }),
+        );
+
+        for state in [&removed, &dropped] {
+            let scrolled: Vec<&AgentId> = state.ui.chat_scrolled_up.keys().collect();
+            let new_from: Vec<&AgentId> = state.ui.chat_new_from.keys().collect();
+            assert_eq!(
+                (scrolled, new_from),
+                (vec![&AgentId::new(2)], vec![&AgentId::new(2)])
+            );
+        }
     }
 
     #[test]
