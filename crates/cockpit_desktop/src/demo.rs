@@ -76,7 +76,12 @@ The parser builds every error at `src/error.rs:2`. The lexer already counts the 
 - The column is a `u32` on `Token`.
 - No new dependency is needed.";
 
-const BENCHMARK_ANSWER: &str = "The benchmark runs in CI now. To compare two runs by hand:
+const BENCHMARK_ANSWER: &str = "The benchmark runs in CI now. The slowest cases:
+deep_nesting: 2.4 ms
+long_sum: 1.1 ms
+many_parentheses: 0.9 ms
+
+To compare two runs by hand:
 
 ```bash
 # Run both versions and keep the medians
@@ -85,7 +90,7 @@ git switch cache-layer
 cargo bench --bench eval -- --baseline before
 ```
 
-The slowest case is still `deep_nesting`, at **2.4 ms**.";
+The CI job fails when a case gets **10%** slower than on `main`.";
 
 const PLAN_TEXT: &str = "## Add a result cache
 

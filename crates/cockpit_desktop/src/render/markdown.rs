@@ -289,8 +289,9 @@ impl<'input> Builder<'input> {
             Event::Code(code) | Event::InlineMath(code) | Event::DisplayMath(code) => {
                 inlines.push(code_span(&code));
             }
-            Event::SoftBreak => inlines.push(Inline::Text(" ".to_owned())),
-            Event::HardBreak => inlines.push(Inline::LineBreak),
+            // A single newline breaks the line, as GitHub comments and claude.ai show it: Claude
+            // often writes one item per line without list markers.
+            Event::SoftBreak | Event::HardBreak => inlines.push(Inline::LineBreak),
             Event::TaskListMarker(done) => {
                 let marker = if done { TASK_DONE } else { TASK_OPEN };
                 inlines.push(Inline::Text(marker.to_owned()));
@@ -587,7 +588,11 @@ mod tests {
                     level: 1,
                     content: vec![text("Title")]
                 },
-                Block::Paragraph(vec![text("First line same paragraph.")]),
+                Block::Paragraph(vec![
+                    text("First line"),
+                    Inline::LineBreak,
+                    text("same paragraph.")
+                ]),
                 Block::Rule,
                 Block::Quote(vec![Block::Paragraph(vec![text("Quoted")])]),
             ]
@@ -611,6 +616,31 @@ mod tests {
                 Inline::Code("code".to_owned()),
                 Inline::LineBreak,
                 text("next"),
+            ]
+        );
+    }
+
+    #[test]
+    fn single_line_breaks_show_as_line_breaks_outside_code_blocks() {
+        let blocks = parse_markdown(
+            "The slowest cases:\ndeep_nesting: 2.4 ms\nlong_sum: **1.1 ms**\n\n```\nfirst\nsecond\n```",
+        );
+
+        assert_eq!(
+            blocks,
+            vec![
+                Block::Paragraph(vec![
+                    text("The slowest cases:"),
+                    Inline::LineBreak,
+                    text("deep_nesting: 2.4 ms"),
+                    Inline::LineBreak,
+                    text("long_sum: "),
+                    Inline::Strong(vec![text("1.1 ms")]),
+                ]),
+                Block::Code {
+                    language: None,
+                    code: "first\nsecond".to_owned()
+                },
             ]
         );
     }
