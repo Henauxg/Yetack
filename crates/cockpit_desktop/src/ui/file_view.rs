@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use cockpit_protocol::{AgentId, FileEdit};
+use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
@@ -13,6 +14,9 @@ use crate::state::{FileRead, Loadable, ViewMode, actions, file_edits};
 use crate::ui::code::{LineNumbers, diff_line, diff_row, lines_not_shown};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::splitter::FILE_VIEW_ID;
+
+/// With Ctrl, closes the shown tab.
+const CLOSE_TAB_KEY: &str = "w";
 
 /// Unchanged lines kept around each change of the file view's diff.
 const FILE_DIFF_CONTEXT: usize = 3;
@@ -32,19 +36,7 @@ pub fn FileViewPanel() -> Element {
         return rsx! {};
     };
     let folder = &entry.summary.folder;
-    let changed = entry
-        .details
-        .loaded()
-        .into_iter()
-        .flat_map(|details| details.changed_files.iter())
-        .map(|file| file_edits::relative_path(folder, &file.path));
-    // Each path once: the daemon's list does not promise it, and the paths key the tabs.
-    let mut tabs: Vec<PathBuf> = Vec::new();
-    for path in changed.chain([view.path.clone()]) {
-        if !tabs.contains(&path) {
-            tabs.push(path);
-        }
-    }
+    let tabs = view.tabs(&entry.changed_paths());
     let text = entry.files.get(&view.path).cloned().unwrap_or_default();
     let edits: Vec<FileEdit> = file_edits::edits_for(&entry.transcript, folder, &view.path)
         .into_iter()
@@ -63,10 +55,24 @@ pub fn FileViewPanel() -> Element {
         )
     };
     let diff = view.mode == ViewMode::Diff;
+    let shown = view.path.clone();
     let loading = matches!(text, Loadable::NotRequested | Loadable::Loading);
     let wrap = state.prefs.file_view.wrap;
     rsx! {
-        section { id: FILE_VIEW_ID, class: "file-view", aria_label: "File view",
+        section {
+            id: FILE_VIEW_ID,
+            class: "file-view",
+            aria_label: "File view",
+            // Focusable, so that a click in the view lets Ctrl+W close its tab.
+            tabindex: -1,
+            onkeydown: move |event| {
+                let command = event.modifiers().ctrl() || event.modifiers().meta();
+                if command && event.key() == Key::Character(CLOSE_TAB_KEY.to_owned()) {
+                    event.prevent_default();
+                    let shown = shown.clone();
+                    cockpit.update(|state| actions::close_tab(state, agent, &shown));
+                }
+            },
             div { class: "file-tabs",
                 div { class: "tab-list scroll-x", role: "tablist", aria_label: "Files changed by this agent",
                     for tab in tabs {
@@ -146,17 +152,41 @@ fn FileTab(agent: AgentId, path: PathBuf, selected: bool) -> Element {
     let cockpit: Cockpit = use_context();
     let name = file_name(&path);
     let full = path.display().to_string();
+    let close = {
+        let path = path.clone();
+        move || {
+            let path = path.clone();
+            cockpit.update(|state| actions::close_tab(state, agent, &path));
+        }
+    };
+    let close_on_middle = close.clone();
     rsx! {
-        button {
+        div {
             class: if selected { "file-tab selected" } else { "file-tab" },
             role: "tab",
             aria_selected: selected,
             title: "{full}",
-            onclick: move |_| {
-                let path = path.clone();
-                cockpit.update(|state| actions::open_file(state, agent, path, None));
+            onauxclick: move |event| {
+                if event.trigger_button() == Some(MouseButton::Auxiliary) {
+                    event.prevent_default();
+                    close_on_middle();
+                }
             },
-            "{name}"
+            button {
+                class: "file-tab-name",
+                onclick: move |_| {
+                    let path = path.clone();
+                    cockpit.update(|state| actions::open_file(state, agent, path, None));
+                },
+                "{name}"
+            }
+            button {
+                class: "file-tab-close",
+                aria_label: "Close {name}",
+                title: "Close (middle-click, or Ctrl+W in the file view)",
+                onclick: move |_| close(),
+                Icon { kind: IconKind::Close, size: 12 }
+            }
         }
     }
 }
@@ -178,6 +208,7 @@ fn FileChoices(
             for choice in matches {
                 {
                     let shown = file_edits::relative_path(&folder, &choice).display().to_string();
+                    let name = name.clone();
                     rsx! {
                         button {
                             key: "{choice.display()}",
@@ -185,7 +216,7 @@ fn FileChoices(
                             title: "{choice.display()}",
                             onclick: move |_| {
                                 let choice = choice.clone();
-                                cockpit.update(|state| actions::open_file(state, agent, choice, line));
+                                cockpit.update(|state| actions::pick_file(state, agent, &name, choice, line));
                             },
                             "{shown}"
                         }

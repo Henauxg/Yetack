@@ -384,11 +384,7 @@ mod tests {
         let agent = AgentId::new(1);
         state.ui.file_views.insert(
             agent,
-            FileView {
-                path: PathBuf::from("src/main.rs"),
-                line: Some(3),
-                mode: Default::default(),
-            },
+            FileView::new(PathBuf::from("src/main.rs"), Some(3), Default::default()),
         );
 
         let requests = needed_requests(&mut state);

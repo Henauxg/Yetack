@@ -8,6 +8,7 @@ use cockpit_protocol::{
     AgentDetails, AgentId, AgentStatus, AgentSummary, PastSession, PlanUsage, Settings, Timestamp,
 };
 
+use super::file_edits;
 use super::transcript::Transcript;
 use super::ui_state::UiState;
 use crate::config::DaemonLabel;
@@ -90,6 +91,17 @@ impl AgentEntry {
             commands_requested: false,
             turn_started: None,
         }
+    }
+
+    /// The files the agent changed, by the paths the file view uses.
+    pub fn changed_paths(&self) -> Vec<PathBuf> {
+        let folder = &self.summary.folder;
+        self.details
+            .loaded()
+            .into_iter()
+            .flat_map(|details| details.changed_files.iter())
+            .map(|file| file_edits::relative_path(folder, &file.path))
+            .collect()
     }
 
     /// Whether the commands and skills are on their way, with the details or on their own.
