@@ -26,11 +26,23 @@
 //!
 //! - unknown fields are ignored;
 //! - an unknown `type` or `subtype` gives a variant holding the raw JSON;
-//! - a word from a set Claude Code may extend, such as a status, gives an [`OpenWord`].
+//! - a word from a set Claude Code may extend, such as a status, gives an [`OpenWord`];
+//! - a missing optional field reads as its default: `None`, empty, `false` or `0`.
 //!
-//! Only a line that is not JSON, or a known kind whose required field is missing or has the
-//! wrong type, gives a [`ParseError`]. A field is required only when the line is useless
-//! without it, so most fields are optional.
+//! A field is required only when the line is useless without it, so most fields are optional.
+//!
+//! A [`ParseError`] comes from a line that is not JSON, or from a line of a known kind that misses
+//! a required field or holds a field it cannot read. Which fields must read depends on the line:
+//!
+//! - In a `result` line, only `subtype` (required) and `session_id` (optional) are strict. Every
+//!   other field reads as missing when it is `null` or does not read as its type, even deep inside
+//!   it: a `usage` with one bad count reads as no `usage`. A `result` line ends a turn, so losing
+//!   one would leave the agent shown as working.
+//! - In every other line, a field that is present must read as its type, whether it is required
+//!   or optional: a string for a number, or a negative duration, is an error. So is `null`, except
+//!   in an `Option` field (`None`), in a field holding raw JSON, and in the lists that read it as
+//!   empty: the `content` of a user message or a tool result, and `can_use_tool`'s
+//!   `permission_suggestions`.
 
 mod content_block;
 mod context_usage;

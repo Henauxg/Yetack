@@ -41,6 +41,25 @@ where
     Ok(value.unwrap_or_default())
 }
 
+/// Reads a value that is `null` or does not read as a `T`, even deep inside it, as the default.
+pub(crate) fn default_on_error<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    Ok(T::deserialize(value).unwrap_or_default())
+}
+
+/// Reads a value that is `null` or not a number of milliseconds as `None`.
+pub(crate) fn milliseconds_or_none<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    Ok(optional_milliseconds(value).unwrap_or_default())
+}
+
 /// Reads a number of milliseconds, whole or not.
 pub(crate) fn optional_milliseconds<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
 where
