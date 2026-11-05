@@ -523,7 +523,13 @@ pub fn ItemView(
         ItemBody::TurnEnd(end) => rsx! {
             TurnEndView { end }
         },
-        ItemBody::Notice { text, .. } => rsx! {
+        ItemBody::Notice {
+            text,
+            detail: Some(detail),
+        } => rsx! {
+            NoticeWithDetail { agent, folder, title: text, markdown: detail }
+        },
+        ItemBody::Notice { text, detail: None } => rsx! {
             p { class: "notice", "{text}" }
         },
     }
@@ -555,6 +561,30 @@ fn QueuedMessage(agent: AgentId, item: ItemId, message: UserMessage) -> Element 
                     class: "link-button",
                     onclick: move |_| cockpit.change(|_| actions::cancel_queued(agent, item)),
                     "Cancel"
+                }
+            }
+        }
+    }
+}
+
+/// A notice that unfolds to the Markdown it titles, such as a skill's instructions, folded as
+/// thinking is.
+#[component]
+fn NoticeWithDetail(agent: AgentId, folder: PathBuf, title: String, markdown: String) -> Element {
+    let mut expanded = use_signal(|| false);
+    let open = expanded();
+    rsx! {
+        div { class: "thinking notice-with-detail",
+            button {
+                class: "fold-button",
+                aria_expanded: open,
+                onclick: move |_| expanded.toggle(),
+                span { class: "dim", "{title}" }
+                span { class: if open { "chevron open" } else { "chevron" }, Icon { kind: IconKind::ChevronRight, size: 12 } }
+            }
+            if open {
+                div { class: "notice-detail",
+                    MarkdownView { agent, folder, markdown }
                 }
             }
         }

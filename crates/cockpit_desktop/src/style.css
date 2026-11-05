@@ -87,6 +87,10 @@ button:disabled {
   color: var(--muted);
 }
 
+.dim {
+  color: var(--dim);
+}
+
 .small {
   font-size: 12px;
 }
@@ -1423,6 +1427,20 @@ html.reordering * {
   color: var(--muted);
   font-size: 13px;
   white-space: pre-wrap;
+}
+
+.notice-with-detail .fold-button {
+  font-size: 12px;
+}
+
+/* The thinking text's look, without its pre-wrap: the Markdown blocks space themselves. */
+.notice-detail {
+  max-width: var(--prose-width);
+  margin: 6px 0 0 15px;
+  padding-left: 12px;
+  border-left: 1px solid var(--line-strong);
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .fold-button {
@@ -4076,7 +4094,8 @@ label.icon-button,
 }
 
 .fold-button:hover,
-.fold-button:hover .muted {
+.fold-button:hover .muted,
+.fold-button:hover .dim {
   color: var(--text-bright);
 }
 
@@ -4301,6 +4320,7 @@ label.icon-button,
 .block-body,
 .subagent-body,
 .thinking-text,
+.notice-detail,
 .mcp-detail-view {
   animation: unfold var(--motion-in) var(--ease-out) backwards;
 }
