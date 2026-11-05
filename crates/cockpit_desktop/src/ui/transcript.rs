@@ -65,12 +65,13 @@ pub fn TranscriptView() -> Element {
     let working = status == AgentStatus::Working;
     let turn_started = entry.turn_started;
     let items: Vec<&TranscriptItem> = entry.transcript.items().collect();
+    let loaded: BTreeSet<ItemId> = items.iter().map(|item| item.id).collect();
     let children = children_by_parent(&items);
     let awaiting = awaiting_approval(&items);
     let top_items: Vec<&TranscriptItem> = items
         .iter()
         .copied()
-        .filter(|item| shows_at_top(item))
+        .filter(|item| shows_at_top(item, &loaded))
         .collect();
     // Messages queued at the end wait for the running turn, so they show under its working line.
     let split = top_items
@@ -86,14 +87,23 @@ pub fn TranscriptView() -> Element {
     let is_step: Vec<bool> = states.iter().map(Option::is_some).collect();
     let links = step_links(&is_step, working);
     let working_linked = is_step.last().copied().unwrap_or(false);
-    let top: Vec<(TranscriptItem, Vec<TranscriptItem>, bool, Option<Step>)> = top_items
+    let notes = older_step_notes(top_items, &loaded);
+    let top: Vec<(
+        TranscriptItem,
+        Vec<TranscriptItem>,
+        bool,
+        Option<Step>,
+        bool,
+    )> = top_items
         .iter()
         .zip(states)
         .zip(links)
-        .map(|((item, state), links)| {
+        .zip(notes)
+        .map(|(((item, state), links), older_step)| {
             let step = state.map(|state| Step { state, links });
             let nested = subtree(&children, item.id);
-            ((*item).clone(), nested, awaiting.contains(&item.id), step)
+            let awaits = awaiting.contains(&item.id);
+            ((*item).clone(), nested, awaits, step, older_step)
         })
         .collect();
     let history = entry.transcript.history().clone();
@@ -141,14 +151,14 @@ pub fn TranscriptView() -> Element {
                 }
                 // Item ids repeat across agents: with the agent in the key, another agent's item
                 // never takes over the state of this one's (a fold, a typed answer).
-                for (item, nested, awaits_approval, step) in top {
-                    TranscriptRow { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), item, nested, awaits_approval, step }
+                for (item, nested, awaits_approval, step, older_step) in top {
+                    TranscriptRow { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), item, nested, awaits_approval, step, older_step }
                 }
                 if working {
                     WorkingLine { since: turn_started, linked: working_linked }
                 }
                 for item in queued {
-                    TranscriptRow { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), item, nested: Vec::new(), awaits_approval: false, step: None }
+                    TranscriptRow { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), item, nested: Vec::new(), awaits_approval: false, step: None, older_step: false }
                 }
             }
         }
@@ -275,10 +285,24 @@ fn WorkingLine(since: Option<Instant>, linked: bool) -> Element {
     }
 }
 
-/// Top-level items, and the cards still waiting for an answer, even a subagent's: a folded
-/// subagent must not hide them.
-fn shows_at_top(item: &TranscriptItem) -> bool {
-    item.parent.is_none() || waits_for_answer(item)
+/// Top-level items, the cards still waiting for an answer, even a subagent's, which a folded
+/// subagent must not hide, and the items whose parent sits in older messages the window has not
+/// loaded, which would show nowhere else.
+fn shows_at_top(item: &TranscriptItem, loaded: &BTreeSet<ItemId>) -> bool {
+    item.parent.is_none_or(|parent| !loaded.contains(&parent)) || waits_for_answer(item)
+}
+
+/// For each top item, whether a note goes above it: the item starts a run of items whose parent,
+/// the step they belong to, is not loaded.
+fn older_step_notes(top_items: &[&TranscriptItem], loaded: &BTreeSet<ItemId>) -> Vec<bool> {
+    let mut notes = Vec::with_capacity(top_items.len());
+    let mut run: Option<ItemId> = None;
+    for item in top_items {
+        let unloaded_parent = item.parent.filter(|parent| !loaded.contains(parent));
+        notes.push(unloaded_parent.is_some() && unloaded_parent != run);
+        run = unloaded_parent;
+    }
+    notes
 }
 
 fn is_queued(item: &TranscriptItem) -> bool {
@@ -335,18 +359,26 @@ fn TranscriptRow(
     nested: Vec<TranscriptItem>,
     awaits_approval: bool,
     step: Option<Step>,
+    /// The item starts a run whose step sits in older messages the window has not loaded.
+    older_step: bool,
 ) -> Element {
     let view = rsx! {
         ItemView { agent, folder, item, nested, awaits_approval }
     };
-    let Some(step) = step else {
-        return view;
+    let row = match step {
+        Some(step) => rsx! {
+            div { class: step.class(),
+                span { class: "step-dot", aria_hidden: true }
+                {view}
+            }
+        },
+        None => view,
     };
     rsx! {
-        div { class: step.class(),
-            span { class: "step-dot", aria_hidden: true }
-            {view}
+        if older_step {
+            p { class: "history-note", "Part of a step in older messages: load them to see it." }
         }
+        {row}
     }
 }
 
@@ -1156,6 +1188,36 @@ mod tests {
                 added: 1,
                 removed: 1
             }
+        );
+    }
+
+    /// A subagent's items whose call sits in an older page show at the top level, one note above
+    /// each run of them.
+    #[test]
+    fn items_whose_parent_is_not_loaded_show_at_the_top_under_one_note_per_run() {
+        let bash = || ItemBody::ToolCall(call("Bash", "ls", ToolCallStatus::Done));
+        let items = [
+            item(10, Some(5), bash()),
+            item(11, Some(5), bash()),
+            item(12, Some(10), bash()),
+            item(13, None, bash()),
+            item(14, Some(6), bash()),
+            item(15, Some(5), bash()),
+        ];
+        let refs: Vec<&TranscriptItem> = items.iter().collect();
+        let loaded: BTreeSet<ItemId> = items.iter().map(|item| item.id).collect();
+
+        let top: Vec<&TranscriptItem> = refs
+            .iter()
+            .copied()
+            .filter(|item| shows_at_top(item, &loaded))
+            .collect();
+        let ids: Vec<u32> = top.iter().map(|item| item.id.get()).collect();
+
+        assert_eq!(ids, [10, 11, 13, 14, 15]);
+        assert_eq!(
+            older_step_notes(&top, &loaded),
+            [true, false, false, true, true]
         );
     }
 
