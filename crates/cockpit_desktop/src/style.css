@@ -1,25 +1,27 @@
-/* The black theme of the round 5 mockups: neutral greys, no blue tint. */
+/* The dark theme of the round 5 mockups: neutral greys, no blue tint, the chat on #181818 as
+   in Cursor's and VS Code's dark themes, the sidebar a step darker. Text keeps at least the
+   contrast it had on the first, near-black background. */
 
 :root {
-  --bg: #0a0a0a;
-  --sidebar: #111111;
-  --panel: #141414;
-  --raised: #1a1a1a;
-  --hover: #1c1c1c;
-  --selected: #1f1f1f;
-  --code-bg: #121212;
-  --well: #0f0f0f;
-  --line: #222222;
-  --line-soft: #1f1f1f;
-  --line-strong: #2a2a2a;
-  --line-control: #2e2e2e;
-  --line-divider: #262626;
-  --text: #ececec;
+  --bg: #181818;
+  --sidebar: #131313;
+  --panel: #212121;
+  --raised: #272727;
+  --hover: #282828;
+  --selected: #2b2b2b;
+  --code-bg: #1f1f1f;
+  --well: #1d1d1d;
+  --line: #2e2e2e;
+  --line-soft: #2b2b2b;
+  --line-strong: #353535;
+  --line-control: #393939;
+  --line-divider: #323232;
+  --text: #f9f9f9;
   --text-bright: #ffffff;
-  --text-soft: #d4d4d4;
-  --muted: #a6a6a6;
-  --dim: #8a8a8a;
-  --faint: #5a5a5a;
+  --text-soft: #e0e0e0;
+  --muted: #b0b0b0;
+  --dim: #939393;
+  --faint: #616161;
   --teal: #2dd4bf;
   --amber: #f5a524;
   --green: #4ac26b;
@@ -72,7 +74,7 @@ button:disabled {
 }
 
 :focus-visible {
-  outline: 2px solid #6b6b6b;
+  outline: 2px solid #727272;
   outline-offset: 1px;
 }
 
@@ -123,7 +125,7 @@ button:disabled {
 .scroll,
 .scroll-x {
   scrollbar-width: thin;
-  scrollbar-color: #333333 transparent;
+  scrollbar-color: #3e3e3e transparent;
 }
 
 .scroll {
@@ -144,12 +146,12 @@ button:disabled {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #333333;
+  background: #3e3e3e;
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #444444;
+  background: #4d4d4d;
 }
 
 ::-webkit-scrollbar-corner {
@@ -159,7 +161,7 @@ button:disabled {
 /* Syntax colors (R3-parts). */
 
 .tok-plain {
-  color: #e6e6e6;
+  color: #f3f3f3;
 }
 
 .tok-keyword {
@@ -183,7 +185,7 @@ button:disabled {
 }
 
 .tok-comment {
-  color: #8a8a8a;
+  color: #939393;
 }
 
 /* Status colors. */
@@ -201,7 +203,7 @@ button:disabled {
 }
 
 .status-idle {
-  --status: #bdbdbd;
+  --status: #c8c8c8;
   --status-fill: transparent;
   --status-bg: rgba(255, 255, 255, 0.06);
 }
@@ -277,19 +279,19 @@ button:disabled {
 .icon-button.framed {
   width: 30px;
   height: 30px;
-  border: 1px solid #333333;
+  border: 1px solid #3e3e3e;
   background: var(--raised);
   color: var(--text-soft);
 }
 
 .icon-button.framed.toggled {
-  border-color: #4a4a4a;
+  border-color: #525252;
   background: var(--line-divider);
 }
 
 .icon-button.framed.toggled-warning {
-  border-color: #5a4316;
-  background: #1f1a10;
+  border-color: #614c23;
+  background: #2b271e;
   color: var(--amber);
 }
 
@@ -335,7 +337,7 @@ button:disabled {
 }
 
 .button.danger {
-  border-color: #4a2422;
+  border-color: #52302e;
   background: rgba(244, 112, 103, 0.12);
   color: var(--red);
 }
@@ -361,19 +363,19 @@ button:disabled {
   min-height: 18px;
   padding: 0 5px;
   border-radius: 4px;
-  border: 1px solid #333333;
+  border: 1px solid #3e3e3e;
   color: var(--dim);
   font-family: var(--mono);
   font-size: 11px;
 }
 
 .button.primary .key-hint {
-  border-color: #9a9a9a;
+  border-color: #a3a3a3;
   color: var(--bg);
 }
 
 .button.warning-outline .key-hint {
-  border-color: #5a4316;
+  border-color: #614c23;
   color: var(--amber);
 }
 
@@ -381,7 +383,7 @@ button:disabled {
   min-height: 36px;
   padding: 0 10px;
   border-radius: 8px;
-  border: 1px solid #3a3a3a;
+  border: 1px solid #444444;
   background: var(--bg);
   color: var(--text);
 }
@@ -471,7 +473,7 @@ button:disabled {
 }
 
 .agent-row:hover {
-  background: #161616;
+  background: #1c1c1c;
 }
 
 .agent-row.selected {
@@ -688,7 +690,7 @@ button:disabled {
 }
 
 .chip.open {
-  border-color: #3a3a3a;
+  border-color: #444444;
   background: var(--hover);
 }
 
@@ -710,7 +712,7 @@ button:disabled {
 .chip-separator {
   width: 1px;
   height: 14px;
-  background: #333333;
+  background: #3e3e3e;
 }
 
 .chip-compact {
@@ -895,7 +897,7 @@ button:disabled {
 .connection-banner {
   flex: none;
   padding: 6px 20px;
-  border-bottom: 1px solid #4a2422;
+  border-bottom: 1px solid #52302e;
   background: rgba(244, 112, 103, 0.08);
   color: #f6a49c;
   font-size: 12.5px;
@@ -969,13 +971,13 @@ button:disabled {
   padding: 9px 13px;
   border-radius: 12px;
   background: var(--hover);
-  color: #f2f2f2;
+  color: #ffffff;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .user-bubble.queued {
-  border: 1px dashed #3a3a3a;
+  border: 1px dashed #444444;
   background: transparent;
   color: var(--text-soft);
 }
@@ -1125,7 +1127,7 @@ button:disabled {
   color: #9ccfd8;
   font-size: 12.5px;
   text-decoration: underline;
-  text-decoration-color: #3d5a60;
+  text-decoration-color: #476167;
   text-underline-offset: 3px;
 }
 
@@ -1165,7 +1167,7 @@ button:disabled {
 .md-quote {
   margin: 0;
   padding-left: 12px;
-  border-left: 2px solid #333333;
+  border-left: 2px solid #3e3e3e;
   color: var(--muted);
 }
 
@@ -1296,7 +1298,7 @@ button:disabled {
 }
 
 .tool.failed .tool-output {
-  border-color: #4a2422;
+  border-color: #52302e;
 }
 
 .tool-output pre {
@@ -1326,7 +1328,7 @@ button:disabled {
   color: var(--text);
   font-size: 12.5px;
   text-decoration: underline;
-  text-decoration-color: #4a4a4a;
+  text-decoration-color: #525252;
   text-underline-offset: 3px;
 }
 
@@ -1481,13 +1483,13 @@ button:disabled {
 }
 
 .card.waiting {
-  border-color: #7a5414;
+  border-color: #825c21;
   --card-head: var(--amber);
 }
 
 .approval-card,
 .question-card {
-  background: #14110a;
+  background: #211e18;
 }
 
 .card-head {
@@ -1543,7 +1545,7 @@ button:disabled {
 .question-chip {
   padding: 1px 8px;
   border-radius: 999px;
-  border: 1px solid #3a3a3a;
+  border: 1px solid #444444;
   font-size: 12px;
   font-weight: 400;
   color: var(--muted);
@@ -1586,7 +1588,7 @@ button:disabled {
   height: 20px;
   padding: 0 5px;
   border-radius: 4px;
-  border: 1px solid #3a3a3a;
+  border: 1px solid #444444;
   background: var(--hover);
   color: var(--muted);
   font-size: 11px;
@@ -1612,7 +1614,7 @@ button:disabled {
 .blocks {
   position: absolute;
   top: 12px;
-  right: 16px;
+  right: 6px;
   z-index: 5;
   display: flex;
   flex-direction: column;
@@ -1620,13 +1622,14 @@ button:disabled {
   gap: 8px;
   max-height: calc(100% - 24px);
   overflow-y: auto;
-  padding: 2px 2px 12px;
+  /* Room for the cards' shadow, which the scrolling box would cut. */
+  padding: 2px 10px 24px;
   scrollbar-width: thin;
-  scrollbar-color: #333333 transparent;
+  scrollbar-color: #3e3e3e transparent;
 }
 
 .blocks.beside-badges {
-  right: 56px;
+  right: 46px;
 }
 
 .block-card {
@@ -1637,7 +1640,7 @@ button:disabled {
   border-radius: 12px;
   border: 1px solid var(--line-divider);
   background: var(--panel);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
 }
 
 .block-card.wide {
@@ -1782,7 +1785,7 @@ button:disabled {
   justify-content: center;
   border-radius: 7px;
   background: var(--selected);
-  color: #c9c9c9;
+  color: #d4d4d4;
 }
 
 .task-text {
@@ -1822,7 +1825,7 @@ button:disabled {
   align-items: center;
   justify-content: center;
   border-radius: 50%;
-  border: 1px solid #333333;
+  border: 1px solid #3e3e3e;
   background: transparent;
   color: var(--muted);
 }
@@ -1857,7 +1860,7 @@ button:disabled {
 }
 
 .badge.pressed {
-  border-color: #4a4a4a;
+  border-color: #525252;
   background: var(--line-divider);
 }
 
@@ -2038,7 +2041,7 @@ button:disabled {
   z-index: 8;
   padding: 4px 8px;
   border-radius: 6px;
-  border: 1px solid #3a3a3a;
+  border: 1px solid #444444;
   background: var(--line-divider);
   color: var(--text);
   font-size: 12px;
@@ -2072,13 +2075,13 @@ button:disabled {
 }
 
 .error-box {
-  border: 1px solid #4a2422;
+  border: 1px solid #52302e;
   background: rgba(244, 112, 103, 0.08);
   color: #f6a49c;
 }
 
 .warning-box {
-  border: 1px solid #5a4316;
+  border: 1px solid #614c23;
   background: rgba(245, 165, 36, 0.08);
   color: #f7c46b;
 }
@@ -2102,7 +2105,7 @@ button:disabled {
   min-height: 26px;
   padding: 0 9px;
   border-radius: 999px;
-  border: 1px solid #333333;
+  border: 1px solid #3e3e3e;
   background: transparent;
   color: var(--text-soft);
   font-size: 12px;
@@ -2486,8 +2489,8 @@ button:disabled {
   gap: 8px;
   padding: 8px 8px 8px 12px;
   border-radius: 8px;
-  border: 1px solid #4a2422;
-  background: #1a1111;
+  border: 1px solid #52302e;
+  background: #271e1e;
   color: #f6a49c;
   font-size: 12.5px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
@@ -2919,8 +2922,8 @@ button:disabled {
   --press-scale: 0.96;
   --focus-ring: rgba(45, 212, 191, 0.7);
   --link-hover: #c5ecf2;
-  --raised-hover: #242424;
-  --pressed: #262626;
+  --raised-hover: #303030;
+  --pressed: #323232;
 }
 
 button,
@@ -2964,7 +2967,7 @@ label.icon-button,
 /* Hover. */
 
 .button:not(:disabled):hover {
-  border-color: #3a3a3a;
+  border-color: #444444;
   background: var(--raised-hover);
 }
 
@@ -2974,31 +2977,31 @@ label.icon-button,
 }
 
 .button.warning-outline:not(:disabled):hover {
-  border-color: #6b4f1a;
+  border-color: #725727;
   background: rgba(245, 165, 36, 0.1);
 }
 
 .button.danger:not(:disabled):hover {
-  border-color: #6a302c;
+  border-color: #713b37;
   background: rgba(244, 112, 103, 0.2);
 }
 
 .icon-button.raised:hover {
-  border-color: #3a3a3a;
+  border-color: #444444;
   background: var(--raised-hover);
 }
 
 .icon-button.framed:hover {
-  border-color: #4a4a4a;
+  border-color: #525252;
   color: var(--text);
 }
 
 .icon-button.active:hover {
-  background: #2c2c2c;
+  background: #373737;
 }
 
 .chip:hover {
-  border-color: #3a3a3a;
+  border-color: #444444;
   background: var(--hover);
 }
 
@@ -3008,7 +3011,7 @@ label.icon-button,
 }
 
 .menu-button.raised:hover {
-  background: #262626;
+  background: #323232;
 }
 
 .send-button:not(:disabled):hover {
@@ -3022,13 +3025,13 @@ label.icon-button,
 }
 
 .badge:hover {
-  border-color: #3a3a3a;
+  border-color: #444444;
   background: var(--hover);
   color: var(--text);
 }
 
 .badge.pressed:hover {
-  background: #2c2c2c;
+  background: #373737;
 }
 
 .block-head {
@@ -3054,13 +3057,13 @@ label.icon-button,
 }
 
 .copy-button:hover {
-  border-color: #3a3a3a;
+  border-color: #444444;
   background: var(--raised-hover);
   color: var(--text);
 }
 
 .option:hover {
-  border-color: #3a3a3a;
+  border-color: #444444;
   background: var(--hover);
 }
 
@@ -3069,7 +3072,7 @@ label.icon-button,
 }
 
 .filter:not(.chosen):hover {
-  border-color: #4a4a4a;
+  border-color: #525252;
   color: var(--text);
 }
 
@@ -3080,12 +3083,12 @@ label.icon-button,
 }
 
 .dialog-tab:not(.selected):hover {
-  border-bottom-color: #3a3a3a;
+  border-bottom-color: #444444;
   color: var(--text-soft);
 }
 
 .agent-row.selected:hover {
-  background: #202020;
+  background: #2c2c2c;
 }
 
 /* Links: a brighter color, and the underline comes in. */
@@ -3106,7 +3109,7 @@ label.icon-button,
 }
 
 .md-link {
-  text-decoration-color: #3d5a60;
+  text-decoration-color: #476167;
 }
 
 .path-link:hover,
@@ -3116,7 +3119,7 @@ label.icon-button,
 }
 
 .link-button {
-  text-decoration-color: #4a4a4a;
+  text-decoration-color: #525252;
 }
 
 .link-button:hover,

@@ -154,7 +154,7 @@ fn rings(plan: Option<u8>, context: Option<u8>) -> String {
     let outer = f64::from(plan.unwrap_or(0)) / 100.0 * OUTER_RING;
     let inner = f64::from(context.unwrap_or(0)) / 100.0 * INNER_RING;
     format!(
-        r##"<svg width="22" height="22" viewBox="0 0 26 26" aria-hidden="true"><circle cx="13" cy="13" r="10" fill="none" stroke="#262626" stroke-width="3"></circle><circle cx="13" cy="13" r="10" fill="none" stroke="#d4d4d4" stroke-width="3" stroke-linecap="round" stroke-dasharray="{outer:.1} {OUTER_RING}" transform="rotate(-90 13 13)"></circle><circle cx="13" cy="13" r="5" fill="none" stroke="#262626" stroke-width="2.5"></circle><circle cx="13" cy="13" r="5" fill="none" stroke="#ececec" stroke-width="2.5" stroke-dasharray="{inner:.1} {INNER_RING}" transform="rotate(-90 13 13)"></circle></svg>"##
+        r##"<svg width="22" height="22" viewBox="0 0 26 26" aria-hidden="true"><circle cx="13" cy="13" r="10" fill="none" stroke="#323232" stroke-width="3"></circle><circle cx="13" cy="13" r="10" fill="none" stroke="#e0e0e0" stroke-width="3" stroke-linecap="round" stroke-dasharray="{outer:.1} {OUTER_RING}" transform="rotate(-90 13 13)"></circle><circle cx="13" cy="13" r="5" fill="none" stroke="#323232" stroke-width="2.5"></circle><circle cx="13" cy="13" r="5" fill="none" stroke="#f9f9f9" stroke-width="2.5" stroke-dasharray="{inner:.1} {INNER_RING}" transform="rotate(-90 13 13)"></circle></svg>"##
     )
 }
 

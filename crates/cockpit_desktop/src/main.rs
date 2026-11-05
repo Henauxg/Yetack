@@ -24,7 +24,7 @@ const STYLESHEET: &str = include_str!("style.css");
 const APP_NAME: &str = "agents-cockpit";
 
 /// The theme's background, so the window does not flash white before the page draws.
-const BACKGROUND: (u8, u8, u8, u8) = (10, 10, 10, 255);
+const BACKGROUND: (u8, u8, u8, u8) = (24, 24, 24, 255);
 
 /// Log level when `RUST_LOG` is not set.
 const DEFAULT_LOG: &str = "warn";
