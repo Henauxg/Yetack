@@ -11,6 +11,20 @@ name = "agents-cockpit"
 path = "src/main.rs"
 
 [dependencies]
+anyhow.workspace = true
+clap = { version = "4", features = ["derive"] }
+cockpit_client.workspace = true
+cockpit_daemon.workspace = true
+cockpit_protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# The bridge copies stdin and stdout.
+tokio = { workspace = true, features = ["io-std"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true
