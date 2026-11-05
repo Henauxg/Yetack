@@ -440,6 +440,47 @@ button:disabled {
   font-weight: 600;
 }
 
+/* The status filter: one chip per status, with its count. */
+.status-filters {
+  display: flex;
+  gap: 4px;
+  padding: 0 2px;
+}
+
+.filter-chip {
+  flex: 1 1 0;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 6px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.filter-chip .status-dot {
+  width: 8px;
+  height: 8px;
+}
+
+.filter-chip.chosen {
+  border-color: rgba(45, 212, 191, 0.55);
+  background: rgba(45, 212, 191, 0.12);
+  color: var(--text-bright);
+}
+
+.hidden-note {
+  margin: 0 10px 6px;
+  color: var(--dim);
+  font-size: 12px;
+}
+
 .agent-list {
   flex: 1 1 auto;
   min-height: 0;
@@ -3829,6 +3870,12 @@ label.icon-button,
   background: #2c2c2c;
 }
 
+.filter-chip:not(.chosen):hover {
+  border-color: #444444;
+  background: var(--hover);
+  color: var(--text);
+}
+
 /* Links: a brighter color, and the underline comes in. */
 
 .md-link,
@@ -3884,7 +3931,8 @@ label.icon-button,
 .filter:active,
 .copy-button:active,
 .back-button:active,
-.option:active {
+.option:active,
+.filter-chip:active {
   transform: scale(var(--press-scale));
 }
 

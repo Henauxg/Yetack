@@ -25,7 +25,7 @@ use super::ui_state::{
 };
 use super::{export, file_edits};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
-use crate::prefs;
+use crate::prefs::{self, StatusFilter};
 
 /// What starts a slash command in the composer.
 pub const COMMAND_PREFIX: char = '/';
@@ -1175,6 +1175,11 @@ fn below_in_order(state: &AppState, row: AgentId, moving: AgentId) -> Option<Age
     order.get(index + 1).copied()
 }
 
+/// Shows only the agents of one status in the sidebar, or all of them. The selection stays.
+pub fn set_status_filter(state: &mut AppState, filter: StatusFilter) {
+    state.prefs.sidebar.filter = filter;
+}
+
 /// Agents whose title or folder holds the query, the ones that wait for you first: the switcher
 /// finds an agent, so it ranks by attention rather than in the sidebar's order.
 pub fn filtered_agents<'state>(state: &'state AppState, query: &str) -> Vec<&'state AgentEntry> {
@@ -2309,6 +2314,33 @@ mod tests {
         assert!(at_top.is_empty());
         assert_eq!(sent_move(&down).and_then(|params| params.before), None);
         assert_eq!(sidebar(&state), [3, 1, 2]);
+    }
+
+    /// Agents 3, 2 and 1 from the top, with agent 2 working and the sidebar showing idle agents.
+    #[test]
+    fn moves_go_past_the_rows_the_filter_hides_and_leave_them_in_place() {
+        let mut state = ordered();
+        if let Some(entry) = state.agents.get_mut(&AgentId::new(3)) {
+            entry.summary.status = AgentStatus::Idle;
+        }
+        set_status_filter(&mut state, StatusFilter::Idle);
+        state.ui.selected = Some(AgentId::new(3));
+
+        let down = move_selected(&mut state, Direction::Down);
+        let after_down = ids(&state.agents_in_order());
+        let dropped = drop_agent(&mut state, AgentId::new(1), None);
+        state.ui.selected = Some(AgentId::new(2));
+        let hidden = move_selected(&mut state, Direction::Up);
+
+        assert_eq!(sent_move(&down).and_then(|params| params.before), None);
+        assert_eq!(after_down, [2, 1, 3]);
+        assert_eq!(
+            sent_move(&dropped).and_then(|params| params.before),
+            None,
+            "below the last row it shows"
+        );
+        assert_eq!(ids(&state.agents_in_order()), [2, 3, 1]);
+        assert!(hidden.is_empty(), "the hidden selected agent stays");
     }
 
     #[test]

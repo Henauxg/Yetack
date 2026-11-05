@@ -12,7 +12,7 @@ use cockpit_protocol::{
 use super::transcript::Transcript;
 use super::ui_state::UiState;
 use crate::config::DaemonLabel;
-use crate::prefs::Prefs;
+use crate::prefs::{Prefs, StatusFilter};
 
 /// Data the app asks the daemon for when it needs it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -145,9 +145,27 @@ impl AppState {
         agents
     }
 
-    /// The agents the sidebar shows, in its order.
+    /// The agents the sidebar shows, in its order: those its status filter keeps.
     pub fn sidebar_agents(&self) -> Vec<&AgentEntry> {
-        self.agents_in_order()
+        let filter = self.prefs.sidebar.filter;
+        let mut agents = self.agents_in_order();
+        agents.retain(|entry| filter.admits(entry.summary.status));
+        agents
+    }
+
+    /// How many agents `filter` keeps, for its chip.
+    pub fn filter_count(&self, filter: StatusFilter) -> usize {
+        self.agents
+            .values()
+            .filter(|entry| filter.admits(entry.summary.status))
+            .count()
+    }
+
+    /// Whether the status filter hides the selected agent, which the center still shows.
+    pub fn selected_is_hidden(&self) -> bool {
+        let filter = self.prefs.sidebar.filter;
+        self.selected()
+            .is_some_and(|entry| !filter.admits(entry.summary.status))
     }
 
     /// The agent switcher's order: by attention, unread first within a status, then by id.
@@ -171,14 +189,18 @@ impl AppState {
         self.ui.unread.contains(&agent)
     }
 
-    /// Keeps the selection on an agent that exists, or picks the sidebar's first.
+    /// Keeps the selection on an agent that exists, or picks the sidebar's first row. When the
+    /// filter hides every agent, it picks the first of the whole order.
     pub fn fix_selection(&mut self) {
         let valid = self
             .ui
             .selected
             .is_some_and(|selected| self.agents.contains_key(&selected));
         if !valid {
-            self.ui.selected = self.agents_in_order().first().map(|entry| entry.id());
+            let first_row = self.sidebar_agents().first().map(|entry| entry.id());
+            let first =
+                first_row.or_else(|| self.agents_in_order().first().map(|entry| entry.id()));
+            self.ui.selected = first;
         }
         if let Some(selected) = self.ui.selected {
             self.ui.unread.remove(&selected);
@@ -276,6 +298,44 @@ pub(crate) mod tests {
 
         assert_eq!(before, [2, 3, 1]);
         assert_eq!(ids(&state.agents_in_order()), [2, 3, 1]);
+    }
+
+    #[test]
+    fn the_filter_hides_rows_without_changing_their_order() {
+        let mut state = state_with(vec![
+            placed(1, AgentStatus::Idle, 1024),
+            placed(2, AgentStatus::Working, 2048),
+            placed(3, AgentStatus::Idle, 3072),
+            placed(4, AgentStatus::NeedsYou, 4096),
+        ]);
+        state.ui.selected = Some(AgentId::new(2));
+
+        state.prefs.sidebar.filter = StatusFilter::Idle;
+
+        assert_eq!(ids(&state.sidebar_agents()), [3, 1]);
+        assert_eq!(state.filter_count(StatusFilter::Idle), 2);
+        assert_eq!(state.filter_count(StatusFilter::All), 4);
+        assert_eq!(state.filter_count(StatusFilter::Exited), 0);
+        assert!(state.selected_is_hidden());
+        assert_eq!(state.selected().map(AgentEntry::id), Some(AgentId::new(2)));
+    }
+
+    #[test]
+    fn fix_selection_picks_the_first_row_the_filter_shows() {
+        let mut state = state_with(vec![
+            placed(1, AgentStatus::Idle, 1024),
+            placed(2, AgentStatus::Working, 2048),
+        ]);
+        state.prefs.sidebar.filter = StatusFilter::Idle;
+
+        state.fix_selection();
+        let shown = state.ui.selected;
+        state.prefs.sidebar.filter = StatusFilter::Exited;
+        state.ui.selected = None;
+        state.fix_selection();
+
+        assert_eq!(shown, Some(AgentId::new(1)));
+        assert_eq!(state.ui.selected, Some(AgentId::new(2)));
     }
 
     #[test]

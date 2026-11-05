@@ -1,11 +1,14 @@
-//! The agent list: compact two-line rows in the order the user sets, and the connection's state.
+//! The agent list: a status filter, compact two-line rows in the order the user sets, and the
+//! connection's state.
 
 use std::time::Instant;
 
 use cockpit_protocol::{AgentId, AgentStatus};
 use dioxus::prelude::*;
+use strum::VariantArray;
 
 use crate::connection::{Clock, Cockpit};
+use crate::prefs::StatusFilter;
 use crate::state::{AgentEntry, ConnectionState, actions};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::reorder::{LIST_ID, ROW_CLASS, row_id};
@@ -53,12 +56,45 @@ pub fn activity_line(entry: &AgentEntry) -> String {
     }
 }
 
+/// A chip of the status filter.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct FilterChip {
+    filter: StatusFilter,
+    count: usize,
+    chosen: bool,
+}
+
+fn filter_label(filter: StatusFilter) -> &'static str {
+    filter.status().map_or("All", format::status_label)
+}
+
+/// What the list says when the filter leaves no row.
+fn empty_list_text(filter: StatusFilter) -> &'static str {
+    match filter {
+        StatusFilter::All => "No agent yet. Ctrl+N starts one.",
+        StatusFilter::NeedsYou => "No agent needs you.",
+        StatusFilter::Working => "No agent is working.",
+        StatusFilter::Idle => "No agent is idle.",
+        StatusFilter::Exited => "No agent has exited.",
+    }
+}
+
 #[component]
 pub fn Sidebar() -> Element {
     let cockpit: Cockpit = use_context();
     let state = cockpit.state.read();
+    let filter = state.prefs.sidebar.filter;
+    let chips: Vec<FilterChip> = StatusFilter::VARIANTS
+        .iter()
+        .map(|&chip| FilterChip {
+            filter: chip,
+            count: state.filter_count(chip),
+            chosen: chip == filter,
+        })
+        .collect();
+    let selected_hidden = state.selected_is_hidden();
     let rows: Vec<AgentRow> = state
-        .agents_in_order()
+        .sidebar_agents()
         .into_iter()
         .map(|entry| {
             AgentRow::new(
@@ -87,15 +123,57 @@ pub fn Sidebar() -> Element {
                     Icon { kind: IconKind::Plus, size: 16 }
                 }
             }
+            StatusFilters { chips }
             div { id: LIST_ID, class: "agent-list scroll",
+                if selected_hidden {
+                    p { class: "hidden-note",
+                        "The filter hides the selected agent. "
+                        button {
+                            class: "link-button",
+                            onclick: move |_| cockpit.update(|state| actions::set_status_filter(state, StatusFilter::All)),
+                            "Show all"
+                        }
+                    }
+                }
                 if rows.is_empty() {
-                    p { class: "sidebar-empty", "No agent yet. Ctrl+N starts one." }
+                    p { class: "sidebar-empty", "{empty_list_text(filter)}" }
                 }
                 for row in rows {
                     AgentRowView { key: "{row.id.get()}", row }
                 }
             }
             ConnectionFooter {}
+        }
+    }
+}
+
+/// One chip per status, with its count: a chip hides the other agents' rows, and never changes
+/// their order.
+#[component]
+fn StatusFilters(chips: Vec<FilterChip>) -> Element {
+    let cockpit: Cockpit = use_context();
+    rsx! {
+        div { class: "status-filters", role: "group", aria_label: "Show agents by status",
+            for chip in chips {
+                button {
+                    key: "{filter_label(chip.filter)}",
+                    class: format!(
+                        "filter-chip {} {}",
+                        if chip.chosen { "chosen" } else { "" },
+                        chip.filter.status().map_or("", format::status_class),
+                    ),
+                    aria_pressed: chip.chosen,
+                    title: "{filter_label(chip.filter)}: {chip.count}",
+                    aria_label: "{filter_label(chip.filter)}: {chip.count}",
+                    onclick: move |_| cockpit.update(|state| actions::set_status_filter(state, chip.filter)),
+                    if chip.filter.status().is_some() {
+                        span { class: "status-dot", aria_hidden: true }
+                    } else {
+                        span { class: "filter-word", "{filter_label(chip.filter)}" }
+                    }
+                    span { class: "filter-count", "{chip.count}" }
+                }
+            }
         }
     }
 }

@@ -289,6 +289,24 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_the_filter_hides_still_raises_its_alerts() {
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::Idle),
+            summary(2, AgentStatus::Working),
+        ]);
+        state.ui.selected = Some(AgentId::new(1));
+        state.prefs.sidebar.filter = crate::prefs::StatusFilter::Idle;
+
+        let alert = apply(
+            &mut state,
+            &mut Drafts::default(),
+            record(Event::AgentUpdated(with_status(2, AgentStatus::NeedsYou))),
+        );
+
+        assert_eq!(alert.map(|alert| alert.kind), Some(AlertKind::NeedsYou));
+    }
+
+    #[test]
     fn finishing_elsewhere_marks_unread_and_alerts() {
         let mut state = state_with(vec![
             summary(1, AgentStatus::Working),
