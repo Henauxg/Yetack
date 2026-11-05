@@ -61,6 +61,10 @@ document.addEventListener("pointerdown", (event) => {
   if (!isSplitter(event.target) || event.button !== 0 || app === null || pane === null) {
     return;
   }
+  // Without this, the drag selects the chat's text. The focus it would give is given here, so
+  // that the arrow keys move the splitter after a click.
+  event.preventDefault();
+  event.target.focus({ preventScroll: true });
   event.target.setPointerCapture(event.pointerId);
   drag = {
     pointer: event.pointerId,
