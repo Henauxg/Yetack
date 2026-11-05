@@ -24,6 +24,12 @@ pub const PALETTE_FILTER_ID: &str = "palette-filter";
 /// The palette's highlighted entry, kept in view as the keys move it.
 pub const HIGHLIGHTED_ENTRY_ID: &str = "palette-highlighted";
 
+/// A pause in typing this long ends an undo step, as in common text editors.
+const UNDO_PAUSE_MS: u32 = 500;
+
+/// The undo steps a text field keeps, and as many redo steps.
+const UNDO_STEPS: u16 = 200;
+
 /// What a note calls an image pasted into the window.
 const PASTED_IMAGE: &str = "The pasted image";
 
@@ -40,6 +46,89 @@ const send = (message) => dioxus.send(message);
 })();
 window.addEventListener("focus", () => send({ type: "focus", focused: true }));
 window.addEventListener("blur", () => send({ type: "focus", focused: false }));
+// Undo and redo in text fields. WebKitGTK binds no key to its own, which also goes out of step
+// when the app writes a field's text, so the script keeps a history per field.
+const textInputTypes = ["text", "search", "url", "email"];
+const isTextField = (element) => (element instanceof HTMLTextAreaElement
+  || (element instanceof HTMLInputElement && textInputTypes.includes(element.type)))
+  && !element.readOnly && !element.disabled;
+const groupedKinds = ["insertText", "insertCompositionText", "deleteContentBackward", "deleteContentForward"];
+const histories = new WeakMap();
+const snapshot = (field) => ({ value: field.value, start: field.selectionStart, end: field.selectionEnd });
+const remember = (steps, step) => {
+  steps.push(step);
+  if (steps.length > settings.undo_steps) {
+    steps.shift();
+  }
+};
+// One history per field, and per agent in the composer, whose text area the agents share.
+const historyOf = (field) => {
+  let scopes = histories.get(field);
+  if (scopes === undefined) {
+    scopes = new Map();
+    histories.set(field, scopes);
+  }
+  const scope = field.dataset.undoScope ?? "";
+  let history = scopes.get(scope);
+  if (history === undefined) {
+    history = { undo: [], redo: [], last: snapshot(field), kind: "", at: 0, wroteWord: false };
+    scopes.set(scope, history);
+  }
+  return history;
+};
+// A text the app wrote since the field's last edit, such as a palette pick, is a step of its own.
+const catchUp = (field) => {
+  const history = historyOf(field);
+  if (field.value !== history.last.value) {
+    remember(history.undo, history.last);
+    history.redo = [];
+    history.last = snapshot(field);
+    history.kind = "";
+  }
+  return history;
+};
+document.addEventListener("beforeinput", (event) => {
+  const field = event.target;
+  if (!isTextField(field)) {
+    return;
+  }
+  const history = catchUp(field);
+  const kind = event.inputType;
+  const now = Date.now();
+  // Typing, or deleting, makes one step until a pause, another kind of edit, or a new word once
+  // the step holds one.
+  const word = /\S/.test(event.data ?? "");
+  const newWord = word && history.wroteWord && /\s/.test(field.value.charAt(field.selectionStart - 1));
+  const grouped = groupedKinds.includes(kind) && kind === history.kind
+    && now - history.at < settings.undo_pause_ms && !newWord;
+  if (!grouped) {
+    remember(history.undo, snapshot(field));
+    history.wroteWord = false;
+  }
+  history.wroteWord = history.wroteWord || word;
+  history.redo = [];
+  history.kind = kind;
+  history.at = now;
+}, true);
+document.addEventListener("input", (event) => {
+  if (isTextField(event.target)) {
+    historyOf(event.target).last = snapshot(event.target);
+  }
+}, true);
+const undo = (field, redo) => {
+  const history = catchUp(field);
+  const step = (redo ? history.redo : history.undo).pop();
+  if (step === undefined) {
+    return;
+  }
+  remember(redo ? history.undo : history.redo, snapshot(field));
+  field.value = step.value;
+  field.setSelectionRange(step.start, step.end);
+  history.last = snapshot(field);
+  history.kind = "";
+  // The fields follow the keyboard alone: an input event gives the app the restored text.
+  field.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: redo ? "historyRedo" : "historyUndo" }));
+};
 document.addEventListener("keydown", (event) => {
   if (event.isComposing) {
     return;
@@ -53,6 +142,11 @@ document.addEventListener("keydown", (event) => {
   const command = event.ctrlKey || event.metaKey;
   const plain = !command && !event.altKey;
   const letter = key.length === 1 ? key.toLowerCase() : "";
+  if (command && !event.altKey && (letter === "z" || (letter === "y" && !event.shiftKey)) && isTextField(target)) {
+    event.preventDefault();
+    undo(target, letter === "y" || event.shiftKey);
+    return;
+  }
   const answers = (mode.answer_letters && (letter === "y" || letter === "n"))
     || (mode.answer_numbers && (/^[1-9]$/.test(key) || key === "Enter"));
   const text = composer ? target.value : "";
@@ -178,6 +272,10 @@ struct FieldText {
 #[derive(Debug, Serialize)]
 struct Settings {
     composer_id: &'static str,
+    /// A pause in typing this long, in milliseconds, ends an undo step.
+    undo_pause_ms: u32,
+    /// The undo steps a field keeps.
+    undo_steps: u16,
 }
 
 /// Which plain keys the script takes, beyond Ctrl+K, Ctrl+N, Esc and the composer's Enter.
@@ -222,6 +320,8 @@ pub fn use_bridge(cockpit: Cockpit) {
         let mut script = document::eval(SCRIPT);
         if let Err(error) = script.send(Settings {
             composer_id: COMPOSER_ID,
+            undo_pause_ms: UNDO_PAUSE_MS,
+            undo_steps: UNDO_STEPS,
         }) {
             tracing::warn!("cannot start the page's script: {error}");
         }
@@ -381,6 +481,8 @@ mod tests {
 
         let settings = Settings {
             composer_id: COMPOSER_ID,
+            undo_pause_ms: 500,
+            undo_steps: 200,
         };
         let mode = KeyMode {
             answer_letters: true,
@@ -395,7 +497,7 @@ mod tests {
 
         assert_eq!(
             serde_json::to_value(settings).unwrap(),
-            json!({ "composer_id": "composer" })
+            json!({ "composer_id": "composer", "undo_pause_ms": 500, "undo_steps": 200 })
         );
         assert_eq!(
             serde_json::to_value(mode).unwrap(),

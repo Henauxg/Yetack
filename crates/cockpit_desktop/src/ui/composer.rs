@@ -152,6 +152,8 @@ pub fn Composer() -> Element {
                     textarea {
                         id: COMPOSER_ID,
                         class: "composer-input",
+                        // The page's script keeps one undo history per agent.
+                        "data-undo-scope": "{agent.get()}",
                         rows: "2",
                         aria_label: "Message {title}",
                         placeholder: placeholder(status),
