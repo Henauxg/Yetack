@@ -1,9 +1,10 @@
 //! What the transcript shows of a tool call: its one-line summary, its edit, its output.
 
-use std::path::Path;
+use std::collections::BTreeSet;
+use std::path::{Component, Path, PathBuf};
 
 use claude_protocol::{ContentBlock, ToolInput};
-use cockpit_protocol::FileEdit;
+use cockpit_protocol::{ChangedFile, FileEdit, ItemBody, ToolCall, ToolCallStatus, TranscriptItem};
 use serde_json::{Map, Value};
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
@@ -12,6 +13,16 @@ use strum::{EnumString, IntoStaticStr, VariantArray};
 enum SubagentTool {
     Task,
     Agent,
+}
+
+/// The tools whose input names a file the agent reads or changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString)]
+enum FileTool {
+    Read,
+    Edit,
+    MultiEdit,
+    Write,
+    NotebookEdit,
 }
 
 /// The input fields a summary shows: the first one present wins.
@@ -74,6 +85,44 @@ pub(crate) fn summary(input: &Map<String, Value>, folder: &Path) -> String {
         return one_line(&shown);
     }
     String::new()
+}
+
+/// The files the agent read or changed, most recent first, each once: the files of its finished
+/// `Read`, `Edit`, `MultiEdit`, `Write` and `NotebookEdit` calls, subagents' included, then its
+/// changed files. Claude Code's file tools take absolute paths: any other path is left out.
+pub(crate) fn touched_files(items: &[TranscriptItem], changed: &[ChangedFile]) -> Vec<PathBuf> {
+    let finished_calls = items.iter().rev().filter_map(|item| match &item.body {
+        ItemBody::ToolCall(call) if call.status == ToolCallStatus::Done => Some(call),
+        _ => None,
+    });
+    let from_calls = finished_calls.filter_map(touched_file);
+    let from_changes = changed.iter().map(|file| file.path.clone());
+    let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut files = Vec::new();
+    for path in from_calls.chain(from_changes) {
+        let plain = path.is_absolute()
+            && path
+                .components()
+                .all(|component| !matches!(component, Component::ParentDir));
+        if plain && seen.insert(path.clone()) {
+            files.push(path);
+        }
+    }
+    files
+}
+
+fn touched_file(call: &ToolCall) -> Option<PathBuf> {
+    call.tool.parse::<FileTool>().ok()?;
+    if let Some(edit) = &call.edit {
+        return Some(edit.path.clone());
+    }
+    for field in [SummaryField::FilePath, SummaryField::NotebookPath] {
+        let key: &str = field.into();
+        if let Some(Value::String(path)) = call.input.get(key) {
+            return Some(PathBuf::from(path));
+        }
+    }
+    None
 }
 
 /// For `Edit` and `Write`. A `Write` starts with no old text: the result may tell it later.
@@ -257,6 +306,69 @@ mod tests {
                 "description",
                 "prompt",
                 "skill"
+            ]
+        );
+    }
+
+    #[test]
+    fn touched_files_come_most_recent_first_from_finished_file_tools() {
+        let call = |id: u32, tool: &str, status: ToolCallStatus, input: Value| TranscriptItem {
+            id: cockpit_protocol::ItemId::new(id),
+            parent: None,
+            body: ItemBody::ToolCall(ToolCall {
+                tool: tool.to_owned(),
+                summary: String::new(),
+                input,
+                status,
+                output: None,
+                exit_code: None,
+                edit: None,
+            }),
+        };
+        let done = ToolCallStatus::Done;
+        let items = [
+            call(1, "Read", done, json!({"file_path": "/work/app/src/a.rs"})),
+            call(
+                2,
+                "Bash",
+                done,
+                json!({"command": "cat /work/app/src/b.rs"}),
+            ),
+            call(
+                3,
+                "NotebookEdit",
+                done,
+                json!({"notebook_path": "/work/app/n.ipynb"}),
+            ),
+            call(
+                4,
+                "Read",
+                ToolCallStatus::Failed,
+                json!({"file_path": "/work/app/gone.rs"}),
+            ),
+            call(5, "Read", done, json!({"file_path": "src/relative.rs"})),
+            call(
+                6,
+                "Read",
+                done,
+                json!({"file_path": "/work/app/../secret.txt"}),
+            ),
+            call(7, "Read", done, json!({"file_path": "/work/app/src/a.rs"})),
+        ];
+        let changed = [ChangedFile {
+            path: PathBuf::from("/work/app_feature/src/lib.rs"),
+            lines_added: 1,
+            lines_removed: 0,
+        }];
+
+        let files = touched_files(&items, &changed);
+
+        assert_eq!(
+            files,
+            [
+                PathBuf::from("/work/app/src/a.rs"),
+                PathBuf::from("/work/app/n.ipynb"),
+                PathBuf::from("/work/app_feature/src/lib.rs"),
             ]
         );
     }

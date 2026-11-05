@@ -541,7 +541,14 @@ fn response_bodies() -> Vec<ResponseBody> {
             commands: commands(),
         },
         ResponseBody::File {
+            path: PathBuf::from("/srv/projects/shop/src/main.rs"),
             text: "fn main() {}\n".to_owned(),
+        },
+        ResponseBody::FileMatches {
+            matches: vec![
+                PathBuf::from("/srv/projects/shop/src/login.rs"),
+                PathBuf::from("/srv/projects/shop_feature/src/login.rs"),
+            ],
         },
         ResponseBody::Sessions {
             sessions: vec![PastSession {
@@ -783,6 +790,7 @@ fn message_and_body_tags_are_pinned() {
             "mcp_servers",
             "commands",
             "file",
+            "file_matches",
             "sessions",
         ]
     );

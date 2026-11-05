@@ -54,8 +54,15 @@ pub enum ResponseBody {
     Commands {
         commands: Vec<SlashCommand>,
     },
+    /// `path` is where the file was read, absolute: the path asked for, or the file the daemon
+    /// found for it.
     File {
+        path: PathBuf,
         text: String,
+    },
+    /// Several files match the relative path asked for, and none was read. Absolute paths.
+    FileMatches {
+        matches: Vec<PathBuf>,
     },
     Sessions {
         sessions: Vec<PastSession>,

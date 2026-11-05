@@ -4,11 +4,12 @@ use std::path::PathBuf;
 
 use cockpit_client::RequestError;
 use cockpit_protocol::{
-    AgentDetails, AgentId, AgentParams, HistoryParams, ItemId, Method, Position, ReadFileParams,
-    Request, ResponseBody,
+    AgentDetails, AgentId, AgentParams, ErrorCode, HistoryParams, ItemId, Method, Position,
+    ReadFileParams, Request, ResponseBody,
 };
 
-use super::app_state::{AppState, Loadable};
+use super::actions;
+use super::app_state::{AppState, FileRead, Loadable};
 use super::drafts::{Draft, Drafts};
 use super::transcript::HistoryState;
 use super::ui_state::Dialog;
@@ -229,17 +230,27 @@ pub fn apply_response(
             }
         }
         Purpose::ReadFile { agent, path } => {
-            let Some(entry) = state.agents.get_mut(&agent) else {
-                return;
-            };
-            // A file the view no longer shows is not kept.
-            let Some(held) = entry.files.get_mut(&path) else {
-                return;
-            };
-            *held = match result {
-                Ok(ResponseBody::File { text }) => Loadable::Loaded(text),
+            let read = match result {
+                Ok(ResponseBody::File { path: found, text }) => {
+                    actions::show_read_file(state, agent, &path, &found, text);
+                    return;
+                }
+                Ok(ResponseBody::FileMatches { matches }) => {
+                    Loadable::Loaded(FileRead::Choices(matches))
+                }
+                Err(failure) if failure.not_found => {
+                    Loadable::Loaded(FileRead::Missing(failure.message))
+                }
                 other => Failure::from_result(other).into_loadable(),
             };
+            // A file the view no longer shows is not kept.
+            let held = state
+                .agents
+                .get_mut(&agent)
+                .and_then(|entry| entry.files.get_mut(&path));
+            if let Some(held) = held {
+                *held = read;
+            }
         }
         Purpose::Sessions => {
             state.sessions = match result {
@@ -309,6 +320,8 @@ struct Failure {
     message: String,
     /// The connection was missing or dropped: asking again after it comes back may work.
     transient: bool,
+    /// The daemon found nothing by that name.
+    not_found: bool,
 }
 
 impl Failure {
@@ -319,6 +332,10 @@ impl Failure {
                 error,
                 RequestError::NotConnected | RequestError::Disconnected
             ),
+            not_found: matches!(
+                error,
+                RequestError::Failed(body) if body.code == ErrorCode::NotFound
+            ),
         }
     }
 
@@ -328,6 +345,7 @@ impl Failure {
             Ok(_) => Self {
                 message: "the daemon answered with an unexpected response".to_owned(),
                 transient: false,
+                not_found: false,
             },
             Err(failure) => failure,
         }
@@ -395,11 +413,7 @@ mod tests {
         let agent = AgentId::new(1);
         state.ui.file_views.insert(
             agent,
-            FileView {
-                path: PathBuf::from("src/main.rs"),
-                line: Some(3),
-                mode: Default::default(),
-            },
+            FileView::new(PathBuf::from("src/main.rs"), Some(3), Default::default()),
         );
 
         let requests = needed_requests(&mut state);

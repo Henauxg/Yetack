@@ -3,7 +3,7 @@
 
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use cockpit_protocol::{
     AgentId, AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState,
@@ -15,7 +15,7 @@ use cockpit_protocol::{
 };
 use strum::VariantArray;
 
-use super::app_state::{AgentEntry, AppState, Loadable};
+use super::app_state::{AgentEntry, AppState, FileRead, Loadable};
 use super::drafts::{Drafts, Palette, QuestionDraft};
 use super::requests::{Outgoing, Purpose, Shift, history_request};
 use super::transcript::HistoryState;
@@ -1005,9 +1005,9 @@ pub fn cancel_queued(agent: AgentId, item: ItemId) -> Vec<Outgoing> {
     ))]
 }
 
-/// Opens the file view on `path`, at `line` when a link names one. A file the agent changed opens
-/// on its diff, unless a line is asked for. The text is read again, since it may have changed, and
-/// the text of the file shown before is dropped: files can be large.
+/// Opens the file view on `path`, at `line` when a link names one, in its tab. A file the agent
+/// changed opens on its diff, unless a line is asked for. The text is read again, since it may
+/// have changed, and the text of the file shown before is dropped: files can be large.
 pub fn open_file(state: &mut AppState, agent: AgentId, path: PathBuf, line: Option<u32>) {
     let Some(entry) = state.agents.get_mut(&agent) else {
         return;
@@ -1020,14 +1020,105 @@ pub fn open_file(state: &mut AppState, agent: AgentId, path: PathBuf, line: Opti
     } else {
         ViewMode::WholeFile
     };
+    let changed_paths = entry.changed_paths();
     entry.files.clear();
     entry.files.insert(path.clone(), Loadable::NotRequested);
-    state
+    let view = state
         .ui
         .file_views
-        .insert(agent, FileView { path, line, mode });
+        .entry(agent)
+        .or_insert_with(|| FileView::new(path.clone(), line, mode));
+    view.closed.remove(&path);
+    if !changed_paths.contains(&path) && !view.opened.contains(&path) {
+        view.opened.push(path.clone());
+    }
+    view.path = path;
+    view.line = line;
+    view.mode = mode;
     state.ui.popover = None;
     state.ui.badge = None;
+}
+
+/// Opens `choice`, one of the files that end with `name`, in the tab of `name`.
+pub fn pick_file(
+    state: &mut AppState,
+    agent: AgentId,
+    name: &Path,
+    choice: PathBuf,
+    line: Option<u32>,
+) {
+    if let Some(view) = state.ui.file_views.get_mut(&agent) {
+        view.opened.retain(|opened| opened != name);
+    }
+    open_file(state, agent, choice, line);
+}
+
+/// Closes a tab. When it is the shown one, the tab after it shows, or the one before it for the
+/// last tab; closing the only tab closes the file view.
+pub fn close_tab(state: &mut AppState, agent: AgentId, path: &Path) {
+    let Some(entry) = state.agents.get(&agent) else {
+        return;
+    };
+    let changed = entry.changed_paths();
+    let Some(view) = state.ui.file_views.get_mut(&agent) else {
+        return;
+    };
+    let tabs = view.tabs(&changed);
+    let Some(index) = tabs.iter().position(|tab| tab == path) else {
+        return;
+    };
+    view.opened.retain(|opened| opened != path);
+    if changed.iter().any(|changed| changed == path) {
+        view.closed.insert(path.to_owned());
+    }
+    if view.path != path {
+        return;
+    }
+    let after = tabs.get(index + 1);
+    let before = index.checked_sub(1).and_then(|before| tabs.get(before));
+    match after.or(before) {
+        Some(next) => open_file(state, agent, next.clone(), None),
+        None => close_file_view(state, agent),
+    }
+}
+
+/// Shows the text the daemon read for `requested` at `found`. When the daemon looked a name up and
+/// found the file elsewhere, the view moves to it. A file the view no longer shows is not kept.
+pub fn show_read_file(
+    state: &mut AppState,
+    agent: AgentId,
+    requested: &Path,
+    found: &Path,
+    text: String,
+) {
+    let Some(entry) = state.agents.get_mut(&agent) else {
+        return;
+    };
+    if entry.files.remove(requested).is_none() {
+        return;
+    }
+    let folder = &entry.summary.folder;
+    let found = file_edits::relative_path(folder, found);
+    if let Some(view) = state.ui.file_views.get_mut(&agent)
+        && view.path == requested
+    {
+        let changed = !file_edits::edits_for(&entry.transcript, folder, &found).is_empty();
+        if view.line.is_none() && changed {
+            view.mode = ViewMode::Diff;
+        }
+        // The found file takes the tab of the name asked for.
+        for opened in &mut view.opened {
+            if opened == requested {
+                opened.clone_from(&found);
+            }
+        }
+        let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
+        view.opened.retain(|opened| seen.insert(opened.clone()));
+        view.path = found.clone();
+    }
+    entry
+        .files
+        .insert(found, Loadable::Loaded(FileRead::Text(text)));
 }
 
 pub fn close_file_view(state: &mut AppState, agent: AgentId) {
@@ -1508,9 +1599,10 @@ pub fn resume_session(state: &mut AppState, session: ClaudeSessionId) -> Vec<Out
 
 #[cfg(test)]
 mod tests {
+    use cockpit_client::RequestError;
     use cockpit_protocol::{
-        AgentDetails, AskedQuestion, CommandKind, HistoryPage, ImageMediaType, Method,
-        QuestionOption, ResponseBody, Timestamp, TranscriptItem,
+        AgentDetails, AskedQuestion, ChangedFile, CommandKind, ErrorBody, ErrorCode, HistoryPage,
+        ImageMediaType, Method, QuestionOption, ResponseBody, Timestamp, TranscriptItem,
     };
 
     use super::*;
@@ -2512,11 +2604,84 @@ mod tests {
         assert_eq!(
             state.ui.file_view(agent()),
             Some(&FileView {
-                path: PathBuf::from("src/lib.rs"),
-                line: Some(12),
-                mode: ViewMode::WholeFile,
+                opened: vec![PathBuf::from("src/lib.rs")],
+                ..FileView::new(PathBuf::from("src/lib.rs"), Some(12), ViewMode::WholeFile)
             })
         );
+    }
+
+    #[test]
+    fn tabs_close_one_by_one_and_the_last_closes_the_view() {
+        let mut state = state(AgentStatus::Idle);
+        let changed = |path: &str| ChangedFile {
+            path: PathBuf::from("/work/project-1").join(path),
+            lines_added: 1,
+            lines_removed: 0,
+        };
+        state.agents.get_mut(&agent()).unwrap().details = Loadable::Loaded(AgentDetails {
+            changed_files: vec![changed("a.rs"), changed("b.rs")],
+            ..AgentDetails::default()
+        });
+        let tabs = |state: &AppState| -> (Vec<String>, String) {
+            let entry = &state.agents[&agent()];
+            let view = state.ui.file_view(agent()).unwrap();
+            let names = view.tabs(&entry.changed_paths());
+            let names = names.iter().map(|tab| tab.display().to_string()).collect();
+            (names, view.path.display().to_string())
+        };
+        let path = |name: &str| PathBuf::from(name);
+
+        open_file(&mut state, agent(), path("c.rs"), None);
+        assert_eq!(
+            tabs(&state),
+            (
+                vec!["a.rs".into(), "b.rs".into(), "c.rs".into()],
+                "c.rs".into()
+            )
+        );
+
+        // The shown last tab gives way to the one before it.
+        close_tab(&mut state, agent(), Path::new("c.rs"));
+        assert_eq!(
+            tabs(&state),
+            (vec!["a.rs".into(), "b.rs".into()], "b.rs".into())
+        );
+
+        // A changed file's tab stays closed until the file opens again.
+        close_tab(&mut state, agent(), Path::new("a.rs"));
+        assert_eq!(tabs(&state), (vec!["b.rs".into()], "b.rs".into()));
+        open_file(&mut state, agent(), path("a.rs"), None);
+        assert_eq!(
+            tabs(&state),
+            (vec!["a.rs".into(), "b.rs".into()], "a.rs".into())
+        );
+
+        // The shown first tab gives way to the one after it.
+        close_tab(&mut state, agent(), Path::new("a.rs"));
+        assert_eq!(tabs(&state), (vec!["b.rs".into()], "b.rs".into()));
+
+        close_tab(&mut state, agent(), Path::new("b.rs"));
+        assert_eq!(state.ui.file_view(agent()), None);
+        assert!(state.agents[&agent()].files.is_empty());
+    }
+
+    #[test]
+    fn a_picked_file_takes_the_tab_of_the_name() {
+        let mut state = state(AgentStatus::Idle);
+        let picked = PathBuf::from("/work/project-1_review/src/b/widget.ts");
+
+        open_file(&mut state, agent(), PathBuf::from("widget.ts"), Some(3));
+        pick_file(
+            &mut state,
+            agent(),
+            Path::new("widget.ts"),
+            picked.clone(),
+            Some(3),
+        );
+
+        let view = state.ui.file_view(agent()).unwrap();
+        assert_eq!(view.tabs(&[]), [picked]);
+        assert_eq!(view.line, Some(3));
     }
 
     #[test]
@@ -2532,6 +2697,7 @@ mod tests {
                     path: PathBuf::from(path),
                 },
                 Ok(ResponseBody::File {
+                    path: PathBuf::from("/work/project-1").join(path),
                     text: format!("text of {path}"),
                 }),
             );
@@ -2546,6 +2712,86 @@ mod tests {
 
         close_file_view(&mut state, agent());
         assert!(state.agents[&agent()].files.is_empty());
+    }
+
+    fn read_answer(state: &mut AppState, path: &str, result: Result<ResponseBody, RequestError>) {
+        apply_response(
+            state,
+            &mut Drafts::default(),
+            Method::AgentReadFile,
+            Purpose::ReadFile {
+                agent: agent(),
+                path: PathBuf::from(path),
+            },
+            result,
+        );
+    }
+
+    #[test]
+    fn a_name_the_daemon_found_elsewhere_moves_the_view_to_the_file() {
+        let mut state = state(AgentStatus::Idle);
+        let name = "register-parcel.component.ts";
+        let found = "/work/project-1_parcel/front/src/app/register-parcel.component.ts";
+        open_file(&mut state, agent(), PathBuf::from(name), Some(249));
+
+        read_answer(
+            &mut state,
+            name,
+            Ok(ResponseBody::File {
+                path: PathBuf::from(found),
+                text: "export class RegisterParcel {}\n".to_owned(),
+            }),
+        );
+
+        let view = state.ui.file_view(agent()).unwrap();
+        assert_eq!(
+            (view.path.as_path(), view.line),
+            (Path::new(found), Some(249))
+        );
+        let held: Vec<&PathBuf> = state.agents[&agent()].files.keys().collect();
+        assert_eq!(held, [&PathBuf::from(found)]);
+    }
+
+    #[test]
+    fn several_matches_wait_for_a_pick_and_a_miss_says_why() {
+        let mut state = state(AgentStatus::Idle);
+        let matches = vec![
+            PathBuf::from("/work/project-1/src/a/widget.ts"),
+            PathBuf::from("/work/project-1_review/src/b/widget.ts"),
+        ];
+        let missing = "cache.rs is not in the agent's folder or in the files it read or changed";
+        let shown = |state: &AppState, path: &str| {
+            state.agents[&agent()].files.get(Path::new(path)).cloned()
+        };
+
+        open_file(&mut state, agent(), PathBuf::from("widget.ts"), None);
+        read_answer(
+            &mut state,
+            "widget.ts",
+            Ok(ResponseBody::FileMatches {
+                matches: matches.clone(),
+            }),
+        );
+        assert_eq!(
+            shown(&state, "widget.ts"),
+            Some(Loadable::Loaded(FileRead::Choices(matches)))
+        );
+
+        open_file(&mut state, agent(), PathBuf::from("cache.rs"), None);
+        let error = ErrorBody::new(ErrorCode::NotFound, missing.to_owned());
+        read_answer(&mut state, "cache.rs", Err(RequestError::Failed(error)));
+        assert_eq!(
+            shown(&state, "cache.rs"),
+            Some(Loadable::Loaded(FileRead::Missing(missing.to_owned())))
+        );
+
+        open_file(&mut state, agent(), PathBuf::from("image.png"), None);
+        let error = ErrorBody::new(ErrorCode::FileUnreadable, "not text".to_owned());
+        read_answer(&mut state, "image.png", Err(RequestError::Failed(error)));
+        assert_eq!(
+            shown(&state, "image.png"),
+            Some(Loadable::Failed("not text".to_owned()))
+        );
     }
 
     #[test]

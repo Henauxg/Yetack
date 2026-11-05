@@ -95,11 +95,41 @@ pub enum ViewMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileView {
-    /// Relative to the agent's folder when the file is inside it.
+    /// The shown file, relative to the agent's folder when the file is inside it.
     pub path: PathBuf,
     /// The line a `path:line` link marks.
     pub line: Option<u32>,
     pub mode: ViewMode,
+    /// Files opened from a link or a pick, besides the changed files, in the order they opened.
+    pub opened: Vec<PathBuf>,
+    /// Changed files whose tab the user closed. Opening one again brings its tab back.
+    pub closed: BTreeSet<PathBuf>,
+}
+
+impl FileView {
+    pub fn new(path: PathBuf, line: Option<u32>, mode: ViewMode) -> Self {
+        Self {
+            path,
+            line,
+            mode,
+            opened: Vec::new(),
+            closed: BTreeSet::new(),
+        }
+    }
+
+    /// The tabs, each once: the changed files, then the opened files, without the closed ones.
+    /// The shown file always has its tab.
+    pub fn tabs(&self, changed: &[PathBuf]) -> Vec<PathBuf> {
+        let mut tabs: Vec<PathBuf> = Vec::new();
+        let open = changed.iter().chain(&self.opened);
+        for path in open.chain([&self.path]) {
+            let shown = *path == self.path || !self.closed.contains(path);
+            if shown && !tabs.contains(path) {
+                tabs.push(path.clone());
+            }
+        }
+        tabs
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

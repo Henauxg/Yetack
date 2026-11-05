@@ -46,6 +46,62 @@ const PARSER_COLUMNS_WORKTREE: &str =
     "/home/dev/projects/calc-parser_GH42Q-report-the-column-of-every-unexpected-token";
 const PARSER_BENCH_WORKTREE: &str = "/home/dev/projects/calc-parser_benchmarks-for-large-inputs";
 
+/// Files of the columns worktree: one the agent changed, one it only read, and a name the parser's
+/// own folder has too.
+const TOKEN_FILE: &str = "crates/calc-lexer/src/tokens/unexpected_token.rs";
+const POSITION_FILE: &str = "crates/calc-lexer/src/position.rs";
+const WORKTREE_LIB_FILE: &str = "crates/calc-lexer/src/lib.rs";
+const LIB_FILE: &str = "src/lib.rs";
+
+const TOKEN_TEXT: &str = "use crate::position::Position;
+
+/// A token the parser did not expect, with where it starts.
+pub struct UnexpectedToken {
+    pub text: String,
+    pub at: Position,
+}
+";
+
+const POSITION_TEXT: &str = "/// Where a token starts, as editors count: lines and columns from 1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Position {
+    pub line: u32,
+    pub column: u32,
+}
+
+impl Position {
+    pub fn start() -> Self {
+        Self { line: 1, column: 1 }
+    }
+
+    /// Moves past `character`: a new line starts again at column 1.
+    pub fn advance(&mut self, character: char) {
+        if character == '\\n' {
+            self.line += 1;
+            self.column = 1;
+        } else {
+            self.column += 1;
+        }
+    }
+}
+";
+
+const WORKTREE_LIB_TEXT: &str = "pub mod position;
+pub mod tokens;
+
+pub use position::Position;
+";
+
+const LIB_TEXT: &str = "mod error;
+mod lexer;
+
+pub use error::ParseError;
+";
+
+/// Plain `name:line` references, which the daemon looks up: a file the agent read, one it
+/// changed, a name two files share, and one that matches nothing.
+const LOOKUP_ANSWER: &str = "In the columns worktree, the column math is in position.rs:12-20 and the token type in unexpected_token.rs:4. Both crates re-export it from lib.rs:4. The old cache.rs:10 is gone.";
+
 /// How long the working agent's turn has run when the demo starts.
 const TURN_ELAPSED: Duration = Duration::from_secs(4 * 60 + 12);
 
@@ -285,11 +341,7 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
             .context
             .map(ResponseBody::ContextUsage)
             .ok_or_else(|| refused(ErrorCode::NotFound, "No context usage in the demo.")),
-        Request::AgentReadFile(params) => file_text(&params.path)
-            .map(|text| ResponseBody::File {
-                text: text.to_owned(),
-            })
-            .ok_or_else(|| refused(ErrorCode::NotFound, "The demo has no such file.")),
+        Request::AgentReadFile(params) => read_file(&params.path),
         Request::AgentHistory(params) if params.agent == AgentId::new(LIVE_AGENT) => {
             let before = params.before.map_or(LIVE_PAGE_FIRST_ID, ItemId::get);
             let items = (LIVE_OLDER_FIRST_ID..before)
@@ -327,18 +379,53 @@ fn refused(code: ErrorCode, message: &str) -> RequestError {
     RequestError::Failed(ErrorBody::new(code, message.to_owned()))
 }
 
-fn file_text(path: &Path) -> Option<&'static str> {
-    let relative = path.strip_prefix(PARSER_FOLDER).unwrap_or(path);
-    if relative == Path::new(ERROR_FILE) {
-        Some(ERROR_AFTER)
-    } else if relative == Path::new(TEST_FILE) {
-        Some(TEST_TEXT)
-    } else if relative == Path::new(LEXER_FILE) {
-        Some(LEXER_TEXT)
-    } else if relative == Path::new(NOTES_FILE) {
-        Some(NOTES_TEXT)
-    } else {
-        None
+/// The sample's files, absolute, with their text.
+fn files() -> [(PathBuf, &'static str); 9] {
+    let parser = Path::new(PARSER_FOLDER);
+    let columns = Path::new(PARSER_COLUMNS_WORKTREE);
+    [
+        (parser.join(ERROR_FILE), ERROR_AFTER),
+        (parser.join(TEST_FILE), TEST_TEXT),
+        (parser.join(LEXER_FILE), LEXER_TEXT),
+        (parser.join(NOTES_FILE), NOTES_TEXT),
+        (parser.join(LIB_FILE), LIB_TEXT),
+        (columns.join(TOKEN_FILE), TOKEN_TEXT),
+        (columns.join(POSITION_FILE), POSITION_TEXT),
+        (columns.join(WORKTREE_LIB_FILE), WORKTREE_LIB_TEXT),
+        (
+            Path::new(PARSER_BENCH_WORKTREE).join("README.md"),
+            NOTES_TEXT,
+        ),
+    ]
+}
+
+/// As the daemon answers for the parser agent: the path itself, else the sample's files whose
+/// path ends with it, one read or several listed.
+fn read_file(path: &Path) -> Result<ResponseBody, RequestError> {
+    let files = files();
+    let wanted = Path::new(PARSER_FOLDER).join(path);
+    let matches: Vec<&(PathBuf, &str)> = match files.iter().find(|(file, _)| *file == wanted) {
+        Some(exact) => vec![exact],
+        None => files
+            .iter()
+            .filter(|(file, _)| file.ends_with(path))
+            .collect(),
+    };
+    match matches.as_slice() {
+        [] => Err(refused(
+            ErrorCode::NotFound,
+            &format!(
+                "{} is not in the agent's folder or in the files it read or changed",
+                path.display()
+            ),
+        )),
+        [(path, text)] => Ok(ResponseBody::File {
+            path: path.clone(),
+            text: (*text).to_owned(),
+        }),
+        several => Ok(ResponseBody::FileMatches {
+            matches: several.iter().map(|(path, _)| path.clone()).collect(),
+        }),
     }
 }
 
@@ -430,6 +517,15 @@ fn bash(
     ToolCall {
         input: serde_json::json!({"command": command, "description": description}),
         ..call("Bash", command, status, output)
+    }
+}
+
+/// A `Read` of an absolute path, as Claude Code writes its input.
+fn read_call(path: &Path) -> ToolCall {
+    let shown = path.display().to_string();
+    ToolCall {
+        input: serde_json::json!({ "file_path": shown }),
+        ..call("Read", &shown, ToolCallStatus::Done, None)
     }
 }
 
@@ -756,8 +852,10 @@ fn parser_agent(now: SystemTime) -> Sample {
             edit_call("Edit", LEXER_FILE, LEXER_LINE_BEFORE, LEXER_LINE_AFTER),
         ),
         item(16, None, text(FIX_ANSWER)),
+        item(17, None, ItemBody::ToolCall(read_call(&Path::new(PARSER_COLUMNS_WORKTREE).join(POSITION_FILE)))),
+        item(18, None, text(LOOKUP_ANSWER)),
         item(
-            17,
+            19,
             None,
             ItemBody::ToolCall(bash(
                 "Run the parser tests again",
@@ -767,7 +865,7 @@ fn parser_agent(now: SystemTime) -> Sample {
             )),
         ),
         item(
-            18,
+            20,
             None,
             user("Also cover a token at the end of the input.", true),
         ),
@@ -1397,6 +1495,27 @@ pub struct ParseError {
     }
 
     #[test]
+    fn names_are_looked_up_as_the_daemon_does() {
+        let read = |path: &str| read_file(Path::new(path));
+        let position = Path::new(PARSER_COLUMNS_WORKTREE).join(POSITION_FILE);
+
+        assert!(
+            matches!(read("position.rs"), Ok(ResponseBody::File { path, .. }) if path == position)
+        );
+        assert!(
+            matches!(read("lib.rs"), Ok(ResponseBody::FileMatches { matches }) if matches.len() == 2)
+        );
+        assert!(matches!(
+            read("src/lib.rs"),
+            Ok(ResponseBody::File { path, .. }) if path == Path::new(PARSER_FOLDER).join(LIB_FILE)
+        ));
+        assert!(matches!(
+            read("cache.rs"),
+            Err(RequestError::Failed(body)) if body.code == ErrorCode::NotFound
+        ));
+    }
+
+    #[test]
     fn the_sidebar_shows_the_order_the_user_set() {
         let state = state(label());
 
@@ -1419,7 +1538,7 @@ pub struct ParseError {
             path: PathBuf::from(ERROR_FILE),
         });
 
-        let Ok(ResponseBody::File { text }) = answer(&state, &request) else {
+        let Ok(ResponseBody::File { text, .. }) = answer(&state, &request) else {
             panic!("the demo answers with the file");
         };
         let edits = file_edits::edits_for(&entry.transcript, folder, Path::new(ERROR_FILE));
