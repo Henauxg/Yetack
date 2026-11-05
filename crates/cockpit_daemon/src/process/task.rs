@@ -8,6 +8,7 @@ use std::time::{Duration, SystemTime};
 
 use claude_protocol::{
     ControlRequest, ControlRequestId, ControlResponse, IncomingRequest, InputLine, OutputLine,
+    ParseError,
 };
 use cockpit_protocol::Timestamp;
 use serde_json::Value;
@@ -34,10 +35,6 @@ const STDERR_BUFFER: usize = 64;
 const CONTROL_ID_PREFIX: &str = "cockpit-";
 /// What a control request the daemon cannot handle gets as an answer.
 const UNHANDLED_REQUEST: &str = "agents-cockpit does not handle this request";
-/// The fields that identify a control request in a line that does not parse.
-const TYPE_KEY: &str = "type";
-const CONTROL_REQUEST_TYPE: &str = "control_request";
-const REQUEST_ID_KEY: &str = "request_id";
 
 /// What the hub asks of the process.
 #[derive(Debug)]
@@ -299,7 +296,11 @@ where
             Ok(parsed) => parsed,
             Err(error) => {
                 tracing::warn!(%error, "skipped a line from claude");
-                if let Some(id) = control_request_id(line) {
+                if let ParseError::MalformedLine {
+                    request_id: Some(id),
+                    ..
+                } = error
+                {
                     self.refuse(id);
                 }
                 return Ok(());
@@ -425,17 +426,6 @@ where
     }
 }
 
-/// The id of a `control_request` line that does not parse: Claude Code still waits for an
-/// answer to it.
-fn control_request_id(line: &str) -> Option<ControlRequestId> {
-    let value: Value = serde_json::from_str(line).ok()?;
-    if value.get(TYPE_KEY)?.as_str()? != CONTROL_REQUEST_TYPE {
-        return None;
-    }
-    let id = value.get(REQUEST_ID_KEY)?.as_str()?;
-    Some(ControlRequestId::new(id.to_owned()))
-}
-
 fn describe_exit(status: Option<ExitStatus>) -> String {
     match status {
         Some(status) => match (status.code(), status.signal()) {
@@ -488,23 +478,6 @@ mod tests {
     use std::process::Stdio;
 
     use super::*;
-
-    #[test]
-    fn the_id_of_a_control_request_that_does_not_parse_is_found() {
-        let malformed =
-            r#"{"type":"control_request","request_id":"r-7","request":{"subtype":"can_use_tool"}}"#;
-        assert!(malformed.parse::<OutputLine>().is_err());
-
-        assert_eq!(
-            control_request_id(malformed),
-            Some(ControlRequestId::new("r-7".to_owned()))
-        );
-        assert_eq!(
-            control_request_id(r#"{"type":"assistant","request_id":"r-8"}"#),
-            None
-        );
-        assert_eq!(control_request_id("not json"), None);
-    }
 
     #[test]
     fn exits_are_described() {
