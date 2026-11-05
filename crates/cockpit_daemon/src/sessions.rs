@@ -3,6 +3,10 @@
 //! Claude Code writes each session to `<claude folder>/projects/<project>/<session id>.jsonl`.
 //! A session's title, folder and first prompt come from the head and the tail of its file, as
 //! the Python Agent SDK reads them; the number of prompts needs the whole file.
+//!
+//! A session's transcript comes from the same lines as on `claude`'s stdout, through
+//! [`PastTranscript`]. The file holds other lines too (titles, file history snapshots, API
+//! requests): they read as lines of an unknown type, which show nothing.
 
 use std::cmp::Reverse;
 use std::fs::File;
@@ -10,13 +14,15 @@ use std::io::{BufReader, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use claude_protocol::MessageOrigin;
-use cockpit_protocol::{ClaudeSessionId, PastSession, Timestamp};
+use claude_protocol::{MessageOrigin, OutputLine};
+use cockpit_protocol::{ClaudeSessionId, PastSession, Timestamp, TranscriptItem};
 use serde::Deserialize;
 use serde_json::Value;
 use strum::{IntoStaticStr, VariantArray};
 
 use crate::read_file;
+use crate::store::PastFile;
+use crate::transcript::PastTranscript;
 
 const PROJECTS_FOLDER: &str = "projects";
 const SESSION_EXTENSION: &str = "jsonl";
@@ -82,9 +88,98 @@ pub(crate) fn list(claude_folder: &Path) -> Vec<PastSession> {
     newest.filter_map(|(_, path)| read_session(&path)).collect()
 }
 
-/// The session with this id, in any project.
-pub(crate) fn find(claude_folder: &Path, id: &ClaudeSessionId) -> Option<PastSession> {
-    read_session(&find_file(claude_folder, id)?)
+/// A session `sessions.resume` takes over, and its transcript so far.
+pub(crate) struct FoundSession {
+    pub(crate) session: PastSession,
+    pub(crate) past: SessionPast,
+}
+
+/// The transcript of a session file's first `file.bytes`.
+pub(crate) struct SessionPast {
+    pub(crate) items: Vec<TranscriptItem>,
+    pub(crate) file: PastFile,
+}
+
+/// The session with this id, in any project, and the transcript of its whole lines.
+pub(crate) fn find(claude_folder: &Path, id: &ClaudeSessionId) -> Option<FoundSession> {
+    let path = find_file(claude_folder, id)?;
+    let session = read_session(&path)?;
+    let past = read_past(&path, &session.folder, id, None);
+    Some(FoundSession { session, past })
+}
+
+/// The transcript of the part of a session file an agent shows, read again by a restarted
+/// daemon. It has no items when the file is gone.
+pub(crate) fn past_items(
+    claude_folder: &Path,
+    folder: &Path,
+    file: &PastFile,
+) -> Vec<TranscriptItem> {
+    let Some(path) = find_file(claude_folder, &file.session) else {
+        return Vec::new();
+    };
+    read_past(&path, folder, &file.session, Some(file.bytes)).items
+}
+
+/// The transcript of the file's whole lines, within its first `limit` bytes when given. A line
+/// that does not read is skipped, and a read error ends the transcript there.
+fn read_past(path: &Path, folder: &Path, id: &ClaudeSessionId, limit: Option<u64>) -> SessionPast {
+    use std::io::BufRead;
+
+    let mut transcript = PastTranscript::new(folder.to_owned());
+    let mut bytes: u64 = 0;
+    if let Ok(file) = read_file::open_to_read(path) {
+        let mut reader = BufReader::new(file);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            // A line without its newline is still being written.
+            if !reader
+                .read_until(b'\n', &mut line)
+                .is_ok_and(|_| line.ends_with(b"\n"))
+            {
+                break;
+            }
+            let end = bytes.saturating_add(u64::try_from(line.len()).unwrap_or(u64::MAX));
+            if limit.is_some_and(|limit| end > limit) {
+                break;
+            }
+            bytes = end;
+            if let Some(shown) = past_line(&line) {
+                transcript.add(shown);
+            }
+        }
+    }
+    SessionPast {
+        items: transcript.into_items(),
+        file: PastFile {
+            session: id.clone(),
+            bytes,
+        },
+    }
+}
+
+/// A line of a session file, unless the transcript leaves it out:
+///
+/// - a subagent's line, which the file does not tie to the call that started the subagent;
+/// - the summary Claude Code writes after a compaction, whose boundary line shows a notice;
+/// - a user line that Claude Code marks as meta, such as context it adds, unless another source
+///   than the user wrote it, such as another session.
+fn past_line(line: &[u8]) -> Option<OutputLine> {
+    let value: Value = serde_json::from_slice(line).ok()?;
+    let flag = |key| value.get(key) == Some(&Value::Bool(true));
+    if flag(SIDECHAIN_KEY) || flag(COMPACT_SUMMARY_KEY) {
+        return None;
+    }
+    let meta = flag(META_KEY);
+    let line = OutputLine::try_from(value).ok()?;
+    if meta
+        && let OutputLine::User(message) = &line
+        && message.origin.as_ref().is_none_or(MessageOrigin::is_human)
+    {
+        return None;
+    }
+    Some(line)
 }
 
 /// The total cost Claude Code restores when it resumes the session: the one its last `cost-state`
@@ -304,6 +399,7 @@ fn shorten(text: &str) -> String {
 mod tests {
     use std::time::Duration;
 
+    use cockpit_protocol::ItemBody;
     use rustix::fs::Mode;
     use serde_json::json;
 
@@ -397,6 +493,140 @@ mod tests {
         assert_eq!(summary, [("Fix the cart total", 1)]);
     }
 
+    fn session(id: &str) -> ClaudeSessionId {
+        ClaudeSessionId::new(id.to_owned())
+    }
+
+    fn texts(items: &[TranscriptItem]) -> Vec<String> {
+        items
+            .iter()
+            .map(|item| match &item.body {
+                ItemBody::UserMessage(message) => format!("user: {}", message.text),
+                ItemBody::AssistantText { markdown } => format!("text: {markdown}"),
+                ItemBody::Notice { text } => format!("notice: {text}"),
+                other => format!("{other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_past_of_a_session_file_comes_out_in_order_without_what_it_does_not_show() {
+        let temp = tempfile::tempdir().unwrap();
+        write_session(
+            temp.path(),
+            "p",
+            FIRST,
+            &[
+                json!({"type": "file-history-snapshot", "snapshot": {"files": []}}),
+                prompt("Fix the cart total"),
+                json!({"type": "user", "isMeta": true, "message": {
+                    "role": "user", "content": "<system-reminder>Some context</system-reminder>"
+                }}),
+                json!({"type": "assistant", "message": {"content": [
+                    {"type": "text", "text": "The total is fixed."}
+                ]}}),
+                json!({"type": "assistant", "isSidechain": true, "message": {"content": [
+                    {"type": "text", "text": "A subagent's answer"}
+                ]}}),
+                json!({"type": "system", "subtype": "compact_boundary", "isMeta": false,
+                       "compactMetadata": {"trigger": "auto"}}),
+                json!({"type": "user", "isCompactSummary": true, "message": {
+                    "role": "user", "content": "This session is being continued"
+                }}),
+                json!({"type": "user", "isMeta": true, "origin": {"kind": "peer"}, "message": {
+                    "role": "user", "content": "Another session asks for the logs"
+                }}),
+                json!({"type": "ai-title", "aiTitle": "Cart total"}),
+            ],
+        );
+        let path = temp
+            .path()
+            .join(PROJECTS_FOLDER)
+            .join("p")
+            .join(format!("{FIRST}.jsonl"));
+        let whole = std::fs::metadata(&path).unwrap().len();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        std::io::Write::write_all(&mut file, br#"{"type":"user","message":"#).unwrap();
+
+        let found = find(temp.path(), &session(FIRST)).unwrap();
+
+        assert_eq!(
+            texts(&found.past.items),
+            [
+                "user: Fix the cart total",
+                "text: The total is fixed.",
+                "notice: Conversation compacted",
+                "notice: peer: Another session asks for the logs",
+            ]
+        );
+        let ids: Vec<u32> = found.past.items.iter().map(|item| item.id.get()).collect();
+        assert_eq!(ids, [1998, 1999, 2000, 2001]);
+        assert_eq!(
+            found.past.file.bytes, whole,
+            "the line being written is left out"
+        );
+        assert_eq!(found.past.file.session, session(FIRST));
+    }
+
+    #[test]
+    fn a_restarted_daemon_reads_the_same_past_however_the_file_grew() {
+        let temp = tempfile::tempdir().unwrap();
+        write_session(
+            temp.path(),
+            "p",
+            FIRST,
+            &[prompt("Before"), prompt("Also before")],
+        );
+        let found = find(temp.path(), &session(FIRST)).unwrap();
+        write_session(
+            temp.path(),
+            "p",
+            FIRST,
+            &[
+                prompt("Before"),
+                prompt("Also before"),
+                prompt("The agent's own"),
+            ],
+        );
+
+        let again = past_items(temp.path(), Path::new("/srv/work/shop"), &found.past.file);
+        let gone = past_items(
+            temp.path(),
+            Path::new("/srv/work/shop"),
+            &PastFile {
+                session: session(SECOND),
+                bytes: 10,
+            },
+        );
+
+        assert_eq!(again, found.past.items);
+        assert!(gone.is_empty());
+    }
+
+    #[test]
+    fn a_long_session_file_shows_its_newest_items_under_a_notice() {
+        let temp = tempfile::tempdir().unwrap();
+        let prompts: Vec<Value> = (0..2_005)
+            .map(|index| prompt(&format!("Prompt {index}")))
+            .collect();
+        write_session(temp.path(), "p", FIRST, &prompts);
+
+        let found = find(temp.path(), &session(FIRST)).unwrap();
+
+        let items = &found.past.items;
+        assert_eq!(items.len(), 2_001);
+        assert!(
+            matches!(items[0].body, ItemBody::Notice { .. }),
+            "{:?}",
+            items[0]
+        );
+        assert_eq!(texts(&items[1..2]), ["user: Prompt 5"]);
+        assert_eq!(texts(&items[2_000..]), ["user: Prompt 2004"]);
+    }
+
     #[test]
     fn the_restored_cost_is_the_last_cost_states() {
         let temp = tempfile::tempdir().unwrap();
@@ -414,7 +644,6 @@ mod tests {
             ],
         );
         write_session(temp.path(), "p", SECOND, &[prompt("Hello")]);
-        let session = |id: &str| ClaudeSessionId::new(id.to_owned());
 
         assert_eq!(restored_cost(temp.path(), &session(FIRST)), Some(0.75));
         assert_eq!(restored_cost(temp.path(), &session(SECOND)), Some(0.0));
@@ -446,9 +675,12 @@ mod tests {
             &ClaudeSessionId::new("../../etc/passwd".to_owned()),
         );
 
-        assert_eq!(found.map(|session| session.title), Some("Hello".to_owned()));
-        assert_eq!(missing, None);
-        assert_eq!(path, None);
+        assert_eq!(
+            found.map(|found| found.session.title),
+            Some("Hello".to_owned())
+        );
+        assert!(missing.is_none());
+        assert!(path.is_none());
     }
 
     #[test]

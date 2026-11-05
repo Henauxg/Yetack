@@ -1,12 +1,14 @@
 //! The state a restarted daemon reads back: `agents.json`, `settings.json`, and the event logs.
 
 use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
 
 use cockpit_protocol::{
     AgentDetails, AgentId, AgentSummary, Event, ItemId, PlanUsage, Seq, TranscriptItem,
 };
 
 use crate::hub::agents::initial_summary;
+use crate::sessions;
 use crate::store::{
     AgentRecord, AgentsFile, DaemonSettings, EventLogs, LogName, StateDir, StoreError,
     for_each_event,
@@ -31,7 +33,8 @@ struct LoggedAgent {
     items: BTreeMap<ItemId, TranscriptItem>,
 }
 
-pub(crate) fn restore(state: &StateDir) -> Result<Restored, StoreError> {
+/// `claude_folder` holds the session files that agents made from past sessions read again.
+pub(crate) fn restore(state: &StateDir, claude_folder: &Path) -> Result<Restored, StoreError> {
     let file = AgentsFile::load(&state.agents_file())?;
     let settings = DaemonSettings::load(&state.settings_file())?;
     let mut last_seq: Option<Seq> = None;
@@ -61,7 +64,10 @@ pub(crate) fn restore(state: &StateDir) -> Result<Restored, StoreError> {
             summary.title = record.title.clone();
             summary.folder = record.folder.clone();
             let items: Vec<TranscriptItem> = logged.items.into_values().collect();
-            let view = AgentView::restore(summary, logged.details, items, ttl);
+            let mut view = AgentView::restore(summary, logged.details, items, ttl);
+            if let Some(file) = &record.past {
+                view.show_past(sessions::past_items(claude_folder, &record.folder, file));
+            }
             (record, view)
         })
         .collect();
@@ -97,8 +103,11 @@ mod tests {
     use std::path::PathBuf;
 
     use cockpit_protocol::{
-        AgentStatus, EventRecord, Frame, ItemBody, ServerMessage, Settings, Timestamp,
+        AgentStatus, ClaudeSessionId, EventRecord, Frame, ItemBody, ServerMessage, Settings,
+        Timestamp,
     };
+
+    use crate::store::PastFile;
 
     use super::*;
 
@@ -113,6 +122,7 @@ mod tests {
             mode: None,
             running: true,
             started_at: Timestamp::from_unix_millis(0),
+            past: None,
         }
     }
 
@@ -182,7 +192,7 @@ mod tests {
             Event::PlanUsageChanged(PlanUsage::default()),
         );
 
-        let restored = restore(&state).unwrap();
+        let restored = restore(&state, &temp.path().join("claude")).unwrap();
 
         assert_eq!(restored.last_seq, Some(Seq::new(5)));
         assert_eq!(restored.next_agent, AgentId::new(3));
@@ -278,7 +288,7 @@ mod tests {
             Event::AgentUpdated(summary),
         );
 
-        let restored = restore(&state).unwrap();
+        let restored = restore(&state, &temp.path().join("claude")).unwrap();
 
         assert_eq!(restored.last_seq, Some(Seq::new(6)));
         assert_eq!(restored.plan_usage, usage);
@@ -310,9 +320,65 @@ mod tests {
             Event::SettingsChanged(Settings::default()),
         );
 
-        let restored = restore(&state).unwrap();
+        let restored = restore(&state, &temp.path().join("claude")).unwrap();
 
         assert_eq!(restored.last_seq, Some(Seq::new(9)));
+    }
+
+    #[test]
+    fn an_agent_made_from_a_past_session_reads_its_past_again_above_its_own_items() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = StateDir::create(temp.path()).unwrap();
+        let session = ClaudeSessionId::new("11111111-2222-3333-4444-555555555555".to_owned());
+        let project = temp.path().join("claude/projects/-srv-work");
+        std::fs::create_dir_all(&project).unwrap();
+        let past = r#"{"type":"user","message":{"role":"user","content":"Fix the cart"}}"#;
+        let own = r#"{"type":"user","message":{"role":"user","content":"Own prompt"}}"#;
+        std::fs::write(
+            project.join(format!("{}.jsonl", session.as_str())),
+            format!("{past}\n{own}\n"),
+        )
+        .unwrap();
+        let mut agent = record(1);
+        agent.session = Some(session.clone());
+        agent.past = Some(PastFile {
+            session,
+            bytes: u64::try_from(past.len() + 1).unwrap(),
+        });
+        AgentsFile {
+            next_agent: AgentId::new(2),
+            replay_floor: None,
+            agents: vec![agent.clone()],
+        }
+        .save(&state.agents_file())
+        .unwrap();
+        let mut logs = EventLogs::new(state.events());
+        let name = LogName::Agent(AgentId::new(1));
+        log(
+            &mut logs,
+            name,
+            1,
+            Event::AgentAdded(initial_summary(&agent)),
+        );
+        log(
+            &mut logs,
+            name,
+            2,
+            Event::TranscriptAppended {
+                agent: AgentId::new(1),
+                item: notice(2002, "own"),
+            },
+        );
+
+        let restored = restore(&state, &temp.path().join("claude")).unwrap();
+
+        let (_, view) = &restored.agents[0];
+        let ids: Vec<u32> = view.items().iter().map(|item| item.id.get()).collect();
+        assert_eq!(ids, [2001, 2002]);
+        let ItemBody::UserMessage(message) = &view.items()[0].body else {
+            panic!("expected the past prompt, got {:?}", view.items());
+        };
+        assert_eq!(message.text, "Fix the cart");
     }
 
     #[test]
@@ -320,7 +386,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let state = StateDir::create(temp.path()).unwrap();
 
-        let restored = restore(&state).unwrap();
+        let restored = restore(&state, &temp.path().join("claude")).unwrap();
 
         assert!(restored.agents.is_empty());
         assert_eq!(restored.last_seq, None);

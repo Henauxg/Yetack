@@ -1,11 +1,10 @@
 use std::path::PathBuf;
 
-use cockpit_protocol::{
-    AgentId, Frame, PastSession, PermissionMode, Request, ResponseResult, Seq, Snapshot,
-};
+use cockpit_protocol::{AgentId, Frame, PermissionMode, Request, ResponseResult, Seq, Snapshot};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::process::ProcessEvent;
+use crate::sessions::FoundSession;
 
 /// Where the answer to a client's request goes.
 pub(crate) type Reply = oneshot::Sender<ResponseResult>;
@@ -27,9 +26,9 @@ pub(crate) enum HubInput {
         generation: u32,
         event: ProcessEvent<ControlPurpose>,
     },
-    /// `sessions.resume` found the session on disk.
+    /// `sessions.resume` found the session on disk, and read its transcript.
     SessionFound {
-        session: PastSession,
+        found: Box<FoundSession>,
         reply: Reply,
     },
     /// The cost Claude Code restores with the session one of an agent's processes resumed.

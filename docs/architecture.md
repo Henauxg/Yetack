@@ -182,7 +182,7 @@ Everything lives in `$XDG_STATE_HOME/agents-cockpit/` (default `~/.local/state/a
 
 - `agents-cockpit.sock`: the socket, mode 600;
 - `serve.lock`: held while a daemon runs, so a second daemon refuses to start and a leftover socket is safe to delete;
-- `agents.json`: one entry per agent (id, title, folder, Claude session id, model, effort, mode), written atomically (write to a temporary file, then rename);
+- `agents.json`: one entry per agent (id, title, folder, Claude session id, model, effort, mode, and for an agent made from a past session the part of the session file it shows), written atomically (write to a temporary file, then rename);
 - `settings.json`: the hidden MCP servers and other daemon-side settings;
 - `events/<agent-id>.jsonl`: the agent's cockpit events, each with its `Seq`, appended;
 - `raw/<agent-id>.jsonl`: every line exchanged with `claude`, for debugging.
@@ -192,6 +192,19 @@ It creates each folder with mode 700 and each file with mode 600.
 The socket gets mode 600 right after the bind; until then, the 700 folder keeps other users away from it.
 
 On start the daemon reads `agents.json`, finds the last `Seq` in the logs, and resumes each agent that was running with `--resume`.
+
+### Past sessions
+
+`sessions.resume` reads the session file in a task, before the agent exists, so the first `agent.history` already gets the past.
+
+- Its lines go through the same conversion as `claude`'s stdout (`PastTranscript`), so origins, notices and tool calls come out the same.
+  The file's other lines (titles, file history snapshots, API requests) read as lines of an unknown type, which show nothing.
+  It leaves out the lines of subagents (`isSidechain`), which it does not tie to their call, the summary after a compaction, and the user lines marked `isMeta`, unless another source than the user wrote them.
+- The newest 2,000 items show, numbered to end at id 2,001, after a notice when older ones are left out.
+  The agent numbers its own items from 2,002, so the two never share an id.
+- The past items go in no event: clients read them with `agent.history`.
+  `agents.json` records the session and the bytes read, and a restarted daemon reads those bytes again.
+  Claude Code only appends to a session file, so the same bytes give the same items, and a large session does not add megabytes to the event log.
 
 ### Server and peer checks
 

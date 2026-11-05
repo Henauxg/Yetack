@@ -1126,6 +1126,23 @@ async fn files_settings_sessions_and_agent_settings() {
         restored.turns, 0,
         "the session's past cost shows before any turn"
     );
+    let past = client.history(second).await;
+    let ids: Vec<u32> = past.iter().map(|item| item.id.get()).collect();
+    assert_eq!(ids, [2001], "{past:?}");
+    assert!(
+        matches!(&past[0].body, ItemBody::UserMessage(message) if message.text == "Fix the old bug")
+    );
+    let again = client
+        .ok(Request::SessionsResume(SessionResumeParams {
+            session: ClaudeSessionId::new(SESSION_ID.to_owned()),
+        }))
+        .await;
+    assert_eq!(again, ResponseBody::AgentStarted { agent: second });
+    assert_eq!(
+        client.history(second).await,
+        past,
+        "the agent that has the session keeps its items"
+    );
     let launches = setup.wait_for_launches(2);
     let resumed_launch = launches
         .iter()

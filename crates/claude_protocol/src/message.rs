@@ -44,7 +44,8 @@ pub struct UserMessage {
     #[serde(default, deserialize_with = "wire::default_on_error")]
     pub origin: Option<MessageOrigin>,
     /// Claude Code's own record of the tool's result, richer than the content block: a string,
-    /// or an object whose shape depends on the tool.
+    /// or an object whose shape depends on the tool. Session files name it `toolUseResult`.
+    #[serde(alias = "toolUseResult")]
     pub tool_use_result: Option<Value>,
     pub session_id: Option<SessionId>,
     pub uuid: Option<MessageUuid>,

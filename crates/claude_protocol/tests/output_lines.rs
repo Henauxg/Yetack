@@ -359,6 +359,21 @@ fn an_origin_that_does_not_read_reads_as_none() {
 }
 
 #[test]
+fn a_session_file_names_the_tool_result_record_in_camel_case() {
+    let line = r#"{"type":"user","isSidechain":false,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"ok"}]},"toolUseResult":{"type":"create","filePath":"/srv/notes.md"}}"#;
+    let value: Value = serde_json::from_str(line).unwrap();
+
+    let Ok(OutputLine::User(user)) = OutputLine::try_from(value) else {
+        panic!("not a user line");
+    };
+
+    assert_eq!(
+        user.tool_use_result,
+        Some(json!({"type": "create", "filePath": "/srv/notes.md"}))
+    );
+}
+
+#[test]
 fn user_tool_results() {
     let OutputLine::User(user) = fixture("user_tool_results.json") else {
         panic!("not a user line");

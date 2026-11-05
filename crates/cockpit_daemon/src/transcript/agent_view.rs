@@ -1,6 +1,7 @@
 //! An agent as clients see it, built from the lines its `claude` writes.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use claude_protocol::{
@@ -12,14 +13,16 @@ use claude_protocol::{
     UserMessage as ClaudeUserMessage,
 };
 use cockpit_protocol::{
-    AgentDetails, AgentStatus, AgentSummary, Answer, AnswerState, Approval, BackgroundTask,
-    BackgroundTaskId, BackgroundTaskStatus, ClaudeSessionId, ContextUsage, CostUsd, Effort, Event,
-    Image, ItemBody, ItemId, McpServer, PendingId, PermissionMode, Plan, Prompt, Question,
-    Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, UserMessage,
+    AgentDetails, AgentId, AgentStatus, AgentSummary, Answer, AnswerState, Approval,
+    BackgroundTask, BackgroundTaskId, BackgroundTaskStatus, ClaudeSessionId, ContextUsage, CostUsd,
+    Effort, Event, Image, ItemBody, ItemId, McpServer, PendingId, PermissionMode, Plan, Prompt,
+    Question, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
+    UserMessage,
 };
 use serde_json::{Map, Value};
 use strum::EnumString;
 
+use crate::transcript::past_transcript::LAST_PAST_ID;
 use crate::transcript::{answers, details, notices, tools, words};
 
 /// What the hub does after a line, beyond publishing the view's events.
@@ -75,9 +78,20 @@ const SUBTYPE_KEY: &str = "subtype";
 const SYNTHETIC_MODEL: &str = "<synthetic>";
 const COMPACTED_NOTICE: &str = "Conversation compacted";
 const QUEUED_CANCELLED_NOTICE: &str = "Queued message cancelled";
+/// Where a session file shows that the user stopped a turn: it holds no turn end to say it.
+const PAST_STOP_NOTICE: &str = "Stopped";
 /// Prompts sent and not yet echoed back. Older ones are forgotten: Claude Code does not echo
 /// every prompt, such as some slash commands.
 const MAX_AWAITED_ECHOES: usize = 32;
+
+/// Where a `user` line comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LineSource {
+    /// `claude`'s stdout, which marks a prompt it echoes with `isReplay`.
+    Process,
+    /// A session file, which writes a prompt the user typed without it.
+    SessionFile,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ItemChange {
@@ -188,6 +202,73 @@ impl AgentView {
         view
     }
 
+    /// A view that reads a session file's lines, for their items alone. `folder` is the
+    /// session's, which tool summaries show paths relative to.
+    pub(super) fn for_session_file(folder: PathBuf) -> Self {
+        let summary = AgentSummary {
+            id: AgentId::new(0),
+            title: String::new(),
+            folder,
+            status: AgentStatus::Idle,
+            activity: None,
+            pending_count: 0,
+            model: None,
+            effort: None,
+            mode: PermissionMode::Default,
+            task_progress: None,
+            context_percent: None,
+            cache_expires_at: None,
+            turns: 0,
+            cost: CostUsd::new(0.0),
+            started_at: Timestamp::from_unix_millis(0),
+            session: None,
+        };
+        Self::new(summary, Duration::ZERO)
+    }
+
+    /// Reads one line of a session file. Its lines read as on stdout, except a prompt the user
+    /// typed, which has no `isReplay` there.
+    pub(super) fn apply_session_line(&mut self, line: OutputLine) {
+        match line {
+            OutputLine::User(message) => self.apply_user(message, LineSource::SessionFile),
+            line => {
+                // A session file holds no `result` line, so nothing follows up.
+                self.apply(line, Timestamp::from_unix_millis(0));
+            }
+        }
+    }
+
+    /// Forgets all but the newest `keep` items, and the changes no event will publish.
+    pub(super) fn keep_newest(&mut self, keep: usize) {
+        let older = self.items.len().saturating_sub(keep);
+        self.items.drain(..older);
+        self.changes.clear();
+    }
+
+    /// The items, as an ended process leaves them: what ran failed, what waited is cancelled.
+    pub(super) fn into_finished_items(self) -> Vec<TranscriptItem> {
+        let mut items = self.items;
+        for item in &mut items {
+            if is_unfinished(&item.body) {
+                finish_leftover(&mut item.body);
+            }
+        }
+        items
+    }
+
+    /// Shows a past session's items above the agent's own, which the agent numbers after
+    /// [`LAST_PAST_ID`]. A past item whose id an own item already has is left out.
+    pub(crate) fn show_past(&mut self, mut past: Vec<TranscriptItem>) {
+        let own = std::mem::take(&mut self.items);
+        if let Some(first) = own.first() {
+            past.retain(|item| item.id < first.id);
+        }
+        past.extend(own);
+        self.items = past;
+        let first_own = ItemId::new(LAST_PAST_ID.saturating_add(1));
+        self.next_item = self.next_item.max(first_own);
+    }
+
     pub(crate) fn summary(&self) -> &AgentSummary {
         &self.summary
     }
@@ -253,7 +334,7 @@ impl AgentView {
         match line {
             OutputLine::System(event) => self.apply_system(event, now),
             OutputLine::Assistant(message) => self.apply_assistant(message, now),
-            OutputLine::User(message) => self.apply_user(message),
+            OutputLine::User(message) => self.apply_user(message, LineSource::Process),
             OutputLine::Result(result) => {
                 self.apply_result(&result);
                 follow_ups.push(FollowUp::TurnEnded);
@@ -623,7 +704,7 @@ impl AgentView {
         }
     }
 
-    fn apply_user(&mut self, message: ClaudeUserMessage) {
+    fn apply_user(&mut self, message: ClaudeUserMessage, source: LineSource) {
         let parent = self.parent_item(message.parent_tool_use_id.as_ref());
         let ClaudeUserMessage {
             message: body,
@@ -655,8 +736,20 @@ impl AgentView {
             }
             return;
         }
+        let interrupt = text.trim().parse::<InterruptNotice>().is_ok();
+        if source == LineSource::SessionFile {
+            let body = if interrupt {
+                ItemBody::Notice {
+                    text: PAST_STOP_NOTICE.to_owned(),
+                }
+            } else {
+                user_message(text, images)
+            };
+            self.push_item(parent, body);
+            return;
+        }
         // The turn end says the user stopped the turn.
-        if !is_replay && text.trim().parse::<InterruptNotice>().is_ok() {
+        if !is_replay && interrupt {
             return;
         }
         if is_replay {

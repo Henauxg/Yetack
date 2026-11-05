@@ -161,7 +161,8 @@ impl Hub {
         });
     }
 
-    /// Finds the session on disk in a task, which hands it back to the hub.
+    /// Finds the session on disk and reads its transcript in a task, which hands them back to the
+    /// hub before the agent exists.
     fn sessions_resume(&mut self, params: SessionResumeParams, reply: Reply) {
         if let Some(agent) = self.agent_with_session(&params.session) {
             if self
@@ -180,8 +181,11 @@ impl Hub {
             let id = params.session;
             let found = tokio::task::spawn_blocking(move || sessions::find(&folder, &id)).await;
             match found {
-                Ok(Some(session)) => {
-                    let input = HubInput::SessionFound { session, reply };
+                Ok(Some(found)) => {
+                    let input = HubInput::SessionFound {
+                        found: Box::new(found),
+                        reply,
+                    };
                     if let Err(unsent) = inputs.send(input).await
                         && let HubInput::SessionFound { reply, .. } = unsent.0
                     {

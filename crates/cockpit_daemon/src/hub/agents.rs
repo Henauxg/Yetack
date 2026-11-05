@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use claude_protocol::{ControlRequest, InputLine, OutputLine};
 use cockpit_protocol::{
     AgentId, AgentStatus, AgentSummary, AnswerParams, CancelQueuedParams, ClaudeSessionId, CostUsd,
-    ErrorBody, ErrorCode, Event, PastSession, Prompt, ResponseBody, ResponseResult,
-    SetEffortParams, StartParams,
+    ErrorBody, ErrorCode, Event, Prompt, ResponseBody, ResponseResult, SetEffortParams,
+    StartParams, TranscriptItem,
 };
 
 use crate::hub::input::{ControlPurpose, HubInput, Reply};
@@ -17,6 +17,7 @@ use crate::hub::state::{Agent, Hub, QueuedPrompt};
 use crate::hub::{errors, state};
 use crate::process::{ClaudeCommand, InterruptedTurn, ProcessEvent};
 use crate::sessions;
+use crate::sessions::FoundSession;
 use crate::store::{AgentRecord, LogName, RawLog};
 use crate::transcript::{
     AgentView, AnswerError, FollowUp, ProcessSession, PromptDelivery, plan_usage, prompts, words,
@@ -65,23 +66,29 @@ impl Hub {
             mode: params.mode,
             running: true,
             started_at: state::now(),
+            past: None,
         };
-        let agent = self.add_agent(record, params.prompt)?;
+        let agent = self.add_agent(record, params.prompt, None)?;
         Ok(ResponseBody::AgentStarted { agent })
     }
 
     /// Starts an agent's process, then lists the agent. Nothing is listed when `claude` cannot
-    /// start.
+    /// start. `past` is the transcript of the session the agent takes over, which shows above its
+    /// own items without any event: clients read it with `agent.history`.
     pub(super) fn add_agent(
         &mut self,
         record: AgentRecord,
         prompt: Option<Prompt>,
+        past: Option<Vec<TranscriptItem>>,
     ) -> Result<AgentId, ErrorBody> {
         let id = record.id;
         let next = id
             .next()
             .ok_or_else(|| errors::internal("no agent id is left".to_owned()))?;
-        let view = AgentView::new(initial_summary(&record), self.settings.prompt_cache_ttl());
+        let mut view = AgentView::new(initial_summary(&record), self.settings.prompt_cache_ttl());
+        if let Some(past) = past {
+            view.show_past(past);
+        }
         self.agents.insert(
             id,
             Agent {
@@ -467,11 +474,12 @@ impl Hub {
     }
 
     /// A past session becomes an agent, or the agent that has it resumes.
-    pub(super) fn resume_session(&mut self, session: PastSession, reply: Reply) {
-        respond(reply, self.agent_for_session(session));
+    pub(super) fn resume_session(&mut self, found: FoundSession, reply: Reply) {
+        respond(reply, self.agent_for_session(found));
     }
 
-    fn agent_for_session(&mut self, session: PastSession) -> Result<ResponseBody, ErrorBody> {
+    fn agent_for_session(&mut self, found: FoundSession) -> Result<ResponseBody, ErrorBody> {
+        let FoundSession { session, past } = found;
         if let Some(agent) = self.agent_with_session(&session.id) {
             if self
                 .agents
@@ -492,8 +500,9 @@ impl Hub {
             mode: None,
             running: true,
             started_at: state::now(),
+            past: Some(past.file),
         };
-        let agent = self.add_agent(record, None)?;
+        let agent = self.add_agent(record, None, Some(past.items))?;
         Ok(ResponseBody::AgentStarted { agent })
     }
 
@@ -595,7 +604,10 @@ fn default_title(prompt: Option<&Prompt>, folder: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::Timestamp;
+    use cockpit_protocol::{PastSession, Timestamp};
+
+    use crate::sessions::SessionPast;
+    use crate::store::PastFile;
 
     use super::*;
 
@@ -678,12 +690,22 @@ mod tests {
     fn a_past_session_needs_a_folder_an_agent_can_start_in() {
         let temp = tempfile::tempdir().unwrap();
         let mut hub = Hub::for_tests(temp.path());
-        let session = |folder: &str| PastSession {
-            id: ClaudeSessionId::new("11111111-2222-3333-4444-555555555555".to_owned()),
-            title: "Fix the cart".to_owned(),
-            folder: PathBuf::from(folder),
-            last_activity: Timestamp::from_unix_millis(0),
-            turns: 1,
+        let id = ClaudeSessionId::new("11111111-2222-3333-4444-555555555555".to_owned());
+        let session = |folder: &str| FoundSession {
+            session: PastSession {
+                id: id.clone(),
+                title: "Fix the cart".to_owned(),
+                folder: PathBuf::from(folder),
+                last_activity: Timestamp::from_unix_millis(0),
+                turns: 1,
+            },
+            past: SessionPast {
+                items: Vec::new(),
+                file: PastFile {
+                    session: id.clone(),
+                    bytes: 0,
+                },
+            },
         };
 
         let relative = hub.agent_for_session(session("work")).unwrap_err();

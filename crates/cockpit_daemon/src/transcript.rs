@@ -2,6 +2,8 @@
 //! both formats.
 //!
 //! - [`AgentView`] turns the lines `claude` writes into transcript items, details and a summary.
+//! - [`PastTranscript`] turns the lines of a past session's file into transcript items, the same
+//!   way.
 //! - [`answers`] turns a client's answer into the `control_response` Claude Code waits for, and
 //!   [`prompts`] a client's prompt into a `user` line.
 //! - [`plan_usage`] keeps the account's plan usage from `rate_limit_event` lines.
@@ -10,9 +12,11 @@ mod agent_view;
 mod answers;
 mod details;
 mod notices;
+mod past_transcript;
 pub(crate) mod plan_usage;
 pub(crate) mod prompts;
 mod tools;
 pub(crate) mod words;
 
 pub(crate) use agent_view::{AgentView, AnswerError, FollowUp, ProcessSession, PromptDelivery};
+pub(crate) use past_transcript::PastTranscript;
