@@ -9,10 +9,13 @@ mod dialogs;
 mod file_view;
 mod header;
 mod icons;
+mod loading;
 mod markdown;
 mod mcp;
 mod palette;
+mod presence;
 mod sidebar;
+mod splitter;
 mod transcript;
 
 pub use app::App;

@@ -20,8 +20,6 @@ pub enum IconKind {
     Plug,
     Person,
     Terminal,
-    Stop,
-    StopSmall,
     Send,
     Clock,
     Shield,
@@ -35,6 +33,7 @@ pub enum IconKind {
     EyeOff,
     Question,
     Warning,
+    Folder,
 }
 
 impl IconKind {
@@ -68,12 +67,6 @@ impl IconKind {
                 r#"<circle cx="12" cy="8" r="4"></circle><path d="M5 21a7 7 0 0 1 14 0"></path>"#
             }
             Self::Terminal => r#"<path d="M5 7l5 5-5 5"></path><path d="M12 18h7"></path>"#,
-            Self::Stop => {
-                r#"<rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor" stroke="none"></rect>"#
-            }
-            Self::StopSmall => {
-                r#"<rect x="4" y="4" width="16" height="16" rx="3" fill="currentColor" stroke="none"></rect>"#
-            }
             Self::Send => r#"<path d="M12 19V5"></path><path d="M6 11l6-6 6 6"></path>"#,
             Self::Clock => {
                 r#"<circle cx="12" cy="12" r="8"></circle><path d="M12 8v4l3 2"></path>"#
@@ -106,6 +99,9 @@ impl IconKind {
             }
             Self::Warning => {
                 r#"<path d="M12 3l9 16H3z"></path><path d="M12 10v4"></path><path d="M12 17h.01"></path>"#
+            }
+            Self::Folder => {
+                r#"<path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>"#
             }
         }
     }

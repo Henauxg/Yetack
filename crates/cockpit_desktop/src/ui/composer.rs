@@ -14,6 +14,7 @@ use crate::state::{PaletteOrigin, Popover, actions};
 use crate::ui::header::cache_left;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::palette::Palette;
+use crate::ui::presence::Presence;
 
 pub fn mode_icon(mode: PermissionMode) -> IconKind {
     match mode {
@@ -125,10 +126,10 @@ pub fn Composer() -> Element {
                 if let Some(Popover::Palette(origin)) = popover {
                     Palette { agent, origin }
                 }
-                if popover == Some(Popover::Model) {
+                Presence { open: popover == Some(Popover::Model),
                     ModelMenu { agent, model, effort }
                 }
-                if popover == Some(Popover::Mode) {
+                Presence { open: popover == Some(Popover::Mode),
                     ModeMenu { agent, mode }
                 }
                 div { class: "composer",
@@ -207,15 +208,12 @@ pub fn Composer() -> Element {
                             Icon { kind: IconKind::ChevronDown, size: 12 }
                         }
                         if buttons.stop() {
-                            if working {
-                                span { class: "key-hint", aria_hidden: true, "Esc" }
-                            }
                             button {
-                                class: "send-button",
+                                class: "send-button stop",
                                 aria_label: "{stop_label}",
                                 title: "{stop_label}",
                                 onclick: move |_| cockpit.change(|state| actions::interrupt(state, agent)),
-                                Icon { kind: IconKind::Stop, size: 12 }
+                                span { class: "stop-square", aria_hidden: true }
                             }
                         }
                         if buttons.send() {

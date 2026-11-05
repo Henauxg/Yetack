@@ -1,6 +1,7 @@
 //! What the user's clicks and keys change, and the requests they send. The connection sends the
 //! returned requests, then the ones `needed_requests` adds.
 
+use std::cmp::Reverse;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -8,9 +9,9 @@ use cockpit_protocol::{
     AgentId, AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState,
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, CancelQueuedParams, ClaudeSessionId,
     Effort, Image, ItemBody, ItemId, McpRemoveParams, McpScope, McpServerParams, McpToggleParams,
-    PendingId, PermissionMode, PlanAnswer, PlanDecision, Prompt, PromptParams, Question,
-    QuestionAnswer, Request, SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams,
-    SlashCommand, StartParams, StopTaskParams,
+    PastSession, PendingId, PermissionMode, PlanAnswer, PlanDecision, Prompt, PromptParams,
+    Question, QuestionAnswer, Request, SessionResumeParams, SetEffortParams, SetModeParams,
+    SetModelParams, SlashCommand, StartParams, StopTaskParams,
 };
 use strum::VariantArray;
 
@@ -24,6 +25,7 @@ use super::ui_state::{
 };
 use super::{export, file_edits};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
+use crate::prefs;
 
 /// What starts a slash command in the composer.
 pub const COMMAND_PREFIX: char = '/';
@@ -33,6 +35,9 @@ const CLEAR_COMMAND: &str = "clear";
 const COMPACT_COMMAND: &str = "compact";
 
 const MEGABYTE: usize = 1024 * 1024;
+
+/// Ten to the number of decimals a saved width share keeps.
+const SHARE_PRECISION: f64 = 10_000.0;
 
 /// The largest image file the composer takes, in megabytes. Claude counts its own per-image limit
 /// on the base64 text, a third larger than the file.
@@ -864,6 +869,28 @@ pub fn set_view_mode(state: &mut AppState, agent: AgentId, mode: ViewMode) {
     }
 }
 
+/// Wraps the file view's long lines, or lets them scroll sideways again. The choice is saved, and
+/// holds for every agent.
+pub fn toggle_wrap(state: &mut AppState) {
+    state.prefs.file_view.wrap = !state.prefs.file_view.wrap;
+}
+
+/// Keeps the file view's width, as a share of the window's, where the splitter left it. The page
+/// sends it: a share outside 0 to 1 is ignored.
+pub fn set_file_view_share(state: &mut AppState, share: f64) {
+    if !prefs::is_share(share) {
+        tracing::warn!("ignored a file view width of {share} of the window");
+        return;
+    }
+    // Four decimals place the splitter within a fraction of a pixel and keep the file readable.
+    let rounded = (share * SHARE_PRECISION).round() / SHARE_PRECISION;
+    state.prefs.file_view.width_share = Some(rounded);
+}
+
+pub fn reset_file_view_share(state: &mut AppState) {
+    state.prefs.file_view.width_share = None;
+}
+
 /// Folds or unfolds a floating block, or opens its badge's popover while the file view is open.
 /// Opening the MCP servers asks Claude Code for their status.
 pub fn toggle_block(state: &mut AppState, agent: AgentId, block: Block) -> Vec<Outgoing> {
@@ -893,13 +920,15 @@ pub fn toggle_block(state: &mut AppState, agent: AgentId, block: Block) -> Vec<O
 /// Opens or closes the usage card. Opening it asks Claude Code for the context usage now.
 pub fn toggle_usage(state: &mut AppState, agent: AgentId) -> Vec<Outgoing> {
     state.ui.toggle_popover(Popover::Usage);
-    let running = state
+    let opened = state.ui.popover == Some(Popover::Usage);
+    let Some(entry) = state
         .agents
-        .get(&agent)
-        .is_some_and(|entry| entry.summary.status != AgentStatus::Exited);
-    if state.ui.popover != Some(Popover::Usage) || !running {
+        .get_mut(&agent)
+        .filter(|entry| opened && entry.summary.status != AgentStatus::Exited)
+    else {
         return Vec::new();
-    }
+    };
+    entry.context_loading = true;
     vec![Outgoing {
         request: Request::AgentContextUsage(AgentParams { agent }),
         purpose: Purpose::ContextUsage { agent },
@@ -1050,9 +1079,10 @@ pub fn switcher_pick(state: &mut AppState, index: Option<usize>) {
     select_agent(state, agent);
 }
 
-/// Opens the new agent dialog on the last used folder. The past sessions are listed again, since
-/// sessions end and start while the app runs. An open dialog stays as it is: its first message
-/// field follows the keyboard, not the form, so a fresh form would not empty it.
+/// Opens the new agent dialog on the last used folder, with the model, effort and permission
+/// mode of the last agent started. The past sessions are listed again, since sessions end and
+/// start while the app runs. An open dialog stays as it is: its first message field follows the
+/// keyboard, not the form, so a fresh form would not empty it.
 pub fn open_new_agent(state: &mut AppState) {
     if matches!(state.ui.dialog, Some(Dialog::NewAgent(_))) {
         return;
@@ -1062,12 +1092,26 @@ pub fn open_new_agent(state: &mut AppState) {
         .first()
         .map(|(folder, _)| folder.to_string_lossy().into_owned())
         .unwrap_or_default();
+    let last = state
+        .agents
+        .values()
+        .map(|entry| &entry.summary)
+        .max_by_key(|summary| summary.started_at);
+    let model = last
+        .and_then(|summary| summary.model.as_deref())
+        .and_then(format::model_alias)
+        .map(str::to_owned);
+    let effort = last.and_then(|summary| summary.effort);
+    let mode = last.map(|summary| summary.mode);
     if state.sessions != Loadable::Loading {
         state.sessions = Loadable::NotRequested;
     }
     state.ui.popover = None;
     state.ui.dialog = Some(Dialog::NewAgent(NewAgentForm {
         folder,
+        model,
+        effort,
+        mode,
         ..NewAgentForm::default()
     }));
 }
@@ -1105,6 +1149,69 @@ pub fn start_agent(state: &mut AppState) -> Vec<Outgoing> {
     }]
 }
 
+/// The past sessions the "Resume a session" tab lists: those no agent runs, whose title or
+/// folder holds the query, newest first. A session's title is its first prompt unless it was
+/// named.
+pub fn resumable_sessions<'state>(
+    state: &'state AppState,
+    query: &str,
+) -> Vec<&'state PastSession> {
+    let query = query.to_lowercase();
+    let running: BTreeSet<&ClaudeSessionId> = state
+        .agents
+        .values()
+        .filter_map(|entry| entry.summary.session.as_ref())
+        .collect();
+    let mut sessions: Vec<&PastSession> = state
+        .sessions
+        .loaded()
+        .into_iter()
+        .flatten()
+        .filter(|session| !running.contains(&session.id))
+        .filter(|session| {
+            session.title.to_lowercase().contains(&query)
+                || session
+                    .folder
+                    .to_string_lossy()
+                    .to_lowercase()
+                    .contains(&query)
+        })
+        .collect();
+    sessions.sort_by_key(|session| Reverse(session.last_activity));
+    sessions
+}
+
+pub fn session_query(state: &mut AppState, query: String) {
+    with_new_agent_form(state, |form| {
+        form.session_query = query;
+        form.session_highlighted = 0;
+    });
+}
+
+pub fn session_move(state: &mut AppState, direction: Direction) {
+    let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
+        return;
+    };
+    let count = resumable_sessions(state, &form.session_query).len();
+    let highlighted = moved(form.session_highlighted, count, direction);
+    with_new_agent_form(state, |form| form.session_highlighted = highlighted);
+}
+
+/// Resumes the session at `index` of the listed ones, or the highlighted one.
+pub fn session_pick(state: &mut AppState, index: Option<usize>) -> Vec<Outgoing> {
+    let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
+        return Vec::new();
+    };
+    let index = index.unwrap_or(form.session_highlighted);
+    let Some(session) = resumable_sessions(state, &form.session_query)
+        .get(index)
+        .map(|session| session.id.clone())
+    else {
+        return Vec::new();
+    };
+    resume_session(state, session)
+}
+
 pub fn resume_session(state: &mut AppState, session: ClaudeSessionId) -> Vec<Outgoing> {
     if let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog {
         if form.starting {
@@ -1122,7 +1229,7 @@ pub fn resume_session(state: &mut AppState, session: ClaudeSessionId) -> Vec<Out
 mod tests {
     use cockpit_protocol::{
         AgentDetails, AskedQuestion, CommandKind, HistoryPage, ImageMediaType, Method,
-        QuestionOption, ResponseBody, TranscriptItem,
+        QuestionOption, ResponseBody, Timestamp, TranscriptItem,
     };
 
     use super::*;
@@ -1883,6 +1990,24 @@ mod tests {
     }
 
     #[test]
+    fn the_splitter_keeps_a_share_of_the_window_and_double_click_resets_it() {
+        let mut state = state(AgentStatus::Idle);
+        let default = state.prefs.file_view.share();
+
+        set_file_view_share(&mut state, 0.437_512_3);
+        assert_eq!(state.prefs.file_view.width_share, Some(0.4375));
+
+        for refused in [0.0, 1.0, -0.2, f64::NAN, f64::INFINITY] {
+            set_file_view_share(&mut state, refused);
+            assert_eq!(state.prefs.file_view.share(), 0.4375, "{refused}");
+        }
+
+        reset_file_view_share(&mut state);
+        assert_eq!(state.prefs.file_view.width_share, None);
+        assert_eq!(state.prefs.file_view.share(), default);
+    }
+
+    #[test]
     fn blocks_fold_when_floating_and_open_as_badges_beside_the_file_view() {
         let mut state = state(AgentStatus::Idle);
 
@@ -1964,6 +2089,57 @@ mod tests {
     }
 
     #[test]
+    fn the_new_agent_form_starts_from_the_last_agent_started() {
+        let mut older = summary(1, AgentStatus::Idle);
+        older.model = Some("claude-haiku-4-5".to_owned());
+        older.effort = Some(Effort::Low);
+        older.mode = PermissionMode::Plan;
+        let mut last = summary(2, AgentStatus::Exited);
+        last.model = Some("claude-opus-5-5[1m]".to_owned());
+        last.effort = Some(Effort::Xhigh);
+        last.mode = PermissionMode::AcceptEdits;
+        last.started_at = Timestamp::from_unix_millis(90_000);
+        let mut state = state_with(vec![last, older]);
+
+        open_new_agent(&mut state);
+
+        let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
+            panic!("expected the new agent dialog, got {:?}", state.ui.dialog);
+        };
+        assert_eq!(
+            (form.model.as_deref(), form.effort, form.mode),
+            (
+                Some("opus"),
+                Some(Effort::Xhigh),
+                Some(PermissionMode::AcceptEdits)
+            )
+        );
+    }
+
+    #[test]
+    fn the_new_agent_form_keeps_the_defaults_without_an_agent_or_a_known_model() {
+        let mut state = state_with(Vec::new());
+        open_new_agent(&mut state);
+        let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
+            panic!("expected the new agent dialog, got {:?}", state.ui.dialog);
+        };
+        assert_eq!(
+            (form.model.as_deref(), form.effort, form.mode),
+            (None, None, None)
+        );
+
+        let mut unknown = summary(1, AgentStatus::Idle);
+        unknown.model = Some("claude-mythical-1".to_owned());
+        let mut state = state_with(vec![unknown]);
+        open_new_agent(&mut state);
+        let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
+            panic!("expected the new agent dialog, got {:?}", state.ui.dialog);
+        };
+        assert_eq!(form.model, None);
+        assert_eq!(form.mode, Some(PermissionMode::Default));
+    }
+
+    #[test]
     fn opening_the_open_new_agent_dialog_keeps_its_form() {
         let mut state = state(AgentStatus::Idle);
         open_new_agent(&mut state);
@@ -2005,6 +2181,84 @@ mod tests {
                 .count()
         };
         assert_eq!((lists(&first), lists(&second)), (1, 1));
+    }
+
+    fn past_session(id: &str, title: &str, folder: &str, minutes_ago: u64) -> PastSession {
+        PastSession {
+            id: ClaudeSessionId::new(id.to_owned()),
+            title: title.to_owned(),
+            folder: PathBuf::from(folder),
+            last_activity: Timestamp::from_unix_millis(10_000_000 - minutes_ago * 60_000),
+            turns: 4,
+        }
+    }
+
+    #[test]
+    fn the_session_search_filters_by_title_and_folder_and_resumes_the_highlighted_one() {
+        let mut running = summary(1, AgentStatus::Idle);
+        running.session = Some(ClaudeSessionId::new("running".to_owned()));
+        let mut state = state_with(vec![running]);
+        open_new_agent(&mut state);
+        state.sessions = Loadable::Loaded(vec![
+            past_session("lexer", "Speed up the lexer", "/work/parser", 30),
+            past_session("running", "Fix the parser", "/work/parser", 5),
+            past_session("docs", "Rewrite the error page", "/work/docs-site", 60),
+            past_session("columns", "Parser columns", "/work/tools", 10),
+        ]);
+        let ids = |state: &AppState, query: &str| -> Vec<String> {
+            resumable_sessions(state, query)
+                .iter()
+                .map(|session| session.id.as_str().to_owned())
+                .collect()
+        };
+
+        assert_eq!(ids(&state, ""), ["columns", "lexer", "docs"]);
+        assert_eq!(ids(&state, "PARSER"), ["columns", "lexer"]);
+        assert_eq!(ids(&state, "docs-site"), ["docs"]);
+        assert!(ids(&state, "nothing like it").is_empty());
+
+        session_query(&mut state, "parser".to_owned());
+        session_move(&mut state, Direction::Down);
+        session_move(&mut state, Direction::Down);
+        let requests = session_pick(&mut state, None);
+
+        assert_eq!(
+            requests.first().map(|outgoing| &outgoing.request),
+            Some(&Request::SessionsResume(SessionResumeParams {
+                session: ClaudeSessionId::new("lexer".to_owned())
+            }))
+        );
+        session_query(&mut state, "nothing like it".to_owned());
+        assert!(matches!(
+            &state.ui.dialog,
+            Some(Dialog::NewAgent(form)) if form.session_highlighted == 0
+        ));
+    }
+
+    #[test]
+    fn the_context_loads_from_the_opening_of_the_usage_card_to_its_answer() {
+        let mut state = state(AgentStatus::Idle);
+        let loading = |state: &AppState| {
+            state
+                .agents
+                .get(&agent())
+                .is_some_and(|entry| entry.context_loading)
+        };
+
+        let requests = toggle_usage(&mut state, agent());
+        assert!(loading(&state));
+
+        let Some(Outgoing { purpose, .. }) = requests.into_iter().next() else {
+            panic!("expected a context usage request");
+        };
+        apply_response(
+            &mut state,
+            &mut Drafts::default(),
+            Method::AgentContextUsage,
+            purpose,
+            Err(cockpit_client::RequestError::Disconnected),
+        );
+        assert!(!loading(&state));
     }
 
     #[test]
