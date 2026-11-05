@@ -261,6 +261,8 @@ Data the mockups show but the protocol does not carry yet, and choices approved 
 - Syntax colors for Nix and TOML files.
 - CLI commands for model, mode, effort, history and MCP servers.
 - The daemon marks the end of a replay, and the app raises no notification for replayed events, so a reconnect does not bring back hours-old alerts.
+- A file edit whose texts were dropped for size (over 1 MiB) says so, so the app shows "too large to show" instead of an empty diff.
+- A tool input too large for one frame (a huge `Write`) is cut in its live event as it already is in history, and `settings.set` gets a size limit.
 
 ## Background
 
