@@ -55,13 +55,33 @@ impl AgentsFile {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+
     use super::*;
 
-    #[test]
-    fn round_trips() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("agents.json");
-        let file = AgentsFile {
+    /// `agents.json` as the daemon writes it. No field is `null`, so a field that no longer reads
+    /// back fails the test.
+    const AGENTS_JSON: &str = r#"{
+  "next_agent": 3,
+  "replay_floor": 17,
+  "agents": [
+    {
+      "id": 2,
+      "title": "Fix the parser",
+      "folder": "/srv/work/parser",
+      "session": "session-a",
+      "model": "opus",
+      "effort": "high",
+      "mode": "acceptEdits",
+      "running": true,
+      "started_at": 1000
+    }
+  ]
+}
+"#;
+
+    fn sample() -> AgentsFile {
+        AgentsFile {
             next_agent: AgentId::new(3),
             replay_floor: Some(Seq::new(17)),
             agents: vec![AgentRecord {
@@ -75,10 +95,29 @@ mod tests {
                 running: true,
                 started_at: Timestamp::from_unix_millis(1_000),
             }],
-        };
+        }
+    }
 
-        file.save(&path).unwrap();
+    #[test]
+    fn reads_the_saved_format() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("agents.json");
+        std::fs::write(&path, AGENTS_JSON).unwrap();
 
-        assert_eq!(AgentsFile::load(&path).unwrap(), file);
+        let file = AgentsFile::load(&path).unwrap();
+
+        assert_eq!(file, sample());
+    }
+
+    #[test]
+    fn writes_the_saved_format() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("agents.json");
+
+        sample().save(&path).unwrap();
+
+        let written: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let expected: Value = serde_json::from_str(AGENTS_JSON).unwrap();
+        assert_eq!(written, expected);
     }
 }
