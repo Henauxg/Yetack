@@ -39,17 +39,11 @@ pub enum PaletteOrigin {
     Button,
 }
 
+/// A dialog. What its fields hold is in the drafts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Dialog {
-    Switcher(Switcher),
+    Switcher,
     NewAgent(NewAgentForm),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Switcher {
-    pub query: String,
-    /// An index into the filtered agents.
-    pub highlighted: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -71,17 +65,11 @@ pub enum FormMenu {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NewAgentForm {
     pub tab: NewAgentTab,
-    pub folder: String,
     /// `None` keeps Claude Code's default, as do `effort` and `mode`.
     pub model: Option<String>,
     pub effort: Option<Effort>,
     pub mode: Option<PermissionMode>,
-    pub prompt: String,
     pub menu: Option<FormMenu>,
-    /// What the "Resume a session" tab's search field holds.
-    pub session_query: String,
-    /// An index into the sessions the query leaves.
-    pub session_highlighted: usize,
     /// A start or resume request is on its way.
     pub starting: bool,
 }

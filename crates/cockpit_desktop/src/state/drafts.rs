@@ -1,6 +1,7 @@
-//! What you type before it is sent: the composer's drafts, the command palette's filter and the
-//! answers being chosen on question cards. The window holds them in a signal of their own, apart
-//! from the agents' data, so that typing does not render the transcript again.
+//! What you type before it is sent: the composer's drafts, the command palette's filter, the
+//! answers being chosen on question cards, and the fields of the dialogs. The window holds them in
+//! a signal of their own, apart from the agents' data, so that typing does not render the
+//! transcript again.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -37,6 +38,26 @@ pub struct Palette {
     pub moved: bool,
 }
 
+/// The new agent dialog's fields, while it is open.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NewAgentDraft {
+    pub folder: String,
+    /// The first message.
+    pub prompt: String,
+    /// What the "Resume a session" tab's search field holds.
+    pub session_query: String,
+    /// An index into the sessions the query leaves.
+    pub session_highlighted: usize,
+}
+
+/// The agent switcher's search, while it is open.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SwitcherDraft {
+    pub query: String,
+    /// An index into the agents the query leaves.
+    pub highlighted: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Drafts {
     pub composer: BTreeMap<AgentId, Draft>,
@@ -48,6 +69,8 @@ pub struct Drafts {
     pub palette: Palette,
     /// The text of the header's title field while a title is edited.
     pub title: String,
+    pub new_agent: NewAgentDraft,
+    pub switcher: SwitcherDraft,
 }
 
 impl Drafts {

@@ -53,8 +53,8 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
     let letter = press.key.to_lowercase();
     if command && !press.alt && !press.shift {
         match letter.as_str() {
-            "k" => actions::toggle_switcher(state),
-            "n" => actions::open_new_agent(state),
+            "k" => actions::toggle_switcher(state, drafts),
+            "n" => actions::open_new_agent(state, drafts),
             _ => {}
         }
         return Vec::new();
@@ -266,7 +266,7 @@ mod tests {
         let mut state = state(AgentStatus::Idle, None);
 
         handle_key(&mut state, &mut drafts, &ctrl("k"));
-        assert!(matches!(state.ui.dialog, Some(Dialog::Switcher(_))));
+        assert!(matches!(state.ui.dialog, Some(Dialog::Switcher)));
 
         handle_key(&mut state, &mut drafts, &ctrl("N"));
         assert!(matches!(state.ui.dialog, Some(Dialog::NewAgent(_))));
@@ -432,7 +432,7 @@ mod tests {
             &mut drafts,
             &press(KEY_ESCAPE, KeyTarget::Field),
         );
-        actions::toggle_switcher(&mut state);
+        actions::toggle_switcher(&mut state, &mut drafts);
         let dialog = handle_key(
             &mut state,
             &mut drafts,
@@ -537,7 +537,7 @@ mod tests {
     fn page_keys_do_nothing_behind_a_dialog() {
         let mut drafts = Drafts::default();
         let mut state = state(AgentStatus::NeedsYou, Some(approval()));
-        actions::toggle_switcher(&mut state);
+        actions::toggle_switcher(&mut state, &mut drafts);
 
         assert!(handle_key(&mut state, &mut drafts, &press("y", KeyTarget::Page)).is_empty());
     }

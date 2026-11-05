@@ -75,14 +75,14 @@ pub fn Sidebar() -> Element {
                     class: "icon-button",
                     title: "Find an agent (Ctrl+K)",
                     aria_label: "Find an agent (Ctrl+K)",
-                    onclick: move |_| cockpit.update(actions::toggle_switcher),
+                    onclick: move |_| cockpit.update_with_drafts(actions::toggle_switcher),
                     Icon { kind: IconKind::Search, size: 16 }
                 }
                 button {
                     class: "icon-button raised",
                     title: "New agent (Ctrl+N)",
                     aria_label: "New agent (Ctrl+N)",
-                    onclick: move |_| cockpit.update(actions::open_new_agent),
+                    onclick: move |_| cockpit.update_with_drafts(actions::open_new_agent),
                     Icon { kind: IconKind::Plus, size: 16 }
                 }
             }

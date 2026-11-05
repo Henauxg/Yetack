@@ -16,12 +16,11 @@ use cockpit_protocol::{
 use strum::VariantArray;
 
 use super::app_state::{AgentEntry, AppState, Loadable};
-use super::drafts::{Drafts, Palette, QuestionDraft};
+use super::drafts::{Drafts, NewAgentDraft, Palette, QuestionDraft, SwitcherDraft};
 use super::requests::{Outgoing, Purpose, history_request};
 use super::transcript::HistoryState;
 use super::ui_state::{
-    Block, Dialog, FileView, NewAgentForm, NewAgentTab, PaletteOrigin, Popover, Switcher,
-    TitleEdit, ViewMode,
+    Block, Dialog, FileView, NewAgentForm, NewAgentTab, PaletteOrigin, Popover, TitleEdit, ViewMode,
 };
 use super::{export, file_edits};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
@@ -1108,10 +1107,11 @@ pub fn retry_history(state: &mut AppState, agent: AgentId) {
     }
 }
 
-pub fn toggle_switcher(state: &mut AppState) {
-    let open = matches!(state.ui.dialog, Some(Dialog::Switcher(_)));
+pub fn toggle_switcher(state: &mut AppState, drafts: &mut Drafts) {
+    let open = state.ui.dialog == Some(Dialog::Switcher);
     state.ui.popover = None;
-    state.ui.dialog = (!open).then(|| Dialog::Switcher(Switcher::default()));
+    state.ui.dialog = (!open).then_some(Dialog::Switcher);
+    drafts.switcher = SwitcherDraft::default();
 }
 
 /// Agents whose title or folder holds the query, in the sidebar's order.
@@ -1132,31 +1132,27 @@ pub fn filtered_agents<'state>(state: &'state AppState, query: &str) -> Vec<&'st
         .collect()
 }
 
-pub fn switcher_query(state: &mut AppState, query: String) {
-    if let Some(Dialog::Switcher(switcher)) = &mut state.ui.dialog {
-        switcher.query = query;
-        switcher.highlighted = 0;
-    }
+/// Only the drafts change, so that typing in the switcher does not render the transcript again.
+pub fn switcher_query(drafts: &mut Drafts, query: String) {
+    drafts.switcher = SwitcherDraft {
+        query,
+        highlighted: 0,
+    };
 }
 
-pub fn switcher_move(state: &mut AppState, direction: Direction) {
-    let Some(Dialog::Switcher(switcher)) = &state.ui.dialog else {
-        return;
-    };
+pub fn switcher_move(state: &AppState, drafts: &mut Drafts, direction: Direction) {
+    let switcher = &mut drafts.switcher;
     let count = filtered_agents(state, &switcher.query).len();
-    let highlighted = moved(switcher.highlighted, count, direction);
-    if let Some(Dialog::Switcher(switcher)) = &mut state.ui.dialog {
-        switcher.highlighted = highlighted;
-    }
+    switcher.highlighted = moved(switcher.highlighted, count, direction);
 }
 
 /// Opens the agent at `index` of the filtered list, or the highlighted one.
-pub fn switcher_pick(state: &mut AppState, index: Option<usize>) {
-    let Some(Dialog::Switcher(switcher)) = &state.ui.dialog else {
+pub fn switcher_pick(state: &mut AppState, drafts: &Drafts, index: Option<usize>) {
+    if state.ui.dialog != Some(Dialog::Switcher) {
         return;
-    };
-    let index = index.unwrap_or(switcher.highlighted);
-    let Some(agent) = filtered_agents(state, &switcher.query)
+    }
+    let index = index.unwrap_or(drafts.switcher.highlighted);
+    let Some(agent) = filtered_agents(state, &drafts.switcher.query)
         .get(index)
         .map(|entry| entry.id())
     else {
@@ -1169,9 +1165,8 @@ pub fn switcher_pick(state: &mut AppState, index: Option<usize>) {
 /// Opens the new agent dialog on the last used folder, with the model, effort and permission
 /// mode of the last agent started. A mode the mode menu does not offer, or Plan, which is
 /// usually for a while, is not carried over. The past sessions are listed again, since sessions
-/// end and start while the app runs. An open dialog stays as it is: its first message field follows the
-/// keyboard, not the form, so a fresh form would not empty it.
-pub fn open_new_agent(state: &mut AppState) {
+/// end and start while the app runs. An open dialog stays as it is, with what its fields hold.
+pub fn open_new_agent(state: &mut AppState, drafts: &mut Drafts) {
     if matches!(state.ui.dialog, Some(Dialog::NewAgent(_))) {
         return;
     }
@@ -1198,12 +1193,15 @@ pub fn open_new_agent(state: &mut AppState) {
     }
     state.ui.popover = None;
     state.ui.dialog = Some(Dialog::NewAgent(NewAgentForm {
-        folder,
         model,
         effort,
         mode,
         ..NewAgentForm::default()
     }));
+    drafts.new_agent = NewAgentDraft {
+        folder,
+        ..NewAgentDraft::default()
+    };
 }
 
 pub fn with_new_agent_form(state: &mut AppState, change: impl FnOnce(&mut NewAgentForm)) {
@@ -1212,16 +1210,16 @@ pub fn with_new_agent_form(state: &mut AppState, change: impl FnOnce(&mut NewAge
     }
 }
 
-pub fn start_agent(state: &mut AppState) -> Vec<Outgoing> {
+pub fn start_agent(state: &mut AppState, drafts: &Drafts) -> Vec<Outgoing> {
     let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog else {
         return Vec::new();
     };
-    let folder = form.folder.trim();
+    let folder = drafts.new_agent.folder.trim();
     if folder.is_empty() || form.starting || form.tab != NewAgentTab::Start {
         return Vec::new();
     }
     form.starting = true;
-    let prompt = form.prompt.trim();
+    let prompt = drafts.new_agent.prompt.trim();
     let params = StartParams {
         folder: PathBuf::from(folder),
         title: None,
@@ -1271,29 +1269,26 @@ pub fn resumable_sessions<'state>(
     sessions
 }
 
-pub fn session_query(state: &mut AppState, query: String) {
-    with_new_agent_form(state, |form| {
-        form.session_query = query;
-        form.session_highlighted = 0;
-    });
+/// Only the drafts change, so that typing a search does not render the transcript again.
+pub fn session_query(drafts: &mut Drafts, query: String) {
+    drafts.new_agent.session_query = query;
+    drafts.new_agent.session_highlighted = 0;
 }
 
-pub fn session_move(state: &mut AppState, direction: Direction) {
-    let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
-        return;
-    };
-    let count = resumable_sessions(state, &form.session_query).len();
-    let highlighted = moved(form.session_highlighted, count, direction);
-    with_new_agent_form(state, |form| form.session_highlighted = highlighted);
+pub fn session_move(state: &AppState, drafts: &mut Drafts, direction: Direction) {
+    let new_agent = &mut drafts.new_agent;
+    let count = resumable_sessions(state, &new_agent.session_query).len();
+    new_agent.session_highlighted = moved(new_agent.session_highlighted, count, direction);
 }
 
 /// Resumes the session at `index` of the listed ones, or the highlighted one.
-pub fn session_pick(state: &mut AppState, index: Option<usize>) -> Vec<Outgoing> {
-    let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
+pub fn session_pick(state: &mut AppState, drafts: &Drafts, index: Option<usize>) -> Vec<Outgoing> {
+    if !matches!(state.ui.dialog, Some(Dialog::NewAgent(_))) {
         return Vec::new();
-    };
-    let index = index.unwrap_or(form.session_highlighted);
-    let Some(session) = resumable_sessions(state, &form.session_query)
+    }
+    let new_agent = &drafts.new_agent;
+    let index = index.unwrap_or(new_agent.session_highlighted);
+    let Some(session) = resumable_sessions(state, &new_agent.session_query)
         .get(index)
         .map(|session| session.id.clone())
     else {
@@ -2241,13 +2236,14 @@ mod tests {
             summary(2, AgentStatus::Working),
             summary(3, AgentStatus::Idle),
         ]);
-        toggle_switcher(&mut state);
-        switcher_query(&mut state, "project".to_owned());
+        let mut drafts = Drafts::default();
+        toggle_switcher(&mut state, &mut drafts);
+        switcher_query(&mut drafts, "project".to_owned());
 
-        switcher_move(&mut state, Direction::Down);
-        switcher_move(&mut state, Direction::Down);
-        switcher_move(&mut state, Direction::Down);
-        switcher_pick(&mut state, None);
+        switcher_move(&state, &mut drafts, Direction::Down);
+        switcher_move(&state, &mut drafts, Direction::Down);
+        switcher_move(&state, &mut drafts, Direction::Down);
+        switcher_pick(&mut state, &drafts, None);
 
         assert_eq!(state.ui.selected, Some(AgentId::new(3)));
         assert_eq!(state.ui.dialog, None);
@@ -2256,14 +2252,13 @@ mod tests {
     #[test]
     fn starting_an_agent_sends_the_form_once() {
         let mut state = state(AgentStatus::Idle);
-        open_new_agent(&mut state);
-        with_new_agent_form(&mut state, |form| {
-            form.prompt = "Fix the flaky test".to_owned();
-            form.mode = Some(PermissionMode::Plan);
-        });
+        let mut drafts = Drafts::default();
+        open_new_agent(&mut state, &mut drafts);
+        drafts.new_agent.prompt = "Fix the flaky test".to_owned();
+        with_new_agent_form(&mut state, |form| form.mode = Some(PermissionMode::Plan));
 
-        let first = start_agent(&mut state);
-        let second = start_agent(&mut state);
+        let first = start_agent(&mut state, &drafts);
+        let second = start_agent(&mut state, &drafts);
 
         let Some(Outgoing {
             request: Request::AgentStart(params),
@@ -2296,7 +2291,7 @@ mod tests {
         last.started_at = Timestamp::from_unix_millis(90_000);
         let mut state = state_with(vec![last, older]);
 
-        open_new_agent(&mut state);
+        open_new_agent(&mut state, &mut Drafts::default());
 
         let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
             panic!("expected the new agent dialog, got {:?}", state.ui.dialog);
@@ -2314,7 +2309,7 @@ mod tests {
     #[test]
     fn the_new_agent_form_keeps_the_defaults_without_an_agent_or_a_known_model() {
         let mut state = state_with(Vec::new());
-        open_new_agent(&mut state);
+        open_new_agent(&mut state, &mut Drafts::default());
         let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
             panic!("expected the new agent dialog, got {:?}", state.ui.dialog);
         };
@@ -2326,7 +2321,7 @@ mod tests {
         let mut unknown = summary(1, AgentStatus::Idle);
         unknown.model = Some("claude-mythical-1".to_owned());
         let mut state = state_with(vec![unknown]);
-        open_new_agent(&mut state);
+        open_new_agent(&mut state, &mut Drafts::default());
         let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
             panic!("expected the new agent dialog, got {:?}", state.ui.dialog);
         };
@@ -2342,7 +2337,7 @@ mod tests {
             let mut last = summary(1, AgentStatus::Idle);
             last.mode = mode;
             let mut state = state_with(vec![last]);
-            open_new_agent(&mut state);
+            open_new_agent(&mut state, &mut Drafts::default());
             match &state.ui.dialog {
                 Some(Dialog::NewAgent(form)) => form.mode,
                 other => panic!("expected the new agent dialog, got {other:?}"),
@@ -2358,23 +2353,24 @@ mod tests {
     #[test]
     fn opening_the_open_new_agent_dialog_keeps_its_form() {
         let mut state = state(AgentStatus::Idle);
-        open_new_agent(&mut state);
-        with_new_agent_form(&mut state, |form| {
-            form.prompt = "Fix the flaky test".to_owned();
-        });
+        let mut drafts = Drafts::default();
+        open_new_agent(&mut state, &mut drafts);
+        drafts.new_agent.prompt = "Fix the flaky test".to_owned();
+        with_new_agent_form(&mut state, |form| form.effort = Some(Effort::Max));
 
-        open_new_agent(&mut state);
+        open_new_agent(&mut state, &mut drafts);
 
+        assert_eq!(drafts.new_agent.prompt, "Fix the flaky test");
         assert!(matches!(
             &state.ui.dialog,
-            Some(Dialog::NewAgent(form)) if form.prompt == "Fix the flaky test"
+            Some(Dialog::NewAgent(form)) if form.effort == Some(Effort::Max)
         ));
     }
 
     #[test]
     fn each_opening_of_the_new_agent_dialog_lists_the_sessions_again() {
         let mut state = state(AgentStatus::Idle);
-        open_new_agent(&mut state);
+        open_new_agent(&mut state, &mut Drafts::default());
         let first = needed_requests(&mut state);
         apply_response(
             &mut state,
@@ -2387,7 +2383,7 @@ mod tests {
         );
         state.ui.dialog = None;
 
-        open_new_agent(&mut state);
+        open_new_agent(&mut state, &mut Drafts::default());
         let second = needed_requests(&mut state);
 
         let lists = |requests: &[Outgoing]| {
@@ -2414,7 +2410,8 @@ mod tests {
         let mut running = summary(1, AgentStatus::Idle);
         running.session = Some(ClaudeSessionId::new("running".to_owned()));
         let mut state = state_with(vec![running]);
-        open_new_agent(&mut state);
+        let mut drafts = Drafts::default();
+        open_new_agent(&mut state, &mut drafts);
         state.sessions = Loadable::Loaded(vec![
             past_session("lexer", "Speed up the lexer", "/work/parser", 30),
             past_session("running", "Fix the parser", "/work/parser", 5),
@@ -2433,10 +2430,10 @@ mod tests {
         assert_eq!(ids(&state, "docs-site"), ["docs"]);
         assert!(ids(&state, "nothing like it").is_empty());
 
-        session_query(&mut state, "parser".to_owned());
-        session_move(&mut state, Direction::Down);
-        session_move(&mut state, Direction::Down);
-        let requests = session_pick(&mut state, None);
+        session_query(&mut drafts, "parser".to_owned());
+        session_move(&state, &mut drafts, Direction::Down);
+        session_move(&state, &mut drafts, Direction::Down);
+        let requests = session_pick(&mut state, &drafts, None);
 
         assert_eq!(
             requests.first().map(|outgoing| &outgoing.request),
@@ -2444,11 +2441,8 @@ mod tests {
                 session: ClaudeSessionId::new("lexer".to_owned())
             }))
         );
-        session_query(&mut state, "nothing like it".to_owned());
-        assert!(matches!(
-            &state.ui.dialog,
-            Some(Dialog::NewAgent(form)) if form.session_highlighted == 0
-        ));
+        session_query(&mut drafts, "nothing like it".to_owned());
+        assert_eq!(drafts.new_agent.session_highlighted, 0);
     }
 
     #[test]
