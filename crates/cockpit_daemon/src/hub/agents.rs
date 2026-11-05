@@ -16,6 +16,7 @@ use crate::hub::input::{ControlPurpose, HubInput, Reply};
 use crate::hub::state::{Agent, Hub, QueuedPrompt};
 use crate::hub::{errors, state};
 use crate::process::{ClaudeCommand, ProcessEvent};
+use crate::sessions;
 use crate::store::{AgentRecord, LogName, RawLog};
 use crate::transcript::{
     AgentView, AnswerError, FollowUp, PromptDelivery, plan_usage, prompts, words,
@@ -23,6 +24,8 @@ use crate::transcript::{
 
 /// A title made from a prompt keeps this many characters.
 const TITLE_MAX_CHARS: usize = 60;
+/// The longest model name a client may set: every summary carries it.
+const MODEL_MAX_CHARS: usize = 100;
 
 impl Hub {
     pub(super) fn start_restored_agents(&mut self) {
@@ -41,6 +44,12 @@ impl Hub {
     }
 
     pub(super) fn start_agent(&mut self, params: StartParams) -> Result<ResponseBody, ErrorBody> {
+        if let Some(title) = &params.title {
+            check_length("title", title, sessions::TITLE_MAX_CHARS)?;
+        }
+        if let Some(model) = &params.model {
+            check_model(model)?;
+        }
         let folder = agent_folder(&params.folder)?;
         let title = params
             .title
@@ -502,6 +511,21 @@ fn agent_folder(folder: &Path) -> Result<PathBuf, ErrorBody> {
     Ok(resolved)
 }
 
+pub(super) fn check_model(model: &str) -> Result<(), ErrorBody> {
+    check_length("model name", model, MODEL_MAX_CHARS)
+}
+
+/// Refuses a client's text longer than `max_chars`, so that the snapshots stay small.
+fn check_length(what: &str, text: &str, max_chars: usize) -> Result<(), ErrorBody> {
+    let chars = text.chars().count();
+    if chars > max_chars {
+        return Err(errors::invalid(format!(
+            "the {what} has {chars} characters, more than {max_chars}"
+        )));
+    }
+    Ok(())
+}
+
 /// The prompt's first line, or the folder's name.
 fn default_title(prompt: Option<&Prompt>, folder: &Path) -> String {
     let first_line = prompt.and_then(|prompt| {
@@ -563,6 +587,46 @@ mod tests {
         assert_eq!(relative.code, ErrorCode::InvalidRequest);
         assert_eq!(missing.code, ErrorCode::NotFound);
         assert_eq!(not_a_folder.code, ErrorCode::InvalidRequest);
+    }
+
+    /// Titles and model names go into every snapshot, which must stay under the framing maximum.
+    #[test]
+    fn a_title_or_a_model_name_too_long_is_refused() {
+        use cockpit_protocol::SetModelParams;
+        use tokio::sync::oneshot;
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut hub = Hub::for_tests(&temp.path().join("state"));
+        let mut start = |title: usize, model: usize| {
+            let params = StartParams {
+                folder: temp.path().to_owned(),
+                title: Some("t".repeat(title)),
+                model: Some("m".repeat(model)),
+                effort: None,
+                mode: None,
+                prompt: None,
+            };
+            hub.start_agent(params).unwrap_err().code
+        };
+
+        let long_title = start(sessions::TITLE_MAX_CHARS + 1, 1);
+        let long_model = start(1, MODEL_MAX_CHARS + 1);
+        // The test's `claude` cannot start: the request got past the checks.
+        let longest = start(sessions::TITLE_MAX_CHARS, MODEL_MAX_CHARS);
+        let (reply, mut answer) = oneshot::channel();
+        let set_model = SetModelParams {
+            agent: AgentId::new(1),
+            model: "m".repeat(MODEL_MAX_CHARS + 1),
+        };
+        hub.set_model(set_model, reply);
+
+        assert_eq!(long_title, ErrorCode::InvalidRequest);
+        assert_eq!(long_model, ErrorCode::InvalidRequest);
+        assert_eq!(longest, ErrorCode::ClaudeFailed);
+        let ResponseResult::Error(refused) = answer.try_recv().unwrap() else {
+            panic!("expected the model name to be refused");
+        };
+        assert_eq!(refused.code, ErrorCode::InvalidRequest);
     }
 
     /// A session file's `cwd` is what `claude` wrote, or anything a process of the user wrote.

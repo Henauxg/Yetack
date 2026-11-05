@@ -41,6 +41,9 @@ const ELLIPSIS: char = '…';
 
 /// The most of a tool's output a transcript item keeps, so that a history page stays small.
 pub(crate) const MAX_OUTPUT_BYTES: usize = 64 * 1024;
+/// An edit whose old or new text is longer loses both, so that its item stays far below the
+/// framing maximum: a `Write` over a large file copies the whole file into the old text.
+const MAX_EDIT_TEXT_BYTES: usize = 1024 * 1024;
 
 /// Lines added and removed by an edit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +96,22 @@ pub(crate) fn file_edit(input: &ToolInput) -> Option<FileEdit> {
         | ToolInput::Read(_)
         | ToolInput::Unknown => None,
     }
+}
+
+/// The edit of a tool call from its raw input, with its texts whatever their size.
+pub(crate) fn input_edit(tool: &str, input: &Value) -> Option<FileEdit> {
+    let parsed = ToolInput::parse(tool, input.as_object()?).ok()?;
+    file_edit(&parsed)
+}
+
+/// The edit as a transcript item keeps it: its path only, when a text is over
+/// [`MAX_EDIT_TEXT_BYTES`].
+pub(crate) fn without_large_texts(mut edit: FileEdit) -> FileEdit {
+    if edit.old_text.len() > MAX_EDIT_TEXT_BYTES || edit.new_text.len() > MAX_EDIT_TEXT_BYTES {
+        edit.old_text = String::new();
+        edit.new_text = String::new();
+    }
+    edit
 }
 
 /// The file before a `Write`, from Claude Code's record of the call.

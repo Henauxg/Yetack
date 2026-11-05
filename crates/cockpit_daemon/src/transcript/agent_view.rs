@@ -568,7 +568,7 @@ impl AgentView {
             status: ToolCallStatus::Running,
             output: None,
             exit_code: None,
-            edit: tools::file_edit(&parsed),
+            edit: tools::file_edit(&parsed).map(tools::without_large_texts),
         };
         let body = if tools::is_subagent(&name) {
             ItemBody::Subagent(call)
@@ -656,7 +656,11 @@ impl AgentView {
         }
         call.status = ToolCallStatus::Done;
         call.output = Some(output);
-        let Some(edit) = &mut call.edit else {
+        if call.edit.is_none() {
+            return;
+        }
+        // The item's edit may have lost its texts to the size limit: the input still holds them.
+        let Some(mut edit) = tools::input_edit(&call.tool, &call.input) else {
             return;
         };
         if edit.old_text.is_empty()
@@ -666,6 +670,7 @@ impl AgentView {
         }
         let lines = tools::changed_lines(&edit.old_text, &edit.new_text);
         let path = edit.path.clone();
+        call.edit = Some(tools::without_large_texts(edit));
         details::add_changed_file(&mut self.details.changed_files, &path, lines);
         self.details_changed = true;
     }
@@ -741,7 +746,7 @@ impl AgentView {
                 tool: request.tool_name.clone(),
                 summary: tools::summary(&request.input, &self.summary.folder),
                 input: Value::Object(request.input.clone()),
-                edit: tools::file_edit(&parsed),
+                edit: tools::file_edit(&parsed).map(tools::without_large_texts),
                 reason: request.decision_reason.clone().or_else(|| {
                     request
                         .blocked_path
@@ -1052,7 +1057,7 @@ mod tests {
 
     use claude_protocol::PermissionDecision;
     use cockpit_protocol::{
-        AgentId, ApprovalAnswer, ApprovalDecision, BackgroundTaskKind, CommandKind,
+        AgentId, ApprovalAnswer, ApprovalDecision, BackgroundTaskKind, CommandKind, FileEdit,
         McpServerStatus, PlanAnswer, PlanDecision, QuestionAnswer, TaskProgress, TaskStatus,
     };
     use serde_json::json;
@@ -1295,6 +1300,65 @@ mod tests {
         assert_eq!(call.edit.as_ref().unwrap().old_text, "one\n");
         let file = &view.details().changed_files[0];
         assert_eq!((file.lines_added, file.lines_removed), (1, 0));
+    }
+
+    #[test]
+    fn a_write_over_a_large_file_keeps_its_path_and_line_counts_but_not_its_texts() {
+        let mut view = view();
+        let path = format!("{FOLDER}/prices.csv");
+        apply(
+            &mut view,
+            tool_use(
+                "t1",
+                "Write",
+                json!({"file_path": path, "content": "sku,price\n"}),
+            ),
+        );
+        let mut done = tool_result("t1", "File written", false);
+        // 1.2 MB, over the limit of an edit's text.
+        let original = "A-1,10\n".repeat(170_000);
+        done["tool_use_result"] = json!({"type": "update", "originalFile": original});
+
+        apply(&mut view, done);
+
+        let ItemBody::ToolCall(call) = &view.items()[0].body else {
+            panic!("expected a tool call");
+        };
+        let edit = call.edit.as_ref().unwrap();
+        assert_eq!(edit.path, PathBuf::from(&path));
+        assert_eq!((edit.old_text.as_str(), edit.new_text.as_str()), ("", ""));
+        let file = &view.details().changed_files[0];
+        assert_eq!((file.lines_added, file.lines_removed), (1, 170_000));
+    }
+
+    #[test]
+    fn a_large_new_text_is_left_out_of_the_call_and_its_approval() {
+        let mut view = view();
+        let path = format!("{FOLDER}/prices.csv");
+        // 1.4 MB, over the limit of an edit's text.
+        let input = json!({"file_path": path, "content": "A-1,10\n".repeat(200_000)});
+        apply(&mut view, tool_use("t1", "Write", input.clone()));
+        apply(&mut view, can_use_tool("req-1", "t1", "Write", input));
+
+        apply(&mut view, tool_result("t1", "File created", false));
+
+        let edits: Vec<&FileEdit> = view
+            .items()
+            .iter()
+            .filter_map(|item| match &item.body {
+                ItemBody::ToolCall(call) => call.edit.as_ref(),
+                ItemBody::Approval(approval) => approval.edit.as_ref(),
+                _ => None,
+            })
+            .collect();
+        let empty = FileEdit {
+            path: PathBuf::from(&path),
+            old_text: String::new(),
+            new_text: String::new(),
+        };
+        assert_eq!(edits, [&empty, &empty]);
+        let file = &view.details().changed_files[0];
+        assert_eq!((file.lines_added, file.lines_removed), (200_000, 0));
     }
 
     #[test]

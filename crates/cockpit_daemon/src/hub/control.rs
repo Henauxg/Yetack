@@ -157,6 +157,10 @@ impl Hub {
 
     /// Asks the running `claude`, or records the model for the next start.
     pub(super) fn set_model(&mut self, params: SetModelParams, reply: Reply) {
+        if let Err(error) = agents::check_model(&params.model) {
+            agents::respond(reply, Err(error));
+            return;
+        }
         let id = params.agent;
         let Some(agent) = self.agents.get_mut(&id) else {
             agents::respond(reply, Err(errors::agent_not_found(id)));

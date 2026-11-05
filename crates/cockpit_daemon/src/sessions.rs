@@ -22,7 +22,8 @@ const SESSION_EXTENSION: &str = "jsonl";
 const CHUNK_BYTES: u64 = 64 * 1024;
 /// The newest sessions listed.
 const MAX_SESSIONS: usize = 100;
-const TITLE_MAX_CHARS: usize = 200;
+/// The longest title of a past session or of an agent: every title goes into every snapshot.
+pub(crate) const TITLE_MAX_CHARS: usize = 200;
 
 /// The keys of Claude Code's session lines that matter here.
 const TYPE_KEY: &str = "type";
