@@ -1011,10 +1011,17 @@ button:disabled {
   display: flex;
   flex-direction: column-reverse;
   padding-right: 296px;
+  /* The chat's scroll script anchors the view: a webview's own anchoring would correct twice. */
+  overflow-anchor: none;
 }
 
 .center.narrow-chat .chat-scroll {
   padding-right: 52px;
+}
+
+/* The wrapper the chat's scroll script anchors on: its entry lays out as the column's own child. */
+.transcript-entry {
+  display: contents;
 }
 
 /* The server detail widens the MCP block from 272 to 380 px. */

@@ -95,6 +95,20 @@ pub fn select_agent(state: &mut AppState, agent: AgentId) {
     state.ui.mcp.filter = ToolFilter::All;
 }
 
+/// The chat's script says the agent's chat reached its bottom, or left it. Leaving it marks the
+/// last entry seen, so that the entries after it count as new.
+pub fn chat_at_bottom(state: &mut AppState, agent: AgentId, at_bottom: bool) {
+    if at_bottom {
+        state.ui.chat_scrolled_up.remove(&agent);
+        return;
+    }
+    let Some(entry) = state.agents.get(&agent) else {
+        return;
+    };
+    let last_seen = entry.transcript.last_id();
+    state.ui.chat_scrolled_up.entry(agent).or_insert(last_seen);
+}
+
 /// Whether the command palette opens or closes as you type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaletteChange {
@@ -1415,6 +1429,39 @@ mod tests {
         // The palette opened again while the request was on its way asks nothing more.
         assert_eq!((first.len(), second.len()), (1, 0));
         assert_eq!(agent_commands(&state, agent()).len(), 1);
+    }
+
+    /// Appends a notice with the id `id` to the agent's transcript.
+    fn append_notice(state: &mut AppState, id: u32) {
+        if let Some(entry) = state.agents.get_mut(&agent()) {
+            entry.transcript.append(TranscriptItem {
+                id: ItemId::new(id),
+                parent: None,
+                body: ItemBody::Notice {
+                    text: format!("notice {id}"),
+                },
+            });
+        }
+    }
+
+    #[test]
+    fn leaving_the_bottom_of_the_chat_marks_the_last_entry_seen() {
+        let mut state = state(AgentStatus::Working);
+        let marked = |state: &AppState| state.ui.chat_scrolled_up.get(&agent()).copied();
+        chat_at_bottom(&mut state, agent(), false);
+        let empty = marked(&state);
+        chat_at_bottom(&mut state, agent(), true);
+        let back = marked(&state);
+
+        append_notice(&mut state, 5);
+        chat_at_bottom(&mut state, agent(), false);
+        append_notice(&mut state, 6);
+        chat_at_bottom(&mut state, agent(), false);
+
+        assert_eq!(empty, Some(None));
+        assert_eq!(back, None);
+        // A second report while still scrolled up keeps the first mark.
+        assert_eq!(marked(&state), Some(Some(ItemId::new(5))));
     }
 
     #[test]

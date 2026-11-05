@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use cockpit_protocol::{AgentId, Effort, PermissionMode};
+use cockpit_protocol::{AgentId, Effort, ItemId, PermissionMode};
 
 /// How many error notes stay on screen; an older one goes when a new one comes.
 const MAX_ERRORS: usize = 4;
@@ -159,6 +159,9 @@ pub struct UiState {
     /// The notes at the bottom left: errors, and what an action did.
     pub errors: Vec<ErrorNote>,
     next_error: u32,
+    /// The agents whose chat is scrolled up, each with the last entry it held when it left its
+    /// bottom (`None` when it held none). The entries after it arrived since.
+    pub chat_scrolled_up: BTreeMap<AgentId, Option<ItemId>>,
 }
 
 impl Default for UiState {
@@ -176,6 +179,7 @@ impl Default for UiState {
             title_edit: None,
             errors: Vec::new(),
             next_error: 0,
+            chat_scrolled_up: BTreeMap::new(),
         }
     }
 }

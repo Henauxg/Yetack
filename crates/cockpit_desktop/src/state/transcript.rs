@@ -65,6 +65,10 @@ impl Transcript {
         self.items.keys().next().copied()
     }
 
+    pub fn last_id(&self) -> Option<ItemId> {
+        self.items.keys().next_back().copied()
+    }
+
     pub fn append(&mut self, item: TranscriptItem) {
         self.items.insert(item.id, item);
     }

@@ -17,6 +17,7 @@ use crate::connection::{Clock, Cockpit};
 use crate::render::{Diff, Language, diff_lines};
 use crate::state::{HistoryState, actions, file_edits};
 use crate::ui::cards::{ApprovalCard, PlanCard, QuestionCard};
+use crate::ui::chat_scroll::{self, CHAT_SCROLL_ID, ENTRY_CLASS};
 use crate::ui::code::{LineNumbers, diff_row};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::loading::TranscriptSkeleton;
@@ -49,6 +50,7 @@ const BASH_TOOL: &str = "Bash";
 #[component]
 pub fn TranscriptView() -> Element {
     let cockpit: Cockpit = use_context();
+    chat_scroll::use_chat_scroll(cockpit);
     let state = cockpit.state.read();
     let Some(entry) = state.selected() else {
         return rsx! {
@@ -98,7 +100,11 @@ pub fn TranscriptView() -> Element {
         .collect();
     let history = entry.transcript.history().clone();
     rsx! {
-        div { class: "chat-scroll scroll",
+        div {
+            id: CHAT_SCROLL_ID,
+            class: "chat-scroll scroll",
+            // The chat's scroll script keeps each agent's place.
+            "data-agent": "{agent.get()}",
             div { class: "chat-column",
                 match history {
                     HistoryState::NotLoaded | HistoryState::Loading => rsx! {
@@ -378,16 +384,21 @@ fn TranscriptRow(
     awaits_approval: bool,
     step: Option<Step>,
 ) -> Element {
+    let id = chat_scroll::entry_id(agent, item.id);
     let view = rsx! {
         ItemView { agent, folder, item, nested, awaits_approval }
     };
     let Some(step) = step else {
-        return view;
+        return rsx! {
+            div { id, class: ENTRY_CLASS, {view} }
+        };
     };
     rsx! {
-        div { class: step.class(),
-            span { class: "step-dot", aria_hidden: true }
-            {view}
+        div { id, class: ENTRY_CLASS,
+            div { class: step.class(),
+                span { class: "step-dot", aria_hidden: true }
+                {view}
+            }
         }
     }
 }
