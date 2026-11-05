@@ -35,6 +35,10 @@ pub enum Request {
     /// Removes an exited agent from the list. Its Claude session stays on disk, for
     /// `sessions.resume`. Answered by `Done`.
     AgentRemove(AgentParams),
+    /// Ends the agent's `claude`, if it runs, and removes the agent at once. Its Claude session
+    /// stays on disk, for `sessions.resume`. A working agent's turn is interrupted first. Answered
+    /// by `Done`, after the `AgentRemoved` event.
+    AgentClose(AgentParams),
     /// Answered by `History`.
     AgentHistory(HistoryParams),
     /// Answered by `Details`. `DetailsChanged` events keep them current after that.
@@ -97,6 +101,8 @@ pub enum Method {
     AgentResume,
     #[strum(serialize = "agent.remove")]
     AgentRemove,
+    #[strum(serialize = "agent.close")]
+    AgentClose,
     #[strum(serialize = "agent.history")]
     AgentHistory,
     #[strum(serialize = "agent.details")]
@@ -320,6 +326,7 @@ impl Request {
             Self::AgentStop(_) => Method::AgentStop,
             Self::AgentResume(_) => Method::AgentResume,
             Self::AgentRemove(_) => Method::AgentRemove,
+            Self::AgentClose(_) => Method::AgentClose,
             Self::AgentHistory(_) => Method::AgentHistory,
             Self::AgentDetails(_) => Method::AgentDetails,
             Self::AgentSetModel(_) => Method::AgentSetModel,
@@ -366,6 +373,7 @@ impl Serialize for Request {
             Self::AgentStop(params) => tagged(method, params, serializer),
             Self::AgentResume(params) => tagged(method, params, serializer),
             Self::AgentRemove(params) => tagged(method, params, serializer),
+            Self::AgentClose(params) => tagged(method, params, serializer),
             Self::AgentHistory(params) => tagged(method, params, serializer),
             Self::AgentDetails(params) => tagged(method, params, serializer),
             Self::AgentSetModel(params) => tagged(method, params, serializer),
@@ -413,6 +421,7 @@ impl<'de> Deserialize<'de> for Request {
             Method::AgentStop => Self::AgentStop(params(raw)?),
             Method::AgentResume => Self::AgentResume(params(raw)?),
             Method::AgentRemove => Self::AgentRemove(params(raw)?),
+            Method::AgentClose => Self::AgentClose(params(raw)?),
             Method::AgentHistory => Self::AgentHistory(params(raw)?),
             Method::AgentDetails => Self::AgentDetails(params(raw)?),
             Method::AgentSetModel => Self::AgentSetModel(params(raw)?),

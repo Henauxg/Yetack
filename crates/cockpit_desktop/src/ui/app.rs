@@ -1,11 +1,13 @@
 //! The window: sidebar, center pane, file view and dialogs.
 
+use std::time::Duration;
+
 use dioxus::prelude::*;
 
 use crate::bridge::use_bridge;
 use crate::connection::{Cockpit, Startup, use_clock, use_cockpit};
 use crate::prefs::use_prefs_saver;
-use crate::state::{ConnectionState, NoteKind};
+use crate::state::{ConnectionState, NoteKind, actions};
 use crate::ui::blocks::FloatingBlocks;
 use crate::ui::composer::Composer;
 use crate::ui::dialogs::Dialogs;
@@ -67,12 +69,16 @@ pub fn App() -> Element {
     }
 }
 
+/// How long the note of a closed agent offers it back.
+const UNDO_CLOSE: Duration = Duration::from_secs(8);
+
 #[component]
 fn ErrorNotes() -> Element {
     let cockpit: Cockpit = use_context();
     let notes = cockpit.state.read().ui.errors.clone();
     rsx! {
         div { class: "error-notes", aria_live: "polite",
+            ClosedNote {}
             for note in notes {
                 div { key: "{note.id}", class: if note.kind == NoteKind::Info { "error-note info" } else { "error-note" },
                     span { "{note.text}" }
@@ -83,6 +89,43 @@ fn ErrorNotes() -> Element {
                         Icon { kind: IconKind::Close, size: 12 }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// "Closed <title>", with Undo while `UNDO_CLOSE` runs. A later close replaces it.
+#[component]
+fn ClosedNote() -> Element {
+    let cockpit: Cockpit = use_context();
+    let closed = cockpit.state.read().ui.closed.clone();
+    let mut timed = use_hook(|| CopyValue::new(None::<u32>));
+    let Some(closed) = closed else {
+        return rsx! {};
+    };
+    let serial = closed.serial;
+    if timed() != Some(serial) {
+        timed.set(Some(serial));
+        spawn(async move {
+            tokio::time::sleep(UNDO_CLOSE).await;
+            cockpit.update(|state| state.ui.expire_closed(serial));
+        });
+    }
+    rsx! {
+        div { key: "closed-{serial}", class: "error-note info closed-note",
+            span { "Closed {closed.title}." }
+            if closed.session.is_some() {
+                button {
+                    class: "link-button undo-button",
+                    onclick: move |_| cockpit.change(actions::undo_close),
+                    "Undo"
+                }
+            }
+            button {
+                class: "icon-button tiny",
+                aria_label: "Dismiss",
+                onclick: move |_| cockpit.update(|state| state.ui.expire_closed(serial)),
+                Icon { kind: IconKind::Close, size: 12 }
             }
         }
     }

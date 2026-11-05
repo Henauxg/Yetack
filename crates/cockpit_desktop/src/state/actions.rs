@@ -16,12 +16,13 @@ use cockpit_protocol::{
 use strum::VariantArray;
 
 use super::app_state::{AgentEntry, AppState, FileRead, Loadable};
+use super::apply::forget_agent;
 use super::drafts::{Drafts, NewAgentDraft, Palette, QuestionDraft, SwitcherDraft};
 use super::requests::{Outgoing, Purpose, Shift, history_request};
 use super::transcript::HistoryState;
 use super::ui_state::{
-    Block, Dialog, FileView, NewAgentForm, NewAgentTab, PaletteOrigin, Popover, TitleEdit,
-    TitlePlace, ViewMode,
+    Block, Dialog, FileView, NewAgentForm, NewAgentTab, PaletteOrigin, Popover, Reopening,
+    TitleEdit, TitlePlace, ViewMode,
 };
 use super::{export, file_edits};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
@@ -277,6 +278,7 @@ pub enum MenuAction {
     ExportConversation,
     /// Turns the header's title into a field.
     Rename,
+    CloseAgent,
     /// A setting: its row holds its choices, which Left and Right move through.
     Model,
     Effort,
@@ -299,6 +301,7 @@ impl MenuAction {
             Self::CompactConversation => "Compact conversation",
             Self::ExportConversation => "Export conversation",
             Self::Rename => "Rename",
+            Self::CloseAgent => "Close agent",
             Self::Model => "Model",
             Self::Effort => "Effort",
             Self::Mode => "Permission mode",
@@ -311,7 +314,8 @@ impl MenuAction {
             | Self::ClearConversation
             | Self::CompactConversation
             | Self::ExportConversation
-            | Self::Rename => MenuSection::Context,
+            | Self::Rename
+            | Self::CloseAgent => MenuSection::Context,
             Self::Model | Self::Effort | Self::Mode => MenuSection::Model,
         }
     }
@@ -328,6 +332,7 @@ impl MenuAction {
             Self::AttachImage
             | Self::ExportConversation
             | Self::Rename
+            | Self::CloseAgent
             | Self::Model
             | Self::Effort
             | Self::Mode => {
@@ -363,7 +368,8 @@ impl MenuAction {
             | Self::ClearConversation
             | Self::CompactConversation
             | Self::ExportConversation
-            | Self::Rename => Vec::new(),
+            | Self::Rename
+            | Self::CloseAgent => Vec::new(),
         };
         let mut words = words.into_iter().chain([self.label()]);
         words.any(|word| word.to_lowercase().contains(query))
@@ -514,6 +520,10 @@ pub fn palette_pick(
             start_rename(state, drafts, agent);
             Picked::default()
         }
+        MenuAction::CloseAgent => Picked {
+            requests: request_close(state, drafts, agent),
+            window: None,
+        },
         MenuAction::Model | MenuAction::Effort | MenuAction::Mode => Picked::default(),
     };
     state.ui.popover = None;
@@ -708,7 +718,8 @@ pub fn setting_choices(summary: &AgentSummary, action: MenuAction) -> Vec<Settin
         | MenuAction::ClearConversation
         | MenuAction::CompactConversation
         | MenuAction::ExportConversation
-        | MenuAction::Rename => Vec::new(),
+        | MenuAction::Rename
+        | MenuAction::CloseAgent => Vec::new(),
     }
 }
 
@@ -736,7 +747,8 @@ pub fn choose_setting(
         | MenuAction::ClearConversation
         | MenuAction::CompactConversation
         | MenuAction::ExportConversation
-        | MenuAction::Rename => None,
+        | MenuAction::Rename
+        | MenuAction::CloseAgent => None,
     };
     requests.unwrap_or_default()
 }
@@ -796,7 +808,8 @@ fn unknown_value_choice(action: MenuAction) -> Option<usize> {
         | MenuAction::ClearConversation
         | MenuAction::CompactConversation
         | MenuAction::ExportConversation
-        | MenuAction::Rename => None,
+        | MenuAction::Rename
+        | MenuAction::CloseAgent => None,
     }
 }
 
@@ -1456,6 +1469,100 @@ fn below_in_order(state: &AppState, row: AgentId, moving: AgentId) -> Option<Age
 /// Shows only the agents of one status in the sidebar, or all of them. The selection stays.
 pub fn set_status_filter(state: &mut AppState, filter: StatusFilter) {
     state.prefs.sidebar.filter = filter;
+}
+
+/// What closing the agent would lose, as the confirmation says it, or `None` when nothing would
+/// be lost and the agent closes at once.
+pub fn close_warning(entry: &AgentEntry, drafts: &Drafts) -> Option<String> {
+    let mut losses = Vec::new();
+    match entry.summary.status {
+        AgentStatus::Working => losses.push("is working"),
+        AgentStatus::NeedsYou => losses.push("waits for your answer"),
+        AgentStatus::Idle | AgentStatus::Exited => {}
+    }
+    if drafts
+        .draft(entry.id())
+        .is_some_and(|draft| !draft.is_empty())
+    {
+        losses.push("holds a message you have not sent");
+    }
+    if losses.is_empty() {
+        return None;
+    }
+    Some(format!("{} {}.", entry.summary.title, losses.join(" and ")))
+}
+
+/// Closes the agent, after asking when it works, waits for you, or holds a draft.
+pub fn request_close(state: &mut AppState, drafts: &mut Drafts, agent: AgentId) -> Vec<Outgoing> {
+    let Some(entry) = state.agents.get(&agent) else {
+        return Vec::new();
+    };
+    if close_warning(entry, drafts).is_some() {
+        state.ui.popover = None;
+        state.ui.dialog = Some(Dialog::CloseAgent(agent));
+        return Vec::new();
+    }
+    close_agent(state, drafts, agent)
+}
+
+/// Closes the agent: it leaves the sidebar at once, with its drafts and file view, and the undo
+/// note offers it back. The selection goes to the next row, or to the one above for the last.
+pub fn close_agent(state: &mut AppState, drafts: &mut Drafts, agent: AgentId) -> Vec<Outgoing> {
+    let ids = |entries: Vec<&AgentEntry>| -> Vec<AgentId> {
+        entries.iter().map(|entry| entry.id()).collect()
+    };
+    let order = ids(state.agents_in_order());
+    let before = order.iter().skip_while(|id| **id != agent).nth(1).copied();
+    let rows = ids(state.sidebar_agents());
+    let neighbour = rows.iter().position(|id| *id == agent).and_then(|index| {
+        let above = index.checked_sub(1).and_then(|above| rows.get(above));
+        rows.get(index + 1).or(above).copied()
+    });
+    let Some(entry) = forget_agent(state, drafts, agent) else {
+        return Vec::new();
+    };
+    state.ui.closing.insert(agent);
+    let summary = &entry.summary;
+    state.ui.note_closed(
+        agent,
+        summary.title.clone(),
+        summary.session.clone(),
+        before,
+    );
+    if state.ui.selected == Some(agent) {
+        match neighbour {
+            Some(next) => select_agent(state, next),
+            None => {
+                state.ui.leave_agent();
+                state.ui.selected = None;
+                state.fix_selection();
+            }
+        }
+    }
+    vec![Outgoing {
+        request: Request::AgentClose(AgentParams { agent }),
+        purpose: Purpose::Close {
+            entry: Box::new(entry),
+        },
+    }]
+}
+
+/// Brings the agent of the undo note back from its session, to the place it left.
+pub fn undo_close(state: &mut AppState) -> Vec<Outgoing> {
+    let Some(closed) = state.ui.closed.take() else {
+        return Vec::new();
+    };
+    let Some(session) = closed.session else {
+        return Vec::new();
+    };
+    state.ui.reopening = Some(Reopening {
+        session: session.clone(),
+        before: closed.before,
+    });
+    vec![Outgoing {
+        request: Request::SessionsResume(SessionResumeParams { session }),
+        purpose: Purpose::Reopen,
+    }]
 }
 
 /// Agents whose title or folder holds the query, the ones that wait for you first: the switcher
@@ -2140,6 +2247,219 @@ mod tests {
         requests.iter().map(|outgoing| &outgoing.request).collect()
     }
 
+    fn event(event: cockpit_protocol::Event) -> cockpit_protocol::EventRecord {
+        cockpit_protocol::EventRecord {
+            seq: cockpit_protocol::Seq::new(1),
+            event,
+        }
+    }
+
+    /// `ordered()` with every agent idle and its own session.
+    fn idle_ordered() -> AppState {
+        let mut state = ordered();
+        for entry in state.agents.values_mut() {
+            entry.summary.status = AgentStatus::Idle;
+            entry.summary.session = Some(ClaudeSessionId::new(format!(
+                "session-{}",
+                entry.id().get()
+            )));
+        }
+        state
+    }
+
+    fn sent_close(requests: &[Outgoing]) -> Option<AgentId> {
+        match &requests.first()?.request {
+            Request::AgentClose(params) => Some(params.agent),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn an_idle_agent_closes_at_once_and_the_next_row_is_selected() {
+        let mut state = idle_ordered();
+        let mut drafts = Drafts::default();
+        open_file(
+            &mut state,
+            AgentId::new(2),
+            PathBuf::from("src/lib.rs"),
+            None,
+        );
+
+        let requests = request_close(&mut state, &mut drafts, AgentId::new(2));
+
+        assert_eq!(sent_close(&requests), Some(AgentId::new(2)));
+        assert_eq!(sidebar(&state), [3, 1]);
+        assert_eq!(state.ui.selected, Some(AgentId::new(1)));
+        assert_eq!(state.ui.file_view(AgentId::new(2)), None);
+        assert_eq!(state.ui.dialog, None);
+        let closed = state.ui.closed.clone().unwrap();
+        assert_eq!(closed.title, "Agent 2");
+        assert_eq!(closed.before, Some(AgentId::new(1)));
+    }
+
+    #[test]
+    fn closing_the_last_row_selects_the_one_above() {
+        let mut state = idle_ordered();
+        state.ui.selected = Some(AgentId::new(1));
+
+        request_close(&mut state, &mut Drafts::default(), AgentId::new(1));
+
+        assert_eq!(state.ui.selected, Some(AgentId::new(2)));
+    }
+
+    #[test]
+    fn a_working_waiting_or_drafted_agent_asks_first() {
+        let mut state = ordered();
+        let mut drafts = Drafts::default();
+        drafts.draft_mut(AgentId::new(3)).text = "One more thing".to_owned();
+        let warning = |state: &AppState, drafts: &Drafts, agent: u32| {
+            close_warning(&state.agents[&AgentId::new(agent)], drafts)
+        };
+
+        let working = warning(&state, &drafts, 2);
+        let waiting_with_draft = warning(&state, &drafts, 3);
+        let idle = warning(&state, &drafts, 1);
+        let asked = request_close(&mut state, &mut drafts, AgentId::new(2));
+        let shown = sidebar(&state);
+        let confirmed = close_agent(&mut state, &mut drafts, AgentId::new(2));
+
+        assert_eq!(working.as_deref(), Some("Agent 2 is working."));
+        assert_eq!(
+            waiting_with_draft.as_deref(),
+            Some("Agent 3 waits for your answer and holds a message you have not sent.")
+        );
+        assert_eq!(idle, None);
+        assert!(asked.is_empty());
+        assert_eq!(shown, [3, 2, 1], "nothing closed before the answer");
+        assert_eq!(sent_close(&confirmed), Some(AgentId::new(2)));
+        assert_eq!(state.ui.dialog, None);
+        assert_eq!(sidebar(&state), [3, 1]);
+    }
+
+    #[test]
+    fn a_closing_agent_stays_off_until_the_daemon_removes_it() {
+        let mut state = idle_ordered();
+        let mut drafts = Drafts::default();
+        let late = state.agents[&AgentId::new(2)].summary.clone();
+        request_close(&mut state, &mut drafts, AgentId::new(2));
+
+        let alert = crate::state::apply::apply(
+            &mut state,
+            &mut drafts,
+            event(cockpit_protocol::Event::AgentUpdated(late)),
+        );
+        let before_removal = sidebar(&state);
+        crate::state::apply::apply(
+            &mut state,
+            &mut drafts,
+            event(cockpit_protocol::Event::AgentRemoved {
+                agent: AgentId::new(2),
+            }),
+        );
+
+        assert_eq!(alert, None);
+        assert_eq!(before_removal, [3, 1]);
+        assert!(state.ui.closing.is_empty());
+    }
+
+    #[test]
+    fn a_refused_close_brings_the_agent_back_unless_the_daemon_has_none() {
+        let mut drafts = Drafts::default();
+        let refused = |code| {
+            Err(RequestError::Failed(ErrorBody::new(
+                code,
+                "refused".to_owned(),
+            )))
+        };
+        let mut failed = idle_ordered();
+        let mut gone = idle_ordered();
+
+        for (state, code) in [
+            (&mut failed, ErrorCode::Internal),
+            (&mut gone, ErrorCode::NotFound),
+        ] {
+            let requests = request_close(state, &mut drafts, AgentId::new(2));
+            for outgoing in requests {
+                let method = outgoing.request.method();
+                apply_response(state, &mut drafts, method, outgoing.purpose, refused(code));
+            }
+        }
+
+        assert_eq!(sidebar(&failed), [3, 2, 1]);
+        assert_eq!(failed.ui.closed, None);
+        assert_eq!(failed.ui.errors.len(), 1);
+        assert_eq!(sidebar(&gone), [3, 1]);
+        assert!(gone.ui.errors.is_empty());
+        assert!(failed.ui.closing.is_empty() && gone.ui.closing.is_empty());
+    }
+
+    #[test]
+    fn undo_brings_the_session_back_to_its_place() {
+        let mut state = idle_ordered();
+        let mut drafts = Drafts::default();
+        let mut back = state.agents[&AgentId::new(2)].summary.clone();
+        request_close(&mut state, &mut drafts, AgentId::new(2));
+        crate::state::apply::apply(
+            &mut state,
+            &mut drafts,
+            event(cockpit_protocol::Event::AgentRemoved {
+                agent: AgentId::new(2),
+            }),
+        );
+
+        let undone = undo_close(&mut state);
+        // The daemon starts a new agent from the session, on top of the list.
+        back.id = AgentId::new(4);
+        back.position = cockpit_protocol::Position::new(4096);
+        crate::state::apply::apply(
+            &mut state,
+            &mut drafts,
+            event(cockpit_protocol::Event::AgentAdded(back)),
+        );
+        apply_response(
+            &mut state,
+            &mut drafts,
+            Method::SessionsResume,
+            Purpose::Reopen,
+            Ok(ResponseBody::AgentStarted {
+                agent: AgentId::new(4),
+            }),
+        );
+        let moved = needed_requests(&mut state);
+
+        assert!(matches!(
+            undone.first().map(|outgoing| &outgoing.request),
+            Some(Request::SessionsResume(params)) if params.session.as_str() == "session-2"
+        ));
+        assert_eq!(
+            sent_move(&moved),
+            Some(MoveParams {
+                agent: AgentId::new(4),
+                before: Some(AgentId::new(1)),
+            })
+        );
+        assert_eq!(sidebar(&state), [3, 4, 1]);
+        assert_eq!(state.ui.selected, Some(AgentId::new(4)));
+        assert_eq!(state.ui.reopening, None);
+        assert!(
+            undo_close(&mut state).is_empty(),
+            "the note went with the undo"
+        );
+    }
+
+    #[test]
+    fn an_agent_without_a_session_closes_without_undo() {
+        let mut state = idle_ordered();
+        if let Some(entry) = state.agents.get_mut(&AgentId::new(2)) {
+            entry.summary.session = None;
+        }
+
+        request_close(&mut state, &mut Drafts::default(), AgentId::new(2));
+
+        assert!(state.ui.closed.is_some());
+        assert!(undo_close(&mut state).is_empty());
+    }
+
     #[test]
     fn the_menu_filter_matches_actions_settings_and_commands() {
         let commands = vec![
@@ -2157,6 +2477,7 @@ mod tests {
                 "Compact conversation",
                 "Export conversation",
                 "Rename",
+                "Close agent",
                 "Model",
                 "Effort",
                 "Permission mode",
@@ -2203,7 +2524,7 @@ mod tests {
         };
 
         let up_at_the_top = press(Direction::Up, 1);
-        let on_the_first_command = press(Direction::Down, 8);
+        let on_the_first_command = press(Direction::Down, 9);
         let at_the_bottom = press(Direction::Down, 5);
         let back_on_the_settings = press(Direction::Up, 3);
 
@@ -2214,7 +2535,7 @@ mod tests {
                 at_the_bottom,
                 back_on_the_settings
             ),
-            (0, 8, 9, 6)
+            (0, 9, 10, 7)
         );
     }
 

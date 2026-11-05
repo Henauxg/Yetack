@@ -1335,6 +1335,33 @@ fn live_test_output(id: u32) -> String {
     )
 }
 
+/// Brings back an agent the app closed, as a daemon would from its session: on top of the list,
+/// under its old id. Answers `sessions.resume` for a session in `closed`, and nothing else.
+pub fn reopen(
+    state: &mut AppState,
+    closed: &mut Vec<AgentEntry>,
+    request: &Request,
+) -> Option<Result<ResponseBody, RequestError>> {
+    let Request::SessionsResume(params) = request else {
+        return None;
+    };
+    let index = closed
+        .iter()
+        .position(|entry| entry.summary.session.as_ref() == Some(&params.session))?;
+    let mut entry = closed.remove(index);
+    let top = state
+        .agents
+        .values()
+        .map(|other| other.summary.position.get())
+        .max()
+        .unwrap_or(0);
+    entry.summary.position = Position::new(top.saturating_add(POSITION_STEP));
+    let agent = entry.id();
+    state.ui.closing.remove(&agent);
+    state.agents.insert(agent, entry);
+    Some(Ok(ResponseBody::AgentStarted { agent }))
+}
+
 /// One step of the live agent, as its daemon would send it: tick by tick, a test command starts,
 /// then ends with its output, which makes its entry taller, then a line of text, then a read.
 pub fn live_tick(state: &mut AppState, tick: u32) {
@@ -1555,6 +1582,33 @@ pub struct ParseError {
             read("cache.rs"),
             Err(RequestError::Failed(body)) if body.code == ErrorCode::NotFound
         ));
+    }
+
+    #[test]
+    fn undo_brings_back_an_agent_the_demo_closed() {
+        let mut state = state(label());
+        let mut drafts = crate::state::Drafts::default();
+        let closing =
+            crate::state::actions::request_close(&mut state, &mut drafts, AgentId::new(5));
+        let mut closed: Vec<AgentEntry> = closing
+            .iter()
+            .filter_map(|outgoing| match &outgoing.purpose {
+                crate::state::Purpose::Close { entry } => Some(entry.as_ref().clone()),
+                _ => None,
+            })
+            .collect();
+        let undo = crate::state::actions::undo_close(&mut state);
+
+        let reopened = undo
+            .first()
+            .and_then(|outgoing| reopen(&mut state, &mut closed, &outgoing.request));
+
+        assert!(matches!(
+            reopened,
+            Some(Ok(ResponseBody::AgentStarted { agent })) if agent == AgentId::new(5)
+        ));
+        assert!(state.agents.contains_key(&AgentId::new(5)));
+        assert!(closed.is_empty());
     }
 
     #[test]

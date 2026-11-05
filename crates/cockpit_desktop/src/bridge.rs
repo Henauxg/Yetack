@@ -160,6 +160,9 @@ document.addEventListener("keydown", (event) => {
   let take = false;
   if (command && !event.altKey && !event.shiftKey && (letter === "k" || letter === "n")) {
     take = true;
+  } else if (command && !event.altKey && event.shiftKey && letter === "w") {
+    // Ctrl+Shift+W closes the selected agent. The file view takes Ctrl+W alone.
+    take = true;
   } else if (key === "Escape") {
     take = true;
   } else if (key === "F2" && plain && !event.shiftKey) {
@@ -308,8 +311,8 @@ struct Settings {
     undo_steps: u16,
 }
 
-/// Which plain keys the script takes, beyond Ctrl+K, Ctrl+N, Esc, F2, Alt+Up, Alt+Down and the
-/// composer's Enter.
+/// Which plain keys the script takes, beyond Ctrl+K, Ctrl+N, Ctrl+Shift+W, Esc, F2, Alt+Up,
+/// Alt+Down and the composer's Enter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 struct KeyMode {
     /// Y and N answer an approval or a plan.

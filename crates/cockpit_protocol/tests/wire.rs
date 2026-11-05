@@ -455,6 +455,7 @@ fn requests() -> Vec<Request> {
         Request::AgentStop(AgentParams { agent }),
         Request::AgentResume(AgentParams { agent }),
         Request::AgentRemove(AgentParams { agent }),
+        Request::AgentClose(AgentParams { agent }),
         Request::AgentHistory(HistoryParams {
             agent,
             before: Some(ItemId::new(40)),
@@ -743,6 +744,7 @@ fn method_names_are_pinned() {
             "agent.stop",
             "agent.resume",
             "agent.remove",
+            "agent.close",
             "agent.history",
             "agent.details",
             "agent.set_model",
@@ -992,6 +994,23 @@ fn a_rename_request_on_the_wire() {
                 "method": "agent.rename",
                 "params": {"agent": 3, "title": "Login form"},
             },
+        }),
+    );
+}
+
+#[test]
+fn a_close_request_on_the_wire() {
+    let message = ClientMessage::Request {
+        id: RequestId::new(11),
+        request: Request::AgentClose(AgentParams { agent: agent() }),
+    };
+
+    assert_wire(
+        &message,
+        json!({
+            "type": "request",
+            "id": 11,
+            "request": {"method": "agent.close", "params": {"agent": 3}},
         }),
     );
 }

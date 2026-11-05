@@ -9,7 +9,7 @@ use cockpit_protocol::{
 };
 
 use super::actions;
-use super::app_state::{AppState, FileRead, Loadable};
+use super::app_state::{AgentEntry, AppState, FileRead, Loadable};
 use super::drafts::{Draft, Drafts};
 use super::transcript::HistoryState;
 use super::ui_state::Dialog;
@@ -61,6 +61,13 @@ pub enum Purpose {
     Move {
         shifts: Vec<Shift>,
     },
+    /// `agent.close`, whose agent the app already took off. It comes back when the close fails,
+    /// unless the daemon has no such agent.
+    Close {
+        entry: Box<AgentEntry>,
+    },
+    /// `sessions.resume` from the undo note: the agent opens, then goes back to its place.
+    Reopen,
 }
 
 /// An agent's position before and after a move the daemon has not answered yet.
@@ -86,6 +93,18 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
     let mut requests = Vec::new();
     if !state.is_connected() {
         return requests;
+    }
+    if let Some(reopening) = &state.ui.reopening {
+        let back = state
+            .agents
+            .values()
+            .find(|entry| entry.summary.session.as_ref() == Some(&reopening.session))
+            .map(AgentEntry::id);
+        if let Some(agent) = back {
+            let before = reopening.before;
+            state.ui.reopening = None;
+            requests.extend(actions::move_agent(state, agent, before));
+        }
     }
     if matches!(state.ui.dialog, Some(Dialog::NewAgent(_)))
         && state.sessions == Loadable::NotRequested
@@ -301,6 +320,31 @@ pub fn apply_response(
                     .report(format!("The agent was not moved: {}", failure.message));
             }
         }
+        // On success the agent stays among the closing ones until its `AgentRemoved`, so that an
+        // event sent before the close does not bring it back.
+        Purpose::Close { entry } => {
+            if let Err(failure) = result {
+                let agent = entry.id();
+                state.ui.closing.remove(&agent);
+                state.ui.closed.take_if(|closed| closed.agent == agent);
+                if !failure.not_found {
+                    state.agents.entry(agent).or_insert(*entry);
+                    state
+                        .ui
+                        .report(format!("The agent was not closed: {}", failure.message));
+                }
+            }
+        }
+        Purpose::Reopen => match result {
+            Ok(ResponseBody::AgentStarted { agent }) => actions::select_agent(state, agent),
+            other => {
+                state.ui.reopening = None;
+                let failure = Failure::from_result(other);
+                state
+                    .ui
+                    .report(format!("The agent did not come back: {}", failure.message));
+            }
+        },
     }
 }
 

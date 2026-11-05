@@ -9,7 +9,7 @@ use super::app_state::AppState;
 use super::drafts::Drafts;
 use super::requests::Outgoing;
 use super::transcript::WaitingKind;
-use super::ui_state::{PaletteOrigin, Popover};
+use super::ui_state::{Dialog, PaletteOrigin, Popover};
 
 /// `KeyboardEvent.key` values.
 const KEY_ESCAPE: &str = "Escape";
@@ -59,6 +59,14 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
             _ => {}
         }
         return Vec::new();
+    }
+    // Ctrl+Shift+W asks to close the selected agent, and confirms when asked.
+    if command && !press.alt && press.shift && letter == "w" {
+        return match (&state.ui.dialog, state.ui.selected) {
+            (Some(Dialog::CloseAgent(agent)), _) => actions::close_agent(state, drafts, *agent),
+            (None, Some(agent)) => actions::request_close(state, drafts, agent),
+            (Some(_), _) | (None, None) => Vec::new(),
+        };
     }
     // Esc only closes what is open: the Stop button alone stops an agent, so a stray Esc never
     // cuts a turn short.
@@ -581,6 +589,29 @@ mod tests {
         assert_eq!(from_page, Some(TitlePlace::Sidebar));
         assert_eq!(from_header, Some(TitlePlace::Sidebar));
         assert_eq!(place(&state), None, "nothing behind a dialog");
+    }
+
+    #[test]
+    fn ctrl_shift_w_asks_to_close_the_selected_agent_and_confirms_when_asked() {
+        let mut drafts = Drafts::default();
+        let mut state = state(AgentStatus::Working, None);
+        let close = KeyPress {
+            shift: true,
+            key: "W".to_owned(),
+            ..ctrl("w")
+        };
+
+        let asked = handle_key(&mut state, &mut drafts, &close);
+        let dialog = state.ui.dialog.clone();
+        let confirmed = handle_key(&mut state, &mut drafts, &close);
+
+        assert!(asked.is_empty());
+        assert_eq!(dialog, Some(Dialog::CloseAgent(AgentId::new(1))));
+        assert!(matches!(
+            confirmed.first().map(|outgoing| &outgoing.request),
+            Some(Request::AgentClose(params)) if params.agent == AgentId::new(1)
+        ));
+        assert!(state.agents.is_empty());
     }
 
     #[test]

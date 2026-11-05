@@ -30,6 +30,7 @@ impl ControlPurpose {
             Self::Initialize
             | Self::ContextRefresh
             | Self::DefaultEffort
+            | Self::Closing
             | Self::SetMode { reply: None, .. }
             | Self::McpStatus(None) => {}
         }
@@ -167,6 +168,8 @@ impl Hub {
                     .map_err(|failure| errors::control_failed(id, failure));
                 agents::respond(reply, result);
             }
+            // A closed agent leaves the hub at once: its answers go to `fail`.
+            ControlPurpose::Closing => {}
         }
         if record_changed {
             self.save_agents();
