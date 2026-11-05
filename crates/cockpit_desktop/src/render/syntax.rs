@@ -6,6 +6,8 @@ use std::sync::LazyLock;
 use strum::IntoStaticStr;
 use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxReference, SyntaxSet};
 
+use super::capped::{self, Capped};
+
 /// The default syntaxes, loaded once: loading them takes a few milliseconds.
 static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
 
@@ -187,6 +189,19 @@ pub fn highlight(code: &str, language: Option<Language>) -> Vec<Vec<Span>> {
         lines.push(merge_spans(spans));
     }
     lines
+}
+
+/// `highlight` of the first `max_lines` lines of `code` only.
+pub fn highlight_capped(
+    code: &str,
+    language: Option<Language>,
+    max_lines: usize,
+) -> Capped<Vec<Span>> {
+    let (head, more) = capped::split_lines(code, max_lines);
+    Capped {
+        rows: highlight(head, language),
+        more,
+    }
 }
 
 /// Parses a text line by line, keeping the grammar's state between lines.
@@ -505,6 +520,25 @@ mod tests {
         let lines = highlight(code, language("rust"));
 
         assert_eq!(class_of(&lines, "second\""), TokenClass::String);
+    }
+
+    #[test]
+    fn a_code_block_shows_its_first_five_thousand_lines() {
+        let code: String = (1..=5_003)
+            .map(|number| format!("x = {number}\n"))
+            .collect();
+
+        let shown = highlight_capped(&code, language("python"), capped::MAX_RENDERED_LINES);
+
+        assert_eq!((shown.rows.len(), shown.more), (5_000, 3));
+        let last: Vec<&str> = shown
+            .rows
+            .last()
+            .into_iter()
+            .flatten()
+            .map(|span| span.text.as_str())
+            .collect();
+        assert_eq!(last.concat(), "x = 5000");
     }
 
     #[test]

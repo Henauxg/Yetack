@@ -9,9 +9,9 @@ use cockpit_protocol::{
 use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
-use crate::render::{DiffRow, Language, diff_lines};
+use crate::render::{Diff, Language, MAX_RENDERED_LINES, diff_lines};
 use crate::state::{actions, file_edits};
-use crate::ui::code::{LineNumbers, diff_row};
+use crate::ui::code::{LineNumbers, diff_row, lines_not_shown};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::markdown::MarkdownView;
 
@@ -43,7 +43,7 @@ pub fn ApprovalCard(agent: AgentId, folder: PathBuf, approval: Approval) -> Elem
     } else {
         format!("Claude asks to use {}", approval.tool)
     };
-    let rows: Vec<DiffRow> = approval
+    let diff: Diff = approval
         .edit
         .as_ref()
         .map(|edit| {
@@ -53,6 +53,7 @@ pub fn ApprovalCard(agent: AgentId, folder: PathBuf, approval: Approval) -> Elem
                 Language::from_path(&edit.path),
                 2,
                 1,
+                MAX_RENDERED_LINES,
             )
         })
         .unwrap_or_default();
@@ -90,12 +91,14 @@ pub fn ApprovalCard(agent: AgentId, folder: PathBuf, approval: Approval) -> Elem
             if let Some(input) = input {
                 pre { class: "approval-input mono scroll", "{input}" }
             }
-            // Every row: what is allowed must show in full before it is allowed.
-            if !rows.is_empty() {
+            // Every row up to the cap, and past it a line that says how much is left out: what is
+            // allowed must show before it is allowed.
+            if !diff.rows.is_empty() {
                 div { class: "diff-box scroll-x approval-diff",
-                    for row in rows.iter() {
+                    for row in diff.rows.iter() {
                         {diff_row(row, numbers, None)}
                     }
+                    {lines_not_shown(diff.more)}
                 }
             }
             if let Some(reason) = &approval.reason {

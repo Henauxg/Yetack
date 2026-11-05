@@ -11,7 +11,7 @@ use cockpit_protocol::{
 use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
-use crate::render::{DiffRow, Language, LineKind, diff_lines};
+use crate::render::{Diff, Language, diff_lines};
 use crate::state::{HistoryState, actions, file_edits};
 use crate::ui::cards::{ApprovalCard, PlanCard, QuestionCard};
 use crate::ui::code::{LineNumbers, diff_row};
@@ -342,16 +342,19 @@ fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall) -> Element {
     };
     let language = Language::from_path(&edit.path);
     let created = edit.old_text.is_empty();
-    let rows = diff_lines(
+    let Diff {
+        rows: preview,
+        more,
+        added,
+        removed,
+    } = diff_lines(
         &edit.old_text,
         &edit.new_text,
         language,
         EDIT_CONTEXT_LINES,
         1,
+        EDIT_PREVIEW_ROWS,
     );
-    let (added, removed) = line_counts(&rows);
-    let more = rows.len().saturating_sub(EDIT_PREVIEW_ROWS);
-    let preview: Vec<DiffRow> = rows.into_iter().take(EDIT_PREVIEW_ROWS).collect();
     let numbers = if created {
         LineNumbers::Shown
     } else {
@@ -405,21 +408,6 @@ fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall) -> Element {
             }
         }
     }
-}
-
-fn line_counts(rows: &[DiffRow]) -> (usize, usize) {
-    let mut added = 0;
-    let mut removed = 0;
-    for row in rows {
-        if let DiffRow::Line(line) = row {
-            match line.kind {
-                LineKind::Added => added += 1,
-                LineKind::Removed => removed += 1,
-                LineKind::Context => {}
-            }
-        }
-    }
-    (added, removed)
 }
 
 #[component]

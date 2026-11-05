@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use similar::{ChangeTag, DiffOp, TextDiff};
 
+use super::capped::{self, Capped};
 use super::syntax::{self, Language, Span, TokenClass};
 
 /// How long a diff may take before similar approximates it, so a huge file cannot freeze the UI.
@@ -43,16 +44,31 @@ pub enum DiffRow {
     },
 }
 
+/// The first rows of a diff, and its line counts.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Diff {
+    /// At most the number of rows asked for.
+    pub rows: Vec<DiffRow>,
+    /// The diff's lines after `rows`, left out.
+    pub more: usize,
+    /// Added lines in the whole diff, `more` included.
+    pub added: usize,
+    /// Removed lines in the whole diff, `more` included.
+    pub removed: usize,
+}
+
 /// Lines are numbered from `first_line` (1 for a whole file). Unchanged lines more than `context`
 /// lines away from a change are left out: a `Folded` row between two groups of changes, nothing
-/// before the first group or after the last. Equal texts give no row.
+/// before the first group or after the last. Equal texts give no row. The rows stop at
+/// `max_rows`: the lines past it are only counted.
 pub fn diff_lines(
     old: &str,
     new: &str,
     language: Option<Language>,
     context: usize,
     first_line: u32,
-) -> Vec<DiffRow> {
+    max_rows: usize,
+) -> Diff {
     let old_lines: Vec<&str> = old.lines().collect();
     let new_lines: Vec<&str> = new.lines().collect();
     let started = Instant::now();
@@ -60,13 +76,13 @@ pub fn diff_lines(
         .timeout(DIFF_TIMEOUT)
         .diff_slices(&old_lines, &new_lines);
     let groups = diff.grouped_ops(context);
+    let mut result = Diff::default();
     if groups.is_empty() {
-        return Vec::new();
+        return result;
     }
     let old_spans = syntax::highlight(old, language);
     let new_spans = syntax::highlight(new, language);
     let deadline = started.checked_add(DIFF_TIMEOUT);
-    let mut rows = Vec::new();
     let mut previous_end: Option<usize> = None;
     for group in &groups {
         let (Some(first), Some(last)) = (group.first(), group.last()) else {
@@ -74,26 +90,131 @@ pub fn diff_lines(
         };
         if let Some(end) = previous_end {
             let skipped = first.old_range().start.saturating_sub(end);
-            if skipped > 0 {
-                rows.push(DiffRow::Folded {
+            if skipped > 0 && result.rows.len() < max_rows {
+                result.rows.push(DiffRow::Folded {
                     lines: u32::try_from(skipped).unwrap_or(u32::MAX),
                 });
             }
         }
         previous_end = Some(last.old_range().end);
         for operation in group {
-            push_operation(
-                &mut rows, &diff, operation, deadline, &old_spans, &new_spans, first_line,
-            );
+            result.count_changes(operation);
+            let lines = row_count(operation);
+            let shown = lines.min(max_rows.saturating_sub(result.rows.len()));
+            result.more += lines - shown;
+            if shown > 0 {
+                let operation = truncated(operation, shown);
+                push_operation(
+                    &mut result.rows,
+                    &diff,
+                    &operation,
+                    deadline,
+                    &old_spans,
+                    &new_spans,
+                    first_line,
+                );
+            }
         }
     }
-    rows
+    result
 }
 
-/// Every line of `text` as `Context` with syntax colors, for the file view's "Whole file" mode.
-pub fn plain_lines(text: &str, language: Option<Language>, first_line: u32) -> Vec<DiffLine> {
+impl Diff {
+    fn count_changes(&mut self, operation: &DiffOp) {
+        match *operation {
+            DiffOp::Equal { .. } => {}
+            DiffOp::Delete { old_len, .. } => self.removed += old_len,
+            DiffOp::Insert { new_len, .. } => self.added += new_len,
+            DiffOp::Replace {
+                old_len, new_len, ..
+            } => {
+                self.removed += old_len;
+                self.added += new_len;
+            }
+        }
+    }
+}
+
+/// The rows an operation gives: one per unchanged, removed or added line.
+fn row_count(operation: &DiffOp) -> usize {
+    match *operation {
+        DiffOp::Equal { len, .. } => len,
+        DiffOp::Delete { old_len, .. } => old_len,
+        DiffOp::Insert { new_len, .. } => new_len,
+        DiffOp::Replace {
+            old_len, new_len, ..
+        } => old_len + new_len,
+    }
+}
+
+/// `operation` cut to its first `limit` rows. A replacement shows its removed lines, then its
+/// added ones.
+fn truncated(operation: &DiffOp, limit: usize) -> DiffOp {
+    match *operation {
+        DiffOp::Equal {
+            old_index,
+            new_index,
+            len,
+        } => DiffOp::Equal {
+            old_index,
+            new_index,
+            len: len.min(limit),
+        },
+        DiffOp::Delete {
+            old_index,
+            old_len,
+            new_index,
+        } => DiffOp::Delete {
+            old_index,
+            old_len: old_len.min(limit),
+            new_index,
+        },
+        DiffOp::Insert {
+            old_index,
+            new_index,
+            new_len,
+        } => DiffOp::Insert {
+            old_index,
+            new_index,
+            new_len: new_len.min(limit),
+        },
+        DiffOp::Replace {
+            old_index,
+            old_len,
+            new_index,
+            new_len,
+        } => {
+            let old_len = old_len.min(limit);
+            let new_len = new_len.min(limit - old_len);
+            if new_len == 0 {
+                DiffOp::Delete {
+                    old_index,
+                    old_len,
+                    new_index,
+                }
+            } else {
+                DiffOp::Replace {
+                    old_index,
+                    old_len,
+                    new_index,
+                    new_len,
+                }
+            }
+        }
+    }
+}
+
+/// The first `max_lines` lines of `text` as `Context` with syntax colors, for the file view's
+/// "Whole file" mode.
+pub fn plain_lines(
+    text: &str,
+    language: Option<Language>,
+    first_line: u32,
+    max_lines: usize,
+) -> Capped<DiffLine> {
+    let (head, more) = capped::split_lines(text, max_lines);
     let mut lines = Vec::new();
-    for (index, spans) in syntax::highlight(text, language).into_iter().enumerate() {
+    for (index, spans) in syntax::highlight(head, language).into_iter().enumerate() {
         let number = line_number(index, first_line);
         lines.push(DiffLine {
             kind: LineKind::Context,
@@ -102,7 +223,7 @@ pub fn plain_lines(text: &str, language: Option<Language>, first_line: u32) -> V
             segments: segments(&spans, &[]),
         });
     }
-    lines
+    Capped { rows: lines, more }
 }
 
 fn push_operation(
@@ -214,6 +335,14 @@ fn push_segment(segments: &mut Vec<Segment>, text: &str, class: TokenClass, emph
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::MAX_RENDERED_LINES;
+
+    /// Five thousand and three numbered lines.
+    fn long_text() -> String {
+        (1..=5_003)
+            .map(|number| format!("line {number}\n"))
+            .collect()
+    }
 
     /// A row as `(kind sign, old number, new number, text with emphasized parts in brackets)`.
     fn summary(row: &DiffRow) -> (String, Option<u32>, Option<u32>, String) {
@@ -253,7 +382,15 @@ mod tests {
 
     #[test]
     fn an_added_line_comes_with_its_context() {
-        let rows = diff_lines("one\ntwo\nthree\n", "one\ntwo\nnew\nthree\n", None, 1, 1);
+        let rows = diff_lines(
+            "one\ntwo\nthree\n",
+            "one\ntwo\nnew\nthree\n",
+            None,
+            1,
+            1,
+            MAX_RENDERED_LINES,
+        )
+        .rows;
 
         assert_eq!(
             summaries(&rows),
@@ -267,14 +404,30 @@ mod tests {
 
     #[test]
     fn a_removed_line_keeps_its_old_number() {
-        let rows = diff_lines("one\ntwo\nthree", "one\nthree", None, 0, 1);
+        let rows = diff_lines(
+            "one\ntwo\nthree",
+            "one\nthree",
+            None,
+            0,
+            1,
+            MAX_RENDERED_LINES,
+        )
+        .rows;
 
         assert_eq!(summaries(&rows), vec![row("-", Some(2), None, "two")]);
     }
 
     #[test]
     fn a_changed_word_is_the_only_emphasized_part() {
-        let rows = diff_lines("let size = small;\n", "let size = large;\n", None, 3, 1);
+        let rows = diff_lines(
+            "let size = small;\n",
+            "let size = large;\n",
+            None,
+            3,
+            1,
+            MAX_RENDERED_LINES,
+        )
+        .rows;
 
         assert_eq!(
             summaries(&rows),
@@ -287,7 +440,15 @@ mod tests {
 
     #[test]
     fn a_fully_different_line_has_no_emphasis() {
-        let rows = diff_lines("alpha beta\n", "gamma delta\n", None, 3, 1);
+        let rows = diff_lines(
+            "alpha beta\n",
+            "gamma delta\n",
+            None,
+            3,
+            1,
+            MAX_RENDERED_LINES,
+        )
+        .rows;
 
         assert_eq!(
             summaries(&rows),
@@ -305,7 +466,7 @@ mod tests {
             .replace("line 2\n", "line two\n")
             .replace("line 18\n", "line eighteen\n");
 
-        let rows = diff_lines(&old, &new, None, 2, 1);
+        let rows = diff_lines(&old, &new, None, 2, 1, MAX_RENDERED_LINES).rows;
 
         let folded: Vec<u32> = rows
             .iter()
@@ -324,7 +485,7 @@ mod tests {
 
     #[test]
     fn a_created_file_is_all_added() {
-        let rows = diff_lines("", "first\nsecond\n", None, 3, 1);
+        let rows = diff_lines("", "first\nsecond\n", None, 3, 1, MAX_RENDERED_LINES).rows;
 
         assert_eq!(
             summaries(&rows),
@@ -337,7 +498,15 @@ mod tests {
 
     #[test]
     fn numbers_start_at_the_first_line() {
-        let rows = diff_lines("keep\nold\n", "keep\nnew\n", None, 1, 40);
+        let rows = diff_lines(
+            "keep\nold\n",
+            "keep\nnew\n",
+            None,
+            1,
+            40,
+            MAX_RENDERED_LINES,
+        )
+        .rows;
 
         assert_eq!(
             summaries(&rows),
@@ -352,7 +521,7 @@ mod tests {
     #[test]
     fn equal_texts_give_no_row() {
         assert_eq!(
-            diff_lines("same\ntext\n", "same\ntext", None, 3, 1),
+            diff_lines("same\ntext\n", "same\ntext", None, 3, 1, MAX_RENDERED_LINES).rows,
             Vec::new()
         );
     }
@@ -361,7 +530,15 @@ mod tests {
     fn segments_carry_syntax_classes_and_emphasis() {
         let language = Language::from_tag("rust");
 
-        let rows = diff_lines("let total = 1;\n", "let total = 22;\n", language, 0, 1);
+        let rows = diff_lines(
+            "let total = 1;\n",
+            "let total = 22;\n",
+            language,
+            0,
+            1,
+            MAX_RENDERED_LINES,
+        )
+        .rows;
 
         let Some(DiffRow::Line(added)) = rows.get(1) else {
             panic!("expected an added line in {rows:?}");
@@ -382,7 +559,13 @@ mod tests {
 
     #[test]
     fn whole_file_lines_are_context_with_colors() {
-        let lines = plain_lines("fn main() {}\n\n", Language::from_tag("rust"), 1);
+        let lines = plain_lines(
+            "fn main() {}\n\n",
+            Language::from_tag("rust"),
+            1,
+            MAX_RENDERED_LINES,
+        )
+        .rows;
 
         assert_eq!(lines.len(), 2);
         let first = lines.first().expect("a first line");
@@ -393,6 +576,44 @@ mod tests {
             Some(TokenClass::Keyword)
         );
         assert_eq!(lines.get(1).map(|line| line.segments.len()), Some(0));
+    }
+
+    #[test]
+    fn the_whole_file_shows_its_first_five_thousand_lines() {
+        let lines = plain_lines(&long_text(), None, 1, MAX_RENDERED_LINES);
+
+        assert_eq!((lines.rows.len(), lines.more), (5_000, 3));
+        let last = lines.rows.last().expect("a last line");
+        assert_eq!(last.new_number, Some(5_000));
+    }
+
+    #[test]
+    fn a_huge_written_file_shows_its_first_five_thousand_rows_and_counts_them_all() {
+        let diff = diff_lines("", &long_text(), None, 3, 1, MAX_RENDERED_LINES);
+
+        assert_eq!(diff.rows.len(), 5_000);
+        assert_eq!((diff.more, diff.added, diff.removed), (3, 5_003, 0));
+        let last = diff.rows.last().map(summary);
+        assert_eq!(last, Some(row("+", None, Some(5_000), "line 5000")));
+    }
+
+    #[test]
+    fn the_cap_cuts_a_replacement_and_counts_the_later_groups() {
+        let old = "one\ntwo\nkeep 1\nkeep 2\nkeep 3\nkeep 4\nfive\n";
+        let new = "ONE\nTWO\nkeep 1\nkeep 2\nkeep 3\nkeep 4\nFIVE\n";
+
+        let diff = diff_lines(old, new, None, 0, 1, 3);
+
+        assert_eq!(
+            summaries(&diff.rows),
+            vec![
+                row("-", Some(1), None, "one"),
+                row("-", Some(2), None, "two"),
+                row("+", None, Some(1), "ONE"),
+            ]
+        );
+        // The second line of the first change, then the last change's two lines.
+        assert_eq!((diff.more, diff.added, diff.removed), (3, 3, 3));
     }
 
     #[test]

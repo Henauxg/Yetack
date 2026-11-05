@@ -8,9 +8,9 @@ use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
 use crate::format;
-use crate::render::{self, Language, diff_lines};
+use crate::render::{self, Diff, Language, MAX_RENDERED_LINES, diff_lines};
 use crate::state::{Loadable, ViewMode, actions, file_edits};
-use crate::ui::code::{LineNumbers, diff_line, diff_row};
+use crate::ui::code::{LineNumbers, diff_line, diff_row, lines_not_shown};
 use crate::ui::icons::{Icon, IconKind};
 
 /// Unchanged lines kept around each change of the file view's diff.
@@ -149,42 +149,66 @@ fn FileContent(
 ) -> Element {
     let language = Language::from_path(&path);
     if mode == ViewMode::WholeFile || edits.is_empty() {
-        let lines = render::plain_lines(&text, language, 1);
+        let lines = render::plain_lines(&text, language, 1, MAX_RENDERED_LINES);
         return rsx! {
             if mode == ViewMode::Diff {
                 p { class: "file-note", "This agent did not change the file. Here is its text." }
             }
-            for row in lines.iter() {
+            for row in lines.rows.iter() {
                 {diff_line(row, LineNumbers::Shown, line)}
             }
+            {lines_not_shown(lines.more)}
         };
     }
     let edit_refs: Vec<&FileEdit> = edits.iter().collect();
     if let Some(original) = file_edits::original_text(&text, &edit_refs) {
-        let rows = diff_lines(&original, &text, language, FILE_DIFF_CONTEXT, 1);
-        if rows.is_empty() {
+        let diff = diff_lines(
+            &original,
+            &text,
+            language,
+            FILE_DIFF_CONTEXT,
+            1,
+            MAX_RENDERED_LINES,
+        );
+        if diff.rows.is_empty() {
             return rsx! {
                 p { class: "file-note", "The file is back to its text before the edits." }
             };
         }
         return rsx! {
-            for row in rows.iter() {
+            for row in diff.rows.iter() {
                 {diff_row(row, LineNumbers::Shown, line)}
             }
+            {lines_not_shown(diff.more)}
         };
     }
     // Another change hides where the edits were: each edit shows on its own, without line
-    // numbers.
+    // numbers. The edits share the cap.
     let count = edits.len();
+    let mut left = MAX_RENDERED_LINES;
+    let mut diffs: Vec<Diff> = Vec::with_capacity(count);
+    for edit in &edits {
+        let diff = diff_lines(
+            &edit.old_text,
+            &edit.new_text,
+            language,
+            FILE_DIFF_CONTEXT,
+            1,
+            left,
+        );
+        left = left.saturating_sub(diff.rows.len());
+        diffs.push(diff);
+    }
     rsx! {
         p { class: "file-note",
             "The file changed since these edits, so each shows on its own, without line numbers."
         }
-        for (index, edit) in edits.iter().enumerate() {
+        for (index, diff) in diffs.iter().enumerate() {
             p { class: "edit-title", "Edit {index + 1} of {count}" }
-            for row in diff_lines(&edit.old_text, &edit.new_text, language, FILE_DIFF_CONTEXT, 1).iter() {
+            for row in diff.rows.iter() {
                 {diff_row(row, LineNumbers::Hidden, None)}
             }
+            {lines_not_shown(diff.more)}
         }
     }
 }

@@ -1453,6 +1453,15 @@ button:disabled {
   color: var(--muted);
 }
 
+/* The last row of a code block, a diff or a file cut at the line cap. */
+.lines-not-shown {
+  padding: 4px 12px;
+  font-family: var(--sans);
+  font-size: 12.5px;
+  font-style: italic;
+  color: var(--dim);
+}
+
 /* Cards that wait for an answer. */
 
 .card {

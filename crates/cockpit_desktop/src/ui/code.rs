@@ -5,9 +5,9 @@ use std::time::Duration;
 use dioxus::html::ScrollBehavior;
 use dioxus::prelude::*;
 
-use crate::bridge;
-use crate::render::{self, DiffLine, DiffRow, Language, LineKind};
+use crate::render::{self, DiffLine, DiffRow, Language, LineKind, MAX_RENDERED_LINES};
 use crate::ui::icons::{Icon, IconKind};
+use crate::{bridge, format};
 
 /// How long the copy button says "Copied".
 const COPIED_FOR: Duration = Duration::from_secs(2);
@@ -22,7 +22,11 @@ pub enum LineNumbers {
 #[component]
 pub fn CodeBlock(language: Option<String>, code: String) -> Element {
     let mut copied = use_signal(|| false);
-    let lines = render::highlight(&code, language.as_deref().and_then(Language::from_tag));
+    let lines = render::highlight_capped(
+        &code,
+        language.as_deref().and_then(Language::from_tag),
+        MAX_RENDERED_LINES,
+    );
     let label = language.unwrap_or_default();
     let copy_label = if label.is_empty() {
         "Copy the code".to_owned()
@@ -54,15 +58,30 @@ pub fn CodeBlock(language: Option<String>, code: String) -> Element {
                 }
             }
             div { class: "code-lines mono scroll-x",
-                for (index, spans) in lines.into_iter().enumerate() {
+                for (index, spans) in lines.rows.into_iter().enumerate() {
                     div { key: "{index}", class: "code-line",
                         for span in spans {
                             span { class: span.class.css_class(), "{span.text}" }
                         }
                     }
                 }
+                {lines_not_shown(lines.more)}
             }
         }
+    }
+}
+
+/// The last row of a view cut at `MAX_RENDERED_LINES`, when it left lines out.
+pub fn lines_not_shown(more: usize) -> Element {
+    if more == 0 {
+        return rsx! {};
+    }
+    let text = format!(
+        "{} not shown",
+        format::count(more, "more line", "more lines")
+    );
+    rsx! {
+        div { class: "lines-not-shown", "{text}" }
     }
 }
 
