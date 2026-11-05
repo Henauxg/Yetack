@@ -232,8 +232,16 @@ fn MenuFilter(agent: AgentId) -> Element {
                 cockpit.with_drafts(|_, drafts| actions::palette_filter(drafts, event.value()));
             },
             onkeydown: move |event: KeyboardEvent| match event.key() {
-                Key::ArrowDown => cockpit.with_drafts(|state, drafts| actions::palette_move(state, drafts, agent, Direction::Down)),
-                Key::ArrowUp => cockpit.with_drafts(|state, drafts| actions::palette_move(state, drafts, agent, Direction::Up)),
+                // The keys move the highlight, and the filter's caret stays: a text field's Up
+                // and Down would take it to the start or the end.
+                Key::ArrowDown => {
+                    event.prevent_default();
+                    cockpit.with_drafts(|state, drafts| actions::palette_move(state, drafts, agent, Direction::Down));
+                }
+                Key::ArrowUp => {
+                    event.prevent_default();
+                    cockpit.with_drafts(|state, drafts| actions::palette_move(state, drafts, agent, Direction::Up));
+                }
                 Key::ArrowLeft => step_setting(cockpit, agent, Step::Previous, &event),
                 Key::ArrowRight => step_setting(cockpit, agent, Step::Next, &event),
                 Key::Enter => act(cockpit, agent, None),
