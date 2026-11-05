@@ -220,7 +220,7 @@ pub fn tokens(count: u64) -> String {
     const THOUSAND: u64 = 1_000;
     const MILLION: u64 = 1_000_000;
     let scaled = |value: u64, unit: u64, suffix: &str| -> String {
-        let tenths = value * 10 / unit;
+        let tenths = value / (unit / 10);
         if tenths.is_multiple_of(10) || tenths >= 1000 {
             format!("{}{suffix}", tenths / 10)
         } else {
@@ -257,9 +257,11 @@ pub fn minutes_until(moment: Timestamp, now: SystemTime) -> Option<u64> {
     Some(remaining.as_secs().div_ceil(60))
 }
 
+/// `None` past chrono's calendar, where its conversions from `SystemTime` and to local time panic.
 fn local(moment: Timestamp) -> Option<NaiveDateTime> {
-    let time = moment.to_system_time()?;
-    Some(DateTime::<Local>::from(time).naive_local())
+    let millis = i64::try_from(moment.unix_millis()).ok()?;
+    let time = DateTime::from_timestamp_millis(millis)?.with_timezone(&Local);
+    time.naive_utc().checked_add_offset(*time.offset())
 }
 
 fn local_now(now: SystemTime) -> NaiveDateTime {
@@ -399,6 +401,26 @@ mod tests {
             ago_between(at(1, 9, 0), at(20, 9, 0), minutes(27_360)),
             "1 Nov"
         );
+    }
+
+    #[test]
+    fn a_moment_past_the_calendar_reads_without_failing() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let far = Timestamp::from_unix_millis(u64::MAX);
+        let last = u64::try_from(DateTime::<chrono::Utc>::MAX_UTC.timestamp_millis()).unwrap();
+
+        assert_eq!(reset_time(far, now), None);
+        assert_eq!(ago(far, now), "now");
+        // East of UTC, the calendar's last moment is past it in local time.
+        assert!(
+            reset_time(Timestamp::from_unix_millis(last), now)
+                .is_none_or(|text| text.starts_with("Resets"))
+        );
+    }
+
+    #[test]
+    fn the_largest_token_count_reads_without_overflow() {
+        assert_eq!(tokens(u64::MAX), "18446744073709M");
     }
 
     #[test]

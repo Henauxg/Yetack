@@ -115,6 +115,7 @@ pub fn palette_pick(state: &mut AppState, agent: AgentId, index: Option<usize>) 
     };
     let text = format!("{COMMAND_PREFIX}{} ", command.name);
     state.ui.draft_mut(agent).text = text;
+    state.ui.draft_written();
     state.ui.popover = None;
 }
 
@@ -157,6 +158,7 @@ pub fn send_prompt(state: &mut AppState, agent: AgentId, typed: Option<String>) 
         return Vec::new();
     }
     let draft = std::mem::take(draft);
+    state.ui.draft_written();
     state.ui.popover = None;
     let prompt = Prompt {
         text: draft.text.trim().to_owned(),
@@ -349,7 +351,8 @@ pub fn cancel_queued(agent: AgentId, item: ItemId) -> Vec<Outgoing> {
 }
 
 /// Opens the file view on `path`, at `line` when a link names one. A file the agent changed opens
-/// on its diff, unless a line is asked for. The text is read again, since it may have changed.
+/// on its diff, unless a line is asked for. The text is read again, since it may have changed, and
+/// the text of the file shown before is dropped: files can be large.
 pub fn open_file(state: &mut AppState, agent: AgentId, path: PathBuf, line: Option<u32>) {
     let Some(entry) = state.agents.get_mut(&agent) else {
         return;
@@ -361,6 +364,7 @@ pub fn open_file(state: &mut AppState, agent: AgentId, path: PathBuf, line: Opti
     } else {
         ViewMode::WholeFile
     };
+    entry.files.clear();
     entry.files.insert(path.clone(), Loadable::NotRequested);
     state
         .ui
@@ -373,6 +377,9 @@ pub fn open_file(state: &mut AppState, agent: AgentId, path: PathBuf, line: Opti
 pub fn close_file_view(state: &mut AppState, agent: AgentId) {
     state.ui.file_views.remove(&agent);
     state.ui.badge = None;
+    if let Some(entry) = state.agents.get_mut(&agent) {
+        entry.files.clear();
+    }
 }
 
 pub fn set_view_mode(state: &mut AppState, agent: AgentId, mode: ViewMode) {
@@ -569,13 +576,21 @@ pub fn switcher_pick(state: &mut AppState, index: Option<usize>) {
     select_agent(state, agent);
 }
 
-/// Opens the new agent dialog on the last used folder.
+/// Opens the new agent dialog on the last used folder. The past sessions are listed again, since
+/// sessions end and start while the app runs. An open dialog stays as it is: its first message
+/// field follows the keyboard, not the form, so a fresh form would not empty it.
 pub fn open_new_agent(state: &mut AppState) {
+    if matches!(state.ui.dialog, Some(Dialog::NewAgent(_))) {
+        return;
+    }
     let folder = state
         .recent_folders()
         .first()
         .map(|(folder, _)| folder.to_string_lossy().into_owned())
         .unwrap_or_default();
+    if state.sessions != Loadable::Loading {
+        state.sessions = Loadable::NotRequested;
+    }
     state.ui.popover = None;
     state.ui.dialog = Some(Dialog::NewAgent(NewAgentForm {
         folder,
@@ -638,6 +653,7 @@ mod tests {
     use super::*;
     use crate::state::app_state::ConnectionState;
     use crate::state::app_state::tests::{state_with, summary};
+    use crate::state::requests::{apply_response, needed_requests};
 
     const AGENT: u32 = 1;
 
@@ -753,6 +769,21 @@ mod tests {
             Some("/context ")
         );
         assert_eq!(state.ui.popover, None);
+    }
+
+    #[test]
+    fn the_composer_takes_the_draft_only_when_the_app_changes_it() {
+        let mut state = state(AgentStatus::Idle);
+        with_commands(&mut state, vec![command("compact", "")]);
+
+        composer_input(&mut state, agent(), "/co".to_owned());
+        let after_typing = state.ui.composer_writes;
+        palette_pick(&mut state, agent(), None);
+        let after_pick = state.ui.composer_writes;
+        send_prompt(&mut state, agent(), None);
+        let after_send = state.ui.composer_writes;
+
+        assert_eq!((after_typing, after_pick, after_send), (0, 1, 2));
     }
 
     #[test]
@@ -896,6 +927,34 @@ mod tests {
     }
 
     #[test]
+    fn only_the_shown_file_keeps_its_text() {
+        let mut state = state(AgentStatus::Idle);
+        let read = |state: &mut AppState, path: &str| {
+            apply_response(
+                state,
+                Method::AgentReadFile,
+                Purpose::ReadFile {
+                    agent: agent(),
+                    path: PathBuf::from(path),
+                },
+                Ok(cockpit_protocol::ResponseBody::File {
+                    text: format!("text of {path}"),
+                }),
+            );
+        };
+        open_file(&mut state, agent(), PathBuf::from("a.rs"), None);
+        read(&mut state, "a.rs");
+
+        open_file(&mut state, agent(), PathBuf::from("b.rs"), None);
+        read(&mut state, "c.rs");
+        let held: Vec<PathBuf> = state.agents[&agent()].files.keys().cloned().collect();
+        assert_eq!(held, [PathBuf::from("b.rs")]);
+
+        close_file_view(&mut state, agent());
+        assert!(state.agents[&agent()].files.is_empty());
+    }
+
+    #[test]
     fn blocks_fold_when_floating_and_open_as_badges_beside_the_file_view() {
         let mut state = state(AgentStatus::Idle);
 
@@ -974,6 +1033,49 @@ mod tests {
             Some("Fix the flaky test")
         );
         assert!(second.is_empty());
+    }
+
+    #[test]
+    fn opening_the_open_new_agent_dialog_keeps_its_form() {
+        let mut state = state(AgentStatus::Idle);
+        open_new_agent(&mut state);
+        with_new_agent_form(&mut state, |form| {
+            form.prompt = "Fix the flaky test".to_owned();
+        });
+
+        open_new_agent(&mut state);
+
+        assert!(matches!(
+            &state.ui.dialog,
+            Some(Dialog::NewAgent(form)) if form.prompt == "Fix the flaky test"
+        ));
+    }
+
+    #[test]
+    fn each_opening_of_the_new_agent_dialog_lists_the_sessions_again() {
+        let mut state = state(AgentStatus::Idle);
+        open_new_agent(&mut state);
+        let first = needed_requests(&mut state);
+        apply_response(
+            &mut state,
+            Method::SessionsList,
+            Purpose::Sessions,
+            Ok(cockpit_protocol::ResponseBody::Sessions {
+                sessions: Vec::new(),
+            }),
+        );
+        state.ui.dialog = None;
+
+        open_new_agent(&mut state);
+        let second = needed_requests(&mut state);
+
+        let lists = |requests: &[Outgoing]| {
+            requests
+                .iter()
+                .filter(|outgoing| outgoing.request == Request::SessionsList)
+                .count()
+        };
+        assert_eq!((lists(&first), lists(&second)), (1, 1));
     }
 
     #[test]

@@ -206,11 +206,14 @@ pub fn apply_response(
             let Some(entry) = state.agents.get_mut(&agent) else {
                 return;
             };
-            let text = match result {
+            // A file the view no longer shows is not kept.
+            let Some(held) = entry.files.get_mut(&path) else {
+                return;
+            };
+            *held = match result {
                 Ok(ResponseBody::File { text }) => Loadable::Loaded(text),
                 other => Failure::from_result(other).into_loadable(),
             };
-            entry.files.insert(path, text);
         }
         Purpose::Sessions => {
             state.sessions = match result {
@@ -238,6 +241,7 @@ pub fn apply_response(
                 let current = state.ui.draft_mut(agent);
                 if current.is_empty() {
                     *current = draft;
+                    state.ui.draft_written();
                 }
                 state
                     .ui
@@ -458,6 +462,7 @@ mod tests {
         );
 
         assert_eq!(state.ui.draft(agent), Some(&draft));
+        assert_eq!(state.ui.composer_writes, 1);
         assert_eq!(state.ui.errors.len(), 1);
     }
 

@@ -143,6 +143,10 @@ pub struct UiState {
     pub file_views: BTreeMap<AgentId, FileView>,
     pub mcp: McpView,
     pub drafts: BTreeMap<AgentId, Draft>,
+    /// Counts the times the app changed a draft's text itself, as opposed to typing. The composer
+    /// takes the draft's text at each, and else leaves its text to the keyboard: a render that
+    /// lags behind typing would put an older text back.
+    pub composer_writes: u64,
     pub questions: BTreeMap<PendingId, QuestionDraft>,
     pub palette: Palette,
     pub errors: Vec<ErrorNote>,
@@ -162,6 +166,7 @@ impl Default for UiState {
             file_views: BTreeMap::new(),
             mcp: McpView::default(),
             drafts: BTreeMap::new(),
+            composer_writes: 0,
             questions: BTreeMap::new(),
             palette: Palette::default(),
             errors: Vec::new(),
@@ -192,6 +197,11 @@ impl UiState {
 
     pub fn draft_mut(&mut self, agent: AgentId) -> &mut Draft {
         self.drafts.entry(agent).or_default()
+    }
+
+    /// For a draft text the app changed, so that the composer shows it.
+    pub fn draft_written(&mut self) {
+        self.composer_writes = self.composer_writes.wrapping_add(1);
     }
 
     pub fn file_view(&self, agent: AgentId) -> Option<&FileView> {

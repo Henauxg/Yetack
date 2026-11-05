@@ -58,6 +58,11 @@ select {
   color: inherit;
 }
 
+/* Its lines wrap, yet WebKitGTK shows an empty horizontal scrollbar under it. */
+textarea {
+  overflow-x: hidden;
+}
+
 button {
   cursor: pointer;
 }
@@ -1373,6 +1378,11 @@ button:disabled {
   margin-left: 15px;
 }
 
+.approval-diff {
+  max-height: 360px;
+  overflow-y: auto;
+}
+
 .diff-row {
   display: flex;
   min-width: max-content;
@@ -1493,6 +1503,7 @@ button:disabled {
   border-radius: 8px;
   background: var(--bg);
   font-size: 12.5px;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 

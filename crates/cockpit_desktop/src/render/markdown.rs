@@ -17,6 +17,9 @@ const LINE_ANCHOR: &str = "#L";
 /// What separates a URL's scheme from the rest, as in `https://`.
 const SCHEME_SEPARATOR: &str = "://";
 
+/// The schemes of the links that open in the browser.
+const WEB_SCHEMES: [&str; 2] = ["http", "https"];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Block {
     Heading {
@@ -304,7 +307,7 @@ impl<'input> Builder<'input> {
                     Tag::Emphasis => inlines.push(Inline::Emphasis(content)),
                     Tag::Strong => inlines.push(Inline::Strong(content)),
                     Tag::Strikethrough => inlines.push(Inline::Strikethrough(content)),
-                    Tag::Link { dest_url, .. } => inlines.push(link(&dest_url, content)),
+                    Tag::Link { dest_url, .. } => inlines.extend(link(&dest_url, content)),
                     // An image shows as its alt text; other tags keep their content.
                     _ => inlines.extend(content),
                 }
@@ -361,13 +364,15 @@ fn code_span(code: &str) -> Inline {
     }
 }
 
-/// A link to a local `path:line` or `path#L12` opens the file view instead of a browser.
-fn link(url: &str, content: Vec<Inline>) -> Inline {
+/// A link to a local `path:line` or `path#L12` opens the file view instead of a browser. Any
+/// other link than a web one keeps only its text: the system would open it with whatever program
+/// handles its scheme or file.
+fn link(url: &str, content: Vec<Inline>) -> Vec<Inline> {
     if !url.contains(SCHEME_SEPARATOR)
         && let Some((path, line)) = split_link_target(url)
     {
         let text = plain_text(&content);
-        return Inline::File(FileRef {
+        return vec![Inline::File(FileRef {
             text: if text.is_empty() {
                 url.to_owned()
             } else {
@@ -375,12 +380,23 @@ fn link(url: &str, content: Vec<Inline>) -> Inline {
             },
             path: path.to_owned(),
             line,
-        });
+        })];
     }
-    Inline::Link {
+    if !is_web_url(url) {
+        return content;
+    }
+    vec![Inline::Link {
         url: url.to_owned(),
         content,
-    }
+    }]
+}
+
+fn is_web_url(url: &str) -> bool {
+    url.split_once(SCHEME_SEPARATOR).is_some_and(|(scheme, _)| {
+        WEB_SCHEMES
+            .iter()
+            .any(|web| scheme.eq_ignore_ascii_case(web))
+    })
 }
 
 /// `path:line` (with an optional `:column` or `-end`) or `path#L12`, taking the whole of `target`.
@@ -806,6 +822,24 @@ mod tests {
                 Inline::Link {
                     url: "https://example.org/a.rs:3".to_owned(),
                     content: vec![text("site")]
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn only_web_links_stay_links() {
+        let inlines = paragraph(
+            "[a](javascript:alert(1)) [b](file:///etc/hosts) [c](notes.html) [d](HTTPS://example.org)",
+        );
+
+        assert_eq!(
+            inlines,
+            vec![
+                text("a b c "),
+                Inline::Link {
+                    url: "HTTPS://example.org".to_owned(),
+                    content: vec![text("d")]
                 },
             ]
         );

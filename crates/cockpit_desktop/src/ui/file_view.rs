@@ -29,19 +29,18 @@ pub fn FileViewPanel() -> Element {
         return rsx! {};
     };
     let folder = &entry.summary.folder;
-    let mut tabs: Vec<PathBuf> = entry
+    let changed = entry
         .details
         .loaded()
-        .map(|details| {
-            details
-                .changed_files
-                .iter()
-                .map(|file| relative_path(folder, &file.path))
-                .collect()
-        })
-        .unwrap_or_default();
-    if !tabs.contains(&view.path) {
-        tabs.push(view.path.clone());
+        .into_iter()
+        .flat_map(|details| details.changed_files.iter())
+        .map(|file| relative_path(folder, &file.path));
+    // Each path once: the daemon's list does not promise it, and the paths key the tabs.
+    let mut tabs: Vec<PathBuf> = Vec::new();
+    for path in changed.chain([view.path.clone()]) {
+        if !tabs.contains(&path) {
+            tabs.push(path);
+        }
     }
     let text = entry.files.get(&view.path).cloned().unwrap_or_default();
     let edits: Vec<FileEdit> = edits_for(&entry.transcript, folder, &view.path)

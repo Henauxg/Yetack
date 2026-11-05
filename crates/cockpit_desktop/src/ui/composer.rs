@@ -42,6 +42,22 @@ fn placeholder(status: AgentStatus) -> &'static str {
 pub fn Composer() -> Element {
     let cockpit = use_context::<Cockpit>();
     let Clock(now) = use_context::<Clock>();
+    // The text area is not bound to the draft, whose renders can lag behind typing: it takes the
+    // draft's text only when another agent opens or the app changes the draft.
+    let shown = use_memo(move || {
+        let state = cockpit.state.read();
+        (state.ui.selected, state.ui.composer_writes)
+    });
+    use_effect(move || {
+        let (agent, _) = shown();
+        let text = agent
+            .and_then(|agent| {
+                let state = cockpit.state.peek();
+                state.ui.draft(agent).map(|draft| draft.text.clone())
+            })
+            .unwrap_or_default();
+        bridge::set_composer_text(text);
+    });
     let state = cockpit.state.read();
     let Some(entry) = state.selected() else {
         return rsx! {};
@@ -118,7 +134,6 @@ pub fn Composer() -> Element {
                         "aria-label": "Message {title}",
                         placeholder: placeholder(status),
                         disabled: exited,
-                        value: "{draft.text}",
                         oninput: move |event: FormEvent| {
                             cockpit.change(|state| actions::composer_input(state, agent, event.value()));
                         },
@@ -283,9 +298,10 @@ fn CommandPalette(
                 if commands.is_empty() {
                     span { class: "palette-empty", "No command or skill matches." }
                 }
+                // Keyed by position: Claude Code may list two commands under one name.
                 for (index, command) in commands.into_iter().enumerate() {
                     button {
-                        key: "{command.name}",
+                        key: "{index}",
                         class: if index == highlighted { "palette-item highlighted" } else { "palette-item" },
                         onclick: move |_| cockpit.update(|state| actions::palette_pick(state, agent, Some(index))),
                         span { class: "mono", "/{command.name}" }

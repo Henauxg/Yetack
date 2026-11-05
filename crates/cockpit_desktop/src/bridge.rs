@@ -107,6 +107,27 @@ try {
 }
 "#;
 
+/// Puts the text it receives in the composer, caret at the end. The composer may not be on the
+/// page yet when the agent was just selected: it then waits a few frames for it.
+const COMPOSER_TEXT_SCRIPT: &str = r#"
+const { composer_id, text } = await dioxus.recv();
+for (let frame = 0; frame < 30; frame++) {
+  const area = document.getElementById(composer_id);
+  if (area !== null) {
+    area.value = text;
+    area.selectionStart = area.selectionEnd = text.length;
+    break;
+  }
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+}
+"#;
+
+#[derive(Debug, Serialize)]
+struct ComposerText {
+    composer_id: &'static str,
+    text: String,
+}
+
 #[derive(Debug, Serialize)]
 struct Settings {
     composer_id: &'static str,
@@ -219,6 +240,17 @@ pub fn copy_to_clipboard(text: String) {
     let script = document::eval(COPY_SCRIPT);
     if let Err(error) = script.send(text) {
         tracing::warn!("cannot copy: {error}");
+    }
+}
+
+pub fn set_composer_text(text: String) {
+    let script = document::eval(COMPOSER_TEXT_SCRIPT);
+    let message = ComposerText {
+        composer_id: COMPOSER_ID,
+        text,
+    };
+    if let Err(error) = script.send(message) {
+        tracing::warn!("cannot fill the composer: {error}");
     }
 }
 

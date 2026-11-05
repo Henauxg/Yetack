@@ -1,7 +1,7 @@
 //! The conversation: user bubbles, agent text, tool calls, inline diffs, subagents and the cards
 //! that wait for an answer.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use cockpit_protocol::{
@@ -51,10 +51,11 @@ pub fn TranscriptView() -> Element {
     let folder = entry.summary.folder.clone();
     let status = entry.summary.status;
     let items: Vec<&TranscriptItem> = entry.transcript.items().collect();
+    let children = children_by_parent(&items);
     let top: Vec<(TranscriptItem, Vec<TranscriptItem>)> = items
         .iter()
         .filter(|item| shows_at_top(item))
-        .map(|item| ((*item).clone(), subtree(&items, item.id)))
+        .map(|item| ((*item).clone(), subtree(&children, item.id)))
         .collect();
     let history = entry.transcript.history().clone();
     let activity = activity_line(entry);
@@ -97,8 +98,10 @@ pub fn TranscriptView() -> Element {
                         }
                     }
                 }
+                // Item ids repeat across agents: with the agent in the key, another agent's item
+                // never takes over the state of this one's (a fold, a typed answer).
                 for (item, nested) in top {
-                    ItemView { key: "{item.id.get()}", agent, folder: folder.clone(), item, nested }
+                    ItemView { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), item, nested }
                 }
                 if status == AgentStatus::Working {
                     div { class: "working-line",
@@ -126,20 +129,32 @@ fn waits_for_answer(item: &TranscriptItem) -> bool {
     }
 }
 
-/// Every item nested under `root`, at any depth, in transcript order.
-fn subtree(items: &[&TranscriptItem], root: ItemId) -> Vec<TranscriptItem> {
-    let mut children: BTreeMap<ItemId, Vec<&TranscriptItem>> = BTreeMap::new();
+/// Each item's direct children. Built once per render, so that the subtrees cost one pass over
+/// the transcript instead of one per item.
+type Children<'item> = BTreeMap<ItemId, Vec<&'item TranscriptItem>>;
+
+fn children_by_parent<'item>(items: &[&'item TranscriptItem]) -> Children<'item> {
+    let mut children = Children::new();
     for item in items {
         if let Some(parent) = item.parent {
             children.entry(parent).or_default().push(item);
         }
     }
+    children
+}
+
+/// Every item nested under `root`, at any depth, in transcript order. Each item comes once, even
+/// when parents form a cycle.
+fn subtree(children: &Children<'_>, root: ItemId) -> Vec<TranscriptItem> {
     let mut found: Vec<TranscriptItem> = Vec::new();
+    let mut seen = BTreeSet::from([root]);
     let mut pending = vec![root];
     while let Some(parent) = pending.pop() {
         for child in children.get(&parent).into_iter().flatten() {
-            found.push((*child).clone());
-            pending.push(child.id);
+            if seen.insert(child.id) {
+                found.push((*child).clone());
+                pending.push(child.id);
+            }
         }
     }
     found.sort_by_key(|item| item.id);
@@ -422,10 +437,11 @@ fn SubagentView(
         ToolCallStatus::Failed => format!("failed, {calls_text}"),
     };
     let nested_refs: Vec<&TranscriptItem> = nested.iter().collect();
+    let by_parent = children_by_parent(&nested_refs);
     let children: Vec<(TranscriptItem, Vec<TranscriptItem>)> = nested
         .iter()
         .filter(|item| item.parent == Some(id) && !waits_for_answer(item))
-        .map(|item| (item.clone(), subtree(&nested_refs, item.id)))
+        .map(|item| (item.clone(), subtree(&by_parent, item.id)))
         .collect();
     rsx! {
         div { class: status_class(call.status),
@@ -527,12 +543,29 @@ mod tests {
         ];
         let refs: Vec<&TranscriptItem> = items.iter().collect();
 
-        let ids: Vec<u32> = subtree(&refs, ItemId::new(1))
+        let ids: Vec<u32> = subtree(&children_by_parent(&refs), ItemId::new(1))
             .iter()
             .map(|item| item.id.get())
             .collect();
 
         assert_eq!(ids, [2, 3, 5]);
+    }
+
+    #[test]
+    fn a_cycle_of_parents_ends() {
+        let items = [notice(1, Some(2)), notice(2, Some(1)), notice(3, Some(3))];
+        let refs: Vec<&TranscriptItem> = items.iter().collect();
+        let children = children_by_parent(&refs);
+
+        let ids = |root: u32| -> Vec<u32> {
+            subtree(&children, ItemId::new(root))
+                .iter()
+                .map(|item| item.id.get())
+                .collect()
+        };
+
+        assert_eq!(ids(1), [2]);
+        assert!(ids(3).is_empty());
     }
 
     #[test]

@@ -174,6 +174,9 @@ fn NewAgentDialog(form: NewAgentForm) -> Element {
 fn StartForm(form: NewAgentForm) -> Element {
     let cockpit = use_context::<Cockpit>();
     let Clock(now) = use_context::<Clock>();
+    // The first message starts from the form, then follows the keyboard alone: a render that lags
+    // behind typing would put an older text back.
+    let prompt_seed = use_hook(|| form.prompt.clone());
     let (folders, machine) = {
         let state = cockpit.state.read();
         let mut folders = state.recent_folders();
@@ -300,7 +303,7 @@ fn StartForm(form: NewAgentForm) -> Element {
                     rows: "3",
                     "aria-label": "First message",
                     placeholder: "What should the agent do?",
-                    value: "{form.prompt}",
+                    initial_value: "{prompt_seed}",
                     oninput: move |event: FormEvent| {
                         cockpit.update(|state| actions::with_new_agent_form(state, |form| form.prompt = event.value()));
                     },
@@ -370,7 +373,8 @@ fn ResumeList(starting: bool) -> Element {
                     if sessions.is_empty() {
                         span { class: "muted", "No past session." }
                     }
-                    for session in sessions {
+                    // Keyed by position: the daemon's list does not promise one entry per session.
+                    for (index, session) in sessions.into_iter().enumerate() {
                         {
                             let meta = format!(
                                 "Active {}, {}",
@@ -379,7 +383,7 @@ fn ResumeList(starting: bool) -> Element {
                             );
                             let id = session.id.clone();
                             rsx! {
-                                div { key: "{session.id.as_str()}", class: "session-row",
+                                div { key: "{index}", class: "session-row",
                                     span { class: "session-text",
                                         span { class: "session-title", "{session.title}" }
                                         span { class: "mono muted small", "{session.folder.display()}" }

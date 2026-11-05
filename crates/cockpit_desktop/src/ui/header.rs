@@ -43,8 +43,7 @@ pub fn Header() -> Element {
     let plan = plan_percent(&state.plan_usage);
     let context = context_percent(entry);
     let files = changed_files(entry);
-    let added: u32 = files.iter().map(|file| file.lines_added).sum();
-    let removed: u32 = files.iter().map(|file| file.lines_removed).sum();
+    let (added, removed) = line_totals(&files);
     let usage_open = state.ui.popover == Some(Popover::Usage);
     let changes_open = state.ui.popover == Some(Popover::Changes);
     let plan_text = plan.map_or_else(|| "?".to_owned(), |percent| format!("{percent}%"));
@@ -117,6 +116,13 @@ fn changed_files(entry: &AgentEntry) -> Vec<ChangedFile> {
         .loaded()
         .map(|details| details.changed_files.clone())
         .unwrap_or_default()
+}
+
+/// Summed in `u64`, so that no count the daemon sends overflows.
+fn line_totals(files: &[ChangedFile]) -> (u64, u64) {
+    let added = files.iter().map(|file| u64::from(file.lines_added)).sum();
+    let removed = files.iter().map(|file| u64::from(file.lines_removed)).sum();
+    (added, removed)
 }
 
 /// The five-hour window, which the chip shows; another window when Claude Code reported only
@@ -300,13 +306,14 @@ fn ChangesList(agent: AgentId, files: Vec<ChangedFile>, folder: PathBuf) -> Elem
     rsx! {
         div { class: "popover changes-list",
             span { class: "changes-title", "{title}" }
-            for file in files {
+            // Keyed by position: the daemon's list does not promise one entry per path.
+            for (index, file) in files.into_iter().enumerate() {
                 {
                     let shown = relative_path(&folder, &file.path).display().to_string();
                     let path = file.path.clone();
                     rsx! {
                         button {
-                            key: "{shown}",
+                            key: "{index}",
                             class: "file-row",
                             onclick: move |_| {
                                 let path = path.clone();
@@ -323,5 +330,28 @@ fn ChangesList(agent: AgentId, files: Vec<ChangedFile>, folder: PathBuf) -> Elem
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file(path: &str, lines_added: u32, lines_removed: u32) -> ChangedFile {
+        ChangedFile {
+            path: PathBuf::from(path),
+            lines_added,
+            lines_removed,
+        }
+    }
+
+    #[test]
+    fn line_totals_hold_counts_past_u32() {
+        let files = [file("a.rs", u32::MAX, 1), file("b.rs", u32::MAX, u32::MAX)];
+
+        assert_eq!(
+            line_totals(&files),
+            (2 * u64::from(u32::MAX), u64::from(u32::MAX) + 1)
+        );
     }
 }
