@@ -75,8 +75,8 @@ button:disabled {
 }
 
 :focus-visible {
-  outline: 2px solid #727272;
-  outline-offset: 1px;
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .mono {
@@ -3138,11 +3138,6 @@ label.icon-button,
     text-decoration-color;
   transition-duration: var(--motion-hover);
   transition-timing-function: var(--ease);
-}
-
-:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
 }
 
 /* Rows sit in scrolling lists, which would cut a ring drawn outside them. */
