@@ -635,6 +635,31 @@ button:disabled {
   text-overflow: ellipsis;
 }
 
+/* The pencil shows on the title line under the pointer, and on keyboard focus. */
+.rename-button {
+  margin-left: -4px;
+  opacity: 0;
+}
+
+.title-line:hover .rename-button,
+.rename-button:focus-visible {
+  opacity: 1;
+}
+
+.title-field {
+  flex: 0 1 360px;
+  min-width: 0;
+  margin: -2px 0;
+  padding: 1px 7px;
+  border-radius: 6px;
+  border: 1px solid rgba(45, 212, 191, 0.55);
+  background: var(--bg);
+  box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.12);
+  font-size: 15px;
+  font-weight: 600;
+  outline: none;
+}
+
 .status-pill {
   flex: none;
   display: inline-flex;

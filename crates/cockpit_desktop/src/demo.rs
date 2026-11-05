@@ -783,6 +783,7 @@ fn approval_agent(now: SystemTime) -> Sample {
                 edit: None,
                 reason: Some("Push the branch so the preview builds.".to_owned()),
                 answer: AnswerState::Waiting,
+                tool_call: None,
             }),
         ),
     ];

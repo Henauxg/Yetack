@@ -115,6 +115,10 @@ pub struct Approval {
     /// Why Claude Code asks, when it says.
     pub reason: Option<String>,
     pub answer: AnswerState<ApprovalAnswer>,
+    /// The tool call it asks about, when the daemon has its item. `None` when missing, so an
+    /// approval saved without it still loads.
+    #[serde(default)]
+    pub tool_call: Option<ItemId>,
 }
 
 /// Whether an approval, a question or a plan still waits.

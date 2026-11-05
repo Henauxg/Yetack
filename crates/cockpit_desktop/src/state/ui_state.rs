@@ -133,6 +133,13 @@ pub struct ErrorNote {
     pub kind: NoteKind,
 }
 
+/// An agent's title being edited: the field's text, which follows the keyboard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TitleEdit {
+    pub agent: AgentId,
+    pub title: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UiState {
     pub selected: Option<AgentId>,
@@ -147,6 +154,8 @@ pub struct UiState {
     pub dialog: Option<Dialog>,
     pub file_views: BTreeMap<AgentId, FileView>,
     pub mcp: McpView,
+    /// The agent title the header shows as a text field.
+    pub title_edit: Option<TitleEdit>,
     /// The notes at the bottom left: errors, and what an action did.
     pub errors: Vec<ErrorNote>,
     next_error: u32,
@@ -164,6 +173,7 @@ impl Default for UiState {
             dialog: None,
             file_views: BTreeMap::new(),
             mcp: McpView::default(),
+            title_edit: None,
             errors: Vec::new(),
             next_error: 0,
         }
@@ -200,8 +210,8 @@ impl UiState {
         self.file_views.get(&agent)
     }
 
-    /// Closes every popover and the dialog, or only the dialog's menu when one is open. Returns
-    /// whether anything was open.
+    /// Closes every popover and the dialog, or only the dialog's menu when one is open, and
+    /// cancels a title edit. Returns whether anything was open.
     pub fn close_overlays(&mut self) -> bool {
         if let Some(Dialog::NewAgent(form)) = &mut self.dialog
             && form.menu.is_some()
@@ -209,10 +219,14 @@ impl UiState {
             form.menu = None;
             return true;
         }
-        let open = self.popover.is_some() || self.dialog.is_some() || self.badge.is_some();
+        let open = self.popover.is_some()
+            || self.dialog.is_some()
+            || self.badge.is_some()
+            || self.title_edit.is_some();
         self.popover = None;
         self.dialog = None;
         self.badge = None;
+        self.title_edit = None;
         open
     }
 

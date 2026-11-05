@@ -6,11 +6,11 @@ use std::time::Duration;
 
 use claude_protocol::{
     AssistantMessage, CanUseTool, ContentBlock, ContextUsage as ClaudeContextUsage,
-    ControlRequestId, ImageBlock, ImageSource, IncomingControlRequest, IncomingRequest,
-    InitializeResponse, InputLine, InterruptNotice, McpStatus, OpenWord, OutputLine, RateLimitInfo,
-    ResultMessage, SessionState, SystemEvent, SystemInit, TaskNotification, TaskStarted, TaskUsage,
-    TerminalReason, ToolInput, ToolName, ToolResultBlock, ToolUseBlock, ToolUseId, Usage,
-    UserMessage as ClaudeUserMessage,
+    ControlRequestId, ConversationReset, ImageBlock, ImageSource, IncomingControlRequest,
+    IncomingRequest, InitializeResponse, InputLine, InterruptNotice, McpStatus, OpenWord,
+    OutputLine, RateLimitInfo, ResetTrigger, ResultMessage, SessionState, SystemEvent, SystemInit,
+    TaskNotification, TaskStarted, TaskUsage, TerminalReason, ToolInput, ToolName, ToolResultBlock,
+    ToolUseBlock, ToolUseId, TypedCommand, Usage, UserMessage as ClaudeUserMessage,
 };
 use cockpit_protocol::{
     AgentDetails, AgentId, AgentStatus, AgentSummary, Answer, AnswerState, Approval,
@@ -20,8 +20,9 @@ use cockpit_protocol::{
     UserMessage,
 };
 use serde_json::{Map, Value};
-use strum::EnumString;
+use strum::{EnumString, IntoStaticStr, VariantArray};
 
+use crate::sessions;
 use crate::transcript::past_transcript::LAST_PAST_ID;
 use crate::transcript::{answers, details, notices, tools, words};
 
@@ -66,17 +67,29 @@ pub(crate) enum AnswerError {
 }
 
 /// `system` subtypes the view reads that `claude_protocol` leaves untyped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr, VariantArray)]
 #[strum(serialize_all = "snake_case")]
 enum UntypedSystemSubtype {
     CompactBoundary,
+    /// A local command's output, in a session file. On stdout it comes as a synthetic assistant
+    /// message.
+    LocalCommand,
+    /// Claude Code named the session, after `/rename`.
+    SessionTitleChanged,
 }
 
 const SUBTYPE_KEY: &str = "subtype";
+/// The text of a `local_command` line.
+const CONTENT_KEY: &str = "content";
+/// The new name in a `session_title_changed` line.
+const TITLE_KEY: &str = "title";
 /// The model of an assistant message Claude Code writes itself, such as a slash command's output
 /// or an API error.
 const SYNTHETIC_MODEL: &str = "<synthetic>";
 const COMPACTED_NOTICE: &str = "Conversation compacted";
+const CLEARED_NOTICE: &str = "Conversation cleared";
+/// A new conversation for a reason this daemon does not know.
+const RESET_NOTICE: &str = "New conversation";
 const QUEUED_CANCELLED_NOTICE: &str = "Queued message cancelled";
 /// Where a session file shows that the user stopped a turn: it holds no turn end to say it.
 const PAST_STOP_NOTICE: &str = "Stopped";
@@ -231,6 +244,22 @@ impl AgentView {
     pub(super) fn apply_session_line(&mut self, line: OutputLine) {
         match line {
             OutputLine::User(message) => self.apply_user(message, LineSource::SessionFile),
+            OutputLine::System(SystemEvent::Other(value))
+                if untyped_subtype(&value) == Some(UntypedSystemSubtype::LocalCommand) =>
+            {
+                let output = value
+                    .get(CONTENT_KEY)
+                    .and_then(Value::as_str)
+                    .and_then(claude_protocol::local_command_output);
+                if let Some(output) = output.filter(|output| !output.is_empty()) {
+                    self.push_item(
+                        None,
+                        ItemBody::Notice {
+                            text: output.to_owned(),
+                        },
+                    );
+                }
+            }
             line => {
                 // A session file holds no `result` line, so nothing follows up.
                 self.apply(line, Timestamp::from_unix_millis(0));
@@ -346,6 +375,7 @@ impl AgentView {
             OutputLine::ControlCancelRequest(cancel) => {
                 self.cancel_pending(&PendingId::new(cancel.request_id.as_str().to_owned()));
             }
+            OutputLine::ConversationReset(reset) => self.reset_conversation(&reset),
             OutputLine::StreamEvent(_)
             | OutputLine::ControlResponse(_)
             | OutputLine::Unknown(_) => {}
@@ -543,6 +573,10 @@ impl AgentView {
         self.summary.effort = Some(effort);
     }
 
+    pub(crate) fn set_title(&mut self, title: String) {
+        self.summary.title = title;
+    }
+
     fn apply_system(&mut self, event: SystemEvent, now: Timestamp) {
         match event {
             SystemEvent::Init(init) => self.apply_init(init),
@@ -579,12 +613,8 @@ impl AgentView {
                     .map_or_else(String::new, |status| format!(" {status}"));
                 self.summary.activity = Some(format!("Retrying after API error{status}"));
             }
-            SystemEvent::Other(value) => {
-                let subtype = value
-                    .get(SUBTYPE_KEY)
-                    .and_then(Value::as_str)
-                    .and_then(|subtype| subtype.parse::<UntypedSystemSubtype>().ok());
-                if let Some(UntypedSystemSubtype::CompactBoundary) = subtype {
+            SystemEvent::Other(value) => match untyped_subtype(&value) {
+                Some(UntypedSystemSubtype::CompactBoundary) => {
                     self.push_item(
                         None,
                         ItemBody::Notice {
@@ -592,12 +622,37 @@ impl AgentView {
                         },
                     );
                 }
-            }
+                Some(UntypedSystemSubtype::SessionTitleChanged) => {
+                    let title = value.get(TITLE_KEY).and_then(Value::as_str).map(str::trim);
+                    if let Some(title) = title.filter(|title| !title.is_empty()) {
+                        self.summary.title = sessions::shorten(title);
+                    }
+                }
+                Some(UntypedSystemSubtype::LocalCommand) | None => {}
+            },
             SystemEvent::ThinkingTokens(_)
             | SystemEvent::HookStarted(_)
             | SystemEvent::HookProgress(_)
             | SystemEvent::HookResponse(_) => {}
         }
+    }
+
+    /// Claude Code starts a new conversation, as `/clear` does. Its total cost counts from 0
+    /// again, so what the process spent so far joins the agent's earlier cost.
+    fn reset_conversation(&mut self, reset: &ConversationReset) {
+        self.cost_before_process += self.process_cost;
+        self.process_cost = 0.0;
+        self.awaits_restored_cost = false;
+        let text = match reset.trigger {
+            Some(OpenWord::Known(ResetTrigger::Clear)) => CLEARED_NOTICE,
+            Some(OpenWord::Unknown(_)) | None => RESET_NOTICE,
+        };
+        self.push_item(
+            None,
+            ItemBody::Notice {
+                text: text.to_owned(),
+            },
+        );
     }
 
     /// `system/init` starts each turn and says what the session uses.
@@ -736,6 +791,23 @@ impl AgentView {
             }
             return;
         }
+        if let Some(output) = claude_protocol::local_command_output(&text) {
+            // Shown as `/effort`'s output is, which comes as a synthetic assistant message.
+            if !output.is_empty() {
+                self.push_item(
+                    parent,
+                    ItemBody::Notice {
+                        text: output.to_owned(),
+                    },
+                );
+            }
+            return;
+        }
+        // A slash command reads as the user typed it, which is also the prompt its echo matches.
+        let text = match TypedCommand::parse(&text) {
+            Some(command) => command.to_string(),
+            None => text,
+        };
         let interrupt = text.trim().parse::<InterruptNotice>().is_ok();
         if source == LineSource::SessionFile {
             let body = if interrupt {
@@ -890,6 +962,7 @@ impl AgentView {
                         .map(|path| format!("{} is outside the allowed folders", path.display()))
                 }),
                 answer: AnswerState::Waiting,
+                tool_call: tool_item,
             }),
         };
         // A question or a plan takes the place of its tool call's item, which says nothing more.
@@ -1059,6 +1132,10 @@ impl AgentView {
             AgentStatus::Idle
         };
     }
+}
+
+fn untyped_subtype(value: &Value) -> Option<UntypedSystemSubtype> {
+    value.get(SUBTYPE_KEY)?.as_str()?.parse().ok()
 }
 
 fn change_item(change: ItemChange) -> ItemId {
@@ -1493,6 +1570,51 @@ mod tests {
         assert_eq!(edits, [&empty, &empty]);
         let file = &view.details().changed_files[0];
         assert_eq!((file.lines_added, file.lines_removed), (200_000, 0));
+    }
+
+    #[test]
+    fn each_approval_names_its_own_call_among_identical_parallel_calls() {
+        let mut view = view();
+        let input = json!({"command": "touch same.txt"});
+        apply(&mut view, tool_use("t1", "Bash", input.clone()));
+        apply(&mut view, tool_use("t2", "Bash", input.clone()));
+
+        apply(
+            &mut view,
+            can_use_tool("req-2", "t2", "Bash", input.clone()),
+        );
+        apply(&mut view, can_use_tool("req-1", "t1", "Bash", input));
+
+        let calls: Vec<ItemId> = view.items()[..2].iter().map(|item| item.id).collect();
+        let links: Vec<Option<ItemId>> = view.items()[2..]
+            .iter()
+            .map(|item| match &item.body {
+                ItemBody::Approval(approval) => approval.tool_call,
+                other => panic!("expected an approval, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(links, [Some(calls[1]), Some(calls[0])]);
+    }
+
+    #[test]
+    fn an_approval_without_a_known_call_names_none() {
+        let mut view = view();
+
+        apply(
+            &mut view,
+            can_use_tool("req-1", "t9", "Bash", json!({"command": "ls"})),
+        );
+
+        let [item] = view.items() else {
+            panic!("expected one item, got {:?}", view.items());
+        };
+        assert!(matches!(
+            &item.body,
+            ItemBody::Approval(Approval {
+                tool_call: None,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -2024,6 +2146,135 @@ mod tests {
         restored.process_started(ProcessSession::Resumed);
         let next = restored.add_prompt(&prompt("Again"), PromptDelivery::Now);
         assert_eq!(next, ItemId::new(5));
+    }
+
+    #[test]
+    fn a_typed_command_reads_as_typed_and_its_echo_adds_nothing() {
+        let mut view = view();
+        view.add_prompt(&prompt("/greet world"), PromptDelivery::Now);
+
+        apply(
+            &mut view,
+            echo(
+                "<command-message>greet</command-message>\n\
+                 <command-name>/greet</command-name>\n<command-args>world</command-args>",
+            ),
+        );
+        apply(
+            &mut view,
+            echo("<command-message>review</command-message>\n<command-name>/review</command-name>"),
+        );
+
+        assert_eq!(
+            bodies(&view),
+            [
+                &user_message("/greet world".to_owned(), Vec::new()),
+                &user_message("/review".to_owned(), Vec::new()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_local_commands_output_shows_as_a_notice() {
+        let mut view = view();
+
+        apply(
+            &mut view,
+            echo("<local-command-stdout>Compacted </local-command-stdout>"),
+        );
+        apply(
+            &mut view,
+            echo("<local-command-stdout></local-command-stdout>"),
+        );
+
+        assert_eq!(
+            bodies(&view),
+            [&ItemBody::Notice {
+                text: "Compacted".to_owned()
+            }]
+        );
+    }
+
+    #[test]
+    fn untyped_system_subtypes_are_pinned() {
+        let words: Vec<&str> = UntypedSystemSubtype::VARIANTS
+            .iter()
+            .map(|&subtype| subtype.into())
+            .collect();
+
+        assert_eq!(
+            words,
+            ["compact_boundary", "local_command", "session_title_changed"]
+        );
+    }
+
+    #[test]
+    fn a_cleared_conversation_shows_a_notice_and_keeps_the_cost_spent() {
+        let mut view = view();
+        apply(&mut view, init());
+        apply(&mut view, result(0.5));
+        view.add_prompt(&prompt("/clear"), PromptDelivery::Now);
+
+        apply(
+            &mut view,
+            json!({"type": "conversation_reset", "trigger": "clear", "session_id": "session-1",
+                   "new_conversation_id": "session-2"}),
+        );
+        let mut new_session = init();
+        new_session["session_id"] = json!("session-2");
+        apply(&mut view, new_session);
+        let mut empty = result(0.0);
+        empty["num_turns"] = json!(0);
+        empty["usage"] = json!({});
+        apply(&mut view, empty);
+        let cleared = view.summary().cost;
+        apply(&mut view, result(0.25));
+
+        let kinds: Vec<String> = bodies(&view)
+            .into_iter()
+            .map(|body| match body {
+                ItemBody::TurnEnd(end) => format!("end {}", end.cost.get()),
+                ItemBody::UserMessage(message) => format!("user {}", message.text),
+                ItemBody::Notice { text } => format!("notice {text}"),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "end 0.5",
+                "user /clear",
+                "notice Conversation cleared",
+                "end 0.25"
+            ]
+        );
+        assert_eq!(cleared, CostUsd::new(0.5));
+        assert_eq!(view.summary().cost, CostUsd::new(0.75));
+        assert_eq!(view.summary().turns, 2);
+        assert_eq!(
+            view.summary().session.as_ref().map(ClaudeSessionId::as_str),
+            Some("session-2")
+        );
+    }
+
+    #[test]
+    fn claude_code_naming_the_session_renames_the_agent() {
+        let mut view = view();
+
+        apply(
+            &mut view,
+            json!({"type": "system", "subtype": "session_title_changed", "title": " Cart fix ",
+                   "session_id": "session-1"}),
+        );
+        let named = view.summary().title.clone();
+        apply(
+            &mut view,
+            json!({"type": "system", "subtype": "session_title_changed", "title": "",
+                   "session_id": "session-1"}),
+        );
+
+        assert_eq!(named, "Cart fix");
+        assert_eq!(view.summary().title, "Cart fix");
     }
 
     #[test]

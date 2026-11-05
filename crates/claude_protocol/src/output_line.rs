@@ -4,6 +4,7 @@ use serde_json::Value;
 use strum::{Display, EnumString, IntoStaticStr, VariantArray};
 
 use crate::control::{ControlCancelRequest, ControlResponse, IncomingControlRequest};
+use crate::conversation_reset::ConversationReset;
 use crate::message::{AssistantMessage, StreamEvent, UserMessage};
 use crate::parse_error::ParseError;
 use crate::rate_limit::RateLimitEvent;
@@ -23,6 +24,7 @@ pub enum OutputLine {
     ControlRequest(IncomingControlRequest),
     ControlResponse(ControlResponse),
     ControlCancelRequest(ControlCancelRequest),
+    ConversationReset(ConversationReset),
     /// JSON of a type this crate does not know, or without a type, as Claude Code wrote it.
     Unknown(Value),
 }
@@ -39,6 +41,7 @@ enum LineType {
     ControlRequest,
     ControlResponse,
     ControlCancelRequest,
+    ConversationReset,
 }
 
 impl FromStr for OutputLine {
@@ -76,6 +79,7 @@ impl TryFrom<Value> for OutputLine {
             LineType::ControlCancelRequest => {
                 wire::read(&value, kind).map(Self::ControlCancelRequest)
             }
+            LineType::ConversationReset => wire::read(&value, kind).map(Self::ConversationReset),
         }
     }
 }
@@ -99,6 +103,7 @@ mod tests {
                 "control_request",
                 "control_response",
                 "control_cancel_request",
+                "conversation_reset",
             ]
         );
     }

@@ -8,6 +8,7 @@
 //! - `garbage`: writes lines that do not parse, then answers.
 //! - `linger`: starts a child process that ignores stdin, answers "Started child <pid>", and
 //!   from then on keeps running after its stdin closes, as a `claude` that hangs.
+//! - `/rename <title>`: names the session, as Claude Code does.
 //! - anything else: answers "Echo: <prompt>".
 //!
 //! With `FAKE_CLAUDE_ARGS_FILE` set, it appends its command line to that file, one JSON array per
@@ -254,6 +255,23 @@ impl<W: Write> Fake<W> {
                                   "request": {"subtype": "can_use_tool"}}))?;
                 self.say("Still here.")?;
                 self.end_turn()
+            }
+            "/rename" => {
+                let title = prompt.trim_start_matches(first_word).trim();
+                self.emit(
+                    &json!({"type": "system", "subtype": "session_title_changed",
+                                  "title": title, "session_id": self.session}),
+                )?;
+                self.emit(&json!({"type": "assistant", "session_id": self.session, "message": {
+                    "model": "<synthetic>",
+                    "content": [{"type": "text", "text": format!("Session renamed to: {title}")}]
+                }}))?;
+                self.turn = None;
+                self.emit(&json!({
+                    "type": "result", "subtype": "success", "is_error": false, "num_turns": 0,
+                    "total_cost_usd": self.total_cost, "session_id": self.session
+                }))?;
+                self.next_queued()
             }
             "/effort" => {
                 self.emit(

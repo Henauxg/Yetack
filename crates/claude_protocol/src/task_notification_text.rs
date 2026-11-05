@@ -2,6 +2,7 @@ use strum::{Display, IntoStaticStr, VariantArray};
 
 use crate::open_word::OpenWord;
 use crate::system_event::TaskStatus;
+use crate::tagged;
 
 /// A `<task-notification>` element in the text of a `user` line whose origin is
 /// [`OriginKind::TaskNotification`](crate::OriginKind::TaskNotification): Claude Code tells
@@ -43,9 +44,9 @@ impl TaskNotificationText {
     pub fn parse_all(text: &str) -> Vec<Self> {
         let mut notifications = Vec::new();
         let mut rest = text;
-        while let Some((inner, after)) = element(rest, Tag::TaskNotification) {
-            let content = |tag| {
-                element(inner, tag)
+        while let Some((inner, after)) = tagged::element(rest, Tag::TaskNotification.into()) {
+            let content = |tag: Tag| {
+                tagged::element(inner, tag.into())
                     .map(|(content, _)| content.trim())
                     .filter(|content| !content.is_empty())
             };
@@ -60,14 +61,6 @@ impl TaskNotificationText {
         }
         notifications
     }
-}
-
-/// The content of the first `tag` element in `text`, and the text after it.
-fn element(text: &str, tag: Tag) -> Option<(&str, &str)> {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let (_, from_content) = text.split_once(&open)?;
-    from_content.split_once(&close)
 }
 
 #[cfg(test)]

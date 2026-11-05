@@ -8,7 +8,7 @@
 use claude_protocol::{
     HookOutcome, InterruptNotice, McpScope, McpServerState, McpTransport, OpenWord, OriginKind,
     PermissionBehavior, PermissionDestination, PermissionMode, RateLimitStatus, RateLimitType,
-    ResultSubtype, SessionState, TaskStatus, TerminalReason, TodoStatus, ToolName,
+    ResetTrigger, ResultSubtype, SessionState, TaskStatus, TerminalReason, TodoStatus, ToolName,
 };
 use strum::VariantArray;
 
@@ -122,6 +122,11 @@ fn interrupt_notices_are_pinned() {
             "[Request interrupted by user for tool use]"
         ]
     );
+}
+
+#[test]
+fn reset_triggers_are_pinned() {
+    assert_eq!(words::<ResetTrigger>(), ["clear"]);
 }
 
 #[test]

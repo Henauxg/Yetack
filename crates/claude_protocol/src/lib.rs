@@ -45,9 +45,11 @@
 //!   `permission_suggestions`. One field reads as missing when it does not read, as in a
 //!   `result` line: the `origin` of a user message.
 
+mod command_text;
 mod content_block;
 mod context_usage;
 mod control;
+mod conversation_reset;
 mod ids;
 mod initialize_response;
 mod input_line;
@@ -60,10 +62,12 @@ mod permission;
 mod rate_limit;
 mod result_message;
 mod system_event;
+mod tagged;
 mod task_notification_text;
 mod tool_input;
 mod wire;
 
+pub use command_text::{TypedCommand, local_command_output};
 pub use content_block::{
     Base64Image, ContentBlock, ImageBlock, ImageSource, TextBlock, ThinkingBlock, ToolResultBlock,
     ToolUseBlock, UrlImage,
@@ -73,6 +77,7 @@ pub use control::{
     CanUseTool, ControlCancelRequest, ControlError, ControlResponse, ControlSuccess,
     IncomingControlRequest, IncomingRequest,
 };
+pub use conversation_reset::{ConversationReset, ResetTrigger};
 pub use ids::{ControlRequestId, HookId, MessageUuid, SessionId, TaskId, ToolUseId};
 pub use initialize_response::{InitializeResponse, SlashCommand};
 pub use input_line::{

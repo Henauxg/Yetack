@@ -143,7 +143,7 @@ fn folder_arg(path: &Path) -> &str {
 }
 
 #[test]
-fn starts_lists_prompts_tails_and_stops_an_agent() {
+fn starts_lists_prompts_tails_renames_and_stops_an_agent() {
     use std::io::Write;
 
     let daemon = Daemon::start();
@@ -188,6 +188,9 @@ fn starts_lists_prompts_tails_and_stops_an_agent() {
     assert_eq!(event["event"]["agent"], 1);
     let _ = tail.kill();
     let _ = tail.wait();
+
+    daemon.ok(&["rename", "1", "Parser fix"]);
+    daemon.wait_for_list("Parser fix");
 
     daemon.ok(&["stop", "1"]);
     daemon.wait_for_list("exited");

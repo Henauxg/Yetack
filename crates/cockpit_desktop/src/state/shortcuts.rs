@@ -208,6 +208,7 @@ mod tests {
             edit: None,
             reason: None,
             answer: AnswerState::Waiting,
+            tool_call: None,
         })
     }
 

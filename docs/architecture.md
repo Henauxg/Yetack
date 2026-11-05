@@ -36,7 +36,7 @@ All crates live in `crates/` and are application code ([standards/rust/README.md
 | `cockpit_protocol` | lib | The daemon API: ids, the transcript model, requests, responses, events, snapshots, and the line framing. |
 | `cockpit_client` | lib | A connection to a daemon over a transport (local socket or SSH bridge): requests, responses, events, reconnection. |
 | `cockpit_daemon` | lib | The daemon: claude processes, the hub, the store, the socket server and its peer checks. |
-| `agents_cockpit` | bin `agents-cockpit` | The command line: `serve`, `bridge`, and client commands (`list`, `start`, `prompt`, `answer`, `stop`, `tail`). |
+| `agents_cockpit` | bin `agents-cockpit` | The command line: `serve`, `bridge`, and client commands (`list`, `start`, `prompt`, `answer`, `stop`, `rename`, `tail`). |
 | `cockpit_desktop` | bin `agents-cockpit-desktop` | The Dioxus desktop app. |
 
 Dependencies point one way:
@@ -87,15 +87,15 @@ An agent's conversation is a list of `TranscriptItem`s, each with an `ItemId` an
 The daemon numbers items in transcript order, so the app can merge a history page with live appends by id.
 The kinds of item:
 
-- `UserMessage` (text, attached images), with `queued` while the agent works;
+- `UserMessage` (text, attached images), with `queued` while the agent works; a slash command shows as typed, such as `/review fix`, not as Claude Code's `command-name` wrapper;
 - `AssistantText` (markdown) and `Thinking` (folded in the app);
 - `ToolCall`: tool name, summary, input, status (running, done, failed), output, and for `Edit` and `Write` the file path with the old and new text (both left empty when either is over 1 MiB);
 - `Subagent`: a tool call whose own items carry it as `parent` (from `parent_tool_use_id`);
-- `Approval`: tool, input (with the diff for an edit), reason, and its answer state;
+- `Approval`: tool, input (with the diff for an edit), reason, its answer state, and the item of its tool call (from the request's `tool_use_id`, which Claude Code sends after the call's `tool_use`);
 - `Question`: the `AskUserQuestion` questions and options, and its answer state;
 - `Plan`: the `ExitPlanMode` plan text, and its answer state (a decision, with an optional message when Claude should keep planning);
 - `TurnEnd`: duration, usage and cost of the turn, and whether the user stopped it (`stopped`, from the `result` line's `terminal_reason`), or the error that ended it;
-- `Notice`: a line such as "Conversation compacted", or a message Claude Code writes itself (a user line whose `origin` is not `human`), such as its summary of a background task that ended.
+- `Notice`: a line such as "Conversation compacted" or "Conversation cleared" (a `conversation_reset` line, after which Claude Code's total cost counts from 0 again), a local command's output such as `/effort`'s, or a message Claude Code writes itself (a user line whose `origin` is not `human`), such as its summary of a background task that ended.
 
 An answer state is `Waiting`, `Answered`, or `Cancelled` (Claude Code withdraws a pending request when the turn is interrupted).
 
@@ -128,7 +128,7 @@ Transcripts are not in the snapshot: the app asks for an agent's transcript with
 
 ### Requests
 
-`agent.start`, `agent.prompt`, `agent.cancel_queued`, `agent.answer` (approval, question or plan), `agent.interrupt`, `agent.stop`, `agent.resume`, `agent.remove`, `agent.history`, `agent.details`, `agent.set_model`, `agent.set_effort`, `agent.set_mode`, `agent.context_usage`, `agent.stop_task`, `agent.mcp_status`, `agent.mcp_reconnect`, `agent.mcp_toggle`, `agent.commands` (slash commands and skills), `agent.read_file` (the file view), `mcp.remove` (with the agent, whose folder decides the project and local scopes), `settings.set`, `sessions.list`, `sessions.resume`.
+`agent.start`, `agent.prompt`, `agent.cancel_queued`, `agent.answer` (approval, question or plan), `agent.interrupt`, `agent.stop`, `agent.resume`, `agent.remove`, `agent.history`, `agent.details`, `agent.set_model`, `agent.set_effort`, `agent.set_mode`, `agent.rename`, `agent.context_usage`, `agent.stop_task`, `agent.mcp_status`, `agent.mcp_reconnect`, `agent.mcp_toggle`, `agent.commands` (slash commands and skills), `agent.read_file` (the file view), `mcp.remove` (with the agent, whose folder decides the project and local scopes), `settings.set`, `sessions.list`, `sessions.resume`.
 
 A history page is limited by bytes as well as by count: images travel inline, and a line over the framing maximum is refused.
 An item too large for any response comes as a `Notice` that says so, under the item's id, so paging moves on.
@@ -173,6 +173,7 @@ The hub turns Claude Code messages into transcript items and status changes (mod
 - The daemon's own control requests (`interrupt`, `set_model`, `set_permission_mode`, `get_context_usage`, `mcp_status`, `mcp_reconnect`, `mcp_toggle`, `stop_task`) carry ids of its own.
   Claude Code echoes control responses; one whose id the daemon did not send is ignored.
 - Effort has no control request: the daemon sends `/effort <level>` as a prompt.
+- Naming a session has none either: `agent.rename` sends `/rename <title>`, so Claude Code's resume list and `sessions.list` show the name. Claude Code then writes `system/session_title_changed`, which also renames the agent after a `/rename` typed in the composer.
 - After `--resume`, Claude Code's `total_cost_usd` counts from the cost it restores: the `totalCostUSD` of the session file's last `cost-state` line, which Claude Code writes when its process exits.
   The daemon reads that line in a task as the process starts, so the first turn's end shows that turn's cost alone. The agent's cost is Claude Code's total, the session's past included.
 
@@ -237,7 +238,7 @@ On start the daemon reads `agents.json`, finds the last `Seq` in the logs, and r
 - **State**: `AppState` holds the summaries, the open transcripts, the plan usage and the UI state (selected agent, unread agents, open blocks).
   A pure function `apply(&mut AppState, Event)` updates it, so the state logic is tested without a window.
 - **Connection task**: a Dioxus coroutine owns the `Connection`, applies events to the state signal, and sends the requests the components ask for.
-- **Components** follow the mockups: sidebar, center header (usage chip, changes chip), transcript, composer (model, mode, cache timer, Send or Stop), floating blocks and badges (tasks, running, MCP servers), file view, command palette, agent switcher, new agent dialog, notifications.
+- **Components** follow the mockups: sidebar, center header (the title, which its pencil, a double-click or Rename in the "/" menu turns into a field that renames the agent; usage chip, changes chip), transcript, composer (model, mode, cache timer, Send or Stop), floating blocks and badges (tasks, running, MCP servers), file view, command palette, agent switcher, new agent dialog, notifications.
 - **Rendering**: markdown with `pulldown-cmark`, syntax colors with `syntect` (Rust, SQL, Markdown, JSON, Bash, Nix), diffs with `similar` (line diff, then word highlights inside changed lines).
 - **Shortcuts**: Ctrl+K, Ctrl+N, Esc, Y, N, 1 to 9, as in plan.md.
 

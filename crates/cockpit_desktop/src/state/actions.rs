@@ -10,8 +10,8 @@ use cockpit_protocol::{
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, CancelQueuedParams, ClaudeSessionId,
     Effort, Image, ItemBody, ItemId, McpRemoveParams, McpScope, McpServerParams, McpToggleParams,
     PastSession, PendingId, PermissionMode, PlanAnswer, PlanDecision, Prompt, PromptParams,
-    Question, QuestionAnswer, Request, SessionResumeParams, SetEffortParams, SetModeParams,
-    SetModelParams, SlashCommand, StartParams, StopTaskParams,
+    Question, QuestionAnswer, RenameParams, Request, SessionResumeParams, SetEffortParams,
+    SetModeParams, SetModelParams, SlashCommand, StartParams, StopTaskParams,
 };
 use strum::VariantArray;
 
@@ -21,7 +21,7 @@ use super::requests::{Outgoing, Purpose, history_request};
 use super::transcript::HistoryState;
 use super::ui_state::{
     Block, Dialog, FileView, NewAgentForm, NewAgentTab, PaletteOrigin, Popover, Switcher,
-    ToolFilter, ViewMode,
+    TitleEdit, ToolFilter, ViewMode,
 };
 use super::{export, file_edits};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
@@ -213,6 +213,8 @@ pub enum MenuAction {
     ClearConversation,
     CompactConversation,
     ExportConversation,
+    /// Turns the header's title into a field.
+    Rename,
     /// A setting: its row holds its choices, which Left and Right move through.
     Model,
     Effort,
@@ -234,6 +236,7 @@ impl MenuAction {
             Self::ClearConversation => "Clear conversation",
             Self::CompactConversation => "Compact conversation",
             Self::ExportConversation => "Export conversation",
+            Self::Rename => "Rename",
             Self::Model => "Model",
             Self::Effort => "Effort",
             Self::Mode => "Permission mode",
@@ -245,7 +248,8 @@ impl MenuAction {
             Self::AttachImage
             | Self::ClearConversation
             | Self::CompactConversation
-            | Self::ExportConversation => MenuSection::Context,
+            | Self::ExportConversation
+            | Self::Rename => MenuSection::Context,
             Self::Model | Self::Effort | Self::Mode => MenuSection::Model,
         }
     }
@@ -261,6 +265,7 @@ impl MenuAction {
             Self::CompactConversation => COMPACT_COMMAND,
             Self::AttachImage
             | Self::ExportConversation
+            | Self::Rename
             | Self::Model
             | Self::Effort
             | Self::Mode => {
@@ -295,7 +300,8 @@ impl MenuAction {
             Self::AttachImage
             | Self::ClearConversation
             | Self::CompactConversation
-            | Self::ExportConversation => Vec::new(),
+            | Self::ExportConversation
+            | Self::Rename => Vec::new(),
         };
         let mut words = words.into_iter().chain([self.label()]);
         words.any(|word| word.to_lowercase().contains(query))
@@ -433,10 +439,52 @@ pub fn palette_pick(
                 window: Some(WindowAction::Copy(markdown)),
             }
         }
+        MenuAction::Rename => {
+            start_rename(state, agent);
+            Picked::default()
+        }
         MenuAction::Model | MenuAction::Effort | MenuAction::Mode => Picked::default(),
     };
     state.ui.popover = None;
     picked
+}
+
+/// Turns the header's title into a field holding it.
+pub fn start_rename(state: &mut AppState, agent: AgentId) {
+    let Some(entry) = state.agents.get(&agent) else {
+        return;
+    };
+    state.ui.title_edit = Some(TitleEdit {
+        agent,
+        title: entry.summary.title.clone(),
+    });
+    state.ui.popover = None;
+}
+
+pub fn rename_text(state: &mut AppState, text: String) {
+    if let Some(edit) = &mut state.ui.title_edit {
+        edit.title = text;
+    }
+}
+
+/// Ends the title edit, and renames the agent when the title changed and is not empty. Esc ends
+/// it with the overlays instead, which renames nothing.
+pub fn finish_rename(state: &mut AppState) -> Vec<Outgoing> {
+    let Some(edit) = state.ui.title_edit.take() else {
+        return Vec::new();
+    };
+    let title = edit.title.trim();
+    let unchanged = state
+        .agents
+        .get(&edit.agent)
+        .is_none_or(|entry| entry.summary.title == title);
+    if title.is_empty() || unchanged {
+        return Vec::new();
+    }
+    vec![Outgoing::action(Request::AgentRename(RenameParams {
+        agent: edit.agent,
+        title: title.to_owned(),
+    }))]
 }
 
 /// A prompt the app writes itself: a failure shows as a note, and no draft comes back.
@@ -503,7 +551,8 @@ pub fn setting_choices(summary: &AgentSummary, action: MenuAction) -> Vec<Settin
         MenuAction::AttachImage
         | MenuAction::ClearConversation
         | MenuAction::CompactConversation
-        | MenuAction::ExportConversation => Vec::new(),
+        | MenuAction::ExportConversation
+        | MenuAction::Rename => Vec::new(),
     }
 }
 
@@ -530,7 +579,8 @@ pub fn choose_setting(
         MenuAction::AttachImage
         | MenuAction::ClearConversation
         | MenuAction::CompactConversation
-        | MenuAction::ExportConversation => None,
+        | MenuAction::ExportConversation
+        | MenuAction::Rename => None,
     };
     requests.unwrap_or_default()
 }
@@ -1550,6 +1600,7 @@ mod tests {
                 "Clear conversation",
                 "Compact conversation",
                 "Export conversation",
+                "Rename",
                 "Model",
                 "Effort",
                 "Permission mode",
@@ -1596,7 +1647,7 @@ mod tests {
         };
 
         let up_at_the_top = press(Direction::Up, 1);
-        let on_the_first_command = press(Direction::Down, 7);
+        let on_the_first_command = press(Direction::Down, 8);
         let at_the_bottom = press(Direction::Down, 5);
         let back_on_the_settings = press(Direction::Up, 3);
 
@@ -1607,7 +1658,7 @@ mod tests {
                 at_the_bottom,
                 back_on_the_settings
             ),
-            (0, 7, 8, 5)
+            (0, 8, 9, 6)
         );
     }
 
@@ -1701,6 +1752,60 @@ mod tests {
         );
         assert_eq!(part.window, Some(WindowAction::Copy(copied)));
         assert!(part_note.is_some_and(|(_, text)| text.contains("without the older messages")));
+    }
+
+    #[test]
+    fn rename_from_the_menu_opens_the_title_field_and_saves_a_changed_title() {
+        let mut state = state(AgentStatus::Exited);
+        let mut drafts = Drafts::default();
+        open_menu(&mut state, &mut drafts, "rename");
+
+        let picked = palette_pick(&mut state, &mut drafts, agent(), None);
+        let opened = state.ui.title_edit.clone();
+        rename_text(&mut state, "  Cart total ".to_owned());
+        let saved = finish_rename(&mut state);
+        let again = finish_rename(&mut state);
+
+        assert_eq!(picked, Picked::default());
+        assert_eq!(state.ui.popover, None);
+        assert_eq!(
+            opened,
+            Some(TitleEdit {
+                agent: agent(),
+                title: "Agent 1".to_owned()
+            })
+        );
+        assert_eq!(
+            sent(&saved),
+            [&Request::AgentRename(RenameParams {
+                agent: agent(),
+                title: "Cart total".to_owned()
+            })]
+        );
+        assert!(again.is_empty(), "the field closed with the first save");
+        assert_eq!(state.ui.title_edit, None);
+    }
+
+    #[test]
+    fn an_empty_or_unchanged_title_or_escape_renames_nothing() {
+        let mut state = state(AgentStatus::Idle);
+        let saved = |state: &mut AppState, text: &str| {
+            start_rename(state, agent());
+            rename_text(state, text.to_owned());
+            finish_rename(state)
+        };
+
+        let empty = saved(&mut state, "   ");
+        let unchanged = saved(&mut state, "Agent 1");
+        start_rename(&mut state, agent());
+        rename_text(&mut state, "Typed, then Esc".to_owned());
+        let closed = state.ui.close_overlays();
+        let after_escape = finish_rename(&mut state);
+
+        assert!(empty.is_empty());
+        assert!(unchanged.is_empty());
+        assert!(closed);
+        assert!(after_escape.is_empty());
     }
 
     #[test]

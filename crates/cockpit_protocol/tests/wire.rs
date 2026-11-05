@@ -23,11 +23,11 @@ use cockpit_protocol::{
     McpServerParams, McpServerStatus, McpToggleParams, McpTool, McpTransport, Method,
     PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision,
     PlanUsage, Prompt, PromptParams, Question, QuestionAnswer, QuestionOption, RateLimitStatus,
-    ReadFileParams, Request, RequestId, ResponseBody, ResponseResult, Seq, ServerMessage,
-    SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, Settings, SlashCommand,
-    Snapshot, StartParams, StopTaskParams, TaskListItem, TaskProgress, TaskStatus, Timestamp,
-    TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, UsageWindow, UserMessage,
-    WindowUsage,
+    ReadFileParams, RenameParams, Request, RequestId, ResponseBody, ResponseResult, Seq,
+    ServerMessage, SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, Settings,
+    SlashCommand, Snapshot, StartParams, StopTaskParams, TaskListItem, TaskProgress, TaskStatus,
+    Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, UsageWindow,
+    UserMessage, WindowUsage,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -199,6 +199,7 @@ fn bodies() -> Vec<ItemBody> {
             edit: None,
             reason: Some("The command deletes files".to_owned()),
             answer: AnswerState::Answered(approval_answer()),
+            tool_call: Some(ItemId::new(12)),
         }),
         ItemBody::Approval(Approval {
             pending: pending(),
@@ -208,6 +209,7 @@ fn bodies() -> Vec<ItemBody> {
             edit: Some(edit()),
             reason: None,
             answer: AnswerState::Waiting,
+            tool_call: None,
         }),
         ItemBody::Question(Question {
             pending: pending(),
@@ -461,6 +463,10 @@ fn requests() -> Vec<Request> {
         Request::AgentSetMode(SetModeParams {
             agent,
             mode: PermissionMode::BypassPermissions,
+        }),
+        Request::AgentRename(RenameParams {
+            agent,
+            title: "Login form".to_owned(),
         }),
         Request::AgentContextUsage(AgentParams { agent }),
         Request::AgentStopTask(StopTaskParams {
@@ -722,6 +728,7 @@ fn method_names_are_pinned() {
             "agent.set_model",
             "agent.set_effort",
             "agent.set_mode",
+            "agent.rename",
             "agent.context_usage",
             "agent.stop_task",
             "agent.mcp_status",
@@ -945,6 +952,29 @@ fn a_prompt_request_on_the_wire() {
 }
 
 #[test]
+fn a_rename_request_on_the_wire() {
+    let message = ClientMessage::Request {
+        id: RequestId::new(9),
+        request: Request::AgentRename(RenameParams {
+            agent: agent(),
+            title: "Login form".to_owned(),
+        }),
+    };
+
+    assert_wire(
+        &message,
+        json!({
+            "type": "request",
+            "id": 9,
+            "request": {
+                "method": "agent.rename",
+                "params": {"agent": 3, "title": "Login form"},
+            },
+        }),
+    );
+}
+
+#[test]
 fn a_question_answer_on_the_wire() {
     let message = ClientMessage::Request {
         id: RequestId::new(8),
@@ -1142,6 +1172,7 @@ fn an_approval_and_a_turn_end_on_the_wire() {
         edit: Some(edit()),
         reason: None,
         answer: AnswerState::Answered(approval_answer()),
+        tool_call: Some(ItemId::new(16)),
     });
     let turn_end = ItemBody::TurnEnd(TurnEnd {
         duration: Duration::from_millis(83_250),
@@ -1169,6 +1200,7 @@ fn an_approval_and_a_turn_end_on_the_wire() {
                 "state": "answered",
                 "answer": {"decision": "deny", "message": "Run only the login tests"},
             },
+            "tool_call": 16,
         }),
     );
     assert_wire(
@@ -1182,6 +1214,18 @@ fn an_approval_and_a_turn_end_on_the_wire() {
             "stopped": false,
         }),
     );
+}
+
+#[test]
+fn an_approval_saved_without_its_tool_call_still_loads() {
+    let saved = r#"{"type":"approval","pending":"toolu_01","tool":"Bash","summary":"ls","input":{"command":"ls"},"edit":null,"reason":null,"answer":{"state":"waiting"}}"#;
+
+    let ItemBody::Approval(approval) = serde_json::from_str::<ItemBody>(saved).unwrap() else {
+        panic!("not an approval");
+    };
+
+    assert_eq!(approval.tool_call, None);
+    assert_eq!(approval.answer, AnswerState::Waiting);
 }
 
 #[test]

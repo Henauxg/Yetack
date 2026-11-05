@@ -143,6 +143,14 @@ const field_id = await dioxus.recv();
 document.getElementById(field_id)?.focus();
 "#;
 
+/// Gives the focus to the field whose id it receives, its text selected.
+const SELECT_SCRIPT: &str = r#"
+const field_id = await dioxus.recv();
+const field = document.getElementById(field_id);
+field?.focus();
+field?.select();
+"#;
+
 /// Clicks the element whose id it receives.
 const CLICK_SCRIPT: &str = r#"
 const element_id = await dioxus.recv();
@@ -300,6 +308,13 @@ pub fn focus_field(field_id: &'static str) {
     let script = document::eval(FOCUS_SCRIPT);
     if let Err(error) = script.send(field_id) {
         tracing::warn!("cannot focus the field {field_id}: {error}");
+    }
+}
+
+pub fn select_field(field_id: &'static str) {
+    let script = document::eval(SELECT_SCRIPT);
+    if let Err(error) = script.send(field_id) {
+        tracing::warn!("cannot select the field {field_id}: {error}");
     }
 }
 

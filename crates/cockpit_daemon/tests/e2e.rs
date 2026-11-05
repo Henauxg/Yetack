@@ -22,7 +22,7 @@ use cockpit_protocol::{
     ClaudeSessionId, CommandKind, CostUsd, Effort, ErrorCode, Event, EventRecord, HistoryParams,
     ItemBody, ItemId, McpRemoveParams, McpScope, McpServerParams, McpServerStatus, McpToggleParams,
     PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, Prompt, PromptParams, Question,
-    QuestionAnswer, ReadFileParams, Request, ResponseBody, Seq, SessionResumeParams,
+    QuestionAnswer, ReadFileParams, RenameParams, Request, ResponseBody, Seq, SessionResumeParams,
     SetEffortParams, SetModeParams, SetModelParams, Settings, StartParams, StopTaskParams,
     TranscriptItem,
 };
@@ -470,6 +470,51 @@ async fn a_new_agent_shows_its_mcp_servers_and_context_before_any_prompt() {
         .map(|server| (server.name.as_str(), server.status))
         .collect();
     assert_eq!(servers, [("notes", McpServerStatus::Connected)]);
+}
+
+#[tokio::test]
+async fn an_agent_is_renamed_in_its_record_and_in_its_claude_session() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let agent = client.start(&setup.work(), "hello there").await;
+    client.idle(agent).await;
+    let rename = |title: &str| {
+        Request::AgentRename(RenameParams {
+            agent,
+            title: title.to_owned(),
+        })
+    };
+
+    assert_eq!(
+        client.ok(rename("  Cart   total ")).await,
+        ResponseBody::Done
+    );
+
+    client
+        .summary_with(agent, |summary| summary.title == "Cart total")
+        .await;
+    client
+        .item_with(agent, |body| {
+            matches!(body, ItemBody::Notice { text } if text == "Session renamed to: Cart total")
+        })
+        .await;
+    assert_eq!(
+        client.error_code(rename(" \n ")).await,
+        ErrorCode::InvalidRequest
+    );
+    assert_eq!(
+        client.error_code(rename(&"x".repeat(201))).await,
+        ErrorCode::InvalidRequest
+    );
+    let saved = std::fs::read_to_string(setup.state().join("agents.json")).unwrap();
+    assert!(saved.contains("\"Cart total\""), "{saved}");
+    let users = client
+        .history(agent)
+        .await
+        .into_iter()
+        .filter(|item| matches!(item.body, ItemBody::UserMessage(_)))
+        .count();
+    assert_eq!(users, 1, "the rename prompt shows no item");
 }
 
 #[tokio::test]

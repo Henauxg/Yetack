@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use claude_protocol::{ControlRequest, InputLine, OutputLine};
 use cockpit_protocol::{
     AgentId, AgentStatus, AgentSummary, AnswerParams, CancelQueuedParams, ClaudeSessionId, CostUsd,
-    ErrorBody, ErrorCode, Event, Prompt, ResponseBody, ResponseResult, SetEffortParams,
-    StartParams, TranscriptItem,
+    ErrorBody, ErrorCode, Event, Prompt, RenameParams, ResponseBody, ResponseResult,
+    SetEffortParams, StartParams, TranscriptItem,
 };
 
 use crate::hub::input::{ControlPurpose, HubInput, Reply};
@@ -244,6 +244,11 @@ impl Hub {
         if session_changed {
             agent.record.session = session;
         }
+        // Claude Code names the session itself after a `/rename` typed in the composer.
+        let title_changed = agent.view.summary().title != agent.record.title;
+        if title_changed {
+            agent.record.title = agent.view.summary().title.clone();
+        }
         for follow_up in follow_ups {
             match follow_up {
                 FollowUp::TurnEnded => {
@@ -262,7 +267,7 @@ impl Hub {
                 }
             }
         }
-        if session_changed {
+        if session_changed || title_changed {
             self.save_agents();
         }
         self.publish(id);
@@ -468,6 +473,44 @@ impl Hub {
         }
         agent.record.effort = Some(params.effort);
         agent.view.set_effort(params.effort);
+        self.save_agents();
+        self.publish(id);
+        Ok(ResponseBody::Done)
+    }
+
+    /// Renames the agent. While its process runs, `/rename` names its Claude session too, so
+    /// Claude Code's resume list and `sessions.list` show the name.
+    pub(super) fn rename(&mut self, params: RenameParams) -> Result<ResponseBody, ErrorBody> {
+        let title = params
+            .title
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if title.is_empty() {
+            return Err(errors::invalid("the title is empty".to_owned()));
+        }
+        check_length("title", &title, sessions::TITLE_MAX_CHARS)?;
+        let id = params.agent;
+        let agent = self
+            .agents
+            .get_mut(&id)
+            .ok_or(errors::agent_not_found(id))?;
+        if let Some(process) = &agent.process {
+            let text = prompts::rename_command(&title);
+            let line = InputLine::prompt(text.clone());
+            if agent.view.is_busy() || !agent.queue.is_empty() {
+                agent.queue.push_back(QueuedPrompt {
+                    item: None,
+                    line,
+                    text,
+                });
+            } else {
+                process.write(line);
+                agent.view.expect_echo(text);
+            }
+        }
+        agent.record.title = title.clone();
+        agent.view.set_title(title);
         self.save_agents();
         self.publish(id);
         Ok(ResponseBody::Done)
