@@ -48,6 +48,15 @@ pub enum NewAgentTab {
     Resume,
 }
 
+/// A menu of the new agent dialog, apart from the composer's: the composer's would open behind
+/// the dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormMenu {
+    /// The model and the effort.
+    Model,
+    Mode,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NewAgentForm {
     pub tab: NewAgentTab,
@@ -57,6 +66,7 @@ pub struct NewAgentForm {
     pub effort: Option<Effort>,
     pub mode: Option<PermissionMode>,
     pub prompt: String,
+    pub menu: Option<FormMenu>,
     /// A start or resume request is on its way.
     pub starting: bool,
 }
@@ -156,8 +166,15 @@ impl UiState {
         self.file_views.get(&agent)
     }
 
-    /// Closes every popover and the dialog. Returns whether anything was open.
+    /// Closes every popover and the dialog, or only the dialog's menu when one is open. Returns
+    /// whether anything was open.
     pub fn close_overlays(&mut self) -> bool {
+        if let Some(Dialog::NewAgent(form)) = &mut self.dialog
+            && form.menu.is_some()
+        {
+            form.menu = None;
+            return true;
+        }
         let open = self.popover.is_some() || self.dialog.is_some() || self.badge.is_some();
         self.popover = None;
         self.dialog = None;
@@ -191,6 +208,23 @@ mod tests {
         let first = ui.errors.first().map(|note| note.id).unwrap();
         ui.dismiss(first);
         assert_eq!(ui.errors.len(), 3);
+    }
+
+    #[test]
+    fn escape_closes_the_new_agent_menu_before_the_dialog() {
+        let mut ui = UiState {
+            dialog: Some(Dialog::NewAgent(NewAgentForm {
+                menu: Some(FormMenu::Mode),
+                ..NewAgentForm::default()
+            })),
+            ..UiState::default()
+        };
+
+        assert!(ui.close_overlays());
+        assert!(matches!(&ui.dialog, Some(Dialog::NewAgent(form)) if form.menu.is_none()));
+
+        assert!(ui.close_overlays());
+        assert_eq!(ui.dialog, None);
     }
 
     #[test]

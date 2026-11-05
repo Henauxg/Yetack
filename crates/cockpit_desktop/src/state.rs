@@ -18,7 +18,7 @@ pub use requests::{Outgoing, apply_response, needed_requests};
 pub use shortcuts::{KeyPress, handle_key};
 pub use transcript::{HistoryState, WaitingKind};
 pub use ui_state::{
-    Block, Dialog, McpView, NewAgentForm, NewAgentTab, Popover, ToolFilter, ViewMode,
+    Block, Dialog, FormMenu, McpView, NewAgentForm, NewAgentTab, Popover, ToolFilter, ViewMode,
 };
 
 #[cfg(test)]

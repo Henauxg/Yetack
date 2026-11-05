@@ -389,11 +389,6 @@ button:disabled {
   color: var(--text);
 }
 
-.text-field.prompt-field {
-  padding: 8px 10px;
-  resize: vertical;
-}
-
 .chevron {
   display: inline-flex;
   color: var(--dim);
@@ -2665,6 +2660,8 @@ button:disabled {
 
 .dialog.new-agent {
   width: 640px;
+  /* The model and mode menus open over the recent folders, past the footer they hang from. */
+  overflow: visible;
 }
 
 .dialog-search {
@@ -2742,7 +2739,7 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 14px 16px 10px;
+  padding: 14px 12px 8px 20px;
 }
 
 .dialog-head h2 {
@@ -2755,13 +2752,16 @@ button:disabled {
 .dialog-tabs {
   display: flex;
   gap: 4px;
-  padding: 0 16px;
+  padding: 0 14px;
   border-bottom: 1px solid var(--line-divider);
 }
 
 .dialog-tab {
-  min-height: 36px;
-  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  padding: 0 8px;
   border: 0;
   border-bottom: 2px solid transparent;
   background: transparent;
@@ -2769,17 +2769,41 @@ button:disabled {
   font-size: 13px;
 }
 
+.dialog-tab .icon {
+  color: var(--dim);
+}
+
 .dialog-tab.selected {
-  border-bottom-color: var(--text);
+  border-bottom-color: var(--teal);
   color: var(--text);
 }
 
+.dialog-tab.selected .icon {
+  color: var(--teal);
+}
+
 .dialog-body {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding: 14px 16px 16px;
+  padding: 16px 20px;
   overflow-y: auto;
+}
+
+.dialog-footer {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 20px 18px;
+  border-top: 1px solid var(--line-divider);
+}
+
+.dialog-note {
+  font-size: 12.5px;
+  color: var(--muted);
 }
 
 .field-group {
@@ -2790,13 +2814,54 @@ button:disabled {
 
 .field-label {
   font-size: 12px;
+  font-weight: 500;
   color: var(--muted);
+}
+
+.folder-field {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 40px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line-control);
+  background: var(--bg);
+  color: var(--dim);
+  transition: border-color var(--motion-hover) var(--ease), box-shadow var(--motion-hover) var(--ease);
+}
+
+.folder-field:hover {
+  border-color: #4d4d4d;
+}
+
+.folder-field:focus-within {
+  border-color: rgba(45, 212, 191, 0.55);
+  box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.12);
+  color: var(--teal);
+}
+
+.folder-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 38px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+
+.folder-input::placeholder {
+  color: var(--dim);
+  font-family: var(--sans);
 }
 
 .folder-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 
 .folder-option {
@@ -2804,31 +2869,35 @@ button:disabled {
   align-items: center;
   gap: 10px;
   width: 100%;
-  min-height: 32px;
+  min-height: 34px;
   padding: 0 10px;
   border-radius: 8px;
-  border: 1px solid var(--line-control);
+  border: 1px solid transparent;
   background: transparent;
   color: var(--text);
   text-align: left;
 }
 
+.folder-option:hover {
+  background: var(--hover);
+}
+
 .folder-option.checked {
-  border-color: var(--text);
-  background: var(--selected);
+  border-color: rgba(45, 212, 191, 0.4);
+  background: rgba(45, 212, 191, 0.07);
 }
 
-.radio-mark {
-  flex: none;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  border: 2px solid var(--faint);
+.folder-icon {
+  display: inline-flex;
+  color: var(--dim);
 }
 
-.folder-option.checked .radio-mark {
-  border-color: var(--text);
-  background: var(--text);
+.folder-option:hover .folder-icon {
+  color: var(--text-soft);
+}
+
+.folder-option.checked .folder-icon {
+  color: var(--teal);
 }
 
 /* One line per folder, cut at its start: the end of a path tells folders apart. */
@@ -2849,33 +2918,90 @@ button:disabled {
   unicode-bidi: isolate;
 }
 
+.folder-parent {
+  color: var(--dim);
+}
+
+.folder-name {
+  color: var(--text);
+}
+
 .folder-used {
   flex: none;
+  font-size: 12px;
+  color: var(--dim);
   white-space: nowrap;
 }
 
-.select-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.select-label {
+/* The first message, in the composer's box. */
+.prompt-box {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 12px;
-  color: var(--muted);
+  padding: 10px 10px 8px;
+  border-radius: 14px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg);
+  transition: border-color var(--motion-hover) var(--ease);
 }
 
-.select {
-  min-height: 32px;
-  padding: 0 8px;
-  border-radius: 8px;
+.prompt-box:hover {
+  border-color: #444444;
+}
+
+.prompt-box:focus-within {
+  border-color: #525252;
+}
+
+.prompt-input {
+  min-height: 60px;
+  max-height: 200px;
+  padding: 4px 6px;
   border: 0;
-  background: var(--selected);
+  background: transparent;
   color: var(--text);
-  font-size: 12.5px;
+  line-height: 1.5;
+  resize: none;
+  outline: none;
+}
+
+.prompt-input::placeholder {
+  color: var(--dim);
+}
+
+.prompt-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.menu-anchor {
+  position: relative;
+}
+
+.menu-button.open {
+  background: var(--line-divider);
+  color: var(--text);
+}
+
+.form-menu {
+  bottom: calc(100% + 6px);
+  z-index: 8;
+}
+
+.form-menu.model-menu {
+  left: 0;
+  width: 330px;
+}
+
+.form-menu.mode-menu {
+  right: 0;
+  left: auto;
+  width: 340px;
+}
+
+.effort-row.with-default {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
 }
 
 .dialog-actions {
@@ -2885,13 +3011,38 @@ button:disabled {
   gap: 8px;
 }
 
+.dialog-actions .button.primary {
+  padding-right: 8px;
+}
+
+.session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .session-row {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px;
-  border-radius: 8px;
-  background: var(--raised);
+  gap: 12px;
+  width: 100%;
+  min-height: 52px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+.session-row:not(:disabled):hover,
+.session-row.highlighted {
+  background: var(--hover);
+}
+
+.session-row.highlighted {
+  border-color: var(--line-control);
 }
 
 .session-text {
@@ -2907,6 +3058,53 @@ button:disabled {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.session-row .folder-path {
+  font-size: 12px;
+}
+
+.session-meta {
+  flex: none;
+  min-width: 76px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--dim);
+  white-space: nowrap;
+  transition: opacity var(--motion-hover) var(--ease);
+}
+
+/* Over the time and turns, which it replaces on the row under the pointer or the highlight. */
+.session-resume {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 12px;
+  border-radius: 7px;
+  background: var(--text);
+  color: var(--bg);
+  font-size: 12.5px;
+  font-weight: 600;
+  opacity: 0;
+  transform: translate(4px, -50%);
+  transition: opacity var(--motion-hover) var(--ease), transform var(--motion-hover) var(--ease);
+}
+
+.session-row:not(:disabled):hover .session-meta,
+.session-row.highlighted .session-meta {
+  opacity: 0;
+}
+
+.session-row:not(:disabled):hover .session-resume,
+.session-row.highlighted .session-resume {
+  opacity: 1;
+  transform: translate(0, -50%);
 }
 
 /* Motion: hover, press and focus, and how overlays, menus, blocks and notes come and go. Every
