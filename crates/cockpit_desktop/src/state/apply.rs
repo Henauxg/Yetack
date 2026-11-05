@@ -10,6 +10,7 @@ use cockpit_protocol::{
     Snapshot,
 };
 
+use super::actions;
 use super::app_state::{AgentEntry, AppState, ConnectionState, Loadable};
 use super::drafts::Drafts;
 use super::transcript::KEPT_ITEMS_AWAY;
@@ -120,6 +121,7 @@ pub fn apply_catchup(state: &mut AppState, drafts: &mut Drafts, catchup: Catchup
         .retain(|agent| agents.contains_key(agent));
     drafts.retain_agents(|agent| agents.contains_key(&agent));
     state.fix_selection();
+    actions::follow_hidden_title_edit(state, drafts);
 }
 
 pub fn apply(state: &mut AppState, drafts: &mut Drafts, record: EventRecord) -> Option<Alert> {
@@ -131,7 +133,11 @@ pub fn apply(state: &mut AppState, drafts: &mut Drafts, record: EventRecord) -> 
             }
             None
         }
-        Event::AgentUpdated(summary) => update_agent(state, summary),
+        Event::AgentUpdated(summary) => {
+            let alert = update_agent(state, summary);
+            actions::follow_hidden_title_edit(state, drafts);
+            alert
+        }
         Event::AgentRemoved { agent } => {
             state.agents.remove(&agent);
             state.ui.unread.remove(&agent);
@@ -585,6 +591,50 @@ mod tests {
         assert_eq!(dropped.ui.title_edit, None);
         assert_eq!(other.ui.title_edit, Some(renamed(2)));
         assert!(!removed.ui.close_overlays(), "nothing is left open for Esc");
+    }
+
+    /// The row's title field would leave the page in the middle of a word, and no field would
+    /// show the edit.
+    #[test]
+    fn a_title_edited_in_a_row_the_filter_then_hides_moves_to_the_header_with_its_text() {
+        let working = |id| placed(id, AgentStatus::Working, id * 1024);
+        let mut updated = state_with(vec![working(1), working(2)]);
+        let mut drafts = Drafts::default();
+        updated.ui.selected = Some(AgentId::new(1));
+        updated.prefs.sidebar.filter = crate::prefs::StatusFilter::Working;
+        actions::rename_key(&mut updated, &mut drafts);
+        actions::rename_text(&updated, &mut drafts, "Cart tot".to_owned());
+        let mut dropped = updated.clone();
+        let mut dropped_drafts = drafts.clone();
+
+        apply(
+            &mut updated,
+            &mut drafts,
+            record(Event::AgentUpdated(with_status(1, AgentStatus::Idle))),
+        );
+        apply_catchup(
+            &mut dropped,
+            &mut dropped_drafts,
+            Catchup::Snapshot(Snapshot {
+                agents: vec![
+                    placed(1, AgentStatus::Idle, 1024),
+                    placed(2, AgentStatus::Working, 2048),
+                ],
+                plan_usage: PlanUsage::default(),
+                settings: Settings::default(),
+                last_seq: Some(Seq::new(40)),
+            }),
+        );
+
+        let header = Some(TitleEdit {
+            agent: AgentId::new(1),
+            title: "Cart tot".to_owned(),
+            place: TitlePlace::Header,
+            select_all: false,
+        });
+        assert_eq!(updated.ui.title_edit, header);
+        assert_eq!(dropped.ui.title_edit, header);
+        assert_eq!(drafts.title, "Cart tot");
     }
 
     #[test]

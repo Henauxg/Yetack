@@ -566,12 +566,35 @@ pub fn rename_key(state: &mut AppState, drafts: &mut Drafts) {
             None => return,
         },
     };
-    let has_row = state
+    let place = if has_row(state, agent) {
+        wanted
+    } else {
+        TitlePlace::Header
+    };
+    start_rename_at(state, drafts, agent, place);
+}
+
+/// The filter hid the row whose title is being edited, as when the agent's status changed: the
+/// edit moves to the header with the text typed so far, as F2 opens it for an agent without a row.
+pub fn follow_hidden_title_edit(state: &mut AppState, drafts: &mut Drafts) {
+    let in_row = state
+        .ui
+        .title_edit
+        .as_ref()
+        .filter(|edit| edit.place == TitlePlace::Sidebar)
+        .map(|edit| edit.agent);
+    if let Some(agent) = in_row
+        && !has_row(state, agent)
+    {
+        start_rename_at(state, drafts, agent, TitlePlace::Header);
+    }
+}
+
+fn has_row(state: &AppState, agent: AgentId) -> bool {
+    state
         .sidebar_agents()
         .iter()
-        .any(|entry| entry.id() == agent);
-    let place = if has_row { wanted } else { TitlePlace::Header };
-    start_rename_at(state, drafts, agent, place);
+        .any(|entry| entry.id() == agent)
 }
 
 /// Only the drafts change, so that typing a title does not render the transcript again.
