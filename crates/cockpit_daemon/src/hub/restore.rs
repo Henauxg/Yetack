@@ -8,7 +8,8 @@ use cockpit_protocol::{
 
 use crate::hub::agents::initial_summary;
 use crate::store::{
-    AgentRecord, AgentsFile, DaemonSettings, EventLogs, LogName, StateDir, StoreError, read_log,
+    AgentRecord, AgentsFile, DaemonSettings, EventLogs, LogName, StateDir, StoreError,
+    for_each_event,
 };
 use crate::transcript::AgentView;
 
@@ -37,7 +38,7 @@ pub(crate) fn restore(state: &StateDir) -> Result<Restored, StoreError> {
     let mut plan_usage = PlanUsage::default();
     let mut logged: HashMap<AgentId, LoggedAgent> = HashMap::new();
     for (log, path) in EventLogs::new(state.events()).list()? {
-        for record in read_log(&path)? {
+        for_each_event(&path, |record| {
             last_seq = last_seq.max(Some(record.seq));
             match log {
                 LogName::Daemon => {
@@ -47,7 +48,7 @@ pub(crate) fn restore(state: &StateDir) -> Result<Restored, StoreError> {
                 }
                 LogName::Agent(agent) => logged.entry(agent).or_default().apply(record.event),
             }
-        }
+        })?;
     }
     let ttl = settings.prompt_cache_ttl();
     let agents: Vec<(AgentRecord, AgentView)> = file
@@ -115,6 +116,16 @@ mod tests {
         }
     }
 
+    fn notice(id: u32, text: &str) -> TranscriptItem {
+        TranscriptItem {
+            id: ItemId::new(id),
+            parent: None,
+            body: ItemBody::Notice {
+                text: text.to_owned(),
+            },
+        }
+    }
+
     fn log(logs: &mut EventLogs, name: LogName, seq: u64, event: Event) {
         let frame = Frame::encode(&ServerMessage::Event(EventRecord {
             seq: Seq::new(seq),
@@ -140,20 +151,13 @@ mod tests {
         let mut summary = initial_summary(&record(1));
         summary.turns = 4;
         log(&mut logs, agent, 1, Event::AgentAdded(summary.clone()));
-        let item = |id: u32, text: &str| TranscriptItem {
-            id: ItemId::new(id),
-            parent: None,
-            body: ItemBody::Notice {
-                text: text.to_owned(),
-            },
-        };
         log(
             &mut logs,
             agent,
             2,
             Event::TranscriptAppended {
                 agent: AgentId::new(1),
-                item: item(1, "first"),
+                item: notice(1, "first"),
             },
         );
         log(
@@ -168,7 +172,7 @@ mod tests {
             4,
             Event::TranscriptChanged {
                 agent: AgentId::new(1),
-                item: item(1, "changed"),
+                item: notice(1, "changed"),
             },
         );
         log(
@@ -185,10 +189,104 @@ mod tests {
         let (_, first) = &restored.agents[0];
         assert_eq!(first.summary().turns, 4);
         assert_eq!(first.summary().status, AgentStatus::Exited);
-        assert_eq!(first.items(), [item(1, "changed")]);
+        assert_eq!(first.items(), [notice(1, "changed")]);
         let (_, second) = &restored.agents[1];
         assert_eq!(second.summary().title, "Agent 2");
         assert!(second.items().is_empty());
+    }
+
+    /// Each log applies in its own order, wherever the other logs put their numbers, and a line
+    /// that does not decode costs only itself.
+    #[test]
+    fn interleaved_logs_and_a_broken_line_restore_the_state_they_logged() {
+        use std::fs::OpenOptions;
+        use std::io::Write;
+
+        use cockpit_protocol::{ChangedFile, RateLimitStatus, UsageWindow, WindowUsage};
+
+        let temp = tempfile::tempdir().unwrap();
+        let state = StateDir::create(temp.path()).unwrap();
+        AgentsFile {
+            next_agent: AgentId::new(3),
+            replay_floor: None,
+            agents: vec![record(1), record(2)],
+        }
+        .save(&state.agents_file())
+        .unwrap();
+        let mut logs = EventLogs::new(state.events());
+        let (first, second) = (AgentId::new(1), AgentId::new(2));
+        let mut summary = initial_summary(&record(1));
+        let details = AgentDetails {
+            changed_files: vec![ChangedFile {
+                path: PathBuf::from("/srv/work/cart.rs"),
+                lines_added: 3,
+                lines_removed: 1,
+            }],
+            ..AgentDetails::default()
+        };
+        let usage = PlanUsage {
+            windows: BTreeMap::from([(
+                UsageWindow::FiveHour,
+                WindowUsage {
+                    utilization: Some(0.5),
+                    resets_at: None,
+                    status: RateLimitStatus::Allowed,
+                },
+            )]),
+        };
+        let appended = |agent, item| Event::TranscriptAppended { agent, item };
+        log(
+            &mut logs,
+            LogName::Agent(first),
+            1,
+            Event::AgentAdded(summary.clone()),
+        );
+        log(
+            &mut logs,
+            LogName::Agent(second),
+            2,
+            appended(second, notice(1, "a")),
+        );
+        let details_changed = Event::DetailsChanged {
+            agent: first,
+            details: details.clone(),
+        };
+        log(&mut logs, LogName::Agent(first), 3, details_changed);
+        OpenOptions::new()
+            .append(true)
+            .open(logs.path(LogName::Agent(second)))
+            .unwrap()
+            .write_all(b"not an event\n")
+            .unwrap();
+        log(
+            &mut logs,
+            LogName::Agent(second),
+            4,
+            appended(second, notice(2, "b")),
+        );
+        log(
+            &mut logs,
+            LogName::Daemon,
+            5,
+            Event::PlanUsageChanged(usage.clone()),
+        );
+        summary.turns = 2;
+        log(
+            &mut logs,
+            LogName::Agent(first),
+            6,
+            Event::AgentUpdated(summary),
+        );
+
+        let restored = restore(&state).unwrap();
+
+        assert_eq!(restored.last_seq, Some(Seq::new(6)));
+        assert_eq!(restored.plan_usage, usage);
+        let (_, first) = &restored.agents[0];
+        assert_eq!(first.summary().turns, 2);
+        assert_eq!(first.details(), &details);
+        let (_, second) = &restored.agents[1];
+        assert_eq!(second.items(), [notice(1, "a"), notice(2, "b")]);
     }
 
     /// The floor is the sequence number of an event that could not be logged, which clients may

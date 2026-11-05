@@ -157,19 +157,21 @@ fn open_for_append(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
-/// The events of one log, oldest first. A line that does not decode is skipped.
-pub(crate) fn read_log(path: &Path) -> Result<Vec<EventRecord>, StoreError> {
-    let mut records = Vec::new();
+/// Calls `visit` with each event of one log, oldest first, as it reads them: a log never sits in
+/// memory whole. A line that does not decode is skipped.
+pub(crate) fn for_each_event(
+    path: &Path,
+    mut visit: impl FnMut(EventRecord),
+) -> Result<(), StoreError> {
     for_each_line(path, |line| {
         match serde_json::from_slice::<ServerMessage>(line) {
-            Ok(ServerMessage::Event(record)) => records.push(record),
+            Ok(ServerMessage::Event(record)) => visit(record),
             Ok(_) | Err(_) => {
                 tracing::warn!(path = %path.display(), "skipped a log line that is not an event")
             }
         }
         true
-    })?;
-    Ok(records)
+    })
 }
 
 /// The frames of every event after `after`, up to `upto`, from all the logs in `folder`.
@@ -261,6 +263,19 @@ mod tests {
         }
     }
 
+    fn read_events(path: &Path) -> Vec<EventRecord> {
+        let mut records = Vec::new();
+        for_each_event(path, |record| records.push(record)).unwrap();
+        records
+    }
+
+    fn seqs(path: &Path) -> Vec<u64> {
+        read_events(path)
+            .iter()
+            .map(|record| record.seq.get())
+            .collect()
+    }
+
     #[test]
     fn file_names_round_trip() {
         for log in [LogName::Daemon, LogName::Agent(AgentId::new(12))] {
@@ -279,10 +294,42 @@ mod tests {
         logs.append(log, &frame(1, removed(7))).unwrap();
         logs.append(log, &frame(2, removed(8))).unwrap();
 
-        let records = read_log(&logs.path(log)).unwrap();
+        let records = read_events(&logs.path(log));
         let seqs: Vec<u64> = records.iter().map(|record| record.seq.get()).collect();
         assert_eq!(seqs, [1, 2]);
         assert_eq!(records[1].event, removed(8));
+    }
+
+    /// A restore applies each event as its line is read, before the rest of the log is there.
+    #[test]
+    fn events_reach_the_visitor_as_their_lines_are_read() {
+        use std::io::Write;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        use rustix::fs::Mode;
+
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(LogName::Daemon.file_name());
+        rustix::fs::mkfifoat(rustix::fs::CWD, &path, Mode::RUSR | Mode::WUSR).unwrap();
+        let (sender, seen) = mpsc::channel();
+        let reader_path = path.clone();
+        let reader = std::thread::spawn(move || {
+            for_each_event(&reader_path, |record| {
+                let _ = sender.send(record.seq.get());
+            })
+        });
+
+        // Opening a FIFO waits for its other end.
+        let mut writer = OpenOptions::new().write(true).open(&path).unwrap();
+        writer.write_all(frame(1, removed(7)).as_bytes()).unwrap();
+        let first = seen.recv_timeout(Duration::from_secs(5));
+        writer.write_all(frame(2, removed(8)).as_bytes()).unwrap();
+        drop(writer);
+
+        assert_eq!(first, Ok(1), "the first event comes before the log ends");
+        assert_eq!(seen.recv_timeout(Duration::from_secs(5)), Ok(2));
+        assert!(reader.join().unwrap().is_ok());
     }
 
     #[test]
@@ -297,12 +344,7 @@ mod tests {
         let mut logs = EventLogs::new(temp.path().to_owned());
         logs.append(log, &frame(3, removed(9))).unwrap();
 
-        let seqs: Vec<u64> = read_log(&path)
-            .unwrap()
-            .iter()
-            .map(|record| record.seq.get())
-            .collect();
-        assert_eq!(seqs, [1, 3]);
+        assert_eq!(seqs(&path), [1, 3]);
     }
 
     /// A write that fails, as on a full disk, may leave part of its line in the file.
@@ -325,12 +367,7 @@ mod tests {
         logs.append(log, &frame(3, removed(9))).unwrap();
 
         assert!(failed.is_err());
-        let seqs: Vec<u64> = read_log(&path)
-            .unwrap()
-            .iter()
-            .map(|record| record.seq.get())
-            .collect();
-        assert_eq!(seqs, [1, 3]);
+        assert_eq!(seqs(&path), [1, 3]);
     }
 
     #[test]
