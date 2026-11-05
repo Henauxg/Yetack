@@ -295,4 +295,43 @@ mod tests {
             BridgeMessage::Image { media_type, data } if media_type == "image/png" && data == "iVBORw0KGgo="
         ));
     }
+
+    /// The scripts read these fields by name: a rename in Rust would make them read `undefined`,
+    /// with no error.
+    #[test]
+    fn the_fields_the_scripts_read_are_pinned() {
+        use serde_json::json;
+
+        let settings = Settings {
+            composer_id: COMPOSER_ID,
+        };
+        let mode = KeyMode {
+            answer_letters: true,
+            answer_numbers: false,
+            palette: true,
+            dialog: false,
+        };
+        let composer_text = ComposerText {
+            composer_id: COMPOSER_ID,
+            text: "Run the tests".to_owned(),
+        };
+
+        assert_eq!(
+            serde_json::to_value(settings).unwrap(),
+            json!({ "composer_id": "composer" })
+        );
+        assert_eq!(
+            serde_json::to_value(mode).unwrap(),
+            json!({
+                "answer_letters": true,
+                "answer_numbers": false,
+                "palette": true,
+                "dialog": false,
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(composer_text).unwrap(),
+            json!({ "composer_id": "composer", "text": "Run the tests" })
+        );
+    }
 }
