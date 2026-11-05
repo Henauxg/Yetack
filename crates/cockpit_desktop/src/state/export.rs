@@ -1,11 +1,20 @@
 //! An agent's conversation as Markdown, for the palette's Export entry: the user's messages,
-//! Claude's answers, and one line per tool call.
+//! Claude's answers, one line per tool call, and one line per answered approval or plan and per
+//! failed or stopped turn.
 
-use cockpit_protocol::{AnswerState, ItemBody, Question, ToolCall, ToolCallStatus};
+use std::collections::BTreeSet;
+
+use cockpit_protocol::{
+    AnswerState, Approval, ApprovalDecision, ItemBody, ItemId, Plan, PlanDecision, Question,
+    ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
+};
 
 use super::app_state::AgentEntry;
-use super::transcript::HistoryState;
+use super::transcript::{HistoryState, awaiting_approval};
 use crate::format;
+
+/// The shortest fence of a fenced code block.
+const MIN_FENCE: usize = 3;
 
 /// Who a part of the conversation comes from, which a heading names when it changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,10 +55,9 @@ pub fn conversation_markdown(entry: &AgentEntry) -> String {
         }
         parts.push(part);
     };
-    let top_level = entry
-        .transcript
-        .items()
-        .filter(|item| item.parent.is_none());
+    let items: Vec<&TranscriptItem> = entry.transcript.items().collect();
+    let awaiting: BTreeSet<ItemId> = awaiting_approval(&items);
+    let top_level = items.iter().filter(|item| item.parent.is_none());
     for item in top_level {
         match &item.body {
             ItemBody::UserMessage(message) if !message.queued => {
@@ -73,8 +81,21 @@ pub fn conversation_markdown(entry: &AgentEntry) -> String {
                     Part::Paragraph(markdown.clone()),
                 );
             }
-            ItemBody::ToolCall(call) | ItemBody::Subagent(call) => {
-                say(&mut parts, Speaker::Claude, Part::ListLine(tool_line(call)));
+            ItemBody::ToolCall(call) => {
+                let line = tool_line(call, awaiting.contains(&item.id));
+                say(&mut parts, Speaker::Claude, Part::ListLine(line));
+            }
+            ItemBody::Subagent(call) => {
+                say(
+                    &mut parts,
+                    Speaker::Claude,
+                    Part::ListLine(tool_line(call, false)),
+                );
+            }
+            ItemBody::Approval(approval) => {
+                if let Some(line) = approval_line(approval) {
+                    say(&mut parts, Speaker::Claude, Part::ListLine(line));
+                }
             }
             ItemBody::Question(question) => {
                 for line in question_lines(question) {
@@ -87,29 +108,118 @@ pub fn conversation_markdown(entry: &AgentEntry) -> String {
                     Speaker::Claude,
                     Part::Paragraph(plan.markdown.clone()),
                 );
+                if let Some(line) = plan_line(plan) {
+                    say(&mut parts, Speaker::Claude, Part::ListLine(line));
+                }
             }
-            ItemBody::Notice { text } => parts.push(Part::Paragraph(format!("_{text}_"))),
-            ItemBody::UserMessage(_)
-            | ItemBody::Thinking { .. }
-            | ItemBody::Approval(_)
-            | ItemBody::TurnEnd(_) => {}
+            ItemBody::TurnEnd(end) => {
+                if let Some(line) = turn_end_line(end) {
+                    say(&mut parts, Speaker::Claude, Part::ListLine(line));
+                }
+            }
+            ItemBody::Notice { text } => parts.push(notice(text)),
+            ItemBody::UserMessage(_) | ItemBody::Thinking { .. } => {}
         }
     }
     joined(&parts)
 }
 
 /// "- Bash: cargo test (failed, exit 101)".
-fn tool_line(call: &ToolCall) -> String {
+fn tool_line(call: &ToolCall, awaits_approval: bool) -> String {
     let mut line = format!("- {}", call.tool);
     if !call.summary.is_empty() {
         line = format!("{line}: {}", call.summary);
     }
     match (call.status, call.exit_code) {
         (ToolCallStatus::Done, _) => line,
+        (ToolCallStatus::Running, _) if awaits_approval => {
+            format!("{line} (waiting for approval)")
+        }
         (ToolCallStatus::Running, _) => format!("{line} (running)"),
         (ToolCallStatus::Failed, Some(code)) => format!("{line} (failed, exit {code})"),
         (ToolCallStatus::Failed, None) => format!("{line} (failed)"),
     }
+}
+
+/// "- Approval of Bash: git push (denied: not on main)". `None` while it waits: its call's line
+/// says so.
+fn approval_line(approval: &Approval) -> Option<String> {
+    let outcome = match &approval.answer {
+        AnswerState::Waiting => return None,
+        AnswerState::Answered(answer) => match (answer.decision, &answer.message) {
+            (ApprovalDecision::Allow, _) => "allowed".to_owned(),
+            (ApprovalDecision::Deny, Some(message)) => format!("denied: {}", one_line(message)),
+            (ApprovalDecision::Deny, None) => "denied".to_owned(),
+        },
+        AnswerState::Cancelled => "withdrawn when the turn stopped".to_owned(),
+    };
+    let mut line = format!("- Approval of {}", approval.tool);
+    if !approval.summary.is_empty() {
+        line = format!("{line}: {}", approval.summary);
+    }
+    Some(format!("{line} ({outcome})"))
+}
+
+/// "- Plan approved, Claude asks before each edit". `None` while it waits.
+fn plan_line(plan: &Plan) -> Option<String> {
+    let outcome = match &plan.answer {
+        AnswerState::Waiting => return None,
+        AnswerState::Answered(answer) => match (answer.decision, &answer.message) {
+            (PlanDecision::AcceptEdits, _) => {
+                "approved, Claude edits files without asking".to_owned()
+            }
+            (PlanDecision::AskBeforeEdits, _) => {
+                "approved, Claude asks before each edit".to_owned()
+            }
+            (PlanDecision::KeepPlanning, Some(message)) => {
+                format!("sent back to keep planning: {}", one_line(message))
+            }
+            (PlanDecision::KeepPlanning, None) => "sent back to keep planning".to_owned(),
+        },
+        AnswerState::Cancelled => "withdrawn when the turn stopped".to_owned(),
+    };
+    Some(format!("- Plan {outcome}"))
+}
+
+/// "- The turn failed after 12 s: overloaded". `None` for a turn that ended well.
+fn turn_end_line(end: &TurnEnd) -> Option<String> {
+    let duration = format::duration(end.duration);
+    match &end.error {
+        Some(error) => Some(format!(
+            "- The turn failed after {duration}: {}",
+            one_line(error)
+        )),
+        None if end.stopped => Some(format!("- Stopped after {duration}")),
+        None => None,
+    }
+}
+
+/// A notice in italics, or in a fenced block when it holds several lines, such as a local
+/// command's output: italics end at a blank line, and a line could start a heading or a list.
+fn notice(text: &str) -> Part {
+    let text = text.trim_end();
+    if !text.contains('\n') {
+        return Part::Paragraph(format!("_{text}_"));
+    }
+    let fence = "`".repeat(longest_backtick_run(text).max(MIN_FENCE - 1) + 1);
+    Part::Paragraph(format!("{fence}\n{text}\n{fence}"))
+}
+
+/// A fence must be longer than any run of backticks in the block.
+fn longest_backtick_run(text: &str) -> usize {
+    let mut longest = 0;
+    let mut run = 0;
+    for character in text.chars() {
+        run = if character == '`' { run + 1 } else { 0 };
+        longest = longest.max(run);
+    }
+    longest
+}
+
+/// A user's text on one line of a list.
+fn one_line(text: &str) -> String {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    words.join(" ")
 }
 
 /// One line per asked question, with its answer.
@@ -153,9 +263,11 @@ fn joined(parts: &[Part]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use cockpit_protocol::{
-        AgentStatus, AskedQuestion, HistoryPage, Image, ImageMediaType, ItemId, PendingId,
-        QuestionAnswer, QuestionOption, TranscriptItem, UserMessage,
+        AgentStatus, ApprovalAnswer, AskedQuestion, CostUsd, HistoryPage, Image, ImageMediaType,
+        PendingId, PlanAnswer, QuestionAnswer, QuestionOption, TokenUsage, UserMessage,
     };
     use serde_json::Value;
 
@@ -312,6 +424,103 @@ Thanks
 "
         );
         assert!(is_complete(&entry));
+    }
+
+    #[test]
+    fn an_export_says_what_waits_what_was_answered_and_how_turns_ended() {
+        let approval = |call: u32, answer| {
+            ItemBody::Approval(Approval {
+                pending: PendingId::new(format!("request-{call}")),
+                tool: "Bash".to_owned(),
+                summary: "git push".to_owned(),
+                input: Value::Null,
+                edit: None,
+                reason: None,
+                answer,
+                tool_call: Some(ItemId::new(call)),
+            })
+        };
+        let plan = |answer| {
+            ItemBody::Plan(Plan {
+                pending: PendingId::new("request-9".to_owned()),
+                markdown: "1. Rename the module".to_owned(),
+                answer,
+            })
+        };
+        let turn_end = |error: Option<&str>, stopped| {
+            ItemBody::TurnEnd(TurnEnd {
+                duration: Duration::from_secs(12),
+                cost: CostUsd::new(0.1),
+                usage: TokenUsage::default(),
+                error: error.map(str::to_owned),
+                stopped,
+            })
+        };
+        let push = || ItemBody::ToolCall(call("Bash", "git push", ToolCallStatus::Running, None));
+        let denied = AnswerState::Answered(ApprovalAnswer {
+            decision: ApprovalDecision::Deny,
+            message: Some("Not on main.\nOpen a branch.".to_owned()),
+        });
+        let keep_planning = AnswerState::Answered(PlanAnswer {
+            decision: PlanDecision::KeepPlanning,
+            message: Some("Keep the old name".to_owned()),
+        });
+        let accepted = AnswerState::Answered(PlanAnswer {
+            decision: PlanDecision::AskBeforeEdits,
+            message: None,
+        });
+        let entry = entry_with(
+            vec![
+                (None, push()),
+                (None, approval(1, denied)),
+                (None, turn_end(None, false)),
+                (None, plan(keep_planning)),
+                (None, plan(accepted)),
+                (None, turn_end(None, true)),
+                (
+                    None,
+                    ItemBody::Notice {
+                        text: "Context usage\n\n# System prompt: 3k\n```json".to_owned(),
+                    },
+                ),
+                (None, turn_end(Some("API error:\noverloaded"), false)),
+                (None, push()),
+                (None, approval(9, AnswerState::Waiting)),
+            ],
+            false,
+        );
+
+        let markdown = conversation_markdown(&entry);
+
+        assert_eq!(
+            markdown,
+            "# Agent 1
+
+## Claude
+
+- Bash: git push (running)
+- Approval of Bash: git push (denied: Not on main. Open a branch.)
+
+1. Rename the module
+
+- Plan sent back to keep planning: Keep the old name
+
+1. Rename the module
+
+- Plan approved, Claude asks before each edit
+- Stopped after 12 s
+
+````
+Context usage
+
+# System prompt: 3k
+```json
+````
+
+- The turn failed after 12 s: API error: overloaded
+- Bash: git push (waiting for approval)
+"
+        );
     }
 
     #[test]
