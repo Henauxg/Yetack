@@ -10,12 +10,16 @@
 
 use std::cmp::Reverse;
 use std::fs::File;
-use std::io::{BufReader, SeekFrom};
+use std::io;
+use std::io::{BufRead, BufReader, Read, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use claude_protocol::{MessageOrigin, OutputLine, TypedCommand};
-use cockpit_protocol::{ClaudeSessionId, MAX_TITLE_CHARS, PastSession, Timestamp, TranscriptItem};
+use cockpit_protocol::{
+    ClaudeSessionId, CostUsd, MAX_LINE_BYTES, MAX_TITLE_CHARS, PastSession, Timestamp,
+    TranscriptItem,
+};
 use serde::Deserialize;
 use serde_json::Value;
 use strum::{IntoStaticStr, VariantArray};
@@ -46,6 +50,7 @@ const ORIGIN_KEY: &str = "origin";
 const COST_STATE_TYPE: &str = "cost-state";
 const TOTAL_COST_KEY: &str = "totalCostUSD";
 const TOOL_RESULT_MARK: &str = "\"tool_result\"";
+const NEWLINE: u8 = b'\n';
 
 /// The keys of the titles, in the order they win: one the user set, then one Claude wrote, then
 /// the last prompt and the summary.
@@ -117,33 +122,40 @@ pub(crate) fn past_items(
     read_past(&path, folder, &file.session, Some(file.bytes)).items
 }
 
-/// The transcript of the file's whole lines, within its first `limit` bytes when given. A line
-/// that does not read is skipped, and a read error ends the transcript there.
+/// The transcript of the file's whole lines, within its first `limit` bytes when given. It has no
+/// items when the file cannot be opened.
 fn read_past(path: &Path, folder: &Path, id: &ClaudeSessionId, limit: Option<u64>) -> SessionPast {
-    use std::io::BufRead;
+    match read_file::open_to_read(path) {
+        Ok(file) => past_within(file, limit, folder, id),
+        Err(_) => past_within(io::empty(), limit, folder, id),
+    }
+}
 
+/// The transcript of `file`'s whole lines, within its first `limit` bytes when given. A line that
+/// does not read, or is longer than [`MAX_LINE_BYTES`], is skipped, and a read error ends the
+/// transcript there.
+fn past_within(
+    file: impl Read,
+    limit: Option<u64>,
+    folder: &Path,
+    id: &ClaudeSessionId,
+) -> SessionPast {
+    // The agent's own lines follow the limit: they are never read.
+    let mut reader = BufReader::new(file.take(limit.unwrap_or(u64::MAX)));
     let mut transcript = PastTranscript::new(folder.to_owned());
     let mut bytes: u64 = 0;
-    if let Ok(file) = read_file::open_to_read(path) {
-        let mut reader = BufReader::new(file);
-        let mut line = Vec::new();
-        loop {
-            line.clear();
+    let mut line = Vec::new();
+    loop {
+        match next_line(&mut reader, &mut line, MAX_LINE_BYTES) {
+            Ok(Some(SessionLine::Whole { bytes: read })) => {
+                bytes = bytes.saturating_add(read);
+                if let Some(shown) = past_line(&line) {
+                    transcript.add(shown);
+                }
+            }
+            Ok(Some(SessionLine::TooLong { bytes: read })) => bytes = bytes.saturating_add(read),
             // A line without its newline is still being written.
-            if !reader
-                .read_until(b'\n', &mut line)
-                .is_ok_and(|_| line.ends_with(b"\n"))
-            {
-                break;
-            }
-            let end = bytes.saturating_add(u64::try_from(line.len()).unwrap_or(u64::MAX));
-            if limit.is_some_and(|limit| end > limit) {
-                break;
-            }
-            bytes = end;
-            if let Some(shown) = past_line(&line) {
-                transcript.add(shown);
-            }
+            Ok(Some(SessionLine::Unfinished) | None) | Err(_) => break,
         }
     }
     SessionPast {
@@ -183,18 +195,16 @@ fn past_line(line: &[u8]) -> Option<OutputLine> {
 ///
 /// Claude Code writes a `cost-state` line when its process exits. A process killed before that
 /// writes none, so the next `--resume` restores the last line's cost.
-pub(crate) fn restored_cost(claude_folder: &Path, id: &ClaudeSessionId) -> Option<f64> {
-    use std::io::BufRead;
-
+pub(crate) fn restored_cost(claude_folder: &Path, id: &ClaudeSessionId) -> Option<CostUsd> {
     let file = read_file::open_to_read(&find_file(claude_folder, id)?).ok()?;
     let mut reader = BufReader::new(file);
     let mut cost = 0.0;
     let mut line = Vec::new();
     loop {
-        line.clear();
-        match reader.read_until(b'\n', &mut line) {
-            Ok(0) => return Some(cost),
-            Ok(_) => {}
+        match next_line(&mut reader, &mut line, MAX_LINE_BYTES) {
+            Ok(Some(SessionLine::Whole { .. } | SessionLine::Unfinished)) => {}
+            Ok(Some(SessionLine::TooLong { .. })) => continue,
+            Ok(None) => return Some(CostUsd::new(cost)),
             Err(_) => return None,
         }
         let text = String::from_utf8_lossy(&line);
@@ -208,6 +218,59 @@ pub(crate) fn restored_cost(claude_folder: &Path, id: &ClaudeSessionId) -> Optio
             && let Some(total) = value.get(TOTAL_COST_KEY).and_then(Value::as_f64)
         {
             cost = total;
+        }
+    }
+}
+
+/// How [`next_line`] found a line of a session file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionLine {
+    /// A line, with its newline, is in the buffer.
+    Whole { bytes: u64 },
+    /// The file ends before the line's newline, as when Claude Code is still writing it. The line
+    /// is in the buffer when it is not too long.
+    Unfinished,
+    /// A line longer than the maximum was skipped, as `claude`'s output skips one: the buffer is
+    /// empty.
+    TooLong { bytes: u64 },
+}
+
+/// Reads the next line of a session file into `line`, keeping at most `max_bytes` of it, its
+/// newline included. `None` at the end of the file.
+fn next_line(
+    reader: &mut impl BufRead,
+    line: &mut Vec<u8>,
+    max_bytes: usize,
+) -> io::Result<Option<SessionLine>> {
+    line.clear();
+    let mut bytes: usize = 0;
+    loop {
+        let available = match reader.fill_buf() {
+            Ok(available) => available,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        if available.is_empty() {
+            let end = (bytes > 0).then_some(SessionLine::Unfinished);
+            return Ok(end);
+        }
+        let newline = available.iter().position(|&byte| byte == NEWLINE);
+        let length = newline.map_or(available.len(), |end| end + 1);
+        bytes = bytes.saturating_add(length);
+        if bytes <= max_bytes {
+            line.extend_from_slice(available.get(..length).unwrap_or_default());
+        } else {
+            line.clear();
+        }
+        reader.consume(length);
+        if newline.is_some() {
+            let read = u64::try_from(bytes).unwrap_or(u64::MAX);
+            let found = if bytes <= max_bytes {
+                SessionLine::Whole { bytes: read }
+            } else {
+                SessionLine::TooLong { bytes: read }
+            };
+            return Ok(Some(found));
         }
     }
 }
@@ -322,7 +385,7 @@ fn written_by_claude_code(line: &Value) -> bool {
 /// The user's prompts in the whole file, slash commands included. A tool result is a user line
 /// too, so lines naming one are skipped before parsing.
 fn count_prompts(mut file: File) -> u32 {
-    use std::io::{BufRead, Seek};
+    use std::io::Seek;
 
     if file.seek(SeekFrom::Start(0)).is_err() {
         return 0;
@@ -347,7 +410,7 @@ fn count_prompts(mut file: File) -> u32 {
 }
 
 fn read_chunk(file: &mut File, start: u64) -> Option<String> {
-    use std::io::{Read, Seek};
+    use std::io::Seek;
 
     file.seek(SeekFrom::Start(start)).ok()?;
     let mut bytes = Vec::new();
@@ -394,6 +457,7 @@ pub(crate) fn shorten(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fs::OpenOptions;
     use std::time::Duration;
 
     use cockpit_protocol::ItemBody;
@@ -508,6 +572,8 @@ mod tests {
 
     #[test]
     fn the_past_of_a_session_file_comes_out_in_order_without_what_it_does_not_show() {
+        use std::io::Write;
+
         let temp = tempfile::tempdir().unwrap();
         write_session(
             temp.path(),
@@ -542,11 +608,8 @@ mod tests {
             .join("p")
             .join(format!("{FIRST}.jsonl"));
         let whole = std::fs::metadata(&path).unwrap().len();
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .unwrap();
-        std::io::Write::write_all(&mut file, br#"{"type":"user","message":"#).unwrap();
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(br#"{"type":"user","message":"#).unwrap();
 
         let found = find(temp.path(), &session(FIRST)).unwrap();
 
@@ -625,6 +688,75 @@ mod tests {
     }
 
     #[test]
+    fn a_line_reads_whole_or_is_skipped_when_too_long_or_unfinished() {
+        let mut reader = BufReader::with_capacity(2, &b"ab\ncdefgh\nij"[..]);
+        let mut line = Vec::new();
+        let mut found = Vec::new();
+
+        while let Some(read) = next_line(&mut reader, &mut line, 4).unwrap() {
+            found.push((read, String::from_utf8_lossy(&line).into_owned()));
+        }
+
+        assert_eq!(
+            found,
+            [
+                (SessionLine::Whole { bytes: 3 }, "ab\n".to_owned()),
+                (SessionLine::TooLong { bytes: 7 }, String::new()),
+                (SessionLine::Unfinished, "ij".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_line_longer_than_the_maximum_is_skipped() {
+        let temp = tempfile::tempdir().unwrap();
+        let long = prompt(&"x".repeat(MAX_LINE_BYTES));
+        write_session(
+            temp.path(),
+            "p",
+            FIRST,
+            &[prompt("Before"), long, prompt("After")],
+        );
+        let path = temp
+            .path()
+            .join(PROJECTS_FOLDER)
+            .join("p")
+            .join(format!("{FIRST}.jsonl"));
+        let whole = std::fs::metadata(&path).unwrap().len();
+
+        let found = find(temp.path(), &session(FIRST)).unwrap();
+
+        assert_eq!(texts(&found.past.items), ["user: Before", "user: After"]);
+        assert_eq!(found.past.file.bytes, whole);
+    }
+
+    /// Fails a test that reads it.
+    struct Unreadable;
+
+    impl Read for Unreadable {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            panic!("the past was read beyond its limit");
+        }
+    }
+
+    #[test]
+    fn a_restarted_daemon_reads_nothing_beyond_the_past() {
+        let past = format!("{}\n", prompt("Before"));
+        let limit = u64::try_from(past.len()).unwrap();
+        let file = io::Cursor::new(past.into_bytes()).chain(Unreadable);
+
+        let read = past_within(
+            file,
+            Some(limit),
+            Path::new("/srv/work/shop"),
+            &session(FIRST),
+        );
+
+        assert_eq!(texts(&read.items), ["user: Before"]);
+        assert_eq!(read.file.bytes, limit);
+    }
+
+    #[test]
     fn the_restored_cost_is_the_last_cost_states() {
         let temp = tempfile::tempdir().unwrap();
         let cost_state = |total: f64| json!({"type": "cost-state", "sessionId": FIRST, "totalCostUSD": total, "modelUsage": {}});
@@ -642,8 +774,14 @@ mod tests {
         );
         write_session(temp.path(), "p", SECOND, &[prompt("Hello")]);
 
-        assert_eq!(restored_cost(temp.path(), &session(FIRST)), Some(0.75));
-        assert_eq!(restored_cost(temp.path(), &session(SECOND)), Some(0.0));
+        assert_eq!(
+            restored_cost(temp.path(), &session(FIRST)),
+            Some(CostUsd::new(0.75))
+        );
+        assert_eq!(
+            restored_cost(temp.path(), &session(SECOND)),
+            Some(CostUsd::new(0.0))
+        );
         assert_eq!(
             restored_cost(
                 temp.path(),

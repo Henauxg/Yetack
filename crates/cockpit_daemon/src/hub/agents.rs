@@ -189,7 +189,7 @@ impl Hub {
         });
     }
 
-    pub(super) fn restored_cost(&mut self, id: AgentId, generation: u32, cost: f64) {
+    pub(super) fn restored_cost(&mut self, id: AgentId, generation: u32, cost: CostUsd) {
         let Some(agent) = self
             .agents
             .get_mut(&id)

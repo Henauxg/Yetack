@@ -72,6 +72,7 @@ impl Hub {
         let mut refresh_context = false;
         match purpose {
             ControlPurpose::Initialize => {
+                view.initialized();
                 match parse::<InitializeResponse>(result) {
                     Ok(response) => view.set_commands(&response),
                     Err(error) => tracing::warn!(agent = id.get(), error, "initialize failed"),

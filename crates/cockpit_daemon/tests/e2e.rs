@@ -106,6 +106,10 @@ impl Setup {
             )
             .env("CLAUDE_CONFIG_DIR", self.temp.path().join("claude"))
             .env("FAKE_CLAUDE_ARGS_FILE", self.args_file())
+            .env(
+                "FAKE_CLAUDE_SESSION_NAMES",
+                self.temp.path().join("session-names"),
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(log);
@@ -515,6 +519,41 @@ async fn an_agent_is_renamed_in_its_record_and_in_its_claude_session() {
         .filter(|item| matches!(item.body, ItemBody::UserMessage(_)))
         .count();
     assert_eq!(users, 1, "the rename prompt shows no item");
+}
+
+#[tokio::test]
+async fn a_rename_made_while_the_agent_is_stopped_outlives_its_resume() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let agent = client.start(&setup.work(), "hello there").await;
+    client.idle(agent).await;
+    let rename = |title: &str| {
+        Request::AgentRename(RenameParams {
+            agent,
+            title: title.to_owned(),
+        })
+    };
+    client.ok(rename("Cart total")).await;
+    client
+        .item_with(agent, |body| {
+            matches!(body, ItemBody::Notice { text } if text == "Session renamed to: Cart total")
+        })
+        .await;
+    client.ok(Request::AgentStop(AgentParams { agent })).await;
+    client
+        .summary_with(agent, |summary| summary.status == AgentStatus::Exited)
+        .await;
+
+    client.ok(rename("Checkout")).await;
+    client.ok(Request::AgentResume(AgentParams { agent })).await;
+    // The fake restates the session's name before it answers `initialize`, so before this turn.
+    client.prompt(agent, "after the resume").await;
+    client.says(agent, "Echo: after the resume").await;
+    let idle = client.idle(agent).await;
+
+    assert_eq!(idle.title, "Checkout");
+    let saved = std::fs::read_to_string(setup.state().join("agents.json")).unwrap();
+    assert!(saved.contains("\"Checkout\""), "{saved}");
 }
 
 #[tokio::test]

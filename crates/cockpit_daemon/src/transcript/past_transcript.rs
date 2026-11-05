@@ -25,7 +25,7 @@ impl PastTranscript {
     /// `folder` is the session's, which tool summaries show paths relative to.
     pub(crate) fn new(folder: PathBuf) -> Self {
         Self {
-            view: AgentView::for_session_file(folder),
+            view: AgentView::new_for_session_file(folder),
             left_out: false,
         }
     }
@@ -75,6 +75,7 @@ impl PastTranscript {
 
 #[cfg(test)]
 mod tests {
+    use cockpit_protocol::{ToolCallStatus, UserMessage};
     use serde_json::{Value, json};
 
     use super::*;
@@ -145,7 +146,7 @@ mod tests {
         };
         assert_eq!(
             unfinished.status,
-            cockpit_protocol::ToolCallStatus::Failed,
+            ToolCallStatus::Failed,
             "a call the file never answers did not finish"
         );
     }
@@ -172,7 +173,7 @@ mod tests {
 
         let bodies: Vec<&ItemBody> = items.iter().map(|item| &item.body).collect();
         let user = |text: &str| {
-            ItemBody::UserMessage(cockpit_protocol::UserMessage {
+            ItemBody::UserMessage(UserMessage {
                 text: text.to_owned(),
                 images: Vec::new(),
                 queued: false,
