@@ -18,7 +18,7 @@ pub(crate) struct Restored {
     pub(crate) replay_floor: Option<Seq>,
     pub(crate) settings: DaemonSettings,
     pub(crate) plan_usage: PlanUsage,
-    /// The last sequence number in the logs, which numbering continues from.
+    /// The last sequence number in the logs or the replay floor, which numbering continues from.
     pub(crate) last_seq: Option<Seq>,
 }
 
@@ -70,7 +70,8 @@ pub(crate) fn restore(state: &StateDir) -> Result<Restored, StoreError> {
         replay_floor: file.replay_floor,
         settings,
         plan_usage,
-        last_seq,
+        // The floor may name an event clients saw but no log holds.
+        last_seq: last_seq.max(file.replay_floor),
     })
 }
 
@@ -188,6 +189,32 @@ mod tests {
         let (_, second) = &restored.agents[1];
         assert_eq!(second.summary().title, "Agent 2");
         assert!(second.items().is_empty());
+    }
+
+    /// The floor is the sequence number of an event that could not be logged, which clients may
+    /// have seen: a number at or below it must not name a new event.
+    #[test]
+    fn the_numbering_continues_above_the_replay_floor() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = StateDir::create(temp.path()).unwrap();
+        AgentsFile {
+            next_agent: AgentId::new(1),
+            replay_floor: Some(Seq::new(9)),
+            agents: Vec::new(),
+        }
+        .save(&state.agents_file())
+        .unwrap();
+        let mut logs = EventLogs::new(state.events());
+        log(
+            &mut logs,
+            LogName::Daemon,
+            8,
+            Event::SettingsChanged(Settings::default()),
+        );
+
+        let restored = restore(&state).unwrap();
+
+        assert_eq!(restored.last_seq, Some(Seq::new(9)));
     }
 
     #[test]

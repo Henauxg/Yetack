@@ -185,6 +185,59 @@ fn starts_lists_prompts_tails_and_stops_an_agent() {
     daemon.wait_for_list("exited");
 }
 
+/// As in `agents-cockpit tail | head -n 1`.
+#[test]
+fn tail_ends_when_its_output_closes() {
+    let daemon = Daemon::start();
+    let work = daemon.work();
+    daemon.ok(&["start", folder_arg(&work), "first prompt"]);
+    let mut tail = daemon
+        .command(&["tail"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let lines = lines_of(&mut tail);
+    let deadline = Instant::now() + WAIT;
+    while line_with(&lines, "prompt", Duration::from_millis(200)).is_none() {
+        daemon.ok(&["prompt", "1", "a prompt"]);
+        assert!(Instant::now() < deadline, "the tail showed nothing");
+    }
+
+    // The reading thread closes the pipe once it fails to pass on its next line.
+    drop(lines);
+    let deadline = Instant::now() + WAIT;
+    while tail.try_wait().unwrap().is_none() {
+        daemon.ok(&["prompt", "1", "another prompt"]);
+        if Instant::now() > deadline {
+            let _ = tail.kill();
+            panic!("the tail still runs with its output closed");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// A title can come from a session file any process of the user could write.
+#[test]
+fn list_prints_no_control_character() {
+    let daemon = Daemon::start();
+    let work = daemon.work();
+    daemon.ok(&[
+        "start",
+        folder_arg(&work),
+        "--title",
+        "Fix\u{1b}]0;owned\u{7} it",
+    ]);
+
+    let list = daemon.wait_for_list("Fix");
+
+    assert!(
+        !list.chars().any(|c| c.is_control() && c != '\n'),
+        "{list:?}"
+    );
+    assert!(list.contains("Fix"), "{list}");
+}
+
 #[test]
 fn errors_go_to_stderr_with_a_failure_status() {
     let daemon = Daemon::start();

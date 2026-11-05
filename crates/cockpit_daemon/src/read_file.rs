@@ -3,12 +3,16 @@
 use std::fs::File;
 use std::io;
 use std::io::Read;
+use std::os::fd::AsRawFd;
 use std::path::{Component, Path};
 
 use cockpit_protocol::{ErrorBody, ErrorCode};
+use rustix::fs::{Mode, OFlags};
 
 /// The largest file the view shows.
 pub(crate) const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
+/// Links to the process's open files, each naming the file's path.
+const OPEN_FILES: &str = "/proc/self/fd";
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ReadFileError {
@@ -56,8 +60,9 @@ pub(crate) fn read(folder: &Path, path: &Path) -> Result<String, ReadFileError> 
     if !resolved.starts_with(&folder) {
         return Err(ReadFileError::Outside);
     }
-    let file = File::open(&resolved).map_err(ReadFileError::NotFound)?;
+    let file = open_to_read(&resolved).map_err(ReadFileError::NotFound)?;
     // The checks use the open file, so a swap after them does not matter.
+    ensure_inside(&file, &folder)?;
     let metadata = file.metadata().map_err(ReadFileError::Io)?;
     if !metadata.is_file() {
         return Err(ReadFileError::NotAFile);
@@ -73,6 +78,23 @@ pub(crate) fn read(folder: &Path, path: &Path) -> Result<String, ReadFileError> 
         return Err(ReadFileError::TooLarge);
     }
     String::from_utf8(bytes).map_err(|_| ReadFileError::NotText)
+}
+
+/// Opens a file for reading without waiting: opening a FIFO waits for a writer otherwise.
+pub(crate) fn open_to_read(path: &Path) -> io::Result<File> {
+    let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    Ok(File::from(rustix::fs::open(path, flags, Mode::empty())?))
+}
+
+/// Refuses an open file outside `folder`: a folder of its path may have become a symlink since
+/// the path was checked.
+fn ensure_inside(file: &File, folder: &Path) -> Result<(), ReadFileError> {
+    let link = Path::new(OPEN_FILES).join(file.as_raw_fd().to_string());
+    let opened = std::fs::read_link(link).map_err(ReadFileError::Io)?;
+    if !opened.starts_with(folder) {
+        return Err(ReadFileError::Outside);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -109,6 +131,46 @@ mod tests {
         for result in [dotdot, absolute, link] {
             assert!(matches!(result, Err(ReadFileError::Outside)), "{result:?}");
         }
+    }
+
+    /// A folder of the path swapped for a symlink between the path check and the open leads the
+    /// open outside: the open file's own path is checked again.
+    #[test]
+    fn an_open_file_outside_the_folder_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join("agent");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("inside.txt"), "inside").unwrap();
+        std::fs::write(temp.path().join("secret.txt"), "secret").unwrap();
+        let folder = folder.canonicalize().unwrap();
+        let inside = open_to_read(&folder.join("inside.txt")).unwrap();
+        let outside = open_to_read(&temp.path().join("secret.txt")).unwrap();
+
+        assert!(ensure_inside(&inside, &folder).is_ok());
+        let refused = ensure_inside(&outside, &folder);
+        assert!(
+            matches!(refused, Err(ReadFileError::Outside)),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn a_fifo_is_refused_at_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let fifo = temp.path().join("notes.txt");
+        rustix::fs::mkfifoat(rustix::fs::CWD, &fifo, rustix::fs::Mode::RUSR).unwrap();
+        let folder = temp.path().to_owned();
+        let (sender, receiver) = std::sync::mpsc::channel();
+
+        // Opening a FIFO waits for a writer: the read runs in a thread the test can leave behind.
+        std::thread::spawn(move || {
+            let _ = sender.send(read(&folder, Path::new("notes.txt")));
+        });
+
+        let read = receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("an answer without a writer on the FIFO");
+        assert!(matches!(read, Err(ReadFileError::NotAFile)), "{read:?}");
     }
 
     #[test]

@@ -12,6 +12,8 @@ use std::time::SystemTime;
 use cockpit_protocol::{ClaudeSessionId, PastSession, Timestamp};
 use serde_json::Value;
 
+use crate::read_file;
+
 const PROJECTS_FOLDER: &str = "projects";
 const SESSION_EXTENSION: &str = "jsonl";
 /// The bytes read from each end of a file for its title and folder.
@@ -80,8 +82,11 @@ pub(crate) fn find(claude_folder: &Path, id: &ClaudeSessionId) -> Option<PastSes
 
 fn read_session(path: &Path) -> Option<PastSession> {
     let id = session_id(path)?;
-    let mut file = File::open(path).ok()?;
+    let mut file = read_file::open_to_read(path).ok()?;
     let metadata = file.metadata().ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
     let head = read_chunk(&mut file, 0)?;
     let tail_start = metadata.len().saturating_sub(CHUNK_BYTES);
     let tail = if tail_start == 0 {
@@ -111,7 +116,7 @@ fn read_session(path: &Path) -> Option<PastSession> {
         title,
         folder,
         last_activity,
-        turns: count_prompts(path),
+        turns: count_prompts(file),
     })
 }
 
@@ -162,10 +167,10 @@ fn is_prompt(line: &Value) -> bool {
 
 /// The user's prompts in the whole file, slash commands included. A tool result is a user line too, so lines naming one
 /// are skipped before parsing.
-fn count_prompts(path: &Path) -> u32 {
-    let Ok(file) = File::open(path) else {
+fn count_prompts(mut file: File) -> u32 {
+    if file.seek(SeekFrom::Start(0)).is_err() {
         return 0;
-    };
+    }
     let mut count: u32 = 0;
     let mut reader = BufReader::new(file);
     let mut line = Vec::new();
@@ -334,5 +339,31 @@ mod tests {
         );
 
         assert!(list(temp.path()).is_empty());
+    }
+
+    #[test]
+    fn a_fifo_named_as_a_session_is_skipped_at_once() {
+        let temp = tempfile::tempdir().unwrap();
+        write_session(temp.path(), "p", FIRST, &[prompt("Hello")]);
+        let fifo = temp
+            .path()
+            .join(PROJECTS_FOLDER)
+            .join("p")
+            .join(format!("{SECOND}.{SESSION_EXTENSION}"));
+        rustix::fs::mkfifoat(rustix::fs::CWD, &fifo, rustix::fs::Mode::RUSR).unwrap();
+        let claude = temp.path().to_owned();
+        let (sender, receiver) = std::sync::mpsc::channel();
+
+        // Opening a FIFO waits for a writer: the listing runs in a thread the test can leave
+        // behind.
+        std::thread::spawn(move || {
+            let _ = sender.send(list(&claude));
+        });
+
+        let sessions = receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("a list without a writer on the FIFO");
+        let ids: Vec<&str> = sessions.iter().map(|session| session.id.as_str()).collect();
+        assert_eq!(ids, [FIRST]);
     }
 }

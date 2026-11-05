@@ -175,4 +175,41 @@ mod tests {
         drop(first);
         state.lock().unwrap();
     }
+
+    /// Whatever the umask of the process that runs the test.
+    #[test]
+    fn every_file_is_for_the_owner_only() {
+        use cockpit_protocol::{Event, EventRecord, Frame, Seq, ServerMessage, Settings};
+
+        use crate::store::{AgentsFile, DaemonSettings, EventLogs, LogName, RawLog};
+
+        let temp = tempfile::tempdir().unwrap();
+        let state = StateDir::create(temp.path()).unwrap();
+        let _lock = state.lock().unwrap();
+        AgentsFile::default().save(&state.agents_file()).unwrap();
+        DaemonSettings::default()
+            .save(&state.settings_file())
+            .unwrap();
+        let mut logs = EventLogs::new(state.events());
+        let event = ServerMessage::Event(EventRecord {
+            seq: Seq::new(1),
+            event: Event::SettingsChanged(Settings::default()),
+        });
+        logs.append(LogName::Daemon, &Frame::encode(&event).unwrap())
+            .unwrap();
+        let raw = state.raw_log(AgentId::new(1));
+        RawLog::open(&raw).unwrap();
+
+        let files = [
+            temp.path().join(LOCK_FILE),
+            state.agents_file(),
+            state.settings_file(),
+            logs.path(LogName::Daemon),
+            raw,
+        ];
+        for file in files {
+            let mode = std::fs::metadata(&file).unwrap().mode() & 0o777;
+            assert_eq!(mode, FILE_MODE, "{}", file.display());
+        }
+    }
 }

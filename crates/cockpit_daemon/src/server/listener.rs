@@ -52,3 +52,24 @@ pub(crate) async fn accept_loop(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::MetadataExt;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn bind_replaces_a_leftover_socket_and_admits_only_the_owner() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("agents-cockpit.sock");
+        // Dropping a listener leaves its file, as a crashed daemon does.
+        drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+
+        let _listener = bind(&path).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().mode() & 0o777;
+        assert_eq!(mode, SOCKET_MODE);
+        std::os::unix::net::UnixStream::connect(&path).unwrap();
+    }
+}

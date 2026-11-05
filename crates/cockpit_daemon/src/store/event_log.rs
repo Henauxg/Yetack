@@ -93,7 +93,12 @@ impl EventLogs {
                 entry.insert(open_for_append(&path).map_err(error)?)
             }
         };
-        file.write_all(frame.as_bytes()).map_err(error)
+        let written = file.write_all(frame.as_bytes());
+        if written.is_err() {
+            // The next append opens the log again, which ends a line the failed write cut.
+            self.open.remove(&log);
+        }
+        written.map_err(error)
     }
 
     /// Deletes a log, as when its agent is removed.
@@ -287,6 +292,32 @@ mod tests {
         let mut logs = EventLogs::new(temp.path().to_owned());
         logs.append(log, &frame(3, removed(9))).unwrap();
 
+        let seqs: Vec<u64> = read_log(&path)
+            .unwrap()
+            .iter()
+            .map(|record| record.seq.get())
+            .collect();
+        assert_eq!(seqs, [1, 3]);
+    }
+
+    /// A write that fails, as on a full disk, may leave part of its line in the file.
+    #[test]
+    fn the_append_after_a_failed_one_starts_on_a_line_of_its_own() {
+        let temp = tempfile::tempdir().unwrap();
+        let log = LogName::Daemon;
+        let mut logs = EventLogs::new(temp.path().to_owned());
+        logs.append(log, &frame(1, removed(7))).unwrap();
+        let path = logs.path(log);
+        let mut cut = OpenOptions::new().append(true).open(&path).unwrap();
+        cut.write_all(b"{\"type\":\"event\",\"seq\":2,\"ev")
+            .unwrap();
+        // A handle that cannot write stands for the one whose write failed.
+        logs.open.insert(log, File::open(&path).unwrap());
+
+        let failed = logs.append(log, &frame(2, removed(8)));
+        logs.append(log, &frame(3, removed(9))).unwrap();
+
+        assert!(failed.is_err());
         let seqs: Vec<u64> = read_log(&path)
             .unwrap()
             .iter()

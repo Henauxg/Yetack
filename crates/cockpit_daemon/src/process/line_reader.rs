@@ -32,7 +32,8 @@ impl<R: AsyncBufRead + Unpin> LineReader<R> {
         }
     }
 
-    /// The next line, or `None` at the end of the stream. A last line without `\n` still counts.
+    /// The next line, or `None` at the end of the stream. A last line without `\n` still counts,
+    /// and an empty line is skipped.
     ///
     /// It is cancel safe: what was read stays for the next call.
     pub(crate) async fn next(&mut self) -> io::Result<Option<ReadLine>> {
@@ -57,8 +58,8 @@ impl<R: AsyncBufRead + Unpin> LineReader<R> {
                 None => self.line.extend_from_slice(segment),
             }
             self.reader.consume(consumed);
-            if complete {
-                return Ok(self.finish_line());
+            if complete && let Some(line) = self.finish_line() {
+                return Ok(Some(line));
             }
         }
     }
@@ -100,6 +101,13 @@ mod tests {
         let lines = read_all(b"first\nsecond\nlast", 100, 3).await;
 
         assert_eq!(lines, [line("first"), line("second"), line("last")]);
+    }
+
+    #[tokio::test]
+    async fn an_empty_line_does_not_end_the_stream() {
+        let lines = read_all(b"first\n\nsecond\n\n", 100, 3).await;
+
+        assert_eq!(lines, [line("first"), line("second")]);
     }
 
     #[tokio::test]

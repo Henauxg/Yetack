@@ -40,7 +40,8 @@ pub(crate) struct Hub {
 pub(super) struct Agent {
     pub(super) record: AgentRecord,
     pub(super) view: AgentView,
-    /// `None` while the agent is exited.
+    /// `None` while the agent is exited. A stopped agent keeps it, with its stdin closed and
+    /// `record.running` false, until the process ends.
     pub(super) process: Option<ProcessHandle<ControlPurpose>>,
     /// Counts the agent's processes, so that a late event of an old one is ignored.
     pub(super) generation: u32,
@@ -213,6 +214,20 @@ impl Hub {
 
     pub(super) fn raw_log_path(&self, agent: AgentId) -> PathBuf {
         self.state.raw_log(agent)
+    }
+
+    /// A hub on the state folder `folder`, whose `claude` cannot start, and with no task.
+    #[cfg(test)]
+    pub(super) fn for_tests(folder: &std::path::Path) -> Self {
+        let state = StateDir::create(folder).unwrap();
+        let restored = crate::hub::restore(&state).unwrap();
+        let config = DaemonConfig {
+            state_dir: folder.to_owned(),
+            claude_program: folder.join("no-claude"),
+            claude_config_dir: folder.join("claude"),
+        };
+        let (inputs, _) = mpsc::channel(1);
+        Self::new(state, config, restored, inputs)
     }
 }
 

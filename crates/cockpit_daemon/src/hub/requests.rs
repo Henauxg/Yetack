@@ -11,7 +11,7 @@ use crate::hub::agents::respond;
 use crate::hub::input::{ControlPurpose, HubInput, Reply};
 use crate::hub::state::{Agent, Hub};
 use crate::hub::{errors, history};
-use crate::store::LogName;
+use crate::store::{DaemonSettings, LogName};
 use crate::transcript::words;
 use crate::{mcp_remove, read_file, sessions};
 
@@ -136,10 +136,14 @@ impl Hub {
     }
 
     fn set_settings(&mut self, settings: Settings) -> Result<ResponseBody, ErrorBody> {
-        self.settings.shared = settings.clone();
-        self.settings
+        let updated = DaemonSettings {
+            shared: settings.clone(),
+            ..self.settings.clone()
+        };
+        updated
             .save(&self.state.settings_file())
             .map_err(|error| errors::internal(errors::chain(&error)))?;
+        self.settings = updated;
         self.emit(
             LogName::Daemon,
             cockpit_protocol::Event::SettingsChanged(settings),
@@ -199,5 +203,29 @@ impl Hub {
                 Err(error) => respond(reply, Err(errors::internal(error.to_string()))),
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+
+    #[test]
+    fn settings_that_cannot_be_saved_are_not_applied() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut hub = Hub::for_tests(temp.path());
+        // A folder in the file's place makes the save fail.
+        std::fs::create_dir(hub.state.settings_file()).unwrap();
+        let settings = Settings {
+            hidden_mcp_servers: BTreeSet::from(["notes".to_owned()]),
+        };
+
+        let result = hub.set_settings(settings);
+
+        assert!(result.is_err(), "{result:?}");
+        assert_eq!(hub.settings.shared, Settings::default());
+        assert_eq!(hub.snapshot().settings, Settings::default());
     }
 }

@@ -231,7 +231,7 @@ impl Hub {
             .agents
             .get_mut(&id)
             .ok_or(errors::agent_not_found(id))?;
-        let Some(process) = &agent.process else {
+        let Some(process) = agent.process.as_ref().filter(|_| agent.record.running) else {
             return Err(errors::agent_exited(id));
         };
         let line = prompts::prompt_line(&prompt)
@@ -302,7 +302,7 @@ impl Hub {
             .agents
             .get_mut(&id)
             .ok_or(errors::agent_not_found(id))?;
-        if agent.process.is_none() {
+        if agent.process.is_none() || !agent.record.running {
             return Err(errors::agent_exited(id));
         }
         let answered = agent
@@ -431,7 +431,7 @@ impl Hub {
         let record = AgentRecord {
             id: self.next_agent,
             title: session.title,
-            folder: session.folder,
+            folder: agent_folder(&session.folder)?,
             session: Some(session.id),
             model: None,
             effort: None,
@@ -563,5 +563,66 @@ mod tests {
         assert_eq!(relative.code, ErrorCode::InvalidRequest);
         assert_eq!(missing.code, ErrorCode::NotFound);
         assert_eq!(not_a_folder.code, ErrorCode::InvalidRequest);
+    }
+
+    /// A session file's `cwd` is what `claude` wrote, or anything a process of the user wrote.
+    #[test]
+    fn a_past_session_needs_a_folder_an_agent_can_start_in() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut hub = Hub::for_tests(temp.path());
+        let session = |folder: &str| PastSession {
+            id: cockpit_protocol::ClaudeSessionId::new(
+                "11111111-2222-3333-4444-555555555555".to_owned(),
+            ),
+            title: "Fix the cart".to_owned(),
+            folder: PathBuf::from(folder),
+            last_activity: cockpit_protocol::Timestamp::from_unix_millis(0),
+            turns: 1,
+        };
+
+        let relative = hub.agent_for_session(session("work")).unwrap_err();
+        let missing = hub
+            .agent_for_session(session("/nonexistent/agents-cockpit/work"))
+            .unwrap_err();
+
+        assert_eq!(relative.code, ErrorCode::InvalidRequest);
+        assert_eq!(missing.code, ErrorCode::NotFound);
+        assert!(hub.agents.is_empty());
+    }
+
+    /// Once stopped, the process's stdin is closed: a prompt would be shown as sent and never
+    /// reach `claude`.
+    #[tokio::test]
+    async fn a_stopping_agent_takes_no_prompt() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut hub = Hub::for_tests(&temp.path().join("state"));
+        let claude = temp.path().join("claude");
+        std::fs::write(&claude, "#!/bin/sh\nexec cat >/dev/null\n").unwrap();
+        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+        hub.config.claude_program = claude;
+        let start = StartParams {
+            folder: temp.path().to_owned(),
+            title: None,
+            model: None,
+            effort: None,
+            mode: None,
+            prompt: None,
+        };
+        let Ok(ResponseBody::AgentStarted { agent }) = hub.start_agent(start) else {
+            panic!("the agent did not start");
+        };
+        let items_before = hub.agents[&agent].view.items().len();
+
+        hub.stop(agent).unwrap();
+        let prompt = Prompt {
+            text: "one more thing".to_owned(),
+            images: Vec::new(),
+        };
+        let refused = hub.prompt(agent, prompt).unwrap_err();
+
+        assert_eq!(refused.code, ErrorCode::AgentExited);
+        assert_eq!(hub.agents[&agent].view.items().len(), items_before);
     }
 }

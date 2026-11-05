@@ -20,6 +20,16 @@ use crate::cli::{AnswerCommand, Command, Target};
 const STDIN_ARG: &str = "-";
 /// The width of `list`'s title column; a longer title is shortened.
 const TITLE_COLUMN: usize = 32;
+/// What `list` prints in place of a control character.
+const CONTROL_REPLACEMENT: char = '\u{fffd}';
+
+/// Whether stdout still takes lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stdout {
+    Open,
+    /// Its reader left, as after `| head`: not an error, but nothing more to print.
+    Closed,
+}
 
 pub(crate) async fn run(target: &Target, command: Command) -> anyhow::Result<()> {
     let transport = target.transport()?;
@@ -66,9 +76,13 @@ pub(crate) async fn run(target: &Target, command: Command) -> anyhow::Result<()>
     };
     let (connection, _) = Connection::connect(&transport, None).await?;
     match connection.request(request).await? {
-        ResponseBody::AgentStarted { agent } => print_line(&agent.get().to_string())?,
+        ResponseBody::AgentStarted { agent } => {
+            print_line(&agent.get().to_string())?;
+        }
         ResponseBody::Done => {}
-        other => print_line(&serde_json::to_string(&other)?)?,
+        other => {
+            print_line(&serde_json::to_string(&other)?)?;
+        }
     }
     Ok(())
 }
@@ -78,32 +92,40 @@ async fn list(transport: &Transport) -> anyhow::Result<()> {
     let Catchup::Snapshot(snapshot) = catchup else {
         bail!("the daemon sent no snapshot");
     };
-    print_line(&format!(
+    let header = format!(
         "{:<4} {:<9} {:<4} {:<5} {:<TITLE_COLUMN$} FOLDER",
         "ID", "STATUS", "WAIT", "TURNS", "TITLE"
-    ))?;
+    );
+    if print_line(&header)? == Stdout::Closed {
+        return Ok(());
+    }
     for agent in snapshot.agents {
-        print_line(&format!(
+        let row = format!(
             "{:<4} {:<9} {:<4} {:<5} {:<TITLE_COLUMN$} {}",
             agent.id.get(),
             word(agent.status)?,
             agent.pending_count,
             agent.turns,
-            shorten(&agent.title, TITLE_COLUMN),
-            agent.folder.display()
-        ))?;
+            shorten(&printable(&agent.title), TITLE_COLUMN),
+            printable(&agent.folder.display().to_string())
+        );
+        if print_line(&row)? == Stdout::Closed {
+            return Ok(());
+        }
     }
     Ok(())
 }
 
-/// Prints events as JSON lines until interrupted, reconnecting after a drop.
+/// Prints events as JSON lines until interrupted or stdout closes, reconnecting after a drop.
 async fn tail(transport: Transport, agent: Option<AgentId>) -> anyhow::Result<()> {
     let mut session = Session::start(transport, Backoff::default());
     while let Some(update) = session.next_update().await {
         match update {
             SessionUpdate::Event(record) => {
-                if agent.is_none() || event_agent(&record.event) == agent {
-                    print_line(&serde_json::to_string(&record)?)?;
+                if (agent.is_none() || event_agent(&record.event) == agent)
+                    && print_line(&serde_json::to_string(&record)?)? == Stdout::Closed
+                {
+                    return Ok(());
                 }
             }
             SessionUpdate::Disconnected { error, retry_in } => {
@@ -182,6 +204,19 @@ fn text_prompt(text: String) -> Prompt {
     }
 }
 
+/// Text from the daemon with its control characters replaced, since a terminal acts on them.
+fn printable(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_control() {
+                CONTROL_REPLACEMENT
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
 fn shorten(text: &str, max_chars: usize) -> String {
     if text.chars().count() <= max_chars {
         return text.to_owned();
@@ -200,11 +235,11 @@ fn word<T: Serialize>(value: T) -> anyhow::Result<String> {
 }
 
 /// Prints a line. A closed stdout, as after `| head`, is not an error.
-fn print_line(line: &str) -> anyhow::Result<()> {
+fn print_line(line: &str) -> anyhow::Result<Stdout> {
     let mut stdout = io::stdout().lock();
     match writeln!(stdout, "{line}") {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Ok(()) => Ok(Stdout::Open),
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(Stdout::Closed),
         Err(error) => Err(error.into()),
     }
 }
