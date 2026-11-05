@@ -198,7 +198,7 @@ impl AppState {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use cockpit_protocol::{CostUsd, PermissionMode};
+    use cockpit_protocol::{CostUsd, PermissionMode, Position};
 
     use super::*;
 
@@ -220,6 +220,7 @@ pub(crate) mod tests {
             cost: CostUsd::new(0.0),
             started_at: Timestamp::from_unix_millis(u64::from(id) * 1000),
             session: None,
+            position: Position::default(),
         }
     }
 

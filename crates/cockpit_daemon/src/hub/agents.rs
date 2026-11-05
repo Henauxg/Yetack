@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use claude_protocol::{ControlRequest, InputLine, OutputLine};
 use cockpit_protocol::{
     AgentId, AgentStatus, AgentSummary, AnswerParams, CancelQueuedParams, ClaudeSessionId, CostUsd,
-    ErrorBody, ErrorCode, Event, MAX_TITLE_CHARS, Prompt, RenameParams, ResponseBody,
+    ErrorBody, ErrorCode, Event, MAX_TITLE_CHARS, Position, Prompt, RenameParams, ResponseBody,
     ResponseResult, SetEffortParams, StartParams, TranscriptItem,
 };
 
@@ -67,17 +67,18 @@ impl Hub {
             running: true,
             started_at: state::now(),
             past: None,
+            position: Position::default(),
         };
         let agent = self.add_agent(record, params.prompt, None)?;
         Ok(ResponseBody::AgentStarted { agent })
     }
 
-    /// Starts an agent's process, then lists the agent. Nothing is listed when `claude` cannot
-    /// start. `past` is the transcript of the session the agent takes over, which shows above its
-    /// own items without any event: clients read it with `agent.history`.
+    /// Starts an agent's process, then lists the agent on top of the others. Nothing is listed
+    /// when `claude` cannot start. `past` is the transcript of the session the agent takes over,
+    /// which shows above its own items without any event: clients read it with `agent.history`.
     pub(super) fn add_agent(
         &mut self,
-        record: AgentRecord,
+        mut record: AgentRecord,
         prompt: Option<Prompt>,
         past: Option<Vec<TranscriptItem>>,
     ) -> Result<AgentId, ErrorBody> {
@@ -85,6 +86,10 @@ impl Hub {
         let next = id
             .next()
             .ok_or_else(|| errors::internal("no agent id is left".to_owned()))?;
+        let mut places = cockpit_protocol::place_on_top(&self.places(), id);
+        if let Some(index) = places.iter().position(|place| place.agent == id) {
+            record.position = places.swap_remove(index).position;
+        }
         let mut view = AgentView::new(initial_summary(&record), self.settings.prompt_cache_ttl());
         if let Some(past) = past {
             view.show_past(past);
@@ -104,6 +109,8 @@ impl Hub {
             return Err(ErrorBody::new(ErrorCode::ClaudeFailed, error));
         }
         self.next_agent = next;
+        // The agents below the new one, renumbered when it found no room above them.
+        self.set_places(&places);
         self.save_agents();
         let Some(agent) = self.agents.get_mut(&id) else {
             return Err(errors::agent_not_found(id));
@@ -111,6 +118,9 @@ impl Hub {
         agent.view.mark_published();
         let summary = agent.view.summary().clone();
         self.emit(LogName::Agent(id), Event::AgentAdded(summary));
+        for place in places {
+            self.publish(place.agent);
+        }
         if let Some(prompt) = prompt {
             self.prompt(id, prompt)?;
         }
@@ -544,6 +554,7 @@ impl Hub {
             running: true,
             started_at: state::now(),
             past: Some(past.file),
+            position: Position::default(),
         };
         let agent = self.add_agent(record, None, Some(past.items))?;
         Ok(ResponseBody::AgentStarted { agent })
@@ -581,6 +592,7 @@ pub(super) fn initial_summary(record: &AgentRecord) -> AgentSummary {
         cost: CostUsd::new(0.0),
         started_at: record.started_at,
         session: record.session.clone(),
+        position: record.position,
     }
 }
 

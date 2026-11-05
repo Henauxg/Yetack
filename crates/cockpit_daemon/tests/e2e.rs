@@ -21,10 +21,10 @@ use cockpit_protocol::{
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, CancelQueuedParams, Catchup,
     ClaudeSessionId, CommandKind, CostUsd, Effort, ErrorCode, Event, EventRecord, HistoryParams,
     ItemBody, ItemId, McpRemoveParams, McpScope, McpServerParams, McpServerStatus, McpToggleParams,
-    PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, Prompt, PromptParams, Question,
-    QuestionAnswer, ReadFileParams, RenameParams, Request, ResponseBody, Seq, SessionResumeParams,
-    SetEffortParams, SetModeParams, SetModelParams, Settings, StartParams, StopTaskParams,
-    TranscriptItem,
+    MoveParams, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, Prompt, PromptParams,
+    Question, QuestionAnswer, ReadFileParams, RenameParams, Request, ResponseBody, Seq,
+    SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, Settings, StartParams,
+    StopTaskParams, TranscriptItem,
 };
 use rustix::process::{Pid, Signal};
 use serde_json::Value;
@@ -836,6 +836,55 @@ async fn a_restarted_daemon_resumes_its_agents_and_replays_or_snapshots() {
         panic!("expected a snapshot, as the logs no longer hold every event");
     };
     assert!(snapshot.agents.is_empty());
+}
+
+/// The agents in the list's order, as a new client sees them.
+async fn list_order(setup: &Setup) -> Vec<AgentId> {
+    let (_, catchup) = setup.connect_after(None).await;
+    let Catchup::Snapshot(snapshot) = catchup else {
+        panic!("expected a snapshot");
+    };
+    let mut agents = snapshot.agents;
+    agents.sort_by(|left, right| cockpit_protocol::list_order(left.place(), right.place()));
+    agents.iter().map(|summary| summary.id).collect()
+}
+
+#[tokio::test]
+async fn the_list_keeps_the_order_a_client_sets() {
+    let mut setup = Setup::new();
+    let mut client = setup.connect().await;
+    let first = client.start(&setup.work(), "one").await;
+    client.idle(first).await;
+    let second = client.start(&setup.work(), "two").await;
+    client.idle(second).await;
+    let started = list_order(&setup).await;
+
+    client.prompt(first, "a turn").await;
+    client.says(first, "Echo: a turn").await;
+    client.idle(first).await;
+    let after_a_turn = list_order(&setup).await;
+    let moved = MoveParams {
+        agent: first,
+        before: Some(second),
+    };
+    assert_eq!(
+        client.ok(Request::AgentMove(moved)).await,
+        ResponseBody::Done
+    );
+    let updated = client.summary_with(first, |_| true).await;
+    let unknown = MoveParams {
+        agent: first,
+        before: Some(AgentId::new(9)),
+    };
+    let refused = client.error_code(Request::AgentMove(unknown)).await;
+    drop(client);
+    setup.restart();
+
+    assert_eq!(started, [second, first]);
+    assert_eq!(after_a_turn, [second, first]);
+    assert!(updated.position > Default::default());
+    assert_eq!(refused, ErrorCode::NotFound);
+    assert_eq!(list_order(&setup).await, [first, second]);
 }
 
 #[tokio::test]

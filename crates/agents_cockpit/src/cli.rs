@@ -99,6 +99,14 @@ pub(crate) enum Command {
         agent: AgentId,
         title: String,
     },
+    /// Move an agent in the list, just above another one, or to the bottom
+    Move {
+        #[arg(value_parser = agent_id)]
+        agent: AgentId,
+        /// The agent to go just above; without it, the agent goes to the bottom
+        #[arg(long, value_parser = agent_id)]
+        before: Option<AgentId>,
+    },
     /// Print events as JSON lines, of one agent or of all
     Tail {
         #[arg(value_parser = agent_id)]

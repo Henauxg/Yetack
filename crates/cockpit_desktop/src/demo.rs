@@ -10,8 +10,8 @@ use cockpit_protocol::{
     BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus, ChangedFile,
     ClaudeSessionId, CommandKind, ContextCategory, ContextUsage, CostUsd, Effort, ErrorBody,
     ErrorCode, FileEdit, HistoryPage, ItemBody, ItemId, McpScope, McpServer, McpServerStatus,
-    McpTool, McpTransport, PastSession, PendingId, PermissionMode, Plan, PlanUsage, Question,
-    QuestionOption, RateLimitStatus, Request, ResponseBody, SlashCommand, TaskListItem,
+    McpTool, McpTransport, PastSession, PendingId, PermissionMode, Plan, PlanUsage, Position,
+    Question, QuestionOption, RateLimitStatus, Request, ResponseBody, SlashCommand, TaskListItem,
     TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem,
     TurnEnd, UsageWindow, UserMessage, WindowUsage,
 };
@@ -298,6 +298,7 @@ fn summary(parts: SummaryParts<'_>, now: SystemTime) -> AgentSummary {
         cost: CostUsd::new(1.84),
         started_at: at(now, 3600),
         session: Some(ClaudeSessionId::new(format!("demo-session-{}", parts.id))),
+        position: Position::default(),
     }
 }
 

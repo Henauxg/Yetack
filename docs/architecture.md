@@ -36,7 +36,7 @@ All crates live in `crates/` and are application code ([standards/rust/README.md
 | `cockpit_protocol` | lib | The daemon API: ids, the transcript model, requests, responses, events, snapshots, and the line framing. |
 | `cockpit_client` | lib | A connection to a daemon over a transport (local socket or SSH bridge): requests, responses, events, reconnection. |
 | `cockpit_daemon` | lib | The daemon: claude processes, the hub, the store, the socket server and its peer checks. |
-| `agents_cockpit` | bin `agents-cockpit` | The command line: `serve`, `bridge`, and client commands (`list`, `start`, `prompt`, `answer`, `stop`, `rename`, `tail`). |
+| `agents_cockpit` | bin `agents-cockpit` | The command line: `serve`, `bridge`, and client commands (`list`, `start`, `prompt`, `answer`, `stop`, `rename`, `move`, `tail`). |
 | `cockpit_desktop` | bin `agents-cockpit-desktop` | The Dioxus desktop app. |
 
 Dependencies point one way:
@@ -70,7 +70,19 @@ Each id is a newtype ([standards/rust/api_design.md](standards/rust/api_design.m
 ### Agents
 
 `AgentSummary` is what the sidebar and the header need:
-id, title, folder, status, activity line, pending count, model, effort, permission mode, task progress, context percentage, prompt cache expiry, turns, API-equivalent cost, start time.
+id, title, folder, status, activity line, pending count, model, effort, permission mode, task progress, context percentage, prompt cache expiry, turns, API-equivalent cost, start time, position in the list.
+
+The list's order belongs to the user, and the daemon keeps it, so every client and `agents-cockpit list` show the same one:
+
+- The list shows the highest `position` first, and the older agent first between equal positions.
+- A new agent goes on top, and so does an agent made from a past session.
+  Only `agent.move` moves an agent: a status change, a turn or a rename does not.
+- Positions leave room between neighbours.
+  A move gives the moved agent a position between its new neighbours', so one `AgentUpdated` event goes out.
+  When they leave no room, every agent gets a new position, 1024 apart, and each agent whose position changed gets an event.
+  For example, with C at 3072, B at 2048 and A at 1024, moving A just above B gives A 2560.
+- `cockpit_protocol` holds the order and the move (`list_order`, `move_agent`, `place_on_top`), so the app reorders at once with the same numbers the daemon will send.
+- An `agents.json` saved before positions existed reads 0 for every agent, so the agents keep the order of their ids until one moves.
 
 `AgentStatus` is derived by the daemon, never by the app:
 
@@ -128,7 +140,7 @@ Transcripts are not in the snapshot: the app asks for an agent's transcript with
 
 ### Requests
 
-`agent.start`, `agent.prompt`, `agent.cancel_queued`, `agent.answer` (approval, question or plan), `agent.interrupt`, `agent.stop`, `agent.resume`, `agent.remove`, `agent.history`, `agent.details`, `agent.set_model`, `agent.set_effort`, `agent.set_mode`, `agent.rename`, `agent.context_usage`, `agent.stop_task`, `agent.mcp_status`, `agent.mcp_reconnect`, `agent.mcp_toggle`, `agent.commands` (slash commands and skills), `agent.read_file` (the file view), `mcp.remove` (with the agent, whose folder decides the project and local scopes), `settings.set`, `sessions.list`, `sessions.resume`.
+`agent.start`, `agent.prompt`, `agent.cancel_queued`, `agent.answer` (approval, question or plan), `agent.interrupt`, `agent.stop`, `agent.resume`, `agent.remove`, `agent.history`, `agent.details`, `agent.set_model`, `agent.set_effort`, `agent.set_mode`, `agent.rename`, `agent.move` (the agent goes just above `before`, or to the bottom when `before` is `null`), `agent.context_usage`, `agent.stop_task`, `agent.mcp_status`, `agent.mcp_reconnect`, `agent.mcp_toggle`, `agent.commands` (slash commands and skills), `agent.read_file` (the file view), `mcp.remove` (with the agent, whose folder decides the project and local scopes), `settings.set`, `sessions.list`, `sessions.resume`.
 
 A history page is limited by bytes as well as by count: images travel inline, and a line over the framing maximum is refused.
 An item too large for any response comes as a `Notice` that says so, under the item's id, so paging moves on.
@@ -183,7 +195,7 @@ Everything lives in `$XDG_STATE_HOME/agents-cockpit/` (default `~/.local/state/a
 
 - `agents-cockpit.sock`: the socket, mode 600;
 - `serve.lock`: held while a daemon runs, so a second daemon refuses to start and a leftover socket is safe to delete;
-- `agents.json`: one entry per agent (id, title, folder, Claude session id, model, effort, mode, and for an agent made from a past session the part of the session file it shows), written atomically (write to a temporary file, then rename);
+- `agents.json`: one entry per agent (id, title, folder, Claude session id, model, effort, mode, position in the list, and for an agent made from a past session the part of the session file it shows), written atomically (write to a temporary file, then rename);
 - `settings.json`: the hidden MCP servers and other daemon-side settings;
 - `events/<agent-id>.jsonl`: the agent's cockpit events, each with its `Seq`, appended;
 - `raw/<agent-id>.jsonl`: every line exchanged with `claude`, for debugging.

@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use cockpit_protocol::{AgentId, ClaudeSessionId, Effort, PermissionMode, Seq, Timestamp};
+use cockpit_protocol::{
+    AgentId, ClaudeSessionId, Effort, PermissionMode, Position, Seq, Timestamp,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::store::atomic_file;
@@ -35,6 +37,10 @@ pub(crate) struct AgentRecord {
     /// above its own items. A restarted daemon reads it again.
     #[serde(default)]
     pub(crate) past: Option<PastFile>,
+    /// Where the agent shows in the list. A file saved before positions existed reads 0 for
+    /// every agent, which keeps them in the order of their ids.
+    #[serde(default)]
+    pub(crate) position: Position,
 }
 
 /// The start of a session file, as it was when an agent took the session over. Claude Code only
@@ -90,7 +96,8 @@ mod tests {
       "past": {
         "session": "session-a",
         "bytes": 52000
-      }
+      },
+      "position": 2048
     }
   ]
 }
@@ -114,6 +121,7 @@ mod tests {
                     session: ClaudeSessionId::new("session-a".to_owned()),
                     bytes: 52_000,
                 }),
+                position: Position::new(2048),
             }],
         }
     }
@@ -141,11 +149,29 @@ mod tests {
       }"#,
             "",
         );
+        assert_ne!(without_past, AGENTS_JSON);
         std::fs::write(&path, without_past).unwrap();
 
         let file = AgentsFile::load(&path).unwrap();
 
         assert_eq!(file.agents[0].past, None);
+    }
+
+    #[test]
+    fn an_agent_saved_without_a_position_still_loads() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("agents.json");
+        let without_position = AGENTS_JSON.replace(
+            r#",
+      "position": 2048"#,
+            "",
+        );
+        assert_ne!(without_position, AGENTS_JSON);
+        std::fs::write(&path, without_position).unwrap();
+
+        let file = AgentsFile::load(&path).unwrap();
+
+        assert_eq!(file.agents[0].position, Position::new(0));
     }
 
     #[test]
