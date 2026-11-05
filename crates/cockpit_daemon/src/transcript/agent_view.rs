@@ -152,6 +152,8 @@ pub(crate) struct AgentView {
     /// Claude Code restates the session's saved name as it starts, before it answers
     /// `initialize`: that name must not replace one the agent got while it was stopped.
     takes_session_titles: bool,
+    /// The name Claude Code restated as the process started, until it answers `initialize`.
+    restated_title: Option<String>,
     awaited_echoes: VecDeque<String>,
     /// Calls per tool name, for the MCP servers' tool counts.
     tool_counts: HashMap<String, u32>,
@@ -178,6 +180,7 @@ impl AgentView {
             cost_before_process: 0.0,
             awaits_restored_cost: false,
             takes_session_titles: false,
+            restated_title: None,
             awaited_echoes: VecDeque::new(),
             tool_counts: HashMap::new(),
             skills: BTreeSet::new(),
@@ -517,14 +520,21 @@ impl AgentView {
         self.process_cost = 0.0;
         self.awaits_restored_cost = session == ProcessSession::Resumed;
         self.takes_session_titles = false;
+        self.restated_title = None;
         self.pending.clear();
         self.tool_calls.clear();
     }
 
     /// The process answered `initialize`: from now on, a name Claude Code gives the session, as
-    /// after a `/rename`, renames the agent.
-    pub(crate) fn initialized(&mut self) {
+    /// after a `/rename`, renames the agent. True when the name Claude Code restated for the
+    /// session as it started is not the agent's, as after a rename made while the agent was
+    /// stopped: the session needs a `/rename`.
+    #[must_use]
+    pub(crate) fn initialized(&mut self) -> bool {
         self.takes_session_titles = true;
+        self.restated_title
+            .take()
+            .is_some_and(|restated| restated != self.summary.title)
     }
 
     /// The cost Claude Code restored with a resumed session, read from the session file. It is
@@ -641,16 +651,18 @@ impl AgentView {
                         },
                     );
                 }
-                Some(UntypedSystemSubtype::SessionTitleChanged) if self.takes_session_titles => {
+                Some(UntypedSystemSubtype::SessionTitleChanged) => {
                     let title = value.get(TITLE_KEY).and_then(Value::as_str).map(str::trim);
                     if let Some(title) = title.filter(|title| !title.is_empty()) {
-                        self.summary.title = sessions::shorten(title);
+                        let title = sessions::shorten(title);
+                        if self.takes_session_titles {
+                            self.summary.title = title;
+                        } else {
+                            self.restated_title = Some(title);
+                        }
                     }
                 }
-                Some(
-                    UntypedSystemSubtype::SessionTitleChanged | UntypedSystemSubtype::LocalCommand,
-                )
-                | None => {}
+                Some(UntypedSystemSubtype::LocalCommand) | None => {}
             },
             SystemEvent::ThinkingTokens(_)
             | SystemEvent::HookStarted(_)
@@ -2345,7 +2357,7 @@ mod tests {
     #[test]
     fn claude_code_naming_the_session_renames_the_agent() {
         let mut view = view();
-        view.initialized();
+        let renames_session = view.initialized();
 
         apply(
             &mut view,
@@ -2359,29 +2371,47 @@ mod tests {
                    "session_id": "session-1"}),
         );
 
+        assert!(!renames_session, "Claude Code restated no name");
         assert_eq!(named, "Cart fix");
         assert_eq!(view.summary().title, "Cart fix");
+    }
+
+    fn named(title: &str) -> Value {
+        json!({"type": "system", "subtype": "session_title_changed", "title": title,
+               "session_id": "session-1"})
     }
 
     #[test]
     fn the_name_claude_code_restates_as_it_starts_keeps_the_agents_own() {
         let mut view = view();
-        view.initialized();
         view.process_exited("claude exited".to_owned(), now());
         view.set_title("Checkout".to_owned());
-        let named = |title: &str| {
-            json!({"type": "system", "subtype": "session_title_changed", "title": title,
-                   "session_id": "session-1"})
-        };
 
         view.process_started(ProcessSession::Resumed);
         apply(&mut view, named("Cart total"));
         let at_start = view.summary().title.clone();
-        view.initialized();
+        let renames_session = view.initialized();
         apply(&mut view, named("Cart fix"));
 
         assert_eq!(at_start, "Checkout");
+        assert!(renames_session, "the session still has its old name");
         assert_eq!(view.summary().title, "Cart fix");
+    }
+
+    #[test]
+    fn a_restated_name_that_is_the_agents_needs_no_rename() {
+        let mut view = view();
+        view.set_title("Checkout".to_owned());
+
+        view.process_started(ProcessSession::Resumed);
+        apply(&mut view, named("  Checkout "));
+        let same = view.initialized();
+        view.process_started(ProcessSession::Resumed);
+        let none = view.initialized();
+
+        assert!(!same, "the session has the agent's name");
+        assert!(!none, "Claude Code restated no name");
+        assert_eq!(view.summary().title, "Checkout");
     }
 
     #[test]

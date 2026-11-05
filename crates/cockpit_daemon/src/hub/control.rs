@@ -70,9 +70,10 @@ impl Hub {
         let mut record_changed = false;
         let mut refresh_mcp = false;
         let mut refresh_context = false;
+        let mut rename_session = false;
         match purpose {
             ControlPurpose::Initialize => {
-                view.initialized();
+                rename_session = view.initialized();
                 match parse::<InitializeResponse>(result) {
                     Ok(response) => view.set_commands(&response),
                     Err(error) => tracing::warn!(agent = id.get(), error, "initialize failed"),
@@ -151,6 +152,9 @@ impl Hub {
         }
         if record_changed {
             self.save_agents();
+        }
+        if rename_session {
+            self.rename_session(id);
         }
         if refresh_mcp {
             self.control(

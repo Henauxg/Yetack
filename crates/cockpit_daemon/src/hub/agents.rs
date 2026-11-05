@@ -458,19 +458,7 @@ impl Hub {
             .ok_or(errors::agent_not_found(id))?;
         let text = prompts::effort_command(params.effort)
             .ok_or_else(|| errors::internal("the effort has no word".to_owned()))?;
-        if let Some(process) = &agent.process {
-            let line = InputLine::prompt(text.clone());
-            if agent.view.is_busy() || !agent.queue.is_empty() {
-                agent.queue.push_back(QueuedPrompt {
-                    item: None,
-                    line,
-                    text,
-                });
-            } else {
-                process.write(line);
-                agent.view.expect_echo(text);
-            }
-        }
+        send_hidden_prompt(agent, text);
         agent.record.effort = Some(params.effort);
         agent.view.set_effort(params.effort);
         self.save_agents();
@@ -495,25 +483,20 @@ impl Hub {
             .agents
             .get_mut(&id)
             .ok_or(errors::agent_not_found(id))?;
-        if let Some(process) = &agent.process {
-            let text = prompts::rename_command(&title);
-            let line = InputLine::prompt(text.clone());
-            if agent.view.is_busy() || !agent.queue.is_empty() {
-                agent.queue.push_back(QueuedPrompt {
-                    item: None,
-                    line,
-                    text,
-                });
-            } else {
-                process.write(line);
-                agent.view.expect_echo(text);
-            }
-        }
+        send_hidden_prompt(agent, prompts::rename_command(&title));
         agent.record.title = title.clone();
         agent.view.set_title(title);
         self.save_agents();
         self.publish(id);
         Ok(ResponseBody::Done)
+    }
+
+    /// Gives the agent's name to its Claude session, whose saved name is another.
+    pub(super) fn rename_session(&mut self, id: AgentId) {
+        if let Some(agent) = self.agents.get_mut(&id) {
+            let text = prompts::rename_command(&agent.record.title);
+            send_hidden_prompt(agent, text);
+        }
     }
 
     /// A past session becomes an agent, or the agent that has it resumes.
@@ -554,6 +537,25 @@ impl Hub {
             .values()
             .find(|agent| agent.record.session.as_ref() == Some(session))
             .map(|agent| agent.record.id)
+    }
+}
+
+/// Sends a prompt the transcript does not show, such as `/effort high`, now or after the current
+/// turn. An agent without a process gets nothing.
+fn send_hidden_prompt(agent: &mut Agent, text: String) {
+    let Some(process) = &agent.process else {
+        return;
+    };
+    let line = InputLine::prompt(text.clone());
+    if agent.view.is_busy() || !agent.queue.is_empty() {
+        agent.queue.push_back(QueuedPrompt {
+            item: None,
+            line,
+            text,
+        });
+    } else {
+        process.write(line);
+        agent.view.expect_echo(text);
     }
 }
 
