@@ -31,6 +31,15 @@ const WORKING_FOLDER_ENV: &str = "PWD";
 const RESUME_INTERRUPTED_TURN_ENV: &str = "CLAUDE_CODE_RESUME_INTERRUPTED_TURN";
 const ENABLED: &str = "1";
 
+/// What a resumed session does with a turn that was cut off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InterruptedTurn {
+    /// The daemon resumes its agents as it starts: the turn its stop cut off carries on.
+    Resume,
+    /// A user resumes the agent, which a user's stop may have cut off: the turn stays cut.
+    Leave,
+}
+
 /// How to start `claude` for one agent. A prompt never goes on the command line: other users
 /// can read it there.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +52,7 @@ pub(crate) struct ClaudeCommand {
     pub(crate) effort: Option<String>,
     /// The Claude session to resume.
     pub(crate) resume: Option<ClaudeSessionId>,
+    pub(crate) interrupted_turn: InterruptedTurn,
 }
 
 impl ClaudeCommand {
@@ -78,7 +88,7 @@ impl ClaudeCommand {
             .stderr(Stdio::piped())
             .process_group(0)
             .kill_on_drop(true);
-        if self.resume.is_some() {
+        if self.resume.is_some() && self.interrupted_turn == InterruptedTurn::Resume {
             command.env(RESUME_INTERRUPTED_TURN_ENV, ENABLED);
         }
         command
@@ -91,6 +101,8 @@ fn flag(name: &str, value: &str) -> OsString {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+
     use super::*;
 
     fn command() -> ClaudeCommand {
@@ -101,6 +113,7 @@ mod tests {
             mode: None,
             effort: None,
             resume: None,
+            interrupted_turn: InterruptedTurn::Leave,
         }
     }
 
@@ -152,5 +165,27 @@ mod tests {
             ["--model=-p", "--resume=--dangerously-skip-permissions"].map(OsString::from)
         );
         assert!(!args.contains(&OsString::from("-p")));
+    }
+
+    #[test]
+    fn only_the_daemons_own_resume_carries_on_with_a_cut_turn() {
+        let session = Some(ClaudeSessionId::new("session-1".to_owned()));
+        let carries_on = |resume: Option<ClaudeSessionId>, interrupted_turn| {
+            let command = ClaudeCommand {
+                resume,
+                interrupted_turn,
+                ..command()
+            }
+            .to_command();
+            let envs: Vec<(&OsStr, Option<&OsStr>)> = command.as_std().get_envs().collect();
+            envs.contains(&(
+                OsStr::new(RESUME_INTERRUPTED_TURN_ENV),
+                Some(OsStr::new(ENABLED)),
+            ))
+        };
+
+        assert!(carries_on(session.clone(), InterruptedTurn::Resume));
+        assert!(!carries_on(session, InterruptedTurn::Leave));
+        assert!(!carries_on(None, InterruptedTurn::Resume));
     }
 }

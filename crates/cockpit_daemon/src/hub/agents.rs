@@ -15,7 +15,7 @@ use cockpit_protocol::{
 use crate::hub::input::{ControlPurpose, HubInput, Reply};
 use crate::hub::state::{Agent, Hub, QueuedPrompt};
 use crate::hub::{errors, state};
-use crate::process::{ClaudeCommand, ProcessEvent};
+use crate::process::{ClaudeCommand, InterruptedTurn, ProcessEvent};
 use crate::sessions;
 use crate::store::{AgentRecord, LogName, RawLog};
 use crate::transcript::{
@@ -36,7 +36,7 @@ impl Hub {
                 .agents
                 .get(&id)
                 .is_some_and(|agent| agent.record.running);
-            if running && let Err(error) = self.start_process(id) {
+            if running && let Err(error) = self.start_process(id, InterruptedTurn::Resume) {
                 self.exited_at_start(id, &error);
             }
             self.publish(id);
@@ -92,7 +92,7 @@ impl Hub {
                 queue: VecDeque::new(),
             },
         );
-        if let Err(error) = self.start_process(id) {
+        if let Err(error) = self.start_process(id, InterruptedTurn::Leave) {
             self.agents.remove(&id);
             return Err(ErrorBody::new(ErrorCode::ClaudeFailed, error));
         }
@@ -112,7 +112,11 @@ impl Hub {
 
     /// Starts `claude` for an agent and asks for its commands. The error says why it cannot
     /// start.
-    pub(super) fn start_process(&mut self, id: AgentId) -> Result<(), String> {
+    pub(super) fn start_process(
+        &mut self,
+        id: AgentId,
+        interrupted_turn: InterruptedTurn,
+    ) -> Result<(), String> {
         let raw_path = self.raw_log_path(id);
         let Some(agent) = self.agents.get_mut(&id) else {
             return Err(format!("no agent {}", id.get()));
@@ -125,6 +129,7 @@ impl Hub {
             mode: record.mode.map(words::mode_to_claude),
             effort: record.effort.and_then(words::effort_word),
             resume: record.session.clone(),
+            interrupted_turn,
         };
         let raw_log = RawLog::open(&raw_path)
             .inspect_err(|error| {
@@ -358,7 +363,7 @@ impl Hub {
         if agent.process.is_some() {
             return Err(errors::agent_running(id));
         }
-        self.start_process(id)
+        self.start_process(id, InterruptedTurn::Leave)
             .map_err(|error| ErrorBody::new(ErrorCode::ClaudeFailed, error))?;
         if let Some(agent) = self.agents.get_mut(&id) {
             agent.record.running = true;

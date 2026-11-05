@@ -83,6 +83,7 @@ agents-cockpit starts `claude` the same way:
   Effort has no control request: the daemon sends `/effort <level>` as a prompt, which `-p` mode accepts.
 - A restarted agent starts with `--resume <session-id>`.
   With `CLAUDE_CODE_RESUME_INTERRUPTED_TURN=1`, Claude Code continues a turn that was cut off.
+  The daemon sets it only for the agents it resumes as it starts, whose turn its own stop cut off: a turn a user stopped stays stopped when the user resumes the agent or a past session.
 - Never pass `--bare`: bare mode ignores the subscription login and needs an API key.
 - Never pass a prompt as a command-line argument: every user on the server can read arguments with `ps`.
 - Usage comes from two events (field names from the Python SDK's `types.py`):

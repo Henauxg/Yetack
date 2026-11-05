@@ -6,6 +6,6 @@ mod line_reader;
 mod process_error;
 mod task;
 
-pub(crate) use claude_command::ClaudeCommand;
+pub(crate) use claude_command::{ClaudeCommand, InterruptedTurn};
 pub use process_error::ProcessError;
 pub(crate) use task::{ControlFailure, ProcessEvent, ProcessHandle, spawn};

@@ -31,6 +31,9 @@ use tempfile::TempDir;
 
 const WAIT: Duration = Duration::from_secs(15);
 const SESSION_ID: &str = "11111111-2222-3333-4444-555555555555";
+/// The fake `claude` records this first on its command line when it should carry on with a turn
+/// that was cut off.
+const RESUME_INTERRUPTED_TURN: &str = "CLAUDE_CODE_RESUME_INTERRUPTED_TURN=1";
 
 /// A state folder, an agent folder and a Claude folder, and the daemon serving them.
 struct Setup {
@@ -137,7 +140,23 @@ impl Setup {
         self.start();
     }
 
-    /// The argument lists of every `claude` started so far.
+    /// The command lines of every `claude` started so far, once `count` of them have started.
+    fn wait_for_launches(&self, count: usize) -> Vec<Vec<String>> {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let launches = self.claude_args();
+            if launches.len() >= count {
+                return launches;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "claude did not start: {launches:?}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// The command lines of every `claude` started so far.
     fn claude_args(&self) -> Vec<Vec<String>> {
         let text = std::fs::read_to_string(self.args_file()).unwrap_or_default();
         text.lines()
@@ -646,6 +665,14 @@ async fn a_restarted_daemon_resumes_its_agents_and_replays_or_snapshots() {
         launches[1].contains(&format!("--resume={}", session.as_str())),
         "{launches:?}"
     );
+    assert!(
+        !launches[0].contains(&RESUME_INTERRUPTED_TURN.to_owned()),
+        "a new agent has no turn to carry on: {launches:?}"
+    );
+    assert!(
+        launches[1].contains(&RESUME_INTERRUPTED_TURN.to_owned()),
+        "the daemon's restart cut the turn off: {launches:?}"
+    );
     drop(snapshot_client);
 
     replayed.prompt(agent, "after the restart").await;
@@ -682,6 +709,15 @@ async fn a_restarted_daemon_resumes_its_agents_and_replays_or_snapshots() {
     client
         .summary_with(agent, |summary| summary.status == AgentStatus::Idle)
         .await;
+    let launches = setup.wait_for_launches(3);
+    assert!(
+        launches[2].contains(&format!("--resume={}", session.as_str())),
+        "{launches:?}"
+    );
+    assert!(
+        !launches[2].contains(&RESUME_INTERRUPTED_TURN.to_owned()),
+        "a user's stop cut the turn off: {launches:?}"
+    );
     let code = client
         .error_code(Request::AgentRemove(AgentParams { agent }))
         .await;
@@ -1032,11 +1068,14 @@ async fn files_settings_sessions_and_agent_settings() {
         panic!("expected AgentStarted, got {resumed:?}");
     };
     assert_ne!(second, agent);
+    let launches = setup.wait_for_launches(2);
+    let resumed_launch = launches
+        .iter()
+        .find(|args| args.contains(&format!("--resume={SESSION_ID}")))
+        .unwrap();
     assert!(
-        setup
-            .claude_args()
-            .iter()
-            .any(|args| args.contains(&format!("--resume={SESSION_ID}")))
+        !resumed_launch.contains(&RESUME_INTERRUPTED_TURN.to_owned()),
+        "a past session's last turn stays as it ended: {resumed_launch:?}"
     );
     let missing = client
         .error_code(Request::SessionsResume(SessionResumeParams {

@@ -10,8 +10,9 @@
 //!   from then on keeps running after its stdin closes, as a `claude` that hangs.
 //! - anything else: answers "Echo: <prompt>".
 //!
-//! With `FAKE_CLAUDE_ARGS_FILE` set, it appends its arguments to that file, one JSON array per
-//! line. It exits when its stdin closes.
+//! With `FAKE_CLAUDE_ARGS_FILE` set, it appends its command line to that file, one JSON array per
+//! line: `CLAUDE_CODE_RESUME_INTERRUPTED_TURN=<value>` first when that variable is set, as a shell
+//! writes it, then its arguments. It exits when its stdin closes.
 
 use std::collections::VecDeque;
 use std::fs::OpenOptions;
@@ -23,6 +24,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 const ARGS_FILE_ENV: &str = "FAKE_CLAUDE_ARGS_FILE";
+const RESUME_INTERRUPTED_TURN_ENV: &str = "CLAUDE_CODE_RESUME_INTERRUPTED_TURN";
 /// The child of `linger`, which outlives any test.
 const LINGERING_CHILD: [&str; 2] = ["sleep", "600"];
 const RESUME_FLAG: &str = "--resume=";
@@ -75,8 +77,15 @@ fn run() -> io::Result<()> {
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(path) = std::env::var_os(ARGS_FILE_ENV) {
+        let resume_turn = std::env::var_os(RESUME_INTERRUPTED_TURN_ENV)
+            .map(|value| format!("{RESUME_INTERRUPTED_TURN_ENV}={}", value.to_string_lossy()));
+        let command_line: Vec<&str> = resume_turn
+            .iter()
+            .chain(&args)
+            .map(String::as_str)
+            .collect();
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-        writeln!(file, "{}", json!(args))?;
+        writeln!(file, "{}", json!(command_line))?;
     }
     let flag = |prefix: &str| {
         args.iter()
