@@ -360,13 +360,17 @@ fn CommandPalette(
                             actions::palette_pick(state, drafts, agent, Some(index));
                             Vec::new()
                         }),
-                        span { class: "mono", "/{command.name}" }
-                        span { class: "palette-description", "{command.description}" }
-                        span { class: "palette-kind",
-                            match command.kind {
-                                CommandKind::Skill => "skill",
-                                CommandKind::Command => "command",
+                        span { class: "palette-item-head",
+                            span { class: "mono palette-name", "/{command.name}" }
+                            span { class: "palette-kind",
+                                match command.kind {
+                                    CommandKind::Skill => "skill",
+                                    CommandKind::Command => "command",
+                                }
                             }
+                        }
+                        if !command.description.is_empty() {
+                            span { class: "palette-description", "{command.description}" }
                         }
                     }
                 }
