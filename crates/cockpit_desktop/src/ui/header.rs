@@ -66,7 +66,7 @@ pub fn Header() -> Element {
                         span { class: "pill-label", "{status_label}" }
                     }
                 }
-                span { class: "header-folder mono", "{folder}" }
+                span { class: "header-folder", "{folder}" }
             }
             div { class: "chip-anchor",
                 button {
