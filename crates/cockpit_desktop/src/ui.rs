@@ -14,6 +14,7 @@ mod markdown;
 mod mcp;
 mod palette;
 mod presence;
+mod reorder;
 mod sidebar;
 mod splitter;
 mod transcript;

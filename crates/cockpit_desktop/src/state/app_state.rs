@@ -145,6 +145,11 @@ impl AppState {
         agents
     }
 
+    /// The agents the sidebar shows, in its order.
+    pub fn sidebar_agents(&self) -> Vec<&AgentEntry> {
+        self.agents_in_order()
+    }
+
     /// The agent switcher's order: by attention, unread first within a status, then by id.
     pub fn agents_by_attention(&self) -> Vec<&AgentEntry> {
         let mut agents: Vec<&AgentEntry> = self.agents.values().collect();

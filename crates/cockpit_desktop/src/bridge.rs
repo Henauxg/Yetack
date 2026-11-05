@@ -155,6 +155,9 @@ document.addEventListener("keydown", (event) => {
     take = true;
   } else if (key === "Escape") {
     take = true;
+  } else if (event.altKey && !command && !event.shiftKey && (key === "ArrowUp" || key === "ArrowDown")) {
+    // Alt+Up and Alt+Down move the selected agent in the sidebar.
+    take = where !== "field" && !mode.dialog;
   } else if (where === "composer" && plain) {
     take = (mode.palette && ["ArrowUp", "ArrowDown", "Enter", "Tab"].includes(key))
       || (text === "" && answers)
@@ -278,7 +281,8 @@ struct Settings {
     undo_steps: u16,
 }
 
-/// Which plain keys the script takes, beyond Ctrl+K, Ctrl+N, Esc and the composer's Enter.
+/// Which plain keys the script takes, beyond Ctrl+K, Ctrl+N, Esc, Alt+Up, Alt+Down and the
+/// composer's Enter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 struct KeyMode {
     /// Y and N answer an approval or a plan.

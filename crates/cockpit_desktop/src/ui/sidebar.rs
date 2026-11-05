@@ -8,6 +8,7 @@ use dioxus::prelude::*;
 use crate::connection::{Clock, Cockpit};
 use crate::state::{AgentEntry, ConnectionState, actions};
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::reorder::{LIST_ID, ROW_CLASS, row_id};
 use crate::{APP_NAME, format};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -86,7 +87,7 @@ pub fn Sidebar() -> Element {
                     Icon { kind: IconKind::Plus, size: 16 }
                 }
             }
-            div { class: "agent-list scroll",
+            div { id: LIST_ID, class: "agent-list scroll",
                 if rows.is_empty() {
                     p { class: "sidebar-empty", "No agent yet. Ctrl+N starts one." }
                 }
@@ -103,7 +104,7 @@ pub fn Sidebar() -> Element {
 fn AgentRowView(row: AgentRow) -> Element {
     let cockpit: Cockpit = use_context();
     let agent = row.id;
-    let mut classes = vec!["agent-row", format::status_class(row.status)];
+    let mut classes = vec![ROW_CLASS, format::status_class(row.status)];
     if row.selected {
         classes.push("selected");
     }
@@ -113,6 +114,7 @@ fn AgentRowView(row: AgentRow) -> Element {
     let class = classes.join(" ");
     rsx! {
         button {
+            id: row_id(agent),
             class,
             aria_current: row.selected,
             onclick: move |_| cockpit.update(|state| actions::select_agent(state, agent)),

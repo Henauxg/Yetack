@@ -9,15 +9,15 @@ use cockpit_protocol::{
     AgentId, AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState,
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, CancelQueuedParams, ClaudeSessionId,
     Effort, Image, ItemBody, ItemId, McpRemoveParams, McpScope, McpServerParams, McpToggleParams,
-    PastSession, PendingId, PermissionMode, PlanAnswer, PlanDecision, Prompt, PromptParams,
-    Question, QuestionAnswer, RenameParams, Request, SessionResumeParams, SetEffortParams,
-    SetModeParams, SetModelParams, SlashCommand, StartParams, StopTaskParams,
+    MoveParams, PastSession, PendingId, PermissionMode, Placed, PlanAnswer, PlanDecision, Prompt,
+    PromptParams, Question, QuestionAnswer, RenameParams, Request, SessionResumeParams,
+    SetEffortParams, SetModeParams, SetModelParams, SlashCommand, StartParams, StopTaskParams,
 };
 use strum::VariantArray;
 
 use super::app_state::{AgentEntry, AppState, Loadable};
 use super::drafts::{Drafts, Palette, QuestionDraft};
-use super::requests::{Outgoing, Purpose, history_request};
+use super::requests::{Outgoing, Purpose, Shift, history_request};
 use super::transcript::HistoryState;
 use super::ui_state::{
     Block, Dialog, FileView, NewAgentForm, NewAgentTab, PaletteOrigin, Popover, Switcher,
@@ -1077,6 +1077,104 @@ pub fn toggle_switcher(state: &mut AppState) {
     state.ui.dialog = (!open).then(|| Dialog::Switcher(Switcher::default()));
 }
 
+/// Moves `agent` just above `before`, or to the bottom of the list. The sidebar shows the new
+/// order at once, with the positions the daemon then sends in its events.
+pub fn move_agent(state: &mut AppState, agent: AgentId, before: Option<AgentId>) -> Vec<Outgoing> {
+    let list: Vec<Placed> = state
+        .agents_in_order()
+        .iter()
+        .map(|entry| entry.summary.place())
+        .collect();
+    let moved = cockpit_protocol::move_agent(&list, agent, before);
+    let mut shifts = Vec::with_capacity(moved.len());
+    for place in moved {
+        if let Some(entry) = state.agents.get_mut(&place.agent) {
+            shifts.push(Shift {
+                agent: place.agent,
+                from: entry.summary.position,
+                to: place.position,
+            });
+            entry.summary.position = place.position;
+        }
+    }
+    if shifts.is_empty() {
+        return Vec::new();
+    }
+    vec![Outgoing {
+        request: Request::AgentMove(MoveParams { agent, before }),
+        purpose: Purpose::Move { shifts },
+    }]
+}
+
+/// Drops a dragged sidebar row just above the row of `before_row`, or below the last row when
+/// it is `None`. Hidden agents keep their places: a drop below the last row lands just under it.
+pub fn drop_agent(
+    state: &mut AppState,
+    agent: AgentId,
+    before_row: Option<AgentId>,
+) -> Vec<Outgoing> {
+    let before = match before_row {
+        Some(row) => Some(row),
+        None => {
+            let shown = state.sidebar_agents();
+            let Some(last) = shown
+                .iter()
+                .rev()
+                .map(|entry| entry.id())
+                .find(|id| *id != agent)
+            else {
+                return Vec::new();
+            };
+            below_in_order(state, last, agent)
+        }
+    };
+    move_agent(state, agent, before)
+}
+
+/// Alt+Up and Alt+Down: the selected agent goes one row up or down among the rows the sidebar
+/// shows.
+pub fn move_selected(state: &mut AppState, direction: Direction) -> Vec<Outgoing> {
+    let Some(agent) = state.ui.selected else {
+        return Vec::new();
+    };
+    let shown: Vec<AgentId> = state
+        .sidebar_agents()
+        .iter()
+        .map(|entry| entry.id())
+        .collect();
+    let Some(index) = shown.iter().position(|id| *id == agent) else {
+        return Vec::new();
+    };
+    let before = match direction {
+        Direction::Up => {
+            let Some(above) = index.checked_sub(1).and_then(|above| shown.get(above)) else {
+                return Vec::new();
+            };
+            Some(*above)
+        }
+        Direction::Down => {
+            let Some(below) = shown.get(index + 1) else {
+                return Vec::new();
+            };
+            below_in_order(state, *below, agent)
+        }
+    };
+    move_agent(state, agent, before)
+}
+
+/// The agent just below `row` in the whole order, leaving `moving` out: the one `moving` goes
+/// above to land just below `row`. `None` when `row` is the last.
+fn below_in_order(state: &AppState, row: AgentId, moving: AgentId) -> Option<AgentId> {
+    let order: Vec<AgentId> = state
+        .agents_in_order()
+        .iter()
+        .map(|entry| entry.id())
+        .filter(|id| *id != moving)
+        .collect();
+    let index = order.iter().position(|id| *id == row)?;
+    order.get(index + 1).copied()
+}
+
 /// Agents whose title or folder holds the query, the ones that wait for you first: the switcher
 /// finds an agent, so it ranks by attention rather than in the sidebar's order.
 pub fn filtered_agents<'state>(state: &'state AppState, query: &str) -> Vec<&'state AgentEntry> {
@@ -1285,11 +1383,34 @@ mod tests {
 
     use super::*;
     use crate::state::app_state::ConnectionState;
-    use crate::state::app_state::tests::{state_with, summary};
+    use crate::state::app_state::tests::{ids, placed, state_with, summary};
     use crate::state::requests::{apply_response, needed_requests};
     use crate::state::ui_state::NoteKind;
 
     const AGENT: u32 = 1;
+
+    /// Agents 3, 2 and 1 from the top, 1024 apart, with agent 2 selected.
+    fn ordered() -> AppState {
+        let mut state = state_with(vec![
+            placed(1, AgentStatus::Idle, 1024),
+            placed(2, AgentStatus::Working, 2048),
+            placed(3, AgentStatus::NeedsYou, 3072),
+        ]);
+        state.connection = ConnectionState::Connected;
+        state.ui.selected = Some(AgentId::new(2));
+        state
+    }
+
+    fn sidebar(state: &AppState) -> Vec<u32> {
+        ids(&state.sidebar_agents())
+    }
+
+    fn sent_move(requests: &[Outgoing]) -> Option<MoveParams> {
+        match &requests.first()?.request {
+            Request::AgentMove(params) => Some(*params),
+            _ => None,
+        }
+    }
 
     fn agent() -> AgentId {
         AgentId::new(AGENT)
@@ -2093,6 +2214,101 @@ mod tests {
 
         close_file_view(&mut state, agent());
         assert!(state.agents[&agent()].files.is_empty());
+    }
+
+    #[test]
+    fn a_move_shows_at_once_and_sends_the_request() {
+        let mut state = ordered();
+
+        let requests = move_agent(&mut state, AgentId::new(1), Some(AgentId::new(3)));
+
+        assert_eq!(sidebar(&state), [1, 3, 2]);
+        assert_eq!(
+            sent_move(&requests),
+            Some(MoveParams {
+                agent: AgentId::new(1),
+                before: Some(AgentId::new(3)),
+            })
+        );
+        assert!(move_agent(&mut state, AgentId::new(1), Some(AgentId::new(3))).is_empty());
+    }
+
+    #[test]
+    fn a_refused_move_puts_the_agents_back_unless_an_event_moved_them() {
+        let mut state = ordered();
+        let mut drafts = Drafts::default();
+        let refused = || {
+            Err(cockpit_client::RequestError::Failed(
+                cockpit_protocol::ErrorBody::new(
+                    cockpit_protocol::ErrorCode::NotFound,
+                    "no agent 3".to_owned(),
+                ),
+            ))
+        };
+
+        let first = move_agent(&mut state, AgentId::new(1), Some(AgentId::new(3)));
+        for outgoing in first {
+            apply_response(
+                &mut state,
+                &mut drafts,
+                Method::AgentMove,
+                outgoing.purpose,
+                refused(),
+            );
+        }
+        let after_refusal = sidebar(&state);
+        let second = move_agent(&mut state, AgentId::new(1), Some(AgentId::new(2)));
+        if let Some(entry) = state.agents.get_mut(&AgentId::new(1)) {
+            entry.summary.position = cockpit_protocol::Position::new(9000);
+        }
+        for outgoing in second {
+            apply_response(
+                &mut state,
+                &mut drafts,
+                Method::AgentMove,
+                outgoing.purpose,
+                refused(),
+            );
+        }
+
+        assert_eq!(after_refusal, [3, 2, 1]);
+        assert_eq!(sidebar(&state), [1, 3, 2], "the event's position stays");
+        assert_eq!(state.ui.errors.len(), 2);
+    }
+
+    #[test]
+    fn a_row_dropped_below_the_last_one_goes_to_the_bottom() {
+        let mut state = ordered();
+
+        let to_bottom = drop_agent(&mut state, AgentId::new(3), None);
+        let to_top = drop_agent(&mut state, AgentId::new(1), Some(AgentId::new(2)));
+
+        assert_eq!(sent_move(&to_bottom).and_then(|params| params.before), None);
+        assert_eq!(
+            sent_move(&to_top).and_then(|params| params.before),
+            Some(AgentId::new(2))
+        );
+        assert_eq!(sidebar(&state), [1, 2, 3]);
+    }
+
+    #[test]
+    fn alt_arrows_move_the_selected_agent_one_row() {
+        let mut state = ordered();
+
+        let up = move_selected(&mut state, Direction::Up);
+        let after_up = sidebar(&state);
+        let at_top = move_selected(&mut state, Direction::Up);
+        move_selected(&mut state, Direction::Down);
+        let down = move_selected(&mut state, Direction::Down);
+
+        assert_eq!(
+            sent_move(&up).and_then(|params| params.before),
+            Some(AgentId::new(3))
+        );
+        assert_eq!(after_up, [2, 3, 1]);
+        assert!(at_top.is_empty());
+        assert_eq!(sent_move(&down).and_then(|params| params.before), None);
+        assert_eq!(sidebar(&state), [3, 1, 2]);
     }
 
     #[test]

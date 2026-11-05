@@ -12,6 +12,7 @@ use crate::ui::dialogs::Dialogs;
 use crate::ui::file_view::FileViewPanel;
 use crate::ui::header::Header;
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::reorder::use_reorder;
 use crate::ui::sidebar::Sidebar;
 use crate::ui::splitter::{APP_ID, SHARE_PROPERTY, Splitter, use_splitter};
 use crate::ui::transcript::TranscriptView;
@@ -25,6 +26,7 @@ pub fn App() -> Element {
     use_clock();
     use_bridge(cockpit);
     use_splitter(cockpit);
+    use_reorder(cockpit);
     let state = cockpit.state.read();
     let file_view_open = state
         .ui

@@ -72,6 +72,16 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
             .map(|entry| actions::interrupt(state, entry.id()))
             .unwrap_or_default();
     }
+    // Alt+Up and Alt+Down move the selected agent in the sidebar, from anywhere but a text field
+    // other than the composer.
+    let moves = press.alt && !command && !press.shift;
+    if moves && state.ui.dialog.is_none() && press.target != KeyTarget::Field {
+        match press.key.as_str() {
+            KEY_UP => return actions::move_selected(state, Direction::Up),
+            KEY_DOWN => return actions::move_selected(state, Direction::Down),
+            _ => {}
+        }
+    }
     if command || press.alt {
         return Vec::new();
     }
@@ -417,6 +427,39 @@ mod tests {
             sent.first().map(|outgoing| &outgoing.request),
             Some(Request::AgentPrompt(params)) if params.prompt.text == "Run the linter"
         ));
+    }
+
+    #[test]
+    fn alt_up_and_alt_down_move_the_selected_agent_except_from_a_field_or_a_dialog() {
+        let mut drafts = Drafts::default();
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::Idle),
+            summary(2, AgentStatus::Idle),
+        ]);
+        state.ui.selected = Some(AgentId::new(2));
+        let alt = |key: &str, target| KeyPress {
+            alt: true,
+            ..press(key, target)
+        };
+
+        let from_field = handle_key(&mut state, &mut drafts, &alt(KEY_UP, KeyTarget::Field));
+        let from_composer = handle_key(&mut state, &mut drafts, &alt(KEY_UP, KeyTarget::Composer));
+        let from_page = handle_key(&mut state, &mut drafts, &alt(KEY_DOWN, KeyTarget::Page));
+        actions::toggle_switcher(&mut state);
+        let behind_a_dialog = handle_key(&mut state, &mut drafts, &alt(KEY_DOWN, KeyTarget::Page));
+
+        let method =
+            |requests: &[Outgoing]| requests.first().map(|outgoing| outgoing.request.method());
+        assert!(from_field.is_empty());
+        assert_eq!(
+            method(&from_composer),
+            Some(cockpit_protocol::Method::AgentMove)
+        );
+        assert_eq!(
+            method(&from_page),
+            Some(cockpit_protocol::Method::AgentMove)
+        );
+        assert!(behind_a_dialog.is_empty());
     }
 
     #[test]

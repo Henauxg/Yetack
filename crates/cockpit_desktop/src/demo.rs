@@ -244,6 +244,14 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
         Request::SessionsList => Ok(ResponseBody::Sessions {
             sessions: sessions(SystemTime::now()),
         }),
+        Request::AgentMove(params) => {
+            let known = |agent: AgentId| state.agents.contains_key(&agent);
+            if known(params.agent) && params.before.is_none_or(known) {
+                Ok(ResponseBody::Done)
+            } else {
+                Err(refused(ErrorCode::NotFound, "The demo has no such agent."))
+            }
+        }
         Request::AgentStart(_) | Request::SessionsResume(_) => Err(refused(
             ErrorCode::InvalidRequest,
             "The demo does not start agents.",

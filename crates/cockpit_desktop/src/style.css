@@ -545,6 +545,59 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 
+/* A dragged row stays in its place, dimmed, while a lifted copy follows the pointer, a little to
+   the right, so the line that shows where the row will land stays in view at its start. The
+   page's script adds the copy, the line and the root's class (ui/reorder.rs). */
+.agent-row[data-dragged] {
+  opacity: 0.35;
+}
+
+.agent-row.drag-ghost {
+  position: fixed;
+  z-index: 50;
+  transform: translateX(24px) scale(1.02);
+  border-color: rgba(45, 212, 191, 0.45);
+  background: var(--raised);
+  box-shadow: var(--shadow);
+  pointer-events: none;
+  transition: none;
+  animation: lift var(--motion-in) var(--ease-out);
+}
+
+@keyframes lift {
+  from {
+    transform: translateX(0) scale(1);
+    box-shadow: none;
+  }
+}
+
+html.reordering,
+html.reordering * {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.drop-line {
+  position: fixed;
+  z-index: 40;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--teal);
+  pointer-events: none;
+}
+
+/* A dot marks the line's start, as in a tree view. */
+.drop-line::before {
+  content: "";
+  position: absolute;
+  top: -3px;
+  left: -4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--teal);
+}
+
 .sidebar-foot {
   display: flex;
   flex-direction: column;

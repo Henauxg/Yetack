@@ -252,9 +252,13 @@ On start the daemon reads `agents.json`, finds the last `Seq` in the logs, and r
 - **Connection task**: a Dioxus coroutine owns the `Connection`, applies events to the state signal, and sends the requests the components ask for.
 - **Components** follow the mockups: sidebar, center header (the title, which its pencil, a double-click or Rename in the "/" menu turns into a field that renames the agent; usage chip, changes chip), transcript, composer (model, mode, cache timer, Send or Stop), floating blocks and badges (tasks, running, MCP servers), file view, command palette, agent switcher, new agent dialog, notifications.
 - **Agent order**: the sidebar lists the agents in the daemon's order, and the first of that order is selected when the selection goes.
+  A row moves by drag and drop, or Alt+Up and Alt+Down on the selected agent; both send `agent.move`.
+  The sidebar shows the new order at once, with the positions the daemon then sends, and puts the agents back when the daemon refuses the move.
+  A page script follows the drag (`ui/reorder.rs`), as the splitter's does: a lifted copy of the row follows the pointer, a line shows where the row will land, and Rust hears of it once, on release.
+  A press that moves less than 4 pixels stays a click.
   The Ctrl+K switcher lists every agent, the ones that wait for you first: it finds an agent, and Ctrl+K then Enter opens the one that needs you.
 - **Rendering**: markdown with `pulldown-cmark`, syntax colors with `syntect` (Rust, SQL, Markdown, JSON, Bash, Nix), diffs with `similar` (line diff, then word highlights inside changed lines).
-- **Shortcuts**: Ctrl+K, Ctrl+N, Esc, Y, N, 1 to 9, as in plan.md.
+- **Shortcuts**: Ctrl+K, Ctrl+N, Esc, Y, N, 1 to 9, as in plan.md, and Alt+Up and Alt+Down to move the selected agent in the sidebar.
 
 ## Errors
 
