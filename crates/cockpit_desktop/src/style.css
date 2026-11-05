@@ -594,11 +594,15 @@ button:disabled {
   display: flex;
   flex-direction: column;
   background: var(--bg);
-  container-type: inline-size;
-  container-name: center;
 }
 
+/* A query container: the header shrinks its chips by its own width. Containment makes it a
+   stacking context, so it sits above the backdrop that closes its popovers. */
 .center-header {
+  position: relative;
+  z-index: 6;
+  container-type: inline-size;
+  container-name: header;
   flex: none;
   display: flex;
   align-items: center;
@@ -724,12 +728,7 @@ button:disabled {
   text-align: center;
 }
 
-@container center (max-width: 620px) {
-  .center-header {
-    gap: 6px;
-    padding: 8px 10px 8px 16px;
-  }
-
+@container header (max-width: 620px) {
   .chip-full,
   .pill-label {
     display: none;
