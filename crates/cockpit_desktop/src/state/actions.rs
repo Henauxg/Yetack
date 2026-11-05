@@ -2773,7 +2773,7 @@ mod tests {
                     path: PathBuf::from(path),
                 },
                 Ok(ResponseBody::File {
-                    path: PathBuf::from("/work/project-1").join(path),
+                    path: Some(PathBuf::from("/work/project-1").join(path)),
                     text: format!("text of {path}"),
                 }),
             );
@@ -2814,7 +2814,7 @@ mod tests {
             &mut state,
             name,
             Ok(ResponseBody::File {
-                path: PathBuf::from(found),
+                path: Some(PathBuf::from(found)),
                 text: "export class RegisterParcel {}\n".to_owned(),
             }),
         );
@@ -2826,6 +2826,28 @@ mod tests {
         );
         let held: Vec<&PathBuf> = state.agents[&agent()].files.keys().collect();
         assert_eq!(held, [&PathBuf::from(found)]);
+    }
+
+    /// A daemon that predates the path in its answer reads only the path asked for.
+    #[test]
+    fn an_answer_without_its_path_shows_the_path_asked_for() {
+        let mut state = state(AgentStatus::Idle);
+        open_file(&mut state, agent(), PathBuf::from("src/main.rs"), None);
+
+        read_answer(
+            &mut state,
+            "src/main.rs",
+            Ok(ResponseBody::File {
+                path: None,
+                text: "fn main() {}\n".to_owned(),
+            }),
+        );
+
+        let view = state.ui.file_view(agent()).unwrap();
+        assert_eq!(view.path, Path::new("src/main.rs"));
+        let shown = state.agents[&agent()].files.get(Path::new("src/main.rs"));
+        let text = "fn main() {}\n".to_owned();
+        assert_eq!(shown, Some(&Loadable::Loaded(FileRead::Text(text))));
     }
 
     #[test]

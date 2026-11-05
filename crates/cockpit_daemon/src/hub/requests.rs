@@ -119,7 +119,10 @@ impl Hub {
         tokio::spawn(async move {
             let found = read_file::find_and_read(folder, touched, home, params.path).await;
             let result = match found {
-                Ok(Found::File { path, text }) => Ok(ResponseBody::File { path, text }),
+                Ok(Found::File { path, text }) => Ok(ResponseBody::File {
+                    path: Some(path),
+                    text,
+                }),
                 Ok(Found::Several(matches)) => Ok(ResponseBody::FileMatches { matches }),
                 Err(error) => Err(error.to_error_body()),
             };
