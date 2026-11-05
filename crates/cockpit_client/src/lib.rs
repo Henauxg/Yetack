@@ -1,1 +1,18 @@
 //! A connection to an agents-cockpit daemon, over its local socket or an SSH bridge.
+//!
+//! [`Session`] is what an app keeps: it reconnects after a drop and reports every change of
+//! connection. [`Connection`] is one connection, for a command that runs once.
+
+mod connection;
+mod error;
+mod requester;
+mod session;
+#[cfg(test)]
+mod test_daemon;
+mod transport;
+
+pub use connection::Connection;
+pub use error::{CloseError, ConnectError, RequestError};
+pub use requester::Requester;
+pub use session::{Backoff, Session, SessionError, SessionUpdate};
+pub use transport::{BRIDGE_SUBCOMMAND, Transport};
