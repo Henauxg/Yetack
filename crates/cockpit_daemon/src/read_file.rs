@@ -258,7 +258,7 @@ pub(crate) async fn find_and_read(
     }
     let roots = access.search_roots(folder);
     let tail = name_tail(&path).unwrap_or_else(|| path.clone());
-    let matches = search(roots, &tail, Instant::now() + SEARCH_TIME).await;
+    let matches = search(&access, roots, &tail, Instant::now() + SEARCH_TIME).await;
     match matches.as_slice() {
         [] => Err(ReadFileError::Unknown(path)),
         [only] => {
@@ -323,8 +323,14 @@ fn name_tail(path: &Path) -> Option<PathBuf> {
 }
 
 /// The files under `roots` whose path ends with `path`, as `git ls-files` lists them, each once,
-/// until `deadline` or [`MAX_MATCHES`]. A root that is not in a git checkout adds nothing.
-async fn search(roots: Vec<PathBuf>, path: &Path, deadline: Instant) -> Vec<PathBuf> {
+/// until `deadline` or [`MAX_MATCHES`]. A root that is not in a git checkout adds nothing, and
+/// neither does a file `access` does not allow once its symlinks are resolved.
+async fn search(
+    access: &Access,
+    roots: Vec<PathBuf>,
+    path: &Path,
+    deadline: Instant,
+) -> Vec<PathBuf> {
     let mut matches: Vec<PathBuf> = Vec::new();
     // The agent's folder may sit in one of the checkouts: a file found twice is listed once.
     let mut seen: Vec<PathBuf> = Vec::new();
@@ -360,8 +366,10 @@ async fn search(roots: Vec<PathBuf>, path: &Path, deadline: Instant) -> Vec<Path
                 continue;
             }
             let found = root.join(relative);
-            let canonical = found.canonicalize().unwrap_or_else(|_| found.clone());
-            if seen.contains(&canonical) {
+            let Ok(canonical) = found.canonicalize() else {
+                continue;
+            };
+            if access.holder(&canonical).is_none() || seen.contains(&canonical) {
                 continue;
             }
             seen.push(canonical);
@@ -607,6 +615,33 @@ mod tests {
         assert_eq!(
             message.message,
             "register-parcel.component.ts is not in the agent's folder or in the files it read or changed"
+        );
+    }
+
+    /// A symlink out of the allowed folders, or to nothing, is no file the user can open.
+    #[tokio::test]
+    async fn a_search_lists_only_files_the_daemon_reads() {
+        let layout = Layout::new();
+        git_init(&layout.agent);
+        write(&layout.agent.join("src/a/widget.ts"), "widget\n");
+        std::fs::create_dir_all(layout.agent.join("src/b")).unwrap();
+        std::fs::create_dir_all(layout.agent.join("src/c")).unwrap();
+        symlink(
+            layout.untouched.join("src/secret.ts"),
+            layout.agent.join("src/b/widget.ts"),
+        )
+        .unwrap();
+        symlink(
+            layout.agent.join("src/gone.ts"),
+            layout.agent.join("src/c/widget.ts"),
+        )
+        .unwrap();
+
+        let found = find(&layout, &[], "widget.ts").await.unwrap();
+
+        assert_eq!(
+            found,
+            file(layout.agent.join("src/a/widget.ts"), "widget\n")
         );
     }
 
