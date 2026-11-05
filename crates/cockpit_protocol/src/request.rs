@@ -60,7 +60,8 @@ pub enum Request {
     AgentMcpToggle(McpToggleParams),
     /// The slash commands and skills, for the palette. Answered by `Commands`.
     AgentCommands(AgentParams),
-    /// Answered by `File`.
+    /// Answered by `File`, or by `FileMatches` when the path is relative, names no file in the
+    /// agent's folder, and several files elsewhere end with it.
     AgentReadFile(ReadFileParams),
     /// Runs `claude mcp remove <server> -s <scope>` in the agent's folder. Answered by `Done`.
     McpRemove(McpRemoveParams),
@@ -266,7 +267,9 @@ pub struct McpToggleParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadFileParams {
     pub agent: AgentId,
-    /// Absolute, or relative to the agent's folder.
+    /// Absolute, or relative to the agent's folder. A relative path that names no file there is
+    /// looked up in the files the agent read or changed, then searched for in the checkouts it
+    /// worked in.
     pub path: PathBuf,
 }
 

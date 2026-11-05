@@ -9,7 +9,7 @@ use dioxus::prelude::*;
 use crate::connection::Cockpit;
 use crate::format;
 use crate::render::{self, Diff, Language, MAX_RENDERED_LINES, diff_lines};
-use crate::state::{Loadable, ViewMode, actions, file_edits};
+use crate::state::{FileRead, Loadable, ViewMode, actions, file_edits};
 use crate::ui::code::{LineNumbers, diff_line, diff_row, lines_not_shown};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::splitter::FILE_VIEW_ID;
@@ -125,7 +125,13 @@ pub fn FileViewPanel() -> Element {
                     Loadable::Failed(error) => rsx! {
                         p { class: "file-note", "Cannot read the file: {error}" }
                     },
-                    Loadable::Loaded(text) => rsx! {
+                    Loadable::Loaded(FileRead::Missing(sentence)) => rsx! {
+                        p { class: "file-note", "{sentence}." }
+                    },
+                    Loadable::Loaded(FileRead::Choices(matches)) => rsx! {
+                        FileChoices { agent, folder: folder.clone(), name: view.path.clone(), matches, line: view.line }
+                    },
+                    Loadable::Loaded(FileRead::Text(text)) => rsx! {
                         FileContent { path: view.path.clone(), text, mode: view.mode, line: view.line, edits }
                     },
                 }
@@ -151,6 +157,41 @@ fn FileTab(agent: AgentId, path: PathBuf, selected: bool) -> Element {
                 cockpit.update(|state| actions::open_file(state, agent, path, None));
             },
             "{name}"
+        }
+    }
+}
+
+/// The files that end with `name`, for the user to pick one.
+#[component]
+fn FileChoices(
+    agent: AgentId,
+    folder: PathBuf,
+    name: PathBuf,
+    matches: Vec<PathBuf>,
+    line: Option<u32>,
+) -> Element {
+    let cockpit: Cockpit = use_context();
+    let count = matches.len();
+    rsx! {
+        div { class: "file-choices",
+            p { class: "file-note", "{count} files end with {name.display()}. Pick one:" }
+            for choice in matches {
+                {
+                    let shown = file_edits::relative_path(&folder, &choice).display().to_string();
+                    rsx! {
+                        button {
+                            key: "{choice.display()}",
+                            class: "file-choice mono",
+                            title: "{choice.display()}",
+                            onclick: move |_| {
+                                let choice = choice.clone();
+                                cockpit.update(|state| actions::open_file(state, agent, choice, line));
+                            },
+                            "{shown}"
+                        }
+                    }
+                }
+            }
         }
     }
 }

@@ -3,7 +3,7 @@
 
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use cockpit_protocol::{
     AgentId, AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState,
@@ -15,7 +15,7 @@ use cockpit_protocol::{
 };
 use strum::VariantArray;
 
-use super::app_state::{AgentEntry, AppState, Loadable};
+use super::app_state::{AgentEntry, AppState, FileRead, Loadable};
 use super::drafts::{Drafts, Palette, QuestionDraft};
 use super::requests::{Outgoing, Purpose, history_request};
 use super::transcript::HistoryState;
@@ -906,6 +906,37 @@ pub fn open_file(state: &mut AppState, agent: AgentId, path: PathBuf, line: Opti
     state.ui.badge = None;
 }
 
+/// Shows the text the daemon read for `requested` at `found`. When the daemon looked a name up and
+/// found the file elsewhere, the view moves to it. A file the view no longer shows is not kept.
+pub fn show_read_file(
+    state: &mut AppState,
+    agent: AgentId,
+    requested: &Path,
+    found: &Path,
+    text: String,
+) {
+    let Some(entry) = state.agents.get_mut(&agent) else {
+        return;
+    };
+    if entry.files.remove(requested).is_none() {
+        return;
+    }
+    let folder = &entry.summary.folder;
+    let found = file_edits::relative_path(folder, found);
+    if let Some(view) = state.ui.file_views.get_mut(&agent)
+        && view.path == requested
+    {
+        let changed = !file_edits::edits_for(&entry.transcript, folder, &found).is_empty();
+        if view.line.is_none() && changed {
+            view.mode = ViewMode::Diff;
+        }
+        view.path = found.clone();
+    }
+    entry
+        .files
+        .insert(found, Loadable::Loaded(FileRead::Text(text)));
+}
+
 pub fn close_file_view(state: &mut AppState, agent: AgentId) {
     state.ui.file_views.remove(&agent);
     state.ui.badge = None;
@@ -1278,9 +1309,10 @@ pub fn resume_session(state: &mut AppState, session: ClaudeSessionId) -> Vec<Out
 
 #[cfg(test)]
 mod tests {
+    use cockpit_client::RequestError;
     use cockpit_protocol::{
-        AgentDetails, AskedQuestion, CommandKind, HistoryPage, ImageMediaType, Method,
-        QuestionOption, ResponseBody, Timestamp, TranscriptItem,
+        AgentDetails, AskedQuestion, CommandKind, ErrorBody, ErrorCode, HistoryPage,
+        ImageMediaType, Method, QuestionOption, ResponseBody, Timestamp, TranscriptItem,
     };
 
     use super::*;
@@ -2086,6 +2118,7 @@ mod tests {
                     path: PathBuf::from(path),
                 },
                 Ok(ResponseBody::File {
+                    path: PathBuf::from("/work/project-1").join(path),
                     text: format!("text of {path}"),
                 }),
             );
@@ -2100,6 +2133,86 @@ mod tests {
 
         close_file_view(&mut state, agent());
         assert!(state.agents[&agent()].files.is_empty());
+    }
+
+    fn read_answer(state: &mut AppState, path: &str, result: Result<ResponseBody, RequestError>) {
+        apply_response(
+            state,
+            &mut Drafts::default(),
+            Method::AgentReadFile,
+            Purpose::ReadFile {
+                agent: agent(),
+                path: PathBuf::from(path),
+            },
+            result,
+        );
+    }
+
+    #[test]
+    fn a_name_the_daemon_found_elsewhere_moves_the_view_to_the_file() {
+        let mut state = state(AgentStatus::Idle);
+        let name = "register-parcel.component.ts";
+        let found = "/work/project-1_parcel/front/src/app/register-parcel.component.ts";
+        open_file(&mut state, agent(), PathBuf::from(name), Some(249));
+
+        read_answer(
+            &mut state,
+            name,
+            Ok(ResponseBody::File {
+                path: PathBuf::from(found),
+                text: "export class RegisterParcel {}\n".to_owned(),
+            }),
+        );
+
+        let view = state.ui.file_view(agent()).unwrap();
+        assert_eq!(
+            (view.path.as_path(), view.line),
+            (Path::new(found), Some(249))
+        );
+        let held: Vec<&PathBuf> = state.agents[&agent()].files.keys().collect();
+        assert_eq!(held, [&PathBuf::from(found)]);
+    }
+
+    #[test]
+    fn several_matches_wait_for_a_pick_and_a_miss_says_why() {
+        let mut state = state(AgentStatus::Idle);
+        let matches = vec![
+            PathBuf::from("/work/project-1/src/a/widget.ts"),
+            PathBuf::from("/work/project-1_review/src/b/widget.ts"),
+        ];
+        let missing = "cache.rs is not in the agent's folder or in the files it read or changed";
+        let shown = |state: &AppState, path: &str| {
+            state.agents[&agent()].files.get(Path::new(path)).cloned()
+        };
+
+        open_file(&mut state, agent(), PathBuf::from("widget.ts"), None);
+        read_answer(
+            &mut state,
+            "widget.ts",
+            Ok(ResponseBody::FileMatches {
+                matches: matches.clone(),
+            }),
+        );
+        assert_eq!(
+            shown(&state, "widget.ts"),
+            Some(Loadable::Loaded(FileRead::Choices(matches)))
+        );
+
+        open_file(&mut state, agent(), PathBuf::from("cache.rs"), None);
+        let error = ErrorBody::new(ErrorCode::NotFound, missing.to_owned());
+        read_answer(&mut state, "cache.rs", Err(RequestError::Failed(error)));
+        assert_eq!(
+            shown(&state, "cache.rs"),
+            Some(Loadable::Loaded(FileRead::Missing(missing.to_owned())))
+        );
+
+        open_file(&mut state, agent(), PathBuf::from("image.png"), None);
+        let error = ErrorBody::new(ErrorCode::FileUnreadable, "not text".to_owned());
+        read_answer(&mut state, "image.png", Err(RequestError::Failed(error)));
+        assert_eq!(
+            shown(&state, "image.png"),
+            Some(Loadable::Failed("not text".to_owned()))
+        );
     }
 
     #[test]

@@ -1058,6 +1058,7 @@ async fn files_settings_sessions_and_agent_settings() {
     assert_eq!(
         client.ok(read("notes.txt")).await,
         ResponseBody::File {
+            path: setup.work().join("notes.txt"),
             text: "remember the milk\n".to_owned()
         }
     );

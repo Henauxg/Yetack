@@ -39,6 +39,17 @@ impl<T> Loadable<T> {
     }
 }
 
+/// What the daemon answered for the file view's path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileRead {
+    Text(String),
+    /// Several files end with the path, which names none in the agent's folder: the user picks
+    /// one. Absolute paths.
+    Choices(Vec<PathBuf>),
+    /// No file matches: the daemon's sentence that says so.
+    Missing(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectionState {
     /// `attempt` counts from 1 since the last connection.
@@ -60,7 +71,7 @@ pub struct AgentEntry {
     /// An `agent.context_usage` request is on its way: the usage card shows that it loads.
     pub context_loading: bool,
     /// The file view's texts, by the path the view uses.
-    pub files: BTreeMap<PathBuf, Loadable<String>>,
+    pub files: BTreeMap<PathBuf, Loadable<FileRead>>,
     /// An `agent.commands` request is on its way.
     pub commands_requested: bool,
     /// When the app saw the agent's current turn start. `None` between turns, and for a turn
