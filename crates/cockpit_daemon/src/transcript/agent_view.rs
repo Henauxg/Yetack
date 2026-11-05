@@ -142,11 +142,16 @@ pub(crate) struct AgentView {
     /// The `total_cost_usd` of the current process so far: Claude Code counts from its start, or
     /// from the cost it restores with a resumed session.
     process_cost: f64,
-    /// The cost of the agent's earlier processes, which a resumed session's total already holds.
+    /// The part of the agent's cost that the process's `total_cost_usd` does not count: the
+    /// earlier processes' cost after a new session, none after a resumed one (Claude Code
+    /// restores it), and what came before a `/clear`.
     cost_before_process: f64,
     /// Until the process's first `result`, the cost a resumed session restores can still become
     /// the first turn's base.
     awaits_restored_cost: bool,
+    /// Claude Code restates the session's saved name as it starts, before it answers
+    /// `initialize`: that name must not replace one the agent got while it was stopped.
+    takes_session_titles: bool,
     awaited_echoes: VecDeque<String>,
     /// Calls per tool name, for the MCP servers' tool counts.
     tool_counts: HashMap<String, u32>,
@@ -172,6 +177,7 @@ impl AgentView {
             process_cost: 0.0,
             cost_before_process: 0.0,
             awaits_restored_cost: false,
+            takes_session_titles: false,
             awaited_echoes: VecDeque::new(),
             tool_counts: HashMap::new(),
             skills: BTreeSet::new(),
@@ -217,7 +223,7 @@ impl AgentView {
 
     /// A view that reads a session file's lines, for their items alone. `folder` is the
     /// session's, which tool summaries show paths relative to.
-    pub(super) fn for_session_file(folder: PathBuf) -> Self {
+    pub(super) fn new_for_session_file(folder: PathBuf) -> Self {
         let summary = AgentSummary {
             id: AgentId::new(0),
             title: String::new(),
@@ -511,20 +517,27 @@ impl AgentView {
         };
         self.process_cost = 0.0;
         self.awaits_restored_cost = session == ProcessSession::Resumed;
+        self.takes_session_titles = false;
         self.pending.clear();
         self.tool_calls.clear();
+    }
+
+    /// The process answered `initialize`: from now on, a name Claude Code gives the session, as
+    /// after a `/rename`, renames the agent.
+    pub(crate) fn initialized(&mut self) {
+        self.takes_session_titles = true;
     }
 
     /// The cost Claude Code restored with a resumed session, read from the session file. It is
     /// the base of the first turn's cost, unless a `result` came first: the first turn's cost then
     /// counts from 0.
-    pub(crate) fn set_restored_cost(&mut self, cost: f64) {
+    pub(crate) fn set_restored_cost(&mut self, cost: CostUsd) {
         if !self.awaits_restored_cost {
             return;
         }
         self.awaits_restored_cost = false;
-        self.process_cost = cost;
-        self.summary.cost = CostUsd::new(self.cost_before_process + cost);
+        self.process_cost = cost.get();
+        self.summary.cost = CostUsd::new(self.cost_before_process + cost.get());
     }
 
     /// The `claude` process ended: what waited is cancelled, what ran failed.
@@ -627,13 +640,16 @@ impl AgentView {
                         },
                     );
                 }
-                Some(UntypedSystemSubtype::SessionTitleChanged) => {
+                Some(UntypedSystemSubtype::SessionTitleChanged) if self.takes_session_titles => {
                     let title = value.get(TITLE_KEY).and_then(Value::as_str).map(str::trim);
                     if let Some(title) = title.filter(|title| !title.is_empty()) {
                         self.summary.title = sessions::shorten(title);
                     }
                 }
-                Some(UntypedSystemSubtype::LocalCommand) | None => {}
+                Some(
+                    UntypedSystemSubtype::SessionTitleChanged | UntypedSystemSubtype::LocalCommand,
+                )
+                | None => {}
             },
             SystemEvent::ThinkingTokens(_)
             | SystemEvent::HookStarted(_)
@@ -643,9 +659,10 @@ impl AgentView {
     }
 
     /// Claude Code starts a new conversation, as `/clear` does. Its total cost counts from 0
-    /// again, so what the process spent so far joins the agent's earlier cost.
+    /// again, so the agent's cost so far becomes the base, even when a resumed session's restored
+    /// cost was not read yet.
     fn reset_conversation(&mut self, reset: &ConversationReset) {
-        self.cost_before_process += self.process_cost;
+        self.cost_before_process = self.summary.cost.get();
         self.process_cost = 0.0;
         self.awaits_restored_cost = false;
         let text = match reset.trigger {
@@ -2032,7 +2049,7 @@ mod tests {
         view.process_exited("claude exited".to_owned(), now());
 
         view.process_started(ProcessSession::Resumed);
-        view.set_restored_cost(86.0);
+        view.set_restored_cost(CostUsd::new(86.0));
         let restored = view.summary().cost;
         apply(&mut view, result(88.5));
         apply(&mut view, result(89.0));
@@ -2051,11 +2068,29 @@ mod tests {
         view.process_started(ProcessSession::Resumed);
 
         apply(&mut view, result(88.5));
-        view.set_restored_cost(86.0);
+        view.set_restored_cost(CostUsd::new(86.0));
         apply(&mut view, result(89.0));
 
         assert_eq!(view.summary().cost, CostUsd::new(89.0));
         assert_eq!(turn_costs(&view), [CostUsd::new(88.5), CostUsd::new(0.5)]);
+    }
+
+    #[test]
+    fn a_clear_before_the_restored_cost_keeps_the_cost_spent() {
+        let mut view = view();
+        apply(&mut view, result(2.0));
+        view.process_exited("claude exited".to_owned(), now());
+        view.process_started(ProcessSession::Resumed);
+
+        apply(
+            &mut view,
+            json!({"type": "conversation_reset", "trigger": "clear", "session_id": "session-1"}),
+        );
+        view.set_restored_cost(CostUsd::new(2.0));
+        apply(&mut view, result(0.25));
+
+        assert_eq!(view.summary().cost, CostUsd::new(2.25));
+        assert_eq!(turn_costs(&view), [CostUsd::new(2.0), CostUsd::new(0.25)]);
     }
 
     fn turn_costs(view: &AgentView) -> Vec<CostUsd> {
@@ -2266,6 +2301,7 @@ mod tests {
     #[test]
     fn claude_code_naming_the_session_renames_the_agent() {
         let mut view = view();
+        view.initialized();
 
         apply(
             &mut view,
@@ -2280,6 +2316,27 @@ mod tests {
         );
 
         assert_eq!(named, "Cart fix");
+        assert_eq!(view.summary().title, "Cart fix");
+    }
+
+    #[test]
+    fn the_name_claude_code_restates_as_it_starts_keeps_the_agents_own() {
+        let mut view = view();
+        view.initialized();
+        view.process_exited("claude exited".to_owned(), now());
+        view.set_title("Checkout".to_owned());
+        let named = |title: &str| {
+            json!({"type": "system", "subtype": "session_title_changed", "title": title,
+                   "session_id": "session-1"})
+        };
+
+        view.process_started(ProcessSession::Resumed);
+        apply(&mut view, named("Cart total"));
+        let at_start = view.summary().title.clone();
+        view.initialized();
+        apply(&mut view, named("Cart fix"));
+
+        assert_eq!(at_start, "Checkout");
         assert_eq!(view.summary().title, "Cart fix");
     }
 

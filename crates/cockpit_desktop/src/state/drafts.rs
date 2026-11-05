@@ -43,6 +43,8 @@ pub struct Drafts {
     pub composer_writes: u64,
     pub questions: BTreeMap<PendingId, QuestionDraft>,
     pub palette: Palette,
+    /// The text of the header's title field while a title is edited.
+    pub title: String,
 }
 
 impl Drafts {

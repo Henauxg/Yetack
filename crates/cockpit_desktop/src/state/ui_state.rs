@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use cockpit_protocol::{AgentId, Effort, PermissionMode};
+use cockpit_protocol::{AgentId, Effort, ItemId, PermissionMode};
 
 /// How many error notes stay on screen; an older one goes when a new one comes.
 const MAX_ERRORS: usize = 4;
@@ -133,12 +133,16 @@ pub struct ErrorNote {
     pub kind: NoteKind,
 }
 
-/// An agent's title being edited: the field's text, which follows the keyboard.
+/// An agent's title being edited. The field's text, which follows the keyboard, is in the drafts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TitleEdit {
     pub agent: AgentId,
+    /// The title the field starts from.
     pub title: String,
     pub place: TitlePlace,
+    /// The field selects its text when the edit starts. After a move to the other place it puts
+    /// the caret at the end, so typing goes on after the text instead of replacing it.
+    pub select_all: bool,
 }
 
 /// Where the title field shows: one place at a time.
@@ -159,6 +163,8 @@ pub struct UiState {
     pub open_blocks: BTreeSet<Block>,
     /// The block shown as a popover from its badge, while the file view is open.
     pub badge: Option<Block>,
+    /// The agents whose background block lists every finished task, not only the latest.
+    pub finished_tasks_unfolded: BTreeSet<AgentId>,
     pub popover: Option<Popover>,
     pub dialog: Option<Dialog>,
     pub file_views: BTreeMap<AgentId, FileView>,
@@ -168,6 +174,14 @@ pub struct UiState {
     /// The notes at the bottom left: errors, and what an action did.
     pub errors: Vec<ErrorNote>,
     next_error: u32,
+    /// The agents whose chat is scrolled up, each with the last entry it held when it left its
+    /// bottom (`None` when it held none). The entries after it arrived since.
+    pub chat_scrolled_up: BTreeMap<AgentId, Option<ItemId>>,
+    /// The first entry that arrived while the agent's chat was scrolled up, once the chat went
+    /// back down: the "New" divider sits above it until a message is sent or another agent opens.
+    pub chat_new_from: BTreeMap<AgentId, ItemId>,
+    /// Counts the sends that take the chat to its bottom: the chat's scroll script jumps at each.
+    pub chat_jumps: u64,
 }
 
 impl Default for UiState {
@@ -178,6 +192,7 @@ impl Default for UiState {
             window_focused: true,
             open_blocks: BTreeSet::from([Block::Tasks, Block::Running]),
             badge: None,
+            finished_tasks_unfolded: BTreeSet::new(),
             popover: None,
             dialog: None,
             file_views: BTreeMap::new(),
@@ -185,6 +200,9 @@ impl Default for UiState {
             title_edit: None,
             errors: Vec::new(),
             next_error: 0,
+            chat_scrolled_up: BTreeMap::new(),
+            chat_new_from: BTreeMap::new(),
+            chat_jumps: 0,
         }
     }
 }
@@ -217,6 +235,12 @@ impl UiState {
 
     pub fn file_view(&self, agent: AgentId) -> Option<&FileView> {
         self.file_views.get(&agent)
+    }
+
+    pub fn toggle_finished_tasks(&mut self, agent: AgentId) {
+        if !self.finished_tasks_unfolded.remove(&agent) {
+            self.finished_tasks_unfolded.insert(agent);
+        }
     }
 
     /// Closes every popover and the dialog, or only the dialog's menu when one is open, and
@@ -289,6 +313,19 @@ mod tests {
 
         assert!(ui.close_overlays());
         assert_eq!(ui.dialog, None);
+    }
+
+    #[test]
+    fn the_finished_tasks_fold_per_agent() {
+        let mut ui = UiState::default();
+        let (first, second) = (AgentId::new(1), AgentId::new(2));
+
+        ui.toggle_finished_tasks(first);
+        assert!(ui.finished_tasks_unfolded.contains(&first));
+        assert!(!ui.finished_tasks_unfolded.contains(&second));
+
+        ui.toggle_finished_tasks(first);
+        assert!(ui.finished_tasks_unfolded.is_empty());
     }
 
     #[test]

@@ -21,6 +21,7 @@ pub enum IconKind {
     Person,
     Terminal,
     Send,
+    ArrowDown,
     Clock,
     Shield,
     Bolt,
@@ -34,6 +35,7 @@ pub enum IconKind {
     Question,
     Warning,
     Folder,
+    File,
 }
 
 impl IconKind {
@@ -68,6 +70,7 @@ impl IconKind {
             }
             Self::Terminal => r#"<path d="M5 7l5 5-5 5"></path><path d="M12 18h7"></path>"#,
             Self::Send => r#"<path d="M12 19V5"></path><path d="M6 11l6-6 6 6"></path>"#,
+            Self::ArrowDown => r#"<path d="M12 5v14"></path><path d="M6 13l6 6 6-6"></path>"#,
             Self::Clock => {
                 r#"<circle cx="12" cy="12" r="8"></circle><path d="M12 8v4l3 2"></path>"#
             }
@@ -99,6 +102,9 @@ impl IconKind {
             }
             Self::Warning => {
                 r#"<path d="M12 3l9 16H3z"></path><path d="M12 10v4"></path><path d="M12 17h.01"></path>"#
+            }
+            Self::File => {
+                r#"<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"></path><path d="M14 3v5h5"></path>"#
             }
             Self::Folder => {
                 r#"<path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>"#

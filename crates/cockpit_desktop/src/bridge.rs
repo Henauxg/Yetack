@@ -250,6 +250,16 @@ const field_id = await dioxus.recv();
 document.getElementById(field_id)?.focus();
 "#;
 
+/// Gives the focus to the field whose id it receives, the caret at the end of its text.
+const FOCUS_AT_END_SCRIPT: &str = r#"
+const field_id = await dioxus.recv();
+const field = document.getElementById(field_id);
+if (field !== null) {
+  field.focus();
+  field.setSelectionRange(field.value.length, field.value.length);
+}
+"#;
+
 /// Gives the focus to the field whose id it receives, its text selected.
 const SELECT_SCRIPT: &str = r#"
 const field_id = await dioxus.recv();
@@ -425,6 +435,22 @@ pub fn focus_field(field_id: &'static str) {
     let script = document::eval(FOCUS_SCRIPT);
     if let Err(error) = script.send(field_id) {
         tracing::warn!("cannot focus the field {field_id}: {error}");
+    }
+}
+
+fn focus_field_at_end(field_id: &'static str) {
+    let script = document::eval(FOCUS_AT_END_SCRIPT);
+    if let Err(error) = script.send(field_id) {
+        tracing::warn!("cannot focus the field {field_id}: {error}");
+    }
+}
+
+/// Focuses a title field as its edit asks: its text selected, or the caret at the end.
+pub fn focus_title_field(field_id: &'static str, select_all: bool) {
+    if select_all {
+        select_field(field_id);
+    } else {
+        focus_field_at_end(field_id);
     }
 }
 

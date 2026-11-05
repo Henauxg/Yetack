@@ -26,6 +26,25 @@ pub const DEMO_FLAG: &str = "--demo";
 const PARSER_FOLDER: &str = "/home/dev/projects/calc-parser";
 const SERVICE_FOLDER: &str = "/home/dev/projects/calc-service";
 const PLATFORM_FOLDER: &str = "/home/dev/projects/acme-platform";
+const STREAM_FOLDER: &str = "/home/dev/projects/calc-stream";
+
+/// The agent whose conversation grows while the demo runs, to try the chat's scrolling.
+const LIVE_AGENT: u32 = 7;
+
+/// How often the live agent adds or finishes an entry.
+pub const LIVE_TICK: Duration = Duration::from_millis(1500);
+
+/// The live agent's entries: the older page that "Load older messages" brings, the first page,
+/// then the live ones, one id per tick.
+const LIVE_OLDER_FIRST_ID: u32 = 60;
+const LIVE_PAGE_FIRST_ID: u32 = 100;
+const LIVE_PAGE_LAST_ID: u32 = 123;
+const LIVE_TICK_FIRST_ID: u32 = 1000;
+
+/// Other git worktrees of the parser, beside its folder, where the parser agent also edited files.
+const PARSER_COLUMNS_WORKTREE: &str =
+    "/home/dev/projects/calc-parser_GH42Q-report-the-column-of-every-unexpected-token";
+const PARSER_BENCH_WORKTREE: &str = "/home/dev/projects/calc-parser_benchmarks-for-large-inputs";
 
 /// How long the working agent's turn has run when the demo starts.
 const TURN_ELAPSED: Duration = Duration::from_secs(4 * 60 + 12);
@@ -121,6 +140,38 @@ The parser builds every error at `src/error.rs:2`. The lexer already counts the 
 - The column is a `u32` on `Token`.
 - No new dependency is needed.";
 
+/// A command as long as the ones agents write against a database: a few lines, some of them
+/// very long.
+const MEDIANS_COMMAND: &str = r#"psql "$CI_DATABASE_URL" --no-psqlrc --tuples-only --no-align --field-separator '|' --command "SELECT b.case_name, r.branch, percentile_cont(0.5) WITHIN GROUP (ORDER BY b.nanoseconds) AS median_ns, count(*) AS samples FROM bench_results b JOIN ci_runs r ON r.id = b.run_id WHERE r.finished_at > now() - interval '7 days' AND r.project = 'calc-service' GROUP BY b.case_name, r.branch ORDER BY median_ns DESC" \
+  | jq --raw-input --slurp 'split("\n") | map(select(length > 0) | split("|")) | map({case: .[0], branch: .[1], median_ms: ((.[2] | tonumber) / 1000000), samples: (.[3] | tonumber)})' \
+  > bench-medians.json
+jq --arg branch main '[.[] | select(.branch == $branch)] | sort_by(-.median_ms) | .[:3]' bench-medians.json > main-medians.json
+jq --arg branch cache-layer '[.[] | select(.branch == $branch)] | sort_by(-.median_ms) | .[:3]' bench-medians.json > branch-medians.json
+curl --silent --fail --request POST "https://ci.example.com/api/v2/annotations" --header "Content-Type: application/json" --data '{"project": "calc-service", "kind": "benchmark-comparison", "window": "7d", "baseline": "main", "candidate": "cache-layer"}'
+jq --slurp '[.[0], .[1]] | transpose | map({case: .[0].case, main_ms: .[0].median_ms, branch_ms: .[1].median_ms, change_percent: (((.[1].median_ms / .[0].median_ms) - 1) * 100 | round)})' main-medians.json branch-medians.json"#;
+
+const MEDIANS_OUTPUT: &str = r#"{"annotation": {"id": 4812, "project": "calc-service", "kind": "benchmark-comparison", "created_at": "2026-03-02T10:14:07Z"}}
+[
+  {
+    "case": "deep_nesting",
+    "main_ms": 2.61,
+    "branch_ms": 2.41,
+    "change_percent": -8
+  },
+  {
+    "case": "long_sum",
+    "main_ms": 1.08,
+    "branch_ms": 1.1,
+    "change_percent": 2
+  },
+  {
+    "case": "many_parentheses",
+    "main_ms": 0.93,
+    "branch_ms": 0.9,
+    "change_percent": -3
+  }
+]"#;
+
 const BENCHMARK_ANSWER: &str = "The benchmark runs in CI now. The slowest cases, against `main`:
 
 | Case | `main` | This branch | Change | Samples | Slowest input |
@@ -151,7 +202,7 @@ const PLAN_TEXT: &str = "## Add a result cache
 4. Add a test that evaluates the same expression twice.";
 
 /// The sidebar's order, top first, as a user arranged it: neither by id nor by status.
-const SIDEBAR_ORDER: [u32; 6] = [1, 4, 2, 5, 3, 6];
+const SIDEBAR_ORDER: [u32; 7] = [1, LIVE_AGENT, 4, 2, 5, 3, 6];
 
 /// The room between two agents' positions, as the daemon leaves it.
 const POSITION_STEP: u32 = 1024;
@@ -172,12 +223,14 @@ pub fn state(daemon: DaemonLabel) -> AppState {
         plan_agent(now),
         benchmark_agent(now),
         exited_agent(now),
+        live_agent(now),
     ];
     for sample in agents {
         let mut entry = AgentEntry::new(sample.summary);
+        let has_older = entry.id() == AgentId::new(LIVE_AGENT);
         entry.transcript.merge_page(HistoryPage {
             items: sample.items,
-            has_older: false,
+            has_older,
         });
         entry.details = Loadable::Loaded(sample.details);
         if entry.summary.status == AgentStatus::Working {
@@ -237,6 +290,16 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
                 text: text.to_owned(),
             })
             .ok_or_else(|| refused(ErrorCode::NotFound, "The demo has no such file.")),
+        Request::AgentHistory(params) if params.agent == AgentId::new(LIVE_AGENT) => {
+            let before = params.before.map_or(LIVE_PAGE_FIRST_ID, ItemId::get);
+            let items = (LIVE_OLDER_FIRST_ID..before)
+                .map(|id| item(id, None, live_entry(id)))
+                .collect();
+            Ok(ResponseBody::History(HistoryPage {
+                items,
+                has_older: false,
+            }))
+        }
         Request::AgentHistory(_) => Ok(ResponseBody::History(HistoryPage {
             items: Vec::new(),
             has_older: false,
@@ -518,6 +581,47 @@ fn details() -> AgentDetails {
     }
 }
 
+/// Three running tasks among many finished ones, in the order they started, as the daemon lists
+/// them: the block shows the running ones first and folds the older finished ones.
+fn parser_background_tasks(now: SystemTime) -> Vec<BackgroundTask> {
+    use BackgroundTaskKind::{Agent, Command};
+    use BackgroundTaskStatus::{Done, Failed, Running, Stopped};
+    // Kind, description, status, started and ended so many seconds ago, tool calls.
+    #[rustfmt::skip]
+    let tasks = [
+        (Agent, "Map where the lexer builds tokens", Done, 1500, Some(1380), 14),
+        (Agent, "List the parser's error messages", Done, 1460, Some(1300), 9),
+        (Command, "cargo build --all-targets", Done, 1400, Some(1340), 0),
+        (Agent, "Check the grammar for ambiguous rules", Failed, 1350, Some(1200), 21),
+        (Agent, "Review the error type for missing cases", Running, 1290, None, 5),
+        (Agent, "Find tests that assert on columns", Done, 1250, Some(1050), 12),
+        (Command, "cargo clippy --all-targets", Done, 1210, Some(1150), 0),
+        (Agent, "Compare with the column rules of other parsers", Done, 1100, Some(800), 18),
+        (Command, "cargo test lexer", Stopped, 980, Some(950), 0),
+        (Agent, "Draft the changelog entry", Done, 900, Some(700), 6),
+        (Agent, "Look for callers of Token::column", Done, 860, Some(640), 11),
+        (Agent, "Write fuzz inputs with unicode", Running, 600, None, 8),
+        (Command, "cargo doc --no-deps", Done, 420, Some(380), 0),
+        (Agent, "Check the docs for column examples", Done, 300, Some(150), 7),
+        (Agent, "Summarize the error type review", Done, 200, Some(90), 4),
+        (Command, "cargo test parser", Running, 12, None, 0),
+    ];
+    (1_u32..)
+        .zip(tasks)
+        .map(
+            |(index, (kind, description, status, started, ended, tool_calls))| BackgroundTask {
+                id: BackgroundTaskId::new(format!("demo-task-{index}")),
+                kind,
+                description: description.to_owned(),
+                status,
+                started_at: at(now, started),
+                ended_at: ended.map(|ended| at(now, ended)),
+                tool_calls,
+            },
+        )
+        .collect()
+}
+
 struct Sample {
     summary: AgentSummary,
     items: Vec<TranscriptItem>,
@@ -680,26 +784,7 @@ fn parser_agent(now: SystemTime) -> Sample {
             task("Fix the failing test", TaskStatus::InProgress),
             task("Cover a token at the end of the input", TaskStatus::Pending),
         ],
-        background_tasks: vec![
-            BackgroundTask {
-                id: BackgroundTaskId::new("demo-task-1".to_owned()),
-                kind: BackgroundTaskKind::Agent,
-                description: "Review the error type for missing cases".to_owned(),
-                status: BackgroundTaskStatus::Running,
-                started_at: at(now, 41),
-                ended_at: None,
-                tool_calls: 5,
-            },
-            BackgroundTask {
-                id: BackgroundTaskId::new("demo-task-2".to_owned()),
-                kind: BackgroundTaskKind::Command,
-                description: "cargo test parser".to_owned(),
-                status: BackgroundTaskStatus::Running,
-                started_at: at(now, 12),
-                ended_at: None,
-                tool_calls: 0,
-            },
-        ],
+        background_tasks: parser_background_tasks(now),
         changed_files: vec![
             ChangedFile {
                 path: Path::new(PARSER_FOLDER).join(ERROR_FILE),
@@ -715,6 +800,23 @@ fn parser_agent(now: SystemTime) -> Sample {
                 path: Path::new(PARSER_FOLDER).join(LEXER_FILE),
                 lines_added: 1,
                 lines_removed: 1,
+            },
+            ChangedFile {
+                path: Path::new(PARSER_COLUMNS_WORKTREE)
+                    .join("crates/calc-lexer/src/tokens/unexpected_token.rs"),
+                lines_added: 31,
+                lines_removed: 4,
+            },
+            ChangedFile {
+                path: Path::new(PARSER_COLUMNS_WORKTREE)
+                    .join("crates/calc-lexer/tests/columns_of_unexpected_tokens.rs"),
+                lines_added: 24,
+                lines_removed: 0,
+            },
+            ChangedFile {
+                path: Path::new(PARSER_BENCH_WORKTREE).join("benches/lexer_on_large_inputs.rs"),
+                lines_added: 12,
+                lines_removed: 2,
             },
         ],
         context: Some(ContextUsage {
@@ -942,9 +1044,19 @@ fn benchmark_agent(now: SystemTime) -> Sample {
                 Some("eval/deep_nesting  time: [2.38 ms 2.41 ms 2.44 ms]"),
             )),
         ),
-        item(3, None, text(BENCHMARK_ANSWER)),
         item(
-            4,
+            3,
+            None,
+            ItemBody::ToolCall(bash(
+                "Compare the last week's medians of main and the branch",
+                MEDIANS_COMMAND,
+                ToolCallStatus::Done,
+                Some(MEDIANS_OUTPUT),
+            )),
+        ),
+        item(4, None, text(BENCHMARK_ANSWER)),
+        item(
+            5,
             None,
             ItemBody::TurnEnd(TurnEnd {
                 duration: Duration::from_secs(252),
@@ -1010,6 +1122,111 @@ fn exited_agent(now: SystemTime) -> Sample {
         summary,
         items,
         details: details(),
+    }
+}
+
+fn live_agent(now: SystemTime) -> Sample {
+    let summary = summary(
+        SummaryParts {
+            id: LIVE_AGENT,
+            title: "Stream the parser's input",
+            folder: STREAM_FOLDER,
+            status: AgentStatus::Working,
+            activity: Some("Running the case tests"),
+            pending: 0,
+        },
+        now,
+    );
+    let first = item(
+        LIVE_PAGE_FIRST_ID,
+        None,
+        user(
+            "Make the parser read its input as a stream, and run every case test.",
+            false,
+        ),
+    );
+    let page =
+        (LIVE_PAGE_FIRST_ID + 1..=LIVE_PAGE_LAST_ID).map(|id| item(id, None, live_entry(id)));
+    Sample {
+        summary,
+        items: std::iter::once(first).chain(page).collect(),
+        details: details(),
+    }
+}
+
+/// The kinds of the live agent's entries, as `live_entry` makes them.
+const LIVE_TEXT: u32 = 0;
+const LIVE_READ: u32 = 2;
+
+/// A made-up entry of the live agent, picked by its id.
+fn live_entry(id: u32) -> ItemBody {
+    live_entry_of(id % 4, id)
+}
+
+/// An entry of the live agent of the `kind` (0 to 3) about the case `id`.
+fn live_entry_of(kind: u32, id: u32) -> ItemBody {
+    match kind {
+        LIVE_TEXT => text(&format!(
+            "Case {id} passes: the stream splits the input at each separator and keeps every token's column. On to the next case."
+        )),
+        1 => ItemBody::ToolCall(bash(
+            "Run one case test",
+            &format!("cargo test -p calc-stream case_{id}"),
+            ToolCallStatus::Done,
+            Some(&live_test_output(id)),
+        )),
+        LIVE_READ => ItemBody::ToolCall(call(
+            "Read",
+            &format!("src/stream/case_{id}.rs"),
+            ToolCallStatus::Done,
+            None,
+        )),
+        _ => ItemBody::ToolCall(call(
+            "Grep",
+            &format!("fn case_{id}"),
+            ToolCallStatus::Done,
+            Some(&format!("src/stream/case_{id}.rs:12")),
+        )),
+    }
+}
+
+fn live_test_output(id: u32) -> String {
+    format!(
+        "running 1 test\ntest case_{id}::splits_at_separators ... ok\ntest case_{id}::keeps_columns ... ok\ntest case_{id}::reads_in_chunks ... ok\ntest case_{id}::ends_cleanly ... ok\ntest case_{id}::reports_offsets ... ok\n\ntest result: ok. 5 passed; 0 failed"
+    )
+}
+
+/// One step of the live agent, as its daemon would send it: tick by tick, a test command starts,
+/// then ends with its output, which makes its entry taller, then a line of text, then a read.
+pub fn live_tick(state: &mut AppState, tick: u32) {
+    let Some(entry) = state.agents.get_mut(&AgentId::new(LIVE_AGENT)) else {
+        return;
+    };
+    let id = LIVE_TICK_FIRST_ID.saturating_add(tick);
+    let command = |id: u32, status, output: Option<&str>| {
+        ItemBody::ToolCall(bash(
+            "Run one case test",
+            &format!("cargo test -p calc-stream case_{id}"),
+            status,
+            output,
+        ))
+    };
+    match tick % 4 {
+        0 => entry
+            .transcript
+            .append(item(id, None, command(id, ToolCallStatus::Running, None))),
+        1 => {
+            let started = id.saturating_sub(1);
+            let output = live_test_output(started);
+            let done = command(started, ToolCallStatus::Done, Some(&output));
+            entry.transcript.change(item(started, None, done));
+        }
+        2 => entry
+            .transcript
+            .append(item(id, None, live_entry_of(LIVE_TEXT, id))),
+        _ => entry
+            .transcript
+            .append(item(id, None, live_entry_of(LIVE_READ, id))),
     }
 }
 
@@ -1095,6 +1312,50 @@ mod tests {
     use super::*;
     use crate::state::{WaitingKind, file_edits};
 
+    #[test]
+    fn the_live_agent_starts_a_command_finishes_it_then_adds_entries() {
+        let mut state = state(label());
+        let agent = AgentId::new(LIVE_AGENT);
+        let status = |state: &AppState| match state.agents[&agent]
+            .transcript
+            .get(ItemId::new(LIVE_TICK_FIRST_ID))
+            .map(|item| &item.body)
+        {
+            Some(ItemBody::ToolCall(call)) => Some((call.status, call.output.is_some())),
+            _ => None,
+        };
+        let count = |state: &AppState| state.agents[&agent].transcript.items().count();
+        let before = count(&state);
+
+        live_tick(&mut state, 0);
+        let started = status(&state);
+        live_tick(&mut state, 1);
+        let finished = status(&state);
+        live_tick(&mut state, 2);
+        live_tick(&mut state, 3);
+
+        assert_eq!(started, Some((ToolCallStatus::Running, false)));
+        assert_eq!(finished, Some((ToolCallStatus::Done, true)));
+        assert_eq!(count(&state), before + 3);
+    }
+
+    #[test]
+    fn the_live_agent_has_an_older_page_to_load() {
+        let state = state(label());
+        let request = Request::AgentHistory(cockpit_protocol::HistoryParams {
+            agent: AgentId::new(LIVE_AGENT),
+            before: Some(ItemId::new(LIVE_PAGE_FIRST_ID)),
+            limit: 100,
+        });
+
+        let Ok(ResponseBody::History(page)) = answer(&state, &request) else {
+            panic!("the live agent answers its history");
+        };
+
+        assert_eq!(page.items.len(), 40);
+        assert!(!page.has_older);
+    }
+
     /// `src/error.rs` before the sample's edit.
     const ERROR_BEFORE: &str = "/// A parse error, with where it happened.
 pub struct ParseError {
@@ -1127,6 +1388,7 @@ pub struct ParseError {
                 Some(WaitingKind::Question),
                 Some(WaitingKind::Approval),
                 Some(WaitingKind::Plan),
+                None,
                 None,
                 None,
             ]

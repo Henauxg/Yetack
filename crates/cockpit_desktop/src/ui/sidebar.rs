@@ -26,12 +26,13 @@ struct AgentRow {
     selected: bool,
     /// "3/5".
     tasks: Option<String>,
-    /// The text of the title field that replaces the title while the agent is renamed here.
-    edit: Option<String>,
+    /// The title the row's field starts from while the agent is renamed here, and whether the
+    /// field selects it.
+    edit: Option<(String, bool)>,
 }
 
 impl AgentRow {
-    fn new(entry: &AgentEntry, selected: bool, unread: bool, edit: Option<String>) -> Self {
+    fn new(entry: &AgentEntry, selected: bool, unread: bool, edit: Option<(String, bool)>) -> Self {
         let summary = &entry.summary;
         Self {
             id: summary.id,
@@ -106,7 +107,7 @@ pub fn Sidebar() -> Element {
                 .title_edit
                 .as_ref()
                 .filter(|edit| edit.agent == entry.id() && edit.place == TitlePlace::Sidebar)
-                .map(|edit| edit.title.clone());
+                .map(|edit| (edit.title.clone(), edit.select_all));
             AgentRow::new(
                 entry,
                 state.ui.selected == Some(entry.id()),
@@ -200,7 +201,7 @@ fn AgentRowView(row: AgentRow) -> Element {
     if row.unread {
         classes.push("unread");
     }
-    if let Some(title) = row.edit {
+    if let Some((title, select_all)) = row.edit {
         classes.push("editing");
         let class = classes.join(" ");
         // A div, not a button: a button would take the field's Space and Enter as clicks.
@@ -217,14 +218,14 @@ fn AgentRowView(row: AgentRow) -> Element {
                         // an older title back.
                         initial_value: "{title}",
                         maxlength: "{MAX_TITLE_CHARS}",
-                        onmounted: move |_| bridge::select_field(ROW_TITLE_FIELD_ID),
-                        oninput: move |event: FormEvent| cockpit.update(|state| actions::rename_text(state, event.value())),
+                        onmounted: move |_| bridge::focus_title_field(ROW_TITLE_FIELD_ID, select_all),
+                        oninput: move |event: FormEvent| cockpit.type_title(event.value()),
                         onkeydown: move |event: KeyboardEvent| {
                             if event.key() == Key::Enter {
-                                cockpit.change(actions::finish_rename);
+                                cockpit.change_with_drafts(actions::finish_rename);
                             }
                         },
-                        onblur: move |_| cockpit.change(|state| actions::finish_rename_at(state, TitlePlace::Sidebar)),
+                        onblur: move |_| cockpit.change_with_drafts(|state, drafts| actions::finish_rename_at(state, drafts, TitlePlace::Sidebar)),
                     }
                 }
                 span { class: "row-line row-second",
@@ -244,7 +245,10 @@ fn AgentRowView(row: AgentRow) -> Element {
                 span { class: "status-dot", aria_hidden: true }
                 span {
                     class: "row-title",
-                    ondoubleclick: move |_| cockpit.update(|state| actions::start_rename_in_sidebar(state, agent)),
+                    ondoubleclick: move |_| cockpit.change_with_drafts(|state, drafts| {
+                        actions::start_rename_in_sidebar(state, drafts, agent);
+                        Vec::new()
+                    }),
                     "{row.title}"
                 }
                 if row.pending > 0 {

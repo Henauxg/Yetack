@@ -423,7 +423,10 @@ fn FormModelMenu(model: Option<String>, effort: Option<Effort>) -> Element {
     let default_model = model.is_none();
     let default_effort = effort.is_none();
     rsx! {
-        div { class: "popover menu model-menu form-menu",
+        // A click in the menu stays in it: the dialog closes its menus on the clicks it gets.
+        div {
+            class: "popover menu model-menu form-menu",
+            onclick: move |event| event.stop_propagation(),
             span { class: "menu-title", "Model" }
             button {
                 class: if default_model { "menu-item chosen" } else { "menu-item" },
@@ -493,7 +496,9 @@ fn FormModeMenu(mode: Option<PermissionMode>) -> Element {
         modes.push(mode);
     }
     rsx! {
-        div { class: "popover menu mode-menu form-menu",
+        div {
+            class: "popover menu mode-menu form-menu",
+            onclick: move |event| event.stop_propagation(),
             button {
                 class: if mode.is_none() { "menu-item two-lines chosen" } else { "menu-item two-lines" },
                 aria_pressed: mode.is_none(),

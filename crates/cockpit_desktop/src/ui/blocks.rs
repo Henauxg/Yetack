@@ -2,6 +2,7 @@
 //! one line. While the file view is open they become badges on the chat's right edge, and a
 //! click opens one as a popover.
 
+use std::cmp::Reverse;
 use std::time::{Duration, SystemTime};
 
 use cockpit_protocol::{
@@ -16,6 +17,9 @@ use crate::state::{Block, actions};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::mcp::{McpPanel, mcp_summary};
 
+/// Finished background tasks the block lists until "Show more".
+const RECENT_FINISHED: usize = 3;
+
 #[component]
 pub fn FloatingBlocks() -> Element {
     let cockpit: Cockpit = use_context();
@@ -28,6 +32,11 @@ pub fn FloatingBlocks() -> Element {
     let badge_mode = state.ui.file_view(agent).is_some();
     let badge = state.ui.badge;
     let open_blocks = state.ui.open_blocks.clone();
+    let finished_rows = if state.ui.finished_tasks_unfolded.contains(&agent) {
+        FinishedRows::All
+    } else {
+        FinishedRows::Recent
+    };
     let alive = entry.summary.status != AgentStatus::Exited;
     let hidden = state.settings.hidden_mcp_servers.clone();
     let mcp_view = state.ui.mcp.clone();
@@ -90,7 +99,7 @@ pub fn FloatingBlocks() -> Element {
                     open: running_open,
                     badge_mode,
                     wide: false,
-                    RunningBody { agent, tasks: background }
+                    RunningBody { agent, tasks: background, finished_rows }
                 }
             }
             if show_mcp {
@@ -296,6 +305,71 @@ fn TasksBody(tasks: Vec<TaskListItem>) -> Element {
     }
 }
 
+/// Which finished background tasks the block lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FinishedRows {
+    /// The `RECENT_FINISHED` latest, failed ones first.
+    Recent,
+    All,
+}
+
+/// The background block's rows: every running task in the order they started, then the finished
+/// ones, the latest to end first.
+#[derive(Debug)]
+struct BackgroundRows {
+    tasks: Vec<BackgroundTask>,
+    /// The finished tasks left out.
+    hidden: usize,
+    /// More finished tasks exist than `RECENT_FINISHED`: the block offers to fold or unfold them.
+    foldable: bool,
+}
+
+impl BackgroundRows {
+    fn new(tasks: Vec<BackgroundTask>, finished_rows: FinishedRows) -> Self {
+        let (mut running, mut finished): (Vec<BackgroundTask>, Vec<BackgroundTask>) = tasks
+            .into_iter()
+            .partition(|task| task.status == BackgroundTaskStatus::Running);
+        running.sort_by_key(|task| task.started_at);
+        finished.sort_by_key(|task| Reverse(task.ended_at.unwrap_or(task.started_at)));
+        let foldable = finished.len() > RECENT_FINISHED;
+        let finished_count = finished.len();
+        if finished_rows == FinishedRows::Recent {
+            finished = recent_finished(finished);
+        }
+        let hidden = finished_count - finished.len();
+        running.extend(finished);
+        Self {
+            tasks: running,
+            hidden,
+            foldable,
+        }
+    }
+}
+
+/// The `RECENT_FINISHED` latest of `finished`, which comes newest first, in the same order. A
+/// failed task takes a place before the others, so tasks that end after it do not push it out.
+fn recent_finished(finished: Vec<BackgroundTask>) -> Vec<BackgroundTask> {
+    let failed = finished
+        .iter()
+        .filter(|task| task.status == BackgroundTaskStatus::Failed)
+        .count();
+    let mut failed_places = failed.min(RECENT_FINISHED);
+    let mut other_places = RECENT_FINISHED - failed_places;
+    let mut kept = Vec::with_capacity(RECENT_FINISHED);
+    for task in finished {
+        let places = if task.status == BackgroundTaskStatus::Failed {
+            &mut failed_places
+        } else {
+            &mut other_places
+        };
+        if *places > 0 {
+            *places -= 1;
+            kept.push(task);
+        }
+    }
+    kept
+}
+
 fn elapsed(task: &BackgroundTask, now: SystemTime) -> Option<Duration> {
     let end = match task.ended_at {
         Some(ended) => ended.to_system_time()?,
@@ -324,12 +398,22 @@ fn task_meta(task: &BackgroundTask, now: SystemTime) -> String {
 }
 
 #[component]
-fn RunningBody(agent: AgentId, tasks: Vec<BackgroundTask>) -> Element {
+fn RunningBody(agent: AgentId, tasks: Vec<BackgroundTask>, finished_rows: FinishedRows) -> Element {
     let cockpit: Cockpit = use_context();
     let Clock(now) = use_context::<Clock>();
     let now = now();
+    let BackgroundRows {
+        tasks,
+        hidden,
+        foldable,
+    } = BackgroundRows::new(tasks, finished_rows);
+    let fold_text = if hidden > 0 {
+        format!("Show {hidden} more finished")
+    } else {
+        "Show less".to_owned()
+    };
     rsx! {
-        div { class: "running-list",
+        div { class: "running-list scroll",
             for task in tasks {
                 {
                     let meta = task_meta(&task, now);
@@ -373,6 +457,14 @@ fn RunningBody(agent: AgentId, tasks: Vec<BackgroundTask>) -> Element {
                 }
             }
         }
+        if foldable {
+            button {
+                class: "running-fold",
+                aria_expanded: hidden == 0,
+                onclick: move |_| cockpit.update(|state| state.ui.toggle_finished_tasks(agent)),
+                "{fold_text}"
+            }
+        }
     }
 }
 
@@ -405,6 +497,87 @@ mod tests {
         assert_eq!(task_meta(&agent, now), "5 tool calls, 41 s");
         assert_eq!(task_meta(&command, now), "running, 41 s");
         assert_eq!(task_meta(&done, now), "Done in 12 s");
+    }
+
+    /// A task started and ended that many seconds after the epoch; `ended` is `None` while it runs.
+    fn timed(
+        id: &str,
+        status: BackgroundTaskStatus,
+        started: u64,
+        ended: Option<u64>,
+    ) -> BackgroundTask {
+        BackgroundTask {
+            id: BackgroundTaskId::new(id.to_owned()),
+            started_at: Timestamp::from_unix_millis(started * 1_000),
+            ended_at: ended.map(|ended| Timestamp::from_unix_millis(ended * 1_000)),
+            ..task(status, BackgroundTaskKind::Agent)
+        }
+    }
+
+    fn ids(rows: &BackgroundRows) -> Vec<&str> {
+        rows.tasks.iter().map(|task| task.id.as_str()).collect()
+    }
+
+    #[test]
+    fn running_tasks_come_first_as_they_started_then_the_latest_finished() {
+        use BackgroundTaskStatus::{Done, Running, Stopped};
+        // In the daemon's order: the order the tasks started.
+        let tasks = vec![
+            timed("early-done", Done, 10, Some(90)),
+            timed("first-running", Running, 20, None),
+            timed("late-done", Done, 30, Some(40)),
+            timed("stopped", Stopped, 50, Some(60)),
+            timed("second-running", Running, 70, None),
+        ];
+
+        let rows = BackgroundRows::new(tasks, FinishedRows::All);
+
+        assert_eq!(
+            ids(&rows),
+            [
+                "first-running",
+                "second-running",
+                "early-done",
+                "stopped",
+                "late-done"
+            ]
+        );
+        assert_eq!((rows.hidden, rows.foldable), (0, false));
+    }
+
+    #[test]
+    fn the_fold_keeps_the_three_latest_finished_and_a_failed_one_among_them() {
+        use BackgroundTaskStatus::{Done, Failed, Running};
+        let tasks = vec![
+            timed("running", Running, 0, None),
+            timed("failed", Failed, 1, Some(10)),
+            timed("done-11", Done, 2, Some(11)),
+            timed("done-12", Done, 3, Some(12)),
+            timed("done-13", Done, 4, Some(13)),
+            timed("done-14", Done, 5, Some(14)),
+        ];
+
+        let folded = BackgroundRows::new(tasks.clone(), FinishedRows::Recent);
+        assert_eq!(ids(&folded), ["running", "done-14", "done-13", "failed"]);
+        assert_eq!((folded.hidden, folded.foldable), (2, true));
+
+        let unfolded = BackgroundRows::new(tasks.clone(), FinishedRows::All);
+        assert_eq!(unfolded.tasks.len(), 6);
+        assert_eq!((unfolded.hidden, unfolded.foldable), (0, true));
+
+        // The head counts every task, the folded ones too.
+        let head = BackgroundHead::new(&tasks);
+        assert_eq!(
+            (head.summary.as_str(), head.badge.as_str()),
+            ("1 running", "1")
+        );
+        let ended: Vec<BackgroundTask> = tasks.into_iter().skip(1).collect();
+        let head = BackgroundHead::new(&ended);
+        assert_eq!(
+            (head.title, head.summary.as_str()),
+            ("Background", "4 done, 1 failed")
+        );
+        assert_eq!(head.badge, "5");
     }
 
     #[test]

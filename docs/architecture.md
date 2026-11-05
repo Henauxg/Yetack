@@ -186,6 +186,7 @@ The hub turns Claude Code messages into transcript items and status changes (mod
   Claude Code echoes control responses; one whose id the daemon did not send is ignored.
 - Effort has no control request: the daemon sends `/effort <level>` as a prompt.
 - Naming a session has none either: `agent.rename` sends `/rename <title>`, so Claude Code's resume list and `sessions.list` show the name. Claude Code then writes `system/session_title_changed`, which also renames the agent after a `/rename` typed in the composer.
+  As it starts, before it answers `initialize`, Claude Code restates the session's saved name the same way: the daemon leaves the agent's name, so a rename made while the agent was stopped stays.
 - After `--resume`, Claude Code's `total_cost_usd` counts from the cost it restores: the `totalCostUSD` of the session file's last `cost-state` line, which Claude Code writes when its process exits.
   The daemon reads that line in a task as the process starts, so the first turn's end shows that turn's cost alone. The agent's cost is Claude Code's total, the session's past included.
 
@@ -265,6 +266,7 @@ On start the daemon reads `agents.json`, finds the last `Seq` in the logs, and r
 - **Renaming in the sidebar**: F2, or a double-click on a row's title, turns the selected agent's row title into a field, as the header's pencil does for the header's title.
   Enter or leaving the field saves with `agent.rename`, and Esc cancels.
   One title field shows at a time: F2 in the header's field moves the edit to the row with the text typed so far, and F2 in the row's field moves it back.
+  The typed text lives in the drafts, as the composer's does, so typing a title renders neither the transcript nor the sidebar.
   An agent the filter hides has no row, so F2 opens the header's field.
 - **Shortcuts**: Ctrl+K, Ctrl+N, Esc, Y, N, 1 to 9, as in plan.md, Alt+Up and Alt+Down to move the selected agent in the sidebar, and F2 to rename it.
 

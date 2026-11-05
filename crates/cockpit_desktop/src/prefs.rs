@@ -190,6 +190,8 @@ impl Prefs {
             .write(true)
             .mode(FILE_MODE)
             .open(&temporary)?;
+        // The mode above applies only to a file the open creates.
+        out.set_permissions(Permissions::from_mode(FILE_MODE))?;
         out.write_all(&bytes)?;
         out.sync_all()?;
         std::fs::rename(&temporary, file)?;
@@ -364,6 +366,25 @@ mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         assert_eq!(names, [OsString::from(PREFS_FILE)]);
+    }
+
+    /// The mode given at creation does not reach a file that already exists, such as a temporary
+    /// file a crash left behind.
+    #[test]
+    fn a_leftover_temporary_file_does_not_widen_the_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join(PREFS_FILE);
+        let leftover = temporary_path(&file);
+        std::fs::write(&leftover, "{").unwrap();
+        std::fs::set_permissions(&leftover, Permissions::from_mode(0o644)).unwrap();
+
+        Prefs::default().save(&file).unwrap();
+
+        let mode = std::fs::metadata(&file).unwrap().mode() & 0o777;
+        assert_eq!(mode, FILE_MODE);
+        assert_eq!(Prefs::load(&file), Prefs::default());
     }
 
     #[test]

@@ -88,11 +88,72 @@ pub enum Step {
 
 pub fn select_agent(state: &mut AppState, agent: AgentId) {
     state.ui.selected = Some(agent);
+    state.ui.chat_new_from.clear();
     state.ui.unread.remove(&agent);
     state.ui.popover = None;
     state.ui.badge = None;
     state.ui.mcp.detail = None;
     state.ui.mcp.filter = ToolFilter::All;
+}
+
+/// The chat's script says the agent's chat reached its bottom, or left it. Leaving it marks the
+/// last entry seen, so that the entries after it count as new. Reaching it puts the "New" divider
+/// above the first new entry, if any came.
+pub fn chat_at_bottom(state: &mut AppState, agent: AgentId, at_bottom: bool) {
+    let Some(entry) = state.agents.get(&agent) else {
+        return;
+    };
+    if !at_bottom {
+        let last_seen = entry.transcript.last_id();
+        state.ui.chat_scrolled_up.entry(agent).or_insert(last_seen);
+        return;
+    }
+    let Some(last_seen) = state.ui.chat_scrolled_up.remove(&agent) else {
+        return;
+    };
+    if let Some(first) = new_entries(entry, last_seen).first {
+        state.ui.chat_new_from.insert(agent, first);
+    }
+}
+
+/// The entries that arrived while an agent's chat was scrolled up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NewEntries {
+    pub count: usize,
+    pub first: Option<ItemId>,
+}
+
+/// The entries after `last_seen` that a reader counts: messages, Claude's text, tool calls and
+/// cards, not notices, thinking or a turn's end.
+pub fn new_entries(entry: &AgentEntry, last_seen: Option<ItemId>) -> NewEntries {
+    let counted = entry.transcript.items_after(last_seen).filter(|item| {
+        item.parent.is_none()
+            && matches!(
+                item.body,
+                ItemBody::UserMessage(_)
+                    | ItemBody::AssistantText { .. }
+                    | ItemBody::ToolCall(_)
+                    | ItemBody::Subagent(_)
+                    | ItemBody::Approval(_)
+                    | ItemBody::Question(_)
+                    | ItemBody::Plan(_)
+            )
+    });
+    let mut news = NewEntries::default();
+    for item in counted {
+        news.first = news.first.or(Some(item.id));
+        news.count += 1;
+    }
+    news
+}
+
+/// Where the chat's "New" divider goes: above the first new entry while scrolled up, else where
+/// the chat's last trip down put it.
+pub fn new_divider(state: &AppState, agent: AgentId) -> Option<ItemId> {
+    let entry = state.agents.get(&agent)?;
+    let scrolled_up = state.ui.chat_scrolled_up.get(&agent);
+    let waiting = scrolled_up.and_then(|&last_seen| new_entries(entry, last_seen).first);
+    waiting.or_else(|| state.ui.chat_new_from.get(&agent).copied())
 }
 
 /// Whether the command palette opens or closes as you type.
@@ -431,7 +492,7 @@ pub fn palette_pick(
             let note = if export::is_complete(entry) {
                 "Copied the conversation to the clipboard as Markdown."
             } else {
-                "Copied the conversation to the clipboard as Markdown, without the older messages the window has not loaded. Scroll up to load them, then export again."
+                "Copied the conversation to the clipboard as Markdown, without the older messages the window has not loaded. Load them with \"Load older messages\" at the top of the conversation, then export again."
             };
             state.ui.inform(note.to_owned());
             Picked {
@@ -440,7 +501,7 @@ pub fn palette_pick(
             }
         }
         MenuAction::Rename => {
-            start_rename(state, agent);
+            start_rename(state, drafts, agent);
             Picked::default()
         }
         MenuAction::Model | MenuAction::Effort | MenuAction::Mode => Picked::default(),
@@ -450,35 +511,41 @@ pub fn palette_pick(
 }
 
 /// Turns the header's title into a field holding it.
-pub fn start_rename(state: &mut AppState, agent: AgentId) {
-    start_rename_at(state, agent, TitlePlace::Header);
+pub fn start_rename(state: &mut AppState, drafts: &mut Drafts, agent: AgentId) {
+    start_rename_at(state, drafts, agent, TitlePlace::Header);
 }
 
 /// Turns the title of the agent's sidebar row into a field holding it.
-pub fn start_rename_in_sidebar(state: &mut AppState, agent: AgentId) {
-    start_rename_at(state, agent, TitlePlace::Sidebar);
+pub fn start_rename_in_sidebar(state: &mut AppState, drafts: &mut Drafts, agent: AgentId) {
+    start_rename_at(state, drafts, agent, TitlePlace::Sidebar);
 }
 
-/// An edit of the same agent moves to `place` with the text typed so far.
-fn start_rename_at(state: &mut AppState, agent: AgentId, place: TitlePlace) {
+/// An edit of the same agent moves to `place`: the new field starts from the text typed so far,
+/// which stays in the drafts.
+fn start_rename_at(state: &mut AppState, drafts: &mut Drafts, agent: AgentId, place: TitlePlace) {
     let Some(entry) = state.agents.get(&agent) else {
         return;
     };
-    let title = match state.ui.title_edit.take() {
-        Some(edit) if edit.agent == agent => edit.title,
-        Some(_) | None => entry.summary.title.clone(),
-    };
+    let moving = state
+        .ui
+        .title_edit
+        .as_ref()
+        .is_some_and(|edit| edit.agent == agent);
+    if !moving {
+        drafts.title.clone_from(&entry.summary.title);
+    }
     state.ui.title_edit = Some(TitleEdit {
         agent,
-        title,
+        title: drafts.title.clone(),
         place,
+        select_all: !moving,
     });
     state.ui.popover = None;
 }
 
 /// F2: renames the selected agent in its sidebar row, or moves an open title field to the other
 /// place. An agent the filter hides has no row: its title field opens in the header.
-pub fn rename_key(state: &mut AppState) {
+pub fn rename_key(state: &mut AppState, drafts: &mut Drafts) {
     let (agent, wanted) = match &state.ui.title_edit {
         Some(edit) => match edit.place {
             TitlePlace::Header => (edit.agent, TitlePlace::Sidebar),
@@ -494,18 +561,23 @@ pub fn rename_key(state: &mut AppState) {
         .iter()
         .any(|entry| entry.id() == agent);
     let place = if has_row { wanted } else { TitlePlace::Header };
-    start_rename_at(state, agent, place);
+    start_rename_at(state, drafts, agent, place);
 }
 
-pub fn rename_text(state: &mut AppState, text: String) {
-    if let Some(edit) = &mut state.ui.title_edit {
-        edit.title = text;
+/// Only the drafts change, so that typing a title does not render the transcript again.
+pub fn rename_text(state: &AppState, drafts: &mut Drafts, text: String) {
+    if state.ui.title_edit.is_some() {
+        drafts.title = text;
     }
 }
 
 /// A title field left the focus: the edit ends when it is still at that field's place. A field
 /// that leaves the page as the edit moves to the other place must not end it.
-pub fn finish_rename_at(state: &mut AppState, place: TitlePlace) -> Vec<Outgoing> {
+pub fn finish_rename_at(
+    state: &mut AppState,
+    drafts: &mut Drafts,
+    place: TitlePlace,
+) -> Vec<Outgoing> {
     let here = state
         .ui
         .title_edit
@@ -514,16 +586,17 @@ pub fn finish_rename_at(state: &mut AppState, place: TitlePlace) -> Vec<Outgoing
     if !here {
         return Vec::new();
     }
-    finish_rename(state)
+    finish_rename(state, drafts)
 }
 
 /// Ends the title edit, and renames the agent when the title changed and is not empty. Esc ends
 /// it with the overlays instead, which renames nothing.
-pub fn finish_rename(state: &mut AppState) -> Vec<Outgoing> {
+pub fn finish_rename(state: &mut AppState, drafts: &mut Drafts) -> Vec<Outgoing> {
     let Some(edit) = state.ui.title_edit.take() else {
         return Vec::new();
     };
-    let title = edit.title.trim();
+    let typed = std::mem::take(&mut drafts.title);
+    let title = typed.trim();
     let unchanged = state
         .agents
         .get(&edit.agent)
@@ -731,6 +804,8 @@ pub fn send_prompt(
     let draft = std::mem::take(draft);
     drafts.draft_written();
     state.ui.popover = None;
+    state.ui.chat_new_from.remove(&agent);
+    state.ui.chat_jumps = state.ui.chat_jumps.wrapping_add(1);
     let prompt = Prompt {
         text: draft.text.trim().to_owned(),
         images: draft.images.clone(),
@@ -1594,6 +1669,139 @@ mod tests {
         assert_eq!(agent_commands(&state, agent()).len(), 1);
     }
 
+    /// Appends a notice with the id `id` to the agent's transcript.
+    fn append_notice(state: &mut AppState, id: u32) {
+        if let Some(entry) = state.agents.get_mut(&agent()) {
+            entry.transcript.append(TranscriptItem {
+                id: ItemId::new(id),
+                parent: None,
+                body: ItemBody::Notice {
+                    text: format!("notice {id}"),
+                },
+            });
+        }
+    }
+
+    /// Appends an item with the id `id` and the body `body` to the agent's transcript.
+    fn append(state: &mut AppState, id: u32, body: ItemBody) {
+        if let Some(entry) = state.agents.get_mut(&agent()) {
+            entry.transcript.append(TranscriptItem {
+                id: ItemId::new(id),
+                parent: None,
+                body,
+            });
+        }
+    }
+
+    fn text(markdown: &str) -> ItemBody {
+        ItemBody::AssistantText {
+            markdown: markdown.to_owned(),
+        }
+    }
+
+    #[test]
+    fn new_entries_count_messages_text_tool_calls_and_cards_only() {
+        let mut state = state(AgentStatus::Working);
+        append_notice(&mut state, 1);
+        chat_at_bottom(&mut state, agent(), false);
+        append_notice(&mut state, 2);
+        append(&mut state, 3, text("Reading the lexer."));
+        append(
+            &mut state,
+            4,
+            ItemBody::Thinking {
+                text: "Hmm.".to_owned(),
+            },
+        );
+        append(
+            &mut state,
+            5,
+            ItemBody::UserMessage(cockpit_protocol::UserMessage {
+                text: "Also the docs".to_owned(),
+                images: Vec::new(),
+                queued: true,
+            }),
+        );
+        append(&mut state, 6, ItemBody::Question(question(false)));
+
+        let last_seen = state.ui.chat_scrolled_up[&agent()];
+        let news = new_entries(&state.agents[&agent()], last_seen);
+
+        assert_eq!(
+            news,
+            NewEntries {
+                count: 3,
+                first: Some(ItemId::new(3)),
+            }
+        );
+    }
+
+    #[test]
+    fn the_new_divider_stays_above_the_first_new_entry_until_a_send_or_a_switch() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        append_notice(&mut state, 1);
+        let divider = |state: &AppState| new_divider(state, agent());
+        chat_at_bottom(&mut state, agent(), false);
+        let nothing_new = divider(&state);
+        append_notice(&mut state, 2);
+        append(&mut state, 3, text("Done."));
+        let scrolled_up = divider(&state);
+        chat_at_bottom(&mut state, agent(), true);
+        let back_down = divider(&state);
+
+        type_text(&mut state, &mut drafts, "Thanks");
+        send_prompt(&mut state, &mut drafts, agent(), None);
+        let after_send = divider(&state);
+        chat_at_bottom(&mut state, agent(), false);
+        append(&mut state, 4, text("More."));
+        chat_at_bottom(&mut state, agent(), true);
+        let again = divider(&state);
+        select_agent(&mut state, agent());
+
+        assert_eq!(nothing_new, None);
+        assert_eq!(scrolled_up, Some(ItemId::new(3)));
+        assert_eq!(back_down, Some(ItemId::new(3)));
+        assert_eq!(after_send, None);
+        assert_eq!(again, Some(ItemId::new(4)));
+        assert_eq!(divider(&state), None);
+    }
+
+    #[test]
+    fn a_send_takes_the_chat_to_its_bottom_and_an_empty_one_does_not() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        chat_at_bottom(&mut state, agent(), false);
+
+        send_prompt(&mut state, &mut drafts, agent(), None);
+        let after_empty = state.ui.chat_jumps;
+        type_text(&mut state, &mut drafts, "Thanks");
+        send_prompt(&mut state, &mut drafts, agent(), None);
+
+        assert_eq!(after_empty, 0);
+        assert_eq!(state.ui.chat_jumps, 1);
+    }
+
+    #[test]
+    fn leaving_the_bottom_of_the_chat_marks_the_last_entry_seen() {
+        let mut state = state(AgentStatus::Working);
+        let marked = |state: &AppState| state.ui.chat_scrolled_up.get(&agent()).copied();
+        chat_at_bottom(&mut state, agent(), false);
+        let empty = marked(&state);
+        chat_at_bottom(&mut state, agent(), true);
+        let back = marked(&state);
+
+        append_notice(&mut state, 5);
+        chat_at_bottom(&mut state, agent(), false);
+        append_notice(&mut state, 6);
+        chat_at_bottom(&mut state, agent(), false);
+
+        assert_eq!(empty, Some(None));
+        assert_eq!(back, None);
+        // A second report while still scrolled up keeps the first mark.
+        assert_eq!(marked(&state), Some(Some(ItemId::new(5))));
+    }
+
     #[test]
     fn typing_changes_the_rest_of_the_state_only_to_open_or_close_the_palette() {
         let mut state = state(AgentStatus::Idle);
@@ -1928,7 +2136,10 @@ mod tests {
             ))
         );
         assert_eq!(part.window, Some(WindowAction::Copy(copied)));
-        assert!(part_note.is_some_and(|(_, text)| text.contains("without the older messages")));
+        // Only the button loads older messages: the note names it.
+        assert!(part_note.is_some_and(|(_, text)| {
+            text.contains("without the older messages") && text.contains("\"Load older messages\"")
+        }));
     }
 
     #[test]
@@ -1939,9 +2150,10 @@ mod tests {
 
         let picked = palette_pick(&mut state, &mut drafts, agent(), None);
         let opened = state.ui.title_edit.clone();
-        rename_text(&mut state, "  Cart total ".to_owned());
-        let saved = finish_rename(&mut state);
-        let again = finish_rename(&mut state);
+        let typed_from = drafts.title.clone();
+        rename_text(&state, &mut drafts, "  Cart total ".to_owned());
+        let saved = finish_rename(&mut state, &mut drafts);
+        let again = finish_rename(&mut state, &mut drafts);
 
         assert_eq!(picked, Picked::default());
         assert_eq!(state.ui.popover, None);
@@ -1951,8 +2163,10 @@ mod tests {
                 agent: agent(),
                 title: "Agent 1".to_owned(),
                 place: TitlePlace::Header,
+                select_all: true,
             })
         );
+        assert_eq!(typed_from, "Agent 1");
         assert_eq!(
             sent(&saved),
             [&Request::AgentRename(RenameParams {
@@ -1967,18 +2181,20 @@ mod tests {
     #[test]
     fn f2_renames_in_the_sidebar_and_moves_the_field_with_its_text() {
         let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
         let place = |state: &AppState| state.ui.title_edit.as_ref().map(|edit| edit.place);
 
-        rename_key(&mut state);
+        rename_key(&mut state, &mut drafts);
         let opened = state.ui.title_edit.clone();
-        rename_text(&mut state, "Cart total".to_owned());
-        rename_key(&mut state);
+        rename_text(&state, &mut drafts, "Cart total".to_owned());
+        rename_key(&mut state, &mut drafts);
         let in_header = place(&state);
         // The row's field leaves the page as the edit moves: its blur does not end the edit.
-        let stale_blur = finish_rename_at(&mut state, TitlePlace::Sidebar);
-        rename_key(&mut state);
+        let stale_blur = finish_rename_at(&mut state, &mut drafts, TitlePlace::Sidebar);
+        rename_key(&mut state, &mut drafts);
         let back = state.ui.title_edit.clone();
-        let saved = finish_rename_at(&mut state, TitlePlace::Sidebar);
+        let typed = drafts.title.clone();
+        let saved = finish_rename_at(&mut state, &mut drafts, TitlePlace::Sidebar);
 
         assert_eq!(
             opened,
@@ -1986,14 +2202,17 @@ mod tests {
                 agent: agent(),
                 title: "Agent 1".to_owned(),
                 place: TitlePlace::Sidebar,
+                select_all: true,
             })
         );
         assert_eq!(in_header, Some(TitlePlace::Header));
         assert!(stale_blur.is_empty());
         assert_eq!(
-            back.map(|edit| (edit.title, edit.place)),
-            Some(("Cart total".to_owned(), TitlePlace::Sidebar))
+            back.map(|edit| (edit.title, edit.place, edit.select_all)),
+            Some(("Cart total".to_owned(), TitlePlace::Sidebar, false)),
+            "the field that opens starts from the typed text, the caret at its end"
         );
+        assert_eq!(typed, "Cart total");
         assert_eq!(
             sent(&saved),
             [&Request::AgentRename(RenameParams {
@@ -2009,7 +2228,7 @@ mod tests {
         let mut state = state(AgentStatus::Idle);
         set_status_filter(&mut state, StatusFilter::Working);
 
-        rename_key(&mut state);
+        rename_key(&mut state, &mut Drafts::default());
 
         assert_eq!(
             state.ui.title_edit.map(|edit| edit.place),
@@ -2020,18 +2239,20 @@ mod tests {
     #[test]
     fn an_empty_or_unchanged_title_or_escape_renames_nothing() {
         let mut state = state(AgentStatus::Idle);
-        let saved = |state: &mut AppState, text: &str| {
-            start_rename(state, agent());
-            rename_text(state, text.to_owned());
-            finish_rename(state)
+        let mut drafts = Drafts::default();
+        let mut saved = |state: &mut AppState, text: &str| {
+            start_rename(state, &mut drafts, agent());
+            rename_text(state, &mut drafts, text.to_owned());
+            finish_rename(state, &mut drafts)
         };
 
         let empty = saved(&mut state, "   ");
         let unchanged = saved(&mut state, "Agent 1");
-        start_rename(&mut state, agent());
-        rename_text(&mut state, "Typed, then Esc".to_owned());
+        let mut drafts = Drafts::default();
+        start_rename(&mut state, &mut drafts, agent());
+        rename_text(&state, &mut drafts, "Typed, then Esc".to_owned());
         let closed = state.ui.close_overlays();
-        let after_escape = finish_rename(&mut state);
+        let after_escape = finish_rename(&mut state, &mut drafts);
 
         assert!(empty.is_empty());
         assert!(unchanged.is_empty());
@@ -2548,11 +2769,13 @@ mod tests {
 
     #[test]
     fn the_new_agent_form_starts_from_the_last_agent_started() {
-        let mut older = summary(1, AgentStatus::Idle);
+        // The last agent started has the lower id, so that the order of the ids cannot pass for
+        // the order of the starts.
+        let mut older = summary(2, AgentStatus::Idle);
         older.model = Some("claude-haiku-4-5".to_owned());
         older.effort = Some(Effort::Low);
         older.mode = PermissionMode::Plan;
-        let mut last = summary(2, AgentStatus::Exited);
+        let mut last = summary(1, AgentStatus::Exited);
         last.model = Some("claude-opus-5-5[1m]".to_owned());
         last.effort = Some(Effort::Xhigh);
         last.mode = PermissionMode::AcceptEdits;

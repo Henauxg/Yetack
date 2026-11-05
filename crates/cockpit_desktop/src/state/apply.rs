@@ -53,25 +53,36 @@ pub fn apply_update(
             Vec::new()
         }
         SessionUpdate::Event(record) => {
-            if let Event::AgentUpdated(summary) = &record.event {
-                note_turn_start(state, summary, now);
-            }
+            note_turn_start(state, &record.event, now);
             apply(state, drafts, record).into_iter().collect()
         }
     }
 }
 
 /// Keeps when the agent's turn started, for the working line's elapsed time. A turn runs while
-/// the agent works or waits for an answer.
-fn note_turn_start(state: &mut AppState, summary: &AgentSummary, now: Instant) {
-    let Some(entry) = state.agents.get_mut(&summary.id) else {
-        return;
-    };
+/// the agent works or waits for an answer. The daemon sends a queued prompt as a turn ends, so
+/// the agent works on without a pause: a turn's end starts the next one, until the agent idles.
+fn note_turn_start(state: &mut AppState, event: &Event, now: Instant) {
     let in_turn = |status| matches!(status, AgentStatus::Working | AgentStatus::NeedsYou);
-    match (in_turn(entry.summary.status), in_turn(summary.status)) {
-        (false, true) => entry.turn_started = Some(now),
-        (_, false) => entry.turn_started = None,
-        (true, true) => {}
+    match event {
+        Event::AgentUpdated(summary) => {
+            let Some(entry) = state.agents.get_mut(&summary.id) else {
+                return;
+            };
+            match (in_turn(entry.summary.status), in_turn(summary.status)) {
+                (false, true) => entry.turn_started = Some(now),
+                (_, false) => entry.turn_started = None,
+                (true, true) => {}
+            }
+        }
+        Event::TranscriptAppended { agent, item } if matches!(item.body, ItemBody::TurnEnd(_)) => {
+            if let Some(entry) = state.agents.get_mut(agent)
+                && in_turn(entry.summary.status)
+            {
+                entry.turn_started = Some(now);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -97,8 +108,16 @@ pub fn apply_catchup(state: &mut AppState, drafts: &mut Drafts, catchup: Catchup
     state.ui.unread.retain(|agent| agents.contains_key(agent));
     state
         .ui
+        .title_edit
+        .take_if(|edit| !agents.contains_key(&edit.agent));
+    state
+        .ui
         .file_views
         .retain(|agent, _| agents.contains_key(agent));
+    state
+        .ui
+        .finished_tasks_unfolded
+        .retain(|agent| agents.contains_key(agent));
     drafts
         .composer
         .retain(|agent, _| agents.contains_key(agent));
@@ -119,7 +138,9 @@ pub fn apply(state: &mut AppState, drafts: &mut Drafts, record: EventRecord) -> 
             state.agents.remove(&agent);
             state.ui.unread.remove(&agent);
             state.ui.file_views.remove(&agent);
+            state.ui.finished_tasks_unfolded.remove(&agent);
             drafts.composer.remove(&agent);
+            state.ui.title_edit.take_if(|edit| edit.agent == agent);
             if state.ui.selected == Some(agent) {
                 state.ui.selected = None;
                 state.fix_selection();
@@ -235,12 +256,13 @@ mod tests {
 
     use cockpit_client::{ConnectError, SessionError};
     use cockpit_protocol::{
-        AgentDetails, ItemId, PendingId, PlanUsage, Question, Seq, Settings, TaskProgress,
-        TranscriptItem,
+        AgentDetails, CostUsd, ItemId, PendingId, PlanUsage, Question, Seq, Settings, TaskProgress,
+        TokenUsage, TranscriptItem, TurnEnd,
     };
 
     use super::*;
     use crate::state::app_state::tests::{placed, state_with, summary};
+    use crate::state::ui_state::{TitleEdit, TitlePlace};
 
     fn record(event: Event) -> EventRecord {
         EventRecord {
@@ -458,6 +480,57 @@ mod tests {
         assert!(!state.agents.contains_key(&AgentId::new(3)));
     }
 
+    /// A title edit left open for a removed agent would take the first Esc meant to stop the next
+    /// agent.
+    #[test]
+    fn removing_the_agent_being_renamed_ends_the_rename() {
+        let renamed = |agent: u32| TitleEdit {
+            agent: AgentId::new(agent),
+            title: format!("Agent {agent}"),
+            place: TitlePlace::Header,
+            select_all: true,
+        };
+        let mut removed = state_with(vec![
+            summary(1, AgentStatus::Idle),
+            summary(2, AgentStatus::Working),
+        ]);
+        removed.ui.selected = Some(AgentId::new(1));
+        removed.ui.title_edit = Some(renamed(1));
+        let mut dropped = removed.clone();
+        let mut other = removed.clone();
+        other.ui.title_edit = Some(renamed(2));
+
+        apply(
+            &mut removed,
+            &mut Drafts::default(),
+            record(Event::AgentRemoved {
+                agent: AgentId::new(1),
+            }),
+        );
+        apply_catchup(
+            &mut dropped,
+            &mut Drafts::default(),
+            Catchup::Snapshot(Snapshot {
+                agents: vec![summary(2, AgentStatus::Working)],
+                plan_usage: PlanUsage::default(),
+                settings: Settings::default(),
+                last_seq: Some(Seq::new(40)),
+            }),
+        );
+        apply(
+            &mut other,
+            &mut Drafts::default(),
+            record(Event::AgentRemoved {
+                agent: AgentId::new(1),
+            }),
+        );
+
+        assert_eq!(removed.ui.title_edit, None);
+        assert_eq!(dropped.ui.title_edit, None);
+        assert_eq!(other.ui.title_edit, Some(renamed(2)));
+        assert!(!removed.ui.close_overlays(), "nothing is left open for Esc");
+    }
+
     #[test]
     fn the_first_agent_added_is_selected() {
         let mut state = state_with(Vec::new());
@@ -528,6 +601,60 @@ mod tests {
         assert_eq!(change(AgentStatus::Working, later), Some(start));
         assert_eq!(change(AgentStatus::Idle, later), None);
         assert_eq!(change(AgentStatus::Working, later), Some(later));
+    }
+
+    /// The daemon sends a queued prompt as the turn before it ends: the agent goes on working,
+    /// and the working line counts from the end of the last turn.
+    #[test]
+    fn a_queued_prompt_starts_its_turn_when_the_last_one_ends() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        let agent = AgentId::new(1);
+        let start = Instant::now();
+        let ended = start + Duration::from_secs(360);
+        let mut update = |event, now| {
+            apply_update(
+                &mut state,
+                &mut Drafts::default(),
+                SessionUpdate::Event(record(event)),
+                now,
+            );
+            state.agents[&agent].turn_started
+        };
+        let turn_end = || TranscriptItem {
+            id: ItemId::new(9),
+            parent: None,
+            body: ItemBody::TurnEnd(TurnEnd {
+                duration: Duration::from_secs(360),
+                cost: CostUsd::new(0.4),
+                usage: TokenUsage::default(),
+                error: None,
+                stopped: false,
+            }),
+        };
+
+        update(Event::AgentUpdated(summary(1, AgentStatus::Working)), start);
+        let after_the_end = update(
+            Event::TranscriptAppended {
+                agent,
+                item: turn_end(),
+            },
+            ended,
+        );
+        let next_turn = update(
+            Event::AgentUpdated(summary(1, AgentStatus::Working)),
+            ended + Duration::from_secs(1),
+        );
+        let idle = update(Event::AgentUpdated(summary(1, AgentStatus::Idle)), ended);
+        let ended_while_idle = update(
+            Event::TranscriptAppended {
+                agent,
+                item: turn_end(),
+            },
+            ended,
+        );
+
+        assert_eq!((after_the_end, next_turn), (Some(ended), Some(ended)));
+        assert_eq!((idle, ended_while_idle), (None, None));
     }
 
     #[test]

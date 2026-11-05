@@ -3,6 +3,8 @@
 mod app;
 mod blocks;
 mod cards;
+mod changes_list;
+mod chat_scroll;
 mod code;
 mod composer;
 mod dialogs;
