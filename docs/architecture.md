@@ -175,7 +175,7 @@ The hub turns Claude Code messages into transcript items and status changes (mod
 
 ### Store
 
-Everything lives in `$XDG_STATE_HOME/agents-cockpit/` (default `~/.local/state/agents-cockpit/`), mode 700, with `umask 077`:
+Everything lives in `$XDG_STATE_HOME/agents-cockpit/` (default `~/.local/state/agents-cockpit/`), mode 700:
 
 - `agents-cockpit.sock`: the socket, mode 600;
 - `serve.lock`: held while a daemon runs, so a second daemon refuses to start and a leftover socket is safe to delete;
@@ -183,6 +183,10 @@ Everything lives in `$XDG_STATE_HOME/agents-cockpit/` (default `~/.local/state/a
 - `settings.json`: the hidden MCP servers and other daemon-side settings;
 - `events/<agent-id>.jsonl`: the agent's cockpit events, each with its `Seq`, appended;
 - `raw/<agent-id>.jsonl`: every line exchanged with `claude`, for debugging.
+
+The daemon leaves the umask alone, since `claude` and the agents' commands inherit it.
+It creates each folder with mode 700 and each file with mode 600.
+The socket gets mode 600 right after the bind; until then, the 700 folder keeps other users away from it.
 
 On start the daemon reads `agents.json`, finds the last `Seq` in the logs, and resumes each agent that was running with `--resume`.
 

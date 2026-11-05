@@ -37,10 +37,16 @@ struct Setup {
     temp: TempDir,
     daemon: Option<Child>,
     starts: u32,
+    /// The umask the daemon starts with, as `umask` takes it; `None` keeps the test's.
+    umask: Option<&'static str>,
 }
 
 impl Setup {
     fn new() -> Self {
+        Self::new_with_umask(None)
+    }
+
+    fn new_with_umask(umask: Option<&'static str>) -> Self {
         let temp = tempfile::tempdir().unwrap();
         for folder in ["state", "work", "claude"] {
             std::fs::create_dir(temp.path().join(folder)).unwrap();
@@ -49,6 +55,7 @@ impl Setup {
             temp,
             daemon: None,
             starts: 0,
+            umask,
         };
         setup.start();
         setup
@@ -74,7 +81,19 @@ impl Setup {
         self.starts += 1;
         let log =
             File::create(self.temp.path().join(format!("daemon-{}.log", self.starts))).unwrap();
-        let mut command = Command::new(env!("CARGO_BIN_EXE_test-serve"));
+        let serve = env!("CARGO_BIN_EXE_test-serve");
+        let mut command = match self.umask {
+            // `exec` keeps the daemon's pid, which `stop` signals.
+            Some(umask) => {
+                let mut shell = Command::new("/bin/sh");
+                shell
+                    .arg("-c")
+                    .arg(format!("umask {umask} && exec \"$0\" \"$@\""))
+                    .arg(serve);
+                shell
+            }
+            None => Command::new(serve),
+        };
         command
             .arg(self.state())
             .env(
@@ -701,6 +720,55 @@ async fn a_second_daemon_is_refused_by_the_lock() {
     assert!(log.contains("another daemon already runs"), "{log}");
     // The first daemon still serves.
     setup.connect().await;
+}
+
+/// `claude`, and so the commands the agents run, keep the user's umask, here the most open one.
+/// The state folder stays private through the modes the daemon gives its files.
+#[tokio::test]
+async fn claude_keeps_the_users_umask_and_the_state_stays_private() {
+    use std::os::unix::fs::MetadataExt;
+
+    let setup = Setup::new_with_umask(Some("000"));
+    let mut client = setup.connect().await;
+    let agent = client.start(&setup.work(), "hello").await;
+    client.says(agent, "Echo: hello").await;
+    let idle = client.idle(agent).await;
+
+    // The fake `claude` names its session after its pid.
+    let session = idle.session.unwrap();
+    let pid = session.as_str().strip_prefix("fake-session-").unwrap();
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+    let umask = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Umask:"))
+        .map(str::trim);
+    assert_eq!(umask, Some("0000"));
+    let mut folders = vec![setup.state()];
+    let mut files: Vec<PathBuf> = Vec::new();
+    while let Some(folder) = folders.pop() {
+        let mode = std::fs::metadata(&folder).unwrap().mode() & 0o777;
+        assert_eq!(mode, 0o700, "{}", folder.display());
+        for entry in std::fs::read_dir(&folder).unwrap() {
+            let path = entry.unwrap().path();
+            let metadata = std::fs::symlink_metadata(&path).unwrap();
+            if metadata.is_dir() {
+                folders.push(path);
+                continue;
+            }
+            assert_eq!(metadata.mode() & 0o777, 0o600, "{}", path.display());
+            files.push(path.strip_prefix(setup.state()).unwrap().to_owned());
+        }
+    }
+    files.sort();
+    let expected = [
+        "agents-cockpit.sock",
+        "agents.json",
+        "events/1.jsonl",
+        "events/daemon.jsonl",
+        "raw/1.jsonl",
+        "serve.lock",
+    ];
+    assert_eq!(files, expected.map(PathBuf::from));
 }
 
 #[tokio::test]

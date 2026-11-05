@@ -17,6 +17,9 @@ const ACCEPT_RETRY: Duration = Duration::from_millis(100);
 
 /// Binds the socket, replacing a file a crashed daemon left. The caller holds the lock, so no
 /// other daemon uses that file.
+///
+/// The socket starts with the mode the umask leaves, until it gets [`SOCKET_MODE`]: `path` must
+/// be in a folder only the owner may enter.
 pub(crate) fn bind(path: &Path) -> io::Result<UnixListener> {
     use std::os::unix::fs::PermissionsExt;
 

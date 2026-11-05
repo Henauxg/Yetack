@@ -3,7 +3,6 @@
 use std::io;
 use std::path::PathBuf;
 
-use rustix::fs::Mode;
 use tokio::sync::mpsc;
 
 use crate::daemon_config::DaemonConfig;
@@ -12,8 +11,6 @@ use crate::server::DaemonIdentity;
 use crate::store::{StateDir, StoreError};
 use crate::{hub, server};
 
-/// New files and folders are for the owner only.
-const UMASK: u32 = 0o077;
 /// Inputs waiting for the hub. A full queue makes the process and connection tasks wait.
 const HUB_INPUTS: usize = 1024;
 
@@ -36,11 +33,13 @@ pub enum ServeError {
 /// It takes the state folder's lock first, so a second daemon fails with
 /// `StoreError::AlreadyRunning` without touching the first one's socket. On shutdown the agents
 /// stay marked as running, so the next daemon resumes them.
+///
+/// It leaves the umask alone: `claude` and the commands the agents run inherit the user's. Each
+/// file and folder of the state folder is private by the mode it is created with.
 pub async fn serve(
     config: DaemonConfig,
     shutdown: impl Future<Output = ()>,
 ) -> Result<(), ServeError> {
-    rustix::process::umask(Mode::from_raw_mode(UMASK));
     let state = StateDir::create(&config.state_dir)?;
     let _lock = state.lock()?;
     let restored = hub::restore(&state)?;
