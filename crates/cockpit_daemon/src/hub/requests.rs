@@ -1,17 +1,20 @@
 //! Which method does what. The requests that read files or run commands do it in a task of their
 //! own, so the hub never waits on them.
 
+use std::path::PathBuf;
+
 use claude_protocol::{ControlRequest, TaskId};
 use cockpit_protocol::{
     AgentId, ErrorBody, ErrorCode, Event, HistoryParams, McpRemoveParams, ReadFileParams, Request,
     ResponseBody, SessionResumeParams, Settings,
 };
 
+use crate::daemon_config::HOME_ENV;
 use crate::hub::input::{ControlPurpose, HubInput, Reply};
 use crate::hub::state::{Agent, Hub};
 use crate::hub::{agents, errors, history};
 use crate::store::{DaemonSettings, LogName};
-use crate::transcript::words;
+use crate::transcript::{touched_files, words};
 use crate::{mcp_remove, read_file, sessions};
 
 impl Hub {
@@ -103,13 +106,20 @@ impl Hub {
     }
 
     fn read_file(&self, params: ReadFileParams, reply: Reply) {
-        let folder = match self.agent(params.agent) {
-            Ok(agent) => agent.record.folder.clone(),
+        let (folder, touched) = match self.agent(params.agent) {
+            Ok(agent) => (
+                agent.record.folder.clone(),
+                touched_files(agent.view.items(), &agent.view.details().changed_files),
+            ),
             Err(error) => return agents::respond(reply, Err(error)),
         };
+        let home = std::env::var_os(HOME_ENV).map(PathBuf::from);
         tokio::spawn(async move {
-            let read =
-                tokio::task::spawn_blocking(move || read_file::read(&folder, &params.path)).await;
+            let read = tokio::task::spawn_blocking(move || {
+                let access = read_file::Access::new(&folder, &touched, home.as_deref())?;
+                read_file::read(&access, &params.path)
+            })
+            .await;
             let result = match read {
                 Ok(Ok(text)) => Ok(ResponseBody::File { text }),
                 Ok(Err(error)) => Err(error.to_error_body()),
