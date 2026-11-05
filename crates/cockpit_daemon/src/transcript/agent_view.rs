@@ -6,11 +6,11 @@ use std::time::Duration;
 
 use claude_protocol::{
     AssistantMessage, CanUseTool, ContentBlock, ContextUsage as ClaudeContextUsage,
-    ControlRequestId, ImageBlock, ImageSource, IncomingControlRequest, IncomingRequest,
-    InitializeResponse, InputLine, InterruptNotice, McpStatus, OpenWord, OutputLine, RateLimitInfo,
-    ResultMessage, SessionState, SystemEvent, SystemInit, TaskNotification, TaskStarted, TaskUsage,
-    TerminalReason, ToolInput, ToolName, ToolResultBlock, ToolUseBlock, ToolUseId, TypedCommand,
-    Usage, UserMessage as ClaudeUserMessage,
+    ControlRequestId, ConversationReset, ImageBlock, ImageSource, IncomingControlRequest,
+    IncomingRequest, InitializeResponse, InputLine, InterruptNotice, McpStatus, OpenWord,
+    OutputLine, RateLimitInfo, ResetTrigger, ResultMessage, SessionState, SystemEvent, SystemInit,
+    TaskNotification, TaskStarted, TaskUsage, TerminalReason, ToolInput, ToolName, ToolResultBlock,
+    ToolUseBlock, ToolUseId, TypedCommand, Usage, UserMessage as ClaudeUserMessage,
 };
 use cockpit_protocol::{
     AgentDetails, AgentId, AgentStatus, AgentSummary, Answer, AnswerState, Approval,
@@ -82,6 +82,9 @@ const CONTENT_KEY: &str = "content";
 /// or an API error.
 const SYNTHETIC_MODEL: &str = "<synthetic>";
 const COMPACTED_NOTICE: &str = "Conversation compacted";
+const CLEARED_NOTICE: &str = "Conversation cleared";
+/// A new conversation for a reason this daemon does not know.
+const RESET_NOTICE: &str = "New conversation";
 const QUEUED_CANCELLED_NOTICE: &str = "Queued message cancelled";
 /// Where a session file shows that the user stopped a turn: it holds no turn end to say it.
 const PAST_STOP_NOTICE: &str = "Stopped";
@@ -367,6 +370,7 @@ impl AgentView {
             OutputLine::ControlCancelRequest(cancel) => {
                 self.cancel_pending(&PendingId::new(cancel.request_id.as_str().to_owned()));
             }
+            OutputLine::ConversationReset(reset) => self.reset_conversation(&reset),
             OutputLine::StreamEvent(_)
             | OutputLine::ControlResponse(_)
             | OutputLine::Unknown(_) => {}
@@ -615,6 +619,24 @@ impl AgentView {
             | SystemEvent::HookProgress(_)
             | SystemEvent::HookResponse(_) => {}
         }
+    }
+
+    /// Claude Code starts a new conversation, as `/clear` does. Its total cost counts from 0
+    /// again, so what the process spent so far joins the agent's earlier cost.
+    fn reset_conversation(&mut self, reset: &ConversationReset) {
+        self.cost_before_process += self.process_cost;
+        self.process_cost = 0.0;
+        self.awaits_restored_cost = false;
+        let text = match reset.trigger {
+            Some(OpenWord::Known(ResetTrigger::Clear)) => CLEARED_NOTICE,
+            Some(OpenWord::Unknown(_)) | None => RESET_NOTICE,
+        };
+        self.push_item(
+            None,
+            ItemBody::Notice {
+                text: text.to_owned(),
+            },
+        );
     }
 
     /// `system/init` starts each turn and says what the session uses.
@@ -2165,6 +2187,55 @@ mod tests {
             .collect();
 
         assert_eq!(words, ["compact_boundary", "local_command"]);
+    }
+
+    #[test]
+    fn a_cleared_conversation_shows_a_notice_and_keeps_the_cost_spent() {
+        let mut view = view();
+        apply(&mut view, init());
+        apply(&mut view, result(0.5));
+        view.add_prompt(&prompt("/clear"), PromptDelivery::Now);
+
+        apply(
+            &mut view,
+            json!({"type": "conversation_reset", "trigger": "clear", "session_id": "session-1",
+                   "new_conversation_id": "session-2"}),
+        );
+        let mut new_session = init();
+        new_session["session_id"] = json!("session-2");
+        apply(&mut view, new_session);
+        let mut empty = result(0.0);
+        empty["num_turns"] = json!(0);
+        empty["usage"] = json!({});
+        apply(&mut view, empty);
+        let cleared = view.summary().cost;
+        apply(&mut view, result(0.25));
+
+        let kinds: Vec<String> = bodies(&view)
+            .into_iter()
+            .map(|body| match body {
+                ItemBody::TurnEnd(end) => format!("end {}", end.cost.get()),
+                ItemBody::UserMessage(message) => format!("user {}", message.text),
+                ItemBody::Notice { text } => format!("notice {text}"),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "end 0.5",
+                "user /clear",
+                "notice Conversation cleared",
+                "end 0.25"
+            ]
+        );
+        assert_eq!(cleared, CostUsd::new(0.5));
+        assert_eq!(view.summary().cost, CostUsd::new(0.75));
+        assert_eq!(view.summary().turns, 2);
+        assert_eq!(
+            view.summary().session.as_ref().map(ClaudeSessionId::as_str),
+            Some("session-2")
+        );
     }
 
     #[test]

@@ -13,7 +13,7 @@ use claude_protocol::{
     IncomingRequest, InitializeResponse, McpScope, McpServerState, McpStatus, McpTransport,
     MessageOrigin, OpenWord, OriginKind, OutputLine, ParseError, PermissionBehavior,
     PermissionDestination, PermissionMode, PermissionUpdate, RateLimitStatus, RateLimitType,
-    ResultMessage, ResultSubtype, SessionId, SessionState, SystemEvent, TaskId,
+    ResetTrigger, ResultMessage, ResultSubtype, SessionId, SessionState, SystemEvent, TaskId,
     TaskNotificationText, TaskStatus, TerminalReason, ToolUseId, Usage, UserMessage,
 };
 use serde_json::{Value, json};
@@ -307,6 +307,20 @@ fn user_replayed_prompt() {
         panic!("string content is not one text block");
     };
     assert_eq!(text.text, "Add a changelog entry for the parser");
+}
+
+#[test]
+fn conversation_reset() {
+    let OutputLine::ConversationReset(reset) = fixture("conversation_reset.json") else {
+        panic!("not a conversation_reset line");
+    };
+    assert_eq!(reset.trigger, Some(OpenWord::Known(ResetTrigger::Clear)));
+    assert_eq!(
+        reset.session_id,
+        Some(SessionId::new(
+            "00000000-0000-4000-8000-000000000001".to_owned()
+        ))
+    );
 }
 
 #[test]

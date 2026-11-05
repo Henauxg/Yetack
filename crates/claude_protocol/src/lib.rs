@@ -49,6 +49,7 @@ mod command_text;
 mod content_block;
 mod context_usage;
 mod control;
+mod conversation_reset;
 mod ids;
 mod initialize_response;
 mod input_line;
@@ -76,6 +77,7 @@ pub use control::{
     CanUseTool, ControlCancelRequest, ControlError, ControlResponse, ControlSuccess,
     IncomingControlRequest, IncomingRequest,
 };
+pub use conversation_reset::{ConversationReset, ResetTrigger};
 pub use ids::{ControlRequestId, HookId, MessageUuid, SessionId, TaskId, ToolUseId};
 pub use initialize_response::{InitializeResponse, SlashCommand};
 pub use input_line::{
