@@ -12,7 +12,7 @@ mod shortcuts;
 mod transcript;
 mod ui_state;
 
-pub use app_state::{AgentEntry, AppState, ConnectionState, Loadable};
+pub use app_state::{AgentEntry, AppState, ConnectionState, FileRead, Loadable};
 pub use apply::{Alert, AlertKind, apply_update};
 pub use drafts::Drafts;
 pub use requests::{Outgoing, apply_response, needed_requests};

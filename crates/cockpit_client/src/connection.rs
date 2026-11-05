@@ -311,6 +311,8 @@ async fn write_frames<W: AsyncWrite + Unpin>(
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use cockpit_protocol::{AgentId, AgentParams, ErrorBody, ErrorCode, Event, ResponseResult};
 
     use super::*;
@@ -332,6 +334,7 @@ mod tests {
     /// A body that names the request it answers.
     fn echo(request: &Request) -> ResponseBody {
         ResponseBody::File {
+            path: PathBuf::new(),
             text: request.method().to_string(),
         }
     }

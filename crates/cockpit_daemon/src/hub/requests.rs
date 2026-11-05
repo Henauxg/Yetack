@@ -1,17 +1,21 @@
 //! Which method does what. The requests that read files or run commands do it in a task of their
 //! own, so the hub never waits on them.
 
+use std::path::PathBuf;
+
 use claude_protocol::{ControlRequest, TaskId};
 use cockpit_protocol::{
     AgentId, ErrorBody, ErrorCode, Event, HistoryParams, McpRemoveParams, ReadFileParams, Request,
     ResponseBody, SessionResumeParams, Settings,
 };
 
+use crate::daemon_config::HOME_ENV;
 use crate::hub::input::{ControlPurpose, HubInput, Reply};
 use crate::hub::state::{Agent, Hub};
 use crate::hub::{agents, errors, history};
+use crate::read_file::Found;
 use crate::store::{DaemonSettings, LogName};
-use crate::transcript::words;
+use crate::transcript::{touched_files, words};
 use crate::{mcp_remove, read_file, sessions};
 
 impl Hub {
@@ -104,17 +108,20 @@ impl Hub {
     }
 
     fn read_file(&self, params: ReadFileParams, reply: Reply) {
-        let folder = match self.agent(params.agent) {
-            Ok(agent) => agent.record.folder.clone(),
+        let (folder, touched) = match self.agent(params.agent) {
+            Ok(agent) => (
+                agent.record.folder.clone(),
+                touched_files(agent.view.items(), &agent.view.details().changed_files),
+            ),
             Err(error) => return agents::respond(reply, Err(error)),
         };
+        let home = std::env::var_os(HOME_ENV).map(PathBuf::from);
         tokio::spawn(async move {
-            let read =
-                tokio::task::spawn_blocking(move || read_file::read(&folder, &params.path)).await;
-            let result = match read {
-                Ok(Ok(text)) => Ok(ResponseBody::File { text }),
-                Ok(Err(error)) => Err(error.to_error_body()),
-                Err(error) => Err(errors::internal(error.to_string())),
+            let found = read_file::find_and_read(folder, touched, home, params.path).await;
+            let result = match found {
+                Ok(Found::File { path, text }) => Ok(ResponseBody::File { path, text }),
+                Ok(Found::Several(matches)) => Ok(ResponseBody::FileMatches { matches }),
+                Err(error) => Err(error.to_error_body()),
             };
             agents::respond(reply, result);
         });
