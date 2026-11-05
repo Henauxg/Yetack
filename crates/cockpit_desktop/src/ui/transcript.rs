@@ -11,23 +11,85 @@ use cockpit_protocol::{
     TurnEnd, UserMessage,
 };
 use dioxus::prelude::*;
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::connection::{Clock, Cockpit};
 use crate::render::{Diff, Language, diff_lines};
 use crate::state::{HistoryState, actions, file_edits};
 use crate::ui::cards::{ApprovalCard, PlanCard, QuestionCard};
+use crate::ui::chat_scroll::{self, CHAT_SCROLL_ID, ENTRY_CLASS, JumpToLatest, NewDivider};
 use crate::ui::code::{LineNumbers, diff_row};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::loading::TranscriptSkeleton;
 use crate::ui::markdown::MarkdownView;
 use crate::{bridge, format};
 
-/// Command output longer than this folds behind "Show more".
-const OUTPUT_PREVIEW_LINES: usize = 5;
+/// Screen lines a folded IN or OUT row keeps, wrapped lines counted.
+const IN_FOLD_LINES: u8 = 3;
+const OUT_FOLD_LINES: u8 = 5;
 
-/// A command longer than this folds too: a heredoc can make it long.
-const COMMAND_PREVIEW_LINES: usize = 8;
+/// The classes the fold script looks for: an IN or OUT row, the box that cuts its text, and the
+/// label it writes on the row's button.
+const IO_ROW_CLASS: &str = "io-row";
+const IO_CLIP_CLASS: &str = "io-clip";
+const FOLD_LABEL_CLASS: &str = "fold-more";
+
+/// Folds IN and OUT rows by their height on screen, which only the page knows: wrapping depends
+/// on the width. It marks `data-tall` each row whose text is taller than the `--fold-lines` the
+/// row sets, and writes on its button how many screen lines the fold hides. A ResizeObserver
+/// measures each row's text when it appears and when its width or its text changes, so a resize
+/// of the window renders nothing. Message fields are serde's names for `FoldClasses`.
+const FOLD_SCRIPT: &str = r#"
+const classes = await dioxus.recv();
+if (!window.agentsCockpitFolds) {
+  window.agentsCockpitFolds = true;
+  const textSelector = `.${classes.clip} > pre`;
+  const measure = (text, height) => {
+    const row = text.closest(`.${classes.row}`);
+    if (row === null) {
+      return;
+    }
+    const kept = parseInt(getComputedStyle(row).getPropertyValue("--fold-lines"), 10);
+    const lineHeight = parseFloat(getComputedStyle(text).lineHeight);
+    const hidden = Math.round(height / lineHeight) - kept;
+    if (!(hidden > 0)) {
+      delete row.dataset.tall;
+      return;
+    }
+    row.dataset.tall = "";
+    const label = row.querySelector(`.${classes.label}`);
+    if (label !== null) {
+      label.textContent = `Show ${hidden} ${hidden === 1 ? "line" : "lines"} more`;
+    }
+  };
+  const sizes = new ResizeObserver((entries) => {
+    for (const entry of entries) {
+      measure(entry.target, entry.contentRect.height);
+    }
+  });
+  const watch = (node, added) => {
+    if (!(node instanceof Element)) {
+      return;
+    }
+    const texts = node.matches(textSelector) ? [node] : node.querySelectorAll(textSelector);
+    for (const text of texts) {
+      if (added) {
+        sizes.observe(text);
+      } else {
+        sizes.unobserve(text);
+      }
+    }
+  };
+  new MutationObserver((records) => {
+    for (const record of records) {
+      record.removedNodes.forEach((node) => watch(node, false));
+      record.addedNodes.forEach((node) => watch(node, true));
+    }
+  }).observe(document.body, { childList: true, subtree: true });
+  watch(document.body, true);
+}
+"#;
 
 /// Diff rows an inline edit shows before "open in the file view".
 const EDIT_PREVIEW_ROWS: usize = 8;
@@ -48,7 +110,9 @@ const BASH_TOOL: &str = "Bash";
 
 #[component]
 pub fn TranscriptView() -> Element {
+    use_hook(start_fold_script);
     let cockpit: Cockpit = use_context();
+    chat_scroll::use_chat_scroll(cockpit);
     let state = cockpit.state.read();
     let Some(entry) = state.selected() else {
         return rsx! {
@@ -97,8 +161,15 @@ pub fn TranscriptView() -> Element {
         })
         .collect();
     let history = entry.transcript.history().clone();
+    let scrolled_up = state.ui.chat_scrolled_up.get(&agent).copied();
+    let waiting = scrolled_up.map_or(0, |last_seen| actions::new_entries(entry, last_seen).count);
+    let divider = actions::new_divider(&state, agent);
     rsx! {
-        div { class: "chat-scroll scroll",
+        div {
+            id: CHAT_SCROLL_ID,
+            class: "chat-scroll scroll",
+            // The chat's scroll script keeps each agent's place.
+            "data-agent": "{agent.get()}",
             div { class: "chat-column",
                 match history {
                     HistoryState::NotLoaded | HistoryState::Loading => rsx! {
@@ -142,16 +213,17 @@ pub fn TranscriptView() -> Element {
                 // Item ids repeat across agents: with the agent in the key, another agent's item
                 // never takes over the state of this one's (a fold, a typed answer).
                 for (item, nested, awaits_approval, step) in top {
-                    TranscriptRow { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), item, nested, awaits_approval, step }
+                    TranscriptRow { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), new_above: divider == Some(item.id), item, nested, awaits_approval, step }
                 }
                 if working {
                     WorkingLine { since: turn_started, linked: working_linked }
                 }
                 for item in queued {
-                    TranscriptRow { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), item, nested: Vec::new(), awaits_approval: false, step: None }
+                    TranscriptRow { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), new_above: divider == Some(item.id), item, nested: Vec::new(), awaits_approval: false, step: None }
                 }
             }
         }
+        JumpToLatest { shown: scrolled_up.is_some(), count: waiting }
     }
 }
 
@@ -373,21 +445,36 @@ fn awaiting_approval(items: &[&TranscriptItem]) -> BTreeSet<ItemId> {
 fn TranscriptRow(
     agent: AgentId,
     folder: PathBuf,
+    /// The "New" divider goes above the entry.
+    new_above: bool,
     item: TranscriptItem,
     nested: Vec<TranscriptItem>,
     awaits_approval: bool,
     step: Option<Step>,
 ) -> Element {
+    let id = chat_scroll::entry_id(agent, item.id);
     let view = rsx! {
         ItemView { agent, folder, item, nested, awaits_approval }
     };
     let Some(step) = step else {
-        return view;
+        return rsx! {
+            div { id, class: ENTRY_CLASS,
+                if new_above {
+                    NewDivider {}
+                }
+                {view}
+            }
+        };
     };
     rsx! {
-        div { class: step.class(),
-            span { class: "step-dot", aria_hidden: true }
-            {view}
+        div { id, class: ENTRY_CLASS,
+            if new_above {
+                NewDivider {}
+            }
+            div { class: step.class(),
+                span { class: "step-dot", aria_hidden: true }
+                {view}
+            }
         }
     }
 }
@@ -657,49 +744,60 @@ impl IoKind {
 
     fn class(self) -> &'static str {
         match self {
-            Self::In => "io-row io-in",
-            Self::Out => "io-row io-out",
+            Self::In => "io-in",
+            Self::Out => "io-out",
         }
     }
 
-    fn preview_lines(self) -> usize {
+    fn fold_lines(self) -> u8 {
         match self {
-            Self::In => COMMAND_PREVIEW_LINES,
-            Self::Out => OUTPUT_PREVIEW_LINES,
+            Self::In => IN_FOLD_LINES,
+            Self::Out => OUT_FOLD_LINES,
         }
     }
 }
 
+#[derive(Serialize)]
+struct FoldClasses {
+    row: &'static str,
+    clip: &'static str,
+    label: &'static str,
+}
+
+fn start_fold_script() {
+    let script = document::eval(FOLD_SCRIPT);
+    let classes = FoldClasses {
+        row: IO_ROW_CLASS,
+        clip: IO_CLIP_CLASS,
+        label: FOLD_LABEL_CLASS,
+    };
+    if let Err(error) = script.send(classes) {
+        tracing::warn!("cannot start the script that folds tool output: {error}");
+    }
+}
+
+/// Folded, a row taller than its fold keeps its first screen lines; the page script decides which
+/// rows are taller. The fold stays as the user set it when the call's output arrives.
 #[component]
 fn IoRow(kind: IoKind, text: String) -> Element {
-    let mut expanded = use_signal(|| false);
-    let preview_lines = kind.preview_lines();
-    let hidden = text.lines().count().saturating_sub(preview_lines);
-    let shown = if expanded() || hidden == 0 {
-        text.clone()
-    } else {
-        text.lines()
-            .take(preview_lines)
-            .collect::<Vec<&str>>()
-            .join("\n")
-    };
-    let toggle_text = if expanded() {
-        "Show less".to_owned()
-    } else {
-        format!("Show {} more", format::count(hidden, "line", "lines"))
-    };
+    let mut unfolded = use_signal(|| false);
+    let open = unfolded();
+    let state = if open { " unfolded" } else { "" };
     rsx! {
-        div { class: kind.class(),
+        div {
+            class: "{IO_ROW_CLASS} {kind.class()}{state}",
+            style: "--fold-lines: {kind.fold_lines()}",
             span { class: "io-label", "{kind.label()}" }
             div { class: "io-text",
-                pre { "{shown}" }
-                if hidden > 0 {
-                    button {
-                        class: "fold-lines",
-                        aria_expanded: expanded(),
-                        onclick: move |_| expanded.toggle(),
-                        "{toggle_text}"
-                    }
+                div { class: IO_CLIP_CLASS,
+                    pre { "{text}" }
+                }
+                button {
+                    class: "fold-lines",
+                    aria_expanded: open,
+                    onclick: move |_| unfolded.toggle(),
+                    span { class: FOLD_LABEL_CLASS }
+                    span { class: "fold-less", "Show less" }
                 }
             }
         }

@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use cockpit_client::RequestError;
 use cockpit_protocol::{
-    AgentDetails, AgentId, AgentParams, ErrorCode, HistoryParams, ItemId, Method, ReadFileParams,
-    Request, ResponseBody,
+    AgentDetails, AgentId, AgentParams, ErrorCode, HistoryParams, ItemId, Method, Position,
+    ReadFileParams, Request, ResponseBody,
 };
 
 use super::actions;
@@ -56,6 +56,19 @@ pub enum Purpose {
         agent: AgentId,
         draft: Draft,
     },
+    /// `agent.move`, whose positions the sidebar already shows. They go back when the move
+    /// fails, unless an event changed them meanwhile.
+    Move {
+        shifts: Vec<Shift>,
+    },
+}
+
+/// An agent's position before and after a move the daemon has not answered yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Shift {
+    pub agent: AgentId,
+    pub from: Position,
+    pub to: Position,
 }
 
 impl Outgoing {
@@ -270,6 +283,22 @@ pub fn apply_response(
                 state
                     .ui
                     .report(format!("The message was not sent: {}", failure.message));
+            }
+        }
+        Purpose::Move { shifts } => {
+            if let Err(failure) = result {
+                for shift in shifts {
+                    let entry = state
+                        .agents
+                        .get_mut(&shift.agent)
+                        .filter(|entry| entry.summary.position == shift.to);
+                    if let Some(entry) = entry {
+                        entry.summary.position = shift.from;
+                    }
+                }
+                state
+                    .ui
+                    .report(format!("The agent was not moved: {}", failure.message));
             }
         }
     }

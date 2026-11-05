@@ -6,6 +6,7 @@ mod control;
 mod errors;
 mod history;
 mod input;
+mod order;
 mod requests;
 mod restore;
 mod state;

@@ -1,0 +1,23 @@
+{
+  "type": "control_response",
+  "response": {
+    "subtype": "success",
+    "request_id": "cockpit-4",
+    "response": {
+      "effective": { "effortLevel": "low", "theme": "dark" },
+      "sources": [
+        { "source": "userSettings", "settings": { "effortLevel": "low" } },
+        { "source": "projectSettings", "settings": { "permissions": { "allow": [] } } }
+      ],
+      "applied": {
+        "model": "claude-test-model",
+        "effort": "medium",
+        "advisor": null,
+        "ultracode": false,
+        "ultracodeRequested": false,
+        "ultracodeAvailable": true,
+        "ultrathinkAvailable": false
+      }
+    }
+  }
+}

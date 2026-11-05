@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use strum::VariantArray;
 
 use crate::ids::{AgentId, ClaudeSessionId};
+use crate::position::Position;
 use crate::time::Timestamp;
 use crate::usage::CostUsd;
 
@@ -70,8 +71,14 @@ pub struct AgentSummary {
     pub pending_count: u16,
     /// `None` until Claude Code reports the model it uses.
     pub model: Option<String>,
-    /// `None` while the agent runs at Claude Code's default effort.
+    /// The effort the agent runs at: the one it was given, or else the one Claude Code applies by
+    /// itself, from its settings or the model's default. `None` while unknown.
     pub effort: Option<Effort>,
+    /// `effort` is the one Claude Code applies by itself, which an agent in another folder or on
+    /// another model may not get: a client that starts a new agent like this one leaves its effort
+    /// out. `false` when missing, so a summary saved without it still loads.
+    #[serde(default)]
+    pub effort_is_default: bool,
     pub mode: PermissionMode,
     /// `None` when the agent has no task list.
     pub task_progress: Option<TaskProgress>,
@@ -85,4 +92,7 @@ pub struct AgentSummary {
     pub started_at: Timestamp,
     /// `None` until Claude Code reports its session.
     pub session: Option<ClaudeSessionId>,
+    /// Where the agent shows in the list. An event logged before positions existed reads 0.
+    #[serde(default)]
+    pub position: Position,
 }

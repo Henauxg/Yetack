@@ -62,6 +62,8 @@ pub enum ControlRequest {
         model: Option<String>,
     },
     GetContextUsage,
+    /// The answer says what Claude Code applies, such as the effort level.
+    GetSettings,
     McpStatus,
     #[serde(rename_all = "camelCase")]
     McpReconnect {

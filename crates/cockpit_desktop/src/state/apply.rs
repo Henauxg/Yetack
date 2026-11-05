@@ -114,6 +114,10 @@ pub fn apply_catchup(state: &mut AppState, drafts: &mut Drafts, catchup: Catchup
         .ui
         .file_views
         .retain(|agent, _| agents.contains_key(agent));
+    state
+        .ui
+        .finished_tasks_unfolded
+        .retain(|agent| agents.contains_key(agent));
     drafts
         .composer
         .retain(|agent, _| agents.contains_key(agent));
@@ -134,6 +138,7 @@ pub fn apply(state: &mut AppState, drafts: &mut Drafts, record: EventRecord) -> 
             state.agents.remove(&agent);
             state.ui.unread.remove(&agent);
             state.ui.file_views.remove(&agent);
+            state.ui.finished_tasks_unfolded.remove(&agent);
             drafts.composer.remove(&agent);
             state.ui.title_edit.take_if(|edit| edit.agent == agent);
             if state.ui.selected == Some(agent) {
@@ -256,8 +261,8 @@ mod tests {
     };
 
     use super::*;
-    use crate::state::app_state::tests::{state_with, summary};
-    use crate::state::ui_state::TitleEdit;
+    use crate::state::app_state::tests::{placed, state_with, summary};
+    use crate::state::ui_state::{TitleEdit, TitlePlace};
 
     fn record(event: Event) -> EventRecord {
         EventRecord {
@@ -303,6 +308,24 @@ mod tests {
         assert_eq!(alert.title, "Agent 1 needs you");
         assert_eq!(alert.body, "Running the tests");
         assert_eq!(again, None);
+    }
+
+    #[test]
+    fn an_agent_the_filter_hides_still_raises_its_alerts() {
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::Idle),
+            summary(2, AgentStatus::Working),
+        ]);
+        state.ui.selected = Some(AgentId::new(1));
+        state.prefs.sidebar.filter = crate::prefs::StatusFilter::Idle;
+
+        let alert = apply(
+            &mut state,
+            &mut Drafts::default(),
+            record(Event::AgentUpdated(with_status(2, AgentStatus::NeedsYou))),
+        );
+
+        assert_eq!(alert.map(|alert| alert.kind), Some(AlertKind::NeedsYou));
     }
 
     #[test]
@@ -437,11 +460,11 @@ mod tests {
     }
 
     #[test]
-    fn removing_the_selected_agent_selects_the_next_by_attention() {
+    fn removing_the_selected_agent_selects_the_sidebars_first() {
         let mut state = state_with(vec![
-            summary(1, AgentStatus::Idle),
-            summary(2, AgentStatus::Working),
-            summary(3, AgentStatus::NeedsYou),
+            placed(1, AgentStatus::Idle, 1024),
+            placed(2, AgentStatus::Working, 3072),
+            placed(3, AgentStatus::NeedsYou, 2048),
         ]);
         state.ui.selected = Some(AgentId::new(3));
 
@@ -464,6 +487,8 @@ mod tests {
         let renamed = |agent: u32| TitleEdit {
             agent: AgentId::new(agent),
             title: format!("Agent {agent}"),
+            place: TitlePlace::Header,
+            select_all: true,
         };
         let mut removed = state_with(vec![
             summary(1, AgentStatus::Idle),

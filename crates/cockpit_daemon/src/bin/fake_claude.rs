@@ -13,6 +13,9 @@
 //!   `initialize`.
 //! - anything else: answers "Echo: <prompt>".
 //!
+//! Its `get_settings` answer applies the `--effort` it was given, or else a default that depends
+//! on the model, as Claude Code's does: `medium` for its own default model, `low` for any other.
+//!
 //! With `FAKE_CLAUDE_ARGS_FILE` set, it appends its command line to that file, one JSON array per
 //! line: `CLAUDE_CODE_RESUME_INTERRUPTED_TURN=<value>` first when that variable is set, as a shell
 //! writes it, then its arguments. It exits when its stdin closes.
@@ -36,6 +39,8 @@ const LINGERING_CHILD: [&str; 2] = ["sleep", "600"];
 const RESUME_FLAG: &str = "--resume=";
 const MODE_FLAG: &str = "--permission-mode=";
 const MODEL_FLAG: &str = "--model=";
+const EFFORT_FLAG: &str = "--effort=";
+const DEFAULT_MODEL: &str = "fake-model";
 const INTERRUPTED_NOTICE: &str = "[Request interrupted by user]";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +66,8 @@ struct Fake<W> {
     /// Started with `--resume`: Claude Code restates the session's name as it starts.
     resumed: bool,
     model: String,
+    /// The `--effort` it was given.
+    effort: Option<String>,
     mode: String,
     total_cost: f64,
     next_id: u32,
@@ -104,7 +111,8 @@ fn run() -> io::Result<()> {
         session: flag(RESUME_FLAG)
             .unwrap_or_else(|| format!("fake-session-{}", std::process::id())),
         resumed: flag(RESUME_FLAG).is_some(),
-        model: flag(MODEL_FLAG).unwrap_or_else(|| "fake-model".to_owned()),
+        model: flag(MODEL_FLAG).unwrap_or_else(|| DEFAULT_MODEL.to_owned()),
+        effort: flag(EFFORT_FLAG),
         mode: flag(MODE_FLAG).unwrap_or_else(|| "default".to_owned()),
         total_cost: 0.0,
         next_id: 1,
@@ -181,6 +189,16 @@ impl<W: Write> Fake<W> {
             "set_model" => {
                 self.model = text(message, &["request", "model"]).to_owned();
                 json!({})
+            }
+            "get_settings" => {
+                let default = if self.model == DEFAULT_MODEL {
+                    "medium"
+                } else {
+                    "low"
+                };
+                let effort = self.effort.as_deref().unwrap_or(default);
+                json!({"effective": {}, "sources": [],
+                       "applied": {"model": self.model, "effort": effort}})
             }
             "mcp_reconnect" | "mcp_toggle" | "stop_task" => json!({}),
             "interrupt" => {

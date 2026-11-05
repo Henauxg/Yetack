@@ -20,14 +20,14 @@ use cockpit_protocol::{
     ChangedFile, ClaudeSessionId, ClientMessage, CommandKind, ContextCategory, ContextUsage,
     CostUsd, Effort, ErrorBody, ErrorCode, Event, EventRecord, FileEdit, HistoryPage,
     HistoryParams, Image, ImageMediaType, ItemBody, ItemId, McpRemoveParams, McpScope, McpServer,
-    McpServerParams, McpServerStatus, McpToggleParams, McpTool, McpTransport, Method,
+    McpServerParams, McpServerStatus, McpToggleParams, McpTool, McpTransport, Method, MoveParams,
     PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision,
-    PlanUsage, Prompt, PromptParams, Question, QuestionAnswer, QuestionOption, RateLimitStatus,
-    ReadFileParams, RenameParams, Request, RequestId, ResponseBody, ResponseResult, Seq,
-    ServerMessage, SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, Settings,
-    SlashCommand, Snapshot, StartParams, StopTaskParams, TaskListItem, TaskProgress, TaskStatus,
-    Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, UsageWindow,
-    UserMessage, WindowUsage,
+    PlanUsage, Position, Prompt, PromptParams, Question, QuestionAnswer, QuestionOption,
+    RateLimitStatus, ReadFileParams, RenameParams, Request, RequestId, ResponseBody,
+    ResponseResult, Seq, ServerMessage, SessionResumeParams, SetEffortParams, SetModeParams,
+    SetModelParams, Settings, SlashCommand, Snapshot, StartParams, StopTaskParams, TaskListItem,
+    TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem,
+    TurnEnd, UsageWindow, UserMessage, WindowUsage,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -62,6 +62,7 @@ fn summary() -> AgentSummary {
         pending_count: 1,
         model: Some("opus".to_owned()),
         effort: Some(Effort::High),
+        effort_is_default: true,
         mode: PermissionMode::AcceptEdits,
         task_progress: Some(TaskProgress { done: 3, total: 5 }),
         context_percent: Some(42),
@@ -70,6 +71,7 @@ fn summary() -> AgentSummary {
         cost: CostUsd::new(1.25),
         started_at: at(1_700_000_000_000),
         session: Some(session_id()),
+        position: Position::new(2048),
     }
 }
 
@@ -83,6 +85,7 @@ fn idle_summary() -> AgentSummary {
         pending_count: 0,
         model: None,
         effort: None,
+        effort_is_default: false,
         mode: PermissionMode::Default,
         task_progress: None,
         context_percent: None,
@@ -91,6 +94,7 @@ fn idle_summary() -> AgentSummary {
         cost: CostUsd::default(),
         started_at: at(1_700_000_000_000),
         session: None,
+        position: Position::new(1024),
     }
 }
 
@@ -468,6 +472,10 @@ fn requests() -> Vec<Request> {
             agent,
             title: "Login form".to_owned(),
         }),
+        Request::AgentMove(MoveParams {
+            agent,
+            before: Some(AgentId::new(4)),
+        }),
         Request::AgentContextUsage(AgentParams { agent }),
         Request::AgentStopTask(StopTaskParams {
             agent,
@@ -736,6 +744,7 @@ fn method_names_are_pinned() {
             "agent.set_effort",
             "agent.set_mode",
             "agent.rename",
+            "agent.move",
             "agent.context_usage",
             "agent.stop_task",
             "agent.mcp_status",
@@ -983,6 +992,34 @@ fn a_rename_request_on_the_wire() {
 }
 
 #[test]
+fn move_requests_on_the_wire() {
+    let request = |before| ClientMessage::Request {
+        id: RequestId::new(10),
+        request: Request::AgentMove(MoveParams {
+            agent: agent(),
+            before,
+        }),
+    };
+
+    assert_wire(
+        &request(Some(AgentId::new(4))),
+        json!({
+            "type": "request",
+            "id": 10,
+            "request": {"method": "agent.move", "params": {"agent": 3, "before": 4}},
+        }),
+    );
+    assert_wire(
+        &request(None),
+        json!({
+            "type": "request",
+            "id": 10,
+            "request": {"method": "agent.move", "params": {"agent": 3, "before": null}},
+        }),
+    );
+}
+
+#[test]
 fn a_question_answer_on_the_wire() {
     let message = ClientMessage::Request {
         id: RequestId::new(8),
@@ -1116,6 +1153,7 @@ fn an_agent_update_on_the_wire() {
                 "pending_count": 1,
                 "model": "opus",
                 "effort": "high",
+                "effort_is_default": true,
                 "mode": "acceptEdits",
                 "task_progress": {"done": 3, "total": 5},
                 "context_percent": 42,
@@ -1124,9 +1162,31 @@ fn an_agent_update_on_the_wire() {
                 "cost": 1.25,
                 "started_at": 1_700_000_000_000_u64,
                 "session": "0b7e1c2a-3d4f-4a5b-8c6d-7e8f9a0b1c2d",
+                "position": 2048,
             },
         }),
     );
+}
+
+#[test]
+fn a_summary_logged_before_positions_reads_position_zero() {
+    let mut logged = serde_json::to_value(summary()).unwrap();
+    logged.as_object_mut().unwrap().remove("position");
+
+    let read: AgentSummary = serde_json::from_value(logged).unwrap();
+
+    assert_eq!(read.position, Position::new(0));
+}
+
+#[test]
+fn a_summary_saved_without_its_effort_source_still_loads() {
+    let mut saved = serde_json::to_value(summary()).unwrap();
+    saved.as_object_mut().unwrap().remove("effort_is_default");
+
+    let loaded: AgentSummary = serde_json::from_value(saved).unwrap();
+
+    assert_eq!(loaded.effort, Some(Effort::High));
+    assert!(!loaded.effort_is_default);
 }
 
 #[test]
