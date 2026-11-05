@@ -12,6 +12,9 @@ use crate::state::{AppState, KeyPress, Popover, WaitingKind, actions, handle_key
 /// The composer's text area, whose keys the script treats apart.
 pub const COMPOSER_ID: &str = "composer";
 
+/// The new agent dialog's folder field.
+pub const FOLDER_FIELD_ID: &str = "new-agent-folder";
+
 /// What a note calls an image pasted into the window.
 const PASTED_IMAGE: &str = "The pasted image";
 
@@ -110,15 +113,15 @@ try {
 }
 "#;
 
-/// Puts the text it receives in the composer, caret at the end. The composer may not be on the
-/// page yet when the agent was just selected: it then waits a few frames for it.
-const COMPOSER_TEXT_SCRIPT: &str = r#"
-const { composer_id, text } = await dioxus.recv();
+/// Puts the text it receives in a text field, caret at the end. The field may not be on the page
+/// yet, as the composer when the agent was just selected: it then waits a few frames for it.
+const FIELD_TEXT_SCRIPT: &str = r#"
+const { field_id, text } = await dioxus.recv();
 for (let frame = 0; frame < 30; frame++) {
-  const area = document.getElementById(composer_id);
-  if (area !== null) {
-    area.value = text;
-    area.selectionStart = area.selectionEnd = text.length;
+  const field = document.getElementById(field_id);
+  if (field !== null) {
+    field.value = text;
+    field.selectionStart = field.selectionEnd = text.length;
     break;
   }
   await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -126,8 +129,8 @@ for (let frame = 0; frame < 30; frame++) {
 "#;
 
 #[derive(Debug, Serialize)]
-struct ComposerText {
-    composer_id: &'static str,
+struct FieldText {
+    field_id: &'static str,
     text: String,
 }
 
@@ -250,14 +253,12 @@ pub fn copy_to_clipboard(text: String) {
     }
 }
 
-pub fn set_composer_text(text: String) {
-    let script = document::eval(COMPOSER_TEXT_SCRIPT);
-    let message = ComposerText {
-        composer_id: COMPOSER_ID,
-        text,
-    };
+/// For a field that follows the keyboard alone: a text the app chose reaches it only this way.
+pub fn set_field_text(field_id: &'static str, text: String) {
+    let script = document::eval(FIELD_TEXT_SCRIPT);
+    let message = FieldText { field_id, text };
     if let Err(error) = script.send(message) {
-        tracing::warn!("cannot fill the composer: {error}");
+        tracing::warn!("cannot fill the field {field_id}: {error}");
     }
 }
 
@@ -311,8 +312,8 @@ mod tests {
             palette: true,
             dialog: false,
         };
-        let composer_text = ComposerText {
-            composer_id: COMPOSER_ID,
+        let field_text = FieldText {
+            field_id: COMPOSER_ID,
             text: "Run the tests".to_owned(),
         };
 
@@ -330,8 +331,8 @@ mod tests {
             })
         );
         assert_eq!(
-            serde_json::to_value(composer_text).unwrap(),
-            json!({ "composer_id": "composer", "text": "Run the tests" })
+            serde_json::to_value(field_text).unwrap(),
+            json!({ "field_id": "composer", "text": "Run the tests" })
         );
     }
 }

@@ -84,7 +84,7 @@ pub fn Composer() -> Element {
                 drafts.draft(agent).map(|draft| draft.text.clone())
             })
             .unwrap_or_default();
-        bridge::set_composer_text(text);
+        bridge::set_field_text(COMPOSER_ID, text);
     });
     let state = cockpit.state.read();
     let drafts = cockpit.drafts.read();

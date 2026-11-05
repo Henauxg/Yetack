@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use cockpit_protocol::{AgentId, AgentStatus, ClaudeSessionId, Effort, PastSession};
 use dioxus::prelude::*;
 
+use crate::bridge::{self, FOLDER_FIELD_ID};
 use crate::connection::{Clock, Cockpit};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::state::actions::Direction;
@@ -79,7 +80,9 @@ fn SwitcherDialog(query: String, highlighted: usize) -> Element {
                     r#type: "text",
                     aria_label: "Find an agent",
                     placeholder: "Type to find an agent by title or folder",
-                    value: "{query}",
+                    // Follows the keyboard alone: a render that lags behind typing would put an
+                    // older query back.
+                    initial_value: "{query}",
                     onmounted: move |event| async move {
                         // The dialog may have closed already: nothing to focus then.
                         let _ = event.data().set_focus(true).await;
@@ -176,8 +179,9 @@ fn StartForm(form: NewAgentForm) -> Element {
 
     let cockpit: Cockpit = use_context();
     let Clock(now) = use_context::<Clock>();
-    // The first message starts from the form, then follows the keyboard alone: a render that lags
-    // behind typing would put an older text back.
+    // The folder and the first message start from the form, then follow the keyboard alone: a
+    // render that lags behind typing would put an older text back.
+    let folder_seed = use_hook(|| form.folder.clone());
     let prompt_seed = use_hook(|| form.prompt.clone());
     let (folders, machine) = {
         let state = cockpit.state.read();
@@ -215,6 +219,7 @@ fn StartForm(form: NewAgentForm) -> Element {
                                     aria_checked: checked,
                                     onclick: move |_| {
                                         let picked = picked.clone();
+                                        bridge::set_field_text(FOLDER_FIELD_ID, picked.clone());
                                         cockpit.update(|state| actions::with_new_agent_form(state, |form| form.folder = picked));
                                     },
                                     span { class: "radio-mark", aria_hidden: true }
@@ -226,11 +231,12 @@ fn StartForm(form: NewAgentForm) -> Element {
                     }
                 }
                 input {
+                    id: FOLDER_FIELD_ID,
                     class: "text-field mono",
                     r#type: "text",
                     aria_label: "Folder",
                     placeholder: "Or type the folder's path on {machine}",
-                    value: "{form.folder}",
+                    initial_value: "{folder_seed}",
                     oninput: move |event: FormEvent| {
                         cockpit.update(|state| actions::with_new_agent_form(state, |form| form.folder = event.value()));
                     },
