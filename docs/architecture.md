@@ -89,7 +89,7 @@ The kinds of item:
 
 - `UserMessage` (text, attached images), with `queued` while the agent works;
 - `AssistantText` (markdown) and `Thinking` (folded in the app);
-- `ToolCall`: tool name, summary, input, status (running, done, failed), output, and for `Edit` and `Write` the file path with the old and new text;
+- `ToolCall`: tool name, summary, input, status (running, done, failed), output, and for `Edit` and `Write` the file path with the old and new text (both left empty when either is over 1 MiB);
 - `Subagent`: a tool call whose own items carry it as `parent` (from `parent_tool_use_id`);
 - `Approval`: tool, input (with the diff for an edit), reason, and its answer state;
 - `Question`: the `AskUserQuestion` questions and options, and its answer state;
@@ -131,6 +131,10 @@ Transcripts are not in the snapshot: the app asks for an agent's transcript with
 `agent.start`, `agent.prompt`, `agent.cancel_queued`, `agent.answer` (approval, question or plan), `agent.interrupt`, `agent.stop`, `agent.resume`, `agent.remove`, `agent.history`, `agent.details`, `agent.set_model`, `agent.set_effort`, `agent.set_mode`, `agent.context_usage`, `agent.stop_task`, `agent.mcp_status`, `agent.mcp_reconnect`, `agent.mcp_toggle`, `agent.commands` (slash commands and skills), `agent.read_file` (the file view), `mcp.remove` (with the agent, whose folder decides the project and local scopes), `settings.set`, `sessions.list`, `sessions.resume`.
 
 A history page is limited by bytes as well as by count: images travel inline, and a line over the framing maximum is refused.
+An item too large for any response comes as a `Notice` that says so, under the item's id, so paging moves on.
+
+Titles and model names go into every snapshot, so the daemon refuses a title over 200 characters and a model name over 100 with `invalid_request`.
+It cuts a past session's title at 200 characters.
 
 The method names are an enum with fixed strings, pinned by a test ([standards/rust/api_design.md](standards/rust/api_design.md#declare-a-reusable-string-once)).
 
@@ -171,7 +175,7 @@ The hub turns Claude Code messages into transcript items and status changes (mod
 
 ### Store
 
-Everything lives in `$XDG_STATE_HOME/agents-cockpit/` (default `~/.local/state/agents-cockpit/`), mode 700, with `umask 077`:
+Everything lives in `$XDG_STATE_HOME/agents-cockpit/` (default `~/.local/state/agents-cockpit/`), mode 700:
 
 - `agents-cockpit.sock`: the socket, mode 600;
 - `serve.lock`: held while a daemon runs, so a second daemon refuses to start and a leftover socket is safe to delete;
@@ -179,6 +183,10 @@ Everything lives in `$XDG_STATE_HOME/agents-cockpit/` (default `~/.local/state/a
 - `settings.json`: the hidden MCP servers and other daemon-side settings;
 - `events/<agent-id>.jsonl`: the agent's cockpit events, each with its `Seq`, appended;
 - `raw/<agent-id>.jsonl`: every line exchanged with `claude`, for debugging.
+
+The daemon leaves the umask alone, since `claude` and the agents' commands inherit it.
+It creates each folder with mode 700 and each file with mode 600.
+The socket gets mode 600 right after the bind; until then, the 700 folder keeps other users away from it.
 
 On start the daemon reads `agents.json`, finds the last `Seq` in the logs, and resumes each agent that was running with `--resume`.
 
@@ -188,6 +196,7 @@ On start the daemon reads `agents.json`, finds the last `Seq` in the logs, and r
 - Each connection passes two checks before any byte is read:
   1. the peer's user id (`SO_PEERCRED`) equals the daemon's;
   2. the peer's parent chain in `/proc` does not reach the daemon's pid, so a command an agent runs cannot drive the daemon.
+     The walk stops, and accepts, at a process of another user or one that `/proc` hides (`hidepid=1` or `2`): the daemon's descendants all run as its user, and `/proc` always shows a user's own processes.
 - `agents-cockpit bridge` connects to the socket like any client; it descends from `sshd`, not from the daemon.
 
 ## Client (`cockpit_client`)
