@@ -20,7 +20,7 @@ pub use shortcuts::{KeyPress, handle_key};
 pub use transcript::{HistoryState, WaitingKind, awaiting_approval};
 pub use ui_state::{
     Block, Dialog, FormMenu, McpView, NewAgentForm, NewAgentTab, NoteKind, PaletteOrigin, Popover,
-    TitlePlace, ToolFilter, ViewMode,
+    TitleEdit, TitlePlace, ToolFilter, ViewMode,
 };
 
 #[cfg(test)]

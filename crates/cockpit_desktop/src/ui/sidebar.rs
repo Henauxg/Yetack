@@ -10,7 +10,7 @@ use strum::VariantArray;
 use crate::bridge::{self, ROW_TITLE_FIELD_ID};
 use crate::connection::{Clock, Cockpit};
 use crate::prefs::StatusFilter;
-use crate::state::{AgentEntry, ConnectionState, TitlePlace, actions};
+use crate::state::{AgentEntry, ConnectionState, TitleEdit, TitlePlace, actions};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::reorder::{LIST_ID, ROW_CLASS, row_id};
 use crate::{APP_NAME, format};
@@ -26,13 +26,12 @@ struct AgentRow {
     selected: bool,
     /// "3/5".
     tasks: Option<String>,
-    /// The title the row's field starts from while the agent is renamed here, and whether the
-    /// field selects it.
-    edit: Option<(String, bool)>,
+    /// The title edit, while the agent is renamed in this row.
+    edit: Option<TitleEdit>,
 }
 
 impl AgentRow {
-    fn new(entry: &AgentEntry, selected: bool, unread: bool, edit: Option<(String, bool)>) -> Self {
+    fn new(entry: &AgentEntry, selected: bool, unread: bool, edit: Option<TitleEdit>) -> Self {
         let summary = &entry.summary;
         Self {
             id: summary.id,
@@ -107,7 +106,7 @@ pub fn Sidebar() -> Element {
                 .title_edit
                 .as_ref()
                 .filter(|edit| edit.agent == entry.id() && edit.place == TitlePlace::Sidebar)
-                .map(|edit| (edit.title.clone(), edit.select_all));
+                .cloned();
             AgentRow::new(
                 entry,
                 state.ui.selected == Some(entry.id()),
@@ -201,7 +200,10 @@ fn AgentRowView(row: AgentRow) -> Element {
     if row.unread {
         classes.push("unread");
     }
-    if let Some((title, select_all)) = row.edit {
+    if let Some(TitleEdit {
+        title, select_all, ..
+    }) = row.edit
+    {
         classes.push("editing");
         let class = classes.join(" ");
         // A div, not a button: a button would take the field's Space and Enter as clicks.
