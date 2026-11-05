@@ -57,8 +57,8 @@ pub(crate) enum Joined {
 #[derive(Debug)]
 pub(crate) enum ControlPurpose {
     Initialize,
-    /// The context usage after a turn, for the summary.
-    ContextAfterTurn,
+    /// The context usage for the summary, after a start or a turn.
+    ContextRefresh,
     /// A request answered by `Done`.
     Done(Reply),
     SetModel {

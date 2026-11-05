@@ -20,10 +20,11 @@ use cockpit_protocol::{
     AgentId, AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState, Approval,
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, CancelQueuedParams, Catchup,
     ClaudeSessionId, CommandKind, Effort, ErrorCode, Event, EventRecord, HistoryParams, ItemBody,
-    ItemId, McpRemoveParams, McpScope, McpServerParams, McpToggleParams, PendingId, PermissionMode,
-    Plan, PlanAnswer, PlanDecision, Prompt, PromptParams, Question, QuestionAnswer, ReadFileParams,
-    Request, ResponseBody, Seq, SessionResumeParams, SetEffortParams, SetModeParams,
-    SetModelParams, Settings, StartParams, StopTaskParams, TranscriptItem,
+    ItemId, McpRemoveParams, McpScope, McpServerParams, McpServerStatus, McpToggleParams,
+    PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, Prompt, PromptParams, Question,
+    QuestionAnswer, ReadFileParams, Request, ResponseBody, Seq, SessionResumeParams,
+    SetEffortParams, SetModeParams, SetModelParams, Settings, StartParams, StopTaskParams,
+    TranscriptItem,
 };
 use rustix::process::{Pid, Signal};
 use serde_json::Value;
@@ -432,6 +433,43 @@ async fn an_agent_answers_a_prompt_and_reports_its_state() {
             .values()
             .any(|window| window.utilization == Some(0.25))
     );
+}
+
+#[tokio::test]
+async fn a_new_agent_shows_its_mcp_servers_and_context_before_any_prompt() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let params = StartParams {
+        folder: setup.work(),
+        title: Some("Waits".to_owned()),
+        model: None,
+        effort: None,
+        mode: None,
+        prompt: None,
+    };
+    let ResponseBody::AgentStarted { agent } = client.ok(Request::AgentStart(params)).await else {
+        panic!("expected AgentStarted");
+    };
+
+    // The fake answers in order: the MCP status before the context usage.
+    let with_context = client
+        .summary_with(agent, |summary| summary.context_percent.is_some())
+        .await;
+    let ResponseBody::Details(details) = client
+        .ok(Request::AgentDetails(AgentParams { agent }))
+        .await
+    else {
+        panic!("expected details");
+    };
+
+    assert_eq!(with_context.context_percent, Some(2));
+    assert_eq!(with_context.turns, 0);
+    let servers: Vec<(&str, McpServerStatus)> = details
+        .mcp_servers
+        .iter()
+        .map(|server| (server.name.as_str(), server.status))
+        .collect();
+    assert_eq!(servers, [("notes", McpServerStatus::Connected)]);
 }
 
 #[tokio::test]

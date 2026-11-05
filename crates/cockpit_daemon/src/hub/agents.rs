@@ -204,7 +204,7 @@ impl Hub {
                     self.control(
                         id,
                         ControlRequest::GetContextUsage,
-                        ControlPurpose::ContextAfterTurn,
+                        ControlPurpose::ContextRefresh,
                     );
                     self.send_next_queued(id);
                 }

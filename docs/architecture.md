@@ -165,6 +165,7 @@ The hub turns Claude Code messages into transcript items and status changes (mod
   The binary is `claude` from `PATH`, or `AGENTS_COCKPIT_CLAUDE` for tests.
 - First message: the `initialize` control request.
   Its answer lists the slash commands and skills.
+  The daemon then asks for the MCP status and the context usage, which Claude Code answers before the first prompt, so a new or resumed agent shows them at once.
 - A prompt goes to stdin as a `user` message, never as an argument: other users can read arguments with `ps`.
 - Claude Code asks for approvals with `can_use_tool` control requests.
   `AskUserQuestion` and `ExitPlanMode` come the same way; the hub shows them as a question or a plan instead of an approval.
