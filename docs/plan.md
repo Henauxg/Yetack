@@ -258,6 +258,7 @@ Data the mockups show but the protocol does not carry yet, and choices approved 
 - Deny and "No, keep planning" get an optional message field in the app (the daemon already sends it).
 - Syntax colors for Nix and TOML files.
 - CLI commands for model, mode, effort, history and MCP servers.
+- The daemon marks the end of a replay, and the app raises no notification for replayed events, so a reconnect does not bring back hours-old alerts.
 
 ## Background
 
