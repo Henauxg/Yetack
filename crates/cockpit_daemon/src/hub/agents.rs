@@ -243,7 +243,13 @@ impl Hub {
         let Some(agent) = self.agents.get_mut(&id) else {
             return;
         };
+        let model_before = agent.view.summary().model.clone();
         let follow_ups = agent.view.apply(line, state::now());
+        // A `/model` typed in the composer shows in the next turn's `system/init`: the new model
+        // has its own default effort.
+        let refresh_effort = model_before.is_some()
+            && agent.view.summary().model != model_before
+            && agent.record.effort.is_none();
         let session = agent.view.summary().session.clone();
         let session_changed = session.is_some() && session != agent.record.session;
         if session_changed {
@@ -274,6 +280,13 @@ impl Hub {
         }
         if session_changed || title_changed {
             self.save_agents();
+        }
+        if refresh_effort {
+            self.control(
+                id,
+                ControlRequest::GetSettings,
+                ControlPurpose::DefaultEffort,
+            );
         }
         self.publish(id);
     }

@@ -222,6 +222,10 @@ impl Hub {
         }
         agent.view.set_model(params.model.clone());
         agent.record.model = Some(params.model);
+        if agent.record.effort.is_none() {
+            // The new model's default is known once the agent starts.
+            agent.view.set_default_effort(None);
+        }
         self.save_agents();
         self.publish(id);
         agents::respond(reply, Ok(ResponseBody::Done));
