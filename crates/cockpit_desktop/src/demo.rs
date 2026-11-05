@@ -25,6 +25,7 @@ pub const DEMO_FLAG: &str = "--demo";
 
 const PARSER_FOLDER: &str = "/home/dev/projects/calc-parser";
 const SERVICE_FOLDER: &str = "/home/dev/projects/calc-service";
+const PLATFORM_FOLDER: &str = "/home/dev/projects/acme-platform";
 
 const ERROR_FILE: &str = "src/error.rs";
 const TEST_FILE: &str = "tests/columns.rs";
@@ -861,7 +862,41 @@ fn plan_usage(now: SystemTime) -> PlanUsage {
 }
 
 fn sessions(now: SystemTime) -> Vec<PastSession> {
-    vec![
+    // Long folders used more recently than the agents', so the new agent dialog lists six of them.
+    let long_folders = [
+        (
+            "services/billing/reconciliation-worker",
+            "Reconcile late payments",
+        ),
+        ("services/billing/invoice-pdf-renderer", "Invoice PDF fonts"),
+        (
+            "frontends/customer-portal/packages/checkout-flow",
+            "Checkout address form",
+        ),
+        (
+            "infrastructure/terraform/modules/object-storage",
+            "Bucket lifecycle rules",
+        ),
+        (
+            "tools/release-automation/changelog-generator",
+            "Changelog from commits",
+        ),
+        (
+            "services/search/indexer-backfill-jobs",
+            "Backfill the search index",
+        ),
+    ];
+    let mut sessions: Vec<PastSession> = Vec::new();
+    for (index, (folder, title)) in (1_u64..).zip(long_folders) {
+        sessions.push(PastSession {
+            id: ClaudeSessionId::new(format!("demo-past-long-{index}")),
+            title: title.to_owned(),
+            folder: Path::new(PLATFORM_FOLDER).join(folder),
+            last_activity: at(now, index * 7 * 60),
+            turns: 12,
+        });
+    }
+    sessions.extend([
         PastSession {
             id: ClaudeSessionId::new("demo-past-1".to_owned()),
             title: "Tokenizer speedup".to_owned(),
@@ -876,7 +911,8 @@ fn sessions(now: SystemTime) -> Vec<PastSession> {
             last_activity: at(now, 3 * 24 * 3600),
             turns: 22,
         },
-    ]
+    ]);
+    sessions
 }
 
 #[cfg(test)]

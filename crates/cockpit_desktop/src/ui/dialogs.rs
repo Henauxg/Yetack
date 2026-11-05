@@ -204,6 +204,19 @@ fn StartForm(form: NewAgentForm) -> Element {
         div { class: "dialog-body",
             div { class: "field-group",
                 span { class: "field-label", "Folder on {machine}" }
+                // Above the recent folders, which arrive after the dialog opens: the field stays
+                // where the first click aims.
+                input {
+                    id: FOLDER_FIELD_ID,
+                    class: "text-field mono",
+                    r#type: "text",
+                    aria_label: "Folder",
+                    placeholder: "Type the folder's path, or pick a recent folder below",
+                    initial_value: "{folder_seed}",
+                    oninput: move |event: FormEvent| {
+                        cockpit.update(|state| actions::with_new_agent_form(state, |form| form.folder = event.value()));
+                    },
+                }
                 div { class: "folder-list", role: "radiogroup", aria_label: "Recent folders",
                     for (folder, used) in folders {
                         {
@@ -217,29 +230,21 @@ fn StartForm(form: NewAgentForm) -> Element {
                                     class: if checked { "folder-option checked" } else { "folder-option" },
                                     role: "radio",
                                     aria_checked: checked,
+                                    title: "{shown}",
                                     onclick: move |_| {
                                         let picked = picked.clone();
                                         bridge::set_field_text(FOLDER_FIELD_ID, picked.clone());
                                         cockpit.update(|state| actions::with_new_agent_form(state, |form| form.folder = picked));
                                     },
                                     span { class: "radio-mark", aria_hidden: true }
-                                    span { class: "mono folder-path", "{shown}" }
-                                    span { class: "muted small", "{used}" }
+                                    span { class: "mono folder-path",
+                                        span { class: "folder-path-text", "{shown}" }
+                                    }
+                                    span { class: "muted small folder-used", "{used}" }
                                 }
                             }
                         }
                     }
-                }
-                input {
-                    id: FOLDER_FIELD_ID,
-                    class: "text-field mono",
-                    r#type: "text",
-                    aria_label: "Folder",
-                    placeholder: "Or type the folder's path on {machine}",
-                    initial_value: "{folder_seed}",
-                    oninput: move |event: FormEvent| {
-                        cockpit.update(|state| actions::with_new_agent_form(state, |form| form.folder = event.value()));
-                    },
                 }
             }
             div { class: "select-row",

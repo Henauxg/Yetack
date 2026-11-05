@@ -2646,7 +2646,8 @@ button:disabled {
   display: flex;
   flex-direction: column;
   max-width: calc(100% - 32px);
-  max-height: calc(100% - 128px);
+  /* Of the overlay's height below its top padding: 32 px stay free under the dialog. */
+  max-height: calc(100% - 32px);
   border-radius: 14px;
   border: 1px solid var(--line-control);
   background: var(--panel);
@@ -2799,7 +2800,7 @@ button:disabled {
   align-items: center;
   gap: 10px;
   width: 100%;
-  min-height: 40px;
+  min-height: 32px;
   padding: 0 10px;
   border-radius: 8px;
   border: 1px solid var(--line-control);
@@ -2826,11 +2827,27 @@ button:disabled {
   background: var(--text);
 }
 
+/* One line per folder, cut at its start: the end of a path tells folders apart. */
 .folder-path {
   flex: 1 1 auto;
   min-width: 0;
   font-size: 12.5px;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+/* Keeps the path's characters in order inside the right-to-left box. */
+.folder-path-text {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+.folder-used {
+  flex: none;
+  white-space: nowrap;
 }
 
 .select-row {
