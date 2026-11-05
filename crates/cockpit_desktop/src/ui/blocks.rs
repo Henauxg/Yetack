@@ -358,14 +358,14 @@ fn RunningBody(agent: AgentId, tasks: Vec<BackgroundTask>) -> Element {
                             }
                             if running {
                                 button {
-                                    class: "round-button",
+                                    class: "stop-button",
                                     aria_label: "{stop_label}",
                                     title: "{stop_label}",
                                     onclick: move |_| {
                                         let id = id.clone();
                                         cockpit.change(|_| actions::stop_task(agent, id));
                                     },
-                                    Icon { kind: IconKind::StopSmall, size: 10 }
+                                    span { class: "stop-square", aria_hidden: true }
                                 }
                             }
                         }

@@ -4,7 +4,8 @@ use dioxus::prelude::*;
 
 use crate::bridge::use_bridge;
 use crate::connection::{Cockpit, Startup, use_clock, use_cockpit};
-use crate::state::{ConnectionState, Popover};
+use crate::prefs::use_prefs_saver;
+use crate::state::{ConnectionState, NoteKind};
 use crate::ui::blocks::FloatingBlocks;
 use crate::ui::composer::Composer;
 use crate::ui::dialogs::Dialogs;
@@ -12,28 +13,28 @@ use crate::ui::file_view::FileViewPanel;
 use crate::ui::header::Header;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::sidebar::Sidebar;
+use crate::ui::splitter::{APP_ID, SHARE_PROPERTY, Splitter, use_splitter};
 use crate::ui::transcript::TranscriptView;
 
 #[component]
 pub fn App() -> Element {
     let startup: Startup = use_hook(consume_context);
+    let prefs_file = startup.prefs_file.clone();
     let cockpit = use_cockpit(startup);
+    use_prefs_saver(cockpit, prefs_file);
     use_clock();
     use_bridge(cockpit);
+    use_splitter(cockpit);
     let state = cockpit.state.read();
     let file_view_open = state
         .ui
         .selected
         .is_some_and(|agent| state.ui.file_view(agent).is_some());
-    // The palette stays open while you type in the composer; clicking elsewhere closes the
-    // other popovers.
-    let closes_on_click = state
-        .ui
-        .popover
-        .is_some_and(|popover| popover != Popover::Palette);
+    let closes_on_click = state.ui.popover_closes_on_click();
     let disconnected = matches!(state.connection, ConnectionState::Disconnected { .. });
+    let share = state.prefs.file_view.share();
     rsx! {
-        div { class: "app",
+        div { id: APP_ID, class: "app", style: "{SHARE_PROPERTY}: {share}",
             Sidebar {}
             main { class: if file_view_open { "center narrow-chat" } else { "center" },
                 Header {}
@@ -50,6 +51,7 @@ pub fn App() -> Element {
                 Composer {}
             }
             if file_view_open {
+                Splitter { share }
                 FileViewPanel {}
             }
             if closes_on_click {
@@ -70,7 +72,7 @@ fn ErrorNotes() -> Element {
     rsx! {
         div { class: "error-notes", aria_live: "polite",
             for note in notes {
-                div { key: "{note.id}", class: "error-note",
+                div { key: "{note.id}", class: if note.kind == NoteKind::Info { "error-note info" } else { "error-note" },
                     span { "{note.text}" }
                     button {
                         class: "icon-button tiny",

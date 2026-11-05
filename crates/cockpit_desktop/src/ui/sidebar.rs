@@ -180,7 +180,6 @@ fn ConnectionFooter() -> Element {
             if let Some(detail) = detail {
                 span { class: "connection-error", "{detail}" }
             }
-            span { class: "sidebar-hint", "Ctrl+K to switch, Ctrl+N for a new agent" }
         }
     }
 }

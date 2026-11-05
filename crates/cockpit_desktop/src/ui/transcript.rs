@@ -19,6 +19,7 @@ use crate::state::{HistoryState, actions, file_edits};
 use crate::ui::cards::{ApprovalCard, PlanCard, QuestionCard};
 use crate::ui::code::{LineNumbers, diff_row};
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::loading::TranscriptSkeleton;
 use crate::ui::markdown::MarkdownView;
 use crate::{bridge, format};
 
@@ -101,10 +102,13 @@ pub fn TranscriptView() -> Element {
             div { class: "chat-column",
                 match history {
                     HistoryState::NotLoaded | HistoryState::Loading => rsx! {
-                        p { class: "history-note", "Loading the conversation" }
+                        TranscriptSkeleton {}
                     },
                     HistoryState::LoadingOlder => rsx! {
-                        p { class: "history-note", "Loading older messages" }
+                        p { class: "history-note loading-note", role: "status",
+                            span { class: "spinner", aria_hidden: true }
+                            "Loading older messages"
+                        }
                     },
                     HistoryState::Loaded { has_older: true } => rsx! {
                         button {
@@ -394,7 +398,7 @@ pub fn ItemView(
             UserBubble { message }
         },
         ItemBody::AssistantText { markdown } => rsx! {
-            MarkdownView { agent, markdown }
+            MarkdownView { agent, folder, markdown }
         },
         ItemBody::Thinking { text } => rsx! {
             ThinkingView { text }
@@ -415,7 +419,7 @@ pub fn ItemView(
             QuestionCard { agent, item: id, question }
         },
         ItemBody::Plan(plan) => rsx! {
-            PlanCard { agent, plan }
+            PlanCard { agent, folder, plan }
         },
         ItemBody::TurnEnd(end) => rsx! {
             TurnEndView { end }
@@ -600,7 +604,7 @@ fn tool_title(call: &ToolCall, shape: &ToolShape, layout: TitleLayout) -> Elemen
             ..
         } => rsx! {
             span { class: "tool-name", "{call.tool}" }
-            span { class: "tool-description", "{description}" }
+            span { class: "call-description", "{description}" }
         },
         ToolShape::Command {
             description: None, ..
@@ -820,8 +824,10 @@ fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall, stage: CallStage) -
             }
             if !preview.is_empty() {
                 div { class: "diff-box inline-diff scroll-x",
-                    for row in preview.iter() {
-                        {diff_row(row, numbers, None)}
+                    div { class: "diff-rows",
+                        for row in preview.iter() {
+                            {diff_row(row, numbers, None)}
+                        }
                     }
                     if more > 0 {
                         button { class: "more-lines", onclick: open_more, "{more_text}" }
