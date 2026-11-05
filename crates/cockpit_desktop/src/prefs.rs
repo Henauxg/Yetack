@@ -50,6 +50,16 @@ pub struct FileViewPrefs {
     pub wrap: bool,
 }
 
+/// The file view's width, as a share of the window's, until it is moved.
+const DEFAULT_WIDTH_SHARE: f64 = 0.35;
+
+impl FileViewPrefs {
+    /// The file view's width as a share of the window's.
+    pub fn share(&self) -> f64 {
+        self.width_share.unwrap_or(DEFAULT_WIDTH_SHARE)
+    }
+}
+
 /// Whether `share` can size a pane: a number strictly between 0 and 1.
 pub fn is_share(share: f64) -> bool {
     share > 0.0 && share < 1.0

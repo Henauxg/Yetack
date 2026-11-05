@@ -12,6 +12,7 @@ use crate::render::{self, Diff, Language, MAX_RENDERED_LINES, diff_lines};
 use crate::state::{Loadable, ViewMode, actions, file_edits};
 use crate::ui::code::{LineNumbers, diff_line, diff_row, lines_not_shown};
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::splitter::FILE_VIEW_ID;
 
 /// Unchanged lines kept around each change of the file view's diff.
 const FILE_DIFF_CONTEXT: usize = 3;
@@ -61,7 +62,7 @@ pub fn FileViewPanel() -> Element {
     let diff = view.mode == ViewMode::Diff;
     let wrap = state.prefs.file_view.wrap;
     rsx! {
-        section { class: "file-view", aria_label: "File view",
+        section { id: FILE_VIEW_ID, class: "file-view", aria_label: "File view",
             div { class: "file-tabs",
                 div { class: "tab-list scroll-x", role: "tablist", aria_label: "Files changed by this agent",
                     for tab in tabs {

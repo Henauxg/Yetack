@@ -12,6 +12,7 @@ mod icons;
 mod markdown;
 mod mcp;
 mod sidebar;
+mod splitter;
 mod transcript;
 
 pub use app::App;

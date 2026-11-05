@@ -21,11 +21,15 @@ use super::transcript::HistoryState;
 use super::ui_state::{
     Block, Dialog, FileView, NewAgentForm, NewAgentTab, Popover, Switcher, ToolFilter, ViewMode,
 };
+use crate::prefs;
 
 /// What starts a slash command in the composer.
 pub const COMMAND_PREFIX: char = '/';
 
 const MEGABYTE: usize = 1024 * 1024;
+
+/// Ten to the number of decimals a saved width share keeps.
+const SHARE_PRECISION: f64 = 10_000.0;
 
 /// The largest image file the composer takes, in megabytes. Claude counts its own per-image limit
 /// on the base64 text, a third larger than the file.
@@ -503,6 +507,22 @@ pub fn set_view_mode(state: &mut AppState, agent: AgentId, mode: ViewMode) {
 /// holds for every agent.
 pub fn toggle_wrap(state: &mut AppState) {
     state.prefs.file_view.wrap = !state.prefs.file_view.wrap;
+}
+
+/// Keeps the file view's width, as a share of the window's, where the splitter left it. The page
+/// sends it: a share outside 0 to 1 is ignored.
+pub fn set_file_view_share(state: &mut AppState, share: f64) {
+    if !prefs::is_share(share) {
+        tracing::warn!("ignored a file view width of {share} of the window");
+        return;
+    }
+    // Four decimals place the splitter within a fraction of a pixel and keep the file readable.
+    let rounded = (share * SHARE_PRECISION).round() / SHARE_PRECISION;
+    state.prefs.file_view.width_share = Some(rounded);
+}
+
+pub fn reset_file_view_share(state: &mut AppState) {
+    state.prefs.file_view.width_share = None;
 }
 
 /// Folds or unfolds a floating block, or opens its badge's popover while the file view is open.
@@ -1161,6 +1181,24 @@ mod tests {
 
         close_file_view(&mut state, agent());
         assert!(state.agents[&agent()].files.is_empty());
+    }
+
+    #[test]
+    fn the_splitter_keeps_a_share_of_the_window_and_double_click_resets_it() {
+        let mut state = state(AgentStatus::Idle);
+        let default = state.prefs.file_view.share();
+
+        set_file_view_share(&mut state, 0.437_512_3);
+        assert_eq!(state.prefs.file_view.width_share, Some(0.4375));
+
+        for refused in [0.0, 1.0, -0.2, f64::NAN, f64::INFINITY] {
+            set_file_view_share(&mut state, refused);
+            assert_eq!(state.prefs.file_view.share(), 0.4375, "{refused}");
+        }
+
+        reset_file_view_share(&mut state);
+        assert_eq!(state.prefs.file_view.width_share, None);
+        assert_eq!(state.prefs.file_view.share(), default);
     }
 
     #[test]
