@@ -180,7 +180,14 @@ mod tests {
             "{second:?}"
         );
         drop(first);
-        state.lock().unwrap();
+        // A child process another test forks shares the lock until it starts its program.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut again = state.lock();
+        while again.is_err() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            again = state.lock();
+        }
+        again.unwrap();
     }
 
     /// Whatever the umask of the process that runs the test.

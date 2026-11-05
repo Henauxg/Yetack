@@ -6,4 +6,4 @@ mod peer;
 
 pub(crate) use listener::{accept_loop, bind};
 pub(crate) use peer::DaemonIdentity;
-pub use peer::PeerError;
+pub use peer::{PeerError, ProcessId, UserId};

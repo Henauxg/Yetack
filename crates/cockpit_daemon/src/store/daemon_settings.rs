@@ -49,7 +49,29 @@ impl DaemonSettings {
 mod tests {
     use std::collections::BTreeSet;
 
+    use serde_json::Value;
+
     use super::*;
+
+    /// `settings.json` as the daemon writes it. Every value differs from its default, so a field
+    /// that no longer reads back fails the test.
+    const SETTINGS_JSON: &str = r#"{
+  "hidden_mcp_servers": [
+    "notes",
+    "tracker"
+  ],
+  "prompt_cache_ttl_minutes": 5
+}
+"#;
+
+    fn sample() -> DaemonSettings {
+        DaemonSettings {
+            shared: Settings {
+                hidden_mcp_servers: BTreeSet::from(["notes".to_owned(), "tracker".to_owned()]),
+            },
+            prompt_cache_ttl_minutes: 5,
+        }
+    }
 
     #[test]
     fn round_trips_and_defaults_missing_fields() {
@@ -67,5 +89,28 @@ mod tests {
         settings.prompt_cache_ttl_minutes = 5;
         settings.save(&path).unwrap();
         assert_eq!(DaemonSettings::load(&path).unwrap(), settings);
+    }
+
+    #[test]
+    fn reads_the_saved_format() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, SETTINGS_JSON).unwrap();
+
+        let settings = DaemonSettings::load(&path).unwrap();
+
+        assert_eq!(settings, sample());
+    }
+
+    #[test]
+    fn writes_the_saved_format() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+
+        sample().save(&path).unwrap();
+
+        let written: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let expected: Value = serde_json::from_str(SETTINGS_JSON).unwrap();
+        assert_eq!(written, expected);
     }
 }
