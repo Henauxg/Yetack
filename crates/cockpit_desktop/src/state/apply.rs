@@ -275,6 +275,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::prefs::StatusFilter;
     use crate::state::app_state::tests::{placed, state_with, summary};
     use crate::state::ui_state::{Block, PaletteOrigin, Popover, TitleEdit, TitlePlace};
 
@@ -331,7 +332,7 @@ mod tests {
             summary(2, AgentStatus::Working),
         ]);
         state.ui.selected = Some(AgentId::new(1));
-        state.prefs.sidebar.filter = crate::prefs::StatusFilter::Idle;
+        state.prefs.sidebar.filter = StatusFilter::Idle;
 
         let alert = apply(
             &mut state,
@@ -659,7 +660,7 @@ mod tests {
         let mut updated = state_with(vec![working(1), working(2)]);
         let mut drafts = Drafts::default();
         updated.ui.selected = Some(AgentId::new(1));
-        updated.prefs.sidebar.filter = crate::prefs::StatusFilter::Working;
+        updated.prefs.sidebar.filter = StatusFilter::Working;
         actions::rename_key(&mut updated, &mut drafts);
         actions::rename_text(&updated, &mut drafts, "Cart tot".to_owned());
         let mut dropped = updated.clone();

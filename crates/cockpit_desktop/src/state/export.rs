@@ -10,7 +10,7 @@ use cockpit_protocol::{
 };
 
 use super::app_state::AgentEntry;
-use super::transcript::{HistoryState, awaiting_approval};
+use super::transcript::{self, HistoryState};
 use crate::format;
 
 /// The shortest fence of a fenced code block.
@@ -56,7 +56,7 @@ pub fn conversation_markdown(entry: &AgentEntry) -> String {
         parts.push(part);
     };
     let items: Vec<&TranscriptItem> = entry.transcript.items().collect();
-    let awaiting: BTreeSet<ItemId> = awaiting_approval(&items);
+    let awaiting: BTreeSet<ItemId> = transcript::awaiting_approval(&items);
     let top_level = items.iter().filter(|item| item.parent.is_none());
     for item in top_level {
         match &item.body {

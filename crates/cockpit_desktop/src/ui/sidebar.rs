@@ -12,7 +12,7 @@ use crate::connection::{Clock, Cockpit};
 use crate::prefs::StatusFilter;
 use crate::state::{AgentEntry, ConnectionState, TitleEdit, TitlePlace, actions};
 use crate::ui::icons::{Icon, IconKind};
-use crate::ui::reorder::{LIST_ID, ROW_CLASS, row_id};
+use crate::ui::reorder::{self, LIST_ID, ROW_CLASS};
 use crate::{APP_NAME, format};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -208,7 +208,7 @@ fn AgentRowView(row: AgentRow) -> Element {
         let class = classes.join(" ");
         // A div, not a button: a button would take the field's Space and Enter as clicks.
         return rsx! {
-            div { id: row_id(agent), class,
+            div { id: reorder::row_id(agent), class,
                 span { class: "row-line",
                     span { class: "status-dot", aria_hidden: true }
                     input {
@@ -239,7 +239,7 @@ fn AgentRowView(row: AgentRow) -> Element {
     let class = classes.join(" ");
     rsx! {
         button {
-            id: row_id(agent),
+            id: reorder::row_id(agent),
             class,
             aria_current: row.selected,
             onclick: move |_| cockpit.update(|state| actions::select_agent(state, agent)),

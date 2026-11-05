@@ -12,7 +12,7 @@ use strum::{EnumString, IntoStaticStr, VariantArray};
 
 use crate::connection::{Clock, Cockpit};
 use crate::state::{AgentEntry, Loadable, Popover, TitlePlace, actions};
-use crate::ui::changes_list::{ChangesList, line_totals};
+use crate::ui::changes_list::{self, ChangesList};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::presence::Presence;
 use crate::{bridge, format};
@@ -130,7 +130,7 @@ pub fn Header() -> Element {
     let plan = plan_percent(&state.plan_usage);
     let context = context_percent(entry);
     let files = changed_files(entry);
-    let (added, removed) = line_totals(&files);
+    let (added, removed) = changes_list::line_totals(&files);
     let usage_open = state.ui.popover == Some(Popover::Usage);
     let changes_open = state.ui.popover == Some(Popover::Changes);
     let plan_text = plan.map_or_else(|| "?".to_owned(), |percent| format!("{percent}%"));

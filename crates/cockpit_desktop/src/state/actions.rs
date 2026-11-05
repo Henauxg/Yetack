@@ -1662,7 +1662,8 @@ mod tests {
     use cockpit_client::RequestError;
     use cockpit_protocol::{
         AgentDetails, AskedQuestion, ChangedFile, CommandKind, ErrorBody, ErrorCode, HistoryPage,
-        ImageMediaType, Method, QuestionOption, ResponseBody, Timestamp, TranscriptItem,
+        ImageMediaType, Method, Position, QuestionOption, ResponseBody, Timestamp, TranscriptItem,
+        UserMessage,
     };
 
     use super::*;
@@ -1870,7 +1871,7 @@ mod tests {
         append(
             &mut state,
             5,
-            ItemBody::UserMessage(cockpit_protocol::UserMessage {
+            ItemBody::UserMessage(UserMessage {
                 text: "Also the docs".to_owned(),
                 images: Vec::new(),
                 queued: true,
@@ -2935,12 +2936,10 @@ mod tests {
         let mut state = ordered();
         let mut drafts = Drafts::default();
         let refused = || {
-            Err(cockpit_client::RequestError::Failed(
-                cockpit_protocol::ErrorBody::new(
-                    cockpit_protocol::ErrorCode::NotFound,
-                    "no agent 3".to_owned(),
-                ),
-            ))
+            Err(RequestError::Failed(ErrorBody::new(
+                ErrorCode::NotFound,
+                "no agent 3".to_owned(),
+            )))
         };
 
         let first = move_agent(&mut state, AgentId::new(1), Some(AgentId::new(3)));
@@ -2956,7 +2955,7 @@ mod tests {
         let after_refusal = sidebar(&state);
         let second = move_agent(&mut state, AgentId::new(1), Some(AgentId::new(2)));
         if let Some(entry) = state.agents.get_mut(&AgentId::new(1)) {
-            entry.summary.position = cockpit_protocol::Position::new(9000);
+            entry.summary.position = Position::new(9000);
         }
         for outgoing in second {
             apply_response(

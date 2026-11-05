@@ -67,7 +67,7 @@ pub struct Drafts {
     composer_writes: BTreeMap<AgentId, u64>,
     pub questions: BTreeMap<PendingId, QuestionDraft>,
     pub palette: Palette,
-    /// The text of the header's title field while a title is edited.
+    /// The text of the title field, the header's or a sidebar row's, while a title is edited.
     pub title: String,
     pub new_agent: NewAgentDraft,
     pub switcher: SwitcherDraft,
