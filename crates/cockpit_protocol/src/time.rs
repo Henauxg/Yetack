@@ -10,21 +10,25 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 pub struct Timestamp(u64);
 
 impl Timestamp {
+    #[must_use]
     pub fn from_unix_millis(millis: u64) -> Self {
         Self(millis)
     }
 
+    #[must_use]
     pub fn unix_millis(self) -> u64 {
         self.0
     }
 
     /// `None` before the epoch, or past `u64::MAX` milliseconds after it.
+    #[must_use]
     pub fn from_system_time(time: SystemTime) -> Option<Self> {
         let since_epoch = time.duration_since(UNIX_EPOCH).ok()?;
         u64::try_from(since_epoch.as_millis()).ok().map(Self)
     }
 
     /// `None` when the platform's `SystemTime` cannot hold the moment.
+    #[must_use]
     pub fn to_system_time(self) -> Option<SystemTime> {
         UNIX_EPOCH.checked_add(Duration::from_millis(self.0))
     }

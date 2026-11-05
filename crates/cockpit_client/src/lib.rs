@@ -5,6 +5,7 @@
 
 mod connection;
 mod error;
+mod lossy_channel;
 mod requester;
 mod session;
 #[cfg(test)]

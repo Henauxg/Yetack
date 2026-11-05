@@ -4,8 +4,8 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use strum::{Display, EnumString, IntoStaticStr, VariantArray};
 
-use crate::error::ParseError;
 use crate::ids::{ControlRequestId, ToolUseId};
+use crate::parse_error::ParseError;
 use crate::permission::PermissionUpdate;
 use crate::wire;
 
@@ -124,13 +124,20 @@ impl IncomingControlRequest {
         };
         let request = match subtype {
             IncomingRequestSubtype::CanUseTool => {
-                IncomingRequest::CanUseTool(wire::read(&request, subtype.into())?)
+                CanUseTool::deserialize(&request).map(IncomingRequest::CanUseTool)
             }
         };
-        Ok(Self {
-            request_id,
-            request,
-        })
+        match request {
+            Ok(request) => Ok(Self {
+                request_id,
+                request,
+            }),
+            Err(error) => Err(ParseError::MalformedLine {
+                kind: subtype.into(),
+                request_id: Some(request_id),
+                error,
+            }),
+        }
     }
 }
 

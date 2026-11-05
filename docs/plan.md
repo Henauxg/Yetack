@@ -201,6 +201,13 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   - Each MCP server can be hidden from the view: it keeps running, but leaves the list and the red dot. A "Show them" link lists hidden servers.
   - Clicking a server opens its detail: status, version, command or URL, scope, error, three icon buttons with tooltips on its title row (Reconnect, "Disable for this agent", "Hide from my view"), its tools with read-only or destructive tags, filters and per-agent call counts, and "Remove from the config" for user, project and local scopes.
   - A background task stops with a small round icon button.
+- Planned after v1: the agent map, as in the Claude Code extension.
+  - A composer button with a live dot (green while a subagent runs) opens a map of the selected agent: the agent at the root, every subagent it started under it, and subagents started by subagents under those.
+  - Each node shows a status dot, the subagent's description, its duration and its token count, updated live while it runs.
+  - Clicking a node shows its details: the prompt it got, its transcript (the items nested under it), its tool calls, and Stop while it runs.
+  - The "Running" block stays as the compact live view, with a link to open the map.
+  - Data: the tree comes from `parent_tool_use_id` (each subagent's messages carry the id of the tool call that started it); status, tokens, tool calls and duration from `task_started`, `task_progress` (its `usage`: total tokens, tool uses, duration) and `task_notification`.
+  - Protocol: `AgentDetails` gains a list of subagents (id, parent, description, foreground or background, status, start and end time, tokens, tool calls, last tool), filled by the daemon.
 - It starts `ssh <server> /absolute/path/to/agents-cockpit bridge` and speaks the daemon API over the process's stdin and stdout.
   Use an absolute path: a non-interactive SSH command does not load your interactive shell setup, so `~/.cargo/bin` may be missing from `PATH`.
 - It reconnects after an SSH drop and sends its last sequence number.
@@ -227,11 +234,13 @@ Options set aside:
    - Check how an `AskUserQuestion` answer and a plan approval go back to Claude Code.
    - Check that a prompt with an image content block works, and that `system/init` lists the skills and commands for the palette.
    - Check the `task_started` and `task_notification` events and the `stop_task` request for background work.
+   - Check whether a foreground subagent (the `Agent` tool) also gets `task_*` events, or only background ones, and whether a subagent started by a subagent nests through `parent_tool_use_id` (for the agent map).
    - Check whether Claude Code's sandbox can deny the agents' commands access to the socket folder.
    - Save the captures as test fixtures, with personal paths and content replaced.
 2. Daemon (about 1 week): start, resume and stop agents, approvals, event logs, the API with sequence numbers, the peer check, the bridge, the CLI commands.
 3. Desktop app (1 to 2 weeks): the v1 views above.
 4. Polish: diff views for file edits, a desktop notification when an agent becomes blocked, keyboard shortcuts.
+5. Agent map: the subagent list in `AgentDetails`, filled by the daemon, then the map dialog and its node details in the app.
 
 ## Background
 

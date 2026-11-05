@@ -30,7 +30,8 @@ pub enum Transport {
     Local { socket: PathBuf },
     /// Runs `ssh <host> <remote_command> bridge` and speaks the protocol over its stdin and
     /// stdout. `remote_command` is the absolute path of `agents-cockpit` on the host, since a
-    /// non-interactive SSH command may not have it on its `PATH`.
+    /// non-interactive SSH command may not have it on its `PATH`. The host's shell reads it as
+    /// it is: it expands no `~` and no variable.
     Ssh {
         host: String,
         remote_command: String,
@@ -101,17 +102,36 @@ pub(crate) fn spawn_ssh(host: &str, remote_command: &str) -> Result<SshLink, Con
 }
 
 /// `BatchMode` makes a missing key fail at once, instead of waiting for a password the app cannot
-/// show. `ForwardAgent=no` keeps the host from using this machine's keys.
+/// show. `ForwardAgent=no` keeps the host from using this machine's keys. `-x` and
+/// `ClearAllForwardings` open no X11 or port forwarding to this machine, even when the user's ssh
+/// config asks for one. `--` ends the options, since ssh reads options after the host too.
 fn ssh_command(host: &str, remote_command: &str) -> Command {
     let mut command = Command::new(SSH_PROGRAM);
     command
-        .args(["-T", "-o", "BatchMode=yes", "-o", "ForwardAgent=no"])
-        .args([host, remote_command, BRIDGE_SUBCOMMAND])
+        .args([
+            "-T",
+            "-x",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ForwardAgent=no",
+            "-o",
+            "ClearAllForwardings=yes",
+            "--",
+        ])
+        .arg(host)
+        .arg(shell_quoted(remote_command))
+        .arg(BRIDGE_SUBCOMMAND)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     command
+}
+
+/// Quotes `word` for a POSIX shell: ssh hands the remote command to the host's shell.
+fn shell_quoted(word: &str) -> String {
+    format!("'{}'", word.replace('\'', r"'\''"))
 }
 
 /// Logs what ssh writes to stderr, and sends the end of it once ssh closes it.
@@ -142,7 +162,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ssh_runs_the_bridge_without_a_password_prompt_or_agent_forwarding() {
+    fn ssh_runs_the_bridge_without_a_password_prompt_or_any_forwarding() {
         let command = ssh_command("build-box", "/opt/agents-cockpit/bin/agents-cockpit");
 
         let std_command = command.as_std();
@@ -155,15 +175,62 @@ mod tests {
             args,
             [
                 "-T",
+                "-x",
                 "-o",
                 "BatchMode=yes",
                 "-o",
                 "ForwardAgent=no",
+                "-o",
+                "ClearAllForwardings=yes",
+                "--",
                 "build-box",
-                "/opt/agents-cockpit/bin/agents-cockpit",
+                "'/opt/agents-cockpit/bin/agents-cockpit'",
                 "bridge",
             ]
         );
+    }
+
+    #[test]
+    fn options_end_before_the_host() {
+        // After the host, ssh reads options again: this one would run `sh` on this machine.
+        let command = ssh_command("build-box", "-oProxyCommand=sh");
+
+        let args: Vec<&str> = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect();
+        let host = args.iter().position(|&arg| arg == "build-box").unwrap();
+        assert_eq!(args.get(host - 1), Some(&"--"), "{args:?}");
+    }
+
+    #[test]
+    fn the_host_shell_reads_the_remote_command_as_it_is() {
+        for path in [
+            "/opt/my tools/agents-cockpit",
+            "/opt/x;printf injected",
+            "/opt/it's/$HOME/agents-cockpit",
+        ] {
+            let command = ssh_command("build-box", path);
+
+            // ssh joins the words after the host with spaces, and the host's shell runs that.
+            let remote: Vec<&str> = command
+                .as_std()
+                .get_args()
+                .map(|arg| arg.to_str().unwrap())
+                .skip_while(|&arg| arg != "build-box")
+                .skip(1)
+                .collect();
+            let output = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("printf '%s\\n' {}", remote.join(" ")))
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                format!("{path}\nbridge\n")
+            );
+        }
     }
 
     #[test]

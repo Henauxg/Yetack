@@ -58,6 +58,7 @@ impl Frame {
     }
 
     /// The line, with its `\n`.
+    #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
@@ -70,6 +71,7 @@ pub struct FrameReader<R> {
 }
 
 impl<R: AsyncBufRead + Unpin> FrameReader<R> {
+    #[must_use]
     pub fn new(reader: R) -> Self {
         Self::with_max_line_bytes(reader, MAX_LINE_BYTES)
     }
@@ -150,6 +152,7 @@ pub struct FrameWriter<W> {
 }
 
 impl<W: AsyncWrite + Unpin> FrameWriter<W> {
+    #[must_use]
     pub fn new(writer: W) -> Self {
         Self { writer }
     }
@@ -171,6 +174,10 @@ impl<W: AsyncWrite + Unpin> FrameWriter<W> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use tokio::io::BufReader;
+
     use super::*;
     use crate::ids::{AgentId, Seq};
     use crate::request::{AgentParams, Request};
@@ -193,8 +200,7 @@ mod tests {
 
     #[tokio::test]
     async fn reads_one_message_per_line_then_none() {
-        let input = b"{\"type\":\"hello\",\"protocol_version\":1,\"last_seq\":3}\n\
-                      {\"type\":\"hello\",\"protocol_version\":1,\"last_seq\":4}\n";
+        let input = b"{\"type\":\"hello\",\"protocol_version\":1,\"last_seq\":3}\n{\"type\":\"hello\",\"protocol_version\":1,\"last_seq\":4}\n";
         let mut reader = FrameReader::new(&input[..]);
 
         let first: Option<ClientMessage> = reader.next_message().await.unwrap();
@@ -210,8 +216,30 @@ mod tests {
     async fn reads_a_line_split_across_reads() {
         let input = b"{\"type\":\"hello\",\"protocol_version\":1,\"last_seq\":3}\n";
         // A two-byte buffer makes every fill_buf return a piece of the line.
-        let mut reader = FrameReader::new(tokio::io::BufReader::with_capacity(2, &input[..]));
+        let mut reader = FrameReader::new(BufReader::with_capacity(2, &input[..]));
 
+        let message: Option<ClientMessage> = reader.next_message().await.unwrap();
+
+        assert_eq!(message, Some(hello(3)));
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_read_keeps_the_part_of_the_line_read_so_far() {
+        use tokio::io::AsyncWriteExt;
+
+        let (mut sender, received) = tokio::io::duplex(1024);
+        let mut reader = FrameReader::new(BufReader::new(received));
+        sender
+            .write_all(b"{\"type\":\"hello\",\"protocol_version\":1,")
+            .await
+            .unwrap();
+
+        // A zero timeout polls the read once, then drops it.
+        let cancelled =
+            tokio::time::timeout(Duration::ZERO, reader.next_message::<ClientMessage>()).await;
+        assert!(cancelled.is_err(), "{cancelled:?}");
+        assert!(!reader.line.is_empty(), "the cancelled read took no bytes");
+        sender.write_all(b"\"last_seq\":3}\n").await.unwrap();
         let message: Option<ClientMessage> = reader.next_message().await.unwrap();
 
         assert_eq!(message, Some(hello(3)));
@@ -329,8 +357,7 @@ mod tests {
         let written = String::from_utf8(writer.writer).unwrap();
         assert_eq!(
             written,
-            "{\"type\":\"hello\",\"protocol_version\":1,\"last_seq\":3}\n\
-             {\"type\":\"request\",\"id\":1,\"request\":{\"method\":\"agent.interrupt\",\"params\":{\"agent\":2}}}\n"
+            "{\"type\":\"hello\",\"protocol_version\":1,\"last_seq\":3}\n{\"type\":\"request\",\"id\":1,\"request\":{\"method\":\"agent.interrupt\",\"params\":{\"agent\":2}}}\n"
         );
     }
 

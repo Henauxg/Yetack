@@ -8,15 +8,18 @@ use serde::{Deserialize, Serialize};
 pub struct AgentId(u32);
 
 impl AgentId {
+    #[must_use]
     pub fn new(raw: u32) -> Self {
         Self(raw)
     }
 
+    #[must_use]
     pub fn get(self) -> u32 {
         self.0
     }
 
     /// The id after this one, or `None` past `u32::MAX`.
+    #[must_use]
     pub fn next(self) -> Option<Self> {
         self.0.checked_add(1).map(Self)
     }
@@ -28,15 +31,18 @@ impl AgentId {
 pub struct Seq(u64);
 
 impl Seq {
+    #[must_use]
     pub fn new(raw: u64) -> Self {
         Self(raw)
     }
 
+    #[must_use]
     pub fn get(self) -> u64 {
         self.0
     }
 
     /// The sequence number after this one, or `None` past `u64::MAX`.
+    #[must_use]
     pub fn next(self) -> Option<Self> {
         self.0.checked_add(1).map(Self)
     }
@@ -48,15 +54,18 @@ impl Seq {
 pub struct RequestId(u32);
 
 impl RequestId {
+    #[must_use]
     pub fn new(raw: u32) -> Self {
         Self(raw)
     }
 
+    #[must_use]
     pub fn get(self) -> u32 {
         self.0
     }
 
     /// The id after this one, back to 0 after `u32::MAX`.
+    #[must_use]
     pub fn next(self) -> Self {
         Self(self.0.wrapping_add(1))
     }
@@ -69,15 +78,18 @@ impl RequestId {
 pub struct ItemId(u32);
 
 impl ItemId {
+    #[must_use]
     pub fn new(raw: u32) -> Self {
         Self(raw)
     }
 
+    #[must_use]
     pub fn get(self) -> u32 {
         self.0
     }
 
     /// The id after this one, or `None` past `u32::MAX`.
+    #[must_use]
     pub fn next(self) -> Option<Self> {
         self.0.checked_add(1).map(Self)
     }
@@ -89,10 +101,12 @@ impl ItemId {
 pub struct ClaudeSessionId(String);
 
 impl ClaudeSessionId {
+    #[must_use]
     pub fn new(raw: String) -> Self {
         Self(raw)
     }
 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -105,10 +119,12 @@ impl ClaudeSessionId {
 pub struct PendingId(String);
 
 impl PendingId {
+    #[must_use]
     pub fn new(raw: String) -> Self {
         Self(raw)
     }
 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -120,10 +136,12 @@ impl PendingId {
 pub struct BackgroundTaskId(String);
 
 impl BackgroundTaskId {
+    #[must_use]
     pub fn new(raw: String) -> Self {
         Self(raw)
     }
 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }

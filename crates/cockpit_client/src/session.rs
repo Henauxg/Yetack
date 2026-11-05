@@ -5,13 +5,12 @@ use std::time::Duration;
 use cockpit_protocol::{Catchup, EventRecord, Request, ResponseBody, Seq};
 use tokio::sync::mpsc;
 
-use crate::connection::Connection;
+use crate::connection::{Connection, EVENT_QUEUE};
 use crate::error::{CloseError, ConnectError, RequestError};
+use crate::lossy_channel;
+use crate::lossy_channel::{LossyReceiver, LossySender, Received, Sent};
 use crate::requester::{Command, Requester};
 use crate::transport::Transport;
-
-/// Updates the session holds before it stops reading from the daemon.
-const UPDATE_BUFFER: usize = 256;
 
 /// The wait between connection attempts: `initial` after a drop, doubling after each failed
 /// attempt up to `max`.
@@ -42,6 +41,9 @@ pub enum SessionUpdate {
     /// The attempt failed, or the connection dropped. Requests in flight failed with
     /// `RequestError::Disconnected`; until the next connection they fail with
     /// `RequestError::NotConnected`.
+    ///
+    /// With `CloseError::EventsLost`, events were dropped and the session closed the connection to
+    /// resynchronize: the next `Connected` brings a snapshot.
     Disconnected {
         error: SessionError,
         retry_in: Duration,
@@ -59,11 +61,15 @@ pub enum SessionError {
 
 /// Connects to a daemon, and reconnects after every drop with the last `Seq` it saw.
 ///
+/// Updates wait for `next_update` in a queue of 4096. When an event finds the queue full, the
+/// session drops the waiting updates and reconnects without a last `Seq`: `next_update` then gives
+/// `Disconnected` with `CloseError::EventsLost`, `Connecting`, and `Connected` with a snapshot.
+///
 /// A task owns the current connection; this handle talks to it over channels. Dropping the
 /// session ends the task and closes the connection.
 pub struct Session {
     requester: Requester,
-    updates: mpsc::Receiver<SessionUpdate>,
+    updates: LossyReceiver<SessionUpdate>,
 }
 
 impl Session {
@@ -72,9 +78,10 @@ impl Session {
     /// # Panics
     ///
     /// Outside a Tokio runtime, since it spawns the session's task.
+    #[must_use]
     pub fn start(transport: Transport, backoff: Backoff) -> Self {
         let (commands_sender, commands) = mpsc::unbounded_channel();
-        let (updates_sender, updates) = mpsc::channel(UPDATE_BUFFER);
+        let (updates_sender, updates) = lossy_channel::channel(EVENT_QUEUE);
         tokio::spawn(run(transport, backoff, commands, updates_sender));
         Self {
             requester: Requester::new(commands_sender),
@@ -83,8 +90,9 @@ impl Session {
     }
 
     /// A handle that sends requests on whichever connection is current.
-    pub fn requester(&self) -> Requester {
-        self.requester.clone()
+    #[must_use]
+    pub fn requester(&self) -> &Requester {
+        &self.requester
     }
 
     pub async fn request(&self, request: Request) -> Result<ResponseBody, RequestError> {
@@ -92,8 +100,16 @@ impl Session {
     }
 
     /// `None` only when the session's task has ended, as when the runtime shuts down.
+    ///
+    /// It is cancel safe, so it can wait in a `tokio::select!`.
     pub async fn next_update(&mut self) -> Option<SessionUpdate> {
-        self.updates.recv().await
+        loop {
+            match self.updates.recv().await? {
+                Received::Item(update) => return Some(update),
+                // The `Disconnected` that follows reports it.
+                Received::Lost => {}
+            }
+        }
     }
 }
 
@@ -102,17 +118,17 @@ async fn run(
     transport: Transport,
     backoff: Backoff,
     mut commands: mpsc::UnboundedReceiver<Command>,
-    updates: mpsc::Sender<SessionUpdate>,
+    updates: LossySender<SessionUpdate>,
 ) {
     let mut last_seq: Option<Seq> = None;
     let mut delay = backoff.initial;
     let mut attempt: u32 = 0;
     loop {
         attempt = attempt.saturating_add(1);
-        if updates
-            .send(SessionUpdate::Connecting { attempt })
+        let connecting = SessionUpdate::Connecting { attempt };
+        if report_while_disconnected(connecting, &mut commands, &updates)
             .await
-            .is_err()
+            .is_none()
         {
             return;
         }
@@ -127,17 +143,13 @@ async fn run(
                 if let Catchup::Snapshot(snapshot) = &catchup {
                     last_seq = snapshot.last_seq;
                 }
-                if updates
-                    .send(SessionUpdate::Connected(catchup))
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-                let Some(error) = serve(connection, &mut commands, &updates, &mut last_seq).await
-                else {
+                let served = serve(connection, catchup, &mut commands, &updates, &mut last_seq);
+                let Some(error) = served.await else {
                     return;
                 };
+                if matches!(error, CloseError::EventsLost) {
+                    last_seq = None;
+                }
                 SessionError::Closed(error)
             }
             Err(error) => SessionError::Connect(error),
@@ -146,7 +158,10 @@ async fn run(
             error,
             retry_in: delay,
         };
-        if updates.send(disconnected).await.is_err() {
+        if report_while_disconnected(disconnected, &mut commands, &updates)
+            .await
+            .is_none()
+        {
             return;
         }
         let wait = tokio::time::sleep(delay);
@@ -160,38 +175,73 @@ async fn run(
     }
 }
 
+/// Queues `update`, waiting for room, and refuses the requests that come meanwhile. Returns `None`
+/// when the `Session` is dropped.
+async fn report_while_disconnected(
+    update: SessionUpdate,
+    commands: &mut mpsc::UnboundedReceiver<Command>,
+    updates: &LossySender<SessionUpdate>,
+) -> Option<()> {
+    while_disconnected(updates.send(update), commands, updates)
+        .await?
+        .ok()
+}
+
 /// Runs `future` and refuses the requests that come meanwhile, since no connection carries them.
 /// Returns `None` when the `Session` is dropped.
 async fn while_disconnected<F: Future>(
     future: F,
     commands: &mut mpsc::UnboundedReceiver<Command>,
-    updates: &mpsc::Sender<SessionUpdate>,
+    updates: &LossySender<SessionUpdate>,
+) -> Option<F::Output> {
+    let refuse = |command: Command| command.answer(Err(RequestError::NotConnected));
+    meanwhile(future, commands, updates, refuse).await
+}
+
+/// Runs `future` and hands the requests that come meanwhile to `handle`. Returns `None` when the
+/// `Session` is dropped.
+async fn meanwhile<F: Future>(
+    future: F,
+    commands: &mut mpsc::UnboundedReceiver<Command>,
+    updates: &LossySender<SessionUpdate>,
+    mut handle: impl FnMut(Command),
 ) -> Option<F::Output> {
     let mut future = std::pin::pin!(future);
     loop {
         tokio::select! {
             output = &mut future => return Some(output),
-            command = commands.recv() => command?.answer(Err(RequestError::NotConnected)),
+            command = commands.recv() => handle(command?),
             () = updates.closed() => return None,
         }
     }
 }
 
-/// Passes events to the session's user and requests to the connection, until the connection
-/// closes. Returns `None` when the `Session` is dropped.
+/// Reports the connection, then passes events to the session's user and requests to the
+/// connection, until the connection closes or an event finds the update queue full. Returns
+/// `None` when the `Session` is dropped.
 async fn serve(
     mut connection: Connection,
+    catchup: Catchup,
     commands: &mut mpsc::UnboundedReceiver<Command>,
-    updates: &mpsc::Sender<SessionUpdate>,
+    updates: &LossySender<SessionUpdate>,
     last_seq: &mut Option<Seq>,
 ) -> Option<CloseError> {
-    let requester = connection.requester();
+    let requester = connection.requester().clone();
+    let connected = updates.send(SessionUpdate::Connected(catchup));
+    let forward = |command| requester.forward(command);
+    meanwhile(connected, commands, updates, forward)
+        .await?
+        .ok()?;
     loop {
         tokio::select! {
             event = connection.next_event() => match event {
                 Ok(record) => {
-                    *last_seq = Some(record.seq);
-                    updates.send(SessionUpdate::Event(record)).await.ok()?;
+                    let seq = record.seq;
+                    match updates.send_or_drop(SessionUpdate::Event(record)) {
+                        Sent::Queued => *last_seq = Some(seq),
+                        Sent::Dropped => return Some(CloseError::EventsLost),
+                        Sent::Closed => return None,
+                    }
                 }
                 Err(error) => return Some(error),
             },
@@ -206,7 +256,8 @@ mod tests {
     use cockpit_protocol::{AgentId, AgentParams, Event};
 
     use super::*;
-    use crate::test_daemon::{TestDaemon, snapshot};
+    use crate::test_daemon;
+    use crate::test_daemon::{TestDaemon, in_time};
 
     const FAST: Backoff = Backoff {
         initial: Duration::from_millis(10),
@@ -226,6 +277,12 @@ mod tests {
         }
     }
 
+    fn interrupt() -> Request {
+        Request::AgentInterrupt(AgentParams {
+            agent: AgentId::new(3),
+        })
+    }
+
     #[tokio::test]
     async fn reconnects_with_the_last_seq_seen() {
         let daemon = TestDaemon::new();
@@ -237,13 +294,13 @@ mod tests {
             SessionUpdate::Connecting { attempt: 1 }
         ));
         let (peer, last_seq) = daemon
-            .accept_and_welcome(Catchup::Snapshot(snapshot(Some(10))))
+            .accept_and_welcome(Catchup::Snapshot(test_daemon::snapshot(Some(10))))
             .await;
         assert_eq!(last_seq, None);
         let SessionUpdate::Connected(Catchup::Snapshot(received)) = next(&mut session).await else {
             panic!("expected a snapshot");
         };
-        assert_eq!(received, snapshot(Some(10)));
+        assert_eq!(received, test_daemon::snapshot(Some(10)));
         drop(peer);
         let SessionUpdate::Disconnected { error, retry_in } = next(&mut session).await else {
             panic!("expected a disconnection");
@@ -348,5 +405,59 @@ mod tests {
             matches!(response, Err(RequestError::NotConnected)),
             "{response:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_session_whose_updates_overflow_reconnects_for_a_snapshot() {
+        let daemon = TestDaemon::new();
+        let mut session = Session::start(daemon.transport(), FAST);
+        let (mut peer, _) = daemon.accept_and_welcome(Catchup::Replay).await;
+        assert!(matches!(
+            next(&mut session).await,
+            SessionUpdate::Connecting { .. }
+        ));
+        assert!(matches!(
+            next(&mut session).await,
+            SessionUpdate::Connected(_)
+        ));
+        let flood = test_daemon::more_events_than_a_queue_holds();
+
+        // Nobody reads the updates, so the session drops them and the connection.
+        let closed = in_time(async {
+            for seq in 1..=flood {
+                peer.event(seq, removed(1)).await;
+            }
+            peer.next().await
+        })
+        .await;
+        let refused = in_time(session.request(interrupt())).await;
+        let disconnected = next(&mut session).await;
+        let connecting = next(&mut session).await;
+        let ((_peer, last_seq), connected) = tokio::join!(
+            daemon.accept_and_welcome(Catchup::Snapshot(test_daemon::snapshot(Some(flood)))),
+            next(&mut session),
+        );
+
+        assert_eq!(closed, None);
+        assert!(
+            matches!(refused, Err(RequestError::NotConnected)),
+            "{refused:?}"
+        );
+        let SessionUpdate::Disconnected { error, .. } = disconnected else {
+            panic!("expected a disconnection, got {disconnected:?}");
+        };
+        assert!(
+            matches!(error, SessionError::Closed(CloseError::EventsLost)),
+            "{error:?}"
+        );
+        assert!(
+            matches!(connecting, SessionUpdate::Connecting { attempt: 1 }),
+            "{connecting:?}"
+        );
+        assert_eq!(last_seq, None);
+        let SessionUpdate::Connected(Catchup::Snapshot(snapshot)) = connected else {
+            panic!("expected a snapshot, got {connected:?}");
+        };
+        assert_eq!(snapshot, test_daemon::snapshot(Some(flood)));
     }
 }
