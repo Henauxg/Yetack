@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
-use cockpit_protocol::{AgentId, Frame, PermissionMode, Request, ResponseResult, Seq, Snapshot};
+use cockpit_protocol::{
+    AgentId, CostUsd, Frame, PermissionMode, Request, ResponseResult, Seq, Snapshot,
+};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::process::ProcessEvent;
@@ -31,11 +33,11 @@ pub(crate) enum HubInput {
         found: Box<FoundSession>,
         reply: Reply,
     },
-    /// The cost Claude Code restores with the session one of an agent's processes resumed.
+    /// The cost Claude Code restored as one of the agent's processes resumed its session.
     RestoredCost {
         agent: AgentId,
         generation: u32,
-        cost: f64,
+        cost: CostUsd,
     },
 }
 

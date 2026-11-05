@@ -1024,10 +1024,9 @@ button:disabled {
 
 /* The column and the composer grow with the window up to 1600 px: past that, a user bubble on
    the right and the agent's text on the left drift too far apart to read as one conversation.
-   Prose keeps about 100 characters per line (90ch); tool calls, code, tables and diffs take the
-   column's whole width. */
+   Prose takes the column's whole width, as tool calls, code, tables and diffs do. */
 .chat-column {
-  --prose-width: 90ch;
+  --prose-width: 100%;
   display: flex;
   flex-direction: column;
   gap: 14px;
