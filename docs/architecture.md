@@ -178,17 +178,22 @@ The hub turns Claude Code messages into transcript items and status changes (mod
 - First message: the `initialize` control request.
   Its answer lists the slash commands and skills.
   The daemon then asks for the MCP status and the context usage, which Claude Code answers before the first prompt, so a new or resumed agent shows them at once.
+- An agent given no effort runs at the one Claude Code applies by itself. The daemon asks for it with `get_settings` once `initialize` is answered, and again after a model change, and the summary shows its `applied.effort` with `effort_is_default`.
+  Claude Code resolves it: the local, then the project settings file of the folder it runs in, else the model's default. The user's own `effortLevel` counts only for some models, so the daemon does not read the files itself.
 - A prompt goes to stdin as a `user` message, never as an argument: other users can read arguments with `ps`.
 - Claude Code asks for approvals with `can_use_tool` control requests.
   `AskUserQuestion` and `ExitPlanMode` come the same way; the hub shows them as a question or a plan instead of an approval.
   The answer is a `control_response` with `behavior: allow` (and `updatedInput`) or `behavior: deny` (and a message).
-- The daemon's own control requests (`interrupt`, `set_model`, `set_permission_mode`, `get_context_usage`, `mcp_status`, `mcp_reconnect`, `mcp_toggle`, `stop_task`) carry ids of its own.
+- The daemon's own control requests (`interrupt`, `set_model`, `set_permission_mode`, `get_context_usage`, `get_settings`, `mcp_status`, `mcp_reconnect`, `mcp_toggle`, `stop_task`) carry ids of its own.
   Claude Code echoes control responses; one whose id the daemon did not send is ignored.
 - Effort has no control request: the daemon sends `/effort <level>` as a prompt.
 - Naming a session has none either: `agent.rename` sends `/rename <title>`, so Claude Code's resume list and `sessions.list` show the name. Claude Code then writes `system/session_title_changed`, which also renames the agent after a `/rename` typed in the composer.
   As it starts, before it answers `initialize`, Claude Code restates the session's saved name the same way: the daemon leaves the agent's name, so a rename made while the agent was stopped stays.
+  When that saved name is not the agent's, the daemon sends `/rename <title>` once Claude Code has answered `initialize`, so the session takes the agent's name.
 - After `--resume`, Claude Code's `total_cost_usd` counts from the cost it restores: the `totalCostUSD` of the session file's last `cost-state` line, which Claude Code writes when its process exits.
-  The daemon reads that line in a task as the process starts, so the first turn's end shows that turn's cost alone. The agent's cost is Claude Code's total, the session's past included.
+  The daemon reads that line in a task as the process starts, so the first turn's end shows that turn's cost alone.
+  The agent's cost is Claude Code's total, the session's past included, or what the agent counted when that is more: a process killed with the daemon writes no `cost-state`, and a `/clear` starts a session whose cost leaves out the one before.
+  The agent's total can then read higher than Claude Code's own `/cost`.
 
 ### Store
 

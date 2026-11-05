@@ -42,6 +42,11 @@ pub(crate) fn effort_word(effort: Effort) -> Option<String> {
     serde_word(effort)
 }
 
+/// Reads a level Claude Code wrote; `None` for one the cockpit does not know.
+pub(crate) fn effort_from_word(word: &str) -> Option<Effort> {
+    serde_json::from_value(Value::String(word.to_owned())).ok()
+}
+
 /// Such as `image/png`: the protocol's own word.
 pub(crate) fn media_type_word(media_type: ImageMediaType) -> Option<String> {
     serde_word(media_type)
@@ -168,6 +173,11 @@ mod tests {
             assert_eq!(media_type_from_word(&word), Some(media_type));
         }
         assert_eq!(effort_word(Effort::Xhigh).as_deref(), Some("xhigh"));
+        for &effort in Effort::VARIANTS {
+            let word = effort_word(effort).unwrap_or_default();
+            assert_eq!(effort_from_word(&word), Some(effort), "{word}");
+        }
+        assert_eq!(effort_from_word("auto"), None);
         assert_eq!(media_type_from_word("image/tiff"), None);
     }
 }

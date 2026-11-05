@@ -440,6 +440,97 @@ async fn an_agent_answers_a_prompt_and_reports_its_state() {
 }
 
 #[tokio::test]
+async fn an_agent_without_an_effort_shows_the_one_claude_code_applies() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let start = |effort: Option<Effort>| {
+        Request::AgentStart(StartParams {
+            folder: setup.work(),
+            title: None,
+            model: None,
+            effort,
+            mode: None,
+            prompt: None,
+        })
+    };
+
+    let ResponseBody::AgentStarted { agent } = client.ok(start(None)).await else {
+        panic!("expected AgentStarted");
+    };
+    let applied = client
+        .summary_with(agent, |summary| summary.effort.is_some())
+        .await;
+    let set_model = SetModelParams {
+        agent,
+        model: "other-model".to_owned(),
+    };
+    client.ok(Request::AgentSetModel(set_model)).await;
+    let other_model = client
+        .summary_with(agent, |summary| summary.effort == Some(Effort::Low))
+        .await;
+    let set_effort = SetEffortParams {
+        agent,
+        effort: Effort::High,
+    };
+    client.ok(Request::AgentSetEffort(set_effort)).await;
+    let given = client
+        .summary_with(agent, |summary| summary.effort == Some(Effort::High))
+        .await;
+    let ResponseBody::AgentStarted { agent: explicit } =
+        client.ok(start(Some(Effort::Xhigh))).await
+    else {
+        panic!("expected AgentStarted");
+    };
+    // The context usage comes after the settings an agent without an effort asks for.
+    let started = client
+        .summary_with(explicit, |summary| summary.context_percent.is_some())
+        .await;
+
+    assert_eq!(
+        (applied.effort, applied.effort_is_default),
+        (Some(Effort::Medium), true)
+    );
+    assert!(other_model.effort_is_default, "the new model's default");
+    assert!(!given.effort_is_default);
+    assert_eq!(
+        (started.effort, started.effort_is_default),
+        (Some(Effort::Xhigh), false)
+    );
+}
+
+#[tokio::test]
+async fn a_start_reads_its_title_as_a_rename_does() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let start = |title: Option<&str>| {
+        Request::AgentStart(StartParams {
+            folder: setup.work(),
+            title: title.map(str::to_owned),
+            model: None,
+            effort: None,
+            mode: None,
+            prompt: Some(text("Fix the cart\nand its test")),
+        })
+    };
+
+    let blank = client.error_code(start(Some(" \n "))).await;
+    let ResponseBody::AgentStarted { agent: titled } =
+        client.ok(start(Some("  Cart \n total "))).await
+    else {
+        panic!("expected AgentStarted");
+    };
+    let named = client.summary_with(titled, |_| true).await;
+    let ResponseBody::AgentStarted { agent: untitled } = client.ok(start(None)).await else {
+        panic!("expected AgentStarted");
+    };
+    let unnamed = client.summary_with(untitled, |_| true).await;
+
+    assert_eq!(blank, ErrorCode::InvalidRequest);
+    assert_eq!(named.title, "Cart total");
+    assert_eq!(unnamed.title, "Fix the cart", "the prompt's first line");
+}
+
+#[tokio::test]
 async fn a_new_agent_shows_its_mcp_servers_and_context_before_any_prompt() {
     let setup = Setup::new();
     let mut client = setup.connect().await;
@@ -546,14 +637,31 @@ async fn a_rename_made_while_the_agent_is_stopped_outlives_its_resume() {
 
     client.ok(rename("Checkout")).await;
     client.ok(Request::AgentResume(AgentParams { agent })).await;
-    // The fake restates the session's name before it answers `initialize`, so before this turn.
+    // The fake restates the session's old name before it answers `initialize`: the daemon then
+    // gives the session the agent's name.
+    let renamed_session = |body: &ItemBody| matches!(body, ItemBody::Notice { text } if text == "Session renamed to: Checkout");
+    client.item_with(agent, renamed_session).await;
     client.prompt(agent, "after the resume").await;
     client.says(agent, "Echo: after the resume").await;
     let idle = client.idle(agent).await;
+    client.ok(Request::AgentStop(AgentParams { agent })).await;
+    client
+        .summary_with(agent, |summary| summary.status == AgentStatus::Exited)
+        .await;
+    client.ok(Request::AgentResume(AgentParams { agent })).await;
+    client.prompt(agent, "after a second resume").await;
+    client.says(agent, "Echo: after a second resume").await;
 
     assert_eq!(idle.title, "Checkout");
     let saved = std::fs::read_to_string(setup.state().join("agents.json")).unwrap();
     assert!(saved.contains("\"Checkout\""), "{saved}");
+    let renames = client
+        .history(agent)
+        .await
+        .into_iter()
+        .filter(|item| renamed_session(&item.body))
+        .count();
+    assert_eq!(renames, 1, "a session with the agent's name gets no rename");
 }
 
 #[tokio::test]

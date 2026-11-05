@@ -1380,7 +1380,9 @@ pub fn open_new_agent(state: &mut AppState) {
         .and_then(|summary| summary.model.as_deref())
         .and_then(format::model_alias)
         .map(str::to_owned);
-    let effort = last.and_then(|summary| summary.effort);
+    let effort = last
+        .filter(|summary| !summary.effort_is_default)
+        .and_then(|summary| summary.effort);
     let mode = last.map(|summary| summary.mode);
     if state.sessions != Loadable::Loading {
         state.sessions = Loadable::NotRequested;

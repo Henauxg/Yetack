@@ -143,8 +143,8 @@ pub(crate) struct AgentView {
     /// from the cost it restores with a resumed session.
     process_cost: f64,
     /// The part of the agent's cost that the process's `total_cost_usd` does not count: the
-    /// earlier processes' cost after a new session, none after a resumed one (Claude Code
-    /// restores it), and what came before a `/clear`.
+    /// earlier processes' cost after a new session, what Claude Code did not restore after a
+    /// resumed one, and what came before a `/clear`.
     cost_before_process: f64,
     /// Until the process's first `result`, the cost a resumed session restores can still become
     /// the first turn's base.
@@ -152,6 +152,8 @@ pub(crate) struct AgentView {
     /// Claude Code restates the session's saved name as it starts, before it answers
     /// `initialize`: that name must not replace one the agent got while it was stopped.
     takes_session_titles: bool,
+    /// The name Claude Code restated as the process started, until it answers `initialize`.
+    restated_title: Option<String>,
     awaited_echoes: VecDeque<String>,
     /// Calls per tool name, for the MCP servers' tool counts.
     tool_counts: HashMap<String, u32>,
@@ -178,6 +180,7 @@ impl AgentView {
             cost_before_process: 0.0,
             awaits_restored_cost: false,
             takes_session_titles: false,
+            restated_title: None,
             awaited_echoes: VecDeque::new(),
             tool_counts: HashMap::new(),
             skills: BTreeSet::new(),
@@ -233,6 +236,7 @@ impl AgentView {
             pending_count: 0,
             model: None,
             effort: None,
+            effort_is_default: false,
             mode: PermissionMode::Default,
             task_progress: None,
             context_percent: None,
@@ -518,25 +522,38 @@ impl AgentView {
         self.process_cost = 0.0;
         self.awaits_restored_cost = session == ProcessSession::Resumed;
         self.takes_session_titles = false;
+        self.restated_title = None;
         self.pending.clear();
         self.tool_calls.clear();
     }
 
     /// The process answered `initialize`: from now on, a name Claude Code gives the session, as
-    /// after a `/rename`, renames the agent.
-    pub(crate) fn initialized(&mut self) {
+    /// after a `/rename`, renames the agent. True when the name Claude Code restated for the
+    /// session as it started is not the agent's, as after a rename made while the agent was
+    /// stopped: the session needs a `/rename`.
+    #[must_use]
+    pub(crate) fn initialized(&mut self) -> bool {
         self.takes_session_titles = true;
+        self.restated_title
+            .take()
+            .is_some_and(|restated| restated != self.summary.title)
     }
 
     /// The cost Claude Code restored with a resumed session, read from the session file. It is
     /// the base of the first turn's cost, unless a `result` came first: the first turn's cost then
     /// counts from 0.
+    ///
+    /// The agent's cost keeps what the agent counted, which can be more than Claude Code restores:
+    /// a process killed with the daemon writes no `cost-state`, and a `/clear` starts a session
+    /// whose cost leaves out the one before. The agent's total can then read higher than Claude
+    /// Code's own `/cost`.
     pub(crate) fn set_restored_cost(&mut self, cost: CostUsd) {
         if !self.awaits_restored_cost {
             return;
         }
         self.awaits_restored_cost = false;
         self.process_cost = cost.get();
+        self.cost_before_process = (self.summary.cost.get() - cost.get()).max(0.0);
         self.summary.cost = CostUsd::new(self.cost_before_process + cost.get());
     }
 
@@ -585,6 +602,14 @@ impl AgentView {
 
     pub(crate) fn set_effort(&mut self, effort: Effort) {
         self.summary.effort = Some(effort);
+        self.summary.effort_is_default = false;
+    }
+
+    /// The effort Claude Code applies by itself to an agent that was given none, from its
+    /// settings or the model's default; `None` when it applies none, or does not say.
+    pub(crate) fn set_default_effort(&mut self, effort: Option<Effort>) {
+        self.summary.effort = effort;
+        self.summary.effort_is_default = effort.is_some();
     }
 
     pub(crate) fn set_title(&mut self, title: String) {
@@ -640,16 +665,18 @@ impl AgentView {
                         },
                     );
                 }
-                Some(UntypedSystemSubtype::SessionTitleChanged) if self.takes_session_titles => {
+                Some(UntypedSystemSubtype::SessionTitleChanged) => {
                     let title = value.get(TITLE_KEY).and_then(Value::as_str).map(str::trim);
                     if let Some(title) = title.filter(|title| !title.is_empty()) {
-                        self.summary.title = sessions::shorten(title);
+                        let title = sessions::shorten(title);
+                        if self.takes_session_titles {
+                            self.summary.title = title;
+                        } else {
+                            self.restated_title = Some(title);
+                        }
                     }
                 }
-                Some(
-                    UntypedSystemSubtype::SessionTitleChanged | UntypedSystemSubtype::LocalCommand,
-                )
-                | None => {}
+                Some(UntypedSystemSubtype::LocalCommand) | None => {}
             },
             SystemEvent::ThinkingTokens(_)
             | SystemEvent::HookStarted(_)
@@ -1308,6 +1335,7 @@ mod tests {
             pending_count: 0,
             model: None,
             effort: None,
+            effort_is_default: false,
             mode: PermissionMode::Default,
             task_progress: None,
             context_percent: None,
@@ -2093,6 +2121,50 @@ mod tests {
         assert_eq!(turn_costs(&view), [CostUsd::new(2.0), CostUsd::new(0.25)]);
     }
 
+    /// A process killed with the daemon writes no `cost-state`, so Claude Code restores less than
+    /// the agent spent, here nothing.
+    #[test]
+    fn a_resume_after_a_kill_keeps_the_cost_the_agent_counted() {
+        let mut view = view();
+        apply(&mut view, result(2.0));
+        view.process_exited("claude was killed by signal 9".to_owned(), now());
+
+        view.process_started(ProcessSession::Resumed);
+        view.set_restored_cost(CostUsd::new(0.0));
+        let restored = view.summary().cost;
+        apply(&mut view, result(0.25));
+
+        assert_eq!(restored, CostUsd::new(2.0));
+        assert_eq!(view.summary().cost, CostUsd::new(2.25));
+        assert_eq!(turn_costs(&view), [CostUsd::new(2.0), CostUsd::new(0.25)]);
+    }
+
+    /// Claude Code restores the cost of the conversation a `/clear` started, not of the one
+    /// before it.
+    #[test]
+    fn a_resume_after_a_clear_keeps_the_cost_spent_before_it() {
+        let mut view = view();
+        apply(&mut view, result(1.5));
+        apply(
+            &mut view,
+            json!({"type": "conversation_reset", "trigger": "clear", "session_id": "session-1"}),
+        );
+        apply(&mut view, result(0.25));
+        view.process_exited("claude exited".to_owned(), now());
+
+        view.process_started(ProcessSession::Resumed);
+        view.set_restored_cost(CostUsd::new(0.25));
+        let restored = view.summary().cost;
+        apply(&mut view, result(0.75));
+
+        assert_eq!(restored, CostUsd::new(1.75));
+        assert_eq!(view.summary().cost, CostUsd::new(2.25));
+        assert_eq!(
+            turn_costs(&view),
+            [CostUsd::new(1.5), CostUsd::new(0.25), CostUsd::new(0.5)]
+        );
+    }
+
     fn turn_costs(view: &AgentView) -> Vec<CostUsd> {
         view.items()
             .iter()
@@ -2301,7 +2373,7 @@ mod tests {
     #[test]
     fn claude_code_naming_the_session_renames_the_agent() {
         let mut view = view();
-        view.initialized();
+        let renames_session = view.initialized();
 
         apply(
             &mut view,
@@ -2315,29 +2387,63 @@ mod tests {
                    "session_id": "session-1"}),
         );
 
+        assert!(!renames_session, "Claude Code restated no name");
         assert_eq!(named, "Cart fix");
         assert_eq!(view.summary().title, "Cart fix");
+    }
+
+    fn named(title: &str) -> Value {
+        json!({"type": "system", "subtype": "session_title_changed", "title": title,
+               "session_id": "session-1"})
     }
 
     #[test]
     fn the_name_claude_code_restates_as_it_starts_keeps_the_agents_own() {
         let mut view = view();
-        view.initialized();
         view.process_exited("claude exited".to_owned(), now());
         view.set_title("Checkout".to_owned());
-        let named = |title: &str| {
-            json!({"type": "system", "subtype": "session_title_changed", "title": title,
-                   "session_id": "session-1"})
-        };
 
         view.process_started(ProcessSession::Resumed);
         apply(&mut view, named("Cart total"));
         let at_start = view.summary().title.clone();
-        view.initialized();
+        let renames_session = view.initialized();
         apply(&mut view, named("Cart fix"));
 
         assert_eq!(at_start, "Checkout");
+        assert!(renames_session, "the session still has its old name");
         assert_eq!(view.summary().title, "Cart fix");
+    }
+
+    #[test]
+    fn a_restated_name_that_is_the_agents_needs_no_rename() {
+        let mut view = view();
+        view.set_title("Checkout".to_owned());
+
+        view.process_started(ProcessSession::Resumed);
+        apply(&mut view, named("  Checkout "));
+        let same = view.initialized();
+        view.process_started(ProcessSession::Resumed);
+        let none = view.initialized();
+
+        assert!(!same, "the session has the agent's name");
+        assert!(!none, "Claude Code restated no name");
+        assert_eq!(view.summary().title, "Checkout");
+    }
+
+    #[test]
+    fn a_given_effort_replaces_the_default_one_and_is_no_default() {
+        let mut view = view();
+
+        view.set_default_effort(Some(Effort::Medium));
+        let default = (view.summary().effort, view.summary().effort_is_default);
+        view.set_effort(Effort::High);
+        let given = (view.summary().effort, view.summary().effort_is_default);
+        view.set_default_effort(None);
+        let unknown = (view.summary().effort, view.summary().effort_is_default);
+
+        assert_eq!(default, (Some(Effort::Medium), true));
+        assert_eq!(given, (Some(Effort::High), false));
+        assert_eq!(unknown, (None, false));
     }
 
     #[test]

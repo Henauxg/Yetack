@@ -247,6 +247,7 @@ pub(crate) mod tests {
             pending_count: 0,
             model: None,
             effort: None,
+            effort_is_default: false,
             mode: PermissionMode::Default,
             task_progress: None,
             context_percent: None,
