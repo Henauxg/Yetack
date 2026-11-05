@@ -63,6 +63,9 @@ pub struct AgentEntry {
     pub files: BTreeMap<PathBuf, Loadable<String>>,
     /// An `agent.commands` request is on its way.
     pub commands_requested: bool,
+    /// When the app saw the agent's current turn start. `None` between turns, and for a turn
+    /// already running when the app connected: the daemon does not say when a turn started.
+    pub turn_started: Option<Instant>,
 }
 
 impl AgentEntry {
@@ -74,6 +77,7 @@ impl AgentEntry {
             context_loading: false,
             files: BTreeMap::new(),
             commands_requested: false,
+            turn_started: None,
         }
     }
 

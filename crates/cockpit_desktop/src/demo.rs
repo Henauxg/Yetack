@@ -2,7 +2,7 @@
 //! requests that read data are answered from the sample; the others do nothing.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_client::RequestError;
 use cockpit_protocol::{
@@ -26,6 +26,9 @@ pub const DEMO_FLAG: &str = "--demo";
 const PARSER_FOLDER: &str = "/home/dev/projects/calc-parser";
 const SERVICE_FOLDER: &str = "/home/dev/projects/calc-service";
 const PLATFORM_FOLDER: &str = "/home/dev/projects/acme-platform";
+
+/// How long the working agent's turn has run when the demo starts.
+const TURN_ELAPSED: Duration = Duration::from_secs(4 * 60 + 12);
 
 const ERROR_FILE: &str = "src/error.rs";
 const TEST_FILE: &str = "tests/columns.rs";
@@ -118,10 +121,13 @@ The parser builds every error at `src/error.rs:2`. The lexer already counts the 
 - The column is a `u32` on `Token`.
 - No new dependency is needed.";
 
-const BENCHMARK_ANSWER: &str = "The benchmark runs in CI now. The slowest cases:
-deep_nesting: 2.4 ms
-long_sum: 1.1 ms
-many_parentheses: 0.9 ms
+const BENCHMARK_ANSWER: &str = "The benchmark runs in CI now. The slowest cases, against `main`:
+
+| Case | `main` | This branch | Change | Samples | Slowest input |
+| --- | --- | --- | --- | --- | --- |
+| deep_nesting | 2.61 ms | 2.41 ms | -7.7% | 100 | `((((((((((1+2)*3)-4)/5)+6)*7)-8)/9)+10)*11)-12` |
+| long_sum | 1.08 ms | 1.10 ms | +1.9% | 100 | `1+2+3+4+5+6+7+8+9+10+11+12+13+14+15+16+17+18+19+20` |
+| many_parentheses | 0.93 ms | 0.90 ms | -3.2% | 100 | `((((((((((((((((((((1))))))))))))))))))))` |
 
 To compare two runs by hand:
 
@@ -133,6 +139,9 @@ cargo bench --bench eval -- --baseline before
 ```
 
 The CI job fails when a case gets **10%** slower than on `main`.";
+
+const TICKETS_OUTPUT: &str = "#41 Errors point at the wrong column (open, label: errors)
+#57 Column is off by one after a tab (open, label: errors)";
 
 const PLAN_TEXT: &str = "## Add a result cache
 
@@ -165,6 +174,9 @@ pub fn state(daemon: DaemonLabel) -> AppState {
             has_older: false,
         });
         entry.details = Loadable::Loaded(sample.details);
+        if entry.summary.status == AgentStatus::Working {
+            entry.turn_started = Instant::now().checked_sub(TURN_ELAPSED);
+        }
         state.agents.insert(entry.id(), entry);
     }
     state.plan_usage = plan_usage(now);
@@ -320,6 +332,19 @@ fn call(tool: &str, summary: &str, status: ToolCallStatus, output: Option<&str>)
         output: output.map(str::to_owned),
         exit_code: None,
         edit: None,
+    }
+}
+
+/// A `Bash` call with the description Claude Code sends with it.
+fn bash(
+    description: &str,
+    command: &str,
+    status: ToolCallStatus,
+    output: Option<&str>,
+) -> ToolCall {
+    ToolCall {
+        input: serde_json::json!({"command": command, "description": description}),
+        ..call("Bash", command, status, output)
     }
 }
 
@@ -499,11 +524,20 @@ fn parser_agent(now: SystemTime) -> Sample {
     summary.cost = CostUsd::new(3.4);
     let failed = ToolCall {
         exit_code: Some(101),
-        ..call(
-            "Bash",
+        ..bash(
+            "Run the parser tests",
             "cargo test parser",
             ToolCallStatus::Failed,
             Some(FAILED_TEST_OUTPUT),
+        )
+    };
+    let tickets = ToolCall {
+        input: serde_json::json!({"project": "calc-parser", "label": "errors", "state": "open"}),
+        ..call(
+            "mcp__tickets__list_tickets",
+            "",
+            ToolCallStatus::Done,
+            Some(TICKETS_OUTPUT),
         )
     };
     let items = vec![
@@ -518,10 +552,17 @@ fn parser_agent(now: SystemTime) -> Sample {
         item(
             2,
             None,
-            text("I will have a subagent map where the errors are built first."),
+            ItemBody::Thinking {
+                text: "The lexer knows each token's column. The question is where the parser builds its errors, and whether one place builds them all.".to_owned(),
+            },
         ),
         item(
             3,
+            None,
+            text("I will have a subagent map where the errors are built first."),
+        ),
+        item(
+            4,
             None,
             ItemBody::Subagent(call(
                 "Task",
@@ -533,13 +574,13 @@ fn parser_agent(now: SystemTime) -> Sample {
             )),
         ),
         item(
-            4,
-            Some(3),
+            5,
+            Some(4),
             ItemBody::ToolCall(call("Read", "src/parser.rs", ToolCallStatus::Done, None)),
         ),
         item(
-            5,
-            Some(3),
+            6,
+            Some(4),
             ItemBody::ToolCall(call(
                 "Grep",
                 "ParseError in src/",
@@ -548,13 +589,24 @@ fn parser_agent(now: SystemTime) -> Sample {
             )),
         ),
         item(
-            6,
-            Some(3),
-            ItemBody::ToolCall(call("Read", ERROR_FILE, ToolCallStatus::Done, None)),
+            7,
+            Some(4),
+            ItemBody::ToolCall(bash(
+                "Count the places that build an error",
+                "rg -c 'ParseError \\{' src/",
+                ToolCallStatus::Done,
+                Some("src/parser.rs:3"),
+            )),
         ),
-        item(7, None, text(FINDINGS)),
         item(
             8,
+            Some(4),
+            ItemBody::ToolCall(call("Read", ERROR_FILE, ToolCallStatus::Done, None)),
+        ),
+        item(9, None, ItemBody::ToolCall(tickets)),
+        item(10, None, text(FINDINGS)),
+        item(
+            11,
             None,
             edit_call(
                 "Edit",
@@ -563,33 +615,33 @@ fn parser_agent(now: SystemTime) -> Sample {
                 "    pub line: u32,\n    /// Counted from 1, as editors show it.\n    pub column: u32,\n",
             ),
         ),
-        item(9, None, edit_call("Write", TEST_FILE, "", TEST_TEXT)),
-        item(10, None, ItemBody::ToolCall(failed)),
+        item(12, None, edit_call("Write", TEST_FILE, "", TEST_TEXT)),
+        item(13, None, ItemBody::ToolCall(failed)),
         item(
-            11,
+            14,
             None,
             text(
                 "The test expects the column to count from 1, and the lexer counts from 0. See `tests/columns.rs:6`. I am fixing the lexer.",
             ),
         ),
         item(
-            12,
+            15,
             None,
             edit_call("Edit", LEXER_FILE, LEXER_LINE_BEFORE, LEXER_LINE_AFTER),
         ),
-        item(13, None, text(FIX_ANSWER)),
+        item(16, None, text(FIX_ANSWER)),
         item(
-            14,
+            17,
             None,
-            ItemBody::ToolCall(call(
-                "Bash",
+            ItemBody::ToolCall(bash(
+                "Run the parser tests again",
                 "cargo test parser",
                 ToolCallStatus::Running,
                 None,
             )),
         ),
         item(
-            15,
+            18,
             None,
             user("Also cover a token at the end of the input.", true),
         ),
@@ -701,8 +753,8 @@ fn question_agent(now: SystemTime) -> Sample {
         item(
             2,
             None,
-            ItemBody::ToolCall(call(
-                "Bash",
+            ItemBody::ToolCall(bash(
+                "List the commits since the last release",
                 "git log --oneline v0.3.0..",
                 ToolCallStatus::Done,
                 Some("12 commits"),
@@ -755,8 +807,8 @@ fn approval_agent(now: SystemTime) -> Sample {
         item(
             2,
             None,
-            ItemBody::ToolCall(call(
-                "Bash",
+            ItemBody::ToolCall(bash(
+                "Check the links",
                 "npm run check-links",
                 ToolCallStatus::Done,
                 Some("0 broken links"),
@@ -765,8 +817,8 @@ fn approval_agent(now: SystemTime) -> Sample {
         item(
             3,
             None,
-            ItemBody::ToolCall(call(
-                "Bash",
+            ItemBody::ToolCall(bash(
+                "Push the branch so the preview builds",
                 "git push -u origin fix-links",
                 ToolCallStatus::Running,
                 None,
@@ -862,8 +914,8 @@ fn benchmark_agent(now: SystemTime) -> Sample {
         item(
             2,
             None,
-            ItemBody::ToolCall(call(
-                "Bash",
+            ItemBody::ToolCall(bash(
+                "Run the benchmark",
                 "cargo bench --bench eval",
                 ToolCallStatus::Done,
                 Some("eval/deep_nesting  time: [2.38 ms 2.41 ms 2.44 ms]"),

@@ -7,9 +7,13 @@ use cockpit_protocol::AgentId;
 use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
-use crate::render::{Block, FileRef, Inline, parse_markdown};
+use crate::render::{self, Block, FileRef, Inline, parse_markdown};
 use crate::state::actions;
 use crate::ui::code::CodeBlock;
+
+/// A table cell this short keeps to one line: a name, a number or a status reads badly wrapped,
+/// and a table too wide for the column scrolls instead.
+const SHORT_CELL_CHARS: usize = 30;
 
 /// `folder` is the agent's, where the files its links open must be.
 #[component]
@@ -72,27 +76,40 @@ fn block_view(agent: AgentId, block: &Block) -> Element {
             CodeBlock { language: language.clone(), code: code.clone() }
         },
         Block::Table { head, rows } => {
+            // A short row gets empty cells, so that every row draws the same borders.
             let columns = rows
                 .iter()
                 .map(Vec::len)
                 .chain(std::iter::once(head.len()))
                 .max()
-                .unwrap_or(1)
-                .max(1);
-            let grid = format!("grid-template-columns: repeat({columns}, minmax(0, 1fr))");
+                .unwrap_or(0);
             rsx! {
-                div { class: "md-table", role: "table",
-                    if !head.is_empty() {
-                        div { class: "md-row head", role: "row", style: "{grid}",
-                            for cell in head.iter() {
-                                div { class: "md-cell", role: "columnheader", {inlines_view(agent, cell)} }
+                div { class: "md-table scroll-x",
+                    table {
+                        if !head.is_empty() {
+                            thead {
+                                tr {
+                                    for index in 0..columns {
+                                        th { class: cell_class(head.get(index).map(Vec::as_slice)),
+                                            if let Some(cell) = head.get(index) {
+                                                {inlines_view(agent, cell)}
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
-                    }
-                    for row in rows.iter() {
-                        div { class: "md-row", role: "row", style: "{grid}",
-                            for cell in row.iter() {
-                                div { class: "md-cell", role: "cell", {inlines_view(agent, cell)} }
+                        tbody {
+                            for row in rows.iter() {
+                                tr {
+                                    for index in 0..columns {
+                                        td { class: cell_class(row.get(index).map(Vec::as_slice)),
+                                            if let Some(cell) = row.get(index) {
+                                                {inlines_view(agent, cell)}
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -105,6 +122,13 @@ fn block_view(agent: AgentId, block: &Block) -> Element {
         Block::Rule => rsx! {
             hr { class: "md-rule" }
         },
+    }
+}
+
+fn cell_class(cell: Option<&[Inline]>) -> &'static str {
+    match cell {
+        Some(cell) if render::plain_text(cell).chars().count() <= SHORT_CELL_CHARS => "short",
+        _ => "",
     }
 }
 
