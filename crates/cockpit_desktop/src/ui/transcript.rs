@@ -152,22 +152,17 @@ pub fn TranscriptView() -> Element {
     let links = step_links(&is_step, working);
     let working_linked = is_step.last().copied().unwrap_or(false);
     let notes = older_step_notes(top_items, &loaded);
-    let top: Vec<(
-        TranscriptItem,
-        Vec<TranscriptItem>,
-        bool,
-        Option<Step>,
-        bool,
-    )> = top_items
+    let top: Vec<TopRow> = top_items
         .iter()
         .zip(states)
         .zip(links)
         .zip(notes)
-        .map(|(((item, state), links), older_step)| {
-            let step = state.map(|state| Step { state, links });
-            let nested = subtree(&children, item.id);
-            let awaits = awaiting.contains(&item.id);
-            ((*item).clone(), nested, awaits, step, older_step)
+        .map(|(((item, state), links), older_step)| TopRow {
+            item: (*item).clone(),
+            nested: subtree(&children, item.id),
+            awaits_approval: awaiting.contains(&item.id),
+            step: state.map(|state| Step { state, links }),
+            older_step,
         })
         .collect();
     let history = entry.transcript.history().clone();
@@ -222,7 +217,7 @@ pub fn TranscriptView() -> Element {
                 }
                 // Item ids repeat across agents: with the agent in the key, another agent's item
                 // never takes over the state of this one's (a fold, a typed answer).
-                for (item, nested, awaits_approval, step, older_step) in top {
+                for TopRow { item, nested, awaits_approval, step, older_step } in top {
                     TranscriptRow { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), new_above: divider == Some(item.id), item, nested, awaits_approval, step, older_step }
                 }
                 if working {
@@ -235,6 +230,15 @@ pub fn TranscriptView() -> Element {
         }
         JumpToLatest { shown: scrolled_up.is_some(), count: waiting }
     }
+}
+
+/// What a row of the main conversation needs, as `TranscriptRow` takes it.
+struct TopRow {
+    item: TranscriptItem,
+    nested: Vec<TranscriptItem>,
+    awaits_approval: bool,
+    step: Option<Step>,
+    older_step: bool,
 }
 
 /// Where a step of a turn stands, as its dot's color says it.
