@@ -242,6 +242,23 @@ Options set aside:
 4. Polish: diff views for file edits, a desktop notification when an agent becomes blocked, keyboard shortcuts.
 5. Agent map: the subagent list in `AgentDetails`, filled by the daemon, then the map dialog and its node details in the app.
 
+### Follow-up pass after the v1 reviews
+
+Data the mockups show but the protocol does not carry yet, and choices approved during the reviews:
+
+- Queued prompts leave the transcript: they live in a queue in `AgentDetails`, which the app draws pinned under the transcript with Cancel. When the daemon sends one to Claude, it leaves the queue and a normal user message is appended at the end of the transcript, so each message sits where Claude read it.
+- `AgentSummary` gains the time of the last activity (the "12 s" on sidebar rows).
+- Tool calls gain start and end times (the "exit 0, 18 s" on tool lines).
+- An `Edit` gains the line where it applies, for line numbers in inline diffs.
+- Recent folders carry their git branch; past sessions say where they started (a terminal, an editor); pasted images keep their file name.
+- `Settings` gains the prompt cache TTL, so the app can change it.
+- `cockpit_client` exports the default socket path, so the app and the daemon cannot disagree on it.
+- A remote daemon with a non-default state folder: `Transport::Ssh` passes `--state-dir`.
+- The folder of `agent.start` may start with `~`: the daemon expands it to the daemon user's home.
+- Deny and "No, keep planning" get an optional message field in the app (the daemon already sends it).
+- Syntax colors for Nix and TOML files.
+- CLI commands for model, mode, effort, history and MCP servers.
+
 ## Background
 
 - herdr ([github.com/herdrdev/herdr](https://github.com/herdrdev/herdr)) runs Claude Code in its terminal interface inside a pseudo-terminal and reads the screen to detect status.
