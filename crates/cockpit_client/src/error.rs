@@ -35,7 +35,7 @@ pub enum ConnectError {
     Frame(#[from] FrameError),
 }
 
-/// Why an established connection ended.
+/// Why an established connection ended, or lost events.
 #[derive(Debug, thiserror::Error)]
 pub enum CloseError {
     #[error("the daemon closed the connection")]
@@ -45,6 +45,10 @@ pub enum CloseError {
     /// The reason was returned by an earlier call.
     #[error("the connection is closed")]
     AlreadyClosed,
+    /// Events came faster than they were read, so the ones waiting were dropped. A `Connection`
+    /// stays open after it. Reconnecting without a last `Seq` gives a snapshot.
+    #[error("events came faster than they were read, so the waiting ones were dropped")]
+    EventsLost,
 }
 
 #[derive(Debug, thiserror::Error)]

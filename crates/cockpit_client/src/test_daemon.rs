@@ -1,6 +1,7 @@
 //! A daemon for tests: a Unix socket in a temporary folder, driven step by step by the test.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use cockpit_protocol::{
     Catchup, ClientMessage, Event, EventRecord, Frame, FrameReader, PROTOCOL_VERSION, PlanUsage,
@@ -11,6 +12,7 @@ use tokio::io::BufReader;
 use tokio::net::UnixListener;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
+use crate::connection::EVENT_QUEUE;
 use crate::transport::Transport;
 
 pub(crate) struct TestDaemon {
@@ -23,6 +25,18 @@ pub(crate) struct TestDaemon {
 pub(crate) struct Peer {
     reader: FrameReader<BufReader<OwnedReadHalf>>,
     writer: OwnedWriteHalf,
+}
+
+/// One event more than a connection or a session queues.
+pub(crate) fn more_events_than_a_queue_holds() -> u64 {
+    u64::try_from(EVENT_QUEUE).unwrap() + 1
+}
+
+/// Runs `future`, and fails the test when it takes more than 5 seconds.
+pub(crate) async fn in_time<F: Future>(future: F) -> F::Output {
+    tokio::time::timeout(Duration::from_secs(5), future)
+        .await
+        .expect("done within 5 seconds")
 }
 
 pub(crate) fn snapshot(last_seq: Option<u64>) -> Snapshot {
