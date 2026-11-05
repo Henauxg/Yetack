@@ -9,23 +9,23 @@ use cockpit_protocol::{
     AgentId, AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState,
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, CancelQueuedParams, ClaudeSessionId,
     Effort, Image, ItemBody, ItemId, McpRemoveParams, McpScope, McpServerParams, McpToggleParams,
-    PastSession, PendingId, PermissionMode, PlanAnswer, PlanDecision, Prompt, PromptParams,
-    Question, QuestionAnswer, RenameParams, Request, SessionResumeParams, SetEffortParams,
-    SetModeParams, SetModelParams, SlashCommand, StartParams, StopTaskParams,
+    MoveParams, PastSession, PendingId, PermissionMode, Placed, PlanAnswer, PlanDecision, Prompt,
+    PromptParams, Question, QuestionAnswer, RenameParams, Request, SessionResumeParams,
+    SetEffortParams, SetModeParams, SetModelParams, SlashCommand, StartParams, StopTaskParams,
 };
 use strum::VariantArray;
 
 use super::app_state::{AgentEntry, AppState, Loadable};
 use super::drafts::{Drafts, Palette, QuestionDraft};
-use super::requests::{Outgoing, Purpose, history_request};
+use super::requests::{Outgoing, Purpose, Shift, history_request};
 use super::transcript::HistoryState;
 use super::ui_state::{
     Block, Dialog, FileView, NewAgentForm, NewAgentTab, PaletteOrigin, Popover, Switcher,
-    TitleEdit, ToolFilter, ViewMode,
+    TitleEdit, TitlePlace, ToolFilter, ViewMode,
 };
 use super::{export, file_edits};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
-use crate::prefs;
+use crate::prefs::{self, StatusFilter};
 
 /// What starts a slash command in the composer.
 pub const COMMAND_PREFIX: char = '/';
@@ -512,13 +512,56 @@ pub fn palette_pick(
 
 /// Turns the header's title into a field holding it.
 pub fn start_rename(state: &mut AppState, drafts: &mut Drafts, agent: AgentId) {
+    start_rename_at(state, drafts, agent, TitlePlace::Header);
+}
+
+/// Turns the title of the agent's sidebar row into a field holding it.
+pub fn start_rename_in_sidebar(state: &mut AppState, drafts: &mut Drafts, agent: AgentId) {
+    start_rename_at(state, drafts, agent, TitlePlace::Sidebar);
+}
+
+/// An edit of the same agent moves to `place`: the new field starts from the text typed so far,
+/// which stays in the drafts.
+fn start_rename_at(state: &mut AppState, drafts: &mut Drafts, agent: AgentId, place: TitlePlace) {
     let Some(entry) = state.agents.get(&agent) else {
         return;
     };
-    let title = entry.summary.title.clone();
-    drafts.title.clone_from(&title);
-    state.ui.title_edit = Some(TitleEdit { agent, title });
+    let moving = state
+        .ui
+        .title_edit
+        .as_ref()
+        .is_some_and(|edit| edit.agent == agent);
+    if !moving {
+        drafts.title.clone_from(&entry.summary.title);
+    }
+    state.ui.title_edit = Some(TitleEdit {
+        agent,
+        title: drafts.title.clone(),
+        place,
+        select_all: !moving,
+    });
     state.ui.popover = None;
+}
+
+/// F2: renames the selected agent in its sidebar row, or moves an open title field to the other
+/// place. An agent the filter hides has no row: its title field opens in the header.
+pub fn rename_key(state: &mut AppState, drafts: &mut Drafts) {
+    let (agent, wanted) = match &state.ui.title_edit {
+        Some(edit) => match edit.place {
+            TitlePlace::Header => (edit.agent, TitlePlace::Sidebar),
+            TitlePlace::Sidebar => (edit.agent, TitlePlace::Header),
+        },
+        None => match state.ui.selected {
+            Some(agent) => (agent, TitlePlace::Sidebar),
+            None => return,
+        },
+    };
+    let has_row = state
+        .sidebar_agents()
+        .iter()
+        .any(|entry| entry.id() == agent);
+    let place = if has_row { wanted } else { TitlePlace::Header };
+    start_rename_at(state, drafts, agent, place);
 }
 
 /// Only the drafts change, so that typing a title does not render the transcript again.
@@ -526,6 +569,24 @@ pub fn rename_text(state: &AppState, drafts: &mut Drafts, text: String) {
     if state.ui.title_edit.is_some() {
         drafts.title = text;
     }
+}
+
+/// A title field left the focus: the edit ends when it is still at that field's place. A field
+/// that leaves the page as the edit moves to the other place must not end it.
+pub fn finish_rename_at(
+    state: &mut AppState,
+    drafts: &mut Drafts,
+    place: TitlePlace,
+) -> Vec<Outgoing> {
+    let here = state
+        .ui
+        .title_edit
+        .as_ref()
+        .is_some_and(|edit| edit.place == place);
+    if !here {
+        return Vec::new();
+    }
+    finish_rename(state, drafts)
 }
 
 /// Ends the title edit, and renames the agent when the title changed and is not empty. Esc ends
@@ -1141,7 +1202,111 @@ pub fn toggle_switcher(state: &mut AppState) {
     state.ui.dialog = (!open).then(|| Dialog::Switcher(Switcher::default()));
 }
 
-/// Agents whose title or folder holds the query, in the sidebar's order.
+/// Moves `agent` just above `before`, or to the bottom of the list. The sidebar shows the new
+/// order at once, with the positions the daemon then sends in its events.
+pub fn move_agent(state: &mut AppState, agent: AgentId, before: Option<AgentId>) -> Vec<Outgoing> {
+    let list: Vec<Placed> = state
+        .agents_in_order()
+        .iter()
+        .map(|entry| entry.summary.place())
+        .collect();
+    let moved = cockpit_protocol::move_agent(&list, agent, before);
+    let mut shifts = Vec::with_capacity(moved.len());
+    for place in moved {
+        if let Some(entry) = state.agents.get_mut(&place.agent) {
+            shifts.push(Shift {
+                agent: place.agent,
+                from: entry.summary.position,
+                to: place.position,
+            });
+            entry.summary.position = place.position;
+        }
+    }
+    if shifts.is_empty() {
+        return Vec::new();
+    }
+    vec![Outgoing {
+        request: Request::AgentMove(MoveParams { agent, before }),
+        purpose: Purpose::Move { shifts },
+    }]
+}
+
+/// Drops a dragged sidebar row just above the row of `before_row`, or below the last row when
+/// it is `None`. Hidden agents keep their places: a drop below the last row lands just under it.
+pub fn drop_agent(
+    state: &mut AppState,
+    agent: AgentId,
+    before_row: Option<AgentId>,
+) -> Vec<Outgoing> {
+    let before = match before_row {
+        Some(row) => Some(row),
+        None => {
+            let shown = state.sidebar_agents();
+            let Some(last) = shown
+                .iter()
+                .rev()
+                .map(|entry| entry.id())
+                .find(|id| *id != agent)
+            else {
+                return Vec::new();
+            };
+            below_in_order(state, last, agent)
+        }
+    };
+    move_agent(state, agent, before)
+}
+
+/// Alt+Up and Alt+Down: the selected agent goes one row up or down among the rows the sidebar
+/// shows.
+pub fn move_selected(state: &mut AppState, direction: Direction) -> Vec<Outgoing> {
+    let Some(agent) = state.ui.selected else {
+        return Vec::new();
+    };
+    let shown: Vec<AgentId> = state
+        .sidebar_agents()
+        .iter()
+        .map(|entry| entry.id())
+        .collect();
+    let Some(index) = shown.iter().position(|id| *id == agent) else {
+        return Vec::new();
+    };
+    let before = match direction {
+        Direction::Up => {
+            let Some(above) = index.checked_sub(1).and_then(|above| shown.get(above)) else {
+                return Vec::new();
+            };
+            Some(*above)
+        }
+        Direction::Down => {
+            let Some(below) = shown.get(index + 1) else {
+                return Vec::new();
+            };
+            below_in_order(state, *below, agent)
+        }
+    };
+    move_agent(state, agent, before)
+}
+
+/// The agent just below `row` in the whole order, leaving `moving` out: the one `moving` goes
+/// above to land just below `row`. `None` when `row` is the last.
+fn below_in_order(state: &AppState, row: AgentId, moving: AgentId) -> Option<AgentId> {
+    let order: Vec<AgentId> = state
+        .agents_in_order()
+        .iter()
+        .map(|entry| entry.id())
+        .filter(|id| *id != moving)
+        .collect();
+    let index = order.iter().position(|id| *id == row)?;
+    order.get(index + 1).copied()
+}
+
+/// Shows only the agents of one status in the sidebar, or all of them. The selection stays.
+pub fn set_status_filter(state: &mut AppState, filter: StatusFilter) {
+    state.prefs.sidebar.filter = filter;
+}
+
+/// Agents whose title or folder holds the query, the ones that wait for you first: the switcher
+/// finds an agent, so it ranks by attention rather than in the sidebar's order.
 pub fn filtered_agents<'state>(state: &'state AppState, query: &str) -> Vec<&'state AgentEntry> {
     let query = query.to_lowercase();
     state
@@ -1350,11 +1515,34 @@ mod tests {
 
     use super::*;
     use crate::state::app_state::ConnectionState;
-    use crate::state::app_state::tests::{state_with, summary};
+    use crate::state::app_state::tests::{ids, placed, state_with, summary};
     use crate::state::requests::{apply_response, needed_requests};
     use crate::state::ui_state::NoteKind;
 
     const AGENT: u32 = 1;
+
+    /// Agents 3, 2 and 1 from the top, 1024 apart, with agent 2 selected.
+    fn ordered() -> AppState {
+        let mut state = state_with(vec![
+            placed(1, AgentStatus::Idle, 1024),
+            placed(2, AgentStatus::Working, 2048),
+            placed(3, AgentStatus::NeedsYou, 3072),
+        ]);
+        state.connection = ConnectionState::Connected;
+        state.ui.selected = Some(AgentId::new(2));
+        state
+    }
+
+    fn sidebar(state: &AppState) -> Vec<u32> {
+        ids(&state.sidebar_agents())
+    }
+
+    fn sent_move(requests: &[Outgoing]) -> Option<MoveParams> {
+        match &requests.first()?.request {
+            Request::AgentMove(params) => Some(*params),
+            _ => None,
+        }
+    }
 
     fn agent() -> AgentId {
         AgentId::new(AGENT)
@@ -1975,7 +2163,9 @@ mod tests {
             opened,
             Some(TitleEdit {
                 agent: agent(),
-                title: "Agent 1".to_owned()
+                title: "Agent 1".to_owned(),
+                place: TitlePlace::Header,
+                select_all: true,
             })
         );
         assert_eq!(typed_from, "Agent 1");
@@ -1988,6 +2178,64 @@ mod tests {
         );
         assert!(again.is_empty(), "the field closed with the first save");
         assert_eq!(state.ui.title_edit, None);
+    }
+
+    #[test]
+    fn f2_renames_in_the_sidebar_and_moves_the_field_with_its_text() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        let place = |state: &AppState| state.ui.title_edit.as_ref().map(|edit| edit.place);
+
+        rename_key(&mut state, &mut drafts);
+        let opened = state.ui.title_edit.clone();
+        rename_text(&state, &mut drafts, "Cart total".to_owned());
+        rename_key(&mut state, &mut drafts);
+        let in_header = place(&state);
+        // The row's field leaves the page as the edit moves: its blur does not end the edit.
+        let stale_blur = finish_rename_at(&mut state, &mut drafts, TitlePlace::Sidebar);
+        rename_key(&mut state, &mut drafts);
+        let back = state.ui.title_edit.clone();
+        let typed = drafts.title.clone();
+        let saved = finish_rename_at(&mut state, &mut drafts, TitlePlace::Sidebar);
+
+        assert_eq!(
+            opened,
+            Some(TitleEdit {
+                agent: agent(),
+                title: "Agent 1".to_owned(),
+                place: TitlePlace::Sidebar,
+                select_all: true,
+            })
+        );
+        assert_eq!(in_header, Some(TitlePlace::Header));
+        assert!(stale_blur.is_empty());
+        assert_eq!(
+            back.map(|edit| (edit.title, edit.place, edit.select_all)),
+            Some(("Cart total".to_owned(), TitlePlace::Sidebar, false)),
+            "the field that opens starts from the typed text, the caret at its end"
+        );
+        assert_eq!(typed, "Cart total");
+        assert_eq!(
+            sent(&saved),
+            [&Request::AgentRename(RenameParams {
+                agent: agent(),
+                title: "Cart total".to_owned()
+            })]
+        );
+        assert_eq!(state.ui.title_edit, None);
+    }
+
+    #[test]
+    fn f2_on_an_agent_the_filter_hides_opens_the_headers_field() {
+        let mut state = state(AgentStatus::Idle);
+        set_status_filter(&mut state, StatusFilter::Working);
+
+        rename_key(&mut state, &mut Drafts::default());
+
+        assert_eq!(
+            state.ui.title_edit.map(|edit| edit.place),
+            Some(TitlePlace::Header)
+        );
     }
 
     #[test]
@@ -2298,6 +2546,128 @@ mod tests {
 
         close_file_view(&mut state, agent());
         assert!(state.agents[&agent()].files.is_empty());
+    }
+
+    #[test]
+    fn a_move_shows_at_once_and_sends_the_request() {
+        let mut state = ordered();
+
+        let requests = move_agent(&mut state, AgentId::new(1), Some(AgentId::new(3)));
+
+        assert_eq!(sidebar(&state), [1, 3, 2]);
+        assert_eq!(
+            sent_move(&requests),
+            Some(MoveParams {
+                agent: AgentId::new(1),
+                before: Some(AgentId::new(3)),
+            })
+        );
+        assert!(move_agent(&mut state, AgentId::new(1), Some(AgentId::new(3))).is_empty());
+    }
+
+    #[test]
+    fn a_refused_move_puts_the_agents_back_unless_an_event_moved_them() {
+        let mut state = ordered();
+        let mut drafts = Drafts::default();
+        let refused = || {
+            Err(cockpit_client::RequestError::Failed(
+                cockpit_protocol::ErrorBody::new(
+                    cockpit_protocol::ErrorCode::NotFound,
+                    "no agent 3".to_owned(),
+                ),
+            ))
+        };
+
+        let first = move_agent(&mut state, AgentId::new(1), Some(AgentId::new(3)));
+        for outgoing in first {
+            apply_response(
+                &mut state,
+                &mut drafts,
+                Method::AgentMove,
+                outgoing.purpose,
+                refused(),
+            );
+        }
+        let after_refusal = sidebar(&state);
+        let second = move_agent(&mut state, AgentId::new(1), Some(AgentId::new(2)));
+        if let Some(entry) = state.agents.get_mut(&AgentId::new(1)) {
+            entry.summary.position = cockpit_protocol::Position::new(9000);
+        }
+        for outgoing in second {
+            apply_response(
+                &mut state,
+                &mut drafts,
+                Method::AgentMove,
+                outgoing.purpose,
+                refused(),
+            );
+        }
+
+        assert_eq!(after_refusal, [3, 2, 1]);
+        assert_eq!(sidebar(&state), [1, 3, 2], "the event's position stays");
+        assert_eq!(state.ui.errors.len(), 2);
+    }
+
+    #[test]
+    fn a_row_dropped_below_the_last_one_goes_to_the_bottom() {
+        let mut state = ordered();
+
+        let to_bottom = drop_agent(&mut state, AgentId::new(3), None);
+        let to_top = drop_agent(&mut state, AgentId::new(1), Some(AgentId::new(2)));
+
+        assert_eq!(sent_move(&to_bottom).and_then(|params| params.before), None);
+        assert_eq!(
+            sent_move(&to_top).and_then(|params| params.before),
+            Some(AgentId::new(2))
+        );
+        assert_eq!(sidebar(&state), [1, 2, 3]);
+    }
+
+    #[test]
+    fn alt_arrows_move_the_selected_agent_one_row() {
+        let mut state = ordered();
+
+        let up = move_selected(&mut state, Direction::Up);
+        let after_up = sidebar(&state);
+        let at_top = move_selected(&mut state, Direction::Up);
+        move_selected(&mut state, Direction::Down);
+        let down = move_selected(&mut state, Direction::Down);
+
+        assert_eq!(
+            sent_move(&up).and_then(|params| params.before),
+            Some(AgentId::new(3))
+        );
+        assert_eq!(after_up, [2, 3, 1]);
+        assert!(at_top.is_empty());
+        assert_eq!(sent_move(&down).and_then(|params| params.before), None);
+        assert_eq!(sidebar(&state), [3, 1, 2]);
+    }
+
+    /// Agents 3, 2 and 1 from the top, with agent 2 working and the sidebar showing idle agents.
+    #[test]
+    fn moves_go_past_the_rows_the_filter_hides_and_leave_them_in_place() {
+        let mut state = ordered();
+        if let Some(entry) = state.agents.get_mut(&AgentId::new(3)) {
+            entry.summary.status = AgentStatus::Idle;
+        }
+        set_status_filter(&mut state, StatusFilter::Idle);
+        state.ui.selected = Some(AgentId::new(3));
+
+        let down = move_selected(&mut state, Direction::Down);
+        let after_down = ids(&state.agents_in_order());
+        let dropped = drop_agent(&mut state, AgentId::new(1), None);
+        state.ui.selected = Some(AgentId::new(2));
+        let hidden = move_selected(&mut state, Direction::Up);
+
+        assert_eq!(sent_move(&down).and_then(|params| params.before), None);
+        assert_eq!(after_down, [2, 1, 3]);
+        assert_eq!(
+            sent_move(&dropped).and_then(|params| params.before),
+            None,
+            "below the last row it shows"
+        );
+        assert_eq!(ids(&state.agents_in_order()), [2, 3, 1]);
+        assert!(hidden.is_empty(), "the hidden selected agent stays");
     }
 
     #[test]

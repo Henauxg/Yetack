@@ -15,8 +15,8 @@ use claude_protocol::{
 use cockpit_protocol::{
     AgentDetails, AgentId, AgentStatus, AgentSummary, Answer, AnswerState, Approval,
     BackgroundTask, BackgroundTaskId, BackgroundTaskStatus, ClaudeSessionId, ContextUsage, CostUsd,
-    Effort, Event, Image, ItemBody, ItemId, McpServer, PendingId, PermissionMode, Plan, Prompt,
-    Question, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
+    Effort, Event, Image, ItemBody, ItemId, McpServer, PendingId, PermissionMode, Plan, Position,
+    Prompt, Question, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
     UserMessage,
 };
 use serde_json::{Map, Value};
@@ -245,6 +245,7 @@ impl AgentView {
             cost: CostUsd::new(0.0),
             started_at: Timestamp::from_unix_millis(0),
             session: None,
+            position: Position::default(),
         };
         Self::new(summary, Duration::ZERO)
     }
@@ -613,6 +614,10 @@ impl AgentView {
 
     pub(crate) fn set_title(&mut self, title: String) {
         self.summary.title = title;
+    }
+
+    pub(crate) fn set_position(&mut self, position: Position) {
+        self.summary.position = position;
     }
 
     fn apply_system(&mut self, event: SystemEvent, now: Timestamp) {
@@ -1339,6 +1344,7 @@ mod tests {
             cost: CostUsd::new(0.0),
             started_at: Timestamp::from_unix_millis(0),
             session: None,
+            position: Position::default(),
         };
         let mut view = AgentView::new(summary, Duration::from_secs(3600));
         view.mark_published();

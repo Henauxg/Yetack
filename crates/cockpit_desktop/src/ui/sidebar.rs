@@ -1,13 +1,18 @@
-//! The agent list: compact two-line rows sorted by attention, and the connection's state.
+//! The agent list: a status filter, compact two-line rows in the order the user sets, and the
+//! connection's state.
 
 use std::time::Instant;
 
-use cockpit_protocol::{AgentId, AgentStatus};
+use cockpit_protocol::{AgentId, AgentStatus, MAX_TITLE_CHARS};
 use dioxus::prelude::*;
+use strum::VariantArray;
 
+use crate::bridge::{self, ROW_TITLE_FIELD_ID};
 use crate::connection::{Clock, Cockpit};
-use crate::state::{AgentEntry, ConnectionState, actions};
+use crate::prefs::StatusFilter;
+use crate::state::{AgentEntry, ConnectionState, TitlePlace, actions};
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::reorder::{LIST_ID, ROW_CLASS, row_id};
 use crate::{APP_NAME, format};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -21,10 +26,13 @@ struct AgentRow {
     selected: bool,
     /// "3/5".
     tasks: Option<String>,
+    /// The title the row's field starts from while the agent is renamed here, and whether the
+    /// field selects it.
+    edit: Option<(String, bool)>,
 }
 
 impl AgentRow {
-    fn new(entry: &AgentEntry, selected: bool, unread: bool) -> Self {
+    fn new(entry: &AgentEntry, selected: bool, unread: bool, edit: Option<(String, bool)>) -> Self {
         let summary = &entry.summary;
         Self {
             id: summary.id,
@@ -37,6 +45,7 @@ impl AgentRow {
             tasks: summary
                 .task_progress
                 .map(|progress| format!("{}/{}", progress.done, progress.total)),
+            edit,
         }
     }
 }
@@ -52,18 +61,58 @@ pub fn activity_line(entry: &AgentEntry) -> String {
     }
 }
 
+/// A chip of the status filter.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct FilterChip {
+    filter: StatusFilter,
+    count: usize,
+    chosen: bool,
+}
+
+fn filter_label(filter: StatusFilter) -> &'static str {
+    filter.status().map_or("All", format::status_label)
+}
+
+/// What the list says when the filter leaves no row.
+fn empty_list_text(filter: StatusFilter) -> &'static str {
+    match filter {
+        StatusFilter::All => "No agent yet. Ctrl+N starts one.",
+        StatusFilter::NeedsYou => "No agent needs you.",
+        StatusFilter::Working => "No agent is working.",
+        StatusFilter::Idle => "No agent is idle.",
+        StatusFilter::Exited => "No agent has exited.",
+    }
+}
+
 #[component]
 pub fn Sidebar() -> Element {
     let cockpit: Cockpit = use_context();
     let state = cockpit.state.read();
+    let filter = state.prefs.sidebar.filter;
+    let chips: Vec<FilterChip> = StatusFilter::VARIANTS
+        .iter()
+        .map(|&chip| FilterChip {
+            filter: chip,
+            count: state.filter_count(chip),
+            chosen: chip == filter,
+        })
+        .collect();
+    let selected_hidden = state.selected_is_hidden();
     let rows: Vec<AgentRow> = state
-        .agents_by_attention()
+        .sidebar_agents()
         .into_iter()
         .map(|entry| {
+            let edit = state
+                .ui
+                .title_edit
+                .as_ref()
+                .filter(|edit| edit.agent == entry.id() && edit.place == TitlePlace::Sidebar)
+                .map(|edit| (edit.title.clone(), edit.select_all));
             AgentRow::new(
                 entry,
                 state.ui.selected == Some(entry.id()),
                 state.is_unread(entry.id()),
+                edit,
             )
         })
         .collect();
@@ -86,9 +135,20 @@ pub fn Sidebar() -> Element {
                     Icon { kind: IconKind::Plus, size: 16 }
                 }
             }
-            div { class: "agent-list scroll",
+            StatusFilters { chips }
+            div { id: LIST_ID, class: "agent-list scroll",
+                if selected_hidden {
+                    p { class: "hidden-note",
+                        "The filter hides the selected agent. "
+                        button {
+                            class: "link-button",
+                            onclick: move |_| cockpit.update(|state| actions::set_status_filter(state, StatusFilter::All)),
+                            "Show all"
+                        }
+                    }
+                }
                 if rows.is_empty() {
-                    p { class: "sidebar-empty", "No agent yet. Ctrl+N starts one." }
+                    p { class: "sidebar-empty", "{empty_list_text(filter)}" }
                 }
                 for row in rows {
                     AgentRowView { key: "{row.id.get()}", row }
@@ -99,26 +159,98 @@ pub fn Sidebar() -> Element {
     }
 }
 
+/// One chip per status, with its count: a chip hides the other agents' rows, and never changes
+/// their order.
+#[component]
+fn StatusFilters(chips: Vec<FilterChip>) -> Element {
+    let cockpit: Cockpit = use_context();
+    rsx! {
+        div { class: "status-filters", role: "group", aria_label: "Show agents by status",
+            for chip in chips {
+                button {
+                    key: "{filter_label(chip.filter)}",
+                    class: format!(
+                        "filter-chip {} {}",
+                        if chip.chosen { "chosen" } else { "" },
+                        chip.filter.status().map_or("", format::status_class),
+                    ),
+                    aria_pressed: chip.chosen,
+                    title: "{filter_label(chip.filter)}: {chip.count}",
+                    aria_label: "{filter_label(chip.filter)}: {chip.count}",
+                    onclick: move |_| cockpit.update(|state| actions::set_status_filter(state, chip.filter)),
+                    if chip.filter.status().is_some() {
+                        span { class: "status-dot", aria_hidden: true }
+                    } else {
+                        span { class: "filter-word", "{filter_label(chip.filter)}" }
+                    }
+                    span { class: "filter-count", "{chip.count}" }
+                }
+            }
+        }
+    }
+}
+
 #[component]
 fn AgentRowView(row: AgentRow) -> Element {
     let cockpit: Cockpit = use_context();
     let agent = row.id;
-    let mut classes = vec!["agent-row", format::status_class(row.status)];
+    let mut classes = vec![ROW_CLASS, format::status_class(row.status)];
     if row.selected {
         classes.push("selected");
     }
     if row.unread {
         classes.push("unread");
     }
+    if let Some((title, select_all)) = row.edit {
+        classes.push("editing");
+        let class = classes.join(" ");
+        // A div, not a button: a button would take the field's Space and Enter as clicks.
+        return rsx! {
+            div { id: row_id(agent), class,
+                span { class: "row-line",
+                    span { class: "status-dot", aria_hidden: true }
+                    input {
+                        id: ROW_TITLE_FIELD_ID,
+                        class: "row-title-field",
+                        r#type: "text",
+                        aria_label: "Agent title",
+                        // Follows the keyboard alone: a render that lags behind typing would put
+                        // an older title back.
+                        initial_value: "{title}",
+                        maxlength: "{MAX_TITLE_CHARS}",
+                        onmounted: move |_| bridge::focus_title_field(ROW_TITLE_FIELD_ID, select_all),
+                        oninput: move |event: FormEvent| cockpit.type_title(event.value()),
+                        onkeydown: move |event: KeyboardEvent| {
+                            if event.key() == Key::Enter {
+                                cockpit.change_with_drafts(actions::finish_rename);
+                            }
+                        },
+                        onblur: move |_| cockpit.change_with_drafts(|state, drafts| actions::finish_rename_at(state, drafts, TitlePlace::Sidebar)),
+                    }
+                }
+                span { class: "row-line row-second",
+                    span { class: "row-activity", "{row.activity}" }
+                }
+            }
+        };
+    }
     let class = classes.join(" ");
     rsx! {
         button {
+            id: row_id(agent),
             class,
             aria_current: row.selected,
             onclick: move |_| cockpit.update(|state| actions::select_agent(state, agent)),
             span { class: "row-line",
                 span { class: "status-dot", aria_hidden: true }
-                span { class: "row-title", "{row.title}" }
+                span {
+                    class: "row-title",
+                    ondoubleclick: move |_| cockpit.change_with_drafts(|state, drafts| {
+                        actions::start_rename_in_sidebar(state, drafts, agent);
+                        Vec::new()
+                    }),
+                    "{row.title}"
+                }
                 if row.pending > 0 {
                     span { class: "pending-badge", "{row.pending}" }
                 }

@@ -86,7 +86,7 @@ impl Cockpit {
         }
     }
 
-    /// Typing in the header's title field changes the drafts alone.
+    /// Typing in a title field, the header's or a sidebar row's, changes the drafts alone.
     pub fn type_title(&self, text: String) {
         self.with_drafts(|state, drafts| actions::rename_text(state, drafts, text));
     }
@@ -330,14 +330,34 @@ mod tests {
             dom.render_immediate(&mut NoOpMutations);
         }
         let after_typing = renders();
+        // F2 moves the field to the agent's sidebar row, where typing changes the drafts alone too.
+        dom.in_runtime(|| {
+            cockpit.change_with_drafts(|state, drafts| {
+                actions::rename_key(state, drafts);
+                Vec::new()
+            });
+        });
+        dom.render_immediate(&mut NoOpMutations);
+        let after_moving_the_title = renders();
+        for text in ["Cart total!", "Cart totals"] {
+            dom.in_runtime(|| cockpit.type_title(text.to_owned()));
+            dom.render_immediate(&mut NoOpMutations);
+        }
+        let after_typing_in_the_row = renders();
         dom.in_runtime(|| cockpit.update(|state| state.ui.window_focused = false));
         dom.render_immediate(&mut NoOpMutations);
 
         // The first render, then only the ones the changes of the state call for: opening the
-        // title field, then the focus.
+        // title field, moving it to the row, then the focus.
         assert_eq!(
-            (after_opening_the_title, after_typing, renders()),
-            (2, 2, 3)
+            (
+                after_opening_the_title,
+                after_typing,
+                after_moving_the_title,
+                after_typing_in_the_row,
+                renders()
+            ),
+            (2, 2, 3, 3, 4)
         );
         let typed = dom.in_runtime(|| {
             let drafts = cockpit.drafts.peek();
@@ -346,7 +366,7 @@ mod tests {
         });
         assert_eq!(
             typed,
-            (Some("Run the tests".to_owned()), "Cart total".to_owned())
+            (Some("Run the tests".to_owned()), "Cart totals".to_owned())
         );
     }
 }

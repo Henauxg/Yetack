@@ -440,6 +440,66 @@ button:disabled {
   font-weight: 600;
 }
 
+/* A row's title while it is renamed there, as the header's title field. */
+.agent-row.editing {
+  background: var(--hover);
+  border-color: var(--line-control);
+}
+
+.row-title-field {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: -2px 0;
+  padding: 1px 6px;
+  border-radius: 6px;
+  border: 1px solid rgba(45, 212, 191, 0.55);
+  background: var(--bg);
+  box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.12);
+  font-weight: 500;
+  outline: none;
+}
+
+/* The status filter: one chip per status, with its count. */
+.status-filters {
+  display: flex;
+  gap: 4px;
+  padding: 0 2px;
+}
+
+.filter-chip {
+  flex: 1 1 0;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 6px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.filter-chip .status-dot {
+  width: 8px;
+  height: 8px;
+}
+
+.filter-chip.chosen {
+  border-color: rgba(45, 212, 191, 0.55);
+  background: rgba(45, 212, 191, 0.12);
+  color: var(--text-bright);
+}
+
+.hidden-note {
+  margin: 0 10px 6px;
+  color: var(--dim);
+  font-size: 12px;
+}
+
 .agent-list {
   flex: 1 1 auto;
   min-height: 0;
@@ -543,6 +603,59 @@ button:disabled {
   font-size: 11.5px;
   color: var(--dim);
   font-variant-numeric: tabular-nums;
+}
+
+/* A dragged row stays in its place, dimmed, while a lifted copy follows the pointer, a little to
+   the right, so the line that shows where the row will land stays in view at its start. The
+   page's script adds the copy, the line and the root's class (ui/reorder.rs). */
+.agent-row[data-dragged] {
+  opacity: 0.35;
+}
+
+.agent-row.drag-ghost {
+  position: fixed;
+  z-index: 50;
+  transform: translateX(24px) scale(1.02);
+  border-color: rgba(45, 212, 191, 0.45);
+  background: var(--raised);
+  box-shadow: var(--shadow);
+  pointer-events: none;
+  transition: none;
+  animation: lift var(--motion-in) var(--ease-out);
+}
+
+@keyframes lift {
+  from {
+    transform: translateX(0) scale(1);
+    box-shadow: none;
+  }
+}
+
+html.reordering,
+html.reordering * {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.drop-line {
+  position: fixed;
+  z-index: 40;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--teal);
+  pointer-events: none;
+}
+
+/* A dot marks the line's start, as in a tree view. */
+.drop-line::before {
+  content: "";
+  position: absolute;
+  top: -3px;
+  left: -4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--teal);
 }
 
 .sidebar-foot {
@@ -4003,6 +4116,12 @@ label.icon-button,
   background: #2c2c2c;
 }
 
+.filter-chip:not(.chosen):hover {
+  border-color: #444444;
+  background: var(--hover);
+  color: var(--text);
+}
+
 /* Links: a brighter color, and the underline comes in. */
 
 .md-link,
@@ -4058,7 +4177,8 @@ label.icon-button,
 .filter:active,
 .copy-button:active,
 .back-button:active,
-.option:active {
+.option:active,
+.filter-chip:active {
   transform: scale(var(--press-scale));
 }
 

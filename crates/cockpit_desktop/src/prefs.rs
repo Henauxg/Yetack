@@ -6,6 +6,9 @@
 //!   "file_view": {
 //!     "width_share": 0.42,
 //!     "wrap": true
+//!   },
+//!   "sidebar": {
+//!     "filter": "needs_you"
 //!   }
 //! }
 //! ```
@@ -19,8 +22,10 @@ use std::fs::{DirBuilder, File, OpenOptions, Permissions};
 use std::io;
 use std::path::{Path, PathBuf};
 
+use cockpit_protocol::AgentStatus;
 use dioxus::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use strum::{EnumString, IntoStaticStr, VariantArray};
 
 use crate::config::Environment;
 use crate::connection::Cockpit;
@@ -37,6 +42,60 @@ const FILE_MODE: u32 = 0o600;
 #[serde(default)]
 pub struct Prefs {
     pub file_view: FileViewPrefs,
+    pub sidebar: SidebarPrefs,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SidebarPrefs {
+    /// The agents the sidebar shows, by status. It hides rows and never changes their order.
+    pub filter: StatusFilter,
+}
+
+/// The sidebar's filter, in the order of its chips.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumString, IntoStaticStr, VariantArray,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum StatusFilter {
+    #[default]
+    All,
+    NeedsYou,
+    Working,
+    Idle,
+    Exited,
+}
+
+impl StatusFilter {
+    /// The status the filter keeps, or `None` for all of them.
+    pub fn status(self) -> Option<AgentStatus> {
+        match self {
+            Self::All => None,
+            Self::NeedsYou => Some(AgentStatus::NeedsYou),
+            Self::Working => Some(AgentStatus::Working),
+            Self::Idle => Some(AgentStatus::Idle),
+            Self::Exited => Some(AgentStatus::Exited),
+        }
+    }
+
+    pub fn admits(self, status: AgentStatus) -> bool {
+        self.status().is_none_or(|kept| kept == status)
+    }
+}
+
+impl Serialize for StatusFilter {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.into())
+    }
+}
+
+/// A word this version does not know, from another version of the app, reads as `All` rather
+/// than costing the whole file.
+impl<'de> Deserialize<'de> for StatusFilter {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let word = String::deserialize(deserializer)?;
+        Ok(word.parse().unwrap_or_default())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
@@ -195,6 +254,9 @@ mod tests {
   "file_view": {
     "width_share": 0.42,
     "wrap": true
+  },
+  "sidebar": {
+    "filter": "needs_you"
   }
 }
 "#;
@@ -208,6 +270,9 @@ mod tests {
                     width_share: Some(0.42),
                     wrap: true,
                 },
+                sidebar: SidebarPrefs {
+                    filter: StatusFilter::NeedsYou,
+                },
             }
         );
         assert_eq!(serde_json::to_string_pretty(&prefs).unwrap() + "\n", text);
@@ -220,6 +285,29 @@ mod tests {
 
         assert_eq!(prefs.file_view.width_share, None);
         assert!(prefs.file_view.wrap);
+        assert_eq!(prefs.sidebar.filter, StatusFilter::All);
+    }
+
+    #[test]
+    fn the_filter_words_are_pinned_and_an_unknown_one_reads_as_all() {
+        let words: Vec<String> = StatusFilter::VARIANTS
+            .iter()
+            .map(|filter| {
+                serde_json::to_value(filter)
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        let unknown: Prefs = serde_json::from_str(
+            r#"{"file_view": {"width_share": 0.3}, "sidebar": {"filter": "paused"}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(words, ["all", "needs_you", "working", "idle", "exited"]);
+        assert_eq!(unknown.sidebar.filter, StatusFilter::All);
+        assert_eq!(unknown.file_view.width_share, Some(0.3));
     }
 
     #[test]
@@ -260,6 +348,9 @@ mod tests {
             file_view: FileViewPrefs {
                 width_share: Some(0.3),
                 wrap: true,
+            },
+            sidebar: SidebarPrefs {
+                filter: StatusFilter::Exited,
             },
         };
 

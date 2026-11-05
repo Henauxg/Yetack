@@ -196,6 +196,36 @@ fn starts_lists_prompts_tails_renames_and_stops_an_agent() {
     daemon.wait_for_list("exited");
 }
 
+/// The ids of `list`'s rows, top first.
+fn listed_ids(list: &str) -> Vec<String> {
+    list.lines()
+        .skip(1)
+        .filter_map(|row| row.split_whitespace().next())
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn list_follows_the_order_and_move_changes_it() {
+    let daemon = Daemon::start();
+    let work = daemon.work();
+    for title in ["Older agent", "Newer agent"] {
+        daemon.ok(&["start", "--title", title, folder_arg(&work)]);
+    }
+    let started = daemon.wait_for_list("Newer agent");
+
+    daemon.ok(&["move", "2"]);
+    let moved_down = daemon.ok(&["list"]);
+    daemon.ok(&["move", "2", "--before", "1"]);
+    let moved_up = daemon.ok(&["list"]);
+    let refused = daemon.run(&["move", "2", "--before", "7"]);
+
+    assert_eq!(listed_ids(&started), ["2", "1"], "{started}");
+    assert_eq!(listed_ids(&moved_down), ["1", "2"], "{moved_down}");
+    assert_eq!(listed_ids(&moved_up), ["2", "1"], "{moved_up}");
+    assert!(!refused.status.success());
+}
+
 /// As in `agents-cockpit tail | head -n 1`.
 #[test]
 fn tail_ends_when_its_output_closes() {

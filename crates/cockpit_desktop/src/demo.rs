@@ -10,8 +10,8 @@ use cockpit_protocol::{
     BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus, ChangedFile,
     ClaudeSessionId, CommandKind, ContextCategory, ContextUsage, CostUsd, Effort, ErrorBody,
     ErrorCode, FileEdit, HistoryPage, ItemBody, ItemId, McpScope, McpServer, McpServerStatus,
-    McpTool, McpTransport, PastSession, PendingId, PermissionMode, Plan, PlanUsage, Question,
-    QuestionOption, RateLimitStatus, Request, ResponseBody, SlashCommand, TaskListItem,
+    McpTool, McpTransport, PastSession, PendingId, PermissionMode, Plan, PlanUsage, Position,
+    Question, QuestionOption, RateLimitStatus, Request, ResponseBody, SlashCommand, TaskListItem,
     TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem,
     TurnEnd, UsageWindow, UserMessage, WindowUsage,
 };
@@ -201,6 +201,12 @@ const PLAN_TEXT: &str = "## Add a result cache
 3. Drop entries older than ten minutes.
 4. Add a test that evaluates the same expression twice.";
 
+/// The sidebar's order, top first, as a user arranged it: neither by id nor by status.
+const SIDEBAR_ORDER: [u32; 7] = [1, LIVE_AGENT, 4, 2, 5, 3, 6];
+
+/// The room between two agents' positions, as the daemon leaves it.
+const POSITION_STEP: u32 = 1024;
+
 pub fn is_requested(arguments: &[String]) -> bool {
     arguments.iter().any(|argument| argument == DEMO_FLAG)
 }
@@ -231,6 +237,12 @@ pub fn state(daemon: DaemonLabel) -> AppState {
             entry.turn_started = Instant::now().checked_sub(TURN_ELAPSED);
         }
         state.agents.insert(entry.id(), entry);
+    }
+    // The bottom agent first: positions grow towards the top.
+    for (step, id) in (1_u32..).zip(SIDEBAR_ORDER.into_iter().rev()) {
+        if let Some(entry) = state.agents.get_mut(&AgentId::new(id)) {
+            entry.summary.position = Position::new(step * POSITION_STEP);
+        }
     }
     state.plan_usage = plan_usage(now);
     state.ui.selected = Some(AgentId::new(1));
@@ -295,6 +307,14 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
         Request::SessionsList => Ok(ResponseBody::Sessions {
             sessions: sessions(SystemTime::now()),
         }),
+        Request::AgentMove(params) => {
+            let known = |agent: AgentId| state.agents.contains_key(&agent);
+            if known(params.agent) && params.before.is_none_or(known) {
+                Ok(ResponseBody::Done)
+            } else {
+                Err(refused(ErrorCode::NotFound, "The demo has no such agent."))
+            }
+        }
         Request::AgentStart(_) | Request::SessionsResume(_) => Err(refused(
             ErrorCode::InvalidRequest,
             "The demo does not start agents.",
@@ -362,6 +382,7 @@ fn summary(parts: SummaryParts<'_>, now: SystemTime) -> AgentSummary {
         cost: CostUsd::new(1.84),
         started_at: at(now, 3600),
         session: Some(ClaudeSessionId::new(format!("demo-session-{}", parts.id))),
+        position: Position::default(),
     }
 }
 
@@ -1373,6 +1394,19 @@ pub struct ParseError {
                 None,
             ]
         );
+    }
+
+    #[test]
+    fn the_sidebar_shows_the_order_the_user_set() {
+        let state = state(label());
+
+        let order: Vec<u32> = state
+            .agents_in_order()
+            .iter()
+            .map(|entry| entry.id().get())
+            .collect();
+
+        assert_eq!(order, SIDEBAR_ORDER);
     }
 
     #[test]

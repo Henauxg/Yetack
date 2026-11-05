@@ -139,6 +139,18 @@ pub struct TitleEdit {
     pub agent: AgentId,
     /// The title the field starts from.
     pub title: String,
+    pub place: TitlePlace,
+    /// The field selects its text when the edit starts. After a move to the other place it puts
+    /// the caret at the end, so typing goes on after the text instead of replacing it.
+    pub select_all: bool,
+}
+
+/// Where the title field shows: one place at a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TitlePlace {
+    Header,
+    /// The agent's row in the sidebar, from F2 or a double-click on the row's title.
+    Sidebar,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,7 +169,7 @@ pub struct UiState {
     pub dialog: Option<Dialog>,
     pub file_views: BTreeMap<AgentId, FileView>,
     pub mcp: McpView,
-    /// The agent title the header shows as a text field.
+    /// The agent title the header or a sidebar row shows as a text field.
     pub title_edit: Option<TitleEdit>,
     /// The notes at the bottom left: errors, and what an action did.
     pub errors: Vec<ErrorNote>,

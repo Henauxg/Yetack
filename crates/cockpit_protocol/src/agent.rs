@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use strum::VariantArray;
 
 use crate::ids::{AgentId, ClaudeSessionId};
+use crate::position::Position;
 use crate::time::Timestamp;
 use crate::usage::CostUsd;
 
@@ -91,4 +92,7 @@ pub struct AgentSummary {
     pub started_at: Timestamp,
     /// `None` until Claude Code reports its session.
     pub session: Option<ClaudeSessionId>,
+    /// Where the agent shows in the list. An event logged before positions existed reads 0.
+    #[serde(default)]
+    pub position: Position,
 }
