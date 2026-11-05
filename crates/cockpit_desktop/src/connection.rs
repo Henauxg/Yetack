@@ -166,6 +166,9 @@ async fn run_demo(
                     tokio::time::sleep(demo::latency(&request)).await;
                     let result = demo::answer(&state.read(), &request);
                     let mut state = state.write();
+                    if result.is_ok() {
+                        demo::apply(&mut state, &request);
+                    }
                     let method = request.method();
                     state::apply_response(&mut state, &mut drafts.write(), method, purpose, result);
                     queue.extend(state::needed_requests(&mut state));
