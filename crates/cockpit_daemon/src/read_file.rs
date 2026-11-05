@@ -61,6 +61,10 @@ const LIST_FILES: [&str; 5] = [
     "--exclude-standard",
 ];
 const GIT_FOLDER_OPTION: &str = "-C";
+/// Turns off the file system monitor, a command the checkout's git config may name, which
+/// listing the files would run: the agent can write that config, and the daemon runs it without
+/// the agent's approvals.
+const NO_MONITOR: [&str; 2] = ["-c", "core.fsmonitor=false"];
 
 /// The folders and files `read` may open, all with their symlinks resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -313,6 +317,7 @@ async fn search(roots: Vec<PathBuf>, path: &Path, deadline: Instant) -> Vec<Path
     let mut seen: Vec<PathBuf> = Vec::new();
     for root in roots {
         let Ok(mut child) = Command::new(GIT_PROGRAM)
+            .args(NO_MONITOR)
             .arg(GIT_FOLDER_OPTION)
             .arg(&root)
             .args(LIST_FILES)
@@ -590,6 +595,36 @@ mod tests {
             message.message,
             "register-parcel.component.ts is not in the agent's folder or in the files it read or changed"
         );
+    }
+
+    /// The agent can write its checkout's git config: listing the files must not run a command
+    /// it names.
+    #[tokio::test]
+    async fn the_search_runs_no_command_from_the_checkouts_git_config() {
+        let layout = Layout::new();
+        let marker = layout.loose.join("monitor-ran");
+        git_init(&layout.agent);
+        write(&layout.agent.join("src/deep/parcel.ts"), "parcel\n");
+        let monitor = format!("touch '{}'; false", marker.display());
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new(GIT_PROGRAM)
+                .arg(GIT_FOLDER_OPTION)
+                .arg(&layout.agent)
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["add", "."]);
+        git(&["config", "core.fsmonitor", &monitor]);
+
+        let found = find(&layout, &[], "parcel.ts").await.unwrap();
+
+        assert_eq!(
+            found,
+            file(layout.agent.join("src/deep/parcel.ts"), "parcel\n")
+        );
+        assert!(!marker.exists(), "the search ran core.fsmonitor");
     }
 
     #[tokio::test]
