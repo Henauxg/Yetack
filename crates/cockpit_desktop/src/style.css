@@ -2638,11 +2638,42 @@ button:disabled {
   color: var(--dim);
 }
 
+/* One line, however narrow the chat, so Stop and Send never wrap: the model button's label
+   shortens first, with an ellipsis, and the other tools keep their size. Only past that does the
+   mode's label shorten, clipped: the shrink spreads over both buttons, and the mode's share of a
+   normal one is a fraction of a pixel, which an ellipsis would show as "Au…". */
 .composer-tools {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 2px;
+}
+
+.composer-tools > * {
+  flex: none;
+}
+
+.composer-tools > .spacer {
+  flex: 1 1 auto;
+}
+
+.composer-tools > .model-button {
+  flex: 0 1000 auto;
+  min-width: 0;
+}
+
+.composer-tools > .mode-button {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.menu-button-label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.model-button .menu-button-label {
+  text-overflow: ellipsis;
 }
 
 .cache-timer {
