@@ -168,6 +168,8 @@ pub struct UiState {
     /// The first entry that arrived while the agent's chat was scrolled up, once the chat went
     /// back down: the "New" divider sits above it until a message is sent or another agent opens.
     pub chat_new_from: BTreeMap<AgentId, ItemId>,
+    /// Counts the sends that take the chat to its bottom: the chat's scroll script jumps at each.
+    pub chat_jumps: u64,
 }
 
 impl Default for UiState {
@@ -188,6 +190,7 @@ impl Default for UiState {
             next_error: 0,
             chat_scrolled_up: BTreeMap::new(),
             chat_new_from: BTreeMap::new(),
+            chat_jumps: 0,
         }
     }
 }

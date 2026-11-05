@@ -163,11 +163,23 @@ document.addEventListener("click", (event) => {
     jump();
   }
 });
+// While a dialog or a menu is open, End is theirs.
+let keysBlocked = false;
+(async () => {
+  for (;;) {
+    const command = await dioxus.recv();
+    if (command.type === "jump") {
+      jump();
+    } else if (command.type === "keys_blocked") {
+      keysBlocked = command.blocked;
+    }
+  }
+})();
 document.addEventListener("keydown", (event) => {
   const target = event.target;
   const typing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
     || target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable);
-  if (event.key !== "End" || typing || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
+  if (event.key !== "End" || typing || keysBlocked || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
     return;
   }
   event.preventDefault();
@@ -182,6 +194,17 @@ struct Settings {
     entry_class: &'static str,
     jump_button_id: &'static str,
     bottom_threshold_px: u16,
+}
+
+/// What the app tells the script once it runs.
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ScrollCommand {
+    /// Go to the bottom and follow new entries, as after a send.
+    Jump,
+    KeysBlocked {
+        blocked: bool,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -235,7 +258,7 @@ pub fn NewDivider() -> Element {
 
 /// Runs the script for the window's life.
 pub fn use_chat_scroll(cockpit: Cockpit) {
-    use_hook(|| {
+    let script = use_hook(|| {
         let mut script = document::eval(SCRIPT);
         let settings = Settings {
             chat_scroll_id: CHAT_SCROLL_ID,
@@ -260,6 +283,26 @@ pub fn use_chat_scroll(cockpit: Cockpit) {
                 }
             }
         });
+        script
+    });
+    let blocked = use_memo(move || {
+        let state = cockpit.state.read();
+        state.ui.dialog.is_some() || state.ui.popover.is_some()
+    });
+    use_effect(move || {
+        let command = ScrollCommand::KeysBlocked { blocked: blocked() };
+        if let Err(error) = script.send(command) {
+            tracing::warn!("cannot update the chat's scroll script: {error}");
+        }
+    });
+    let jumps = use_memo(move || cockpit.state.read().ui.chat_jumps);
+    use_effect(move || {
+        if jumps() == 0 {
+            return;
+        }
+        if let Err(error) = script.send(ScrollCommand::Jump) {
+            tracing::warn!("cannot take the chat to its bottom: {error}");
+        }
     });
 }
 
@@ -299,5 +342,13 @@ mod tests {
                 at_bottom: false
             }
         ));
+        assert_eq!(
+            serde_json::to_value(ScrollCommand::Jump).unwrap(),
+            json!({ "type": "jump" })
+        );
+        assert_eq!(
+            serde_json::to_value(ScrollCommand::KeysBlocked { blocked: true }).unwrap(),
+            json!({ "type": "keys_blocked", "blocked": true })
+        );
     }
 }

@@ -744,6 +744,7 @@ pub fn send_prompt(
     drafts.draft_written();
     state.ui.popover = None;
     state.ui.chat_new_from.remove(&agent);
+    state.ui.chat_jumps = state.ui.chat_jumps.wrapping_add(1);
     let prompt = Prompt {
         text: draft.text.trim().to_owned(),
         images: draft.images.clone(),
@@ -1576,6 +1577,21 @@ mod tests {
         assert_eq!(after_send, None);
         assert_eq!(again, Some(ItemId::new(4)));
         assert_eq!(divider(&state), None);
+    }
+
+    #[test]
+    fn a_send_takes_the_chat_to_its_bottom_and_an_empty_one_does_not() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        chat_at_bottom(&mut state, agent(), false);
+
+        send_prompt(&mut state, &mut drafts, agent(), None);
+        let after_empty = state.ui.chat_jumps;
+        type_text(&mut state, &mut drafts, "Thanks");
+        send_prompt(&mut state, &mut drafts, agent(), None);
+
+        assert_eq!(after_empty, 0);
+        assert_eq!(state.ui.chat_jumps, 1);
     }
 
     #[test]
