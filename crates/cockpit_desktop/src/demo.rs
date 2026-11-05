@@ -79,10 +79,13 @@ The parser builds every error at `src/error.rs:2`. The lexer already counts the 
 - The column is a `u32` on `Token`.
 - No new dependency is needed.";
 
-const BENCHMARK_ANSWER: &str = "The benchmark runs in CI now. The slowest cases:
-deep_nesting: 2.4 ms
-long_sum: 1.1 ms
-many_parentheses: 0.9 ms
+const BENCHMARK_ANSWER: &str = "The benchmark runs in CI now. The slowest cases, against `main`:
+
+| Case | `main` | This branch | Change | Samples | Slowest input |
+| --- | --- | --- | --- | --- | --- |
+| deep_nesting | 2.61 ms | 2.41 ms | -7.7% | 100 | `((((((((((1+2)*3)-4)/5)+6)*7)-8)/9)+10)*11)-12` |
+| long_sum | 1.08 ms | 1.10 ms | +1.9% | 100 | `1+2+3+4+5+6+7+8+9+10+11+12+13+14+15+16+17+18+19+20` |
+| many_parentheses | 0.93 ms | 0.90 ms | -3.2% | 100 | `((((((((((((((((((((1))))))))))))))))))))` |
 
 To compare two runs by hand:
 

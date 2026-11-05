@@ -1132,32 +1132,54 @@ button:disabled {
   text-underline-offset: 3px;
 }
 
+/* As wide as its text needs, up to the column's width. Past that, its cells wrap down to their
+   longest word, then the table scrolls sideways in its own box. */
 .md-table {
-  display: flex;
-  flex-direction: column;
+  width: max-content;
+  max-width: 100%;
   border-radius: 8px;
   border: 1px solid var(--line);
-  overflow: hidden;
   font-size: 13px;
+  overflow-wrap: normal;
 }
 
-.md-row {
-  display: grid;
-  border-top: 1px solid var(--raised);
+.md-table table {
+  border-collapse: collapse;
 }
 
-.md-row.head {
-  border-top: 0;
-  border-bottom: 1px solid var(--line);
+.md-table th,
+.md-table td {
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.md-table .short {
+  white-space: nowrap;
+}
+
+.md-table th {
   background: var(--panel);
   font-weight: 600;
   color: var(--text-soft);
 }
 
-.md-cell {
-  min-width: 0;
-  padding: 7px 10px;
-  overflow-wrap: anywhere;
+/* The box draws the outer border. */
+.md-table tr > :first-child {
+  border-left: 0;
+}
+
+.md-table tr > :last-child {
+  border-right: 0;
+}
+
+.md-table table > :first-child > tr:first-child > * {
+  border-top: 0;
+}
+
+.md-table table > :last-child > tr:last-child > * {
+  border-bottom: 0;
 }
 
 .md-quote {
