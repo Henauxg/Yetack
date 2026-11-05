@@ -1,6 +1,7 @@
 //! The connection task: a coroutine that owns the daemon session, applies its updates to the
 //! state, and runs the requests the components ask for.
 
+use std::collections::VecDeque;
 use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_client::{Backoff, Requester, Session, Transport};
@@ -10,8 +11,8 @@ use dioxus::prelude::*;
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
 
-use crate::notifications;
 use crate::state::{self, AppState, Outgoing, actions};
+use crate::{demo, notifications};
 
 /// What the window was started with.
 #[derive(Debug, Clone, PartialEq)]
@@ -19,6 +20,8 @@ pub struct Startup {
     pub state: AppState,
     pub transport: Transport,
     pub notifications: bool,
+    /// Answers requests from the sample state instead of a daemon.
+    pub demo: bool,
 }
 
 /// What components hold to read and change the state and to reach the daemon.
@@ -75,12 +78,33 @@ pub fn use_cockpit(startup: Startup) -> Cockpit {
         state: initial,
         transport,
         notifications,
+        demo,
     } = startup;
     let state = use_signal(move || initial);
     let daemon = use_coroutine(move |requests: UnboundedReceiver<Outgoing>| {
-        run(state, transport.clone(), notifications, requests)
+        let transport = transport.clone();
+        async move {
+            if demo {
+                run_demo(state, requests).await;
+            } else {
+                run(state, transport, notifications, requests).await;
+            }
+        }
     });
     use_context_provider(|| Cockpit { state, daemon })
+}
+
+/// Answers every request from the sample state, in order.
+async fn run_demo(mut state: Signal<AppState>, mut requests: UnboundedReceiver<Outgoing>) {
+    while let Some(outgoing) = requests.next().await {
+        let mut queue = VecDeque::from([outgoing]);
+        while let Some(Outgoing { request, purpose }) = queue.pop_front() {
+            let result = demo::answer(&state.read(), &request);
+            let mut state = state.write();
+            state::apply_response(&mut state, request.method(), purpose, result);
+            queue.extend(state::needed_requests(&mut state));
+        }
+    }
 }
 
 async fn run(

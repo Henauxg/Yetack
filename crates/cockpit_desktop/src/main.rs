@@ -3,6 +3,7 @@
 mod bridge;
 mod config;
 mod connection;
+mod demo;
 mod format;
 mod notifications;
 mod render;
@@ -29,12 +30,20 @@ const DEFAULT_LOG: &str = "warn";
 fn main() -> anyhow::Result<()> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG));
     tracing_subscriber::fmt().with_env_filter(filter).init();
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    let demo = demo::is_requested(&arguments);
     let environment = Environment::from_process();
     let config = Config::load(&environment)?;
+    let state = if demo {
+        demo::state(config.daemon_label())
+    } else {
+        AppState::new(config.daemon_label())
+    };
     let startup = Startup {
-        state: AppState::new(config.daemon_label()),
+        state,
         transport: config.transport(&environment)?,
-        notifications: config.notifications.enabled,
+        notifications: config.notifications.enabled && !demo,
+        demo,
     };
     let window = WindowBuilder::new()
         .with_title(WINDOW_TITLE)

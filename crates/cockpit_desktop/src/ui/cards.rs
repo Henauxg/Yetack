@@ -210,6 +210,11 @@ pub fn QuestionCard(agent: AgentId, item: ItemId, question: Question) -> Element
                                                 actions::set_other_answer(state, &question, asked_index, event.value());
                                             });
                                         },
+                                        onkeydown: move |event: KeyboardEvent| {
+                                            if event.key() == Key::Enter {
+                                                cockpit.change(|state| actions::submit_question(state, agent, item));
+                                            }
+                                        },
                                     }
                                 }
                             }
