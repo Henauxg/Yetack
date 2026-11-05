@@ -45,17 +45,12 @@ impl Hub {
     }
 
     pub(super) fn start_agent(&mut self, params: StartParams) -> Result<ResponseBody, ErrorBody> {
-        if let Some(title) = &params.title {
-            check_length("title", title, MAX_TITLE_CHARS)?;
-        }
+        let title: Option<String> = params.title.as_deref().map(client_title).transpose()?;
         if let Some(model) = &params.model {
             check_model(model)?;
         }
         let folder = agent_folder(&params.folder)?;
-        let title = params
-            .title
-            .filter(|title| !title.trim().is_empty())
-            .unwrap_or_else(|| default_title(params.prompt.as_ref(), &folder));
+        let title = title.unwrap_or_else(|| default_title(params.prompt.as_ref(), &folder));
         let record = AgentRecord {
             id: self.next_agent,
             title,
@@ -469,15 +464,7 @@ impl Hub {
     /// Renames the agent. While its process runs, `/rename` names its Claude session too, so
     /// Claude Code's resume list and `sessions.list` show the name.
     pub(super) fn rename(&mut self, params: RenameParams) -> Result<ResponseBody, ErrorBody> {
-        let title = params
-            .title
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-        if title.is_empty() {
-            return Err(errors::invalid("the title is empty".to_owned()));
-        }
-        check_length("title", &title, MAX_TITLE_CHARS)?;
+        let title = client_title(&params.title)?;
         let id = params.agent;
         let agent = self
             .agents
@@ -611,6 +598,17 @@ fn agent_folder(folder: &Path) -> Result<PathBuf, ErrorBody> {
 
 pub(super) fn check_model(model: &str) -> Result<(), ErrorBody> {
     check_length("model name", model, MODEL_MAX_CHARS)
+}
+
+/// A title from a client, its whitespace collapsed to single spaces and trimmed. It is refused
+/// empty or over [`MAX_TITLE_CHARS`] characters.
+fn client_title(text: &str) -> Result<String, ErrorBody> {
+    let title = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if title.is_empty() {
+        return Err(errors::invalid("the title is empty".to_owned()));
+    }
+    check_length("title", &title, MAX_TITLE_CHARS)?;
+    Ok(title)
 }
 
 /// Refuses a client's text longer than `max_chars`, so that the snapshots stay small.

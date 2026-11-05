@@ -155,7 +155,8 @@ impl<'de> Deserialize<'de> for Method {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StartParams {
     pub folder: PathBuf,
-    /// `None` lets the daemon name the agent.
+    /// `None` lets the daemon name the agent. The daemon collapses a title's whitespace and trims
+    /// it, and refuses it empty or over [`MAX_TITLE_CHARS`] characters.
     pub title: Option<String>,
     /// `None` keeps Claude Code's default, as do `effort` and `mode`.
     pub model: Option<String>,
@@ -237,7 +238,8 @@ pub struct SetModeParams {
 /// every snapshot.
 pub const MAX_TITLE_CHARS: usize = 200;
 
-/// The daemon trims the title, and refuses it empty or over [`MAX_TITLE_CHARS`] characters.
+/// The daemon collapses the title's whitespace and trims it, and refuses it empty or over
+/// [`MAX_TITLE_CHARS`] characters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RenameParams {
     pub agent: AgentId,

@@ -440,6 +440,38 @@ async fn an_agent_answers_a_prompt_and_reports_its_state() {
 }
 
 #[tokio::test]
+async fn a_start_reads_its_title_as_a_rename_does() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let start = |title: Option<&str>| {
+        Request::AgentStart(StartParams {
+            folder: setup.work(),
+            title: title.map(str::to_owned),
+            model: None,
+            effort: None,
+            mode: None,
+            prompt: Some(text("Fix the cart\nand its test")),
+        })
+    };
+
+    let blank = client.error_code(start(Some(" \n "))).await;
+    let ResponseBody::AgentStarted { agent: titled } =
+        client.ok(start(Some("  Cart \n total "))).await
+    else {
+        panic!("expected AgentStarted");
+    };
+    let named = client.summary_with(titled, |_| true).await;
+    let ResponseBody::AgentStarted { agent: untitled } = client.ok(start(None)).await else {
+        panic!("expected AgentStarted");
+    };
+    let unnamed = client.summary_with(untitled, |_| true).await;
+
+    assert_eq!(blank, ErrorCode::InvalidRequest);
+    assert_eq!(named.title, "Cart total");
+    assert_eq!(unnamed.title, "Fix the cart", "the prompt's first line");
+}
+
+#[tokio::test]
 async fn a_new_agent_shows_its_mcp_servers_and_context_before_any_prompt() {
     let setup = Setup::new();
     let mut client = setup.connect().await;
