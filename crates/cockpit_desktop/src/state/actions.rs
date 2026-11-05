@@ -2203,11 +2203,13 @@ mod tests {
 
     #[test]
     fn the_new_agent_form_starts_from_the_last_agent_started() {
-        let mut older = summary(1, AgentStatus::Idle);
+        // The last agent started has the lower id, so that the order of the ids cannot pass for
+        // the order of the starts.
+        let mut older = summary(2, AgentStatus::Idle);
         older.model = Some("claude-haiku-4-5".to_owned());
         older.effort = Some(Effort::Low);
         older.mode = PermissionMode::Plan;
-        let mut last = summary(2, AgentStatus::Exited);
+        let mut last = summary(1, AgentStatus::Exited);
         last.model = Some("claude-opus-5-5[1m]".to_owned());
         last.effort = Some(Effort::Xhigh);
         last.mode = PermissionMode::AcceptEdits;

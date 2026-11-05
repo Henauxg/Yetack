@@ -338,3 +338,49 @@ fn CommandRow(agent: AgentId, index: usize, command: SlashCommand, highlighted: 
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use cockpit_protocol::AgentDetails;
+
+    use super::*;
+    use crate::state::{Loadable, summary};
+
+    #[test]
+    fn only_the_menu_has_sections_and_loading_rows_come_last() {
+        let mut entry = AgentEntry::new(summary(1, AgentStatus::Idle));
+        entry.details = Loadable::Loaded(AgentDetails {
+            commands: vec![SlashCommand {
+                name: "review".to_owned(),
+                description: "Review the changes on the branch".to_owned(),
+                kind: CommandKind::Skill,
+            }],
+            ..AgentDetails::default()
+        });
+        let sections = |rows: &[Row]| -> Vec<MenuSection> {
+            rows.iter()
+                .filter_map(|row| match row {
+                    Row::Section(section) => Some(*section),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        let typed = rows(&entry, "", PaletteOrigin::Typed);
+        let menu = rows(&entry, "", PaletteOrigin::Button);
+        entry.commands_requested = true;
+        let reloading = rows(&entry, "", PaletteOrigin::Button);
+
+        assert!(matches!(typed.as_slice(), [Row::Command { index: 0, .. }]));
+        assert_eq!(
+            sections(&menu),
+            [
+                MenuSection::Context,
+                MenuSection::Model,
+                MenuSection::Commands
+            ]
+        );
+        assert!(matches!(menu.last(), Some(Row::Command { .. })));
+        assert!(matches!(reloading.last(), Some(Row::CommandsLoading)));
+    }
+}

@@ -1274,4 +1274,60 @@ mod tests {
 
         assert_eq!(ids, [1]);
     }
+
+    #[test]
+    fn a_step_takes_its_dot_from_its_call_or_its_answer() {
+        let step =
+            |body: ItemBody, awaits_approval| StepState::new(&item(1, None, body), awaits_approval);
+        let bash = |status| ItemBody::ToolCall(call("Bash", "cargo test", status));
+        let allowed = AnswerState::Answered(ApprovalAnswer {
+            decision: ApprovalDecision::Allow,
+            message: None,
+        });
+        let message = ItemBody::UserMessage(UserMessage {
+            text: "Run the tests".to_owned(),
+            images: Vec::new(),
+            queued: false,
+        });
+
+        assert_eq!(
+            step(bash(ToolCallStatus::Running), true),
+            Some(StepState::Waiting)
+        );
+        assert_eq!(
+            step(bash(ToolCallStatus::Running), false),
+            Some(StepState::Running)
+        );
+        assert_eq!(
+            step(bash(ToolCallStatus::Failed), false),
+            Some(StepState::Failed)
+        );
+        assert_eq!(
+            step(approval("Bash", "ls", AnswerState::Waiting), false),
+            Some(StepState::Waiting)
+        );
+        assert_eq!(
+            step(approval("Bash", "ls", allowed), false),
+            Some(StepState::Plain)
+        );
+        assert_eq!(
+            step(
+                ItemBody::AssistantText {
+                    markdown: "Done.".to_owned()
+                },
+                false
+            ),
+            Some(StepState::Plain)
+        );
+        assert_eq!(step(message, false), None);
+        assert_eq!(
+            step(
+                ItemBody::Notice {
+                    text: String::new()
+                },
+                false
+            ),
+            None
+        );
+    }
 }
