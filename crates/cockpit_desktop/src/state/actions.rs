@@ -25,6 +25,41 @@ use super::ui_state::{
 /// What starts a slash command in the composer.
 pub const COMMAND_PREFIX: char = '/';
 
+const MEGABYTE: usize = 1024 * 1024;
+
+/// The largest image file the composer takes, in megabytes. Claude counts its own per-image limit
+/// on the base64 text, a third larger than the file.
+const MAX_IMAGE_MEGABYTES: usize = 5;
+
+/// An image Claude refuses for its size, which the draft does not take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("it is {} MB, and Claude reads images up to {MAX_IMAGE_MEGABYTES} MB", megabytes(*.bytes))]
+pub struct ImageTooLarge {
+    pub bytes: usize,
+}
+
+impl ImageTooLarge {
+    /// `bytes` is the image file's size.
+    pub fn check(bytes: usize) -> Result<(), Self> {
+        if bytes > MAX_IMAGE_MEGABYTES * MEGABYTE {
+            return Err(Self { bytes });
+        }
+        Ok(())
+    }
+
+    /// The note the window shows for the image called `name`.
+    pub fn note(&self, name: &str) -> String {
+        format!("{name} was not attached: {self}.")
+    }
+}
+
+/// `bytes` in megabytes with one decimal, rounded up so that a size over the limit never reads
+/// as the limit.
+fn megabytes(bytes: usize) -> String {
+    let tenths = bytes.saturating_mul(10).div_ceil(MEGABYTE);
+    format!("{}.{}", tenths / 10, tenths % 10)
+}
+
 /// Which way the highlight of a list moves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -181,8 +216,17 @@ fn moved(index: usize, count: usize, direction: Direction) -> usize {
     }
 }
 
-pub fn add_image(drafts: &mut Drafts, agent: AgentId, image: Image) {
+/// Adds the image to the draft, unless Claude would refuse it for its size.
+pub fn add_image(drafts: &mut Drafts, agent: AgentId, image: Image) -> Result<(), ImageTooLarge> {
+    ImageTooLarge::check(decoded_len(&image.data))?;
     drafts.draft_mut(agent).images.push(image);
+    Ok(())
+}
+
+/// The size of the bytes that base64 `data` encodes.
+fn decoded_len(data: &str) -> usize {
+    let padding = data.bytes().rev().take_while(|&byte| byte == b'=').count();
+    (data.len() / 4 * 3).saturating_sub(padding)
 }
 
 pub fn remove_image(drafts: &mut Drafts, agent: AgentId, index: usize) {
@@ -714,8 +758,8 @@ pub fn resume_session(state: &mut AppState, session: ClaudeSessionId) -> Vec<Out
 #[cfg(test)]
 mod tests {
     use cockpit_protocol::{
-        AgentDetails, AskedQuestion, CommandKind, HistoryPage, Method, QuestionOption,
-        ResponseBody, TranscriptItem,
+        AgentDetails, AskedQuestion, CommandKind, HistoryPage, ImageMediaType, Method,
+        QuestionOption, ResponseBody, TranscriptItem,
     };
 
     use super::*;
@@ -949,6 +993,33 @@ mod tests {
         let mut exited = state(AgentStatus::Exited);
         let typed = Some("hello".to_owned());
         assert!(send_prompt(&mut exited, &mut drafts, agent(), typed).is_empty());
+    }
+
+    #[test]
+    fn an_image_over_five_megabytes_is_refused_with_a_note() {
+        use base64::Engine;
+
+        let png = |bytes: usize| Image {
+            media_type: ImageMediaType::Png,
+            data: base64::engine::general_purpose::STANDARD.encode(vec![0; bytes]),
+        };
+        let limit = 5 * 1024 * 1024;
+        let mut drafts = Drafts::default();
+
+        let at_limit = add_image(&mut drafts, agent(), png(limit));
+        let over = add_image(&mut drafts, agent(), png(limit + 1));
+
+        assert_eq!(at_limit, Ok(()));
+        assert_eq!(over, Err(ImageTooLarge { bytes: limit + 1 }));
+        assert_eq!(
+            ImageTooLarge::check(7_654_321).map_err(|too_large| too_large.note("shot.png")),
+            Err(
+                "shot.png was not attached: it is 7.3 MB, and Claude reads images up to 5 MB."
+                    .to_owned()
+            )
+        );
+        let images = drafts.draft(agent()).map(|draft| draft.images.len());
+        assert_eq!(images, Some(1));
     }
 
     #[test]

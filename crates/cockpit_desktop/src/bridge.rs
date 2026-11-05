@@ -12,6 +12,9 @@ use crate::state::{AppState, KeyPress, Popover, WaitingKind, actions, handle_key
 /// The composer's text area, whose keys the script treats apart.
 pub const COMPOSER_ID: &str = "composer";
 
+/// What a note calls an image pasted into the window.
+const PASTED_IMAGE: &str = "The pasted image";
+
 /// Waits for its settings, then passes on events. Message and field names are serde's names for
 /// `BridgeMessage`, `KeyPress`, `KeyTarget` and `KeyMode`.
 const SCRIPT: &str = r#"
@@ -212,11 +215,13 @@ fn receive(cockpit: Cockpit, message: BridgeMessage) {
                 return;
             };
             let image = Image { media_type, data };
-            cockpit.with_drafts(|state, drafts| {
-                if let Some(agent) = state.ui.selected {
-                    actions::add_image(drafts, agent, image);
-                }
+            let added = cockpit.with_drafts(|state, drafts| {
+                let agent = state.ui.selected?;
+                Some(actions::add_image(drafts, agent, image))
             });
+            if let Some(Err(too_large)) = added {
+                cockpit.update(|state| state.ui.report(too_large.note(PASTED_IMAGE)));
+            }
         }
     }
 }

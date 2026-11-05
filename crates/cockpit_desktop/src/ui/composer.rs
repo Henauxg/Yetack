@@ -11,7 +11,7 @@ use dioxus::prelude::*;
 use crate::bridge::{self, COMPOSER_ID};
 use crate::connection::{Clock, Cockpit};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
-use crate::state::actions::Direction;
+use crate::state::actions::{Direction, ImageTooLarge};
 use crate::state::{Popover, actions};
 use crate::ui::header::cache_left;
 use crate::ui::icons::{Icon, IconKind};
@@ -287,13 +287,23 @@ async fn attach(cockpit: Cockpit, agent: AgentId, files: Vec<FileData>) {
             });
             continue;
         };
+        // Refused before it is read: a file far over the limit would only fill memory.
+        let size = usize::try_from(file.size()).unwrap_or(usize::MAX);
+        if let Err(too_large) = ImageTooLarge::check(size) {
+            cockpit.update(|state| state.ui.report(too_large.note(&name)));
+            continue;
+        }
         match file.read_bytes().await {
             Ok(bytes) => {
                 let image = Image {
                     media_type,
                     data: BASE64.encode(&bytes),
                 };
-                cockpit.with_drafts(|_, drafts| actions::add_image(drafts, agent, image));
+                let added =
+                    cockpit.with_drafts(|_, drafts| actions::add_image(drafts, agent, image));
+                if let Err(too_large) = added {
+                    cockpit.update(|state| state.ui.report(too_large.note(&name)));
+                }
             }
             Err(error) => {
                 cockpit.update(|state| state.ui.report(format!("Cannot read {name}: {error}")));
