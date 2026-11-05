@@ -173,6 +173,16 @@ pub fn state(daemon: DaemonLabel) -> AppState {
     state
 }
 
+/// How long the demo takes to answer, as a daemon would for the past sessions and the context
+/// usage, so that their loading states show.
+pub fn latency(request: &Request) -> Duration {
+    match request {
+        Request::SessionsList => Duration::from_millis(900),
+        Request::AgentContextUsage(_) => Duration::from_millis(700),
+        _ => Duration::ZERO,
+    }
+}
+
 /// What a daemon holding the sample would answer.
 pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, RequestError> {
     let agent_details = |agent: AgentId| -> Result<AgentDetails, RequestError> {
@@ -638,24 +648,24 @@ fn parser_agent(now: SystemTime) -> Sample {
             tokens: 112_000,
             max_tokens: 200_000,
             percent: 56,
-            categories: vec![
-                ContextCategory {
-                    name: "Messages".to_owned(),
-                    tokens: 88_300,
-                },
-                ContextCategory {
-                    name: "Tools".to_owned(),
-                    tokens: 14_200,
-                },
-                ContextCategory {
-                    name: "Memory files".to_owned(),
-                    tokens: 6_100,
-                },
-                ContextCategory {
-                    name: "System prompt".to_owned(),
-                    tokens: 3_400,
-                },
-            ],
+            categories: [
+                ("System prompt", 3_400),
+                ("System tools", 14_200),
+                ("MCP tools", 5_800),
+                ("MCP server instructions", 900),
+                ("Custom agents", 1_300),
+                ("Memory files", 6_100),
+                ("Skills", 2_000),
+                ("Messages", 78_300),
+                ("Autocompact buffer", 45_000),
+                ("Free space", 43_000),
+            ]
+            .into_iter()
+            .map(|(name, tokens)| ContextCategory {
+                name: name.to_owned(),
+                tokens,
+            })
+            .collect(),
         }),
         ..details()
     };
@@ -942,7 +952,7 @@ fn plan_usage(now: SystemTime) -> PlanUsage {
     usage.windows.insert(
         UsageWindow::SevenDay,
         WindowUsage {
-            utilization: Some(0.18),
+            utilization: Some(0.86),
             resets_at: Some(in_future(now, 4 * 24 * 3600)),
             status: RateLimitStatus::Allowed,
         },

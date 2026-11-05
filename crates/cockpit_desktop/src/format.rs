@@ -41,6 +41,9 @@ pub const MODE_CHOICES: [PermissionMode; 4] = [
 /// The words of a model id that are not its family or version.
 const MODEL_VENDOR: &str = "claude";
 
+/// What starts a model id's suffix, as in "claude-opus-4-6[1m]".
+const MODEL_SUFFIX: char = '[';
+
 /// A model id part this long is a release date, not a version number.
 const DATE_PART_LENGTH: usize = 8;
 
@@ -112,7 +115,7 @@ pub fn effort_short_label(effort: Effort) -> &'static str {
 /// "claude-opus-5-5" reads "Opus 5.5", "claude-sonnet-4-5-20250929" reads "Sonnet 4.5". An id
 /// in another shape stays as it is.
 pub fn model_label(model: &str) -> String {
-    let id = model.split('[').next().unwrap_or(model);
+    let id = model.split(MODEL_SUFFIX).next().unwrap_or(model);
     let mut family: Vec<String> = Vec::new();
     let mut version: Vec<&str> = Vec::new();
     for part in id.split('-') {
@@ -142,6 +145,16 @@ pub fn model_label(model: &str) -> String {
         label.push_str(&version.join("."));
     }
     label
+}
+
+/// The model menu's alias for the family of the id Claude Code reports: "claude-opus-5-5" is
+/// "opus". `None` for a family the menu does not offer.
+pub fn model_alias(model: &str) -> Option<&'static str> {
+    let id = model.split(MODEL_SUFFIX).next().unwrap_or(model);
+    MODEL_CHOICES
+        .iter()
+        .map(|choice| choice.alias)
+        .find(|alias| id.split('-').any(|part| part.eq_ignore_ascii_case(alias)))
 }
 
 fn capitalized(word: &str) -> String {
@@ -345,6 +358,17 @@ mod tests {
         assert_eq!(model_label("opus"), "Opus");
         assert_eq!(model_label("claude-opus-4-6[1m]"), "Opus 4.6");
         assert_eq!(model_label("gpt-4o"), "gpt-4o");
+    }
+
+    #[test]
+    fn model_ids_map_to_the_menu_alias_of_their_family() {
+        assert_eq!(model_alias("claude-opus-5-5"), Some("opus"));
+        assert_eq!(model_alias("claude-sonnet-4-5-20250929"), Some("sonnet"));
+        assert_eq!(model_alias("claude-3-5-haiku-20241022"), Some("haiku"));
+        assert_eq!(model_alias("claude-opus-4-6[1m]"), Some("opus"));
+        assert_eq!(model_alias("sonnet"), Some("sonnet"));
+        assert_eq!(model_alias("claude-mythical-1"), None);
+        assert_eq!(model_alias("gpt-4o"), None);
     }
 
     #[test]

@@ -155,6 +155,12 @@ const element_id = await dioxus.recv();
 document.getElementById(element_id)?.scrollIntoView({ block: "nearest" });
 "#;
 
+/// Brings a dialog's highlighted row into view, after the render that moved the highlight.
+const SCROLL_TO_HIGHLIGHTED_SCRIPT: &str = r#"
+await new Promise((resolve) => requestAnimationFrame(resolve));
+document.querySelector(".dialog .highlighted")?.scrollIntoView({ block: "nearest" });
+"#;
+
 #[derive(Debug, Serialize)]
 struct FieldText {
     field_id: &'static str,
@@ -310,6 +316,11 @@ pub fn reveal(element_id: &'static str) {
     if let Err(error) = script.send(element_id) {
         tracing::warn!("cannot scroll {element_id} into view: {error}");
     }
+}
+
+/// For a list moved by the keyboard: its highlighted row may sit below the scrolled view.
+pub fn scroll_to_highlighted() {
+    document::eval(SCROLL_TO_HIGHLIGHTED_SCRIPT);
 }
 
 #[cfg(test)]
