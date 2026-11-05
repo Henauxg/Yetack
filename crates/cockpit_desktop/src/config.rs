@@ -14,6 +14,7 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 use cockpit_client::Transport;
 use serde::Deserialize;
@@ -163,11 +164,8 @@ impl Config {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
             Err(source) => return Err(ConfigError::Read { path, source }),
         };
-        Self::parse(&text).map_err(|source| ConfigError::Parse { path, source })
-    }
-
-    pub fn parse(text: &str) -> Result<Self, toml::de::Error> {
-        toml::from_str(text)
+        text.parse::<Self>()
+            .map_err(|source| ConfigError::Parse { path, source })
     }
 
     pub fn transport(&self, environment: &Environment) -> Result<Transport, ConfigError> {
@@ -204,6 +202,14 @@ impl Config {
     }
 }
 
+impl FromStr for Config {
+    type Err = toml::de::Error;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        toml::from_str(text)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,7 +224,7 @@ mod tests {
 
     #[test]
     fn an_empty_file_means_the_local_daemon_with_notifications() {
-        let config = Config::parse("").unwrap();
+        let config: Config = "".parse().unwrap();
 
         assert_eq!(config, Config::default());
         assert_eq!(
@@ -244,7 +250,7 @@ mod tests {
             enabled = false
         "#;
 
-        let config = Config::parse(text).unwrap();
+        let config: Config = text.parse().unwrap();
 
         assert_eq!(
             config.transport(&environment()).unwrap(),
@@ -267,7 +273,7 @@ mod tests {
     fn reads_a_local_socket() {
         let text = "[daemon]\ntransport = \"local\"\nsocket = \"/run/cockpit.sock\"\n";
 
-        let config = Config::parse(text).unwrap();
+        let config: Config = text.parse().unwrap();
 
         assert_eq!(
             config.transport(&Environment::default()).unwrap(),
@@ -279,9 +285,17 @@ mod tests {
 
     #[test]
     fn refuses_an_unknown_transport_or_key() {
-        assert!(Config::parse("[daemon]\ntransport = \"tcp\"\n").is_err());
-        assert!(Config::parse("[daemon]\ntransport = \"local\"\nport = 22\n").is_err());
-        assert!(Config::parse("[daemon]\ntransport = \"ssh\"\nhost = \"build-box\"\n").is_err());
+        assert!("[daemon]\ntransport = \"tcp\"\n".parse::<Config>().is_err());
+        assert!(
+            "[daemon]\ntransport = \"local\"\nport = 22\n"
+                .parse::<Config>()
+                .is_err()
+        );
+        assert!(
+            "[daemon]\ntransport = \"ssh\"\nhost = \"build-box\"\n"
+                .parse::<Config>()
+                .is_err()
+        );
     }
 
     #[test]

@@ -16,7 +16,7 @@ use crate::ui::transcript::TranscriptView;
 
 #[component]
 pub fn App() -> Element {
-    let startup = use_hook(consume_context::<Startup>);
+    let startup: Startup = use_hook(consume_context);
     let cockpit = use_cockpit(startup);
     use_clock();
     use_bridge(cockpit);
@@ -65,16 +65,16 @@ pub fn App() -> Element {
 
 #[component]
 fn ErrorNotes() -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     let notes = cockpit.state.read().ui.errors.clone();
     rsx! {
-        div { class: "error-notes", "aria-live": "polite",
+        div { class: "error-notes", aria_live: "polite",
             for note in notes {
                 div { key: "{note.id}", class: "error-note",
                     span { "{note.text}" }
                     button {
                         class: "icon-button tiny",
-                        "aria-label": "Dismiss",
+                        aria_label: "Dismiss",
                         onclick: move |_| cockpit.update(|state| state.ui.dismiss(note.id)),
                         Icon { kind: IconKind::Close, size: 12 }
                     }

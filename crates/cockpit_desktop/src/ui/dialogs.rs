@@ -5,10 +5,10 @@ use std::collections::BTreeSet;
 
 use cockpit_protocol::{AgentId, AgentStatus, ClaudeSessionId, Effort, PastSession};
 use dioxus::prelude::*;
-use strum::VariantArray;
 
 use crate::connection::{Clock, Cockpit};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
+use crate::state::actions::Direction;
 use crate::state::{Dialog, Loadable, NewAgentForm, NewAgentTab, actions};
 use crate::ui::icons::{Icon, IconKind};
 
@@ -20,7 +20,7 @@ const DEFAULT_CHOICE: &str = "";
 
 #[component]
 pub fn Dialogs() -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     let dialog = cockpit.state.read().ui.dialog.clone();
     let Some(dialog) = dialog else {
         return rsx! {};
@@ -52,7 +52,7 @@ struct SwitcherRow {
 
 #[component]
 fn SwitcherDialog(query: String, highlighted: usize) -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     let rows: Vec<SwitcherRow> = {
         let state = cockpit.state.read();
         actions::filtered_agents(&state, &query)
@@ -69,15 +69,15 @@ fn SwitcherDialog(query: String, highlighted: usize) -> Element {
     rsx! {
         div {
             class: "dialog switcher",
-            "role": "dialog",
-            "aria-label": "Switch to an agent",
+            role: "dialog",
+            aria_label: "Switch to an agent",
             onclick: move |event| event.stop_propagation(),
             div { class: "dialog-search",
                 Icon { kind: IconKind::Search, size: 16 }
                 input {
                     class: "search-input",
                     r#type: "text",
-                    "aria-label": "Find an agent",
+                    aria_label: "Find an agent",
                     placeholder: "Type to find an agent by title or folder",
                     value: "{query}",
                     onmounted: move |event| async move {
@@ -86,8 +86,8 @@ fn SwitcherDialog(query: String, highlighted: usize) -> Element {
                     },
                     oninput: move |event: FormEvent| cockpit.update(|state| actions::switcher_query(state, event.value())),
                     onkeydown: move |event: KeyboardEvent| match event.key() {
-                        Key::ArrowDown => cockpit.update(|state| actions::switcher_move(state, true)),
-                        Key::ArrowUp => cockpit.update(|state| actions::switcher_move(state, false)),
+                        Key::ArrowDown => cockpit.update(|state| actions::switcher_move(state, Direction::Down)),
+                        Key::ArrowUp => cockpit.update(|state| actions::switcher_move(state, Direction::Up)),
                         Key::Enter => cockpit.change(|state| {
                             actions::switcher_pick(state, None);
                             Vec::new()
@@ -98,7 +98,7 @@ fn SwitcherDialog(query: String, highlighted: usize) -> Element {
                 span { class: "key-hint", "Ctrl K" }
                 button {
                     class: "icon-button",
-                    "aria-label": "Close",
+                    aria_label: "Close",
                     onclick: move |_| cockpit.update(|state| state.ui.dialog = None),
                     Icon { kind: IconKind::Close, size: 14 }
                 }
@@ -112,7 +112,7 @@ fn SwitcherDialog(query: String, highlighted: usize) -> Element {
                         key: "{row.id.get()}",
                         class: if index == highlighted { "switcher-row highlighted {format::status_class(row.status)}" } else { "switcher-row {format::status_class(row.status)}" },
                         onclick: move |_| cockpit.update(|state| actions::switcher_pick(state, Some(index))),
-                        span { class: "status-dot", "aria-hidden": "true" }
+                        span { class: "status-dot", aria_hidden: true }
                         span { class: if row.unread { "switcher-title unread" } else { "switcher-title" }, "{row.title}" }
                         span { class: "switcher-status", "{format::status_label(row.status)}" }
                         span { class: "spacer" }
@@ -127,36 +127,36 @@ fn SwitcherDialog(query: String, highlighted: usize) -> Element {
 
 #[component]
 fn NewAgentDialog(form: NewAgentForm) -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     let start = form.tab == NewAgentTab::Start;
     rsx! {
         div {
             class: "dialog new-agent",
-            "role": "dialog",
-            "aria-label": "New agent",
+            role: "dialog",
+            aria_label: "New agent",
             onclick: move |event| event.stop_propagation(),
             div { class: "dialog-head",
                 h2 { "New agent" }
                 span { class: "key-hint", "Ctrl N" }
                 button {
                     class: "icon-button",
-                    "aria-label": "Close",
+                    aria_label: "Close",
                     onclick: move |_| cockpit.update(|state| state.ui.dialog = None),
                     Icon { kind: IconKind::Close, size: 14 }
                 }
             }
-            div { class: "dialog-tabs", "role": "tablist", "aria-label": "How to start",
+            div { class: "dialog-tabs", role: "tablist", aria_label: "How to start",
                 button {
                     class: if start { "dialog-tab selected" } else { "dialog-tab" },
-                    "role": "tab",
-                    "aria-selected": if start { "true" } else { "false" },
+                    role: "tab",
+                    aria_selected: start,
                     onclick: move |_| cockpit.update(|state| actions::with_new_agent_form(state, |form| form.tab = NewAgentTab::Start)),
                     "Start in a folder"
                 }
                 button {
                     class: if start { "dialog-tab" } else { "dialog-tab selected" },
-                    "role": "tab",
-                    "aria-selected": if start { "false" } else { "true" },
+                    role: "tab",
+                    aria_selected: !start,
                     onclick: move |_| cockpit.update(|state| actions::with_new_agent_form(state, |form| form.tab = NewAgentTab::Resume)),
                     "Resume a session"
                 }
@@ -172,7 +172,9 @@ fn NewAgentDialog(form: NewAgentForm) -> Element {
 
 #[component]
 fn StartForm(form: NewAgentForm) -> Element {
-    let cockpit = use_context::<Cockpit>();
+    use strum::VariantArray;
+
+    let cockpit: Cockpit = use_context();
     let Clock(now) = use_context::<Clock>();
     // The first message starts from the form, then follows the keyboard alone: a render that lags
     // behind typing would put an older text back.
@@ -198,7 +200,7 @@ fn StartForm(form: NewAgentForm) -> Element {
         div { class: "dialog-body",
             div { class: "field-group",
                 span { class: "field-label", "Folder on {machine}" }
-                div { class: "folder-list", "role": "radiogroup", "aria-label": "Recent folders",
+                div { class: "folder-list", role: "radiogroup", aria_label: "Recent folders",
                     for (folder, used) in folders {
                         {
                             let shown = folder.display().to_string();
@@ -209,13 +211,13 @@ fn StartForm(form: NewAgentForm) -> Element {
                                 button {
                                     key: "{shown}",
                                     class: if checked { "folder-option checked" } else { "folder-option" },
-                                    "role": "radio",
-                                    "aria-checked": if checked { "true" } else { "false" },
+                                    role: "radio",
+                                    aria_checked: checked,
                                     onclick: move |_| {
                                         let picked = picked.clone();
                                         cockpit.update(|state| actions::with_new_agent_form(state, |form| form.folder = picked));
                                     },
-                                    span { class: "radio-mark", "aria-hidden": "true" }
+                                    span { class: "radio-mark", aria_hidden: true }
                                     span { class: "mono folder-path", "{shown}" }
                                     span { class: "muted small", "{used}" }
                                 }
@@ -226,7 +228,7 @@ fn StartForm(form: NewAgentForm) -> Element {
                 input {
                     class: "text-field mono",
                     r#type: "text",
-                    "aria-label": "Folder",
+                    aria_label: "Folder",
                     placeholder: "Or type the folder's path on {machine}",
                     value: "{form.folder}",
                     oninput: move |event: FormEvent| {
@@ -301,7 +303,7 @@ fn StartForm(form: NewAgentForm) -> Element {
                 textarea {
                     class: "text-field prompt-field",
                     rows: "3",
-                    "aria-label": "First message",
+                    aria_label: "First message",
                     placeholder: "What should the agent do?",
                     initial_value: "{prompt_seed}",
                     oninput: move |event: FormEvent| {
@@ -335,7 +337,7 @@ fn StartForm(form: NewAgentForm) -> Element {
 
 #[component]
 fn ResumeList(starting: bool) -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     let Clock(now) = use_context::<Clock>();
     let (sessions, machine) = {
         let state = cockpit.state.read();

@@ -57,10 +57,10 @@ fn block_view(agent: AgentId, block: &Block) -> Element {
                 "list-marker"
             };
             rsx! {
-                div { class: "md-list", "role": "list",
+                div { class: "md-list", role: "list",
                     for (marker, item) in markers.iter().zip(items.iter()) {
-                        div { class: "md-list-item", "role": "listitem",
-                            span { class: marker_class, "aria-hidden": "true", "{marker}" }
+                        div { class: "md-list-item", role: "listitem",
+                            span { class: marker_class, aria_hidden: true, "{marker}" }
                             div { class: "md-list-body", {blocks_view(agent, item)} }
                         }
                     }
@@ -80,18 +80,18 @@ fn block_view(agent: AgentId, block: &Block) -> Element {
                 .max(1);
             let grid = format!("grid-template-columns: repeat({columns}, minmax(0, 1fr))");
             rsx! {
-                div { class: "md-table", "role": "table",
+                div { class: "md-table", role: "table",
                     if !head.is_empty() {
-                        div { class: "md-row head", "role": "row", style: "{grid}",
+                        div { class: "md-row head", role: "row", style: "{grid}",
                             for cell in head.iter() {
-                                div { class: "md-cell", "role": "columnheader", {inlines_view(agent, cell)} }
+                                div { class: "md-cell", role: "columnheader", {inlines_view(agent, cell)} }
                             }
                         }
                     }
                     for row in rows.iter() {
-                        div { class: "md-row", "role": "row", style: "{grid}",
+                        div { class: "md-row", role: "row", style: "{grid}",
                             for cell in row.iter() {
-                                div { class: "md-cell", "role": "cell", {inlines_view(agent, cell)} }
+                                div { class: "md-cell", role: "cell", {inlines_view(agent, cell)} }
                             }
                         }
                     }
@@ -145,7 +145,7 @@ fn inline_view(agent: AgentId, inline: &Inline) -> Element {
 
 #[component]
 fn FileLink(agent: AgentId, file: FileRef) -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     let FileRef { text, path, line } = file;
     rsx! {
         button {

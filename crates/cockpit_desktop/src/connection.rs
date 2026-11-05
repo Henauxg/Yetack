@@ -8,7 +8,6 @@ use cockpit_client::{Backoff, Requester, Session, Transport};
 use cockpit_protocol::AgentId;
 use dioxus::desktop::DesktopContext;
 use dioxus::prelude::*;
-use futures_util::StreamExt;
 use tokio::sync::mpsc;
 
 use crate::state::{self, AppState, Outgoing, actions};
@@ -96,6 +95,8 @@ pub fn use_cockpit(startup: Startup) -> Cockpit {
 
 /// Answers every request from the sample state, in order.
 async fn run_demo(mut state: Signal<AppState>, mut requests: UnboundedReceiver<Outgoing>) {
+    use futures_util::StreamExt;
+
     while let Some(outgoing) = requests.next().await {
         let mut queue = VecDeque::from([outgoing]);
         while let Some(Outgoing { request, purpose }) = queue.pop_front() {
@@ -113,6 +114,8 @@ async fn run(
     notify: bool,
     mut requests: UnboundedReceiver<Outgoing>,
 ) {
+    use futures_util::StreamExt;
+
     let mut session = Session::start(transport, Backoff::default());
     let requester = session.requester().clone();
     let (opened_sender, mut opened) = mpsc::unbounded_channel::<AgentId>();

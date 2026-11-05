@@ -10,9 +10,8 @@ use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
 use crate::render::{DiffRow, Language, diff_lines};
-use crate::state::actions;
-use crate::state::file_edits::relative_path;
-use crate::ui::code::diff_row;
+use crate::state::{actions, file_edits};
+use crate::ui::code::{LineNumbers, diff_row};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::markdown::MarkdownView;
 
@@ -32,14 +31,14 @@ fn card_class(waiting: bool, kind: &str) -> String {
 
 #[component]
 pub fn ApprovalCard(agent: AgentId, folder: PathBuf, approval: Approval) -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     let waiting = approval.answer == AnswerState::Waiting;
     let heading = if approval.tool == COMMAND_TOOL {
         "Claude asks to run a command".to_owned()
     } else if let Some(edit) = &approval.edit {
         format!(
             "Claude asks to change {}",
-            relative_path(&folder, &edit.path).display()
+            file_edits::relative_path(&folder, &edit.path).display()
         )
     } else {
         format!("Claude asks to use {}", approval.tool)
@@ -61,6 +60,11 @@ pub fn ApprovalCard(agent: AgentId, folder: PathBuf, approval: Approval) -> Elem
         .edit
         .as_ref()
         .is_some_and(|edit| edit.old_text.is_empty());
+    let numbers = if created {
+        LineNumbers::Shown
+    } else {
+        LineNumbers::Hidden
+    };
     let outcome = match &approval.answer {
         AnswerState::Waiting => None,
         AnswerState::Answered(answer) => Some(match (answer.decision, &answer.message) {
@@ -86,7 +90,7 @@ pub fn ApprovalCard(agent: AgentId, folder: PathBuf, approval: Approval) -> Elem
             if !rows.is_empty() {
                 div { class: "diff-box scroll-x approval-diff",
                     for row in rows.iter() {
-                        {diff_row(row, created, None)}
+                        {diff_row(row, numbers, None)}
                     }
                 }
             }
@@ -132,7 +136,7 @@ fn approval_text(approval: &Approval) -> String {
 
 #[component]
 pub fn QuestionCard(agent: AgentId, item: ItemId, question: Question) -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     let draft = cockpit
         .state
         .read()
@@ -189,7 +193,7 @@ pub fn QuestionCard(agent: AgentId, item: ItemId, question: Question) -> Element
                                         button {
                                             key: "{option_index}",
                                             class: if picked { "option picked" } else { "option" },
-                                            "aria-pressed": if picked { "true" } else { "false" },
+                                            aria_pressed: picked,
                                             onclick: move |_| {
                                                 let question = question.clone();
                                                 cockpit.update(|state| {
@@ -214,7 +218,7 @@ pub fn QuestionCard(agent: AgentId, item: ItemId, question: Question) -> Element
                                     input {
                                         class: "text-field",
                                         r#type: "text",
-                                        "aria-label": "Other answer",
+                                        aria_label: "Other answer",
                                         placeholder: "Other answer: type your own",
                                         initial_value: "{other}",
                                         oninput: move |event: FormEvent| {
@@ -269,7 +273,7 @@ fn answers_text(answers: &[QuestionAnswer]) -> String {
 
 #[component]
 pub fn PlanCard(agent: AgentId, plan: Plan) -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     let waiting = plan.answer == AnswerState::Waiting;
     let outcome = match &plan.answer {
         AnswerState::Waiting => None,

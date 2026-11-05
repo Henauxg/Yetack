@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 
-use cockpit_protocol::{AgentId, McpServer, McpServerStatus, McpTool, McpTransport};
+use cockpit_protocol::{AgentId, McpScope, McpServer, McpServerStatus, McpTool, McpTransport};
 use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
@@ -89,7 +89,7 @@ pub fn McpPanel(
 
 #[component]
 fn McpList(servers: Vec<McpServer>, hidden: BTreeSet<String>, show_hidden: bool) -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     let hidden_count = servers
         .iter()
         .filter(|server| hidden.contains(&server.name))
@@ -129,7 +129,7 @@ fn McpList(servers: Vec<McpServer>, hidden: BTreeSet<String>, show_hidden: bool)
                                     state.ui.mcp.filter = ToolFilter::All;
                                 });
                             },
-                            span { class: "mcp-dot", "aria-hidden": "true" }
+                            span { class: "mcp-dot", aria_hidden: true }
                             span { class: "mono", "{server.name}" }
                             if is_hidden {
                                 span { class: "hidden-tag", "hidden" }
@@ -163,7 +163,7 @@ fn McpDetail(
     filter: ToolFilter,
     machine: String,
 ) -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     let mut confirming = use_signal(|| false);
     let name = server.name.clone();
     let status = server.status;
@@ -174,7 +174,7 @@ fn McpDetail(
         None => None,
     };
     let scope_line = server.scope.map(|scope| match scope {
-        cockpit_protocol::McpScope::ClaudeAi => "Comes from your claude.ai account".to_owned(),
+        McpScope::ClaudeAi => "Comes from your claude.ai account".to_owned(),
         scope => format!("Configured in the {} scope", format::scope_word(scope)),
     });
     let version = server
@@ -232,27 +232,27 @@ fn McpDetail(
                 span { class: "tooltip-anchor",
                     button {
                         class: "icon-button framed",
-                        "aria-label": "Reconnect",
+                        aria_label: "Reconnect",
                         onclick: move |_| cockpit.change(|_| actions::mcp_reconnect(agent, reconnect_name.clone())),
                         Icon { kind: IconKind::Reconnect, size: 14 }
                     }
-                    span { class: "tooltip", "role": "tooltip", "Reconnect" }
+                    span { class: "tooltip", role: "tooltip", "Reconnect" }
                 }
                 span { class: "tooltip-anchor",
                     button {
                         class: if disabled { "icon-button framed toggled-warning" } else { "icon-button framed" },
-                        "aria-label": "{toggle_label}",
-                        "aria-pressed": if disabled { "true" } else { "false" },
-                        onclick: move |_| cockpit.change(|_| actions::mcp_toggle(agent, toggle_name.clone(), disabled)),
+                        aria_label: "{toggle_label}",
+                        aria_pressed: disabled,
+                        onclick: move |_| cockpit.change(|_| actions::mcp_toggle(agent, toggle_name.clone(), /* enabled */ disabled)),
                         Icon { kind: IconKind::Power, size: 14 }
                     }
-                    span { class: "tooltip", "role": "tooltip", "{toggle_label}" }
+                    span { class: "tooltip", role: "tooltip", "{toggle_label}" }
                 }
                 span { class: "tooltip-anchor",
                     button {
                         class: if hidden { "icon-button framed toggled" } else { "icon-button framed" },
-                        "aria-label": "{hide_label}",
-                        "aria-pressed": if hidden { "true" } else { "false" },
+                        aria_label: "{hide_label}",
+                        aria_pressed: hidden,
                         onclick: move |_| cockpit.change(|state| actions::set_mcp_hidden(state, &hide_name, !hidden)),
                         if hidden {
                             Icon { kind: IconKind::Eye, size: 14 }
@@ -260,7 +260,7 @@ fn McpDetail(
                             Icon { kind: IconKind::EyeOff, size: 14 }
                         }
                     }
-                    span { class: "tooltip", "role": "tooltip", "{hide_label}" }
+                    span { class: "tooltip", role: "tooltip", "{hide_label}" }
                 }
             }
             div { class: "mcp-facts",
@@ -294,12 +294,12 @@ fn McpDetail(
             } else {
                 div { class: "mcp-tools",
                     span { class: "block-note", "{tools_summary}" }
-                    div { class: "tool-filters", "role": "group", "aria-label": "Filter tools",
+                    div { class: "tool-filters", role: "group", aria_label: "Filter tools",
                         for (kind, label) in filters {
                             button {
                                 key: "{label}",
                                 class: if kind == filter { "filter chosen" } else { "filter" },
-                                "aria-pressed": if kind == filter { "true" } else { "false" },
+                                aria_pressed: kind == filter,
                                 onclick: move |_| cockpit.update(|state| state.ui.mcp.filter = kind),
                                 "{label}"
                             }
@@ -340,7 +340,7 @@ fn McpDetail(
                     None => rsx! {
                         span { class: "block-note small",
                             match server.scope {
-                                Some(cockpit_protocol::McpScope::ClaudeAi) => "It comes from your claude.ai account, so it cannot be removed here.".to_owned(),
+                                Some(McpScope::ClaudeAi) => "It comes from your claude.ai account, so it cannot be removed here.".to_owned(),
                                 Some(scope) => format!("It comes from the {} configuration, so it cannot be removed here.", format::scope_word(scope)),
                                 None => "Its scope is unknown, so it cannot be removed here.".to_owned(),
                             }

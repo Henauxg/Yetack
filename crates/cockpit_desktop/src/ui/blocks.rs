@@ -18,7 +18,7 @@ use crate::ui::mcp::{McpPanel, mcp_summary};
 
 #[component]
 pub fn FloatingBlocks() -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     let state = cockpit.state.read();
     let Some(entry) = state.selected() else {
         return rsx! {};
@@ -115,7 +115,7 @@ pub fn FloatingBlocks() -> Element {
             }
         }
         if badge_mode {
-            div { class: "badges", "role": "toolbar", "aria-label": "Agent activity", "aria-orientation": "vertical",
+            div { class: "badges", role: "toolbar", aria_label: "Agent activity", aria_orientation: "vertical",
                 if has_tasks {
                     Badge { agent, block: Block::Tasks, pressed: badge == Some(Block::Tasks), icon: IconKind::Tasks, text: tasks_badge, label: "Tasks, {tasks_summary} done", alert: false }
                 }
@@ -141,7 +141,7 @@ fn BlockCard(
     wide: bool,
     children: Element,
 ) -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     let mut class = vec!["block-card"];
     if wide {
         class.push("wide");
@@ -150,15 +150,15 @@ fn BlockCard(
         class.push("running-block");
     }
     rsx! {
-        section { class: class.join(" "), "aria-label": "{title}",
+        section { class: class.join(" "), aria_label: "{title}",
             button {
                 class: "block-head",
-                "aria-expanded": if open { "true" } else { "false" },
+                aria_expanded: open,
                 onclick: move |_| cockpit.change(|state| actions::toggle_block(state, agent, block)),
                 span { class: "block-icon", Icon { kind: icon, size: 14 } }
                 span { class: "block-title", "{title}" }
                 if alert {
-                    span { class: "alert-dot", "aria-hidden": "true" }
+                    span { class: "alert-dot", aria_hidden: true }
                 }
                 span { class: "block-summary", "{summary}" }
                 if badge_mode {
@@ -184,18 +184,18 @@ fn Badge(
     label: String,
     alert: bool,
 ) -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     rsx! {
         button {
             class: if pressed { "badge pressed" } else { "badge" },
-            "aria-pressed": if pressed { "true" } else { "false" },
-            "aria-label": "{label}",
+            aria_pressed: pressed,
+            aria_label: "{label}",
             title: "{label}",
             onclick: move |_| cockpit.change(|state| actions::toggle_block(state, agent, block)),
             span { class: if block == Block::Running { "badge-icon running" } else { "badge-icon" }, Icon { kind: icon, size: 14 } }
             span { class: "badge-text", "{text}" }
             if alert {
-                span { class: "alert-dot badge-alert", "aria-hidden": "true" }
+                span { class: "alert-dot badge-alert", aria_hidden: true }
             }
         }
     }
@@ -210,7 +210,7 @@ fn TasksBody(tasks: Vec<TaskListItem>) -> Element {
     let percent = done * 100 / tasks.len().max(1);
     rsx! {
         div { class: "bar small", div { class: "bar-fill done", style: "width: {percent}%" } }
-        div { class: "task-list", "role": "list",
+        div { class: "task-list", role: "list",
             for (index, task) in tasks.into_iter().enumerate() {
                 {
                     let (class, words) = match task.status {
@@ -224,7 +224,7 @@ fn TasksBody(tasks: Vec<TaskListItem>) -> Element {
                         task.content.clone()
                     };
                     rsx! {
-                        div { key: "{index}", class, "role": "listitem",
+                        div { key: "{index}", class, role: "listitem",
                             if task.status == TaskStatus::Completed {
                                 span { class: "task-mark", Icon { kind: IconKind::Check, size: 14 } }
                             } else {
@@ -271,7 +271,7 @@ fn task_meta(task: &BackgroundTask, now: SystemTime) -> String {
 
 #[component]
 fn RunningBody(agent: AgentId, tasks: Vec<BackgroundTask>) -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     let Clock(now) = use_context::<Clock>();
     let now = now();
     rsx! {
@@ -298,14 +298,14 @@ fn RunningBody(agent: AgentId, tasks: Vec<BackgroundTask>) -> Element {
                             span { class: "task-text",
                                 span { class: "task-description", "{task.description}" }
                                 span { class: "task-meta",
-                                    span { class: "task-state-dot", "aria-hidden": "true" }
+                                    span { class: "task-state-dot", aria_hidden: true }
                                     "{meta}"
                                 }
                             }
                             if running {
                                 button {
                                     class: "round-button",
-                                    "aria-label": "{stop_label}",
+                                    aria_label: "{stop_label}",
                                     title: "{stop_label}",
                                     onclick: move |_| {
                                         let id = id.clone();

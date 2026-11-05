@@ -4,7 +4,8 @@ use std::path::PathBuf;
 
 use cockpit_client::RequestError;
 use cockpit_protocol::{
-    AgentId, AgentParams, HistoryParams, Method, ReadFileParams, Request, ResponseBody,
+    AgentDetails, AgentId, AgentParams, HistoryParams, ItemId, Method, ReadFileParams, Request,
+    ResponseBody,
 };
 
 use super::app_state::{AppState, Loadable};
@@ -115,7 +116,7 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
 }
 
 /// The page of items before `before`, or the latest page.
-pub fn history_request(agent: AgentId, before: Option<cockpit_protocol::ItemId>) -> Outgoing {
+pub fn history_request(agent: AgentId, before: Option<ItemId>) -> Outgoing {
     Outgoing {
         request: Request::AgentHistory(HistoryParams {
             agent,
@@ -251,10 +252,7 @@ pub fn apply_response(
     }
 }
 
-fn loaded_details(
-    state: &mut AppState,
-    agent: AgentId,
-) -> Option<&mut cockpit_protocol::AgentDetails> {
+fn loaded_details(state: &mut AppState, agent: AgentId) -> Option<&mut AgentDetails> {
     state.agents.get_mut(&agent)?.details.loaded_mut()
 }
 
@@ -306,8 +304,7 @@ impl Failure {
 #[cfg(test)]
 mod tests {
     use cockpit_protocol::{
-        AgentDetails, AgentStatus, ErrorBody, ErrorCode, HistoryPage, ItemBody, ItemId,
-        TranscriptItem,
+        AgentStatus, ErrorBody, ErrorCode, HistoryPage, ItemBody, TranscriptItem,
     };
 
     use super::*;

@@ -3,7 +3,7 @@
 
 use std::time::{Duration, SystemTime};
 
-use chrono::{DateTime, Datelike, Local, NaiveDateTime};
+use chrono::{DateTime, Local, NaiveDateTime};
 use cockpit_protocol::{
     AgentStatus, CostUsd, Effort, McpScope, McpServerStatus, PermissionMode, Timestamp, UsageWindow,
 };
@@ -43,6 +43,9 @@ const MODEL_VENDOR: &str = "claude";
 
 /// A model id part this long is a release date, not a version number.
 const DATE_PART_LENGTH: usize = 8;
+
+/// chrono's format for a month's short name, as in "8 Nov".
+const SHORT_MONTH: &str = "%b";
 
 pub fn status_label(status: AgentStatus) -> &'static str {
     match status {
@@ -283,12 +286,14 @@ pub fn reset_time(moment: Timestamp, now: SystemTime) -> Option<String> {
 
 /// "at 16:00" the same day, "Monday at 09:00" within a week, "8 Nov at 09:00" later.
 fn clock_time(moment: NaiveDateTime, now: NaiveDateTime) -> String {
+    use chrono::Datelike;
+
     let time = moment.format("%H:%M");
     let days = (moment.date() - now.date()).num_days();
     match days {
         0 => format!("at {time}"),
         1..=6 => format!("{} at {time}", moment.format("%A")),
-        _ => format!("{} {} at {time}", moment.day(), moment.format("%b")),
+        _ => format!("{} {} at {time}", moment.day(), moment.format(SHORT_MONTH)),
     }
 }
 
@@ -306,6 +311,8 @@ pub fn ago(moment: Timestamp, now: SystemTime) -> String {
 }
 
 fn ago_between(then: NaiveDateTime, now: NaiveDateTime, elapsed: Duration) -> String {
+    use chrono::Datelike;
+
     let minutes = elapsed.as_secs() / 60;
     let days = (now.date() - then.date()).num_days();
     match (minutes, days) {
@@ -314,13 +321,13 @@ fn ago_between(then: NaiveDateTime, now: NaiveDateTime, elapsed: Duration) -> St
         (_, 0) => format!("{} h ago", minutes / 60),
         (_, 1) => "yesterday".to_owned(),
         (_, 2..=6) => format!("{days} days ago"),
-        _ => format!("{} {}", then.day(), then.format("%b")),
+        _ => format!("{} {}", then.day(), then.format(SHORT_MONTH)),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use chrono::NaiveDate;
+    use chrono::{NaiveDate, Utc};
 
     use super::*;
 
@@ -407,7 +414,7 @@ mod tests {
     fn a_moment_past_the_calendar_reads_without_failing() {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
         let far = Timestamp::from_unix_millis(u64::MAX);
-        let last = u64::try_from(DateTime::<chrono::Utc>::MAX_UTC.timestamp_millis()).unwrap();
+        let last = u64::try_from(DateTime::<Utc>::MAX_UTC.timestamp_millis()).unwrap();
 
         assert_eq!(reset_time(far, now), None);
         assert_eq!(ago(far, now), "now");

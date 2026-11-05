@@ -6,9 +6,9 @@ use cockpit_protocol::{AgentId, AgentStatus};
 use dioxus::prelude::*;
 
 use crate::connection::{Clock, Cockpit};
-use crate::format;
 use crate::state::{AgentEntry, ConnectionState, actions};
 use crate::ui::icons::{Icon, IconKind};
+use crate::{APP_NAME, format};
 
 #[derive(Debug, Clone, PartialEq)]
 struct AgentRow {
@@ -54,7 +54,7 @@ pub fn activity_line(entry: &AgentEntry) -> String {
 
 #[component]
 pub fn Sidebar() -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     let state = cockpit.state.read();
     let rows: Vec<AgentRow> = state
         .agents_by_attention()
@@ -68,20 +68,20 @@ pub fn Sidebar() -> Element {
         })
         .collect();
     rsx! {
-        nav { class: "sidebar", "aria-label": "Agents",
+        nav { class: "sidebar", aria_label: "Agents",
             div { class: "sidebar-head",
-                span { class: "app-name", "agents-cockpit" }
+                span { class: "app-name", "{APP_NAME}" }
                 button {
                     class: "icon-button",
                     title: "Find an agent (Ctrl+K)",
-                    "aria-label": "Find an agent (Ctrl+K)",
+                    aria_label: "Find an agent (Ctrl+K)",
                     onclick: move |_| cockpit.update(actions::toggle_switcher),
                     Icon { kind: IconKind::Search, size: 16 }
                 }
                 button {
                     class: "icon-button raised",
                     title: "New agent (Ctrl+N)",
-                    "aria-label": "New agent (Ctrl+N)",
+                    aria_label: "New agent (Ctrl+N)",
                     onclick: move |_| cockpit.update(actions::open_new_agent),
                     Icon { kind: IconKind::Plus, size: 16 }
                 }
@@ -101,7 +101,7 @@ pub fn Sidebar() -> Element {
 
 #[component]
 fn AgentRowView(row: AgentRow) -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     let agent = row.id;
     let mut classes = vec!["agent-row", format::status_class(row.status)];
     if row.selected {
@@ -114,16 +114,16 @@ fn AgentRowView(row: AgentRow) -> Element {
     rsx! {
         button {
             class,
-            "aria-current": if row.selected { "true" } else { "false" },
+            aria_current: row.selected,
             onclick: move |_| cockpit.update(|state| actions::select_agent(state, agent)),
             span { class: "row-line",
-                span { class: "status-dot", "aria-hidden": "true" }
+                span { class: "status-dot", aria_hidden: true }
                 span { class: "row-title", "{row.title}" }
                 if row.pending > 0 {
                     span { class: "pending-badge", "{row.pending}" }
                 }
                 if row.unread {
-                    span { class: "unread-dot", "aria-hidden": "true" }
+                    span { class: "unread-dot", aria_hidden: true }
                     span { class: "visually-hidden", "unread" }
                 }
             }
@@ -139,7 +139,7 @@ fn AgentRowView(row: AgentRow) -> Element {
 
 #[component]
 fn ConnectionFooter() -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     let Clock(now) = use_context::<Clock>();
     let state = cockpit.state.read();
     let machine = &state.daemon.machine;
@@ -174,7 +174,7 @@ fn ConnectionFooter() -> Element {
     rsx! {
         div { class: "sidebar-foot",
             span { class,
-                span { class: "connection-dot", "aria-hidden": "true" }
+                span { class: "connection-dot", aria_hidden: true }
                 "{line}"
             }
             if let Some(detail) = detail {

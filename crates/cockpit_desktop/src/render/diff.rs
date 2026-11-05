@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use similar::{ChangeTag, DiffOp, TextDiff};
 
-use super::syntax::{Language, Span, TokenClass, highlight};
+use super::syntax::{self, Language, Span, TokenClass};
 
 /// How long a diff may take before similar approximates it, so a huge file cannot freeze the UI.
 const DIFF_TIMEOUT: Duration = Duration::from_millis(300);
@@ -63,8 +63,8 @@ pub fn diff_lines(
     if groups.is_empty() {
         return Vec::new();
     }
-    let old_spans = highlight(old, language);
-    let new_spans = highlight(new, language);
+    let old_spans = syntax::highlight(old, language);
+    let new_spans = syntax::highlight(new, language);
     let deadline = started.checked_add(DIFF_TIMEOUT);
     let mut rows = Vec::new();
     let mut previous_end: Option<usize> = None;
@@ -93,7 +93,7 @@ pub fn diff_lines(
 /// Every line of `text` as `Context` with syntax colors, for the file view's "Whole file" mode.
 pub fn plain_lines(text: &str, language: Option<Language>, first_line: u32) -> Vec<DiffLine> {
     let mut lines = Vec::new();
-    for (index, spans) in highlight(text, language).into_iter().enumerate() {
+    for (index, spans) in syntax::highlight(text, language).into_iter().enumerate() {
         let number = line_number(index, first_line);
         lines.push(DiffLine {
             kind: LineKind::Context,
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn distant_changes_fold_the_lines_between_them() {
-        let old: String = (1..=20).map(|n| format!("line {n}\n")).collect();
+        let old: String = (1..=20).map(|number| format!("line {number}\n")).collect();
         let new = old
             .replace("line 2\n", "line two\n")
             .replace("line 18\n", "line eighteen\n");

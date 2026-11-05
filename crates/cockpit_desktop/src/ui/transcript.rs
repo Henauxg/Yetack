@@ -12,10 +12,9 @@ use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
 use crate::render::{DiffRow, Language, LineKind, diff_lines};
-use crate::state::file_edits::relative_path;
-use crate::state::{HistoryState, actions};
+use crate::state::{HistoryState, actions, file_edits};
 use crate::ui::cards::{ApprovalCard, PlanCard, QuestionCard};
-use crate::ui::code::diff_row;
+use crate::ui::code::{LineNumbers, diff_row};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::markdown::MarkdownView;
 use crate::ui::sidebar::activity_line;
@@ -36,7 +35,7 @@ const MCP_TOOL_SEPARATOR: &str = "__";
 
 #[component]
 pub fn TranscriptView() -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     let state = cockpit.state.read();
     let Some(entry) = state.selected() else {
         return rsx! {
@@ -105,7 +104,7 @@ pub fn TranscriptView() -> Element {
                 }
                 if status == AgentStatus::Working {
                     div { class: "working-line",
-                        span { class: "working-dot", "aria-hidden": "true" }
+                        span { class: "working-dot", aria_hidden: true }
                         "{activity}"
                     }
                 }
@@ -225,7 +224,7 @@ fn UserBubble(message: UserMessage) -> Element {
 
 #[component]
 fn QueuedMessage(agent: AgentId, item: ItemId, message: UserMessage) -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     rsx! {
         div { class: "user-message",
             div { class: "user-bubble queued", "{message.text}" }
@@ -249,7 +248,7 @@ fn ThinkingView(text: String) -> Element {
         div { class: "thinking",
             button {
                 class: "fold-button",
-                "aria-expanded": if open { "true" } else { "false" },
+                aria_expanded: open,
                 onclick: move |_| expanded.toggle(),
                 span { class: "muted", "Thinking" }
                 span { class: if open { "chevron open" } else { "chevron" }, Icon { kind: IconKind::ChevronRight, size: 12 } }
@@ -316,7 +315,7 @@ fn ToolView(call: ToolCall) -> Element {
     rsx! {
         div { class: status_class(call.status),
             div { class: "tool-head",
-                span { class: "tool-dot", "aria-hidden": "true" }
+                span { class: "tool-dot", aria_hidden: true }
                 span { class: "tool-name", "{name}" }
                 code { class: "tool-summary", "{call.summary}" }
                 if !meta.is_empty() {
@@ -337,7 +336,7 @@ fn ToolView(call: ToolCall) -> Element {
 
 #[component]
 fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall) -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     let Some(edit) = call.edit.clone() else {
         return rsx! {};
     };
@@ -353,7 +352,14 @@ fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall) -> Element {
     let (added, removed) = line_counts(&rows);
     let more = rows.len().saturating_sub(EDIT_PREVIEW_ROWS);
     let preview: Vec<DiffRow> = rows.into_iter().take(EDIT_PREVIEW_ROWS).collect();
-    let shown_path = relative_path(&folder, &edit.path).display().to_string();
+    let numbers = if created {
+        LineNumbers::Shown
+    } else {
+        LineNumbers::Hidden
+    };
+    let shown_path = file_edits::relative_path(&folder, &edit.path)
+        .display()
+        .to_string();
     let path = edit.path.clone();
     let open = move |_: MouseEvent| {
         let path = path.clone();
@@ -369,7 +375,7 @@ fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall) -> Element {
     rsx! {
         div { class: status_class(call.status),
             div { class: "tool-head",
-                span { class: "tool-dot", "aria-hidden": "true" }
+                span { class: "tool-dot", aria_hidden: true }
                 span { class: "tool-name", "{name}" }
                 button { class: "path-link mono", onclick: open, "{shown_path}" }
                 if created {
@@ -385,7 +391,7 @@ fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall) -> Element {
             if !preview.is_empty() {
                 div { class: "diff-box inline-diff scroll-x",
                     for row in preview.iter() {
-                        {diff_row(row, created, None)}
+                        {diff_row(row, numbers, None)}
                     }
                     if more > 0 {
                         button { class: "more-lines", onclick: open_more, "{more_text}" }
@@ -447,9 +453,9 @@ fn SubagentView(
         div { class: status_class(call.status),
             button {
                 class: "fold-button tool-head",
-                "aria-expanded": if open { "true" } else { "false" },
+                aria_expanded: open,
                 onclick: move |_| expanded.toggle(),
-                span { class: "tool-dot", "aria-hidden": "true" }
+                span { class: "tool-dot", aria_hidden: true }
                 span { class: "tool-name", "Agent" }
                 span { class: "subagent-title", "{call.summary}" }
                 span { class: "tool-meta", "{meta}" }
@@ -482,12 +488,14 @@ fn CompactItem(
             let name = tool_label(&call.tool);
             let meta = tool_meta(call);
             let summary = match &call.edit {
-                Some(edit) => relative_path(&folder, &edit.path).display().to_string(),
+                Some(edit) => file_edits::relative_path(&folder, &edit.path)
+                    .display()
+                    .to_string(),
                 None => call.summary.clone(),
             };
             rsx! {
                 div { class: "compact-tool {status_class(call.status)}",
-                    span { class: "tool-dot", "aria-hidden": "true" }
+                    span { class: "tool-dot", aria_hidden: true }
                     span { class: "tool-name", "{name}" }
                     code { class: "tool-summary", "{summary}" }
                     if !meta.is_empty() {

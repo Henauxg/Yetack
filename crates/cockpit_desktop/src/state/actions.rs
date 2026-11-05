@@ -14,7 +14,7 @@ use cockpit_protocol::{
 };
 
 use super::app_state::{AgentEntry, AppState, Loadable};
-use super::file_edits::{edits_for, relative_path};
+use super::file_edits;
 use super::requests::{Outgoing, Purpose, history_request};
 use super::transcript::HistoryState;
 use super::ui_state::{
@@ -24,6 +24,13 @@ use super::ui_state::{
 
 /// What starts a slash command in the composer.
 pub const COMMAND_PREFIX: char = '/';
+
+/// Which way the highlight of a list moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Up,
+    Down,
+}
 
 pub fn select_agent(state: &mut AppState, agent: AgentId) {
     state.ui.selected = Some(agent);
@@ -101,9 +108,9 @@ fn agent_commands(state: &AppState, agent: AgentId) -> &[SlashCommand] {
         .map_or(&[], |details| details.commands.as_slice())
 }
 
-pub fn palette_move(state: &mut AppState, agent: AgentId, down: bool) {
+pub fn palette_move(state: &mut AppState, agent: AgentId, direction: Direction) {
     let count = filtered_commands(agent_commands(state, agent), &state.ui.palette.query).len();
-    state.ui.palette.highlighted = moved(state.ui.palette.highlighted, count, down);
+    state.ui.palette.highlighted = moved(state.ui.palette.highlighted, count, direction);
 }
 
 /// Puts the command in the composer, ready for its arguments. `None` picks the highlighted one.
@@ -120,12 +127,11 @@ pub fn palette_pick(state: &mut AppState, agent: AgentId, index: Option<usize>) 
 }
 
 /// An index moved by one, staying within `count` items.
-fn moved(index: usize, count: usize, down: bool) -> usize {
+fn moved(index: usize, count: usize, direction: Direction) -> usize {
     let last = count.saturating_sub(1);
-    if down {
-        index.saturating_add(1).min(last)
-    } else {
-        index.saturating_sub(1).min(last)
+    match direction {
+        Direction::Down => index.saturating_add(1).min(last),
+        Direction::Up => index.saturating_sub(1).min(last),
     }
 }
 
@@ -357,8 +363,9 @@ pub fn open_file(state: &mut AppState, agent: AgentId, path: PathBuf, line: Opti
     let Some(entry) = state.agents.get_mut(&agent) else {
         return;
     };
-    let path = relative_path(&entry.summary.folder, &path);
-    let changed = !edits_for(&entry.transcript, &entry.summary.folder, &path).is_empty();
+    let path = file_edits::relative_path(&entry.summary.folder, &path);
+    let changed =
+        !file_edits::edits_for(&entry.transcript, &entry.summary.folder, &path).is_empty();
     let mode = if line.is_none() && changed {
         ViewMode::Diff
     } else {
@@ -549,12 +556,12 @@ pub fn switcher_query(state: &mut AppState, query: String) {
     }
 }
 
-pub fn switcher_move(state: &mut AppState, down: bool) {
+pub fn switcher_move(state: &mut AppState, direction: Direction) {
     let Some(Dialog::Switcher(switcher)) = &state.ui.dialog else {
         return;
     };
     let count = filtered_agents(state, &switcher.query).len();
-    let highlighted = moved(switcher.highlighted, count, down);
+    let highlighted = moved(switcher.highlighted, count, direction);
     if let Some(Dialog::Switcher(switcher)) = &mut state.ui.dialog {
         switcher.highlighted = highlighted;
     }
@@ -647,7 +654,8 @@ pub fn resume_session(state: &mut AppState, session: ClaudeSessionId) -> Vec<Out
 #[cfg(test)]
 mod tests {
     use cockpit_protocol::{
-        AgentDetails, AskedQuestion, CommandKind, Method, QuestionOption, TranscriptItem,
+        AgentDetails, AskedQuestion, CommandKind, HistoryPage, Method, QuestionOption,
+        ResponseBody, TranscriptItem,
     };
 
     use super::*;
@@ -760,8 +768,8 @@ mod tests {
         );
         composer_input(&mut state, agent(), "/c".to_owned());
 
-        palette_move(&mut state, agent(), true);
-        palette_move(&mut state, agent(), true);
+        palette_move(&mut state, agent(), Direction::Down);
+        palette_move(&mut state, agent(), Direction::Down);
         palette_pick(&mut state, agent(), None);
 
         assert_eq!(
@@ -937,7 +945,7 @@ mod tests {
                     agent: agent(),
                     path: PathBuf::from(path),
                 },
-                Ok(cockpit_protocol::ResponseBody::File {
+                Ok(ResponseBody::File {
                     text: format!("text of {path}"),
                 }),
             );
@@ -998,9 +1006,9 @@ mod tests {
         toggle_switcher(&mut state);
         switcher_query(&mut state, "project".to_owned());
 
-        switcher_move(&mut state, true);
-        switcher_move(&mut state, true);
-        switcher_move(&mut state, true);
+        switcher_move(&mut state, Direction::Down);
+        switcher_move(&mut state, Direction::Down);
+        switcher_move(&mut state, Direction::Down);
         switcher_pick(&mut state, None);
 
         assert_eq!(state.ui.selected, Some(AgentId::new(3)));
@@ -1060,7 +1068,7 @@ mod tests {
             &mut state,
             Method::SessionsList,
             Purpose::Sessions,
-            Ok(cockpit_protocol::ResponseBody::Sessions {
+            Ok(ResponseBody::Sessions {
                 sessions: Vec::new(),
             }),
         );
@@ -1082,7 +1090,7 @@ mod tests {
     fn loading_older_items_asks_before_the_first_one() {
         let mut state = state(AgentStatus::Idle);
         if let Some(entry) = state.agents.get_mut(&agent()) {
-            entry.transcript.merge_page(cockpit_protocol::HistoryPage {
+            entry.transcript.merge_page(HistoryPage {
                 items: vec![TranscriptItem {
                     id: ItemId::new(50),
                     parent: None,

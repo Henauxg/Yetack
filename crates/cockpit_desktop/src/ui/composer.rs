@@ -1,18 +1,17 @@
 //! The composer: attachments, the prompt, the `/` palette, the prompt cache timer, the model,
 //! effort and permission mode menus, and Send, or Stop while the agent works.
 
-use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use cockpit_protocol::{
     AgentId, AgentStatus, CommandKind, Effort, Image, ImageMediaType, PermissionMode, SlashCommand,
 };
 use dioxus::html::FileData;
 use dioxus::prelude::*;
-use strum::VariantArray;
 
 use crate::bridge::{self, COMPOSER_ID};
 use crate::connection::{Clock, Cockpit};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
+use crate::state::actions::Direction;
 use crate::state::{Popover, actions};
 use crate::ui::header::cache_left;
 use crate::ui::icons::{Icon, IconKind};
@@ -40,7 +39,7 @@ fn placeholder(status: AgentStatus) -> &'static str {
 
 #[component]
 pub fn Composer() -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     let Clock(now) = use_context::<Clock>();
     // The text area is not bound to the draft, whose renders can lag behind typing: it takes the
     // draft's text only when another agent opens or the app changes the draft.
@@ -119,7 +118,7 @@ pub fn Composer() -> Element {
                                     span { class: "mono", "Image {index + 1}" }
                                     button {
                                         class: "icon-button tiny",
-                                        "aria-label": "Remove the image",
+                                        aria_label: "Remove the image",
                                         onclick: move |_| cockpit.update(|state| actions::remove_image(state, agent, index)),
                                         Icon { kind: IconKind::Close, size: 12 }
                                     }
@@ -131,7 +130,7 @@ pub fn Composer() -> Element {
                         id: COMPOSER_ID,
                         class: "composer-input",
                         rows: "2",
-                        "aria-label": "Message {title}",
+                        aria_label: "Message {title}",
                         placeholder: placeholder(status),
                         disabled: exited,
                         oninput: move |event: FormEvent| {
@@ -157,7 +156,7 @@ pub fn Composer() -> Element {
                         }
                         button {
                             class: if popover == Some(Popover::Palette) { "icon-button small active" } else { "icon-button small" },
-                            "aria-label": "Commands and skills",
+                            aria_label: "Commands and skills",
                             title: "Commands and skills",
                             onclick: move |_| cockpit.change(|state| actions::toggle_palette(state, agent)),
                             Icon { kind: IconKind::Slash, size: 16 }
@@ -186,10 +185,10 @@ pub fn Composer() -> Element {
                             Icon { kind: IconKind::ChevronDown, size: 12 }
                         }
                         if working {
-                            span { class: "key-hint", "aria-hidden": "true", "Esc" }
+                            span { class: "key-hint", aria_hidden: true, "Esc" }
                             button {
                                 class: "send-button",
-                                "aria-label": "Stop the agent (Esc)",
+                                aria_label: "Stop the agent (Esc)",
                                 title: "Stop the agent (Esc)",
                                 onclick: move |_| cockpit.change(|state| actions::interrupt(state, agent)),
                                 Icon { kind: IconKind::Stop, size: 12 }
@@ -197,7 +196,7 @@ pub fn Composer() -> Element {
                         } else {
                             button {
                                 class: "send-button",
-                                "aria-label": "Send the message",
+                                aria_label: "Send the message",
                                 title: "Send the message (Enter)",
                                 disabled: !can_send,
                                 onclick: move |_| cockpit.change(|state| actions::send_prompt(state, agent, None)),
@@ -213,6 +212,8 @@ pub fn Composer() -> Element {
 
 /// The `accept` list of the file input: the image types Claude reads.
 fn accepted_images() -> String {
+    use strum::VariantArray;
+
     let types: Vec<String> = ImageMediaType::VARIANTS
         .iter()
         .map(|media_type| bridge::mime_type(*media_type))
@@ -232,6 +233,8 @@ fn media_type_from_name(name: &str) -> Option<ImageMediaType> {
 }
 
 async fn attach(cockpit: Cockpit, agent: AgentId, files: Vec<FileData>) {
+    use base64::Engine;
+
     for file in files {
         let name = file.name();
         let media_type = file
@@ -269,15 +272,15 @@ fn CommandPalette(
     query: String,
     highlighted: usize,
 ) -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     rsx! {
-        div { class: "popover palette", "role": "dialog", "aria-label": "Commands",
+        div { class: "popover palette", role: "dialog", aria_label: "Commands",
             div { class: "palette-head",
                 span { class: "mono muted", "/" }
                 input {
                     class: "palette-input",
                     r#type: "text",
-                    "aria-label": "Filter commands",
+                    aria_label: "Filter commands",
                     placeholder: "Type to filter commands and skills",
                     value: "{query}",
                     oninput: move |event: FormEvent| {
@@ -287,8 +290,8 @@ fn CommandPalette(
                         });
                     },
                     onkeydown: move |event: KeyboardEvent| match event.key() {
-                        Key::ArrowDown => cockpit.update(|state| actions::palette_move(state, agent, true)),
-                        Key::ArrowUp => cockpit.update(|state| actions::palette_move(state, agent, false)),
+                        Key::ArrowDown => cockpit.update(|state| actions::palette_move(state, agent, Direction::Down)),
+                        Key::ArrowUp => cockpit.update(|state| actions::palette_move(state, agent, Direction::Up)),
                         Key::Enter => cockpit.update(|state| actions::palette_pick(state, agent, None)),
                         _ => {}
                     },
@@ -322,7 +325,9 @@ fn CommandPalette(
 
 #[component]
 fn ModelMenu(agent: AgentId, model: Option<String>, effort: Option<Effort>) -> Element {
-    let cockpit = use_context::<Cockpit>();
+    use strum::VariantArray;
+
+    let cockpit: Cockpit = use_context();
     let current = model
         .as_deref()
         .map(format::model_label)
@@ -337,7 +342,7 @@ fn ModelMenu(agent: AgentId, model: Option<String>, effort: Option<Effort>) -> E
                         button {
                             key: "{choice.alias}",
                             class: if chosen { "menu-item chosen" } else { "menu-item" },
-                            "aria-pressed": if chosen { "true" } else { "false" },
+                            aria_pressed: chosen,
                             onclick: move |_| {
                                 cockpit.change(|state| actions::set_model(state, agent, choice.alias.to_owned()));
                             },
@@ -351,12 +356,12 @@ fn ModelMenu(agent: AgentId, model: Option<String>, effort: Option<Effort>) -> E
             }
             div { class: "menu-divider" }
             span { class: "menu-title", "Effort" }
-            div { class: "effort-row", "role": "group", "aria-label": "Effort",
+            div { class: "effort-row", role: "group", aria_label: "Effort",
                 for level in Effort::VARIANTS.iter().copied() {
                     button {
                         key: "{format::effort_short_label(level)}",
                         class: if effort == Some(level) { "effort chosen" } else { "effort" },
-                        "aria-pressed": if effort == Some(level) { "true" } else { "false" },
+                        aria_pressed: effort == Some(level),
                         title: format::effort_label(level),
                         onclick: move |_| cockpit.change(|_| actions::set_effort(agent, level)),
                         "{format::effort_short_label(level)}"
@@ -369,7 +374,7 @@ fn ModelMenu(agent: AgentId, model: Option<String>, effort: Option<Effort>) -> E
 
 #[component]
 fn ModeMenu(agent: AgentId, mode: PermissionMode) -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     let mut modes: Vec<PermissionMode> = MODE_CHOICES.to_vec();
     if !modes.contains(&mode) {
         modes.push(mode);
@@ -380,7 +385,7 @@ fn ModeMenu(agent: AgentId, mode: PermissionMode) -> Element {
                 button {
                     key: "{format::mode_label(choice)}",
                     class: if choice == mode { "menu-item two-lines chosen" } else { "menu-item two-lines" },
-                    "aria-pressed": if choice == mode { "true" } else { "false" },
+                    aria_pressed: choice == mode,
                     onclick: move |_| cockpit.change(|state| actions::set_mode(state, agent, choice)),
                     span { "{format::mode_label(choice)}" }
                     span { class: "muted small", "{format::mode_description(choice)}" }

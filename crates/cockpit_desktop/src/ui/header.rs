@@ -5,14 +5,14 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use cockpit_protocol::{
-    AgentId, ChangedFile, PlanUsage, RateLimitStatus, UsageWindow, WindowUsage,
+    AgentId, ChangedFile, ContextUsage, PlanUsage, RateLimitStatus, Timestamp, UsageWindow,
+    WindowUsage,
 };
 use dioxus::prelude::*;
 
 use crate::connection::{Clock, Cockpit};
 use crate::format;
-use crate::state::file_edits::relative_path;
-use crate::state::{AgentEntry, Popover, actions};
+use crate::state::{AgentEntry, Popover, actions, file_edits};
 use crate::ui::icons::{Icon, IconKind};
 
 /// The shades of the context categories, darker for smaller parts.
@@ -24,7 +24,7 @@ const INNER_RING: f64 = 31.42;
 
 #[component]
 pub fn Header() -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     let state = cockpit.state.read();
     let Some(entry) = state.selected() else {
         return rsx! {
@@ -61,7 +61,7 @@ pub fn Header() -> Element {
                 div { class: "title-line",
                     h1 { "{summary.title}" }
                     span { class: "status-pill {status_class}", title: status_label,
-                        span { class: "status-dot", "aria-hidden": "true" }
+                        span { class: "status-dot", aria_hidden: true }
                         span { class: "pill-label", "{status_label}" }
                     }
                 }
@@ -70,12 +70,12 @@ pub fn Header() -> Element {
             div { class: "chip-anchor",
                 button {
                     class: if usage_open { "chip open" } else { "chip" },
-                    "aria-expanded": if usage_open { "true" } else { "false" },
-                    "aria-label": "{usage_label}",
+                    aria_expanded: usage_open,
+                    aria_label: "{usage_label}",
                     onclick: move |_| cockpit.change(|state| actions::toggle_usage(state, agent)),
                     span { class: "chip-full",
                         span { span { class: "chip-key", "Plan" } " {plan_text}" }
-                        span { class: "chip-separator", "aria-hidden": "true" }
+                        span { class: "chip-separator", aria_hidden: true }
                         span { span { class: "chip-key", "Context" } " {context_text}" }
                         Icon { kind: IconKind::ChevronDown, size: 12 }
                     }
@@ -88,8 +88,8 @@ pub fn Header() -> Element {
             div { class: "chip-anchor",
                 button {
                     class: if changes_open { "chip open" } else { "chip" },
-                    "aria-expanded": if changes_open { "true" } else { "false" },
-                    "aria-label": "{changes_label}",
+                    aria_expanded: changes_open,
+                    aria_label: "{changes_label}",
                     onclick: move |_| cockpit.update(|state| state.ui.toggle_popover(Popover::Changes)),
                     Icon { kind: IconKind::FileChanges, size: 14 }
                     span { class: "chip-full mono",
@@ -99,7 +99,7 @@ pub fn Header() -> Element {
                         Icon { kind: IconKind::ChevronDown, size: 12 }
                     }
                     if file_count > 0 {
-                        span { class: "chip-compact chip-count", "aria-hidden": "true", "{file_count}" }
+                        span { class: "chip-compact chip-count", aria_hidden: true, "{file_count}" }
                     }
                 }
                 if changes_open {
@@ -161,7 +161,7 @@ fn rings(plan: Option<u8>, context: Option<u8>) -> String {
 
 #[component]
 fn UsageCard() -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     let Clock(now) = use_context::<Clock>();
     let now = now();
     let state = cockpit.state.read();
@@ -223,10 +223,7 @@ fn UsageCard() -> Element {
 }
 
 /// "48 min left", or "expired"; and whether under ten minutes remain.
-pub fn cache_left(
-    expires_at: Option<cockpit_protocol::Timestamp>,
-    now: SystemTime,
-) -> (String, bool) {
+pub fn cache_left(expires_at: Option<Timestamp>, now: SystemTime) -> (String, bool) {
     const LOW_MINUTES: u64 = 10;
     match expires_at.and_then(|moment| format::minutes_until(moment, now)) {
         Some(minutes) => (format!("{minutes} min left"), minutes < LOW_MINUTES),
@@ -259,7 +256,7 @@ fn WindowRow(window: UsageWindow, usage: WindowUsage, now: SystemTime) -> Elemen
 }
 
 #[component]
-fn ContextBar(context: cockpit_protocol::ContextUsage) -> Element {
+fn ContextBar(context: ContextUsage) -> Element {
     let max = f64::from(context.max_tokens.max(1));
     let parts: Vec<(String, String, &'static str)> = context
         .categories
@@ -276,7 +273,7 @@ fn ContextBar(context: cockpit_protocol::ContextUsage) -> Element {
         })
         .collect();
     rsx! {
-        div { class: "context-bar", "aria-hidden": "true",
+        div { class: "context-bar", aria_hidden: true,
             for (width, _, shade) in parts.clone() {
                 div { style: "width: {width}; background: {shade}" }
             }
@@ -294,7 +291,7 @@ fn ContextBar(context: cockpit_protocol::ContextUsage) -> Element {
 
 #[component]
 fn ChangesList(agent: AgentId, files: Vec<ChangedFile>, folder: PathBuf) -> Element {
-    let cockpit = use_context::<Cockpit>();
+    let cockpit: Cockpit = use_context();
     let title = if files.is_empty() {
         "No file changed yet.".to_owned()
     } else {
@@ -309,7 +306,7 @@ fn ChangesList(agent: AgentId, files: Vec<ChangedFile>, folder: PathBuf) -> Elem
             // Keyed by position: the daemon's list does not promise one entry per path.
             for (index, file) in files.into_iter().enumerate() {
                 {
-                    let shown = relative_path(&folder, &file.path).display().to_string();
+                    let shown = file_edits::relative_path(&folder, &file.path).display().to_string();
                     let path = file.path.clone();
                     rsx! {
                         button {

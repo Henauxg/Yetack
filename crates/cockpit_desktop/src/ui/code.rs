@@ -6,16 +6,23 @@ use dioxus::html::ScrollBehavior;
 use dioxus::prelude::*;
 
 use crate::bridge;
-use crate::render::{DiffLine, DiffRow, Language, LineKind, highlight};
+use crate::render::{self, DiffLine, DiffRow, Language, LineKind};
 use crate::ui::icons::{Icon, IconKind};
 
 /// How long the copy button says "Copied".
 const COPIED_FOR: Duration = Duration::from_secs(2);
 
+/// Whether a diff row shows its line numbers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineNumbers {
+    Shown,
+    Hidden,
+}
+
 #[component]
 pub fn CodeBlock(language: Option<String>, code: String) -> Element {
     let mut copied = use_signal(|| false);
-    let lines = highlight(&code, language.as_deref().and_then(Language::from_tag));
+    let lines = render::highlight(&code, language.as_deref().and_then(Language::from_tag));
     let label = language.unwrap_or_default();
     let copy_label = if label.is_empty() {
         "Copy the code".to_owned()
@@ -29,7 +36,7 @@ pub fn CodeBlock(language: Option<String>, code: String) -> Element {
             }
             button {
                 class: "copy-button",
-                "aria-label": "{copy_label}",
+                aria_label: "{copy_label}",
                 title: "{copy_label}",
                 onclick: move |_| {
                     bridge::copy_to_clipboard(code.clone());
@@ -59,9 +66,8 @@ pub fn CodeBlock(language: Option<String>, code: String) -> Element {
     }
 }
 
-/// One row of a diff. `numbered` shows the line numbers; `marked` highlights the row of that
-/// new-side line and scrolls it into view.
-pub fn diff_row(row: &DiffRow, numbered: bool, marked: Option<u32>) -> Element {
+/// One row of a diff. `marked` highlights the row of that new-side line and scrolls it into view.
+pub fn diff_row(row: &DiffRow, numbers: LineNumbers, marked: Option<u32>) -> Element {
     let line = match row {
         DiffRow::Folded { lines } => {
             let text = if *lines == 1 {
@@ -79,10 +85,10 @@ pub fn diff_row(row: &DiffRow, numbered: bool, marked: Option<u32>) -> Element {
         }
         DiffRow::Line(line) => line,
     };
-    diff_line(line, numbered, marked)
+    diff_line(line, numbers, marked)
 }
 
-pub fn diff_line(line: &DiffLine, numbered: bool, marked: Option<u32>) -> Element {
+pub fn diff_line(line: &DiffLine, numbers: LineNumbers, marked: Option<u32>) -> Element {
     let (kind_class, sign, word_class) = match line.kind {
         LineKind::Context => ("context", "", ""),
         LineKind::Added => ("added", "+", "word-added"),
@@ -98,10 +104,9 @@ pub fn diff_line(line: &DiffLine, numbered: bool, marked: Option<u32>) -> Elemen
     } else {
         format!("diff-row {kind_class}")
     };
-    let number = if numbered {
-        number.map(|number| number.to_string()).unwrap_or_default()
-    } else {
-        String::new()
+    let number = match numbers {
+        LineNumbers::Shown => number.map(|number| number.to_string()).unwrap_or_default(),
+        LineNumbers::Hidden => String::new(),
     };
     let content = rsx! {
         span { class: "line-number", "{number}" }

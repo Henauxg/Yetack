@@ -5,9 +5,8 @@ use cockpit_protocol::AgentId;
 use notify_rust::{Notification, Urgency};
 use tokio::sync::mpsc;
 
+use crate::APP_NAME;
 use crate::state::{Alert, AlertKind};
-
-const APP_NAME: &str = "agents-cockpit";
 
 /// The action a click on the notification's body triggers.
 const OPEN_ACTION: &str = "default";

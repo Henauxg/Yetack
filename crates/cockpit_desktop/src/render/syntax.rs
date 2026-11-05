@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::sync::LazyLock;
 
+use strum::IntoStaticStr;
 use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxReference, SyntaxSet};
 
 /// The default syntaxes, loaded once: loading them takes a few milliseconds.
@@ -66,8 +67,15 @@ const RUST_SYNTAX: &str = "Rust";
 /// Syntect's syntax that colors nothing; it reads as no language.
 const PLAIN_TEXT_SYNTAX: &str = "Plain Text";
 
+/// The extension that names syntect's shell syntax.
+const SHELL_EXTENSION: &str = "sh";
+
 /// Code block tags that name a syntax by another word than its extensions and its name.
-const TAG_ALIASES: &[(&str, &str)] = &[("shell", "sh"), ("console", "sh"), ("zsh", "sh")];
+const TAG_ALIASES: &[(&str, &str)] = &[
+    ("shell", SHELL_EXTENSION),
+    ("console", SHELL_EXTENSION),
+    ("zsh", SHELL_EXTENSION),
+];
 
 /// Past this size, code is shown without colors: the parser is too slow for the UI thread.
 const MAX_HIGHLIGHT_BYTES: usize = 256 * 1024;
@@ -75,7 +83,8 @@ const MAX_HIGHLIGHT_BYTES: usize = 256 * 1024;
 /// The mockup palette (R3-parts): keywords and headings #c4a7e7, strings and inline code #f6c177,
 /// types, keys and link text #9ccfd8, macros and flags #ebbcba, numbers, variables and list
 /// markers #eb6f92, comments #8a8a8a, plain #e6e6e6. The stylesheet colors the classes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, IntoStaticStr)]
+#[strum(serialize_all = "kebab-case", prefix = "tok-")]
 pub enum TokenClass {
     Plain,
     Keyword,
@@ -88,15 +97,7 @@ pub enum TokenClass {
 
 impl TokenClass {
     pub fn css_class(self) -> &'static str {
-        match self {
-            Self::Plain => "tok-plain",
-            Self::Keyword => "tok-keyword",
-            Self::String => "tok-string",
-            Self::Type => "tok-type",
-            Self::Macro => "tok-macro",
-            Self::Number => "tok-number",
-            Self::Comment => "tok-comment",
-        }
+        self.into()
     }
 }
 
@@ -116,7 +117,9 @@ impl Language {
     /// unknown or empty tag.
     pub fn from_tag(tag: &str) -> Option<Self> {
         let word = tag
-            .split(|c: char| c.is_whitespace() || c == ',' || c == '{')
+            .split(|character: char| {
+                character.is_whitespace() || character == ',' || character == '{'
+            })
             .find(|word| !word.is_empty())?
             .to_ascii_lowercase();
         let token = TAG_ALIASES
@@ -305,7 +308,7 @@ fn mark_capitalized_types(spans: Vec<Span>) -> Vec<Span> {
                 (None, true) => word_start = Some(index),
                 (Some(start), false) => {
                     let word = span.text.get(start..index).unwrap_or_default();
-                    if word.starts_with(|c: char| c.is_ascii_uppercase()) {
+                    if word.starts_with(|character: char| character.is_ascii_uppercase()) {
                         push_span(
                             &mut marked,
                             span.text.get(last_end..start).unwrap_or_default(),

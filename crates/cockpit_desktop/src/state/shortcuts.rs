@@ -4,7 +4,7 @@
 use cockpit_protocol::{AgentId, ApprovalDecision, PlanDecision};
 use serde::Deserialize;
 
-use super::actions;
+use super::actions::{self, Direction};
 use super::app_state::AppState;
 use super::requests::Outgoing;
 use super::transcript::WaitingKind;
@@ -16,6 +16,10 @@ const KEY_ENTER: &str = "Enter";
 const KEY_TAB: &str = "Tab";
 const KEY_UP: &str = "ArrowUp";
 const KEY_DOWN: &str = "ArrowDown";
+
+/// The letters that answer an approval or a plan.
+const KEY_YES: &str = "y";
+const KEY_NO: &str = "n";
 
 /// A key press the page's script passes on.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -80,8 +84,8 @@ pub fn handle_key(state: &mut AppState, press: &KeyPress) -> Vec<Outgoing> {
 fn composer_key(state: &mut AppState, agent: AgentId, press: &KeyPress) -> Vec<Outgoing> {
     if state.ui.popover == Some(Popover::Palette) {
         match press.key.as_str() {
-            KEY_UP => actions::palette_move(state, agent, false),
-            KEY_DOWN => actions::palette_move(state, agent, true),
+            KEY_UP => actions::palette_move(state, agent, Direction::Up),
+            KEY_DOWN => actions::palette_move(state, agent, Direction::Down),
             KEY_ENTER | KEY_TAB => actions::palette_pick(state, agent, None),
             _ => {}
         }
@@ -110,16 +114,16 @@ fn card_key(state: &mut AppState, agent: AgentId, key: &str) -> Vec<Outgoing> {
     };
     let letter = key.to_lowercase();
     match (waiting.kind, letter.as_str()) {
-        (WaitingKind::Approval, "y") => {
+        (WaitingKind::Approval, KEY_YES) => {
             actions::answer_approval(agent, waiting.pending, ApprovalDecision::Allow)
         }
-        (WaitingKind::Approval, "n") => {
+        (WaitingKind::Approval, KEY_NO) => {
             actions::answer_approval(agent, waiting.pending, ApprovalDecision::Deny)
         }
-        (WaitingKind::Plan, "y") => {
+        (WaitingKind::Plan, KEY_YES) => {
             actions::answer_plan(agent, waiting.pending, PlanDecision::AcceptEdits)
         }
-        (WaitingKind::Plan, "n") => {
+        (WaitingKind::Plan, KEY_NO) => {
             actions::answer_plan(agent, waiting.pending, PlanDecision::KeepPlanning)
         }
         (WaitingKind::Question, _) if key == KEY_ENTER => {
@@ -309,6 +313,17 @@ mod tests {
             sent.first().map(|outgoing| &outgoing.request),
             Some(Request::AgentPrompt(params)) if params.prompt.text == "Run the linter"
         ));
+    }
+
+    #[test]
+    fn key_targets_parse_from_the_script() {
+        let targets: Vec<KeyTarget> =
+            serde_json::from_str(r#"["composer","field","page"]"#).unwrap();
+
+        assert_eq!(
+            targets,
+            [KeyTarget::Composer, KeyTarget::Field, KeyTarget::Page]
+        );
     }
 
     #[test]

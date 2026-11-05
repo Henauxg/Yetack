@@ -146,7 +146,7 @@ struct KeyMode {
 }
 
 impl KeyMode {
-    fn of(state: &AppState) -> Self {
+    fn new(state: &AppState) -> Self {
         let waiting = state
             .selected()
             .and_then(|entry| entry.transcript.waiting())
@@ -190,7 +190,7 @@ pub fn use_bridge(cockpit: Cockpit) {
         });
         script
     });
-    let mode = use_memo(move || KeyMode::of(&cockpit.state.read()));
+    let mode = use_memo(move || KeyMode::new(&cockpit.state.read()));
     use_effect(move || {
         if let Err(error) = script.send(mode()) {
             tracing::warn!("cannot update the page's script: {error}");
@@ -272,5 +272,20 @@ mod tests {
         let message: BridgeMessage = serde_json::from_str(line).unwrap();
 
         assert!(matches!(message, BridgeMessage::Key(press) if press.key == "y"));
+    }
+
+    #[test]
+    fn focus_and_image_messages_parse_from_the_script() {
+        let focus = r#"{"type":"focus","focused":false}"#;
+        let image = r#"{"type":"image","media_type":"image/png","data":"iVBORw0KGgo="}"#;
+
+        let focus: BridgeMessage = serde_json::from_str(focus).unwrap();
+        let image: BridgeMessage = serde_json::from_str(image).unwrap();
+
+        assert!(matches!(focus, BridgeMessage::Focus { focused: false }));
+        assert!(matches!(
+            image,
+            BridgeMessage::Image { media_type, data } if media_type == "image/png" && data == "iVBORw0KGgo="
+        ));
     }
 }

@@ -110,13 +110,13 @@ pub fn state(daemon: DaemonLabel) -> AppState {
         benchmark_agent(now),
         exited_agent(now),
     ];
-    for (summary, items, details) in agents {
-        let mut entry = AgentEntry::new(summary);
+    for sample in agents {
+        let mut entry = AgentEntry::new(sample.summary);
         entry.transcript.merge_page(HistoryPage {
-            items,
+            items: sample.items,
             has_older: false,
         });
-        entry.details = Loadable::Loaded(details);
+        entry.details = Loadable::Loaded(sample.details);
         state.agents.insert(entry.id(), entry);
     }
     state.plan_usage = plan_usage(now);
@@ -384,7 +384,11 @@ fn details() -> AgentDetails {
     }
 }
 
-type Sample = (AgentSummary, Vec<TranscriptItem>, AgentDetails);
+struct Sample {
+    summary: AgentSummary,
+    items: Vec<TranscriptItem>,
+    details: AgentDetails,
+}
 
 fn parser_agent(now: SystemTime) -> Sample {
     let mut summary = summary(
@@ -566,7 +570,11 @@ fn parser_agent(now: SystemTime) -> Sample {
         }),
         ..details()
     };
-    (summary, items, details)
+    Sample {
+        summary,
+        items,
+        details,
+    }
 }
 
 fn question_agent(now: SystemTime) -> Sample {
@@ -620,7 +628,11 @@ fn question_agent(now: SystemTime) -> Sample {
             }),
         ),
     ];
-    (summary, items, details())
+    Sample {
+        summary,
+        items,
+        details: details(),
+    }
 }
 
 fn approval_agent(now: SystemTime) -> Sample {
@@ -665,7 +677,11 @@ fn approval_agent(now: SystemTime) -> Sample {
             }),
         ),
     ];
-    (summary, items, details())
+    Sample {
+        summary,
+        items,
+        details: details(),
+    }
 }
 
 fn plan_agent(now: SystemTime) -> Sample {
@@ -702,7 +718,11 @@ fn plan_agent(now: SystemTime) -> Sample {
             }),
         ),
     ];
-    (summary, items, details())
+    Sample {
+        summary,
+        items,
+        details: details(),
+    }
 }
 
 fn benchmark_agent(now: SystemTime) -> Sample {
@@ -751,7 +771,11 @@ fn benchmark_agent(now: SystemTime) -> Sample {
             }),
         ),
     ];
-    (summary, items, details())
+    Sample {
+        summary,
+        items,
+        details: details(),
+    }
 }
 
 fn exited_agent(now: SystemTime) -> Sample {
@@ -786,7 +810,11 @@ fn exited_agent(now: SystemTime) -> Sample {
             },
         ),
     ];
-    (summary, items, details())
+    Sample {
+        summary,
+        items,
+        details: details(),
+    }
 }
 
 fn plan_usage(now: SystemTime) -> PlanUsage {
@@ -834,8 +862,7 @@ mod tests {
     use cockpit_protocol::ReadFileParams;
 
     use super::*;
-    use crate::state::WaitingKind;
-    use crate::state::file_edits::{edits_for, original_text};
+    use crate::state::{WaitingKind, file_edits};
 
     /// `src/error.rs` before the sample's edit.
     const ERROR_BEFORE: &str = "/// A parse error, with where it happened.
@@ -888,8 +915,11 @@ pub struct ParseError {
         let Ok(ResponseBody::File { text }) = answer(&state, &request) else {
             panic!("the demo answers with the file");
         };
-        let edits = edits_for(&entry.transcript, folder, Path::new(ERROR_FILE));
+        let edits = file_edits::edits_for(&entry.transcript, folder, Path::new(ERROR_FILE));
 
-        assert_eq!(original_text(&text, &edits).as_deref(), Some(ERROR_BEFORE));
+        assert_eq!(
+            file_edits::original_text(&text, &edits).as_deref(),
+            Some(ERROR_BEFORE)
+        );
     }
 }
