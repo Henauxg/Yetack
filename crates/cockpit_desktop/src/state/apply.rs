@@ -99,6 +99,10 @@ pub fn apply_catchup(state: &mut AppState, drafts: &mut Drafts, catchup: Catchup
         .ui
         .file_views
         .retain(|agent, _| agents.contains_key(agent));
+    state
+        .ui
+        .finished_tasks_unfolded
+        .retain(|agent| agents.contains_key(agent));
     drafts
         .composer
         .retain(|agent, _| agents.contains_key(agent));
@@ -119,6 +123,7 @@ pub fn apply(state: &mut AppState, drafts: &mut Drafts, record: EventRecord) -> 
             state.agents.remove(&agent);
             state.ui.unread.remove(&agent);
             state.ui.file_views.remove(&agent);
+            state.ui.finished_tasks_unfolded.remove(&agent);
             drafts.composer.remove(&agent);
             if state.ui.selected == Some(agent) {
                 state.ui.selected = None;

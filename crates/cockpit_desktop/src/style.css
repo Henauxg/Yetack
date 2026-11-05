@@ -2041,11 +2041,24 @@ button:disabled {
   background: var(--teal);
 }
 
+/* About six rows; past them the list scrolls inside the block, and its end does not scroll
+   the blocks around it. */
 .running-list {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  max-height: 340px;
   margin: 0 -6px;
+  overscroll-behavior: contain;
+}
+
+.running-fold {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 12.5px;
 }
 
 .background-task {
@@ -3763,6 +3776,7 @@ label.icon-button,
 
 .back-button:hover,
 .fold-lines:hover,
+.running-fold:hover,
 .more-lines:hover {
   color: var(--text-bright);
 }
