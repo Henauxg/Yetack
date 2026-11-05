@@ -69,7 +69,7 @@ pub fn toggle_palette(state: &mut AppState, agent: AgentId) -> Vec<Outgoing> {
 /// The details carry the commands; an agent that reported none yet is asked directly.
 fn commands_request(state: &AppState, agent: AgentId) -> Option<Outgoing> {
     let details = state.agents.get(&agent)?.details.loaded()?;
-    details.commands.is_empty().then(|| Outgoing {
+    details.commands.is_empty().then_some(Outgoing {
         request: Request::AgentCommands(AgentParams { agent }),
         purpose: Purpose::Commands { agent },
     })
@@ -407,6 +407,22 @@ pub fn toggle_block(state: &mut AppState, agent: AgentId, block: Block) -> Vec<O
     }]
 }
 
+/// Opens or closes the usage card. Opening it asks Claude Code for the context usage now.
+pub fn toggle_usage(state: &mut AppState, agent: AgentId) -> Vec<Outgoing> {
+    state.ui.toggle_popover(Popover::Usage);
+    let running = state
+        .agents
+        .get(&agent)
+        .is_some_and(|entry| entry.summary.status != AgentStatus::Exited);
+    if state.ui.popover != Some(Popover::Usage) || !running {
+        return Vec::new();
+    }
+    vec![Outgoing {
+        request: Request::AgentContextUsage(AgentParams { agent }),
+        purpose: Purpose::ContextUsage { agent },
+    }]
+}
+
 pub fn stop_task(agent: AgentId, task: BackgroundTaskId) -> Vec<Outgoing> {
     vec![Outgoing::action(Request::AgentStopTask(StopTaskParams {
         agent,
@@ -558,7 +574,7 @@ pub fn open_new_agent(state: &mut AppState) {
     let folder = state
         .recent_folders()
         .first()
-        .map(|folder| folder.to_string_lossy().into_owned())
+        .map(|(folder, _)| folder.to_string_lossy().into_owned())
         .unwrap_or_default();
     state.ui.popover = None;
     state.ui.dialog = Some(Dialog::NewAgent(NewAgentForm {

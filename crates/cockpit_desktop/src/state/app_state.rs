@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use cockpit_protocol::{
-    AgentDetails, AgentId, AgentStatus, AgentSummary, PastSession, PlanUsage, Settings,
+    AgentDetails, AgentId, AgentStatus, AgentSummary, PastSession, PlanUsage, Settings, Timestamp,
 };
 
 use super::transcript::Transcript;
@@ -73,13 +73,6 @@ impl AgentEntry {
     pub fn id(&self) -> AgentId {
         self.summary.id
     }
-
-    /// Forgets what the daemon sends only on request, so it is asked for again.
-    pub fn forget_requested_data(&mut self) {
-        self.transcript.reset();
-        self.details = Loadable::NotRequested;
-        self.files.clear();
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -138,11 +131,6 @@ impl AppState {
         self.agents.get(&self.ui.selected?)
     }
 
-    pub fn selected_mut(&mut self) -> Option<&mut AgentEntry> {
-        let selected = self.ui.selected?;
-        self.agents.get_mut(&selected)
-    }
-
     pub fn is_unread(&self, agent: AgentId) -> bool {
         self.ui.unread.contains(&agent)
     }
@@ -161,9 +149,10 @@ impl AppState {
         }
     }
 
-    /// Folders where agents ran, most recent first, for the new agent dialog.
-    pub fn recent_folders(&self) -> Vec<PathBuf> {
-        let mut uses: BTreeMap<PathBuf, u64> = BTreeMap::new();
+    /// Folders where agents ran, with their last use, most recent first, for the new agent
+    /// dialog.
+    pub fn recent_folders(&self) -> Vec<(PathBuf, Timestamp)> {
+        let mut uses: BTreeMap<PathBuf, Timestamp> = BTreeMap::new();
         let agent_uses = self
             .agents
             .values()
@@ -175,18 +164,18 @@ impl AppState {
             .flatten()
             .map(|session: &PastSession| (&session.folder, session.last_activity));
         for (folder, moment) in agent_uses.chain(session_uses) {
-            let latest = uses.entry(folder.clone()).or_default();
-            *latest = (*latest).max(moment.unix_millis());
+            let latest = uses.entry(folder.clone()).or_insert(moment);
+            *latest = (*latest).max(moment);
         }
-        let mut folders: Vec<(PathBuf, u64)> = uses.into_iter().collect();
+        let mut folders: Vec<(PathBuf, Timestamp)> = uses.into_iter().collect();
         folders.sort_by(|(_, left), (_, right)| right.cmp(left));
-        folders.into_iter().map(|(folder, _)| folder).collect()
+        folders
     }
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use cockpit_protocol::{CostUsd, PermissionMode, Timestamp};
+    use cockpit_protocol::{CostUsd, PermissionMode};
 
     use super::*;
 
@@ -269,8 +258,13 @@ pub(crate) mod tests {
         third.folder = PathBuf::from("/work/shared");
         let state = state_with(vec![first, second, third]);
 
+        let folders: Vec<PathBuf> = state
+            .recent_folders()
+            .into_iter()
+            .map(|(folder, _)| folder)
+            .collect();
         assert_eq!(
-            state.recent_folders(),
+            folders,
             [PathBuf::from("/work/shared"), PathBuf::from("/work/other")]
         );
     }

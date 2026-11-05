@@ -410,7 +410,7 @@ mod tests {
         );
 
         let entry = &state.agents[&first];
-        assert!(entry.transcript.is_empty());
+        assert_eq!(entry.transcript.items().count(), 0);
         assert_eq!(entry.details, Loadable::NotRequested);
         assert_eq!(entry.summary.status, AgentStatus::Working);
         assert_eq!(state.ui.selected, Some(first));

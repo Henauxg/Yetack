@@ -139,11 +139,6 @@ impl Language {
         Self::from_syntax(syntax)
     }
 
-    pub fn name(self) -> &'static str {
-        self.syntax()
-            .map_or(PLAIN_TEXT_SYNTAX, |syntax| syntax.name.as_str())
-    }
-
     fn from_syntax(syntax: &SyntaxReference) -> Option<Self> {
         if syntax.name == PLAIN_TEXT_SYNTAX {
             return None;
@@ -337,6 +332,12 @@ fn mark_capitalized_types(spans: Vec<Span>) -> Vec<Span> {
 mod tests {
     use super::*;
 
+    fn name(language: Language) -> &'static str {
+        language
+            .syntax()
+            .map_or(PLAIN_TEXT_SYNTAX, |syntax| syntax.name.as_str())
+    }
+
     /// The class of the first span whose text is exactly `text`, on any line.
     fn class_of(lines: &[Vec<Span>], text: &str) -> TokenClass {
         lines
@@ -372,7 +373,7 @@ mod tests {
 
     #[test]
     fn tags_and_paths_find_their_syntax() {
-        let names = |tag: &str| Language::from_tag(tag).map(Language::name);
+        let names = |tag: &str| Language::from_tag(tag).map(name);
 
         assert_eq!(names("rust"), Some("Rust"));
         assert_eq!(names("RS"), Some("Rust"));
@@ -389,7 +390,7 @@ mod tests {
         assert_eq!(names("no-such-language"), None);
         assert_eq!(names("nix"), None);
 
-        let path_name = |path: &str| Language::from_path(Path::new(path)).map(Language::name);
+        let path_name = |path: &str| Language::from_path(Path::new(path)).map(name);
         assert_eq!(path_name("src/main.rs"), Some("Rust"));
         assert_eq!(path_name("queries/report.sql"), Some("SQL"));
         assert_eq!(path_name("Makefile"), Some("Makefile"));

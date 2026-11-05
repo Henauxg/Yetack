@@ -11,11 +11,10 @@ mod transcript;
 mod ui_state;
 
 pub use app_state::{AgentEntry, AppState, ConnectionState, Loadable};
-pub use apply::{Alert, AlertKind, apply, apply_catchup, apply_update, error_chain};
-pub use requests::{Outgoing, Purpose, apply_response, needed_requests};
-pub use shortcuts::{KeyPress, KeyTarget, handle_key};
-pub use transcript::{HistoryState, Transcript, Waiting, WaitingKind};
+pub use apply::{Alert, AlertKind, apply_update};
+pub use requests::{Outgoing, apply_response, needed_requests};
+pub use shortcuts::{KeyPress, handle_key};
+pub use transcript::{HistoryState, WaitingKind};
 pub use ui_state::{
-    Block, Dialog, Draft, FileView, NewAgentForm, NewAgentTab, Popover, QuestionDraft, Switcher,
-    ToolFilter, UiState, ViewMode,
+    Block, Dialog, McpView, NewAgentForm, NewAgentTab, Popover, ToolFilter, ViewMode,
 };

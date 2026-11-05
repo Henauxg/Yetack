@@ -221,7 +221,7 @@ pub fn tokens(count: u64) -> String {
     const MILLION: u64 = 1_000_000;
     let scaled = |value: u64, unit: u64, suffix: &str| -> String {
         let tenths = value * 10 / unit;
-        if tenths % 10 == 0 || tenths >= 1000 {
+        if tenths.is_multiple_of(10) || tenths >= 1000 {
             format!("{}{suffix}", tenths / 10)
         } else {
             format!("{}.{}{suffix}", tenths / 10, tenths % 10)

@@ -50,10 +50,6 @@ impl Transcript {
         self.items.get(&id)
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
-    }
-
     pub fn history(&self) -> &HistoryState {
         &self.history
     }
@@ -87,23 +83,6 @@ impl Transcript {
         self.history = HistoryState::Loaded {
             has_older: page.has_older,
         };
-    }
-
-    /// Forgets every item, as after a snapshot: the history is asked for again.
-    pub fn reset(&mut self) {
-        self.items.clear();
-        self.history = HistoryState::NotLoaded;
-    }
-
-    /// The items each subagent call holds, by the call's id, in transcript order.
-    pub fn children(&self) -> BTreeMap<ItemId, Vec<ItemId>> {
-        let mut children: BTreeMap<ItemId, Vec<ItemId>> = BTreeMap::new();
-        for item in self.items.values() {
-            if let Some(parent) = item.parent {
-                children.entry(parent).or_default().push(item.id);
-            }
-        }
-        children
     }
 
     /// The newest approval, question or plan that waits for an answer.
@@ -202,27 +181,6 @@ mod tests {
     }
 
     #[test]
-    fn children_group_under_their_subagent_call() {
-        let mut transcript = Transcript::default();
-        transcript.append(text(1, "top"));
-        for id in [2, 4] {
-            transcript.append(TranscriptItem {
-                parent: Some(ItemId::new(1)),
-                ..text(id, "child")
-            });
-        }
-        transcript.append(text(3, "top again"));
-
-        let children = transcript.children();
-
-        assert_eq!(
-            children.get(&ItemId::new(1)),
-            Some(&vec![ItemId::new(2), ItemId::new(4)])
-        );
-        assert_eq!(children.len(), 1);
-    }
-
-    #[test]
     fn waiting_finds_the_newest_unanswered_card() {
         let mut transcript = Transcript::default();
         transcript.append(plan(1, AnswerState::Waiting));
@@ -242,19 +200,5 @@ mod tests {
 
         transcript.change(plan(1, AnswerState::Cancelled));
         assert_eq!(transcript.waiting(), None);
-    }
-
-    #[test]
-    fn reset_forgets_the_items_and_the_history() {
-        let mut transcript = Transcript::default();
-        transcript.merge_page(HistoryPage {
-            items: vec![text(1, "one")],
-            has_older: false,
-        });
-
-        transcript.reset();
-
-        assert!(transcript.is_empty());
-        assert_eq!(transcript.history(), &HistoryState::NotLoaded);
     }
 }
