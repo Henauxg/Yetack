@@ -437,7 +437,7 @@ fn read_file(path: &Path) -> Result<ResponseBody, RequestError> {
             ),
         )),
         [(path, text)] => Ok(ResponseBody::File {
-            path: path.clone(),
+            path: Some(path.clone()),
             text: (*text).to_owned(),
         }),
         several => Ok(ResponseBody::FileMatches {
@@ -1537,16 +1537,18 @@ pub struct ParseError {
     fn names_are_looked_up_as_the_daemon_does() {
         let read = |path: &str| read_file(Path::new(path));
         let position = Path::new(PARSER_COLUMNS_WORKTREE).join(POSITION_FILE);
+        let lib = Path::new(PARSER_FOLDER).join(LIB_FILE);
 
-        assert!(
-            matches!(read("position.rs"), Ok(ResponseBody::File { path, .. }) if path == position)
-        );
+        assert!(matches!(
+            read("position.rs"),
+            Ok(ResponseBody::File { path, .. }) if path == Some(position)
+        ));
         assert!(
             matches!(read("lib.rs"), Ok(ResponseBody::FileMatches { matches }) if matches.len() == 2)
         );
         assert!(matches!(
             read("src/lib.rs"),
-            Ok(ResponseBody::File { path, .. }) if path == Path::new(PARSER_FOLDER).join(LIB_FILE)
+            Ok(ResponseBody::File { path, .. }) if path == Some(lib)
         ));
         assert!(matches!(
             read("cache.rs"),

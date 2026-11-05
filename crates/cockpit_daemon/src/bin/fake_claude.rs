@@ -11,6 +11,7 @@
 //! - `/rename <title>`: names the session, as Claude Code does. With `FAKE_CLAUDE_SESSION_NAMES`
 //!   set to a folder, it keeps the name there, and a resumed fake restates it before it answers
 //!   `initialize`.
+//! - `/model <model>`: uses that model from the next turn on, as Claude Code does.
 //! - anything else: answers "Echo: <prompt>".
 //!
 //! Its `get_settings` answer applies the `--effort` it was given, or else a default that depends
@@ -307,6 +308,19 @@ impl<W: Write> Fake<W> {
                     "total_cost_usd": self.total_cost, "session_id": self.session
                 }))?;
                 self.next_queued()
+            }
+            "/model" => {
+                prompt
+                    .trim_start_matches(first_word)
+                    .trim()
+                    .clone_into(&mut self.model);
+                self.emit(
+                    &json!({"type": "user", "session_id": self.session, "message": {
+                        "role": "user",
+                        "content": "<local-command-stdout>Model set</local-command-stdout>"
+                    }}),
+                )?;
+                self.end_turn()
             }
             "/effort" => {
                 self.emit(

@@ -232,6 +232,7 @@ pub fn apply_response(
         Purpose::ReadFile { agent, path } => {
             let read = match result {
                 Ok(ResponseBody::File { path: found, text }) => {
+                    let found = found.unwrap_or_else(|| path.clone());
                     actions::show_read_file(state, agent, &path, &found, text);
                     return;
                 }

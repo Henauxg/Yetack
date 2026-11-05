@@ -546,7 +546,7 @@ fn response_bodies() -> Vec<ResponseBody> {
             commands: commands(),
         },
         ResponseBody::File {
-            path: PathBuf::from("/srv/projects/shop/src/main.rs"),
+            path: Some(PathBuf::from("/srv/projects/shop/src/main.rs")),
             text: "fn main() {}\n".to_owned(),
         },
         ResponseBody::FileMatches {
@@ -1192,6 +1192,29 @@ fn a_summary_saved_without_its_effort_source_still_loads() {
 
     assert_eq!(loaded.effort, Some(Effort::High));
     assert!(!loaded.effort_is_default);
+}
+
+#[test]
+fn a_file_answer_with_or_without_the_path_it_read() {
+    let with_path = ResponseBody::File {
+        path: Some(PathBuf::from("/srv/projects/shop/src/main.rs")),
+        text: "fn main() {}\n".to_owned(),
+    };
+
+    assert_wire(
+        &with_path,
+        json!({"type": "file", "path": "/srv/projects/shop/src/main.rs", "text": "fn main() {}\n"}),
+    );
+    // A daemon that predates the path.
+    let without_path: ResponseBody =
+        serde_json::from_value(json!({"type": "file", "text": "fn main() {}\n"})).unwrap();
+    assert_eq!(
+        without_path,
+        ResponseBody::File {
+            path: None,
+            text: "fn main() {}\n".to_owned(),
+        }
+    );
 }
 
 #[test]

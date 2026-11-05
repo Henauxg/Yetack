@@ -499,6 +499,61 @@ async fn an_agent_without_an_effort_shows_the_one_claude_code_applies() {
 }
 
 #[tokio::test]
+async fn a_model_typed_in_the_composer_shows_its_own_default_effort() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+
+    let agent = client.start(&setup.work(), "first").await;
+    let applied = client
+        .summary_with(agent, |summary| summary.effort.is_some())
+        .await;
+    client.prompt(agent, "/model other-model").await;
+    client.prompt(agent, "next").await;
+    let changed = client
+        .summary_with(agent, |summary| summary.effort == Some(Effort::Low))
+        .await;
+
+    assert_eq!(applied.effort, Some(Effort::Medium));
+    assert_eq!(changed.model.as_deref(), Some("other-model"));
+    assert!(changed.effort_is_default);
+}
+
+#[tokio::test]
+async fn a_stopped_agent_given_another_model_shows_no_effort_until_it_starts() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let agent = client.start(&setup.work(), "first").await;
+    client
+        .summary_with(agent, |summary| summary.effort.is_some())
+        .await;
+    client.ok(Request::AgentStop(AgentParams { agent })).await;
+    client
+        .summary_with(agent, |summary| summary.status == AgentStatus::Exited)
+        .await;
+
+    let set_model = SetModelParams {
+        agent,
+        model: "other-model".to_owned(),
+    };
+    client.ok(Request::AgentSetModel(set_model)).await;
+    let stopped = client
+        .summary_with(agent, |summary| {
+            summary.model.as_deref() == Some("other-model")
+        })
+        .await;
+    client.ok(Request::AgentResume(AgentParams { agent })).await;
+    let resumed = client
+        .summary_with(agent, |summary| summary.effort.is_some())
+        .await;
+
+    assert_eq!((stopped.effort, stopped.effort_is_default), (None, false));
+    assert_eq!(
+        (resumed.effort, resumed.effort_is_default),
+        (Some(Effort::Low), true)
+    );
+}
+
+#[tokio::test]
 async fn a_start_reads_its_title_as_a_rename_does() {
     let setup = Setup::new();
     let mut client = setup.connect().await;
@@ -1215,7 +1270,7 @@ async fn files_settings_sessions_and_agent_settings() {
     assert_eq!(
         client.ok(read("notes.txt")).await,
         ResponseBody::File {
-            path: setup.work().join("notes.txt"),
+            path: Some(setup.work().join("notes.txt")),
             text: "remember the milk\n".to_owned()
         }
     );
