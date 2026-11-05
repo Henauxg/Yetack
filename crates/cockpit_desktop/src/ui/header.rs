@@ -151,6 +151,12 @@ pub fn Header() -> Element {
         .as_ref()
         .filter(|edit| edit.agent == agent)
         .map(|edit| edit.title.clone());
+    let start_rename = move || {
+        cockpit.change_with_drafts(|state, drafts| {
+            actions::start_rename(state, drafts, agent);
+            Vec::new()
+        });
+    };
     rsx! {
         header { class: "center-header",
             div { class: "header-title",
@@ -166,24 +172,24 @@ pub fn Header() -> Element {
                             initial_value: "{title}",
                             maxlength: "{MAX_TITLE_CHARS}",
                             onmounted: move |_| bridge::select_field(TITLE_FIELD_ID),
-                            oninput: move |event: FormEvent| cockpit.update(|state| actions::rename_text(state, event.value())),
+                            oninput: move |event: FormEvent| cockpit.type_title(event.value()),
                             onkeydown: move |event: KeyboardEvent| {
                                 if event.key() == Key::Enter {
-                                    cockpit.change(actions::finish_rename);
+                                    cockpit.change_with_drafts(actions::finish_rename);
                                 }
                             },
-                            onblur: move |_| cockpit.change(actions::finish_rename),
+                            onblur: move |_| cockpit.change_with_drafts(actions::finish_rename),
                         }
                     } else {
                         h1 {
-                            ondoubleclick: move |_| cockpit.update(|state| actions::start_rename(state, agent)),
+                            ondoubleclick: move |_| start_rename(),
                             "{summary.title}"
                         }
                         button {
                             class: "icon-button tiny rename-button",
                             aria_label: "Rename",
                             title: "Rename",
-                            onclick: move |_| cockpit.update(|state| actions::start_rename(state, agent)),
+                            onclick: move |_| start_rename(),
                             Icon { kind: IconKind::Pencil, size: 13 }
                         }
                     }

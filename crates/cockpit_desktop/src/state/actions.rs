@@ -440,7 +440,7 @@ pub fn palette_pick(
             }
         }
         MenuAction::Rename => {
-            start_rename(state, agent);
+            start_rename(state, drafts, agent);
             Picked::default()
         }
         MenuAction::Model | MenuAction::Effort | MenuAction::Mode => Picked::default(),
@@ -450,30 +450,31 @@ pub fn palette_pick(
 }
 
 /// Turns the header's title into a field holding it.
-pub fn start_rename(state: &mut AppState, agent: AgentId) {
+pub fn start_rename(state: &mut AppState, drafts: &mut Drafts, agent: AgentId) {
     let Some(entry) = state.agents.get(&agent) else {
         return;
     };
-    state.ui.title_edit = Some(TitleEdit {
-        agent,
-        title: entry.summary.title.clone(),
-    });
+    let title = entry.summary.title.clone();
+    drafts.title.clone_from(&title);
+    state.ui.title_edit = Some(TitleEdit { agent, title });
     state.ui.popover = None;
 }
 
-pub fn rename_text(state: &mut AppState, text: String) {
-    if let Some(edit) = &mut state.ui.title_edit {
-        edit.title = text;
+/// Only the drafts change, so that typing a title does not render the transcript again.
+pub fn rename_text(state: &AppState, drafts: &mut Drafts, text: String) {
+    if state.ui.title_edit.is_some() {
+        drafts.title = text;
     }
 }
 
 /// Ends the title edit, and renames the agent when the title changed and is not empty. Esc ends
 /// it with the overlays instead, which renames nothing.
-pub fn finish_rename(state: &mut AppState) -> Vec<Outgoing> {
+pub fn finish_rename(state: &mut AppState, drafts: &mut Drafts) -> Vec<Outgoing> {
     let Some(edit) = state.ui.title_edit.take() else {
         return Vec::new();
     };
-    let title = edit.title.trim();
+    let typed = std::mem::take(&mut drafts.title);
+    let title = typed.trim();
     let unchanged = state
         .agents
         .get(&edit.agent)
@@ -1762,9 +1763,10 @@ mod tests {
 
         let picked = palette_pick(&mut state, &mut drafts, agent(), None);
         let opened = state.ui.title_edit.clone();
-        rename_text(&mut state, "  Cart total ".to_owned());
-        let saved = finish_rename(&mut state);
-        let again = finish_rename(&mut state);
+        let typed_from = drafts.title.clone();
+        rename_text(&state, &mut drafts, "  Cart total ".to_owned());
+        let saved = finish_rename(&mut state, &mut drafts);
+        let again = finish_rename(&mut state, &mut drafts);
 
         assert_eq!(picked, Picked::default());
         assert_eq!(state.ui.popover, None);
@@ -1775,6 +1777,7 @@ mod tests {
                 title: "Agent 1".to_owned()
             })
         );
+        assert_eq!(typed_from, "Agent 1");
         assert_eq!(
             sent(&saved),
             [&Request::AgentRename(RenameParams {
@@ -1789,18 +1792,20 @@ mod tests {
     #[test]
     fn an_empty_or_unchanged_title_or_escape_renames_nothing() {
         let mut state = state(AgentStatus::Idle);
-        let saved = |state: &mut AppState, text: &str| {
-            start_rename(state, agent());
-            rename_text(state, text.to_owned());
-            finish_rename(state)
+        let mut drafts = Drafts::default();
+        let mut saved = |state: &mut AppState, text: &str| {
+            start_rename(state, &mut drafts, agent());
+            rename_text(state, &mut drafts, text.to_owned());
+            finish_rename(state, &mut drafts)
         };
 
         let empty = saved(&mut state, "   ");
         let unchanged = saved(&mut state, "Agent 1");
-        start_rename(&mut state, agent());
-        rename_text(&mut state, "Typed, then Esc".to_owned());
+        let mut drafts = Drafts::default();
+        start_rename(&mut state, &mut drafts, agent());
+        rename_text(&state, &mut drafts, "Typed, then Esc".to_owned());
         let closed = state.ui.close_overlays();
-        let after_escape = finish_rename(&mut state);
+        let after_escape = finish_rename(&mut state, &mut drafts);
 
         assert!(empty.is_empty());
         assert!(unchanged.is_empty());

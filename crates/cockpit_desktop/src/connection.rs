@@ -85,6 +85,11 @@ impl Cockpit {
             self.change(|state| actions::change_palette(state, agent, palette));
         }
     }
+
+    /// Typing in the header's title field changes the drafts alone.
+    pub fn type_title(&self, text: String) {
+        self.with_drafts(|state, drafts| actions::rename_text(state, drafts, text));
+    }
 }
 
 /// The current time, which ticks every second for the timers on screen.
@@ -298,16 +303,36 @@ mod tests {
             dom.in_runtime(|| cockpit.type_in_composer(agent, text.to_owned()));
             dom.render_immediate(&mut NoOpMutations);
         }
+        dom.in_runtime(|| {
+            cockpit.change_with_drafts(|state, drafts| {
+                actions::start_rename(state, drafts, agent);
+                Vec::new()
+            });
+        });
+        dom.render_immediate(&mut NoOpMutations);
+        let after_opening_the_title = renders();
+        for text in ["C", "Ca", "Cart total"] {
+            dom.in_runtime(|| cockpit.type_title(text.to_owned()));
+            dom.render_immediate(&mut NoOpMutations);
+        }
         let after_typing = renders();
         dom.in_runtime(|| cockpit.update(|state| state.ui.window_focused = false));
         dom.render_immediate(&mut NoOpMutations);
 
-        // The first render, then only the one the change of the state calls for.
-        assert_eq!((after_typing, renders()), (1, 2));
+        // The first render, then only the ones the changes of the state call for: opening the
+        // title field, then the focus.
+        assert_eq!(
+            (after_opening_the_title, after_typing, renders()),
+            (2, 2, 3)
+        );
         let typed = dom.in_runtime(|| {
             let drafts = cockpit.drafts.peek();
-            drafts.draft(agent).map(|draft| draft.text.clone())
+            let draft = drafts.draft(agent).map(|draft| draft.text.clone());
+            (draft, drafts.title.clone())
         });
-        assert_eq!(typed.as_deref(), Some("Run the tests"));
+        assert_eq!(
+            typed,
+            (Some("Run the tests".to_owned()), "Cart total".to_owned())
+        );
     }
 }
