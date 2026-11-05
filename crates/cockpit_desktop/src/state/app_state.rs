@@ -11,6 +11,7 @@ use cockpit_protocol::{
 use super::transcript::Transcript;
 use super::ui_state::UiState;
 use crate::config::DaemonLabel;
+use crate::prefs::Prefs;
 
 /// Data the app asks the daemon for when it needs it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -97,6 +98,8 @@ pub struct AppState {
     /// Past Claude sessions, for the new agent dialog.
     pub sessions: Loadable<Vec<PastSession>>,
     pub ui: UiState,
+    /// The choices the app saves on this machine.
+    pub prefs: Prefs,
 }
 
 /// Agents that wait for you come first, then working, idle and exited ones.
@@ -119,6 +122,7 @@ impl AppState {
             settings: Settings::default(),
             sessions: Loadable::NotRequested,
             ui: UiState::default(),
+            prefs: Prefs::default(),
         }
     }
 

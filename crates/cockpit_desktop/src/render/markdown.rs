@@ -1,6 +1,7 @@
 //! Agent text as a tree of blocks and inlines, with `path:line` references found in the text.
 
 use std::iter::Peekable;
+use std::path::{Component, Path};
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
@@ -11,8 +12,11 @@ const MAX_DEPTH: usize = 32;
 const TASK_DONE: &str = "[x] ";
 const TASK_OPEN: &str = "[ ] ";
 
-/// A GitHub-style line anchor, as in `src/main.rs#L12`.
-const LINE_ANCHOR: &str = "#L";
+/// What starts a link's fragment, as in `docs/plan.md#decisions`.
+const FRAGMENT: char = '#';
+
+/// What starts a GitHub-style line fragment, as in `src/main.rs#L12`.
+const LINE_FRAGMENT: char = 'L';
 
 /// What separates a URL's scheme from the rest, as in `https://`.
 const SCHEME_SEPARATOR: &str = "://";
@@ -58,20 +62,23 @@ pub enum Inline {
     LineBreak,
 }
 
-/// A `path:line` reference, which opens the file view at that line.
+/// A reference to a file, which opens the file view: a `path:line` in the text, or a link to a
+/// file in the agent's folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileRef {
-    /// As written, such as "src/main.rs:12".
+    /// As written, such as "src/main.rs:12", or the link's text.
     pub text: String,
     pub path: String,
-    pub line: u32,
+    pub line: Option<u32>,
 }
 
-pub fn parse_markdown(markdown: &str) -> Vec<Block> {
+/// `folder` is the agent's: a link to a file opens the file view only when the file is in it.
+pub fn parse_markdown(markdown: &str, folder: &Path) -> Vec<Block> {
     let options =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     let mut builder = Builder {
         events: Parser::new_ext(markdown, options).peekable(),
+        folder,
     };
     builder.blocks(None, 0)
 }
@@ -100,6 +107,7 @@ fn push_plain_text(text: &mut String, inlines: &[Inline]) {
 /// Builds the tree from pulldown-cmark's events, which always come balanced.
 struct Builder<'input> {
     events: Peekable<Parser<'input>>,
+    folder: &'input Path,
 }
 
 impl<'input> Builder<'input> {
@@ -308,7 +316,9 @@ impl<'input> Builder<'input> {
                     Tag::Emphasis => inlines.push(Inline::Emphasis(content)),
                     Tag::Strong => inlines.push(Inline::Strong(content)),
                     Tag::Strikethrough => inlines.push(Inline::Strikethrough(content)),
-                    Tag::Link { dest_url, .. } => inlines.extend(link(&dest_url, content)),
+                    Tag::Link { dest_url, .. } => {
+                        inlines.extend(link(&dest_url, content, self.folder));
+                    }
                     // An image shows as its alt text; other tags keep their content.
                     _ => inlines.extend(content),
                 }
@@ -365,31 +375,29 @@ fn code_span(code: &str) -> Inline {
     }
 }
 
-/// A link to a local `path:line` or `path#L12` opens the file view instead of a browser. Any
-/// other link than a web one keeps only its text: the system would open it with whatever program
+/// A link to a file in the agent's folder opens the file view instead of a browser. Any other
+/// link than a web one keeps only its text: the system would open it with whatever program
 /// handles its scheme or file.
-fn link(url: &str, content: Vec<Inline>) -> Vec<Inline> {
-    if !url.contains(SCHEME_SEPARATOR)
-        && let Some((path, line)) = split_link_target(url)
-    {
-        let text = plain_text(&content);
-        return vec![Inline::File(FileRef {
-            text: if text.is_empty() {
-                url.to_owned()
-            } else {
-                text
-            },
-            path: path.to_owned(),
-            line,
-        })];
+fn link(url: &str, content: Vec<Inline>, folder: &Path) -> Vec<Inline> {
+    if is_web_url(url) {
+        return vec![Inline::Link {
+            url: url.to_owned(),
+            content,
+        }];
     }
-    if !is_web_url(url) {
+    let Some((path, line)) = local_file_target(url, folder) else {
         return content;
-    }
-    vec![Inline::Link {
-        url: url.to_owned(),
-        content,
-    }]
+    };
+    let text = plain_text(&content);
+    vec![Inline::File(FileRef {
+        text: if text.is_empty() {
+            url.to_owned()
+        } else {
+            text
+        },
+        path: path.to_owned(),
+        line,
+    })]
 }
 
 fn is_web_url(url: &str) -> bool {
@@ -400,19 +408,66 @@ fn is_web_url(url: &str) -> bool {
     })
 }
 
-/// `path:line` (with an optional `:column` or `-end`) or `path#L12`, taking the whole of `target`.
-fn split_link_target(target: &str) -> Option<(&str, u32)> {
-    if let Some((path, anchor)) = target.split_once(LINE_ANCHOR) {
-        let digits: &str = anchor.split(['-', 'L']).next()?;
-        return Some((path, line_number(digits)?)).filter(|(path, _)| is_path(path));
-    }
-    match find_file_refs(target).as_slice() {
-        [TextPiece::File(file)] => {
-            let path = target.get(..file.path.len())?;
-            Some((path, file.line))
+/// The path and line of a link to a file in `folder`: a relative path, or an absolute one under
+/// `folder`, then an optional `:line` (with `:column` or `-end`) or `#L12` (with `-L20`). Another
+/// fragment, such as a heading's, opens the file at its top. A colon followed by anything but a
+/// line, as in `javascript:` or `mailto:`, makes it no file.
+fn local_file_target<'target>(
+    target: &'target str,
+    folder: &Path,
+) -> Option<(&'target str, Option<u32>)> {
+    let (location, fragment) = match target.split_once(FRAGMENT) {
+        Some((location, fragment)) => (location, Some(fragment)),
+        None => (target, None),
+    };
+    let (path, suffix_line) = match location.split_once(':') {
+        Some((path, suffix)) => (path, Some(line_suffix(suffix)?)),
+        None => (location, None),
+    };
+    let fragment_line = fragment
+        .and_then(|fragment| fragment.strip_prefix(LINE_FRAGMENT))
+        .and_then(|anchor| line_number(anchor.split('-').next().unwrap_or_default()));
+    is_in_folder(path, folder).then_some((path, suffix_line.or(fragment_line)))
+}
+
+/// The line of what follows a path's colon: `12`, `12:5`, `40-52` or `12:5-7`.
+fn line_suffix(suffix: &str) -> Option<u32> {
+    let line_len = digits_len(suffix);
+    let line = line_number(suffix.get(..line_len)?)?;
+    let mut rest = suffix.get(line_len..)?;
+    for separator in [':', '-'] {
+        if let Some(after) = rest.strip_prefix(separator) {
+            let extra = digits_len(after);
+            if extra == 0 {
+                return None;
+            }
+            rest = after.get(extra..)?;
         }
-        _ => None,
     }
+    rest.is_empty().then_some(line)
+}
+
+/// Whether `path` names a file in `folder`: relative, or absolute and under `folder`, and without
+/// `..`, which the daemon refuses as well. A `?` or a leading `~` belongs to a URL or a shell.
+fn is_in_folder(path: &str, folder: &Path) -> bool {
+    if path.contains('?') || path.starts_with('~') || path.chars().any(char::is_control) {
+        return false;
+    }
+    let path = Path::new(path);
+    let inside = if path.is_absolute() {
+        path.strip_prefix(folder).ok()
+    } else {
+        Some(path)
+    };
+    inside.is_some_and(|inside| {
+        let named = inside
+            .components()
+            .any(|component| matches!(component, Component::Normal(_)));
+        named
+            && inside
+                .components()
+                .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
+    })
 }
 
 /// Merges adjacent texts, then splits them around `path:line` references.
@@ -530,7 +585,7 @@ fn find_file_refs(text: &str) -> Vec<TextPiece<'_>> {
         pieces.push(TextPiece::File(FileRef {
             text: written.to_owned(),
             path: path.to_owned(),
-            line,
+            line: Some(line),
         }));
         plain_start = end;
         search_from = end;
@@ -547,6 +602,13 @@ fn find_file_refs(text: &str) -> Vec<TextPiece<'_>> {
 mod tests {
     use super::*;
 
+    /// The agent's folder in these tests.
+    const FOLDER: &str = "/work/calc";
+
+    fn parse(markdown: &str) -> Vec<Block> {
+        parse_markdown(markdown, Path::new(FOLDER))
+    }
+
     fn text(value: &str) -> Inline {
         Inline::Text(value.to_owned())
     }
@@ -555,13 +617,13 @@ mod tests {
         Inline::File(FileRef {
             text: written.to_owned(),
             path: path.to_owned(),
-            line,
+            line: Some(line),
         })
     }
 
     /// The inlines of a markdown text made of one paragraph.
     fn paragraph(markdown: &str) -> Vec<Inline> {
-        match parse_markdown(markdown).as_slice() {
+        match parse(markdown).as_slice() {
             [Block::Paragraph(inlines)] => inlines.clone(),
             blocks => panic!("expected one paragraph, got {blocks:?}"),
         }
@@ -571,7 +633,7 @@ mod tests {
         find_file_refs(input)
             .into_iter()
             .filter_map(|piece| match piece {
-                TextPiece::File(file) => Some((file.text, file.path, file.line)),
+                TextPiece::File(file) => Some((file.text, file.path, file.line?)),
                 TextPiece::Text(_) => None,
             })
             .collect()
@@ -579,7 +641,7 @@ mod tests {
 
     #[test]
     fn headings_paragraphs_rules_and_quotes() {
-        let blocks = parse_markdown("# Title\n\nFirst line\nsame paragraph.\n\n---\n\n> Quoted");
+        let blocks = parse("# Title\n\nFirst line\nsame paragraph.\n\n---\n\n> Quoted");
 
         assert_eq!(
             blocks,
@@ -622,7 +684,7 @@ mod tests {
 
     #[test]
     fn single_line_breaks_show_as_line_breaks_outside_code_blocks() {
-        let blocks = parse_markdown(
+        let blocks = parse(
             "The slowest cases:\ndeep_nesting: 2.4 ms\nlong_sum: **1.1 ms**\n\n```\nfirst\nsecond\n```",
         );
 
@@ -647,8 +709,8 @@ mod tests {
 
     #[test]
     fn tight_and_loose_lists_wrap_their_text_in_paragraphs() {
-        let tight = parse_markdown("- one\n- two\n  - nested");
-        let loose = parse_markdown("3. first\n\n4. second");
+        let tight = parse("- one\n- two\n  - nested");
+        let loose = parse("3. first\n\n4. second");
 
         assert_eq!(
             tight,
@@ -680,7 +742,7 @@ mod tests {
 
     #[test]
     fn task_list_markers_become_text() {
-        let blocks = parse_markdown("- [x] done\n- [ ] open");
+        let blocks = parse("- [x] done\n- [ ] open");
 
         let Some(Block::List { items, .. }) = blocks.first() else {
             panic!("expected a list, got {blocks:?}");
@@ -696,8 +758,7 @@ mod tests {
 
     #[test]
     fn code_blocks_keep_their_language_without_the_final_newline() {
-        let blocks =
-            parse_markdown("```rust title=\"x\"\nlet a = 1;\n\nlet b = 2;\n```\n\n    indented");
+        let blocks = parse("```rust title=\"x\"\nlet a = 1;\n\nlet b = 2;\n```\n\n    indented");
 
         assert_eq!(
             blocks,
@@ -716,8 +777,7 @@ mod tests {
 
     #[test]
     fn tables_split_head_and_rows() {
-        let blocks =
-            parse_markdown("| Name | Size |\n| --- | --- |\n| `a.txt` | 3 |\n| b | **4** |");
+        let blocks = parse("| Name | Size |\n| --- | --- |\n| `a.txt` | 3 |\n| b | **4** |");
 
         assert_eq!(
             blocks,
@@ -858,19 +918,83 @@ mod tests {
     }
 
     #[test]
-    fn only_web_links_stay_links() {
-        let inlines = paragraph(
-            "[a](javascript:alert(1)) [b](file:///etc/hosts) [c](notes.html) [d](HTTPS://example.org)",
-        );
+    fn links_to_files_in_the_folder_open_the_file_view() {
+        let opened = |target: &str| -> Option<(String, Option<u32>)> {
+            match paragraph(&format!("[x]({target})")).as_slice() {
+                [Inline::File(file)] => Some((file.path.clone(), file.line)),
+                _ => None,
+            }
+        };
 
+        let cases = [
+            ("AGENTS.md", "AGENTS.md", None),
+            ("./docs/plan.md", "./docs/plan.md", None),
+            ("docs/plan.md#decisions", "docs/plan.md", None),
+            ("src/lexer.rs#L17", "src/lexer.rs", Some(17)),
+            ("src/lexer.rs:17:5", "src/lexer.rs", Some(17)),
+            ("Makefile:3", "Makefile", Some(3)),
+            ("/work/calc/src/error.rs", "/work/calc/src/error.rs", None),
+            (
+                "/work/calc/src/error.rs#L2",
+                "/work/calc/src/error.rs",
+                Some(2),
+            ),
+        ];
+        for (target, path, line) in cases {
+            assert_eq!(opened(target), Some((path.to_owned(), line)), "{target}");
+        }
+    }
+
+    #[test]
+    fn links_that_would_leave_the_app_or_the_folder_keep_only_their_text() {
+        let targets = [
+            "javascript:alert(1)",
+            "JavaScript:void(0)",
+            "file:///etc/hosts",
+            "mailto:someone@example.org",
+            "data:text/html,hello",
+            "ftp://example.org/a.txt",
+            "//example.org/a.rs",
+            "/etc/hosts",
+            "/work/calculator/src/a.rs",
+            "/work/calc",
+            "../secrets.txt",
+            "/work/calc/../other/a.rs",
+            "~/notes.md",
+            "notes.md?raw=1",
+            "src/a.rs:twelve",
+            "src/a.rs:0",
+            "#heading",
+            "./",
+        ];
+        for target in targets {
+            assert_eq!(
+                paragraph(&format!("[label]({target})")),
+                vec![text("label")],
+                "{target}"
+            );
+        }
         assert_eq!(
-            inlines,
+            paragraph("[d](HTTPS://example.org)"),
+            vec![Inline::Link {
+                url: "HTTPS://example.org".to_owned(),
+                content: vec![text("d")]
+            }]
+        );
+    }
+
+    #[test]
+    fn a_link_to_a_file_without_text_shows_its_target() {
+        assert_eq!(
+            paragraph("See [](AGENTS.md)."),
             vec![
-                text("a b c "),
-                Inline::Link {
-                    url: "HTTPS://example.org".to_owned(),
-                    content: vec![text("d")]
-                },
+                text("See "),
+                Inline::File(FileRef {
+                    text: "AGENTS.md".to_owned(),
+                    path: "AGENTS.md".to_owned(),
+                    line: None,
+                }),
+                text("."),
             ]
         );
     }
@@ -886,7 +1010,7 @@ mod tests {
     fn deep_nesting_is_flattened_without_failing() {
         let markdown = format!("{}deep", "> ".repeat(200));
 
-        let blocks = parse_markdown(&markdown);
+        let blocks = parse(&markdown);
 
         assert_eq!(blocks.len(), 1);
     }

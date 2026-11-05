@@ -136,16 +136,20 @@ impl Environment {
 
     /// Where a daemon on this machine listens, as the daemon computes it.
     pub fn default_socket(&self) -> Result<PathBuf, ConfigError> {
-        let base = xdg_base(
-            self.state_home.as_deref(),
-            self.home.as_deref(),
-            DEFAULT_STATE_HOME,
-        )
-        .ok_or(ConfigError::NoHome {
+        let base = self.state_base().ok_or(ConfigError::NoHome {
             what: "daemon's socket",
             var: STATE_HOME_VAR,
         })?;
         Ok(base.join(APP_FOLDER).join(SOCKET_FILE))
+    }
+
+    /// `$XDG_STATE_HOME`, or its default under the home folder.
+    pub fn state_base(&self) -> Option<PathBuf> {
+        xdg_base(
+            self.state_home.as_deref(),
+            self.home.as_deref(),
+            DEFAULT_STATE_HOME,
+        )
     }
 }
 

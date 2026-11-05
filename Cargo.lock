@@ -567,6 +567,7 @@ dependencies = [
  "similar",
  "strum",
  "syntect",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "toml 1.2.0+spec-1.1.0",

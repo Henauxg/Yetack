@@ -96,8 +96,10 @@ pub fn diff_row(row: &DiffRow, numbers: LineNumbers, marked: Option<u32>) -> Ele
             };
             return rsx! {
                 div { class: "diff-row folded",
-                    span { class: "line-number" }
-                    span { class: "line-sign" }
+                    span { class: "line-gutter",
+                        span { class: "line-number" }
+                        span { class: "line-sign" }
+                    }
                     span { class: "line-text", "{text}" }
                 }
             };
@@ -128,8 +130,10 @@ pub fn diff_line(line: &DiffLine, numbers: LineNumbers, marked: Option<u32>) -> 
         LineNumbers::Hidden => String::new(),
     };
     let content = rsx! {
-        span { class: "line-number", "{number}" }
-        span { class: "line-sign", "{sign}" }
+        span { class: "line-gutter",
+            span { class: "line-number", "{number}" }
+            span { class: "line-sign", "{sign}" }
+        }
         span { class: "line-text",
             for segment in line.segments.iter() {
                 span {

@@ -12,9 +12,13 @@ use crate::render::{self, Diff, Language, MAX_RENDERED_LINES, diff_lines};
 use crate::state::{Loadable, ViewMode, actions, file_edits};
 use crate::ui::code::{LineNumbers, diff_line, diff_row, lines_not_shown};
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::splitter::FILE_VIEW_ID;
 
 /// Unchanged lines kept around each change of the file view's diff.
 const FILE_DIFF_CONTEXT: usize = 3;
+
+/// The widths of the placeholder lines shown while the file loads, in percent of the text's width.
+const LOADING_LINE_WIDTHS: [u8; 8] = [46, 72, 64, 30, 81, 58, 69, 38];
 
 #[component]
 pub fn FileViewPanel() -> Element {
@@ -59,8 +63,10 @@ pub fn FileViewPanel() -> Element {
         )
     };
     let diff = view.mode == ViewMode::Diff;
+    let loading = matches!(text, Loadable::NotRequested | Loadable::Loading);
+    let wrap = state.prefs.file_view.wrap;
     rsx! {
-        section { class: "file-view", aria_label: "File view",
+        section { id: FILE_VIEW_ID, class: "file-view", aria_label: "File view",
             div { class: "file-tabs",
                 div { class: "tab-list scroll-x", role: "tablist", aria_label: "Files changed by this agent",
                     for tab in tabs {
@@ -76,7 +82,12 @@ pub fn FileViewPanel() -> Element {
                 }
             }
             div { class: "file-bar",
-                span { class: "file-label mono", "{label}" }
+                span { class: "file-label mono",
+                    "{label}"
+                    if loading {
+                        span { class: "spinner", role: "status", aria_label: "Loading the file" }
+                    }
+                }
                 span { class: "read-only-chip", "Read-only" }
                 div { class: "segmented", role: "group", aria_label: "View mode",
                     button {
@@ -92,11 +103,24 @@ pub fn FileViewPanel() -> Element {
                         "Whole file"
                     }
                 }
+                div { class: "segmented",
+                    button {
+                        class: if wrap { "segment chosen" } else { "segment" },
+                        aria_pressed: wrap,
+                        title: "Wrap long lines instead of scrolling sideways",
+                        onclick: move |_| cockpit.update(actions::toggle_wrap),
+                        "Wrap"
+                    }
+                }
             }
-            div { class: "file-body scroll mono",
+            div { class: if wrap { "file-body scroll mono wrap" } else { "file-body scroll mono" },
                 match text {
                     Loadable::NotRequested | Loadable::Loading => rsx! {
-                        p { class: "file-note", "Loading the file" }
+                        div { class: "file-loading", aria_hidden: true,
+                            for (index, width) in LOADING_LINE_WIDTHS.iter().enumerate() {
+                                div { key: "{index}", class: "skeleton skeleton-line", style: "width: {width}%" }
+                            }
+                        }
                     },
                     Loadable::Failed(error) => rsx! {
                         p { class: "file-note", "Cannot read the file: {error}" }
@@ -154,8 +178,10 @@ fn FileContent(
             if mode == ViewMode::Diff {
                 p { class: "file-note", "This agent did not change the file. Here is its text." }
             }
-            for row in lines.rows.iter() {
-                {diff_line(row, LineNumbers::Shown, line)}
+            div { class: "diff-rows",
+                for row in lines.rows.iter() {
+                    {diff_line(row, LineNumbers::Shown, line)}
+                }
             }
             {lines_not_shown(lines.more)}
         };
@@ -176,8 +202,10 @@ fn FileContent(
             };
         }
         return rsx! {
-            for row in diff.rows.iter() {
-                {diff_row(row, LineNumbers::Shown, line)}
+            div { class: "diff-rows",
+                for row in diff.rows.iter() {
+                    {diff_row(row, LineNumbers::Shown, line)}
+                }
             }
             {lines_not_shown(diff.more)}
         };
@@ -205,8 +233,10 @@ fn FileContent(
         }
         for (index, diff) in diffs.iter().enumerate() {
             p { class: "edit-title", "Edit {index + 1} of {count}" }
-            for row in diff.rows.iter() {
-                {diff_row(row, LineNumbers::Hidden, None)}
+            div { class: "diff-rows",
+                for row in diff.rows.iter() {
+                    {diff_row(row, LineNumbers::Hidden, None)}
+                }
             }
             {lines_not_shown(diff.more)}
         }
