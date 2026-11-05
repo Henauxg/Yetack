@@ -808,6 +808,39 @@ fn a_known_type_with_a_malformed_required_field_is_an_error() {
 }
 
 #[test]
+fn a_malformed_control_request_keeps_its_id() {
+    // Claude Code waits for an answer, so the caller answers this id with an error.
+    let line = r#"{"type":"control_request","request_id":"r7","request":{"subtype":"can_use_tool","tool_name":"Bash"}}"#;
+
+    let error = line.parse::<OutputLine>().unwrap_err();
+
+    let ParseError::MalformedLine {
+        kind, request_id, ..
+    } = error
+    else {
+        panic!("{line} gave {error:?}");
+    };
+    assert_eq!(kind, "can_use_tool");
+    assert_eq!(request_id, Some(ControlRequestId::new("r7".to_owned())));
+}
+
+#[test]
+fn another_malformed_line_has_no_request_id() {
+    let error = r#"{"type":"assistant"}"#.parse::<OutputLine>().unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            ParseError::MalformedLine {
+                request_id: None,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+}
+
+#[test]
 fn a_parse_error_says_what_is_wrong() {
     let error = r#"{"type":"assistant"}"#.parse::<OutputLine>().unwrap_err();
     assert_eq!(

@@ -522,6 +522,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_undecodable_event_is_skipped() {
+        let daemon = TestDaemon::new();
+        let (mut connection, mut peer) = connect(&daemon).await;
+
+        peer.send_line(r#"{"type":"event","seq":6,"event":{"type":"surprise"}}"#)
+            .await;
+        peer.event(7, removed(2)).await;
+        let next = connection.next_event().await.unwrap();
+
+        assert_eq!((next.seq, next.event), (Seq::new(7), removed(2)));
+    }
+
+    #[tokio::test]
     async fn a_dropped_connection_fails_the_requests_in_flight() {
         let daemon = TestDaemon::new();
         let (mut connection, mut peer) = connect(&daemon).await;

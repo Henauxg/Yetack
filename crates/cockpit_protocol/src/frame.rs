@@ -218,6 +218,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_cancelled_read_keeps_the_part_of_the_line_read_so_far() {
+        use tokio::io::AsyncWriteExt;
+
+        let (mut sender, received) = tokio::io::duplex(1024);
+        let mut reader = FrameReader::new(tokio::io::BufReader::new(received));
+        sender
+            .write_all(b"{\"type\":\"hello\",\"protocol_version\":1,")
+            .await
+            .unwrap();
+
+        // A zero timeout polls the read once, then drops it.
+        let cancelled = tokio::time::timeout(
+            std::time::Duration::ZERO,
+            reader.next_message::<ClientMessage>(),
+        )
+        .await;
+        assert!(cancelled.is_err(), "{cancelled:?}");
+        assert!(!reader.line.is_empty(), "the cancelled read took no bytes");
+        sender.write_all(b"\"last_seq\":3}\n").await.unwrap();
+        let message: Option<ClientMessage> = reader.next_message().await.unwrap();
+
+        assert_eq!(message, Some(hello(3)));
+    }
+
+    #[tokio::test]
     async fn accepts_a_line_of_exactly_the_maximum() {
         let mut input = json_string_line(MAX_LINE_BYTES);
         input.push(NEWLINE);
