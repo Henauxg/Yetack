@@ -71,7 +71,7 @@ const historyOf = (field) => {
   const scope = field.dataset.undoScope ?? "";
   let history = scopes.get(scope);
   if (history === undefined) {
-    history = { undo: [], redo: [], last: snapshot(field), kind: "", at: 0 };
+    history = { undo: [], redo: [], last: snapshot(field), kind: "", at: 0, wroteWord: false };
     scopes.set(scope, history);
   }
   return history;
@@ -95,13 +95,17 @@ document.addEventListener("beforeinput", (event) => {
   const history = catchUp(field);
   const kind = event.inputType;
   const now = Date.now();
-  // Typing, or deleting, makes one step until a pause, another kind of edit, or a new word.
-  const newWord = /\S/.test(event.data ?? "") && /\s/.test(field.value.charAt(field.selectionStart - 1));
+  // Typing, or deleting, makes one step until a pause, another kind of edit, or a new word once
+  // the step holds one.
+  const word = /\S/.test(event.data ?? "");
+  const newWord = word && history.wroteWord && /\s/.test(field.value.charAt(field.selectionStart - 1));
   const grouped = groupedKinds.includes(kind) && kind === history.kind
     && now - history.at < settings.undo_pause_ms && !newWord;
   if (!grouped) {
     remember(history.undo, snapshot(field));
+    history.wroteWord = false;
   }
+  history.wroteWord = history.wroteWord || word;
   history.redo = [];
   history.kind = kind;
   history.at = now;
