@@ -58,6 +58,8 @@ pub struct AgentEntry {
     pub details: Loadable<AgentDetails>,
     /// The file view's texts, by the path the view uses.
     pub files: BTreeMap<PathBuf, Loadable<String>>,
+    /// An `agent.commands` request is on its way.
+    pub commands_requested: bool,
 }
 
 impl AgentEntry {
@@ -67,6 +69,16 @@ impl AgentEntry {
             transcript: Transcript::default(),
             details: Loadable::NotRequested,
             files: BTreeMap::new(),
+            commands_requested: false,
+        }
+    }
+
+    /// Whether the commands and skills are on their way, with the details or on their own.
+    pub fn commands_loading(&self) -> bool {
+        match &self.details {
+            Loadable::NotRequested | Loadable::Loading => true,
+            Loadable::Loaded(_) => self.commands_requested,
+            Loadable::Failed(_) => false,
         }
     }
 

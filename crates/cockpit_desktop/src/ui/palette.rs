@@ -13,9 +13,17 @@ use crate::state::actions::{
 use crate::state::{AgentEntry, PaletteOrigin};
 use crate::ui::icons::{Icon, IconKind};
 
+/// The key of the placeholder rows, apart from the entries' numbers and the sections' titles.
+const LOADING_KEY: &str = "loading";
+
+/// The widths of the placeholder rows' two lines while the commands load, one pair per row.
+const LOADING_ROWS: [(&str, &str); 3] = [("34%", "72%"), ("48%", "60%"), ("28%", "66%")];
+
 #[derive(Debug, Clone, PartialEq)]
 enum Row {
     Section(MenuSection),
+    /// The commands section while the commands are on their way.
+    CommandsLoading,
     /// `index` counts the entries, the commands included, for the highlight.
     Action {
         index: usize,
@@ -65,6 +73,9 @@ fn rows(entry: &AgentEntry, query: &str, origin: PaletteOrigin) -> Vec<Row> {
             },
         };
         rows.push(row);
+    }
+    if entry.commands_loading() {
+        rows.push(Row::CommandsLoading);
     }
     rows
 }
@@ -141,6 +152,9 @@ pub fn Palette(agent: AgentId, origin: PaletteOrigin) -> Element {
                     match row {
                         Row::Section(section) => rsx! {
                             span { key: "{section_title(section)}", class: "palette-section", "{section_title(section)}" }
+                        },
+                        Row::CommandsLoading => rsx! {
+                            CommandsLoading { key: "{LOADING_KEY}" }
                         },
                         Row::Action { index, action, disabled } => rsx! {
                             ActionRow { key: "{index}", agent, index, action, disabled, highlighted: index == highlighted }
@@ -286,6 +300,24 @@ fn SettingRow(
                         },
                         "{choice.label}"
                     }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn CommandsLoading() -> Element {
+    rsx! {
+        div {
+            span { class: "palette-section",
+                "{section_title(MenuSection::Commands)}"
+                span { class: "spinner", role: "status", aria_label: "Loading the commands and skills" }
+            }
+            for (row, (name_width, description_width)) in LOADING_ROWS.into_iter().enumerate() {
+                div { key: "{row}", class: "palette-skeleton", aria_hidden: true,
+                    span { class: "skeleton skeleton-line", style: "width: {name_width}" }
+                    span { class: "skeleton skeleton-line", style: "width: {description_width}" }
                 }
             }
         }

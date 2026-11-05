@@ -162,9 +162,14 @@ fn open_palette(state: &mut AppState, agent: AgentId, origin: PaletteOrigin) -> 
 }
 
 /// The details carry the commands; an agent that reported none yet is asked directly.
-fn commands_request(state: &AppState, agent: AgentId) -> Option<Outgoing> {
-    let details = state.agents.get(&agent)?.details.loaded()?;
-    details.commands.is_empty().then_some(Outgoing {
+fn commands_request(state: &mut AppState, agent: AgentId) -> Option<Outgoing> {
+    let entry = state.agents.get_mut(&agent)?;
+    let details = entry.details.loaded()?;
+    if !details.commands.is_empty() || entry.commands_requested {
+        return None;
+    }
+    entry.commands_requested = true;
+    Some(Outgoing {
         request: Request::AgentCommands(AgentParams { agent }),
         purpose: Purpose::Commands { agent },
     })
@@ -1216,6 +1221,43 @@ mod tests {
 
         type_text(&mut state, &mut drafts, "/review the branch");
         assert_eq!(state.ui.popover, None);
+    }
+
+    #[test]
+    fn the_commands_load_until_the_details_or_their_own_request_answer() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        let loading = |state: &AppState| state.agents[&agent()].commands_loading();
+        let before_the_details = loading(&state);
+        with_commands(&mut state, Vec::new());
+        let with_no_commands = loading(&state);
+
+        let first = toggle_palette(&mut state, &mut drafts, agent());
+        let while_asked = loading(&state);
+        toggle_palette(&mut state, &mut drafts, agent());
+        let second = toggle_palette(&mut state, &mut drafts, agent());
+        apply_response(
+            &mut state,
+            &mut drafts,
+            Method::AgentCommands,
+            Purpose::Commands { agent: agent() },
+            Ok(ResponseBody::Commands {
+                commands: vec![command("review", "")],
+            }),
+        );
+
+        assert_eq!(
+            (
+                before_the_details,
+                with_no_commands,
+                while_asked,
+                loading(&state)
+            ),
+            (true, false, true, false)
+        );
+        // The palette opened again while the request was on its way asks nothing more.
+        assert_eq!((first.len(), second.len()), (1, 0));
+        assert_eq!(agent_commands(&state, agent()).len(), 1);
     }
 
     #[test]

@@ -2457,6 +2457,16 @@ button:disabled {
   white-space: nowrap;
 }
 
+/* A command row's place while the commands load. The shimmer is the shared skeleton style. */
+.palette-skeleton {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 5px 10px;
+}
+
 .palette-empty {
   display: block;
   padding: 10px;
