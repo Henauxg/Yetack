@@ -132,7 +132,8 @@ pub fn use_cockpit(startup: Startup) -> Cockpit {
     })
 }
 
-/// Answers every request from the sample state, in order.
+/// Answers every request from the sample state, in order, and makes the live agent's
+/// conversation grow.
 async fn run_demo(
     mut state: Signal<AppState>,
     mut drafts: Signal<Drafts>,
@@ -140,15 +141,28 @@ async fn run_demo(
 ) {
     use futures_util::StreamExt;
 
-    while let Some(outgoing) = requests.next().await {
-        let mut queue = VecDeque::from([outgoing]);
-        while let Some(Outgoing { request, purpose }) = queue.pop_front() {
-            tokio::time::sleep(demo::latency(&request)).await;
-            let result = demo::answer(&state.read(), &request);
-            let mut state = state.write();
-            let method = request.method();
-            state::apply_response(&mut state, &mut drafts.write(), method, purpose, result);
-            queue.extend(state::needed_requests(&mut state));
+    let mut ticks = tokio::time::interval(demo::LIVE_TICK);
+    let mut tick: u32 = 0;
+    loop {
+        tokio::select! {
+            outgoing = requests.next() => {
+                let Some(outgoing) = outgoing else {
+                    return;
+                };
+                let mut queue = VecDeque::from([outgoing]);
+                while let Some(Outgoing { request, purpose }) = queue.pop_front() {
+                    tokio::time::sleep(demo::latency(&request)).await;
+                    let result = demo::answer(&state.read(), &request);
+                    let mut state = state.write();
+                    let method = request.method();
+                    state::apply_response(&mut state, &mut drafts.write(), method, purpose, result);
+                    queue.extend(state::needed_requests(&mut state));
+                }
+            }
+            _ = ticks.tick() => {
+                demo::live_tick(&mut state.write(), tick);
+                tick = tick.wrapping_add(1);
+            }
         }
     }
 }

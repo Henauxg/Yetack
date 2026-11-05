@@ -26,6 +26,20 @@ pub const DEMO_FLAG: &str = "--demo";
 const PARSER_FOLDER: &str = "/home/dev/projects/calc-parser";
 const SERVICE_FOLDER: &str = "/home/dev/projects/calc-service";
 const PLATFORM_FOLDER: &str = "/home/dev/projects/acme-platform";
+const STREAM_FOLDER: &str = "/home/dev/projects/calc-stream";
+
+/// The agent whose conversation grows while the demo runs, to try the chat's scrolling.
+const LIVE_AGENT: u32 = 7;
+
+/// How often the live agent adds or finishes an entry.
+pub const LIVE_TICK: Duration = Duration::from_millis(1500);
+
+/// The live agent's entries: the older page that "Load older messages" brings, the first page,
+/// then the live ones, one id per tick.
+const LIVE_OLDER_FIRST_ID: u32 = 60;
+const LIVE_PAGE_FIRST_ID: u32 = 100;
+const LIVE_PAGE_LAST_ID: u32 = 123;
+const LIVE_TICK_FIRST_ID: u32 = 1000;
 
 /// How long the working agent's turn has run when the demo starts.
 const TURN_ELAPSED: Duration = Duration::from_secs(4 * 60 + 12);
@@ -166,12 +180,14 @@ pub fn state(daemon: DaemonLabel) -> AppState {
         plan_agent(now),
         benchmark_agent(now),
         exited_agent(now),
+        live_agent(now),
     ];
     for sample in agents {
         let mut entry = AgentEntry::new(sample.summary);
+        let has_older = entry.id() == AgentId::new(LIVE_AGENT);
         entry.transcript.merge_page(HistoryPage {
             items: sample.items,
-            has_older: false,
+            has_older,
         });
         entry.details = Loadable::Loaded(sample.details);
         if entry.summary.status == AgentStatus::Working {
@@ -225,6 +241,16 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
                 text: text.to_owned(),
             })
             .ok_or_else(|| refused(ErrorCode::NotFound, "The demo has no such file.")),
+        Request::AgentHistory(params) if params.agent == AgentId::new(LIVE_AGENT) => {
+            let before = params.before.map_or(LIVE_PAGE_FIRST_ID, ItemId::get);
+            let items = (LIVE_OLDER_FIRST_ID..before)
+                .map(|id| item(id, None, live_entry(id)))
+                .collect();
+            Ok(ResponseBody::History(HistoryPage {
+                items,
+                has_older: false,
+            }))
+        }
         Request::AgentHistory(_) => Ok(ResponseBody::History(HistoryPage {
             items: Vec::new(),
             has_older: false,
@@ -992,6 +1018,111 @@ fn exited_agent(now: SystemTime) -> Sample {
     }
 }
 
+fn live_agent(now: SystemTime) -> Sample {
+    let summary = summary(
+        SummaryParts {
+            id: LIVE_AGENT,
+            title: "Stream the parser's input",
+            folder: STREAM_FOLDER,
+            status: AgentStatus::Working,
+            activity: Some("Running the case tests"),
+            pending: 0,
+        },
+        now,
+    );
+    let first = item(
+        LIVE_PAGE_FIRST_ID,
+        None,
+        user(
+            "Make the parser read its input as a stream, and run every case test.",
+            false,
+        ),
+    );
+    let page =
+        (LIVE_PAGE_FIRST_ID + 1..=LIVE_PAGE_LAST_ID).map(|id| item(id, None, live_entry(id)));
+    Sample {
+        summary,
+        items: std::iter::once(first).chain(page).collect(),
+        details: details(),
+    }
+}
+
+/// The kinds of the live agent's entries, as `live_entry` makes them.
+const LIVE_TEXT: u32 = 0;
+const LIVE_READ: u32 = 2;
+
+/// A made-up entry of the live agent, picked by its id.
+fn live_entry(id: u32) -> ItemBody {
+    live_entry_of(id % 4, id)
+}
+
+/// An entry of the live agent of the `kind` (0 to 3) about the case `id`.
+fn live_entry_of(kind: u32, id: u32) -> ItemBody {
+    match kind {
+        LIVE_TEXT => text(&format!(
+            "Case {id} passes: the stream splits the input at each separator and keeps every token's column. On to the next case."
+        )),
+        1 => ItemBody::ToolCall(bash(
+            "Run one case test",
+            &format!("cargo test -p calc-stream case_{id}"),
+            ToolCallStatus::Done,
+            Some(&live_test_output(id)),
+        )),
+        LIVE_READ => ItemBody::ToolCall(call(
+            "Read",
+            &format!("src/stream/case_{id}.rs"),
+            ToolCallStatus::Done,
+            None,
+        )),
+        _ => ItemBody::ToolCall(call(
+            "Grep",
+            &format!("fn case_{id}"),
+            ToolCallStatus::Done,
+            Some(&format!("src/stream/case_{id}.rs:12")),
+        )),
+    }
+}
+
+fn live_test_output(id: u32) -> String {
+    format!(
+        "running 1 test\ntest case_{id}::splits_at_separators ... ok\ntest case_{id}::keeps_columns ... ok\ntest case_{id}::reads_in_chunks ... ok\ntest case_{id}::ends_cleanly ... ok\ntest case_{id}::reports_offsets ... ok\n\ntest result: ok. 5 passed; 0 failed"
+    )
+}
+
+/// One step of the live agent, as its daemon would send it: tick by tick, a test command starts,
+/// then ends with its output, which makes its entry taller, then a line of text, then a read.
+pub fn live_tick(state: &mut AppState, tick: u32) {
+    let Some(entry) = state.agents.get_mut(&AgentId::new(LIVE_AGENT)) else {
+        return;
+    };
+    let id = LIVE_TICK_FIRST_ID.saturating_add(tick);
+    let command = |id: u32, status, output: Option<&str>| {
+        ItemBody::ToolCall(bash(
+            "Run one case test",
+            &format!("cargo test -p calc-stream case_{id}"),
+            status,
+            output,
+        ))
+    };
+    match tick % 4 {
+        0 => entry
+            .transcript
+            .append(item(id, None, command(id, ToolCallStatus::Running, None))),
+        1 => {
+            let started = id.saturating_sub(1);
+            let output = live_test_output(started);
+            let done = command(started, ToolCallStatus::Done, Some(&output));
+            entry.transcript.change(item(started, None, done));
+        }
+        2 => entry
+            .transcript
+            .append(item(id, None, live_entry_of(LIVE_TEXT, id))),
+        _ => entry
+            .transcript
+            .append(item(id, None, live_entry_of(LIVE_READ, id))),
+    }
+}
+
 fn plan_usage(now: SystemTime) -> PlanUsage {
     let mut usage = PlanUsage::default();
     usage.windows.insert(
@@ -1074,6 +1205,50 @@ mod tests {
     use super::*;
     use crate::state::{WaitingKind, file_edits};
 
+    #[test]
+    fn the_live_agent_starts_a_command_finishes_it_then_adds_entries() {
+        let mut state = state(label());
+        let agent = AgentId::new(LIVE_AGENT);
+        let status = |state: &AppState| match state.agents[&agent]
+            .transcript
+            .get(ItemId::new(LIVE_TICK_FIRST_ID))
+            .map(|item| &item.body)
+        {
+            Some(ItemBody::ToolCall(call)) => Some((call.status, call.output.is_some())),
+            _ => None,
+        };
+        let count = |state: &AppState| state.agents[&agent].transcript.items().count();
+        let before = count(&state);
+
+        live_tick(&mut state, 0);
+        let started = status(&state);
+        live_tick(&mut state, 1);
+        let finished = status(&state);
+        live_tick(&mut state, 2);
+        live_tick(&mut state, 3);
+
+        assert_eq!(started, Some((ToolCallStatus::Running, false)));
+        assert_eq!(finished, Some((ToolCallStatus::Done, true)));
+        assert_eq!(count(&state), before + 3);
+    }
+
+    #[test]
+    fn the_live_agent_has_an_older_page_to_load() {
+        let state = state(label());
+        let request = Request::AgentHistory(cockpit_protocol::HistoryParams {
+            agent: AgentId::new(LIVE_AGENT),
+            before: Some(ItemId::new(LIVE_PAGE_FIRST_ID)),
+            limit: 100,
+        });
+
+        let Ok(ResponseBody::History(page)) = answer(&state, &request) else {
+            panic!("the live agent answers its history");
+        };
+
+        assert_eq!(page.items.len(), 40);
+        assert!(!page.has_older);
+    }
+
     /// `src/error.rs` before the sample's edit.
     const ERROR_BEFORE: &str = "/// A parse error, with where it happened.
 pub struct ParseError {
@@ -1106,6 +1281,7 @@ pub struct ParseError {
                 Some(WaitingKind::Question),
                 Some(WaitingKind::Approval),
                 Some(WaitingKind::Plan),
+                None,
                 None,
                 None,
             ]
