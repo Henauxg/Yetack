@@ -105,6 +105,14 @@ pub(crate) fn input_edit(tool: &str, input: &Value) -> Option<FileEdit> {
     file_edit(&parsed)
 }
 
+/// The skill a `Skill` call loads, such as `review`.
+pub(crate) fn loaded_skill(tool: &str, input: &Value) -> Option<String> {
+    let Ok(ToolInput::Skill(skill)) = ToolInput::parse(tool, input.as_object()?) else {
+        return None;
+    };
+    Some(skill.skill)
+}
+
 /// The edit as a transcript item keeps it: its path only, when a text is over
 /// [`MAX_EDIT_TEXT_BYTES`].
 pub(crate) fn without_large_texts(mut edit: FileEdit) -> FileEdit {

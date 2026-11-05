@@ -108,6 +108,7 @@ The kinds of item:
 - `Plan`: the `ExitPlanMode` plan text, and its answer state (a decision, with an optional message when Claude should keep planning);
 - `TurnEnd`: duration, usage and cost of the turn, and whether the user stopped it (`stopped`, from the `result` line's `terminal_reason`), or the error that ended it;
 - `Notice`: a line such as "Conversation compacted" or "Conversation cleared" (a `conversation_reset` line, after which Claude Code's total cost counts from 0 again), a local command's output such as `/effort`'s, or a message Claude Code writes itself (a user line whose `origin` is not `human`), such as its summary of a background task that ended.
+  Context Claude Code adds for Claude (a user line marked `isSynthetic`) becomes a notice whose `detail` holds its text, which the app shows folded: "Skill instructions: /loop" after a `Skill` call that loaded it, "Conversation summary" after a compaction, else "Context added by Claude Code".
 
 An answer state is `Waiting`, `Answered`, or `Cancelled` (Claude Code withdraws a pending request when the turn is interrupted).
 
@@ -218,7 +219,8 @@ On start the daemon reads `agents.json`, finds the last `Seq` in the logs, and r
 
 - Its lines go through the same conversion as `claude`'s stdout (`PastTranscript`), so origins, notices and tool calls come out the same.
   The file's other lines (titles, file history snapshots, API requests) read as lines of an unknown type, which show nothing.
-  It leaves out the lines of subagents (`isSidechain`), which it does not tie to their call, the summary after a compaction, and the user lines marked `isMeta`, unless another source than the user wrote them.
+  It leaves out the lines of subagents (`isSidechain`), which it does not tie to their call.
+  The user lines marked `isMeta` or `isCompactSummary` are the ones `claude`'s stdout marks `isSynthetic`: it shows a skill's instructions and the summary after a compaction as folded notices, and leaves out the rest, unless another source than the user wrote them.
 - The newest 2,000 items show, numbered to end at id 2,001, after a notice when older ones are left out.
   The agent numbers its own items from 2,002, so the two never share an id.
 - The past items go in no event: clients read them with `agent.history`.

@@ -87,6 +87,11 @@ const TITLE_KEY: &str = "title";
 /// or an API error.
 const SYNTHETIC_MODEL: &str = "<synthetic>";
 const COMPACTED_NOTICE: &str = "Conversation compacted";
+/// Titles a skill's instructions, followed by the skill's command.
+const SKILL_INSTRUCTIONS_TITLE: &str = "Skill instructions";
+const SUMMARY_TITLE: &str = "Conversation summary";
+/// Titles context Claude Code adds that no line before it explains.
+const CONTEXT_TITLE: &str = "Context added by Claude Code";
 const CLEARED_NOTICE: &str = "Conversation cleared";
 /// A new conversation for a reason this daemon does not know.
 const RESET_NOTICE: &str = "New conversation";
@@ -96,6 +101,15 @@ const PAST_STOP_NOTICE: &str = "Stopped";
 /// Prompts sent and not yet echoed back. Older ones are forgotten: Claude Code does not echo
 /// every prompt, such as some slash commands.
 const MAX_AWAITED_ECHOES: usize = 32;
+
+/// What the next synthetic `user` line holds, as the line before it says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ExpectedContext {
+    /// The instructions of the skill a `Skill` call just loaded, such as `review`.
+    Skill(String),
+    /// The summary that follows a compaction.
+    Summary,
+}
 
 /// Where a `user` line comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,6 +166,8 @@ pub(crate) struct AgentView {
     /// Claude Code restates the session's saved name as it starts, before it answers
     /// `initialize`: that name must not replace one the agent got while it was stopped.
     takes_session_titles: bool,
+    /// Set by a `Skill` call's result or a compaction, for the synthetic `user` line after it.
+    expected_context: Option<ExpectedContext>,
     /// The name Claude Code restated as the process started, until it answers `initialize`.
     restated_title: Option<String>,
     awaited_echoes: VecDeque<String>,
@@ -181,6 +197,7 @@ impl AgentView {
             awaits_restored_cost: false,
             takes_session_titles: false,
             restated_title: None,
+            expected_context: None,
             awaited_echoes: VecDeque::new(),
             tool_counts: HashMap::new(),
             skills: BTreeSet::new(),
@@ -525,6 +542,7 @@ impl AgentView {
         self.awaits_restored_cost = session == ProcessSession::Resumed;
         self.takes_session_titles = false;
         self.restated_title = None;
+        self.expected_context = None;
         self.pending.clear();
         self.tool_calls.clear();
     }
@@ -673,6 +691,7 @@ impl AgentView {
                             detail: None,
                         },
                     );
+                    self.expected_context = Some(ExpectedContext::Summary);
                 }
                 Some(UntypedSystemSubtype::SessionTitleChanged) => {
                     let title = value.get(TITLE_KEY).and_then(Value::as_str).map(str::trim);
@@ -740,6 +759,7 @@ impl AgentView {
     }
 
     fn apply_assistant(&mut self, message: AssistantMessage, now: Timestamp) {
+        self.expected_context = None;
         let parent = self.parent_item(message.parent_tool_use_id.as_ref());
         let synthetic = message.message.model.as_deref() == Some(SYNTHETIC_MODEL);
         if message.parent_tool_use_id.is_none() {
@@ -830,6 +850,7 @@ impl AgentView {
             message: body,
             is_replay,
             origin,
+            is_synthetic,
             tool_use_result,
             ..
         } = message;
@@ -851,14 +872,28 @@ impl AgentView {
         }
         let text = texts.join("\n");
         if let Some(notices) = notices::notices(origin.as_ref(), &text) {
+            // A message another source wrote whole, such as a subagent's report, unfolds to it.
+            let detail = (is_synthetic && notices.len() == 1).then(|| text.clone());
             for notice in notices {
                 self.push_item(
                     parent,
                     ItemBody::Notice {
                         text: notice,
-                        detail: None,
+                        detail: detail.clone(),
                     },
                 );
+            }
+            return;
+        }
+        if is_synthetic {
+            let expected = self.expected_context.take();
+            // A session file marks other context the same way, such as reminders: it stays hidden.
+            if expected.is_some() || source == LineSource::Process {
+                let body = ItemBody::Notice {
+                    text: context_title(expected),
+                    detail: Some(text),
+                };
+                self.push_item(parent, body);
             }
             return;
         }
@@ -915,6 +950,21 @@ impl AgentView {
         let Some(&item_id) = self.tool_calls.get(&result.tool_use_id) else {
             return;
         };
+        let skill = find_item(&self.items, item_id).and_then(|item| match &item.body {
+            ItemBody::ToolCall(call) => tools::loaded_skill(&call.tool, &call.input),
+            ItemBody::UserMessage(_)
+            | ItemBody::AssistantText { .. }
+            | ItemBody::Thinking { .. }
+            | ItemBody::Subagent(_)
+            | ItemBody::Approval(_)
+            | ItemBody::Question(_)
+            | ItemBody::Plan(_)
+            | ItemBody::TurnEnd(_)
+            | ItemBody::Notice { .. } => None,
+        });
+        if let Some(skill) = skill.filter(|_| !result.is_error) {
+            self.expected_context = Some(ExpectedContext::Skill(skill));
+        }
         let output = tools::result_text(&result.content);
         let Some(item) = self.item_mut(item_id) else {
             return;
@@ -1205,6 +1255,15 @@ impl AgentView {
         } else {
             AgentStatus::Idle
         };
+    }
+}
+
+/// The title of context Claude Code adds, such as `Skill instructions: /review`.
+fn context_title(expected: Option<ExpectedContext>) -> String {
+    match expected {
+        Some(ExpectedContext::Skill(skill)) => format!("{SKILL_INSTRUCTIONS_TITLE}: /{skill}"),
+        Some(ExpectedContext::Summary) => SUMMARY_TITLE.to_owned(),
+        None => CONTEXT_TITLE.to_owned(),
     }
 }
 
@@ -2474,6 +2533,114 @@ mod tests {
         assert_eq!(default, (Some(Effort::Medium), true));
         assert_eq!(given, (Some(Effort::High), false));
         assert_eq!(unknown, (None, false));
+    }
+
+    fn synthetic(text: &str) -> Value {
+        json!({"type": "user", "isSynthetic": true, "message": {
+            "role": "user", "content": [{"type": "text", "text": text}]
+        }})
+    }
+
+    fn notice(text: &str, detail: Option<&str>) -> ItemBody {
+        ItemBody::Notice {
+            text: text.to_owned(),
+            detail: detail.map(str::to_owned),
+        }
+    }
+
+    const GREET: &str = "# /greet — greet someone by name\n\nAnswer `Hello, <name>!`.";
+
+    #[test]
+    fn a_skills_instructions_become_a_titled_notice_that_unfolds_to_them() {
+        let mut view = view();
+
+        apply(
+            &mut view,
+            tool_use("t1", "Skill", json!({"skill": "greet", "args": "world"})),
+        );
+        apply(
+            &mut view,
+            tool_result("t1", "Launching skill: greet", false),
+        );
+        apply(&mut view, synthetic(GREET));
+        apply(&mut view, echo("Hello there"));
+
+        let bodies = bodies(&view);
+        assert!(matches!(bodies[0], ItemBody::ToolCall(_)), "{bodies:?}");
+        assert_eq!(
+            bodies[1..],
+            [
+                &notice("Skill instructions: /greet", Some(GREET)),
+                &user_message("Hello there".to_owned(), Vec::new()),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_summary_after_a_compaction_becomes_a_titled_notice() {
+        let mut view = view();
+        let summary = "This session is being continued.\n\n1. The user asked for a parser.";
+
+        apply(
+            &mut view,
+            json!({"type": "system", "subtype": "compact_boundary", "compact_metadata": {}}),
+        );
+        apply(&mut view, synthetic(summary));
+
+        assert_eq!(
+            bodies(&view),
+            [
+                &notice(COMPACTED_NOTICE, None),
+                &notice(SUMMARY_TITLE, Some(summary)),
+            ]
+        );
+    }
+
+    #[test]
+    fn context_nothing_explains_gets_a_plain_title() {
+        let mut view = view();
+
+        apply(
+            &mut view,
+            tool_use("t1", "Skill", json!({"skill": "missing"})),
+        );
+        apply(&mut view, tool_result("t1", "Unknown skill: missing", true));
+        apply(&mut view, synthetic("Some context"));
+        apply(
+            &mut view,
+            assistant(json!([{"type": "text", "text": "Done."}])),
+        );
+        apply(&mut view, synthetic("More context"));
+
+        let notices: Vec<&ItemBody> = bodies(&view)
+            .into_iter()
+            .filter(|body| matches!(body, ItemBody::Notice { .. }))
+            .collect();
+        assert_eq!(
+            notices,
+            [
+                &notice(CONTEXT_TITLE, Some("Some context")),
+                &notice(CONTEXT_TITLE, Some("More context")),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_report_another_source_wrote_unfolds_to_it() {
+        let mut view = view();
+        let mut report = synthetic("[Subagent hand-back] The report follows:\n  All tests pass.");
+        report["origin"] = json!({"kind": "peer"});
+        report["isReplay"] = json!(true);
+
+        apply(&mut view, report);
+
+        assert_eq!(
+            bodies(&view),
+            [&notice(
+                "peer: [Subagent hand-back] The report follows:",
+                Some("[Subagent hand-back] The report follows:\n  All tests pass.")
+            )]
+        );
     }
 
     #[test]
