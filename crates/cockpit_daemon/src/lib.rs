@@ -17,5 +17,5 @@ mod transcript;
 pub use daemon_config::{CLAUDE_PROGRAM_ENV, DaemonConfig, HOME_ENV};
 pub use process::ProcessError;
 pub use serve::{ServeError, serve};
-pub use server::PeerError;
+pub use server::{PeerError, ProcessId, UserId};
 pub use store::{StoreError, default_state_dir, socket_path};

@@ -19,6 +19,37 @@ const STAT_FILE: &str = "stat";
 /// Longer than any real chain: a loop in a corrupt `/proc` cannot run forever.
 const MAX_CHAIN: usize = 4096;
 
+/// A process, as `/proc` numbers it. Unlike rustix's `Pid`, it holds 0: the kernel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProcessId(u32);
+
+impl ProcessId {
+    #[must_use]
+    pub fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    #[must_use]
+    pub fn get(self) -> u32 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UserId(u32);
+
+impl UserId {
+    #[must_use]
+    pub fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    #[must_use]
+    pub fn get(self) -> u32 {
+        self.0
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PeerError {
     #[error("cannot read the peer's credentials")]
@@ -26,34 +57,34 @@ pub enum PeerError {
     /// The peer is in a PID namespace the daemon cannot see.
     #[error("the peer's credentials carry no process id")]
     NoPid,
-    #[error("the peer runs as user {uid}, not as the daemon's user")]
-    OtherUser { uid: u32 },
-    #[error("process {peer} descends from the daemon")]
-    DescendsFromDaemon { peer: u32 },
-    #[error("cannot read the parent of process {pid}")]
+    #[error("the peer runs as user {}, not as the daemon's user", .uid.get())]
+    OtherUser { uid: UserId },
+    #[error("process {} descends from the daemon", .peer.get())]
+    DescendsFromDaemon { peer: ProcessId },
+    #[error("cannot read the parent of process {}", .pid.get())]
     Proc {
-        pid: u32,
+        pid: ProcessId,
         #[source]
         source: io::Error,
     },
-    #[error("the stat of process {pid} holds no parent")]
-    MalformedStat { pid: u32 },
-    #[error("the parent chain of process {peer} does not end")]
-    ChainTooLong { peer: u32 },
+    #[error("the stat of process {} holds no parent", .pid.get())]
+    MalformedStat { pid: ProcessId },
+    #[error("the parent chain of process {} does not end", .peer.get())]
+    ChainTooLong { peer: ProcessId },
 }
 
 /// The daemon's own user and process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DaemonIdentity {
-    uid: u32,
-    pid: u32,
+    uid: UserId,
+    pid: ProcessId,
 }
 
 impl DaemonIdentity {
     pub(crate) fn current() -> Self {
         Self {
-            uid: rustix::process::getuid().as_raw(),
-            pid: std::process::id(),
+            uid: UserId::new(rustix::process::getuid().as_raw()),
+            pid: ProcessId::new(std::process::id()),
         }
     }
 }
@@ -62,7 +93,7 @@ impl DaemonIdentity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProcEntry {
     /// The owner of `/proc/<pid>`: the process's user.
-    owner: u32,
+    owner: UserId,
     /// The content of `/proc/<pid>/stat`.
     stat: String,
 }
@@ -70,24 +101,24 @@ struct ProcEntry {
 /// Runs before any byte of the connection is read.
 pub(crate) fn check(stream: &UnixStream, daemon: DaemonIdentity) -> Result<(), PeerError> {
     let credentials = stream.peer_cred().map_err(PeerError::Credentials)?;
-    if credentials.uid() != daemon.uid {
-        return Err(PeerError::OtherUser {
-            uid: credentials.uid(),
-        });
+    let uid = UserId::new(credentials.uid());
+    if uid != daemon.uid {
+        return Err(PeerError::OtherUser { uid });
     }
     let pid = credentials
         .pid()
         .and_then(|pid| u32::try_from(pid).ok())
         .filter(|&pid| pid > 0)
+        .map(ProcessId::new)
         .ok_or(PeerError::NoPid)?;
     check_ancestry(pid, daemon, read_proc_entry)
 }
 
 /// Walks from `peer` up its parents, read by `read_entry`, and refuses it when one is the daemon.
 fn check_ancestry(
-    peer: u32,
+    peer: ProcessId,
     daemon: DaemonIdentity,
-    read_entry: impl Fn(u32) -> io::Result<ProcEntry>,
+    read_entry: impl Fn(ProcessId) -> io::Result<ProcEntry>,
 ) -> Result<(), PeerError> {
     let mut pid = peer;
     for _ in 0..MAX_CHAIN {
@@ -95,7 +126,7 @@ fn check_ancestry(
             return Err(PeerError::DescendsFromDaemon { peer });
         }
         // 1 is init; 0 is the kernel, the parent of init.
-        if pid <= 1 {
+        if pid.get() <= 1 {
             return Ok(());
         }
         let entry = match read_entry(pid) {
@@ -119,22 +150,23 @@ fn check_ancestry(
     Err(PeerError::ChainTooLong { peer })
 }
 
-fn read_proc_entry(pid: u32) -> io::Result<ProcEntry> {
+fn read_proc_entry(pid: ProcessId) -> io::Result<ProcEntry> {
     use std::os::unix::fs::MetadataExt;
 
-    let folder = Path::new(PROC_ROOT).join(pid.to_string());
-    let owner = std::fs::metadata(&folder)?.uid();
+    let folder = Path::new(PROC_ROOT).join(pid.get().to_string());
+    let owner = UserId::new(std::fs::metadata(&folder)?.uid());
     let stat = std::fs::read_to_string(folder.join(STAT_FILE))?;
     Ok(ProcEntry { owner, stat })
 }
 
 /// The parent in a `stat` line: `pid (name) state ppid ...`. The name may hold spaces and
 /// parentheses, so the fields count from its last `)`.
-fn parent(stat: &str) -> Option<u32> {
+fn parent(stat: &str) -> Option<ProcessId> {
     let after_name = stat.rfind(')').and_then(|end| stat.get(end + 1..))?;
     let mut fields = after_name.split_whitespace();
     let _state = fields.next();
-    fields.next()?.parse().ok()
+    let parent: u32 = fields.next()?.parse().ok()?;
+    Some(ProcessId::new(parent))
 }
 
 #[cfg(test)]
@@ -143,11 +175,14 @@ mod tests {
 
     use super::*;
 
-    const USER: u32 = 1000;
-    const ROOT: u32 = 0;
-    const DAEMON: DaemonIdentity = DaemonIdentity { uid: USER, pid: 50 };
+    const USER: UserId = UserId(1000);
+    const ROOT: UserId = UserId(0);
+    const DAEMON: DaemonIdentity = DaemonIdentity {
+        uid: USER,
+        pid: ProcessId(50),
+    };
 
-    fn entry(owner: u32, stat: &str) -> Result<ProcEntry, io::ErrorKind> {
+    fn entry(owner: UserId, stat: &str) -> Result<ProcEntry, io::ErrorKind> {
         Ok(ProcEntry {
             owner,
             stat: stat.to_owned(),
@@ -156,9 +191,10 @@ mod tests {
 
     /// A `/proc` with these entries, where any other process is missing.
     fn fake_proc(
-        entries: Vec<(u32, Result<ProcEntry, io::ErrorKind>)>,
-    ) -> impl Fn(u32) -> io::Result<ProcEntry> {
-        let entries: HashMap<u32, Result<ProcEntry, io::ErrorKind>> = entries.into_iter().collect();
+        entries: Vec<(ProcessId, Result<ProcEntry, io::ErrorKind>)>,
+    ) -> impl Fn(ProcessId) -> io::Result<ProcEntry> {
+        let entries: HashMap<ProcessId, Result<ProcEntry, io::ErrorKind>> =
+            entries.into_iter().collect();
         move |pid| match entries.get(&pid) {
             Some(Ok(entry)) => Ok(entry.clone()),
             Some(Err(kind)) => Err(io::Error::from(*kind)),
@@ -168,14 +204,16 @@ mod tests {
 
     /// 1 init and 40 sshd, of root; 41 the bridge; 50 the daemon, 60 its claude, and 70 a shell
     /// with a strange name. `sshd` is as `/proc` shows it.
-    fn processes(sshd: Result<ProcEntry, io::ErrorKind>) -> impl Fn(u32) -> io::Result<ProcEntry> {
+    fn processes(
+        sshd: Result<ProcEntry, io::ErrorKind>,
+    ) -> impl Fn(ProcessId) -> io::Result<ProcEntry> {
         fake_proc(vec![
-            (1, entry(ROOT, "1 (init) S 0 1 1")),
-            (40, sshd),
-            (41, entry(USER, "41 (agents-cockpit) S 40 41 41")),
-            (50, entry(USER, "50 (agents-cockpit) S 1 50 50")),
-            (60, entry(USER, "60 (claude) S 50 60 60")),
-            (70, entry(USER, "70 (sh (x) y) R 60 70 70")),
+            (ProcessId(1), entry(ROOT, "1 (init) S 0 1 1")),
+            (ProcessId(40), sshd),
+            (ProcessId(41), entry(USER, "41 (agents-cockpit) S 40 41 41")),
+            (ProcessId(50), entry(USER, "50 (agents-cockpit) S 1 50 50")),
+            (ProcessId(60), entry(USER, "60 (claude) S 50 60 60")),
+            (ProcessId(70), entry(USER, "70 (sh (x) y) R 60 70 70")),
         ])
     }
 
@@ -183,18 +221,25 @@ mod tests {
     fn a_descendant_of_the_daemon_is_refused_and_others_pass() {
         let proc = processes(entry(ROOT, "40 (sshd) S 1 40 40"));
 
-        let bridge = check_ancestry(41, DAEMON, &proc);
-        let agent_shell = check_ancestry(70, DAEMON, &proc);
-        let daemon_itself = check_ancestry(50, DAEMON, &proc);
+        let bridge = check_ancestry(ProcessId(41), DAEMON, &proc);
+        let agent_shell = check_ancestry(ProcessId(70), DAEMON, &proc);
+        let daemon_itself = check_ancestry(ProcessId(50), DAEMON, &proc);
 
         assert!(bridge.is_ok(), "{bridge:?}");
         assert!(
-            matches!(agent_shell, Err(PeerError::DescendsFromDaemon { peer: 70 })),
+            matches!(
+                agent_shell,
+                Err(PeerError::DescendsFromDaemon {
+                    peer: ProcessId(70)
+                })
+            ),
             "{agent_shell:?}"
         );
         assert!(matches!(
             daemon_itself,
-            Err(PeerError::DescendsFromDaemon { peer: 50 })
+            Err(PeerError::DescendsFromDaemon {
+                peer: ProcessId(50)
+            })
         ));
     }
 
@@ -211,12 +256,17 @@ mod tests {
             let shown = format!("{sshd:?}");
             let proc = processes(sshd);
 
-            let bridge = check_ancestry(41, DAEMON, &proc);
-            let agent_shell = check_ancestry(70, DAEMON, &proc);
+            let bridge = check_ancestry(ProcessId(41), DAEMON, &proc);
+            let agent_shell = check_ancestry(ProcessId(70), DAEMON, &proc);
 
             assert!(bridge.is_ok(), "{shown}: {bridge:?}");
             assert!(
-                matches!(agent_shell, Err(PeerError::DescendsFromDaemon { peer: 70 })),
+                matches!(
+                    agent_shell,
+                    Err(PeerError::DescendsFromDaemon {
+                        peer: ProcessId(70)
+                    })
+                ),
                 "{shown}: {agent_shell:?}"
             );
         }
@@ -225,26 +275,40 @@ mod tests {
     #[test]
     fn an_unreadable_chain_is_refused() {
         let proc = fake_proc(vec![
-            (30, entry(USER, "30 (failing-parent) S 31 30 30")),
-            (31, Err(io::ErrorKind::Other)),
-            (32, entry(USER, "32 (broken")),
-            (33, entry(USER, "33 (self) S 33 33 33")),
+            (ProcessId(30), entry(USER, "30 (failing-parent) S 31 30 30")),
+            (ProcessId(31), Err(io::ErrorKind::Other)),
+            (ProcessId(32), entry(USER, "32 (broken")),
+            (ProcessId(33), entry(USER, "33 (self) S 33 33 33")),
         ]);
 
-        let failing = check_ancestry(30, DAEMON, &proc);
-        let malformed = check_ancestry(32, DAEMON, &proc);
-        let looping = check_ancestry(33, DAEMON, &proc);
+        let failing = check_ancestry(ProcessId(30), DAEMON, &proc);
+        let malformed = check_ancestry(ProcessId(32), DAEMON, &proc);
+        let looping = check_ancestry(ProcessId(33), DAEMON, &proc);
 
         assert!(
-            matches!(failing, Err(PeerError::Proc { pid: 31, .. })),
+            matches!(
+                failing,
+                Err(PeerError::Proc {
+                    pid: ProcessId(31),
+                    ..
+                })
+            ),
             "{failing:?}"
         );
         assert!(
-            matches!(malformed, Err(PeerError::MalformedStat { pid: 32 })),
+            matches!(
+                malformed,
+                Err(PeerError::MalformedStat { pid: ProcessId(32) })
+            ),
             "{malformed:?}"
         );
         assert!(
-            matches!(looping, Err(PeerError::ChainTooLong { peer: 33 })),
+            matches!(
+                looping,
+                Err(PeerError::ChainTooLong {
+                    peer: ProcessId(33)
+                })
+            ),
             "{looping:?}"
         );
     }
@@ -253,7 +317,7 @@ mod tests {
     fn the_real_proc_shows_this_test_descends_from_itself_only() {
         let me = DaemonIdentity::current();
         let another = DaemonIdentity {
-            pid: u32::MAX,
+            pid: ProcessId(u32::MAX),
             ..me
         };
 
