@@ -129,6 +129,17 @@ impl Access {
         let file = || self.files.iter().find(|file| *file == resolved);
         folder.or_else(file).map(PathBuf::as_path)
     }
+
+    /// The folders a search lists: `folder`, the agent's folder as its record names it, then the
+    /// checkouts other than that folder, so that no checkout is listed twice.
+    fn search_roots(&self, folder: PathBuf) -> Vec<PathBuf> {
+        let others = self
+            .checkouts
+            .iter()
+            .filter(|checkout| **checkout != self.folder)
+            .cloned();
+        std::iter::once(folder).chain(others).collect()
+    }
 }
 
 /// The git checkout above `folder`, a path without symlinks, unless it is `/` or holds `home`.
@@ -246,9 +257,9 @@ pub(crate) async fn find_and_read(
     if let Some(found) = found {
         return Ok(found);
     }
-    let roots = std::iter::once(folder).chain(access.checkouts.iter().cloned());
+    let roots = access.search_roots(folder);
     let tail = name_tail(&path).unwrap_or_else(|| path.clone());
-    let matches = search(roots.collect(), &tail, Instant::now() + SEARCH_TIME).await;
+    let matches = search(roots, &tail, Instant::now() + SEARCH_TIME).await;
     match matches.as_slice() {
         [] => Err(ReadFileError::Unknown(path)),
         [only] => {
@@ -646,6 +657,21 @@ mod tests {
             format!("{} does not exist", missing.display())
         );
         assert_outside(dots.map(|_| String::new()));
+    }
+
+    /// Listing a large checkout takes much of the search's time.
+    #[test]
+    fn a_search_lists_the_agents_own_checkout_once() {
+        let layout = Layout::new();
+        std::fs::create_dir(layout.agent.join(GIT_ENTRY)).unwrap();
+        let access = layout.access(&[
+            layout.agent.join("src/main.rs"),
+            layout.feature.join("src/app/touched.ts"),
+        ]);
+
+        let roots = access.search_roots(layout.agent.clone());
+
+        assert_eq!(roots, [layout.agent.clone(), layout.feature.clone()]);
     }
 
     #[test]
