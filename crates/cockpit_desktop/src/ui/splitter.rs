@@ -100,6 +100,13 @@ const end = (event) => {
 };
 document.addEventListener("pointerup", end);
 document.addEventListener("pointercancel", end);
+// The press that starts a drag would also start a text selection, which the pointer's moves then
+// stretch over the chat.
+document.addEventListener("selectstart", (event) => {
+  if (drag !== null) {
+    event.preventDefault();
+  }
+});
 document.addEventListener("keydown", (event) => {
   const direction = { ArrowLeft: 1, ArrowRight: -1 }[event.key];
   const app = byId(settings.app_id);
