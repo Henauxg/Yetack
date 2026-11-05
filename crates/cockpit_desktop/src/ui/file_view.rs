@@ -10,13 +10,16 @@ use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
-use crate::format;
 use crate::render::{self, Diff, Language, MAX_RENDERED_LINES, diff_lines};
 use crate::state::{FileRead, Loadable, ViewMode, actions, file_edits};
 use crate::ui::changes_list::{outside_root, root_label};
 use crate::ui::code::{LineNumbers, diff_line, diff_row, lines_not_shown};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::splitter::FILE_VIEW_ID;
+use crate::{bridge, format};
+
+/// The shown tab's id, which keeps it in view in a long row of tabs.
+const SHOWN_TAB_ID: &str = "file-tab-shown";
 
 /// With Ctrl, closes the shown tab.
 const CLOSE_TAB_KEY: &str = "w";
@@ -172,8 +175,14 @@ fn FileTab(agent: AgentId, path: PathBuf, label: String, full: String, selected:
         }
     };
     let close_on_middle = close.clone();
+    use_effect(use_reactive!(|selected| {
+        if selected {
+            bridge::reveal(SHOWN_TAB_ID);
+        }
+    }));
     rsx! {
         div {
+            id: selected.then_some(SHOWN_TAB_ID),
             class: if selected { "file-tab selected" } else { "file-tab" },
             role: "tab",
             aria_selected: selected,
