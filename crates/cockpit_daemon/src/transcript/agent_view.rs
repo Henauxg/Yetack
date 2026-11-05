@@ -143,8 +143,8 @@ pub(crate) struct AgentView {
     /// from the cost it restores with a resumed session.
     process_cost: f64,
     /// The part of the agent's cost that the process's `total_cost_usd` does not count: the
-    /// earlier processes' cost after a new session, none after a resumed one (Claude Code
-    /// restores it), and what came before a `/clear`.
+    /// earlier processes' cost after a new session, what Claude Code did not restore after a
+    /// resumed one, and what came before a `/clear`.
     cost_before_process: f64,
     /// Until the process's first `result`, the cost a resumed session restores can still become
     /// the first turn's base.
@@ -530,12 +530,18 @@ impl AgentView {
     /// The cost Claude Code restored with a resumed session, read from the session file. It is
     /// the base of the first turn's cost, unless a `result` came first: the first turn's cost then
     /// counts from 0.
+    ///
+    /// The agent's cost keeps what the agent counted, which can be more than Claude Code restores:
+    /// a process killed with the daemon writes no `cost-state`, and a `/clear` starts a session
+    /// whose cost leaves out the one before. The agent's total can then read higher than Claude
+    /// Code's own `/cost`.
     pub(crate) fn set_restored_cost(&mut self, cost: CostUsd) {
         if !self.awaits_restored_cost {
             return;
         }
         self.awaits_restored_cost = false;
         self.process_cost = cost.get();
+        self.cost_before_process = (self.summary.cost.get() - cost.get()).max(0.0);
         self.summary.cost = CostUsd::new(self.cost_before_process + cost.get());
     }
 
@@ -2085,6 +2091,50 @@ mod tests {
 
         assert_eq!(view.summary().cost, CostUsd::new(2.25));
         assert_eq!(turn_costs(&view), [CostUsd::new(2.0), CostUsd::new(0.25)]);
+    }
+
+    /// A process killed with the daemon writes no `cost-state`, so Claude Code restores less than
+    /// the agent spent, here nothing.
+    #[test]
+    fn a_resume_after_a_kill_keeps_the_cost_the_agent_counted() {
+        let mut view = view();
+        apply(&mut view, result(2.0));
+        view.process_exited("claude was killed by signal 9".to_owned(), now());
+
+        view.process_started(ProcessSession::Resumed);
+        view.set_restored_cost(CostUsd::new(0.0));
+        let restored = view.summary().cost;
+        apply(&mut view, result(0.25));
+
+        assert_eq!(restored, CostUsd::new(2.0));
+        assert_eq!(view.summary().cost, CostUsd::new(2.25));
+        assert_eq!(turn_costs(&view), [CostUsd::new(2.0), CostUsd::new(0.25)]);
+    }
+
+    /// Claude Code restores the cost of the conversation a `/clear` started, not of the one
+    /// before it.
+    #[test]
+    fn a_resume_after_a_clear_keeps_the_cost_spent_before_it() {
+        let mut view = view();
+        apply(&mut view, result(1.5));
+        apply(
+            &mut view,
+            json!({"type": "conversation_reset", "trigger": "clear", "session_id": "session-1"}),
+        );
+        apply(&mut view, result(0.25));
+        view.process_exited("claude exited".to_owned(), now());
+
+        view.process_started(ProcessSession::Resumed);
+        view.set_restored_cost(CostUsd::new(0.25));
+        let restored = view.summary().cost;
+        apply(&mut view, result(0.75));
+
+        assert_eq!(restored, CostUsd::new(1.75));
+        assert_eq!(view.summary().cost, CostUsd::new(2.25));
+        assert_eq!(
+            turn_costs(&view),
+            [CostUsd::new(1.5), CostUsd::new(0.25), CostUsd::new(0.5)]
+        );
     }
 
     fn turn_costs(view: &AgentView) -> Vec<CostUsd> {
