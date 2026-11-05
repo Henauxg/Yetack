@@ -831,7 +831,7 @@ mod tests {
     }
 
     #[test]
-    fn interrupt_needs_a_turn() {
+    fn the_stop_button_stops_a_working_or_waiting_agent() {
         assert_eq!(interrupt(&state(AgentStatus::Working), agent()).len(), 1);
         assert_eq!(interrupt(&state(AgentStatus::NeedsYou), agent()).len(), 1);
         assert!(interrupt(&state(AgentStatus::Idle), agent()).is_empty());

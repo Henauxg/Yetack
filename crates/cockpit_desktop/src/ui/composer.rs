@@ -1,5 +1,5 @@
 //! The composer: attachments, the prompt, the `/` palette, the prompt cache timer, the model,
-//! effort and permission mode menus, and Send, or Stop while the agent works.
+//! effort and permission mode menus, and Send and Stop.
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use cockpit_protocol::{
@@ -34,6 +34,35 @@ fn placeholder(status: AgentStatus) -> &'static str {
         AgentStatus::Working => "Add a message; Claude reads it after the current step",
         AgentStatus::Idle => "Ask for a change. Type / for commands and skills.",
         AgentStatus::Exited => "Resume the agent to send a message",
+    }
+}
+
+/// The buttons at the end of the composer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EndButtons {
+    Send,
+    /// While the agent works, Stop takes the place of Send.
+    Stop,
+    /// While the agent waits for you, Esc does not stop it, and Send tells Claude what to do
+    /// instead.
+    StopAndSend,
+}
+
+impl EndButtons {
+    fn new(status: AgentStatus) -> Self {
+        match status {
+            AgentStatus::Working => Self::Stop,
+            AgentStatus::NeedsYou => Self::StopAndSend,
+            AgentStatus::Idle | AgentStatus::Exited => Self::Send,
+        }
+    }
+
+    fn stop(self) -> bool {
+        matches!(self, Self::Stop | Self::StopAndSend)
+    }
+
+    fn send(self) -> bool {
+        matches!(self, Self::Send | Self::StopAndSend)
     }
 }
 
@@ -78,6 +107,12 @@ pub fn Composer() -> Element {
         .collect();
     let working = status == AgentStatus::Working;
     let exited = status == AgentStatus::Exited;
+    let buttons = EndButtons::new(status);
+    let stop_label = if working {
+        "Stop the agent (Esc)"
+    } else {
+        "Stop the agent"
+    };
     let (cache_text, cache_low) = cache_left(summary.cache_expires_at, now());
     let cache_short = match summary
         .cache_expires_at
@@ -184,16 +219,19 @@ pub fn Composer() -> Element {
                             "{mode_label}"
                             Icon { kind: IconKind::ChevronDown, size: 12 }
                         }
-                        if working {
-                            span { class: "key-hint", aria_hidden: true, "Esc" }
+                        if buttons.stop() {
+                            if working {
+                                span { class: "key-hint", aria_hidden: true, "Esc" }
+                            }
                             button {
                                 class: "send-button",
-                                aria_label: "Stop the agent (Esc)",
-                                title: "Stop the agent (Esc)",
+                                aria_label: "{stop_label}",
+                                title: "{stop_label}",
                                 onclick: move |_| cockpit.change(|state| actions::interrupt(state, agent)),
                                 Icon { kind: IconKind::Stop, size: 12 }
                             }
-                        } else {
+                        }
+                        if buttons.send() {
                             button {
                                 class: "send-button",
                                 aria_label: "Send the message",
@@ -408,6 +446,19 @@ mod tests {
         );
         assert_eq!(media_type_from_name("notes.txt"), None);
         assert_eq!(media_type_from_name("no-extension"), None);
+    }
+
+    #[test]
+    fn stop_shows_beside_send_while_the_agent_waits_for_you() {
+        let shown = |status| {
+            let buttons = EndButtons::new(status);
+            (buttons.stop(), buttons.send())
+        };
+
+        assert_eq!(shown(AgentStatus::NeedsYou), (true, true));
+        assert_eq!(shown(AgentStatus::Working), (true, false));
+        assert_eq!(shown(AgentStatus::Idle), (false, true));
+        assert_eq!(shown(AgentStatus::Exited), (false, true));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! The keyboard shortcuts of R4-parts, resolved against the state. The page's script decides
 //! which key presses reach here (`bridge`), so typing in a field is never taken over.
 
-use cockpit_protocol::{AgentId, ApprovalDecision, PlanDecision};
+use cockpit_protocol::{AgentId, AgentStatus, ApprovalDecision, PlanDecision};
 use serde::Deserialize;
 
 use super::actions::{self, Direction};
@@ -62,10 +62,13 @@ pub fn handle_key(state: &mut AppState, press: &KeyPress) -> Vec<Outgoing> {
         if state.ui.close_overlays() {
             return Vec::new();
         }
-        return state
-            .ui
-            .selected
-            .map(|agent| actions::interrupt(state, agent))
+        // Stop works only while the agent works: one that waits for you stops with the Stop
+        // button.
+        let working = state
+            .selected()
+            .filter(|entry| entry.summary.status == AgentStatus::Working);
+        return working
+            .map(|entry| actions::interrupt(state, entry.id()))
             .unwrap_or_default();
     }
     if command || press.alt {
@@ -249,6 +252,39 @@ mod tests {
         assert_eq!(state.ui.popover, None);
         assert!(matches!(
             second.first().map(|outgoing| &outgoing.request),
+            Some(Request::AgentInterrupt(_))
+        ));
+    }
+
+    #[test]
+    fn escape_does_not_stop_an_agent_that_waits_for_you() {
+        let mut waiting = state(AgentStatus::NeedsYou, Some(question()));
+        let mut idle = state(AgentStatus::Idle, None);
+
+        // The question's "Other" field is a field like any other.
+        let from_field = handle_key(&mut waiting, &press(KEY_ESCAPE, KeyTarget::Field));
+        let from_page = handle_key(&mut waiting, &press(KEY_ESCAPE, KeyTarget::Page));
+        let from_composer = handle_key(&mut idle, &press(KEY_ESCAPE, KeyTarget::Composer));
+
+        assert!(from_field.is_empty());
+        assert!(from_page.is_empty());
+        assert!(from_composer.is_empty());
+    }
+
+    #[test]
+    fn escape_in_a_field_closes_a_menu_or_a_dialog_before_stopping() {
+        let mut state = state(AgentStatus::Working, None);
+        state.ui.popover = Some(Popover::Model);
+
+        let menu = handle_key(&mut state, &press(KEY_ESCAPE, KeyTarget::Field));
+        actions::toggle_switcher(&mut state);
+        let dialog = handle_key(&mut state, &press(KEY_ESCAPE, KeyTarget::Field));
+        let stop = handle_key(&mut state, &press(KEY_ESCAPE, KeyTarget::Field));
+
+        assert!(menu.is_empty() && dialog.is_empty());
+        assert_eq!((state.ui.popover, &state.ui.dialog), (None, &None));
+        assert!(matches!(
+            stop.first().map(|outgoing| &outgoing.request),
             Some(Request::AgentInterrupt(_))
         ));
     }
