@@ -1614,12 +1614,13 @@ button:disabled {
 }
 
 .io-row {
+  --io-line-height: 1.55;
   display: grid;
   grid-template-columns: 44px minmax(0, 1fr);
   align-items: baseline;
   font-family: var(--mono);
   font-size: 12px;
-  line-height: 1.55;
+  line-height: var(--io-line-height);
 }
 
 .io-row + .io-row {
@@ -1637,11 +1638,11 @@ button:disabled {
 
 .io-text {
   min-width: 0;
+  padding: 7px 10px 7px 0;
 }
 
 .io-text pre {
   margin: 0;
-  padding: 7px 10px 7px 0;
   font: inherit;
   color: var(--text-soft);
   white-space: pre-wrap;
@@ -1652,14 +1653,44 @@ button:disabled {
   color: var(--muted);
 }
 
+/* The fold script marks a row `data-tall` when its text takes more screen lines than the row's
+   `--fold-lines`. Only such a row folds, fades at the cut and shows its button. */
+.io-clip {
+  position: relative;
+}
+
+.io-row[data-tall]:not(.unfolded) .io-clip {
+  max-height: calc(var(--fold-lines) * var(--io-line-height) * 1em);
+  overflow: hidden;
+}
+
+.io-row[data-tall]:not(.unfolded) .io-clip::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  height: 1.2em;
+  background: linear-gradient(to bottom, transparent, var(--well));
+  pointer-events: none;
+}
+
 .fold-lines {
-  display: block;
-  padding: 0 10px 8px 0;
+  display: none;
+  margin-top: 4px;
+  padding: 0;
   border: 0;
   background: transparent;
   color: var(--text-soft);
   font-family: var(--sans);
   font-size: 12.5px;
+}
+
+.io-row[data-tall] .fold-lines {
+  display: block;
+}
+
+.io-row.unfolded .fold-more,
+.io-row:not(.unfolded) .fold-less {
+  display: none;
 }
 
 .path-link {

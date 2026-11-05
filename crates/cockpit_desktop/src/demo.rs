@@ -126,6 +126,38 @@ The parser builds every error at `src/error.rs:2`. The lexer already counts the 
 - The column is a `u32` on `Token`.
 - No new dependency is needed.";
 
+/// A command as long as the ones agents write against a database: a few lines, some of them
+/// very long.
+const MEDIANS_COMMAND: &str = r#"psql "$CI_DATABASE_URL" --no-psqlrc --tuples-only --no-align --field-separator '|' --command "SELECT b.case_name, r.branch, percentile_cont(0.5) WITHIN GROUP (ORDER BY b.nanoseconds) AS median_ns, count(*) AS samples FROM bench_results b JOIN ci_runs r ON r.id = b.run_id WHERE r.finished_at > now() - interval '7 days' AND r.project = 'calc-service' GROUP BY b.case_name, r.branch ORDER BY median_ns DESC" \
+  | jq --raw-input --slurp 'split("\n") | map(select(length > 0) | split("|")) | map({case: .[0], branch: .[1], median_ms: ((.[2] | tonumber) / 1000000), samples: (.[3] | tonumber)})' \
+  > bench-medians.json
+jq --arg branch main '[.[] | select(.branch == $branch)] | sort_by(-.median_ms) | .[:3]' bench-medians.json > main-medians.json
+jq --arg branch cache-layer '[.[] | select(.branch == $branch)] | sort_by(-.median_ms) | .[:3]' bench-medians.json > branch-medians.json
+curl --silent --fail --request POST "https://ci.example.com/api/v2/annotations" --header "Content-Type: application/json" --data '{"project": "calc-service", "kind": "benchmark-comparison", "window": "7d", "baseline": "main", "candidate": "cache-layer"}'
+jq --slurp '[.[0], .[1]] | transpose | map({case: .[0].case, main_ms: .[0].median_ms, branch_ms: .[1].median_ms, change_percent: (((.[1].median_ms / .[0].median_ms) - 1) * 100 | round)})' main-medians.json branch-medians.json"#;
+
+const MEDIANS_OUTPUT: &str = r#"{"annotation": {"id": 4812, "project": "calc-service", "kind": "benchmark-comparison", "created_at": "2026-03-02T10:14:07Z"}}
+[
+  {
+    "case": "deep_nesting",
+    "main_ms": 2.61,
+    "branch_ms": 2.41,
+    "change_percent": -8
+  },
+  {
+    "case": "long_sum",
+    "main_ms": 1.08,
+    "branch_ms": 1.1,
+    "change_percent": 2
+  },
+  {
+    "case": "many_parentheses",
+    "main_ms": 0.93,
+    "branch_ms": 0.9,
+    "change_percent": -3
+  }
+]"#;
+
 const BENCHMARK_ANSWER: &str = "The benchmark runs in CI now. The slowest cases, against `main`:
 
 | Case | `main` | This branch | Change | Samples | Slowest input |
@@ -965,9 +997,19 @@ fn benchmark_agent(now: SystemTime) -> Sample {
                 Some("eval/deep_nesting  time: [2.38 ms 2.41 ms 2.44 ms]"),
             )),
         ),
-        item(3, None, text(BENCHMARK_ANSWER)),
         item(
-            4,
+            3,
+            None,
+            ItemBody::ToolCall(bash(
+                "Compare the last week's medians of main and the branch",
+                MEDIANS_COMMAND,
+                ToolCallStatus::Done,
+                Some(MEDIANS_OUTPUT),
+            )),
+        ),
+        item(4, None, text(BENCHMARK_ANSWER)),
+        item(
+            5,
             None,
             ItemBody::TurnEnd(TurnEnd {
                 duration: Duration::from_secs(252),
