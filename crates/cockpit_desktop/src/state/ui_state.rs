@@ -133,10 +133,11 @@ pub struct ErrorNote {
     pub kind: NoteKind,
 }
 
-/// An agent's title being edited: the field's text, which follows the keyboard.
+/// An agent's title being edited. The field's text, which follows the keyboard, is in the drafts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TitleEdit {
     pub agent: AgentId,
+    /// The title the field starts from.
     pub title: String,
 }
 

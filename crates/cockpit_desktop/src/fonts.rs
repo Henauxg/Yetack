@@ -1,9 +1,6 @@
 //! JetBrains Mono, bundled for code and paths: the page gets it as `data:` URLs in its stylesheet,
 //! so the window reads no font file and no network. Its license is `assets/fonts/OFL.txt`.
 
-use std::fmt::Write;
-
-use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 
 /// The family the stylesheet's `--mono` asks for first.
@@ -28,6 +25,10 @@ const FACES: [Face; 2] = [
 
 /// The `@font-face` rules of the bundled faces, to go before the stylesheet.
 pub fn font_faces() -> String {
+    use std::fmt::Write;
+
+    use base64::Engine;
+
     let mut css = String::new();
     for face in &FACES {
         let data = BASE64.encode(face.woff2);

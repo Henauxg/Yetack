@@ -156,14 +156,15 @@ fn card_key(state: &AppState, drafts: &mut Drafts, agent: AgentId, key: &str) ->
 #[cfg(test)]
 mod tests {
     use cockpit_protocol::{
-        AgentStatus, Answer, AnswerState, Approval, AskedQuestion, ItemBody, ItemId, PendingId,
-        Question, QuestionOption, Request, TranscriptItem,
+        AgentDetails, AgentStatus, Answer, AnswerState, Approval, AskedQuestion, CommandKind,
+        ItemBody, ItemId, PendingId, Question, QuestionOption, Request, SlashCommand,
+        TranscriptItem,
     };
     use serde_json::Value;
 
     use super::*;
-    use crate::state::app_state::ConnectionState;
     use crate::state::app_state::tests::{state_with, summary};
+    use crate::state::app_state::{ConnectionState, Loadable};
     use crate::state::ui_state::Dialog;
 
     fn press(key: &str, target: KeyTarget) -> KeyPress {
@@ -268,6 +269,40 @@ mod tests {
             second.first().map(|outgoing| &outgoing.request),
             Some(Request::AgentInterrupt(_))
         ));
+    }
+
+    #[test]
+    fn enter_and_tab_in_a_typed_palette_insert_the_command_and_send_nothing() {
+        let agent = AgentId::new(1);
+        for key in [KEY_ENTER, KEY_TAB] {
+            let mut drafts = Drafts::default();
+            let mut state = state(AgentStatus::Idle, None);
+            if let Some(entry) = state.agents.get_mut(&agent) {
+                entry.details = Loadable::Loaded(AgentDetails {
+                    commands: vec![SlashCommand {
+                        name: "review".to_owned(),
+                        description: "Review the changes on the branch".to_owned(),
+                        kind: CommandKind::Skill,
+                    }],
+                    ..AgentDetails::default()
+                });
+            }
+            let typed = actions::composer_input(&state, &mut drafts, agent, "/rev".to_owned());
+            if let Some(change) = typed {
+                actions::change_palette(&mut state, agent, change);
+            }
+            let enter = KeyPress {
+                composer_text: "/rev".to_owned(),
+                ..press(key, KeyTarget::Composer)
+            };
+
+            let requests = handle_key(&mut state, &mut drafts, &enter);
+
+            assert!(requests.is_empty(), "{key} sends nothing");
+            let text = drafts.draft(agent).map(|draft| draft.text.as_str());
+            assert_eq!(text, Some("/review "), "{key}");
+            assert_eq!(state.ui.popover, None, "{key}");
+        }
     }
 
     #[test]
