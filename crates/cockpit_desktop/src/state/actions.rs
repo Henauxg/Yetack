@@ -431,7 +431,7 @@ pub fn palette_pick(
             let note = if export::is_complete(entry) {
                 "Copied the conversation to the clipboard as Markdown."
             } else {
-                "Copied the conversation to the clipboard as Markdown, without the older messages the window has not loaded. Scroll up to load them, then export again."
+                "Copied the conversation to the clipboard as Markdown, without the older messages the window has not loaded. Load them with \"Load older messages\" at the top of the conversation, then export again."
             };
             state.ui.inform(note.to_owned());
             Picked {
@@ -1752,7 +1752,10 @@ mod tests {
             ))
         );
         assert_eq!(part.window, Some(WindowAction::Copy(copied)));
-        assert!(part_note.is_some_and(|(_, text)| text.contains("without the older messages")));
+        // Only the button loads older messages: the note names it.
+        assert!(part_note.is_some_and(|(_, text)| {
+            text.contains("without the older messages") && text.contains("\"Load older messages\"")
+        }));
     }
 
     #[test]
