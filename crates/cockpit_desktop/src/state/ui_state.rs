@@ -25,7 +25,18 @@ pub enum Popover {
     Changes,
     Model,
     Mode,
-    Palette,
+    Palette(PaletteOrigin),
+}
+
+/// How the command palette opened, which decides when it closes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PaletteOrigin {
+    /// A `/` typed at the start of the composer. The palette closes when the composer's text no
+    /// longer starts with `/`.
+    Typed,
+    /// The composer's slash button. The palette stays open until Esc, a pick, or a click
+    /// elsewhere.
+    Button,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,10 +105,18 @@ pub struct McpView {
     pub filter: ToolFilter,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoteKind {
+    Error,
+    /// What an action did, such as a copy to the clipboard.
+    Info,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErrorNote {
     pub id: u32,
     pub text: String,
+    pub kind: NoteKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +133,7 @@ pub struct UiState {
     pub dialog: Option<Dialog>,
     pub file_views: BTreeMap<AgentId, FileView>,
     pub mcp: McpView,
+    /// The notes at the bottom left: errors, and what an action did.
     pub errors: Vec<ErrorNote>,
     next_error: u32,
 }
@@ -139,9 +159,19 @@ impl Default for UiState {
 impl UiState {
     /// Shows an error note until it is dismissed or pushed out by newer ones.
     pub fn report(&mut self, text: String) {
+        self.note(text, NoteKind::Error);
+    }
+
+    /// Shows what an action did, in a note like an error's.
+    pub fn inform(&mut self, text: String) {
+        self.note(text, NoteKind::Info);
+    }
+
+    fn note(&mut self, text: String, kind: NoteKind) {
         self.errors.push(ErrorNote {
             id: self.next_error,
             text,
+            kind,
         });
         self.next_error = self.next_error.wrapping_add(1);
         let excess = self.errors.len().saturating_sub(MAX_ERRORS);
@@ -163,6 +193,13 @@ impl UiState {
         self.dialog = None;
         self.badge = None;
         open
+    }
+
+    /// Whether a click outside the open popover closes it. The palette opened by typing `/` stays
+    /// open while you type in the composer.
+    pub fn popover_closes_on_click(&self) -> bool {
+        self.popover
+            .is_some_and(|popover| popover != Popover::Palette(PaletteOrigin::Typed))
     }
 
     pub fn toggle_popover(&mut self, popover: Popover) {
@@ -203,5 +240,21 @@ mod tests {
 
         ui.toggle_popover(Popover::Changes);
         assert_eq!(ui.popover, None);
+    }
+
+    #[test]
+    fn a_click_elsewhere_closes_the_palette_only_when_the_button_opened_it() {
+        let closes = |popover| {
+            let ui = UiState {
+                popover,
+                ..UiState::default()
+            };
+            ui.popover_closes_on_click()
+        };
+
+        assert!(closes(Some(Popover::Palette(PaletteOrigin::Button))));
+        assert!(closes(Some(Popover::Model)));
+        assert!(!closes(Some(Popover::Palette(PaletteOrigin::Typed))));
+        assert!(!closes(None));
     }
 }

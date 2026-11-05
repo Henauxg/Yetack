@@ -368,6 +368,27 @@ fn commands() -> Vec<SlashCommand> {
         ),
         command("changelog", "Draft the changelog entry", CommandKind::Skill),
         command(
+            "summarize-open-pull-requests",
+            "List the open pull requests with their review state, the checks that fail and who waits on whom",
+            CommandKind::Skill,
+        ),
+        command(
+            "update-dependency-lockfiles",
+            "Bump the locked versions of every dependency, run the tests and list what changed",
+            CommandKind::Skill,
+        ),
+        command(
+            "write-release-notes-from-tags",
+            "Write the release notes from the commits between the last two tags",
+            CommandKind::Skill,
+        ),
+        command(
+            "explain-failing-ci-job",
+            "Read the log of the last failed CI job and explain why it failed",
+            CommandKind::Skill,
+        ),
+        command("benchmark-hot-paths", "", CommandKind::Skill),
+        command(
             "compact",
             "Summarize the conversation to free context",
             CommandKind::Command,
@@ -379,6 +400,11 @@ fn commands() -> Vec<SlashCommand> {
         ),
         command("model", "Change the model", CommandKind::Command),
         command("effort", "Change the effort level", CommandKind::Command),
+        command(
+            "clear",
+            "Clear the conversation history and free up context",
+            CommandKind::Command,
+        ),
     ]
 }
 
