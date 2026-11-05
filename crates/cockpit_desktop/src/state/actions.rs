@@ -21,6 +21,7 @@ use super::transcript::HistoryState;
 use super::ui_state::{
     Block, Dialog, FileView, NewAgentForm, NewAgentTab, Popover, Switcher, ToolFilter, ViewMode,
 };
+use crate::format;
 
 /// What starts a slash command in the composer.
 pub const COMMAND_PREFIX: char = '/';
@@ -687,9 +688,10 @@ pub fn switcher_pick(state: &mut AppState, index: Option<usize>) {
     select_agent(state, agent);
 }
 
-/// Opens the new agent dialog on the last used folder. The past sessions are listed again, since
-/// sessions end and start while the app runs. An open dialog stays as it is: its first message
-/// field follows the keyboard, not the form, so a fresh form would not empty it.
+/// Opens the new agent dialog on the last used folder, with the model, effort and permission
+/// mode of the last agent started. The past sessions are listed again, since sessions end and
+/// start while the app runs. An open dialog stays as it is: its first message field follows the
+/// keyboard, not the form, so a fresh form would not empty it.
 pub fn open_new_agent(state: &mut AppState) {
     if matches!(state.ui.dialog, Some(Dialog::NewAgent(_))) {
         return;
@@ -699,12 +701,26 @@ pub fn open_new_agent(state: &mut AppState) {
         .first()
         .map(|(folder, _)| folder.to_string_lossy().into_owned())
         .unwrap_or_default();
+    let last = state
+        .agents
+        .values()
+        .map(|entry| &entry.summary)
+        .max_by_key(|summary| summary.started_at);
+    let model = last
+        .and_then(|summary| summary.model.as_deref())
+        .and_then(format::model_alias)
+        .map(str::to_owned);
+    let effort = last.and_then(|summary| summary.effort);
+    let mode = last.map(|summary| summary.mode);
     if state.sessions != Loadable::Loading {
         state.sessions = Loadable::NotRequested;
     }
     state.ui.popover = None;
     state.ui.dialog = Some(Dialog::NewAgent(NewAgentForm {
         folder,
+        model,
+        effort,
+        mode,
         ..NewAgentForm::default()
     }));
 }
@@ -759,7 +775,7 @@ pub fn resume_session(state: &mut AppState, session: ClaudeSessionId) -> Vec<Out
 mod tests {
     use cockpit_protocol::{
         AgentDetails, AskedQuestion, CommandKind, HistoryPage, ImageMediaType, Method,
-        QuestionOption, ResponseBody, TranscriptItem,
+        QuestionOption, ResponseBody, Timestamp, TranscriptItem,
     };
 
     use super::*;
@@ -1236,6 +1252,57 @@ mod tests {
             Some("Fix the flaky test")
         );
         assert!(second.is_empty());
+    }
+
+    #[test]
+    fn the_new_agent_form_starts_from_the_last_agent_started() {
+        let mut older = summary(1, AgentStatus::Idle);
+        older.model = Some("claude-haiku-4-5".to_owned());
+        older.effort = Some(Effort::Low);
+        older.mode = PermissionMode::Plan;
+        let mut last = summary(2, AgentStatus::Exited);
+        last.model = Some("claude-opus-5-5[1m]".to_owned());
+        last.effort = Some(Effort::Xhigh);
+        last.mode = PermissionMode::AcceptEdits;
+        last.started_at = Timestamp::from_unix_millis(90_000);
+        let mut state = state_with(vec![last, older]);
+
+        open_new_agent(&mut state);
+
+        let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
+            panic!("expected the new agent dialog, got {:?}", state.ui.dialog);
+        };
+        assert_eq!(
+            (form.model.as_deref(), form.effort, form.mode),
+            (
+                Some("opus"),
+                Some(Effort::Xhigh),
+                Some(PermissionMode::AcceptEdits)
+            )
+        );
+    }
+
+    #[test]
+    fn the_new_agent_form_keeps_the_defaults_without_an_agent_or_a_known_model() {
+        let mut state = state_with(Vec::new());
+        open_new_agent(&mut state);
+        let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
+            panic!("expected the new agent dialog, got {:?}", state.ui.dialog);
+        };
+        assert_eq!(
+            (form.model.as_deref(), form.effort, form.mode),
+            (None, None, None)
+        );
+
+        let mut unknown = summary(1, AgentStatus::Idle);
+        unknown.model = Some("claude-mythical-1".to_owned());
+        let mut state = state_with(vec![unknown]);
+        open_new_agent(&mut state);
+        let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
+            panic!("expected the new agent dialog, got {:?}", state.ui.dialog);
+        };
+        assert_eq!(form.model, None);
+        assert_eq!(form.mode, Some(PermissionMode::Default));
     }
 
     #[test]
