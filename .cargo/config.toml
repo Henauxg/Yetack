@@ -1,3 +1,4 @@
 [env]
 # The standard's clippy.toml, which exempts tests from the panic lints.
-CLIPPY_CONF_DIR = { value = "docs/standards/rust", relative = true }
+# Forced, so a CLIPPY_CONF_DIR set for another project does not replace it.
+CLIPPY_CONF_DIR = { value = "docs/standards/rust", relative = true, force = true }
