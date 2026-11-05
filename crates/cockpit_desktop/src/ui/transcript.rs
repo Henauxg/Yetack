@@ -1,5 +1,6 @@
 //! The conversation: user bubbles, agent text, tool calls, inline diffs, subagents and the cards
-//! that wait for an answer.
+//! that wait for an answer. The steps of a turn sit on a vertical line, each with a dot whose
+//! color says where the step stands.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -9,6 +10,7 @@ use cockpit_protocol::{
     TurnEnd, UserMessage,
 };
 use dioxus::prelude::*;
+use serde_json::Value;
 
 use crate::connection::Cockpit;
 use crate::render::{Diff, Language, diff_lines};
@@ -23,6 +25,9 @@ use crate::{bridge, format};
 /// Command output longer than this folds behind "Show more".
 const OUTPUT_PREVIEW_LINES: usize = 5;
 
+/// A command longer than this folds too: a heredoc can make it long.
+const COMMAND_PREVIEW_LINES: usize = 8;
+
 /// Diff rows an inline edit shows before "open in the file view".
 const EDIT_PREVIEW_ROWS: usize = 8;
 
@@ -32,6 +37,13 @@ const EDIT_CONTEXT_LINES: usize = 2;
 /// The prefix and separator of an MCP tool's name, as in `mcp__server__tool`.
 const MCP_TOOL_PREFIX: &str = "mcp__";
 const MCP_TOOL_SEPARATOR: &str = "__";
+
+/// The input fields of a shell command, as Claude Code's `Bash` tool sends them.
+const COMMAND_FIELD: &str = "command";
+const DESCRIPTION_FIELD: &str = "description";
+
+/// Claude Code's shell tool. Without its input, its summary is the command's first line.
+const BASH_TOOL: &str = "Bash";
 
 #[component]
 pub fn TranscriptView() -> Element {
@@ -52,12 +64,25 @@ pub fn TranscriptView() -> Element {
     let items: Vec<&TranscriptItem> = entry.transcript.items().collect();
     let children = children_by_parent(&items);
     let awaiting = awaiting_approval(&items);
-    let top: Vec<(TranscriptItem, Vec<TranscriptItem>, bool)> = items
+    let top_items: Vec<&TranscriptItem> = items
         .iter()
+        .copied()
         .filter(|item| shows_at_top(item))
-        .map(|item| {
+        .collect();
+    let states: Vec<Option<StepState>> = top_items
+        .iter()
+        .map(|item| StepState::new(item, awaiting.contains(&item.id)))
+        .collect();
+    let is_step: Vec<bool> = states.iter().map(Option::is_some).collect();
+    let links = step_links(&is_step, false);
+    let top: Vec<(TranscriptItem, Vec<TranscriptItem>, bool, Option<Step>)> = top_items
+        .iter()
+        .zip(states)
+        .zip(links)
+        .map(|((item, state), links)| {
+            let step = state.map(|state| Step { state, links });
             let nested = subtree(&children, item.id);
-            ((*item).clone(), nested, awaiting.contains(&item.id))
+            ((*item).clone(), nested, awaiting.contains(&item.id), step)
         })
         .collect();
     let history = entry.transcript.history().clone();
@@ -103,8 +128,8 @@ pub fn TranscriptView() -> Element {
                 }
                 // Item ids repeat across agents: with the agent in the key, another agent's item
                 // never takes over the state of this one's (a fold, a typed answer).
-                for (item, nested, awaits_approval) in top {
-                    ItemView { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), item, nested, awaits_approval }
+                for (item, nested, awaits_approval, step) in top {
+                    TranscriptRow { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), item, nested, awaits_approval, step }
                 }
                 if status == AgentStatus::Working {
                     div { class: "working-line",
@@ -115,6 +140,105 @@ pub fn TranscriptView() -> Element {
             }
         }
     }
+}
+
+/// Where a step of a turn stands, as its dot's color says it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StepState {
+    /// Text and thinking, which neither succeed nor fail.
+    Plain,
+    Running,
+    Done,
+    Failed,
+    /// A tool call, an approval, a question or a plan waits for an answer.
+    Waiting,
+}
+
+impl StepState {
+    /// `None` for what is not a step of the agent's turn: a user message, a notice, a turn's end.
+    fn new(item: &TranscriptItem, awaits_approval: bool) -> Option<Self> {
+        let state = match &item.body {
+            ItemBody::AssistantText { .. } | ItemBody::Thinking { .. } => Self::Plain,
+            ItemBody::ToolCall(call) => Self::from_stage(CallStage::new(call, awaits_approval)),
+            ItemBody::Subagent(call) => Self::from_stage(CallStage::new(call, false)),
+            ItemBody::Approval(_) | ItemBody::Question(_) | ItemBody::Plan(_) => {
+                if waits_for_answer(item) {
+                    Self::Waiting
+                } else {
+                    Self::Plain
+                }
+            }
+            ItemBody::UserMessage(_) | ItemBody::TurnEnd(_) | ItemBody::Notice { .. } => {
+                return None;
+            }
+        };
+        Some(state)
+    }
+
+    fn from_stage(stage: CallStage) -> Self {
+        match stage {
+            CallStage::AwaitsApproval => Self::Waiting,
+            CallStage::Running => Self::Running,
+            CallStage::Done => Self::Done,
+            CallStage::Failed => Self::Failed,
+        }
+    }
+
+    fn class(self) -> &'static str {
+        match self {
+            Self::Plain => "step-plain",
+            Self::Running => "step-running",
+            Self::Done => "step-done",
+            Self::Failed => "step-failed",
+            Self::Waiting => "step-waiting",
+        }
+    }
+}
+
+/// Whether the line that links a turn's steps comes down to a step's dot, and goes on below it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct StepLinks {
+    above: bool,
+    below: bool,
+}
+
+/// A step's dot, and the line that links it to the turn's other steps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Step {
+    state: StepState,
+    links: StepLinks,
+}
+
+impl Step {
+    fn class(self) -> String {
+        let mut class = format!("step {}", self.state.class());
+        if self.links.above {
+            class.push_str(" linked-above");
+        }
+        if self.links.below {
+            class.push_str(" linked-below");
+        }
+        class
+    }
+}
+
+/// The links of each item, given which items are steps: a user message, a notice or a turn's end
+/// breaks the line. With `working`, the last step links down to the working line.
+fn step_links(is_step: &[bool], working: bool) -> Vec<StepLinks> {
+    let mut links = Vec::with_capacity(is_step.len());
+    for (index, &step) in is_step.iter().enumerate() {
+        let previous = index
+            .checked_sub(1)
+            .and_then(|before| is_step.get(before))
+            .copied()
+            .unwrap_or(false);
+        let next = is_step.get(index + 1).copied().unwrap_or(working);
+        links.push(StepLinks {
+            above: step && previous,
+            below: step && next,
+        });
+    }
+    links
 }
 
 /// Top-level items, and the cards still waiting for an answer, even a subagent's: a folded
@@ -192,6 +316,30 @@ fn awaiting_approval(items: &[&TranscriptItem]) -> BTreeSet<ItemId> {
         })
         .map(|item| item.id)
         .collect()
+}
+
+/// An item of the main conversation, on the steps' line when it is a step of a turn.
+#[component]
+fn TranscriptRow(
+    agent: AgentId,
+    folder: PathBuf,
+    item: TranscriptItem,
+    nested: Vec<TranscriptItem>,
+    awaits_approval: bool,
+    step: Option<Step>,
+) -> Element {
+    let view = rsx! {
+        ItemView { agent, folder, item, nested, awaits_approval }
+    };
+    let Some(step) = step else {
+        return view;
+    };
+    rsx! {
+        div { class: step.class(),
+            span { class: "step-dot", aria_hidden: true }
+            {view}
+        }
+    }
 }
 
 #[component]
@@ -326,14 +474,185 @@ impl CallStage {
     }
 }
 
-/// "mcp__search__find" reads "search/find".
-fn tool_label(tool: &str) -> String {
-    let Some(rest) = tool.strip_prefix(MCP_TOOL_PREFIX) else {
-        return tool.to_owned();
+/// What a tool call's title line and its IN block show, by the kind of tool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ToolShape {
+    /// A shell command: the description Claude Code sends with it on the title line, the command
+    /// in the IN block.
+    Command {
+        description: Option<String>,
+        command: String,
+    },
+    /// An MCP tool, as "Search [find_pages]": its server and its name on the title line, its
+    /// input as JSON in the IN block.
+    Mcp {
+        server: String,
+        tool: String,
+        input: Option<String>,
+    },
+    /// Any other tool: its name and summary (a path, a pattern, a URL) on the title line.
+    Other,
+}
+
+impl ToolShape {
+    fn new(call: &ToolCall) -> Self {
+        if let Some(name) = call.tool.strip_prefix(MCP_TOOL_PREFIX) {
+            let (server, tool) = name.split_once(MCP_TOOL_SEPARATOR).unwrap_or((name, ""));
+            let input = match &call.input {
+                Value::Object(fields) if !fields.is_empty() => {
+                    serde_json::to_string_pretty(&call.input).ok()
+                }
+                _ => None,
+            };
+            return Self::Mcp {
+                server: capitalized(server),
+                tool: tool.to_owned(),
+                input,
+            };
+        }
+        let field = |name: &str| {
+            call.input
+                .get(name)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(str::to_owned)
+        };
+        let command = field(COMMAND_FIELD).or_else(|| {
+            (call.tool == BASH_TOOL && !call.summary.is_empty()).then(|| call.summary.clone())
+        });
+        match command {
+            Some(command) => Self::Command {
+                description: field(DESCRIPTION_FIELD),
+                command,
+            },
+            None => Self::Other,
+        }
+    }
+
+    /// The text of the IN block.
+    fn input(&self) -> Option<&str> {
+        match self {
+            Self::Command { command, .. } => Some(command),
+            Self::Mcp { input, .. } => input.as_deref(),
+            Self::Other => None,
+        }
+    }
+}
+
+/// "search" reads "Search".
+fn capitalized(word: &str) -> String {
+    let mut chars = word.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+/// Where a tool call's title line shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TitleLayout {
+    /// Over the IN and OUT block, which holds the command.
+    Full,
+    /// Alone, in a subagent: the command takes the place of a missing description.
+    Compact,
+}
+
+/// The tool's name in bold, then the description or the summary.
+fn tool_title(call: &ToolCall, shape: &ToolShape, layout: TitleLayout) -> Element {
+    match shape {
+        ToolShape::Command {
+            description: Some(description),
+            ..
+        } => rsx! {
+            span { class: "tool-name", "{call.tool}" }
+            span { class: "tool-description", "{description}" }
+        },
+        ToolShape::Command {
+            description: None, ..
+        } if layout == TitleLayout::Full => rsx! {
+            span { class: "tool-name", "{call.tool}" }
+        },
+        ToolShape::Mcp { server, tool, .. } => rsx! {
+            span { class: "tool-name", "{server}" }
+            if !tool.is_empty() {
+                code { class: "tool-summary", "[{tool}]" }
+            }
+        },
+        ToolShape::Command { .. } | ToolShape::Other => rsx! {
+            span { class: "tool-name", "{call.tool}" }
+            if !call.summary.is_empty() {
+                code { class: "tool-summary", "{call.summary}" }
+            }
+        },
+    }
+}
+
+/// A row of a tool call's framed block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IoKind {
+    /// The command or the input the call got.
+    In,
+    /// What it answered.
+    Out,
+}
+
+impl IoKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::In => "IN",
+            Self::Out => "OUT",
+        }
+    }
+
+    fn class(self) -> &'static str {
+        match self {
+            Self::In => "io-row io-in",
+            Self::Out => "io-row io-out",
+        }
+    }
+
+    fn preview_lines(self) -> usize {
+        match self {
+            Self::In => COMMAND_PREVIEW_LINES,
+            Self::Out => OUTPUT_PREVIEW_LINES,
+        }
+    }
+}
+
+#[component]
+fn IoRow(kind: IoKind, text: String) -> Element {
+    let mut expanded = use_signal(|| false);
+    let preview_lines = kind.preview_lines();
+    let hidden = text.lines().count().saturating_sub(preview_lines);
+    let shown = if expanded() || hidden == 0 {
+        text.clone()
+    } else {
+        text.lines()
+            .take(preview_lines)
+            .collect::<Vec<&str>>()
+            .join("\n")
     };
-    match rest.split_once(MCP_TOOL_SEPARATOR) {
-        Some((server, name)) => format!("{server}/{name}"),
-        None => rest.to_owned(),
+    let toggle_text = if expanded() {
+        "Show less".to_owned()
+    } else {
+        format!("Show {} more", format::count(hidden, "line", "lines"))
+    };
+    rsx! {
+        div { class: kind.class(),
+            span { class: "io-label", "{kind.label()}" }
+            div { class: "io-text",
+                pre { "{shown}" }
+                if hidden > 0 {
+                    button {
+                        class: "fold-lines",
+                        aria_expanded: expanded(),
+                        onclick: move |_| expanded.toggle(),
+                        "{toggle_text}"
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -375,43 +694,26 @@ impl EditMeta {
 
 #[component]
 fn ToolView(call: ToolCall, stage: CallStage) -> Element {
-    let mut expanded = use_signal(|| false);
-    let output = call.output.clone().unwrap_or_default();
-    let lines: Vec<&str> = output.lines().collect();
-    let foldable = lines.len() > OUTPUT_PREVIEW_LINES;
-    let shown = if expanded() || !foldable {
-        output.clone()
-    } else {
-        lines
-            .iter()
-            .take(OUTPUT_PREVIEW_LINES)
-            .copied()
-            .collect::<Vec<&str>>()
-            .join("\n")
-    };
-    let hidden = lines.len().saturating_sub(OUTPUT_PREVIEW_LINES);
-    let toggle_text = if expanded() {
-        "Show less".to_owned()
-    } else {
-        format!("Show {} more", format::count(hidden, "line", "lines"))
-    };
-    let name = tool_label(&call.tool);
+    let shape = ToolShape::new(&call);
     let meta = tool_meta(&call, stage);
+    let input = shape.input().map(str::to_owned);
+    let output = call.output.clone().filter(|output| !output.is_empty());
+    let framed = input.is_some() || output.is_some();
     rsx! {
         div { class: stage.class(),
             div { class: "tool-head",
-                span { class: "tool-dot", aria_hidden: true }
-                span { class: "tool-name", "{name}" }
-                code { class: "tool-summary", "{call.summary}" }
+                {tool_title(&call, &shape, TitleLayout::Full)}
                 if !meta.is_empty() {
                     span { class: "tool-meta", "{meta}" }
                 }
             }
-            if !output.is_empty() {
-                div { class: "tool-output",
-                    pre { "{shown}" }
-                    if foldable {
-                        button { class: "fold-lines", onclick: move |_| expanded.toggle(), "{toggle_text}" }
+            if framed {
+                div { class: "tool-io",
+                    if let Some(input) = input {
+                        IoRow { kind: IoKind::In, text: input }
+                    }
+                    if let Some(output) = output {
+                        IoRow { kind: IoKind::Out, text: output }
                     }
                 }
             }
@@ -458,12 +760,10 @@ fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall, stage: CallStage) -
         format::count(more, "line", "lines")
     );
     let meta = EditMeta::new(&call, stage, added, removed);
-    let name = tool_label(&call.tool);
     rsx! {
         div { class: stage.class(),
             div { class: "tool-head",
-                span { class: "tool-dot", aria_hidden: true }
-                span { class: "tool-name", "{name}" }
+                span { class: "tool-name", "{call.tool}" }
                 button { class: "path-link mono", onclick: open, "{shown_path}" }
                 match meta {
                     EditMeta::Stage(words) => rsx! {
@@ -495,8 +795,10 @@ fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall, stage: CallStage) -
                 }
             }
             if call.status == ToolCallStatus::Failed {
-                if let Some(output) = &call.output {
-                    div { class: "tool-output", pre { "{output}" } }
+                if let Some(output) = call.output.clone() {
+                    div { class: "tool-io",
+                        IoRow { kind: IoKind::Out, text: output }
+                    }
                 }
             }
         }
@@ -540,7 +842,6 @@ fn SubagentView(
                 class: "fold-button tool-head",
                 aria_expanded: open,
                 onclick: move |_| expanded.toggle(),
-                span { class: "tool-dot", aria_hidden: true }
                 span { class: "tool-name", "Agent" }
                 span { class: "subagent-title", "{call.summary}" }
                 span { class: "tool-meta", "{meta}" }
@@ -572,19 +873,23 @@ fn CompactItem(
     match &item.body {
         ItemBody::ToolCall(call) => {
             let stage = CallStage::new(call, awaits_approval);
-            let name = tool_label(&call.tool);
             let meta = tool_meta(call, stage);
-            let summary = match &call.edit {
-                Some(edit) => file_edits::relative_path(&folder, &edit.path)
-                    .display()
-                    .to_string(),
-                None => call.summary.clone(),
+            let title = match &call.edit {
+                Some(edit) => {
+                    let path = file_edits::relative_path(&folder, &edit.path)
+                        .display()
+                        .to_string();
+                    rsx! {
+                        span { class: "tool-name", "{call.tool}" }
+                        code { class: "tool-summary", "{path}" }
+                    }
+                }
+                None => tool_title(call, &ToolShape::new(call), TitleLayout::Compact),
             };
             rsx! {
                 div { class: "compact-tool {stage.class()}",
                     span { class: "tool-dot", aria_hidden: true }
-                    span { class: "tool-name", "{name}" }
-                    code { class: "tool-summary", "{summary}" }
+                    {title}
                     if !meta.is_empty() {
                         span { class: "tool-meta", "{meta}" }
                     }
@@ -670,9 +975,79 @@ mod tests {
     }
 
     #[test]
-    fn mcp_tool_names_read_as_server_and_tool() {
-        assert_eq!(tool_label("mcp__search__find_pages"), "search/find_pages");
-        assert_eq!(tool_label("Bash"), "Bash");
+    fn the_line_links_consecutive_steps_only() {
+        let none = StepLinks::default();
+        let links = |above, below| StepLinks { above, below };
+
+        assert_eq!(
+            step_links(&[false, true, true, true, false, true], false),
+            [
+                none,
+                links(false, true),
+                links(true, true),
+                links(true, false),
+                none,
+                none
+            ]
+        );
+        assert_eq!(step_links(&[false, true], true), [none, links(false, true)]);
+        assert_eq!(step_links(&[true, false], true), [none, none]);
+    }
+
+    #[test]
+    fn a_command_shows_its_description_and_its_command() {
+        let with_input = |input: serde_json::Value| ToolCall {
+            input,
+            ..call("Bash", "cargo test", ToolCallStatus::Done)
+        };
+
+        assert_eq!(
+            ToolShape::new(&with_input(serde_json::json!({
+                "command": "cargo test\n--quiet",
+                "description": "Run the tests",
+            }))),
+            ToolShape::Command {
+                description: Some("Run the tests".to_owned()),
+                command: "cargo test\n--quiet".to_owned(),
+            }
+        );
+        assert_eq!(
+            ToolShape::new(&with_input(serde_json::Value::Null)),
+            ToolShape::Command {
+                description: None,
+                command: "cargo test".to_owned(),
+            }
+        );
+        assert_eq!(
+            ToolShape::new(&call("Read", "src/main.rs", ToolCallStatus::Done)),
+            ToolShape::Other
+        );
+    }
+
+    #[test]
+    fn an_mcp_tool_shows_its_server_its_name_and_its_input() {
+        let search = ToolCall {
+            input: serde_json::json!({"query": "columns"}),
+            ..call("mcp__search__find_pages", "columns", ToolCallStatus::Done)
+        };
+        let bare = call("mcp__search__list", "", ToolCallStatus::Done);
+
+        assert_eq!(
+            ToolShape::new(&search),
+            ToolShape::Mcp {
+                server: "Search".to_owned(),
+                tool: "find_pages".to_owned(),
+                input: Some("{\n  \"query\": \"columns\"\n}".to_owned()),
+            }
+        );
+        assert_eq!(
+            ToolShape::new(&bare),
+            ToolShape::Mcp {
+                server: "Search".to_owned(),
+                tool: "list".to_owned(),
+                input: None,
+            }
+        );
     }
 
     fn call(tool: &str, summary: &str, status: ToolCallStatus) -> ToolCall {

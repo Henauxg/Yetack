@@ -1241,6 +1241,77 @@ button:disabled {
   white-space: pre;
 }
 
+/* Steps of a turn: a dot per step, on a line that links the turn's steps. */
+
+.step {
+  /* From the step's top to its dot's: the dot sits in the middle of a 13 or 14 px first line. */
+  --dot-top: 7px;
+  --step: var(--dim);
+  position: relative;
+  padding-left: 22px;
+}
+
+/* A card's first line sits below its padding. */
+.step:has(> .card) {
+  --dot-top: 21px;
+}
+
+.step.step-running {
+  --step: var(--teal);
+}
+
+.step.step-done {
+  --step: var(--green);
+}
+
+.step.step-failed {
+  --step: var(--red);
+}
+
+.step.step-waiting {
+  --step: var(--amber);
+}
+
+.step-dot {
+  position: absolute;
+  top: var(--dot-top);
+  left: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--step);
+}
+
+.step.step-running > .step-dot {
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+/* The line runs through the dots' centers and across the column's 14 px gap, 2 px clear of each
+   dot. */
+.step.linked-above::before,
+.step.linked-below::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  width: 1px;
+  background: var(--line-control);
+}
+
+.step.linked-above::before {
+  top: 0;
+  height: calc(var(--dot-top) - 2px);
+}
+
+.step.linked-below::after {
+  top: calc(var(--dot-top) + 9px);
+  bottom: -14px;
+}
+
+/* A heading's top margin would lower it below its dot. */
+.step > .markdown > .md-heading:first-child {
+  margin-top: 0;
+}
+
 /* Tool calls. */
 
 .tool {
@@ -1282,11 +1353,18 @@ button:disabled {
   font-size: 13px;
 }
 
+.tool-description {
+  min-width: 0;
+  font-size: 13px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
 .tool-summary {
   min-width: 0;
   font-family: var(--mono);
   font-size: 12.5px;
-  color: var(--text-soft);
+  color: var(--muted);
   overflow-wrap: anywhere;
 }
 
@@ -1301,35 +1379,64 @@ button:disabled {
   color: var(--tool);
 }
 
-.tool-output {
-  margin-left: 15px;
+/* What a command or an MCP tool got (IN), over what it answered (OUT). */
+.tool-io {
   border-radius: 8px;
-  border: 1px solid var(--line-soft);
+  border: 1px solid var(--line);
   background: var(--well);
   overflow: hidden;
 }
 
-.tool.failed .tool-output {
+.tool.failed .tool-io {
   border-color: #4a2422;
 }
 
-.tool-output pre {
-  margin: 0;
-  padding: 8px 10px;
+.io-row {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: baseline;
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1.55;
-  color: var(--muted);
+}
+
+.io-row + .io-row {
+  border-top: 1px solid var(--line);
+}
+
+.io-label {
+  padding-left: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+  user-select: none;
+}
+
+.io-text {
+  min-width: 0;
+}
+
+.io-text pre {
+  margin: 0;
+  padding: 7px 10px 7px 0;
+  font: inherit;
+  color: var(--text-soft);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
+.io-out pre {
+  color: var(--muted);
+}
+
 .fold-lines {
   display: block;
-  padding: 0 10px 8px;
+  padding: 0 10px 8px 0;
   border: 0;
   background: transparent;
   color: var(--text-soft);
+  font-family: var(--sans);
   font-size: 12.5px;
 }
 
@@ -1344,6 +1451,11 @@ button:disabled {
   text-underline-offset: 3px;
 }
 
+/* The step's indent replaces the inline diff's own. */
+.tool > .inline-diff {
+  margin-left: 0;
+}
+
 .subagent-title {
   font-size: 13px;
 }
@@ -1351,7 +1463,7 @@ button:disabled {
 .subagent-body {
   margin-left: 3px;
   padding-left: 14px;
-  border-left: 1px solid var(--line-strong);
+  border-left: 1px solid var(--line-control);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -1359,6 +1471,7 @@ button:disabled {
 
 .compact-tool {
   display: flex;
+  flex-direction: row;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
