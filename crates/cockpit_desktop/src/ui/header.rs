@@ -1,18 +1,18 @@
 //! The center header: the agent's title, status and folder, the usage chip and the changes chip.
 //! It stays on one line; when narrow, the title shortens, then the chips shrink to icons.
 
-use std::path::PathBuf;
 use std::time::SystemTime;
 
 use cockpit_protocol::{
-    AgentId, ChangedFile, ContextUsage, MAX_TITLE_CHARS, PlanUsage, RateLimitStatus, Timestamp,
-    UsageWindow, WindowUsage,
+    ChangedFile, ContextUsage, MAX_TITLE_CHARS, PlanUsage, RateLimitStatus, Timestamp, UsageWindow,
+    WindowUsage,
 };
 use dioxus::prelude::*;
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
 use crate::connection::{Clock, Cockpit};
-use crate::state::{AgentEntry, Loadable, Popover, actions, file_edits};
+use crate::state::{AgentEntry, Loadable, Popover, actions};
+use crate::ui::changes_list::{ChangesList, line_totals};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::presence::Presence;
 use crate::{bridge, format};
@@ -243,13 +243,6 @@ fn changed_files(entry: &AgentEntry) -> Vec<ChangedFile> {
         .unwrap_or_default()
 }
 
-/// Summed in `u64`, so that no count the daemon sends overflows.
-fn line_totals(files: &[ChangedFile]) -> (u64, u64) {
-    let added = files.iter().map(|file| u64::from(file.lines_added)).sum();
-    let removed = files.iter().map(|file| u64::from(file.lines_removed)).sum();
-    (added, removed)
-}
-
 /// The five-hour window, which the chip shows; another window when Claude Code reported only
 /// that one.
 fn plan_percent(plan_usage: &PlanUsage) -> Option<u8> {
@@ -453,58 +446,9 @@ fn ContextBar(context: ContextUsage) -> Element {
     }
 }
 
-#[component]
-fn ChangesList(agent: AgentId, files: Vec<ChangedFile>, folder: PathBuf) -> Element {
-    let cockpit: Cockpit = use_context();
-    let title = if files.is_empty() {
-        "No file changed yet.".to_owned()
-    } else {
-        format!(
-            "{} changed by this agent. Pick one to open it.",
-            format::count(files.len(), "file", "files")
-        )
-    };
-    rsx! {
-        div { class: "popover changes-list",
-            span { class: "changes-title", "{title}" }
-            // Keyed by position: the daemon's list does not promise one entry per path.
-            for (index, file) in files.into_iter().enumerate() {
-                {
-                    let shown = file_edits::relative_path(&folder, &file.path).display().to_string();
-                    let path = file.path.clone();
-                    rsx! {
-                        button {
-                            key: "{index}",
-                            class: "file-row",
-                            onclick: move |_| {
-                                let path = path.clone();
-                                cockpit.update(|state| actions::open_file(state, agent, path, None));
-                            },
-                            span { class: "mono file-path", "{shown}" }
-                            span { class: "mono",
-                                span { class: "added", "+{file.lines_added}" }
-                                " "
-                                span { class: "removed", "-{file.lines_removed}" }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn file(path: &str, lines_added: u32, lines_removed: u32) -> ChangedFile {
-        ChangedFile {
-            path: PathBuf::from(path),
-            lines_added,
-            lines_removed,
-        }
-    }
 
     /// Claude Code writes these names: a rename here would leave a part grey.
     #[test]
@@ -558,15 +502,5 @@ mod tests {
             WindowLevel::AtLimit
         );
         assert_eq!(level(0.5, RateLimitStatus::Rejected), WindowLevel::AtLimit);
-    }
-
-    #[test]
-    fn line_totals_hold_counts_past_u32() {
-        let files = [file("a.rs", u32::MAX, 1), file("b.rs", u32::MAX, u32::MAX)];
-
-        assert_eq!(
-            line_totals(&files),
-            (2 * u64::from(u32::MAX), u64::from(u32::MAX) + 1)
-        );
     }
 }

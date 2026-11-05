@@ -27,6 +27,11 @@ const PARSER_FOLDER: &str = "/home/dev/projects/calc-parser";
 const SERVICE_FOLDER: &str = "/home/dev/projects/calc-service";
 const PLATFORM_FOLDER: &str = "/home/dev/projects/acme-platform";
 
+/// Other git worktrees of the parser, beside its folder, where the parser agent also edited files.
+const PARSER_COLUMNS_WORKTREE: &str =
+    "/home/dev/projects/calc-parser_GH42Q-report-the-column-of-every-unexpected-token";
+const PARSER_BENCH_WORKTREE: &str = "/home/dev/projects/calc-parser_benchmarks-for-large-inputs";
+
 /// How long the working agent's turn has run when the demo starts.
 const TURN_ELAPSED: Duration = Duration::from_secs(4 * 60 + 12);
 
@@ -694,6 +699,23 @@ fn parser_agent(now: SystemTime) -> Sample {
                 path: Path::new(PARSER_FOLDER).join(LEXER_FILE),
                 lines_added: 1,
                 lines_removed: 1,
+            },
+            ChangedFile {
+                path: Path::new(PARSER_COLUMNS_WORKTREE)
+                    .join("crates/calc-lexer/src/tokens/unexpected_token.rs"),
+                lines_added: 31,
+                lines_removed: 4,
+            },
+            ChangedFile {
+                path: Path::new(PARSER_COLUMNS_WORKTREE)
+                    .join("crates/calc-lexer/tests/columns_of_unexpected_tokens.rs"),
+                lines_added: 24,
+                lines_removed: 0,
+            },
+            ChangedFile {
+                path: Path::new(PARSER_BENCH_WORKTREE).join("benches/lexer_on_large_inputs.rs"),
+                lines_added: 12,
+                lines_removed: 2,
             },
         ],
         context: Some(ContextUsage {
