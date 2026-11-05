@@ -93,6 +93,7 @@ fn control_requests() {
             ControlRequest::GetContextUsage,
             r#"{"subtype":"get_context_usage"}"#,
         ),
+        (ControlRequest::GetSettings, r#"{"subtype":"get_settings"}"#),
         (ControlRequest::McpStatus, r#"{"subtype":"mcp_status"}"#),
         (
             ControlRequest::McpReconnect {

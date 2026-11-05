@@ -2,6 +2,7 @@
 
 use claude_protocol::{
     ContextUsage as ClaudeContextUsage, ControlRequest, InitializeResponse, McpStatus, ParseError,
+    SettingsAnswer,
 };
 use cockpit_protocol::{
     AgentId, ErrorBody, ErrorCode, ResponseBody, SetModeParams, SetModelParams,
@@ -28,6 +29,7 @@ impl ControlPurpose {
             | Self::McpStatus(Some(reply)) => agents::respond(reply, Err(error)),
             Self::Initialize
             | Self::ContextRefresh
+            | Self::DefaultEffort
             | Self::SetMode { reply: None, .. }
             | Self::McpStatus(None) => {}
         }
@@ -71,9 +73,11 @@ impl Hub {
         let mut refresh_mcp = false;
         let mut refresh_context = false;
         let mut rename_session = false;
+        let mut refresh_effort = false;
         match purpose {
             ControlPurpose::Initialize => {
                 rename_session = view.initialized();
+                refresh_effort = agent.record.effort.is_none();
                 match parse::<InitializeResponse>(result) {
                     Ok(response) => view.set_commands(&response),
                     Err(error) => tracing::warn!(agent = id.get(), error, "initialize failed"),
@@ -88,6 +92,18 @@ impl Hub {
                 }
                 Err(error) => tracing::debug!(agent = id.get(), error, "no context usage"),
             },
+            // An effort given to the agent meanwhile stays.
+            ControlPurpose::DefaultEffort if agent.record.effort.is_some() => {}
+            ControlPurpose::DefaultEffort => match parse::<SettingsAnswer>(result) {
+                Ok(answer) => {
+                    let effort = answer.applied.effort.as_deref();
+                    view.set_default_effort(effort.and_then(words::effort_from_word));
+                }
+                Err(error) => {
+                    tracing::debug!(agent = id.get(), error, "no settings");
+                    view.set_default_effort(None);
+                }
+            },
             ControlPurpose::Done(reply) => {
                 let result = result
                     .map(|_| ResponseBody::Done)
@@ -99,6 +115,8 @@ impl Hub {
                     view.set_model(model.clone());
                     agent.record.model = Some(model);
                     record_changed = true;
+                    // The model has its own default effort.
+                    refresh_effort = agent.record.effort.is_none();
                     agents::respond(reply, Ok(ResponseBody::Done));
                 }
                 Err(failure) => agents::respond(reply, Err(errors::control_failed(id, failure))),
@@ -155,6 +173,13 @@ impl Hub {
         }
         if rename_session {
             self.rename_session(id);
+        }
+        if refresh_effort {
+            self.control(
+                id,
+                ControlRequest::GetSettings,
+                ControlPurpose::DefaultEffort,
+            );
         }
         if refresh_mcp {
             self.control(

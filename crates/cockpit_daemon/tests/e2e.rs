@@ -440,6 +440,65 @@ async fn an_agent_answers_a_prompt_and_reports_its_state() {
 }
 
 #[tokio::test]
+async fn an_agent_without_an_effort_shows_the_one_claude_code_applies() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let start = |effort: Option<Effort>| {
+        Request::AgentStart(StartParams {
+            folder: setup.work(),
+            title: None,
+            model: None,
+            effort,
+            mode: None,
+            prompt: None,
+        })
+    };
+
+    let ResponseBody::AgentStarted { agent } = client.ok(start(None)).await else {
+        panic!("expected AgentStarted");
+    };
+    let applied = client
+        .summary_with(agent, |summary| summary.effort.is_some())
+        .await;
+    let set_model = SetModelParams {
+        agent,
+        model: "other-model".to_owned(),
+    };
+    client.ok(Request::AgentSetModel(set_model)).await;
+    let other_model = client
+        .summary_with(agent, |summary| summary.effort == Some(Effort::Low))
+        .await;
+    let set_effort = SetEffortParams {
+        agent,
+        effort: Effort::High,
+    };
+    client.ok(Request::AgentSetEffort(set_effort)).await;
+    let given = client
+        .summary_with(agent, |summary| summary.effort == Some(Effort::High))
+        .await;
+    let ResponseBody::AgentStarted { agent: explicit } =
+        client.ok(start(Some(Effort::Xhigh))).await
+    else {
+        panic!("expected AgentStarted");
+    };
+    // The context usage comes after the settings an agent without an effort asks for.
+    let started = client
+        .summary_with(explicit, |summary| summary.context_percent.is_some())
+        .await;
+
+    assert_eq!(
+        (applied.effort, applied.effort_is_default),
+        (Some(Effort::Medium), true)
+    );
+    assert!(other_model.effort_is_default, "the new model's default");
+    assert!(!given.effort_is_default);
+    assert_eq!(
+        (started.effort, started.effort_is_default),
+        (Some(Effort::Xhigh), false)
+    );
+}
+
+#[tokio::test]
 async fn a_start_reads_its_title_as_a_rename_does() {
     let setup = Setup::new();
     let mut client = setup.connect().await;

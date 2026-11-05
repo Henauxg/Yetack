@@ -562,6 +562,7 @@ pub(super) fn initial_summary(record: &AgentRecord) -> AgentSummary {
         pending_count: 0,
         model: record.model.clone(),
         effort: record.effort,
+        effort_is_default: false,
         mode: record.mode.unwrap_or_default(),
         task_progress: None,
         context_percent: None,

@@ -236,6 +236,7 @@ impl AgentView {
             pending_count: 0,
             model: None,
             effort: None,
+            effort_is_default: false,
             mode: PermissionMode::Default,
             task_progress: None,
             context_percent: None,
@@ -600,6 +601,14 @@ impl AgentView {
 
     pub(crate) fn set_effort(&mut self, effort: Effort) {
         self.summary.effort = Some(effort);
+        self.summary.effort_is_default = false;
+    }
+
+    /// The effort Claude Code applies by itself to an agent that was given none, from its
+    /// settings or the model's default; `None` when it applies none, or does not say.
+    pub(crate) fn set_default_effort(&mut self, effort: Option<Effort>) {
+        self.summary.effort = effort;
+        self.summary.effort_is_default = effort.is_some();
     }
 
     pub(crate) fn set_title(&mut self, title: String) {
@@ -1321,6 +1330,7 @@ mod tests {
             pending_count: 0,
             model: None,
             effort: None,
+            effort_is_default: false,
             mode: PermissionMode::Default,
             task_progress: None,
             context_percent: None,
@@ -2412,6 +2422,22 @@ mod tests {
         assert!(!same, "the session has the agent's name");
         assert!(!none, "Claude Code restated no name");
         assert_eq!(view.summary().title, "Checkout");
+    }
+
+    #[test]
+    fn a_given_effort_replaces_the_default_one_and_is_no_default() {
+        let mut view = view();
+
+        view.set_default_effort(Some(Effort::Medium));
+        let default = (view.summary().effort, view.summary().effort_is_default);
+        view.set_effort(Effort::High);
+        let given = (view.summary().effort, view.summary().effort_is_default);
+        view.set_default_effort(None);
+        let unknown = (view.summary().effort, view.summary().effort_is_default);
+
+        assert_eq!(default, (Some(Effort::Medium), true));
+        assert_eq!(given, (Some(Effort::High), false));
+        assert_eq!(unknown, (None, false));
     }
 
     #[test]

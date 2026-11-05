@@ -70,8 +70,14 @@ pub struct AgentSummary {
     pub pending_count: u16,
     /// `None` until Claude Code reports the model it uses.
     pub model: Option<String>,
-    /// `None` while the agent runs at Claude Code's default effort.
+    /// The effort the agent runs at: the one it was given, or else the one Claude Code applies by
+    /// itself, from its settings or the model's default. `None` while unknown.
     pub effort: Option<Effort>,
+    /// `effort` is the one Claude Code applies by itself, which an agent in another folder or on
+    /// another model may not get: a client that starts a new agent like this one leaves its effort
+    /// out. `false` when missing, so a summary saved without it still loads.
+    #[serde(default)]
+    pub effort_is_default: bool,
     pub mode: PermissionMode,
     /// `None` when the agent has no task list.
     pub task_progress: Option<TaskProgress>,
