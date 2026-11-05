@@ -1375,8 +1375,20 @@ button:disabled {
   line-height: 1.65;
 }
 
+/* Its height fits its rows: only a long line scrolls it, sideways. */
 .inline-diff {
   margin-left: 15px;
+  overflow-y: hidden;
+}
+
+/* With `scrollbar-width` or `scrollbar-color` set, WebKitGTK draws overlay scrollbars that show
+   only while scrolling, so nothing tells that a line goes on. Unset, the always visible
+   `::-webkit-scrollbar` style applies. */
+.diff-box,
+.approval-diff-lines,
+.file-body {
+  scrollbar-width: auto;
+  scrollbar-color: auto;
 }
 
 .approval-diff {
@@ -1384,22 +1396,50 @@ button:disabled {
   overflow-y: auto;
 }
 
+/* A box that scrolls both ways shows a vertical scrollbar as soon as the horizontal one appears,
+   so the lines scroll sideways in a box of their own. */
+.approval-diff-lines {
+  overflow-y: hidden;
+}
+
+/* Every row as wide as the longest, so that a row's color spans the scrolled width and its gutter
+   can stick to the left edge all the way. */
+.diff-rows {
+  width: max-content;
+  min-width: 100%;
+}
+
 .diff-row {
+  --row-tint: transparent;
   display: flex;
   min-width: max-content;
   min-height: 1.65em;
+  background: var(--row-tint);
 }
 
 .diff-row.added {
-  background: rgba(46, 160, 67, 0.14);
+  --row-tint: rgba(46, 160, 67, 0.14);
 }
 
 .diff-row.removed {
-  background: rgba(248, 81, 73, 0.12);
+  --row-tint: rgba(248, 81, 73, 0.12);
 }
 
 .diff-row.marked {
-  background: rgba(246, 193, 119, 0.14);
+  --row-tint: rgba(246, 193, 119, 0.14);
+}
+
+/* The line number and sign stay in place while the text scrolls sideways under them, so the
+   gutter repeats the row's tint over an opaque color. */
+.line-gutter {
+  position: sticky;
+  left: 0;
+  flex: none;
+  display: flex;
+  background: linear-gradient(var(--row-tint), var(--row-tint)), var(--well);
+}
+
+.diff-row.marked .line-gutter {
   box-shadow: inset 3px 0 0 #f6c177;
 }
 
@@ -2304,7 +2344,7 @@ button:disabled {
   left: 20px;
   bottom: calc(100% - 4px);
   z-index: 7;
-  width: 460px;
+  width: 520px;
   max-width: calc(100% - 40px);
   display: flex;
   flex-direction: column;
@@ -2332,17 +2372,19 @@ button:disabled {
 }
 
 .palette-list {
-  max-height: 300px;
+  max-height: 340px;
   padding: 4px;
 }
 
+/* Two lines: the name and its kind, then the description. Neither wraps. */
 .palette-item {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
   width: 100%;
   min-height: 40px;
-  padding: 0 10px;
+  padding: 5px 10px;
   border-radius: 6px;
   border: 0;
   background: transparent;
@@ -2356,19 +2398,109 @@ button:disabled {
   background: var(--selected);
 }
 
-.palette-description {
-  flex: 1 1 auto;
+.palette-item-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
   min-width: 0;
-  color: var(--muted);
+}
+
+.palette-name,
+.palette-description {
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+.palette-name {
+  flex: 0 1 auto;
+}
+
+.palette-description {
+  font-size: 12px;
+  color: var(--dim);
+}
+
 .palette-kind {
   flex: none;
+  margin-left: auto;
   font-size: 11px;
   color: var(--dim);
+}
+
+/* The slash button's menu: sections of actions and settings over the commands. */
+.palette-menu .palette-list {
+  max-height: min(500px, calc(100vh - 280px));
+}
+
+.palette-section {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px 4px;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.palette-action,
+.palette-setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: 13px;
+}
+
+.palette-setting {
+  min-height: 38px;
+  padding-right: 6px;
+}
+
+.palette-action.highlighted,
+.palette-action:hover:not(:disabled),
+.palette-setting.highlighted {
+  background: var(--selected);
+}
+
+.palette-action:disabled {
+  color: var(--faint);
+}
+
+.palette-hint {
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+/* The settings take the file view's segmented control, a little smaller. */
+.palette-setting .segmented {
+  flex: none;
+  gap: 2px;
+}
+
+.palette-setting .segment {
+  min-height: 24px;
+  padding: 0 9px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* A command row's place while the commands load. The shimmer is the shared skeleton style. */
+.palette-skeleton {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 5px 10px;
 }
 
 .palette-empty {
@@ -2465,6 +2597,13 @@ button:disabled {
   color: var(--text);
 }
 
+/* A note that says what an action did, such as a copy to the clipboard. */
+.error-note.info {
+  border-color: var(--line-control);
+  background: var(--raised);
+  color: var(--text-soft);
+}
+
 .error-notes {
   position: absolute;
   left: 20px;
@@ -2494,16 +2633,56 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+/* Split between the chat and the file view. The file view takes its share of the window, set
+   in `--file-view-share` on the app. The chat's basis is 0, so when space runs short the file
+   view alone shrinks, down to its own minimum, and the chat keeps its minimum width. */
+
+.center.narrow-chat {
+  flex-basis: 0;
+  min-width: min(360px, 30%);
+}
+
+.splitter {
+  position: relative;
+  z-index: 3;
+  flex: none;
+  width: 1px;
+  background: var(--line);
+  cursor: col-resize;
+  touch-action: none;
+}
+
+/* A wider grip than the line it draws. */
+.splitter::before {
+  content: "";
+  position: absolute;
+  inset: 0 -4px;
+}
+
+.splitter:hover,
+.splitter:focus-visible,
+.splitter.dragging {
+  outline: none;
+  background: var(--teal);
+  box-shadow: 0 0 0 1px var(--teal);
+}
+
+/* While the splitter moves, the pointer keeps its shape over every pane and selects no text. */
+html.splitting,
+html.splitting * {
+  cursor: col-resize;
+  user-select: none;
+}
+
 /* File view. */
 
 .file-view {
-  flex: 0 1 500px;
-  min-width: 0;
+  flex: 0 1 calc(var(--file-view-share) * 100%);
+  min-width: min(320px, 28%);
   min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--well);
-  border-left: 1px solid var(--line);
 }
 
 .file-tabs {
@@ -2559,6 +2738,10 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.file-label .spinner {
+  margin-left: 8px;
+}
+
 .read-only-chip {
   padding: 1px 8px;
   border-radius: 999px;
@@ -2601,6 +2784,29 @@ button:disabled {
 .file-body .line-number {
   width: 44px;
   padding-right: 10px;
+}
+
+/* Placeholder lines where the text will be, past the line numbers. */
+.file-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 8px 14px 0 58px;
+}
+
+/* Wrapped lines keep their number on their first row. */
+.file-body.wrap .diff-rows {
+  width: auto;
+}
+
+.file-body.wrap .diff-row {
+  min-width: 0;
+}
+
+.file-body.wrap .line-text {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .file-note {

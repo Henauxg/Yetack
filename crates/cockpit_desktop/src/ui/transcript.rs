@@ -224,7 +224,7 @@ pub fn ItemView(
             UserBubble { message }
         },
         ItemBody::AssistantText { markdown } => rsx! {
-            MarkdownView { agent, markdown }
+            MarkdownView { agent, folder, markdown }
         },
         ItemBody::Thinking { text } => rsx! {
             ThinkingView { text }
@@ -245,7 +245,7 @@ pub fn ItemView(
             QuestionCard { agent, item: id, question }
         },
         ItemBody::Plan(plan) => rsx! {
-            PlanCard { agent, plan }
+            PlanCard { agent, folder, plan }
         },
         ItemBody::TurnEnd(end) => rsx! {
             TurnEndView { end }
@@ -498,8 +498,10 @@ fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall, stage: CallStage) -
             }
             if !preview.is_empty() {
                 div { class: "diff-box inline-diff scroll-x",
-                    for row in preview.iter() {
-                        {diff_row(row, numbers, None)}
+                    div { class: "diff-rows",
+                        for row in preview.iter() {
+                            {diff_row(row, numbers, None)}
+                        }
                     }
                     if more > 0 {
                         button { class: "more-lines", onclick: open_more, "{more_text}" }

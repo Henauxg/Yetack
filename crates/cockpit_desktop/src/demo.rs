@@ -29,6 +29,8 @@ const PLATFORM_FOLDER: &str = "/home/dev/projects/acme-platform";
 
 const ERROR_FILE: &str = "src/error.rs";
 const TEST_FILE: &str = "tests/columns.rs";
+const LEXER_FILE: &str = "src/lexer.rs";
+const NOTES_FILE: &str = "AGENTS.md";
 
 const ERROR_AFTER: &str = "/// A parse error, with where it happened.
 pub struct ParseError {
@@ -48,6 +50,46 @@ fn an_unexpected_token_reports_its_column() {
     assert_eq!(error.message, \"unexpected `*`\");
 }
 ";
+
+/// Long lines, to look at the file view's sideways scroll and its wrap toggle.
+const LEXER_TEXT: &str = "//! Splits an expression into tokens, each with the line and the column where it starts, so that the parser can point at the token an error is about.
+
+use crate::token::{Token, TokenKind};
+
+/// The characters that end a number or a name: an operator, a parenthesis, a comma, or white space between two tokens.
+const SEPARATORS: [char; 12] = ['+', '-', '*', '/', '%', '^', '(', ')', ',', ' ', '\\t', '\\n'];
+
+pub fn tokens(input: &str) -> Vec<Token> {
+    let mut tokens = Vec::new();
+    let (mut line, mut column) = (1, 1);
+    for (offset, character) in input.char_indices() {
+        if character == '\\n' {
+            line += 1;
+            column = 1;
+            continue;
+        }
+        tokens.push(Token { kind: TokenKind::from_char(character), line, column, offset, text: input[offset..offset + character.len_utf8()].to_owned() });
+        column += 1;
+    }
+    tokens
+}
+";
+
+const LEXER_LINE_BEFORE: &str = "        tokens.push(Token { kind: TokenKind::from_char(character), line, column: column - 1, offset, text: input[offset..offset + character.len_utf8()].to_owned() });\n";
+
+const LEXER_LINE_AFTER: &str = "        tokens.push(Token { kind: TokenKind::from_char(character), line, column, offset, text: input[offset..offset + character.len_utf8()].to_owned() });\n";
+
+const NOTES_TEXT: &str = "# calc-parser
+
+Notes for agents working in this repository.
+
+- Lines and columns count from 1, as editors show them.
+- Every error carries the line and the column of the token it is about.
+- Run `cargo test` before saying a change is done.
+";
+
+/// Markdown links to files of the agent's folder: relative, at a line, and absolute.
+const FIX_ANSWER: &str = "Fixed in [the lexer](src/lexer.rs#L17): columns now count from 1, as [AGENTS.md](AGENTS.md) asks. The [error type](/home/dev/projects/calc-parser/src/error.rs) stays as it is. Running the tests again.";
 
 const FAILED_TEST_OUTPUT: &str = "running 4 tests
 test lexer::tests::counts_lines ... ok
@@ -186,6 +228,10 @@ fn file_text(path: &Path) -> Option<&'static str> {
         Some(ERROR_AFTER)
     } else if relative == Path::new(TEST_FILE) {
         Some(TEST_TEXT)
+    } else if relative == Path::new(LEXER_FILE) {
+        Some(LEXER_TEXT)
+    } else if relative == Path::new(NOTES_FILE) {
+        Some(NOTES_TEXT)
     } else {
         None
     }
@@ -368,6 +414,27 @@ fn commands() -> Vec<SlashCommand> {
         ),
         command("changelog", "Draft the changelog entry", CommandKind::Skill),
         command(
+            "summarize-open-pull-requests",
+            "List the open pull requests with their review state, the checks that fail and who waits on whom",
+            CommandKind::Skill,
+        ),
+        command(
+            "update-dependency-lockfiles",
+            "Bump the locked versions of every dependency, run the tests and list what changed",
+            CommandKind::Skill,
+        ),
+        command(
+            "write-release-notes-from-tags",
+            "Write the release notes from the commits between the last two tags",
+            CommandKind::Skill,
+        ),
+        command(
+            "explain-failing-ci-job",
+            "Read the log of the last failed CI job and explain why it failed",
+            CommandKind::Skill,
+        ),
+        command("benchmark-hot-paths", "", CommandKind::Skill),
+        command(
             "compact",
             "Summarize the conversation to free context",
             CommandKind::Command,
@@ -379,6 +446,11 @@ fn commands() -> Vec<SlashCommand> {
         ),
         command("model", "Change the model", CommandKind::Command),
         command("effort", "Change the effort level", CommandKind::Command),
+        command(
+            "clear",
+            "Clear the conversation history and free up context",
+            CommandKind::Command,
+        ),
     ]
 }
 
@@ -493,6 +565,12 @@ fn parser_agent(now: SystemTime) -> Sample {
         item(
             12,
             None,
+            edit_call("Edit", LEXER_FILE, LEXER_LINE_BEFORE, LEXER_LINE_AFTER),
+        ),
+        item(13, None, text(FIX_ANSWER)),
+        item(
+            14,
+            None,
             ItemBody::ToolCall(call(
                 "Bash",
                 "cargo test parser",
@@ -501,7 +579,7 @@ fn parser_agent(now: SystemTime) -> Sample {
             )),
         ),
         item(
-            13,
+            15,
             None,
             user("Also cover a token at the end of the input.", true),
         ),
@@ -549,6 +627,11 @@ fn parser_agent(now: SystemTime) -> Sample {
                 path: Path::new(PARSER_FOLDER).join(TEST_FILE),
                 lines_added: 8,
                 lines_removed: 0,
+            },
+            ChangedFile {
+                path: Path::new(PARSER_FOLDER).join(LEXER_FILE),
+                lines_added: 1,
+                lines_removed: 1,
             },
         ],
         context: Some(ContextUsage {

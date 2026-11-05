@@ -6,6 +6,7 @@ mod connection;
 mod demo;
 mod format;
 mod notifications;
+mod prefs;
 mod render;
 mod state;
 mod ui;
@@ -17,6 +18,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::config::{Config, Environment};
 use crate::connection::Startup;
+use crate::prefs::Prefs;
 use crate::state::AppState;
 
 const STYLESHEET: &str = include_str!("style.css");
@@ -41,16 +43,21 @@ fn main() -> anyhow::Result<()> {
     let demo = demo::is_requested(&arguments);
     let environment = Environment::from_process();
     let config = Config::load(&environment)?;
-    let state = if demo {
+    let mut state = if demo {
         demo::state(config.daemon_label())
     } else {
         AppState::new(config.daemon_label())
     };
+    let prefs_file = prefs::file(&environment);
+    if let Some(file) = &prefs_file {
+        state.prefs = Prefs::load(file);
+    }
     let startup = Startup {
         state,
         transport: config.transport(&environment)?,
         notifications: config.notifications.enabled && !demo,
         demo,
+        prefs_file,
     };
     let window = WindowBuilder::new()
         .with_title(APP_NAME)

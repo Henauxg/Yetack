@@ -1,5 +1,5 @@
-//! Agent text rendered from the markdown tree, with `path:line` references as links into the file
-//! view.
+//! Agent text rendered from the markdown tree, with `path:line` references and links to the
+//! agent's files as links into the file view.
 
 use std::path::PathBuf;
 
@@ -11,9 +11,10 @@ use crate::render::{Block, FileRef, Inline, parse_markdown};
 use crate::state::actions;
 use crate::ui::code::CodeBlock;
 
+/// `folder` is the agent's, where the files its links open must be.
 #[component]
-pub fn MarkdownView(agent: AgentId, markdown: String) -> Element {
-    let blocks = parse_markdown(&markdown);
+pub fn MarkdownView(agent: AgentId, folder: PathBuf, markdown: String) -> Element {
+    let blocks = parse_markdown(&markdown, &folder);
     rsx! {
         div { class: "markdown", {blocks_view(agent, &blocks)} }
     }
@@ -153,7 +154,7 @@ fn FileLink(agent: AgentId, file: FileRef) -> Element {
             title: "Open in the file view",
             onclick: move |_| {
                 let path = PathBuf::from(&path);
-                cockpit.update(|state| actions::open_file(state, agent, path, Some(line)));
+                cockpit.update(|state| actions::open_file(state, agent, path, line));
             },
             "{text}"
         }

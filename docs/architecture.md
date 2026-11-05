@@ -232,6 +232,8 @@ On start the daemon reads `agents.json`, finds the last `Seq` in the logs, and r
 
 - **Config**: `~/.config/agents-cockpit/config.toml` lists the daemons to reach, each local or over SSH.
   v1 connects to one.
+- **Preferences**: `$XDG_STATE_HOME/agents-cockpit-desktop/prefs.json` (default `~/.local/state/agents-cockpit-desktop/`), on the machine the app runs on, keeps one viewer's choices: the file view's width and its wrap toggle.
+  A missing or broken file means the defaults.
 - **State**: `AppState` holds the summaries, the open transcripts, the plan usage and the UI state (selected agent, unread agents, open blocks).
   A pure function `apply(&mut AppState, Event)` updates it, so the state logic is tested without a window.
 - **Connection task**: a Dioxus coroutine owns the `Connection`, applies events to the state signal, and sends the requests the components ask for.

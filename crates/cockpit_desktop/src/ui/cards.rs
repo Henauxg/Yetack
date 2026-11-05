@@ -94,9 +94,13 @@ pub fn ApprovalCard(agent: AgentId, folder: PathBuf, approval: Approval) -> Elem
             // Every row up to the cap, and past it a line that says how much is left out: what is
             // allowed must show before it is allowed.
             if !diff.rows.is_empty() {
-                div { class: "diff-box scroll-x approval-diff",
-                    for row in diff.rows.iter() {
-                        {diff_row(row, numbers, None)}
+                div { class: "diff-box approval-diff",
+                    div { class: "approval-diff-lines scroll-x",
+                        div { class: "diff-rows",
+                            for row in diff.rows.iter() {
+                                {diff_row(row, numbers, None)}
+                            }
+                        }
                     }
                     {lines_not_shown(diff.more)}
                 }
@@ -286,7 +290,7 @@ fn answers_text(answers: &[QuestionAnswer]) -> String {
 }
 
 #[component]
-pub fn PlanCard(agent: AgentId, plan: Plan) -> Element {
+pub fn PlanCard(agent: AgentId, folder: PathBuf, plan: Plan) -> Element {
     let cockpit: Cockpit = use_context();
     let waiting = plan.answer == AnswerState::Waiting;
     let outcome = match &plan.answer {
@@ -318,7 +322,7 @@ pub fn PlanCard(agent: AgentId, plan: Plan) -> Element {
                 Icon { kind: IconKind::List, size: 16 }
                 span { "Claude proposes a plan" }
             }
-            MarkdownView { agent, markdown: plan.markdown.clone() }
+            MarkdownView { agent, folder, markdown: plan.markdown.clone() }
             if waiting {
                 div { class: "card-actions",
                     button { class: "button primary", onclick: decide(PlanDecision::AcceptEdits),

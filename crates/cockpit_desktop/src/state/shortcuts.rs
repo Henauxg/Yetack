@@ -9,7 +9,7 @@ use super::app_state::AppState;
 use super::drafts::Drafts;
 use super::requests::Outgoing;
 use super::transcript::WaitingKind;
-use super::ui_state::Popover;
+use super::ui_state::{PaletteOrigin, Popover};
 
 /// `KeyboardEvent.key` values.
 const KEY_ESCAPE: &str = "Escape";
@@ -91,11 +91,15 @@ fn composer_key(
     agent: AgentId,
     press: &KeyPress,
 ) -> Vec<Outgoing> {
-    if state.ui.popover == Some(Popover::Palette) {
+    if state.ui.popover == Some(Popover::Palette(PaletteOrigin::Typed)) {
         match press.key.as_str() {
             KEY_UP => actions::palette_move(state, drafts, agent, Direction::Up),
             KEY_DOWN => actions::palette_move(state, drafts, agent, Direction::Down),
-            KEY_ENTER | KEY_TAB => actions::palette_pick(state, drafts, agent, None),
+            // Opened by typing, the palette lists commands alone. A pick puts one in the
+            // composer, which already has the focus the pick asks the window for.
+            KEY_ENTER | KEY_TAB => {
+                return actions::palette_pick(state, drafts, agent, None).requests;
+            }
             _ => {}
         }
         return Vec::new();
@@ -264,6 +268,26 @@ mod tests {
             second.first().map(|outgoing| &outgoing.request),
             Some(Request::AgentInterrupt(_))
         ));
+    }
+
+    #[test]
+    fn escape_closes_the_palette_whatever_opened_it() {
+        let mut drafts = Drafts::default();
+        let mut state = state(AgentStatus::Idle, None);
+        let agent = AgentId::new(1);
+        let escape = press(KEY_ESCAPE, KeyTarget::Field);
+
+        actions::toggle_palette(&mut state, &mut drafts, agent);
+        handle_key(&mut state, &mut drafts, &escape);
+        let after_button = state.ui.popover;
+        let typed = actions::composer_input(&state, &mut drafts, agent, "/".to_owned());
+        if let Some(change) = typed {
+            actions::change_palette(&mut state, agent, change);
+        }
+        handle_key(&mut state, &mut drafts, &escape);
+
+        assert_eq!(after_button, None);
+        assert_eq!(state.ui.popover, None);
     }
 
     #[test]

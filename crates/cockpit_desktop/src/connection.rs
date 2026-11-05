@@ -2,6 +2,7 @@
 //! state, and runs the requests the components ask for.
 
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_client::{Backoff, Requester, Session, Transport};
@@ -22,6 +23,8 @@ pub struct Startup {
     pub notifications: bool,
     /// Answers requests from the sample state instead of a daemon.
     pub demo: bool,
+    /// Where the preferences are saved, `None` without a home folder.
+    pub prefs_file: Option<PathBuf>,
 }
 
 /// What components hold to read and change the state and to reach the daemon. The drafts are a
@@ -108,6 +111,7 @@ pub fn use_cockpit(startup: Startup) -> Cockpit {
         transport,
         notifications,
         demo,
+        prefs_file: _,
     } = startup;
     let state = use_signal(move || initial);
     let drafts = use_signal(Drafts::default);

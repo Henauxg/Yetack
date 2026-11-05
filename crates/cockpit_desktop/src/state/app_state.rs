@@ -11,6 +11,7 @@ use cockpit_protocol::{
 use super::transcript::Transcript;
 use super::ui_state::UiState;
 use crate::config::DaemonLabel;
+use crate::prefs::Prefs;
 
 /// Data the app asks the daemon for when it needs it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -58,6 +59,8 @@ pub struct AgentEntry {
     pub details: Loadable<AgentDetails>,
     /// The file view's texts, by the path the view uses.
     pub files: BTreeMap<PathBuf, Loadable<String>>,
+    /// An `agent.commands` request is on its way.
+    pub commands_requested: bool,
 }
 
 impl AgentEntry {
@@ -67,6 +70,16 @@ impl AgentEntry {
             transcript: Transcript::default(),
             details: Loadable::NotRequested,
             files: BTreeMap::new(),
+            commands_requested: false,
+        }
+    }
+
+    /// Whether the commands and skills are on their way, with the details or on their own.
+    pub fn commands_loading(&self) -> bool {
+        match &self.details {
+            Loadable::NotRequested | Loadable::Loading => true,
+            Loadable::Loaded(_) => self.commands_requested,
+            Loadable::Failed(_) => false,
         }
     }
 
@@ -85,6 +98,8 @@ pub struct AppState {
     /// Past Claude sessions, for the new agent dialog.
     pub sessions: Loadable<Vec<PastSession>>,
     pub ui: UiState,
+    /// The choices the app saves on this machine.
+    pub prefs: Prefs,
 }
 
 /// Agents that wait for you come first, then working, idle and exited ones.
@@ -107,6 +122,7 @@ impl AppState {
             settings: Settings::default(),
             sessions: Loadable::NotRequested,
             ui: UiState::default(),
+            prefs: Prefs::default(),
         }
     }
 
