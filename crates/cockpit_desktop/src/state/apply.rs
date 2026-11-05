@@ -97,6 +97,10 @@ pub fn apply_catchup(state: &mut AppState, drafts: &mut Drafts, catchup: Catchup
     state.ui.unread.retain(|agent| agents.contains_key(agent));
     state
         .ui
+        .title_edit
+        .take_if(|edit| !agents.contains_key(&edit.agent));
+    state
+        .ui
         .file_views
         .retain(|agent, _| agents.contains_key(agent));
     drafts
@@ -120,6 +124,7 @@ pub fn apply(state: &mut AppState, drafts: &mut Drafts, record: EventRecord) -> 
             state.ui.unread.remove(&agent);
             state.ui.file_views.remove(&agent);
             drafts.composer.remove(&agent);
+            state.ui.title_edit.take_if(|edit| edit.agent == agent);
             if state.ui.selected == Some(agent) {
                 state.ui.selected = None;
                 state.fix_selection();
@@ -241,6 +246,7 @@ mod tests {
 
     use super::*;
     use crate::state::app_state::tests::{state_with, summary};
+    use crate::state::ui_state::TitleEdit;
 
     fn record(event: Event) -> EventRecord {
         EventRecord {
@@ -438,6 +444,55 @@ mod tests {
 
         assert_eq!(state.ui.selected, Some(AgentId::new(2)));
         assert!(!state.agents.contains_key(&AgentId::new(3)));
+    }
+
+    /// A title edit left open for a removed agent would take the first Esc meant to stop the next
+    /// agent.
+    #[test]
+    fn removing_the_agent_being_renamed_ends_the_rename() {
+        let renamed = |agent: u32| TitleEdit {
+            agent: AgentId::new(agent),
+            title: format!("Agent {agent}"),
+        };
+        let mut removed = state_with(vec![
+            summary(1, AgentStatus::Idle),
+            summary(2, AgentStatus::Working),
+        ]);
+        removed.ui.selected = Some(AgentId::new(1));
+        removed.ui.title_edit = Some(renamed(1));
+        let mut dropped = removed.clone();
+        let mut other = removed.clone();
+        other.ui.title_edit = Some(renamed(2));
+
+        apply(
+            &mut removed,
+            &mut Drafts::default(),
+            record(Event::AgentRemoved {
+                agent: AgentId::new(1),
+            }),
+        );
+        apply_catchup(
+            &mut dropped,
+            &mut Drafts::default(),
+            Catchup::Snapshot(Snapshot {
+                agents: vec![summary(2, AgentStatus::Working)],
+                plan_usage: PlanUsage::default(),
+                settings: Settings::default(),
+                last_seq: Some(Seq::new(40)),
+            }),
+        );
+        apply(
+            &mut other,
+            &mut Drafts::default(),
+            record(Event::AgentRemoved {
+                agent: AgentId::new(1),
+            }),
+        );
+
+        assert_eq!(removed.ui.title_edit, None);
+        assert_eq!(dropped.ui.title_edit, None);
+        assert_eq!(other.ui.title_edit, Some(renamed(2)));
+        assert!(!removed.ui.close_overlays(), "nothing is left open for Esc");
     }
 
     #[test]
