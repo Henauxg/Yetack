@@ -17,6 +17,7 @@ const KEY_ENTER: &str = "Enter";
 const KEY_TAB: &str = "Tab";
 const KEY_UP: &str = "ArrowUp";
 const KEY_DOWN: &str = "ArrowDown";
+const KEY_F2: &str = "F2";
 
 /// The letters that answer an approval or a plan.
 const KEY_YES: &str = "y";
@@ -71,6 +72,12 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
         return working
             .map(|entry| actions::interrupt(state, entry.id()))
             .unwrap_or_default();
+    }
+    // The script passes F2 on from outside text fields, and from the title fields.
+    let plain = !command && !press.alt && !press.shift;
+    if press.key == KEY_F2 && plain && state.ui.dialog.is_none() {
+        actions::rename_key(state);
+        return Vec::new();
     }
     // Alt+Up and Alt+Down move the selected agent in the sidebar, from anywhere but a text field
     // other than the composer.
@@ -460,6 +467,29 @@ mod tests {
             Some(cockpit_protocol::Method::AgentMove)
         );
         assert!(behind_a_dialog.is_empty());
+    }
+
+    #[test]
+    fn f2_opens_the_rows_title_field_and_moves_it_from_the_headers() {
+        use crate::state::TitlePlace;
+
+        let mut drafts = Drafts::default();
+        let mut state = state(AgentStatus::Idle, None);
+        let place = |state: &AppState| state.ui.title_edit.as_ref().map(|edit| edit.place);
+
+        handle_key(&mut state, &mut drafts, &press(KEY_F2, KeyTarget::Page));
+        let from_page = place(&state);
+        state.ui.title_edit = None;
+        actions::start_rename(&mut state, AgentId::new(1));
+        handle_key(&mut state, &mut drafts, &press(KEY_F2, KeyTarget::Field));
+        let from_header = place(&state);
+        state.ui.title_edit = None;
+        actions::toggle_switcher(&mut state);
+        handle_key(&mut state, &mut drafts, &press(KEY_F2, KeyTarget::Page));
+
+        assert_eq!(from_page, Some(TitlePlace::Sidebar));
+        assert_eq!(from_header, Some(TitlePlace::Sidebar));
+        assert_eq!(place(&state), None, "nothing behind a dialog");
     }
 
     #[test]

@@ -21,7 +21,7 @@ use super::requests::{Outgoing, Purpose, Shift, history_request};
 use super::transcript::HistoryState;
 use super::ui_state::{
     Block, Dialog, FileView, NewAgentForm, NewAgentTab, PaletteOrigin, Popover, Switcher,
-    TitleEdit, ToolFilter, ViewMode,
+    TitleEdit, TitlePlace, ToolFilter, ViewMode,
 };
 use super::{export, file_edits};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
@@ -451,20 +451,70 @@ pub fn palette_pick(
 
 /// Turns the header's title into a field holding it.
 pub fn start_rename(state: &mut AppState, agent: AgentId) {
+    start_rename_at(state, agent, TitlePlace::Header);
+}
+
+/// Turns the title of the agent's sidebar row into a field holding it.
+pub fn start_rename_in_sidebar(state: &mut AppState, agent: AgentId) {
+    start_rename_at(state, agent, TitlePlace::Sidebar);
+}
+
+/// An edit of the same agent moves to `place` with the text typed so far.
+fn start_rename_at(state: &mut AppState, agent: AgentId, place: TitlePlace) {
     let Some(entry) = state.agents.get(&agent) else {
         return;
     };
+    let title = match state.ui.title_edit.take() {
+        Some(edit) if edit.agent == agent => edit.title,
+        Some(_) | None => entry.summary.title.clone(),
+    };
     state.ui.title_edit = Some(TitleEdit {
         agent,
-        title: entry.summary.title.clone(),
+        title,
+        place,
     });
     state.ui.popover = None;
+}
+
+/// F2: renames the selected agent in its sidebar row, or moves an open title field to the other
+/// place. An agent the filter hides has no row: its title field opens in the header.
+pub fn rename_key(state: &mut AppState) {
+    let (agent, wanted) = match &state.ui.title_edit {
+        Some(edit) => match edit.place {
+            TitlePlace::Header => (edit.agent, TitlePlace::Sidebar),
+            TitlePlace::Sidebar => (edit.agent, TitlePlace::Header),
+        },
+        None => match state.ui.selected {
+            Some(agent) => (agent, TitlePlace::Sidebar),
+            None => return,
+        },
+    };
+    let has_row = state
+        .sidebar_agents()
+        .iter()
+        .any(|entry| entry.id() == agent);
+    let place = if has_row { wanted } else { TitlePlace::Header };
+    start_rename_at(state, agent, place);
 }
 
 pub fn rename_text(state: &mut AppState, text: String) {
     if let Some(edit) = &mut state.ui.title_edit {
         edit.title = text;
     }
+}
+
+/// A title field left the focus: the edit ends when it is still at that field's place. A field
+/// that leaves the page as the edit moves to the other place must not end it.
+pub fn finish_rename_at(state: &mut AppState, place: TitlePlace) -> Vec<Outgoing> {
+    let here = state
+        .ui
+        .title_edit
+        .as_ref()
+        .is_some_and(|edit| edit.place == place);
+    if !here {
+        return Vec::new();
+    }
+    finish_rename(state)
 }
 
 /// Ends the title edit, and renames the agent when the title changed and is not empty. Esc ends
@@ -1899,7 +1949,8 @@ mod tests {
             opened,
             Some(TitleEdit {
                 agent: agent(),
-                title: "Agent 1".to_owned()
+                title: "Agent 1".to_owned(),
+                place: TitlePlace::Header,
             })
         );
         assert_eq!(
@@ -1911,6 +1962,59 @@ mod tests {
         );
         assert!(again.is_empty(), "the field closed with the first save");
         assert_eq!(state.ui.title_edit, None);
+    }
+
+    #[test]
+    fn f2_renames_in_the_sidebar_and_moves_the_field_with_its_text() {
+        let mut state = state(AgentStatus::Idle);
+        let place = |state: &AppState| state.ui.title_edit.as_ref().map(|edit| edit.place);
+
+        rename_key(&mut state);
+        let opened = state.ui.title_edit.clone();
+        rename_text(&mut state, "Cart total".to_owned());
+        rename_key(&mut state);
+        let in_header = place(&state);
+        // The row's field leaves the page as the edit moves: its blur does not end the edit.
+        let stale_blur = finish_rename_at(&mut state, TitlePlace::Sidebar);
+        rename_key(&mut state);
+        let back = state.ui.title_edit.clone();
+        let saved = finish_rename_at(&mut state, TitlePlace::Sidebar);
+
+        assert_eq!(
+            opened,
+            Some(TitleEdit {
+                agent: agent(),
+                title: "Agent 1".to_owned(),
+                place: TitlePlace::Sidebar,
+            })
+        );
+        assert_eq!(in_header, Some(TitlePlace::Header));
+        assert!(stale_blur.is_empty());
+        assert_eq!(
+            back.map(|edit| (edit.title, edit.place)),
+            Some(("Cart total".to_owned(), TitlePlace::Sidebar))
+        );
+        assert_eq!(
+            sent(&saved),
+            [&Request::AgentRename(RenameParams {
+                agent: agent(),
+                title: "Cart total".to_owned()
+            })]
+        );
+        assert_eq!(state.ui.title_edit, None);
+    }
+
+    #[test]
+    fn f2_on_an_agent_the_filter_hides_opens_the_headers_field() {
+        let mut state = state(AgentStatus::Idle);
+        set_status_filter(&mut state, StatusFilter::Working);
+
+        rename_key(&mut state);
+
+        assert_eq!(
+            state.ui.title_edit.map(|edit| edit.place),
+            Some(TitlePlace::Header)
+        );
     }
 
     #[test]

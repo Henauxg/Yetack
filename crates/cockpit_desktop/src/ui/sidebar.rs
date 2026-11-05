@@ -3,13 +3,14 @@
 
 use std::time::Instant;
 
-use cockpit_protocol::{AgentId, AgentStatus};
+use cockpit_protocol::{AgentId, AgentStatus, MAX_TITLE_CHARS};
 use dioxus::prelude::*;
 use strum::VariantArray;
 
+use crate::bridge::{self, ROW_TITLE_FIELD_ID};
 use crate::connection::{Clock, Cockpit};
 use crate::prefs::StatusFilter;
-use crate::state::{AgentEntry, ConnectionState, actions};
+use crate::state::{AgentEntry, ConnectionState, TitlePlace, actions};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::reorder::{LIST_ID, ROW_CLASS, row_id};
 use crate::{APP_NAME, format};
@@ -25,10 +26,12 @@ struct AgentRow {
     selected: bool,
     /// "3/5".
     tasks: Option<String>,
+    /// The text of the title field that replaces the title while the agent is renamed here.
+    edit: Option<String>,
 }
 
 impl AgentRow {
-    fn new(entry: &AgentEntry, selected: bool, unread: bool) -> Self {
+    fn new(entry: &AgentEntry, selected: bool, unread: bool, edit: Option<String>) -> Self {
         let summary = &entry.summary;
         Self {
             id: summary.id,
@@ -41,6 +44,7 @@ impl AgentRow {
             tasks: summary
                 .task_progress
                 .map(|progress| format!("{}/{}", progress.done, progress.total)),
+            edit,
         }
     }
 }
@@ -97,10 +101,17 @@ pub fn Sidebar() -> Element {
         .sidebar_agents()
         .into_iter()
         .map(|entry| {
+            let edit = state
+                .ui
+                .title_edit
+                .as_ref()
+                .filter(|edit| edit.agent == entry.id() && edit.place == TitlePlace::Sidebar)
+                .map(|edit| edit.title.clone());
             AgentRow::new(
                 entry,
                 state.ui.selected == Some(entry.id()),
                 state.is_unread(entry.id()),
+                edit,
             )
         })
         .collect();
@@ -189,6 +200,39 @@ fn AgentRowView(row: AgentRow) -> Element {
     if row.unread {
         classes.push("unread");
     }
+    if let Some(title) = row.edit {
+        classes.push("editing");
+        let class = classes.join(" ");
+        // A div, not a button: a button would take the field's Space and Enter as clicks.
+        return rsx! {
+            div { id: row_id(agent), class,
+                span { class: "row-line",
+                    span { class: "status-dot", aria_hidden: true }
+                    input {
+                        id: ROW_TITLE_FIELD_ID,
+                        class: "row-title-field",
+                        r#type: "text",
+                        aria_label: "Agent title",
+                        // Follows the keyboard alone: a render that lags behind typing would put
+                        // an older title back.
+                        initial_value: "{title}",
+                        maxlength: "{MAX_TITLE_CHARS}",
+                        onmounted: move |_| bridge::select_field(ROW_TITLE_FIELD_ID),
+                        oninput: move |event: FormEvent| cockpit.update(|state| actions::rename_text(state, event.value())),
+                        onkeydown: move |event: KeyboardEvent| {
+                            if event.key() == Key::Enter {
+                                cockpit.change(actions::finish_rename);
+                            }
+                        },
+                        onblur: move |_| cockpit.change(|state| actions::finish_rename_at(state, TitlePlace::Sidebar)),
+                    }
+                }
+                span { class: "row-line row-second",
+                    span { class: "row-activity", "{row.activity}" }
+                }
+            }
+        };
+    }
     let class = classes.join(" ");
     rsx! {
         button {
@@ -198,7 +242,11 @@ fn AgentRowView(row: AgentRow) -> Element {
             onclick: move |_| cockpit.update(|state| actions::select_agent(state, agent)),
             span { class: "row-line",
                 span { class: "status-dot", aria_hidden: true }
-                span { class: "row-title", "{row.title}" }
+                span {
+                    class: "row-title",
+                    ondoubleclick: move |_| cockpit.update(|state| actions::start_rename_in_sidebar(state, agent)),
+                    "{row.title}"
+                }
                 if row.pending > 0 {
                     span { class: "pending-badge", "{row.pending}" }
                 }

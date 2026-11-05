@@ -440,6 +440,25 @@ button:disabled {
   font-weight: 600;
 }
 
+/* A row's title while it is renamed there, as the header's title field. */
+.agent-row.editing {
+  background: var(--hover);
+  border-color: var(--line-control);
+}
+
+.row-title-field {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: -2px 0;
+  padding: 1px 6px;
+  border-radius: 6px;
+  border: 1px solid rgba(45, 212, 191, 0.55);
+  background: var(--bg);
+  box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.12);
+  font-weight: 500;
+  outline: none;
+}
+
 /* The status filter: one chip per status, with its count. */
 .status-filters {
   display: flex;

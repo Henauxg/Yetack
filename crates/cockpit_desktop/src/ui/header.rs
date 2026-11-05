@@ -12,7 +12,7 @@ use dioxus::prelude::*;
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
 use crate::connection::{Clock, Cockpit};
-use crate::state::{AgentEntry, Loadable, Popover, actions, file_edits};
+use crate::state::{AgentEntry, Loadable, Popover, TitlePlace, actions, file_edits};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::presence::Presence;
 use crate::{bridge, format};
@@ -109,9 +109,6 @@ fn part_class(name: &str) -> &'static str {
 const OUTER_RING: f64 = 62.83;
 const INNER_RING: f64 = 31.42;
 
-/// The field that replaces the agent's title while it is renamed.
-const TITLE_FIELD_ID: &str = "agent-title-field";
-
 #[component]
 pub fn Header() -> Element {
     let cockpit: Cockpit = use_context();
@@ -149,7 +146,7 @@ pub fn Header() -> Element {
         .ui
         .title_edit
         .as_ref()
-        .filter(|edit| edit.agent == agent)
+        .filter(|edit| edit.agent == agent && edit.place == TitlePlace::Header)
         .map(|edit| edit.title.clone());
     rsx! {
         header { class: "center-header",
@@ -157,7 +154,7 @@ pub fn Header() -> Element {
                 div { class: "title-line",
                     if let Some(title) = title_edit {
                         input {
-                            id: TITLE_FIELD_ID,
+                            id: bridge::HEADER_TITLE_FIELD_ID,
                             class: "title-field",
                             r#type: "text",
                             aria_label: "Agent title",
@@ -165,14 +162,14 @@ pub fn Header() -> Element {
                             // put an older title back.
                             initial_value: "{title}",
                             maxlength: "{MAX_TITLE_CHARS}",
-                            onmounted: move |_| bridge::select_field(TITLE_FIELD_ID),
+                            onmounted: move |_| bridge::select_field(bridge::HEADER_TITLE_FIELD_ID),
                             oninput: move |event: FormEvent| cockpit.update(|state| actions::rename_text(state, event.value())),
                             onkeydown: move |event: KeyboardEvent| {
                                 if event.key() == Key::Enter {
                                     cockpit.change(actions::finish_rename);
                                 }
                             },
-                            onblur: move |_| cockpit.change(actions::finish_rename),
+                            onblur: move |_| cockpit.change(|state| actions::finish_rename_at(state, TitlePlace::Header)),
                         }
                     } else {
                         h1 {

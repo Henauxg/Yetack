@@ -262,7 +262,11 @@ On start the daemon reads `agents.json`, finds the last `Seq` in the logs, and r
   Alt+Up, Alt+Down and a drop move an agent among the rows the sidebar shows, and the hidden agents keep their places.
   The Ctrl+K switcher lists every agent, the ones that wait for you first: it finds an agent, and Ctrl+K then Enter opens the one that needs you.
 - **Rendering**: markdown with `pulldown-cmark`, syntax colors with `syntect` (Rust, SQL, Markdown, JSON, Bash, Nix), diffs with `similar` (line diff, then word highlights inside changed lines).
-- **Shortcuts**: Ctrl+K, Ctrl+N, Esc, Y, N, 1 to 9, as in plan.md, and Alt+Up and Alt+Down to move the selected agent in the sidebar.
+- **Renaming in the sidebar**: F2, or a double-click on a row's title, turns the selected agent's row title into a field, as the header's pencil does for the header's title.
+  Enter or leaving the field saves with `agent.rename`, and Esc cancels.
+  One title field shows at a time: F2 in the header's field moves the edit to the row with the text typed so far, and F2 in the row's field moves it back.
+  An agent the filter hides has no row, so F2 opens the header's field.
+- **Shortcuts**: Ctrl+K, Ctrl+N, Esc, Y, N, 1 to 9, as in plan.md, Alt+Up and Alt+Down to move the selected agent in the sidebar, and F2 to rename it.
 
 ## Errors
 
