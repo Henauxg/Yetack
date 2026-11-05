@@ -69,6 +69,16 @@ impl Transcript {
         self.items.keys().next_back().copied()
     }
 
+    /// In transcript order, the items after `after`, or all of them with `None`.
+    pub fn items_after(&self, after: Option<ItemId>) -> impl Iterator<Item = &TranscriptItem> {
+        use std::ops::Bound;
+
+        let start = after.map_or(Bound::Unbounded, Bound::Excluded);
+        self.items
+            .range((start, Bound::Unbounded))
+            .map(|(_, item)| item)
+    }
+
     pub fn append(&mut self, item: TranscriptItem) {
         self.items.insert(item.id, item);
     }

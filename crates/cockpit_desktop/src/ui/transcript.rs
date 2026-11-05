@@ -17,7 +17,7 @@ use crate::connection::{Clock, Cockpit};
 use crate::render::{Diff, Language, diff_lines};
 use crate::state::{HistoryState, actions, file_edits};
 use crate::ui::cards::{ApprovalCard, PlanCard, QuestionCard};
-use crate::ui::chat_scroll::{self, CHAT_SCROLL_ID, ENTRY_CLASS};
+use crate::ui::chat_scroll::{self, CHAT_SCROLL_ID, ENTRY_CLASS, JumpToLatest, NewDivider};
 use crate::ui::code::{LineNumbers, diff_row};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::loading::TranscriptSkeleton;
@@ -99,6 +99,9 @@ pub fn TranscriptView() -> Element {
         })
         .collect();
     let history = entry.transcript.history().clone();
+    let scrolled_up = state.ui.chat_scrolled_up.get(&agent).copied();
+    let waiting = scrolled_up.map_or(0, |last_seen| actions::new_entries(entry, last_seen).count);
+    let divider = actions::new_divider(&state, agent);
     rsx! {
         div {
             id: CHAT_SCROLL_ID,
@@ -148,16 +151,17 @@ pub fn TranscriptView() -> Element {
                 // Item ids repeat across agents: with the agent in the key, another agent's item
                 // never takes over the state of this one's (a fold, a typed answer).
                 for (item, nested, awaits_approval, step) in top {
-                    TranscriptRow { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), item, nested, awaits_approval, step }
+                    TranscriptRow { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), new_above: divider == Some(item.id), item, nested, awaits_approval, step }
                 }
                 if working {
                     WorkingLine { since: turn_started, linked: working_linked }
                 }
                 for item in queued {
-                    TranscriptRow { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), item, nested: Vec::new(), awaits_approval: false, step: None }
+                    TranscriptRow { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), new_above: divider == Some(item.id), item, nested: Vec::new(), awaits_approval: false, step: None }
                 }
             }
         }
+        JumpToLatest { shown: scrolled_up.is_some(), count: waiting }
     }
 }
 
@@ -379,6 +383,8 @@ fn awaiting_approval(items: &[&TranscriptItem]) -> BTreeSet<ItemId> {
 fn TranscriptRow(
     agent: AgentId,
     folder: PathBuf,
+    /// The "New" divider goes above the entry.
+    new_above: bool,
     item: TranscriptItem,
     nested: Vec<TranscriptItem>,
     awaits_approval: bool,
@@ -390,11 +396,19 @@ fn TranscriptRow(
     };
     let Some(step) = step else {
         return rsx! {
-            div { id, class: ENTRY_CLASS, {view} }
+            div { id, class: ENTRY_CLASS,
+                if new_above {
+                    NewDivider {}
+                }
+                {view}
+            }
         };
     };
     rsx! {
         div { id, class: ENTRY_CLASS,
+            if new_above {
+                NewDivider {}
+            }
             div { class: step.class(),
                 span { class: "step-dot", aria_hidden: true }
                 {view}

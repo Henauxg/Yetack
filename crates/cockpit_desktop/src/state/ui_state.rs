@@ -162,6 +162,9 @@ pub struct UiState {
     /// The agents whose chat is scrolled up, each with the last entry it held when it left its
     /// bottom (`None` when it held none). The entries after it arrived since.
     pub chat_scrolled_up: BTreeMap<AgentId, Option<ItemId>>,
+    /// The first entry that arrived while the agent's chat was scrolled up, once the chat went
+    /// back down: the "New" divider sits above it until a message is sent or another agent opens.
+    pub chat_new_from: BTreeMap<AgentId, ItemId>,
 }
 
 impl Default for UiState {
@@ -180,6 +183,7 @@ impl Default for UiState {
             errors: Vec::new(),
             next_error: 0,
             chat_scrolled_up: BTreeMap::new(),
+            chat_new_from: BTreeMap::new(),
         }
     }
 }

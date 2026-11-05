@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::connection::Cockpit;
 use crate::state::actions;
+use crate::ui::icons::{Icon, IconKind};
 
 /// The chat's scroll box.
 pub const CHAT_SCROLL_ID: &str = "chat-scroll";
@@ -24,6 +25,9 @@ pub const ENTRY_CLASS: &str = "transcript-entry";
 
 /// How close to the bottom, in pixels, the chat still follows new entries.
 const BOTTOM_THRESHOLD_PX: u16 = 40;
+
+/// The most new entries the jump button's badge counts; past it, it shows "99+".
+const MAX_BADGE_COUNT: usize = 99;
 
 /// Waits for its settings, then keeps the chat's place. Message and field names are serde's names
 /// for `Settings` and `ScrollMessage`.
@@ -44,8 +48,9 @@ let corrected = null;
 const places = new Map();
 const boxTop = () => box.getBoundingClientRect().top;
 const gapBelow = () => column.getBoundingClientRect().bottom - box.getBoundingClientRect().bottom;
-// An entry's wrapper has no box of its own: its first element shows the entry.
-const shown = (entry) => entry.firstElementChild;
+// An entry's wrapper has no box of its own: its last element shows the entry, after the "New"
+// divider when it has one.
+const shown = (entry) => entry.lastElementChild;
 const firstInView = () => {
   const entries = column.getElementsByClassName(settings.entry_class);
   const top = boxTop();
@@ -188,6 +193,44 @@ enum ScrollMessage {
 /// The id of an entry's wrapper.
 pub fn entry_id(agent: AgentId, item: ItemId) -> String {
     format!("entry-{}-{}", agent.get(), item.get())
+}
+
+/// The jump to the latest entry, while the chat is scrolled up: an arrow, with the count of the
+/// entries that arrived meanwhile. A click, or End, goes down; the script handles both.
+#[component]
+pub fn JumpToLatest(shown: bool, count: usize) -> Element {
+    let badge = match count {
+        0 => None,
+        1..=MAX_BADGE_COUNT => Some(count.to_string()),
+        _ => Some(format!("{MAX_BADGE_COUNT}+")),
+    };
+    let label = match count {
+        0 => "Jump to the latest message".to_owned(),
+        1 => "Jump to the latest message: 1 new entry".to_owned(),
+        _ => format!("Jump to the latest message: {count} new entries"),
+    };
+    rsx! {
+        button {
+            id: JUMP_BUTTON_ID,
+            class: if shown { "jump-latest shown" } else { "jump-latest" },
+            title: "Jump to the latest message (End)",
+            aria_label: label,
+            aria_hidden: !shown,
+            tabindex: if shown { "0" } else { "-1" },
+            Icon { kind: IconKind::ArrowDown, size: 16 }
+            if let Some(badge) = badge {
+                span { class: "jump-badge", "{badge}" }
+            }
+        }
+    }
+}
+
+/// The line above the first entry that arrived while the chat was scrolled up.
+#[component]
+pub fn NewDivider() -> Element {
+    rsx! {
+        div { class: "new-divider", role: "separator", "New" }
+    }
 }
 
 /// Runs the script for the window's life.
