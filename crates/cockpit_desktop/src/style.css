@@ -586,10 +586,6 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
-.sidebar-hint {
-  color: var(--dim);
-}
-
 /* Center pane. */
 
 .center {

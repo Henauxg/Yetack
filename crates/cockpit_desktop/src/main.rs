@@ -11,6 +11,7 @@ mod state;
 mod ui;
 
 use dioxus::LaunchBuilder;
+use dioxus::desktop::tao::window::Icon;
 use dioxus::desktop::{LogicalSize, WindowBuilder};
 use tracing_subscriber::EnvFilter;
 
@@ -21,7 +22,11 @@ use crate::state::AppState;
 const STYLESHEET: &str = include_str!("style.css");
 
 /// The name the window title, the sidebar and the notifications show.
-const APP_NAME: &str = "agents-cockpit";
+const APP_NAME: &str = "Agents Cockpit";
+
+/// The window's icon, for window managers that read it from the window. A Wayland desktop takes
+/// the icon from the desktop entry instead, which `flake.nix` installs with the same artwork.
+const ICON_PNG: &[u8] = include_bytes!("../assets/agents-cockpit-256.png");
 
 /// The theme's background, so the window does not flash white before the page draws.
 const BACKGROUND: (u8, u8, u8, u8) = (10, 10, 10, 255);
@@ -51,14 +56,28 @@ fn main() -> anyhow::Result<()> {
         .with_title(APP_NAME)
         .with_inner_size(LogicalSize::new(1440.0, 900.0))
         .with_min_inner_size(LogicalSize::new(720.0, 480.0));
-    let desktop = dioxus::desktop::Config::new()
+    let mut desktop = dioxus::desktop::Config::new()
         .with_window(window)
         .with_menu(None)
         .with_background_color(BACKGROUND)
         .with_custom_head(format!("<style>{STYLESHEET}</style>"));
+    match dioxus::desktop::icon_from_memory::<Icon>(ICON_PNG) {
+        Ok(icon) => desktop = desktop.with_icon(icon),
+        Err(error) => tracing::warn!("cannot load the window icon: {error}"),
+    }
     LaunchBuilder::desktop()
         .with_cfg(desktop)
         .with_context(startup)
         .launch(ui::App);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_icon_decodes() {
+        assert!(dioxus::desktop::icon_from_memory::<Icon>(ICON_PNG).is_ok());
+    }
 }
