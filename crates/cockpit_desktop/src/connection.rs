@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 
 use crate::demo;
 use crate::notifications::Notifier;
-use crate::state::{self, AppState, Drafts, Outgoing, actions};
+use crate::state::{self, AgentEntry, AppState, Drafts, Outgoing, Purpose, actions};
 
 /// What the window was started with.
 #[derive(Debug, Clone, PartialEq)]
@@ -155,6 +155,8 @@ async fn run_demo(
 
     let mut ticks = tokio::time::interval(demo::LIVE_TICK);
     let mut tick: u32 = 0;
+    // The agents closed, which Undo brings back.
+    let mut closed: Vec<AgentEntry> = Vec::new();
     loop {
         tokio::select! {
             outgoing = requests.next() => {
@@ -164,7 +166,11 @@ async fn run_demo(
                 let mut queue = VecDeque::from([outgoing]);
                 while let Some(Outgoing { request, purpose }) = queue.pop_front() {
                     tokio::time::sleep(demo::latency(&request)).await;
-                    let result = demo::answer(&state.read(), &request);
+                    if let Purpose::Close { entry } = &purpose {
+                        closed.push(entry.as_ref().clone());
+                    }
+                    let reopened = demo::reopen(&mut state.write(), &mut closed, &request);
+                    let result = reopened.unwrap_or_else(|| demo::answer(&state.read(), &request));
                     let mut state = state.write();
                     let method = request.method();
                     state::apply_response(&mut state, &mut drafts.write(), method, purpose, result);

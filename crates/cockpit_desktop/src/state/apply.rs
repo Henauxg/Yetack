@@ -13,6 +13,7 @@ use cockpit_protocol::{
 use super::app_state::{AgentEntry, AppState, ConnectionState, Loadable};
 use super::drafts::Drafts;
 use super::transcript::KEPT_ITEMS_AWAY;
+use super::ui_state::Dialog;
 
 /// A desktop notification to show.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,7 +105,12 @@ pub fn apply_catchup(state: &mut AppState, drafts: &mut Drafts, catchup: Catchup
         .collect();
     state.plan_usage = plan_usage;
     state.settings = settings;
+    // The snapshot holds the agents the daemon still has, closed or not.
+    state.ui.closing.clear();
     let agents = &state.agents;
+    state.ui.dialog.take_if(
+        |dialog| matches!(dialog, Dialog::CloseAgent(agent) if !agents.contains_key(agent)),
+    );
     state.ui.unread.retain(|agent| agents.contains_key(agent));
     state
         .ui
@@ -124,6 +130,7 @@ pub fn apply_catchup(state: &mut AppState, drafts: &mut Drafts, catchup: Catchup
 
 pub fn apply(state: &mut AppState, drafts: &mut Drafts, record: EventRecord) -> Option<Alert> {
     match record.event {
+        Event::AgentAdded(summary) if state.ui.closing.contains(&summary.id) => None,
         Event::AgentAdded(summary) => {
             state.agents.insert(summary.id, AgentEntry::new(summary));
             if state.ui.selected.is_none() {
@@ -133,12 +140,8 @@ pub fn apply(state: &mut AppState, drafts: &mut Drafts, record: EventRecord) -> 
         }
         Event::AgentUpdated(summary) => update_agent(state, summary),
         Event::AgentRemoved { agent } => {
-            state.agents.remove(&agent);
-            state.ui.unread.remove(&agent);
-            state.ui.file_views.remove(&agent);
-            state.ui.finished_tasks_unfolded.remove(&agent);
-            drafts.retain_agents(|kept| kept != agent);
-            state.ui.title_edit.take_if(|edit| edit.agent == agent);
+            forget_agent(state, drafts, agent);
+            state.ui.closing.remove(&agent);
             if state.ui.selected == Some(agent) {
                 state.ui.selected = None;
                 state.fix_selection();
@@ -183,8 +186,31 @@ pub fn apply(state: &mut AppState, drafts: &mut Drafts, record: EventRecord) -> 
     }
 }
 
+/// Forgets an agent the daemon removed or the app closed: its entry, which it returns, its drafts,
+/// its file view, and an edit or a dialog about it.
+pub fn forget_agent(
+    state: &mut AppState,
+    drafts: &mut Drafts,
+    agent: AgentId,
+) -> Option<AgentEntry> {
+    let entry = state.agents.remove(&agent);
+    state.ui.unread.remove(&agent);
+    state.ui.file_views.remove(&agent);
+    state.ui.finished_tasks_unfolded.remove(&agent);
+    drafts.retain_agents(|kept| kept != agent);
+    state.ui.title_edit.take_if(|edit| edit.agent == agent);
+    state
+        .ui
+        .dialog
+        .take_if(|dialog| *dialog == Dialog::CloseAgent(agent));
+    entry
+}
+
 fn update_agent(state: &mut AppState, summary: AgentSummary) -> Option<Alert> {
     let agent = summary.id;
+    if state.ui.closing.contains(&agent) {
+        return None;
+    }
     let selected = state.ui.selected == Some(agent);
     let looked_at = selected && state.ui.window_focused;
     let Some(entry) = state.agents.get_mut(&agent) else {

@@ -235,6 +235,25 @@ fn AgentRowView(row: AgentRow) -> Element {
         };
     }
     let class = classes.join(" ");
+    // The close button sits beside the row, over its corner: a button cannot hold another.
+    rsx! {
+        div { class: if row.selected { "row-wrap selected" } else { "row-wrap" },
+            AgentRowButton { row: row.clone(), class }
+            button {
+                class: "row-close",
+                aria_label: "Close {row.title}",
+                title: "Close the agent (Ctrl+Shift+W)",
+                onclick: move |_| cockpit.change_with_drafts(|state, drafts| actions::request_close(state, drafts, agent)),
+                Icon { kind: IconKind::Close, size: 12 }
+            }
+        }
+    }
+}
+
+#[component]
+fn AgentRowButton(row: AgentRow, class: String) -> Element {
+    let cockpit: Cockpit = use_context();
+    let agent = row.id;
     rsx! {
         button {
             id: row_id(agent),
