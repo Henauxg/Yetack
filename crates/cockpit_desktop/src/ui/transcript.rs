@@ -506,7 +506,7 @@ fn TurnEndView(end: TurnEnd) -> Element {
     rsx! {
         match end.error {
             Some(error) => rsx! {
-                p { class: "turn-end failed", "The turn stopped after {duration}: {error}" }
+                p { class: "turn-end failed", "The turn failed after {duration}: {error}" }
             },
             None if stopped => rsx! {
                 p { class: "turn-end", "Stopped after {duration}, {cost} at API prices" }
