@@ -8,6 +8,7 @@ use cockpit_protocol::{
     ResponseBody,
 };
 
+use super::actions;
 use super::app_state::{AppState, Loadable};
 use super::drafts::{Draft, Drafts};
 use super::transcript::HistoryState;
@@ -236,8 +237,7 @@ pub fn apply_response(
         }
         Purpose::Start => match result {
             Ok(ResponseBody::AgentStarted { agent }) => {
-                state.ui.selected = Some(agent);
-                state.ui.unread.remove(&agent);
+                actions::select_agent(state, agent);
                 if matches!(state.ui.dialog, Some(Dialog::NewAgent(_))) {
                     state.ui.dialog = None;
                 }
@@ -322,7 +322,7 @@ mod tests {
     use super::*;
     use crate::state::app_state::ConnectionState;
     use crate::state::app_state::tests::{state_with, summary};
-    use crate::state::ui_state::FileView;
+    use crate::state::ui_state::{Block, FileView};
 
     fn connected_with_selection() -> AppState {
         let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
@@ -511,6 +511,9 @@ mod tests {
     fn a_started_agent_opens_and_closes_the_dialog() {
         let mut state = connected_with_selection();
         state.ui.dialog = Some(Dialog::NewAgent(Default::default()));
+        // What the agent shown before had open.
+        state.ui.badge = Some(Block::Mcp);
+        state.ui.mcp.detail = Some("search".to_owned());
 
         apply_response(
             &mut state,
@@ -524,6 +527,8 @@ mod tests {
 
         assert_eq!(state.ui.selected, Some(AgentId::new(9)));
         assert_eq!(state.ui.dialog, None);
+        assert_eq!(state.ui.badge, None);
+        assert_eq!(state.ui.mcp.detail, None);
     }
 
     #[test]
