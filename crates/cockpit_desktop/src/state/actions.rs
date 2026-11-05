@@ -412,7 +412,7 @@ pub fn palette_pick(
             let name = command.name.clone();
             let draft = drafts.draft_mut(agent);
             draft.text = with_command(&draft.text, &name);
-            drafts.draft_written();
+            drafts.draft_written(agent);
             state.ui.popover = None;
             return Picked {
                 requests: Vec::new(),
@@ -719,7 +719,7 @@ pub fn send_prompt(
         return Vec::new();
     }
     let draft = std::mem::take(draft);
-    drafts.draft_written();
+    drafts.draft_written(agent);
     state.ui.popover = None;
     let prompt = Prompt {
         text: draft.text.trim().to_owned(),
@@ -1978,11 +1978,11 @@ mod tests {
         with_commands(&mut state, vec![command("compact", "")]);
 
         type_text(&mut state, &mut drafts, "/co");
-        let after_typing = drafts.composer_writes;
+        let after_typing = drafts.composer_writes(agent());
         let _ = palette_pick(&mut state, &mut drafts, agent(), None);
-        let after_pick = drafts.composer_writes;
+        let after_pick = drafts.composer_writes(agent());
         send_prompt(&mut state, &mut drafts, agent(), None);
-        let after_send = drafts.composer_writes;
+        let after_send = drafts.composer_writes(agent());
 
         assert_eq!((after_typing, after_pick, after_send), (0, 1, 2));
     }

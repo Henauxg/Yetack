@@ -71,7 +71,8 @@ pub fn Composer() -> Element {
     // draft's text only when another agent opens or the app changes the draft.
     let shown = use_memo(move || {
         let selected = cockpit.state.read().ui.selected;
-        (selected, cockpit.drafts.read().composer_writes)
+        let writes = selected.map(|agent| cockpit.drafts.read().composer_writes(agent));
+        (selected, writes)
     });
     use_effect(move || {
         let (agent, _) = shown();

@@ -254,7 +254,7 @@ pub fn apply_response(
                 let current = drafts.draft_mut(agent);
                 if current.is_empty() {
                     *current = draft;
-                    drafts.draft_written();
+                    drafts.draft_written(agent);
                 }
                 state
                     .ui
@@ -476,8 +476,35 @@ mod tests {
         );
 
         assert_eq!(drafts.draft(agent), Some(&draft));
-        assert_eq!(drafts.composer_writes, 1);
+        assert_eq!(drafts.composer_writes(agent), 1);
         assert_eq!(state.ui.errors.len(), 1);
+    }
+
+    /// The composer shows another agent: a restored draft must not rewrite its text while its
+    /// keystrokes are on their way.
+    #[test]
+    fn a_failed_prompt_for_another_agent_leaves_the_composer_alone() {
+        let mut state = connected_with_selection();
+        let mut drafts = Drafts::default();
+        let shown = state.ui.selected.expect("the helper selects an agent");
+        let other = AgentId::new(shown.get() + 1);
+
+        apply_response(
+            &mut state,
+            &mut drafts,
+            Method::AgentPrompt,
+            Purpose::Prompt {
+                agent: other,
+                draft: Draft {
+                    text: "Run the tests".to_owned(),
+                    images: Vec::new(),
+                },
+            },
+            Err(RequestError::NotConnected),
+        );
+
+        assert_eq!(drafts.composer_writes(shown), 0);
+        assert_eq!(drafts.composer_writes(other), 1);
     }
 
     #[test]

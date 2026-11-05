@@ -40,10 +40,10 @@ pub struct Palette {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Drafts {
     pub composer: BTreeMap<AgentId, Draft>,
-    /// Counts the times the app changed a draft's text itself, as opposed to typing. The composer
-    /// takes the draft's text at each, and else leaves its text to the keyboard: a render that
-    /// lags behind typing would put an older text back.
-    pub composer_writes: u64,
+    /// Counts, per agent, the times the app changed a draft's text itself, as opposed to typing.
+    /// The composer takes the draft's text at each, and else leaves its text to the keyboard: a
+    /// render that lags behind typing would put an older text back.
+    composer_writes: BTreeMap<AgentId, u64>,
     pub questions: BTreeMap<PendingId, QuestionDraft>,
     pub palette: Palette,
     /// The text of the header's title field while a title is edited.
@@ -59,8 +59,22 @@ impl Drafts {
         self.composer.entry(agent).or_default()
     }
 
-    /// For a draft text the app changed, so that the composer shows it.
-    pub fn draft_written(&mut self) {
-        self.composer_writes = self.composer_writes.wrapping_add(1);
+    /// For a draft text the app changed, so that the composer shows it when it shows `agent`.
+    pub fn draft_written(&mut self, agent: AgentId) {
+        let writes = self.composer_writes.entry(agent).or_default();
+        *writes = writes.wrapping_add(1);
+    }
+
+    pub fn composer_writes(&self, agent: AgentId) -> u64 {
+        self.composer_writes
+            .get(&agent)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Drops the drafts of the agents `keep` refuses.
+    pub fn retain_agents(&mut self, keep: impl Fn(AgentId) -> bool) {
+        self.composer.retain(|&agent, _| keep(agent));
+        self.composer_writes.retain(|&agent, _| keep(agent));
     }
 }
