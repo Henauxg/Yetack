@@ -4,6 +4,7 @@ use dioxus::prelude::*;
 
 use crate::bridge::use_bridge;
 use crate::connection::{Cockpit, Startup, use_clock, use_cockpit};
+use crate::prefs::use_prefs_saver;
 use crate::state::{ConnectionState, Popover};
 use crate::ui::blocks::FloatingBlocks;
 use crate::ui::composer::Composer;
@@ -17,7 +18,9 @@ use crate::ui::transcript::TranscriptView;
 #[component]
 pub fn App() -> Element {
     let startup: Startup = use_hook(consume_context);
+    let prefs_file = startup.prefs_file.clone();
     let cockpit = use_cockpit(startup);
+    use_prefs_saver(cockpit, prefs_file);
     use_clock();
     use_bridge(cockpit);
     let state = cockpit.state.read();
