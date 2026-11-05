@@ -102,12 +102,23 @@ pub(crate) fn spawn_ssh(host: &str, remote_command: &str) -> Result<SshLink, Con
 }
 
 /// `BatchMode` makes a missing key fail at once, instead of waiting for a password the app cannot
-/// show. `ForwardAgent=no` keeps the host from using this machine's keys. `--` ends the options,
-/// since ssh reads options after the host too.
+/// show. `ForwardAgent=no` keeps the host from using this machine's keys. `-x` and
+/// `ClearAllForwardings` open no X11 or port forwarding to this machine, even when the user's ssh
+/// config asks for one. `--` ends the options, since ssh reads options after the host too.
 fn ssh_command(host: &str, remote_command: &str) -> Command {
     let mut command = Command::new(SSH_PROGRAM);
     command
-        .args(["-T", "-o", "BatchMode=yes", "-o", "ForwardAgent=no", "--"])
+        .args([
+            "-T",
+            "-x",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ForwardAgent=no",
+            "-o",
+            "ClearAllForwardings=yes",
+            "--",
+        ])
         .arg(host)
         .arg(shell_quoted(remote_command))
         .arg(BRIDGE_SUBCOMMAND)
@@ -151,7 +162,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ssh_runs_the_bridge_without_a_password_prompt_or_agent_forwarding() {
+    fn ssh_runs_the_bridge_without_a_password_prompt_or_any_forwarding() {
         let command = ssh_command("build-box", "/opt/agents-cockpit/bin/agents-cockpit");
 
         let std_command = command.as_std();
@@ -164,10 +175,13 @@ mod tests {
             args,
             [
                 "-T",
+                "-x",
                 "-o",
                 "BatchMode=yes",
                 "-o",
                 "ForwardAgent=no",
+                "-o",
+                "ClearAllForwardings=yes",
                 "--",
                 "build-box",
                 "'/opt/agents-cockpit/bin/agents-cockpit'",
