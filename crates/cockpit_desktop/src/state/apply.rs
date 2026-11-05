@@ -52,7 +52,26 @@ pub fn apply_update(
             };
             Vec::new()
         }
-        SessionUpdate::Event(record) => apply(state, drafts, record).into_iter().collect(),
+        SessionUpdate::Event(record) => {
+            if let Event::AgentUpdated(summary) = &record.event {
+                note_turn_start(state, summary, now);
+            }
+            apply(state, drafts, record).into_iter().collect()
+        }
+    }
+}
+
+/// Keeps when the agent's turn started, for the working line's elapsed time. A turn runs while
+/// the agent works or waits for an answer.
+fn note_turn_start(state: &mut AppState, summary: &AgentSummary, now: Instant) {
+    let Some(entry) = state.agents.get_mut(&summary.id) else {
+        return;
+    };
+    let in_turn = |status| matches!(status, AgentStatus::Working | AgentStatus::NeedsYou);
+    match (in_turn(entry.summary.status), in_turn(summary.status)) {
+        (false, true) => entry.turn_started = Some(now),
+        (_, false) => entry.turn_started = None,
+        (true, true) => {}
     }
 }
 
@@ -468,6 +487,29 @@ mod tests {
         assert_eq!(state.ui.selected, Some(first));
         assert!(state.ui.unread.is_empty());
         assert_eq!(state.settings, settings);
+    }
+
+    #[test]
+    fn a_turn_starts_when_the_agent_starts_working() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        let agent = AgentId::new(1);
+        let start = Instant::now();
+        let later = start + Duration::from_secs(30);
+        let mut change = |status, now| {
+            apply_update(
+                &mut state,
+                &mut Drafts::default(),
+                SessionUpdate::Event(record(Event::AgentUpdated(summary(1, status)))),
+                now,
+            );
+            state.agents[&agent].turn_started
+        };
+
+        assert_eq!(change(AgentStatus::Working, start), Some(start));
+        assert_eq!(change(AgentStatus::NeedsYou, later), Some(start));
+        assert_eq!(change(AgentStatus::Working, later), Some(start));
+        assert_eq!(change(AgentStatus::Idle, later), None);
+        assert_eq!(change(AgentStatus::Working, later), Some(later));
     }
 
     #[test]

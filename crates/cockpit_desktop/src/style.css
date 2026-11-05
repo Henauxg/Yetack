@@ -1017,22 +1017,6 @@ button:disabled {
   color: var(--red);
 }
 
-.working-line {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--teal);
-}
-
-.working-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--teal);
-  animation: pulse 1.6s ease-in-out infinite;
-}
-
 @keyframes pulse {
   50% {
     opacity: 0.35;
@@ -1305,6 +1289,26 @@ button:disabled {
 .step.linked-below::after {
   top: calc(var(--dot-top) + 9px);
   bottom: -14px;
+}
+
+/* The working line ends a running turn's line with the spinner in place of a dot. */
+.step.working {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.step-marker {
+  position: absolute;
+  top: calc(var(--dot-top) - 4px);
+  left: -4px;
+  width: 15px;
+  height: 15px;
+  display: grid;
+  place-items: center;
+}
+
+.step.working.linked-above::before {
+  height: calc(var(--dot-top) - 6px);
 }
 
 /* A heading's top margin would lower it below its dot. */

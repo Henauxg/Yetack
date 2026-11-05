@@ -58,6 +58,9 @@ pub struct AgentEntry {
     pub details: Loadable<AgentDetails>,
     /// The file view's texts, by the path the view uses.
     pub files: BTreeMap<PathBuf, Loadable<String>>,
+    /// When the app saw the agent's current turn start. `None` between turns, and for a turn
+    /// already running when the app connected: the daemon does not say when a turn started.
+    pub turn_started: Option<Instant>,
 }
 
 impl AgentEntry {
@@ -67,6 +70,7 @@ impl AgentEntry {
             transcript: Transcript::default(),
             details: Loadable::NotRequested,
             files: BTreeMap::new(),
+            turn_started: None,
         }
     }
 

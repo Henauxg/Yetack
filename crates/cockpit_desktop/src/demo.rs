@@ -2,7 +2,7 @@
 //! requests that read data are answered from the sample; the others do nothing.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_client::RequestError;
 use cockpit_protocol::{
@@ -26,6 +26,9 @@ pub const DEMO_FLAG: &str = "--demo";
 const PARSER_FOLDER: &str = "/home/dev/projects/calc-parser";
 const SERVICE_FOLDER: &str = "/home/dev/projects/calc-service";
 const PLATFORM_FOLDER: &str = "/home/dev/projects/acme-platform";
+
+/// How long the working agent's turn has run when the demo starts.
+const TURN_ELAPSED: Duration = Duration::from_secs(4 * 60 + 12);
 
 const ERROR_FILE: &str = "src/error.rs";
 const TEST_FILE: &str = "tests/columns.rs";
@@ -126,6 +129,9 @@ pub fn state(daemon: DaemonLabel) -> AppState {
             has_older: false,
         });
         entry.details = Loadable::Loaded(sample.details);
+        if entry.summary.status == AgentStatus::Working {
+            entry.turn_started = Instant::now().checked_sub(TURN_ELAPSED);
+        }
         state.agents.insert(entry.id(), entry);
     }
     state.plan_usage = plan_usage(now);
