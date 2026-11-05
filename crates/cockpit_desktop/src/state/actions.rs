@@ -144,7 +144,8 @@ pub fn palette_move(state: &AppState, drafts: &mut Drafts, agent: AgentId, direc
     drafts.palette.highlighted = moved(drafts.palette.highlighted, count, direction);
 }
 
-/// Puts the command in the composer, ready for its arguments. `None` picks the highlighted one.
+/// Puts the command at the start of the draft, ready for its arguments, and keeps the rest of the
+/// text. `None` picks the highlighted one.
 pub fn palette_pick(
     state: &mut AppState,
     drafts: &mut Drafts,
@@ -156,10 +157,19 @@ pub fn palette_pick(
     let Some(command) = commands.get(index) else {
         return;
     };
-    let text = format!("{COMMAND_PREFIX}{} ", command.name);
-    drafts.draft_mut(agent).text = text;
+    let draft = drafts.draft_mut(agent);
+    draft.text = with_command(&draft.text, &command.name);
     drafts.draft_written();
     state.ui.popover = None;
+}
+
+/// `text` starting with the command, in place of the `/word` it starts with, if any.
+fn with_command(text: &str, name: &str) -> String {
+    let rest = match text.strip_prefix(COMMAND_PREFIX) {
+        Some(typed) => typed.trim_start_matches(|character: char| !character.is_whitespace()),
+        None => text,
+    };
+    format!("{COMMAND_PREFIX}{name} {}", rest.trim_start())
 }
 
 /// An index moved by one, staying within `count` items.
@@ -864,6 +874,29 @@ mod tests {
             Some("/context ")
         );
         assert_eq!(state.ui.popover, None);
+    }
+
+    #[test]
+    fn a_command_picked_from_the_slash_button_keeps_the_draft() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        with_commands(&mut state, vec![command("review", "")]);
+        let mut pick_on = |text: &str| {
+            type_text(&mut state, &mut drafts, text);
+            toggle_palette(&mut state, &mut drafts, agent());
+            palette_pick(&mut state, &mut drafts, agent(), None);
+            drafts.draft(agent()).map(|draft| draft.text.clone())
+        };
+
+        assert_eq!(
+            pick_on("check the parser\nthen the lexer").as_deref(),
+            Some("/review check the parser\nthen the lexer")
+        );
+        assert_eq!(
+            pick_on("/rev the branch").as_deref(),
+            Some("/review the branch")
+        );
+        assert_eq!(pick_on("").as_deref(), Some("/review "));
     }
 
     #[test]
