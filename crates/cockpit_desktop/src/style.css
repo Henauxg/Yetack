@@ -759,8 +759,71 @@ html.reordering * {
 }
 
 .title-line:hover .rename-button,
-.rename-button:focus-visible {
+.rename-button:focus-visible,
+.rename-button.active {
   opacity: 1;
+}
+
+/* A click on the title's emoji opens the emoji picker. */
+.title-emoji {
+  cursor: pointer;
+}
+
+.header-title {
+  position: relative;
+}
+
+/* Under the title: the grid of emoji, then "No emoji". Rust sets the grid's columns. */
+.emoji-picker {
+  left: 0;
+  top: calc(100% + 6px);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  transform-origin: top left;
+}
+
+.emoji-grid {
+  display: grid;
+  gap: 2px;
+}
+
+.emoji-choice {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 19px;
+  line-height: 1;
+}
+
+.emoji-none {
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.emoji-choice:hover,
+.emoji-choice:focus-visible,
+.emoji-none:hover,
+.emoji-none:focus-visible {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.emoji-choice.chosen,
+.emoji-none.chosen {
+  background: var(--selected);
+  color: var(--text);
 }
 
 .title-field {

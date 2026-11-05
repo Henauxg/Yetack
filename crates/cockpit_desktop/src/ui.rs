@@ -8,6 +8,7 @@ mod chat_scroll;
 mod code;
 mod composer;
 mod dialogs;
+mod emoji_picker;
 mod file_view;
 mod header;
 mod icons;
