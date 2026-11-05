@@ -45,17 +45,12 @@ impl Hub {
     }
 
     pub(super) fn start_agent(&mut self, params: StartParams) -> Result<ResponseBody, ErrorBody> {
-        if let Some(title) = &params.title {
-            check_length("title", title, MAX_TITLE_CHARS)?;
-        }
+        let title: Option<String> = params.title.as_deref().map(client_title).transpose()?;
         if let Some(model) = &params.model {
             check_model(model)?;
         }
         let folder = agent_folder(&params.folder)?;
-        let title = params
-            .title
-            .filter(|title| !title.trim().is_empty())
-            .unwrap_or_else(|| default_title(params.prompt.as_ref(), &folder));
+        let title = title.unwrap_or_else(|| default_title(params.prompt.as_ref(), &folder));
         let record = AgentRecord {
             id: self.next_agent,
             title,
@@ -458,19 +453,7 @@ impl Hub {
             .ok_or(errors::agent_not_found(id))?;
         let text = prompts::effort_command(params.effort)
             .ok_or_else(|| errors::internal("the effort has no word".to_owned()))?;
-        if let Some(process) = &agent.process {
-            let line = InputLine::prompt(text.clone());
-            if agent.view.is_busy() || !agent.queue.is_empty() {
-                agent.queue.push_back(QueuedPrompt {
-                    item: None,
-                    line,
-                    text,
-                });
-            } else {
-                process.write(line);
-                agent.view.expect_echo(text);
-            }
-        }
+        send_hidden_prompt(agent, text);
         agent.record.effort = Some(params.effort);
         agent.view.set_effort(params.effort);
         self.save_agents();
@@ -481,39 +464,26 @@ impl Hub {
     /// Renames the agent. While its process runs, `/rename` names its Claude session too, so
     /// Claude Code's resume list and `sessions.list` show the name.
     pub(super) fn rename(&mut self, params: RenameParams) -> Result<ResponseBody, ErrorBody> {
-        let title = params
-            .title
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
-        if title.is_empty() {
-            return Err(errors::invalid("the title is empty".to_owned()));
-        }
-        check_length("title", &title, MAX_TITLE_CHARS)?;
+        let title = client_title(&params.title)?;
         let id = params.agent;
         let agent = self
             .agents
             .get_mut(&id)
             .ok_or(errors::agent_not_found(id))?;
-        if let Some(process) = &agent.process {
-            let text = prompts::rename_command(&title);
-            let line = InputLine::prompt(text.clone());
-            if agent.view.is_busy() || !agent.queue.is_empty() {
-                agent.queue.push_back(QueuedPrompt {
-                    item: None,
-                    line,
-                    text,
-                });
-            } else {
-                process.write(line);
-                agent.view.expect_echo(text);
-            }
-        }
+        send_hidden_prompt(agent, prompts::rename_command(&title));
         agent.record.title = title.clone();
         agent.view.set_title(title);
         self.save_agents();
         self.publish(id);
         Ok(ResponseBody::Done)
+    }
+
+    /// Gives the agent's name to its Claude session, whose saved name is another.
+    pub(super) fn rename_session(&mut self, id: AgentId) {
+        if let Some(agent) = self.agents.get_mut(&id) {
+            let text = prompts::rename_command(&agent.record.title);
+            send_hidden_prompt(agent, text);
+        }
     }
 
     /// A past session becomes an agent, or the agent that has it resumes.
@@ -557,6 +527,25 @@ impl Hub {
     }
 }
 
+/// Sends a prompt the transcript does not show, such as `/effort high`, now or after the current
+/// turn. An agent without a process gets nothing.
+fn send_hidden_prompt(agent: &mut Agent, text: String) {
+    let Some(process) = &agent.process else {
+        return;
+    };
+    let line = InputLine::prompt(text.clone());
+    if agent.view.is_busy() || !agent.queue.is_empty() {
+        agent.queue.push_back(QueuedPrompt {
+            item: None,
+            line,
+            text,
+        });
+    } else {
+        process.write(line);
+        agent.view.expect_echo(text);
+    }
+}
+
 pub(super) fn respond(reply: Reply, result: Result<ResponseBody, ErrorBody>) {
     // The client may have left.
     let _ = reply.send(ResponseResult::from(result));
@@ -573,6 +562,7 @@ pub(super) fn initial_summary(record: &AgentRecord) -> AgentSummary {
         pending_count: 0,
         model: record.model.clone(),
         effort: record.effort,
+        effort_is_default: false,
         mode: record.mode.unwrap_or_default(),
         task_progress: None,
         context_percent: None,
@@ -609,6 +599,17 @@ fn agent_folder(folder: &Path) -> Result<PathBuf, ErrorBody> {
 
 pub(super) fn check_model(model: &str) -> Result<(), ErrorBody> {
     check_length("model name", model, MODEL_MAX_CHARS)
+}
+
+/// A title from a client, its whitespace collapsed to single spaces and trimmed. It is refused
+/// empty or over [`MAX_TITLE_CHARS`] characters.
+fn client_title(text: &str) -> Result<String, ErrorBody> {
+    let title = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if title.is_empty() {
+        return Err(errors::invalid("the title is empty".to_owned()));
+    }
+    check_length("title", &title, MAX_TITLE_CHARS)?;
+    Ok(title)
 }
 
 /// Refuses a client's text longer than `max_chars`, so that the snapshots stay small.

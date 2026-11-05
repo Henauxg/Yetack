@@ -62,6 +62,7 @@ fn summary() -> AgentSummary {
         pending_count: 1,
         model: Some("opus".to_owned()),
         effort: Some(Effort::High),
+        effort_is_default: true,
         mode: PermissionMode::AcceptEdits,
         task_progress: Some(TaskProgress { done: 3, total: 5 }),
         context_percent: Some(42),
@@ -83,6 +84,7 @@ fn idle_summary() -> AgentSummary {
         pending_count: 0,
         model: None,
         effort: None,
+        effort_is_default: false,
         mode: PermissionMode::Default,
         task_progress: None,
         context_percent: None,
@@ -1108,6 +1110,7 @@ fn an_agent_update_on_the_wire() {
                 "pending_count": 1,
                 "model": "opus",
                 "effort": "high",
+                "effort_is_default": true,
                 "mode": "acceptEdits",
                 "task_progress": {"done": 3, "total": 5},
                 "context_percent": 42,
@@ -1119,6 +1122,17 @@ fn an_agent_update_on_the_wire() {
             },
         }),
     );
+}
+
+#[test]
+fn a_summary_saved_without_its_effort_source_still_loads() {
+    let mut saved = serde_json::to_value(summary()).unwrap();
+    saved.as_object_mut().unwrap().remove("effort_is_default");
+
+    let loaded: AgentSummary = serde_json::from_value(saved).unwrap();
+
+    assert_eq!(loaded.effort, Some(Effort::High));
+    assert!(!loaded.effort_is_default);
 }
 
 #[test]

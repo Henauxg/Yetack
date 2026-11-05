@@ -353,6 +353,7 @@ fn summary(parts: SummaryParts<'_>, now: SystemTime) -> AgentSummary {
         pending_count: parts.pending,
         model: Some("claude-opus-5-5".to_owned()),
         effort: Some(Effort::High),
+        effort_is_default: false,
         mode: PermissionMode::Default,
         task_progress: None,
         context_percent: Some(31),

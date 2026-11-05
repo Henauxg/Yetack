@@ -383,7 +383,8 @@ fn written_by_claude_code(line: &Value) -> bool {
 }
 
 /// The user's prompts in the whole file, slash commands included. A tool result is a user line
-/// too, so lines naming one are skipped before parsing.
+/// too, so lines naming one are skipped before parsing, and so is a line longer than
+/// [`MAX_LINE_BYTES`].
 fn count_prompts(mut file: File) -> u32 {
     use std::io::Seek;
 
@@ -393,10 +394,12 @@ fn count_prompts(mut file: File) -> u32 {
     let mut count: u32 = 0;
     let mut reader = BufReader::new(file);
     let mut line = Vec::new();
-    while reader
-        .read_until(b'\n', &mut line)
-        .is_ok_and(|read| read > 0)
-    {
+    loop {
+        match next_line(&mut reader, &mut line, MAX_LINE_BYTES) {
+            Ok(Some(SessionLine::Whole { .. } | SessionLine::Unfinished)) => {}
+            Ok(Some(SessionLine::TooLong { .. })) => continue,
+            Ok(None) | Err(_) => return count,
+        }
         let text = String::from_utf8_lossy(&line);
         if !text.contains(TOOL_RESULT_MARK)
             && let Ok(value) = serde_json::from_str::<Value>(&text)
@@ -404,9 +407,7 @@ fn count_prompts(mut file: File) -> u32 {
         {
             count = count.saturating_add(1);
         }
-        line.clear();
     }
-    count
 }
 
 fn read_chunk(file: &mut File, start: u64) -> Option<String> {
@@ -728,6 +729,7 @@ mod tests {
 
         assert_eq!(texts(&found.past.items), ["user: Before", "user: After"]);
         assert_eq!(found.past.file.bytes, whole);
+        assert_eq!(found.session.turns, 2, "the long prompt is not counted");
     }
 
     /// Fails a test that reads it.

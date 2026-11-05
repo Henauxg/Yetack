@@ -80,6 +80,8 @@ fn remove_args(server: &str, scope: McpScope) -> Vec<OsString> {
 
 #[cfg(test)]
 mod tests {
+    use std::io;
+
     use super::*;
 
     #[test]
@@ -105,6 +107,7 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&program, Permissions::from_mode(0o755)).unwrap();
+        wait_until_it_runs(&program).await;
 
         let result = remove(&program, temp.path(), "notes", McpScope::Local).await;
 
@@ -114,5 +117,24 @@ mod tests {
             error.message,
             "claude mcp remove failed: No MCP server named notes"
         );
+    }
+
+    /// A process another test forks while a script is written keeps it open for writing until
+    /// it runs its own program, and running the script fails with "Text file busy" until then.
+    /// Once the script ran, no process can hold it open for writing again.
+    async fn wait_until_it_runs(program: &Path) {
+        for _ in 0..200 {
+            let run = Command::new(program)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .await;
+            match run {
+                Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy => {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Ok(_) | Err(_) => return,
+            }
+        }
     }
 }
