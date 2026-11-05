@@ -67,6 +67,10 @@ pub struct NewAgentForm {
     pub mode: Option<PermissionMode>,
     pub prompt: String,
     pub menu: Option<FormMenu>,
+    /// What the "Resume a session" tab's search field holds.
+    pub session_query: String,
+    /// An index into the sessions the query leaves.
+    pub session_highlighted: usize,
     /// A start or resume request is on its way.
     pub starting: bool,
 }

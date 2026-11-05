@@ -1,12 +1,8 @@
 //! The agent switcher (Ctrl+K) and the new agent dialog (Ctrl+N).
 
-use std::cmp::Reverse;
-use std::collections::BTreeSet;
 use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 
-use cockpit_protocol::{
-    AgentId, AgentStatus, ClaudeSessionId, Effort, PastSession, PermissionMode,
-};
+use cockpit_protocol::{AgentId, AgentStatus, Effort, PastSession, PermissionMode};
 use dioxus::prelude::*;
 
 use crate::bridge::{self, FOLDER_FIELD_ID};
@@ -192,7 +188,7 @@ fn NewAgentDialog(form: NewAgentForm) -> Element {
             if start {
                 StartForm { form }
             } else {
-                ResumeList { starting: form.starting }
+                ResumeList { query: form.session_query, highlighted: form.session_highlighted, starting: form.starting }
             }
         }
     }
@@ -497,33 +493,59 @@ fn FormModeMenu(mode: Option<PermissionMode>) -> Element {
 }
 
 #[component]
-fn ResumeList(starting: bool) -> Element {
+fn ResumeList(query: String, highlighted: usize, starting: bool) -> Element {
     let cockpit: Cockpit = use_context();
     let Clock(now) = use_context::<Clock>();
+    // Follows the keyboard alone, as the other fields.
+    let query_seed = use_hook(|| query.clone());
     let (sessions, machine) = {
         let state = cockpit.state.read();
-        let running: BTreeSet<ClaudeSessionId> = state
-            .agents
-            .values()
-            .filter_map(|entry| entry.summary.session.clone())
-            .collect();
         let sessions = match &state.sessions {
-            Loadable::Loaded(sessions) => {
-                let mut free: Vec<PastSession> = sessions
-                    .iter()
-                    .filter(|session| !running.contains(&session.id))
+            Loadable::Loaded(_) => Loadable::Loaded(
+                actions::resumable_sessions(&state, &query)
+                    .into_iter()
                     .cloned()
-                    .collect();
-                free.sort_by_key(|session| Reverse(session.last_activity));
-                Loadable::Loaded(free)
-            }
-            other => other.clone(),
+                    .collect::<Vec<PastSession>>(),
+            ),
+            Loadable::NotRequested => Loadable::NotRequested,
+            Loadable::Loading => Loadable::Loading,
+            Loadable::Failed(error) => Loadable::Failed(error.clone()),
         };
         (sessions, state.daemon.machine.clone())
     };
     let now = now();
+    let searching = !query.trim().is_empty();
     rsx! {
         div { class: "dialog-body",
+            div { class: "folder-field session-search",
+                Icon { kind: IconKind::Search, size: 16 }
+                input {
+                    class: "folder-input",
+                    r#type: "text",
+                    spellcheck: false,
+                    aria_label: "Find a session",
+                    placeholder: "Find a session by its title or folder",
+                    initial_value: "{query_seed}",
+                    onmounted: move |event| async move {
+                        // The tab may have changed already: nothing to focus then.
+                        let _ = event.data().set_focus(true).await;
+                    },
+                    oninput: move |event: FormEvent| cockpit.update(|state| actions::session_query(state, event.value())),
+                    onkeydown: move |event: KeyboardEvent| match event.key() {
+                        Key::ArrowDown => {
+                            cockpit.update(|state| actions::session_move(state, Direction::Down));
+                            bridge::scroll_to_highlighted();
+                        }
+                        Key::ArrowUp => {
+                            cockpit.update(|state| actions::session_move(state, Direction::Up));
+                            bridge::scroll_to_highlighted();
+                        }
+                        Key::Enter => cockpit.change(|state| actions::session_pick(state, None)),
+                        _ => {}
+                    },
+                }
+                span { class: "key-hint", "Enter" }
+            }
             span { class: "dialog-note", "Claude sessions on {machine} that no agent runs now, newest first." }
             match sessions {
                 Loadable::NotRequested | Loadable::Loading => rsx! {
@@ -534,25 +556,25 @@ fn ResumeList(starting: bool) -> Element {
                 },
                 Loadable::Loaded(sessions) => rsx! {
                     if sessions.is_empty() {
-                        span { class: "dialog-note", "No past session." }
+                        span { class: "dialog-note",
+                            if searching { "No session matches." } else { "No past session." }
+                        }
                     }
-                    div { class: "session-list", role: "list",
+                    div { class: "session-list", role: "listbox", aria_label: "Sessions",
                         // Keyed by position: the daemon's list does not promise one entry per
                         // session.
                         for (index, session) in sessions.into_iter().enumerate() {
                             {
                                 let turns = format::count(usize::try_from(session.turns).unwrap_or(usize::MAX), "turn", "turns");
-                                let id = session.id.clone();
+                                let chosen = index == highlighted;
                                 rsx! {
                                     button {
                                         key: "{index}",
-                                        class: "session-row",
-                                        role: "listitem",
+                                        class: if chosen { "session-row highlighted" } else { "session-row" },
+                                        role: "option",
+                                        aria_selected: chosen,
                                         disabled: starting,
-                                        onclick: move |_| {
-                                            let id = id.clone();
-                                            cockpit.change(|state| actions::resume_session(state, id));
-                                        },
+                                        onclick: move |_| cockpit.change(|state| actions::session_pick(state, Some(index))),
                                         span { class: "session-text",
                                             span { class: "session-title", "{session.title}" }
                                             FolderPath { folder: session.folder.clone() }

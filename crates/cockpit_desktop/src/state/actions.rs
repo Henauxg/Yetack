@@ -1,16 +1,17 @@
 //! What the user's clicks and keys change, and the requests they send. The connection sends the
 //! returned requests, then the ones `needed_requests` adds.
 
+use std::cmp::Reverse;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use cockpit_protocol::{
     AgentId, AgentParams, AgentStatus, Answer, AnswerParams, AnswerState, ApprovalAnswer,
     ApprovalDecision, BackgroundTaskId, CancelQueuedParams, ClaudeSessionId, Effort, Image,
-    ItemBody, ItemId, McpRemoveParams, McpScope, McpServerParams, McpToggleParams, PendingId,
-    PermissionMode, PlanAnswer, PlanDecision, Prompt, PromptParams, Question, QuestionAnswer,
-    Request, SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, SlashCommand,
-    StartParams, StopTaskParams,
+    ItemBody, ItemId, McpRemoveParams, McpScope, McpServerParams, McpToggleParams, PastSession,
+    PendingId, PermissionMode, PlanAnswer, PlanDecision, Prompt, PromptParams, Question,
+    QuestionAnswer, Request, SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams,
+    SlashCommand, StartParams, StopTaskParams,
 };
 
 use super::app_state::{AgentEntry, AppState, Loadable};
@@ -758,6 +759,69 @@ pub fn start_agent(state: &mut AppState) -> Vec<Outgoing> {
     }]
 }
 
+/// The past sessions the "Resume a session" tab lists: those no agent runs, whose title or
+/// folder holds the query, newest first. A session's title is its first prompt unless it was
+/// named.
+pub fn resumable_sessions<'state>(
+    state: &'state AppState,
+    query: &str,
+) -> Vec<&'state PastSession> {
+    let query = query.to_lowercase();
+    let running: BTreeSet<&ClaudeSessionId> = state
+        .agents
+        .values()
+        .filter_map(|entry| entry.summary.session.as_ref())
+        .collect();
+    let mut sessions: Vec<&PastSession> = state
+        .sessions
+        .loaded()
+        .into_iter()
+        .flatten()
+        .filter(|session| !running.contains(&session.id))
+        .filter(|session| {
+            session.title.to_lowercase().contains(&query)
+                || session
+                    .folder
+                    .to_string_lossy()
+                    .to_lowercase()
+                    .contains(&query)
+        })
+        .collect();
+    sessions.sort_by_key(|session| Reverse(session.last_activity));
+    sessions
+}
+
+pub fn session_query(state: &mut AppState, query: String) {
+    with_new_agent_form(state, |form| {
+        form.session_query = query;
+        form.session_highlighted = 0;
+    });
+}
+
+pub fn session_move(state: &mut AppState, direction: Direction) {
+    let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
+        return;
+    };
+    let count = resumable_sessions(state, &form.session_query).len();
+    let highlighted = moved(form.session_highlighted, count, direction);
+    with_new_agent_form(state, |form| form.session_highlighted = highlighted);
+}
+
+/// Resumes the session at `index` of the listed ones, or the highlighted one.
+pub fn session_pick(state: &mut AppState, index: Option<usize>) -> Vec<Outgoing> {
+    let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
+        return Vec::new();
+    };
+    let index = index.unwrap_or(form.session_highlighted);
+    let Some(session) = resumable_sessions(state, &form.session_query)
+        .get(index)
+        .map(|session| session.id.clone())
+    else {
+        return Vec::new();
+    };
+    resume_session(state, session)
+}
+
 pub fn resume_session(state: &mut AppState, session: ClaudeSessionId) -> Vec<Outgoing> {
     if let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog {
         if form.starting {
@@ -1347,6 +1411,58 @@ mod tests {
                 .count()
         };
         assert_eq!((lists(&first), lists(&second)), (1, 1));
+    }
+
+    fn past_session(id: &str, title: &str, folder: &str, minutes_ago: u64) -> PastSession {
+        PastSession {
+            id: ClaudeSessionId::new(id.to_owned()),
+            title: title.to_owned(),
+            folder: PathBuf::from(folder),
+            last_activity: Timestamp::from_unix_millis(10_000_000 - minutes_ago * 60_000),
+            turns: 4,
+        }
+    }
+
+    #[test]
+    fn the_session_search_filters_by_title_and_folder_and_resumes_the_highlighted_one() {
+        let mut running = summary(1, AgentStatus::Idle);
+        running.session = Some(ClaudeSessionId::new("running".to_owned()));
+        let mut state = state_with(vec![running]);
+        open_new_agent(&mut state);
+        state.sessions = Loadable::Loaded(vec![
+            past_session("lexer", "Speed up the lexer", "/work/parser", 30),
+            past_session("running", "Fix the parser", "/work/parser", 5),
+            past_session("docs", "Rewrite the error page", "/work/docs-site", 60),
+            past_session("columns", "Parser columns", "/work/tools", 10),
+        ]);
+        let ids = |state: &AppState, query: &str| -> Vec<String> {
+            resumable_sessions(state, query)
+                .iter()
+                .map(|session| session.id.as_str().to_owned())
+                .collect()
+        };
+
+        assert_eq!(ids(&state, ""), ["columns", "lexer", "docs"]);
+        assert_eq!(ids(&state, "PARSER"), ["columns", "lexer"]);
+        assert_eq!(ids(&state, "docs-site"), ["docs"]);
+        assert!(ids(&state, "nothing like it").is_empty());
+
+        session_query(&mut state, "parser".to_owned());
+        session_move(&mut state, Direction::Down);
+        session_move(&mut state, Direction::Down);
+        let requests = session_pick(&mut state, None);
+
+        assert_eq!(
+            requests.first().map(|outgoing| &outgoing.request),
+            Some(&Request::SessionsResume(SessionResumeParams {
+                session: ClaudeSessionId::new("lexer".to_owned())
+            }))
+        );
+        session_query(&mut state, "nothing like it".to_owned());
+        assert!(matches!(
+            &state.ui.dialog,
+            Some(Dialog::NewAgent(form)) if form.session_highlighted == 0
+        ));
     }
 
     #[test]
