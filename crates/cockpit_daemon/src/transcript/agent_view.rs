@@ -652,9 +652,10 @@ impl AgentView {
     }
 
     /// Claude Code starts a new conversation, as `/clear` does. Its total cost counts from 0
-    /// again, so what the process spent so far joins the agent's earlier cost.
+    /// again, so the agent's cost so far becomes the base, even when a resumed session's restored
+    /// cost was not read yet.
     fn reset_conversation(&mut self, reset: &ConversationReset) {
-        self.cost_before_process += self.process_cost;
+        self.cost_before_process = self.summary.cost.get();
         self.process_cost = 0.0;
         self.awaits_restored_cost = false;
         let text = match reset.trigger {
@@ -2064,6 +2065,24 @@ mod tests {
 
         assert_eq!(view.summary().cost, CostUsd::new(89.0));
         assert_eq!(turn_costs(&view), [CostUsd::new(88.5), CostUsd::new(0.5)]);
+    }
+
+    #[test]
+    fn a_clear_before_the_restored_cost_keeps_the_cost_spent() {
+        let mut view = view();
+        apply(&mut view, result(2.0));
+        view.process_exited("claude exited".to_owned(), now());
+        view.process_started(ProcessSession::Resumed);
+
+        apply(
+            &mut view,
+            json!({"type": "conversation_reset", "trigger": "clear", "session_id": "session-1"}),
+        );
+        view.set_restored_cost(2.0);
+        apply(&mut view, result(0.25));
+
+        assert_eq!(view.summary().cost, CostUsd::new(2.25));
+        assert_eq!(turn_costs(&view), [CostUsd::new(2.0), CostUsd::new(0.25)]);
     }
 
     fn turn_costs(view: &AgentView) -> Vec<CostUsd> {
