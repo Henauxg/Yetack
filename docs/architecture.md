@@ -74,7 +74,7 @@ id, title, folder, status, activity line, pending count, model, effort, permissi
 
 The list's order belongs to the user, and the daemon keeps it, so every client and `agents-cockpit list` show the same one:
 
-- The list shows the highest `position` first, and the older agent first between equal positions.
+- The list shows the highest `position` first, and the newer agent first between equal positions.
 - A new agent goes on top, and so does an agent made from a past session.
   Only `agent.move` moves an agent: a status change, a turn or a rename does not.
 - Positions leave room between neighbours.
@@ -82,7 +82,7 @@ The list's order belongs to the user, and the daemon keeps it, so every client a
   When they leave no room, every agent gets a new position, 1024 apart, and each agent whose position changed gets an event.
   For example, with C at 3072, B at 2048 and A at 1024, moving A just above B gives A 2560.
 - `cockpit_protocol` holds the order and the move (`list_order`, `move_agent`, `place_on_top`), so the app reorders at once with the same numbers the daemon will send.
-- An `agents.json` saved before positions existed reads 0 for every agent, so the agents keep the order of their ids until one moves.
+- An `agents.json` saved before positions existed reads 0 for every agent, so the agents list newest first, as new agents do, until one moves.
 
 `AgentStatus` is derived by the daemon, never by the app:
 

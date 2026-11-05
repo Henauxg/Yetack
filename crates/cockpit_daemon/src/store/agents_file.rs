@@ -38,7 +38,7 @@ pub(crate) struct AgentRecord {
     #[serde(default)]
     pub(crate) past: Option<PastFile>,
     /// Where the agent shows in the list. A file saved before positions existed reads 0 for
-    /// every agent, which keeps them in the order of their ids.
+    /// every agent, which lists them newest first.
     #[serde(default)]
     pub(crate) position: Position,
 }

@@ -52,14 +52,14 @@ impl AgentSummary {
     }
 }
 
-/// The list's order: the higher position first, then the older agent. Agents saved before
-/// positions existed all have position 0, so they keep the order of their ids.
+/// The list's order: the higher position first, then the newer agent. Agents saved before
+/// positions existed all have position 0, so they list newest first, as new agents do.
 #[must_use]
 pub fn list_order(left: Placed, right: Placed) -> Ordering {
     right
         .position
         .cmp(&left.position)
-        .then(left.agent.cmp(&right.agent))
+        .then(right.agent.cmp(&left.agent))
 }
 
 /// The places that change when `agent` goes just above `before`, or to the bottom when `before`
@@ -186,13 +186,13 @@ mod tests {
     }
 
     #[test]
-    fn the_higher_position_comes_first_then_the_older_agent() {
+    fn the_higher_position_comes_first_then_the_newer_agent() {
         let mut places = [placed(1, 0), placed(2, 2048), placed(3, 0), placed(4, 1024)];
 
         places.sort_by(|left, right| list_order(*left, *right));
 
         let agents: Vec<u32> = places.iter().map(|place| place.agent.get()).collect();
-        assert_eq!(agents, [2, 4, 1, 3]);
+        assert_eq!(agents, [2, 4, 3, 1]);
     }
 
     #[test]
@@ -243,13 +243,15 @@ mod tests {
 
     /// An `agents.json` saved before positions existed gives every agent position 0.
     #[test]
-    fn agents_saved_without_positions_keep_their_order_until_one_moves() {
-        let list = [placed(1, 0), placed(2, 0), placed(3, 0)];
+    fn agents_saved_without_positions_list_newest_first_until_one_moves() {
+        let mut list = [placed(1, 0), placed(2, 0), placed(3, 0)];
+        list.sort_by(|left, right| list_order(*left, *right));
 
-        let changes = move_agent(&list, agent(3), Some(agent(2)));
+        let changes = move_agent(&list, agent(1), Some(agent(2)));
 
-        assert_eq!(changes, [placed(1, 3072), placed(3, 2048), placed(2, 1024)]);
-        assert_eq!(order_after(&list, &changes), [1, 3, 2]);
+        assert_eq!(list, [placed(3, 0), placed(2, 0), placed(1, 0)]);
+        assert_eq!(changes, [placed(3, 3072), placed(1, 2048), placed(2, 1024)]);
+        assert_eq!(order_after(&list, &changes), [3, 1, 2]);
     }
 
     #[test]

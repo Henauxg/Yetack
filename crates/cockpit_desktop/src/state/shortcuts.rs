@@ -478,7 +478,8 @@ mod tests {
             summary(1, AgentStatus::Idle),
             summary(2, AgentStatus::Idle),
         ]);
-        state.ui.selected = Some(AgentId::new(2));
+        // Equal positions list the newer agent first: agent 1 is at the bottom.
+        state.ui.selected = Some(AgentId::new(1));
         let alt = |key: &str, target| KeyPress {
             alt: true,
             ..press(key, target)

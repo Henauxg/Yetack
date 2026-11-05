@@ -197,10 +197,10 @@ mod tests {
         assert!(unknown.message.contains('4'), "{}", unknown.message);
     }
 
-    /// `agents.json` from before positions: every agent reads 0, and the list keeps the order of
-    /// their ids, which is the order `agents-cockpit list` printed.
+    /// `agents.json` from before positions: every agent reads 0, and the list shows the newest
+    /// first, as it shows new agents.
     #[test]
-    fn a_saved_file_without_positions_loads_in_the_order_of_the_ids() {
+    fn a_saved_file_without_positions_loads_newest_first() {
         let temp = tempfile::tempdir().unwrap();
         let folder = temp.path().join("state");
         let state = StateDir::create(&folder).unwrap();
@@ -227,10 +227,10 @@ mod tests {
         let mut hub = Hub::for_tests(&folder);
 
         let loaded = snapshot_order(&hub);
-        hub.move_agent(move_params(3, Some(2))).unwrap();
+        hub.move_agent(move_params(1, Some(2))).unwrap();
 
-        assert_eq!(loaded, [1, 2, 3]);
-        assert_eq!(snapshot_order(&hub), [1, 3, 2]);
+        assert_eq!(loaded, [3, 2, 1]);
+        assert_eq!(snapshot_order(&hub), [3, 1, 2]);
     }
 
     /// A past session made into an agent is a new agent.
