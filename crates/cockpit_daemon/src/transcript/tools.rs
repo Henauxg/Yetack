@@ -16,7 +16,7 @@ enum SubagentTool {
 }
 
 /// The tools whose input names a file the agent reads or changes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr, VariantArray)]
 enum FileTool {
     Read,
     Edit,
@@ -285,6 +285,16 @@ mod tests {
         assert_eq!(outside, "/etc/hosts");
         assert_eq!(grep, "fn main");
         assert_eq!(nothing, "");
+    }
+
+    #[test]
+    fn file_tools_are_pinned() {
+        let tools: Vec<&str> = FileTool::VARIANTS.iter().map(|&tool| tool.into()).collect();
+
+        assert_eq!(
+            tools,
+            ["Read", "Edit", "MultiEdit", "Write", "NotebookEdit"]
+        );
     }
 
     #[test]
