@@ -16,6 +16,7 @@ use crate::state::{HistoryState, actions, file_edits};
 use crate::ui::cards::{ApprovalCard, PlanCard, QuestionCard};
 use crate::ui::code::{LineNumbers, diff_row};
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::loading::TranscriptSkeleton;
 use crate::ui::markdown::MarkdownView;
 use crate::ui::sidebar::activity_line;
 use crate::{bridge, format};
@@ -67,10 +68,13 @@ pub fn TranscriptView() -> Element {
             div { class: "chat-column",
                 match history {
                     HistoryState::NotLoaded | HistoryState::Loading => rsx! {
-                        p { class: "history-note", "Loading the conversation" }
+                        TranscriptSkeleton {}
                     },
                     HistoryState::LoadingOlder => rsx! {
-                        p { class: "history-note", "Loading older messages" }
+                        p { class: "history-note loading-note", role: "status",
+                            span { class: "spinner", aria_hidden: true }
+                            "Loading older messages"
+                        }
                     },
                     HistoryState::Loaded { has_older: true } => rsx! {
                         button {

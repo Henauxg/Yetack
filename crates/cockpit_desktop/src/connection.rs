@@ -143,6 +143,7 @@ async fn run_demo(
     while let Some(outgoing) = requests.next().await {
         let mut queue = VecDeque::from([outgoing]);
         while let Some(Outgoing { request, purpose }) = queue.pop_front() {
+            tokio::time::sleep(demo::latency(&request)).await;
             let result = demo::answer(&state.read(), &request);
             let mut state = state.write();
             let method = request.method();

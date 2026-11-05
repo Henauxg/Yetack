@@ -181,14 +181,19 @@ pub fn apply_response(
                 other => Failure::from_result(other).into_loadable(),
             };
         }
-        Purpose::ContextUsage { agent } => match result {
-            Ok(ResponseBody::ContextUsage(context)) => {
-                if let Some(details) = loaded_details(state, agent) {
-                    details.context = Some(context);
-                }
+        Purpose::ContextUsage { agent } => {
+            if let Some(entry) = state.agents.get_mut(&agent) {
+                entry.context_loading = false;
             }
-            other => report(state, method, other),
-        },
+            match result {
+                Ok(ResponseBody::ContextUsage(context)) => {
+                    if let Some(details) = loaded_details(state, agent) {
+                        details.context = Some(context);
+                    }
+                }
+                other => report(state, method, other),
+            }
+        }
         Purpose::McpStatus { agent } => match result {
             Ok(ResponseBody::McpServers { servers }) => {
                 if let Some(details) = loaded_details(state, agent) {

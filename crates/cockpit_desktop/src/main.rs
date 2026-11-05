@@ -4,6 +4,7 @@ mod bridge;
 mod config;
 mod connection;
 mod demo;
+mod fonts;
 mod format;
 mod notifications;
 mod prefs;
@@ -31,7 +32,7 @@ const APP_NAME: &str = "Agents Cockpit";
 const ICON_PNG: &[u8] = include_bytes!("../assets/agents-cockpit-256.png");
 
 /// The theme's background, so the window does not flash white before the page draws.
-const BACKGROUND: (u8, u8, u8, u8) = (10, 10, 10, 255);
+const BACKGROUND: (u8, u8, u8, u8) = (24, 24, 24, 255);
 
 /// Log level when `RUST_LOG` is not set.
 const DEFAULT_LOG: &str = "warn";
@@ -67,7 +68,10 @@ fn main() -> anyhow::Result<()> {
         .with_window(window)
         .with_menu(None)
         .with_background_color(BACKGROUND)
-        .with_custom_head(format!("<style>{STYLESHEET}</style>"));
+        .with_custom_head(format!(
+            "<style>{}{STYLESHEET}</style>",
+            fonts::font_faces()
+        ));
     match dioxus::desktop::icon_from_memory::<Icon>(ICON_PNG) {
         Ok(icon) => desktop = desktop.with_icon(icon),
         Err(error) => tracing::warn!("cannot load the window icon: {error}"),

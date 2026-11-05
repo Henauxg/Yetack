@@ -84,7 +84,7 @@ const MAX_HIGHLIGHT_BYTES: usize = 256 * 1024;
 
 /// The mockup palette (R3-parts): keywords and headings #c4a7e7, strings and inline code #f6c177,
 /// types, keys and link text #9ccfd8, macros and flags #ebbcba, numbers, variables and list
-/// markers #eb6f92, comments #8a8a8a, plain #e6e6e6. The stylesheet colors the classes.
+/// markers #eb6f92, comments #939393, plain #f3f3f3. The stylesheet colors the classes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, IntoStaticStr)]
 #[strum(serialize_all = "kebab-case", prefix = "tok-")]
 pub enum TokenClass {

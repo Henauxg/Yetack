@@ -57,6 +57,8 @@ pub struct AgentEntry {
     pub summary: AgentSummary,
     pub transcript: Transcript,
     pub details: Loadable<AgentDetails>,
+    /// An `agent.context_usage` request is on its way: the usage card shows that it loads.
+    pub context_loading: bool,
     /// The file view's texts, by the path the view uses.
     pub files: BTreeMap<PathBuf, Loadable<String>>,
     /// An `agent.commands` request is on its way.
@@ -69,6 +71,7 @@ impl AgentEntry {
             summary,
             transcript: Transcript::default(),
             details: Loadable::NotRequested,
+            context_loading: false,
             files: BTreeMap::new(),
             commands_requested: false,
         }
