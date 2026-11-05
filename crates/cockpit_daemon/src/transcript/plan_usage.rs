@@ -23,10 +23,22 @@ pub(crate) fn apply(usage: &mut PlanUsage, info: &RateLimitInfo) -> bool {
             .as_ref()
             .and_then(words::rate_limit_status)
             .or(event_status);
-        update(usage, window_key, window.utilization, window.resets_at, status);
+        update(
+            usage,
+            window_key,
+            window.utilization,
+            window.resets_at,
+            status,
+        );
     }
     if let Some(window_key) = info.rate_limit_type.as_ref().and_then(words::usage_window) {
-        update(usage, window_key, info.utilization, info.resets_at, event_status);
+        update(
+            usage,
+            window_key,
+            info.utilization,
+            info.resets_at,
+            event_status,
+        );
     }
     *usage != before
 }

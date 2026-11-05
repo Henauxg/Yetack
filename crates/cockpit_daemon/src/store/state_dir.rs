@@ -3,6 +3,8 @@ use std::fs::{DirBuilder, File, OpenOptions, Permissions, TryLockError};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+use cockpit_protocol::AgentId;
+
 use crate::store::error::StoreError;
 
 const STATE_FOLDER_NAME: &str = "agents-cockpit";
@@ -17,6 +19,7 @@ const AGENTS_FILE: &str = "agents.json";
 const SETTINGS_FILE: &str = "settings.json";
 const EVENTS_FOLDER: &str = "events";
 const RAW_FOLDER: &str = "raw";
+const RAW_LOG_EXTENSION: &str = "jsonl";
 
 /// Only the owner may enter the folders.
 const FOLDER_MODE: u32 = 0o700;
@@ -103,6 +106,12 @@ impl StateDir {
 
     pub(crate) fn raw(&self) -> PathBuf {
         self.root.join(RAW_FOLDER)
+    }
+
+    /// `raw/<agent-id>.jsonl`.
+    pub(crate) fn raw_log(&self, agent: AgentId) -> PathBuf {
+        self.raw()
+            .join(format!("{}.{RAW_LOG_EXTENSION}", agent.get()))
     }
 }
 

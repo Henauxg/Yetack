@@ -92,7 +92,12 @@ pub(crate) fn prune_background_tasks(tasks: &mut Vec<BackgroundTask>) {
     });
 }
 
-pub(crate) fn add_changed_file(files: &mut Vec<ChangedFile>, path: &Path, added: u32, removed: u32) {
+pub(crate) fn add_changed_file(
+    files: &mut Vec<ChangedFile>,
+    path: &Path,
+    added: u32,
+    removed: u32,
+) {
     match files.iter_mut().find(|file| file.path == path) {
         Some(file) => {
             file.lines_added = file.lines_added.saturating_add(added);
@@ -239,7 +244,10 @@ fn mcp_tool_name(server: &str, tool: &str) -> String {
     format!("{MCP_TOOL_PREFIX}{server}{MCP_TOOL_SEPARATOR}{tool}")
 }
 
-pub(crate) fn commands(response: &InitializeResponse, skills: &BTreeSet<String>) -> Vec<SlashCommand> {
+pub(crate) fn commands(
+    response: &InitializeResponse,
+    skills: &BTreeSet<String>,
+) -> Vec<SlashCommand> {
     response
         .commands
         .iter()
@@ -252,7 +260,10 @@ pub(crate) fn commands(response: &InitializeResponse, skills: &BTreeSet<String>)
 }
 
 /// From `system/init`, which names the commands without describing them.
-pub(crate) fn commands_from_names(names: &[String], skills: &BTreeSet<String>) -> Vec<SlashCommand> {
+pub(crate) fn commands_from_names(
+    names: &[String],
+    skills: &BTreeSet<String>,
+) -> Vec<SlashCommand> {
     names
         .iter()
         .map(|name| SlashCommand {
@@ -381,7 +392,11 @@ mod tests {
         let usage = context_usage(&usage);
 
         assert_eq!(usage.percent, 5);
-        let names: Vec<&str> = usage.categories.iter().map(|category| category.name.as_str()).collect();
+        let names: Vec<&str> = usage
+            .categories
+            .iter()
+            .map(|category| category.name.as_str())
+            .collect();
         assert_eq!(names, ["System prompt", "Messages"]);
     }
 }

@@ -155,7 +155,9 @@ pub(crate) fn read_log(path: &Path) -> Result<Vec<EventRecord>, StoreError> {
     for_each_line(path, |line| {
         match serde_json::from_slice::<ServerMessage>(line) {
             Ok(ServerMessage::Event(record)) => records.push(record),
-            Ok(_) | Err(_) => tracing::warn!(path = %path.display(), "skipped a log line that is not an event"),
+            Ok(_) | Err(_) => {
+                tracing::warn!(path = %path.display(), "skipped a log line that is not an event")
+            }
         }
         true
     })?;
@@ -299,11 +301,17 @@ mod tests {
         let mut logs = EventLogs::new(temp.path().to_owned());
         let agent = LogName::Agent(AgentId::new(1));
         logs.append(agent, &frame(1, removed(1))).unwrap();
-        logs.append(LogName::Daemon, &frame(2, Event::SettingsChanged(Settings::default())))
-            .unwrap();
+        logs.append(
+            LogName::Daemon,
+            &frame(2, Event::SettingsChanged(Settings::default())),
+        )
+        .unwrap();
         logs.append(agent, &frame(3, removed(3))).unwrap();
-        logs.append(LogName::Daemon, &frame(4, Event::PlanUsageChanged(PlanUsage::default())))
-            .unwrap();
+        logs.append(
+            LogName::Daemon,
+            &frame(4, Event::PlanUsageChanged(PlanUsage::default())),
+        )
+        .unwrap();
         logs.append(agent, &frame(5, removed(5))).unwrap();
 
         let read = read_replay(temp.path(), Seq::new(1), Some(Seq::new(4)), 1 << 20).unwrap();
@@ -324,7 +332,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let mut logs = EventLogs::new(temp.path().to_owned());
         for seq in 1..=10 {
-            logs.append(LogName::Daemon, &frame(seq, removed(1))).unwrap();
+            logs.append(LogName::Daemon, &frame(seq, removed(1)))
+                .unwrap();
         }
 
         let read = read_replay(temp.path(), Seq::new(0), Some(Seq::new(10)), 100).unwrap();

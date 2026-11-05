@@ -162,6 +162,7 @@ impl AgentView {
         }
         view.stop_background_tasks(None);
         view.summary.activity = None;
+        view.refresh_status();
         view
     }
 
@@ -242,8 +243,9 @@ impl AgentView {
             OutputLine::ControlCancelRequest(cancel) => {
                 self.cancel_pending(&PendingId::new(cancel.request_id.as_str().to_owned()));
             }
-            OutputLine::StreamEvent(_) | OutputLine::ControlResponse(_) | OutputLine::Unknown(_) => {
-            }
+            OutputLine::StreamEvent(_)
+            | OutputLine::ControlResponse(_)
+            | OutputLine::Unknown(_) => {}
         }
         follow_ups
     }
@@ -353,7 +355,10 @@ impl AgentView {
             item.body = body;
         }
         Ok(Answered {
-            line: InputLine::permission(ControlRequestId::new(pending.as_str().to_owned()), decision),
+            line: InputLine::permission(
+                ControlRequestId::new(pending.as_str().to_owned()),
+                decision,
+            ),
             then_mode,
         })
     }
@@ -413,10 +418,6 @@ impl AgentView {
 
     pub(crate) fn set_effort(&mut self, effort: Effort) {
         self.summary.effort = Some(effort);
-    }
-
-    pub(crate) fn set_prompt_cache_ttl(&mut self, ttl: Duration) {
-        self.prompt_cache_ttl = ttl;
     }
 
     fn apply_system(&mut self, event: SystemEvent, now: Timestamp) {
@@ -492,12 +493,18 @@ impl AgentView {
         );
         self.skills = init.skills.into_iter().collect();
         if self.details.commands.is_empty() {
-            self.details.commands = details::commands_from_names(&init.slash_commands, &self.skills);
+            self.details.commands =
+                details::commands_from_names(&init.slash_commands, &self.skills);
         } else {
             details::mark_skills(&mut self.details.commands, &self.skills);
         }
         details::merge_init_servers(&mut self.details.mcp_servers, &init.mcp_servers);
-        if before != (self.details.commands.clone(), self.details.mcp_servers.clone()) {
+        if before
+            != (
+                self.details.commands.clone(),
+                self.details.mcp_servers.clone(),
+            )
+        {
             self.details_changed = true;
         }
     }
@@ -511,14 +518,20 @@ impl AgentView {
         for block in message.message.content {
             match block {
                 ContentBlock::Text(text) if !text.text.trim().is_empty() => {
-                    self.push_item(parent, ItemBody::AssistantText {
-                        markdown: text.text,
-                    });
+                    self.push_item(
+                        parent,
+                        ItemBody::AssistantText {
+                            markdown: text.text,
+                        },
+                    );
                 }
                 ContentBlock::Thinking(thinking) if !thinking.thinking.trim().is_empty() => {
-                    self.push_item(parent, ItemBody::Thinking {
-                        text: thinking.thinking,
-                    });
+                    self.push_item(
+                        parent,
+                        ItemBody::Thinking {
+                            text: thinking.thinking,
+                        },
+                    );
                 }
                 ContentBlock::ToolUse(tool_use) => self.start_tool_call(tool_use, parent),
                 ContentBlock::Text(_)
@@ -687,7 +700,8 @@ impl AgentView {
         let parent = tool_item
             .and_then(|id| find_item(&self.items, id))
             .and_then(|item| item.parent);
-        let parsed = ToolInput::parse(&request.tool_name, &request.input).unwrap_or(ToolInput::Unknown);
+        let parsed =
+            ToolInput::parse(&request.tool_name, &request.input).unwrap_or(ToolInput::Unknown);
         let body = match &parsed {
             ToolInput::AskUserQuestion(_) => ItemBody::Question(Question {
                 pending: pending.clone(),
@@ -774,7 +788,9 @@ impl AgentView {
 
     fn task_started(&mut self, task: TaskStarted, now: Timestamp) {
         let id = BackgroundTaskId::new(task.task_id.as_str().to_owned());
-        self.details.background_tasks.retain(|existing| existing.id != id);
+        self.details
+            .background_tasks
+            .retain(|existing| existing.id != id);
         self.details.background_tasks.push(BackgroundTask {
             id,
             kind: details::background_kind(task.task_type.as_deref()),
@@ -837,7 +853,11 @@ impl AgentView {
     }
 
     fn take_echo(&mut self, text: &str) -> bool {
-        match self.awaited_echoes.iter().position(|awaited| awaited == text) {
+        match self
+            .awaited_echoes
+            .iter()
+            .position(|awaited| awaited == text)
+        {
             Some(index) => {
                 self.awaited_echoes.remove(index);
                 true
@@ -1121,13 +1141,23 @@ mod tests {
         let mut view = view();
 
         view.add_prompt(&prompt("Fix the cart total"), false);
-        assert_eq!(view.summary().status, AgentStatus::Idle, "refreshed on publish");
+        assert_eq!(
+            view.summary().status,
+            AgentStatus::Idle,
+            "refreshed on publish"
+        );
         view.take_events();
         assert_eq!(view.summary().status, AgentStatus::Working);
         apply(&mut view, init());
         apply(&mut view, echo("Fix the cart total"));
-        apply(&mut view, assistant(json!([{"type": "thinking", "thinking": ""}])));
-        apply(&mut view, assistant(json!([{"type": "text", "text": "The total is fixed."}])));
+        apply(
+            &mut view,
+            assistant(json!([{"type": "thinking", "thinking": ""}])),
+        );
+        apply(
+            &mut view,
+            assistant(json!([{"type": "text", "text": "The total is fixed."}])),
+        );
         let follow_ups = apply(&mut view, result(0.25));
         let events = view.take_events();
 
@@ -1156,7 +1186,10 @@ mod tests {
         assert_eq!(summary.status, AgentStatus::Idle);
         assert_eq!(summary.turns, 1);
         assert_eq!(summary.cost, CostUsd::new(0.25));
-        assert_eq!(summary.session.as_ref().map(ClaudeSessionId::as_str), Some("session-1"));
+        assert_eq!(
+            summary.session.as_ref().map(ClaudeSessionId::as_str),
+            Some("session-1")
+        );
         assert_eq!(summary.model.as_deref(), Some("claude-test-model"));
         assert_eq!(
             summary.cache_expires_at,
@@ -1205,9 +1238,15 @@ mod tests {
     fn a_failed_command_shows_its_exit_code() {
         let mut view = view();
 
-        apply(&mut view, tool_use("t1", "Bash", json!({"command": "cargo test"})));
+        apply(
+            &mut view,
+            tool_use("t1", "Bash", json!({"command": "cargo test"})),
+        );
         assert_eq!(view.summary().activity.as_deref(), Some("Bash: cargo test"));
-        apply(&mut view, tool_result("t1", "Exit code 101\ntest failed", true));
+        apply(
+            &mut view,
+            tool_result("t1", "Exit code 101\ntest failed", true),
+        );
 
         let ItemBody::ToolCall(call) = &view.items()[0].body else {
             panic!("expected a tool call");
@@ -1224,7 +1263,11 @@ mod tests {
 
         apply(
             &mut view,
-            tool_use("t1", "Write", json!({"file_path": path, "content": "one\ntwo\n"})),
+            tool_use(
+                "t1",
+                "Write",
+                json!({"file_path": path, "content": "one\ntwo\n"}),
+            ),
         );
         let mut done = tool_result("t1", "File written", false);
         done["tool_use_result"] = json!({"type": "update", "originalFile": "one\n"});
@@ -1243,7 +1286,10 @@ mod tests {
     fn an_approval_waits_then_allows_with_the_input() {
         let mut view = view();
         view.add_prompt(&prompt("Clean up"), false);
-        apply(&mut view, tool_use("t1", "Bash", json!({"command": "rm -r build"})));
+        apply(
+            &mut view,
+            tool_use("t1", "Bash", json!({"command": "rm -r build"})),
+        );
 
         apply(
             &mut view,
@@ -1262,7 +1308,9 @@ mod tests {
             decision: ApprovalDecision::Allow,
             message: None,
         });
-        let answered = view.answer(&PendingId::new("req-1".to_owned()), answer).unwrap();
+        let answered = view
+            .answer(&PendingId::new("req-1".to_owned()), answer)
+            .unwrap();
         view.take_events();
 
         assert_eq!(
@@ -1295,7 +1343,10 @@ mod tests {
         ]});
         apply(&mut view, tool_use("t1", "AskUserQuestion", input.clone()));
 
-        apply(&mut view, can_use_tool("req-2", "t1", "AskUserQuestion", input));
+        apply(
+            &mut view,
+            can_use_tool("req-2", "t1", "AskUserQuestion", input),
+        );
 
         assert_eq!(view.items().len(), 1);
         let ItemBody::Question(question) = &view.items()[0].body else {
@@ -1304,7 +1355,12 @@ mod tests {
         assert_eq!(question.questions[0].text, "Which store?");
         assert_eq!(question.questions[0].options.len(), 2);
         let pending = PendingId::new("req-2".to_owned());
-        let wrong = view.answer(&pending, Answer::Question { answers: Vec::new() });
+        let wrong = view.answer(
+            &pending,
+            Answer::Question {
+                answers: Vec::new(),
+            },
+        );
         assert!(matches!(wrong, Err(AnswerError::Mismatch(_))), "{wrong:?}");
         let mismatched_kind = view.answer(
             &pending,
@@ -1339,7 +1395,10 @@ mod tests {
         let mut view = view();
         let input = json!({"plan": "1. Read\n2. Fix"});
 
-        apply(&mut view, can_use_tool("req-3", "t9", "ExitPlanMode", input));
+        apply(
+            &mut view,
+            can_use_tool("req-3", "t9", "ExitPlanMode", input),
+        );
 
         let ItemBody::Plan(plan) = &view.items()[0].body else {
             panic!("expected a plan");
@@ -1361,8 +1420,14 @@ mod tests {
     fn an_interrupt_cancels_what_waits_and_fails_what_runs() {
         let mut view = view();
         view.add_prompt(&prompt("Deploy"), false);
-        apply(&mut view, tool_use("t1", "Bash", json!({"command": "make deploy"})));
-        apply(&mut view, tool_use("t2", "Bash", json!({"command": "make check"})));
+        apply(
+            &mut view,
+            tool_use("t1", "Bash", json!({"command": "make deploy"})),
+        );
+        apply(
+            &mut view,
+            tool_use("t2", "Bash", json!({"command": "make check"})),
+        );
         apply(
             &mut view,
             can_use_tool("req-1", "t1", "Bash", json!({"command": "make deploy"})),
@@ -1419,12 +1484,17 @@ mod tests {
 
         apply(
             &mut view,
-            tool_use("t1", "Task", json!({"description": "Survey the tests", "prompt": "Look"})),
+            tool_use(
+                "t1",
+                "Task",
+                json!({"description": "Survey the tests", "prompt": "Look"}),
+            ),
         );
         let mut nested = assistant(json!([{"type": "text", "text": "Found 12 tests."}]));
         nested["parent_tool_use_id"] = json!("t1");
         apply(&mut view, nested);
-        let mut nested_prompt = json!({"type": "user", "message": {"role": "user", "content": "Look"}});
+        let mut nested_prompt =
+            json!({"type": "user", "message": {"role": "user", "content": "Look"}});
         nested_prompt["parent_tool_use_id"] = json!("t1");
         apply(&mut view, nested_prompt);
 
@@ -1441,11 +1511,15 @@ mod tests {
 
         apply(
             &mut view,
-            tool_use("t1", "TodoWrite", json!({"todos": [
-                {"content": "Read", "status": "completed", "activeForm": "Reading"},
-                {"content": "Fix", "status": "in_progress", "activeForm": "Fixing the total"},
-                {"content": "Test", "status": "pending"}
-            ]})),
+            tool_use(
+                "t1",
+                "TodoWrite",
+                json!({"todos": [
+                    {"content": "Read", "status": "completed", "activeForm": "Reading"},
+                    {"content": "Fix", "status": "in_progress", "activeForm": "Fixing the total"},
+                    {"content": "Test", "status": "pending"}
+                ]}),
+            ),
         );
 
         assert_eq!(
@@ -1453,10 +1527,19 @@ mod tests {
             Some(TaskProgress { done: 1, total: 3 })
         );
         assert_eq!(view.summary().activity.as_deref(), Some("Fixing the total"));
-        let statuses: Vec<TaskStatus> = view.details().tasks.iter().map(|task| task.status).collect();
+        let statuses: Vec<TaskStatus> = view
+            .details()
+            .tasks
+            .iter()
+            .map(|task| task.status)
+            .collect();
         assert_eq!(
             statuses,
-            [TaskStatus::Completed, TaskStatus::InProgress, TaskStatus::Pending]
+            [
+                TaskStatus::Completed,
+                TaskStatus::InProgress,
+                TaskStatus::Pending
+            ]
         );
         assert_eq!(view.details().tasks[2].active_form, "Test");
     }
@@ -1553,7 +1636,10 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(costs, [CostUsd::new(0.5), CostUsd::new(0.25), CostUsd::new(0.25)]);
+        assert_eq!(
+            costs,
+            [CostUsd::new(0.5), CostUsd::new(0.25), CostUsd::new(0.25)]
+        );
     }
 
     #[test]
@@ -1587,7 +1673,10 @@ mod tests {
     fn a_restored_agent_continues_its_ids_and_closes_what_was_open() {
         let mut live = view();
         live.add_prompt(&prompt("Go"), false);
-        apply(&mut live, tool_use("t1", "Bash", json!({"command": "sleep 100"})));
+        apply(
+            &mut live,
+            tool_use("t1", "Bash", json!({"command": "sleep 100"})),
+        );
         apply(
             &mut live,
             can_use_tool("req-1", "t1", "Bash", json!({"command": "sleep 100"})),
@@ -1629,7 +1718,11 @@ mod tests {
             .filter(|event| matches!(event, Event::TranscriptChanged { .. }))
             .count();
         assert_eq!(changed, 3);
-        assert!(events.iter().any(|event| matches!(event, Event::AgentUpdated(_))));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, Event::AgentUpdated(_)))
+        );
         restored.process_started();
         let next = restored.add_prompt(&prompt("Again"), false);
         assert_eq!(next, ItemId::new(5));

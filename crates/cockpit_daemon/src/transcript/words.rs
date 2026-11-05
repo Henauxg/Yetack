@@ -58,10 +58,7 @@ pub(crate) fn removable_scope(scope: McpScope) -> Option<ClaudeMcpScope> {
         McpScope::User => Some(ClaudeMcpScope::User),
         McpScope::Project => Some(ClaudeMcpScope::Project),
         McpScope::Local => Some(ClaudeMcpScope::Local),
-        McpScope::Dynamic
-        | McpScope::Enterprise
-        | McpScope::Managed
-        | McpScope::ClaudeAi => None,
+        McpScope::Dynamic | McpScope::Enterprise | McpScope::Managed | McpScope::ClaudeAi => None,
     }
 }
 
@@ -106,7 +103,9 @@ pub(crate) fn usage_window(window: &OpenWord<RateLimitType>) -> Option<UsageWind
     })
 }
 
-pub(crate) fn rate_limit_status(status: &OpenWord<ClaudeRateLimitStatus>) -> Option<RateLimitStatus> {
+pub(crate) fn rate_limit_status(
+    status: &OpenWord<ClaudeRateLimitStatus>,
+) -> Option<RateLimitStatus> {
     let OpenWord::Known(status) = status else {
         return None;
     };

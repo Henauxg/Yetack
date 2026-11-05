@@ -110,6 +110,9 @@ mod tests {
 
         let read = read_json::<BTreeMap<String, u32>>(&path);
 
-        assert!(matches!(read, Err(StoreError::Malformed { .. })), "{read:?}");
+        assert!(
+            matches!(read, Err(StoreError::Malformed { .. })),
+            "{read:?}"
+        );
     }
 }

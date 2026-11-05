@@ -127,7 +127,11 @@ pub(crate) fn truncate(mut text: String, max_bytes: usize) -> String {
 /// The exit code of a failed command: Claude Code starts its output with "Exit code 2".
 pub(crate) fn exit_code(output: &str) -> Option<i32> {
     let first_line = output.lines().next()?;
-    first_line.strip_prefix(EXIT_CODE_PREFIX)?.trim().parse().ok()
+    first_line
+        .strip_prefix(EXIT_CODE_PREFIX)?
+        .trim()
+        .parse()
+        .ok()
 }
 
 /// Lines added and removed from `old` to `new`, after their common first and last lines.

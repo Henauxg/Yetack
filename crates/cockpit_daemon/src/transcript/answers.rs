@@ -1,8 +1,6 @@
 //! A client's answer, as the `control_response` Claude Code waits for.
 
-use claude_protocol::{
-    PermissionDecision, QuestionAnswer as ClaudeQuestionAnswer, ToolInput,
-};
+use claude_protocol::{PermissionDecision, QuestionAnswer as ClaudeQuestionAnswer, ToolInput};
 use cockpit_protocol::{
     ApprovalAnswer, ApprovalDecision, AskedQuestion, PermissionMode, PlanAnswer, PlanDecision,
     QuestionAnswer, QuestionOption,
@@ -120,7 +118,10 @@ mod tests {
 
         let decision = approval(Map::new(), &answer);
 
-        assert_eq!(decision, PermissionDecision::deny(DEFAULT_DENIAL.to_owned()));
+        assert_eq!(
+            decision,
+            PermissionDecision::deny(DEFAULT_DENIAL.to_owned())
+        );
     }
 
     #[test]

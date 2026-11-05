@@ -90,7 +90,11 @@ mod tests {
             Direction::ToClaude,
             "{\"type\":\"user\"}\n",
         );
-        log.append(Timestamp::from_unix_millis(6), Direction::Stderr, "not json");
+        log.append(
+            Timestamp::from_unix_millis(6),
+            Direction::Stderr,
+            "not json",
+        );
 
         let text = std::fs::read_to_string(&path).unwrap();
         assert_eq!(

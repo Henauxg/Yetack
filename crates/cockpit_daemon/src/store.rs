@@ -13,5 +13,5 @@ pub use error::StoreError;
 pub(crate) use event_log::{EventLogs, LogName, ReplayRead, read_log, read_replay};
 pub(crate) use raw_log::{Direction, RawLog};
 pub(crate) use settings_file::DaemonSettings;
-pub(crate) use state_dir::{ServeLock, StateDir};
+pub(crate) use state_dir::StateDir;
 pub use state_dir::{default_state_dir, socket_path};
