@@ -12,7 +12,7 @@ use dioxus::prelude::*;
 
 use crate::connection::{Clock, Cockpit};
 use crate::format;
-use crate::state::{AgentEntry, Popover, actions, file_edits};
+use crate::state::{AgentEntry, Loadable, Popover, actions, file_edits};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::presence::Presence;
 
@@ -173,11 +173,16 @@ fn UsageCard() -> Element {
     let Some(entry) = state.selected() else {
         return rsx! {};
     };
+    // Before the connection, the plan's windows are unknown, not missing.
+    let plan_loading = !state.is_connected();
     let summary = &entry.summary;
+    let context_loading = entry.context_loading
+        || matches!(entry.details, Loadable::NotRequested | Loadable::Loading);
     let context = entry
         .details
         .loaded()
         .and_then(|details| details.context.clone());
+    let context_unknown = context.is_none() && context_loading;
     let context_line = match (&context, summary.context_percent) {
         (Some(context), _) => format!(
             "{} of {}, {}%",
@@ -195,7 +200,15 @@ fn UsageCard() -> Element {
         div { class: "popover usage-card",
             div { class: "card-section",
                 span { class: "section-title", "Plan, all agents" }
-                if windows.is_empty() {
+                if windows.is_empty() && plan_loading {
+                    for width in ["104px", "92px"] {
+                        div { class: "card-row", aria_hidden: true,
+                            span { class: "skeleton skeleton-line", style: "width: {width}" }
+                            span { class: "skeleton skeleton-line", style: "width: 30px" }
+                        }
+                        span { class: "skeleton", style: "height: 6px", aria_hidden: true }
+                    }
+                } else if windows.is_empty() {
                     span { class: "muted small", "Claude Code has not reported the plan usage yet." }
                 }
                 for (window, usage) in windows {
@@ -204,10 +217,24 @@ fn UsageCard() -> Element {
             }
             div { class: "card-divider" }
             div { class: "card-section",
-                span { class: "section-title", "This agent" }
-                div { class: "card-row", span { "Context" } span { "{context_line}" } }
+                span { class: "section-title loading-note",
+                    "This agent"
+                    if context_loading {
+                        span { class: "spinner", role: "status", aria_label: "Loading the context usage" }
+                    }
+                }
+                div { class: "card-row",
+                    span { "Context" }
+                    if context_unknown {
+                        span { class: "skeleton skeleton-line", style: "width: 120px", aria_hidden: true }
+                    } else {
+                        span { "{context_line}" }
+                    }
+                }
                 if let Some(context) = context {
                     ContextBar { context }
+                } else if context_unknown {
+                    span { class: "skeleton", style: "height: 8px", aria_hidden: true }
                 }
                 div { class: "card-row",
                     span { "Prompt cache" }

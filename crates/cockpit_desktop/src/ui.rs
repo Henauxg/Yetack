@@ -9,6 +9,7 @@ mod dialogs;
 mod file_view;
 mod header;
 mod icons;
+mod loading;
 mod markdown;
 mod mcp;
 mod presence;

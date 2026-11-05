@@ -131,6 +131,16 @@ pub fn state(daemon: DaemonLabel) -> AppState {
     state
 }
 
+/// How long the demo takes to answer, as a daemon would for the past sessions and the context
+/// usage, so that their loading states show.
+pub fn latency(request: &Request) -> Duration {
+    match request {
+        Request::SessionsList => Duration::from_millis(900),
+        Request::AgentContextUsage(_) => Duration::from_millis(700),
+        _ => Duration::ZERO,
+    }
+}
+
 /// What a daemon holding the sample would answer.
 pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, RequestError> {
     let agent_details = |agent: AgentId| -> Result<AgentDetails, RequestError> {

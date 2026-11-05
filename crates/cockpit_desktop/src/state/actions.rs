@@ -530,13 +530,15 @@ pub fn toggle_block(state: &mut AppState, agent: AgentId, block: Block) -> Vec<O
 /// Opens or closes the usage card. Opening it asks Claude Code for the context usage now.
 pub fn toggle_usage(state: &mut AppState, agent: AgentId) -> Vec<Outgoing> {
     state.ui.toggle_popover(Popover::Usage);
-    let running = state
+    let opened = state.ui.popover == Some(Popover::Usage);
+    let Some(entry) = state
         .agents
-        .get(&agent)
-        .is_some_and(|entry| entry.summary.status != AgentStatus::Exited);
-    if state.ui.popover != Some(Popover::Usage) || !running {
+        .get_mut(&agent)
+        .filter(|entry| opened && entry.summary.status != AgentStatus::Exited)
+    else {
         return Vec::new();
-    }
+    };
+    entry.context_loading = true;
     vec![Outgoing {
         request: Request::AgentContextUsage(AgentParams { agent }),
         purpose: Purpose::ContextUsage { agent },
@@ -1463,6 +1465,32 @@ mod tests {
             &state.ui.dialog,
             Some(Dialog::NewAgent(form)) if form.session_highlighted == 0
         ));
+    }
+
+    #[test]
+    fn the_context_loads_from_the_opening_of_the_usage_card_to_its_answer() {
+        let mut state = state(AgentStatus::Idle);
+        let loading = |state: &AppState| {
+            state
+                .agents
+                .get(&agent())
+                .is_some_and(|entry| entry.context_loading)
+        };
+
+        let requests = toggle_usage(&mut state, agent());
+        assert!(loading(&state));
+
+        let Some(Outgoing { purpose, .. }) = requests.into_iter().next() else {
+            panic!("expected a context usage request");
+        };
+        apply_response(
+            &mut state,
+            &mut Drafts::default(),
+            Method::AgentContextUsage,
+            purpose,
+            Err(cockpit_client::RequestError::Disconnected),
+        );
+        assert!(!loading(&state));
     }
 
     #[test]

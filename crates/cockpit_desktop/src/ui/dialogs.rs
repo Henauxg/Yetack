@@ -17,6 +17,9 @@ use crate::ui::presence::{Presence, Shown, use_presence};
 /// Recent folders the new agent dialog offers.
 const RECENT_FOLDERS: usize = 6;
 
+/// The widths of the rows that stand for folders and sessions on their way.
+const PLACEHOLDER_WIDTHS: [&str; RECENT_FOLDERS] = ["72%", "58%", "66%", "50%", "62%", "54%"];
+
 /// What the menu buttons say when the form keeps Claude Code's default.
 const DEFAULT_MODEL: &str = "Default model";
 const DEFAULT_MODE: &str = "Default mode";
@@ -235,11 +238,19 @@ fn StartForm(form: NewAgentForm) -> Element {
     // render that lags behind typing would put an older text back.
     let folder_seed = use_hook(|| form.folder.clone());
     let prompt_seed = use_hook(|| form.prompt.clone());
-    let (folders, machine) = {
+    let (folders, machine, sessions_loading) = {
         let state = cockpit.state.read();
         let mut folders = state.recent_folders();
         folders.truncate(RECENT_FOLDERS);
-        (folders, state.daemon.machine.clone())
+        let loading = matches!(state.sessions, Loadable::NotRequested | Loadable::Loading);
+        (folders, state.daemon.machine.clone(), loading)
+    };
+    // The past sessions bring more recent folders: rows stand for them until they arrive, so the
+    // list does not grow under the pointer.
+    let placeholders = if sessions_loading {
+        RECENT_FOLDERS.saturating_sub(folders.len())
+    } else {
+        0
     };
     let now = now();
     let can_start = !form.folder.trim().is_empty() && !form.starting;
@@ -287,9 +298,14 @@ fn StartForm(form: NewAgentForm) -> Element {
                     }
                 }
             }
-            if !folders.is_empty() {
+            if !folders.is_empty() || placeholders > 0 {
                 div { class: "field-group",
-                    span { class: "field-label", "Recent folders" }
+                    span { class: "field-label loading-note",
+                        "Recent folders"
+                        if sessions_loading {
+                            span { class: "spinner", role: "status", aria_label: "Loading the recent folders" }
+                        }
+                    }
                     div { class: "folder-list", role: "radiogroup", aria_label: "Recent folders",
                         for (folder, used) in folders {
                             {
@@ -314,6 +330,14 @@ fn StartForm(form: NewAgentForm) -> Element {
                                         span { class: "folder-used", "{used}" }
                                     }
                                 }
+                            }
+                        }
+                        for (index, width) in PLACEHOLDER_WIDTHS.iter().take(placeholders).enumerate() {
+                            div { key: "placeholder-{index}", class: "folder-option placeholder", aria_hidden: true,
+                                span { class: "skeleton", style: "width: 14px; height: 12px" }
+                                span { class: "skeleton skeleton-line", style: "width: {width}" }
+                                span { class: "spacer" }
+                                span { class: "skeleton skeleton-line", style: "width: 56px" }
                             }
                         }
                     }
@@ -377,7 +401,12 @@ fn StartForm(form: NewAgentForm) -> Element {
                     class: if can_start { "button primary" } else { "button disabled" },
                     disabled: !can_start,
                     onclick: move |_| cockpit.change(actions::start_agent),
-                    if form.starting { "Starting" } else { "Start the agent" }
+                    if form.starting {
+                        span { class: "spinner", aria_hidden: true }
+                        "Starting"
+                    } else {
+                        "Start the agent"
+                    }
                     span { class: "key-hint", "Ctrl Enter" }
                 }
             }
@@ -549,7 +578,17 @@ fn ResumeList(query: String, highlighted: usize, starting: bool) -> Element {
             span { class: "dialog-note", "Claude sessions on {machine} that no agent runs now, newest first." }
             match sessions {
                 Loadable::NotRequested | Loadable::Loading => rsx! {
-                    span { class: "dialog-note", "Loading the sessions" }
+                    div { class: "session-list", role: "status", aria_label: "Loading the sessions",
+                        for (index, width) in PLACEHOLDER_WIDTHS.iter().enumerate() {
+                            div { key: "{index}", class: "session-row placeholder", aria_hidden: true,
+                                span { class: "session-text",
+                                    span { class: "skeleton skeleton-line", style: "width: 38%" }
+                                    span { class: "skeleton skeleton-line", style: "width: {width}" }
+                                }
+                                span { class: "skeleton skeleton-line", style: "width: 64px" }
+                            }
+                        }
+                    }
                 },
                 Loadable::Failed(error) => rsx! {
                     span { class: "dialog-note", "The sessions did not load: {error}" }
