@@ -268,6 +268,12 @@ fn words_are_pinned() {
 }
 ```
 
+The same holds for the field names of a format another program reads: a file
+saved to disk, a message to another process or to a script. Serialization
+takes them from the struct's field names, so renaming a field changes the
+format without any error. Pin them in a test that reads, or writes and
+compares, a hand-written example of the format.
+
 A message that names one of these words writes it through the enum or the
 constant, so that a rename updates the message too:
 
@@ -280,7 +286,13 @@ format!("`{}` needs `{}` or `{}`", KindName::Enum, Key::Of, Key::Values)
 ```
 
 This does not apply to the prose of a message, to a string used in one place
-only, or to a test's input, which is written as a user would write it.
+only, or to test input: a test's input, a fixture, a program that stands in
+for another one in tests, and demo sample data. They are written as the user
+or the other program would write them.
+
+Class names and other values written in user interface markup may repeat, as
+they do in the stylesheet that defines them. A class name the code computes or
+matches is declared once.
 
 An attribute cannot take a constant, so a word that an attribute must spell
 out, such as a `serde` or `strum` rename, may repeat. A test pins these words,
