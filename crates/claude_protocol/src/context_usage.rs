@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::error::ParseError;
+use crate::parse_error::ParseError;
 
 /// The answer to `get_context_usage`: what `/context` shows.
 #[derive(Debug, Clone, PartialEq, Deserialize)]

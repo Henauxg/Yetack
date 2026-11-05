@@ -5,23 +5,26 @@
     reason = "test code: a failure is a failed test"
 )]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use claude_protocol::{
     ContentBlock, ContextUsage, ControlRequestId, ControlResponse, HookOutcome, ImageSource,
     IncomingRequest, InitializeResponse, McpScope, McpServerState, McpStatus, McpTransport,
     OpenWord, OutputLine, ParseError, PermissionBehavior, PermissionDestination, PermissionMode,
-    PermissionUpdate, RateLimitStatus, RateLimitType, ResultSubtype, SessionId, SessionState,
-    SystemEvent, TaskId, TaskStatus, TerminalReason, ToolUseId, Usage,
+    PermissionUpdate, RateLimitStatus, RateLimitType, ResultMessage, ResultSubtype, SessionId,
+    SessionState, SystemEvent, TaskId, TaskStatus, TerminalReason, ToolUseId, Usage,
 };
-use serde_json::json;
+use serde_json::{Value, json};
+
+fn fixture_path(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name)
+}
 
 fn fixture(name: &str) -> OutputLine {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
-        .join(name);
-    let text = std::fs::read_to_string(&path).expect("the fixture exists");
+    let text = std::fs::read_to_string(fixture_path(name)).expect("the fixture exists");
     text.parse()
         .unwrap_or_else(|error| panic!("{name} does not parse: {error}"))
 }
@@ -37,7 +40,7 @@ fn system_event(name: &str) -> SystemEvent {
     event
 }
 
-fn success_body(name: &str) -> serde_json::Value {
+fn success_body(name: &str) -> Value {
     let OutputLine::ControlResponse(ControlResponse::Success(success)) = fixture(name) else {
         panic!("{name} is not a successful control response");
     };
@@ -401,6 +404,68 @@ fn result_interrupted() {
     assert!(result.model_usage.is_empty());
 }
 
+fn result_line(line: &str) -> ResultMessage {
+    match line.parse::<OutputLine>() {
+        Ok(OutputLine::Result(result)) => result,
+        other => panic!("{line} gave {other:?}"),
+    }
+}
+
+#[test]
+fn a_result_line_reads_a_malformed_optional_field_as_absent() {
+    let status = result_line(
+        r#"{"type":"result","subtype":"success","is_error":true,"api_error_status":"529","num_turns":3,"session_id":"00000000-0000-4000-8000-000000000001"}"#,
+    );
+    let duration = result_line(
+        r#"{"type":"result","subtype":"success","duration_ms":-5,"duration_api_ms":1200,"session_id":"00000000-0000-4000-8000-000000000001"}"#,
+    );
+    let errors = result_line(
+        r#"{"type":"result","subtype":"error_during_execution","errors":null,"terminal_reason":"aborted_tools","session_id":"00000000-0000-4000-8000-000000000001"}"#,
+    );
+
+    assert_eq!(status.api_error_status, None);
+    assert!(status.is_error);
+    assert_eq!(status.num_turns, 3);
+    assert_eq!(duration.duration, None);
+    assert_eq!(duration.api_duration, Some(Duration::from_millis(1200)));
+    assert!(errors.errors.is_empty());
+    assert_eq!(
+        errors.terminal_reason,
+        Some(OpenWord::Known(TerminalReason::AbortedTools))
+    );
+    assert_eq!(
+        errors.session_id,
+        Some(SessionId::new(
+            "00000000-0000-4000-8000-000000000001".to_owned()
+        ))
+    );
+}
+
+#[test]
+fn a_result_line_reads_a_bad_value_inside_a_field_as_no_field() {
+    let result = result_line(
+        r#"{"type":"result","subtype":"success","usage":{"output_tokens":"many"},"modelUsage":null,"permission_denials":[{"tool_name":"Bash"}],"total_cost_usd":0.5}"#,
+    );
+
+    assert_eq!(result.usage, None);
+    assert!(result.model_usage.is_empty());
+    assert!(result.permission_denials.is_empty());
+    assert_eq!(result.total_cost_usd, Some(0.5));
+}
+
+#[test]
+fn a_result_line_with_a_malformed_subtype_or_session_id_is_an_error() {
+    for line in [
+        r#"{"type":"result","subtype":7,"session_id":"00000000-0000-4000-8000-000000000001"}"#,
+        r#"{"type":"result","subtype":"success","session_id":42}"#,
+    ] {
+        match line.parse::<OutputLine>() {
+            Err(ParseError::MalformedLine { kind, .. }) => assert_eq!(kind, "result", "{line}"),
+            other => panic!("{line} gave {other:?}"),
+        }
+    }
+}
+
 #[test]
 fn stream_event() {
     let OutputLine::StreamEvent(stream) = fixture("stream_event.json") else {
@@ -530,10 +595,8 @@ fn control_request_can_use_tool() {
 
 #[test]
 fn suggestions_echo_back_as_claude_code_wrote_them() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/control_request_can_use_tool.json");
-    let raw: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let path = fixture_path("control_request_can_use_tool.json");
+    let raw: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     let OutputLine::ControlRequest(request) = fixture("control_request_can_use_tool.json") else {
         panic!("not a control_request line");
     };
@@ -805,6 +868,39 @@ fn a_known_type_with_a_malformed_required_field_is_an_error() {
             other => panic!("{line} gave {other:?}"),
         }
     }
+}
+
+#[test]
+fn a_malformed_control_request_keeps_its_id() {
+    // Claude Code waits for an answer, so the caller answers this id with an error.
+    let line = r#"{"type":"control_request","request_id":"r7","request":{"subtype":"can_use_tool","tool_name":"Bash"}}"#;
+
+    let error = line.parse::<OutputLine>().unwrap_err();
+
+    let ParseError::MalformedLine {
+        kind, request_id, ..
+    } = error
+    else {
+        panic!("{line} gave {error:?}");
+    };
+    assert_eq!(kind, "can_use_tool");
+    assert_eq!(request_id, Some(ControlRequestId::new("r7".to_owned())));
+}
+
+#[test]
+fn another_malformed_line_has_no_request_id() {
+    let error = r#"{"type":"assistant"}"#.parse::<OutputLine>().unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            ParseError::MalformedLine {
+                request_id: None,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
 }
 
 #[test]

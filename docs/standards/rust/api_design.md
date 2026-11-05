@@ -282,6 +282,10 @@ format!("`{}` needs `{}` or `{}`", KindName::Enum, Key::Of, Key::Values)
 This does not apply to the prose of a message, to a string used in one place
 only, or to a test's input, which is written as a user would write it.
 
+An attribute cannot take a constant, so a word that an attribute must spell
+out, such as a `serde` or `strum` rename, may repeat. A test pins these words,
+so a typo fails it.
+
 ## Traits
 
 ### Add trait implementations when they become necessary
@@ -429,6 +433,9 @@ fit a generic with few constraints, an API meant for almost any type, like
 
 - A constructor is `new()`, or `new_with_foo()` when there are several. A
   constructor returning a `Result` is `try_new()`.
+- A constructor that does work besides building the value, such as connecting,
+  spawning, encoding or parsing, may be named after that work, as `File::open`
+  and `TcpStream::connect` are.
 - A value-to-value conversion is `from_foo()`, with a matching `From`
   implementation
   ([when a conversion is value-to-value](https://doc.rust-lang.org/std/convert/trait.From.html#when-to-implement-from)).

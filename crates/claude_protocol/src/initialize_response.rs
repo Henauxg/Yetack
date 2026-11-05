@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::error::ParseError;
+use crate::parse_error::ParseError;
 
 /// The answer to `initialize`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

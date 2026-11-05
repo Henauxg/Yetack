@@ -11,15 +11,17 @@ use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, BufReader};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::error::{CloseError, ConnectError, RequestError};
+use crate::lossy_channel::{LossyReceiver, LossySender, Received, Sent};
 use crate::requester::{Command, Requester};
-use crate::transport;
 use crate::transport::{SshProcess, Transport};
+use crate::{lossy_channel, transport};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Events the connection holds before it stops reading. A daemon disconnects a client that reads
-/// too slowly, and the client then reconnects with its last `Seq`.
-const EVENT_BUFFER: usize = 256;
+/// The events that wait for `next_event`, enough for a burst such as the replay after a reconnect.
+/// When an event finds the queue full, the waiting events are dropped, so that reading the
+/// connection never waits for the app.
+pub(crate) const EVENT_QUEUE: usize = 4096;
 
 /// A connection that passed the handshake.
 ///
@@ -27,7 +29,7 @@ const EVENT_BUFFER: usize = 256;
 /// channels. Dropping the connection closes the transport and kills ssh.
 pub struct Connection {
     requester: Requester,
-    events: mpsc::Receiver<EventRecord>,
+    events: LossyReceiver<EventRecord>,
     /// Why the connection closed; taken by the first `next_event` that returns it.
     close: Option<oneshot::Receiver<CloseError>>,
 }
@@ -59,21 +61,28 @@ impl Connection {
         }
     }
 
-    pub fn requester(&self) -> Requester {
-        self.requester.clone()
+    #[must_use]
+    pub fn requester(&self) -> &Requester {
+        &self.requester
     }
 
     pub async fn request(&self, request: Request) -> Result<ResponseBody, RequestError> {
         self.requester.request(request).await
     }
 
-    /// The next event. An error means the connection closed, and every request in flight failed
-    /// with `RequestError::Disconnected`.
+    /// The next event.
+    ///
+    /// `CloseError::EventsLost` means the events that waited were dropped, and the connection goes
+    /// on: the caller is out of date until it reconnects without a last `Seq`. Any other error
+    /// means the connection closed, and every request in flight failed with
+    /// `RequestError::Disconnected`.
     ///
     /// It is cancel safe, so it can wait in a `tokio::select!`.
     pub async fn next_event(&mut self) -> Result<EventRecord, CloseError> {
-        if let Some(record) = self.events.recv().await {
-            return Ok(record);
+        match self.events.recv().await {
+            Some(Received::Item(record)) => return Ok(record),
+            Some(Received::Lost) => return Err(CloseError::EventsLost),
+            None => {}
         }
         let Some(close) = &mut self.close else {
             return Err(CloseError::AlreadyClosed);
@@ -104,7 +113,7 @@ where
         Err(_elapsed) => return Err(ConnectError::Timeout),
     };
     let (commands_sender, commands) = mpsc::unbounded_channel();
-    let (events_sender, events) = mpsc::channel(EVENT_BUFFER);
+    let (events_sender, events) = lossy_channel::channel(EVENT_QUEUE);
     let (close_sender, close) = oneshot::channel();
     let ends = Ends {
         events: events_sender,
@@ -170,7 +179,7 @@ async fn explain_with_ssh(error: ConnectError, ssh: Option<SshProcess>) -> Conne
 
 /// Where the connection's task sends events, and why it closed.
 struct Ends {
-    events: mpsc::Sender<EventRecord>,
+    events: LossySender<EventRecord>,
     close: oneshot::Sender<CloseError>,
 }
 
@@ -198,7 +207,7 @@ async fn run<R, W>(
         tokio::select! {
             message = reader.next_message::<ServerMessage>() => match message {
                 Ok(Some(message)) => {
-                    if !dispatch(message, &mut pending, &ends.events).await {
+                    if !dispatch(message, &mut pending, &ends.events) {
                         break None;
                     }
                 }
@@ -247,11 +256,12 @@ async fn run<R, W>(
     drop(ssh);
 }
 
-/// Hands a message to whoever waits for it. Returns `false` when the `Connection` is gone.
-async fn dispatch(
+/// Hands a message to whoever waits for it, without waiting. Returns `false` when the
+/// `Connection` is gone.
+fn dispatch(
     message: ServerMessage,
     pending: &mut HashMap<RequestId, Reply>,
-    events: &mpsc::Sender<EventRecord>,
+    events: &LossySender<EventRecord>,
 ) -> bool {
     match message {
         ServerMessage::Response { id, result } => {
@@ -263,7 +273,7 @@ async fn dispatch(
             }
             true
         }
-        ServerMessage::Event(record) => events.send(record).await.is_ok(),
+        ServerMessage::Event(record) => events.send_or_drop(record) != Sent::Closed,
         ServerMessage::Welcome { .. } | ServerMessage::Refused { .. } => {
             tracing::warn!("the daemon sent a second handshake message");
             true
@@ -304,7 +314,8 @@ mod tests {
     use cockpit_protocol::{AgentId, AgentParams, ErrorBody, ErrorCode, Event, ResponseResult};
 
     use super::*;
-    use crate::test_daemon::{Peer, TestDaemon, snapshot};
+    use crate::test_daemon;
+    use crate::test_daemon::{Peer, TestDaemon, in_time};
 
     fn interrupt() -> Request {
         Request::AgentInterrupt(AgentParams {
@@ -350,12 +361,12 @@ mod tests {
 
         let (connected, (_peer, last_seq)) = tokio::join!(
             Connection::connect(&transport, Some(Seq::new(5))),
-            daemon.accept_and_welcome(Catchup::Snapshot(snapshot(Some(9)))),
+            daemon.accept_and_welcome(Catchup::Snapshot(test_daemon::snapshot(Some(9)))),
         );
 
         let (_connection, catchup) = connected.unwrap();
         assert_eq!(last_seq, Some(Seq::new(5)));
-        assert_eq!(catchup, Catchup::Snapshot(snapshot(Some(9))));
+        assert_eq!(catchup, Catchup::Snapshot(test_daemon::snapshot(Some(9))));
     }
 
     #[tokio::test]
@@ -519,6 +530,73 @@ mod tests {
             "{response:?}"
         );
         assert_eq!(next_response.unwrap(), ResponseBody::Done);
+    }
+
+    #[tokio::test]
+    async fn an_undecodable_event_is_skipped() {
+        let daemon = TestDaemon::new();
+        let (mut connection, mut peer) = connect(&daemon).await;
+
+        peer.send_line(r#"{"type":"event","seq":6,"event":{"type":"surprise"}}"#)
+            .await;
+        peer.event(7, removed(2)).await;
+        let next = connection.next_event().await.unwrap();
+
+        assert_eq!((next.seq, next.event), (Seq::new(7), removed(2)));
+    }
+
+    /// Reads a request, sends more events than the connection queues, then answers the request.
+    async fn flood_then_answer(peer: &mut Peer) {
+        let (id, _) = peer.request().await;
+        for seq in 1..=test_daemon::more_events_than_a_queue_holds() {
+            peer.event(seq, removed(1)).await;
+        }
+        peer.respond(id, ResponseBody::Done).await;
+    }
+
+    #[tokio::test]
+    async fn a_response_after_more_events_than_the_queue_holds_reaches_its_request() {
+        let daemon = TestDaemon::new();
+        let (connection, mut peer) = connect(&daemon).await;
+
+        let (response, ()) = in_time(async {
+            tokio::join!(
+                connection.request(interrupt()),
+                flood_then_answer(&mut peer)
+            )
+        })
+        .await;
+
+        assert_eq!(response.unwrap(), ResponseBody::Done);
+    }
+
+    #[tokio::test]
+    async fn a_full_queue_drops_its_events_and_the_connection_goes_on() {
+        let daemon = TestDaemon::new();
+        let (mut connection, mut peer) = connect(&daemon).await;
+        // The response comes last, so every event was read once the request completes.
+        let (flooded, ()) = in_time(async {
+            tokio::join!(
+                connection.request(interrupt()),
+                flood_then_answer(&mut peer)
+            )
+        })
+        .await;
+        flooded.unwrap();
+
+        let lost = in_time(connection.next_event()).await;
+        peer.event(9000, removed(2)).await;
+        let next = in_time(connection.next_event()).await.unwrap();
+        let answer = async {
+            let (id, _) = peer.request().await;
+            peer.respond(id, ResponseBody::Done).await;
+        };
+        let (response, ()) =
+            in_time(async { tokio::join!(connection.request(stop()), answer) }).await;
+
+        assert!(matches!(lost, Err(CloseError::EventsLost)), "{lost:?}");
+        assert_eq!((next.seq, next.event), (Seq::new(9000), removed(2)));
+        assert_eq!(response.unwrap(), ResponseBody::Done);
     }
 
     #[tokio::test]

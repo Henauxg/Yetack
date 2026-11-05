@@ -132,7 +132,8 @@ does most of what it can to avoid panics.
 
 Write enough explicit types that someone who knows the codebase can tell what
 the inferred types are. Prefer a type on the variable to a turbofish. When the
-compiler forces a turbofish, `_` inside it is fine.
+compiler forces a turbofish, `_` inside it is fine. In a `let ... else`, a
+turbofish is fine too: a type there would have to annotate the pattern.
 
 Add a type in particular:
 

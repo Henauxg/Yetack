@@ -4,8 +4,8 @@ use serde_json::Value;
 use strum::{Display, EnumString, IntoStaticStr, VariantArray};
 
 use crate::control::{ControlCancelRequest, ControlResponse, IncomingControlRequest};
-use crate::error::ParseError;
 use crate::message::{AssistantMessage, StreamEvent, UserMessage};
+use crate::parse_error::ParseError;
 use crate::rate_limit::RateLimitEvent;
 use crate::result_message::ResultMessage;
 use crate::system_event::SystemEvent;
