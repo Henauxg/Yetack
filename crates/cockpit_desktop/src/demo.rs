@@ -781,10 +781,22 @@ fn benchmark_agent(now: SystemTime) -> Sample {
             }),
         ),
     ];
+    let details = AgentDetails {
+        background_tasks: vec![BackgroundTask {
+            id: BackgroundTaskId::new("demo-task-3".to_owned()),
+            kind: BackgroundTaskKind::Command,
+            description: "cargo bench --bench eval -- --save-baseline before".to_owned(),
+            status: BackgroundTaskStatus::Stopped,
+            started_at: at(now, 900),
+            ended_at: Some(at(now, 840)),
+            tool_calls: 0,
+        }],
+        ..details()
+    };
     Sample {
         summary,
         items,
-        details: details(),
+        details,
     }
 }
 

@@ -15,6 +15,8 @@ pub enum IconKind {
     FileChanges,
     Tasks,
     Running,
+    /// The still counterpart of `Running`, for work that ended.
+    Circle,
     Plug,
     Person,
     Terminal,
@@ -58,6 +60,7 @@ impl IconKind {
                 r#"<path d="M4 7l2 2 4-4"></path><path d="M13 7h7"></path><path d="M4 16l2 2 4-4"></path><path d="M13 16h7"></path>"#
             }
             Self::Running => r#"<path d="M21 12a9 9 0 1 1-6.2-8.6"></path>"#,
+            Self::Circle => r#"<circle cx="12" cy="12" r="9"></circle>"#,
             Self::Plug => {
                 r#"<path d="M9 3v5"></path><path d="M15 3v5"></path><path d="M6 8h12v3a6 6 0 0 1-12 0z"></path><path d="M12 17v4"></path>"#
             }

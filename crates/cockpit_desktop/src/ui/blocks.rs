@@ -41,15 +41,7 @@ pub fn FloatingBlocks() -> Element {
         .count();
     let tasks_summary = format!("{done} of {}", tasks.len());
     let tasks_badge = format!("{done}/{}", tasks.len());
-    let running = background
-        .iter()
-        .filter(|task| task.status == BackgroundTaskStatus::Running)
-        .count();
-    let running_summary = if running > 0 {
-        format!("{running} running")
-    } else {
-        String::new()
-    };
+    let background_head = BackgroundHead::new(&background);
     let (mcp_alert, mcp_text) = mcp_summary(alive, &servers, &hidden);
     let is_open = |block: Block| {
         if badge_mode {
@@ -77,6 +69,7 @@ pub fn FloatingBlocks() -> Element {
                     block: Block::Tasks,
                     title: "Tasks",
                     icon: IconKind::Tasks,
+                    running: false,
                     summary: tasks_summary.clone(),
                     alert: false,
                     open: tasks_open,
@@ -89,9 +82,10 @@ pub fn FloatingBlocks() -> Element {
                 BlockCard {
                     agent,
                     block: Block::Running,
-                    title: "Running",
-                    icon: IconKind::Running,
-                    summary: running_summary.clone(),
+                    title: background_head.title,
+                    icon: background_head.icon(),
+                    running: background_head.running,
+                    summary: background_head.summary.clone(),
                     alert: false,
                     open: running_open,
                     badge_mode,
@@ -105,6 +99,7 @@ pub fn FloatingBlocks() -> Element {
                     block: Block::Mcp,
                     title: "MCP servers",
                     icon: IconKind::Plug,
+                    running: false,
                     summary: mcp_text.clone(),
                     alert: mcp_alert,
                     open: mcp_open,
@@ -117,13 +112,69 @@ pub fn FloatingBlocks() -> Element {
         if badge_mode {
             div { class: "badges", role: "toolbar", aria_label: "Agent activity", aria_orientation: "vertical",
                 if has_tasks {
-                    Badge { agent, block: Block::Tasks, pressed: badge == Some(Block::Tasks), icon: IconKind::Tasks, text: tasks_badge, label: "Tasks, {tasks_summary} done", alert: false }
+                    Badge { agent, block: Block::Tasks, pressed: badge == Some(Block::Tasks), icon: IconKind::Tasks, running: false, text: tasks_badge, label: "Tasks, {tasks_summary} done", alert: false }
                 }
                 if has_background {
-                    Badge { agent, block: Block::Running, pressed: badge == Some(Block::Running), icon: IconKind::Running, text: running.to_string(), label: "Running in the background, {running_summary}", alert: false }
+                    Badge { agent, block: Block::Running, pressed: badge == Some(Block::Running), icon: background_head.icon(), running: background_head.running, text: background_head.badge, label: "{background_head.label}, {background_head.summary}", alert: false }
                 }
-                Badge { agent, block: Block::Mcp, pressed: badge == Some(Block::Mcp), icon: IconKind::Plug, text: "MCP", label: "MCP servers, {mcp_text}", alert: mcp_alert }
+                Badge { agent, block: Block::Mcp, pressed: badge == Some(Block::Mcp), icon: IconKind::Plug, running: false, text: "MCP", label: "MCP servers, {mcp_text}", alert: mcp_alert }
             }
+        }
+    }
+}
+
+/// The head of the background block and its badge: the spinner and "Running" only while a task
+/// runs.
+#[derive(Debug)]
+struct BackgroundHead {
+    running: bool,
+    title: &'static str,
+    /// The badge's tooltip, before the summary.
+    label: &'static str,
+    summary: String,
+    badge: String,
+}
+
+impl BackgroundHead {
+    fn new(tasks: &[BackgroundTask]) -> Self {
+        let count = |status: BackgroundTaskStatus| {
+            tasks.iter().filter(|task| task.status == status).count()
+        };
+        let running = count(BackgroundTaskStatus::Running);
+        if running > 0 {
+            return Self {
+                running: true,
+                title: "Running",
+                label: "Running in the background",
+                summary: format!("{running} running"),
+                badge: running.to_string(),
+            };
+        }
+        let ended = [
+            (BackgroundTaskStatus::Done, "done"),
+            (BackgroundTaskStatus::Failed, "failed"),
+            (BackgroundTaskStatus::Stopped, "stopped"),
+        ];
+        let counts: Vec<String> = ended
+            .into_iter()
+            .map(|(status, word)| (count(status), word))
+            .filter(|(number, _)| *number > 0)
+            .map(|(number, word)| format!("{number} {word}"))
+            .collect();
+        Self {
+            running: false,
+            title: "Background",
+            label: "Background tasks",
+            summary: counts.join(", "),
+            badge: tasks.len().to_string(),
+        }
+    }
+
+    fn icon(&self) -> IconKind {
+        if self.running {
+            IconKind::Running
+        } else {
+            IconKind::Circle
         }
     }
 }
@@ -134,6 +185,8 @@ fn BlockCard(
     block: Block,
     title: String,
     icon: IconKind,
+    /// Shows the icon in the color of work in progress.
+    running: bool,
     summary: String,
     alert: bool,
     open: bool,
@@ -146,7 +199,7 @@ fn BlockCard(
     if wide {
         class.push("wide");
     }
-    if block == Block::Running {
+    if running {
         class.push("running-block");
     }
     rsx! {
@@ -180,6 +233,7 @@ fn Badge(
     block: Block,
     pressed: bool,
     icon: IconKind,
+    running: bool,
     text: String,
     label: String,
     alert: bool,
@@ -192,7 +246,7 @@ fn Badge(
             aria_label: "{label}",
             title: "{label}",
             onclick: move |_| cockpit.change(|state| actions::toggle_block(state, agent, block)),
-            span { class: if block == Block::Running { "badge-icon running" } else { "badge-icon" }, Icon { kind: icon, size: 14 } }
+            span { class: if running { "badge-icon running" } else { "badge-icon" }, Icon { kind: icon, size: 14 } }
             span { class: "badge-text", "{text}" }
             if alert {
                 span { class: "alert-dot badge-alert", aria_hidden: true }
@@ -351,5 +405,31 @@ mod tests {
         assert_eq!(task_meta(&agent, now), "5 tool calls, 41 s");
         assert_eq!(task_meta(&command, now), "running, 41 s");
         assert_eq!(task_meta(&done, now), "Done in 12 s");
+    }
+
+    #[test]
+    fn the_background_head_says_running_only_while_a_task_runs() {
+        let running = task(BackgroundTaskStatus::Running, BackgroundTaskKind::Agent);
+        let stopped = task(BackgroundTaskStatus::Stopped, BackgroundTaskKind::Command);
+        let done = task(BackgroundTaskStatus::Done, BackgroundTaskKind::Command);
+
+        let head = BackgroundHead::new(&[running, stopped.clone()]);
+        assert_eq!((head.title, head.icon()), ("Running", IconKind::Running));
+        assert_eq!(
+            (head.summary.as_str(), head.badge.as_str()),
+            ("1 running", "1")
+        );
+
+        let head = BackgroundHead::new(std::slice::from_ref(&stopped));
+        assert_eq!((head.title, head.icon()), ("Background", IconKind::Circle));
+        assert!(!head.running);
+        assert_eq!(
+            (head.summary.as_str(), head.badge.as_str()),
+            ("1 stopped", "1")
+        );
+
+        let head = BackgroundHead::new(&[stopped, done.clone(), done]);
+        assert_eq!(head.summary, "2 done, 1 stopped");
+        assert_eq!(head.badge, "3");
     }
 }
