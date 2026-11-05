@@ -238,7 +238,7 @@ On start the daemon reads `agents.json`, finds the last `Seq` in the logs, and r
 - **State**: `AppState` holds the summaries, the open transcripts, the plan usage and the UI state (selected agent, unread agents, open blocks).
   A pure function `apply(&mut AppState, Event)` updates it, so the state logic is tested without a window.
 - **Connection task**: a Dioxus coroutine owns the `Connection`, applies events to the state signal, and sends the requests the components ask for.
-- **Components** follow the mockups: sidebar, center header (usage chip, changes chip), transcript, composer (model, mode, cache timer, Send or Stop), floating blocks and badges (tasks, running, MCP servers), file view, command palette, agent switcher, new agent dialog, notifications.
+- **Components** follow the mockups: sidebar, center header (the title, which its pencil, a double-click or Rename in the "/" menu turns into a field that renames the agent; usage chip, changes chip), transcript, composer (model, mode, cache timer, Send or Stop), floating blocks and badges (tasks, running, MCP servers), file view, command palette, agent switcher, new agent dialog, notifications.
 - **Rendering**: markdown with `pulldown-cmark`, syntax colors with `syntect` (Rust, SQL, Markdown, JSON, Bash, Nix), diffs with `similar` (line diff, then word highlights inside changed lines).
 - **Shortcuts**: Ctrl+K, Ctrl+N, Esc, Y, N, 1 to 9, as in plan.md.
 

@@ -12,10 +12,10 @@ use dioxus::prelude::*;
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
 use crate::connection::{Clock, Cockpit};
-use crate::format;
 use crate::state::{AgentEntry, Loadable, Popover, actions, file_edits};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::presence::Presence;
+use crate::{bridge, format};
 
 /// A plan window this full, in percent, is close to its limit.
 const CLOSE_TO_LIMIT_PERCENT: u8 = 80;
@@ -109,6 +109,9 @@ fn part_class(name: &str) -> &'static str {
 const OUTER_RING: f64 = 62.83;
 const INNER_RING: f64 = 31.42;
 
+/// The field that replaces the agent's title while it is renamed.
+const TITLE_FIELD_ID: &str = "agent-title-field";
+
 #[component]
 pub fn Header() -> Element {
     let cockpit: Cockpit = use_context();
@@ -142,11 +145,47 @@ pub fn Header() -> Element {
     );
     let file_count = files.len();
     let folder = summary.folder.display().to_string();
+    let title_edit = state
+        .ui
+        .title_edit
+        .as_ref()
+        .filter(|edit| edit.agent == agent)
+        .map(|edit| edit.title.clone());
     rsx! {
         header { class: "center-header",
             div { class: "header-title",
                 div { class: "title-line",
-                    h1 { "{summary.title}" }
+                    if let Some(title) = title_edit {
+                        input {
+                            id: TITLE_FIELD_ID,
+                            class: "title-field",
+                            r#type: "text",
+                            aria_label: "Agent title",
+                            // Follows the keyboard alone: a render that lags behind typing would
+                            // put an older title back.
+                            initial_value: "{title}",
+                            onmounted: move |_| bridge::select_field(TITLE_FIELD_ID),
+                            oninput: move |event: FormEvent| cockpit.update(|state| actions::rename_text(state, event.value())),
+                            onkeydown: move |event: KeyboardEvent| {
+                                if event.key() == Key::Enter {
+                                    cockpit.change(actions::finish_rename);
+                                }
+                            },
+                            onblur: move |_| cockpit.change(actions::finish_rename),
+                        }
+                    } else {
+                        h1 {
+                            ondoubleclick: move |_| cockpit.update(|state| actions::start_rename(state, agent)),
+                            "{summary.title}"
+                        }
+                        button {
+                            class: "icon-button tiny rename-button",
+                            aria_label: "Rename",
+                            title: "Rename",
+                            onclick: move |_| cockpit.update(|state| actions::start_rename(state, agent)),
+                            Icon { kind: IconKind::Pencil, size: 13 }
+                        }
+                    }
                     span { class: "status-pill {status_class}", title: status_label,
                         span { class: "status-dot", aria_hidden: true }
                         span { class: "pill-label", "{status_label}" }
