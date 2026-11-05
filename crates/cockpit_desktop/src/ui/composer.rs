@@ -220,15 +220,12 @@ pub fn Composer() -> Element {
                             Icon { kind: IconKind::ChevronDown, size: 12 }
                         }
                         if buttons.stop() {
-                            if working {
-                                span { class: "key-hint", aria_hidden: true, "Esc" }
-                            }
                             button {
-                                class: "send-button",
+                                class: "send-button stop",
                                 aria_label: "{stop_label}",
                                 title: "{stop_label}",
                                 onclick: move |_| cockpit.change(|state| actions::interrupt(state, agent)),
-                                Icon { kind: IconKind::Stop, size: 12 }
+                                span { class: "stop-square", aria_hidden: true }
                             }
                         }
                         if buttons.send() {

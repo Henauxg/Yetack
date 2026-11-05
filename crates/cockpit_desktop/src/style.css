@@ -2364,6 +2364,17 @@ button:disabled {
   color: var(--bg);
 }
 
+/* The square takes 14 of the button's 36 pixels, 11 on each side, to read as Stop at a glance. */
+.send-button.stop .stop-square {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+}
+
+.send-button.stop:hover {
+  color: #c4372e;
+}
+
 .send-button:disabled {
   background: var(--line-strong);
   color: var(--dim);

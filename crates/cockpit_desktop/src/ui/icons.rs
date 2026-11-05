@@ -20,7 +20,6 @@ pub enum IconKind {
     Plug,
     Person,
     Terminal,
-    Stop,
     Send,
     Clock,
     Shield,
@@ -68,9 +67,6 @@ impl IconKind {
                 r#"<circle cx="12" cy="8" r="4"></circle><path d="M5 21a7 7 0 0 1 14 0"></path>"#
             }
             Self::Terminal => r#"<path d="M5 7l5 5-5 5"></path><path d="M12 18h7"></path>"#,
-            Self::Stop => {
-                r#"<rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor" stroke="none"></rect>"#
-            }
             Self::Send => r#"<path d="M12 19V5"></path><path d="M6 11l6-6 6 6"></path>"#,
             Self::Clock => {
                 r#"<circle cx="12" cy="12" r="8"></circle><path d="M12 8v4l3 2"></path>"#
