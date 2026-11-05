@@ -51,10 +51,14 @@ pub fn TranscriptView() -> Element {
     let status = entry.summary.status;
     let items: Vec<&TranscriptItem> = entry.transcript.items().collect();
     let children = children_by_parent(&items);
-    let top: Vec<(TranscriptItem, Vec<TranscriptItem>)> = items
+    let awaiting = awaiting_approval(&items);
+    let top: Vec<(TranscriptItem, Vec<TranscriptItem>, bool)> = items
         .iter()
         .filter(|item| shows_at_top(item))
-        .map(|item| ((*item).clone(), subtree(&children, item.id)))
+        .map(|item| {
+            let nested = subtree(&children, item.id);
+            ((*item).clone(), nested, awaiting.contains(&item.id))
+        })
         .collect();
     let history = entry.transcript.history().clone();
     let activity = activity_line(entry);
@@ -99,8 +103,8 @@ pub fn TranscriptView() -> Element {
                 }
                 // Item ids repeat across agents: with the agent in the key, another agent's item
                 // never takes over the state of this one's (a fold, a typed answer).
-                for (item, nested) in top {
-                    ItemView { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), item, nested }
+                for (item, nested, awaits_approval) in top {
+                    ItemView { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), item, nested, awaits_approval }
                 }
                 if status == AgentStatus::Working {
                     div { class: "working-line",
@@ -160,12 +164,44 @@ fn subtree(children: &Children<'_>, root: ItemId) -> Vec<TranscriptItem> {
     found
 }
 
+/// The running tool calls whose approval card waits for an answer. The protocol does not link an
+/// approval to its call, so they match on parent, tool and summary, which the daemon builds the
+/// same way for both.
+fn awaiting_approval(items: &[&TranscriptItem]) -> BTreeSet<ItemId> {
+    let asked: BTreeSet<(Option<ItemId>, &str, &str)> = items
+        .iter()
+        .filter_map(|item| match &item.body {
+            ItemBody::Approval(approval) if approval.answer == AnswerState::Waiting => Some((
+                item.parent,
+                approval.tool.as_str(),
+                approval.summary.as_str(),
+            )),
+            _ => None,
+        })
+        .collect();
+    if asked.is_empty() {
+        return BTreeSet::new();
+    }
+    items
+        .iter()
+        .filter(|item| match &item.body {
+            ItemBody::ToolCall(call) if call.status == ToolCallStatus::Running => {
+                asked.contains(&(item.parent, call.tool.as_str(), call.summary.as_str()))
+            }
+            _ => false,
+        })
+        .map(|item| item.id)
+        .collect()
+}
+
 #[component]
 pub fn ItemView(
     agent: AgentId,
     folder: PathBuf,
     item: TranscriptItem,
     nested: Vec<TranscriptItem>,
+    /// Whether the item is a running tool call whose approval card waits for an answer.
+    awaits_approval: bool,
 ) -> Element {
     let id = item.id;
     match item.body {
@@ -182,10 +218,10 @@ pub fn ItemView(
             ThinkingView { text }
         },
         ItemBody::ToolCall(call) if call.edit.is_some() => rsx! {
-            EditView { agent, folder, call }
+            EditView { agent, folder, stage: CallStage::new(&call, awaits_approval), call }
         },
         ItemBody::ToolCall(call) => rsx! {
-            ToolView { call }
+            ToolView { stage: CallStage::new(&call, awaits_approval), call }
         },
         ItemBody::Subagent(call) => rsx! {
             SubagentView { agent, folder, id, call, nested }
@@ -260,11 +296,33 @@ fn ThinkingView(text: String) -> Element {
     }
 }
 
-fn status_class(status: ToolCallStatus) -> &'static str {
-    match status {
-        ToolCallStatus::Running => "tool running",
-        ToolCallStatus::Done => "tool done",
-        ToolCallStatus::Failed => "tool failed",
+/// Where a tool call stands, as its line says it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallStage {
+    /// Claude Code asked whether the call may run, and nobody answered yet.
+    AwaitsApproval,
+    Running,
+    Done,
+    Failed,
+}
+
+impl CallStage {
+    fn new(call: &ToolCall, awaits_approval: bool) -> Self {
+        match call.status {
+            ToolCallStatus::Running if awaits_approval => Self::AwaitsApproval,
+            ToolCallStatus::Running => Self::Running,
+            ToolCallStatus::Done => Self::Done,
+            ToolCallStatus::Failed => Self::Failed,
+        }
+    }
+
+    fn class(self) -> &'static str {
+        match self {
+            Self::AwaitsApproval => "tool waiting",
+            Self::Running => "tool running",
+            Self::Done => "tool done",
+            Self::Failed => "tool failed",
+        }
     }
 }
 
@@ -279,17 +337,44 @@ fn tool_label(tool: &str) -> String {
     }
 }
 
-fn tool_meta(call: &ToolCall) -> String {
-    match (call.status, call.exit_code) {
-        (ToolCallStatus::Running, _) => "running".to_owned(),
+fn tool_meta(call: &ToolCall, stage: CallStage) -> String {
+    match (stage, call.exit_code) {
+        (CallStage::AwaitsApproval, _) => "waiting for approval".to_owned(),
+        (CallStage::Running, _) => "running".to_owned(),
         (_, Some(code)) => format!("exit {code}"),
-        (ToolCallStatus::Failed, None) => "failed".to_owned(),
-        (ToolCallStatus::Done, None) => String::new(),
+        (CallStage::Failed, None) => "failed".to_owned(),
+        (CallStage::Done, None) => String::new(),
+    }
+}
+
+/// The end of an edit's line: what the edit did once it ran, where it stands before that.
+#[derive(Debug, PartialEq, Eq)]
+enum EditMeta {
+    Stage(String),
+    Created { lines: usize },
+    Changed { added: usize, removed: usize },
+}
+
+impl EditMeta {
+    fn new(call: &ToolCall, stage: CallStage, added: usize, removed: usize) -> Self {
+        // A `Write` has no old text until it ran, even over a file: the daemon reads that text
+        // from the result.
+        let created = call
+            .edit
+            .as_ref()
+            .is_some_and(|edit| edit.old_text.is_empty());
+        match stage {
+            CallStage::Done if created => Self::Created { lines: added },
+            CallStage::Done => Self::Changed { added, removed },
+            CallStage::AwaitsApproval | CallStage::Running | CallStage::Failed => {
+                Self::Stage(tool_meta(call, stage))
+            }
+        }
     }
 }
 
 #[component]
-fn ToolView(call: ToolCall) -> Element {
+fn ToolView(call: ToolCall, stage: CallStage) -> Element {
     let mut expanded = use_signal(|| false);
     let output = call.output.clone().unwrap_or_default();
     let lines: Vec<&str> = output.lines().collect();
@@ -311,9 +396,9 @@ fn ToolView(call: ToolCall) -> Element {
         format!("Show {} more", format::count(hidden, "line", "lines"))
     };
     let name = tool_label(&call.tool);
-    let meta = tool_meta(&call);
+    let meta = tool_meta(&call, stage);
     rsx! {
-        div { class: status_class(call.status),
+        div { class: stage.class(),
             div { class: "tool-head",
                 span { class: "tool-dot", aria_hidden: true }
                 span { class: "tool-name", "{name}" }
@@ -335,13 +420,12 @@ fn ToolView(call: ToolCall) -> Element {
 }
 
 #[component]
-fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall) -> Element {
+fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall, stage: CallStage) -> Element {
     let cockpit: Cockpit = use_context();
     let Some(edit) = call.edit.clone() else {
         return rsx! {};
     };
     let language = Language::from_path(&edit.path);
-    let created = edit.old_text.is_empty();
     let Diff {
         rows: preview,
         more,
@@ -355,7 +439,7 @@ fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall) -> Element {
         1,
         EDIT_PREVIEW_ROWS,
     );
-    let numbers = if created {
+    let numbers = if edit.old_text.is_empty() {
         LineNumbers::Shown
     } else {
         LineNumbers::Hidden
@@ -373,22 +457,31 @@ fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall) -> Element {
         "{} more, open in the file view",
         format::count(more, "line", "lines")
     );
-    let created_text = format!("Created, {}", format::count(added, "line", "lines"));
+    let meta = EditMeta::new(&call, stage, added, removed);
     let name = tool_label(&call.tool);
     rsx! {
-        div { class: status_class(call.status),
+        div { class: stage.class(),
             div { class: "tool-head",
                 span { class: "tool-dot", aria_hidden: true }
                 span { class: "tool-name", "{name}" }
                 button { class: "path-link mono", onclick: open, "{shown_path}" }
-                if created {
-                    span { class: "tool-meta", "{created_text}" }
-                } else {
-                    span { class: "tool-meta mono",
-                        span { class: "added", "+{added}" }
-                        " "
-                        span { class: "removed", "-{removed}" }
+                match meta {
+                    EditMeta::Stage(words) => rsx! {
+                        span { class: "tool-meta", "{words}" }
+                    },
+                    EditMeta::Created { lines } => {
+                        let lines = format::count(lines, "line", "lines");
+                        rsx! {
+                            span { class: "tool-meta", "Created, {lines}" }
+                        }
                     }
+                    EditMeta::Changed { added, removed } => rsx! {
+                        span { class: "tool-meta mono",
+                            span { class: "added", "+{added}" }
+                            " "
+                            span { class: "removed", "-{removed}" }
+                        }
+                    },
                 }
             }
             if !preview.is_empty() {
@@ -432,13 +525,17 @@ fn SubagentView(
     };
     let nested_refs: Vec<&TranscriptItem> = nested.iter().collect();
     let by_parent = children_by_parent(&nested_refs);
-    let children: Vec<(TranscriptItem, Vec<TranscriptItem>)> = nested
+    let awaiting = awaiting_approval(&nested_refs);
+    let children: Vec<(TranscriptItem, Vec<TranscriptItem>, bool)> = nested
         .iter()
         .filter(|item| item.parent == Some(id) && !waits_for_answer(item))
-        .map(|item| (item.clone(), subtree(&by_parent, item.id)))
+        .map(|item| {
+            let grandchildren = subtree(&by_parent, item.id);
+            (item.clone(), grandchildren, awaiting.contains(&item.id))
+        })
         .collect();
     rsx! {
-        div { class: status_class(call.status),
+        div { class: CallStage::new(&call, false).class(),
             button {
                 class: "fold-button tool-head",
                 aria_expanded: open,
@@ -451,8 +548,8 @@ fn SubagentView(
             }
             if open {
                 div { class: "subagent-body",
-                    for (child, grandchildren) in children {
-                        CompactItem { key: "{child.id.get()}", agent, folder: folder.clone(), item: child, nested: grandchildren }
+                    for (child, grandchildren, awaits_approval) in children {
+                        CompactItem { key: "{child.id.get()}", agent, folder: folder.clone(), item: child, nested: grandchildren, awaits_approval }
                     }
                     if let Some(result) = &call.output {
                         p { class: "subagent-result", "{result}" }
@@ -470,11 +567,13 @@ fn CompactItem(
     folder: PathBuf,
     item: TranscriptItem,
     nested: Vec<TranscriptItem>,
+    awaits_approval: bool,
 ) -> Element {
     match &item.body {
         ItemBody::ToolCall(call) => {
+            let stage = CallStage::new(call, awaits_approval);
             let name = tool_label(&call.tool);
-            let meta = tool_meta(call);
+            let meta = tool_meta(call, stage);
             let summary = match &call.edit {
                 Some(edit) => file_edits::relative_path(&folder, &edit.path)
                     .display()
@@ -482,7 +581,7 @@ fn CompactItem(
                 None => call.summary.clone(),
             };
             rsx! {
-                div { class: "compact-tool {status_class(call.status)}",
+                div { class: "compact-tool {stage.class()}",
                     span { class: "tool-dot", aria_hidden: true }
                     span { class: "tool-name", "{name}" }
                     code { class: "tool-summary", "{summary}" }
@@ -493,7 +592,7 @@ fn CompactItem(
             }
         }
         _ => rsx! {
-            ItemView { agent, folder, item: item.clone(), nested }
+            ItemView { agent, folder, item: item.clone(), nested, awaits_approval }
         },
     }
 }
@@ -516,6 +615,8 @@ fn TurnEndView(end: TurnEnd) -> Element {
 
 #[cfg(test)]
 mod tests {
+    use cockpit_protocol::{Approval, ApprovalAnswer, ApprovalDecision, FileEdit, PendingId};
+
     use super::*;
 
     fn notice(id: u32, parent: Option<u32>) -> TranscriptItem {
@@ -570,24 +671,147 @@ mod tests {
         assert_eq!(tool_label("Bash"), "Bash");
     }
 
-    #[test]
-    fn tool_meta_shows_the_state_and_exit_code() {
-        let call = |status, exit_code| ToolCall {
-            tool: "Bash".to_owned(),
-            summary: String::new(),
+    fn call(tool: &str, summary: &str, status: ToolCallStatus) -> ToolCall {
+        ToolCall {
+            tool: tool.to_owned(),
+            summary: summary.to_owned(),
             input: serde_json::Value::Null,
             status,
             output: None,
-            exit_code,
+            exit_code: None,
             edit: None,
+        }
+    }
+
+    fn write_call(status: ToolCallStatus) -> ToolCall {
+        ToolCall {
+            edit: Some(FileEdit {
+                path: PathBuf::from("/work/notes.txt"),
+                old_text: String::new(),
+                new_text: "one line\n".to_owned(),
+            }),
+            ..call("Write", "notes.txt", status)
+        }
+    }
+
+    fn approval(tool: &str, summary: &str, answer: AnswerState<ApprovalAnswer>) -> ItemBody {
+        ItemBody::Approval(Approval {
+            pending: PendingId::new("request-1".to_owned()),
+            tool: tool.to_owned(),
+            summary: summary.to_owned(),
+            input: serde_json::Value::Null,
+            edit: None,
+            reason: None,
+            answer,
+        })
+    }
+
+    fn item(id: u32, parent: Option<u32>, body: ItemBody) -> TranscriptItem {
+        TranscriptItem {
+            id: ItemId::new(id),
+            parent: parent.map(ItemId::new),
+            body,
+        }
+    }
+
+    #[test]
+    fn tool_meta_shows_the_stage_and_exit_code() {
+        let failed = ToolCall {
+            exit_code: Some(101),
+            ..call("Bash", "cargo test", ToolCallStatus::Failed)
+        };
+        let meta = |status, awaits_approval| {
+            let call = call("Bash", "cargo test", status);
+            tool_meta(&call, CallStage::new(&call, awaits_approval))
         };
 
-        assert_eq!(tool_meta(&call(ToolCallStatus::Running, None)), "running");
+        assert_eq!(meta(ToolCallStatus::Running, true), "waiting for approval");
+        assert_eq!(meta(ToolCallStatus::Running, false), "running");
+        assert_eq!(tool_meta(&failed, CallStage::Failed), "exit 101");
+        assert_eq!(meta(ToolCallStatus::Failed, false), "failed");
+        assert_eq!(meta(ToolCallStatus::Done, false), "");
+    }
+
+    #[test]
+    fn an_edit_shows_its_result_only_once_it_ran() {
+        let meta = |status, awaits_approval| {
+            let call = write_call(status);
+            EditMeta::new(&call, CallStage::new(&call, awaits_approval), 1, 0)
+        };
+
         assert_eq!(
-            tool_meta(&call(ToolCallStatus::Failed, Some(101))),
-            "exit 101"
+            meta(ToolCallStatus::Running, true),
+            EditMeta::Stage("waiting for approval".to_owned())
         );
-        assert_eq!(tool_meta(&call(ToolCallStatus::Failed, None)), "failed");
-        assert_eq!(tool_meta(&call(ToolCallStatus::Done, None)), "");
+        assert_eq!(
+            meta(ToolCallStatus::Running, false),
+            EditMeta::Stage("running".to_owned())
+        );
+        assert_eq!(
+            meta(ToolCallStatus::Failed, false),
+            EditMeta::Stage("failed".to_owned())
+        );
+        assert_eq!(
+            meta(ToolCallStatus::Done, false),
+            EditMeta::Created { lines: 1 }
+        );
+
+        let mut edit = write_call(ToolCallStatus::Done);
+        if let Some(file) = &mut edit.edit {
+            file.old_text = "old line\n".to_owned();
+        }
+        assert_eq!(
+            EditMeta::new(&edit, CallStage::Done, 1, 1),
+            EditMeta::Changed {
+                added: 1,
+                removed: 1
+            }
+        );
+    }
+
+    #[test]
+    fn a_running_call_waits_while_its_approval_waits() {
+        let allowed = AnswerState::Answered(ApprovalAnswer {
+            decision: ApprovalDecision::Allow,
+            message: None,
+        });
+        let items = [
+            item(
+                1,
+                None,
+                ItemBody::ToolCall(write_call(ToolCallStatus::Running)),
+            ),
+            item(
+                2,
+                None,
+                approval("Write", "notes.txt", AnswerState::Waiting),
+            ),
+            item(
+                3,
+                None,
+                ItemBody::ToolCall(call("Bash", "ls", ToolCallStatus::Running)),
+            ),
+            item(4, None, approval("Bash", "ls", allowed)),
+            item(
+                5,
+                Some(9),
+                ItemBody::ToolCall(call("Bash", "rm -r build", ToolCallStatus::Running)),
+            ),
+            item(
+                6,
+                None,
+                approval("Bash", "rm -r build", AnswerState::Waiting),
+            ),
+            item(
+                7,
+                None,
+                ItemBody::ToolCall(call("Bash", "rm -r build", ToolCallStatus::Done)),
+            ),
+        ];
+        let refs: Vec<&TranscriptItem> = items.iter().collect();
+
+        let ids: Vec<u32> = awaiting_approval(&refs).iter().map(|id| id.get()).collect();
+
+        assert_eq!(ids, [1]);
     }
 }

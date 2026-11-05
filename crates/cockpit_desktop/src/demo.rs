@@ -25,6 +25,7 @@ pub const DEMO_FLAG: &str = "--demo";
 
 const PARSER_FOLDER: &str = "/home/dev/projects/calc-parser";
 const SERVICE_FOLDER: &str = "/home/dev/projects/calc-service";
+const PLATFORM_FOLDER: &str = "/home/dev/projects/acme-platform";
 
 const ERROR_FILE: &str = "src/error.rs";
 const TEST_FILE: &str = "tests/columns.rs";
@@ -75,7 +76,12 @@ The parser builds every error at `src/error.rs:2`. The lexer already counts the 
 - The column is a `u32` on `Token`.
 - No new dependency is needed.";
 
-const BENCHMARK_ANSWER: &str = "The benchmark runs in CI now. To compare two runs by hand:
+const BENCHMARK_ANSWER: &str = "The benchmark runs in CI now. The slowest cases:
+deep_nesting: 2.4 ms
+long_sum: 1.1 ms
+many_parentheses: 0.9 ms
+
+To compare two runs by hand:
 
 ```bash
 # Run both versions and keep the medians
@@ -84,7 +90,7 @@ git switch cache-layer
 cargo bench --bench eval -- --baseline before
 ```
 
-The slowest case is still `deep_nesting`, at **2.4 ms**.";
+The CI job fails when a case gets **10%** slower than on `main`.";
 
 const PLAN_TEXT: &str = "## Add a result cache
 
@@ -666,6 +672,16 @@ fn approval_agent(now: SystemTime) -> Sample {
         item(
             3,
             None,
+            ItemBody::ToolCall(call(
+                "Bash",
+                "git push -u origin fix-links",
+                ToolCallStatus::Running,
+                None,
+            )),
+        ),
+        item(
+            4,
+            None,
             ItemBody::Approval(Approval {
                 pending: PendingId::new("demo-approval".to_owned()),
                 tool: "Bash".to_owned(),
@@ -771,10 +787,22 @@ fn benchmark_agent(now: SystemTime) -> Sample {
             }),
         ),
     ];
+    let details = AgentDetails {
+        background_tasks: vec![BackgroundTask {
+            id: BackgroundTaskId::new("demo-task-3".to_owned()),
+            kind: BackgroundTaskKind::Command,
+            description: "cargo bench --bench eval -- --save-baseline before".to_owned(),
+            status: BackgroundTaskStatus::Stopped,
+            started_at: at(now, 900),
+            ended_at: Some(at(now, 840)),
+            tool_calls: 0,
+        }],
+        ..details()
+    };
     Sample {
         summary,
         items,
-        details: details(),
+        details,
     }
 }
 
@@ -839,7 +867,41 @@ fn plan_usage(now: SystemTime) -> PlanUsage {
 }
 
 fn sessions(now: SystemTime) -> Vec<PastSession> {
-    vec![
+    // Long folders used more recently than the agents', so the new agent dialog lists six of them.
+    let long_folders = [
+        (
+            "services/billing/reconciliation-worker",
+            "Reconcile late payments",
+        ),
+        ("services/billing/invoice-pdf-renderer", "Invoice PDF fonts"),
+        (
+            "frontends/customer-portal/packages/checkout-flow",
+            "Checkout address form",
+        ),
+        (
+            "infrastructure/terraform/modules/object-storage",
+            "Bucket lifecycle rules",
+        ),
+        (
+            "tools/release-automation/changelog-generator",
+            "Changelog from commits",
+        ),
+        (
+            "services/search/indexer-backfill-jobs",
+            "Backfill the search index",
+        ),
+    ];
+    let mut sessions: Vec<PastSession> = Vec::new();
+    for (index, (folder, title)) in (1_u64..).zip(long_folders) {
+        sessions.push(PastSession {
+            id: ClaudeSessionId::new(format!("demo-past-long-{index}")),
+            title: title.to_owned(),
+            folder: Path::new(PLATFORM_FOLDER).join(folder),
+            last_activity: at(now, index * 7 * 60),
+            turns: 12,
+        });
+    }
+    sessions.extend([
         PastSession {
             id: ClaudeSessionId::new("demo-past-1".to_owned()),
             title: "Tokenizer speedup".to_owned(),
@@ -854,7 +916,8 @@ fn sessions(now: SystemTime) -> Vec<PastSession> {
             last_activity: at(now, 3 * 24 * 3600),
             turns: 22,
         },
-    ]
+    ]);
+    sessions
 }
 
 #[cfg(test)]
