@@ -39,6 +39,10 @@ const MEGABYTE: usize = 1024 * 1024;
 /// Ten to the number of decimals a saved width share keeps.
 const SHARE_PRECISION: f64 = 10_000.0;
 
+/// The effort Left and Right count from while the agent runs at Claude Code's default effort,
+/// which Claude Code does not report: the middle of the levels.
+const DEFAULT_EFFORT: Effort = Effort::High;
+
 /// The largest image file the composer takes, in megabytes. Claude counts its own per-image limit
 /// on the base64 text, a third larger than the file.
 const MAX_IMAGE_MEGABYTES: usize = 5;
@@ -121,7 +125,7 @@ pub fn composer_input(
         (popover, Some(query)) => {
             drafts.palette = Palette {
                 query: query.to_owned(),
-                highlighted: 0,
+                ..Palette::default()
             };
             let typed_open = popover == Some(Popover::Palette(PaletteOrigin::Typed));
             (!typed_open).then_some(PaletteChange::Open)
@@ -359,6 +363,15 @@ fn open_palette_entries<'state>(
 pub fn palette_move(state: &AppState, drafts: &mut Drafts, agent: AgentId, direction: Direction) {
     let count = open_palette_entries(state, drafts, agent).len();
     drafts.palette.highlighted = moved(drafts.palette.highlighted, count, direction);
+    drafts.palette.moved = true;
+}
+
+/// The menu's own filter changed: the highlight goes back to the first entry.
+pub fn palette_filter(drafts: &mut Drafts, query: String) {
+    drafts.palette = Palette {
+        query,
+        ..Palette::default()
+    };
 }
 
 /// What a pick in the palette asks for: requests, and what only the window can do.
@@ -586,37 +599,63 @@ pub fn choose_setting(
     requests.unwrap_or_default()
 }
 
-/// Left and Right on the highlighted setting: its previous or next choice. Nothing moves past the
-/// first or the last.
+/// Left and Right on the highlighted setting, once Up or Down moved the highlight to it: its
+/// previous or next choice. An unknown effort counts from the default level. Nothing moves past
+/// the first or the last. `None` when the keys are not the setting's: they move the filter's
+/// caret then.
 pub fn palette_step(
     state: &AppState,
     drafts: &Drafts,
     agent: AgentId,
     step: Step,
-) -> Vec<Outgoing> {
+) -> Option<Vec<Outgoing>> {
+    if !drafts.palette.moved {
+        return None;
+    }
     let highlighted = open_palette_entries(state, drafts, agent)
         .get(drafts.palette.highlighted)
         .copied();
     let (Some(PaletteEntry::Action(action)), Some(entry)) = (highlighted, state.agents.get(&agent))
     else {
-        return Vec::new();
+        return None;
     };
+    if !action.is_setting() {
+        return None;
+    }
     let choices = setting_choices(&entry.summary, action);
     let direction = match step {
         Step::Previous => Direction::Up,
         Step::Next => Direction::Down,
     };
-    let next = match choices.iter().position(|choice| choice.chosen) {
-        Some(current) => {
-            let next = moved(current, choices.len(), direction);
-            if next == current {
-                return Vec::new();
-            }
-            next
-        }
+    let current = choices
+        .iter()
+        .position(|choice| choice.chosen)
+        .or_else(|| unknown_value_choice(action));
+    let next = match current {
+        Some(current) => moved(current, choices.len(), direction),
         None => 0,
     };
-    choose_setting(state, agent, action, next)
+    if current == Some(next) {
+        return Some(Vec::new());
+    }
+    Some(choose_setting(state, agent, action, next))
+}
+
+/// The choice a setting counts from when the agent's value is unknown: the default effort level.
+/// A model counts from its first choice, and a mode is always known.
+fn unknown_value_choice(action: MenuAction) -> Option<usize> {
+    match action {
+        MenuAction::Effort => Effort::VARIANTS
+            .iter()
+            .position(|&effort| effort == DEFAULT_EFFORT),
+        MenuAction::Model
+        | MenuAction::Mode
+        | MenuAction::AttachImage
+        | MenuAction::ClearConversation
+        | MenuAction::CompactConversation
+        | MenuAction::ExportConversation
+        | MenuAction::Rename => None,
+    }
 }
 
 /// `text` starting with the command, in place of the `/word` it starts with, if any.
@@ -1568,10 +1607,7 @@ mod tests {
         if state.ui.popover != Some(Popover::Palette(PaletteOrigin::Button)) {
             toggle_palette(state, drafts, agent());
         }
-        drafts.palette = Palette {
-            query: query.to_owned(),
-            highlighted: 0,
-        };
+        palette_filter(drafts, query.to_owned());
     }
 
     /// The entries as the palette names them.
@@ -1829,7 +1865,9 @@ mod tests {
         }
         let mut step = |query: &str, step| {
             open_menu(&mut state, &mut drafts, query);
-            palette_step(&state, &drafts, agent(), step)
+            // Up on the first entry keeps it highlighted, as moved to.
+            palette_move(&state, &mut drafts, agent(), Direction::Up);
+            palette_step(&state, &drafts, agent(), step).unwrap_or_default()
         };
 
         let next_effort = step("effort", Step::Next);
@@ -1865,19 +1903,28 @@ mod tests {
     }
 
     #[test]
-    fn a_setting_without_a_value_starts_at_its_first_choice() {
+    fn an_unknown_effort_counts_from_the_default_level() {
         let mut state = state(AgentStatus::Idle);
         let mut drafts = Drafts::default();
         open_menu(&mut state, &mut drafts, "effort");
+        palette_move(&state, &mut drafts, agent(), Direction::Up);
 
-        let requests = palette_step(&state, &drafts, agent(), Step::Previous);
+        let lower = palette_step(&state, &drafts, agent(), Step::Previous).unwrap_or_default();
+        let higher = palette_step(&state, &drafts, agent(), Step::Next).unwrap_or_default();
         let summary = &state.agents[&agent()].summary;
 
         assert_eq!(
-            sent(&requests),
+            sent(&lower),
             [&Request::AgentSetEffort(SetEffortParams {
                 agent: agent(),
-                effort: Effort::Low,
+                effort: Effort::Medium,
+            })]
+        );
+        assert_eq!(
+            sent(&higher),
+            [&Request::AgentSetEffort(SetEffortParams {
+                agent: agent(),
+                effort: Effort::Xhigh,
             })]
         );
         assert!(
@@ -1889,6 +1936,39 @@ mod tests {
             state.ui.popover,
             Some(Popover::Palette(PaletteOrigin::Button))
         );
+    }
+
+    /// Typing "eff" highlights Effort: Left to fix a typo must move the caret, not send
+    /// `/effort` to Claude.
+    #[test]
+    fn left_and_right_change_a_setting_only_once_up_or_down_moved_to_it() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        if let Some(entry) = state.agents.get_mut(&agent()) {
+            entry.summary.effort = Some(Effort::High);
+        }
+        open_menu(&mut state, &mut drafts, "eff");
+
+        let typed = palette_step(&state, &drafts, agent(), Step::Previous);
+        palette_move(&state, &mut drafts, agent(), Direction::Up);
+        let moved_to = palette_step(&state, &drafts, agent(), Step::Previous);
+        palette_filter(&mut drafts, "effo".to_owned());
+        let typed_again = palette_step(&state, &drafts, agent(), Step::Previous);
+        palette_move(&state, &mut drafts, agent(), Direction::Up);
+        open_menu(&mut state, &mut drafts, "export");
+        palette_move(&state, &mut drafts, agent(), Direction::Up);
+        let on_an_action = palette_step(&state, &drafts, agent(), Step::Next);
+
+        assert_eq!(typed, None);
+        assert_eq!(
+            moved_to.as_deref().map(sent),
+            Some(vec![&Request::AgentSetEffort(SetEffortParams {
+                agent: agent(),
+                effort: Effort::Medium,
+            })])
+        );
+        assert_eq!(typed_again, None);
+        assert_eq!(on_an_action, None);
     }
 
     #[test]

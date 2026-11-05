@@ -32,6 +32,9 @@ pub struct Palette {
     pub query: String,
     /// An index into the filtered commands.
     pub highlighted: usize,
+    /// Up or Down moved the highlight since the filter last changed. Left and Right change the
+    /// highlighted setting only then, and else move the filter's caret.
+    pub moved: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

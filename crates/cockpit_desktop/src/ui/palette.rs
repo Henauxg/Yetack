@@ -104,6 +104,17 @@ fn act(cockpit: Cockpit, agent: AgentId, index: Option<usize>) {
     }
 }
 
+/// Left or Right in the menu's filter: on a setting the keys moved to, they change it and the
+/// caret stays; elsewhere they move the caret.
+fn step_setting(cockpit: Cockpit, agent: AgentId, step: Step, event: &KeyboardEvent) {
+    let stepped =
+        cockpit.with_drafts(|state, drafts| actions::palette_step(state, drafts, agent, step));
+    if let Some(requests) = stepped {
+        event.prevent_default();
+        cockpit.change(|_| requests);
+    }
+}
+
 /// The highlighted row's id, which keeps it in view.
 fn row_id(highlighted: bool) -> Option<&'static str> {
     highlighted.then_some(HIGHLIGHTED_ENTRY_ID)
@@ -218,16 +229,13 @@ fn MenuFilter(agent: AgentId) -> Element {
                 let _ = event.data().set_focus(true).await;
             },
             oninput: move |event: FormEvent| {
-                cockpit.with_drafts(|_, drafts| {
-                    drafts.palette.query = event.value();
-                    drafts.palette.highlighted = 0;
-                });
+                cockpit.with_drafts(|_, drafts| actions::palette_filter(drafts, event.value()));
             },
             onkeydown: move |event: KeyboardEvent| match event.key() {
                 Key::ArrowDown => cockpit.with_drafts(|state, drafts| actions::palette_move(state, drafts, agent, Direction::Down)),
                 Key::ArrowUp => cockpit.with_drafts(|state, drafts| actions::palette_move(state, drafts, agent, Direction::Up)),
-                Key::ArrowLeft => cockpit.change_with_drafts(|state, drafts| actions::palette_step(state, drafts, agent, Step::Previous)),
-                Key::ArrowRight => cockpit.change_with_drafts(|state, drafts| actions::palette_step(state, drafts, agent, Step::Next)),
+                Key::ArrowLeft => step_setting(cockpit, agent, Step::Previous, &event),
+                Key::ArrowRight => step_setting(cockpit, agent, Step::Next, &event),
                 Key::Enter => act(cockpit, agent, None),
                 _ => {}
             },
