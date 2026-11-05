@@ -17,6 +17,8 @@ pub enum ToolName {
     Write,
     Bash,
     Read,
+    /// Loads a skill: Claude Code then adds its instructions as a synthetic `user` line.
+    Skill,
 }
 
 /// The input of a tool call, for the tools this crate knows.
@@ -29,6 +31,7 @@ pub enum ToolInput {
     Write(WriteInput),
     Bash(BashInput),
     Read(ReadInput),
+    Skill(SkillInput),
     /// Another tool: its raw input is all there is.
     Unknown,
 }
@@ -50,9 +53,17 @@ impl ToolInput {
             ToolName::Write => WriteInput::deserialize(input).map(Self::Write),
             ToolName::Bash => BashInput::deserialize(input).map(Self::Bash),
             ToolName::Read => ReadInput::deserialize(input).map(Self::Read),
+            ToolName::Skill => SkillInput::deserialize(input).map(Self::Skill),
         };
         parsed.map_err(|error| ParseError::MalformedToolInput { tool, error })
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SkillInput {
+    /// Without its slash, such as `review`.
+    pub skill: String,
+    pub args: Option<String>,
 }
 
 /// The task list, which each call replaces whole.

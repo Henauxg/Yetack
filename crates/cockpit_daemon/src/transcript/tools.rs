@@ -94,6 +94,7 @@ pub(crate) fn file_edit(input: &ToolInput) -> Option<FileEdit> {
         | ToolInput::ExitPlanMode(_)
         | ToolInput::Bash(_)
         | ToolInput::Read(_)
+        | ToolInput::Skill(_)
         | ToolInput::Unknown => None,
     }
 }
