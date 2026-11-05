@@ -6,7 +6,34 @@ rust-version.workspace = true
 license.workspace = true
 publish = false
 
+# The two binaries serve the integration tests only: a fake `claude`, and a daemon in its own
+# process, since the peer check refuses a client inside the daemon's process. The product's
+# binary is `agents-cockpit`, in the `agents_cockpit` crate.
+[[bin]]
+name = "fake-claude"
+path = "src/bin/fake_claude.rs"
+test = false
+
+[[bin]]
+name = "test-serve"
+path = "src/bin/test_serve.rs"
+test = false
+
 [dependencies]
+claude_protocol.workspace = true
+cockpit_protocol.workspace = true
+rustix = { version = "1", features = ["fs", "process"] }
+serde.workspace = true
+serde_json.workspace = true
+strum.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+cockpit_client.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true
