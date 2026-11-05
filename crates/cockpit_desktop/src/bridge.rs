@@ -25,6 +25,12 @@ pub const PALETTE_FILTER_ID: &str = "palette-filter";
 /// The palette's highlighted entry, kept in view as the keys move it.
 pub const HIGHLIGHTED_ENTRY_ID: &str = "palette-highlighted";
 
+/// The field that replaces the agent's title in the header while it is renamed.
+pub const HEADER_TITLE_FIELD_ID: &str = "agent-title-field";
+
+/// The field that replaces an agent's title in its sidebar row while it is renamed.
+pub const ROW_TITLE_FIELD_ID: &str = "row-title-field";
+
 /// A pause in typing this long ends an undo step, as in common text editors.
 const UNDO_PAUSE_MS: u32 = 500;
 
@@ -156,6 +162,13 @@ document.addEventListener("keydown", (event) => {
     take = true;
   } else if (key === "Escape") {
     take = true;
+  } else if (key === "F2" && plain && !event.shiftKey) {
+    // F2 renames the selected agent, and moves an open title field between the header and the
+    // agent's row.
+    take = !mode.dialog && (where === "page" || (target !== null && settings.title_field_ids.includes(target.id)));
+  } else if (event.altKey && !command && !event.shiftKey && (key === "ArrowUp" || key === "ArrowDown")) {
+    // Alt+Up and Alt+Down move the selected agent in the sidebar.
+    take = where !== "field" && !mode.dialog;
   } else if (where === "composer" && plain) {
     take = (mode.palette && ["ArrowUp", "ArrowDown", "Enter", "Tab"].includes(key))
       || (text === "" && answers)
@@ -238,6 +251,16 @@ const field_id = await dioxus.recv();
 document.getElementById(field_id)?.focus();
 "#;
 
+/// Gives the focus to the field whose id it receives, the caret at the end of its text.
+const FOCUS_AT_END_SCRIPT: &str = r#"
+const field_id = await dioxus.recv();
+const field = document.getElementById(field_id);
+if (field !== null) {
+  field.focus();
+  field.setSelectionRange(field.value.length, field.value.length);
+}
+"#;
+
 /// Gives the focus to the field whose id it receives, its text selected.
 const SELECT_SCRIPT: &str = r#"
 const field_id = await dioxus.recv();
@@ -277,13 +300,16 @@ struct FieldText {
 #[derive(Debug, Serialize)]
 struct Settings {
     composer_id: &'static str,
+    /// The fields where F2 moves the title edit to the other place.
+    title_field_ids: [&'static str; 2],
     /// A pause in typing this long, in milliseconds, ends an undo step.
     undo_pause_ms: u32,
     /// The undo steps a field keeps.
     undo_steps: u16,
 }
 
-/// Which plain keys the script takes, beyond Ctrl+K, Ctrl+N, Esc and the composer's Enter.
+/// Which plain keys the script takes, beyond Ctrl+K, Ctrl+N, Esc, F2, Alt+Up, Alt+Down and the
+/// composer's Enter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 struct KeyMode {
     /// Y and N answer an approval or a plan.
@@ -325,6 +351,7 @@ pub fn use_bridge(cockpit: Cockpit) {
         let mut script = document::eval(SCRIPT);
         if let Err(error) = script.send(Settings {
             composer_id: COMPOSER_ID,
+            title_field_ids: [HEADER_TITLE_FIELD_ID, ROW_TITLE_FIELD_ID],
             undo_pause_ms: UNDO_PAUSE_MS,
             undo_steps: UNDO_STEPS,
         }) {
@@ -416,6 +443,22 @@ pub fn focus_field(field_id: &'static str) {
     }
 }
 
+fn focus_field_at_end(field_id: &'static str) {
+    let script = document::eval(FOCUS_AT_END_SCRIPT);
+    if let Err(error) = script.send(field_id) {
+        tracing::warn!("cannot focus the field {field_id}: {error}");
+    }
+}
+
+/// Focuses a title field as its edit asks: its text selected, or the caret at the end.
+pub fn focus_title_field(field_id: &'static str, select_all: bool) {
+    if select_all {
+        select_field(field_id);
+    } else {
+        focus_field_at_end(field_id);
+    }
+}
+
 pub fn select_field(field_id: &'static str) {
     let script = document::eval(SELECT_SCRIPT);
     if let Err(error) = script.send(field_id) {
@@ -503,6 +546,7 @@ mod tests {
 
         let settings = Settings {
             composer_id: COMPOSER_ID,
+            title_field_ids: [HEADER_TITLE_FIELD_ID, ROW_TITLE_FIELD_ID],
             undo_pause_ms: 500,
             undo_steps: 200,
         };
@@ -519,7 +563,12 @@ mod tests {
 
         assert_eq!(
             serde_json::to_value(settings).unwrap(),
-            json!({ "composer_id": "composer", "undo_pause_ms": 500, "undo_steps": 200 })
+            json!({
+                "composer_id": "composer",
+                "title_field_ids": ["agent-title-field", "row-title-field"],
+                "undo_pause_ms": 500,
+                "undo_steps": 200,
+            })
         );
         assert_eq!(
             serde_json::to_value(mode).unwrap(),

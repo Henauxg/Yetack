@@ -21,6 +21,7 @@ pub enum IconKind {
     Person,
     Terminal,
     Send,
+    ArrowDown,
     Clock,
     Shield,
     Bolt,
@@ -69,6 +70,7 @@ impl IconKind {
             }
             Self::Terminal => r#"<path d="M5 7l5 5-5 5"></path><path d="M12 18h7"></path>"#,
             Self::Send => r#"<path d="M12 19V5"></path><path d="M6 11l6-6 6 6"></path>"#,
+            Self::ArrowDown => r#"<path d="M12 5v14"></path><path d="M6 13l6 6 6-6"></path>"#,
             Self::Clock => {
                 r#"<circle cx="12" cy="12" r="8"></circle><path d="M12 8v4l3 2"></path>"#
             }

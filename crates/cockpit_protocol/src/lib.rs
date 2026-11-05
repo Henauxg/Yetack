@@ -18,6 +18,7 @@ mod details;
 mod event;
 mod frame;
 mod ids;
+mod position;
 mod request;
 mod response;
 mod session;
@@ -35,9 +36,10 @@ pub use details::{
 pub use event::{Event, EventRecord};
 pub use frame::{Frame, FrameError, FrameReader, FrameWriter, MAX_LINE_BYTES};
 pub use ids::{AgentId, BackgroundTaskId, ClaudeSessionId, ItemId, PendingId, RequestId, Seq};
+pub use position::{Placed, Position, list_order, move_agent, place_on_top};
 pub use request::{
     AgentParams, Answer, AnswerParams, CancelQueuedParams, HistoryParams, MAX_TITLE_CHARS,
-    McpRemoveParams, McpServerParams, McpToggleParams, Method, Prompt, PromptParams,
+    McpRemoveParams, McpServerParams, McpToggleParams, Method, MoveParams, Prompt, PromptParams,
     ReadFileParams, RenameParams, Request, SessionResumeParams, SetEffortParams, SetModeParams,
     SetModelParams, StartParams, StopTaskParams,
 };

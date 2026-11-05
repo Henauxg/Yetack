@@ -93,7 +93,7 @@ impl Cockpit {
         }
     }
 
-    /// Typing in the header's title field changes the drafts alone.
+    /// Typing in a title field, the header's or a sidebar row's, changes the drafts alone.
     pub fn type_title(&self, text: String) {
         self.with_drafts(|state, drafts| actions::rename_text(state, drafts, text));
     }
@@ -144,7 +144,8 @@ pub fn use_cockpit(startup: Startup) -> Cockpit {
     })
 }
 
-/// Answers every request from the sample state, in order.
+/// Answers every request from the sample state, in order, and makes the live agent's
+/// conversation grow.
 async fn run_demo(
     mut state: Signal<AppState>,
     mut drafts: Signal<Drafts>,
@@ -152,15 +153,28 @@ async fn run_demo(
 ) {
     use futures_util::StreamExt;
 
-    while let Some(outgoing) = requests.next().await {
-        let mut queue = VecDeque::from([outgoing]);
-        while let Some(Outgoing { request, purpose }) = queue.pop_front() {
-            tokio::time::sleep(demo::latency(&request)).await;
-            let result = demo::answer(&state.read(), &request);
-            let mut state = state.write();
-            let method = request.method();
-            state::apply_response(&mut state, &mut drafts.write(), method, purpose, result);
-            queue.extend(state::needed_requests(&mut state));
+    let mut ticks = tokio::time::interval(demo::LIVE_TICK);
+    let mut tick: u32 = 0;
+    loop {
+        tokio::select! {
+            outgoing = requests.next() => {
+                let Some(outgoing) = outgoing else {
+                    return;
+                };
+                let mut queue = VecDeque::from([outgoing]);
+                while let Some(Outgoing { request, purpose }) = queue.pop_front() {
+                    tokio::time::sleep(demo::latency(&request)).await;
+                    let result = demo::answer(&state.read(), &request);
+                    let mut state = state.write();
+                    let method = request.method();
+                    state::apply_response(&mut state, &mut drafts.write(), method, purpose, result);
+                    queue.extend(state::needed_requests(&mut state));
+                }
+            }
+            _ = ticks.tick() => {
+                demo::live_tick(&mut state.write(), tick);
+                tick = tick.wrapping_add(1);
+            }
         }
     }
 }
@@ -324,6 +338,20 @@ mod tests {
             dom.render_immediate(&mut NoOpMutations);
         }
         let after_typing = renders();
+        // F2 moves the field to the agent's sidebar row, where typing changes the drafts alone too.
+        dom.in_runtime(|| {
+            cockpit.change_with_drafts(|state, drafts| {
+                actions::rename_key(state, drafts);
+                Vec::new()
+            });
+        });
+        dom.render_immediate(&mut NoOpMutations);
+        let after_moving_the_title = renders();
+        for text in ["Cart total!", "Cart totals"] {
+            dom.in_runtime(|| cockpit.type_title(text.to_owned()));
+            dom.render_immediate(&mut NoOpMutations);
+        }
+        let after_typing_in_the_row = renders();
         // The dialogs' fields, through the calls their components make.
         dom.in_runtime(|| cockpit.update_with_drafts(actions::open_new_agent));
         dom.render_immediate(&mut NoOpMutations);
@@ -356,8 +384,17 @@ mod tests {
         dom.render_immediate(&mut NoOpMutations);
 
         // The first render, then only the ones the changes of the state call for: opening the
-        // title field, the new agent dialog and the switcher, then the focus.
-        assert_eq!((after_opening_the_title, after_typing), (2, 2));
+        // title field, moving it to the row, the new agent dialog and the switcher, then the
+        // focus.
+        assert_eq!(
+            (
+                after_opening_the_title,
+                after_typing,
+                after_moving_the_title,
+                after_typing_in_the_row
+            ),
+            (2, 2, 3, 3)
+        );
         assert_eq!(
             (
                 after_opening_the_dialog,
@@ -365,7 +402,7 @@ mod tests {
                 after_typing_in_dialogs,
                 renders()
             ),
-            (3, 4, 4, 5)
+            (4, 5, 5, 6)
         );
         let typed = dom.in_runtime(|| {
             let drafts = cockpit.drafts.peek();
@@ -374,7 +411,7 @@ mod tests {
         });
         assert_eq!(
             typed,
-            (Some("Run the tests".to_owned()), "Cart total".to_owned())
+            (Some("Run the tests".to_owned()), "Cart totals".to_owned())
         );
         let dialogs = dom.in_runtime(|| {
             let drafts = cockpit.drafts.peek();

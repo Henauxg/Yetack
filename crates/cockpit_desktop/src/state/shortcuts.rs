@@ -17,6 +17,7 @@ const KEY_ENTER: &str = "Enter";
 const KEY_TAB: &str = "Tab";
 const KEY_UP: &str = "ArrowUp";
 const KEY_DOWN: &str = "ArrowDown";
+const KEY_F2: &str = "F2";
 
 /// The letters that answer an approval or a plan.
 const KEY_YES: &str = "y";
@@ -71,6 +72,22 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
         return working
             .map(|entry| actions::interrupt(state, entry.id()))
             .unwrap_or_default();
+    }
+    // The script passes F2 on from outside text fields, and from the title fields.
+    let plain = !command && !press.alt && !press.shift;
+    if press.key == KEY_F2 && plain && state.ui.dialog.is_none() {
+        actions::rename_key(state, drafts);
+        return Vec::new();
+    }
+    // Alt+Up and Alt+Down move the selected agent in the sidebar, from anywhere but a text field
+    // other than the composer.
+    let moves = press.alt && !command && !press.shift;
+    if moves && state.ui.dialog.is_none() && press.target != KeyTarget::Field {
+        match press.key.as_str() {
+            KEY_UP => return actions::move_selected(state, Direction::Up),
+            KEY_DOWN => return actions::move_selected(state, Direction::Down),
+            _ => {}
+        }
     }
     if command || press.alt {
         return Vec::new();
@@ -520,6 +537,63 @@ mod tests {
             sent.first().map(|outgoing| &outgoing.request),
             Some(Request::AgentPrompt(params)) if params.prompt.text == "Run the linter"
         ));
+    }
+
+    #[test]
+    fn alt_up_and_alt_down_move_the_selected_agent_except_from_a_field_or_a_dialog() {
+        let mut drafts = Drafts::default();
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::Idle),
+            summary(2, AgentStatus::Idle),
+        ]);
+        // Equal positions list the newer agent first: agent 1 is at the bottom.
+        state.ui.selected = Some(AgentId::new(1));
+        let alt = |key: &str, target| KeyPress {
+            alt: true,
+            ..press(key, target)
+        };
+
+        let from_field = handle_key(&mut state, &mut drafts, &alt(KEY_UP, KeyTarget::Field));
+        let from_composer = handle_key(&mut state, &mut drafts, &alt(KEY_UP, KeyTarget::Composer));
+        let from_page = handle_key(&mut state, &mut drafts, &alt(KEY_DOWN, KeyTarget::Page));
+        actions::toggle_switcher(&mut state, &mut drafts);
+        let behind_a_dialog = handle_key(&mut state, &mut drafts, &alt(KEY_DOWN, KeyTarget::Page));
+
+        let method =
+            |requests: &[Outgoing]| requests.first().map(|outgoing| outgoing.request.method());
+        assert!(from_field.is_empty());
+        assert_eq!(
+            method(&from_composer),
+            Some(cockpit_protocol::Method::AgentMove)
+        );
+        assert_eq!(
+            method(&from_page),
+            Some(cockpit_protocol::Method::AgentMove)
+        );
+        assert!(behind_a_dialog.is_empty());
+    }
+
+    #[test]
+    fn f2_opens_the_rows_title_field_and_moves_it_from_the_headers() {
+        use crate::state::TitlePlace;
+
+        let mut drafts = Drafts::default();
+        let mut state = state(AgentStatus::Idle, None);
+        let place = |state: &AppState| state.ui.title_edit.as_ref().map(|edit| edit.place);
+
+        handle_key(&mut state, &mut drafts, &press(KEY_F2, KeyTarget::Page));
+        let from_page = place(&state);
+        state.ui.title_edit = None;
+        actions::start_rename(&mut state, &mut drafts, AgentId::new(1));
+        handle_key(&mut state, &mut drafts, &press(KEY_F2, KeyTarget::Field));
+        let from_header = place(&state);
+        state.ui.title_edit = None;
+        actions::toggle_switcher(&mut state, &mut drafts);
+        handle_key(&mut state, &mut drafts, &press(KEY_F2, KeyTarget::Page));
+
+        assert_eq!(from_page, Some(TitlePlace::Sidebar));
+        assert_eq!(from_header, Some(TitlePlace::Sidebar));
+        assert_eq!(place(&state), None, "nothing behind a dialog");
     }
 
     #[test]

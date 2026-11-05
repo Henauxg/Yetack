@@ -48,6 +48,9 @@ pub enum Request {
     /// Renames the agent, and its Claude session when its process runs. Answered by `Done`, and
     /// an `AgentUpdated` event to every client.
     AgentRename(RenameParams),
+    /// Places the agent in the list. Answered by `Done`, and an `AgentUpdated` event for each
+    /// agent whose position changed: the moved one alone, unless its new neighbours leave no room.
+    AgentMove(MoveParams),
     /// Asks Claude Code for the context usage now. Answered by `ContextUsage`.
     AgentContextUsage(AgentParams),
     /// Answered by `Done`.
@@ -105,6 +108,8 @@ pub enum Method {
     AgentSetMode,
     #[strum(serialize = "agent.rename")]
     AgentRename,
+    #[strum(serialize = "agent.move")]
+    AgentMove,
     #[strum(serialize = "agent.context_usage")]
     AgentContextUsage,
     #[strum(serialize = "agent.stop_task")]
@@ -155,7 +160,8 @@ impl<'de> Deserialize<'de> for Method {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StartParams {
     pub folder: PathBuf,
-    /// `None` lets the daemon name the agent.
+    /// `None` lets the daemon name the agent. The daemon collapses a title's whitespace and trims
+    /// it, and refuses it empty or over [`MAX_TITLE_CHARS`] characters.
     pub title: Option<String>,
     /// `None` keeps Claude Code's default, as do `effort` and `mode`.
     pub model: Option<String>,
@@ -237,11 +243,19 @@ pub struct SetModeParams {
 /// every snapshot.
 pub const MAX_TITLE_CHARS: usize = 200;
 
-/// The daemon trims the title, and refuses it empty or over [`MAX_TITLE_CHARS`] characters.
+/// The daemon collapses the title's whitespace and trims it, and refuses it empty or over
+/// [`MAX_TITLE_CHARS`] characters.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RenameParams {
     pub agent: AgentId,
     pub title: String,
+}
+
+/// The agent goes just above `before`, or to the bottom of the list when `before` is `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoveParams {
+    pub agent: AgentId,
+    pub before: Option<AgentId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -309,6 +323,7 @@ impl Request {
             Self::AgentSetEffort(_) => Method::AgentSetEffort,
             Self::AgentSetMode(_) => Method::AgentSetMode,
             Self::AgentRename(_) => Method::AgentRename,
+            Self::AgentMove(_) => Method::AgentMove,
             Self::AgentContextUsage(_) => Method::AgentContextUsage,
             Self::AgentStopTask(_) => Method::AgentStopTask,
             Self::AgentMcpStatus(_) => Method::AgentMcpStatus,
@@ -354,6 +369,7 @@ impl Serialize for Request {
             Self::AgentSetEffort(params) => tagged(method, params, serializer),
             Self::AgentSetMode(params) => tagged(method, params, serializer),
             Self::AgentRename(params) => tagged(method, params, serializer),
+            Self::AgentMove(params) => tagged(method, params, serializer),
             Self::AgentContextUsage(params) => tagged(method, params, serializer),
             Self::AgentStopTask(params) => tagged(method, params, serializer),
             Self::AgentMcpStatus(params) => tagged(method, params, serializer),
@@ -400,6 +416,7 @@ impl<'de> Deserialize<'de> for Request {
             Method::AgentSetEffort => Self::AgentSetEffort(params(raw)?),
             Method::AgentSetMode => Self::AgentSetMode(params(raw)?),
             Method::AgentRename => Self::AgentRename(params(raw)?),
+            Method::AgentMove => Self::AgentMove(params(raw)?),
             Method::AgentContextUsage => Self::AgentContextUsage(params(raw)?),
             Method::AgentStopTask => Self::AgentStopTask(params(raw)?),
             Method::AgentMcpStatus => Self::AgentMcpStatus(params(raw)?),

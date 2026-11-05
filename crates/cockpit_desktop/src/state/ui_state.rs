@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use cockpit_protocol::{AgentId, Effort, PermissionMode};
+use cockpit_protocol::{AgentId, Effort, ItemId, PermissionMode};
 
 /// How many error notes stay on screen; an older one goes when a new one comes.
 const MAX_ERRORS: usize = 4;
@@ -127,6 +127,18 @@ pub struct TitleEdit {
     pub agent: AgentId,
     /// The title the field starts from.
     pub title: String,
+    pub place: TitlePlace,
+    /// The field selects its text when the edit starts. After a move to the other place it puts
+    /// the caret at the end, so typing goes on after the text instead of replacing it.
+    pub select_all: bool,
+}
+
+/// Where the title field shows: one place at a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TitlePlace {
+    Header,
+    /// The agent's row in the sidebar, from F2 or a double-click on the row's title.
+    Sidebar,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,11 +157,19 @@ pub struct UiState {
     pub dialog: Option<Dialog>,
     pub file_views: BTreeMap<AgentId, FileView>,
     pub mcp: McpView,
-    /// The agent title the header shows as a text field.
+    /// The agent title the header or a sidebar row shows as a text field.
     pub title_edit: Option<TitleEdit>,
     /// The notes at the bottom left: errors, and what an action did.
     pub errors: Vec<ErrorNote>,
     next_error: u32,
+    /// The agents whose chat is scrolled up, each with the last entry it held when it left its
+    /// bottom (`None` when it held none). The entries after it arrived since.
+    pub chat_scrolled_up: BTreeMap<AgentId, Option<ItemId>>,
+    /// The first entry that arrived while the agent's chat was scrolled up, once the chat went
+    /// back down: the "New" divider sits above it until a message is sent or another agent opens.
+    pub chat_new_from: BTreeMap<AgentId, ItemId>,
+    /// Counts the sends that take the chat to its bottom: the chat's scroll script jumps at each.
+    pub chat_jumps: u64,
 }
 
 impl Default for UiState {
@@ -168,6 +188,9 @@ impl Default for UiState {
             title_edit: None,
             errors: Vec::new(),
             next_error: 0,
+            chat_scrolled_up: BTreeMap::new(),
+            chat_new_from: BTreeMap::new(),
+            chat_jumps: 0,
         }
     }
 }

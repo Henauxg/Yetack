@@ -13,8 +13,9 @@ use claude_protocol::{
     IncomingRequest, InitializeResponse, McpScope, McpServerState, McpStatus, McpTransport,
     MessageOrigin, OpenWord, OriginKind, OutputLine, ParseError, PermissionBehavior,
     PermissionDestination, PermissionMode, PermissionUpdate, RateLimitStatus, RateLimitType,
-    ResetTrigger, ResultMessage, ResultSubtype, SessionId, SessionState, SystemEvent, TaskId,
-    TaskNotificationText, TaskStatus, TerminalReason, ToolUseId, Usage, UserMessage,
+    ResetTrigger, ResultMessage, ResultSubtype, SessionId, SessionState, SettingsAnswer,
+    SystemEvent, TaskId, TaskNotificationText, TaskStatus, TerminalReason, ToolUseId, Usage,
+    UserMessage,
 };
 use serde_json::{Value, json};
 
@@ -741,6 +742,30 @@ fn control_response_initialize() {
             ("plain", "", ""),
         ]
     );
+}
+
+#[test]
+fn control_response_get_settings() {
+    let body = success_body("control_response_get_settings.json");
+
+    let answer = SettingsAnswer::try_from(&body).unwrap();
+
+    assert_eq!(answer.applied.model.as_deref(), Some("claude-test-model"));
+    assert_eq!(answer.applied.effort.as_deref(), Some("medium"));
+}
+
+#[test]
+fn settings_without_an_applied_effort() {
+    let without_effort = json!({"applied": {"model": "claude-test-model", "effort": null}});
+    let without_applied = json!({"effective": {}});
+
+    let answers = [without_effort, without_applied].map(|body| {
+        SettingsAnswer::try_from(&body)
+            .map(|answer| answer.applied.effort)
+            .unwrap()
+    });
+
+    assert_eq!(answers, [None, None]);
 }
 
 #[test]

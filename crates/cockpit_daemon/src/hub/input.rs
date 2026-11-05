@@ -66,6 +66,9 @@ pub(crate) enum ControlPurpose {
     Initialize,
     /// The context usage for the summary, after a start or a turn.
     ContextRefresh,
+    /// The effort Claude Code applies to an agent that was given none, after a start or a model
+    /// change.
+    DefaultEffort,
     /// A request answered by `Done`.
     Done(Reply),
     SetModel {

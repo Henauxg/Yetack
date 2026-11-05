@@ -63,6 +63,7 @@ pub(crate) fn restore(state: &StateDir, claude_folder: &Path) -> Result<Restored
             // The record is the reference for what a client chose.
             summary.title = record.title.clone();
             summary.folder = record.folder.clone();
+            summary.position = record.position;
             let items: Vec<TranscriptItem> = logged.items.into_values().collect();
             let mut view = AgentView::restore(summary, logged.details, items, ttl);
             if let Some(file) = &record.past {
@@ -103,8 +104,8 @@ mod tests {
     use std::path::PathBuf;
 
     use cockpit_protocol::{
-        AgentStatus, ClaudeSessionId, EventRecord, Frame, ItemBody, ServerMessage, Settings,
-        Timestamp,
+        AgentStatus, ClaudeSessionId, EventRecord, Frame, ItemBody, Position, ServerMessage,
+        Settings, Timestamp,
     };
 
     use crate::store::PastFile;
@@ -123,6 +124,7 @@ mod tests {
             running: true,
             started_at: Timestamp::from_unix_millis(0),
             past: None,
+            position: Position::default(),
         }
     }
 

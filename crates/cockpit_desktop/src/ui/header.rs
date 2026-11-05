@@ -11,7 +11,7 @@ use dioxus::prelude::*;
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
 use crate::connection::{Clock, Cockpit};
-use crate::state::{AgentEntry, Loadable, Popover, actions};
+use crate::state::{AgentEntry, Loadable, Popover, TitlePlace, actions};
 use crate::ui::changes_list::{ChangesList, line_totals};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::presence::Presence;
@@ -109,9 +109,6 @@ fn part_class(name: &str) -> &'static str {
 const OUTER_RING: f64 = 62.83;
 const INNER_RING: f64 = 31.42;
 
-/// The field that replaces the agent's title while it is renamed.
-const TITLE_FIELD_ID: &str = "agent-title-field";
-
 #[component]
 pub fn Header() -> Element {
     let cockpit: Cockpit = use_context();
@@ -149,8 +146,8 @@ pub fn Header() -> Element {
         .ui
         .title_edit
         .as_ref()
-        .filter(|edit| edit.agent == agent)
-        .map(|edit| edit.title.clone());
+        .filter(|edit| edit.agent == agent && edit.place == TitlePlace::Header)
+        .map(|edit| (edit.title.clone(), edit.select_all));
     let start_rename = move || {
         cockpit.change_with_drafts(|state, drafts| {
             actions::start_rename(state, drafts, agent);
@@ -161,9 +158,9 @@ pub fn Header() -> Element {
         header { class: "center-header",
             div { class: "header-title",
                 div { class: "title-line",
-                    if let Some(title) = title_edit {
+                    if let Some((title, select_all)) = title_edit {
                         input {
-                            id: TITLE_FIELD_ID,
+                            id: bridge::HEADER_TITLE_FIELD_ID,
                             class: "title-field",
                             r#type: "text",
                             aria_label: "Agent title",
@@ -171,14 +168,14 @@ pub fn Header() -> Element {
                             // put an older title back.
                             initial_value: "{title}",
                             maxlength: "{MAX_TITLE_CHARS}",
-                            onmounted: move |_| bridge::select_field(TITLE_FIELD_ID),
+                            onmounted: move |_| bridge::focus_title_field(bridge::HEADER_TITLE_FIELD_ID, select_all),
                             oninput: move |event: FormEvent| cockpit.type_title(event.value()),
                             onkeydown: move |event: KeyboardEvent| {
                                 if event.key() == Key::Enter {
                                     cockpit.change_with_drafts(actions::finish_rename);
                                 }
                             },
-                            onblur: move |_| bridge::save_on_blur(move || cockpit.change_with_drafts(actions::finish_rename)),
+                            onblur: move |_| bridge::save_on_blur(move || cockpit.change_with_drafts(|state, drafts| actions::finish_rename_at(state, drafts, TitlePlace::Header))),
                         }
                     } else {
                         h1 {
