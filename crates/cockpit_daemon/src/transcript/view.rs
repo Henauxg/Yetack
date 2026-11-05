@@ -55,6 +55,9 @@ enum UntypedSystemSubtype {
 }
 
 const SUBTYPE_KEY: &str = "subtype";
+/// The model of an assistant message Claude Code writes itself, such as a slash command's output
+/// or an API error.
+const SYNTHETIC_MODEL: &str = "<synthetic>";
 const COMPACTED_NOTICE: &str = "Conversation compacted";
 const INTERRUPTED: &str = "Interrupted";
 const QUEUED_CANCELLED_NOTICE: &str = "Queued message cancelled";
@@ -354,6 +357,9 @@ impl AgentView {
         if let Some(item) = self.item_mut(item_id) {
             item.body = body;
         }
+        if self.pending.is_empty() {
+            self.summary.activity = None;
+        }
         Ok(Answered {
             line: InputLine::permission(
                 ControlRequestId::new(pending.as_str().to_owned()),
@@ -511,12 +517,18 @@ impl AgentView {
 
     fn apply_assistant(&mut self, message: AssistantMessage, now: Timestamp) {
         let parent = self.parent_item(message.parent_tool_use_id.as_ref());
+        let synthetic = message.message.model.as_deref() == Some(SYNTHETIC_MODEL);
         if message.parent_tool_use_id.is_none() {
             self.working = true;
-            self.summary.cache_expires_at = Some(add(now, self.prompt_cache_ttl));
+            if !synthetic {
+                self.summary.cache_expires_at = Some(add(now, self.prompt_cache_ttl));
+            }
         }
         for block in message.message.content {
             match block {
+                ContentBlock::Text(text) if synthetic && !text.text.trim().is_empty() => {
+                    self.push_item(parent, ItemBody::Notice { text: text.text });
+                }
                 ContentBlock::Text(text) if !text.text.trim().is_empty() => {
                     self.push_item(
                         parent,
@@ -662,7 +674,6 @@ impl AgentView {
         let turn_cost = (total - self.process_cost).max(0.0);
         self.process_cost = total;
         self.summary.cost = CostUsd::new(self.cost_before_process + total);
-        self.summary.turns = self.summary.turns.saturating_add(1);
         let interrupted = matches!(
             result.terminal_reason,
             Some(OpenWord::Known(
@@ -673,6 +684,14 @@ impl AgentView {
             self.fail_running_calls();
         }
         self.cancel_all_pending();
+        self.working = false;
+        self.summary.activity = None;
+        // A slash command Claude Code runs itself, such as `/effort`, makes no API call: it is not
+        // a turn of the conversation.
+        if result.num_turns == 0 && !result.is_error && !interrupted {
+            return;
+        }
+        self.summary.turns = self.summary.turns.saturating_add(1);
         self.push_item(
             None,
             ItemBody::TurnEnd(TurnEnd {
@@ -682,8 +701,6 @@ impl AgentView {
                 error: turn_error(result, interrupted),
             }),
         );
-        self.working = false;
-        self.summary.activity = None;
     }
 
     fn apply_control_request(&mut self, request: IncomingControlRequest) {
@@ -1743,6 +1760,54 @@ mod tests {
                 text: COMPACTED_NOTICE.to_owned()
             }
         );
+    }
+
+    #[test]
+    fn a_local_command_shows_a_notice_and_no_turn() {
+        let mut view = view();
+        view.expect_echo("/effort low".to_owned());
+
+        apply(&mut view, init());
+        let mut answer = assistant(json!([{"type": "text", "text": "Set effort level to low"}]));
+        answer["message"]["model"] = json!("<synthetic>");
+        apply(&mut view, answer);
+        let mut done = result(0.0);
+        done["num_turns"] = json!(0);
+        let follow_ups = apply(&mut view, done);
+        view.take_events();
+
+        assert_eq!(follow_ups, [FollowUp::TurnEnded]);
+        assert_eq!(
+            bodies(&view),
+            [&ItemBody::Notice {
+                text: "Set effort level to low".to_owned()
+            }]
+        );
+        assert_eq!(view.summary().turns, 0);
+        assert_eq!(view.summary().status, AgentStatus::Idle);
+        assert_eq!(view.summary().cache_expires_at, None);
+    }
+
+    #[test]
+    fn an_answer_clears_the_waiting_activity() {
+        let mut view = view();
+        apply(
+            &mut view,
+            can_use_tool("req-1", "t1", "Bash", json!({"command": "ls"})),
+        );
+        assert_eq!(
+            view.summary().activity.as_deref(),
+            Some("Waiting for you: Bash")
+        );
+
+        let answer = Answer::Approval(ApprovalAnswer {
+            decision: ApprovalDecision::Allow,
+            message: None,
+        });
+        view.answer(&PendingId::new("req-1".to_owned()), answer)
+            .unwrap();
+
+        assert_eq!(view.summary().activity, None);
     }
 
     #[test]

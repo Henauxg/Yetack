@@ -18,6 +18,8 @@ use crate::cli::{AnswerCommand, Command, Target};
 
 /// The argument that makes a command read its text from stdin.
 const STDIN_ARG: &str = "-";
+/// The width of `list`'s title column; a longer title is shortened.
+const TITLE_COLUMN: usize = 32;
 
 pub(crate) async fn run(target: &Target, command: Command) -> anyhow::Result<()> {
     let transport = target.transport()?;
@@ -77,17 +79,17 @@ async fn list(transport: &Transport) -> anyhow::Result<()> {
         bail!("the daemon sent no snapshot");
     };
     print_line(&format!(
-        "{:<4} {:<9} {:<4} {:<5} {:<32} FOLDER",
+        "{:<4} {:<9} {:<4} {:<5} {:<TITLE_COLUMN$} FOLDER",
         "ID", "STATUS", "WAIT", "TURNS", "TITLE"
     ))?;
     for agent in snapshot.agents {
         print_line(&format!(
-            "{:<4} {:<9} {:<4} {:<5} {:<32} {}",
+            "{:<4} {:<9} {:<4} {:<5} {:<TITLE_COLUMN$} {}",
             agent.id.get(),
             word(agent.status)?,
             agent.pending_count,
             agent.turns,
-            agent.title,
+            shorten(&agent.title, TITLE_COLUMN),
             agent.folder.display()
         ))?;
     }
@@ -178,6 +180,15 @@ fn text_prompt(text: String) -> Prompt {
         text,
         images: Vec::new(),
     }
+}
+
+fn shorten(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_owned();
+    }
+    let mut short: String = text.chars().take(max_chars.saturating_sub(1)).collect();
+    short.push('…');
+    short
 }
 
 /// A protocol word, such as a status, as the daemon writes it.
