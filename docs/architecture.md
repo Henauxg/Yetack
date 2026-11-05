@@ -192,6 +192,7 @@ On start the daemon reads `agents.json`, finds the last `Seq` in the logs, and r
 - Each connection passes two checks before any byte is read:
   1. the peer's user id (`SO_PEERCRED`) equals the daemon's;
   2. the peer's parent chain in `/proc` does not reach the daemon's pid, so a command an agent runs cannot drive the daemon.
+     The walk stops, and accepts, at a process of another user or one that `/proc` hides (`hidepid=1` or `2`): the daemon's descendants all run as its user, and `/proc` always shows a user's own processes.
 - `agents-cockpit bridge` connects to the socket like any client; it descends from `sshd`, not from the daemon.
 
 ## Client (`cockpit_client`)

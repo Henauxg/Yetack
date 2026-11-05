@@ -4,6 +4,10 @@
 //! The parent chain stops a process that simply connects. A process that detaches on purpose
 //! (double fork, `setsid`) gets a new parent and passes: Claude Code's sandbox is what keeps the
 //! agents' commands out of the state folder.
+//!
+//! The walk up the chain stops, and accepts, at a process of another user or one that `/proc`
+//! hides (`hidepid=1` or `2`), such as root's `sshd` above the SSH bridge. The daemon's
+//! descendants all run as its user, and `/proc` always shows a user's own processes.
 
 use std::io;
 use std::path::Path;
@@ -54,6 +58,15 @@ impl DaemonIdentity {
     }
 }
 
+/// What the walk reads of a process in `/proc`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProcEntry {
+    /// The owner of `/proc/<pid>`: the process's user.
+    owner: u32,
+    /// The content of `/proc/<pid>/stat`.
+    stat: String,
+}
+
 /// Runs before any byte of the connection is read.
 pub(crate) fn check(stream: &UnixStream, daemon: DaemonIdentity) -> Result<(), PeerError> {
     let credentials = stream.peer_cred().map_err(PeerError::Credentials)?;
@@ -67,77 +80,112 @@ pub(crate) fn check(stream: &UnixStream, daemon: DaemonIdentity) -> Result<(), P
         .and_then(|pid| u32::try_from(pid).ok())
         .filter(|&pid| pid > 0)
         .ok_or(PeerError::NoPid)?;
-    check_ancestry(Path::new(PROC_ROOT), pid, daemon.pid)
+    check_ancestry(pid, daemon, read_proc_entry)
 }
 
-/// Walks from `peer` up its parents in `proc_root` and refuses it when one is `daemon`.
-pub(crate) fn check_ancestry(proc_root: &Path, peer: u32, daemon: u32) -> Result<(), PeerError> {
+/// Walks from `peer` up its parents, read by `read_entry`, and refuses it when one is the daemon.
+fn check_ancestry(
+    peer: u32,
+    daemon: DaemonIdentity,
+    read_entry: impl Fn(u32) -> io::Result<ProcEntry>,
+) -> Result<(), PeerError> {
     let mut pid = peer;
     for _ in 0..MAX_CHAIN {
-        if pid == daemon {
+        if pid == daemon.pid {
             return Err(PeerError::DescendsFromDaemon { peer });
         }
         // 1 is init; 0 is the kernel, the parent of init.
         if pid <= 1 {
             return Ok(());
         }
-        pid = parent(proc_root, pid)?;
+        let entry = match read_entry(pid) {
+            Ok(entry) => entry,
+            // `hidepid=2` hides another user's process; `hidepid=1` refuses to show its files.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+                ) =>
+            {
+                return Ok(());
+            }
+            Err(source) => return Err(PeerError::Proc { pid, source }),
+        };
+        if entry.owner != daemon.uid {
+            return Ok(());
+        }
+        pid = parent(&entry.stat).ok_or(PeerError::MalformedStat { pid })?;
     }
     Err(PeerError::ChainTooLong { peer })
 }
 
-/// Reads the parent from `<proc_root>/<pid>/stat`: `pid (name) state ppid ...`. The name may hold
-/// spaces and parentheses, so the fields count from its last `)`.
-fn parent(proc_root: &Path, pid: u32) -> Result<u32, PeerError> {
-    let path = proc_root.join(pid.to_string()).join(STAT_FILE);
-    let stat = std::fs::read_to_string(&path).map_err(|source| PeerError::Proc { pid, source })?;
-    let after_name = stat
-        .rfind(')')
-        .and_then(|end| stat.get(end + 1..))
-        .ok_or(PeerError::MalformedStat { pid })?;
+fn read_proc_entry(pid: u32) -> io::Result<ProcEntry> {
+    use std::os::unix::fs::MetadataExt;
+
+    let folder = Path::new(PROC_ROOT).join(pid.to_string());
+    let owner = std::fs::metadata(&folder)?.uid();
+    let stat = std::fs::read_to_string(folder.join(STAT_FILE))?;
+    Ok(ProcEntry { owner, stat })
+}
+
+/// The parent in a `stat` line: `pid (name) state ppid ...`. The name may hold spaces and
+/// parentheses, so the fields count from its last `)`.
+fn parent(stat: &str) -> Option<u32> {
+    let after_name = stat.rfind(')').and_then(|end| stat.get(end + 1..))?;
     let mut fields = after_name.split_whitespace();
     let _state = fields.next();
-    fields
-        .next()
-        .and_then(|ppid| ppid.parse().ok())
-        .ok_or(PeerError::MalformedStat { pid })
+    fields.next()?.parse().ok()
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use tempfile::TempDir;
+    use std::collections::HashMap;
 
     use super::*;
 
-    /// A `/proc` with the given (pid, stat line) pairs.
-    fn fake_proc(processes: &[(u32, &str)]) -> (TempDir, PathBuf) {
-        let temp = tempfile::tempdir().unwrap();
-        for (pid, stat) in processes {
-            let folder = temp.path().join(pid.to_string());
-            std::fs::create_dir(&folder).unwrap();
-            std::fs::write(folder.join(STAT_FILE), stat).unwrap();
+    const USER: u32 = 1000;
+    const ROOT: u32 = 0;
+    const DAEMON: DaemonIdentity = DaemonIdentity { uid: USER, pid: 50 };
+
+    fn entry(owner: u32, stat: &str) -> Result<ProcEntry, io::ErrorKind> {
+        Ok(ProcEntry {
+            owner,
+            stat: stat.to_owned(),
+        })
+    }
+
+    /// A `/proc` with these entries, where any other process is missing.
+    fn fake_proc(
+        entries: Vec<(u32, Result<ProcEntry, io::ErrorKind>)>,
+    ) -> impl Fn(u32) -> io::Result<ProcEntry> {
+        let entries: HashMap<u32, Result<ProcEntry, io::ErrorKind>> = entries.into_iter().collect();
+        move |pid| match entries.get(&pid) {
+            Some(Ok(entry)) => Ok(entry.clone()),
+            Some(Err(kind)) => Err(io::Error::from(*kind)),
+            None => Err(io::Error::from(io::ErrorKind::NotFound)),
         }
-        let root = temp.path().to_owned();
-        (temp, root)
+    }
+
+    /// 1 init and 40 sshd, of root; 41 the bridge; 50 the daemon, 60 its claude, and 70 a shell
+    /// with a strange name. `sshd` is as `/proc` shows it.
+    fn processes(sshd: Result<ProcEntry, io::ErrorKind>) -> impl Fn(u32) -> io::Result<ProcEntry> {
+        fake_proc(vec![
+            (1, entry(ROOT, "1 (init) S 0 1 1")),
+            (40, sshd),
+            (41, entry(USER, "41 (agents-cockpit) S 40 41 41")),
+            (50, entry(USER, "50 (agents-cockpit) S 1 50 50")),
+            (60, entry(USER, "60 (claude) S 50 60 60")),
+            (70, entry(USER, "70 (sh (x) y) R 60 70 70")),
+        ])
     }
 
     #[test]
     fn a_descendant_of_the_daemon_is_refused_and_others_pass() {
-        // 1 init, 40 sshd, 41 bridge; 50 daemon, 60 claude, 70 a shell with a strange name.
-        let (_temp, root) = fake_proc(&[
-            (1, "1 (init) S 0 1 1"),
-            (40, "40 (sshd) S 1 40 40"),
-            (41, "41 (agents-cockpit) S 40 41 41"),
-            (50, "50 (agents-cockpit) S 1 50 50"),
-            (60, "60 (claude) S 50 60 60"),
-            (70, "70 (sh (x) y) R 60 70 70"),
-        ]);
+        let proc = processes(entry(ROOT, "40 (sshd) S 1 40 40"));
 
-        let bridge = check_ancestry(&root, 41, 50);
-        let agent_shell = check_ancestry(&root, 70, 50);
-        let daemon_itself = check_ancestry(&root, 50, 50);
+        let bridge = check_ancestry(41, DAEMON, &proc);
+        let agent_shell = check_ancestry(70, DAEMON, &proc);
+        let daemon_itself = check_ancestry(50, DAEMON, &proc);
 
         assert!(bridge.is_ok(), "{bridge:?}");
         assert!(
@@ -150,21 +198,46 @@ mod tests {
         ));
     }
 
+    /// With `hidepid`, root's `sshd` above the bridge is missing or unreadable.
+    #[test]
+    fn the_walk_accepts_at_a_hidden_process_or_one_of_another_user() {
+        let hidden = [
+            Err(io::ErrorKind::NotFound),
+            Err(io::ErrorKind::PermissionDenied),
+            entry(ROOT, "40 (sshd) S 1 40 40"),
+        ];
+
+        for sshd in hidden {
+            let shown = format!("{sshd:?}");
+            let proc = processes(sshd);
+
+            let bridge = check_ancestry(41, DAEMON, &proc);
+            let agent_shell = check_ancestry(70, DAEMON, &proc);
+
+            assert!(bridge.is_ok(), "{shown}: {bridge:?}");
+            assert!(
+                matches!(agent_shell, Err(PeerError::DescendsFromDaemon { peer: 70 })),
+                "{shown}: {agent_shell:?}"
+            );
+        }
+    }
+
     #[test]
     fn an_unreadable_chain_is_refused() {
-        let (_temp, root) = fake_proc(&[
-            (30, "30 (gone-parent) S 31 30 30"),
-            (32, "32 (broken"),
-            (33, "33 (self) S 33 33 33"),
+        let proc = fake_proc(vec![
+            (30, entry(USER, "30 (failing-parent) S 31 30 30")),
+            (31, Err(io::ErrorKind::Other)),
+            (32, entry(USER, "32 (broken")),
+            (33, entry(USER, "33 (self) S 33 33 33")),
         ]);
 
-        let missing = check_ancestry(&root, 30, 50);
-        let malformed = check_ancestry(&root, 32, 50);
-        let looping = check_ancestry(&root, 33, 50);
+        let failing = check_ancestry(30, DAEMON, &proc);
+        let malformed = check_ancestry(32, DAEMON, &proc);
+        let looping = check_ancestry(33, DAEMON, &proc);
 
         assert!(
-            matches!(missing, Err(PeerError::Proc { pid: 31, .. })),
-            "{missing:?}"
+            matches!(failing, Err(PeerError::Proc { pid: 31, .. })),
+            "{failing:?}"
         );
         assert!(
             matches!(malformed, Err(PeerError::MalformedStat { pid: 32 })),
@@ -178,10 +251,14 @@ mod tests {
 
     #[test]
     fn the_real_proc_shows_this_test_descends_from_itself_only() {
-        let me = std::process::id();
+        let me = DaemonIdentity::current();
+        let another = DaemonIdentity {
+            pid: u32::MAX,
+            ..me
+        };
 
-        let from_itself = check_ancestry(Path::new(PROC_ROOT), me, me);
-        let from_another = check_ancestry(Path::new(PROC_ROOT), me, u32::MAX);
+        let from_itself = check_ancestry(me.pid, me, read_proc_entry);
+        let from_another = check_ancestry(me.pid, another, read_proc_entry);
 
         assert!(matches!(
             from_itself,
