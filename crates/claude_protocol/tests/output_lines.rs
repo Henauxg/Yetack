@@ -304,10 +304,44 @@ fn user_replayed_prompt() {
     };
     assert!(user.is_replay);
     assert_eq!(user.origin, None);
+    assert!(!user.is_synthetic);
     let [ContentBlock::Text(text)] = user.message.content.as_slice() else {
         panic!("string content is not one text block");
     };
     assert_eq!(text.text, "Add a changelog entry for the parser");
+}
+
+#[test]
+fn user_skill_instructions() {
+    let OutputLine::User(user) = fixture("user_skill_instructions.json") else {
+        panic!("not a user line");
+    };
+    assert!(user.is_synthetic);
+    assert!(!user.is_replay);
+    let [ContentBlock::Text(text)] = user.message.content.as_slice() else {
+        panic!("not one text block");
+    };
+    assert!(text.text.starts_with("# /greet"), "{}", text.text);
+}
+
+#[test]
+fn a_synthetic_mark_that_does_not_read_reads_as_false() {
+    let line = |synthetic: &str| {
+        let line = format!(
+            r#"{{"type":"user","message":{{"role":"user","content":"Hello"}},"isSynthetic":{synthetic}}}"#
+        );
+        match line.parse::<OutputLine>() {
+            Ok(OutputLine::User(user)) => user.is_synthetic,
+            other => panic!("{line} gave {other:?}"),
+        }
+    };
+
+    let marks: Vec<bool> = ["true", "false", "null", r#""yes""#, "1"]
+        .into_iter()
+        .map(line)
+        .collect();
+
+    assert_eq!(marks, [true, false, false, false, false]);
 }
 
 #[test]

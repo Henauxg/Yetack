@@ -1,0 +1,17 @@
+{
+  "type": "user",
+  "message": {
+    "role": "user",
+    "content": [
+      {
+        "type": "text",
+        "text": "# /greet — greet someone by name\n\nGreet the person the arguments name, in one short sentence.\n\n## Steps\n\n1. Read the name from the arguments.\n2. Answer `Hello, <name>!`."
+      }
+    ]
+  },
+  "parent_tool_use_id": null,
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "uuid": "00000000-0000-4000-8000-000000000401",
+  "timestamp": "2030-01-01T10:00:00.000Z",
+  "isSynthetic": true
+}

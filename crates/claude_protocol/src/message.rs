@@ -43,6 +43,15 @@ pub struct UserMessage {
     /// that does not read, such as one without a `kind`, reads as `None`.
     #[serde(default, deserialize_with = "wire::default_on_error")]
     pub origin: Option<MessageOrigin>,
+    /// Context Claude Code adds for Claude, such as a skill's instructions or the summary after a
+    /// compaction. A session file marks the same lines `isMeta`, or the summary
+    /// `isCompactSummary`. `false` when it does not read.
+    #[serde(
+        default,
+        rename = "isSynthetic",
+        deserialize_with = "wire::default_on_error"
+    )]
+    pub is_synthetic: bool,
     /// Claude Code's own record of the tool's result, richer than the content block: a string,
     /// or an object whose shape depends on the tool. Session files name it `toolUseResult`.
     #[serde(alias = "toolUseResult")]
