@@ -275,7 +275,7 @@ On start the daemon reads `agents.json`, finds the last `Seq` in the logs, and r
   One title field shows at a time: F2 in the header's field moves the edit to the row with the text typed so far, and F2 in the row's field moves it back.
   The typed text lives in the drafts, as the composer's does, so typing a title renders neither the transcript nor the sidebar.
   An agent the filter hides has no row, so F2 opens the header's field.
-- **Shortcuts**: Ctrl+K, Ctrl+N, Esc, Y, N, 1 to 9, as in plan.md, Alt+Up and Alt+Down to move the selected agent in the sidebar, and F2 to rename it.
+- **Shortcuts**: Ctrl+K, Ctrl+N, Esc (closes what is open, never stops the agent), Y, N, 1 to 9, as in plan.md, Alt+Up and Alt+Down to move the selected agent in the sidebar, and F2 to rename it.
 
 ## Errors
 

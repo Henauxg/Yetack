@@ -1,7 +1,7 @@
 //! The keyboard shortcuts of R4-parts, resolved against the state. The page's script decides
 //! which key presses reach here (`bridge`), so typing in a field is never taken over.
 
-use cockpit_protocol::{AgentId, AgentStatus, ApprovalDecision, PlanDecision};
+use cockpit_protocol::{AgentId, ApprovalDecision, PlanDecision};
 use serde::Deserialize;
 
 use super::actions::{self, Direction};
@@ -60,18 +60,11 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
         }
         return Vec::new();
     }
+    // Esc only closes what is open: the Stop button alone stops an agent, so a stray Esc never
+    // cuts a turn short.
     if press.key == KEY_ESCAPE {
-        if state.ui.close_overlays() {
-            return Vec::new();
-        }
-        // Stop works only while the agent works: one that waits for you stops with the Stop
-        // button.
-        let working = state
-            .selected()
-            .filter(|entry| entry.summary.status == AgentStatus::Working);
-        return working
-            .map(|entry| actions::interrupt(state, entry.id()))
-            .unwrap_or_default();
+        state.ui.close_overlays();
+        return Vec::new();
     }
     // The script passes F2 on from outside text fields, and from the title fields.
     let plain = !command && !press.alt && !press.shift;
@@ -290,20 +283,23 @@ mod tests {
     }
 
     #[test]
-    fn escape_closes_what_is_open_before_stopping_the_agent() {
+    fn escape_closes_what_is_open_and_never_stops_a_working_agent() {
         let mut drafts = Drafts::default();
         let mut state = state(AgentStatus::Working, None);
         state.ui.popover = Some(Popover::Usage);
 
         let first = handle_key(&mut state, &mut drafts, &press(KEY_ESCAPE, KeyTarget::Page));
         let second = handle_key(&mut state, &mut drafts, &press(KEY_ESCAPE, KeyTarget::Page));
+        let from_composer = handle_key(
+            &mut state,
+            &mut drafts,
+            &press(KEY_ESCAPE, KeyTarget::Composer),
+        );
 
         assert!(first.is_empty());
         assert_eq!(state.ui.popover, None);
-        assert!(matches!(
-            second.first().map(|outgoing| &outgoing.request),
-            Some(Request::AgentInterrupt(_))
-        ));
+        assert!(second.is_empty());
+        assert!(from_composer.is_empty());
     }
 
     #[test]
@@ -439,7 +435,7 @@ mod tests {
     }
 
     #[test]
-    fn escape_in_a_field_closes_a_menu_or_a_dialog_before_stopping() {
+    fn escape_in_a_field_closes_a_menu_then_a_dialog_and_stops_nothing() {
         let mut drafts = Drafts::default();
         let mut state = state(AgentStatus::Working, None);
         state.ui.popover = Some(Popover::Model);
@@ -463,10 +459,7 @@ mod tests {
 
         assert!(menu.is_empty() && dialog.is_empty());
         assert_eq!((state.ui.popover, &state.ui.dialog), (None, &None));
-        assert!(matches!(
-            stop.first().map(|outgoing| &outgoing.request),
-            Some(Request::AgentInterrupt(_))
-        ));
+        assert!(stop.is_empty());
     }
 
     #[test]

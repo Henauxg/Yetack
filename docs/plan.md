@@ -194,7 +194,7 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   - Pasted screenshots show as thumbnails in the composer and in the sent message.
   - A message sent while the agent works shows as queued, with Cancel.
   - Command output collapses after 5 lines; a failed command has a red dot and its exit code.
-  - Ctrl+N opens the new agent dialog (recent folders, or resume a past session); Ctrl+K opens the agent switcher; Esc stops the agent; Y and N answer an approval or a plan.
+  - Ctrl+N opens the new agent dialog (recent folders, or resume a past session); Ctrl+K opens the agent switcher; Esc closes what is open (a menu, a dialog, an edit) and never stops the agent, which only the Stop button does; Y and N answer an approval or a plan.
   - No rewind of file changes in v1.
 - Decided after round 4 (mocked in round 5), replacing the right panel above:
   - Tasks, background work and MCP servers are floating blocks at the top right of the chat, each folding to one line. They show only when they have content, except MCP servers.
