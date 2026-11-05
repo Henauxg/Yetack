@@ -3,6 +3,7 @@
 mod app;
 mod blocks;
 mod cards;
+mod changes_list;
 mod code;
 mod composer;
 mod dialogs;

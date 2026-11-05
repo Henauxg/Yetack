@@ -947,43 +947,139 @@ button:disabled {
 .changes-list {
   right: 0;
   top: calc(100% + 6px);
-  width: 340px;
+  width: min(560px, calc(100vw - 40px));
   display: flex;
   flex-direction: column;
-  gap: 2px;
   padding: 6px;
-  border-radius: 10px;
 }
 
-.changes-title {
-  padding: 4px 10px 6px;
-  font-size: 12px;
+.changes-empty {
+  padding: 8px 10px;
+  font-size: 12.5px;
   color: var(--dim);
 }
 
-.file-row {
+/* The count of files and lines, in place of a sentence. */
+.changes-total {
   display: flex;
-  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px 8px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line-divider);
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.changes-total .mono {
+  font-size: 12px;
+}
+
+.changes-scroll {
+  max-height: min(60vh, 480px);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.changes-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* The folder a group of files sits in, named once. */
+.changes-root {
+  display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 7px;
+  min-height: 26px;
+  padding: 0 10px;
+  color: var(--dim);
+}
+
+.changes-root-name {
+  min-width: 0;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.change-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: 100%;
-  min-height: 36px;
+  min-height: 32px;
   padding: 0 10px;
   border-radius: 6px;
   border: 0;
   background: transparent;
   color: var(--text);
   text-align: left;
-  font-size: 12px;
 }
 
-.file-row:hover {
+.changes-group.headed .change-row {
+  padding-left: 22px;
+}
+
+.change-row:hover {
   background: var(--selected);
 }
 
-.file-path {
+.change-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--dim);
+}
+
+.change-row:hover .change-icon {
+  color: var(--text-soft);
+}
+
+.change-name {
+  flex: 0 1 auto;
   min-width: 0;
-  overflow-wrap: anywhere;
+  max-width: 60%;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Cut at its start, as the recent folders of the new agent dialog. */
+.change-folder {
+  flex: 1 1 0;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+/* Keeps the folder's characters in order inside the right-to-left box. */
+.change-folder-text {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+/* A fixed column, so that the counts of every row line up. */
+.change-counts {
+  flex: none;
+  width: 84px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.change-counts .zero {
+  color: var(--faint);
 }
 
 .connection-banner {
@@ -3632,7 +3728,7 @@ label.icon-button,
 /* Rows sit in scrolling lists, which would cut a ring drawn outside them. */
 .agent-row:focus-visible,
 .switcher-row:focus-visible,
-.file-row:focus-visible,
+.change-row:focus-visible,
 .menu-item:focus-visible,
 .palette-item:focus-visible,
 .mcp-row:focus-visible,
@@ -3837,7 +3933,7 @@ label.icon-button,
 
 .agent-row:active,
 .switcher-row:active,
-.file-row:active,
+.change-row:active,
 .menu-item:active,
 .palette-item:active,
 .mcp-row:active,
