@@ -61,9 +61,8 @@ const LIST_FILES: [&str; 5] = [
     "--exclude-standard",
 ];
 const GIT_FOLDER_OPTION: &str = "-C";
-/// Turns off the file system monitor, a command the checkout's git config may name, which
-/// listing the files would run: the agent can write that config, and the daemon runs it without
-/// the agent's approvals.
+/// Keeps git from running the file system monitor, a command the agent can set in its checkout's
+/// git config.
 const NO_MONITOR: [&str; 2] = ["-c", "core.fsmonitor=false"];
 
 /// The folders and files `read` may open, all with their symlinks resolved.
