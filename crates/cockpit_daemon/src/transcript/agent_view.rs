@@ -223,7 +223,7 @@ impl AgentView {
 
     /// A view that reads a session file's lines, for their items alone. `folder` is the
     /// session's, which tool summaries show paths relative to.
-    pub(super) fn for_session_file(folder: PathBuf) -> Self {
+    pub(super) fn new_for_session_file(folder: PathBuf) -> Self {
         let summary = AgentSummary {
             id: AgentId::new(0),
             title: String::new(),

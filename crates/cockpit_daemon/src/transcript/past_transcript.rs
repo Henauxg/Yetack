@@ -25,7 +25,7 @@ impl PastTranscript {
     /// `folder` is the session's, which tool summaries show paths relative to.
     pub(crate) fn new(folder: PathBuf) -> Self {
         Self {
-            view: AgentView::for_session_file(folder),
+            view: AgentView::new_for_session_file(folder),
             left_out: false,
         }
     }
