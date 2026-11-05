@@ -142,7 +142,9 @@ pub(crate) struct AgentView {
     /// The `total_cost_usd` of the current process so far: Claude Code counts from its start, or
     /// from the cost it restores with a resumed session.
     process_cost: f64,
-    /// The cost of the agent's earlier processes, which a resumed session's total already holds.
+    /// The part of the agent's cost that the process's `total_cost_usd` does not count: the
+    /// earlier processes' cost after a new session, none after a resumed one (Claude Code
+    /// restores it), and what came before a `/clear`.
     cost_before_process: f64,
     /// Until the process's first `result`, the cost a resumed session restores can still become
     /// the first turn's base.

@@ -33,7 +33,7 @@ pub(crate) enum HubInput {
         found: Box<FoundSession>,
         reply: Reply,
     },
-    /// The cost Claude Code restores with the session one of an agent's processes resumed.
+    /// The cost Claude Code restored as one of the agent's processes resumed its session.
     RestoredCost {
         agent: AgentId,
         generation: u32,
