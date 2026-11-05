@@ -19,7 +19,7 @@ use crate::process::{ClaudeCommand, InterruptedTurn, ProcessEvent};
 use crate::sessions;
 use crate::store::{AgentRecord, LogName, RawLog};
 use crate::transcript::{
-    AgentView, AnswerError, FollowUp, PromptDelivery, plan_usage, prompts, words,
+    AgentView, AnswerError, FollowUp, ProcessSession, PromptDelivery, plan_usage, prompts, words,
 };
 
 /// A title made from a prompt keeps this many characters.
@@ -151,8 +151,47 @@ impl Hub {
         }
         agent.generation = generation;
         agent.process = Some(handle);
-        agent.view.process_started();
+        match command.resume {
+            Some(session) => {
+                agent.view.process_started(ProcessSession::Resumed);
+                self.read_restored_cost(id, generation, session);
+            }
+            None => agent.view.process_started(ProcessSession::New),
+        }
         Ok(())
+    }
+
+    /// Reads the cost Claude Code restores from the session file, in a task, for the first turn's
+    /// cost.
+    fn read_restored_cost(&self, id: AgentId, generation: u32, session: ClaudeSessionId) {
+        let folder = self.config.claude_config_dir.clone();
+        let inputs = self.inputs.clone();
+        tokio::spawn(async move {
+            let read =
+                tokio::task::spawn_blocking(move || sessions::restored_cost(&folder, &session))
+                    .await;
+            if let Ok(Some(cost)) = read {
+                let input = HubInput::RestoredCost {
+                    agent: id,
+                    generation,
+                    cost,
+                };
+                // The daemon may be stopping.
+                let _ = inputs.send(input).await;
+            }
+        });
+    }
+
+    pub(super) fn restored_cost(&mut self, id: AgentId, generation: u32, cost: f64) {
+        let Some(agent) = self
+            .agents
+            .get_mut(&id)
+            .filter(|agent| agent.generation == generation)
+        else {
+            return;
+        };
+        agent.view.set_restored_cost(cost);
+        self.publish(id);
     }
 
     fn exited_at_start(&mut self, id: AgentId, error: &str) {

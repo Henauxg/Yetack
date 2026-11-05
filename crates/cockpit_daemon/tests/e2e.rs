@@ -19,8 +19,8 @@ use cockpit_client::{Connection, RequestError, Transport};
 use cockpit_protocol::{
     AgentId, AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState, Approval,
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, CancelQueuedParams, Catchup,
-    ClaudeSessionId, CommandKind, Effort, ErrorCode, Event, EventRecord, HistoryParams, ItemBody,
-    ItemId, McpRemoveParams, McpScope, McpServerParams, McpServerStatus, McpToggleParams,
+    ClaudeSessionId, CommandKind, CostUsd, Effort, ErrorCode, Event, EventRecord, HistoryParams,
+    ItemBody, ItemId, McpRemoveParams, McpScope, McpServerParams, McpServerStatus, McpToggleParams,
     PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, Prompt, PromptParams, Question,
     QuestionAnswer, ReadFileParams, Request, ResponseBody, Seq, SessionResumeParams,
     SetEffortParams, SetModeParams, SetModelParams, Settings, StartParams, StopTaskParams,
@@ -1097,9 +1097,12 @@ async fn files_settings_sessions_and_agent_settings() {
         "type": "user", "cwd": setup.work(),
         "message": {"role": "user", "content": "Fix the old bug"}
     });
+    let cost_line = serde_json::json!({
+        "type": "cost-state", "sessionId": SESSION_ID, "totalCostUSD": 0.5
+    });
     std::fs::write(
         project.join(format!("{SESSION_ID}.jsonl")),
-        format!("{session_line}\n"),
+        format!("{session_line}\n{cost_line}\n"),
     )
     .unwrap();
     let ResponseBody::Sessions { sessions } = client.ok(Request::SessionsList).await else {
@@ -1116,6 +1119,13 @@ async fn files_settings_sessions_and_agent_settings() {
         panic!("expected AgentStarted, got {resumed:?}");
     };
     assert_ne!(second, agent);
+    let restored = client
+        .summary_with(second, |summary| summary.cost == CostUsd::new(0.5))
+        .await;
+    assert_eq!(
+        restored.turns, 0,
+        "the session's past cost shows before any turn"
+    );
     let launches = setup.wait_for_launches(2);
     let resumed_launch = launches
         .iter()

@@ -115,6 +115,11 @@ impl Hub {
                 event,
             } => self.process_event(agent, generation, event),
             HubInput::SessionFound { session, reply } => self.resume_session(session, reply),
+            HubInput::RestoredCost {
+                agent,
+                generation,
+                cost,
+            } => self.restored_cost(agent, generation, cost),
         }
     }
 

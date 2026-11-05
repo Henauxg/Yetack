@@ -173,6 +173,8 @@ The hub turns Claude Code messages into transcript items and status changes (mod
 - The daemon's own control requests (`interrupt`, `set_model`, `set_permission_mode`, `get_context_usage`, `mcp_status`, `mcp_reconnect`, `mcp_toggle`, `stop_task`) carry ids of its own.
   Claude Code echoes control responses; one whose id the daemon did not send is ignored.
 - Effort has no control request: the daemon sends `/effort <level>` as a prompt.
+- After `--resume`, Claude Code's `total_cost_usd` counts from the cost it restores: the `totalCostUSD` of the session file's last `cost-state` line, which Claude Code writes when its process exits.
+  The daemon reads that line in a task as the process starts, so the first turn's end shows that turn's cost alone. The agent's cost is Claude Code's total, the session's past included.
 
 ### Store
 

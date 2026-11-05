@@ -15,4 +15,4 @@ pub(crate) mod prompts;
 mod tools;
 pub(crate) mod words;
 
-pub(crate) use agent_view::{AgentView, AnswerError, FollowUp, PromptDelivery};
+pub(crate) use agent_view::{AgentView, AnswerError, FollowUp, ProcessSession, PromptDelivery};

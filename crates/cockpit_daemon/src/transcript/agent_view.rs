@@ -38,6 +38,14 @@ pub(crate) enum PromptDelivery {
     Queued,
 }
 
+/// Whether a process starts a new Claude session or resumes one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProcessSession {
+    New,
+    /// Claude Code restores the session's cost, and counts its total from there.
+    Resumed,
+}
+
 /// The answer to a pending item, ready to send.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Answered {
@@ -104,10 +112,14 @@ pub(crate) struct AgentView {
     /// From a prompt, or the start of a turn, until the turn's `result`.
     working: bool,
     exited: bool,
-    /// The `total_cost_usd` of the current process so far: Claude Code counts from its start.
+    /// The `total_cost_usd` of the current process so far: Claude Code counts from its start, or
+    /// from the cost it restores with a resumed session.
     process_cost: f64,
-    /// The cost of the agent's earlier processes.
+    /// The cost of the agent's earlier processes, which a resumed session's total already holds.
     cost_before_process: f64,
+    /// Until the process's first `result`, the cost a resumed session restores can still become
+    /// the first turn's base.
+    awaits_restored_cost: bool,
     awaited_echoes: VecDeque<String>,
     /// Calls per tool name, for the MCP servers' tool counts.
     tool_counts: HashMap<String, u32>,
@@ -132,6 +144,7 @@ impl AgentView {
             exited: false,
             process_cost: 0.0,
             cost_before_process: 0.0,
+            awaits_restored_cost: false,
             awaited_echoes: VecDeque::new(),
             tool_counts: HashMap::new(),
             skills: BTreeSet::new(),
@@ -377,13 +390,29 @@ impl AgentView {
     }
 
     /// A new `claude` process runs for the agent.
-    pub(crate) fn process_started(&mut self) {
+    pub(crate) fn process_started(&mut self, session: ProcessSession) {
         self.exited = false;
         self.working = false;
-        self.cost_before_process = self.summary.cost.get();
+        self.cost_before_process = match session {
+            ProcessSession::New => self.summary.cost.get(),
+            ProcessSession::Resumed => 0.0,
+        };
         self.process_cost = 0.0;
+        self.awaits_restored_cost = session == ProcessSession::Resumed;
         self.pending.clear();
         self.tool_calls.clear();
+    }
+
+    /// The cost Claude Code restored with a resumed session, read from the session file. It is
+    /// the base of the first turn's cost, unless a `result` came first: the first turn's cost then
+    /// counts from 0.
+    pub(crate) fn set_restored_cost(&mut self, cost: f64) {
+        if !self.awaits_restored_cost {
+            return;
+        }
+        self.awaits_restored_cost = false;
+        self.process_cost = cost;
+        self.summary.cost = CostUsd::new(self.cost_before_process + cost);
     }
 
     /// The `claude` process ended: what waited is cancelled, what ran failed.
@@ -686,6 +715,7 @@ impl AgentView {
     }
 
     fn apply_result(&mut self, result: &ResultMessage) {
+        self.awaits_restored_cost = false;
         let total = result.total_cost_usd.unwrap_or(self.process_cost);
         let turn_cost = (total - self.process_cost).max(0.0);
         self.process_cost = total;
@@ -1755,7 +1785,7 @@ mod tests {
         apply(&mut view, result(0.75));
 
         view.process_exited("claude exited".to_owned(), now());
-        view.process_started();
+        view.process_started(ProcessSession::New);
         apply(&mut view, result(0.25));
 
         assert_eq!(view.summary().cost, CostUsd::new(1.0));
@@ -1772,6 +1802,49 @@ mod tests {
             costs,
             [CostUsd::new(0.5), CostUsd::new(0.25), CostUsd::new(0.25)]
         );
+    }
+
+    #[test]
+    fn a_resumed_session_counts_from_the_cost_claude_code_restores() {
+        let mut view = view();
+        apply(&mut view, result(0.5));
+        view.process_exited("claude exited".to_owned(), now());
+
+        view.process_started(ProcessSession::Resumed);
+        view.set_restored_cost(86.0);
+        let restored = view.summary().cost;
+        apply(&mut view, result(88.5));
+        apply(&mut view, result(89.0));
+
+        assert_eq!(restored, CostUsd::new(86.0));
+        assert_eq!(view.summary().cost, CostUsd::new(89.0));
+        assert_eq!(
+            turn_costs(&view),
+            [CostUsd::new(0.5), CostUsd::new(2.5), CostUsd::new(0.5)]
+        );
+    }
+
+    #[test]
+    fn a_restored_cost_after_the_first_result_changes_nothing() {
+        let mut view = view();
+        view.process_started(ProcessSession::Resumed);
+
+        apply(&mut view, result(88.5));
+        view.set_restored_cost(86.0);
+        apply(&mut view, result(89.0));
+
+        assert_eq!(view.summary().cost, CostUsd::new(89.0));
+        assert_eq!(turn_costs(&view), [CostUsd::new(88.5), CostUsd::new(0.5)]);
+    }
+
+    fn turn_costs(view: &AgentView) -> Vec<CostUsd> {
+        view.items()
+            .iter()
+            .filter_map(|item| match &item.body {
+                ItemBody::TurnEnd(end) => Some(end.cost),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
@@ -1855,7 +1928,7 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, Event::AgentUpdated(_)))
         );
-        restored.process_started();
+        restored.process_started(ProcessSession::Resumed);
         let next = restored.add_prompt(&prompt("Again"), PromptDelivery::Now);
         assert_eq!(next, ItemId::new(5));
     }

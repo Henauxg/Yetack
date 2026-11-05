@@ -39,6 +39,8 @@ const SIDECHAIN_KEY: &str = "isSidechain";
 const META_KEY: &str = "isMeta";
 const COMPACT_SUMMARY_KEY: &str = "isCompactSummary";
 const ORIGIN_KEY: &str = "origin";
+const COST_STATE_TYPE: &str = "cost-state";
+const TOTAL_COST_KEY: &str = "totalCostUSD";
 const TOOL_RESULT_MARK: &str = "\"tool_result\"";
 /// How a slash command's prompt starts; such a prompt does not make a title.
 const COMMAND_MARK: &str = "<command-name>";
@@ -82,6 +84,44 @@ pub(crate) fn list(claude_folder: &Path) -> Vec<PastSession> {
 
 /// The session with this id, in any project.
 pub(crate) fn find(claude_folder: &Path, id: &ClaudeSessionId) -> Option<PastSession> {
+    read_session(&find_file(claude_folder, id)?)
+}
+
+/// The total cost Claude Code restores when it resumes the session: the one its last `cost-state`
+/// line records, or 0 without one. `None` when the file cannot be found or read.
+///
+/// Claude Code writes a `cost-state` line when its process exits. A process killed before that
+/// writes none, so the next `--resume` restores the last line's cost.
+pub(crate) fn restored_cost(claude_folder: &Path, id: &ClaudeSessionId) -> Option<f64> {
+    use std::io::BufRead;
+
+    let file = read_file::open_to_read(&find_file(claude_folder, id)?).ok()?;
+    let mut reader = BufReader::new(file);
+    let mut cost = 0.0;
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) => return Some(cost),
+            Ok(_) => {}
+            Err(_) => return None,
+        }
+        let text = String::from_utf8_lossy(&line);
+        if !text.contains(COST_STATE_TYPE) {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        if value.get(TYPE_KEY).and_then(Value::as_str) == Some(COST_STATE_TYPE)
+            && let Some(total) = value.get(TOTAL_COST_KEY).and_then(Value::as_f64)
+        {
+            cost = total;
+        }
+    }
+}
+
+fn find_file(claude_folder: &Path, id: &ClaudeSessionId) -> Option<PathBuf> {
     if !is_session_id(id.as_str()) {
         return None;
     }
@@ -91,7 +131,6 @@ pub(crate) fn find(claude_folder: &Path, id: &ClaudeSessionId) -> Option<PastSes
         .flatten()
         .map(|project| project.path().join(&file_name))
         .find(|path| path.is_file())
-        .and_then(|path| read_session(&path))
 }
 
 fn read_session(path: &Path) -> Option<PastSession> {
@@ -356,6 +395,36 @@ mod tests {
             .map(|session| (session.title.as_str(), session.turns))
             .collect();
         assert_eq!(summary, [("Fix the cart total", 1)]);
+    }
+
+    #[test]
+    fn the_restored_cost_is_the_last_cost_states() {
+        let temp = tempfile::tempdir().unwrap();
+        let cost_state = |total: f64| json!({"type": "cost-state", "sessionId": FIRST, "totalCostUSD": total, "modelUsage": {}});
+        write_session(
+            temp.path(),
+            "p",
+            FIRST,
+            &[
+                prompt("Hello"),
+                cost_state(0.25),
+                prompt("Again"),
+                cost_state(0.75),
+                prompt("A turn of a process that was killed"),
+            ],
+        );
+        write_session(temp.path(), "p", SECOND, &[prompt("Hello")]);
+        let session = |id: &str| ClaudeSessionId::new(id.to_owned());
+
+        assert_eq!(restored_cost(temp.path(), &session(FIRST)), Some(0.75));
+        assert_eq!(restored_cost(temp.path(), &session(SECOND)), Some(0.0));
+        assert_eq!(
+            restored_cost(
+                temp.path(),
+                &session("00000000-0000-4000-8000-000000000009")
+            ),
+            None
+        );
     }
 
     #[test]
