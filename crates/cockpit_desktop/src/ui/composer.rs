@@ -1,23 +1,19 @@
-//! The composer: attachments, the prompt, the `/` palette, the prompt cache timer, the model,
+//! The composer: attachments, the prompt, the slash button, the prompt cache timer, the model,
 //! effort and permission mode menus, and Send and Stop.
 
 use base64::engine::general_purpose::STANDARD as BASE64;
-use cockpit_protocol::{
-    AgentId, AgentStatus, CommandKind, Effort, Image, ImageMediaType, PermissionMode, SlashCommand,
-};
+use cockpit_protocol::{AgentId, AgentStatus, Effort, Image, ImageMediaType, PermissionMode};
 use dioxus::html::FileData;
 use dioxus::prelude::*;
 
-use crate::bridge::{self, COMPOSER_ID};
+use crate::bridge::{self, ATTACH_INPUT_ID, COMPOSER_ID};
 use crate::connection::{Clock, Cockpit};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
-use crate::state::actions::{Direction, ImageTooLarge};
+use crate::state::actions::ImageTooLarge;
 use crate::state::{PaletteOrigin, Popover, actions};
 use crate::ui::header::cache_left;
 use crate::ui::icons::{Icon, IconKind};
-
-/// The hidden file input the attach button opens.
-const ATTACH_INPUT_ID: &str = "attach-input";
+use crate::ui::palette::Palette;
 
 pub fn mode_icon(mode: PermissionMode) -> IconKind {
     match mode {
@@ -96,16 +92,6 @@ pub fn Composer() -> Element {
     let status = summary.status;
     let draft = drafts.draft(agent).cloned().unwrap_or_default();
     let popover = state.ui.popover;
-    let commands = entry
-        .details
-        .loaded()
-        .map(|details| details.commands.clone())
-        .unwrap_or_default();
-    let palette = drafts.palette.clone();
-    let filtered: Vec<SlashCommand> = actions::filtered_commands(&commands, &palette.query)
-        .into_iter()
-        .cloned()
-        .collect();
     let working = status == AgentStatus::Working;
     let exited = status == AgentStatus::Exited;
     let buttons = EndButtons::new(status);
@@ -137,7 +123,7 @@ pub fn Composer() -> Element {
         div { class: "composer-wrap",
             div { class: "composer-column",
                 if let Some(Popover::Palette(origin)) = popover {
-                    CommandPalette { agent, origin, commands: filtered, query: palette.query, highlighted: palette.highlighted }
+                    Palette { agent, origin }
                 }
                 if popover == Some(Popover::Model) {
                     ModelMenu { agent, model, effort }
@@ -190,8 +176,8 @@ pub fn Composer() -> Element {
                         }
                         button {
                             class: if popover == Some(Popover::Palette(PaletteOrigin::Button)) { "icon-button small active" } else { "icon-button small" },
-                            aria_label: "Commands and skills",
-                            title: "Commands and skills",
+                            aria_label: "Actions, commands and skills",
+                            title: "Actions, commands and skills",
                             onclick: move |_| cockpit.change_with_drafts(|state, drafts| actions::toggle_palette(state, drafts, agent)),
                             Icon { kind: IconKind::Slash, size: 16 }
                         }
@@ -312,87 +298,6 @@ async fn attach(cockpit: Cockpit, agent: AgentId, files: Vec<FileData>) {
     }
 }
 
-/// Puts the command at `index`, or the highlighted one, in the composer, and gives the composer
-/// the focus for its arguments.
-fn pick_command(cockpit: Cockpit, agent: AgentId, index: Option<usize>) {
-    cockpit.change_with_drafts(|state, drafts| {
-        actions::palette_pick(state, drafts, agent, index);
-        Vec::new()
-    });
-    bridge::focus_field(COMPOSER_ID);
-}
-
-#[component]
-fn CommandPalette(
-    agent: AgentId,
-    origin: PaletteOrigin,
-    commands: Vec<SlashCommand>,
-    query: String,
-    highlighted: usize,
-) -> Element {
-    let cockpit: Cockpit = use_context();
-    rsx! {
-        div { class: "popover palette", role: "dialog", aria_label: "Commands",
-            div { class: "palette-head",
-                span { class: "mono muted", "/" }
-                input {
-                    class: "palette-input",
-                    r#type: "text",
-                    aria_label: "Filter commands",
-                    placeholder: "Type to filter commands and skills",
-                    value: "{query}",
-                    // Opened by typing, the palette leaves the focus in the composer, whose text
-                    // filters it.
-                    onmounted: move |event| async move {
-                        if origin == PaletteOrigin::Button {
-                            // The palette may have closed already: nothing to focus then.
-                            let _ = event.data().set_focus(true).await;
-                        }
-                    },
-                    oninput: move |event: FormEvent| {
-                        cockpit.with_drafts(|_, drafts| {
-                            drafts.palette.query = event.value();
-                            drafts.palette.highlighted = 0;
-                        });
-                    },
-                    onkeydown: move |event: KeyboardEvent| match event.key() {
-                        Key::ArrowDown => cockpit.with_drafts(|state, drafts| actions::palette_move(state, drafts, agent, Direction::Down)),
-                        Key::ArrowUp => cockpit.with_drafts(|state, drafts| actions::palette_move(state, drafts, agent, Direction::Up)),
-                        Key::Enter => pick_command(cockpit, agent, None),
-                        _ => {}
-                    },
-                }
-            }
-            div { class: "palette-list scroll",
-                if commands.is_empty() {
-                    span { class: "palette-empty", "No command or skill matches." }
-                }
-                // Keyed by position: Claude Code may list two commands under one name.
-                for (index, command) in commands.into_iter().enumerate() {
-                    button {
-                        key: "{index}",
-                        class: if index == highlighted { "palette-item highlighted" } else { "palette-item" },
-                        onclick: move |_| pick_command(cockpit, agent, Some(index)),
-                        span { class: "palette-item-head",
-                            span { class: "mono palette-name", "/{command.name}" }
-                            span { class: "palette-kind",
-                                match command.kind {
-                                    CommandKind::Skill => "skill",
-                                    CommandKind::Command => "command",
-                                }
-                            }
-                        }
-                        if !command.description.is_empty() {
-                            span { class: "palette-description", "{command.description}" }
-                        }
-                    }
-                }
-            }
-            span { class: "palette-foot", "Up and Down to move, Enter to insert, Esc to close" }
-        }
-    }
-}
-
 #[component]
 fn ModelMenu(agent: AgentId, model: Option<String>, effort: Option<Effort>) -> Element {
     use strum::VariantArray;
@@ -414,7 +319,10 @@ fn ModelMenu(agent: AgentId, model: Option<String>, effort: Option<Effort>) -> E
                             class: if chosen { "menu-item chosen" } else { "menu-item" },
                             aria_pressed: chosen,
                             onclick: move |_| {
-                                cockpit.change(|state| actions::set_model(state, agent, choice.alias.to_owned()));
+                                cockpit.change(|state| {
+                                    state.ui.popover = None;
+                                    actions::set_model(agent, choice.alias.to_owned())
+                                });
                             },
                             "{choice.label}"
                             if chosen {
@@ -456,7 +364,10 @@ fn ModeMenu(agent: AgentId, mode: PermissionMode) -> Element {
                     key: "{format::mode_label(choice)}",
                     class: if choice == mode { "menu-item two-lines chosen" } else { "menu-item two-lines" },
                     aria_pressed: choice == mode,
-                    onclick: move |_| cockpit.change(|state| actions::set_mode(state, agent, choice)),
+                    onclick: move |_| cockpit.change(|state| {
+                        state.ui.popover = None;
+                        actions::set_mode(agent, choice)
+                    }),
                     span { "{format::mode_label(choice)}" }
                     span { class: "muted small", "{format::mode_description(choice)}" }
                 }

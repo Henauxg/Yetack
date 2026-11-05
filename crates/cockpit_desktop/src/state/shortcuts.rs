@@ -95,7 +95,11 @@ fn composer_key(
         match press.key.as_str() {
             KEY_UP => actions::palette_move(state, drafts, agent, Direction::Up),
             KEY_DOWN => actions::palette_move(state, drafts, agent, Direction::Down),
-            KEY_ENTER | KEY_TAB => actions::palette_pick(state, drafts, agent, None),
+            // Opened by typing, the palette lists commands alone. A pick puts one in the
+            // composer, which already has the focus the pick asks the window for.
+            KEY_ENTER | KEY_TAB => {
+                return actions::palette_pick(state, drafts, agent, None).requests;
+            }
             _ => {}
         }
         return Vec::new();

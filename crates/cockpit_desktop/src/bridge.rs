@@ -15,6 +15,15 @@ pub const COMPOSER_ID: &str = "composer";
 /// The new agent dialog's folder field.
 pub const FOLDER_FIELD_ID: &str = "new-agent-folder";
 
+/// The hidden file input the composer's attach button opens.
+pub const ATTACH_INPUT_ID: &str = "attach-input";
+
+/// The filter field of the palette the slash button opens.
+pub const PALETTE_FILTER_ID: &str = "palette-filter";
+
+/// The palette's highlighted entry, kept in view as the keys move it.
+pub const HIGHLIGHTED_ENTRY_ID: &str = "palette-highlighted";
+
 /// What a note calls an image pasted into the window.
 const PASTED_IMAGE: &str = "The pasted image";
 
@@ -132,6 +141,18 @@ for (let frame = 0; frame < 30; frame++) {
 const FOCUS_SCRIPT: &str = r#"
 const field_id = await dioxus.recv();
 document.getElementById(field_id)?.focus();
+"#;
+
+/// Clicks the element whose id it receives.
+const CLICK_SCRIPT: &str = r#"
+const element_id = await dioxus.recv();
+document.getElementById(element_id)?.click();
+"#;
+
+/// Scrolls the element whose id it receives into view, as little as needed.
+const REVEAL_SCRIPT: &str = r#"
+const element_id = await dioxus.recv();
+document.getElementById(element_id)?.scrollIntoView({ block: "nearest" });
 "#;
 
 #[derive(Debug, Serialize)]
@@ -273,6 +294,21 @@ pub fn focus_field(field_id: &'static str) {
     let script = document::eval(FOCUS_SCRIPT);
     if let Err(error) = script.send(field_id) {
         tracing::warn!("cannot focus the field {field_id}: {error}");
+    }
+}
+
+/// For a file input, the click opens the file chooser.
+pub fn click(element_id: &'static str) {
+    let script = document::eval(CLICK_SCRIPT);
+    if let Err(error) = script.send(element_id) {
+        tracing::warn!("cannot click {element_id}: {error}");
+    }
+}
+
+pub fn reveal(element_id: &'static str) {
+    let script = document::eval(REVEAL_SCRIPT);
+    if let Err(error) = script.send(element_id) {
+        tracing::warn!("cannot scroll {element_id} into view: {error}");
     }
 }
 

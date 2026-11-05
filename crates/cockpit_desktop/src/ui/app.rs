@@ -4,7 +4,7 @@ use dioxus::prelude::*;
 
 use crate::bridge::use_bridge;
 use crate::connection::{Cockpit, Startup, use_clock, use_cockpit};
-use crate::state::ConnectionState;
+use crate::state::{ConnectionState, NoteKind};
 use crate::ui::blocks::FloatingBlocks;
 use crate::ui::composer::Composer;
 use crate::ui::dialogs::Dialogs;
@@ -65,7 +65,7 @@ fn ErrorNotes() -> Element {
     rsx! {
         div { class: "error-notes", aria_live: "polite",
             for note in notes {
-                div { key: "{note.id}", class: "error-note",
+                div { key: "{note.id}", class: if note.kind == NoteKind::Info { "error-note info" } else { "error-note" },
                     span { "{note.text}" }
                     button {
                         class: "icon-button tiny",

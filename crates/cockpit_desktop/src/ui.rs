@@ -11,6 +11,7 @@ mod header;
 mod icons;
 mod markdown;
 mod mcp;
+mod palette;
 mod sidebar;
 mod transcript;
 
