@@ -83,16 +83,21 @@ id, title, folder, status, activity line, pending count, model, effort, permissi
 
 ### Transcript
 
-An agent's conversation is a list of `TranscriptItem`s, each with an `ItemId`:
+An agent's conversation is a list of `TranscriptItem`s, each with an `ItemId` and an optional `parent` (the subagent it nests under).
+The daemon numbers items in transcript order, so the app can merge a history page with live appends by id.
+The kinds of item:
 
 - `UserMessage` (text, attached images), with `queued` while the agent works;
 - `AssistantText` (markdown) and `Thinking` (folded in the app);
 - `ToolCall`: tool name, summary, input, status (running, done, failed), output, and for `Edit` and `Write` the file path with the old and new text;
-- `Subagent`: a tool call whose own calls nest under it (`parent_tool_use_id`);
-- `Approval`: tool, input, reason, and the answer once given;
-- `Question`: the `AskUserQuestion` questions and options, and the answer;
-- `Plan`: the `ExitPlanMode` plan text, and the decision;
-- `TurnEnd`: duration, usage and cost of the turn, or the error that ended it.
+- `Subagent`: a tool call whose own items carry it as `parent` (from `parent_tool_use_id`);
+- `Approval`: tool, input (with the diff for an edit), reason, and its answer state;
+- `Question`: the `AskUserQuestion` questions and options, and its answer state;
+- `Plan`: the `ExitPlanMode` plan text, and its answer state (a decision, with an optional message when Claude should keep planning);
+- `TurnEnd`: duration, usage and cost of the turn, or the error that ended it;
+- `Notice`: a line such as "Conversation compacted".
+
+An answer state is `Waiting`, `Answered`, or `Cancelled` (Claude Code withdraws a pending request when the turn is interrupted).
 
 `AgentDetails` holds what the side blocks show: the task list (from `TodoWrite`), background tasks (`task_started`, `task_notification`), changed files, and the last context usage.
 
@@ -111,9 +116,10 @@ A reader refuses a line longer than a fixed maximum (16 MiB) instead of bufferin
 ### Session
 
 1. The client sends `Hello { protocol_version, last_seq }`.
-2. The daemon answers `Welcome { protocol_version, snapshot }`, or `Refused { reason }` when the versions differ.
-3. When `last_seq` is given and the logs still hold every event after it, the daemon sends those events, then live events.
-   Otherwise the snapshot alone is the starting point, and the client replaces its state with it.
+2. The daemon answers `Welcome { protocol_version, catchup }`, or `Refused { reason }` when the versions differ.
+3. `catchup` is `Replay` when `last_seq` was given and the logs still hold every event after it: the daemon then sends those events, then live events.
+   Otherwise it is `Snapshot(snapshot)`: the client replaces its state with it, and live events follow.
+   A welcome never carries both, so no event is applied twice.
 4. The client sends `Request { id, request }`; the daemon answers `Response { id, result }`.
    Responses and events share the connection, in any order.
 
@@ -122,7 +128,9 @@ Transcripts are not in the snapshot: the app asks for an agent's transcript with
 
 ### Requests
 
-`agent.start`, `agent.prompt`, `agent.answer` (approval, question or plan), `agent.interrupt`, `agent.stop`, `agent.resume`, `agent.history`, `agent.set_model`, `agent.set_effort`, `agent.set_mode`, `agent.context_usage`, `agent.stop_task`, `agent.mcp_status`, `agent.mcp_reconnect`, `agent.mcp_toggle`, `agent.commands` (slash commands and skills), `agent.read_file` (the file view), `mcp.remove`, `settings.set`, `sessions.list`, `sessions.resume`.
+`agent.start`, `agent.prompt`, `agent.cancel_queued`, `agent.answer` (approval, question or plan), `agent.interrupt`, `agent.stop`, `agent.resume`, `agent.remove`, `agent.history`, `agent.details`, `agent.set_model`, `agent.set_effort`, `agent.set_mode`, `agent.context_usage`, `agent.stop_task`, `agent.mcp_status`, `agent.mcp_reconnect`, `agent.mcp_toggle`, `agent.commands` (slash commands and skills), `agent.read_file` (the file view), `mcp.remove` (with the agent, whose folder decides the project and local scopes), `settings.set`, `sessions.list`, `sessions.resume`.
+
+A history page is limited by bytes as well as by count: images travel inline, and a line over the framing maximum is refused.
 
 The method names are an enum with fixed strings, pinned by a test ([standards/rust/api_design.md](standards/rust/api_design.md#declare-a-reusable-string-once)).
 
