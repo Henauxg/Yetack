@@ -15,6 +15,7 @@ use crate::state::actions::{Direction, ImageTooLarge};
 use crate::state::{Popover, actions};
 use crate::ui::header::cache_left;
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::presence::Presence;
 
 /// The hidden file input the attach button opens.
 const ATTACH_INPUT_ID: &str = "attach-input";
@@ -139,10 +140,10 @@ pub fn Composer() -> Element {
                 if popover == Some(Popover::Palette) {
                     CommandPalette { agent, commands: filtered, query: palette.query, highlighted: palette.highlighted }
                 }
-                if popover == Some(Popover::Model) {
+                Presence { open: popover == Some(Popover::Model),
                     ModelMenu { agent, model, effort }
                 }
-                if popover == Some(Popover::Mode) {
+                Presence { open: popover == Some(Popover::Mode),
                     ModeMenu { agent, mode }
                 }
                 div { class: "composer",

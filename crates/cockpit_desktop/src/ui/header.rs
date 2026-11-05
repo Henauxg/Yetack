@@ -14,6 +14,7 @@ use crate::connection::{Clock, Cockpit};
 use crate::format;
 use crate::state::{AgentEntry, Popover, actions, file_edits};
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::presence::Presence;
 
 /// The shades of the context categories, darker for smaller parts.
 const CATEGORY_SHADES: [&str; 5] = ["#ececec", "#a6a6a6", "#6b6b6b", "#4a4a4a", "#333333"];
@@ -81,9 +82,7 @@ pub fn Header() -> Element {
                     }
                     span { class: "chip-compact", dangerous_inner_html: rings(plan, context) }
                 }
-                if usage_open {
-                    UsageCard {}
-                }
+                Presence { open: usage_open, UsageCard {} }
             }
             div { class: "chip-anchor",
                 button {
@@ -102,7 +101,7 @@ pub fn Header() -> Element {
                         span { class: "chip-compact chip-count", aria_hidden: true, "{file_count}" }
                     }
                 }
-                if changes_open {
+                Presence { open: changes_open,
                     ChangesList { agent, files: files.clone(), folder: summary.folder.clone() }
                 }
             }

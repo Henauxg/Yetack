@@ -2904,3 +2904,404 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* Motion: hover, press and focus, and how overlays, menus, blocks and notes come and go. Every
+   duration and easing is a token below. A leaving element is one ui/presence.rs keeps on screen
+   for its exit animation: it is inert, so input already goes past it. */
+
+:root {
+  --motion-hover: 90ms;
+  --motion-in: 140ms;
+  --motion-out: 100ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.5, 0, 0.75, 0);
+  --press-scale: 0.96;
+  --focus-ring: rgba(45, 212, 191, 0.7);
+  --link-hover: #c5ecf2;
+  --raised-hover: #242424;
+  --pressed: #262626;
+}
+
+button,
+label.icon-button,
+.chip,
+.text-field,
+.md-link,
+.file-link,
+.path-link {
+  transition-property: background-color, border-color, color, box-shadow, transform, opacity,
+    text-decoration-color;
+  transition-duration: var(--motion-hover);
+  transition-timing-function: var(--ease);
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* Rows sit in scrolling lists, which would cut a ring drawn outside them. */
+.agent-row:focus-visible,
+.switcher-row:focus-visible,
+.file-row:focus-visible,
+.menu-item:focus-visible,
+.palette-item:focus-visible,
+.mcp-row:focus-visible,
+.block-head:focus-visible,
+.folder-option:focus-visible,
+.session-row:focus-visible {
+  outline-offset: -2px;
+}
+
+.text-field:focus,
+.text-field:focus-visible {
+  outline: none;
+  border-color: rgba(45, 212, 191, 0.55);
+  box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.12);
+}
+
+/* Hover. */
+
+.button:not(:disabled):hover {
+  border-color: #3a3a3a;
+  background: var(--raised-hover);
+}
+
+.button.primary:not(:disabled):hover {
+  background: var(--text-bright);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
+}
+
+.button.warning-outline:not(:disabled):hover {
+  border-color: #6b4f1a;
+  background: rgba(245, 165, 36, 0.1);
+}
+
+.button.danger:not(:disabled):hover {
+  border-color: #6a302c;
+  background: rgba(244, 112, 103, 0.2);
+}
+
+.icon-button.raised:hover {
+  border-color: #3a3a3a;
+  background: var(--raised-hover);
+}
+
+.icon-button.framed:hover {
+  border-color: #4a4a4a;
+  color: var(--text);
+}
+
+.icon-button.active:hover {
+  background: #2c2c2c;
+}
+
+.chip:hover {
+  border-color: #3a3a3a;
+  background: var(--hover);
+}
+
+.menu-button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.menu-button.raised:hover {
+  background: #262626;
+}
+
+.send-button:not(:disabled):hover {
+  background: var(--text-bright);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
+}
+
+.effort:not(.chosen):hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.badge:hover {
+  border-color: #3a3a3a;
+  background: var(--hover);
+  color: var(--text);
+}
+
+.badge.pressed:hover {
+  background: #2c2c2c;
+}
+
+.block-head {
+  border-radius: 11px;
+}
+
+.block-head[aria-expanded="true"] {
+  border-radius: 11px 11px 0 0;
+}
+
+.block-head:hover {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.block-head:hover .chevron,
+.fold-button:hover .chevron {
+  color: var(--text);
+}
+
+.fold-button:hover,
+.fold-button:hover .muted {
+  color: var(--text-bright);
+}
+
+.copy-button:hover {
+  border-color: #3a3a3a;
+  background: var(--raised-hover);
+  color: var(--text);
+}
+
+.option:hover {
+  border-color: #3a3a3a;
+  background: var(--hover);
+}
+
+.option.picked:hover {
+  border-color: var(--text);
+}
+
+.filter:not(.chosen):hover {
+  border-color: #4a4a4a;
+  color: var(--text);
+}
+
+.back-button:hover,
+.fold-lines:hover,
+.more-lines:hover {
+  color: var(--text-bright);
+}
+
+.dialog-tab:not(.selected):hover {
+  border-bottom-color: #3a3a3a;
+  color: var(--text-soft);
+}
+
+.agent-row.selected:hover {
+  background: #202020;
+}
+
+/* Links: a brighter color, and the underline comes in. */
+
+.md-link,
+.file-link,
+.path-link,
+.link-button {
+  cursor: pointer;
+}
+
+.md-link:hover,
+.md-link:focus-visible,
+.file-link:hover,
+.file-link:focus-visible {
+  color: var(--link-hover);
+  text-decoration-color: currentColor;
+}
+
+.md-link {
+  text-decoration-color: #3d5a60;
+}
+
+.path-link:hover,
+.path-link:focus-visible {
+  color: var(--text-bright);
+  text-decoration-color: currentColor;
+}
+
+.link-button {
+  text-decoration-color: #4a4a4a;
+}
+
+.link-button:hover,
+.link-button:focus-visible {
+  color: var(--text-bright);
+  text-decoration-color: currentColor;
+}
+
+.link-button.danger:hover,
+.link-button.danger:focus-visible {
+  color: #ff8f86;
+}
+
+/* Press: small controls sink, rows darken. */
+
+.button:not(:disabled):active,
+.icon-button:active,
+.chip:active,
+.menu-button:active,
+.send-button:not(:disabled):active,
+.badge:active,
+.round-button:active,
+.effort:active,
+.filter:active,
+.copy-button:active,
+.back-button:active,
+.option:active {
+  transform: scale(var(--press-scale));
+}
+
+.agent-row:active,
+.switcher-row:active,
+.file-row:active,
+.menu-item:active,
+.palette-item:active,
+.mcp-row:active,
+.folder-option:active,
+.session-row:active {
+  background: var(--pressed);
+}
+
+.block-head:active {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.chevron {
+  transition: transform var(--motion-in) var(--ease-out), color var(--motion-hover) var(--ease);
+}
+
+/* Appear. */
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+}
+
+@keyframes dialog-out {
+  to {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+
+/* `--enter-y` is the side the popover comes from: above its anchor or below it. */
+@keyframes popover-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--enter-y)) scale(0.97);
+  }
+}
+
+@keyframes popover-out {
+  to {
+    opacity: 0;
+    transform: translateY(var(--enter-y)) scale(0.98);
+  }
+}
+
+@keyframes slide-in-left {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@keyframes unfold {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+.overlay {
+  animation: fade-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.dialog {
+  animation: dialog-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.popover {
+  --enter-y: -4px;
+  transform-origin: top right;
+  animation: popover-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.menu,
+.palette {
+  --enter-y: 4px;
+  transform-origin: bottom left;
+}
+
+.mode-menu {
+  transform-origin: bottom right;
+}
+
+.block-card,
+.badge {
+  animation: slide-in-left var(--motion-in) var(--ease-out) backwards;
+}
+
+.error-note {
+  animation: rise-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.block-body,
+.subagent-body,
+.thinking-text,
+.mcp-detail-view {
+  animation: unfold var(--motion-in) var(--ease-out) backwards;
+}
+
+.tooltip-anchor:hover .tooltip,
+.tooltip-anchor:focus-within .tooltip {
+  animation: fade-in var(--motion-in) var(--ease-out) backwards;
+}
+
+/* Leave. */
+
+.presence {
+  display: contents;
+}
+
+.leaving {
+  pointer-events: none;
+}
+
+.overlay.leaving {
+  animation: fade-out var(--motion-out) var(--ease-in) forwards;
+}
+
+.overlay.leaving > .dialog {
+  animation: dialog-out var(--motion-out) var(--ease-in) forwards;
+}
+
+.presence.leaving > .popover {
+  animation: popover-out var(--motion-out) var(--ease-in) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-hover: 0ms;
+    --motion-in: 0ms;
+    --motion-out: 0ms;
+    --press-scale: 1;
+  }
+}

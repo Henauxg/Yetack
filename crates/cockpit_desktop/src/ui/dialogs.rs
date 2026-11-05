@@ -12,6 +12,7 @@ use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::state::actions::Direction;
 use crate::state::{Dialog, Loadable, NewAgentForm, NewAgentTab, actions};
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::presence::{Shown, use_presence};
 
 /// Recent folders the new agent dialog offers.
 const RECENT_FOLDERS: usize = 6;
@@ -23,20 +24,31 @@ const DEFAULT_CHOICE: &str = "";
 pub fn Dialogs() -> Element {
     let cockpit: Cockpit = use_context();
     let dialog = cockpit.state.read().ui.dialog.clone();
-    let Some(dialog) = dialog else {
+    let Some(Shown {
+        value: dialog,
+        leaving,
+        opening,
+    }) = use_presence(dialog)
+    else {
         return rsx! {};
     };
     rsx! {
-        div {
-            class: "overlay",
-            onclick: move |_| cockpit.update(|state| state.ui.dialog = None),
-            match dialog {
-                Dialog::Switcher(switcher) => rsx! {
-                    SwitcherDialog { query: switcher.query, highlighted: switcher.highlighted }
-                },
-                Dialog::NewAgent(form) => rsx! {
-                    NewAgentDialog { form }
-                },
+        // Keyed by opening: a dialog reopened while the last one leaves mounts afresh, its fields
+        // empty.
+        for opening in [opening] {
+            div {
+                key: "{opening}",
+                class: if leaving { "overlay leaving" } else { "overlay" },
+                inert: leaving.then_some(true),
+                onclick: move |_| cockpit.update(|state| state.ui.dialog = None),
+                match dialog.clone() {
+                    Dialog::Switcher(switcher) => rsx! {
+                        SwitcherDialog { query: switcher.query, highlighted: switcher.highlighted }
+                    },
+                    Dialog::NewAgent(form) => rsx! {
+                        NewAgentDialog { form }
+                    },
+                }
             }
         }
     }
