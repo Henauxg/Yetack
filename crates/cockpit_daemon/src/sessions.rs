@@ -457,6 +457,7 @@ pub(crate) fn shorten(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fs::OpenOptions;
     use std::time::Duration;
 
     use cockpit_protocol::ItemBody;
@@ -571,6 +572,8 @@ mod tests {
 
     #[test]
     fn the_past_of_a_session_file_comes_out_in_order_without_what_it_does_not_show() {
+        use std::io::Write;
+
         let temp = tempfile::tempdir().unwrap();
         write_session(
             temp.path(),
@@ -605,11 +608,8 @@ mod tests {
             .join("p")
             .join(format!("{FIRST}.jsonl"));
         let whole = std::fs::metadata(&path).unwrap().len();
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&path)
-            .unwrap();
-        std::io::Write::write_all(&mut file, br#"{"type":"user","message":"#).unwrap();
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(br#"{"type":"user","message":"#).unwrap();
 
         let found = find(temp.path(), &session(FIRST)).unwrap();
 
