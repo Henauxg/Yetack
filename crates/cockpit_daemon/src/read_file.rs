@@ -85,6 +85,9 @@ impl Access {
         home: Option<&Path>,
     ) -> Result<Self, ReadFileError> {
         let folder = folder.canonicalize().map_err(ReadFileError::NotFound)?;
+        // Compared with checkouts whose symlinks are resolved.
+        let home: Option<PathBuf> =
+            home.map(|home| home.canonicalize().unwrap_or_else(|_| home.to_owned()));
         let mut checkouts: Vec<PathBuf> = Vec::new();
         let mut files: Vec<PathBuf> = Vec::new();
         // Files of one folder share their checkout: each folder is looked up once.
@@ -95,7 +98,7 @@ impl Access {
             };
             let checkout = checkout_of
                 .entry(parent)
-                .or_insert_with_key(|parent| checkout_holding(parent, home))
+                .or_insert_with_key(|parent| checkout_holding(parent, home.as_deref()))
                 .clone();
             match checkout {
                 Some(checkout) => {
@@ -659,6 +662,31 @@ mod tests {
         );
         assert_outside(read(&access, &layout.loose.join("todo.txt")));
         assert_outside(read(&access, &layout.feature.join("src/app/beside.ts")));
+    }
+
+    /// Some systems keep the home folders behind a symlink, such as `/home` to `/var/home`.
+    #[test]
+    fn a_home_folder_reached_through_a_symlink_is_still_the_home_folder() {
+        let layout = Layout::new();
+        let home = layout.temp.path().canonicalize().unwrap();
+        std::fs::create_dir(home.join(GIT_ENTRY)).unwrap();
+        write(&home.join("dotfile.txt"), "dotfile\n");
+        let links = tempfile::tempdir().unwrap();
+        let linked_home = links.path().join("home");
+        symlink(&home, &linked_home).unwrap();
+
+        let access = Access::new(
+            &layout.agent,
+            &[home.join("dotfile.txt")],
+            Some(&linked_home),
+        )
+        .unwrap();
+
+        assert_eq!(
+            read(&access, &home.join("dotfile.txt")).unwrap(),
+            "dotfile\n"
+        );
+        assert_outside(read(&access, &layout.loose.join("todo.txt")));
     }
 
     #[test]
