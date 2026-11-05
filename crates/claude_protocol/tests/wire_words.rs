@@ -6,9 +6,9 @@
 )]
 
 use claude_protocol::{
-    HookOutcome, McpScope, McpServerState, McpTransport, OpenWord, OriginKind, PermissionBehavior,
-    PermissionDestination, PermissionMode, RateLimitStatus, RateLimitType, ResultSubtype,
-    SessionState, TaskStatus, TerminalReason, TodoStatus, ToolName,
+    HookOutcome, InterruptNotice, McpScope, McpServerState, McpTransport, OpenWord, OriginKind,
+    PermissionBehavior, PermissionDestination, PermissionMode, RateLimitStatus, RateLimitType,
+    ResultSubtype, SessionState, TaskStatus, TerminalReason, TodoStatus, ToolName,
 };
 use strum::VariantArray;
 
@@ -111,6 +111,17 @@ fn task_and_session_words_are_pinned() {
 #[test]
 fn origin_kinds_are_pinned() {
     assert_eq!(words::<OriginKind>(), ["human", "task-notification"]);
+}
+
+#[test]
+fn interrupt_notices_are_pinned() {
+    assert_eq!(
+        words::<InterruptNotice>(),
+        [
+            "[Request interrupted by user]",
+            "[Request interrupted by user for tool use]"
+        ]
+    );
 }
 
 #[test]

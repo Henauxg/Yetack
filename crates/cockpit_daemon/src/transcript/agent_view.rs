@@ -6,8 +6,8 @@ use std::time::Duration;
 use claude_protocol::{
     AssistantMessage, CanUseTool, ContentBlock, ContextUsage as ClaudeContextUsage,
     ControlRequestId, ImageBlock, ImageSource, IncomingControlRequest, IncomingRequest,
-    InitializeResponse, InputLine, McpStatus, OpenWord, OutputLine, RateLimitInfo, ResultMessage,
-    SessionState, SystemEvent, SystemInit, TaskNotification, TaskStarted, TaskUsage,
+    InitializeResponse, InputLine, InterruptNotice, McpStatus, OpenWord, OutputLine, RateLimitInfo,
+    ResultMessage, SessionState, SystemEvent, SystemInit, TaskNotification, TaskStarted, TaskUsage,
     TerminalReason, ToolInput, ToolName, ToolResultBlock, ToolUseBlock, ToolUseId, Usage,
     UserMessage as ClaudeUserMessage,
 };
@@ -66,7 +66,6 @@ const SUBTYPE_KEY: &str = "subtype";
 /// or an API error.
 const SYNTHETIC_MODEL: &str = "<synthetic>";
 const COMPACTED_NOTICE: &str = "Conversation compacted";
-const INTERRUPTED: &str = "Interrupted";
 const QUEUED_CANCELLED_NOTICE: &str = "Queued message cancelled";
 /// Prompts sent and not yet echoed back. Older ones are forgotten: Claude Code does not echo
 /// every prompt, such as some slash commands.
@@ -627,6 +626,10 @@ impl AgentView {
             }
             return;
         }
+        // The turn end says the user stopped the turn.
+        if !is_replay && text.trim().parse::<InterruptNotice>().is_ok() {
+            return;
+        }
         if is_replay {
             if self.take_echo(&text) {
                 return;
@@ -636,7 +639,7 @@ impl AgentView {
             // A subagent's prompt, which the agent wrote.
             self.push_item(parent, user_message(text, images));
         } else {
-            // Claude Code's own lines, such as "[Request interrupted by user]".
+            // Claude Code's own lines.
             self.push_item(None, ItemBody::Notice { text });
         }
     }
@@ -687,6 +690,8 @@ impl AgentView {
         let turn_cost = (total - self.process_cost).max(0.0);
         self.process_cost = total;
         self.summary.cost = CostUsd::new(self.cost_before_process + total);
+        // The result says it rather than the daemon's own `interrupt`, which may arrive after the
+        // turn ended.
         let interrupted = matches!(
             result.terminal_reason,
             Some(OpenWord::Known(
@@ -712,6 +717,7 @@ impl AgentView {
                 cost: CostUsd::new(turn_cost),
                 usage: token_usage(result.usage),
                 error: turn_error(result, interrupted),
+                stopped: interrupted,
             }),
         );
     }
@@ -1036,12 +1042,9 @@ fn token_usage(usage: Option<Usage>) -> TokenUsage {
     }
 }
 
-/// Why the turn failed or stopped early; `None` when it succeeded.
+/// Why the turn failed; `None` when it succeeded or the user stopped it.
 fn turn_error(result: &ResultMessage, interrupted: bool) -> Option<String> {
-    if interrupted {
-        return Some(INTERRUPTED.to_owned());
-    }
-    if !result.is_error {
+    if interrupted || !result.is_error {
         return None;
     }
     if !result.errors.is_empty() {
@@ -1209,6 +1212,7 @@ mod tests {
                         cache_read: 40,
                     },
                     error: None,
+                    stopped: false,
                 }),
             ]
         );
@@ -1528,12 +1532,17 @@ mod tests {
             &mut view,
             json!({"type": "control_cancel_request", "request_id": "req-1"}),
         );
-        apply(
-            &mut view,
-            json!({"type": "user", "message": {"role": "user", "content": [
-                {"type": "text", "text": "[Request interrupted by user]"}
-            ]}}),
-        );
+        for notice in [
+            "[Request interrupted by user for tool use]",
+            "[Request interrupted by user]",
+        ] {
+            apply(
+                &mut view,
+                json!({"type": "user", "message": {"role": "user", "content": [
+                    {"type": "text", "text": notice}
+                ]}}),
+            );
+        }
         apply(&mut view, interrupted_result());
         view.take_events();
 
@@ -1553,16 +1562,52 @@ mod tests {
                 ..
             })
         ));
-        assert!(view.items().iter().any(|item| item.body
-            == ItemBody::Notice {
-                text: "[Request interrupted by user]".to_owned()
-            }));
+        assert!(
+            !view
+                .items()
+                .iter()
+                .any(|item| matches!(item.body, ItemBody::Notice { .. })),
+            "the turn end says the user stopped the turn"
+        );
+        let ends: Vec<&TurnEnd> = view
+            .items()
+            .iter()
+            .filter_map(|item| match &item.body {
+                ItemBody::TurnEnd(end) => Some(end),
+                _ => None,
+            })
+            .collect();
+        let [end] = ends.as_slice() else {
+            panic!("expected one turn end, got {ends:?}");
+        };
+        assert!(end.stopped);
+        assert_eq!(end.error, None);
+        assert_eq!(view.summary().status, AgentStatus::Idle);
+        assert_eq!(view.summary().pending_count, 0);
+    }
+
+    #[test]
+    fn a_failed_turn_carries_its_error() {
+        let mut view = view();
+        view.add_prompt(&prompt("Refactor everything"), PromptDelivery::Now);
+
+        apply(
+            &mut view,
+            json!({
+                "type": "result", "subtype": "error_max_turns", "is_error": true,
+                "terminal_reason": "max_turns", "num_turns": 30,
+                "errors": ["Reached the maximum number of turns"]
+            }),
+        );
+
         let Some(ItemBody::TurnEnd(end)) = view.items().last().map(|item| &item.body) else {
             panic!("expected a turn end");
         };
-        assert_eq!(end.error.as_deref(), Some(INTERRUPTED));
-        assert_eq!(view.summary().status, AgentStatus::Idle);
-        assert_eq!(view.summary().pending_count, 0);
+        assert!(!end.stopped);
+        assert_eq!(
+            end.error.as_deref(),
+            Some("Reached the maximum number of turns")
+        );
     }
 
     #[test]

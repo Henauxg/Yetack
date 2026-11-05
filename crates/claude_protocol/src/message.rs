@@ -72,6 +72,17 @@ pub enum OriginKind {
     TaskNotification,
 }
 
+/// The text of the `user` line Claude Code writes when the user interrupts a turn. The line has
+/// no origin, and the `result` line that follows ends the turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display, EnumString, IntoStaticStr, VariantArray)]
+pub enum InterruptNotice {
+    #[strum(serialize = "[Request interrupted by user]")]
+    Interrupted,
+    /// The interrupt stopped a tool call.
+    #[strum(serialize = "[Request interrupted by user for tool use]")]
+    InterruptedForToolUse,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct UserBody {
     /// Text content is read as one text block.

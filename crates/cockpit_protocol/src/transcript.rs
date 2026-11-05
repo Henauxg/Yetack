@@ -207,6 +207,10 @@ pub struct TurnEnd {
     /// The cost of this turn alone.
     pub cost: CostUsd,
     pub usage: TokenUsage,
-    /// Why the turn failed or stopped early; `None` when it succeeded.
+    /// Why the turn failed; `None` when it succeeded or the user stopped it.
     pub error: Option<String>,
+    /// The user stopped the turn, with an interrupt. `false` when missing, so a turn end saved
+    /// without it still loads.
+    #[serde(default)]
+    pub stopped: bool,
 }

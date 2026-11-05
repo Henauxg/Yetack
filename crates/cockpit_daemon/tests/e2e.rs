@@ -20,8 +20,8 @@ use cockpit_protocol::{
     AgentId, AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState, Approval,
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, CancelQueuedParams, Catchup,
     ClaudeSessionId, CommandKind, Effort, ErrorCode, Event, EventRecord, HistoryParams, ItemBody,
-    McpRemoveParams, McpScope, McpServerParams, McpToggleParams, PendingId, PermissionMode, Plan,
-    PlanAnswer, PlanDecision, Prompt, PromptParams, Question, QuestionAnswer, ReadFileParams,
+    ItemId, McpRemoveParams, McpScope, McpServerParams, McpToggleParams, PendingId, PermissionMode,
+    Plan, PlanAnswer, PlanDecision, Prompt, PromptParams, Question, QuestionAnswer, ReadFileParams,
     Request, ResponseBody, Seq, SessionResumeParams, SetEffortParams, SetModeParams,
     SetModelParams, Settings, StartParams, StopTaskParams, TranscriptItem,
 };
@@ -614,7 +614,8 @@ async fn an_interrupt_cancels_what_waits_and_queued_prompts_follow() {
     let ItemBody::TurnEnd(end) = end.body else {
         panic!("expected a turn end");
     };
-    assert_eq!(end.error.as_deref(), Some("Interrupted"));
+    assert!(end.stopped);
+    assert_eq!(end.error, None);
     let sent = client
         .item_with(agent, |body| {
             matches!(
@@ -625,13 +626,22 @@ async fn an_interrupt_cancels_what_waits_and_queued_prompts_follow() {
         .await;
     assert_eq!(sent.id, queued.id);
     client.says(agent, "Echo: hello queued").await;
-    let users = client
-        .history(agent)
-        .await
-        .into_iter()
+    let history = client.history(agent).await;
+    let users = history
+        .iter()
         .filter(|item| matches!(item.body, ItemBody::UserMessage(_)))
         .count();
     assert_eq!(users, 2, "the echo of a sent prompt adds no item");
+    let notices: Vec<ItemId> = history
+        .iter()
+        .filter(|item| matches!(item.body, ItemBody::Notice { .. }))
+        .map(|item| item.id)
+        .collect();
+    assert_eq!(
+        notices,
+        [dropped.id],
+        "the turn end says the user stopped the turn"
+    );
 }
 
 #[tokio::test]

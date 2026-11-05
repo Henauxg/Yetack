@@ -84,8 +84,8 @@ pub use mcp_status::{
     McpToolAnnotations, McpTransport,
 };
 pub use message::{
-    AssistantBody, AssistantMessage, MessageOrigin, OriginKind, StreamEvent, Usage, UserBody,
-    UserMessage,
+    AssistantBody, AssistantMessage, InterruptNotice, MessageOrigin, OriginKind, StreamEvent,
+    Usage, UserBody, UserMessage,
 };
 pub use open_word::OpenWord;
 pub use output_line::OutputLine;
