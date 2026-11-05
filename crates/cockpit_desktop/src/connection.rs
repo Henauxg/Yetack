@@ -69,6 +69,13 @@ impl Cockpit {
         self.change(|state| change(state, &mut drafts.write()));
     }
 
+    pub fn update_with_drafts(&self, change: impl FnOnce(&mut AppState, &mut Drafts)) {
+        self.change_with_drafts(|state, drafts| {
+            change(state, drafts);
+            Vec::new()
+        });
+    }
+
     /// Changes the drafts alone: the state is read without being written.
     pub fn with_drafts<R>(&self, change: impl FnOnce(&AppState, &mut Drafts) -> R) -> R {
         let mut drafts = self.drafts;
@@ -263,6 +270,7 @@ mod tests {
     use dioxus::dioxus_core::NoOpMutations;
 
     use super::*;
+    use crate::state::actions::Direction;
     use crate::state::{state_with, summary};
 
     thread_local! {
@@ -344,20 +352,57 @@ mod tests {
             dom.render_immediate(&mut NoOpMutations);
         }
         let after_typing_in_the_row = renders();
+        // The dialogs' fields, through the calls their components make.
+        dom.in_runtime(|| cockpit.update_with_drafts(actions::open_new_agent));
+        dom.render_immediate(&mut NoOpMutations);
+        let after_opening_the_dialog = renders();
+        for text in ["/work/c", "/work/calc"] {
+            dom.in_runtime(|| {
+                cockpit.with_drafts(|_, drafts| drafts.new_agent.folder = text.to_owned());
+                cockpit.with_drafts(|_, drafts| drafts.new_agent.prompt = text.to_owned());
+                cockpit.with_drafts(|_, drafts| actions::session_query(drafts, text.to_owned()));
+                cockpit.with_drafts(|state, drafts| {
+                    actions::session_move(state, drafts, Direction::Down);
+                });
+            });
+            dom.render_immediate(&mut NoOpMutations);
+        }
+        dom.in_runtime(|| cockpit.update_with_drafts(actions::toggle_switcher));
+        dom.render_immediate(&mut NoOpMutations);
+        let after_opening_the_switcher = renders();
+        for text in ["a", "ag"] {
+            dom.in_runtime(|| {
+                cockpit.with_drafts(|_, drafts| actions::switcher_query(drafts, text.to_owned()));
+                cockpit.with_drafts(|state, drafts| {
+                    actions::switcher_move(state, drafts, Direction::Down);
+                });
+            });
+            dom.render_immediate(&mut NoOpMutations);
+        }
+        let after_typing_in_dialogs = renders();
         dom.in_runtime(|| cockpit.update(|state| state.ui.window_focused = false));
         dom.render_immediate(&mut NoOpMutations);
 
         // The first render, then only the ones the changes of the state call for: opening the
-        // title field, moving it to the row, then the focus.
+        // title field, moving it to the row, the new agent dialog and the switcher, then the
+        // focus.
         assert_eq!(
             (
                 after_opening_the_title,
                 after_typing,
                 after_moving_the_title,
-                after_typing_in_the_row,
+                after_typing_in_the_row
+            ),
+            (2, 2, 3, 3)
+        );
+        assert_eq!(
+            (
+                after_opening_the_dialog,
+                after_opening_the_switcher,
+                after_typing_in_dialogs,
                 renders()
             ),
-            (2, 2, 3, 3, 4)
+            (4, 5, 5, 6)
         );
         let typed = dom.in_runtime(|| {
             let drafts = cockpit.drafts.peek();
@@ -367,6 +412,22 @@ mod tests {
         assert_eq!(
             typed,
             (Some("Run the tests".to_owned()), "Cart totals".to_owned())
+        );
+        let dialogs = dom.in_runtime(|| {
+            let drafts = cockpit.drafts.peek();
+            (
+                drafts.new_agent.folder.clone(),
+                drafts.new_agent.session_query.clone(),
+                drafts.switcher.query.clone(),
+            )
+        });
+        assert_eq!(
+            dialogs,
+            (
+                "/work/calc".to_owned(),
+                "/work/calc".to_owned(),
+                "ag".to_owned()
+            )
         );
     }
 }

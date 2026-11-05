@@ -260,8 +260,7 @@ pub fn apply_response(
         }
         Purpose::Start => match result {
             Ok(ResponseBody::AgentStarted { agent }) => {
-                state.ui.selected = Some(agent);
-                state.ui.unread.remove(&agent);
+                actions::select_agent(state, agent);
                 if matches!(state.ui.dialog, Some(Dialog::NewAgent(_))) {
                     state.ui.dialog = None;
                 }
@@ -278,7 +277,7 @@ pub fn apply_response(
                 let current = drafts.draft_mut(agent);
                 if current.is_empty() {
                     *current = draft;
-                    drafts.draft_written();
+                    drafts.draft_written(agent);
                 }
                 state
                     .ui
@@ -369,7 +368,7 @@ mod tests {
     use super::*;
     use crate::state::app_state::ConnectionState;
     use crate::state::app_state::tests::{state_with, summary};
-    use crate::state::ui_state::FileView;
+    use crate::state::ui_state::{Block, FileView};
 
     fn connected_with_selection() -> AppState {
         let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
@@ -519,14 +518,44 @@ mod tests {
         );
 
         assert_eq!(drafts.draft(agent), Some(&draft));
-        assert_eq!(drafts.composer_writes, 1);
+        assert_eq!(drafts.composer_writes(agent), 1);
         assert_eq!(state.ui.errors.len(), 1);
+    }
+
+    /// The composer shows another agent: a restored draft must not rewrite its text while its
+    /// keystrokes are on their way.
+    #[test]
+    fn a_failed_prompt_for_another_agent_leaves_the_composer_alone() {
+        let mut state = connected_with_selection();
+        let mut drafts = Drafts::default();
+        let shown = state.ui.selected.expect("the helper selects an agent");
+        let other = AgentId::new(shown.get() + 1);
+
+        apply_response(
+            &mut state,
+            &mut drafts,
+            Method::AgentPrompt,
+            Purpose::Prompt {
+                agent: other,
+                draft: Draft {
+                    text: "Run the tests".to_owned(),
+                    images: Vec::new(),
+                },
+            },
+            Err(RequestError::NotConnected),
+        );
+
+        assert_eq!(drafts.composer_writes(shown), 0);
+        assert_eq!(drafts.composer_writes(other), 1);
     }
 
     #[test]
     fn a_started_agent_opens_and_closes_the_dialog() {
         let mut state = connected_with_selection();
         state.ui.dialog = Some(Dialog::NewAgent(Default::default()));
+        // What the agent shown before had open.
+        state.ui.badge = Some(Block::Mcp);
+        state.ui.mcp.detail = Some("search".to_owned());
 
         apply_response(
             &mut state,
@@ -540,6 +569,8 @@ mod tests {
 
         assert_eq!(state.ui.selected, Some(AgentId::new(9)));
         assert_eq!(state.ui.dialog, None);
+        assert_eq!(state.ui.badge, None);
+        assert_eq!(state.ui.mcp.detail, None);
     }
 
     #[test]

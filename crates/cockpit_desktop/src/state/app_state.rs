@@ -220,6 +220,8 @@ impl AppState {
             .selected
             .is_some_and(|selected| self.agents.contains_key(&selected));
         if !valid {
+            // What is open belonged to the agent that is gone, such as its typed palette.
+            self.ui.leave_agent();
             let first_row = self.sidebar_agents().first().map(|entry| entry.id());
             let first =
                 first_row.or_else(|| self.agents_in_order().first().map(|entry| entry.id()));

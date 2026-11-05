@@ -124,14 +124,14 @@ pub fn Sidebar() -> Element {
                     class: "icon-button",
                     title: "Find an agent (Ctrl+K)",
                     aria_label: "Find an agent (Ctrl+K)",
-                    onclick: move |_| cockpit.update(actions::toggle_switcher),
+                    onclick: move |_| cockpit.update_with_drafts(actions::toggle_switcher),
                     Icon { kind: IconKind::Search, size: 16 }
                 }
                 button {
                     class: "icon-button raised",
                     title: "New agent (Ctrl+N)",
                     aria_label: "New agent (Ctrl+N)",
-                    onclick: move |_| cockpit.update(actions::open_new_agent),
+                    onclick: move |_| cockpit.update_with_drafts(actions::open_new_agent),
                     Icon { kind: IconKind::Plus, size: 16 }
                 }
             }
@@ -225,7 +225,7 @@ fn AgentRowView(row: AgentRow) -> Element {
                                 cockpit.change_with_drafts(actions::finish_rename);
                             }
                         },
-                        onblur: move |_| cockpit.change_with_drafts(|state, drafts| actions::finish_rename_at(state, drafts, TitlePlace::Sidebar)),
+                        onblur: move |_| bridge::save_on_blur(move || cockpit.change_with_drafts(|state, drafts| actions::finish_rename_at(state, drafts, TitlePlace::Sidebar))),
                     }
                 }
                 span { class: "row-line row-second",

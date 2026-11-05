@@ -71,7 +71,8 @@ pub fn Composer() -> Element {
     // draft's text only when another agent opens or the app changes the draft.
     let shown = use_memo(move || {
         let selected = cockpit.state.read().ui.selected;
-        (selected, cockpit.drafts.read().composer_writes)
+        let writes = selected.map(|agent| cockpit.drafts.read().composer_writes(agent));
+        (selected, writes)
     });
     use_effect(move || {
         let (agent, _) = shown();
@@ -191,20 +192,24 @@ pub fn Composer() -> Element {
                             span { "{cache_short}" }
                         }
                         button {
-                            class: "menu-button raised",
+                            class: "menu-button raised model-button",
+                            title: "Model and effort",
                             onclick: move |_| cockpit.update(|state| state.ui.toggle_popover(Popover::Model)),
-                            "{model_label}"
-                            if !effort_label.is_empty() {
-                                span { class: "muted", "{effort_label}" }
+                            span { class: "menu-button-label",
+                                "{model_label}"
+                                if !effort_label.is_empty() {
+                                    span { class: "muted", " {effort_label}" }
+                                }
                             }
                             Icon { kind: IconKind::ChevronDown, size: 12 }
                         }
                         span { class: "spacer" }
                         button {
-                            class: "menu-button",
+                            class: "menu-button mode-button",
+                            title: "Permission mode",
                             onclick: move |_| cockpit.update(|state| state.ui.toggle_popover(Popover::Mode)),
                             Icon { kind: mode_icon(mode), size: 14 }
-                            "{mode_label}"
+                            span { class: "menu-button-label", "{mode_label}" }
                             Icon { kind: IconKind::ChevronDown, size: 12 }
                         }
                         if buttons.stop() {

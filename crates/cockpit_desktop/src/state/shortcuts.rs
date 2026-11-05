@@ -54,8 +54,8 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
     let letter = press.key.to_lowercase();
     if command && !press.alt && !press.shift {
         match letter.as_str() {
-            "k" => actions::toggle_switcher(state),
-            "n" => actions::open_new_agent(state),
+            "k" => actions::toggle_switcher(state, drafts),
+            "n" => actions::open_new_agent(state, drafts),
             _ => {}
         }
         return Vec::new();
@@ -115,11 +115,17 @@ fn composer_key(
             // Opened by typing, the palette lists commands alone. A pick puts one in the
             // composer, which already has the focus the pick asks the window for.
             KEY_ENTER | KEY_TAB => {
-                return actions::palette_pick(state, drafts, agent, None).requests;
+                sync_composer_text(state, drafts, agent, &press.composer_text);
+                if state.ui.popover == Some(Popover::Palette(PaletteOrigin::Typed)) {
+                    return actions::palette_pick(state, drafts, agent, None).requests;
+                }
             }
             _ => {}
         }
-        return Vec::new();
+        // The text the key saw closed the palette: only Enter goes on, to send it.
+        if press.key != KEY_ENTER {
+            return Vec::new();
+        }
     }
     if press.composer_text.is_empty() {
         let answered = card_key(state, drafts, agent, &press.key);
@@ -132,6 +138,18 @@ fn composer_key(
         return actions::send_prompt(state, drafts, agent, typed);
     }
     Vec::new()
+}
+
+/// The draft can lag a keystroke behind the composer: a key that acts on the typed text first
+/// gives the draft the text the key saw. The same text leaves the palette's highlight in place.
+fn sync_composer_text(state: &mut AppState, drafts: &mut Drafts, agent: AgentId, text: &str) {
+    let draft = drafts.draft(agent).map(|draft| draft.text.as_str());
+    if draft == Some(text) {
+        return;
+    }
+    if let Some(change) = actions::composer_input(state, drafts, agent, text.to_owned()) {
+        actions::change_palette(state, agent, change);
+    }
 }
 
 /// Y and N answer an approval or a plan; 1 to 9 pick an answer to a question, Enter sends it.
@@ -265,7 +283,7 @@ mod tests {
         let mut state = state(AgentStatus::Idle, None);
 
         handle_key(&mut state, &mut drafts, &ctrl("k"));
-        assert!(matches!(state.ui.dialog, Some(Dialog::Switcher(_))));
+        assert!(matches!(state.ui.dialog, Some(Dialog::Switcher)));
 
         handle_key(&mut state, &mut drafts, &ctrl("N"));
         assert!(matches!(state.ui.dialog, Some(Dialog::NewAgent(_))));
@@ -320,6 +338,56 @@ mod tests {
             assert_eq!(text, Some("/review "), "{key}");
             assert_eq!(state.ui.popover, None, "{key}");
         }
+    }
+
+    /// The draft can lag a keystroke behind the field: "/re" in the draft and "/ren" in the field
+    /// must pick "rename-branch", not "review".
+    #[test]
+    fn enter_in_a_typed_palette_picks_from_the_text_the_key_saw() {
+        let agent = AgentId::new(1);
+        let command = |name: &str| SlashCommand {
+            name: name.to_owned(),
+            description: String::new(),
+            kind: CommandKind::Command,
+        };
+        let pick = |field: &str, down: bool| {
+            let mut drafts = Drafts::default();
+            let mut state = state(AgentStatus::Idle, None);
+            if let Some(entry) = state.agents.get_mut(&agent) {
+                entry.details = Loadable::Loaded(AgentDetails {
+                    commands: vec![command("review"), command("rename-branch")],
+                    ..AgentDetails::default()
+                });
+            }
+            let typed = actions::composer_input(&state, &mut drafts, agent, "/re".to_owned());
+            if let Some(change) = typed {
+                actions::change_palette(&mut state, agent, change);
+            }
+            if down {
+                handle_key(
+                    &mut state,
+                    &mut drafts,
+                    &press(KEY_DOWN, KeyTarget::Composer),
+                );
+            }
+            let enter = KeyPress {
+                composer_text: field.to_owned(),
+                ..press(KEY_ENTER, KeyTarget::Composer)
+            };
+            let requests = handle_key(&mut state, &mut drafts, &enter);
+            let text = drafts.draft(agent).map(|draft| draft.text.clone());
+            (requests.is_empty(), text)
+        };
+
+        assert_eq!(
+            pick("/ren", false),
+            (true, Some("/rename-branch ".to_owned()))
+        );
+        // The same text keeps the highlight the keys moved.
+        assert_eq!(
+            pick("/re", true),
+            (true, Some("/rename-branch ".to_owned()))
+        );
     }
 
     #[test]
@@ -381,7 +449,7 @@ mod tests {
             &mut drafts,
             &press(KEY_ESCAPE, KeyTarget::Field),
         );
-        actions::toggle_switcher(&mut state);
+        actions::toggle_switcher(&mut state, &mut drafts);
         let dialog = handle_key(
             &mut state,
             &mut drafts,
@@ -488,7 +556,7 @@ mod tests {
         let from_field = handle_key(&mut state, &mut drafts, &alt(KEY_UP, KeyTarget::Field));
         let from_composer = handle_key(&mut state, &mut drafts, &alt(KEY_UP, KeyTarget::Composer));
         let from_page = handle_key(&mut state, &mut drafts, &alt(KEY_DOWN, KeyTarget::Page));
-        actions::toggle_switcher(&mut state);
+        actions::toggle_switcher(&mut state, &mut drafts);
         let behind_a_dialog = handle_key(&mut state, &mut drafts, &alt(KEY_DOWN, KeyTarget::Page));
 
         let method =
@@ -520,7 +588,7 @@ mod tests {
         handle_key(&mut state, &mut drafts, &press(KEY_F2, KeyTarget::Field));
         let from_header = place(&state);
         state.ui.title_edit = None;
-        actions::toggle_switcher(&mut state);
+        actions::toggle_switcher(&mut state, &mut drafts);
         handle_key(&mut state, &mut drafts, &press(KEY_F2, KeyTarget::Page));
 
         assert_eq!(from_page, Some(TitlePlace::Sidebar));
@@ -543,7 +611,7 @@ mod tests {
     fn page_keys_do_nothing_behind_a_dialog() {
         let mut drafts = Drafts::default();
         let mut state = state(AgentStatus::NeedsYou, Some(approval()));
-        actions::toggle_switcher(&mut state);
+        actions::toggle_switcher(&mut state, &mut drafts);
 
         assert!(handle_key(&mut state, &mut drafts, &press("y", KeyTarget::Page)).is_empty());
     }

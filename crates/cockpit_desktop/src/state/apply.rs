@@ -118,9 +118,7 @@ pub fn apply_catchup(state: &mut AppState, drafts: &mut Drafts, catchup: Catchup
         .ui
         .finished_tasks_unfolded
         .retain(|agent| agents.contains_key(agent));
-    drafts
-        .composer
-        .retain(|agent, _| agents.contains_key(agent));
+    drafts.retain_agents(|agent| agents.contains_key(&agent));
     state.fix_selection();
 }
 
@@ -139,7 +137,7 @@ pub fn apply(state: &mut AppState, drafts: &mut Drafts, record: EventRecord) -> 
             state.ui.unread.remove(&agent);
             state.ui.file_views.remove(&agent);
             state.ui.finished_tasks_unfolded.remove(&agent);
-            drafts.composer.remove(&agent);
+            drafts.retain_agents(|kept| kept != agent);
             state.ui.title_edit.take_if(|edit| edit.agent == agent);
             if state.ui.selected == Some(agent) {
                 state.ui.selected = None;
@@ -262,7 +260,7 @@ mod tests {
 
     use super::*;
     use crate::state::app_state::tests::{placed, state_with, summary};
-    use crate::state::ui_state::{TitleEdit, TitlePlace};
+    use crate::state::ui_state::{Block, PaletteOrigin, Popover, TitleEdit, TitlePlace};
 
     fn record(event: Event) -> EventRecord {
         EventRecord {
@@ -478,6 +476,64 @@ mod tests {
 
         assert_eq!(state.ui.selected, Some(AgentId::new(2)));
         assert!(!state.agents.contains_key(&AgentId::new(3)));
+    }
+
+    /// The palette typed in the removed agent's composer would stay open over the next agent's,
+    /// and Enter there would pick a command instead of sending.
+    #[test]
+    fn removing_the_selected_agent_closes_its_popovers() {
+        let mut removed = state_with(vec![
+            summary(1, AgentStatus::Idle),
+            summary(2, AgentStatus::Working),
+        ]);
+        removed.ui.selected = Some(AgentId::new(1));
+        removed.ui.popover = Some(Popover::Palette(PaletteOrigin::Typed));
+        removed.ui.badge = Some(Block::Mcp);
+        removed.ui.mcp.detail = Some("search".to_owned());
+        let mut dropped = removed.clone();
+        let mut other = removed.clone();
+
+        apply(
+            &mut removed,
+            &mut Drafts::default(),
+            record(Event::AgentRemoved {
+                agent: AgentId::new(1),
+            }),
+        );
+        apply_catchup(
+            &mut dropped,
+            &mut Drafts::default(),
+            Catchup::Snapshot(Snapshot {
+                agents: vec![summary(2, AgentStatus::Working)],
+                plan_usage: PlanUsage::default(),
+                settings: Settings::default(),
+                last_seq: Some(Seq::new(40)),
+            }),
+        );
+        apply(
+            &mut other,
+            &mut Drafts::default(),
+            record(Event::AgentRemoved {
+                agent: AgentId::new(2),
+            }),
+        );
+
+        for state in [&removed, &dropped] {
+            assert_eq!(state.ui.selected, Some(AgentId::new(2)));
+            assert_eq!(
+                (
+                    state.ui.popover,
+                    state.ui.badge,
+                    state.ui.mcp.detail.as_deref()
+                ),
+                (None, None, None)
+            );
+        }
+        assert_eq!(
+            other.ui.popover,
+            Some(Popover::Palette(PaletteOrigin::Typed)),
+            "another agent's removal leaves the shown one's palette open"
+        );
     }
 
     /// A title edit left open for a removed agent would take the first Esc meant to stop the next

@@ -1,9 +1,11 @@
 //! An agent's conversation as the app holds it: items merged by id from history pages and live
 //! events.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use cockpit_protocol::{AnswerState, HistoryPage, ItemBody, ItemId, PendingId, TranscriptItem};
+use cockpit_protocol::{
+    AnswerState, HistoryPage, ItemBody, ItemId, PendingId, ToolCallStatus, TranscriptItem,
+};
 
 /// The most items the app keeps of an agent you are not looking at.
 pub const KEPT_ITEMS_AWAY: usize = 2_000;
@@ -146,11 +148,102 @@ impl Transcript {
     }
 }
 
+/// The running tool calls whose approval card waits for an answer. An approval names its call;
+/// one from an older daemon's log does not, and matches a call on parent, tool and summary, which
+/// the daemon builds the same way for both.
+pub fn awaiting_approval(items: &[&TranscriptItem]) -> BTreeSet<ItemId> {
+    let mut linked: BTreeSet<ItemId> = BTreeSet::new();
+    let mut asked: BTreeSet<(Option<ItemId>, &str, &str)> = BTreeSet::new();
+    for item in items {
+        let ItemBody::Approval(approval) = &item.body else {
+            continue;
+        };
+        if approval.answer != AnswerState::Waiting {
+            continue;
+        }
+        match approval.tool_call {
+            Some(call) => {
+                linked.insert(call);
+            }
+            None => {
+                asked.insert((
+                    item.parent,
+                    approval.tool.as_str(),
+                    approval.summary.as_str(),
+                ));
+            }
+        }
+    }
+    if linked.is_empty() && asked.is_empty() {
+        return BTreeSet::new();
+    }
+    items
+        .iter()
+        .filter(|item| match &item.body {
+            ItemBody::ToolCall(call) if call.status == ToolCallStatus::Running => {
+                linked.contains(&item.id)
+                    || asked.contains(&(item.parent, call.tool.as_str(), call.summary.as_str()))
+            }
+            _ => false,
+        })
+        .map(|item| item.id)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::{Plan, PlanAnswer, PlanDecision};
+    use std::path::PathBuf;
+
+    use cockpit_protocol::{
+        Approval, ApprovalAnswer, ApprovalDecision, FileEdit, Plan, PlanAnswer, PlanDecision,
+        ToolCall,
+    };
 
     use super::*;
+
+    fn call(tool: &str, summary: &str, status: ToolCallStatus) -> ToolCall {
+        ToolCall {
+            tool: tool.to_owned(),
+            summary: summary.to_owned(),
+            input: serde_json::Value::Null,
+            status,
+            output: None,
+            exit_code: None,
+            edit: None,
+        }
+    }
+
+    fn write_call(status: ToolCallStatus) -> ToolCall {
+        ToolCall {
+            edit: Some(FileEdit {
+                path: PathBuf::from("/work/notes.txt"),
+                old_text: String::new(),
+                new_text: "one line\n".to_owned(),
+            }),
+            ..call("Write", "notes.txt", status)
+        }
+    }
+
+    fn approval(tool: &str, summary: &str, answer: AnswerState<ApprovalAnswer>) -> ItemBody {
+        ItemBody::Approval(Approval {
+            pending: PendingId::new("request-1".to_owned()),
+            tool: tool.to_owned(),
+            summary: summary.to_owned(),
+            input: serde_json::Value::Null,
+            edit: None,
+            reason: None,
+            answer,
+            tool_call: None,
+        })
+    }
+
+    fn item(id: u32, parent: Option<u32>, body: ItemBody) -> TranscriptItem {
+        TranscriptItem {
+            id: ItemId::new(id),
+            parent: parent.map(ItemId::new),
+            body,
+        }
+    }
 
     fn text(id: u32, markdown: &str) -> TranscriptItem {
         TranscriptItem {
@@ -274,5 +367,79 @@ mod tests {
 
         transcript.change(plan(1, AnswerState::Cancelled));
         assert_eq!(transcript.waiting(), None);
+    }
+
+    #[test]
+    fn a_linked_approval_marks_only_its_own_call() {
+        let running =
+            || ItemBody::ToolCall(call("Bash", "touch same.txt", ToolCallStatus::Running));
+        let linked = |call: u32, answer| {
+            let ItemBody::Approval(approval) = approval("Bash", "touch same.txt", answer) else {
+                panic!("the helper builds an approval");
+            };
+            ItemBody::Approval(Approval {
+                tool_call: Some(ItemId::new(call)),
+                ..approval
+            })
+        };
+        let allowed = AnswerState::Answered(ApprovalAnswer {
+            decision: ApprovalDecision::Allow,
+            message: None,
+        });
+        let items = [
+            item(1, None, running()),
+            item(2, None, running()),
+            item(3, None, linked(1, allowed)),
+            item(4, None, linked(2, AnswerState::Waiting)),
+        ];
+        let refs: Vec<&TranscriptItem> = items.iter().collect();
+
+        assert_eq!(awaiting_approval(&refs), BTreeSet::from([ItemId::new(2)]));
+    }
+
+    #[test]
+    fn a_running_call_waits_while_its_approval_waits() {
+        let allowed = AnswerState::Answered(ApprovalAnswer {
+            decision: ApprovalDecision::Allow,
+            message: None,
+        });
+        let items = [
+            item(
+                1,
+                None,
+                ItemBody::ToolCall(write_call(ToolCallStatus::Running)),
+            ),
+            item(
+                2,
+                None,
+                approval("Write", "notes.txt", AnswerState::Waiting),
+            ),
+            item(
+                3,
+                None,
+                ItemBody::ToolCall(call("Bash", "ls", ToolCallStatus::Running)),
+            ),
+            item(4, None, approval("Bash", "ls", allowed)),
+            item(
+                5,
+                Some(9),
+                ItemBody::ToolCall(call("Bash", "rm -r build", ToolCallStatus::Running)),
+            ),
+            item(
+                6,
+                None,
+                approval("Bash", "rm -r build", AnswerState::Waiting),
+            ),
+            item(
+                7,
+                None,
+                ItemBody::ToolCall(call("Bash", "rm -r build", ToolCallStatus::Done)),
+            ),
+        ];
+        let refs: Vec<&TranscriptItem> = items.iter().collect();
+
+        let ids: Vec<u32> = awaiting_approval(&refs).iter().map(|id| id.get()).collect();
+
+        assert_eq!(ids, [1]);
     }
 }

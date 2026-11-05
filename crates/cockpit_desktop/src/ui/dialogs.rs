@@ -46,8 +46,8 @@ pub fn Dialogs() -> Element {
                 inert: leaving.then_some(true),
                 onclick: move |_| cockpit.update(|state| state.ui.dialog = None),
                 match dialog.clone() {
-                    Dialog::Switcher(switcher) => rsx! {
-                        SwitcherDialog { query: switcher.query, highlighted: switcher.highlighted }
+                    Dialog::Switcher => rsx! {
+                        SwitcherDialog {}
                     },
                     Dialog::NewAgent(form) => rsx! {
                         NewAgentDialog { form }
@@ -68,8 +68,14 @@ struct SwitcherRow {
 }
 
 #[component]
-fn SwitcherDialog(query: String, highlighted: usize) -> Element {
+fn SwitcherDialog() -> Element {
     let cockpit: Cockpit = use_context();
+    let (query, highlighted) = {
+        let drafts = cockpit.drafts.read();
+        (drafts.switcher.query.clone(), drafts.switcher.highlighted)
+    };
+    // Follows the keyboard alone: a render that lags behind typing would put an older query back.
+    let query_seed = use_hook(|| query.clone());
     let rows: Vec<SwitcherRow> = {
         let state = cockpit.state.read();
         actions::filtered_agents(&state, &query)
@@ -96,21 +102,16 @@ fn SwitcherDialog(query: String, highlighted: usize) -> Element {
                     r#type: "text",
                     aria_label: "Find an agent",
                     placeholder: "Type to find an agent by title or folder",
-                    // Follows the keyboard alone: a render that lags behind typing would put an
-                    // older query back.
-                    initial_value: "{query}",
+                    initial_value: "{query_seed}",
                     onmounted: move |event| async move {
                         // The dialog may have closed already: nothing to focus then.
                         let _ = event.data().set_focus(true).await;
                     },
-                    oninput: move |event: FormEvent| cockpit.update(|state| actions::switcher_query(state, event.value())),
+                    oninput: move |event: FormEvent| cockpit.with_drafts(|_, drafts| actions::switcher_query(drafts, event.value())),
                     onkeydown: move |event: KeyboardEvent| match event.key() {
-                        Key::ArrowDown => cockpit.update(|state| actions::switcher_move(state, Direction::Down)),
-                        Key::ArrowUp => cockpit.update(|state| actions::switcher_move(state, Direction::Up)),
-                        Key::Enter => cockpit.change(|state| {
-                            actions::switcher_pick(state, None);
-                            Vec::new()
-                        }),
+                        Key::ArrowDown => cockpit.with_drafts(|state, drafts| actions::switcher_move(state, drafts, Direction::Down)),
+                        Key::ArrowUp => cockpit.with_drafts(|state, drafts| actions::switcher_move(state, drafts, Direction::Up)),
+                        Key::Enter => cockpit.update_with_drafts(|state, drafts| actions::switcher_pick(state, drafts, None)),
                         _ => {}
                     },
                 }
@@ -130,7 +131,7 @@ fn SwitcherDialog(query: String, highlighted: usize) -> Element {
                     button {
                         key: "{row.id.get()}",
                         class: if index == highlighted { "switcher-row highlighted {format::status_class(row.status)}" } else { "switcher-row {format::status_class(row.status)}" },
-                        onclick: move |_| cockpit.update(|state| actions::switcher_pick(state, Some(index))),
+                        onclick: move |_| cockpit.update_with_drafts(|state, drafts| actions::switcher_pick(state, drafts, Some(index))),
                         span { class: "status-dot", aria_hidden: true }
                         span { class: if row.unread { "switcher-title unread" } else { "switcher-title" }, "{row.title}" }
                         span { class: "switcher-status", "{format::status_label(row.status)}" }
@@ -191,7 +192,7 @@ fn NewAgentDialog(form: NewAgentForm) -> Element {
             if start {
                 StartForm { form }
             } else {
-                ResumeList { query: form.session_query, highlighted: form.session_highlighted, starting: form.starting }
+                ResumeList { starting: form.starting }
             }
         }
     }
@@ -234,10 +235,17 @@ fn FolderPath(folder: PathBuf) -> Element {
 fn StartForm(form: NewAgentForm) -> Element {
     let cockpit: Cockpit = use_context();
     let Clock(now) = use_context::<Clock>();
-    // The folder and the first message start from the form, then follow the keyboard alone: a
+    let (typed_folder, typed_prompt) = {
+        let drafts = cockpit.drafts.read();
+        (
+            drafts.new_agent.folder.clone(),
+            drafts.new_agent.prompt.clone(),
+        )
+    };
+    // The folder and the first message start from the drafts, then follow the keyboard alone: a
     // render that lags behind typing would put an older text back.
-    let folder_seed = use_hook(|| form.folder.clone());
-    let prompt_seed = use_hook(|| form.prompt.clone());
+    let folder_seed = use_hook(|| typed_folder.clone());
+    let prompt_seed = use_hook(|| typed_prompt.clone());
     let (folders, machine, sessions_loading) = {
         let state = cockpit.state.read();
         let mut folders = state.recent_folders();
@@ -253,11 +261,13 @@ fn StartForm(form: NewAgentForm) -> Element {
         0
     };
     let now = now();
-    let can_start = !form.folder.trim().is_empty() && !form.starting;
+    let can_start = !typed_folder.trim().is_empty() && !form.starting;
+    let start =
+        move || cockpit.change_with_drafts(|state, drafts| actions::start_agent(state, drafts));
     let start_on_command_enter = move |event: KeyboardEvent| {
         let command = event.modifiers().ctrl() || event.modifiers().meta();
         if command && event.key() == Key::Enter {
-            cockpit.change(actions::start_agent);
+            start();
         }
     };
     let toggle_menu = move |menu: FormMenu| {
@@ -293,7 +303,7 @@ fn StartForm(form: NewAgentForm) -> Element {
                         spellcheck: false,
                         placeholder: "Type the folder's path, or pick a recent folder below",
                         initial_value: "{folder_seed}",
-                        oninput: move |event: FormEvent| change_form(cockpit, |form| form.folder = event.value()),
+                        oninput: move |event: FormEvent| cockpit.with_drafts(|_, drafts| drafts.new_agent.folder = event.value()),
                         onkeydown: start_on_command_enter,
                     }
                 }
@@ -310,7 +320,7 @@ fn StartForm(form: NewAgentForm) -> Element {
                         for (folder, used) in folders {
                             {
                                 let shown = folder.display().to_string();
-                                let checked = form.folder == shown;
+                                let checked = typed_folder == shown;
                                 let used = format::ago(used, now);
                                 let picked = shown.clone();
                                 rsx! {
@@ -323,7 +333,7 @@ fn StartForm(form: NewAgentForm) -> Element {
                                         onclick: move |_| {
                                             let picked = picked.clone();
                                             bridge::set_field_text(FOLDER_FIELD_ID, picked.clone());
-                                            change_form(cockpit, |form| form.folder = picked);
+                                            cockpit.with_drafts(|_, drafts| drafts.new_agent.folder = picked);
                                         },
                                         span { class: "folder-icon", Icon { kind: IconKind::Folder, size: 14 } }
                                         FolderPath { folder }
@@ -352,7 +362,7 @@ fn StartForm(form: NewAgentForm) -> Element {
                     aria_label: "First message",
                     placeholder: "What should the agent do? Optional: it can wait for your first message.",
                     initial_value: "{prompt_seed}",
-                    oninput: move |event: FormEvent| change_form(cockpit, |form| form.prompt = event.value()),
+                    oninput: move |event: FormEvent| cockpit.with_drafts(|_, drafts| drafts.new_agent.prompt = event.value()),
                     onkeydown: start_on_command_enter,
                 }
                 div { class: "prompt-tools",
@@ -400,7 +410,7 @@ fn StartForm(form: NewAgentForm) -> Element {
                 button {
                     class: if can_start { "button primary" } else { "button disabled" },
                     disabled: !can_start,
-                    onclick: move |_| cockpit.change(actions::start_agent),
+                    onclick: move |_| start(),
                     if form.starting {
                         span { class: "spinner", aria_hidden: true }
                         "Starting"
@@ -527,9 +537,17 @@ fn FormModeMenu(mode: Option<PermissionMode>) -> Element {
 }
 
 #[component]
-fn ResumeList(query: String, highlighted: usize, starting: bool) -> Element {
+fn ResumeList(starting: bool) -> Element {
     let cockpit: Cockpit = use_context();
     let Clock(now) = use_context::<Clock>();
+    let (query, highlighted) = {
+        let drafts = cockpit.drafts.read();
+        let new_agent = &drafts.new_agent;
+        (
+            new_agent.session_query.clone(),
+            new_agent.session_highlighted,
+        )
+    };
     // Follows the keyboard alone, as the other fields.
     let query_seed = use_hook(|| query.clone());
     let (sessions, machine) = {
@@ -564,17 +582,17 @@ fn ResumeList(query: String, highlighted: usize, starting: bool) -> Element {
                         // The tab may have changed already: nothing to focus then.
                         let _ = event.data().set_focus(true).await;
                     },
-                    oninput: move |event: FormEvent| cockpit.update(|state| actions::session_query(state, event.value())),
+                    oninput: move |event: FormEvent| cockpit.with_drafts(|_, drafts| actions::session_query(drafts, event.value())),
                     onkeydown: move |event: KeyboardEvent| match event.key() {
                         Key::ArrowDown => {
-                            cockpit.update(|state| actions::session_move(state, Direction::Down));
+                            cockpit.with_drafts(|state, drafts| actions::session_move(state, drafts, Direction::Down));
                             bridge::scroll_to_highlighted();
                         }
                         Key::ArrowUp => {
-                            cockpit.update(|state| actions::session_move(state, Direction::Up));
+                            cockpit.with_drafts(|state, drafts| actions::session_move(state, drafts, Direction::Up));
                             bridge::scroll_to_highlighted();
                         }
-                        Key::Enter => cockpit.change(|state| actions::session_pick(state, None)),
+                        Key::Enter => cockpit.change_with_drafts(|state, drafts| actions::session_pick(state, drafts, None)),
                         _ => {}
                     },
                 }
@@ -618,7 +636,7 @@ fn ResumeList(query: String, highlighted: usize, starting: bool) -> Element {
                                         role: "option",
                                         aria_selected: chosen,
                                         disabled: starting,
-                                        onclick: move |_| cockpit.change(|state| actions::session_pick(state, Some(index))),
+                                        onclick: move |_| cockpit.change_with_drafts(|state, drafts| actions::session_pick(state, drafts, Some(index))),
                                         span { class: "session-text",
                                             span { class: "session-title", "{session.title}" }
                                             FolderPath { folder: session.folder.clone() }
