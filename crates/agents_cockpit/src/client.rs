@@ -8,8 +8,8 @@ use anyhow::bail;
 use cockpit_client::{BRIDGE_SUBCOMMAND, Backoff, Connection, Session, SessionUpdate, Transport};
 use cockpit_protocol::{
     AgentId, AgentParams, Answer, AnswerParams, ApprovalAnswer, ApprovalDecision, Catchup, Effort,
-    Event, PermissionMode, PlanAnswer, PlanDecision, Prompt, PromptParams, QuestionAnswer, Request,
-    ResponseBody, StartParams,
+    Event, PermissionMode, PlanAnswer, PlanDecision, Prompt, PromptParams, QuestionAnswer,
+    RenameParams, Request, ResponseBody, StartParams,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -71,6 +71,7 @@ pub(crate) async fn run(target: &Target, command: Command) -> anyhow::Result<()>
         }),
         Command::Interrupt { agent } => Request::AgentInterrupt(AgentParams { agent }),
         Command::Stop { agent } => Request::AgentStop(AgentParams { agent }),
+        Command::Rename { agent, title } => Request::AgentRename(RenameParams { agent, title }),
     };
     let (connection, _) = Connection::connect(&transport, None).await?;
     match connection.request(request).await? {

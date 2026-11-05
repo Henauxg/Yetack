@@ -37,8 +37,8 @@ pub use frame::{Frame, FrameError, FrameReader, FrameWriter, MAX_LINE_BYTES};
 pub use ids::{AgentId, BackgroundTaskId, ClaudeSessionId, ItemId, PendingId, RequestId, Seq};
 pub use request::{
     AgentParams, Answer, AnswerParams, CancelQueuedParams, HistoryParams, McpRemoveParams,
-    McpServerParams, McpToggleParams, Method, Prompt, PromptParams, ReadFileParams, Request,
-    SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, StartParams,
+    McpServerParams, McpToggleParams, Method, Prompt, PromptParams, ReadFileParams, RenameParams,
+    Request, SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, StartParams,
     StopTaskParams,
 };
 pub use response::{ErrorBody, ErrorCode, HistoryPage, PastSession, ResponseBody, ResponseResult};

@@ -93,6 +93,12 @@ pub(crate) enum Command {
         #[arg(value_parser = agent_id)]
         agent: AgentId,
     },
+    /// Rename an agent, and its Claude session while it runs
+    Rename {
+        #[arg(value_parser = agent_id)]
+        agent: AgentId,
+        title: String,
+    },
     /// Print events as JSON lines, of one agent or of all
     Tail {
         #[arg(value_parser = agent_id)]

@@ -22,6 +22,7 @@ use cockpit_protocol::{
 use serde_json::{Map, Value};
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
+use crate::sessions;
 use crate::transcript::past_transcript::LAST_PAST_ID;
 use crate::transcript::{answers, details, notices, tools, words};
 
@@ -73,11 +74,15 @@ enum UntypedSystemSubtype {
     /// A local command's output, in a session file. On stdout it comes as a synthetic assistant
     /// message.
     LocalCommand,
+    /// Claude Code named the session, after `/rename`.
+    SessionTitleChanged,
 }
 
 const SUBTYPE_KEY: &str = "subtype";
 /// The text of a `local_command` line.
 const CONTENT_KEY: &str = "content";
+/// The new name in a `session_title_changed` line.
+const TITLE_KEY: &str = "title";
 /// The model of an assistant message Claude Code writes itself, such as a slash command's output
 /// or an API error.
 const SYNTHETIC_MODEL: &str = "<synthetic>";
@@ -568,6 +573,10 @@ impl AgentView {
         self.summary.effort = Some(effort);
     }
 
+    pub(crate) fn set_title(&mut self, title: String) {
+        self.summary.title = title;
+    }
+
     fn apply_system(&mut self, event: SystemEvent, now: Timestamp) {
         match event {
             SystemEvent::Init(init) => self.apply_init(init),
@@ -604,8 +613,8 @@ impl AgentView {
                     .map_or_else(String::new, |status| format!(" {status}"));
                 self.summary.activity = Some(format!("Retrying after API error{status}"));
             }
-            SystemEvent::Other(value) => {
-                if let Some(UntypedSystemSubtype::CompactBoundary) = untyped_subtype(&value) {
+            SystemEvent::Other(value) => match untyped_subtype(&value) {
+                Some(UntypedSystemSubtype::CompactBoundary) => {
                     self.push_item(
                         None,
                         ItemBody::Notice {
@@ -613,7 +622,14 @@ impl AgentView {
                         },
                     );
                 }
-            }
+                Some(UntypedSystemSubtype::SessionTitleChanged) => {
+                    let title = value.get(TITLE_KEY).and_then(Value::as_str).map(str::trim);
+                    if let Some(title) = title.filter(|title| !title.is_empty()) {
+                        self.summary.title = sessions::shorten(title);
+                    }
+                }
+                Some(UntypedSystemSubtype::LocalCommand) | None => {}
+            },
             SystemEvent::ThinkingTokens(_)
             | SystemEvent::HookStarted(_)
             | SystemEvent::HookProgress(_)
@@ -2186,7 +2202,10 @@ mod tests {
             .map(|&subtype| subtype.into())
             .collect();
 
-        assert_eq!(words, ["compact_boundary", "local_command"]);
+        assert_eq!(
+            words,
+            ["compact_boundary", "local_command", "session_title_changed"]
+        );
     }
 
     #[test]
@@ -2236,6 +2255,26 @@ mod tests {
             view.summary().session.as_ref().map(ClaudeSessionId::as_str),
             Some("session-2")
         );
+    }
+
+    #[test]
+    fn claude_code_naming_the_session_renames_the_agent() {
+        let mut view = view();
+
+        apply(
+            &mut view,
+            json!({"type": "system", "subtype": "session_title_changed", "title": " Cart fix ",
+                   "session_id": "session-1"}),
+        );
+        let named = view.summary().title.clone();
+        apply(
+            &mut view,
+            json!({"type": "system", "subtype": "session_title_changed", "title": "",
+                   "session_id": "session-1"}),
+        );
+
+        assert_eq!(named, "Cart fix");
+        assert_eq!(view.summary().title, "Cart fix");
     }
 
     #[test]

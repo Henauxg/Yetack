@@ -6,6 +6,8 @@ use cockpit_protocol::{Effort, Prompt};
 use crate::transcript::words;
 
 const EFFORT_COMMAND: &str = "/effort";
+/// Names the Claude session, for Claude Code's resume list and `sessions.list`.
+const RENAME_COMMAND: &str = "/rename";
 
 /// Text alone, or the images followed by the text. `None` when an image's type has no word, which
 /// the protocol's own types rule out.
@@ -28,6 +30,11 @@ pub(crate) fn prompt_line(prompt: &Prompt) -> Option<InputLine> {
         }));
     }
     Some(InputLine::prompt_blocks(blocks))
+}
+
+/// `/rename <title>`: naming a session has no control request.
+pub(crate) fn rename_command(title: &str) -> String {
+    format!("{RENAME_COMMAND} {title}")
 }
 
 /// `/effort <level>`: effort has no control request.

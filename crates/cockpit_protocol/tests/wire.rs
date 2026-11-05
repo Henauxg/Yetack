@@ -23,11 +23,11 @@ use cockpit_protocol::{
     McpServerParams, McpServerStatus, McpToggleParams, McpTool, McpTransport, Method,
     PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision,
     PlanUsage, Prompt, PromptParams, Question, QuestionAnswer, QuestionOption, RateLimitStatus,
-    ReadFileParams, Request, RequestId, ResponseBody, ResponseResult, Seq, ServerMessage,
-    SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, Settings, SlashCommand,
-    Snapshot, StartParams, StopTaskParams, TaskListItem, TaskProgress, TaskStatus, Timestamp,
-    TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, UsageWindow, UserMessage,
-    WindowUsage,
+    ReadFileParams, RenameParams, Request, RequestId, ResponseBody, ResponseResult, Seq,
+    ServerMessage, SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, Settings,
+    SlashCommand, Snapshot, StartParams, StopTaskParams, TaskListItem, TaskProgress, TaskStatus,
+    Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, UsageWindow,
+    UserMessage, WindowUsage,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -464,6 +464,10 @@ fn requests() -> Vec<Request> {
             agent,
             mode: PermissionMode::BypassPermissions,
         }),
+        Request::AgentRename(RenameParams {
+            agent,
+            title: "Login form".to_owned(),
+        }),
         Request::AgentContextUsage(AgentParams { agent }),
         Request::AgentStopTask(StopTaskParams {
             agent,
@@ -724,6 +728,7 @@ fn method_names_are_pinned() {
             "agent.set_model",
             "agent.set_effort",
             "agent.set_mode",
+            "agent.rename",
             "agent.context_usage",
             "agent.stop_task",
             "agent.mcp_status",
@@ -941,6 +946,29 @@ fn a_prompt_request_on_the_wire() {
                         "images": [{"media_type": "image/png", "data": "iVBORw0KGgo="}],
                     },
                 },
+            },
+        }),
+    );
+}
+
+#[test]
+fn a_rename_request_on_the_wire() {
+    let message = ClientMessage::Request {
+        id: RequestId::new(9),
+        request: Request::AgentRename(RenameParams {
+            agent: agent(),
+            title: "Login form".to_owned(),
+        }),
+    };
+
+    assert_wire(
+        &message,
+        json!({
+            "type": "request",
+            "id": 9,
+            "request": {
+                "method": "agent.rename",
+                "params": {"agent": 3, "title": "Login form"},
             },
         }),
     );

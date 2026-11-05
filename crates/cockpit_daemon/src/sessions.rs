@@ -383,7 +383,8 @@ fn is_session_id(text: &str) -> bool {
         })
 }
 
-fn shorten(text: &str) -> String {
+/// The text, cut at [`TITLE_MAX_CHARS`].
+pub(crate) fn shorten(text: &str) -> String {
     let text = text.trim();
     if text.chars().count() <= TITLE_MAX_CHARS {
         return text.to_owned();
