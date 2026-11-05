@@ -264,6 +264,15 @@ Data the mockups show but the protocol does not carry yet, and choices approved 
 - A file edit whose texts were dropped for size (over 1 MiB) says so, so the app shows "too large to show" instead of an empty diff.
 - A tool input too large for one frame (a huge `Write`) is cut in its live event as it already is in history, and `settings.set` gets a size limit.
 
+Found by the first end-to-end run of the app against a real daemon:
+
+- A user message Claude Code writes itself carries an `origin` (`{"kind": "task-notification"}` when a background command ends). The transcript shows it as a short note ("Background command stopped: Wait 60 seconds"), not as a bubble of raw `<task-notification>` XML the user seems to have typed.
+- A tool line shows its result ("Created, 1 line") only once the tool has run. Before that, while it waits for approval, the line says it waits.
+- An interrupted turn shows one muted line. Today it shows the `[Request interrupted by user]` message and a red "The turn stopped after 6 s: Interrupted" under it.
+- The background tasks panel shows its spinner and "Running" only while a task runs.
+- The new agent dialog keeps the folder field in place when the recent folders arrive, which can take more than a second. With six recent folders, the Start button must stay visible in a 900 px high window.
+- Single line breaks in Claude's answers show as line breaks, as on GitHub and claude.ai. Today a list written one item per line, without list markers, renders as one paragraph.
+
 ## Background
 
 - herdr ([github.com/herdrdev/herdr](https://github.com/herdrdev/herdr)) runs Claude Code in its terminal interface inside a pseudo-terminal and reads the screen to detect status.
