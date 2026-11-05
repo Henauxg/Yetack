@@ -117,7 +117,7 @@ pub fn conversation_markdown(entry: &AgentEntry) -> String {
                     say(&mut parts, Speaker::Claude, Part::ListLine(line));
                 }
             }
-            ItemBody::Notice { text } => parts.push(notice(text)),
+            ItemBody::Notice { text, .. } => parts.push(notice(text)),
             ItemBody::UserMessage(_) | ItemBody::Thinking { .. } => {}
         }
     }
@@ -385,6 +385,7 @@ mod tests {
                     None,
                     ItemBody::Notice {
                         text: "Conversation compacted".to_owned(),
+                        detail: None,
                     },
                 ),
                 (None, user("Thanks", 0, false)),
@@ -481,6 +482,7 @@ Thanks
                     None,
                     ItemBody::Notice {
                         text: "Context usage\n\n# System prompt: 3k\n```json".to_owned(),
+                        detail: None,
                     },
                 ),
                 (None, turn_end(Some("API error:\noverloaded"), false)),

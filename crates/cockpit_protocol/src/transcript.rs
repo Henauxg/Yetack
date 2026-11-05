@@ -40,6 +40,11 @@ pub enum ItemBody {
     /// "Conversation compacted" or "claude exited with status 1".
     Notice {
         text: String,
+        /// Markdown that `text` titles, such as the instructions of a skill Claude Code loaded,
+        /// which the app shows folded. `None` when missing, so a notice saved without it still
+        /// loads.
+        #[serde(default)]
+        detail: Option<String>,
     },
 }
 

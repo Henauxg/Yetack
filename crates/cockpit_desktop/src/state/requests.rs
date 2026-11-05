@@ -437,6 +437,7 @@ mod tests {
                 parent: None,
                 body: ItemBody::Notice {
                     text: "compacted".to_owned(),
+                    detail: None,
                 },
             }],
             has_older: false,

@@ -167,7 +167,8 @@ fn tool_words_are_pinned() {
             "Edit",
             "Write",
             "Bash",
-            "Read"
+            "Read",
+            "Skill"
         ]
     );
 }

@@ -8,8 +8,8 @@
 use std::path::Path;
 
 use claude_protocol::{
-    BashInput, EditInput, ExitPlanModeInput, OpenWord, ParseError, ReadInput, TodoStatus,
-    ToolInput, ToolName, WriteInput,
+    BashInput, EditInput, ExitPlanModeInput, OpenWord, ParseError, ReadInput, SkillInput,
+    TodoStatus, ToolInput, ToolName, WriteInput,
 };
 use serde_json::{Map, Value, json};
 
@@ -184,6 +184,26 @@ fn read() {
             offset: Some(40),
             limit: Some(20),
         })
+    );
+}
+
+#[test]
+fn skill() {
+    let with_args = parse("Skill", json!({"skill": "greet", "args": "world"}));
+    let without = parse("Skill", json!({"skill": "review"}));
+
+    assert_eq!(
+        [with_args, without],
+        [
+            ToolInput::Skill(SkillInput {
+                skill: "greet".to_owned(),
+                args: Some("world".to_owned()),
+            }),
+            ToolInput::Skill(SkillInput {
+                skill: "review".to_owned(),
+                args: None,
+            }),
+        ]
     );
 }
 
