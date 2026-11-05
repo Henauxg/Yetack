@@ -528,13 +528,13 @@ impl AgentView {
     /// The cost Claude Code restored with a resumed session, read from the session file. It is
     /// the base of the first turn's cost, unless a `result` came first: the first turn's cost then
     /// counts from 0.
-    pub(crate) fn set_restored_cost(&mut self, cost: f64) {
+    pub(crate) fn set_restored_cost(&mut self, cost: CostUsd) {
         if !self.awaits_restored_cost {
             return;
         }
         self.awaits_restored_cost = false;
-        self.process_cost = cost;
-        self.summary.cost = CostUsd::new(self.cost_before_process + cost);
+        self.process_cost = cost.get();
+        self.summary.cost = CostUsd::new(self.cost_before_process + cost.get());
     }
 
     /// The `claude` process ended: what waited is cancelled, what ran failed.
@@ -2041,7 +2041,7 @@ mod tests {
         view.process_exited("claude exited".to_owned(), now());
 
         view.process_started(ProcessSession::Resumed);
-        view.set_restored_cost(86.0);
+        view.set_restored_cost(CostUsd::new(86.0));
         let restored = view.summary().cost;
         apply(&mut view, result(88.5));
         apply(&mut view, result(89.0));
@@ -2060,7 +2060,7 @@ mod tests {
         view.process_started(ProcessSession::Resumed);
 
         apply(&mut view, result(88.5));
-        view.set_restored_cost(86.0);
+        view.set_restored_cost(CostUsd::new(86.0));
         apply(&mut view, result(89.0));
 
         assert_eq!(view.summary().cost, CostUsd::new(89.0));
@@ -2078,7 +2078,7 @@ mod tests {
             &mut view,
             json!({"type": "conversation_reset", "trigger": "clear", "session_id": "session-1"}),
         );
-        view.set_restored_cost(2.0);
+        view.set_restored_cost(CostUsd::new(2.0));
         apply(&mut view, result(0.25));
 
         assert_eq!(view.summary().cost, CostUsd::new(2.25));

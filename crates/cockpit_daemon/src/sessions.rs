@@ -17,7 +17,8 @@ use std::time::SystemTime;
 
 use claude_protocol::{MessageOrigin, OutputLine, TypedCommand};
 use cockpit_protocol::{
-    ClaudeSessionId, MAX_LINE_BYTES, MAX_TITLE_CHARS, PastSession, Timestamp, TranscriptItem,
+    ClaudeSessionId, CostUsd, MAX_LINE_BYTES, MAX_TITLE_CHARS, PastSession, Timestamp,
+    TranscriptItem,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -194,7 +195,7 @@ fn past_line(line: &[u8]) -> Option<OutputLine> {
 ///
 /// Claude Code writes a `cost-state` line when its process exits. A process killed before that
 /// writes none, so the next `--resume` restores the last line's cost.
-pub(crate) fn restored_cost(claude_folder: &Path, id: &ClaudeSessionId) -> Option<f64> {
+pub(crate) fn restored_cost(claude_folder: &Path, id: &ClaudeSessionId) -> Option<CostUsd> {
     let file = read_file::open_to_read(&find_file(claude_folder, id)?).ok()?;
     let mut reader = BufReader::new(file);
     let mut cost = 0.0;
@@ -203,7 +204,7 @@ pub(crate) fn restored_cost(claude_folder: &Path, id: &ClaudeSessionId) -> Optio
         match next_line(&mut reader, &mut line, MAX_LINE_BYTES) {
             Ok(Some(SessionLine::Whole { .. } | SessionLine::Unfinished)) => {}
             Ok(Some(SessionLine::TooLong { .. })) => continue,
-            Ok(None) => return Some(cost),
+            Ok(None) => return Some(CostUsd::new(cost)),
             Err(_) => return None,
         }
         let text = String::from_utf8_lossy(&line);
@@ -773,8 +774,14 @@ mod tests {
         );
         write_session(temp.path(), "p", SECOND, &[prompt("Hello")]);
 
-        assert_eq!(restored_cost(temp.path(), &session(FIRST)), Some(0.75));
-        assert_eq!(restored_cost(temp.path(), &session(SECOND)), Some(0.0));
+        assert_eq!(
+            restored_cost(temp.path(), &session(FIRST)),
+            Some(CostUsd::new(0.75))
+        );
+        assert_eq!(
+            restored_cost(temp.path(), &session(SECOND)),
+            Some(CostUsd::new(0.0))
+        );
         assert_eq!(
             restored_cost(
                 temp.path(),

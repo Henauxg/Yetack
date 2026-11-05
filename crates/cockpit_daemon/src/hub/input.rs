@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
-use cockpit_protocol::{AgentId, Frame, PermissionMode, Request, ResponseResult, Seq, Snapshot};
+use cockpit_protocol::{
+    AgentId, CostUsd, Frame, PermissionMode, Request, ResponseResult, Seq, Snapshot,
+};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::process::ProcessEvent;
@@ -35,7 +37,7 @@ pub(crate) enum HubInput {
     RestoredCost {
         agent: AgentId,
         generation: u32,
-        cost: f64,
+        cost: CostUsd,
     },
 }
 
