@@ -666,6 +666,16 @@ fn approval_agent(now: SystemTime) -> Sample {
         item(
             3,
             None,
+            ItemBody::ToolCall(call(
+                "Bash",
+                "git push -u origin fix-links",
+                ToolCallStatus::Running,
+                None,
+            )),
+        ),
+        item(
+            4,
+            None,
             ItemBody::Approval(Approval {
                 pending: PendingId::new("demo-approval".to_owned()),
                 tool: "Bash".to_owned(),

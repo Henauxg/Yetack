@@ -1240,6 +1240,10 @@ button:disabled {
   --tool: var(--teal);
 }
 
+.tool.waiting {
+  --tool: var(--amber);
+}
+
 .tool.failed {
   --tool: var(--red);
 }
@@ -1278,6 +1282,7 @@ button:disabled {
 }
 
 .tool.running .tool-meta,
+.tool.waiting .tool-meta,
 .tool.failed .tool-meta {
   color: var(--tool);
 }
