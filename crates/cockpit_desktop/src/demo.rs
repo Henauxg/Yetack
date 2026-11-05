@@ -30,6 +30,7 @@ const PLATFORM_FOLDER: &str = "/home/dev/projects/acme-platform";
 const ERROR_FILE: &str = "src/error.rs";
 const TEST_FILE: &str = "tests/columns.rs";
 const LEXER_FILE: &str = "src/lexer.rs";
+const NOTES_FILE: &str = "AGENTS.md";
 
 const ERROR_AFTER: &str = "/// A parse error, with where it happened.
 pub struct ParseError {
@@ -77,6 +78,18 @@ pub fn tokens(input: &str) -> Vec<Token> {
 const LEXER_LINE_BEFORE: &str = "        tokens.push(Token { kind: TokenKind::from_char(character), line, column: column - 1, offset, text: input[offset..offset + character.len_utf8()].to_owned() });\n";
 
 const LEXER_LINE_AFTER: &str = "        tokens.push(Token { kind: TokenKind::from_char(character), line, column, offset, text: input[offset..offset + character.len_utf8()].to_owned() });\n";
+
+const NOTES_TEXT: &str = "# calc-parser
+
+Notes for agents working in this repository.
+
+- Lines and columns count from 1, as editors show them.
+- Every error carries the line and the column of the token it is about.
+- Run `cargo test` before saying a change is done.
+";
+
+/// Markdown links to files of the agent's folder: relative, at a line, and absolute.
+const FIX_ANSWER: &str = "Fixed in [the lexer](src/lexer.rs#L17): columns now count from 1, as [AGENTS.md](AGENTS.md) asks. The [error type](/home/dev/projects/calc-parser/src/error.rs) stays as it is. Running the tests again.";
 
 const FAILED_TEST_OUTPUT: &str = "running 4 tests
 test lexer::tests::counts_lines ... ok
@@ -217,6 +230,8 @@ fn file_text(path: &Path) -> Option<&'static str> {
         Some(TEST_TEXT)
     } else if relative == Path::new(LEXER_FILE) {
         Some(LEXER_TEXT)
+    } else if relative == Path::new(NOTES_FILE) {
+        Some(NOTES_TEXT)
     } else {
         None
     }
@@ -526,8 +541,9 @@ fn parser_agent(now: SystemTime) -> Sample {
             None,
             edit_call("Edit", LEXER_FILE, LEXER_LINE_BEFORE, LEXER_LINE_AFTER),
         ),
+        item(13, None, text(FIX_ANSWER)),
         item(
-            13,
+            14,
             None,
             ItemBody::ToolCall(call(
                 "Bash",
@@ -537,7 +553,7 @@ fn parser_agent(now: SystemTime) -> Sample {
             )),
         ),
         item(
-            14,
+            15,
             None,
             user("Also cover a token at the end of the input.", true),
         ),

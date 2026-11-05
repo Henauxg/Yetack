@@ -290,7 +290,7 @@ fn answers_text(answers: &[QuestionAnswer]) -> String {
 }
 
 #[component]
-pub fn PlanCard(agent: AgentId, plan: Plan) -> Element {
+pub fn PlanCard(agent: AgentId, folder: PathBuf, plan: Plan) -> Element {
     let cockpit: Cockpit = use_context();
     let waiting = plan.answer == AnswerState::Waiting;
     let outcome = match &plan.answer {
@@ -322,7 +322,7 @@ pub fn PlanCard(agent: AgentId, plan: Plan) -> Element {
                 Icon { kind: IconKind::List, size: 16 }
                 span { "Claude proposes a plan" }
             }
-            MarkdownView { agent, markdown: plan.markdown.clone() }
+            MarkdownView { agent, folder, markdown: plan.markdown.clone() }
             if waiting {
                 div { class: "card-actions",
                     button { class: "button primary", onclick: decide(PlanDecision::AcceptEdits),
