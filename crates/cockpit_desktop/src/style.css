@@ -923,12 +923,22 @@ button:disabled {
   padding-right: 52px;
 }
 
+/* The server detail widens the MCP block from 272 to 380 px. */
+.center:not(.narrow-chat):has(.block-card.wide) :is(.chat-scroll, .composer-wrap) {
+  padding-right: 404px;
+}
+
+/* The column and the composer grow with the window up to 1600 px: past that, a user bubble on
+   the right and the agent's text on the left drift too far apart to read as one conversation.
+   Prose keeps about 100 characters per line (90ch); tool calls, code, tables and diffs take the
+   column's whole width. */
 .chat-column {
+  --prose-width: 90ch;
   display: flex;
   flex-direction: column;
   gap: 14px;
   width: 100%;
-  max-width: 820px;
+  max-width: 1600px;
   margin: 0 auto;
   padding: 20px;
 }
@@ -958,7 +968,7 @@ button:disabled {
 
 .user-message {
   align-self: flex-end;
-  max-width: 80%;
+  max-width: min(80%, var(--prose-width));
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -1034,6 +1044,7 @@ button:disabled {
 }
 
 .thinking-text {
+  max-width: var(--prose-width);
   margin: 6px 0 0 15px;
   padding-left: 12px;
   border-left: 1px solid var(--line-strong);
@@ -1060,8 +1071,11 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-width: 72ch;
   overflow-wrap: anywhere;
+}
+
+.markdown > :is(p, .md-heading, .md-list, .md-quote) {
+  max-width: var(--prose-width);
 }
 
 .markdown p {
@@ -1361,6 +1375,7 @@ button:disabled {
 }
 
 .subagent-result {
+  max-width: var(--prose-width);
   margin: 0;
   font-size: 13px;
   color: var(--muted);
@@ -2185,7 +2200,7 @@ button:disabled {
 .composer-column {
   position: relative;
   width: 100%;
-  max-width: 820px;
+  max-width: 1600px;
   margin: 0 auto;
   padding: 10px 20px 16px;
 }
