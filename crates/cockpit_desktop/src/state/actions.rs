@@ -88,11 +88,72 @@ pub enum Step {
 
 pub fn select_agent(state: &mut AppState, agent: AgentId) {
     state.ui.selected = Some(agent);
+    state.ui.chat_new_from.clear();
     state.ui.unread.remove(&agent);
     state.ui.popover = None;
     state.ui.badge = None;
     state.ui.mcp.detail = None;
     state.ui.mcp.filter = ToolFilter::All;
+}
+
+/// The chat's script says the agent's chat reached its bottom, or left it. Leaving it marks the
+/// last entry seen, so that the entries after it count as new. Reaching it puts the "New" divider
+/// above the first new entry, if any came.
+pub fn chat_at_bottom(state: &mut AppState, agent: AgentId, at_bottom: bool) {
+    let Some(entry) = state.agents.get(&agent) else {
+        return;
+    };
+    if !at_bottom {
+        let last_seen = entry.transcript.last_id();
+        state.ui.chat_scrolled_up.entry(agent).or_insert(last_seen);
+        return;
+    }
+    let Some(last_seen) = state.ui.chat_scrolled_up.remove(&agent) else {
+        return;
+    };
+    if let Some(first) = new_entries(entry, last_seen).first {
+        state.ui.chat_new_from.insert(agent, first);
+    }
+}
+
+/// The entries that arrived while an agent's chat was scrolled up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NewEntries {
+    pub count: usize,
+    pub first: Option<ItemId>,
+}
+
+/// The entries after `last_seen` that a reader counts: messages, Claude's text, tool calls and
+/// cards, not notices, thinking or a turn's end.
+pub fn new_entries(entry: &AgentEntry, last_seen: Option<ItemId>) -> NewEntries {
+    let counted = entry.transcript.items_after(last_seen).filter(|item| {
+        item.parent.is_none()
+            && matches!(
+                item.body,
+                ItemBody::UserMessage(_)
+                    | ItemBody::AssistantText { .. }
+                    | ItemBody::ToolCall(_)
+                    | ItemBody::Subagent(_)
+                    | ItemBody::Approval(_)
+                    | ItemBody::Question(_)
+                    | ItemBody::Plan(_)
+            )
+    });
+    let mut news = NewEntries::default();
+    for item in counted {
+        news.first = news.first.or(Some(item.id));
+        news.count += 1;
+    }
+    news
+}
+
+/// Where the chat's "New" divider goes: above the first new entry while scrolled up, else where
+/// the chat's last trip down put it.
+pub fn new_divider(state: &AppState, agent: AgentId) -> Option<ItemId> {
+    let entry = state.agents.get(&agent)?;
+    let scrolled_up = state.ui.chat_scrolled_up.get(&agent);
+    let waiting = scrolled_up.and_then(|&last_seen| new_entries(entry, last_seen).first);
+    waiting.or_else(|| state.ui.chat_new_from.get(&agent).copied())
 }
 
 /// Whether the command palette opens or closes as you type.
@@ -682,6 +743,7 @@ pub fn send_prompt(
     let draft = std::mem::take(draft);
     drafts.draft_written();
     state.ui.popover = None;
+    state.ui.chat_new_from.remove(&agent);
     let prompt = Prompt {
         text: draft.text.trim().to_owned(),
         images: draft.images.clone(),
@@ -1416,6 +1478,124 @@ mod tests {
         // The palette opened again while the request was on its way asks nothing more.
         assert_eq!((first.len(), second.len()), (1, 0));
         assert_eq!(agent_commands(&state, agent()).len(), 1);
+    }
+
+    /// Appends a notice with the id `id` to the agent's transcript.
+    fn append_notice(state: &mut AppState, id: u32) {
+        if let Some(entry) = state.agents.get_mut(&agent()) {
+            entry.transcript.append(TranscriptItem {
+                id: ItemId::new(id),
+                parent: None,
+                body: ItemBody::Notice {
+                    text: format!("notice {id}"),
+                },
+            });
+        }
+    }
+
+    /// Appends an item with the id `id` and the body `body` to the agent's transcript.
+    fn append(state: &mut AppState, id: u32, body: ItemBody) {
+        if let Some(entry) = state.agents.get_mut(&agent()) {
+            entry.transcript.append(TranscriptItem {
+                id: ItemId::new(id),
+                parent: None,
+                body,
+            });
+        }
+    }
+
+    fn text(markdown: &str) -> ItemBody {
+        ItemBody::AssistantText {
+            markdown: markdown.to_owned(),
+        }
+    }
+
+    #[test]
+    fn new_entries_count_messages_text_tool_calls_and_cards_only() {
+        let mut state = state(AgentStatus::Working);
+        append_notice(&mut state, 1);
+        chat_at_bottom(&mut state, agent(), false);
+        append_notice(&mut state, 2);
+        append(&mut state, 3, text("Reading the lexer."));
+        append(
+            &mut state,
+            4,
+            ItemBody::Thinking {
+                text: "Hmm.".to_owned(),
+            },
+        );
+        append(
+            &mut state,
+            5,
+            ItemBody::UserMessage(cockpit_protocol::UserMessage {
+                text: "Also the docs".to_owned(),
+                images: Vec::new(),
+                queued: true,
+            }),
+        );
+        append(&mut state, 6, ItemBody::Question(question(false)));
+
+        let last_seen = state.ui.chat_scrolled_up[&agent()];
+        let news = new_entries(&state.agents[&agent()], last_seen);
+
+        assert_eq!(
+            news,
+            NewEntries {
+                count: 3,
+                first: Some(ItemId::new(3)),
+            }
+        );
+    }
+
+    #[test]
+    fn the_new_divider_stays_above_the_first_new_entry_until_a_send_or_a_switch() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        append_notice(&mut state, 1);
+        let divider = |state: &AppState| new_divider(state, agent());
+        chat_at_bottom(&mut state, agent(), false);
+        let nothing_new = divider(&state);
+        append_notice(&mut state, 2);
+        append(&mut state, 3, text("Done."));
+        let scrolled_up = divider(&state);
+        chat_at_bottom(&mut state, agent(), true);
+        let back_down = divider(&state);
+
+        type_text(&mut state, &mut drafts, "Thanks");
+        send_prompt(&mut state, &mut drafts, agent(), None);
+        let after_send = divider(&state);
+        chat_at_bottom(&mut state, agent(), false);
+        append(&mut state, 4, text("More."));
+        chat_at_bottom(&mut state, agent(), true);
+        let again = divider(&state);
+        select_agent(&mut state, agent());
+
+        assert_eq!(nothing_new, None);
+        assert_eq!(scrolled_up, Some(ItemId::new(3)));
+        assert_eq!(back_down, Some(ItemId::new(3)));
+        assert_eq!(after_send, None);
+        assert_eq!(again, Some(ItemId::new(4)));
+        assert_eq!(divider(&state), None);
+    }
+
+    #[test]
+    fn leaving_the_bottom_of_the_chat_marks_the_last_entry_seen() {
+        let mut state = state(AgentStatus::Working);
+        let marked = |state: &AppState| state.ui.chat_scrolled_up.get(&agent()).copied();
+        chat_at_bottom(&mut state, agent(), false);
+        let empty = marked(&state);
+        chat_at_bottom(&mut state, agent(), true);
+        let back = marked(&state);
+
+        append_notice(&mut state, 5);
+        chat_at_bottom(&mut state, agent(), false);
+        append_notice(&mut state, 6);
+        chat_at_bottom(&mut state, agent(), false);
+
+        assert_eq!(empty, Some(None));
+        assert_eq!(back, None);
+        // A second report while still scrolled up keeps the first mark.
+        assert_eq!(marked(&state), Some(Some(ItemId::new(5))));
     }
 
     #[test]
