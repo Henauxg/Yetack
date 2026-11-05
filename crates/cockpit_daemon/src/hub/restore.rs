@@ -50,7 +50,7 @@ pub(crate) fn restore(state: &StateDir) -> Result<Restored, StoreError> {
         }
     }
     let ttl = settings.prompt_cache_ttl();
-    let agents = file
+    let agents: Vec<(AgentRecord, AgentView)> = file
         .agents
         .into_iter()
         .map(|record| {
@@ -59,7 +59,7 @@ pub(crate) fn restore(state: &StateDir) -> Result<Restored, StoreError> {
             // The record is the reference for what a client chose.
             summary.title = record.title.clone();
             summary.folder = record.folder.clone();
-            let items = logged.items.into_values().collect();
+            let items: Vec<TranscriptItem> = logged.items.into_values().collect();
             let view = AgentView::restore(summary, logged.details, items, ttl);
             (record, view)
         })

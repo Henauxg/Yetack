@@ -2,7 +2,7 @@
 //!
 //! [`serve`] runs it. The `agents-cockpit` binary calls it for `agents-cockpit serve`.
 
-mod config;
+mod daemon_config;
 mod error_chain;
 mod hub;
 mod mcp_remove;
@@ -14,7 +14,7 @@ mod sessions;
 mod store;
 mod transcript;
 
-pub use config::{CLAUDE_PROGRAM_ENV, DaemonConfig};
+pub use daemon_config::{CLAUDE_PROGRAM_ENV, DaemonConfig, HOME_ENV};
 pub use process::ProcessError;
 pub use serve::{ServeError, serve};
 pub use server::PeerError;

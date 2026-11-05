@@ -1,7 +1,6 @@
 //! The task that owns one `claude` child process.
 
 use std::collections::HashMap;
-use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::ExitStatus;
 use std::time::{Duration, SystemTime};
@@ -17,9 +16,9 @@ use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
-use crate::process::command::ClaudeCommand;
-use crate::process::error::ProcessError;
+use crate::process::claude_command::ClaudeCommand;
 use crate::process::line_reader::{LineReader, ReadLine};
+use crate::process::process_error::ProcessError;
 use crate::store::{Direction, RawLog};
 
 /// How long Claude Code has to answer one of the daemon's control requests.
@@ -292,7 +291,7 @@ where
 
     async fn received(&mut self, line: &str) -> Result<(), HubGone> {
         self.raw(Direction::FromClaude, line);
-        let parsed = match line.parse::<OutputLine>() {
+        let parsed: OutputLine = match line.parse() {
             Ok(parsed) => parsed,
             Err(error) => {
                 tracing::warn!(%error, "skipped a line from claude");
@@ -427,6 +426,8 @@ where
 }
 
 fn describe_exit(status: Option<ExitStatus>) -> String {
+    use std::os::unix::process::ExitStatusExt;
+
     match status {
         Some(status) => match (status.code(), status.signal()) {
             (Some(0), _) => "claude exited".to_owned(),
@@ -475,6 +476,7 @@ fn now() -> Timestamp {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::process::ExitStatusExt;
     use std::process::Stdio;
 
     use super::*;

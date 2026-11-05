@@ -1,15 +1,13 @@
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io;
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::store::error::StoreError;
 use crate::store::state_dir::FILE_MODE;
+use crate::store::store_error::StoreError;
 
 const TEMPORARY_SUFFIX: &str = ".tmp";
 
@@ -46,6 +44,9 @@ pub(crate) fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), Sto
 
 /// Writes a temporary file beside `path`, syncs it, then renames it over `path`.
 fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
     let temporary = temporary_path(path);
     let mut file = OpenOptions::new()
         .create(true)
@@ -108,7 +109,7 @@ mod tests {
         let path = temp.path().join("agents.json");
         std::fs::write(&path, b"{not json").unwrap();
 
-        let read = read_json::<BTreeMap<String, u32>>(&path);
+        let read: Result<BTreeMap<String, u32>, StoreError> = read_json(&path);
 
         assert!(
             matches!(read, Err(StoreError::Malformed { .. })),

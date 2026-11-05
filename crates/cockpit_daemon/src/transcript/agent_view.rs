@@ -31,6 +31,13 @@ pub(crate) enum FollowUp {
     RateLimit(RateLimitInfo),
 }
 
+/// Whether a client's prompt goes to `claude` now or waits for the current turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PromptDelivery {
+    Now,
+    Queued,
+}
+
 /// The answer to a pending item, ready to send.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Answered {
@@ -254,7 +261,8 @@ impl AgentView {
     }
 
     /// A prompt from a client. A queued one waits in the transcript until the hub sends it.
-    pub(crate) fn add_prompt(&mut self, prompt: &Prompt, queued: bool) -> ItemId {
+    pub(crate) fn add_prompt(&mut self, prompt: &Prompt, delivery: PromptDelivery) -> ItemId {
+        let queued = delivery == PromptDelivery::Queued;
         let item = self.push_item(
             None,
             ItemBody::UserMessage(UserMessage {
@@ -493,10 +501,8 @@ impl AgentView {
         if let Some(OpenWord::Known(mode)) = init.permission_mode {
             self.summary.mode = words::mode_to_cockpit(mode);
         }
-        let before = (
-            self.details.commands.clone(),
-            self.details.mcp_servers.clone(),
-        );
+        let commands_before = self.details.commands.clone();
+        let servers_before = self.details.mcp_servers.clone();
         self.skills = init.skills.into_iter().collect();
         if self.details.commands.is_empty() {
             self.details.commands =
@@ -505,12 +511,7 @@ impl AgentView {
             details::mark_skills(&mut self.details.commands, &self.skills);
         }
         details::merge_init_servers(&mut self.details.mcp_servers, &init.mcp_servers);
-        if before
-            != (
-                self.details.commands.clone(),
-                self.details.mcp_servers.clone(),
-            )
-        {
+        if commands_before != self.details.commands || servers_before != self.details.mcp_servers {
             self.details_changed = true;
         }
     }
@@ -663,9 +664,9 @@ impl AgentView {
         {
             edit.old_text = original;
         }
-        let (added, removed) = tools::changed_lines(&edit.old_text, &edit.new_text);
+        let lines = tools::changed_lines(&edit.old_text, &edit.new_text);
         let path = edit.path.clone();
-        details::add_changed_file(&mut self.details.changed_files, &path, added, removed);
+        details::add_changed_file(&mut self.details.changed_files, &path, lines);
         self.details_changed = true;
     }
 
@@ -1051,8 +1052,8 @@ mod tests {
 
     use claude_protocol::PermissionDecision;
     use cockpit_protocol::{
-        AgentId, ApprovalAnswer, ApprovalDecision, PlanAnswer, PlanDecision, QuestionAnswer,
-        TaskProgress, TaskStatus,
+        AgentId, ApprovalAnswer, ApprovalDecision, BackgroundTaskKind, CommandKind,
+        McpServerStatus, PlanAnswer, PlanDecision, QuestionAnswer, TaskProgress, TaskStatus,
     };
     use serde_json::json;
 
@@ -1157,7 +1158,7 @@ mod tests {
     fn a_plain_turn_shows_the_prompt_the_answer_and_its_end() {
         let mut view = view();
 
-        view.add_prompt(&prompt("Fix the cart total"), false);
+        view.add_prompt(&prompt("Fix the cart total"), PromptDelivery::Now);
         assert_eq!(
             view.summary().status,
             AgentStatus::Idle,
@@ -1232,7 +1233,7 @@ mod tests {
         apply(&mut view, init());
 
         let details = view.details();
-        let commands: Vec<(&str, cockpit_protocol::CommandKind)> = details
+        let commands: Vec<(&str, CommandKind)> = details
             .commands
             .iter()
             .map(|command| (command.name.as_str(), command.kind))
@@ -1240,15 +1241,12 @@ mod tests {
         assert_eq!(
             commands,
             [
-                ("review", cockpit_protocol::CommandKind::Command),
-                ("tidy", cockpit_protocol::CommandKind::Skill)
+                ("review", CommandKind::Command),
+                ("tidy", CommandKind::Skill)
             ]
         );
         assert_eq!(details.mcp_servers.len(), 1);
-        assert_eq!(
-            details.mcp_servers[0].status,
-            cockpit_protocol::McpServerStatus::Connected
-        );
+        assert_eq!(details.mcp_servers[0].status, McpServerStatus::Connected);
     }
 
     #[test]
@@ -1302,7 +1300,7 @@ mod tests {
     #[test]
     fn an_approval_waits_then_allows_with_the_input() {
         let mut view = view();
-        view.add_prompt(&prompt("Clean up"), false);
+        view.add_prompt(&prompt("Clean up"), PromptDelivery::Now);
         apply(
             &mut view,
             tool_use("t1", "Bash", json!({"command": "rm -r build"})),
@@ -1355,9 +1353,10 @@ mod tests {
     #[test]
     fn a_question_replaces_its_tool_call_and_takes_one_answer_per_question() {
         let mut view = view();
-        let input = json!({"questions": [
-            {"question": "Which store?", "header": "Store", "options": [{"label": "Paris"}, {"label": "Lyon"}]}
-        ]});
+        let input = json!({"questions": [{
+            "question": "Which store?", "header": "Store",
+            "options": [{"label": "Paris"}, {"label": "Lyon"}]
+        }]});
         apply(&mut view, tool_use("t1", "AskUserQuestion", input.clone()));
 
         apply(
@@ -1436,7 +1435,7 @@ mod tests {
     #[test]
     fn an_interrupt_cancels_what_waits_and_fails_what_runs() {
         let mut view = view();
-        view.add_prompt(&prompt("Deploy"), false);
+        view.add_prompt(&prompt("Deploy"), PromptDelivery::Now);
         apply(
             &mut view,
             tool_use("t1", "Bash", json!({"command": "make deploy"})),
@@ -1583,7 +1582,7 @@ mod tests {
         );
 
         assert_eq!(running.status, BackgroundTaskStatus::Running);
-        assert_eq!(running.kind, cockpit_protocol::BackgroundTaskKind::Command);
+        assert_eq!(running.kind, BackgroundTaskKind::Command);
         assert_eq!(running.tool_calls, 3);
         let ended = &view.details().background_tasks[0];
         assert_eq!(ended.status, BackgroundTaskStatus::Failed);
@@ -1593,10 +1592,10 @@ mod tests {
     #[test]
     fn a_queued_prompt_waits_then_its_echo_adds_nothing() {
         let mut view = view();
-        view.add_prompt(&prompt("First"), false);
+        view.add_prompt(&prompt("First"), PromptDelivery::Now);
         assert!(view.is_busy());
 
-        let queued = view.add_prompt(&prompt("Second"), true);
+        let queued = view.add_prompt(&prompt("Second"), PromptDelivery::Queued);
         let ItemBody::UserMessage(message) = &view.items()[1].body else {
             panic!("expected a user message");
         };
@@ -1621,7 +1620,7 @@ mod tests {
     #[test]
     fn a_cancelled_queued_prompt_becomes_a_notice() {
         let mut view = view();
-        let queued = view.add_prompt(&prompt("Later"), true);
+        let queued = view.add_prompt(&prompt("Later"), PromptDelivery::Queued);
 
         view.cancel_queued(queued);
 
@@ -1689,7 +1688,7 @@ mod tests {
     #[test]
     fn a_restored_agent_continues_its_ids_and_closes_what_was_open() {
         let mut live = view();
-        live.add_prompt(&prompt("Go"), false);
+        live.add_prompt(&prompt("Go"), PromptDelivery::Now);
         apply(
             &mut live,
             tool_use("t1", "Bash", json!({"command": "sleep 100"})),
@@ -1698,7 +1697,7 @@ mod tests {
             &mut live,
             can_use_tool("req-1", "t1", "Bash", json!({"command": "sleep 100"})),
         );
-        live.add_prompt(&prompt("Then this"), true);
+        live.add_prompt(&prompt("Then this"), PromptDelivery::Queued);
         live.take_events();
 
         let mut restored = AgentView::restore(
@@ -1741,7 +1740,7 @@ mod tests {
                 .any(|event| matches!(event, Event::AgentUpdated(_)))
         );
         restored.process_started();
-        let next = restored.add_prompt(&prompt("Again"), false);
+        let next = restored.add_prompt(&prompt("Again"), PromptDelivery::Now);
         assert_eq!(next, ItemId::new(5));
     }
 

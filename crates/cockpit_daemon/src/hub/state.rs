@@ -10,7 +10,7 @@ use cockpit_protocol::{
 };
 use tokio::sync::mpsc;
 
-use crate::config::DaemonConfig;
+use crate::daemon_config::DaemonConfig;
 use crate::hub::input::{ControlPurpose, HubInput, Joined, Registration};
 use crate::hub::restore::Restored;
 use crate::process::ProcessHandle;
@@ -64,7 +64,7 @@ impl Hub {
         inputs: mpsc::Sender<HubInput>,
     ) -> Self {
         let logs = EventLogs::new(state.events());
-        let agents = restored
+        let agents: BTreeMap<AgentId, Agent> = restored
             .agents
             .into_iter()
             .map(|(record, view)| {

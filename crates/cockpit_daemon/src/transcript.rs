@@ -6,12 +6,12 @@
 //!   [`prompts`] a client's prompt into a `user` line.
 //! - [`plan_usage`] keeps the account's plan usage from `rate_limit_event` lines.
 
+mod agent_view;
 mod answers;
 mod details;
 pub(crate) mod plan_usage;
 pub(crate) mod prompts;
 mod tools;
-mod view;
 pub(crate) mod words;
 
-pub(crate) use view::{AgentView, AnswerError, FollowUp};
+pub(crate) use agent_view::{AgentView, AnswerError, FollowUp, PromptDelivery};

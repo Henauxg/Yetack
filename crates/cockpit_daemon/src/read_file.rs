@@ -2,8 +2,6 @@
 
 use std::fs::File;
 use std::io;
-use std::io::Read;
-use std::os::fd::AsRawFd;
 use std::path::{Component, Path};
 
 use cockpit_protocol::{ErrorBody, ErrorCode};
@@ -46,6 +44,8 @@ impl ReadFileError {
 /// Reads `path`, absolute or relative to `folder`, when it stays inside `folder` once its
 /// symlinks are resolved.
 pub(crate) fn read(folder: &Path, path: &Path) -> Result<String, ReadFileError> {
+    use std::io::Read;
+
     if path
         .components()
         .any(|component| component == Component::ParentDir)
@@ -89,6 +89,8 @@ pub(crate) fn open_to_read(path: &Path) -> io::Result<File> {
 /// Refuses an open file outside `folder`: a folder of its path may have become a symlink since
 /// the path was checked.
 fn ensure_inside(file: &File, folder: &Path) -> Result<(), ReadFileError> {
+    use std::os::fd::AsRawFd;
+
     let link = Path::new(OPEN_FILES).join(file.as_raw_fd().to_string());
     let opened = std::fs::read_link(link).map_err(ReadFileError::Io)?;
     if !opened.starts_with(folder) {
@@ -100,6 +102,7 @@ fn ensure_inside(file: &File, folder: &Path) -> Result<(), ReadFileError> {
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::symlink;
+    use std::time::Duration;
 
     use super::*;
 
@@ -158,7 +161,7 @@ mod tests {
     fn a_fifo_is_refused_at_once() {
         let temp = tempfile::tempdir().unwrap();
         let fifo = temp.path().join("notes.txt");
-        rustix::fs::mkfifoat(rustix::fs::CWD, &fifo, rustix::fs::Mode::RUSR).unwrap();
+        rustix::fs::mkfifoat(rustix::fs::CWD, &fifo, Mode::RUSR).unwrap();
         let folder = temp.path().to_owned();
         let (sender, receiver) = std::sync::mpsc::channel();
 
@@ -168,7 +171,7 @@ mod tests {
         });
 
         let read = receiver
-            .recv_timeout(std::time::Duration::from_secs(5))
+            .recv_timeout(Duration::from_secs(5))
             .expect("an answer without a writer on the FIFO");
         assert!(matches!(read, Err(ReadFileError::NotAFile)), "{read:?}");
     }

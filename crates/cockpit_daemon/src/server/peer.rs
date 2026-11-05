@@ -107,10 +107,12 @@ fn parent(proc_root: &Path, pid: u32) -> Result<u32, PeerError> {
 mod tests {
     use std::path::PathBuf;
 
+    use tempfile::TempDir;
+
     use super::*;
 
     /// A `/proc` with the given (pid, stat line) pairs.
-    fn fake_proc(processes: &[(u32, &str)]) -> (tempfile::TempDir, PathBuf) {
+    fn fake_proc(processes: &[(u32, &str)]) -> (TempDir, PathBuf) {
         let temp = tempfile::tempdir().unwrap();
         for (pid, stat) in processes {
             let folder = temp.path().join(pid.to_string());

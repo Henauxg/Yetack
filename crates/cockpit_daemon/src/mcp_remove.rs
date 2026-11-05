@@ -38,7 +38,7 @@ pub(crate) async fn remove(
         .map_err(|_| {
             ErrorBody::new(
                 ErrorCode::Timeout,
-                "claude mcp remove did not finish in time".to_owned(),
+                format!("claude {MCP_SUBCOMMAND} {REMOVE_SUBCOMMAND} did not finish in time"),
             )
         })?
         .map_err(|error| {
@@ -61,7 +61,10 @@ pub(crate) async fn remove(
         .map_or("", |(index, _)| text.get(index..).unwrap_or_default());
     Err(ErrorBody::new(
         ErrorCode::ClaudeFailed,
-        format!("claude mcp remove failed: {}", tail.trim()),
+        format!(
+            "claude {MCP_SUBCOMMAND} {REMOVE_SUBCOMMAND} failed: {}",
+            tail.trim()
+        ),
     ))
 }
 
@@ -91,6 +94,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_failure_quotes_what_claude_said() {
+        use std::fs::Permissions;
+        use std::os::unix::fs::PermissionsExt;
+
         let temp = tempfile::tempdir().unwrap();
         let program = temp.path().join("claude");
         std::fs::write(
@@ -98,11 +104,7 @@ mod tests {
             "#!/bin/sh\necho \"No MCP server named $5\" >&2\nexit 1\n",
         )
         .unwrap();
-        std::fs::set_permissions(
-            &program,
-            std::os::unix::fs::PermissionsExt::from_mode(0o755),
-        )
-        .unwrap();
+        std::fs::set_permissions(&program, Permissions::from_mode(0o755)).unwrap();
 
         let result = remove(&program, temp.path(), "notes", McpScope::Local).await;
 

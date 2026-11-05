@@ -1,17 +1,16 @@
 //! The daemon's control requests to Claude Code, and their answers.
 
 use claude_protocol::{
-    ContextUsage as ClaudeContextUsage, ControlRequest, InitializeResponse, McpStatus,
+    ContextUsage as ClaudeContextUsage, ControlRequest, InitializeResponse, McpStatus, ParseError,
 };
 use cockpit_protocol::{
     AgentId, ErrorBody, ErrorCode, ResponseBody, SetModeParams, SetModelParams,
 };
 use serde_json::Value;
 
-use crate::hub::agents::respond;
-use crate::hub::errors;
 use crate::hub::input::{ControlPurpose, Reply};
 use crate::hub::state::Hub;
+use crate::hub::{agents, errors};
 use crate::process::ControlFailure;
 use crate::transcript::words;
 
@@ -26,7 +25,7 @@ impl ControlPurpose {
             | Self::SetMode {
                 reply: Some(reply), ..
             }
-            | Self::McpStatus(Some(reply)) => respond(reply, Err(error)),
+            | Self::McpStatus(Some(reply)) => agents::respond(reply, Err(error)),
             Self::Initialize
             | Self::ContextAfterTurn
             | Self::SetMode { reply: None, .. }
@@ -85,16 +84,16 @@ impl Hub {
                 let result = result
                     .map(|_| ResponseBody::Done)
                     .map_err(|failure| errors::control_failed(id, failure));
-                respond(reply, result);
+                agents::respond(reply, result);
             }
             ControlPurpose::SetModel { model, reply } => match result {
                 Ok(_) => {
                     view.set_model(model.clone());
                     agent.record.model = Some(model);
                     record_changed = true;
-                    respond(reply, Ok(ResponseBody::Done));
+                    agents::respond(reply, Ok(ResponseBody::Done));
                 }
-                Err(failure) => respond(reply, Err(errors::control_failed(id, failure))),
+                Err(failure) => agents::respond(reply, Err(errors::control_failed(id, failure))),
             },
             ControlPurpose::SetMode { mode, reply } => {
                 let result = match result {
@@ -107,7 +106,7 @@ impl Hub {
                     Err(failure) => Err(errors::control_failed(id, failure)),
                 };
                 match reply {
-                    Some(reply) => respond(reply, result),
+                    Some(reply) => agents::respond(reply, result),
                     None => {
                         if let Err(error) = result {
                             tracing::warn!(agent = id.get(), error.message, "mode change failed");
@@ -118,7 +117,7 @@ impl Hub {
             ControlPurpose::ContextUsage(reply) => {
                 let result = parse_for_client::<ClaudeContextUsage>(id, result)
                     .map(|usage| ResponseBody::ContextUsage(view.set_context(&usage)));
-                respond(reply, result);
+                agents::respond(reply, result);
             }
             ControlPurpose::McpStatus(reply) => {
                 let result = parse_for_client::<McpStatus>(id, result).map(|status| {
@@ -127,7 +126,7 @@ impl Hub {
                     }
                 });
                 match reply {
-                    Some(reply) => respond(reply, result),
+                    Some(reply) => agents::respond(reply, result),
                     None => {
                         if let Err(error) = result {
                             tracing::debug!(agent = id.get(), error.message, "no MCP status");
@@ -140,7 +139,7 @@ impl Hub {
                 let result = result
                     .map(|_| ResponseBody::Done)
                     .map_err(|failure| errors::control_failed(id, failure));
-                respond(reply, result);
+                agents::respond(reply, result);
             }
         }
         if record_changed {
@@ -160,7 +159,7 @@ impl Hub {
     pub(super) fn set_model(&mut self, params: SetModelParams, reply: Reply) {
         let id = params.agent;
         let Some(agent) = self.agents.get_mut(&id) else {
-            respond(reply, Err(errors::agent_not_found(id)));
+            agents::respond(reply, Err(errors::agent_not_found(id)));
             return;
         };
         if agent.process.is_some() {
@@ -178,14 +177,14 @@ impl Hub {
         agent.record.model = Some(params.model);
         self.save_agents();
         self.publish(id);
-        respond(reply, Ok(ResponseBody::Done));
+        agents::respond(reply, Ok(ResponseBody::Done));
     }
 
     /// Asks the running `claude`, or records the mode for the next start.
     pub(super) fn set_mode(&mut self, params: SetModeParams, reply: Reply) {
         let id = params.agent;
         let Some(agent) = self.agents.get_mut(&id) else {
-            respond(reply, Err(errors::agent_not_found(id)));
+            agents::respond(reply, Err(errors::agent_not_found(id)));
             return;
         };
         if agent.process.is_some() {
@@ -203,14 +202,14 @@ impl Hub {
         agent.record.mode = Some(params.mode);
         self.save_agents();
         self.publish(id);
-        respond(reply, Ok(ResponseBody::Done));
+        agents::respond(reply, Ok(ResponseBody::Done));
     }
 }
 
 /// Reads an answer's body, or says why there is none.
 fn parse<T>(result: Result<Value, ControlFailure>) -> Result<T, String>
 where
-    T: for<'body> TryFrom<&'body Value, Error = claude_protocol::ParseError>,
+    T: for<'body> TryFrom<&'body Value, Error = ParseError>,
 {
     let body = result.map_err(|failure| format!("{failure:?}"))?;
     T::try_from(&body).map_err(|error| error.to_string())
@@ -218,7 +217,7 @@ where
 
 fn parse_for_client<T>(id: AgentId, result: Result<Value, ControlFailure>) -> Result<T, ErrorBody>
 where
-    T: for<'body> TryFrom<&'body Value, Error = claude_protocol::ParseError>,
+    T: for<'body> TryFrom<&'body Value, Error = ParseError>,
 {
     let body = result.map_err(|failure| errors::control_failed(id, failure))?;
     T::try_from(&body).map_err(|error| ErrorBody::new(ErrorCode::ClaudeFailed, error.to_string()))

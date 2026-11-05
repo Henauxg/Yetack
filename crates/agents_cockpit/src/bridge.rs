@@ -1,19 +1,23 @@
 //! `agents-cockpit bridge`: what `ssh <host> agents-cockpit bridge` runs. It copies bytes between
 //! its stdin and stdout and the daemon's socket, and parses nothing.
 
+use std::io;
 use std::path::Path;
 
-use anyhow::Context;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::UnixStream;
+
+use crate::cli::{PROGRAM, SERVE_SUBCOMMAND};
 
 const BUFFER_BYTES: usize = 64 * 1024;
 
 /// Copies until either side closes.
 pub(crate) async fn run(socket: &Path) -> anyhow::Result<()> {
+    use anyhow::Context;
+
     let stream = UnixStream::connect(socket).await.with_context(|| {
         format!(
-            "cannot connect to {}: is `agents-cockpit serve` running?",
+            "cannot connect to {}: is `{PROGRAM} {SERVE_SUBCOMMAND}` running?",
             socket.display()
         )
     })?;
@@ -22,13 +26,15 @@ pub(crate) async fn run(socket: &Path) -> anyhow::Result<()> {
     let mut stdout = tokio::io::stdout();
     tokio::select! {
         copied = copy(&mut stdin, &mut to_daemon) => copied.context("cannot copy to the daemon")?,
-        copied = copy(&mut from_daemon, &mut stdout) => copied.context("cannot copy from the daemon")?,
+        copied = copy(&mut from_daemon, &mut stdout) => {
+            copied.context("cannot copy from the daemon")?;
+        }
     }
     Ok(())
 }
 
 /// Copies and flushes each chunk at once: a protocol line must not wait in a buffer.
-async fn copy<R, W>(reader: &mut R, writer: &mut W) -> std::io::Result<()>
+async fn copy<R, W>(reader: &mut R, writer: &mut W) -> io::Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,

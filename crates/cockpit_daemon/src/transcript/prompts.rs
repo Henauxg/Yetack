@@ -57,7 +57,9 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&line).unwrap(),
             json!({"type": "user", "message": {"role": "user", "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "aGVsbG8="}},
+                {"type": "image", "source": {
+                    "type": "base64", "media_type": "image/png", "data": "aGVsbG8="
+                }},
                 {"type": "text", "text": "What is wrong here?"}
             ]}})
         );

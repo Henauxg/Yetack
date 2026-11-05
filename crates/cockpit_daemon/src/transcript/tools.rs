@@ -5,7 +5,7 @@ use std::path::Path;
 use claude_protocol::{ContentBlock, ToolInput};
 use cockpit_protocol::FileEdit;
 use serde_json::{Map, Value};
-use strum::EnumString;
+use strum::{EnumString, IntoStaticStr, VariantArray};
 
 /// The tools that run a subagent. Claude Code has called it both names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString)]
@@ -15,19 +15,20 @@ enum SubagentTool {
 }
 
 /// The input fields a summary shows: the first one present wins.
-const SUMMARY_FIELDS: [&str; 9] = [
-    "command",
-    FILE_PATH_FIELD,
-    NOTEBOOK_PATH_FIELD,
-    "pattern",
-    "url",
-    "query",
-    "description",
-    "prompt",
-    "skill",
-];
-const FILE_PATH_FIELD: &str = "file_path";
-const NOTEBOOK_PATH_FIELD: &str = "notebook_path";
+#[derive(Debug, Clone, Copy, PartialEq, Eq, IntoStaticStr, VariantArray)]
+#[strum(serialize_all = "snake_case")]
+enum SummaryField {
+    Command,
+    FilePath,
+    NotebookPath,
+    Pattern,
+    Url,
+    Query,
+    Description,
+    Prompt,
+    Skill,
+}
+
 const SUMMARY_MAX_CHARS: usize = 200;
 
 /// Claude Code's record of a `Write` call holds the file as it was before.
@@ -41,6 +42,13 @@ const ELLIPSIS: char = '…';
 /// The most of a tool's output a transcript item keeps, so that a history page stays small.
 pub(crate) const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 
+/// Lines added and removed by an edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ChangedLines {
+    pub(crate) added: u32,
+    pub(crate) removed: u32,
+}
+
 pub(crate) fn is_subagent(tool: &str) -> bool {
     tool.parse::<SubagentTool>().is_ok()
 }
@@ -48,11 +56,12 @@ pub(crate) fn is_subagent(tool: &str) -> bool {
 /// One line for the card's title: the command, the file path (relative to the agent's folder
 /// when inside it), the pattern, the URL.
 pub(crate) fn summary(input: &Map<String, Value>, folder: &Path) -> String {
-    for field in SUMMARY_FIELDS {
-        let Some(Value::String(text)) = input.get(field) else {
+    for &field in SummaryField::VARIANTS {
+        let key: &str = field.into();
+        let Some(Value::String(text)) = input.get(key) else {
             continue;
         };
-        let shown = if field == FILE_PATH_FIELD || field == NOTEBOOK_PATH_FIELD {
+        let shown = if matches!(field, SummaryField::FilePath | SummaryField::NotebookPath) {
             Path::new(text)
                 .strip_prefix(folder)
                 .map_or_else(|_| text.clone(), |relative| relative.display().to_string())
@@ -135,7 +144,7 @@ pub(crate) fn exit_code(output: &str) -> Option<i32> {
 }
 
 /// Lines added and removed from `old` to `new`, after their common first and last lines.
-pub(crate) fn changed_lines(old: &str, new: &str) -> (u32, u32) {
+pub(crate) fn changed_lines(old: &str, new: &str) -> ChangedLines {
     let old_lines: Vec<&str> = old.lines().collect();
     let new_lines: Vec<&str> = new.lines().collect();
     let common_start = old_lines
@@ -153,10 +162,10 @@ pub(crate) fn changed_lines(old: &str, new: &str) -> (u32, u32) {
         .count();
     let added = new_rest.len() - common_end;
     let removed = old_rest.len() - common_end;
-    (
-        u32::try_from(added).unwrap_or(u32::MAX),
-        u32::try_from(removed).unwrap_or(u32::MAX),
-    )
+    ChangedLines {
+        added: u32::try_from(added).unwrap_or(u32::MAX),
+        removed: u32::try_from(removed).unwrap_or(u32::MAX),
+    }
 }
 
 fn one_line(text: &str) -> String {
@@ -211,6 +220,29 @@ mod tests {
     }
 
     #[test]
+    fn summary_fields_are_pinned() {
+        let fields: Vec<&str> = SummaryField::VARIANTS
+            .iter()
+            .map(|&field| field.into())
+            .collect();
+
+        assert_eq!(
+            fields,
+            [
+                "command",
+                "file_path",
+                "notebook_path",
+                "pattern",
+                "url",
+                "query",
+                "description",
+                "prompt",
+                "skill"
+            ]
+        );
+    }
+
+    #[test]
     fn a_long_summary_is_shortened() {
         let long = "x".repeat(500);
 
@@ -235,10 +267,34 @@ mod tests {
 
     #[test]
     fn changed_lines_skip_the_common_lines() {
-        assert_eq!(changed_lines("a\nb\nc\n", "a\nB\nc\n"), (1, 1));
-        assert_eq!(changed_lines("", "one\ntwo\n"), (2, 0));
-        assert_eq!(changed_lines("a\nb\n", "a\nb\nc\n"), (1, 0));
-        assert_eq!(changed_lines("same", "same"), (0, 0));
+        assert_eq!(
+            changed_lines("a\nb\nc\n", "a\nB\nc\n"),
+            ChangedLines {
+                added: 1,
+                removed: 1
+            }
+        );
+        assert_eq!(
+            changed_lines("", "one\ntwo\n"),
+            ChangedLines {
+                added: 2,
+                removed: 0
+            }
+        );
+        assert_eq!(
+            changed_lines("a\nb\n", "a\nb\nc\n"),
+            ChangedLines {
+                added: 1,
+                removed: 0
+            }
+        );
+        assert_eq!(
+            changed_lines("same", "same"),
+            ChangedLines {
+                added: 0,
+                removed: 0
+            }
+        );
     }
 
     #[test]

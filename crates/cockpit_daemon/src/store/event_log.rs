@@ -3,20 +3,20 @@
 //! they are.
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::fs::{File, OpenOptions};
 use std::io;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::fs::{FileExt, OpenOptionsExt};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 use cockpit_protocol::{AgentId, EventRecord, Frame, Seq, ServerMessage};
 use serde::Deserialize;
 
-use crate::store::error::StoreError;
 use crate::store::state_dir::FILE_MODE;
+use crate::store::store_error::StoreError;
 
 const DAEMON_LOG: &str = "daemon";
-const LOG_EXTENSION: &str = "jsonl";
+const LOG_SUFFIX: &str = ".jsonl";
 const NEWLINE: u8 = b'\n';
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -50,13 +50,13 @@ struct SeqProbe {
 impl LogName {
     fn file_name(self) -> String {
         match self {
-            Self::Agent(agent) => format!("{}.{LOG_EXTENSION}", agent.get()),
-            Self::Daemon => format!("{DAEMON_LOG}.{LOG_EXTENSION}"),
+            Self::Agent(agent) => format!("{}{LOG_SUFFIX}", agent.get()),
+            Self::Daemon => format!("{DAEMON_LOG}{LOG_SUFFIX}"),
         }
     }
 
     fn from_file_name(name: &str) -> Option<Self> {
-        let stem = name.strip_suffix(LOG_EXTENSION)?.strip_suffix('.')?;
+        let stem = name.strip_suffix(LOG_SUFFIX)?;
         if stem == DAEMON_LOG {
             return Some(Self::Daemon);
         }
@@ -82,16 +82,16 @@ impl EventLogs {
 
     /// Appends one frame, which ends with its `\n`.
     pub(crate) fn append(&mut self, log: LogName, frame: &Frame) -> Result<(), StoreError> {
+        use std::io::Write;
+
         let path = self.path(log);
         let error = |source| StoreError::Write {
             path: path.clone(),
             source,
         };
         let file = match self.open.entry(log) {
-            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(open_for_append(&path).map_err(error)?)
-            }
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => entry.insert(open_for_append(&path).map_err(error)?),
         };
         let written = file.write_all(frame.as_bytes());
         if written.is_err() {
@@ -137,6 +137,9 @@ fn list_logs(folder: &Path) -> Result<Vec<(LogName, PathBuf)>, StoreError> {
 /// Opens a log for appending. A last line cut by a crash gets its `\n`, so the next line starts
 /// on a line of its own.
 fn open_for_append(path: &Path) -> io::Result<File> {
+    use std::io::Write;
+    use std::os::unix::fs::{FileExt, OpenOptionsExt};
+
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -213,6 +216,8 @@ pub(crate) fn read_replay(
 /// Calls `visit` with each line, without its `\n`, until it returns `false`. A missing file has
 /// no lines.
 fn for_each_line(path: &Path, mut visit: impl FnMut(&[u8]) -> bool) -> Result<(), StoreError> {
+    use std::io::BufRead;
+
     let error = |source| StoreError::Read {
         path: path.to_owned(),
         source,
@@ -303,6 +308,8 @@ mod tests {
     /// A write that fails, as on a full disk, may leave part of its line in the file.
     #[test]
     fn the_append_after_a_failed_one_starts_on_a_line_of_its_own() {
+        use std::io::Write;
+
         let temp = tempfile::tempdir().unwrap();
         let log = LogName::Daemon;
         let mut logs = EventLogs::new(temp.path().to_owned());

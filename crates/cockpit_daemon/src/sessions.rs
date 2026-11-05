@@ -4,13 +4,15 @@
 //! A session's title, folder and first prompt come from the head and the tail of its file, as
 //! the Python Agent SDK reads them; the number of prompts needs the whole file.
 
+use std::cmp::Reverse;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use cockpit_protocol::{ClaudeSessionId, PastSession, Timestamp};
 use serde_json::Value;
+use strum::{IntoStaticStr, VariantArray};
 
 use crate::read_file;
 
@@ -34,11 +36,19 @@ const SIDECHAIN_KEY: &str = "isSidechain";
 const META_KEY: &str = "isMeta";
 const COMPACT_SUMMARY_KEY: &str = "isCompactSummary";
 const TOOL_RESULT_MARK: &str = "\"tool_result\"";
-/// Titles in the order they win: one the user set, then one Claude wrote, then the last prompt
-/// and the summary.
-const TITLE_KEYS: [&str; 4] = ["customTitle", "aiTitle", "lastPrompt", "summary"];
 /// How a slash command's prompt starts; such a prompt does not make a title.
 const COMMAND_MARK: &str = "<command-name>";
+
+/// The keys of the titles, in the order they win: one the user set, then one Claude wrote, then
+/// the last prompt and the summary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, IntoStaticStr, VariantArray)]
+#[strum(serialize_all = "camelCase")]
+enum TitleKey {
+    CustomTitle,
+    AiTitle,
+    LastPrompt,
+    Summary,
+}
 
 /// The newest sessions, newest first.
 pub(crate) fn list(claude_folder: &Path) -> Vec<PastSession> {
@@ -61,7 +71,7 @@ pub(crate) fn list(claude_folder: &Path) -> Vec<PastSession> {
             }
         }
     }
-    files.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
+    files.sort_by_key(|(modified, _)| Reverse(*modified));
     let newest = files.into_iter().take(MAX_SESSIONS);
     newest.filter_map(|(_, path)| read_session(&path)).collect()
 }
@@ -127,9 +137,10 @@ fn title(head: &[Value], tail: &[Value]) -> Option<String> {
             .rev()
             .find_map(|line| line.get(key)?.as_str().map(str::to_owned))
     };
-    let named = TITLE_KEYS
-        .iter()
-        .find_map(|key| last_string(tail, key).or_else(|| last_string(head, key)));
+    let named = TitleKey::VARIANTS.iter().find_map(|&key| {
+        let key: &str = key.into();
+        last_string(tail, key).or_else(|| last_string(head, key))
+    });
     let title = named.or_else(|| head.iter().find_map(first_prompt))?;
     Some(shorten(&title))
 }
@@ -165,9 +176,11 @@ fn is_prompt(line: &Value) -> bool {
         && !flag(COMPACT_SUMMARY_KEY)
 }
 
-/// The user's prompts in the whole file, slash commands included. A tool result is a user line too, so lines naming one
-/// are skipped before parsing.
+/// The user's prompts in the whole file, slash commands included. A tool result is a user line
+/// too, so lines naming one are skipped before parsing.
 fn count_prompts(mut file: File) -> u32 {
+    use std::io::{BufRead, Seek};
+
     if file.seek(SeekFrom::Start(0)).is_err() {
         return 0;
     }
@@ -191,6 +204,8 @@ fn count_prompts(mut file: File) -> u32 {
 }
 
 fn read_chunk(file: &mut File, start: u64) -> Option<String> {
+    use std::io::{Read, Seek};
+
     file.seek(SeekFrom::Start(start)).ok()?;
     let mut bytes = Vec::new();
     file.take(CHUNK_BYTES).read_to_end(&mut bytes).ok()?;
@@ -235,6 +250,9 @@ fn shorten(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use rustix::fs::Mode;
     use serde_json::json;
 
     use super::*;
@@ -250,7 +268,10 @@ mod tests {
     }
 
     fn prompt(text: &str) -> Value {
-        json!({"type": "user", "cwd": "/srv/work/shop", "message": {"role": "user", "content": text}})
+        json!({
+            "type": "user", "cwd": "/srv/work/shop",
+            "message": {"role": "user", "content": text}
+        })
     }
 
     #[test]
@@ -304,6 +325,13 @@ mod tests {
     }
 
     #[test]
+    fn title_keys_are_pinned() {
+        let keys: Vec<&str> = TitleKey::VARIANTS.iter().map(|&key| key.into()).collect();
+
+        assert_eq!(keys, ["customTitle", "aiTitle", "lastPrompt", "summary"]);
+    }
+
+    #[test]
     fn finds_a_session_by_id_and_refuses_an_id_that_is_a_path() {
         let temp = tempfile::tempdir().unwrap();
         write_session(temp.path(), "-srv-work-shop", FIRST, &[prompt("Hello")]);
@@ -327,9 +355,10 @@ mod tests {
             temp.path(),
             "p",
             FIRST,
-            &[
-                json!({"type": "user", "isSidechain": true, "cwd": "/srv", "message": {"content": "x"}}),
-            ],
+            &[json!({
+                "type": "user", "isSidechain": true, "cwd": "/srv",
+                "message": {"content": "x"}
+            })],
         );
         write_session(
             temp.path(),
@@ -350,7 +379,7 @@ mod tests {
             .join(PROJECTS_FOLDER)
             .join("p")
             .join(format!("{SECOND}.{SESSION_EXTENSION}"));
-        rustix::fs::mkfifoat(rustix::fs::CWD, &fifo, rustix::fs::Mode::RUSR).unwrap();
+        rustix::fs::mkfifoat(rustix::fs::CWD, &fifo, Mode::RUSR).unwrap();
         let claude = temp.path().to_owned();
         let (sender, receiver) = std::sync::mpsc::channel();
 
@@ -361,7 +390,7 @@ mod tests {
         });
 
         let sessions = receiver
-            .recv_timeout(std::time::Duration::from_secs(5))
+            .recv_timeout(Duration::from_secs(5))
             .expect("a list without a writer on the FIFO");
         let ids: Vec<&str> = sessions.iter().map(|session| session.id.as_str()).collect();
         assert_eq!(ids, [FIRST]);

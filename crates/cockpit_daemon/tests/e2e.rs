@@ -25,6 +25,8 @@ use cockpit_protocol::{
     Request, ResponseBody, Seq, SessionResumeParams, SetEffortParams, SetModeParams,
     SetModelParams, Settings, StartParams, StopTaskParams, TranscriptItem,
 };
+use rustix::process::{Pid, Signal};
+use serde_json::Value;
 use tempfile::TempDir;
 
 const WAIT: Duration = Duration::from_secs(15);
@@ -102,8 +104,8 @@ impl Setup {
         let Some(mut child) = self.daemon.take() else {
             return;
         };
-        let pid = rustix::process::Pid::from_raw(i32::try_from(child.id()).unwrap()).unwrap();
-        rustix::process::kill_process(pid, rustix::process::Signal::TERM).unwrap();
+        let pid = Pid::from_raw(i32::try_from(child.id()).unwrap()).unwrap();
+        rustix::process::kill_process(pid, Signal::TERM).unwrap();
         let deadline = Instant::now() + WAIT;
         while child.try_wait().unwrap().is_none() {
             assert!(Instant::now() < deadline, "the daemon did not stop");
@@ -526,7 +528,10 @@ async fn an_interrupt_cancels_what_waits_and_queued_prompts_follow() {
     client.prompt(agent, "hello queued").await;
     let queued = client
         .item_with(agent, |body| {
-            matches!(body, ItemBody::UserMessage(message) if message.queued && message.text == "hello queued")
+            matches!(
+                body,
+                ItemBody::UserMessage(message) if message.queued && message.text == "hello queued"
+            )
         })
         .await;
     client.prompt(agent, "drop me").await;
@@ -558,7 +563,10 @@ async fn an_interrupt_cancels_what_waits_and_queued_prompts_follow() {
 
     let cancelled = client
         .item_with(agent, |body| {
-            matches!(body, ItemBody::Approval(approval) if approval.answer == AnswerState::Cancelled)
+            matches!(
+                body,
+                ItemBody::Approval(approval) if approval.answer == AnswerState::Cancelled
+            )
         })
         .await;
     assert_eq!(cancelled.id, waiting.id);
@@ -571,7 +579,10 @@ async fn an_interrupt_cancels_what_waits_and_queued_prompts_follow() {
     assert_eq!(end.error.as_deref(), Some("Interrupted"));
     let sent = client
         .item_with(agent, |body| {
-            matches!(body, ItemBody::UserMessage(message) if !message.queued && message.text == "hello queued")
+            matches!(
+                body,
+                ItemBody::UserMessage(message) if !message.queued && message.text == "hello queued"
+            )
         })
         .await;
     assert_eq!(sent.id, queued.id);
@@ -702,7 +713,7 @@ async fn malformed_requests_get_an_error_and_the_connection_stays() {
         .unwrap();
     let (read, mut write) = stream.into_split();
     let mut lines = BufReader::new(read).lines();
-    let mut next_line = async || -> serde_json::Value {
+    let mut next_line = async || -> Value {
         let line = tokio::time::timeout(WAIT, lines.next_line())
             .await
             .unwrap()
@@ -871,7 +882,12 @@ async fn files_settings_sessions_and_agent_settings() {
         .history(agent)
         .await
         .into_iter()
-        .filter(|item| matches!(&item.body, ItemBody::UserMessage(message) if message.text.starts_with("/effort")))
+        .filter(|item| {
+            matches!(
+                &item.body,
+                ItemBody::UserMessage(message) if message.text.starts_with("/effort")
+            )
+        })
         .count();
     assert_eq!(notices, 0, "the effort prompt shows no item");
 

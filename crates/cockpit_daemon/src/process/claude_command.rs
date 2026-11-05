@@ -3,15 +3,17 @@ use std::path::PathBuf;
 use std::process::Stdio;
 
 use claude_protocol::PermissionMode;
+use cockpit_protocol::ClaudeSessionId;
 use tokio::process::Command;
 
+const STREAM_JSON: &str = "stream-json";
 /// JSON in and out, approvals over stdio, and prompts echoed back.
 const FIXED_ARGS: [&str; 8] = [
     "--output-format",
-    "stream-json",
+    STREAM_JSON,
     "--verbose",
     "--input-format",
-    "stream-json",
+    STREAM_JSON,
     "--permission-prompt-tool",
     "stdio",
     "--replay-user-messages",
@@ -40,7 +42,7 @@ pub(crate) struct ClaudeCommand {
     /// The level as `--effort` takes it.
     pub(crate) effort: Option<String>,
     /// The Claude session to resume.
-    pub(crate) resume: Option<String>,
+    pub(crate) resume: Option<ClaudeSessionId>,
 }
 
 impl ClaudeCommand {
@@ -57,7 +59,7 @@ impl ClaudeCommand {
             args.push(flag(EFFORT_FLAG, effort));
         }
         if let Some(session) = &self.resume {
-            args.push(flag(RESUME_FLAG, session));
+            args.push(flag(RESUME_FLAG, session.as_str()));
         }
         args
     }
@@ -112,7 +114,7 @@ mod tests {
             model: Some("opus".to_owned()),
             mode: Some(PermissionMode::AcceptEdits),
             effort: Some("high".to_owned()),
-            resume: Some("session-1".to_owned()),
+            resume: Some(ClaudeSessionId::new("session-1".to_owned())),
             ..command()
         };
 
@@ -134,7 +136,9 @@ mod tests {
     fn a_value_that_looks_like_an_option_stays_a_value() {
         let command = ClaudeCommand {
             model: Some("-p".to_owned()),
-            resume: Some("--dangerously-skip-permissions".to_owned()),
+            resume: Some(ClaudeSessionId::new(
+                "--dangerously-skip-permissions".to_owned(),
+            )),
             ..command()
         };
 

@@ -4,7 +4,7 @@ use cockpit_protocol::{AgentId, ClaudeSessionId, Effort, PermissionMode, Seq, Ti
 use serde::{Deserialize, Serialize};
 
 use crate::store::atomic_file;
-use crate::store::error::StoreError;
+use crate::store::store_error::StoreError;
 
 /// `agents.json`: the agents, and the counters that must survive a restart.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

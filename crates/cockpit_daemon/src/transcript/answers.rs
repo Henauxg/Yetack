@@ -30,7 +30,7 @@ pub(crate) fn questions(
     questions: &[AskedQuestion],
     answers: &[QuestionAnswer],
 ) -> PermissionDecision {
-    let answers = questions
+    let answers: Vec<ClaudeQuestionAnswer> = questions
         .iter()
         .zip(answers)
         .map(|(question, answer)| {
@@ -76,7 +76,7 @@ pub(crate) fn asked_questions(input: &ToolInput) -> Option<Vec<AskedQuestion>> {
     let ToolInput::AskUserQuestion(asked) = input else {
         return None;
     };
-    let questions = asked
+    let questions: Vec<AskedQuestion> = asked
         .questions
         .iter()
         .map(|question| AskedQuestion {

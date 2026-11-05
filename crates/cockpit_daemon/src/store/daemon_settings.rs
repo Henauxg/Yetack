@@ -5,7 +5,7 @@ use cockpit_protocol::Settings;
 use serde::{Deserialize, Serialize};
 
 use crate::store::atomic_file;
-use crate::store::error::StoreError;
+use crate::store::store_error::StoreError;
 
 /// `settings.json`: the settings clients share, and the daemon's own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -14,7 +14,7 @@
 use std::collections::VecDeque;
 use std::fs::OpenOptions;
 use std::io;
-use std::io::{BufRead, Write};
+use std::io::Write;
 use std::process::ExitCode;
 
 use serde_json::{Value, json};
@@ -64,6 +64,8 @@ fn main() -> ExitCode {
 }
 
 fn run() -> io::Result<()> {
+    use std::io::BufRead;
+
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(path) = std::env::var_os(ARGS_FILE_ENV) {
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;

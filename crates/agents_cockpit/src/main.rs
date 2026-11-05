@@ -6,12 +6,11 @@ mod client;
 
 use std::process::ExitCode;
 
-use clap::Parser;
-use cockpit_daemon::DaemonConfig;
+use cockpit_daemon::{DaemonConfig, HOME_ENV};
 use tokio::runtime::Runtime;
 use tracing_subscriber::EnvFilter;
 
-use crate::cli::{Cli, Command};
+use crate::cli::{Cli, Command, PROGRAM, SERVE_SUBCOMMAND, SSH_FLAG};
 
 /// The log level of `serve`, unless `RUST_LOG` says otherwise.
 const SERVE_LOG_LEVEL: &str = "info";
@@ -19,6 +18,8 @@ const SERVE_LOG_LEVEL: &str = "info";
 const CLIENT_LOG_LEVEL: &str = "warn";
 
 fn main() -> ExitCode {
+    use clap::Parser;
+
     let cli = Cli::parse();
     let level = if matches!(cli.command, Command::Serve) {
         SERVE_LOG_LEVEL
@@ -33,7 +34,7 @@ fn main() -> ExitCode {
     let runtime = match Runtime::new() {
         Ok(runtime) => runtime,
         Err(error) => {
-            eprintln!("agents-cockpit: cannot start the runtime: {error}");
+            eprintln!("{PROGRAM}: cannot start the runtime: {error}");
             return ExitCode::FAILURE;
         }
     };
@@ -46,7 +47,7 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("agents-cockpit: {error:#}");
+            eprintln!("{PROGRAM}: {error:#}");
             ExitCode::FAILURE
         }
     }
@@ -58,10 +59,12 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Command::Serve => {
             if cli.target.is_remote() {
-                anyhow::bail!("serve runs the daemon on this machine: --ssh does not apply");
+                anyhow::bail!(
+                    "{SERVE_SUBCOMMAND} runs the daemon on this machine: --{SSH_FLAG} does not apply"
+                );
             }
-            let config =
-                DaemonConfig::from_env(cli.target.state_dir.clone()).context("HOME is not set")?;
+            let config = DaemonConfig::from_env(cli.target.state_dir.clone())
+                .with_context(|| format!("{HOME_ENV} is not set"))?;
             cockpit_daemon::serve(config, shutdown_signal()?).await?;
             Ok(())
         }
@@ -72,10 +75,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
 
 /// Completes on SIGTERM, as systemd stops a service, or on Ctrl+C.
 fn shutdown_signal() -> anyhow::Result<impl Future<Output = ()>> {
-    use tokio::signal::unix::{SignalKind, signal};
+    use tokio::signal::unix;
+    use tokio::signal::unix::SignalKind;
 
-    let mut terminate = signal(SignalKind::terminate())?;
-    let mut interrupt = signal(SignalKind::interrupt())?;
+    let mut terminate = unix::signal(SignalKind::terminate())?;
+    let mut interrupt = unix::signal(SignalKind::interrupt())?;
     Ok(async move {
         tokio::select! {
             _ = terminate.recv() => {}

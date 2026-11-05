@@ -11,7 +11,8 @@ const DEFAULT_CLAUDE_PROGRAM: &str = "claude";
 /// Claude Code's own setting for its folder, which `sessions.list` reads.
 const CLAUDE_CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
 const CLAUDE_HOME_FOLDER: &str = ".claude";
-const HOME_ENV: &str = "HOME";
+/// Names the home folder, which the default state folder and Claude Code's folder need.
+pub const HOME_ENV: &str = "HOME";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonConfig {
@@ -24,6 +25,7 @@ pub struct DaemonConfig {
 impl DaemonConfig {
     /// From the environment, with `state_dir` replacing the default state folder when given.
     /// `None` when `HOME` is unset and a default needs it.
+    #[must_use]
     pub fn from_env(state_dir: Option<PathBuf>) -> Option<Self> {
         let state_dir = match state_dir {
             Some(state_dir) => state_dir,

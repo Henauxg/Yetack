@@ -1,13 +1,12 @@
 use std::fs::{File, OpenOptions};
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use cockpit_protocol::Timestamp;
 use serde::Serialize;
 
-use crate::store::error::StoreError;
 use crate::store::state_dir::FILE_MODE;
+use crate::store::store_error::StoreError;
 
 /// `raw/<agent-id>.jsonl`: every line exchanged with one agent's `claude`, for debugging.
 #[derive(Debug)]
@@ -35,6 +34,8 @@ struct Entry<'line> {
 
 impl RawLog {
     pub(crate) fn open(path: &Path) -> Result<Self, StoreError> {
+        use std::os::unix::fs::OpenOptionsExt;
+
         let file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -53,13 +54,15 @@ impl RawLog {
 
     /// Appends a line. A failure is logged once, and never stops the agent.
     pub(crate) fn append(&mut self, at: Timestamp, direction: Direction, line: &str) {
+        use std::io::Write;
+
         let entry = Entry {
             at,
             direction,
             line: line.trim_end_matches('\n'),
         };
         let written = serde_json::to_vec(&entry)
-            .map_err(std::io::Error::other)
+            .map_err(io::Error::other)
             .and_then(|mut bytes| {
                 bytes.push(b'\n');
                 self.file.write_all(&bytes)
@@ -77,6 +80,8 @@ impl RawLog {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::Value;
+
     use super::*;
 
     #[test]
@@ -99,8 +104,23 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert_eq!(
             text,
-            "{\"at\":5,\"direction\":\"to_claude\",\"line\":\"{\\\"type\\\":\\\"user\\\"}\"}\n\
-             {\"at\":6,\"direction\":\"stderr\",\"line\":\"not json\"}\n"
+            "{\"at\":5,\"direction\":\"to_claude\",\"line\":\"{\\\"type\\\":\\\"user\\\"}\"}\n{\"at\":6,\"direction\":\"stderr\",\"line\":\"not json\"}\n"
         );
+    }
+
+    #[test]
+    fn direction_words_are_pinned() {
+        let directions = [
+            Direction::ToClaude,
+            Direction::FromClaude,
+            Direction::Stderr,
+        ];
+
+        let words: Vec<Value> = directions
+            .iter()
+            .map(|direction| serde_json::to_value(direction).unwrap())
+            .collect();
+
+        assert_eq!(words, ["to_claude", "from_claude", "stderr"]);
     }
 }

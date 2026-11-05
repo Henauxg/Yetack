@@ -1,15 +1,14 @@
 use std::env;
 use std::fs::{DirBuilder, File, OpenOptions, Permissions, TryLockError};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use cockpit_protocol::AgentId;
 
-use crate::store::error::StoreError;
+use crate::daemon_config::HOME_ENV;
+use crate::store::store_error::StoreError;
 
 const STATE_FOLDER_NAME: &str = "agents-cockpit";
 const XDG_STATE_HOME: &str = "XDG_STATE_HOME";
-const HOME: &str = "HOME";
 /// Where the state goes under `$HOME` when `XDG_STATE_HOME` is unset.
 const HOME_STATE: &str = ".local/state";
 
@@ -27,6 +26,7 @@ const FOLDER_MODE: u32 = 0o700;
 pub(crate) const FILE_MODE: u32 = 0o600;
 
 /// `$XDG_STATE_HOME/agents-cockpit`, or `~/.local/state/agents-cockpit`. `None` without a home.
+#[must_use]
 pub fn default_state_dir() -> Option<PathBuf> {
     // The XDG specification ignores a relative path.
     let xdg = env::var_os(XDG_STATE_HOME)
@@ -34,12 +34,13 @@ pub fn default_state_dir() -> Option<PathBuf> {
         .filter(|path| path.is_absolute());
     let base = match xdg {
         Some(base) => base,
-        None => PathBuf::from(env::var_os(HOME)?).join(HOME_STATE),
+        None => PathBuf::from(env::var_os(HOME_ENV)?).join(HOME_STATE),
     };
     Some(base.join(STATE_FOLDER_NAME))
 }
 
 /// The daemon's socket in the state folder `state_dir`.
+#[must_use]
 pub fn socket_path(state_dir: &Path) -> PathBuf {
     state_dir.join(SOCKET_FILE)
 }
@@ -70,6 +71,8 @@ impl StateDir {
 
     /// Takes `serve.lock`, or fails with `AlreadyRunning`.
     pub(crate) fn lock(&self) -> Result<ServeLock, StoreError> {
+        use std::os::unix::fs::OpenOptionsExt;
+
         let path = self.root.join(LOCK_FILE);
         let file = OpenOptions::new()
             .create(true)
@@ -116,6 +119,8 @@ impl StateDir {
 }
 
 fn create_private_folder(path: &Path) -> Result<(), StoreError> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
     let error = |source| StoreError::CreateFolder {
         path: path.to_owned(),
         source,
@@ -150,6 +155,8 @@ mod tests {
 
     #[test]
     fn tightens_an_existing_folder() {
+        use std::os::unix::fs::PermissionsExt;
+
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("state");
         std::fs::create_dir(&root).unwrap();

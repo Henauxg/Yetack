@@ -2,20 +2,24 @@
 //! and removal.
 
 use std::collections::VecDeque;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use claude_protocol::{ControlRequest, InputLine, OutputLine};
 use cockpit_protocol::{
-    AgentId, AgentStatus, AgentSummary, AnswerParams, CancelQueuedParams, CostUsd, ErrorBody,
-    ErrorCode, Event, PastSession, Prompt, ResponseBody, SetEffortParams, StartParams,
+    AgentId, AgentStatus, AgentSummary, AnswerParams, CancelQueuedParams, ClaudeSessionId, CostUsd,
+    ErrorBody, ErrorCode, Event, PastSession, Prompt, ResponseBody, ResponseResult,
+    SetEffortParams, StartParams,
 };
 
-use crate::hub::errors;
 use crate::hub::input::{ControlPurpose, HubInput, Reply};
-use crate::hub::state::{Agent, Hub, QueuedPrompt, now};
+use crate::hub::state::{Agent, Hub, QueuedPrompt};
+use crate::hub::{errors, state};
 use crate::process::{ClaudeCommand, ProcessEvent};
 use crate::store::{AgentRecord, LogName, RawLog};
-use crate::transcript::{AgentView, AnswerError, FollowUp, plan_usage, prompts, words};
+use crate::transcript::{
+    AgentView, AnswerError, FollowUp, PromptDelivery, plan_usage, prompts, words,
+};
 
 /// A title made from a prompt keeps this many characters.
 const TITLE_MAX_CHARS: usize = 60;
@@ -51,7 +55,7 @@ impl Hub {
             effort: params.effort,
             mode: params.mode,
             running: true,
-            started_at: now(),
+            started_at: state::now(),
         };
         let agent = self.add_agent(record, params.prompt)?;
         Ok(ResponseBody::AgentStarted { agent })
@@ -111,10 +115,7 @@ impl Hub {
             model: record.model.clone(),
             mode: record.mode.map(words::mode_to_claude),
             effort: record.effort.and_then(words::effort_word),
-            resume: record
-                .session
-                .as_ref()
-                .map(|session| session.as_str().to_owned()),
+            resume: record.session.clone(),
         };
         let raw_log = RawLog::open(&raw_path)
             .inspect_err(|error| {
@@ -145,7 +146,7 @@ impl Hub {
             tracing::warn!(agent = id.get(), error, "cannot start claude");
             agent
                 .view
-                .process_exited(format!("cannot start claude: {error}"), now());
+                .process_exited(format!("cannot start claude: {error}"), state::now());
         }
     }
 
@@ -177,7 +178,7 @@ impl Hub {
         let Some(agent) = self.agents.get_mut(&id) else {
             return;
         };
-        let follow_ups = agent.view.apply(line, now());
+        let follow_ups = agent.view.apply(line, state::now());
         let session = agent.view.summary().session.clone();
         let session_changed = session.is_some() && session != agent.record.session;
         if session_changed {
@@ -217,7 +218,7 @@ impl Hub {
                 agent.view.cancel_queued(item);
             }
         }
-        agent.view.process_exited(notice, now());
+        agent.view.process_exited(notice, state::now());
         self.publish(id);
     }
 
@@ -237,14 +238,14 @@ impl Hub {
         let line = prompts::prompt_line(&prompt)
             .ok_or_else(|| errors::internal("cannot encode the prompt".to_owned()))?;
         if agent.view.is_busy() || !agent.queue.is_empty() {
-            let item = agent.view.add_prompt(&prompt, true);
+            let item = agent.view.add_prompt(&prompt, PromptDelivery::Queued);
             agent.queue.push_back(QueuedPrompt {
                 item: Some(item),
                 line,
                 text: prompt.text,
             });
         } else {
-            agent.view.add_prompt(&prompt, false);
+            agent.view.add_prompt(&prompt, PromptDelivery::Now);
             process.write(line);
         }
         self.publish(id);
@@ -368,7 +369,7 @@ impl Hub {
             tracing::warn!(error = %errors::chain(&error), "cannot delete an agent's log");
         }
         if let Err(error) = std::fs::remove_file(self.raw_log_path(id))
-            && error.kind() != std::io::ErrorKind::NotFound
+            && error.kind() != io::ErrorKind::NotFound
         {
             tracing::warn!(%error, "cannot delete an agent's raw log");
         }
@@ -437,16 +438,13 @@ impl Hub {
             effort: None,
             mode: None,
             running: true,
-            started_at: now(),
+            started_at: state::now(),
         };
         let agent = self.add_agent(record, None)?;
         Ok(ResponseBody::AgentStarted { agent })
     }
 
-    pub(super) fn agent_with_session(
-        &self,
-        session: &cockpit_protocol::ClaudeSessionId,
-    ) -> Option<AgentId> {
+    pub(super) fn agent_with_session(&self, session: &ClaudeSessionId) -> Option<AgentId> {
         self.agents
             .values()
             .find(|agent| agent.record.session.as_ref() == Some(session))
@@ -456,7 +454,7 @@ impl Hub {
 
 pub(super) fn respond(reply: Reply, result: Result<ResponseBody, ErrorBody>) {
     // The client may have left.
-    let _ = reply.send(result.into());
+    let _ = reply.send(ResponseResult::from(result));
 }
 
 /// The summary of an agent before `claude` says anything.
@@ -529,6 +527,8 @@ fn default_title(prompt: Option<&Prompt>, folder: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    use cockpit_protocol::Timestamp;
+
     use super::*;
 
     #[test]
@@ -571,12 +571,10 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let mut hub = Hub::for_tests(temp.path());
         let session = |folder: &str| PastSession {
-            id: cockpit_protocol::ClaudeSessionId::new(
-                "11111111-2222-3333-4444-555555555555".to_owned(),
-            ),
+            id: ClaudeSessionId::new("11111111-2222-3333-4444-555555555555".to_owned()),
             title: "Fix the cart".to_owned(),
             folder: PathBuf::from(folder),
-            last_activity: cockpit_protocol::Timestamp::from_unix_millis(0),
+            last_activity: Timestamp::from_unix_millis(0),
             turns: 1,
         };
 
@@ -594,13 +592,14 @@ mod tests {
     /// reach `claude`.
     #[tokio::test]
     async fn a_stopping_agent_takes_no_prompt() {
+        use std::fs::Permissions;
         use std::os::unix::fs::PermissionsExt;
 
         let temp = tempfile::tempdir().unwrap();
         let mut hub = Hub::for_tests(&temp.path().join("state"));
         let claude = temp.path().join("claude");
         std::fs::write(&claude, "#!/bin/sh\nexec cat >/dev/null\n").unwrap();
-        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&claude, Permissions::from_mode(0o755)).unwrap();
         hub.config.claude_program = claude;
         let start = StartParams {
             folder: temp.path().to_owned(),

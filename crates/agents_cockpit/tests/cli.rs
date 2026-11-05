@@ -9,13 +9,15 @@
     reason = "test code: a failure is a failed test"
 )]
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::fs::PermissionsExt;
+use std::fs::{File, Permissions};
+use std::io::BufReader;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
+use serde_json::Value;
 use tempfile::TempDir;
 
 const WAIT: Duration = Duration::from_secs(15);
@@ -28,12 +30,14 @@ struct Daemon {
 
 impl Daemon {
     fn start() -> Self {
+        use std::os::unix::fs::PermissionsExt;
+
         let temp = tempfile::tempdir().unwrap();
         let claude = temp.path().join("echo-claude");
         std::fs::write(&claude, "#!/bin/sh\nexec cat\n").unwrap();
-        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&claude, Permissions::from_mode(0o755)).unwrap();
         std::fs::create_dir(temp.path().join("work")).unwrap();
-        let log = std::fs::File::create(temp.path().join("serve.log")).unwrap();
+        let log = File::create(temp.path().join("serve.log")).unwrap();
         let serve = Command::new(BINARY)
             .args(["serve", "--state-dir"])
             .arg(temp.path().join("state"))
@@ -46,7 +50,7 @@ impl Daemon {
         let daemon = Self { temp, serve };
         let socket = cockpit_daemon::socket_path(&daemon.state());
         let deadline = Instant::now() + WAIT;
-        while std::os::unix::net::UnixStream::connect(&socket).is_err() {
+        while UnixStream::connect(&socket).is_err() {
             assert!(Instant::now() < deadline, "the daemon did not start");
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -107,6 +111,8 @@ impl Drop for Daemon {
 
 /// The lines `child` writes on stdout, as they come.
 fn lines_of(child: &mut Child) -> Receiver<String> {
+    use std::io::BufRead;
+
     let stdout = child.stdout.take().unwrap();
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -138,6 +144,8 @@ fn folder_arg(path: &Path) -> &str {
 
 #[test]
 fn starts_lists_prompts_tails_and_stops_an_agent() {
+    use std::io::Write;
+
     let daemon = Daemon::start();
     let empty = daemon.ok(&["list"]);
     assert_eq!(empty.lines().count(), 1, "only the header: {empty}");
@@ -176,7 +184,7 @@ fn starts_lists_prompts_tails_and_stops_an_agent() {
         }
         assert!(Instant::now() < deadline, "the tail showed nothing");
     };
-    let event: serde_json::Value = serde_json::from_str(&line).unwrap();
+    let event: Value = serde_json::from_str(&line).unwrap();
     assert_eq!(event["event"]["agent"], 1);
     let _ = tail.kill();
     let _ = tail.wait();
@@ -251,6 +259,8 @@ fn errors_go_to_stderr_with_a_failure_status() {
 
 #[test]
 fn the_bridge_carries_the_protocol() {
+    use std::io::Write;
+
     let daemon = Daemon::start();
     let mut bridge = daemon
         .command(&[cockpit_client::BRIDGE_SUBCOMMAND])

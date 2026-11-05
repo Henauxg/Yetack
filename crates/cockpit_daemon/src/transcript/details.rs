@@ -15,6 +15,7 @@ use cockpit_protocol::{
 };
 use strum::EnumString;
 
+use crate::transcript::tools::ChangedLines;
 use crate::transcript::words;
 
 /// The task types of `task_started` that run a subagent. Any other runs a command.
@@ -92,28 +93,23 @@ pub(crate) fn prune_background_tasks(tasks: &mut Vec<BackgroundTask>) {
     });
 }
 
-pub(crate) fn add_changed_file(
-    files: &mut Vec<ChangedFile>,
-    path: &Path,
-    added: u32,
-    removed: u32,
-) {
+pub(crate) fn add_changed_file(files: &mut Vec<ChangedFile>, path: &Path, lines: ChangedLines) {
     match files.iter_mut().find(|file| file.path == path) {
         Some(file) => {
-            file.lines_added = file.lines_added.saturating_add(added);
-            file.lines_removed = file.lines_removed.saturating_add(removed);
+            file.lines_added = file.lines_added.saturating_add(lines.added);
+            file.lines_removed = file.lines_removed.saturating_add(lines.removed);
         }
         None => files.push(ChangedFile {
             path: path.to_owned(),
-            lines_added: added,
-            lines_removed: removed,
+            lines_added: lines.added,
+            lines_removed: lines.removed,
         }),
     }
 }
 
 /// Deferred tools are not in the context, so they are left out.
 pub(crate) fn context_usage(usage: &ClaudeContextUsage) -> ContextUsage {
-    let categories = usage
+    let categories: Vec<ContextCategory> = usage
         .categories
         .iter()
         .filter(|category| !category.is_deferred)
@@ -164,7 +160,7 @@ pub(crate) fn mcp_server(server: &ClaudeMcpServer, calls: &HashMap<String, u32>)
             (_, None, None) => None,
         }
     });
-    let tools = server
+    let tools: Vec<McpTool> = server
         .tools
         .iter()
         .map(|tool| McpTool {
@@ -290,7 +286,8 @@ fn command_kind(name: &str, skills: &BTreeSet<String>) -> CommandKind {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::{BackgroundTaskId, Timestamp};
+    use claude_protocol::McpStatus;
+    use cockpit_protocol::{BackgroundTaskId, McpScope, Timestamp};
     use serde_json::json;
 
     use super::*;
@@ -308,6 +305,22 @@ mod tests {
     }
 
     #[test]
+    fn agent_task_types_are_pinned() {
+        assert_eq!(
+            background_kind(Some("local_agent")),
+            BackgroundTaskKind::Agent
+        );
+        assert_eq!(
+            background_kind(Some("remote_agent")),
+            BackgroundTaskKind::Agent
+        );
+        assert_eq!(
+            background_kind(Some("local_bash")),
+            BackgroundTaskKind::Command
+        );
+    }
+
+    #[test]
     fn pruning_keeps_running_tasks_and_the_latest_finished_ones() {
         let mut tasks: Vec<BackgroundTask> = (0..30).map(finished_task).collect();
         tasks[0].status = BackgroundTaskStatus::Running;
@@ -321,7 +334,7 @@ mod tests {
 
     #[test]
     fn mcp_status_becomes_a_server_with_its_call_counts() {
-        let status: claude_protocol::McpStatus = (&json!({
+        let status: McpStatus = (&json!({
             "mcpServers": [{
                 "name": "notes",
                 "status": "connected",
@@ -355,7 +368,7 @@ mod tests {
                 transport: Some(McpTransport::Stdio {
                     command: "notes-server --fast".to_owned()
                 }),
-                scope: Some(cockpit_protocol::McpScope::Project),
+                scope: Some(McpScope::Project),
                 tools: vec![McpTool {
                     name: "search".to_owned(),
                     description: None,

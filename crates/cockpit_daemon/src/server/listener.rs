@@ -1,6 +1,5 @@
 use std::fs::Permissions;
 use std::io;
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::Duration;
 
@@ -19,6 +18,8 @@ const ACCEPT_RETRY: Duration = Duration::from_millis(100);
 /// Binds the socket, replacing a file a crashed daemon left. The caller holds the lock, so no
 /// other daemon uses that file.
 pub(crate) fn bind(path: &Path) -> io::Result<UnixListener> {
+    use std::os::unix::fs::PermissionsExt;
+
     match std::fs::remove_file(path) {
         Ok(()) => tracing::info!(path = %path.display(), "removed a leftover socket"),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -42,7 +43,10 @@ pub(crate) async fn accept_loop(
                     tokio::spawn(connection::serve(stream, hub.clone()));
                 }
                 Err(error) => {
-                    tracing::warn!(error = %crate::error_chain::chain(&error), "refused a connection");
+                    tracing::warn!(
+                        error = %crate::error_chain::chain(&error),
+                        "refused a connection"
+                    );
                 }
             },
             Err(error) => {
@@ -55,12 +59,12 @@ pub(crate) async fn accept_loop(
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::fs::MetadataExt;
-
     use super::*;
 
     #[tokio::test]
     async fn bind_replaces_a_leftover_socket_and_admits_only_the_owner() {
+        use std::os::unix::fs::MetadataExt;
+
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("agents-cockpit.sock");
         // Dropping a listener leaves its file, as a crashed daemon does.

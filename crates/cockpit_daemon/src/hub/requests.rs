@@ -3,14 +3,13 @@
 
 use claude_protocol::{ControlRequest, TaskId};
 use cockpit_protocol::{
-    AgentId, ErrorBody, ErrorCode, HistoryParams, McpRemoveParams, ReadFileParams, Request,
+    AgentId, ErrorBody, ErrorCode, Event, HistoryParams, McpRemoveParams, ReadFileParams, Request,
     ResponseBody, SessionResumeParams, Settings,
 };
 
-use crate::hub::agents::respond;
 use crate::hub::input::{ControlPurpose, HubInput, Reply};
 use crate::hub::state::{Agent, Hub};
-use crate::hub::{errors, history};
+use crate::hub::{agents, errors, history};
 use crate::store::{DaemonSettings, LogName};
 use crate::transcript::words;
 use crate::{mcp_remove, read_file, sessions};
@@ -18,29 +17,31 @@ use crate::{mcp_remove, read_file, sessions};
 impl Hub {
     pub(super) fn request(&mut self, request: Request, reply: Reply) {
         match request {
-            Request::AgentStart(params) => respond(reply, self.start_agent(params)),
+            Request::AgentStart(params) => agents::respond(reply, self.start_agent(params)),
             Request::AgentPrompt(params) => {
-                respond(reply, self.prompt(params.agent, params.prompt))
+                agents::respond(reply, self.prompt(params.agent, params.prompt))
             }
-            Request::AgentCancelQueued(params) => respond(reply, self.cancel_queued(params)),
-            Request::AgentAnswer(params) => respond(reply, self.answer(params)),
+            Request::AgentCancelQueued(params) => {
+                agents::respond(reply, self.cancel_queued(params))
+            }
+            Request::AgentAnswer(params) => agents::respond(reply, self.answer(params)),
             Request::AgentInterrupt(params) => self.control(
                 params.agent,
                 ControlRequest::Interrupt,
                 ControlPurpose::Done(reply),
             ),
-            Request::AgentStop(params) => respond(reply, self.stop(params.agent)),
-            Request::AgentResume(params) => respond(reply, self.resume(params.agent)),
-            Request::AgentRemove(params) => respond(reply, self.remove(params.agent)),
-            Request::AgentHistory(params) => respond(reply, self.history(params)),
+            Request::AgentStop(params) => agents::respond(reply, self.stop(params.agent)),
+            Request::AgentResume(params) => agents::respond(reply, self.resume(params.agent)),
+            Request::AgentRemove(params) => agents::respond(reply, self.remove(params.agent)),
+            Request::AgentHistory(params) => agents::respond(reply, self.history(params)),
             Request::AgentDetails(params) => {
                 let details = self
                     .agent(params.agent)
                     .map(|agent| ResponseBody::Details(agent.view.details().clone()));
-                respond(reply, details);
+                agents::respond(reply, details);
             }
             Request::AgentSetModel(params) => self.set_model(params, reply),
-            Request::AgentSetEffort(params) => respond(reply, self.set_effort(params)),
+            Request::AgentSetEffort(params) => agents::respond(reply, self.set_effort(params)),
             Request::AgentSetMode(params) => self.set_mode(params, reply),
             Request::AgentContextUsage(params) => self.control(
                 params.agent,
@@ -80,11 +81,11 @@ impl Hub {
                     .map(|agent| ResponseBody::Commands {
                         commands: agent.view.details().commands.clone(),
                     });
-                respond(reply, commands);
+                agents::respond(reply, commands);
             }
             Request::AgentReadFile(params) => self.read_file(params, reply),
             Request::McpRemove(params) => self.mcp_remove(params, reply),
-            Request::SettingsSet(settings) => respond(reply, self.set_settings(settings)),
+            Request::SettingsSet(settings) => agents::respond(reply, self.set_settings(settings)),
             Request::SessionsList => self.sessions_list(reply),
             Request::SessionsResume(params) => self.sessions_resume(params, reply),
         }
@@ -103,7 +104,7 @@ impl Hub {
     fn read_file(&self, params: ReadFileParams, reply: Reply) {
         let folder = match self.agent(params.agent) {
             Ok(agent) => agent.record.folder.clone(),
-            Err(error) => return respond(reply, Err(error)),
+            Err(error) => return agents::respond(reply, Err(error)),
         };
         tokio::spawn(async move {
             let read =
@@ -113,25 +114,25 @@ impl Hub {
                 Ok(Err(error)) => Err(error.to_error_body()),
                 Err(error) => Err(errors::internal(error.to_string())),
             };
-            respond(reply, result);
+            agents::respond(reply, result);
         });
     }
 
     fn mcp_remove(&self, params: McpRemoveParams, reply: Reply) {
         let folder = match self.agent(params.agent) {
             Ok(agent) => agent.record.folder.clone(),
-            Err(error) => return respond(reply, Err(error)),
+            Err(error) => return agents::respond(reply, Err(error)),
         };
         let Some(scope) = words::removable_scope(params.scope) else {
             let error = errors::invalid(
                 "only the user, project and local scopes can be removed".to_owned(),
             );
-            return respond(reply, Err(error));
+            return agents::respond(reply, Err(error));
         };
         let program = self.config.claude_program.clone();
         tokio::spawn(async move {
             let result = mcp_remove::remove(&program, &folder, &params.server, scope).await;
-            respond(reply, result.map(|()| ResponseBody::Done));
+            agents::respond(reply, result.map(|()| ResponseBody::Done));
         });
     }
 
@@ -144,10 +145,7 @@ impl Hub {
             .save(&self.state.settings_file())
             .map_err(|error| errors::internal(errors::chain(&error)))?;
         self.settings = updated;
-        self.emit(
-            LogName::Daemon,
-            cockpit_protocol::Event::SettingsChanged(settings),
-        );
+        self.emit(LogName::Daemon, Event::SettingsChanged(settings));
         Ok(ResponseBody::Done)
     }
 
@@ -159,7 +157,7 @@ impl Hub {
                 Ok(sessions) => Ok(ResponseBody::Sessions { sessions }),
                 Err(error) => Err(errors::internal(error.to_string())),
             };
-            respond(reply, result);
+            agents::respond(reply, result);
         });
     }
 
@@ -172,9 +170,9 @@ impl Hub {
                 .is_some_and(|found| found.process.is_none())
                 && let Err(error) = self.resume(agent)
             {
-                return respond(reply, Err(error));
+                return agents::respond(reply, Err(error));
             }
-            return respond(reply, Ok(ResponseBody::AgentStarted { agent }));
+            return agents::respond(reply, Ok(ResponseBody::AgentStarted { agent }));
         }
         let folder = self.config.claude_config_dir.clone();
         let inputs = self.inputs.clone();
@@ -187,20 +185,20 @@ impl Hub {
                     if let Err(unsent) = inputs.send(input).await
                         && let HubInput::SessionFound { reply, .. } = unsent.0
                     {
-                        respond(
+                        agents::respond(
                             reply,
                             Err(errors::internal("the daemon is stopping".to_owned())),
                         );
                     }
                 }
-                Ok(None) => respond(
+                Ok(None) => agents::respond(
                     reply,
                     Err(ErrorBody::new(
                         ErrorCode::NotFound,
                         "no such Claude session".to_owned(),
                     )),
                 ),
-                Err(error) => respond(reply, Err(errors::internal(error.to_string()))),
+                Err(error) => agents::respond(reply, Err(errors::internal(error.to_string()))),
             }
         });
     }

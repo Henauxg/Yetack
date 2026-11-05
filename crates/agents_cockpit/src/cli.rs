@@ -1,17 +1,23 @@
 //! The command line's words.
 
+use std::convert::Infallible;
+use std::num::ParseIntError;
 use std::path::PathBuf;
 
-use anyhow::Context;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use cockpit_client::{BRIDGE_SUBCOMMAND, Transport};
-use cockpit_protocol::{Effort, PermissionMode, PlanDecision};
+use cockpit_daemon::HOME_ENV;
+use cockpit_protocol::{AgentId, Effort, PendingId, PermissionMode, PlanDecision};
 
-const DEFAULT_REMOTE_COMMAND: &str = "agents-cockpit";
+/// The program's name, as the command line and its messages show it.
+pub(crate) const PROGRAM: &str = "agents-cockpit";
+pub(crate) const SERVE_SUBCOMMAND: &str = "serve";
+pub(crate) const SSH_FLAG: &str = "ssh";
+const DEFAULT_REMOTE_COMMAND: &str = PROGRAM;
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "agents-cockpit",
+    name = PROGRAM,
     version,
     about = "Run Claude Code agents in a daemon, and steer them"
 )]
@@ -29,7 +35,7 @@ pub(crate) struct Target {
     #[arg(long, global = true)]
     pub(crate) state_dir: Option<PathBuf>,
     /// Reach the daemon on this host over SSH, through its bridge
-    #[arg(long, global = true, conflicts_with = "state_dir")]
+    #[arg(long = SSH_FLAG, global = true, conflicts_with = "state_dir")]
     pub(crate) ssh: Option<String>,
     /// The absolute path of agents-cockpit on the SSH host
     #[arg(long, global = true, default_value = DEFAULT_REMOTE_COMMAND)]
@@ -39,6 +45,7 @@ pub(crate) struct Target {
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
     /// Run the daemon in the foreground
+    #[command(name = SERVE_SUBCOMMAND)]
     Serve,
     /// Copy bytes between stdin and stdout and the daemon's socket, for
     /// `ssh <host> agents-cockpit bridge`
@@ -61,21 +68,36 @@ pub(crate) enum Command {
         effort: Option<EffortArg>,
     },
     /// Send a prompt; `-` reads it from stdin
-    Prompt { agent: u32, text: String },
+    Prompt {
+        #[arg(value_parser = agent_id)]
+        agent: AgentId,
+        text: String,
+    },
     /// Answer an approval, a question or a plan
     Answer {
-        agent: u32,
+        #[arg(value_parser = agent_id)]
+        agent: AgentId,
         /// The pending id the approval, question or plan carries
-        pending: String,
+        #[arg(value_parser = pending_id)]
+        pending: PendingId,
         #[command(subcommand)]
         answer: AnswerCommand,
     },
     /// Stop the current turn
-    Interrupt { agent: u32 },
+    Interrupt {
+        #[arg(value_parser = agent_id)]
+        agent: AgentId,
+    },
     /// End an agent's claude process
-    Stop { agent: u32 },
+    Stop {
+        #[arg(value_parser = agent_id)]
+        agent: AgentId,
+    },
     /// Print events as JSON lines, of one agent or of all
-    Tail { agent: Option<u32> },
+    Tail {
+        #[arg(value_parser = agent_id)]
+        agent: Option<AgentId>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -136,9 +158,12 @@ impl Target {
 
     /// The socket of the daemon on this machine.
     pub(crate) fn local_socket(&self) -> anyhow::Result<PathBuf> {
+        use anyhow::Context;
+
         let state_dir = match &self.state_dir {
             Some(state_dir) => state_dir.clone(),
-            None => cockpit_daemon::default_state_dir().context("HOME is not set")?,
+            None => cockpit_daemon::default_state_dir()
+                .with_context(|| format!("{HOME_ENV} is not set"))?,
         };
         Ok(cockpit_daemon::socket_path(&state_dir))
     }
@@ -156,39 +181,47 @@ impl Target {
     }
 }
 
-impl ModeArg {
-    pub(crate) fn to_protocol(self) -> PermissionMode {
-        match self {
-            Self::Default => PermissionMode::Default,
-            Self::AcceptEdits => PermissionMode::AcceptEdits,
-            Self::Plan => PermissionMode::Plan,
-            Self::Auto => PermissionMode::Auto,
-            Self::DontAsk => PermissionMode::DontAsk,
-            Self::BypassPermissions => PermissionMode::BypassPermissions,
+impl From<ModeArg> for PermissionMode {
+    fn from(mode: ModeArg) -> Self {
+        match mode {
+            ModeArg::Default => Self::Default,
+            ModeArg::AcceptEdits => Self::AcceptEdits,
+            ModeArg::Plan => Self::Plan,
+            ModeArg::Auto => Self::Auto,
+            ModeArg::DontAsk => Self::DontAsk,
+            ModeArg::BypassPermissions => Self::BypassPermissions,
         }
     }
 }
 
-impl EffortArg {
-    pub(crate) fn to_protocol(self) -> Effort {
-        match self {
-            Self::Low => Effort::Low,
-            Self::Medium => Effort::Medium,
-            Self::High => Effort::High,
-            Self::Xhigh => Effort::Xhigh,
-            Self::Max => Effort::Max,
+impl From<EffortArg> for Effort {
+    fn from(effort: EffortArg) -> Self {
+        match effort {
+            EffortArg::Low => Self::Low,
+            EffortArg::Medium => Self::Medium,
+            EffortArg::High => Self::High,
+            EffortArg::Xhigh => Self::Xhigh,
+            EffortArg::Max => Self::Max,
         }
     }
 }
 
-impl PlanArg {
-    pub(crate) fn to_protocol(self) -> PlanDecision {
-        match self {
-            Self::AcceptEdits => PlanDecision::AcceptEdits,
-            Self::AskBeforeEdits => PlanDecision::AskBeforeEdits,
-            Self::KeepPlanning => PlanDecision::KeepPlanning,
+impl From<PlanArg> for PlanDecision {
+    fn from(decision: PlanArg) -> Self {
+        match decision {
+            PlanArg::AcceptEdits => Self::AcceptEdits,
+            PlanArg::AskBeforeEdits => Self::AskBeforeEdits,
+            PlanArg::KeepPlanning => Self::KeepPlanning,
         }
     }
+}
+
+fn agent_id(text: &str) -> Result<AgentId, ParseIntError> {
+    text.parse().map(AgentId::new)
+}
+
+fn pending_id(text: &str) -> Result<PendingId, Infallible> {
+    Ok(PendingId::new(text.to_owned()))
 }
 
 #[cfg(test)]
@@ -234,7 +267,7 @@ mod tests {
         else {
             panic!("expected a plan answer, got {:?}", cli.command);
         };
-        assert_eq!((agent, pending.as_str()), (3, "perm-1"));
+        assert_eq!((agent, pending.as_str()), (AgentId::new(3), "perm-1"));
         assert_eq!(decision, PlanArg::KeepPlanning);
         assert_eq!(message.as_deref(), Some("Add tests"));
         assert_eq!(cli.target.ssh.as_deref(), Some("build-box"));

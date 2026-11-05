@@ -1,13 +1,14 @@
 //! One client's session: `Hello`, `Welcome` with its catch-up, then requests, responses and live
 //! events.
 
+use std::io;
 use std::time::Duration;
 
 use cockpit_protocol::{
     Catchup, ClientMessage, ErrorBody, ErrorCode, Frame, FrameError, FrameReader, PROTOCOL_VERSION,
     RequestId, ResponseResult, Seq, ServerMessage,
 };
-use tokio::io::{AsyncWriteExt, BufReader};
+use tokio::io::BufReader;
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{mpsc, oneshot};
@@ -40,7 +41,7 @@ enum End {
     #[error("a write to the client timed out")]
     WriteTimeout,
     #[error("the connection failed: {0}")]
-    Io(std::io::Error),
+    Io(io::Error),
     #[error("the connection failed: {0}")]
     Frame(FrameError),
     #[error("the daemon is stopping")]
@@ -158,7 +159,9 @@ async fn serve_requests(
     let mut in_flight: JoinSet<(RequestId, ResponseResult)> = JoinSet::new();
     loop {
         tokio::select! {
-            message = reader.next_message::<ClientMessage>(), if in_flight.len() < MAX_IN_FLIGHT => {
+            message = reader.next_message::<ClientMessage>(),
+                if in_flight.len() < MAX_IN_FLIGHT =>
+            {
                 match message {
                     Ok(Some(ClientMessage::Request { id, request })) => {
                         let (reply, answer) = oneshot::channel();
@@ -167,7 +170,10 @@ async fn serve_requests(
                             .map_err(|_| End::HubGone)?;
                         in_flight.spawn(async move {
                             let result = answer.await.unwrap_or_else(|_| {
-                                failure(ErrorCode::Internal, "the daemon dropped the request".to_owned())
+                                failure(
+                                    ErrorCode::Internal,
+                                    "the daemon dropped the request".to_owned(),
+                                )
                             });
                             (id, result)
                         });
@@ -223,6 +229,8 @@ async fn send(writer: &mut OwnedWriteHalf, message: &ServerMessage) -> Result<()
 }
 
 async fn write(writer: &mut OwnedWriteHalf, bytes: &[u8]) -> Result<(), End> {
+    use tokio::io::AsyncWriteExt;
+
     tokio::time::timeout(WRITE_TIMEOUT, writer.write_all(bytes))
         .await
         .map_err(|_| End::WriteTimeout)?

@@ -6,10 +6,11 @@ use std::path::PathBuf;
 use rustix::fs::Mode;
 use tokio::sync::mpsc;
 
-use crate::config::DaemonConfig;
-use crate::hub::{Hub, restore};
-use crate::server::{DaemonIdentity, accept_loop, bind};
+use crate::daemon_config::DaemonConfig;
+use crate::hub::Hub;
+use crate::server::DaemonIdentity;
 use crate::store::{StateDir, StoreError};
+use crate::{hub, server};
 
 /// New files and folders are for the owner only.
 const UMASK: u32 = 0o077;
@@ -42,16 +43,20 @@ pub async fn serve(
     rustix::process::umask(Mode::from_raw_mode(UMASK));
     let state = StateDir::create(&config.state_dir)?;
     let _lock = state.lock()?;
-    let restored = restore(&state)?;
+    let restored = hub::restore(&state)?;
     let socket = state.socket();
-    let listener = bind(&socket).map_err(|source| ServeError::Listen {
+    let listener = server::bind(&socket).map_err(|source| ServeError::Listen {
         path: socket.clone(),
         source,
     })?;
     let (inputs, received) = mpsc::channel(HUB_INPUTS);
     let hub = Hub::new(state, config, restored, inputs.clone());
     let mut hub_task = tokio::spawn(hub.run(received));
-    let mut server_task = tokio::spawn(accept_loop(listener, inputs, DaemonIdentity::current()));
+    let mut server_task = tokio::spawn(server::accept_loop(
+        listener,
+        inputs,
+        DaemonIdentity::current(),
+    ));
     tracing::info!(socket = %socket.display(), "serving");
     let result = tokio::select! {
         () = shutdown => Ok(()),

@@ -2,19 +2,19 @@
 //! events.
 
 use std::io;
-use std::io::{Read, Write};
 use std::path::PathBuf;
 
-use anyhow::{Context, bail};
-use cockpit_client::{Backoff, Connection, Session, SessionUpdate, Transport};
+use anyhow::bail;
+use cockpit_client::{BRIDGE_SUBCOMMAND, Backoff, Connection, Session, SessionUpdate, Transport};
 use cockpit_protocol::{
-    AgentId, AgentParams, Answer, AnswerParams, ApprovalAnswer, ApprovalDecision, Catchup, Event,
-    PendingId, PlanAnswer, Prompt, PromptParams, QuestionAnswer, Request, ResponseBody,
-    StartParams,
+    AgentId, AgentParams, Answer, AnswerParams, ApprovalAnswer, ApprovalDecision, Catchup, Effort,
+    Event, PermissionMode, PlanAnswer, PlanDecision, Prompt, PromptParams, QuestionAnswer, Request,
+    ResponseBody, StartParams,
 };
 use serde::Serialize;
+use serde_json::Value;
 
-use crate::cli::{AnswerCommand, Command, Target};
+use crate::cli::{AnswerCommand, Command, PROGRAM, SERVE_SUBCOMMAND, SSH_FLAG, Target};
 
 /// The argument that makes a command read its text from stdin.
 const STDIN_ARG: &str = "-";
@@ -35,8 +35,10 @@ pub(crate) async fn run(target: &Target, command: Command) -> anyhow::Result<()>
     let transport = target.transport()?;
     let request = match command {
         Command::List => return list(&transport).await,
-        Command::Tail { agent } => return tail(transport, agent.map(AgentId::new)).await,
-        Command::Serve | Command::Bridge => bail!("serve and bridge run on their own"),
+        Command::Tail { agent } => return tail(transport, agent).await,
+        Command::Serve | Command::Bridge => {
+            bail!("{SERVE_SUBCOMMAND} and {BRIDGE_SUBCOMMAND} run on their own")
+        }
         Command::Start {
             folder,
             prompt,
@@ -48,14 +50,14 @@ pub(crate) async fn run(target: &Target, command: Command) -> anyhow::Result<()>
             folder: agent_folder(target, folder)?,
             title,
             model,
-            effort: effort.map(|effort| effort.to_protocol()),
-            mode: mode.map(|mode| mode.to_protocol()),
+            effort: effort.map(Effort::from),
+            mode: mode.map(PermissionMode::from),
             prompt: prompt
                 .map(|text| read_text(text).map(text_prompt))
                 .transpose()?,
         }),
         Command::Prompt { agent, text } => Request::AgentPrompt(PromptParams {
-            agent: AgentId::new(agent),
+            agent,
             prompt: text_prompt(read_text(text)?),
         }),
         Command::Answer {
@@ -63,16 +65,12 @@ pub(crate) async fn run(target: &Target, command: Command) -> anyhow::Result<()>
             pending,
             answer,
         } => Request::AgentAnswer(AnswerParams {
-            agent: AgentId::new(agent),
-            pending: PendingId::new(pending),
+            agent,
+            pending,
             answer: answer_of(answer),
         }),
-        Command::Interrupt { agent } => Request::AgentInterrupt(AgentParams {
-            agent: AgentId::new(agent),
-        }),
-        Command::Stop { agent } => Request::AgentStop(AgentParams {
-            agent: AgentId::new(agent),
-        }),
+        Command::Interrupt { agent } => Request::AgentInterrupt(AgentParams { agent }),
+        Command::Stop { agent } => Request::AgentStop(AgentParams { agent }),
     };
     let (connection, _) = Connection::connect(&transport, None).await?;
     match connection.request(request).await? {
@@ -129,7 +127,7 @@ async fn tail(transport: Transport, agent: Option<AgentId>) -> anyhow::Result<()
                 }
             }
             SessionUpdate::Disconnected { error, retry_in } => {
-                eprintln!("agents-cockpit: disconnected ({error}); retrying in {retry_in:?}");
+                eprintln!("{PROGRAM}: disconnected ({error}); retrying in {retry_in:?}");
             }
             SessionUpdate::Connecting { .. } | SessionUpdate::Connected(_) => {}
         }
@@ -168,7 +166,7 @@ fn answer_of(answer: AnswerCommand) -> Answer {
                 .collect(),
         },
         AnswerCommand::Plan { decision, message } => Answer::Plan(PlanAnswer {
-            decision: decision.to_protocol(),
+            decision: PlanDecision::from(decision),
             message,
         }),
     }
@@ -177,16 +175,25 @@ fn answer_of(answer: AnswerCommand) -> Answer {
 /// The daemon needs an absolute folder. A relative one is resolved here only for a local daemon:
 /// this machine's working folder means nothing on an SSH host.
 fn agent_folder(target: &Target, folder: PathBuf) -> anyhow::Result<PathBuf> {
+    use anyhow::Context;
+
     if folder.is_absolute() {
         return Ok(folder);
     }
     if target.is_remote() {
-        bail!("give an absolute folder with --ssh: {}", folder.display());
+        bail!(
+            "give an absolute folder with --{SSH_FLAG}: {}",
+            folder.display()
+        );
     }
     std::path::absolute(&folder).with_context(|| format!("cannot resolve {}", folder.display()))
 }
 
 fn read_text(text: String) -> anyhow::Result<String> {
+    use std::io::Read;
+
+    use anyhow::Context;
+
     if text != STDIN_ARG {
         return Ok(text);
     }
@@ -229,13 +236,15 @@ fn shorten(text: &str, max_chars: usize) -> String {
 /// A protocol word, such as a status, as the daemon writes it.
 fn word<T: Serialize>(value: T) -> anyhow::Result<String> {
     match serde_json::to_value(value)? {
-        serde_json::Value::String(word) => Ok(word),
+        Value::String(word) => Ok(word),
         other => Ok(other.to_string()),
     }
 }
 
 /// Prints a line. A closed stdout, as after `| head`, is not an error.
 fn print_line(line: &str) -> anyhow::Result<Stdout> {
+    use std::io::Write;
+
     let mut stdout = io::stdout().lock();
     match writeln!(stdout, "{line}") {
         Ok(()) => Ok(Stdout::Open),
