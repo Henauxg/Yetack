@@ -1,0 +1,25 @@
+{
+  "type": "control_response",
+  "response": {
+    "subtype": "success",
+    "request_id": "cockpit-2",
+    "response": {
+      "categories": [
+        { "id": "system_prompt", "name": "System prompt", "tokens": 3500, "color": "promptBorder", "kind": "used" },
+        { "name": "MCP tools", "tokens": 900, "color": "inactive", "isDeferred": true },
+        { "name": "Messages", "tokens": 31000, "color": "purple" }
+      ],
+      "totalTokens": 35400,
+      "maxTokens": 167000,
+      "rawMaxTokens": 200000,
+      "percentage": 17.7,
+      "model": "claude-test-model",
+      "isAutoCompactEnabled": true,
+      "autoCompactThreshold": 160000,
+      "gridRows": [[{ "color": "promptBorder", "isFilled": true }]],
+      "memoryFiles": [],
+      "mcpTools": [],
+      "agents": []
+    }
+  }
+}

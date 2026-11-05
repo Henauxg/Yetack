@@ -1,0 +1,12 @@
+{
+  "type": "system",
+  "subtype": "hook_progress",
+  "hook_id": "00000000-0000-4000-8000-000000000301",
+  "hook_name": "SessionStart:startup",
+  "hook_event": "SessionStart",
+  "stdout": "loading notes\n",
+  "stderr": "",
+  "output": "loading notes\n",
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "uuid": "00000000-0000-4000-8000-000000000110"
+}

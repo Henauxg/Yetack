@@ -1,0 +1,36 @@
+{
+  "type": "control_response",
+  "response": {
+    "subtype": "success",
+    "request_id": "cockpit-3",
+    "response": {
+      "mcpServers": [
+        {
+          "name": "notes",
+          "status": "connected",
+          "serverInfo": { "name": "notes-server", "version": "1.2.0" },
+          "config": { "type": "stdio", "command": "notes-mcp", "args": ["--root", "/home/user/notes"], "env": { "NOTES_TOKEN": "not-a-real-token" } },
+          "scope": "user",
+          "tools": [
+            { "name": "read_note", "description": "Reads a note", "annotations": { "readOnly": true, "openWorld": false } },
+            { "name": "delete_note", "annotations": { "destructive": true } },
+            { "name": "list_notes" }
+          ]
+        },
+        {
+          "name": "tickets",
+          "status": "failed",
+          "error": "connection refused",
+          "config": { "type": "http", "url": "https://tickets.example.com/mcp", "headers": { "Authorization": "Bearer not-a-real-token" } },
+          "scope": "project"
+        },
+        {
+          "name": "legacy",
+          "status": "hibernating",
+          "config": { "command": "legacy-mcp" },
+          "scope": "galaxy"
+        }
+      ]
+    }
+  }
+}

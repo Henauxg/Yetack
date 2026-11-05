@@ -1,0 +1,33 @@
+{
+  "type": "control_request",
+  "request_id": "00000000-0000-4000-8000-000000000402",
+  "request": {
+    "subtype": "can_use_tool",
+    "tool_name": "AskUserQuestion",
+    "input": {
+      "questions": [
+        {
+          "question": "Which format should the report use?",
+          "header": "Format",
+          "options": [
+            { "label": "Summary", "description": "A short overview" },
+            { "label": "Detailed", "description": "Every finding" }
+          ],
+          "multiSelect": false
+        },
+        {
+          "question": "Which sections should it include?",
+          "header": "Sections",
+          "options": [
+            { "label": "Intro", "description": "The context" },
+            { "label": "Risks", "description": "What could go wrong" }
+          ],
+          "multiSelect": true
+        }
+      ]
+    },
+    "permission_suggestions": null,
+    "blocked_path": null,
+    "tool_use_id": "toolu_00000000000000000000000006"
+  }
+}
