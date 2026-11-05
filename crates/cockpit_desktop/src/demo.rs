@@ -502,6 +502,47 @@ fn details() -> AgentDetails {
     }
 }
 
+/// Three running tasks among many finished ones, in the order they started, as the daemon lists
+/// them: the block shows the running ones first and folds the older finished ones.
+fn parser_background_tasks(now: SystemTime) -> Vec<BackgroundTask> {
+    use BackgroundTaskKind::{Agent, Command};
+    use BackgroundTaskStatus::{Done, Failed, Running, Stopped};
+    // Kind, description, status, started and ended so many seconds ago, tool calls.
+    #[rustfmt::skip]
+    let tasks = [
+        (Agent, "Map where the lexer builds tokens", Done, 1500, Some(1380), 14),
+        (Agent, "List the parser's error messages", Done, 1460, Some(1300), 9),
+        (Command, "cargo build --all-targets", Done, 1400, Some(1340), 0),
+        (Agent, "Check the grammar for ambiguous rules", Failed, 1350, Some(1200), 21),
+        (Agent, "Review the error type for missing cases", Running, 1290, None, 5),
+        (Agent, "Find tests that assert on columns", Done, 1250, Some(1050), 12),
+        (Command, "cargo clippy --all-targets", Done, 1210, Some(1150), 0),
+        (Agent, "Compare with the column rules of other parsers", Done, 1100, Some(800), 18),
+        (Command, "cargo test lexer", Stopped, 980, Some(950), 0),
+        (Agent, "Draft the changelog entry", Done, 900, Some(700), 6),
+        (Agent, "Look for callers of Token::column", Done, 860, Some(640), 11),
+        (Agent, "Write fuzz inputs with unicode", Running, 600, None, 8),
+        (Command, "cargo doc --no-deps", Done, 420, Some(380), 0),
+        (Agent, "Check the docs for column examples", Done, 300, Some(150), 7),
+        (Agent, "Summarize the error type review", Done, 200, Some(90), 4),
+        (Command, "cargo test parser", Running, 12, None, 0),
+    ];
+    (1_u32..)
+        .zip(tasks)
+        .map(
+            |(index, (kind, description, status, started, ended, tool_calls))| BackgroundTask {
+                id: BackgroundTaskId::new(format!("demo-task-{index}")),
+                kind,
+                description: description.to_owned(),
+                status,
+                started_at: at(now, started),
+                ended_at: ended.map(|ended| at(now, ended)),
+                tool_calls,
+            },
+        )
+        .collect()
+}
+
 struct Sample {
     summary: AgentSummary,
     items: Vec<TranscriptItem>,
@@ -664,26 +705,7 @@ fn parser_agent(now: SystemTime) -> Sample {
             task("Fix the failing test", TaskStatus::InProgress),
             task("Cover a token at the end of the input", TaskStatus::Pending),
         ],
-        background_tasks: vec![
-            BackgroundTask {
-                id: BackgroundTaskId::new("demo-task-1".to_owned()),
-                kind: BackgroundTaskKind::Agent,
-                description: "Review the error type for missing cases".to_owned(),
-                status: BackgroundTaskStatus::Running,
-                started_at: at(now, 41),
-                ended_at: None,
-                tool_calls: 5,
-            },
-            BackgroundTask {
-                id: BackgroundTaskId::new("demo-task-2".to_owned()),
-                kind: BackgroundTaskKind::Command,
-                description: "cargo test parser".to_owned(),
-                status: BackgroundTaskStatus::Running,
-                started_at: at(now, 12),
-                ended_at: None,
-                tool_calls: 0,
-            },
-        ],
+        background_tasks: parser_background_tasks(now),
         changed_files: vec![
             ChangedFile {
                 path: Path::new(PARSER_FOLDER).join(ERROR_FILE),

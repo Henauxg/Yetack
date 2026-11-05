@@ -151,6 +151,8 @@ pub struct UiState {
     pub open_blocks: BTreeSet<Block>,
     /// The block shown as a popover from its badge, while the file view is open.
     pub badge: Option<Block>,
+    /// The agents whose background block lists every finished task, not only the latest.
+    pub finished_tasks_unfolded: BTreeSet<AgentId>,
     pub popover: Option<Popover>,
     pub dialog: Option<Dialog>,
     pub file_views: BTreeMap<AgentId, FileView>,
@@ -170,6 +172,7 @@ impl Default for UiState {
             window_focused: true,
             open_blocks: BTreeSet::from([Block::Tasks, Block::Running]),
             badge: None,
+            finished_tasks_unfolded: BTreeSet::new(),
             popover: None,
             dialog: None,
             file_views: BTreeMap::new(),
@@ -209,6 +212,12 @@ impl UiState {
 
     pub fn file_view(&self, agent: AgentId) -> Option<&FileView> {
         self.file_views.get(&agent)
+    }
+
+    pub fn toggle_finished_tasks(&mut self, agent: AgentId) {
+        if !self.finished_tasks_unfolded.remove(&agent) {
+            self.finished_tasks_unfolded.insert(agent);
+        }
     }
 
     /// Closes every popover and the dialog, or only the dialog's menu when one is open, and
@@ -281,6 +290,19 @@ mod tests {
 
         assert!(ui.close_overlays());
         assert_eq!(ui.dialog, None);
+    }
+
+    #[test]
+    fn the_finished_tasks_fold_per_agent() {
+        let mut ui = UiState::default();
+        let (first, second) = (AgentId::new(1), AgentId::new(2));
+
+        ui.toggle_finished_tasks(first);
+        assert!(ui.finished_tasks_unfolded.contains(&first));
+        assert!(!ui.finished_tasks_unfolded.contains(&second));
+
+        ui.toggle_finished_tasks(first);
+        assert!(ui.finished_tasks_unfolded.is_empty());
     }
 
     #[test]
