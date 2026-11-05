@@ -840,6 +840,8 @@ pub fn send_prompt(
     let draft = std::mem::take(draft);
     drafts.draft_written(agent);
     state.ui.popover = None;
+    // The script reports the bottom once its jump got there: what arrived before is not new.
+    state.ui.chat_scrolled_up.remove(&agent);
     state.ui.chat_new_from.remove(&agent);
     state.ui.chat_jumps = state.ui.chat_jumps.wrapping_add(1);
     let prompt = Prompt {
@@ -1894,6 +1896,24 @@ mod tests {
         assert_eq!(after_send, None);
         assert_eq!(again, Some(ItemId::new(4)));
         assert_eq!(divider(&state), None);
+    }
+
+    /// The script reports the bottom only once its jump got there, after the send.
+    #[test]
+    fn a_send_while_scrolled_up_leaves_no_divider_above_what_arrived_meanwhile() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        append_notice(&mut state, 1);
+        chat_at_bottom(&mut state, agent(), false);
+        append(&mut state, 2, text("Done."));
+
+        type_text(&mut state, &mut drafts, "Thanks");
+        send_prompt(&mut state, &mut drafts, agent(), None);
+        let jump_shown = state.ui.chat_scrolled_up.contains_key(&agent());
+        chat_at_bottom(&mut state, agent(), true);
+
+        assert!(!jump_shown);
+        assert_eq!(new_divider(&state, agent()), None);
     }
 
     #[test]
