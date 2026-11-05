@@ -11,6 +11,26 @@ name = "agents-cockpit-desktop"
 path = "src/main.rs"
 
 [dependencies]
+anyhow.workspace = true
+base64 = "0.22.1"
+chrono = { version = "0.4.42", default-features = false, features = ["clock", "std"] }
+cockpit_client.workspace = true
+cockpit_protocol.workspace = true
+dioxus = { version = "0.7.10", default-features = false, features = ["desktop", "launch", "lib"] }
+futures-util = "0.3.31"
+notify-rust = "4.18.2"
+pulldown-cmark = { version = "0.13.6", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+similar = { version = "3.2.1", features = ["inline"] }
+strum.workspace = true
+# The pure Rust regex engine: no C library to build.
+syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "regex-fancy"] }
+thiserror.workspace = true
+tokio.workspace = true
+toml = "1.2.0"
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
