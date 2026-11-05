@@ -5,6 +5,9 @@ use std::collections::BTreeMap;
 
 use cockpit_protocol::{AnswerState, HistoryPage, ItemBody, ItemId, PendingId, TranscriptItem};
 
+/// The most items the app keeps of an agent you are not looking at.
+pub const KEPT_ITEMS_AWAY: usize = 2_000;
+
 /// How much of the history the app holds.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum HistoryState {
@@ -64,6 +67,26 @@ impl Transcript {
 
     pub fn append(&mut self, item: TranscriptItem) {
         self.items.insert(item.id, item);
+    }
+
+    /// Drops the oldest items past `kept`, and marks that older items exist, so that scrolling up
+    /// loads them again through history. While a history page is on its way, nothing is dropped:
+    /// the page would come back with a gap before it.
+    pub fn trim(&mut self, kept: usize) {
+        if matches!(
+            self.history,
+            HistoryState::Loading | HistoryState::LoadingOlder
+        ) {
+            return;
+        }
+        let mut dropped = false;
+        while self.items.len() > kept {
+            self.items.pop_first();
+            dropped = true;
+        }
+        if let (true, HistoryState::Loaded { has_older }) = (dropped, &mut self.history) {
+            *has_older = true;
+        }
     }
 
     /// Replaces the item with the same id. An item the app does not hold is left out: the next
@@ -167,6 +190,43 @@ mod tests {
             &HistoryState::Loaded { has_older: true }
         );
         assert_eq!(transcript.first_id(), Some(ItemId::new(3)));
+    }
+
+    #[test]
+    fn trimming_keeps_the_newest_items_and_marks_that_older_ones_exist() {
+        let mut transcript = Transcript::default();
+        transcript.merge_page(HistoryPage {
+            items: (1..=2_005).map(|id| text(id, "item")).collect(),
+            has_older: false,
+        });
+
+        transcript.trim(KEPT_ITEMS_AWAY);
+
+        assert_eq!(transcript.items().count(), 2_000);
+        assert_eq!(transcript.first_id(), Some(ItemId::new(6)));
+        assert_eq!(
+            transcript.history(),
+            &HistoryState::Loaded { has_older: true }
+        );
+    }
+
+    #[test]
+    fn trimming_waits_for_a_page_on_its_way() {
+        let mut transcript = Transcript::default();
+        for id in 1..=3 {
+            transcript.append(text(id, "item"));
+        }
+        transcript.set_history(HistoryState::LoadingOlder);
+
+        transcript.trim(2);
+        assert_eq!(transcript.items().count(), 3);
+
+        transcript.set_history(HistoryState::Loaded { has_older: false });
+        transcript.trim(3);
+        assert_eq!(
+            transcript.history(),
+            &HistoryState::Loaded { has_older: false }
+        );
     }
 
     #[test]

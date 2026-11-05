@@ -4,6 +4,7 @@
 pub mod actions;
 mod app_state;
 mod apply;
+mod drafts;
 pub mod file_edits;
 mod requests;
 mod shortcuts;
@@ -12,6 +13,7 @@ mod ui_state;
 
 pub use app_state::{AgentEntry, AppState, ConnectionState, Loadable};
 pub use apply::{Alert, AlertKind, apply_update};
+pub use drafts::Drafts;
 pub use requests::{Outgoing, apply_response, needed_requests};
 pub use shortcuts::{KeyPress, handle_key};
 pub use transcript::{HistoryState, WaitingKind};

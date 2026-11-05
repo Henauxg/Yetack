@@ -11,6 +11,8 @@ use cockpit_protocol::{
 };
 
 use super::app_state::{AgentEntry, AppState, ConnectionState, Loadable};
+use super::drafts::Drafts;
+use super::transcript::KEPT_ITEMS_AWAY;
 
 /// A desktop notification to show.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,7 +29,12 @@ pub enum AlertKind {
     Finished,
 }
 
-pub fn apply_update(state: &mut AppState, update: SessionUpdate, now: Instant) -> Vec<Alert> {
+pub fn apply_update(
+    state: &mut AppState,
+    drafts: &mut Drafts,
+    update: SessionUpdate,
+    now: Instant,
+) -> Vec<Alert> {
     match update {
         SessionUpdate::Connecting { attempt } => {
             state.connection = ConnectionState::Connecting { attempt };
@@ -35,7 +42,7 @@ pub fn apply_update(state: &mut AppState, update: SessionUpdate, now: Instant) -
         }
         SessionUpdate::Connected(catchup) => {
             state.connection = ConnectionState::Connected;
-            apply_catchup(state, catchup);
+            apply_catchup(state, drafts, catchup);
             Vec::new()
         }
         SessionUpdate::Disconnected { error, retry_in } => {
@@ -45,13 +52,13 @@ pub fn apply_update(state: &mut AppState, update: SessionUpdate, now: Instant) -
             };
             Vec::new()
         }
-        SessionUpdate::Event(record) => apply(state, record).into_iter().collect(),
+        SessionUpdate::Event(record) => apply(state, drafts, record).into_iter().collect(),
     }
 }
 
 /// With a snapshot, the agents are replaced and what came by request (transcripts, details, file
 /// texts) is forgotten, to be asked for again. With a replay, the events that follow catch up.
-pub fn apply_catchup(state: &mut AppState, catchup: Catchup) {
+pub fn apply_catchup(state: &mut AppState, drafts: &mut Drafts, catchup: Catchup) {
     let Catchup::Snapshot(snapshot) = catchup else {
         return;
     };
@@ -73,14 +80,13 @@ pub fn apply_catchup(state: &mut AppState, catchup: Catchup) {
         .ui
         .file_views
         .retain(|agent, _| agents.contains_key(agent));
-    state
-        .ui
-        .drafts
+    drafts
+        .composer
         .retain(|agent, _| agents.contains_key(agent));
     state.fix_selection();
 }
 
-pub fn apply(state: &mut AppState, record: EventRecord) -> Option<Alert> {
+pub fn apply(state: &mut AppState, drafts: &mut Drafts, record: EventRecord) -> Option<Alert> {
     match record.event {
         Event::AgentAdded(summary) => {
             state.agents.insert(summary.id, AgentEntry::new(summary));
@@ -94,7 +100,7 @@ pub fn apply(state: &mut AppState, record: EventRecord) -> Option<Alert> {
             state.agents.remove(&agent);
             state.ui.unread.remove(&agent);
             state.ui.file_views.remove(&agent);
-            state.ui.drafts.remove(&agent);
+            drafts.composer.remove(&agent);
             if state.ui.selected == Some(agent) {
                 state.ui.selected = None;
                 state.fix_selection();
@@ -102,8 +108,12 @@ pub fn apply(state: &mut AppState, record: EventRecord) -> Option<Alert> {
             None
         }
         Event::TranscriptAppended { agent, item } => {
+            let looked_at = state.ui.selected == Some(agent);
             if let Some(entry) = state.agents.get_mut(&agent) {
                 entry.transcript.append(item);
+                if !looked_at {
+                    entry.transcript.trim(KEPT_ITEMS_AWAY);
+                }
             }
             None
         }
@@ -111,7 +121,7 @@ pub fn apply(state: &mut AppState, record: EventRecord) -> Option<Alert> {
             if let ItemBody::Question(question) = &item.body
                 && question.answer != AnswerState::Waiting
             {
-                state.ui.questions.remove(&question.pending);
+                drafts.questions.remove(&question.pending);
             }
             if let Some(entry) = state.agents.get_mut(&agent) {
                 entry.transcript.change(item);
@@ -243,10 +253,12 @@ mod tests {
 
         let alert = apply(
             &mut state,
+            &mut Drafts::default(),
             record(Event::AgentUpdated(with_status(1, AgentStatus::NeedsYou))),
         );
         let again = apply(
             &mut state,
+            &mut Drafts::default(),
             record(Event::AgentUpdated(with_status(1, AgentStatus::NeedsYou))),
         );
 
@@ -267,7 +279,12 @@ mod tests {
         let mut finished = with_status(1, AgentStatus::Idle);
         finished.task_progress = Some(TaskProgress { done: 4, total: 4 });
 
-        let alert = apply(&mut state, record(Event::AgentUpdated(finished))).unwrap();
+        let alert = apply(
+            &mut state,
+            &mut Drafts::default(),
+            record(Event::AgentUpdated(finished)),
+        )
+        .unwrap();
 
         assert_eq!(alert.kind, AlertKind::Finished);
         assert_eq!(alert.body, "Running the tests. 4 of 4 tasks done.");
@@ -281,15 +298,18 @@ mod tests {
 
         let silent = apply(
             &mut state,
+            &mut Drafts::default(),
             record(Event::AgentUpdated(with_status(1, AgentStatus::Idle))),
         );
         apply(
             &mut state,
+            &mut Drafts::default(),
             record(Event::AgentUpdated(with_status(1, AgentStatus::Working))),
         );
         state.ui.window_focused = false;
         let away = apply(
             &mut state,
+            &mut Drafts::default(),
             record(Event::AgentUpdated(with_status(1, AgentStatus::Idle))),
         );
 
@@ -305,6 +325,7 @@ mod tests {
 
         apply(
             &mut state,
+            &mut Drafts::default(),
             record(Event::TranscriptAppended {
                 agent,
                 item: notice(1, "first"),
@@ -312,6 +333,7 @@ mod tests {
         );
         apply(
             &mut state,
+            &mut Drafts::default(),
             record(Event::TranscriptChanged {
                 agent,
                 item: notice(1, "changed"),
@@ -323,13 +345,39 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_you_do_not_look_at_keeps_its_newest_items() {
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::Working),
+            summary(2, AgentStatus::Working),
+        ]);
+        state.ui.selected = Some(AgentId::new(2));
+        let last = u32::try_from(KEPT_ITEMS_AWAY).unwrap() + 3;
+        for id in 1..=last {
+            for agent in [AgentId::new(1), AgentId::new(2)] {
+                apply(
+                    &mut state,
+                    &mut Drafts::default(),
+                    record(Event::TranscriptAppended {
+                        agent,
+                        item: notice(id, "live"),
+                    }),
+                );
+            }
+        }
+
+        let away = &state.agents[&AgentId::new(1)].transcript;
+        let looked_at = &state.agents[&AgentId::new(2)].transcript;
+        assert_eq!(away.items().count(), KEPT_ITEMS_AWAY);
+        assert_eq!(away.first_id(), Some(ItemId::new(4)));
+        assert_eq!(looked_at.items().count(), KEPT_ITEMS_AWAY + 3);
+    }
+
+    #[test]
     fn an_answered_question_drops_its_draft() {
         let mut state = state_with(vec![summary(1, AgentStatus::NeedsYou)]);
+        let mut drafts = Drafts::default();
         let pending = PendingId::new("request-1".to_owned());
-        state
-            .ui
-            .questions
-            .insert(pending.clone(), Default::default());
+        drafts.questions.insert(pending.clone(), Default::default());
         let question = Question {
             pending: pending.clone(),
             questions: Vec::new(),
@@ -338,6 +386,7 @@ mod tests {
 
         apply(
             &mut state,
+            &mut drafts,
             record(Event::TranscriptChanged {
                 agent: AgentId::new(1),
                 item: TranscriptItem {
@@ -348,7 +397,7 @@ mod tests {
             }),
         );
 
-        assert!(!state.ui.questions.contains_key(&pending));
+        assert!(!drafts.questions.contains_key(&pending));
     }
 
     #[test]
@@ -362,6 +411,7 @@ mod tests {
 
         apply(
             &mut state,
+            &mut Drafts::default(),
             record(Event::AgentRemoved {
                 agent: AgentId::new(3),
             }),
@@ -377,6 +427,7 @@ mod tests {
 
         apply(
             &mut state,
+            &mut Drafts::default(),
             record(Event::AgentAdded(summary(7, AgentStatus::Working))),
         );
 
@@ -401,6 +452,7 @@ mod tests {
 
         apply_catchup(
             &mut state,
+            &mut Drafts::default(),
             Catchup::Snapshot(Snapshot {
                 agents: vec![summary(1, AgentStatus::Working)],
                 plan_usage: PlanUsage::default(),
@@ -423,7 +475,7 @@ mod tests {
         let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
         let before = state.clone();
 
-        apply_catchup(&mut state, Catchup::Replay);
+        apply_catchup(&mut state, &mut Drafts::default(), Catchup::Replay);
 
         assert_eq!(state, before);
     }
@@ -433,11 +485,17 @@ mod tests {
         let mut state = state_with(Vec::new());
         let now = Instant::now();
 
-        apply_update(&mut state, SessionUpdate::Connecting { attempt: 3 }, now);
+        apply_update(
+            &mut state,
+            &mut Drafts::default(),
+            SessionUpdate::Connecting { attempt: 3 },
+            now,
+        );
         assert_eq!(state.connection, ConnectionState::Connecting { attempt: 3 });
 
         apply_update(
             &mut state,
+            &mut Drafts::default(),
             SessionUpdate::Disconnected {
                 error: SessionError::Connect(ConnectError::Ssh {
                     stderr: "Permission denied (publickey).".to_owned(),
@@ -454,7 +512,12 @@ mod tests {
             }
         );
 
-        apply_update(&mut state, SessionUpdate::Connected(Catchup::Replay), now);
+        apply_update(
+            &mut state,
+            &mut Drafts::default(),
+            SessionUpdate::Connected(Catchup::Replay),
+            now,
+        );
         assert!(state.is_connected());
     }
 }

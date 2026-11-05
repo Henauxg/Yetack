@@ -9,8 +9,9 @@ use cockpit_protocol::{
 };
 
 use super::app_state::{AppState, Loadable};
+use super::drafts::{Draft, Drafts};
 use super::transcript::HistoryState;
-use super::ui_state::{Dialog, Draft};
+use super::ui_state::Dialog;
 
 /// The most transcript items one history request asks for.
 pub const HISTORY_PAGE: u16 = 100;
@@ -132,6 +133,7 @@ pub fn history_request(agent: AgentId, before: Option<ItemId>) -> Outgoing {
 
 pub fn apply_response(
     state: &mut AppState,
+    drafts: &mut Drafts,
     method: Method,
     purpose: Purpose,
     result: Result<ResponseBody, RequestError>,
@@ -239,10 +241,10 @@ pub fn apply_response(
         },
         Purpose::Prompt { agent, draft } => {
             if let Err(failure) = result {
-                let current = state.ui.draft_mut(agent);
+                let current = drafts.draft_mut(agent);
                 if current.is_empty() {
                     *current = draft;
-                    state.ui.draft_written();
+                    drafts.draft_written();
                 }
                 state
                     .ui
@@ -390,6 +392,7 @@ mod tests {
 
         apply_response(
             &mut state,
+            &mut Drafts::default(),
             Method::AgentHistory,
             Purpose::History {
                 agent,
@@ -399,6 +402,7 @@ mod tests {
         );
         apply_response(
             &mut state,
+            &mut Drafts::default(),
             Method::AgentDetails,
             Purpose::Details { agent },
             Err(RequestError::Disconnected),
@@ -422,6 +426,7 @@ mod tests {
 
         apply_response(
             &mut state,
+            &mut Drafts::default(),
             Method::AgentInterrupt,
             Purpose::Action,
             Err(RequestError::Failed(ErrorBody::new(
@@ -447,9 +452,11 @@ mod tests {
             text: "Run the tests".to_owned(),
             images: Vec::new(),
         };
+        let mut drafts = Drafts::default();
 
         apply_response(
             &mut state,
+            &mut drafts,
             Method::AgentPrompt,
             Purpose::Prompt {
                 agent,
@@ -458,8 +465,8 @@ mod tests {
             Err(RequestError::NotConnected),
         );
 
-        assert_eq!(state.ui.draft(agent), Some(&draft));
-        assert_eq!(state.ui.composer_writes, 1);
+        assert_eq!(drafts.draft(agent), Some(&draft));
+        assert_eq!(drafts.composer_writes, 1);
         assert_eq!(state.ui.errors.len(), 1);
     }
 
@@ -470,6 +477,7 @@ mod tests {
 
         apply_response(
             &mut state,
+            &mut Drafts::default(),
             Method::AgentStart,
             Purpose::Start,
             Ok(ResponseBody::AgentStarted {
@@ -491,6 +499,7 @@ mod tests {
 
         apply_response(
             &mut state,
+            &mut Drafts::default(),
             Method::AgentCommands,
             Purpose::Commands { agent },
             Ok(ResponseBody::Done),

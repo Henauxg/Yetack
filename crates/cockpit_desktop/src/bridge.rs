@@ -200,7 +200,9 @@ pub fn use_bridge(cockpit: Cockpit) {
 
 fn receive(cockpit: Cockpit, message: BridgeMessage) {
     match message {
-        BridgeMessage::Key(press) => cockpit.change(|state| handle_key(state, &press)),
+        BridgeMessage::Key(press) => {
+            cockpit.change_with_drafts(|state, drafts| handle_key(state, drafts, &press));
+        }
         BridgeMessage::Focus { focused } => {
             cockpit.update(|state| state.ui.window_focused = focused);
         }
@@ -210,9 +212,9 @@ fn receive(cockpit: Cockpit, message: BridgeMessage) {
                 return;
             };
             let image = Image { media_type, data };
-            cockpit.update(|state| {
+            cockpit.with_drafts(|state, drafts| {
                 if let Some(agent) = state.ui.selected {
-                    actions::add_image(state, agent, image);
+                    actions::add_image(drafts, agent, image);
                 }
             });
         }

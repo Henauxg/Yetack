@@ -73,34 +73,35 @@ pub fn Composer() -> Element {
     // The text area is not bound to the draft, whose renders can lag behind typing: it takes the
     // draft's text only when another agent opens or the app changes the draft.
     let shown = use_memo(move || {
-        let state = cockpit.state.read();
-        (state.ui.selected, state.ui.composer_writes)
+        let selected = cockpit.state.read().ui.selected;
+        (selected, cockpit.drafts.read().composer_writes)
     });
     use_effect(move || {
         let (agent, _) = shown();
         let text = agent
             .and_then(|agent| {
-                let state = cockpit.state.peek();
-                state.ui.draft(agent).map(|draft| draft.text.clone())
+                let drafts = cockpit.drafts.peek();
+                drafts.draft(agent).map(|draft| draft.text.clone())
             })
             .unwrap_or_default();
         bridge::set_composer_text(text);
     });
     let state = cockpit.state.read();
+    let drafts = cockpit.drafts.read();
     let Some(entry) = state.selected() else {
         return rsx! {};
     };
     let agent = entry.id();
     let summary = &entry.summary;
     let status = summary.status;
-    let draft = state.ui.draft(agent).cloned().unwrap_or_default();
+    let draft = drafts.draft(agent).cloned().unwrap_or_default();
     let popover = state.ui.popover;
     let commands = entry
         .details
         .loaded()
         .map(|details| details.commands.clone())
         .unwrap_or_default();
-    let palette = state.ui.palette.clone();
+    let palette = drafts.palette.clone();
     let filtered: Vec<SlashCommand> = actions::filtered_commands(&commands, &palette.query)
         .into_iter()
         .cloned()
@@ -154,7 +155,7 @@ pub fn Composer() -> Element {
                                     button {
                                         class: "icon-button tiny",
                                         aria_label: "Remove the image",
-                                        onclick: move |_| cockpit.update(|state| actions::remove_image(state, agent, index)),
+                                        onclick: move |_| cockpit.with_drafts(|_, drafts| actions::remove_image(drafts, agent, index)),
                                         Icon { kind: IconKind::Close, size: 12 }
                                     }
                                 }
@@ -168,9 +169,7 @@ pub fn Composer() -> Element {
                         aria_label: "Message {title}",
                         placeholder: placeholder(status),
                         disabled: exited,
-                        oninput: move |event: FormEvent| {
-                            cockpit.change(|state| actions::composer_input(state, agent, event.value()));
-                        },
+                        oninput: move |event: FormEvent| cockpit.type_in_composer(agent, event.value()),
                     }
                     div { class: "composer-tools",
                         label {
@@ -193,7 +192,7 @@ pub fn Composer() -> Element {
                             class: if popover == Some(Popover::Palette) { "icon-button small active" } else { "icon-button small" },
                             aria_label: "Commands and skills",
                             title: "Commands and skills",
-                            onclick: move |_| cockpit.change(|state| actions::toggle_palette(state, agent)),
+                            onclick: move |_| cockpit.change_with_drafts(|state, drafts| actions::toggle_palette(state, drafts, agent)),
                             Icon { kind: IconKind::Slash, size: 16 }
                         }
                         span {
@@ -237,7 +236,7 @@ pub fn Composer() -> Element {
                                 aria_label: "Send the message",
                                 title: "Send the message (Enter)",
                                 disabled: !can_send,
-                                onclick: move |_| cockpit.change(|state| actions::send_prompt(state, agent, None)),
+                                onclick: move |_| cockpit.change_with_drafts(|state, drafts| actions::send_prompt(state, drafts, agent, None)),
                                 Icon { kind: IconKind::Send, size: 16 }
                             }
                         }
@@ -294,7 +293,7 @@ async fn attach(cockpit: Cockpit, agent: AgentId, files: Vec<FileData>) {
                     media_type,
                     data: BASE64.encode(&bytes),
                 };
-                cockpit.update(|state| actions::add_image(state, agent, image));
+                cockpit.with_drafts(|_, drafts| actions::add_image(drafts, agent, image));
             }
             Err(error) => {
                 cockpit.update(|state| state.ui.report(format!("Cannot read {name}: {error}")));
@@ -322,15 +321,18 @@ fn CommandPalette(
                     placeholder: "Type to filter commands and skills",
                     value: "{query}",
                     oninput: move |event: FormEvent| {
-                        cockpit.update(|state| {
-                            state.ui.palette.query = event.value();
-                            state.ui.palette.highlighted = 0;
+                        cockpit.with_drafts(|_, drafts| {
+                            drafts.palette.query = event.value();
+                            drafts.palette.highlighted = 0;
                         });
                     },
                     onkeydown: move |event: KeyboardEvent| match event.key() {
-                        Key::ArrowDown => cockpit.update(|state| actions::palette_move(state, agent, Direction::Down)),
-                        Key::ArrowUp => cockpit.update(|state| actions::palette_move(state, agent, Direction::Up)),
-                        Key::Enter => cockpit.update(|state| actions::palette_pick(state, agent, None)),
+                        Key::ArrowDown => cockpit.with_drafts(|state, drafts| actions::palette_move(state, drafts, agent, Direction::Down)),
+                        Key::ArrowUp => cockpit.with_drafts(|state, drafts| actions::palette_move(state, drafts, agent, Direction::Up)),
+                        Key::Enter => cockpit.change_with_drafts(|state, drafts| {
+                            actions::palette_pick(state, drafts, agent, None);
+                            Vec::new()
+                        }),
                         _ => {}
                     },
                 }
@@ -344,7 +346,10 @@ fn CommandPalette(
                     button {
                         key: "{index}",
                         class: if index == highlighted { "palette-item highlighted" } else { "palette-item" },
-                        onclick: move |_| cockpit.update(|state| actions::palette_pick(state, agent, Some(index))),
+                        onclick: move |_| cockpit.change_with_drafts(|state, drafts| {
+                            actions::palette_pick(state, drafts, agent, Some(index));
+                            Vec::new()
+                        }),
                         span { class: "mono", "/{command.name}" }
                         span { class: "palette-description", "{command.description}" }
                         span { class: "palette-kind",

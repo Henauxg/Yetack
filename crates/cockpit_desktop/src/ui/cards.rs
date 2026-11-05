@@ -154,14 +154,11 @@ fn approval_input(approval: &Approval) -> Option<String> {
 #[component]
 pub fn QuestionCard(agent: AgentId, item: ItemId, question: Question) -> Element {
     let cockpit: Cockpit = use_context();
-    let draft = cockpit
-        .state
-        .read()
-        .ui
-        .questions
-        .get(&question.pending)
-        .cloned()
-        .unwrap_or_default();
+    // Only this question's draft: typing in the composer leaves the card alone.
+    let draft = use_memo(use_reactive((&question.pending,), move |(pending,)| {
+        let drafts = cockpit.drafts.read();
+        drafts.questions.get(&pending).cloned().unwrap_or_default()
+    }))();
     // The "Other" fields start from the draft, then follow the keyboard alone: a render that lags
     // behind typing would put an older text back.
     let other_seeds = use_hook(|| draft.other.clone());
@@ -213,8 +210,8 @@ pub fn QuestionCard(agent: AgentId, item: ItemId, question: Question) -> Element
                                             aria_pressed: picked,
                                             onclick: move |_| {
                                                 let question = question.clone();
-                                                cockpit.update(|state| {
-                                                    actions::pick_option(state, &question, asked_index, option_index);
+                                                cockpit.with_drafts(|_, drafts| {
+                                                    actions::pick_option(drafts, &question, asked_index, option_index);
                                                 });
                                             },
                                             span { class: "option-key mono", "{number}" }
@@ -240,13 +237,13 @@ pub fn QuestionCard(agent: AgentId, item: ItemId, question: Question) -> Element
                                         initial_value: "{other}",
                                         oninput: move |event: FormEvent| {
                                             let question = question.clone();
-                                            cockpit.update(|state| {
-                                                actions::set_other_answer(state, &question, asked_index, event.value());
+                                            cockpit.with_drafts(|_, drafts| {
+                                                actions::set_other_answer(drafts, &question, asked_index, event.value());
                                             });
                                         },
                                         onkeydown: move |event: KeyboardEvent| {
                                             if event.key() == Key::Enter {
-                                                cockpit.change(|state| actions::submit_question(state, agent, item));
+                                                cockpit.change_with_drafts(|state, drafts| actions::submit_question(state, drafts, agent, item));
                                             }
                                         },
                                     }
@@ -261,7 +258,7 @@ pub fn QuestionCard(agent: AgentId, item: ItemId, question: Question) -> Element
                     button {
                         class: if ready { "button primary" } else { "button disabled" },
                         disabled: !ready,
-                        onclick: move |_| cockpit.change(|state| actions::submit_question(state, agent, item)),
+                        onclick: move |_| cockpit.change_with_drafts(|state, drafts| actions::submit_question(state, drafts, agent, item)),
                         "Send the answer"
                     }
                     span { class: "card-note", "{hint}" }

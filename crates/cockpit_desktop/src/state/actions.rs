@@ -14,12 +14,12 @@ use cockpit_protocol::{
 };
 
 use super::app_state::{AgentEntry, AppState, Loadable};
+use super::drafts::{Drafts, Palette, QuestionDraft};
 use super::file_edits;
 use super::requests::{Outgoing, Purpose, history_request};
 use super::transcript::HistoryState;
 use super::ui_state::{
-    Block, Dialog, FileView, NewAgentForm, NewAgentTab, Palette, Popover, QuestionDraft, Switcher,
-    ToolFilter, ViewMode,
+    Block, Dialog, FileView, NewAgentForm, NewAgentTab, Popover, Switcher, ToolFilter, ViewMode,
 };
 
 /// What starts a slash command in the composer.
@@ -41,36 +41,67 @@ pub fn select_agent(state: &mut AppState, agent: AgentId) {
     state.ui.mcp.filter = ToolFilter::All;
 }
 
-/// The composer's text changed. A `/` word alone opens the palette, filtered by what follows.
-pub fn composer_input(state: &mut AppState, agent: AgentId, text: String) -> Vec<Outgoing> {
-    let mut requests = Vec::new();
+/// Whether the command palette opens or closes as you type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaletteChange {
+    Open,
+    Close,
+}
+
+/// The composer's text changed. A `/` word alone filters the palette, and opens it; other text
+/// closes it. Only the drafts change: the caller applies the returned change with
+/// `change_palette`, so that a keystroke that leaves the palette as it is leaves the rest of the
+/// state alone.
+pub fn composer_input(
+    state: &AppState,
+    drafts: &mut Drafts,
+    agent: AgentId,
+    text: String,
+) -> Option<PaletteChange> {
+    let open = state.ui.popover == Some(Popover::Palette);
     let command_query = text
         .strip_prefix(COMMAND_PREFIX)
         .filter(|rest| !rest.contains(char::is_whitespace));
-    if let Some(query) = command_query {
-        state.ui.palette = Palette {
+    let change = if let Some(query) = command_query {
+        drafts.palette = Palette {
             query: query.to_owned(),
             highlighted: 0,
         };
-        if state.ui.popover != Some(Popover::Palette) {
-            state.ui.popover = Some(Popover::Palette);
-            requests.extend(commands_request(state, agent));
-        }
-    } else if state.ui.popover == Some(Popover::Palette) && !text.is_empty() {
-        state.ui.popover = None;
-    }
-    state.ui.draft_mut(agent).text = text;
-    requests
+        (!open).then_some(PaletteChange::Open)
+    } else {
+        (open && !text.is_empty()).then_some(PaletteChange::Close)
+    };
+    drafts.draft_mut(agent).text = text;
+    change
 }
 
-pub fn toggle_palette(state: &mut AppState, agent: AgentId) -> Vec<Outgoing> {
+/// Opening the palette asks for the commands when the agent reported none yet.
+pub fn change_palette(
+    state: &mut AppState,
+    agent: AgentId,
+    change: PaletteChange,
+) -> Vec<Outgoing> {
+    match change {
+        PaletteChange::Open => {
+            state.ui.popover = Some(Popover::Palette);
+            commands_request(state, agent).into_iter().collect()
+        }
+        PaletteChange::Close => {
+            if state.ui.popover == Some(Popover::Palette) {
+                state.ui.popover = None;
+            }
+            Vec::new()
+        }
+    }
+}
+
+pub fn toggle_palette(state: &mut AppState, drafts: &mut Drafts, agent: AgentId) -> Vec<Outgoing> {
     if state.ui.popover == Some(Popover::Palette) {
         state.ui.popover = None;
         return Vec::new();
     }
-    state.ui.popover = Some(Popover::Palette);
-    state.ui.palette = Palette::default();
-    commands_request(state, agent).into_iter().collect()
+    drafts.palette = Palette::default();
+    change_palette(state, agent, PaletteChange::Open)
 }
 
 /// The details carry the commands; an agent that reported none yet is asked directly.
@@ -108,21 +139,26 @@ fn agent_commands(state: &AppState, agent: AgentId) -> &[SlashCommand] {
         .map_or(&[], |details| details.commands.as_slice())
 }
 
-pub fn palette_move(state: &mut AppState, agent: AgentId, direction: Direction) {
-    let count = filtered_commands(agent_commands(state, agent), &state.ui.palette.query).len();
-    state.ui.palette.highlighted = moved(state.ui.palette.highlighted, count, direction);
+pub fn palette_move(state: &AppState, drafts: &mut Drafts, agent: AgentId, direction: Direction) {
+    let count = filtered_commands(agent_commands(state, agent), &drafts.palette.query).len();
+    drafts.palette.highlighted = moved(drafts.palette.highlighted, count, direction);
 }
 
 /// Puts the command in the composer, ready for its arguments. `None` picks the highlighted one.
-pub fn palette_pick(state: &mut AppState, agent: AgentId, index: Option<usize>) {
-    let index = index.unwrap_or(state.ui.palette.highlighted);
-    let commands = filtered_commands(agent_commands(state, agent), &state.ui.palette.query);
+pub fn palette_pick(
+    state: &mut AppState,
+    drafts: &mut Drafts,
+    agent: AgentId,
+    index: Option<usize>,
+) {
+    let index = index.unwrap_or(drafts.palette.highlighted);
+    let commands = filtered_commands(agent_commands(state, agent), &drafts.palette.query);
     let Some(command) = commands.get(index) else {
         return;
     };
     let text = format!("{COMMAND_PREFIX}{} ", command.name);
-    state.ui.draft_mut(agent).text = text;
-    state.ui.draft_written();
+    drafts.draft_mut(agent).text = text;
+    drafts.draft_written();
     state.ui.popover = None;
 }
 
@@ -135,12 +171,12 @@ fn moved(index: usize, count: usize, direction: Direction) -> usize {
     }
 }
 
-pub fn add_image(state: &mut AppState, agent: AgentId, image: Image) {
-    state.ui.draft_mut(agent).images.push(image);
+pub fn add_image(drafts: &mut Drafts, agent: AgentId, image: Image) {
+    drafts.draft_mut(agent).images.push(image);
 }
 
-pub fn remove_image(state: &mut AppState, agent: AgentId, index: usize) {
-    let images = &mut state.ui.draft_mut(agent).images;
+pub fn remove_image(drafts: &mut Drafts, agent: AgentId, index: usize) {
+    let images = &mut drafts.draft_mut(agent).images;
     if index < images.len() {
         images.remove(index);
     }
@@ -148,7 +184,12 @@ pub fn remove_image(state: &mut AppState, agent: AgentId, index: usize) {
 
 /// Sends the draft. `typed` is the composer's text as the key event saw it, which may hold a last
 /// keystroke the draft has not received yet.
-pub fn send_prompt(state: &mut AppState, agent: AgentId, typed: Option<String>) -> Vec<Outgoing> {
+pub fn send_prompt(
+    state: &mut AppState,
+    drafts: &mut Drafts,
+    agent: AgentId,
+    typed: Option<String>,
+) -> Vec<Outgoing> {
     let exited = state
         .agents
         .get(&agent)
@@ -156,7 +197,7 @@ pub fn send_prompt(state: &mut AppState, agent: AgentId, typed: Option<String>) 
     if exited {
         return Vec::new();
     }
-    let draft = state.ui.draft_mut(agent);
+    let draft = drafts.draft_mut(agent);
     if let Some(typed) = typed {
         draft.text = typed;
     }
@@ -164,7 +205,7 @@ pub fn send_prompt(state: &mut AppState, agent: AgentId, typed: Option<String>) 
         return Vec::new();
     }
     let draft = std::mem::take(draft);
-    state.ui.draft_written();
+    drafts.draft_written();
     state.ui.popover = None;
     let prompt = Prompt {
         text: draft.text.trim().to_owned(),
@@ -220,13 +261,12 @@ pub fn answer_plan(agent: AgentId, pending: PendingId, decision: PlanDecision) -
     answer(agent, pending, Answer::Plan(plan))
 }
 
-fn question_draft<'state>(
-    state: &'state mut AppState,
+fn question_draft<'drafts>(
+    drafts: &'drafts mut Drafts,
     question: &Question,
-) -> &'state mut QuestionDraft {
+) -> &'drafts mut QuestionDraft {
     let count = question.questions.len();
-    let draft = state
-        .ui
+    let draft = drafts
         .questions
         .entry(question.pending.clone())
         .or_default();
@@ -237,7 +277,7 @@ fn question_draft<'state>(
 
 /// Picks an option. In a single-choice question it replaces the pick, or clears it when picked
 /// again; in a multiple-choice question it toggles.
-pub fn pick_option(state: &mut AppState, question: &Question, asked: usize, option: usize) {
+pub fn pick_option(drafts: &mut Drafts, question: &Question, asked: usize, option: usize) {
     let Some(multi_select) = question
         .questions
         .get(asked)
@@ -245,7 +285,7 @@ pub fn pick_option(state: &mut AppState, question: &Question, asked: usize, opti
     else {
         return;
     };
-    let draft = question_draft(state, question);
+    let draft = question_draft(drafts, question);
     let Some(picks) = draft.picks.get_mut(asked) else {
         return;
     };
@@ -258,8 +298,8 @@ pub fn pick_option(state: &mut AppState, question: &Question, asked: usize, opti
     picks.insert(option);
 }
 
-pub fn set_other_answer(state: &mut AppState, question: &Question, asked: usize, text: String) {
-    if let Some(other) = question_draft(state, question).other.get_mut(asked) {
+pub fn set_other_answer(drafts: &mut Drafts, question: &Question, asked: usize, text: String) {
+    if let Some(other) = question_draft(drafts, question).other.get_mut(asked) {
         *other = text;
     }
 }
@@ -301,7 +341,12 @@ fn waiting_question(entry: &AgentEntry, item: ItemId) -> Option<&Question> {
     }
 }
 
-pub fn submit_question(state: &mut AppState, agent: AgentId, item: ItemId) -> Vec<Outgoing> {
+pub fn submit_question(
+    state: &AppState,
+    drafts: &Drafts,
+    agent: AgentId,
+    item: ItemId,
+) -> Vec<Outgoing> {
     let Some(question) = state
         .agents
         .get(&agent)
@@ -309,8 +354,7 @@ pub fn submit_question(state: &mut AppState, agent: AgentId, item: ItemId) -> Ve
     else {
         return Vec::new();
     };
-    let Some(answers) = question_answers(question, state.ui.questions.get(&question.pending))
-    else {
+    let Some(answers) = question_answers(question, drafts.questions.get(&question.pending)) else {
         return Vec::new();
     };
     answer(
@@ -322,7 +366,13 @@ pub fn submit_question(state: &mut AppState, agent: AgentId, item: ItemId) -> Ve
 
 /// The 1 to 9 keys: picks an option of the first question still without an answer, or of the
 /// last one.
-pub fn pick_by_number(state: &mut AppState, agent: AgentId, item: ItemId, number: usize) {
+pub fn pick_by_number(
+    state: &AppState,
+    drafts: &mut Drafts,
+    agent: AgentId,
+    item: ItemId,
+    number: usize,
+) {
     let Some(question) = state
         .agents
         .get(&agent)
@@ -331,7 +381,7 @@ pub fn pick_by_number(state: &mut AppState, agent: AgentId, item: ItemId, number
     else {
         return;
     };
-    let draft = state.ui.questions.get(&question.pending);
+    let draft = drafts.questions.get(&question.pending);
     let unanswered = (0..question.questions.len()).find(|&index| {
         let picked = draft
             .and_then(|draft| draft.picks.get(index))
@@ -345,7 +395,7 @@ pub fn pick_by_number(state: &mut AppState, agent: AgentId, item: ItemId, number
             .get(asked)
             .is_some_and(|asked| option < asked.options.len());
         if exists {
-            pick_option(state, &question, asked, option);
+            pick_option(drafts, &question, asked, option);
         }
     }
 }
@@ -725,22 +775,58 @@ mod tests {
         item
     }
 
+    /// Types in the composer as the window does: the drafts, then the palette when it changes.
+    fn type_text(state: &mut AppState, drafts: &mut Drafts, text: &str) -> Vec<Outgoing> {
+        match composer_input(state, drafts, agent(), text.to_owned()) {
+            Some(change) => change_palette(state, agent(), change),
+            None => Vec::new(),
+        }
+    }
+
     #[test]
     fn a_slash_word_opens_the_palette_and_asks_for_missing_commands() {
         let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
         with_commands(&mut state, Vec::new());
 
-        let requests = composer_input(&mut state, agent(), "/rev".to_owned());
+        let requests = type_text(&mut state, &mut drafts, "/rev");
 
         assert_eq!(state.ui.popover, Some(Popover::Palette));
-        assert_eq!(state.ui.palette.query, "rev");
+        assert_eq!(drafts.palette.query, "rev");
         assert_eq!(
             requests.first().map(|outgoing| outgoing.request.method()),
             Some(Method::AgentCommands)
         );
 
-        composer_input(&mut state, agent(), "/review the branch".to_owned());
+        type_text(&mut state, &mut drafts, "/review the branch");
         assert_eq!(state.ui.popover, None);
+    }
+
+    #[test]
+    fn typing_changes_the_rest_of_the_state_only_to_open_or_close_the_palette() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        with_commands(&mut state, vec![command("review", "")]);
+
+        let plain = composer_input(&state, &mut drafts, agent(), "Run the te".to_owned());
+        let opening = composer_input(&state, &mut drafts, agent(), "/re".to_owned());
+        change_palette(&mut state, agent(), PaletteChange::Open);
+        let filtering = composer_input(&state, &mut drafts, agent(), "/rev".to_owned());
+        let closing = composer_input(&state, &mut drafts, agent(), "/rev the".to_owned());
+
+        assert_eq!(
+            (plain, opening, filtering, closing),
+            (
+                None,
+                Some(PaletteChange::Open),
+                None,
+                Some(PaletteChange::Close)
+            )
+        );
+        assert_eq!(
+            drafts.draft(agent()).map(|draft| draft.text.as_str()),
+            Some("/rev the")
+        );
     }
 
     #[test]
@@ -766,14 +852,15 @@ mod tests {
             &mut state,
             vec![command("compact", ""), command("context", "")],
         );
-        composer_input(&mut state, agent(), "/c".to_owned());
+        let mut drafts = Drafts::default();
+        type_text(&mut state, &mut drafts, "/c");
 
-        palette_move(&mut state, agent(), Direction::Down);
-        palette_move(&mut state, agent(), Direction::Down);
-        palette_pick(&mut state, agent(), None);
+        palette_move(&state, &mut drafts, agent(), Direction::Down);
+        palette_move(&state, &mut drafts, agent(), Direction::Down);
+        palette_pick(&mut state, &mut drafts, agent(), None);
 
         assert_eq!(
-            state.ui.draft(agent()).map(|draft| draft.text.as_str()),
+            drafts.draft(agent()).map(|draft| draft.text.as_str()),
             Some("/context ")
         );
         assert_eq!(state.ui.popover, None);
@@ -782,14 +869,15 @@ mod tests {
     #[test]
     fn the_composer_takes_the_draft_only_when_the_app_changes_it() {
         let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
         with_commands(&mut state, vec![command("compact", "")]);
 
-        composer_input(&mut state, agent(), "/co".to_owned());
-        let after_typing = state.ui.composer_writes;
-        palette_pick(&mut state, agent(), None);
-        let after_pick = state.ui.composer_writes;
-        send_prompt(&mut state, agent(), None);
-        let after_send = state.ui.composer_writes;
+        type_text(&mut state, &mut drafts, "/co");
+        let after_typing = drafts.composer_writes;
+        palette_pick(&mut state, &mut drafts, agent(), None);
+        let after_pick = drafts.composer_writes;
+        send_prompt(&mut state, &mut drafts, agent(), None);
+        let after_send = drafts.composer_writes;
 
         assert_eq!((after_typing, after_pick, after_send), (0, 1, 2));
     }
@@ -797,10 +885,12 @@ mod tests {
     #[test]
     fn sending_takes_the_typed_text_and_clears_the_draft() {
         let mut state = state(AgentStatus::Working);
-        composer_input(&mut state, agent(), "Also cover the edge ca".to_owned());
+        let mut drafts = Drafts::default();
+        type_text(&mut state, &mut drafts, "Also cover the edge ca");
 
         let requests = send_prompt(
             &mut state,
+            &mut drafts,
             agent(),
             Some("Also cover the edge case ".to_owned()),
         );
@@ -813,21 +903,19 @@ mod tests {
             panic!("expected a prompt, got {requests:?}");
         };
         assert_eq!(params.prompt.text, "Also cover the edge case");
-        assert!(
-            state
-                .ui
-                .draft(agent())
-                .is_some_and(|draft| draft.is_empty())
-        );
+        assert!(drafts.draft(agent()).is_some_and(|draft| draft.is_empty()));
     }
 
     #[test]
     fn an_empty_draft_or_an_exited_agent_sends_nothing() {
+        let mut drafts = Drafts::default();
         let mut idle = state(AgentStatus::Idle);
-        assert!(send_prompt(&mut idle, agent(), Some("  ".to_owned())).is_empty());
+        let typed = Some("  ".to_owned());
+        assert!(send_prompt(&mut idle, &mut drafts, agent(), typed).is_empty());
 
         let mut exited = state(AgentStatus::Exited);
-        assert!(send_prompt(&mut exited, agent(), Some("hello".to_owned())).is_empty());
+        let typed = Some("hello".to_owned());
+        assert!(send_prompt(&mut exited, &mut drafts, agent(), typed).is_empty());
     }
 
     #[test]
@@ -839,13 +927,13 @@ mod tests {
 
     #[test]
     fn a_single_choice_question_keeps_one_pick() {
-        let mut state = state(AgentStatus::NeedsYou);
+        let mut drafts = Drafts::default();
         let question = question(false);
 
-        pick_option(&mut state, &question, 0, 0);
-        pick_option(&mut state, &question, 0, 2);
+        pick_option(&mut drafts, &question, 0, 0);
+        pick_option(&mut drafts, &question, 0, 2);
 
-        let answers = question_answers(&question, state.ui.questions.get(&question.pending));
+        let answers = question_answers(&question, drafts.questions.get(&question.pending));
         assert_eq!(
             answers,
             Some(vec![QuestionAnswer {
@@ -857,15 +945,15 @@ mod tests {
 
     #[test]
     fn a_multiple_choice_question_toggles_and_takes_other_text() {
-        let mut state = state(AgentStatus::NeedsYou);
+        let mut drafts = Drafts::default();
         let question = question(true);
 
-        pick_option(&mut state, &question, 0, 0);
-        pick_option(&mut state, &question, 0, 1);
-        pick_option(&mut state, &question, 0, 0);
-        set_other_answer(&mut state, &question, 0, " Ask the owner ".to_owned());
+        pick_option(&mut drafts, &question, 0, 0);
+        pick_option(&mut drafts, &question, 0, 1);
+        pick_option(&mut drafts, &question, 0, 0);
+        set_other_answer(&mut drafts, &question, 0, " Ask the owner ".to_owned());
 
-        let answers = question_answers(&question, state.ui.questions.get(&question.pending));
+        let answers = question_answers(&question, drafts.questions.get(&question.pending));
         assert_eq!(
             answers,
             Some(vec![QuestionAnswer {
@@ -878,12 +966,13 @@ mod tests {
     #[test]
     fn a_question_is_sent_only_once_answered() {
         let mut state = state(AgentStatus::NeedsYou);
+        let mut drafts = Drafts::default();
         let item = with_question(&mut state, question(false));
 
-        assert!(submit_question(&mut state, agent(), item).is_empty());
+        assert!(submit_question(&state, &drafts, agent(), item).is_empty());
 
-        pick_by_number(&mut state, agent(), item, 2);
-        let requests = submit_question(&mut state, agent(), item);
+        pick_by_number(&state, &mut drafts, agent(), item, 2);
+        let requests = submit_question(&state, &drafts, agent(), item);
 
         let Some(Outgoing {
             request: Request::AgentAnswer(params),
@@ -906,11 +995,12 @@ mod tests {
     #[test]
     fn a_number_past_the_options_picks_nothing() {
         let mut state = state(AgentStatus::NeedsYou);
+        let mut drafts = Drafts::default();
         let item = with_question(&mut state, question(false));
 
-        pick_by_number(&mut state, agent(), item, 9);
+        pick_by_number(&state, &mut drafts, agent(), item, 9);
 
-        assert!(submit_question(&mut state, agent(), item).is_empty());
+        assert!(submit_question(&state, &drafts, agent(), item).is_empty());
     }
 
     #[test]
@@ -940,6 +1030,7 @@ mod tests {
         let read = |state: &mut AppState, path: &str| {
             apply_response(
                 state,
+                &mut Drafts::default(),
                 Method::AgentReadFile,
                 Purpose::ReadFile {
                     agent: agent(),
@@ -1066,6 +1157,7 @@ mod tests {
         let first = needed_requests(&mut state);
         apply_response(
             &mut state,
+            &mut Drafts::default(),
             Method::SessionsList,
             Purpose::Sessions,
             Ok(ResponseBody::Sessions {
