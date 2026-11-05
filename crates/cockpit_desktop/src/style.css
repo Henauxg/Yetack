@@ -1888,21 +1888,37 @@ button:disabled {
   background: var(--task);
 }
 
-.round-button {
+/* The stop glyph: a box rather than an SVG, so that its edges fall on device pixels at any
+   scale. Each button centers it on whole CSS pixels. */
+.stop-square {
+  display: block;
   flex: none;
-  width: 28px;
-  height: 28px;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: currentColor;
+}
+
+/* A background task's Stop: the composer's Stop, smaller and quieter, red under the pointer. */
+.stop-button {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 50%;
-  border: 1px solid #3e3e3e;
-  background: transparent;
-  color: var(--muted);
+  border-radius: 7px;
+  border: 1px solid var(--line-control);
+  background: var(--raised);
+  color: var(--text-soft);
 }
 
-.round-button:hover {
-  color: var(--text);
+.stop-button:hover,
+.stop-button:focus-visible {
+  border-color: #713b37;
+  background: rgba(244, 112, 103, 0.16);
+  color: var(--red);
 }
 
 .badges {
@@ -3412,7 +3428,7 @@ label.icon-button,
 .menu-button:active,
 .send-button:not(:disabled):active,
 .badge:active,
-.round-button:active,
+.stop-button:active,
 .effort:active,
 .filter:active,
 .copy-button:active,
