@@ -1,0 +1,18 @@
+{
+  "type": "rate_limit_event",
+  "rate_limit_info": {
+    "status": "allowed_warning",
+    "resetsAt": 1900000000,
+    "rateLimitType": "seven_day",
+    "overageStatus": "rejected",
+    "overageDisabledReason": "org_level_disabled",
+    "isUsingOverage": false,
+    "unifiedWindows": {
+      "seven_day": { "utilization": 0.82, "resetsAt": 1900000000, "status": "allowed_warning" },
+      "five_hour": { "utilization": 0.1, "resetsAt": 1800000000.5, "status": "allowed" },
+      "ten_year": { "utilization": 0.01 }
+    }
+  },
+  "uuid": "00000000-0000-4000-8000-000000000209",
+  "session_id": "00000000-0000-4000-8000-000000000001"
+}

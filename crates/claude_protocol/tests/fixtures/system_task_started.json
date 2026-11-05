@@ -1,0 +1,11 @@
+{
+  "type": "system",
+  "subtype": "task_started",
+  "task_id": "task-0001",
+  "tool_use_id": "toolu_00000000000000000000000001",
+  "description": "Survey the test folder",
+  "task_type": "local_agent",
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "uuid": "00000000-0000-4000-8000-000000000103",
+  "a_future_field": true
+}

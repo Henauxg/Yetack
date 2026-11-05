@@ -1,0 +1,17 @@
+{
+  "type": "control_response",
+  "response": {
+    "subtype": "success",
+    "request_id": "cockpit-1",
+    "response": {
+      "commands": [
+        { "name": "compact", "description": "Summarize the conversation", "argumentHint": "<instructions>", "builtin": true },
+        { "name": "review-notes", "description": "Review the notes folder", "argumentHint": "" },
+        { "name": "plain" }
+      ],
+      "models": [{ "value": "default", "displayName": "Default" }],
+      "pid": 4242
+    },
+    "pending_permission_requests": []
+  }
+}

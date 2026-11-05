@@ -1,0 +1,22 @@
+{
+  "type": "assistant",
+  "message": {
+    "model": "claude-test-model",
+    "id": "msg_00000000000000000000000001",
+    "type": "message",
+    "role": "assistant",
+    "content": [{ "type": "text", "text": "I added the changelog entry." }],
+    "stop_reason": "end_turn",
+    "usage": {
+      "input_tokens": 3,
+      "cache_creation_input_tokens": 200,
+      "cache_read_input_tokens": 30000,
+      "output_tokens": 12,
+      "service_tier": "standard"
+    }
+  },
+  "parent_tool_use_id": null,
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "uuid": "00000000-0000-4000-8000-000000000201",
+  "timestamp": "2030-01-01T00:00:00.000Z"
+}

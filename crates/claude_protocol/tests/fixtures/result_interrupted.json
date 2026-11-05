@@ -1,0 +1,14 @@
+{
+  "type": "result",
+  "subtype": "error_during_execution",
+  "is_error": true,
+  "duration_ms": 4000,
+  "duration_api_ms": 8300,
+  "num_turns": 2,
+  "stop_reason": null,
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "total_cost_usd": 0.0085,
+  "terminal_reason": "aborted_streaming",
+  "errors": ["the turn was interrupted"],
+  "uuid": "00000000-0000-4000-8000-000000000207"
+}

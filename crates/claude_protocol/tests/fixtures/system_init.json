@@ -1,0 +1,20 @@
+{
+  "type": "system",
+  "subtype": "init",
+  "cwd": "/home/user/project",
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "uuid": "00000000-0000-4000-8000-000000000101",
+  "tools": ["Bash", "Edit", "Read", "TodoWrite"],
+  "mcp_servers": [
+    { "name": "notes", "status": "connected" },
+    { "name": "tickets", "status": "needs-auth" }
+  ],
+  "model": "claude-test-model",
+  "permissionMode": "acceptEdits",
+  "slash_commands": ["compact", "review-notes"],
+  "skills": ["review-notes"],
+  "agents": ["general-purpose"],
+  "claude_code_version": "9.9.9",
+  "apiKeySource": "none",
+  "a_future_field": { "nested": [1, 2] }
+}

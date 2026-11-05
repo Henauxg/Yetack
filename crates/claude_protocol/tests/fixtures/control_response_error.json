@@ -1,0 +1,8 @@
+{
+  "type": "control_response",
+  "response": {
+    "subtype": "error",
+    "request_id": "cockpit-4",
+    "error": "Server 'tickets' not found"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "type": "system",
+  "subtype": "task_updated",
+  "task_id": "task-0002",
+  "patch": { "status": "killed", "end_time": 1700000000000 },
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "uuid": "00000000-0000-4000-8000-000000000106"
+}

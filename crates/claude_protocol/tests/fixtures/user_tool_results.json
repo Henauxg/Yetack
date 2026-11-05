@@ -1,0 +1,28 @@
+{
+  "type": "user",
+  "message": {
+    "role": "user",
+    "content": [
+      {
+        "type": "tool_result",
+        "tool_use_id": "toolu_00000000000000000000000003",
+        "content": "Not now, ask again after the review.",
+        "is_error": true
+      },
+      {
+        "type": "tool_result",
+        "tool_use_id": "toolu_00000000000000000000000004",
+        "content": [
+          { "type": "text", "text": "Screenshot attached" },
+          { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo=" } },
+          { "type": "document", "title": "notes.pdf" }
+        ]
+      }
+    ]
+  },
+  "parent_tool_use_id": null,
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "uuid": "00000000-0000-4000-8000-000000000205",
+  "tool_use_result": "Error: Not now, ask again after the review.",
+  "tool_result_meta": [{ "id": "toolu_00000000000000000000000003" }]
+}

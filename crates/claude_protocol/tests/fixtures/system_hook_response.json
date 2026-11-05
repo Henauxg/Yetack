@@ -1,0 +1,14 @@
+{
+  "type": "system",
+  "subtype": "hook_response",
+  "hook_id": "00000000-0000-4000-8000-000000000301",
+  "hook_name": "SessionStart:startup",
+  "hook_event": "SessionStart",
+  "output": "",
+  "stdout": "",
+  "stderr": "notes folder missing\n",
+  "exit_code": 1,
+  "outcome": "error",
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "uuid": "00000000-0000-4000-8000-000000000111"
+}

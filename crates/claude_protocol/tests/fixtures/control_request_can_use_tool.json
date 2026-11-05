@@ -1,0 +1,27 @@
+{
+  "type": "control_request",
+  "request_id": "00000000-0000-4000-8000-000000000401",
+  "request": {
+    "subtype": "can_use_tool",
+    "tool_name": "Bash",
+    "display_name": "Run command",
+    "input": { "command": "rm /home/user/other/notes.txt", "description": "Delete the notes" },
+    "title": "Claude wants to run rm /home/user/other/notes.txt",
+    "description": "Delete the notes",
+    "decision_reason": "The command writes outside the project",
+    "blocked_path": "/home/user/other/notes.txt",
+    "permission_suggestions": [
+      {
+        "type": "addRules",
+        "rules": [{ "toolName": "Bash", "ruleContent": "rm /home/user/other/notes.txt" }],
+        "behavior": "allow",
+        "destination": "localSettings"
+      },
+      { "type": "addDirectories", "directories": ["/home/user/other"], "destination": "session" },
+      { "type": "setMode", "mode": "acceptEdits", "destination": "session" },
+      { "type": "grantEverything", "scope": "future" }
+    ],
+    "tool_use_id": "toolu_00000000000000000000000005",
+    "a_future_field": 7
+  }
+}
