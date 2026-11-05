@@ -42,8 +42,8 @@
 //!   or optional: a string for a number, or a negative duration, is an error. So is `null`, except
 //!   in an `Option` field (`None`), in a field holding raw JSON, and in the lists that read it as
 //!   empty: the `content` of a user message or a tool result, and `can_use_tool`'s
-//!   `permission_suggestions`. One field reads as missing when it does not read, as in a
-//!   `result` line: the `origin` of a user message.
+//!   `permission_suggestions`. Two fields read as missing when they do not read, as in a
+//!   `result` line: the `origin` and `isSynthetic` of a user message.
 
 mod applied_settings;
 mod command_text;
@@ -115,5 +115,6 @@ pub use system_event::{
 pub use task_notification_text::TaskNotificationText;
 pub use tool_input::{
     AskUserQuestionInput, BashInput, EditInput, ExitPlanModeInput, Question, QuestionAnswer,
-    QuestionOption, ReadInput, Todo, TodoStatus, TodoWriteInput, ToolInput, ToolName, WriteInput,
+    QuestionOption, ReadInput, SkillInput, Todo, TodoStatus, TodoWriteInput, ToolInput, ToolName,
+    WriteInput,
 };

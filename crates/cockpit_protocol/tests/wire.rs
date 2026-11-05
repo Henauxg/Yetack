@@ -244,6 +244,11 @@ fn bodies() -> Vec<ItemBody> {
         }),
         ItemBody::Notice {
             text: "Conversation compacted".to_owned(),
+            detail: None,
+        },
+        ItemBody::Notice {
+            text: "Skill instructions: /greet".to_owned(),
+            detail: Some("# /greet\n\nGreet the person the arguments name.".to_owned()),
         },
     ]
 }
@@ -1300,6 +1305,31 @@ fn an_approval_and_a_turn_end_on_the_wire() {
             "error": null,
             "stopped": false,
         }),
+    );
+}
+
+#[test]
+fn a_notice_with_its_detail_on_the_wire_and_one_saved_without_it() {
+    let notice = ItemBody::Notice {
+        text: "Conversation summary".to_owned(),
+        detail: Some("The user asked for a parser.".to_owned()),
+    };
+    let saved = r#"{"type":"notice","text":"Conversation compacted"}"#;
+
+    assert_wire(
+        &notice,
+        json!({
+            "type": "notice",
+            "text": "Conversation summary",
+            "detail": "The user asked for a parser.",
+        }),
+    );
+    assert_eq!(
+        serde_json::from_str::<ItemBody>(saved).unwrap(),
+        ItemBody::Notice {
+            text: "Conversation compacted".to_owned(),
+            detail: None,
+        }
     );
 }
 

@@ -143,6 +143,7 @@ pub(crate) fn file_edit(input: &ToolInput) -> Option<FileEdit> {
         | ToolInput::ExitPlanMode(_)
         | ToolInput::Bash(_)
         | ToolInput::Read(_)
+        | ToolInput::Skill(_)
         | ToolInput::Unknown => None,
     }
 }
@@ -151,6 +152,14 @@ pub(crate) fn file_edit(input: &ToolInput) -> Option<FileEdit> {
 pub(crate) fn input_edit(tool: &str, input: &Value) -> Option<FileEdit> {
     let parsed = ToolInput::parse(tool, input.as_object()?).ok()?;
     file_edit(&parsed)
+}
+
+/// The skill a `Skill` call loads, such as `review`.
+pub(crate) fn loaded_skill(tool: &str, input: &Value) -> Option<String> {
+    let Ok(ToolInput::Skill(skill)) = ToolInput::parse(tool, input.as_object()?) else {
+        return None;
+    };
+    Some(skill.skill)
 }
 
 /// The edit as a transcript item keeps it: its path only, when a text is over

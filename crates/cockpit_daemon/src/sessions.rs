@@ -167,25 +167,22 @@ fn past_within(
     }
 }
 
-/// A line of a session file, unless the transcript leaves it out:
+/// A line of a session file, unless it is a subagent's, which the file does not tie to the call
+/// that started the subagent.
 ///
-/// - a subagent's line, which the file does not tie to the call that started the subagent;
-/// - the summary Claude Code writes after a compaction, whose boundary line shows a notice;
-/// - a user line that Claude Code marks as meta, such as context it adds, unless another source
-///   than the user wrote it, such as another session.
+/// A user line marked as meta, or as the summary after a compaction, is what `claude`'s stdout
+/// marks synthetic: context Claude Code adds. The transcript shows it only where a skill's
+/// instructions or a summary is due, or when another source than the user wrote it.
 fn past_line(line: &[u8]) -> Option<OutputLine> {
     let value: Value = serde_json::from_slice(line).ok()?;
     let flag = |key| value.get(key) == Some(&Value::Bool(true));
-    if flag(SIDECHAIN_KEY) || flag(COMPACT_SUMMARY_KEY) {
+    if flag(SIDECHAIN_KEY) {
         return None;
     }
-    let meta = flag(META_KEY);
-    let line = OutputLine::try_from(value).ok()?;
-    if meta
-        && let OutputLine::User(message) = &line
-        && message.origin.as_ref().is_none_or(MessageOrigin::is_human)
-    {
-        return None;
+    let synthetic = flag(META_KEY) || flag(COMPACT_SUMMARY_KEY);
+    let mut line = OutputLine::try_from(value).ok()?;
+    if synthetic && let OutputLine::User(message) = &mut line {
+        message.is_synthetic = true;
     }
     Some(line)
 }
@@ -565,7 +562,7 @@ mod tests {
             .map(|item| match &item.body {
                 ItemBody::UserMessage(message) => format!("user: {}", message.text),
                 ItemBody::AssistantText { markdown } => format!("text: {markdown}"),
-                ItemBody::Notice { text } => format!("notice: {text}"),
+                ItemBody::Notice { text, .. } => format!("notice: {text}"),
                 other => format!("{other:?}"),
             })
             .collect()
@@ -620,16 +617,61 @@ mod tests {
                 "user: Fix the cart total",
                 "text: The total is fixed.",
                 "notice: Conversation compacted",
+                "notice: Conversation summary",
                 "notice: peer: Another session asks for the logs",
             ]
         );
+        let ItemBody::Notice { detail, .. } = &found.past.items[3].body else {
+            panic!("expected the summary");
+        };
+        assert_eq!(detail.as_deref(), Some("This session is being continued"));
         let ids: Vec<u32> = found.past.items.iter().map(|item| item.id.get()).collect();
-        assert_eq!(ids, [1998, 1999, 2000, 2001]);
+        assert_eq!(ids, [1997, 1998, 1999, 2000, 2001]);
         assert_eq!(
             found.past.file.bytes, whole,
             "the line being written is left out"
         );
         assert_eq!(found.past.file.session, session(FIRST));
+    }
+
+    #[test]
+    fn a_past_skills_instructions_show_folded_and_other_meta_lines_stay_hidden() {
+        let temp = tempfile::tempdir().unwrap();
+        let instructions =
+            "Base directory for this skill: /srv/skills/greet\n\n# Greet\n\nSay hello.";
+        let meta = |text: &str| {
+            json!({"type": "user", "isMeta": true, "message": {
+                "role": "user", "content": [{"type": "text", "text": text}]
+            }})
+        };
+        write_session(
+            temp.path(),
+            "p",
+            FIRST,
+            &[
+                prompt("/greet world"),
+                json!({"type": "assistant", "message": {"content": [
+                    {"type": "tool_use", "id": "t1", "name": "Skill", "input": {"skill": "greet"}}
+                ]}}),
+                json!({"type": "user", "message": {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "Launching skill: greet"}
+                ]}, "toolUseResult": {"commandName": "greet", "success": true}}),
+                meta(instructions),
+                meta("<system-reminder>Some context</system-reminder>"),
+            ],
+        );
+
+        let found = find(temp.path(), &session(FIRST)).unwrap();
+
+        let shown: Vec<&ItemBody> = found.past.items.iter().map(|item| &item.body).collect();
+        assert_eq!(shown.len(), 3, "{shown:?}");
+        assert_eq!(
+            shown[2],
+            &ItemBody::Notice {
+                text: "Skill instructions: /greet".to_owned(),
+                detail: Some(instructions.to_owned()),
+            }
+        );
     }
 
     #[test]

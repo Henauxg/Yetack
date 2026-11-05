@@ -228,6 +228,23 @@ const MEDIANS_OUTPUT: &str = r#"{"annotation": {"id": 4812, "project": "calc-ser
   }
 ]"#;
 
+/// The instructions Claude Code adds after a `Skill` call loads the skill.
+const BENCH_COMPARE_SKILL: &str = "# /bench-compare — compare two benchmark runs
+
+Compare the medians of two saved runs, and say whether the difference is noise.
+
+## Steps
+
+1. Save a baseline on `main` with `cargo bench -- --save-baseline main`.
+2. Run the branch against it with `cargo bench -- --baseline main`.
+3. Report each case whose median moved by more than its noise threshold.
+
+## Rules
+
+- Never compare runs from two machines.
+- Quote the medians, not the means.
+";
+
 const BENCHMARK_ANSWER: &str = "The benchmark runs in CI now. The slowest cases, against `main`:
 
 | Case | `main` | This branch | Change | Samples | Slowest input |
@@ -1136,6 +1153,27 @@ fn benchmark_agent(now: SystemTime) -> Sample {
         item(
             2,
             None,
+            ItemBody::ToolCall(ToolCall {
+                input: serde_json::json!({"skill": "bench-compare"}),
+                ..call(
+                    "Skill",
+                    "bench-compare",
+                    ToolCallStatus::Done,
+                    Some("Launching skill: bench-compare"),
+                )
+            }),
+        ),
+        item(
+            3,
+            None,
+            ItemBody::Notice {
+                text: "Skill instructions: /bench-compare".to_owned(),
+                detail: Some(BENCH_COMPARE_SKILL.to_owned()),
+            },
+        ),
+        item(
+            4,
+            None,
             ItemBody::ToolCall(bash(
                 "Run the benchmark",
                 "cargo bench --bench eval",
@@ -1144,7 +1182,7 @@ fn benchmark_agent(now: SystemTime) -> Sample {
             )),
         ),
         item(
-            3,
+            5,
             None,
             ItemBody::ToolCall(bash(
                 "Compare the last week's medians of main and the branch",
@@ -1153,9 +1191,9 @@ fn benchmark_agent(now: SystemTime) -> Sample {
                 Some(MEDIANS_OUTPUT),
             )),
         ),
-        item(4, None, text(BENCHMARK_ANSWER)),
+        item(6, None, text(BENCHMARK_ANSWER)),
         item(
-            5,
+            7,
             None,
             ItemBody::TurnEnd(TurnEnd {
                 duration: Duration::from_secs(252),
@@ -1214,6 +1252,7 @@ fn exited_agent(now: SystemTime) -> Sample {
             None,
             ItemBody::Notice {
                 text: "claude exited with status 0".to_owned(),
+                detail: None,
             },
         ),
     ];

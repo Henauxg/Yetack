@@ -307,6 +307,7 @@ mod tests {
             parent: None,
             body: ItemBody::Notice {
                 text: text.to_owned(),
+                detail: None,
             },
         }
     }
