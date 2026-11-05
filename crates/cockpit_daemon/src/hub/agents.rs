@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use claude_protocol::{ControlRequest, InputLine, OutputLine};
 use cockpit_protocol::{
     AgentId, AgentStatus, AgentSummary, AnswerParams, CancelQueuedParams, ClaudeSessionId, CostUsd,
-    ErrorBody, ErrorCode, Event, Prompt, RenameParams, ResponseBody, ResponseResult,
-    SetEffortParams, StartParams, TranscriptItem,
+    ErrorBody, ErrorCode, Event, MAX_TITLE_CHARS, Prompt, RenameParams, ResponseBody,
+    ResponseResult, SetEffortParams, StartParams, TranscriptItem,
 };
 
 use crate::hub::input::{ControlPurpose, HubInput, Reply};
@@ -46,7 +46,7 @@ impl Hub {
 
     pub(super) fn start_agent(&mut self, params: StartParams) -> Result<ResponseBody, ErrorBody> {
         if let Some(title) = &params.title {
-            check_length("title", title, sessions::TITLE_MAX_CHARS)?;
+            check_length("title", title, MAX_TITLE_CHARS)?;
         }
         if let Some(model) = &params.model {
             check_model(model)?;
@@ -489,7 +489,7 @@ impl Hub {
         if title.is_empty() {
             return Err(errors::invalid("the title is empty".to_owned()));
         }
-        check_length("title", &title, sessions::TITLE_MAX_CHARS)?;
+        check_length("title", &title, MAX_TITLE_CHARS)?;
         let id = params.agent;
         let agent = self
             .agents
@@ -708,10 +708,10 @@ mod tests {
             hub.start_agent(params).unwrap_err().code
         };
 
-        let long_title = start(sessions::TITLE_MAX_CHARS + 1, 1);
+        let long_title = start(MAX_TITLE_CHARS + 1, 1);
         let long_model = start(1, MODEL_MAX_CHARS + 1);
         // The test's `claude` cannot start: the request got past the checks.
-        let longest = start(sessions::TITLE_MAX_CHARS, MODEL_MAX_CHARS);
+        let longest = start(MAX_TITLE_CHARS, MODEL_MAX_CHARS);
         let (reply, mut answer) = oneshot::channel();
         let set_model = SetModelParams {
             agent: AgentId::new(1),

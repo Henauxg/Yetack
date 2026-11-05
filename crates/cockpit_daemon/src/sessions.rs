@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use claude_protocol::{MessageOrigin, OutputLine, TypedCommand};
-use cockpit_protocol::{ClaudeSessionId, PastSession, Timestamp, TranscriptItem};
+use cockpit_protocol::{ClaudeSessionId, MAX_TITLE_CHARS, PastSession, Timestamp, TranscriptItem};
 use serde::Deserialize;
 use serde_json::Value;
 use strum::{IntoStaticStr, VariantArray};
@@ -30,8 +30,6 @@ const SESSION_EXTENSION: &str = "jsonl";
 const CHUNK_BYTES: u64 = 64 * 1024;
 /// The newest sessions listed.
 const MAX_SESSIONS: usize = 100;
-/// The longest title of a past session or of an agent: every title goes into every snapshot.
-pub(crate) const TITLE_MAX_CHARS: usize = 200;
 
 /// The keys of Claude Code's session lines that matter here.
 const TYPE_KEY: &str = "type";
@@ -383,13 +381,13 @@ fn is_session_id(text: &str) -> bool {
         })
 }
 
-/// The text, cut at [`TITLE_MAX_CHARS`].
+/// The text, cut at [`MAX_TITLE_CHARS`].
 pub(crate) fn shorten(text: &str) -> String {
     let text = text.trim();
-    if text.chars().count() <= TITLE_MAX_CHARS {
+    if text.chars().count() <= MAX_TITLE_CHARS {
         return text.to_owned();
     }
-    let mut short: String = text.chars().take(TITLE_MAX_CHARS - 1).collect();
+    let mut short: String = text.chars().take(MAX_TITLE_CHARS - 1).collect();
     short.push('…');
     short
 }

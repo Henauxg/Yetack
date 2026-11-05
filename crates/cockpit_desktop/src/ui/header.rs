@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 
 use cockpit_protocol::{
-    AgentId, ChangedFile, ContextUsage, PlanUsage, RateLimitStatus, Timestamp, UsageWindow,
-    WindowUsage,
+    AgentId, ChangedFile, ContextUsage, MAX_TITLE_CHARS, PlanUsage, RateLimitStatus, Timestamp,
+    UsageWindow, WindowUsage,
 };
 use dioxus::prelude::*;
 use strum::{EnumString, IntoStaticStr, VariantArray};
@@ -164,6 +164,7 @@ pub fn Header() -> Element {
                             // Follows the keyboard alone: a render that lags behind typing would
                             // put an older title back.
                             initial_value: "{title}",
+                            maxlength: "{MAX_TITLE_CHARS}",
                             onmounted: move |_| bridge::select_field(TITLE_FIELD_ID),
                             oninput: move |event: FormEvent| cockpit.update(|state| actions::rename_text(state, event.value())),
                             onkeydown: move |event: KeyboardEvent| {
