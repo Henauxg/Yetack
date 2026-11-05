@@ -757,7 +757,7 @@ button:disabled {
 .usage-card {
   right: 0;
   top: calc(100% + 6px);
-  width: 360px;
+  width: 400px;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -808,6 +808,10 @@ button:disabled {
   background: var(--text-soft);
 }
 
+.bar-fill.accent {
+  background: var(--teal);
+}
+
 .bar-fill.warning {
   background: var(--amber);
 }
@@ -820,12 +824,72 @@ button:disabled {
   background: var(--green);
 }
 
+/* Each part's share of the window, from its token count in an inline flex-grow. A gap of the
+   card's color parts neighbors. */
 .context-bar {
   display: flex;
+  gap: 2px;
   height: 8px;
   border-radius: 4px;
   overflow: hidden;
   background: var(--line-divider);
+}
+
+.context-part,
+.context-rest {
+  flex: 0 1 0;
+}
+
+.context-part {
+  min-width: 2px;
+  background: var(--part);
+}
+
+/* The context's parts: a categorical palette checked for color vision deficiencies, in the bar's
+   order, on the card's #212121. Free space and the autocompact buffer are no content: they stay
+   neutral, the buffer hatched. */
+.context-system-prompt {
+  --part: #d95926;
+}
+
+.context-system-tools {
+  --part: #9085e9;
+}
+
+.context-mcp-tools {
+  --part: #199e70;
+}
+
+.context-mcp-instructions {
+  --part: #c98500;
+}
+
+.context-custom-agents {
+  --part: #d55181;
+}
+
+.context-memory-files {
+  --part: #008300;
+}
+
+.context-skills {
+  --part: #e66767;
+}
+
+.context-messages {
+  --part: #3987e5;
+}
+
+.context-autocompact {
+  --part: repeating-linear-gradient(135deg, #5a5a5a 0 1.5px, #303030 1.5px 4px);
+}
+
+.context-free {
+  --part: #3a3a3a;
+}
+
+.context-other {
+  --part: #7a7a7a;
 }
 
 .context-legend {
@@ -837,15 +901,26 @@ button:disabled {
 }
 
 .context-legend > span {
+  min-width: 0;
   display: inline-flex;
   align-items: center;
   gap: 6px;
 }
 
+/* One line per part: a longer name ends in an ellipsis, its full text in the tooltip. */
+.legend-label {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .legend-swatch {
-  width: 8px;
-  height: 8px;
+  flex: none;
+  width: 9px;
+  height: 9px;
   border-radius: 2px;
+  background: var(--part);
 }
 
 .changes-list {

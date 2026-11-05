@@ -9,6 +9,7 @@ use cockpit_protocol::{
     WindowUsage,
 };
 use dioxus::prelude::*;
+use strum::{EnumString, IntoStaticStr, VariantArray};
 
 use crate::connection::{Clock, Cockpit};
 use crate::format;
@@ -16,8 +17,93 @@ use crate::state::{AgentEntry, Loadable, Popover, actions, file_edits};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::presence::Presence;
 
-/// The shades of the context categories, darker for smaller parts.
-const CATEGORY_SHADES: [&str; 5] = ["#ececec", "#a6a6a6", "#6b6b6b", "#4a4a4a", "#333333"];
+/// A plan window this full, in percent, is close to its limit.
+const CLOSE_TO_LIMIT_PERCENT: u8 = 80;
+const AT_LIMIT_PERCENT: u8 = 100;
+
+/// How close a plan window is to its limit, which colors its bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowLevel {
+    Normal,
+    CloseToLimit,
+    AtLimit,
+}
+
+impl WindowLevel {
+    /// From 80 %, or when Claude Code warns, the window is close to its limit; at 100 %, or when
+    /// Claude Code refuses, it is at its limit.
+    fn new(usage: &WindowUsage) -> Self {
+        let percent = usage.utilization.map(format::percent).unwrap_or(0);
+        match usage.status {
+            RateLimitStatus::Rejected => Self::AtLimit,
+            _ if percent >= AT_LIMIT_PERCENT => Self::AtLimit,
+            RateLimitStatus::AllowedWarning => Self::CloseToLimit,
+            _ if percent >= CLOSE_TO_LIMIT_PERCENT => Self::CloseToLimit,
+            RateLimitStatus::Allowed => Self::Normal,
+        }
+    }
+
+    fn bar_class(self) -> &'static str {
+        match self {
+            Self::Normal => "bar-fill accent",
+            Self::CloseToLimit => "bar-fill warning",
+            Self::AtLimit => "bar-fill rejected",
+        }
+    }
+}
+
+/// A part of the context, by the name Claude Code gives it. Each part keeps its color whatever
+/// parts the agent reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr, VariantArray)]
+#[strum(ascii_case_insensitive)]
+enum ContextPart {
+    #[strum(serialize = "System prompt")]
+    SystemPrompt,
+    #[strum(serialize = "System tools")]
+    SystemTools,
+    #[strum(serialize = "MCP tools")]
+    McpTools,
+    #[strum(serialize = "MCP server instructions")]
+    McpServerInstructions,
+    #[strum(serialize = "Custom agents")]
+    CustomAgents,
+    #[strum(serialize = "Memory files")]
+    MemoryFiles,
+    #[strum(serialize = "Skills")]
+    Skills,
+    #[strum(serialize = "Messages")]
+    Messages,
+    #[strum(serialize = "Autocompact buffer")]
+    AutocompactBuffer,
+    #[strum(serialize = "Free space")]
+    FreeSpace,
+}
+
+impl ContextPart {
+    /// The class that colors the part in the bar and the legend.
+    fn class(self) -> &'static str {
+        match self {
+            Self::SystemPrompt => "context-system-prompt",
+            Self::SystemTools => "context-system-tools",
+            Self::McpTools => "context-mcp-tools",
+            Self::McpServerInstructions => "context-mcp-instructions",
+            Self::CustomAgents => "context-custom-agents",
+            Self::MemoryFiles => "context-memory-files",
+            Self::Skills => "context-skills",
+            Self::Messages => "context-messages",
+            Self::AutocompactBuffer => "context-autocompact",
+            Self::FreeSpace => "context-free",
+        }
+    }
+}
+
+/// The class of a part Claude Code names in a way this app does not know: a neutral grey.
+const OTHER_PART_CLASS: &str = "context-other";
+
+fn part_class(name: &str) -> &'static str {
+    name.parse::<ContextPart>()
+        .map_or(OTHER_PART_CLASS, ContextPart::class)
+}
 
 /// The circumferences of the narrow usage icon's rings.
 const OUTER_RING: f64 = 62.83;
@@ -263,11 +349,7 @@ fn WindowRow(window: UsageWindow, usage: WindowUsage, now: SystemTime) -> Elemen
     let percent = usage.utilization.map(format::percent);
     let shown = percent.map_or_else(|| "?".to_owned(), |percent| format!("{percent}%"));
     let width = percent.unwrap_or(0);
-    let bar_class = match usage.status {
-        RateLimitStatus::Allowed => "bar-fill",
-        RateLimitStatus::AllowedWarning => "bar-fill warning",
-        RateLimitStatus::Rejected => "bar-fill rejected",
-    };
+    let bar_class = WindowLevel::new(&usage).bar_class();
     let reset = usage
         .resets_at
         .and_then(|moment| format::reset_time(moment, now));
@@ -281,34 +363,50 @@ fn WindowRow(window: UsageWindow, usage: WindowUsage, now: SystemTime) -> Elemen
     }
 }
 
+/// A part of the context bar and its legend.
+#[derive(Debug, Clone, PartialEq)]
+struct BarPart {
+    class: &'static str,
+    tokens: u32,
+    label: String,
+}
+
 #[component]
 fn ContextBar(context: ContextUsage) -> Element {
-    let max = f64::from(context.max_tokens.max(1));
-    let parts: Vec<(String, String, &'static str)> = context
+    let parts: Vec<BarPart> = context
         .categories
         .iter()
-        .zip(CATEGORY_SHADES.iter().cycle())
-        .map(|(category, shade)| {
-            let width = f64::from(category.tokens) / max * 100.0;
-            let label = format!(
+        .map(|category| BarPart {
+            class: part_class(&category.name),
+            tokens: category.tokens,
+            label: format!(
                 "{} {}",
                 category.name,
                 format::tokens(u64::from(category.tokens))
-            );
-            (format!("{width:.1}%"), label, *shade)
+            ),
         })
         .collect();
+    let reported: u64 = parts.iter().map(|part| u64::from(part.tokens)).sum();
+    // Room the parts leave in the window, when Claude Code does not report the free space.
+    let rest = u64::from(context.max_tokens).saturating_sub(reported);
     rsx! {
         div { class: "context-bar", aria_hidden: true,
-            for (width, _, shade) in parts.clone() {
-                div { style: "width: {width}; background: {shade}" }
+            for part in parts.clone() {
+                div {
+                    class: "context-part {part.class}",
+                    style: "flex-grow: {part.tokens}",
+                    title: "{part.label}",
+                }
+            }
+            if rest > 0 {
+                div { class: "context-rest", style: "flex-grow: {rest}" }
             }
         }
         div { class: "context-legend",
-            for (_, label, shade) in parts {
-                span {
-                    span { class: "legend-swatch", style: "background: {shade}" }
-                    "{label}"
+            for part in parts {
+                span { title: "{part.label}",
+                    span { class: "legend-swatch {part.class}" }
+                    span { class: "legend-label", "{part.label}" }
                 }
             }
         }
@@ -366,6 +464,60 @@ mod tests {
             lines_added,
             lines_removed,
         }
+    }
+
+    /// Claude Code writes these names: a rename here would leave a part grey.
+    #[test]
+    fn the_context_part_names_are_pinned() {
+        let names: Vec<&str> = ContextPart::VARIANTS
+            .iter()
+            .map(|&part| part.into())
+            .collect();
+
+        assert_eq!(
+            names,
+            [
+                "System prompt",
+                "System tools",
+                "MCP tools",
+                "MCP server instructions",
+                "Custom agents",
+                "Memory files",
+                "Skills",
+                "Messages",
+                "Autocompact buffer",
+                "Free space",
+            ]
+        );
+        assert_eq!(part_class("memory files"), "context-memory-files");
+        assert_eq!(part_class("Deferred tools"), OTHER_PART_CLASS);
+    }
+
+    #[test]
+    fn a_plan_window_turns_amber_near_its_limit_and_red_at_it() {
+        let level = |utilization: f64, status: RateLimitStatus| {
+            WindowLevel::new(&WindowUsage {
+                utilization: Some(utilization),
+                resets_at: None,
+                status,
+            })
+        };
+
+        assert_eq!(level(0.42, RateLimitStatus::Allowed), WindowLevel::Normal);
+        assert_eq!(level(0.79, RateLimitStatus::Allowed), WindowLevel::Normal);
+        assert_eq!(
+            level(0.8, RateLimitStatus::Allowed),
+            WindowLevel::CloseToLimit
+        );
+        assert_eq!(
+            level(0.3, RateLimitStatus::AllowedWarning),
+            WindowLevel::CloseToLimit
+        );
+        assert_eq!(
+            level(1.0, RateLimitStatus::AllowedWarning),
+            WindowLevel::AtLimit
+        );
+        assert_eq!(level(0.5, RateLimitStatus::Rejected), WindowLevel::AtLimit);
     }
 
     #[test]
