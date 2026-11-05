@@ -21,7 +21,7 @@ use super::requests::{Outgoing, Purpose, history_request};
 use super::transcript::HistoryState;
 use super::ui_state::{
     Block, Dialog, FileView, NewAgentForm, NewAgentTab, PaletteOrigin, Popover, Switcher,
-    TitleEdit, ToolFilter, ViewMode,
+    TitleEdit, ViewMode,
 };
 use super::{export, file_edits};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
@@ -93,10 +93,7 @@ pub enum Step {
 pub fn select_agent(state: &mut AppState, agent: AgentId) {
     state.ui.selected = Some(agent);
     state.ui.unread.remove(&agent);
-    state.ui.popover = None;
-    state.ui.badge = None;
-    state.ui.mcp.detail = None;
-    state.ui.mcp.filter = ToolFilter::All;
+    state.ui.leave_agent();
 }
 
 /// Whether the command palette opens or closes as you type.

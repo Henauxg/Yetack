@@ -165,6 +165,8 @@ impl AppState {
             .selected
             .is_some_and(|selected| self.agents.contains_key(&selected));
         if !valid {
+            // What is open belonged to the agent that is gone, such as its typed palette.
+            self.ui.leave_agent();
             self.ui.selected = self.agents_by_attention().first().map(|entry| entry.id());
         }
         if let Some(selected) = self.ui.selected {

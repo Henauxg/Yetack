@@ -220,6 +220,14 @@ impl UiState {
         }
     }
 
+    /// Closes what belongs to the agent shown: its popovers, its badge and its MCP server detail.
+    pub fn leave_agent(&mut self) {
+        self.popover = None;
+        self.badge = None;
+        self.mcp.detail = None;
+        self.mcp.filter = ToolFilter::All;
+    }
+
     /// Closes every popover and the dialog, or only the dialog's menu when one is open, and
     /// cancels a title edit. Returns whether anything was open.
     pub fn close_overlays(&mut self) -> bool {
