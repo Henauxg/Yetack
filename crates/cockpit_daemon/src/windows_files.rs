@@ -172,9 +172,11 @@ fn parse_record(record: &[u8]) -> Option<(usize, FolderEntry)> {
     let name_end = name_at.checked_add(usize::try_from(name_bytes).ok()?)?;
     let units: Vec<u16> = record
         .get(name_at..name_end)?
-        .chunks_exact(2)
-        .map(|pair| Some(u16::from_le_bytes([*pair.first()?, *pair.get(1)?])))
-        .collect::<Option<Vec<u16>>>()?;
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
+        .collect();
     let entry = FolderEntry {
         name: OsString::from_wide(&units),
         attributes,
