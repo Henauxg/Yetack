@@ -3289,7 +3289,8 @@ html.reordering * {
   padding: 4px;
 }
 
-/* Two lines: the name and its kind, then the description. Neither wraps. */
+/* Two lines: the name and its kind, then the description. Neither wraps. The pointer moves the
+   keyboard's highlight, as in the dialogs' lists. A hover, or a fade, would light a second row. */
 .palette-item {
   display: flex;
   flex-direction: column;
@@ -3304,10 +3305,10 @@ html.reordering * {
   color: var(--text);
   text-align: left;
   font-size: 12.5px;
+  transition: none;
 }
 
-.palette-item.highlighted,
-.palette-item:hover {
+.palette-item.highlighted {
   background: var(--selected);
 }
 
@@ -3371,6 +3372,7 @@ html.reordering * {
   color: var(--text);
   text-align: left;
   font-size: 13px;
+  transition: none;
 }
 
 .palette-setting {
@@ -3379,7 +3381,6 @@ html.reordering * {
 }
 
 .palette-action.highlighted,
-.palette-action:hover:not(:disabled),
 .palette-setting.highlighted {
   background: var(--selected);
 }

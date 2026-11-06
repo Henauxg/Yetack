@@ -526,6 +526,15 @@ pub fn palette_move(state: &AppState, drafts: &mut Drafts, agent: AgentId, direc
     drafts.palette.moved = true;
 }
 
+/// The pointer moved onto the entry at `index`: it takes the highlight. Left and Right still
+/// change a setting only after Up or Down. An entry of a list the filter has since narrowed
+/// changes nothing.
+pub fn palette_point(state: &AppState, drafts: &mut Drafts, agent: AgentId, index: usize) {
+    if index < open_palette_entries(state, drafts, agent).len() {
+        drafts.palette.highlighted = index;
+    }
+}
+
 /// The menu's own filter changed: the highlight goes back to the first entry.
 pub fn palette_filter(drafts: &mut Drafts, query: String) {
     drafts.palette = Palette {
@@ -2517,6 +2526,39 @@ mod tests {
         );
         assert_eq!(picked.window, Some(WindowAction::FocusComposer));
         assert_eq!(state.ui.popover, None);
+    }
+
+    #[test]
+    fn the_pointer_moves_the_palette_highlight_within_the_listed_entries() {
+        let mut state = state(AgentStatus::Idle);
+        with_commands(
+            &mut state,
+            vec![
+                command("compact", ""),
+                command("context", ""),
+                command("review", ""),
+            ],
+        );
+        let mut drafts = Drafts::default();
+        type_text(&mut state, &mut drafts, "/");
+
+        palette_point(&state, &mut drafts, agent(), 2);
+        assert_eq!(drafts.palette.highlighted, 2);
+        palette_move(&state, &mut drafts, agent(), Direction::Up);
+        assert_eq!(drafts.palette.highlighted, 1);
+
+        // An entry the narrowed list no longer has: the pointer was on the old list.
+        type_text(&mut state, &mut drafts, "/c");
+        palette_point(&state, &mut drafts, agent(), 2);
+        assert_eq!(drafts.palette.highlighted, 0);
+        palette_point(&state, &mut drafts, agent(), 1);
+        let picked = palette_pick(&mut state, &mut drafts, agent(), None);
+
+        assert_eq!(
+            drafts.draft(agent()).map(|draft| draft.text.as_str()),
+            Some("/context ")
+        );
+        assert_eq!(picked.window, Some(WindowAction::FocusComposer));
     }
 
     #[test]

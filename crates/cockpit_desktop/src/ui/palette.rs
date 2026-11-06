@@ -12,6 +12,7 @@ use crate::state::actions::{
     WindowAction,
 };
 use crate::state::{AgentEntry, PaletteOrigin};
+use crate::ui::dialogs::{PointerMoves, use_pointer_moves};
 use crate::ui::icons::{Icon, IconKind};
 
 /// The key of the placeholder rows, apart from the entries' numbers and the sections' titles.
@@ -121,13 +122,43 @@ fn row_id(highlighted: bool) -> Option<&'static str> {
     highlighted.then_some(HIGHLIGHTED_ENTRY_ID)
 }
 
+/// The pointer's part in the highlight, which the rows share.
+#[derive(Clone, Copy)]
+struct PalettePointer {
+    moves: PointerMoves,
+    /// The entry the pointer highlighted last, until the scroll effect sees it. It is in view
+    /// already: scrolling to it would move the list under the pointer.
+    pointed: CopyValue<Option<usize>>,
+}
+
+impl PalettePointer {
+    /// The pointer moved over the entry at `index`: it takes the highlight.
+    fn point(mut self, cockpit: Cockpit, agent: AgentId, index: usize, event: &MouseEvent) {
+        // Writing the drafts renders their readers: only a new entry does.
+        if self.moves.moved(event) && cockpit.drafts.peek().palette.highlighted != index {
+            let took = cockpit.with_drafts(|state, drafts| {
+                actions::palette_point(state, drafts, agent, index);
+                drafts.palette.highlighted == index
+            });
+            if took {
+                self.pointed.set(Some(index));
+            }
+        }
+    }
+}
+
 #[component]
 pub fn Palette(agent: AgentId, origin: PaletteOrigin) -> Element {
     let cockpit: Cockpit = use_context();
     let highlighted = use_memo(move || cockpit.drafts.read().palette.highlighted);
+    let moves = use_pointer_moves();
+    let mut pointed = use_hook(|| CopyValue::new(None));
+    use_context_provider(|| PalettePointer { moves, pointed });
     use_effect(move || {
-        highlighted();
-        bridge::reveal(HIGHLIGHTED_ENTRY_ID);
+        let index = highlighted();
+        if pointed.replace(None) != Some(index) {
+            bridge::reveal(HIGHLIGHTED_ENTRY_ID);
+        }
     });
     let (rows, query) = {
         let state = cockpit.state.read();
@@ -262,12 +293,14 @@ fn ActionRow(
     highlighted: bool,
 ) -> Element {
     let cockpit: Cockpit = use_context();
+    let pointer: PalettePointer = use_context();
     let hint = action.prompt();
     rsx! {
         button {
             id: row_id(highlighted),
             class: if highlighted { "palette-action highlighted" } else { "palette-action" },
             disabled,
+            onmousemove: move |event: MouseEvent| pointer.point(cockpit, agent, index, &event),
             title: if disabled { "The agent exited: resume it first" },
             onclick: move |_| act(cockpit, agent, Some(index)),
             span { "{action.label()}" }
@@ -287,10 +320,12 @@ fn SettingRow(
     highlighted: bool,
 ) -> Element {
     let cockpit: Cockpit = use_context();
+    let pointer: PalettePointer = use_context();
     rsx! {
         div {
             id: row_id(highlighted),
             class: if highlighted { "palette-setting highlighted" } else { "palette-setting" },
+            onmousemove: move |event: MouseEvent| pointer.point(cockpit, agent, index, &event),
             span { "{action.label()}" }
             div { class: "segmented", role: "group", aria_label: action.label(),
                 for (choice_index, choice) in choices.into_iter().enumerate() {
@@ -336,10 +371,12 @@ fn CommandsLoading() -> Element {
 #[component]
 fn CommandRow(agent: AgentId, index: usize, command: SlashCommand, highlighted: bool) -> Element {
     let cockpit: Cockpit = use_context();
+    let pointer: PalettePointer = use_context();
     rsx! {
         button {
             id: row_id(highlighted),
             class: if highlighted { "palette-item highlighted" } else { "palette-item" },
+            onmousemove: move |event: MouseEvent| pointer.point(cockpit, agent, index, &event),
             onclick: move |_| act(cockpit, agent, Some(index)),
             span { class: "palette-item-head",
                 span { class: "mono palette-name", "/{command.name}" }

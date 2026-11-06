@@ -381,9 +381,10 @@ When the process ends and its pid goes to another one during the check, the sign
   Once it is typed in, the folders of the folder its text names (`folders.list`) take the recent folders' place, filtered by the last segment.
   Tab or Enter completes the highlighted folder, Backspace on an empty segment goes up, and Esc brings the recent folders back.
   A text that names no absolute folder lists nothing.
-- **One highlight in a list**: in the Ctrl+K switcher, the Ctrl+O list, the folder completion and the resume list, the pointer moves the keyboard's highlight, so one row is lit, with no CSS hover and no fade.
+- **One highlight in a list**: in the Ctrl+K switcher, the Ctrl+O list, the folder completion, the resume list and the "/" palette, the pointer moves the keyboard's highlight, so one row is lit, with no CSS hover and no fade.
   WebKitGTK also sends a mousemove when a list scrolls under a still pointer, so only a pointer that moved takes the highlight (`PointerMoves` in `ui/dialogs.rs`).
   In the Ctrl+O list, the pointer picks its row as a key does, so a cut listing highlights it too.
+  The keys scroll the list to the row they highlight. The pointer's row is in view already, so the palette does not scroll to it, and the list never moves under the mouse.
 - **Rendering**: markdown with `pulldown-cmark`, syntax colors with `syntect` (Rust, SQL, Markdown, JSON, Bash, Nix), diffs with `similar` (line diff, then word highlights inside changed lines).
 - **Renaming in the sidebar**: F2, or a double-click on a row's title, turns the selected agent's row title into a field, as the header's pencil does for the header's title.
   Enter or leaving the field saves with `agent.rename`, and Esc cancels.
