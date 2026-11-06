@@ -5,7 +5,7 @@ use cockpit_protocol::{AgentId, ApprovalDecision, PlanDecision};
 use serde::Deserialize;
 
 use super::actions::{self, Direction};
-use super::app_state::AppState;
+use super::app_state::{AgentEntry, AppState};
 use super::drafts::Drafts;
 use super::open_file;
 use super::requests::Outgoing;
@@ -127,6 +127,13 @@ fn composer_key(
                 let typed_open = state.ui.popover == Some(Popover::Palette(PaletteOrigin::Typed));
                 if typed_open && actions::palette_has_entries(state, drafts, agent) {
                     return actions::palette_pick(state, drafts, agent, None).requests;
+                }
+                let loading = state
+                    .agents
+                    .get(&agent)
+                    .is_some_and(AgentEntry::commands_loading);
+                if typed_open && loading {
+                    return Vec::new();
                 }
                 // With no command to pick, Enter sends the message as typed.
                 if typed_open && press.key == KEY_ENTER {
@@ -508,6 +515,22 @@ mod tests {
             Some(Request::AgentPrompt(params)) if params.prompt.text == text
         ));
         assert_eq!(state.ui.popover, None);
+    }
+
+    #[test]
+    fn enter_on_a_slash_word_waits_while_the_commands_load() {
+        let agent = AgentId::new(1);
+        let mut drafts = Drafts::default();
+        let mut state = state(AgentStatus::Idle, None);
+
+        typed(&mut state, &mut drafts, agent, "/rev", 4);
+        let loading = state.agents.get(&agent).map(AgentEntry::commands_loading);
+        let requests = handle_key(&mut state, &mut drafts, &enter("/rev"));
+
+        assert_eq!(loading, Some(true));
+        assert!(requests.is_empty());
+        let draft = drafts.draft(agent).map(|draft| draft.text.as_str());
+        assert_eq!(draft, Some("/rev"));
     }
 
     #[test]
