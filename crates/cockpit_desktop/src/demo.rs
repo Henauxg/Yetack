@@ -786,9 +786,18 @@ struct SummaryParts<'text> {
     status: AgentStatus,
     activity: Option<&'text str>,
     pending: u16,
+    /// How long the turn has run for a working agent, else how long ago the agent last did
+    /// something.
+    since: Duration,
 }
 
 fn summary(parts: SummaryParts<'_>, now: SystemTime) -> AgentSummary {
+    let since = parts.since.as_secs();
+    let (last_activity, turn_started) = match parts.status {
+        AgentStatus::Working => (since, Some(since)),
+        AgentStatus::NeedsYou => (since, Some(since + 3 * 60)),
+        AgentStatus::Idle | AgentStatus::Exited => (since, None),
+    };
     AgentSummary {
         id: AgentId::new(parts.id),
         title: parts.title.to_owned(),
@@ -805,7 +814,9 @@ fn summary(parts: SummaryParts<'_>, now: SystemTime) -> AgentSummary {
         cache_expires_at: Some(in_future(now, 6 * 60)),
         turns: 9,
         cost: CostUsd::new(1.84),
-        started_at: at(now, 3600),
+        started_at: at(now, since + 3600),
+        last_activity_at: Some(at(now, last_activity)),
+        turn_started_at: turn_started.map(|seconds| at(now, seconds)),
         session: Some(ClaudeSessionId::new(format!("demo-session-{}", parts.id))),
         position: Position::default(),
     }
@@ -1072,6 +1083,7 @@ fn parser_agent(now: SystemTime) -> Sample {
             status: AgentStatus::Working,
             activity: Some("Running cargo test parser"),
             pending: 0,
+            since: TURN_ELAPSED,
         },
         now,
     );
@@ -1298,6 +1310,7 @@ fn question_agent(now: SystemTime) -> Sample {
             status: AgentStatus::NeedsYou,
             activity: Some("Asks which changes to include"),
             pending: 1,
+            since: Duration::from_secs(40),
         },
         now,
     );
@@ -1356,6 +1369,7 @@ fn approval_agent(now: SystemTime) -> Sample {
             status: AgentStatus::NeedsYou,
             activity: Some("Waits for approval: git push"),
             pending: 1,
+            since: Duration::from_secs(12),
         },
         now,
     );
@@ -1416,6 +1430,7 @@ fn plan_agent(now: SystemTime) -> Sample {
             status: AgentStatus::NeedsYou,
             activity: Some("Waits for plan approval"),
             pending: 1,
+            since: Duration::from_secs(2 * 60 + 30),
         },
         now,
     );
@@ -1457,6 +1472,7 @@ fn benchmark_agent(now: SystemTime) -> Sample {
             status: AgentStatus::Idle,
             activity: Some("Done: the benchmark runs in CI"),
             pending: 0,
+            since: Duration::from_secs(25 * 60),
         },
         now,
     );
@@ -1554,6 +1570,7 @@ fn exited_agent(now: SystemTime) -> Sample {
             status: AgentStatus::Exited,
             activity: None,
             pending: 0,
+            since: Duration::from_secs(3 * 24 * 3600 + 5 * 3600),
         },
         now,
     );
@@ -1594,6 +1611,7 @@ fn live_agent(now: SystemTime) -> Sample {
             status: AgentStatus::Working,
             activity: Some("Running the case tests"),
             pending: 0,
+            since: TURN_ELAPSED,
         },
         now,
     );

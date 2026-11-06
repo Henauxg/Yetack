@@ -280,6 +280,8 @@ pub(crate) mod tests {
             turns: 0,
             cost: CostUsd::new(0.0),
             started_at: Timestamp::from_unix_millis(u64::from(id) * 1000),
+            last_activity_at: None,
+            turn_started_at: None,
             session: None,
             position: Position::default(),
         }

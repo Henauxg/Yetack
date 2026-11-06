@@ -237,6 +237,10 @@ impl AgentView {
         }
         view.stop_background_tasks(None);
         view.summary.activity = None;
+        // The log does not say when a turn the previous daemon cut off last did something: the
+        // later of its start and the last activity logged stands for it.
+        let turn_started = view.summary.turn_started_at.take();
+        view.summary.last_activity_at = view.summary.last_activity_at.max(turn_started);
         view.refresh_status();
         view
     }
@@ -261,6 +265,8 @@ impl AgentView {
             turns: 0,
             cost: CostUsd::new(0.0),
             started_at: Timestamp::from_unix_millis(0),
+            last_activity_at: None,
+            turn_started_at: None,
             session: None,
             position: Position::default(),
         };
@@ -394,13 +400,13 @@ impl AgentView {
             OutputLine::Assistant(message) => self.apply_assistant(message, now),
             OutputLine::User(message) => self.apply_user(message, LineSource::Process),
             OutputLine::Result(result) => {
-                self.apply_result(&result);
+                self.apply_result(&result, now);
                 follow_ups.push(FollowUp::TurnEnded);
             }
             OutputLine::RateLimitEvent(event) => {
                 follow_ups.push(FollowUp::RateLimit(event.rate_limit_info));
             }
-            OutputLine::ControlRequest(request) => self.apply_control_request(request),
+            OutputLine::ControlRequest(request) => self.apply_control_request(request, now),
             OutputLine::ControlCancelRequest(cancel) => {
                 self.cancel_pending(&PendingId::new(cancel.request_id.as_str().to_owned()));
             }
@@ -413,7 +419,12 @@ impl AgentView {
     }
 
     /// A prompt from a client. A queued one waits in the transcript until the hub sends it.
-    pub(crate) fn add_prompt(&mut self, prompt: &Prompt, delivery: PromptDelivery) -> ItemId {
+    pub(crate) fn add_prompt(
+        &mut self,
+        prompt: &Prompt,
+        delivery: PromptDelivery,
+        now: Timestamp,
+    ) -> ItemId {
         let queued = delivery == PromptDelivery::Queued;
         let item = self.push_item(
             None,
@@ -425,13 +436,13 @@ impl AgentView {
         );
         if !queued {
             self.expect_echo(prompt.text.clone());
-            self.working = true;
+            self.start_turn(now);
         }
         item
     }
 
     /// The hub sent a queued prompt.
-    pub(crate) fn prompt_sent(&mut self, item: ItemId) {
+    pub(crate) fn prompt_sent(&mut self, item: ItemId, now: Timestamp) {
         let mut sent_text = None;
         if let Some(found) = self.item_mut(item)
             && let ItemBody::UserMessage(message) = &mut found.body
@@ -442,7 +453,7 @@ impl AgentView {
         if let Some(text) = sent_text {
             self.expect_echo(text);
         }
-        self.working = true;
+        self.start_turn(now);
     }
 
     /// A prompt that shows no item, such as `/effort high`, whose echo must not show either.
@@ -533,7 +544,7 @@ impl AgentView {
     /// A new `claude` process runs for the agent.
     pub(crate) fn process_started(&mut self, session: ProcessSession) {
         self.exited = false;
-        self.working = false;
+        self.end_work();
         self.cost_before_process = match session {
             ProcessSession::New => self.summary.cost.get(),
             ProcessSession::Resumed => 0.0,
@@ -580,7 +591,8 @@ impl AgentView {
     /// The `claude` process ended: what waited is cancelled, what ran failed.
     pub(crate) fn process_exited(&mut self, notice: String, now: Timestamp) {
         self.exited = true;
-        self.working = false;
+        self.end_work();
+        self.summary.last_activity_at = Some(now);
         self.cancel_all_pending();
         self.fail_running_calls();
         self.stop_background_tasks(Some(now));
@@ -648,7 +660,7 @@ impl AgentView {
 
     fn apply_system(&mut self, event: SystemEvent, now: Timestamp) {
         match event {
-            SystemEvent::Init(init) => self.apply_init(init),
+            SystemEvent::Init(init) => self.apply_init(init, now),
             SystemEvent::TaskStarted(task) => self.task_started(task, now),
             SystemEvent::TaskProgress(progress) => {
                 let id = BackgroundTaskId::new(progress.task_id.as_str().to_owned());
@@ -672,8 +684,8 @@ impl AgentView {
                 }
             }
             SystemEvent::SessionStateChanged(changed) => match changed.state {
-                OpenWord::Known(SessionState::Running) => self.working = true,
-                OpenWord::Known(SessionState::Idle) => self.working = false,
+                OpenWord::Known(SessionState::Running) => self.begin_work(now),
+                OpenWord::Known(SessionState::Idle) => self.end_work(),
                 OpenWord::Known(SessionState::RequiresAction) | OpenWord::Unknown(_) => {}
             },
             SystemEvent::ApiRetry(retry) => {
@@ -734,8 +746,8 @@ impl AgentView {
     }
 
     /// `system/init` starts each turn and says what the session uses.
-    fn apply_init(&mut self, init: SystemInit) {
-        self.working = true;
+    fn apply_init(&mut self, init: SystemInit, now: Timestamp) {
+        self.begin_work(now);
         self.summary.session = Some(ClaudeSessionId::new(init.session_id.as_str().to_owned()));
         if let Some(model) = init.model {
             self.summary.model = Some(model);
@@ -763,7 +775,7 @@ impl AgentView {
         let parent = self.parent_item(message.parent_tool_use_id.as_ref());
         let synthetic = message.message.model.as_deref() == Some(SYNTHETIC_MODEL);
         if message.parent_tool_use_id.is_none() {
-            self.working = true;
+            self.begin_work(now);
             if !synthetic {
                 self.summary.cache_expires_at = Some(add(now, self.prompt_cache_ttl));
             }
@@ -1002,7 +1014,7 @@ impl AgentView {
         self.details_changed = true;
     }
 
-    fn apply_result(&mut self, result: &ResultMessage) {
+    fn apply_result(&mut self, result: &ResultMessage, now: Timestamp) {
         let total = result.total_cost_usd.unwrap_or(self.process_cost);
         if self.awaits_restored_cost {
             // The restored cost is unknown: the total keeps what the agent counted.
@@ -1024,13 +1036,14 @@ impl AgentView {
             self.fail_running_calls();
         }
         self.cancel_all_pending();
-        self.working = false;
+        self.end_work();
         self.summary.activity = None;
         // A slash command Claude Code runs itself, such as `/effort`, makes no API call: it is not
         // a turn of the conversation.
         if result.num_turns == 0 && !result.is_error && !interrupted {
             return;
         }
+        self.summary.last_activity_at = Some(now);
         self.summary.turns = self.summary.turns.saturating_add(1);
         self.push_item(
             None,
@@ -1044,15 +1057,15 @@ impl AgentView {
         );
     }
 
-    fn apply_control_request(&mut self, request: IncomingControlRequest) {
+    fn apply_control_request(&mut self, request: IncomingControlRequest, now: Timestamp) {
         // The process task answers the other subtypes itself.
         if let IncomingRequest::CanUseTool(can_use_tool) = request.request {
-            self.ask(&request.request_id, can_use_tool);
+            self.ask(&request.request_id, can_use_tool, now);
         }
     }
 
     /// Claude Code asks whether a tool call may run.
-    fn ask(&mut self, request_id: &ControlRequestId, request: CanUseTool) {
+    fn ask(&mut self, request_id: &ControlRequestId, request: CanUseTool, now: Timestamp) {
         let pending = PendingId::new(request_id.as_str().to_owned());
         let tool_item = self.tool_calls.get(&request.tool_use_id).copied();
         let parent = tool_item
@@ -1105,6 +1118,9 @@ impl AgentView {
             Some(_) | None => self.push_item(parent, body),
         };
         self.summary.activity = Some(format!("Waiting for you: {}", request.tool_name));
+        if self.pending.is_empty() {
+            self.summary.last_activity_at = Some(now);
+        }
         self.pending.insert(
             pending,
             Pending {
@@ -1245,6 +1261,26 @@ impl AgentView {
         let index = self.items.binary_search_by_key(&id, |item| item.id).ok()?;
         self.changes.push(ItemChange::Changed(id));
         self.items.get_mut(index)
+    }
+
+    /// A prompt went to `claude`: a new turn starts now, even when the last one had not ended.
+    fn start_turn(&mut self, now: Timestamp) {
+        self.working = true;
+        self.summary.turn_started_at = Some(now);
+        self.summary.last_activity_at = Some(now);
+    }
+
+    /// A line shows that a turn runs, which may be one Claude Code started without a prompt.
+    fn begin_work(&mut self, now: Timestamp) {
+        self.working = true;
+        if self.summary.turn_started_at.is_none() {
+            self.summary.turn_started_at = Some(now);
+        }
+    }
+
+    fn end_work(&mut self) {
+        self.working = false;
+        self.summary.turn_started_at = None;
     }
 
     fn refresh_status(&mut self) {
@@ -1432,6 +1468,8 @@ mod tests {
             turns: 0,
             cost: CostUsd::new(0.0),
             started_at: Timestamp::from_unix_millis(0),
+            last_activity_at: None,
+            turn_started_at: None,
             session: None,
             position: Position::default(),
         };
@@ -1513,7 +1551,7 @@ mod tests {
     fn a_plain_turn_shows_the_prompt_the_answer_and_its_end() {
         let mut view = view();
 
-        view.add_prompt(&prompt("Fix the cart total"), PromptDelivery::Now);
+        view.add_prompt(&prompt("Fix the cart total"), PromptDelivery::Now, now());
         assert_eq!(
             view.summary().status,
             AgentStatus::Idle,
@@ -1760,7 +1798,7 @@ mod tests {
     #[test]
     fn an_approval_waits_then_allows_with_the_input() {
         let mut view = view();
-        view.add_prompt(&prompt("Clean up"), PromptDelivery::Now);
+        view.add_prompt(&prompt("Clean up"), PromptDelivery::Now, now());
         apply(
             &mut view,
             tool_use("t1", "Bash", json!({"command": "rm -r build"})),
@@ -1895,7 +1933,7 @@ mod tests {
     #[test]
     fn an_interrupt_cancels_what_waits_and_fails_what_runs() {
         let mut view = view();
-        view.add_prompt(&prompt("Deploy"), PromptDelivery::Now);
+        view.add_prompt(&prompt("Deploy"), PromptDelivery::Now, now());
         apply(
             &mut view,
             tool_use("t1", "Bash", json!({"command": "make deploy"})),
@@ -1974,7 +2012,7 @@ mod tests {
     #[test]
     fn a_failed_turn_carries_its_error() {
         let mut view = view();
-        view.add_prompt(&prompt("Refactor everything"), PromptDelivery::Now);
+        view.add_prompt(&prompt("Refactor everything"), PromptDelivery::Now, now());
 
         apply(
             &mut view,
@@ -2093,16 +2131,16 @@ mod tests {
     #[test]
     fn a_queued_prompt_waits_then_its_echo_adds_nothing() {
         let mut view = view();
-        view.add_prompt(&prompt("First"), PromptDelivery::Now);
+        view.add_prompt(&prompt("First"), PromptDelivery::Now, now());
         assert!(view.is_busy());
 
-        let queued = view.add_prompt(&prompt("Second"), PromptDelivery::Queued);
+        let queued = view.add_prompt(&prompt("Second"), PromptDelivery::Queued, now());
         let ItemBody::UserMessage(message) = &view.items()[1].body else {
             panic!("expected a user message");
         };
         assert!(message.queued);
         apply(&mut view, result(0.1));
-        view.prompt_sent(queued);
+        view.prompt_sent(queued, now());
         apply(&mut view, echo("Second"));
         apply(&mut view, echo("Typed elsewhere"));
 
@@ -2121,7 +2159,7 @@ mod tests {
     #[test]
     fn a_cancelled_queued_prompt_becomes_a_notice() {
         let mut view = view();
-        let queued = view.add_prompt(&prompt("Later"), PromptDelivery::Queued);
+        let queued = view.add_prompt(&prompt("Later"), PromptDelivery::Queued, now());
 
         view.cancel_queued(queued);
 
@@ -2313,7 +2351,7 @@ mod tests {
     #[test]
     fn a_restored_agent_continues_its_ids_and_closes_what_was_open() {
         let mut live = view();
-        live.add_prompt(&prompt("Go"), PromptDelivery::Now);
+        live.add_prompt(&prompt("Go"), PromptDelivery::Now, now());
         apply(
             &mut live,
             tool_use("t1", "Bash", json!({"command": "sleep 100"})),
@@ -2322,7 +2360,7 @@ mod tests {
             &mut live,
             can_use_tool("req-1", "t1", "Bash", json!({"command": "sleep 100"})),
         );
-        live.add_prompt(&prompt("Then this"), PromptDelivery::Queued);
+        live.add_prompt(&prompt("Then this"), PromptDelivery::Queued, now());
         live.take_events();
 
         let mut restored = AgentView::restore(
@@ -2366,14 +2404,14 @@ mod tests {
                 .any(|event| matches!(event, Event::AgentUpdated(_)))
         );
         restored.process_started(ProcessSession::Resumed);
-        let next = restored.add_prompt(&prompt("Again"), PromptDelivery::Now);
+        let next = restored.add_prompt(&prompt("Again"), PromptDelivery::Now, now());
         assert_eq!(next, ItemId::new(5));
     }
 
     #[test]
     fn a_typed_command_reads_as_typed_and_its_echo_adds_nothing() {
         let mut view = view();
-        view.add_prompt(&prompt("/greet world"), PromptDelivery::Now);
+        view.add_prompt(&prompt("/greet world"), PromptDelivery::Now, now());
 
         apply(
             &mut view,
@@ -2436,7 +2474,7 @@ mod tests {
         let mut view = view();
         apply(&mut view, init());
         apply(&mut view, result(0.5));
-        view.add_prompt(&prompt("/clear"), PromptDelivery::Now);
+        view.add_prompt(&prompt("/clear"), PromptDelivery::Now, now());
 
         apply(
             &mut view,
@@ -2773,6 +2811,140 @@ mod tests {
         );
 
         assert!(matches!(follow_ups.as_slice(), [FollowUp::RateLimit(_)]));
+    }
+
+    fn at(seconds: u64) -> Timestamp {
+        Timestamp::from_unix_millis(seconds * 1000)
+    }
+
+    fn apply_at(view: &mut AgentView, line: Value, seconds: u64) -> Vec<FollowUp> {
+        let parsed: OutputLine = line.to_string().parse().unwrap();
+        view.apply(parsed, at(seconds))
+    }
+
+    /// The summary's last activity and turn start.
+    fn times(view: &AgentView) -> (Option<Timestamp>, Option<Timestamp>) {
+        let summary = view.summary();
+        (summary.last_activity_at, summary.turn_started_at)
+    }
+
+    #[test]
+    fn a_turn_is_activity_from_its_prompt_to_its_result() {
+        let mut view = view();
+
+        view.add_prompt(&prompt("Fix the cart total"), PromptDelivery::Now, at(100));
+        assert_eq!(times(&view), (Some(at(100)), Some(at(100))));
+        apply_at(&mut view, init(), 101);
+        apply_at(
+            &mut view,
+            assistant(json!([{"type": "text", "text": "Done."}])),
+            140,
+        );
+        assert_eq!(times(&view), (Some(at(100)), Some(at(100))));
+        apply_at(&mut view, result(0.5), 142);
+
+        assert_eq!(times(&view), (Some(at(142)), None));
+    }
+
+    #[test]
+    fn a_turn_claude_code_starts_itself_starts_at_its_first_line() {
+        let mut view = view();
+
+        apply_at(&mut view, init(), 300);
+        apply_at(
+            &mut view,
+            assistant(json!([{"type": "text", "text": "Again."}])),
+            330,
+        );
+
+        assert_eq!(times(&view), (None, Some(at(300))));
+        view.take_events();
+        assert_eq!(view.summary().status, AgentStatus::Working);
+    }
+
+    #[test]
+    fn a_queued_prompt_sent_at_a_turns_end_starts_a_new_turn() {
+        let mut view = view();
+        view.add_prompt(&prompt("First"), PromptDelivery::Now, at(100));
+        let queued = view.add_prompt(&prompt("Second"), PromptDelivery::Queued, at(120));
+        assert_eq!(times(&view), (Some(at(100)), Some(at(100))));
+
+        apply_at(&mut view, result(0.5), 200);
+        view.prompt_sent(queued, at(200));
+
+        assert_eq!(times(&view), (Some(at(200)), Some(at(200))));
+    }
+
+    #[test]
+    fn waiting_for_you_counts_from_the_first_request() {
+        let mut view = view();
+        view.add_prompt(&prompt("Deploy"), PromptDelivery::Now, at(100));
+        apply_at(
+            &mut view,
+            tool_use("t1", "Bash", json!({"command": "ls"})),
+            110,
+        );
+        apply_at(
+            &mut view,
+            tool_use("t2", "Bash", json!({"command": "pwd"})),
+            110,
+        );
+
+        apply_at(
+            &mut view,
+            can_use_tool("req-1", "t1", "Bash", json!({"command": "ls"})),
+            120,
+        );
+        apply_at(
+            &mut view,
+            can_use_tool("req-2", "t2", "Bash", json!({"command": "pwd"})),
+            125,
+        );
+
+        assert_eq!(times(&view), (Some(at(120)), Some(at(100))));
+    }
+
+    #[test]
+    fn a_command_that_runs_no_turn_moves_no_activity() {
+        let mut view = view();
+        view.add_prompt(&prompt("Fix it"), PromptDelivery::Now, at(100));
+        apply_at(&mut view, result(0.5), 150);
+
+        apply_at(&mut view, init(), 900);
+        apply_at(
+            &mut view,
+            json!({"type": "result", "subtype": "success", "is_error": false, "num_turns": 0}),
+            901,
+        );
+
+        assert_eq!(times(&view), (Some(at(150)), None));
+    }
+
+    #[test]
+    fn an_exit_is_activity_and_ends_the_turn() {
+        let mut view = view();
+        view.add_prompt(&prompt("Go"), PromptDelivery::Now, at(100));
+
+        view.process_exited("claude exited".to_owned(), at(160));
+
+        assert_eq!(times(&view), (Some(at(160)), None));
+    }
+
+    #[test]
+    fn a_turn_the_daemon_cut_off_was_last_active_at_its_start_or_later() {
+        let logged = |last: u64, turn: u64| AgentSummary {
+            status: AgentStatus::Working,
+            last_activity_at: Some(at(last)),
+            turn_started_at: Some(at(turn)),
+            ..view().summary().clone()
+        };
+        let restore = |summary: AgentSummary| {
+            AgentView::restore(summary, AgentDetails::default(), Vec::new(), Duration::ZERO)
+        };
+
+        // A turn that started after the last activity, or one that waited for you since.
+        assert_eq!(times(&restore(logged(50, 100))), (Some(at(100)), None));
+        assert_eq!(times(&restore(logged(130, 100))), (Some(at(130)), None));
     }
 
     fn object(value: Value) -> Map<String, Value> {

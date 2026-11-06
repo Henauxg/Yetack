@@ -323,14 +323,18 @@ impl Hub {
             .ok_or_else(|| errors::internal("cannot encode the prompt".to_owned()))?;
         let mut record_changed = false;
         if agent.view.is_busy() || !agent.queue.is_empty() {
-            let item = agent.view.add_prompt(&prompt, PromptDelivery::Queued);
+            let item = agent
+                .view
+                .add_prompt(&prompt, PromptDelivery::Queued, state::now());
             agent.queue.push_back(QueuedPrompt {
                 item: Some(item),
                 line,
                 text: prompt.text,
             });
         } else {
-            agent.view.add_prompt(&prompt, PromptDelivery::Now);
+            agent
+                .view
+                .add_prompt(&prompt, PromptDelivery::Now, state::now());
             process.write(line);
             record_changed = record_typed_setting(agent, &prompt.text);
         }
@@ -354,7 +358,7 @@ impl Hub {
             process.write(queued.line);
             match queued.item {
                 Some(item) => {
-                    agent.view.prompt_sent(item);
+                    agent.view.prompt_sent(item, state::now());
                     shown_text = Some(queued.text);
                     break;
                 }
@@ -641,6 +645,8 @@ pub(super) fn initial_summary(record: &AgentRecord) -> AgentSummary {
         turns: 0,
         cost: CostUsd::new(0.0),
         started_at: record.started_at,
+        last_activity_at: Some(record.started_at),
+        turn_started_at: None,
         session: record.session.clone(),
         position: record.position,
     }

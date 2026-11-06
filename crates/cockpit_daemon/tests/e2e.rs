@@ -1016,6 +1016,12 @@ async fn a_restarted_daemon_resumes_its_agents_and_replays_or_snapshots() {
     assert_eq!(summary.session.as_ref(), Some(&session));
     assert_eq!(summary.turns, 1);
     assert_eq!(summary.status, AgentStatus::Idle);
+    assert!(idle.last_activity_at.is_some());
+    assert_eq!(
+        summary.last_activity_at, idle.last_activity_at,
+        "a restart is no activity of the agent"
+    );
+    assert_eq!(summary.turn_started_at, None);
     let launches = setup.claude_args();
     assert_eq!(launches.len(), 2);
     assert!(
