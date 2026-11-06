@@ -252,6 +252,7 @@ async fn serve(
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use cockpit_protocol::{AgentId, AgentParams, Event};
 

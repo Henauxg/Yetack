@@ -18,7 +18,7 @@
 //! does not know is ignored.
 
 use std::ffi::OsString;
-use std::fs::{DirBuilder, File, OpenOptions, Permissions};
+use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -35,7 +35,9 @@ const PREFS_FILE: &str = "prefs.json";
 const TEMPORARY_SUFFIX: &str = ".tmp";
 
 /// The same modes as the daemon's files: only their owner reads them.
+#[cfg(unix)]
 const FOLDER_MODE: u32 = 0o700;
+#[cfg(unix)]
 const FILE_MODE: u32 = 0o600;
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -171,36 +173,70 @@ impl Prefs {
     /// temporary file beside it, synced, then renamed over it.
     pub fn save(&self, file: &Path) -> io::Result<()> {
         use std::io::Write;
-        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 
         let mut bytes = serde_json::to_vec_pretty(self)?;
         bytes.push(b'\n');
         if let Some(folder) = file.parent() {
-            DirBuilder::new()
-                .recursive(true)
-                .mode(FOLDER_MODE)
-                .create(folder)?;
-            // An existing folder keeps its mode otherwise.
-            std::fs::set_permissions(folder, Permissions::from_mode(FOLDER_MODE))?;
+            create_private_folder(folder)?;
         }
         let temporary = temporary_path(file);
-        let mut out = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(FILE_MODE)
-            .open(&temporary)?;
-        // The mode above applies only to a file the open creates.
-        out.set_permissions(Permissions::from_mode(FILE_MODE))?;
+        let mut out = create_private_file(&temporary)?;
         out.write_all(&bytes)?;
         out.sync_all()?;
         std::fs::rename(&temporary, file)?;
+        // A folder opens as a file on Unix only.
+        #[cfg(unix)]
         if let Some(folder) = file.parent() {
             // The rename is durable once the folder is synced.
             File::open(folder)?.sync_all()?;
         }
         Ok(())
     }
+}
+
+#[cfg(unix)]
+fn create_private_folder(folder: &Path) -> io::Result<()> {
+    use std::fs::{DirBuilder, Permissions};
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+    DirBuilder::new()
+        .recursive(true)
+        .mode(FOLDER_MODE)
+        .create(folder)?;
+    // An existing folder keeps its mode otherwise.
+    std::fs::set_permissions(folder, Permissions::from_mode(FOLDER_MODE))
+}
+
+/// The folder takes the permissions of the one it is in: under `%LOCALAPPDATA%`, the user's own.
+#[cfg(windows)]
+fn create_private_folder(folder: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(folder)
+}
+
+#[cfg(unix)]
+fn create_private_file(path: &Path) -> io::Result<File> {
+    use std::fs::Permissions;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(FILE_MODE)
+        .open(path)?;
+    // The mode above applies only to a file the open creates.
+    file.set_permissions(Permissions::from_mode(FILE_MODE))?;
+    Ok(file)
+}
+
+/// The file takes the permissions of its folder.
+#[cfg(windows)]
+fn create_private_file(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(path)
 }
 
 fn temporary_path(file: &Path) -> PathBuf {
@@ -243,6 +279,7 @@ pub fn use_prefs_saver(cockpit: Cockpit, file: Option<PathBuf>) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
 
     use super::*;
@@ -339,6 +376,7 @@ mod tests {
         assert!(prefs.file_view.wrap);
     }
 
+    #[cfg(unix)]
     #[test]
     fn saves_privately_and_reads_back() {
         let temp = tempfile::tempdir().unwrap();
@@ -368,10 +406,40 @@ mod tests {
         assert_eq!(names, [OsString::from(PREFS_FILE)]);
     }
 
+    /// Windows renames over an existing file too.
+    #[cfg(windows)]
+    #[test]
+    fn saves_over_the_last_save_and_reads_back() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join(PREFS_FOLDER);
+        let file = folder.join(PREFS_FILE);
+        let prefs = Prefs {
+            file_view: FileViewPrefs {
+                width_share: Some(0.3),
+                wrap: true,
+            },
+            sidebar: SidebarPrefs {
+                filter: StatusFilter::Exited,
+            },
+        };
+
+        Prefs::default().save(&file).unwrap();
+        prefs.save(&file).unwrap();
+
+        assert_eq!(Prefs::load(&file), prefs);
+        let names: Vec<OsString> = std::fs::read_dir(&folder)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, [OsString::from(PREFS_FILE)]);
+    }
+
     /// The mode given at creation does not reach a file that already exists, such as a temporary
     /// file a crash left behind.
+    #[cfg(unix)]
     #[test]
     fn a_leftover_temporary_file_does_not_widen_the_mode() {
+        use std::fs::Permissions;
         use std::os::unix::fs::PermissionsExt;
 
         let temp = tempfile::tempdir().unwrap();
@@ -387,6 +455,7 @@ mod tests {
         assert_eq!(Prefs::load(&file), Prefs::default());
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_file_is_apart_from_the_daemons_folder() {
         let environment = Environment {

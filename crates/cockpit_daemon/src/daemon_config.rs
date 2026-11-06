@@ -12,7 +12,11 @@ const DEFAULT_CLAUDE_PROGRAM: &str = "claude";
 const CLAUDE_CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
 const CLAUDE_HOME_FOLDER: &str = ".claude";
 /// Names the home folder, which the default state folder and Claude Code's folder need.
+#[cfg(unix)]
 pub const HOME_ENV: &str = "HOME";
+/// Names the home folder, which the default state folder and Claude Code's folder need.
+#[cfg(windows)]
+pub const HOME_ENV: &str = "USERPROFILE";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonConfig {

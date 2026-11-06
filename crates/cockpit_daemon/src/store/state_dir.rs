@@ -1,5 +1,5 @@
 use std::env;
-use std::fs::{DirBuilder, File, OpenOptions, Permissions, TryLockError};
+use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 
 use cockpit_protocol::AgentId;
@@ -8,9 +8,16 @@ use crate::daemon_config::HOME_ENV;
 use crate::store::store_error::StoreError;
 
 const STATE_FOLDER_NAME: &str = "agents-cockpit";
-const XDG_STATE_HOME: &str = "XDG_STATE_HOME";
+#[cfg(unix)]
+const STATE_HOME_ENV: &str = "XDG_STATE_HOME";
 /// Where the state goes under `$HOME` when `XDG_STATE_HOME` is unset.
+#[cfg(unix)]
 const HOME_STATE: &str = ".local/state";
+#[cfg(windows)]
+const STATE_HOME_ENV: &str = "LOCALAPPDATA";
+/// Where the state goes under `%USERPROFILE%` when `LOCALAPPDATA` is unset.
+#[cfg(windows)]
+const HOME_STATE: &str = r"AppData\Local";
 
 const SOCKET_FILE: &str = "agents-cockpit.sock";
 const LOCK_FILE: &str = "serve.lock";
@@ -21,15 +28,18 @@ const RAW_FOLDER: &str = "raw";
 const RAW_LOG_EXTENSION: &str = "jsonl";
 
 /// Only the owner may enter the folders.
+#[cfg(unix)]
 const FOLDER_MODE: u32 = 0o700;
 /// Only the owner may read or write the files.
-pub(crate) const FILE_MODE: u32 = 0o600;
+#[cfg(unix)]
+const FILE_MODE: u32 = 0o600;
 
-/// `$XDG_STATE_HOME/agents-cockpit`, or `~/.local/state/agents-cockpit`. `None` without a home.
+/// `$XDG_STATE_HOME/agents-cockpit`, or `~/.local/state/agents-cockpit`; on Windows,
+/// `%LOCALAPPDATA%\agents-cockpit`. `None` without a home.
 #[must_use]
 pub fn default_state_dir() -> Option<PathBuf> {
     // The XDG specification ignores a relative path.
-    let xdg = env::var_os(XDG_STATE_HOME)
+    let xdg = env::var_os(STATE_HOME_ENV)
         .map(PathBuf::from)
         .filter(|path| path.is_absolute());
     let base = match xdg {
@@ -71,14 +81,11 @@ impl StateDir {
 
     /// Takes `serve.lock`, or fails with `AlreadyRunning`.
     pub(crate) fn lock(&self) -> Result<ServeLock, StoreError> {
-        use std::os::unix::fs::OpenOptionsExt;
-
         let path = self.root.join(LOCK_FILE);
-        let file = OpenOptions::new()
+        let file = owner_only()
             .create(true)
             .truncate(false)
             .write(true)
-            .mode(FILE_MODE)
             .open(&path)
             .map_err(|source| StoreError::Lock {
                 path: path.clone(),
@@ -118,7 +125,25 @@ impl StateDir {
     }
 }
 
+/// Options that create a file with mode 600.
+///
+/// On Windows, a new file or folder takes the permissions of the folder it is in. Under
+/// `%LOCALAPPDATA%`, those admit only the user.
+pub(crate) fn owner_only() -> OpenOptions {
+    #[cfg_attr(windows, expect(unused_mut, reason = "only Unix sets a mode"))]
+    let mut options = OpenOptions::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        options.mode(FILE_MODE);
+    }
+    options
+}
+
+#[cfg(unix)]
 fn create_private_folder(path: &Path) -> Result<(), StoreError> {
+    use std::fs::{DirBuilder, Permissions};
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 
     let error = |source| StoreError::CreateFolder {
@@ -134,12 +159,22 @@ fn create_private_folder(path: &Path) -> Result<(), StoreError> {
     std::fs::set_permissions(path, Permissions::from_mode(FOLDER_MODE)).map_err(error)
 }
 
+#[cfg(windows)]
+fn create_private_folder(path: &Path) -> Result<(), StoreError> {
+    std::fs::create_dir_all(path).map_err(|source| StoreError::CreateFolder {
+        path: path.to_owned(),
+        source,
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
 
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn creates_private_folders() {
         let temp = tempfile::tempdir().unwrap();
@@ -153,8 +188,10 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn tightens_an_existing_folder() {
+        use std::fs::Permissions;
         use std::os::unix::fs::PermissionsExt;
 
         let temp = tempfile::tempdir().unwrap();
@@ -191,6 +228,7 @@ mod tests {
     }
 
     /// Whatever the umask of the process that runs the test.
+    #[cfg(unix)]
     #[test]
     fn every_file_is_for_the_owner_only() {
         use cockpit_protocol::{Event, EventRecord, Frame, Seq, ServerMessage, Settings};

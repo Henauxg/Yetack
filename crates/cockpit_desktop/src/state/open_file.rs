@@ -464,6 +464,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn going_up_and_completing_rewrite_the_folder_part() {
         let up = |text: &str| {
@@ -538,6 +539,7 @@ mod tests {
         assert_eq!(opened.path, PathBuf::from("src/lexer.rs"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn tab_completes_a_name_and_backspace_goes_up() {
         let (mut state, mut drafts) = opened();
@@ -575,6 +577,7 @@ mod tests {
         assert_eq!(view(&state).unwrap().folder, PathBuf::from("/work"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_up_row_of_a_parent_folder_typed_relative_lists_the_folder_above_it() {
         let (mut state, mut drafts) = opened();

@@ -1,4 +1,5 @@
-//! The app's config file, `$XDG_CONFIG_HOME/agents-cockpit/config.toml`: which daemon to reach.
+//! The app's config file, `$XDG_CONFIG_HOME/agents-cockpit/config.toml` (on Windows,
+//! `%APPDATA%\agents-cockpit\config.toml`): which daemon to reach.
 //!
 //! ```toml
 //! [daemon]
@@ -23,13 +24,31 @@ const APP_FOLDER: &str = "agents-cockpit";
 const CONFIG_FILE: &str = "config.toml";
 const SOCKET_FILE: &str = "agents-cockpit.sock";
 
+#[cfg(unix)]
 const HOME_VAR: &str = "HOME";
+#[cfg(unix)]
 const CONFIG_HOME_VAR: &str = "XDG_CONFIG_HOME";
+#[cfg(unix)]
 const STATE_HOME_VAR: &str = "XDG_STATE_HOME";
 
 /// The XDG defaults, relative to the home folder.
+#[cfg(unix)]
 const DEFAULT_CONFIG_HOME: &str = ".config";
+#[cfg(unix)]
 const DEFAULT_STATE_HOME: &str = ".local/state";
+
+#[cfg(windows)]
+const HOME_VAR: &str = "USERPROFILE";
+#[cfg(windows)]
+const CONFIG_HOME_VAR: &str = "APPDATA";
+#[cfg(windows)]
+const STATE_HOME_VAR: &str = "LOCALAPPDATA";
+
+/// Windows' defaults, relative to the home folder.
+#[cfg(windows)]
+const DEFAULT_CONFIG_HOME: &str = r"AppData\Roaming";
+#[cfg(windows)]
+const DEFAULT_STATE_HOME: &str = r"AppData\Local";
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -226,6 +245,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn an_empty_file_means_the_local_daemon_with_notifications() {
         let config: Config = "".parse().unwrap();
@@ -302,6 +322,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn xdg_variables_take_precedence_over_home() {
         let environment = Environment {

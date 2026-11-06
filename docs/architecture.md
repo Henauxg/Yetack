@@ -430,9 +430,38 @@ When the process ends and its pid goes to another one during the check, the sign
 - `cockpit_client`: against an in-process fake daemon over a socket pair.
 - `cockpit_desktop`: `apply` on event sequences; rendering helpers (markdown, diffs) on sample input.
 
+## Platforms
+
+Linux runs everything. The workspace also builds and passes its tests on Windows, where the daemon will run inside the desktop app and its agents run Windows' own `claude`.
+The code marks what needs Unix with `#[cfg(unix)]` and gives Windows its own version with `#[cfg(windows)]`.
+
+| | Linux | Windows |
+| --- | --- | --- |
+| daemon | `agents-cockpit serve`, on a Unix socket | none yet: the desktop app is to run it |
+| `agents-cockpit` | every command | the client commands, with `--ssh`; no `serve` and no `bridge` |
+| desktop app | WebKitGTK | WebView2 |
+| daemon's state folder | `$XDG_STATE_HOME/agents-cockpit` | `%LOCALAPPDATA%\agents-cockpit` |
+| app's config file | `$XDG_CONFIG_HOME/agents-cockpit/config.toml` | `%APPDATA%\agents-cockpit\config.toml` |
+| app's preferences | `$XDG_STATE_HOME/agents-cockpit-desktop/prefs.json` | `%LOCALAPPDATA%\agents-cockpit-desktop\prefs.json` |
+| home folder (Claude Code's folder is `.claude` in it) | `HOME` | `USERPROFILE` |
+
+Each path comes from its environment variable, and falls back to its default under the home folder, as on Linux.
+
+On Windows, for now:
+
+- `Transport::Local` fails at once: tokio has no Unix sockets there. The socket server and its peer checks are not built.
+- `machine.load` and `agent.stop_process` answer `unsupported`. The app shows "Load unknown", and so no stop buttons.
+- `agent.read_file`, `agent.list_dir`, `agent.find_files` and `folders.list` answer `unsupported`, since the daemon cannot yet check where an open file is. The file view and the dialogs show the daemon's sentence.
+- Stopping an agent kills its `claude` alone: its MCP servers and commands live on. On Linux the daemon kills the process group.
+- The app shows no notifications.
+- Nothing sets file modes. A file or folder takes the permissions of the folder it is in, and those of `%LOCALAPPDATA%` admit only the user.
+- The tests that need a shell, `/proc`, a Unix socket or file modes are left out, among them the end-to-end tests and the command line's tests.
+  So are the tests whose made-up paths are Unix paths, such as `/work/app`: Windows does not read them as absolute.
+
 ## Development
 
 - `nix develop` gives the toolchain: stable Rust, nightly rustfmt (the standard's `rustfmt.toml` needs it), clippy, and the WebKitGTK libraries for the desktop app.
 - Format: `cargo fmt` (nightly rustfmt from the dev shell, reading the root `rustfmt.toml`).
 - Lint: `cargo clippy -q --workspace --all-targets`; the workspace lints in `Cargo.toml` and `CLIPPY_CONF_DIR` apply the standard.
 - Test: `cargo test -q --workspace`.
+- CI (`.github/workflows/ci.yml`) runs plain cargo, without Nix: it checks, lints and tests the workspace on Linux and on Windows, and keeps the Windows desktop app's release build as an artifact.

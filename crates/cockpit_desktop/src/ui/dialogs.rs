@@ -980,6 +980,7 @@ fn ResumeList(starting: bool) -> Element {
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use super::*;
 

@@ -11,22 +11,36 @@
 //!
 //! [`read_file`]: crate::read_file
 
+#[cfg(unix)]
 use std::ffi::{CStr, OsStr};
+#[cfg(unix)]
 use std::fs::File;
 use std::io;
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Component, Path, PathBuf};
+#[cfg(unix)]
+use std::path::Component;
+use std::path::{Path, PathBuf};
 
-use cockpit_protocol::{DirEntry, DirListing, EntryKind, ErrorBody, ErrorCode};
+#[cfg(unix)]
+use cockpit_protocol::{DirEntry, EntryKind};
+use cockpit_protocol::{DirListing, ErrorBody, ErrorCode};
+#[cfg(unix)]
 use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags};
+#[cfg(unix)]
 use rustix::io::Errno;
+#[cfg(unix)]
 use tokio::time::Instant;
 
-use crate::read_file::{self, Access, ReadFileError, SEARCH_TIME};
+use crate::read_file::ReadFileError;
+#[cfg(unix)]
+use crate::read_file::{self, Access, SEARCH_TIME};
 
 /// The most entries a listing holds.
+#[cfg(unix)]
 pub(crate) const MAX_ENTRIES: usize = 2_000;
 /// The most entries read from a folder. Past it, the listing is cut.
+#[cfg(unix)]
 pub(crate) const MAX_READ: usize = 20_000;
 
 #[derive(Debug, thiserror::Error)]
@@ -59,6 +73,7 @@ impl ListDirError {
 
 /// Lists `path`, absolute or relative to `folder`, the agent's folder. `touched` holds the files
 /// the agent read or changed, and `home` the home folder, as for `agent.read_file`.
+#[cfg(unix)]
 pub(crate) fn list(
     folder: &Path,
     touched: &[PathBuf],
@@ -98,6 +113,7 @@ pub(crate) fn list(
 }
 
 /// The entries of an open folder, its folders first, then the others, each group by name.
+#[cfg(unix)]
 fn read_entries(folder: &File) -> Result<(Vec<DirEntry>, bool), ListDirError> {
     let mut dir = Dir::read_from(folder).map_err(|error| ListDirError::Io(error.into()))?;
     let mut entries: Vec<DirEntry> = Vec::new();
@@ -118,12 +134,14 @@ fn read_entries(folder: &File) -> Result<(Vec<DirEntry>, bool), ListDirError> {
 }
 
 /// Whether a folder's entry is `.` or `..`, which no listing shows.
+#[cfg(unix)]
 fn is_self_or_parent(name: &CStr) -> bool {
     matches!(name.to_bytes(), b"." | b"..")
 }
 
 /// Sorts entries as a listing shows them, then keeps the first [`MAX_ENTRIES`]. Returns whether
 /// it left some out.
+#[cfg(unix)]
 fn sort_and_cap(entries: &mut Vec<DirEntry>) -> bool {
     entries.sort_by_cached_key(|entry| {
         (
@@ -138,6 +156,7 @@ fn sort_and_cap(entries: &mut Vec<DirEntry>) -> bool {
 }
 
 /// Lists the folders in `path`, which must be absolute. A symbolic link to a folder counts as one.
+#[cfg(unix)]
 pub(crate) fn list_folders(path: &Path) -> Result<DirListing, ListDirError> {
     if !path.is_absolute() {
         return Err(ListDirError::NotAbsolute(path.to_owned()));
@@ -158,6 +177,7 @@ pub(crate) fn list_folders(path: &Path) -> Result<DirListing, ListDirError> {
 
 /// The folders of an open folder, by name. Every entry read counts towards [`MAX_READ`], so a
 /// folder of many files answers as quickly as for `agent.list_dir`.
+#[cfg(unix)]
 fn read_folders(folder: &File) -> Result<(Vec<DirEntry>, bool), ListDirError> {
     let mut dir = Dir::read_from(folder).map_err(|error| ListDirError::Io(error.into()))?;
     let mut folders: Vec<DirEntry> = Vec::new();
@@ -197,6 +217,7 @@ fn read_folders(folder: &File) -> Result<(Vec<DirEntry>, bool), ListDirError> {
 
 /// One entry, with what a symbolic link points to and a file's size. An entry that vanished since
 /// the folder was read, or a link that leads nowhere, shows as `Other`.
+#[cfg(unix)]
 fn describe(folder: &File, name: &CStr, listed: FileType) -> DirEntry {
     let shown_name = OsStr::from_bytes(name.to_bytes())
         .to_string_lossy()
@@ -237,6 +258,7 @@ fn describe(folder: &File, name: &CStr, listed: FileType) -> DirEntry {
 
 /// The files whose name holds `name`, whatever its case, in the agent's folder and the allowed
 /// checkouts, as `git ls-files` lists them, within the search's limits.
+#[cfg(unix)]
 pub(crate) async fn find_files(
     folder: PathBuf,
     touched: Vec<PathBuf>,
@@ -262,7 +284,36 @@ pub(crate) async fn find_files(
     Ok(read_file::search(&access, roots, name_holds, Instant::now() + SEARCH_TIME).await)
 }
 
+/// Lists nothing: the daemon cannot yet check where a folder is on Windows.
+#[cfg(windows)]
+pub(crate) fn list(
+    _folder: &Path,
+    _touched: &[PathBuf],
+    _home: Option<&Path>,
+    _path: &Path,
+) -> Result<DirListing, ListDirError> {
+    Err(ListDirError::Access(ReadFileError::Unsupported))
+}
+
+/// Lists nothing, as [`list`] does.
+#[cfg(windows)]
+pub(crate) fn list_folders(_path: &Path) -> Result<DirListing, ListDirError> {
+    Err(ListDirError::Access(ReadFileError::Unsupported))
+}
+
+/// Finds nothing, as [`list`] lists nothing.
+#[cfg(windows)]
+pub(crate) async fn find_files(
+    _folder: PathBuf,
+    _touched: Vec<PathBuf>,
+    _home: Option<PathBuf>,
+    _name: String,
+) -> Result<Vec<PathBuf>, ReadFileError> {
+    Err(ReadFileError::Unsupported)
+}
+
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use std::os::unix::fs::symlink;
     use std::process::Command;

@@ -731,6 +731,7 @@ mod tests {
 
     use crate::sessions::SessionPast;
     use crate::store::PastFile;
+    #[cfg(unix)]
     use crate::test_script;
 
     use super::*;
@@ -810,6 +811,7 @@ mod tests {
     }
 
     /// A session file's `cwd` is what `claude` wrote, or anything a process of the user wrote.
+    #[cfg(unix)]
     #[test]
     fn a_past_session_needs_a_folder_an_agent_can_start_in() {
         let temp = tempfile::tempdir().unwrap();
@@ -843,6 +845,7 @@ mod tests {
     }
 
     /// A close takes out a running agent at once, with its log, and tells the clients.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_close_removes_a_running_agent_and_its_log() {
         use std::fs::Permissions;
@@ -887,6 +890,7 @@ mod tests {
 
     /// Once stopped, the process's stdin is closed: a prompt would be shown as sent and never
     /// reach `claude`.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_stopping_agent_takes_no_prompt() {
         let temp = tempfile::tempdir().unwrap();

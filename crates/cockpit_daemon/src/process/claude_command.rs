@@ -74,8 +74,8 @@ impl ClaudeCommand {
         args
     }
 
-    /// `claude` leads a process group of its own, so that killing the group also ends its MCP
-    /// servers and the commands it started.
+    /// On Unix, `claude` leads a process group of its own, so that killing the group also ends
+    /// its MCP servers and the commands it started.
     pub(crate) fn to_command(&self) -> Command {
         let mut command = Command::new(&self.program);
         command
@@ -86,8 +86,9 @@ impl ClaudeCommand {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .process_group(0)
             .kill_on_drop(true);
+        #[cfg(unix)]
+        command.process_group(0);
         if self.resume.is_some() && self.interrupted_turn == InterruptedTurn::Resume {
             command.env(RESUME_INTERRUPTED_TURN_ENV, ENABLED);
         }

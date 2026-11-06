@@ -1,16 +1,19 @@
 //! Desktop notifications, through the freedesktop notification service: at most one per agent.
-//! Clicking one opens its agent.
+//! Clicking one opens its agent. Windows has no such service, and shows none.
 
 use std::collections::BTreeMap;
 
 use cockpit_protocol::{AgentId, AgentStatus};
+#[cfg(unix)]
 use notify_rust::{Notification, NotificationResponse, Urgency};
 use tokio::sync::{mpsc, oneshot};
 
+#[cfg(unix)]
 use crate::APP_NAME;
 use crate::state::{Alert, AlertKind, AppState};
 
 /// The action a click on the notification's body triggers.
+#[cfg(unix)]
 const OPEN_ACTION: &str = "default";
 
 /// The notifications on screen. Each runs as a task that waits on D-Bus, with no thread of its
@@ -101,6 +104,7 @@ impl Ledger {
 
 /// Shows the alert, and sends its agent to `opened` when the user clicks it. Waits until the
 /// notification goes away, or until `close` fires or is dropped, and then closes it.
+#[cfg(unix)]
 async fn present(
     alert: Alert,
     close: oneshot::Receiver<()>,
@@ -138,8 +142,18 @@ async fn present(
     }
 }
 
+/// Shows nothing.
+#[cfg(windows)]
+async fn present(
+    _alert: Alert,
+    _close: oneshot::Receiver<()>,
+    _opened: mpsc::UnboundedSender<AgentId>,
+) {
+}
+
 /// The body as text in the notification markup, which most services read: the agent's own words
 /// cannot add a link, an image or formatting.
+#[cfg(unix)]
 fn escaped_body(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     for character in text.chars() {
@@ -173,6 +187,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_body_cannot_carry_markup() {
         assert_eq!(

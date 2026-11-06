@@ -1,16 +1,20 @@
 //! The agents-cockpit command line: the daemon, the SSH bridge, and client commands.
 
+#[cfg(unix)]
 mod bridge;
 mod cli;
 mod client;
 
 use std::process::ExitCode;
 
+#[cfg(unix)]
 use cockpit_daemon::{DaemonConfig, HOME_ENV};
 use tokio::runtime::Runtime;
 use tracing_subscriber::EnvFilter;
 
-use crate::cli::{Cli, Command, PROGRAM, SERVE_SUBCOMMAND, SSH_FLAG};
+use crate::cli::{Cli, PROGRAM};
+#[cfg(unix)]
+use crate::cli::{Command, SERVE_SUBCOMMAND, SSH_FLAG};
 
 /// The log level of `serve`, unless `RUST_LOG` says otherwise.
 const SERVE_LOG_LEVEL: &str = "info";
@@ -21,7 +25,11 @@ fn main() -> ExitCode {
     use clap::Parser;
 
     let cli = Cli::parse();
-    let level = if matches!(cli.command, Command::Serve) {
+    #[cfg(unix)]
+    let serving = matches!(cli.command, Command::Serve);
+    #[cfg(windows)]
+    let serving = false;
+    let level = if serving {
         SERVE_LOG_LEVEL
     } else {
         CLIENT_LOG_LEVEL
@@ -38,7 +46,10 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    #[cfg(unix)]
     let bridging = matches!(cli.command, Command::Bridge);
+    #[cfg(windows)]
+    let bridging = false;
     let result = runtime.block_on(run(cli));
     if bridging {
         // The stdin reader blocks a thread until its next byte; waiting for it would hang.
@@ -54,10 +65,11 @@ fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
-    use anyhow::Context;
-
     match cli.command {
+        #[cfg(unix)]
         Command::Serve => {
+            use anyhow::Context;
+
             if cli.target.is_remote() {
                 anyhow::bail!(
                     "{SERVE_SUBCOMMAND} runs the daemon on this machine: --{SSH_FLAG} does not apply"
@@ -68,12 +80,14 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             cockpit_daemon::serve(config, shutdown_signal()?).await?;
             Ok(())
         }
+        #[cfg(unix)]
         Command::Bridge => bridge::run(&cli.target.local_socket()?).await,
         command => client::run(&cli.target, command).await,
     }
 }
 
 /// Completes on SIGTERM, as systemd stops a service, or on Ctrl+C.
+#[cfg(unix)]
 fn shutdown_signal() -> anyhow::Result<impl Future<Output = ()>> {
     use tokio::signal::unix;
     use tokio::signal::unix::SignalKind;

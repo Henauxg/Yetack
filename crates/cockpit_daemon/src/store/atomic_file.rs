@@ -1,12 +1,11 @@
 use std::ffi::OsString;
-use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::store::state_dir::FILE_MODE;
+use crate::store::state_dir;
 use crate::store::store_error::StoreError;
 
 const TEMPORARY_SUFFIX: &str = ".tmp";
@@ -45,21 +44,21 @@ pub(crate) fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), Sto
 /// Writes a temporary file beside `path`, syncs it, then renames it over `path`.
 fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
 
     let temporary = temporary_path(path);
-    let mut file = OpenOptions::new()
+    let mut file = state_dir::owner_only()
         .create(true)
         .truncate(true)
         .write(true)
-        .mode(FILE_MODE)
         .open(&temporary)?;
     file.write_all(bytes)?;
     file.sync_all()?;
     std::fs::rename(&temporary, path)?;
+    // A folder opens as a file on Unix only.
+    #[cfg(unix)]
     if let Some(folder) = path.parent() {
         // The rename is durable once the folder is synced.
-        File::open(folder)?.sync_all()?;
+        std::fs::File::open(folder)?.sync_all()?;
     }
     Ok(())
 }

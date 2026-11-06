@@ -440,6 +440,7 @@ where
 /// Kills `claude` and the rest of its process group: its MCP servers and the commands it started.
 /// Does nothing once `claude` is reaped: its pid, which names the group, may then name another
 /// process.
+#[cfg(unix)]
 fn kill_group(child: &mut Child) {
     use rustix::process::{Pid, Signal};
 
@@ -457,6 +458,14 @@ fn kill_group(child: &mut Child) {
     }
 }
 
+/// Kills `claude` alone: the processes it started live on.
+#[cfg(windows)]
+fn kill_group(child: &mut Child) {
+    // An error means the process is already gone, which `wait` reports.
+    let _ = child.start_kill();
+}
+
+#[cfg(unix)]
 fn describe_exit(status: Option<ExitStatus>) -> String {
     use std::os::unix::process::ExitStatusExt;
 
@@ -467,6 +476,16 @@ fn describe_exit(status: Option<ExitStatus>) -> String {
             (None, Some(signal)) => format!("claude was killed by signal {signal}"),
             (None, None) => "claude exited".to_owned(),
         },
+        None => "claude exited, with an unknown status".to_owned(),
+    }
+}
+
+/// A Windows process always ends with a code: a killed one ends with the code its killer chose.
+#[cfg(windows)]
+fn describe_exit(status: Option<ExitStatus>) -> String {
+    match status.map(|status| status.code()) {
+        Some(Some(0) | None) => "claude exited".to_owned(),
+        Some(Some(code)) => format!("claude exited with status {code}"),
         None => "claude exited, with an unknown status".to_owned(),
     }
 }
@@ -507,6 +526,7 @@ fn now() -> Timestamp {
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use std::os::unix::process::ExitStatusExt;
     use std::process::Stdio;
