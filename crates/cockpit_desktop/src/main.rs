@@ -64,6 +64,7 @@ fn main() -> anyhow::Result<()> {
         state.prefs = Prefs::load(file);
     }
     let in_app = InAppHost::default();
+    in_app::stop_on_signals(in_app.clone());
     let startup = Startup {
         state,
         daemon: config.daemon,

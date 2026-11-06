@@ -1,6 +1,7 @@
 //! The daemon this app runs in its own process, once it runs one.
 
 use std::fmt;
+use std::io;
 use std::pin::pin;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -14,6 +15,14 @@ const SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
 /// How long the app's close waits for a daemon that is still reading its state folder back.
 const START_WAIT: Duration = Duration::from_secs(5);
 const START_THREAD: &str = "agents-cockpit-start";
+const SIGNAL_THREAD: &str = "agents-cockpit-signals";
+
+/// The app's exit status after a signal, as a shell reports a process the signal ended.
+#[cfg(unix)]
+const EXIT_HUNG_UP: i32 = 129;
+const EXIT_INTERRUPTED: i32 = 130;
+#[cfg(unix)]
+const EXIT_TERMINATED: i32 = 143;
 
 /// Holds the daemon the app runs, shared between the connection task, which starts it, and the
 /// window's close, which stops it.
@@ -174,6 +183,53 @@ fn start_daemon(config: DaemonConfig) -> Result<(InAppDaemon, InAppLink), ServeE
     Ok((daemon, link))
 }
 
+/// Stops the daemon in the app, as the window's close does, when the terminal or the system stops
+/// the app: the agents' processes lead process groups of their own, which those signals miss.
+pub fn stop_on_signals(host: InAppHost) {
+    let watcher = std::thread::Builder::new()
+        .name(SIGNAL_THREAD.to_owned())
+        .spawn(move || {
+            let received = tokio::runtime::Builder::new_current_thread()
+                .enable_io()
+                .build()
+                .and_then(|runtime| runtime.block_on(stop_signal()));
+            match received {
+                Ok(status) => {
+                    host.shutdown();
+                    std::process::exit(status);
+                }
+                Err(error) => {
+                    tracing::warn!("cannot watch for the signals that stop the app: {error}")
+                }
+            }
+        });
+    if let Err(error) = watcher {
+        tracing::warn!("cannot watch for the signals that stop the app: {error}");
+    }
+}
+
+/// Waits for Ctrl+C, a hang-up or a request to terminate, and returns the exit status it calls for.
+#[cfg(unix)]
+async fn stop_signal() -> io::Result<i32> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    let mut terminate = signal(SignalKind::terminate())?;
+    let mut hang_up = signal(SignalKind::hangup())?;
+    let status = tokio::select! {
+        _ = interrupt.recv() => EXIT_INTERRUPTED,
+        _ = terminate.recv() => EXIT_TERMINATED,
+        _ = hang_up.recv() => EXIT_HUNG_UP,
+    };
+    Ok(status)
+}
+
+#[cfg(windows)]
+async fn stop_signal() -> io::Result<i32> {
+    tokio::signal::ctrl_c().await?;
+    Ok(EXIT_INTERRUPTED)
+}
+
 /// Two hosts are equal when they hold the same daemon.
 impl PartialEq for InAppHost {
     fn eq(&self, other: &Self) -> bool {
@@ -249,5 +305,21 @@ mod tests {
             Transport::InApp(second.unwrap())
         );
         host.shutdown();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_hang_up_stops_the_app() {
+        let mut waiting = Box::pin(stop_signal());
+        assert!(futures_util::poll!(&mut waiting).is_pending());
+
+        let sent = std::process::Command::new("kill")
+            .args(["-HUP", &std::process::id().to_string()])
+            .status()
+            .unwrap();
+
+        assert!(sent.success());
+        let status = tokio::time::timeout(Duration::from_secs(10), waiting).await;
+        assert_eq!(status.unwrap().unwrap(), EXIT_HUNG_UP);
     }
 }
