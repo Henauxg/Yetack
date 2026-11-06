@@ -22,7 +22,7 @@ test = false
 [dependencies]
 claude_protocol.workspace = true
 cockpit_protocol.workspace = true
-rustix = { version = "1", features = ["fs", "process"] }
+rustix = { version = "1", features = ["fs", "param", "process"] }
 serde.workspace = true
 serde_json.workspace = true
 strum.workspace = true

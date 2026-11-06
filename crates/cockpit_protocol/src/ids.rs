@@ -146,3 +146,21 @@ impl BackgroundTaskId {
         &self.0
     }
 }
+
+/// A process on the daemon's machine, as `/proc` numbers it. Unlike rustix's `Pid`, it holds 0:
+/// the kernel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ProcessId(u32);
+
+impl ProcessId {
+    #[must_use]
+    pub const fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}

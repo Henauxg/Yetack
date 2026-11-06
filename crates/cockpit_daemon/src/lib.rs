@@ -5,6 +5,8 @@
 mod daemon_config;
 mod error_chain;
 mod hub;
+#[allow(dead_code, reason = "the next commit answers machine.load with it")]
+mod machine_load;
 mod mcp_remove;
 mod process;
 mod read_file;
@@ -17,5 +19,5 @@ mod transcript;
 pub use daemon_config::{CLAUDE_PROGRAM_ENV, DaemonConfig, HOME_ENV};
 pub use process::ProcessError;
 pub use serve::{ServeError, serve};
-pub use server::{PeerError, ProcessId, UserId};
+pub use server::{PeerError, UserId};
 pub use store::{StoreError, default_state_dir, socket_path};

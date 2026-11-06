@@ -12,28 +12,13 @@
 use std::io;
 use std::path::Path;
 
+use cockpit_protocol::ProcessId;
 use tokio::net::UnixStream;
 
 const PROC_ROOT: &str = "/proc";
 const STAT_FILE: &str = "stat";
 /// Longer than any real chain: a loop in a corrupt `/proc` cannot run forever.
 const MAX_CHAIN: usize = 4096;
-
-/// A process, as `/proc` numbers it. Unlike rustix's `Pid`, it holds 0: the kernel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ProcessId(u32);
-
-impl ProcessId {
-    #[must_use]
-    pub fn new(raw: u32) -> Self {
-        Self(raw)
-    }
-
-    #[must_use]
-    pub fn get(self) -> u32 {
-        self.0
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UserId(u32);
@@ -179,7 +164,7 @@ mod tests {
     const ROOT: UserId = UserId(0);
     const DAEMON: DaemonIdentity = DaemonIdentity {
         uid: USER,
-        pid: ProcessId(50),
+        pid: ProcessId::new(50),
     };
 
     fn entry(owner: UserId, stat: &str) -> Result<ProcEntry, io::ErrorKind> {
@@ -208,12 +193,18 @@ mod tests {
         sshd: Result<ProcEntry, io::ErrorKind>,
     ) -> impl Fn(ProcessId) -> io::Result<ProcEntry> {
         fake_proc(vec![
-            (ProcessId(1), entry(ROOT, "1 (init) S 0 1 1")),
-            (ProcessId(40), sshd),
-            (ProcessId(41), entry(USER, "41 (agents-cockpit) S 40 41 41")),
-            (ProcessId(50), entry(USER, "50 (agents-cockpit) S 1 50 50")),
-            (ProcessId(60), entry(USER, "60 (claude) S 50 60 60")),
-            (ProcessId(70), entry(USER, "70 (sh (x) y) R 60 70 70")),
+            (ProcessId::new(1), entry(ROOT, "1 (init) S 0 1 1")),
+            (ProcessId::new(40), sshd),
+            (
+                ProcessId::new(41),
+                entry(USER, "41 (agents-cockpit) S 40 41 41"),
+            ),
+            (
+                ProcessId::new(50),
+                entry(USER, "50 (agents-cockpit) S 1 50 50"),
+            ),
+            (ProcessId::new(60), entry(USER, "60 (claude) S 50 60 60")),
+            (ProcessId::new(70), entry(USER, "70 (sh (x) y) R 60 70 70")),
         ])
     }
 
@@ -221,25 +212,21 @@ mod tests {
     fn a_descendant_of_the_daemon_is_refused_and_others_pass() {
         let proc = processes(entry(ROOT, "40 (sshd) S 1 40 40"));
 
-        let bridge = check_ancestry(ProcessId(41), DAEMON, &proc);
-        let agent_shell = check_ancestry(ProcessId(70), DAEMON, &proc);
-        let daemon_itself = check_ancestry(ProcessId(50), DAEMON, &proc);
+        let bridge = check_ancestry(ProcessId::new(41), DAEMON, &proc);
+        let agent_shell = check_ancestry(ProcessId::new(70), DAEMON, &proc);
+        let daemon_itself = check_ancestry(ProcessId::new(50), DAEMON, &proc);
 
         assert!(bridge.is_ok(), "{bridge:?}");
         assert!(
             matches!(
                 agent_shell,
-                Err(PeerError::DescendsFromDaemon {
-                    peer: ProcessId(70)
-                })
+                Err(PeerError::DescendsFromDaemon { peer }) if peer == ProcessId::new(70)
             ),
             "{agent_shell:?}"
         );
         assert!(matches!(
             daemon_itself,
-            Err(PeerError::DescendsFromDaemon {
-                peer: ProcessId(50)
-            })
+            Err(PeerError::DescendsFromDaemon { peer }) if peer == ProcessId::new(50)
         ));
     }
 
@@ -256,16 +243,14 @@ mod tests {
             let shown = format!("{sshd:?}");
             let proc = processes(sshd);
 
-            let bridge = check_ancestry(ProcessId(41), DAEMON, &proc);
-            let agent_shell = check_ancestry(ProcessId(70), DAEMON, &proc);
+            let bridge = check_ancestry(ProcessId::new(41), DAEMON, &proc);
+            let agent_shell = check_ancestry(ProcessId::new(70), DAEMON, &proc);
 
             assert!(bridge.is_ok(), "{shown}: {bridge:?}");
             assert!(
                 matches!(
                     agent_shell,
-                    Err(PeerError::DescendsFromDaemon {
-                        peer: ProcessId(70)
-                    })
+                    Err(PeerError::DescendsFromDaemon { peer }) if peer == ProcessId::new(70)
                 ),
                 "{shown}: {agent_shell:?}"
             );
@@ -275,40 +260,29 @@ mod tests {
     #[test]
     fn an_unreadable_chain_is_refused() {
         let proc = fake_proc(vec![
-            (ProcessId(30), entry(USER, "30 (failing-parent) S 31 30 30")),
-            (ProcessId(31), Err(io::ErrorKind::Other)),
-            (ProcessId(32), entry(USER, "32 (broken")),
-            (ProcessId(33), entry(USER, "33 (self) S 33 33 33")),
+            (
+                ProcessId::new(30),
+                entry(USER, "30 (failing-parent) S 31 30 30"),
+            ),
+            (ProcessId::new(31), Err(io::ErrorKind::Other)),
+            (ProcessId::new(32), entry(USER, "32 (broken")),
+            (ProcessId::new(33), entry(USER, "33 (self) S 33 33 33")),
         ]);
 
-        let failing = check_ancestry(ProcessId(30), DAEMON, &proc);
-        let malformed = check_ancestry(ProcessId(32), DAEMON, &proc);
-        let looping = check_ancestry(ProcessId(33), DAEMON, &proc);
+        let failing = check_ancestry(ProcessId::new(30), DAEMON, &proc);
+        let malformed = check_ancestry(ProcessId::new(32), DAEMON, &proc);
+        let looping = check_ancestry(ProcessId::new(33), DAEMON, &proc);
 
         assert!(
-            matches!(
-                failing,
-                Err(PeerError::Proc {
-                    pid: ProcessId(31),
-                    ..
-                })
-            ),
+            matches!(failing, Err(PeerError::Proc { pid, .. }) if pid == ProcessId::new(31)),
             "{failing:?}"
         );
         assert!(
-            matches!(
-                malformed,
-                Err(PeerError::MalformedStat { pid: ProcessId(32) })
-            ),
+            matches!(malformed, Err(PeerError::MalformedStat { pid }) if pid == ProcessId::new(32)),
             "{malformed:?}"
         );
         assert!(
-            matches!(
-                looping,
-                Err(PeerError::ChainTooLong {
-                    peer: ProcessId(33)
-                })
-            ),
+            matches!(looping, Err(PeerError::ChainTooLong { peer }) if peer == ProcessId::new(33)),
             "{looping:?}"
         );
     }
@@ -317,7 +291,7 @@ mod tests {
     fn the_real_proc_shows_this_test_descends_from_itself_only() {
         let me = DaemonIdentity::current();
         let another = DaemonIdentity {
-            pid: ProcessId(u32::MAX),
+            pid: ProcessId::new(u32::MAX),
             ..me
         };
 
