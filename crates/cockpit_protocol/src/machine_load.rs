@@ -46,7 +46,9 @@ pub struct ServerLoad {
     /// The total minus what the kernel counts as available.
     pub memory_used_bytes: u64,
     pub memory_total_bytes: u64,
-    pub load_average: LoadAverage,
+    /// `None` on Windows, which has no load average. Missing reads as `None`.
+    #[serde(default)]
+    pub load_average: Option<LoadAverage>,
 }
 
 /// The run queue's length, averaged over each window, as `/proc/loadavg` gives it.

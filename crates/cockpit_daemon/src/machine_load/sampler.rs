@@ -37,7 +37,9 @@ impl Sampler {
         let current = self.reader.read(roots, self.previous.as_ref())?;
         if let Some(previous) = &self.previous {
             let sample = sample::sample(previous, &current, self.units);
-            self.history.push(&sample);
+            let agents = sample.agents.iter().map(|agent| (agent.agent, agent.cpu));
+            self.history
+                .push(sample.taken_at, sample.server.cpu, agents);
             self.latest = Some(self.answer(sample));
         }
         self.previous = Some(current);

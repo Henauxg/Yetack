@@ -3,6 +3,8 @@
 
 use cockpit_protocol::{LoadAverage, ProcessId};
 
+use crate::machine_load::command_text::{self, MAX_COMMAND_CHARS};
+
 pub(crate) const PROC_ROOT: &str = "/proc";
 pub(crate) const STAT_FILE: &str = "stat";
 pub(super) const CMDLINE_FILE: &str = "cmdline";
@@ -12,10 +14,6 @@ pub(super) const SERVER_STAT_PATH: &str = "/proc/stat";
 pub(super) const MEMINFO_PATH: &str = "/proc/meminfo";
 pub(super) const LOADAVG_PATH: &str = "/proc/loadavg";
 pub(super) const UPTIME_PATH: &str = "/proc/uptime";
-
-/// A command line past this many characters ends in an ellipsis.
-const MAX_COMMAND_CHARS: usize = 120;
-const ELLIPSIS: char = '…';
 
 /// What the sampling reads of `/proc/<pid>/stat`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,21 +236,7 @@ pub(super) fn short_command(cmdline: &[u8], name: &str) -> String {
             break;
         }
     }
-    let mut short: String = line
-        .chars()
-        .take(MAX_COMMAND_CHARS)
-        .map(|character| {
-            if character.is_control() {
-                ' '
-            } else {
-                character
-            }
-        })
-        .collect();
-    if line.chars().count() > MAX_COMMAND_CHARS {
-        short.push(ELLIPSIS);
-    }
-    short
+    command_text::shortened(&line)
 }
 
 #[cfg(test)]
@@ -421,6 +405,6 @@ mod tests {
         let cut = short_command(long.as_bytes(), "rustc");
         assert!(cut.starts_with("rustc --cfg"), "{cut}");
         assert_eq!(cut.chars().count(), MAX_COMMAND_CHARS + 1);
-        assert!(cut.ends_with(ELLIPSIS), "{cut}");
+        assert!(cut.ends_with('…'), "{cut}");
     }
 }

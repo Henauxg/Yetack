@@ -1,6 +1,6 @@
 //! The sampling task. It starts with the first `machine.load` and ends 30 seconds after the last
-//! one, so the daemon reads `/proc` only while a client shows the load. Its history then starts
-//! afresh with the next question.
+//! one, so the daemon reads the machine only while a client shows the load. Its history then
+//! starts afresh with the next question.
 
 use std::time::Duration;
 
@@ -11,8 +11,7 @@ use tokio::time::Instant;
 
 use crate::error_chain;
 use crate::machine_load::agent_root::AgentRoot;
-use crate::machine_load::reading::LoadError;
-use crate::machine_load::sampler::Sampler;
+use crate::machine_load::{LoadError, Sampler};
 
 /// Where the answer to a `machine.load` goes.
 pub(crate) type Reply = oneshot::Sender<ResponseResult>;
@@ -118,23 +117,25 @@ async fn run(mut queries: mpsc::Receiver<Query>, timing: Timing) {
                 let Some(mut owned) = sampler.take() else {
                     return;
                 };
-                let walked = roots.clone();
+                // The roots go to the reading and come back: on Windows, each holds a handle.
+                let walked = std::mem::take(&mut roots);
                 let stepped = tokio::task::spawn_blocking(move || {
                     let result = owned.step(&walked);
-                    (owned, result)
+                    (owned, walked, result)
                 })
                 .await;
                 let failure = match stepped {
-                    Ok((back, Ok(()))) => {
+                    Ok((back, walked, Ok(()))) => {
                         if let Some(load) = back.latest() {
                             for reply in waiting.drain(..) {
                                 answer(reply, Ok(load.clone()));
                             }
                         }
                         sampler = Some(back);
+                        roots = walked;
                         None
                     }
-                    Ok((_, Err(error))) => Some(unsupported(&error)),
+                    Ok((_, _, Err(error))) => Some(unsupported(&error)),
                     Err(error) => Some(ErrorBody::new(ErrorCode::Internal, error.to_string())),
                 };
                 if let Some(failure) = failure {
@@ -197,9 +198,12 @@ mod tests {
     };
 
     async fn ask(sampler: &mut LoadSampler) -> MachineLoad {
+        // On Windows, an agent without a job counts its `claude` alone: here, the test.
         let own = AgentRoot {
             agent: AgentId::new(1),
             pid: ProcessId::new(std::process::id()),
+            #[cfg(windows)]
+            job: None,
         };
         let (reply, answer) = oneshot::channel();
         sampler.query(vec![own], reply);

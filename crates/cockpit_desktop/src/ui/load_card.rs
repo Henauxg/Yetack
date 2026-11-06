@@ -95,12 +95,15 @@ fn known_load(cockpit: Cockpit, load: &MachineLoad, state: &AppState) -> Element
     let cpu = format!("{:.0} / {} cores", server.cpu.get(), server.cores);
     let memory_percent = machine_load::memory_percent(server);
     let memory = format::memory_of(server.memory_used_bytes, server.memory_total_bytes);
-    let average = server.load_average;
-    let average_percent = machine_load::percent_of(average.one_minute, cores);
-    let averages = format!(
-        "{:.1}, {:.1}, {:.1}",
-        average.one_minute, average.five_minutes, average.fifteen_minutes
-    );
+    // Windows has no load average.
+    let average = server.load_average.map(|average| {
+        let percent = machine_load::percent_of(average.one_minute, cores);
+        let text = format!(
+            "{:.1}, {:.1}, {:.1}",
+            average.one_minute, average.five_minutes, average.fifteen_minutes
+        );
+        (percent, text)
+    });
     let lines = machine_load::agent_lines(load, state);
     let others_percent = machine_load::share_of_server(load.others.cpu, server);
     let others_class = LoadLevel::from_percent(others_percent).class();
@@ -116,7 +119,9 @@ fn known_load(cockpit: Cockpit, load: &MachineLoad, state: &AppState) -> Element
             span { class: "section-title", "Server" }
             LoadBar { label: "CPU", percent: cpu_percent, value: cpu }
             LoadBar { label: "Memory", percent: memory_percent, value: memory }
-            LoadBar { label: "Load avg", percent: average_percent, value: averages, title: "Over 1, 5 and 15 minutes" }
+            if let Some((percent, value)) = average {
+                LoadBar { label: "Load avg", percent, value, title: "Over 1, 5 and 15 minutes" }
+            }
         }
         div { class: "card-divider" }
         div { class: "card-section",

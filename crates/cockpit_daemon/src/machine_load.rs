@@ -1,19 +1,26 @@
 //! The machine's load and each agent's share of it, for `machine.load`, and the stop of one of an
 //! agent's processes, for `agent.stop_process`.
 //!
-//! The sampling reads the server's totals from `/proc/stat`, `/proc/meminfo` and `/proc/loadavg`,
-//! and walks each agent's process tree down from its `claude` process. It never reads the other
-//! processes of the machine, unless the kernel lacks the children files ([`process_tree`]).
+//! On Linux, the sampling reads the server's totals from `/proc/stat`, `/proc/meminfo` and
+//! `/proc/loadavg`, and walks each agent's process tree down from its `claude` process. It never
+//! reads the other processes of the machine, unless the kernel lacks the children files
+//! ([`process_tree`]).
 //!
-//! On Windows, `machine.load` answers `unsupported`, and `agent.stop_process` ends a process of
-//! the agent's Job Object (module `stop_in_job`).
+//! On Windows, it reads the server's totals from `GetSystemTimes` and `GlobalMemoryStatusEx`, and
+//! each agent's figures from its Job Object, which holds every process the agent runs. A stop
+//! ends a process of the agent's job.
 
 mod agent_root;
-#[cfg(unix)]
+mod command_text;
 mod history;
+#[cfg(windows)]
+mod job_reading;
+#[cfg(any(windows, test))]
+mod job_sample;
+#[cfg(windows)]
+mod job_sampler;
 #[cfg(unix)]
 mod kept_file;
-#[cfg(unix)]
 mod load_sampler;
 #[cfg(windows)]
 mod opened_process;
@@ -31,17 +38,20 @@ mod sampler;
 mod stop_in_job;
 #[cfg(unix)]
 mod stop_process;
-#[cfg(windows)]
-mod unsupported;
 
 pub(crate) use agent_root::AgentRoot;
-#[cfg(unix)]
+#[cfg(windows)]
+use job_reading::LoadError;
+#[cfg(windows)]
+use job_sampler::Sampler;
 pub(crate) use load_sampler::LoadSampler;
 #[cfg(unix)]
 pub(crate) use proc_files::{PROC_ROOT, STAT_FILE};
+#[cfg(unix)]
+use reading::LoadError;
+#[cfg(unix)]
+use sampler::Sampler;
 #[cfg(windows)]
 pub(crate) use stop_in_job::stop_descendant;
 #[cfg(unix)]
 pub(crate) use stop_process::stop_descendant;
-#[cfg(windows)]
-pub(crate) use unsupported::LoadSampler;

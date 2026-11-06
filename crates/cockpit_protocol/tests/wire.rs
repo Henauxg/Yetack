@@ -631,11 +631,11 @@ fn machine_load() -> MachineLoad {
             cpu: Cores::new(46.5),
             memory_used_bytes: 312_000_000_000,
             memory_total_bytes: 540_000_000_000,
-            load_average: LoadAverage {
+            load_average: Some(LoadAverage {
                 one_minute: 43.5,
                 five_minutes: 38.25,
                 fifteen_minutes: 30.0,
-            },
+            }),
         },
         agents: vec![
             AgentLoad {
@@ -1511,6 +1511,38 @@ fn a_machine_load_answer_on_the_wire() {
                     {"agent": 4, "cpu": [null, 0.0]},
                 ],
             },
+        }),
+    );
+}
+
+/// A Windows daemon has no load average to send.
+#[test]
+fn a_server_load_without_a_load_average_on_the_wire() {
+    let server = ServerLoad {
+        cores: 8,
+        cpu: Cores::new(1.5),
+        memory_used_bytes: 4_000,
+        memory_total_bytes: 16_000,
+        load_average: None,
+    };
+    let fields = json!({
+        "cores": 8,
+        "cpu": 1.5,
+        "memory_used_bytes": 4_000,
+        "memory_total_bytes": 16_000,
+    });
+
+    let missing: ServerLoad = serde_json::from_value(fields).unwrap();
+
+    assert_eq!(missing, server);
+    assert_wire(
+        &server,
+        json!({
+            "cores": 8,
+            "cpu": 1.5,
+            "memory_used_bytes": 4_000,
+            "memory_total_bytes": 16_000,
+            "load_average": null,
         }),
     );
 }

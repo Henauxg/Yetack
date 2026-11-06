@@ -5,8 +5,6 @@ use std::collections::{BTreeSet, VecDeque};
 
 use cockpit_protocol::{AgentHistory, AgentId, Cores, LoadHistory, ServerPoint, Timestamp};
 
-use crate::machine_load::sample::Sample;
-
 /// Five minutes of samples taken every 3 seconds.
 pub(super) const HISTORY_SAMPLES: usize = 100;
 
@@ -29,21 +27,23 @@ struct AgentPoint {
 }
 
 impl History {
-    /// Adds the sample, and forgets the oldest past [`HISTORY_SAMPLES`].
-    pub(super) fn push(&mut self, sample: &Sample) {
+    /// Adds a sample's CPU, the server's and each agent's, and forgets the oldest past
+    /// [`HISTORY_SAMPLES`].
+    pub(super) fn push(
+        &mut self,
+        taken_at: Timestamp,
+        server_cpu: Cores,
+        agents: impl IntoIterator<Item = (AgentId, Cores)>,
+    ) {
         if self.points.len() >= HISTORY_SAMPLES {
             self.points.pop_front();
         }
         self.points.push_back(Point {
-            taken_at: sample.taken_at,
-            server_cpu: sample.server.cpu,
-            agents: sample
-                .agents
-                .iter()
-                .map(|agent| AgentPoint {
-                    agent: agent.agent,
-                    cpu: agent.cpu,
-                })
+            taken_at,
+            server_cpu,
+            agents: agents
+                .into_iter()
+                .map(|(agent, cpu)| AgentPoint { agent, cpu })
                 .collect(),
         });
     }
@@ -85,48 +85,27 @@ impl History {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::{LoadAverage, ResourceUse, ServerLoad};
-
     use super::*;
-    use crate::machine_load::sample::AgentSample;
 
-    /// Sample `index`, with the server at `index` cores and agent 1 at half of it. Agent 2 runs
-    /// from sample 150.
-    fn sample(index: u32) -> Sample {
-        let agent = |id: u32, cpu: f64| AgentSample {
-            agent: AgentId::new(id),
-            cpu: Cores::new(cpu),
-            memory_bytes: 0,
-            processes: 1,
-            heaviest: Vec::new(),
-        };
-        let mut agents = vec![agent(1, f64::from(index) / 2.0)];
+    /// Pushes sample `index`, with the server at `index` cores and agent 1 at half of it. Agent 2
+    /// runs from sample 150.
+    fn push(history: &mut History, index: u32) {
+        let mut agents = vec![(AgentId::new(1), Cores::new(f64::from(index) / 2.0))];
         if index >= 150 {
-            agents.push(agent(2, 1.0));
+            agents.push((AgentId::new(2), Cores::new(1.0)));
         }
-        Sample {
-            taken_at: Timestamp::from_unix_millis(u64::from(index) * 3000),
-            server: ServerLoad {
-                cores: 64,
-                cpu: Cores::new(f64::from(index)),
-                memory_used_bytes: 0,
-                memory_total_bytes: 0,
-                load_average: LoadAverage {
-                    one_minute: 0.0,
-                    five_minutes: 0.0,
-                    fifteen_minutes: 0.0,
-                },
-            },
+        history.push(
+            Timestamp::from_unix_millis(u64::from(index) * 3000),
+            Cores::new(f64::from(index)),
             agents,
-            others: ResourceUse::default(),
-        }
+        );
     }
 
     #[test]
     fn the_history_keeps_the_last_five_minutes_aligned_per_agent() {
         let mut history = History::default();
         for index in 0..200 {
-            history.push(&sample(index));
+            push(&mut history, index);
         }
 
         let wire = history.to_wire();

@@ -80,7 +80,7 @@ pub(super) fn sample(previous: &Reading, current: &Reading, units: Units) -> Sam
         cpu: server_cpu,
         memory_used_bytes: memory.total_bytes.saturating_sub(memory.available_bytes),
         memory_total_bytes: memory.total_bytes,
-        load_average: current.load_average,
+        load_average: Some(current.load_average),
     };
     let before: HashMap<AgentId, &AgentProcesses> = previous
         .agents

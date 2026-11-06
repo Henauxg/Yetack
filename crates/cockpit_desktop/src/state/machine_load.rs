@@ -227,11 +227,11 @@ pub(crate) mod tests {
             cpu: Cores::new(cpu),
             memory_used_bytes: 312 * GIB,
             memory_total_bytes: 503 * GIB,
-            load_average: LoadAverage {
+            load_average: Some(LoadAverage {
                 one_minute: 43.6,
                 five_minutes: 38.2,
                 fifteen_minutes: 30.1,
-            },
+            }),
         }
     }
 

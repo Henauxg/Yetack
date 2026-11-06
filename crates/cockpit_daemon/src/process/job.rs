@@ -11,13 +11,16 @@ use std::mem;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::ptr;
 
-use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
+use cockpit_protocol::ProcessId;
+use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
 };
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_BASIC_PROCESS_ID_LIST,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicAccountingInformation,
+    JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation, QueryInformationJobObject,
     SetInformationJobObject, TerminateJobObject,
 };
 use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
@@ -90,6 +93,71 @@ impl Job {
             return Err(io::Error::last_os_error());
         }
         Ok(result != 0)
+    }
+
+    /// The user and kernel time of every process the job ever held, in units of 100 ns.
+    pub(crate) fn cpu_time(&self) -> io::Result<u64> {
+        let mut accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+        // SAFETY: the job handle is open, and the pointer and size describe `accounting`, the
+        // structure this class fills.
+        let queried = unsafe {
+            QueryInformationJobObject(
+                self.raw(),
+                JobObjectBasicAccountingInformation,
+                (&raw mut accounting).cast(),
+                size_of_u32::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>(),
+                ptr::null_mut(),
+            )
+        };
+        if queried == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let user = u64::try_from(accounting.TotalUserTime).unwrap_or(0);
+        let kernel = u64::try_from(accounting.TotalKernelTime).unwrap_or(0);
+        Ok(user.saturating_add(kernel))
+    }
+
+    /// The ids of the processes running in the job, at most `limit` of them.
+    pub(crate) fn process_ids(&self, limit: usize) -> io::Result<Vec<ProcessId>> {
+        let header_words =
+            mem::offset_of!(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList) / size_of::<usize>();
+        let mut buffer: Vec<usize> = vec![0; header_words.saturating_add(limit)];
+        let size = u32::try_from(buffer.len() * size_of::<usize>()).unwrap_or(u32::MAX);
+        // SAFETY: the job handle is open, and the buffer holds `size` bytes, aligned for the
+        // list's header and its ids.
+        let queried = unsafe {
+            QueryInformationJobObject(
+                self.raw(),
+                JobObjectBasicProcessIdList,
+                buffer.as_mut_ptr().cast(),
+                size,
+                ptr::null_mut(),
+            )
+        };
+        if queried == 0 {
+            let error = io::Error::last_os_error();
+            // A full buffer holds the first ids.
+            if error
+                .raw_os_error()
+                .and_then(|code| u32::try_from(code).ok())
+                != Some(ERROR_MORE_DATA)
+            {
+                return Err(error);
+            }
+        }
+        // SAFETY: the buffer holds the header, aligned for it, and the call wrote it.
+        let listed = unsafe {
+            (*buffer.as_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>()).NumberOfProcessIdsInList
+        };
+        let listed = usize::try_from(listed).unwrap_or(usize::MAX).min(limit);
+        let ids = buffer
+            .get(header_words..header_words.saturating_add(listed))
+            .unwrap_or_default();
+        Ok(ids
+            .iter()
+            .filter_map(|&id| u32::try_from(id).ok())
+            .map(ProcessId::new)
+            .collect())
     }
 
     /// Another handle to the same job, which keeps it open as this one does.
@@ -217,8 +285,12 @@ mod tests {
             .read_line(&mut line)
             .unwrap();
         assert_eq!(line.trim(), "started");
+        let ids = job.process_ids(16).unwrap();
         job.terminate().unwrap();
         assert!(ended(&mut child), "the shell ends with its job");
+        assert!(ids.contains(&ProcessId::new(child.id())), "{ids:?}");
+        assert!(job.process_ids(16).unwrap().is_empty());
+        job.cpu_time().unwrap();
     }
 
     #[test]

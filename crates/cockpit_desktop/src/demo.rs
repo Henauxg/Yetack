@@ -632,11 +632,11 @@ fn machine_load(now: SystemTime) -> MachineLoad {
             cpu: rounded_cores(server_cores),
             memory_used_bytes: memory_used,
             memory_total_bytes: DEMO_MEMORY,
-            load_average: LoadAverage {
+            load_average: Some(LoadAverage {
                 one_minute: (server_cores * 0.95 * 10.0).round() / 10.0,
                 five_minutes: 38.2,
                 fifteen_minutes: 31.4,
-            },
+            }),
         },
         agents,
         others: ResourceUse {
