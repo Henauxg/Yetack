@@ -288,8 +288,12 @@ pub fn cores(cores: Cores) -> String {
 /// A gigabyte of 2^30 bytes, as `free` and the kernel count memory.
 const GIGABYTE: u64 = 1 << 30;
 
-/// "22.1 GB", "0.4 GB", and without the decimal from 100 GB: "312 GB".
+/// "412 MB" under a gigabyte, "22.1 GB", and without the decimal from 100 GB: "312 GB".
 pub fn memory(bytes: u64) -> String {
+    const MEGABYTE: u64 = 1 << 20;
+    if bytes < GIGABYTE {
+        return format!("{} MB", bytes.saturating_add(MEGABYTE / 2) / MEGABYTE);
+    }
     format!("{} GB", gigabytes(bytes, bytes))
 }
 
@@ -406,7 +410,8 @@ mod tests {
         assert_eq!(cores(Cores::new(18.44)), "18.4");
         assert_eq!(cores(Cores::new(0.0)), "0.0");
         assert_eq!(memory(22 * GIB + GIB / 10), "22.1 GB");
-        assert_eq!(memory(GIB * 4 / 10), "0.4 GB");
+        assert_eq!(memory(GIB * 4 / 10), "410 MB");
+        assert_eq!(memory(3 << 20), "3 MB");
         assert_eq!(memory(312 * GIB), "312 GB");
         assert_eq!(memory_of(312 * GIB, 503 * GIB), "312 / 503 GB");
         assert_eq!(memory_of(6 * GIB, 16 * GIB), "6.0 / 16.0 GB");
