@@ -1,7 +1,7 @@
 //! The agent switcher (Ctrl+K), the new agent dialog (Ctrl+N), the question before closing an
 //! agent, and the frame of the "Open file" dialog (Ctrl+O).
 
-use std::path::{MAIN_SEPARATOR, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use cockpit_protocol::{AgentId, AgentStatus, Effort, PastSession, PermissionMode};
 use dioxus::html::geometry::ScreenPoint;
@@ -11,11 +11,10 @@ use dioxus::prelude::*;
 use crate::bridge::{self, FOLDER_FIELD_ID, HIGHLIGHTED_CLASS};
 use crate::connection::{Clock, Cockpit};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
+use crate::path_style::{self, PathStyle};
 use crate::state::actions::Direction;
 use crate::state::folder_field::{self, FolderRow};
-use crate::state::{
-    Dialog, FolderList, FormMenu, Loadable, NewAgentForm, NewAgentTab, actions, open_file,
-};
+use crate::state::{Dialog, FolderList, FormMenu, Loadable, NewAgentForm, NewAgentTab, actions};
 use crate::ui::agent_map::AgentMapDialog;
 use crate::ui::composer::mode_icon;
 use crate::ui::icons::{Icon, IconKind};
@@ -183,7 +182,7 @@ fn SwitcherDialog() -> Element {
                 id: entry.id(),
                 title: entry.summary.title.clone(),
                 status: entry.summary.status,
-                folder: entry.summary.folder.display().to_string(),
+                folder: path_style::shown(&entry.summary.folder),
                 unread: state.is_unread(entry.id()),
             })
             .collect()
@@ -315,15 +314,11 @@ fn change_form(cockpit: Cockpit, change: impl FnOnce(&mut NewAgentForm)) {
 
 /// A folder's parent, with its separator at the end, and its own name: "/work/" and "parser".
 fn folder_parts(folder: &Path) -> (String, String) {
-    match (folder.parent(), folder.file_name()) {
-        (Some(parent), Some(name)) => {
-            let mut parent = parent.display().to_string();
-            if !parent.ends_with(MAIN_SEPARATOR) {
-                parent.push(MAIN_SEPARATOR);
-            }
-            (parent, name.to_string_lossy().into_owned())
-        }
-        _ => (String::new(), folder.display().to_string()),
+    let style = PathStyle::of(folder);
+    let folder = folder.to_string_lossy();
+    match (style.parent(&folder), style.file_name(&folder)) {
+        (Some(parent), Some(name)) => (style.folder_text(parent), name.to_owned()),
+        _ => (String::new(), style.shown(&folder).into_owned()),
     }
 }
 
@@ -333,7 +328,7 @@ fn folder_parts(folder: &Path) -> (String, String) {
 fn FolderPath(folder: PathBuf) -> Element {
     let (parent, name) = folder_parts(&folder);
     rsx! {
-        span { class: "mono folder-path", title: "{folder.display()}",
+        span { class: "mono folder-path", title: "{path_style::shown(&folder)}",
             span { class: "folder-path-text",
                 span { class: "folder-parent", "{parent}" }
                 span { class: "folder-name", "{name}" }
@@ -450,7 +445,7 @@ fn StartForm(form: NewAgentForm) -> Element {
                         onmouseleave: move |_| pointed.set(None),
                         for (folder, used) in folders {
                             {
-                                let shown = folder.display().to_string();
+                                let shown = path_style::shown(&folder);
                                 let checked = typed_folder == shown;
                                 let lit = pointed.read().as_ref() == Some(&folder);
                                 let used = format::ago(used, now);
@@ -582,8 +577,9 @@ fn FolderRows(list: FolderList) -> Element {
             drafts.new_agent.folder_highlighted,
         )
     };
-    let rows = folder_field::rows(&list, &text);
-    let (_, segment) = open_file::split(&text);
+    let style = folder_field::style(&cockpit.state.peek());
+    let rows = folder_field::rows(style, &list, &text);
+    let (_, segment) = style.split(&text);
     let segment = segment.to_owned();
     let folder_rows = rows
         .iter()
@@ -703,7 +699,9 @@ fn folder_key(cockpit: Cockpit, event: &KeyboardEvent) {
         // The page's script passes Backspace on only with the caret at the end and nothing
         // selected.
         Key::Backspace => {
-            if let Some(text) = cockpit.with_drafts(|_, drafts| folder_field::text_above(drafts)) {
+            if let Some(text) =
+                cockpit.with_drafts(|state, drafts| folder_field::text_above(state, drafts))
+            {
                 event.prevent_default();
                 cockpit.update_with_drafts(|state, drafts| {
                     folder_field::set_text(state, drafts, text.clone())
@@ -980,7 +978,6 @@ fn ResumeList(starting: bool) -> Element {
 }
 
 #[cfg(test)]
-#[cfg(unix)]
 mod tests {
     use super::*;
 
@@ -997,6 +994,18 @@ mod tests {
         assert_eq!(
             folder_parts(Path::new("/")),
             (String::new(), "/".to_owned())
+        );
+        assert_eq!(
+            folder_parts(Path::new("C:/work/parser")),
+            (r"C:\work\".to_owned(), "parser".to_owned())
+        );
+        assert_eq!(
+            folder_parts(Path::new(r"C:\work")),
+            (r"C:\".to_owned(), "work".to_owned())
+        );
+        assert_eq!(
+            folder_parts(Path::new("C:/")),
+            (String::new(), r"C:\".to_owned())
         );
     }
 }

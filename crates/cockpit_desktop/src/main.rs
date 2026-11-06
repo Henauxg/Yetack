@@ -9,6 +9,7 @@ mod fonts;
 mod format;
 mod in_app_host;
 mod notifications;
+mod path_style;
 mod prefs;
 mod reach;
 mod render;

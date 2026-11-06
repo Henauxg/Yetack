@@ -521,12 +521,9 @@ impl Failure {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
     use std::time::Instant;
 
-    #[cfg(unix)]
     use cockpit_client::SessionUpdate;
-    #[cfg(unix)]
     use cockpit_protocol::Catchup;
     use cockpit_protocol::{
         AgentStatus, DirListing, ErrorBody, ErrorCode, HistoryPage, ItemBody, TranscriptItem,
@@ -535,7 +532,6 @@ mod tests {
     use super::*;
     use crate::state::app_state::ConnectionState;
     use crate::state::app_state::tests::{state_with, summary};
-    #[cfg(unix)]
     use crate::state::folder_field;
     use crate::state::ui_state::{Block, FileView};
 
@@ -615,7 +611,6 @@ mod tests {
         assert!(matches!(view.listing, Loadable::Loaded(_)));
     }
 
-    #[cfg(unix)]
     #[test]
     fn the_folder_field_asks_for_its_folder_once_and_drops_a_late_answer() {
         let mut state = connected_with_selection();
@@ -671,7 +666,6 @@ mod tests {
         assert!(matches!(listing(&state), Some(Loadable::Loaded(_))));
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_daemon_without_folders_list_leaves_the_recent_folders_until_it_reconnects() {
         let mut state = connected_with_selection();

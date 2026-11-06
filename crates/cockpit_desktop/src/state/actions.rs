@@ -28,6 +28,7 @@ use super::ui_state::{
 use super::utf16_offset::Utf16Offset;
 use super::{export, file_edits, open_file, title_emoji};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
+use crate::path_style;
 use crate::prefs::{self, StatusFilter};
 
 /// What starts a slash command in the composer.
@@ -1806,7 +1807,7 @@ pub fn open_new_agent(state: &mut AppState, drafts: &mut Drafts) {
     let folder = state
         .recent_folders()
         .first()
-        .map(|(folder, _)| folder.to_string_lossy().into_owned())
+        .map(|(folder, _)| path_style::shown(folder))
         .unwrap_or_default();
     let last = state
         .agents
@@ -3505,7 +3506,7 @@ mod tests {
     fn tabs_close_one_by_one_and_the_last_closes_the_view() {
         let mut state = state(AgentStatus::Idle);
         let changed = |path: &str| ChangedFile {
-            path: PathBuf::from("/work/project-1").join(path),
+            path: PathBuf::from(format!("/work/project-1/{path}")),
             lines_added: 1,
             lines_removed: 0,
         };
@@ -3588,7 +3589,7 @@ mod tests {
                     path: PathBuf::from(path),
                 },
                 Ok(ResponseBody::File {
-                    path: Some(PathBuf::from("/work/project-1").join(path)),
+                    path: Some(PathBuf::from(format!("/work/project-1/{path}"))),
                     text: format!("text of {path}"),
                 }),
             );

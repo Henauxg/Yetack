@@ -22,6 +22,7 @@ use cockpit_protocol::{
 use serde_json::Value;
 
 use crate::daemon_label::DaemonLabel;
+use crate::path_style::PathStyle;
 use crate::state::{AgentEntry, AppState, ConnectionState, Loadable};
 
 /// The command-line flag that starts the demo.
@@ -650,30 +651,42 @@ fn refused(code: ErrorCode, message: &str) -> RequestError {
     RequestError::Failed(ErrorBody::new(code, message.to_owned()))
 }
 
+/// `path` in the made-up folder `folder`, with `/` as the demo's Linux daemon writes it, also
+/// on Windows.
+fn in_folder(folder: &str, path: impl AsRef<Path>) -> PathBuf {
+    let path = path.as_ref().to_string_lossy();
+    if PathStyle::Unix.is_absolute(&path) {
+        PathBuf::from(path.as_ref())
+    } else {
+        PathBuf::from(PathStyle::Unix.join(folder, &path))
+    }
+}
+
 /// The sample's files, absolute, with their text.
 fn files() -> [(PathBuf, &'static str); 16] {
-    let parser = Path::new(PARSER_FOLDER);
-    let columns = Path::new(PARSER_COLUMNS_WORKTREE);
     [
-        (parser.join("Cargo.toml"), CARGO_TEXT),
-        (parser.join("README.md"), README_TEXT),
-        (parser.join(".gitignore"), "/target\n"),
-        (parser.join("src/main.rs"), MAIN_TEXT),
-        (parser.join("src/parser.rs"), PARSER_TEXT),
-        (parser.join("src/token.rs"), TOKEN_KIND_TEXT),
-        (parser.join("benches/eval.rs"), BENCH_TEXT),
-        (parser.join(ERROR_FILE), ERROR_AFTER),
-        (parser.join(TEST_FILE), TEST_TEXT),
-        (parser.join(LEXER_FILE), LEXER_TEXT),
-        (parser.join(NOTES_FILE), NOTES_TEXT),
-        (parser.join(LIB_FILE), LIB_TEXT),
-        (columns.join(TOKEN_FILE), TOKEN_TEXT),
-        (columns.join(POSITION_FILE), POSITION_TEXT),
-        (columns.join(WORKTREE_LIB_FILE), WORKTREE_LIB_TEXT),
+        (in_folder(PARSER_FOLDER, "Cargo.toml"), CARGO_TEXT),
+        (in_folder(PARSER_FOLDER, "README.md"), README_TEXT),
+        (in_folder(PARSER_FOLDER, ".gitignore"), "/target\n"),
+        (in_folder(PARSER_FOLDER, "src/main.rs"), MAIN_TEXT),
+        (in_folder(PARSER_FOLDER, "src/parser.rs"), PARSER_TEXT),
+        (in_folder(PARSER_FOLDER, "src/token.rs"), TOKEN_KIND_TEXT),
+        (in_folder(PARSER_FOLDER, "benches/eval.rs"), BENCH_TEXT),
+        (in_folder(PARSER_FOLDER, ERROR_FILE), ERROR_AFTER),
+        (in_folder(PARSER_FOLDER, TEST_FILE), TEST_TEXT),
+        (in_folder(PARSER_FOLDER, LEXER_FILE), LEXER_TEXT),
+        (in_folder(PARSER_FOLDER, NOTES_FILE), NOTES_TEXT),
+        (in_folder(PARSER_FOLDER, LIB_FILE), LIB_TEXT),
+        (in_folder(PARSER_COLUMNS_WORKTREE, TOKEN_FILE), TOKEN_TEXT),
         (
-            Path::new(PARSER_BENCH_WORKTREE).join("README.md"),
-            NOTES_TEXT,
+            in_folder(PARSER_COLUMNS_WORKTREE, POSITION_FILE),
+            POSITION_TEXT,
         ),
+        (
+            in_folder(PARSER_COLUMNS_WORKTREE, WORKTREE_LIB_FILE),
+            WORKTREE_LIB_TEXT,
+        ),
+        (in_folder(PARSER_BENCH_WORKTREE, "README.md"), NOTES_TEXT),
     ]
 }
 
@@ -688,7 +701,7 @@ const REACHABLE: [&str; 3] = [
 /// As the daemon lists a folder for the parser agent: the sample's files under it, and the folders
 /// that hold them.
 fn list_dir(path: &Path) -> Result<ResponseBody, RequestError> {
-    let folder = Path::new(PARSER_FOLDER).join(path);
+    let folder = in_folder(PARSER_FOLDER, path);
     if !REACHABLE.iter().any(|root| folder.starts_with(root)) {
         return Err(refused(
             ErrorCode::InvalidRequest,
@@ -745,7 +758,7 @@ const OTHER_FOLDERS: [&str; 5] = [
 /// As the daemon lists the folders in `path` for the new agent dialog: the folders of the sample's
 /// agents, past sessions and files, the folders above them, and a few others.
 fn list_folders(state: &AppState, path: &Path) -> Result<ResponseBody, RequestError> {
-    if !path.is_absolute() {
+    if !PathStyle::Unix.is_absolute(&path.to_string_lossy()) {
         return Err(refused(
             ErrorCode::InvalidRequest,
             &format!("the folder {} is not absolute", path.display()),
@@ -815,7 +828,7 @@ fn find_files(name: &str) -> ResponseBody {
 /// path ends with it, one read or several listed.
 fn read_file(path: &Path) -> Result<ResponseBody, RequestError> {
     let files = files();
-    let wanted = Path::new(PARSER_FOLDER).join(path);
+    let wanted = in_folder(PARSER_FOLDER, path);
     let matches: Vec<&(PathBuf, &str)> = match files.iter().find(|(file, _)| *file == wanted) {
         Some(exact) => vec![exact],
         None => files
@@ -955,7 +968,7 @@ fn read_call(path: &Path) -> ToolCall {
 fn edit_call(tool: &str, path: &str, old_text: &str, new_text: &str) -> ItemBody {
     ItemBody::ToolCall(ToolCall {
         edit: Some(FileEdit {
-            path: Path::new(PARSER_FOLDER).join(path),
+            path: in_folder(PARSER_FOLDER, path),
             old_text: old_text.to_owned(),
             new_text: new_text.to_owned(),
         }),
@@ -1186,7 +1199,7 @@ fn parser_agent(now: SystemTime) -> Sample {
             Some(TICKETS_OUTPUT),
         )
     };
-    let position_read = read_call(&Path::new(PARSER_COLUMNS_WORKTREE).join(POSITION_FILE));
+    let position_read = read_call(&in_folder(PARSER_COLUMNS_WORKTREE, POSITION_FILE));
     let items = vec![
         item(
             1,
@@ -1312,34 +1325,38 @@ fn parser_agent(now: SystemTime) -> Sample {
         subagents: parser_subagents(now),
         changed_files: vec![
             ChangedFile {
-                path: Path::new(PARSER_FOLDER).join(ERROR_FILE),
+                path: in_folder(PARSER_FOLDER, ERROR_FILE),
                 lines_added: 2,
                 lines_removed: 0,
             },
             ChangedFile {
-                path: Path::new(PARSER_FOLDER).join(TEST_FILE),
+                path: in_folder(PARSER_FOLDER, TEST_FILE),
                 lines_added: 8,
                 lines_removed: 0,
             },
             ChangedFile {
-                path: Path::new(PARSER_FOLDER).join(LEXER_FILE),
+                path: in_folder(PARSER_FOLDER, LEXER_FILE),
                 lines_added: 1,
                 lines_removed: 1,
             },
             ChangedFile {
-                path: Path::new(PARSER_COLUMNS_WORKTREE)
-                    .join("crates/calc-lexer/src/tokens/unexpected_token.rs"),
+                path: in_folder(
+                    PARSER_COLUMNS_WORKTREE,
+                    "crates/calc-lexer/src/tokens/unexpected_token.rs",
+                ),
                 lines_added: 31,
                 lines_removed: 4,
             },
             ChangedFile {
-                path: Path::new(PARSER_COLUMNS_WORKTREE)
-                    .join("crates/calc-lexer/tests/columns_of_unexpected_tokens.rs"),
+                path: in_folder(
+                    PARSER_COLUMNS_WORKTREE,
+                    "crates/calc-lexer/tests/columns_of_unexpected_tokens.rs",
+                ),
                 lines_added: 24,
                 lines_removed: 0,
             },
             ChangedFile {
-                path: Path::new(PARSER_BENCH_WORKTREE).join("benches/lexer_on_large_inputs.rs"),
+                path: in_folder(PARSER_BENCH_WORKTREE, "benches/lexer_on_large_inputs.rs"),
                 lines_added: 12,
                 lines_removed: 2,
             },
@@ -1747,7 +1764,7 @@ fn live_entry_of(kind: u32, id: u32) -> ItemBody {
         )),
         5 => ItemBody::ToolCall(ToolCall {
             edit: Some(FileEdit {
-                path: Path::new(STREAM_FOLDER).join(format!("src/stream/case_{id}.rs")),
+                path: in_folder(STREAM_FOLDER, format!("src/stream/case_{id}.rs")),
                 old_text: format!("    let input = \"case {id}\";\n    let chunks = 1;\n"),
                 new_text: format!(
                     "    let input = \"case {id}\";\n    let chunks = 4;\n    let keep_partial = true;\n"
@@ -2481,7 +2498,7 @@ fn sessions(now: SystemTime) -> Vec<PastSession> {
         sessions.push(PastSession {
             id: ClaudeSessionId::new(format!("demo-past-long-{index}")),
             title: title.to_owned(),
-            folder: Path::new(PLATFORM_FOLDER).join(folder),
+            folder: in_folder(PLATFORM_FOLDER, folder),
             last_activity: at(now, index * 7 * 60),
             turns: 12,
         });
@@ -2507,7 +2524,6 @@ fn sessions(now: SystemTime) -> Vec<PastSession> {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
     use cockpit_protocol::FoldersListParams;
     use cockpit_protocol::{HistoryParams, ReadFileParams, RenameParams};
 
@@ -2538,7 +2554,6 @@ mod tests {
         assert!(building.cpu.get() > 8.0);
     }
 
-    #[cfg(unix)]
     #[test]
     fn the_demo_lists_made_up_folders_as_the_daemon_would() {
         let state = state(label());
@@ -2727,8 +2742,8 @@ pub struct ParseError {
     #[test]
     fn names_are_looked_up_as_the_daemon_does() {
         let read = |path: &str| read_file(Path::new(path));
-        let position = Path::new(PARSER_COLUMNS_WORKTREE).join(POSITION_FILE);
-        let lib = Path::new(PARSER_FOLDER).join(LIB_FILE);
+        let position = in_folder(PARSER_COLUMNS_WORKTREE, POSITION_FILE);
+        let lib = in_folder(PARSER_FOLDER, LIB_FILE);
 
         assert!(matches!(
             read("position.rs"),

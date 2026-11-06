@@ -18,7 +18,7 @@ use crate::ui::emoji_picker::EmojiPicker;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::load_card::{LoadCard, LoadChip};
 use crate::ui::presence::Presence;
-use crate::{bridge, format};
+use crate::{bridge, format, path_style};
 
 /// A plan window this full, in percent, is close to its limit.
 const CLOSE_TO_LIMIT_PERCENT: u8 = 80;
@@ -150,7 +150,7 @@ pub fn Header() -> Element {
         format::count(files.len(), "file", "files")
     );
     let file_count = files.len();
-    let folder = summary.folder.display().to_string();
+    let folder = path_style::shown(&summary.folder);
     let title_edit = state
         .ui
         .title_edit

@@ -5,7 +5,7 @@
 //! The field follows the keyboard alone: its text lives in the drafts, and a pick that changes it
 //! returns the new text for the window to put in the field.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use cockpit_protocol::{DirEntry, EntryKind};
 
@@ -13,9 +13,7 @@ use super::actions::{self, Direction};
 use super::app_state::{AppState, Loadable};
 use super::drafts::{Drafts, OpenFileDraft};
 use super::ui_state::{Dialog, FileSearch, OpenFileView};
-
-/// What separates the folders of a typed path.
-const SEPARATOR: char = '/';
+use crate::path_style::PathStyle;
 
 /// The shortest bare name searched for in the project: one letter would match nearly every file.
 const MIN_SEARCH_CHARS: usize = 2;
@@ -30,59 +28,46 @@ pub enum Row<'dialog> {
     Match(&'dialog Path),
 }
 
-/// The text split after its last separator: the folder part, which ends with the separator or is
-/// empty, and the last segment.
-pub fn split(text: &str) -> (&str, &str) {
-    match text.rfind(SEPARATOR) {
-        Some(at) => text.split_at(at + SEPARATOR.len_utf8()),
-        None => ("", text),
-    }
-}
-
 /// The folder the text lists: its folder part, absolute or relative to `agent_folder`, with its
 /// ".." resolved, so that its parent is the folder above.
 pub fn listed_folder(agent_folder: &Path, text: &str) -> PathBuf {
-    let (folder_part, _) = split(text);
-    let mut folder = PathBuf::new();
-    for component in agent_folder.join(folder_part).components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                folder.pop();
-            }
-            other => folder.push(other),
-        }
-    }
-    folder
+    let style = PathStyle::of(agent_folder);
+    let (folder_part, _) = style.split(text);
+    PathBuf::from(style.resolve(&agent_folder.to_string_lossy(), folder_part))
 }
 
 /// The name a text asks the project's files for: a bare name, without a separator, long enough.
-pub fn searched_name(text: &str) -> Option<&str> {
+pub fn searched_name(style: PathStyle, text: &str) -> Option<&str> {
     let name = text.trim();
     let long_enough = name.chars().count() >= MIN_SEARCH_CHARS;
-    (!text.contains(SEPARATOR) && long_enough).then_some(name)
+    let bare = !text.contains(|character| style.is_separator(character));
+    (bare && long_enough).then_some(name)
 }
 
 /// The text naming the folder above `folder`, the one `text` lists: "/work/app/src/" gives
 /// "/work/app/". A relative text stays relative while the folder above is in `agent_folder`.
 /// `None` at the top.
 pub fn up(agent_folder: &Path, folder: &Path, text: &str) -> Option<String> {
-    let above = folder.parent()?;
-    let (folder_part, _) = split(text);
-    let relative = !folder_part.starts_with(SEPARATOR);
-    match above.strip_prefix(agent_folder) {
-        Ok(inside) if relative && inside.as_os_str().is_empty() => Some(String::new()),
-        Ok(inside) if relative => Some(as_folder_text(inside)),
-        _ => Some(as_folder_text(above)),
+    let style = PathStyle::of(agent_folder);
+    let folder = folder.to_string_lossy();
+    let above = style.parent(&folder)?;
+    let (folder_part, _) = style.split(text);
+    let relative = !style.is_absolute(folder_part)
+        && !folder_part.starts_with(|character| style.is_separator(character));
+    match style.strip_prefix(above, &agent_folder.to_string_lossy()) {
+        Some("") if relative => Some(String::new()),
+        Some(inside) if relative => Some(style.folder_text(inside)),
+        _ => Some(style.folder_text(above)),
     }
 }
 
 /// The text after taking `name` from the listed folder. A folder's ends with a separator, so that
 /// it lists.
-pub fn completed(text: &str, name: &str, kind: EntryKind) -> String {
-    let (folder_part, _) = split(text);
+pub fn completed(style: PathStyle, text: &str, name: &str, kind: EntryKind) -> String {
+    let (folder_part, _) = style.split(text);
+    let folder_part = style.shown(folder_part);
     if kind == EntryKind::Folder {
-        format!("{folder_part}{name}{SEPARATOR}")
+        format!("{folder_part}{name}{}", style.separator())
     } else {
         format!("{folder_part}{name}")
     }
@@ -90,20 +75,26 @@ pub fn completed(text: &str, name: &str, kind: EntryKind) -> String {
 
 /// `folder` as the field shows it, ending with a separator.
 fn as_folder_text(folder: &Path) -> String {
-    let mut text = folder.display().to_string();
-    if !text.ends_with(SEPARATOR) {
-        text.push(SEPARATOR);
-    }
-    text
+    PathStyle::of(folder).folder_text(&folder.to_string_lossy())
+}
+
+/// The rules of the paths the dialog lists: its agent's folder's.
+pub fn style(view: &OpenFileView) -> PathStyle {
+    PathStyle::of(&view.folder)
+}
+
+fn state_style(state: &AppState) -> PathStyle {
+    view(state).map_or_else(|| state.daemon.path_style(), style)
 }
 
 /// The rows for `text`: ".." while the last segment is empty, the listed entries the segment
 /// keeps, then the project's files for a bare name. The entries whose name starts with the segment
 /// come first, then those that hold it, whatever the case.
 pub fn rows<'view>(view: &'view OpenFileView, text: &str) -> Vec<Row<'view>> {
-    let (_, segment) = split(text);
+    let style = style(view);
+    let (_, segment) = style.split(text);
     let mut rows = Vec::new();
-    if segment.is_empty() && view.folder.parent().is_some() {
+    if segment.is_empty() && style.parent(&view.folder.to_string_lossy()).is_some() {
         rows.push(Row::Up);
     }
     if let Some(listing) = view.listing.loaded() {
@@ -187,7 +178,8 @@ pub struct Typed {
 
 /// Keeps the typed text. The first row is highlighted while a segment filters the list.
 pub fn type_path(state: &AppState, drafts: &mut Drafts, text: String) -> Typed {
-    let (_, segment) = split(&text);
+    let style = state_style(state);
+    let (_, segment) = style.split(&text);
     let filtering = !segment.is_empty();
     drafts.open_file.highlighted = filtering.then_some(0);
     drafts.open_file.chosen = false;
@@ -200,10 +192,11 @@ pub fn type_path(state: &AppState, drafts: &mut Drafts, text: String) -> Typed {
     };
     let text = &drafts.open_file.path;
     let searched = view.search.as_ref().map(|search| search.name.as_str());
-    let wanted = searched_name(text);
+    let wanted = searched_name(style, text);
+    let listed = listed_folder(agent_folder, text);
+    let moved = !style.same_path(&listed.to_string_lossy(), &view.folder.to_string_lossy());
     Typed {
-        follow: listed_folder(agent_folder, text) != view.folder
-            || (wanted.is_none() && searched.is_some()),
+        follow: moved || (wanted.is_none() && searched.is_some()),
         search: wanted.is_some() && wanted != searched,
     }
 }
@@ -227,6 +220,7 @@ pub enum NameSearch {
 /// asks for.
 pub fn follow(state: &mut AppState, drafts: &Drafts, search: NameSearch) {
     let text = drafts.open_file.path.as_str();
+    let style = state_style(state);
     let Some(folder) = view(state).and_then(|view| agent_folder(state, view)) else {
         return;
     };
@@ -234,11 +228,11 @@ pub fn follow(state: &mut AppState, drafts: &Drafts, search: NameSearch) {
     let Some(view) = view_mut(state) else {
         return;
     };
-    if view.folder != folder {
+    if !style.same_path(&folder.to_string_lossy(), &view.folder.to_string_lossy()) {
         view.folder = folder;
         view.listing = Loadable::NotRequested;
     }
-    match searched_name(text) {
+    match searched_name(style, text) {
         None => view.search = None,
         Some(name) => {
             let searched = view.search.as_ref().map(|search| search.name.as_str());
@@ -296,7 +290,7 @@ pub fn highlighted(view: &OpenFileView, draft: &OpenFileDraft) -> Option<usize> 
     if draft.chosen || !cut {
         return Some(index);
     }
-    let (_, segment) = split(&draft.path);
+    let (_, segment) = style(view).split(&draft.path);
     match rows(view, &draft.path).get(index)? {
         Row::Entry(entry) if entry.kind != EntryKind::Folder && entry.name != segment => None,
         _ => Some(index),
@@ -323,24 +317,33 @@ pub fn take(
     let view = view(state)?;
     let agent = view.agent;
     let text = drafts.open_file.path.clone();
-    let (_, segment) = split(&text);
-    let folder = view.folder.clone();
+    let style = style(view);
+    let (_, segment) = style.split(&text);
+    let folder = view.folder.to_string_lossy().into_owned();
+    let in_folder = |name: &str| PathBuf::from(style.join(&folder, name));
     let index = index.or_else(|| highlighted(view, &drafts.open_file));
     let row = index.and_then(|index| rows(view, &text).get(index).copied());
     let (new_text, file) = match row {
-        None if how == Take::Open && !segment.is_empty() => (None, Some(folder.join(segment))),
+        None if how == Take::Open && !segment.is_empty() => (None, Some(in_folder(segment))),
         None => (None, None),
         Some(Row::Up) => (text_above_view(state, view, &text), None),
         Some(Row::Entry(entry)) if entry.kind == EntryKind::Folder => {
-            (Some(completed(&text, &entry.name, EntryKind::Folder)), None)
+            let text = completed(style, &text, &entry.name, EntryKind::Folder);
+            (Some(text), None)
         }
         Some(Row::Entry(entry)) => match how {
-            Take::Open => (None, Some(folder.join(&entry.name))),
-            Take::Complete => (Some(completed(&text, &entry.name, EntryKind::File)), None),
+            Take::Open => (None, Some(in_folder(&entry.name))),
+            Take::Complete => {
+                let text = completed(style, &text, &entry.name, EntryKind::File);
+                (Some(text), None)
+            }
         },
         Some(Row::Match(path)) => match how {
             Take::Open => (None, Some(path.to_owned())),
-            Take::Complete => (Some(path.display().to_string()), None),
+            Take::Complete => {
+                let shown = style.shown(&path.to_string_lossy()).into_owned();
+                (Some(shown), None)
+            }
         },
     };
     if let Some(file) = file {
@@ -358,11 +361,12 @@ pub fn take(
 /// render the window.
 pub fn text_above(state: &AppState, drafts: &Drafts) -> Option<String> {
     let text = &drafts.open_file.path;
-    let (_, segment) = split(text);
+    let view = view(state)?;
+    let (_, segment) = style(view).split(text);
     if !segment.is_empty() {
         return None;
     }
-    text_above_view(state, view(state)?, text)
+    text_above_view(state, view, text)
 }
 
 fn text_above_view(state: &AppState, view: &OpenFileView, text: &str) -> Option<String> {
@@ -375,7 +379,7 @@ pub fn needs_search(state: &AppState, drafts: &Drafts) -> bool {
         return false;
     };
     let searched = view.search.as_ref().map(|search| search.name.as_str());
-    let wanted = searched_name(&drafts.open_file.path);
+    let wanted = searched_name(style(view), &drafts.open_file.path);
     wanted.is_some() && wanted != searched
 }
 
@@ -397,6 +401,9 @@ mod tests {
     use crate::state::app_state::tests::{state_with, summary};
 
     const AGENT_FOLDER: &str = "/work/project-1";
+
+    /// The agent's folder on a Windows daemon.
+    const WINDOWS_FOLDER: &str = r"C:\work\project-1";
 
     fn entry(name: &str, kind: EntryKind) -> DirEntry {
         DirEntry {
@@ -447,6 +454,7 @@ mod tests {
 
     #[test]
     fn a_typed_path_splits_at_its_last_separator() {
+        let split = |text| PathStyle::Unix.split(text);
         assert_eq!(split("/work/app/src/ma"), ("/work/app/src/", "ma"));
         assert_eq!(split("/work/app/"), ("/work/app/", ""));
         assert_eq!(split("main.rs"), ("", "main.rs"));
@@ -462,9 +470,18 @@ mod tests {
             listed_folder(Path::new(AGENT_FOLDER), "lexer"),
             PathBuf::from(AGENT_FOLDER)
         );
+        let windows = Path::new(WINDOWS_FOLDER);
+        assert_eq!(
+            listed_folder(windows, "src/ma"),
+            PathBuf::from(r"C:\work\project-1\src")
+        );
+        assert_eq!(listed_folder(windows, r"..\..\..\"), PathBuf::from(r"C:\"));
+        assert_eq!(
+            listed_folder(windows, "D:/data/"),
+            PathBuf::from(r"D:\data")
+        );
     }
 
-    #[cfg(unix)]
     #[test]
     fn going_up_and_completing_rewrite_the_folder_part() {
         let up = |text: &str| {
@@ -482,17 +499,45 @@ mod tests {
             Some("/work/project-1/")
         );
         assert_eq!(up("/"), None);
+        let unix = PathStyle::Unix;
         assert_eq!(
-            completed("/work/app/sr", "src", EntryKind::Folder),
+            completed(unix, "/work/app/sr", "src", EntryKind::Folder),
             "/work/app/src/"
         );
         assert_eq!(
-            completed("/work/app/RE", "README.md", EntryKind::File),
+            completed(unix, "/work/app/RE", "README.md", EntryKind::File),
             "/work/app/README.md"
         );
-        assert_eq!(searched_name("lexer"), Some("lexer"));
-        assert_eq!(searched_name("l"), None);
-        assert_eq!(searched_name("src/lexer"), None);
+        assert_eq!(searched_name(unix, "lexer"), Some("lexer"));
+        assert_eq!(searched_name(unix, "l"), None);
+        assert_eq!(searched_name(unix, "src/lexer"), None);
+        assert_eq!(searched_name(unix, r"src\lexer"), Some(r"src\lexer"));
+    }
+
+    #[test]
+    fn on_windows_going_up_stops_at_the_drive_and_completing_shows_backslashes() {
+        let up = |text: &str| {
+            let folder = listed_folder(Path::new(WINDOWS_FOLDER), text);
+            super::up(Path::new(WINDOWS_FOLDER), &folder, text)
+        };
+        assert_eq!(up(r"C:\work\app\src\").as_deref(), Some(r"C:\work\app\"));
+        assert_eq!(up("C:/work/").as_deref(), Some(r"C:\"));
+        assert_eq!(up(r"src\lib\").as_deref(), Some(r"src\"));
+        assert_eq!(up("src/").as_deref(), Some(""));
+        assert_eq!(up("").as_deref(), Some(r"C:\work\"));
+        assert_eq!(
+            up(r"c:\WORK\Project-1\src\").as_deref(),
+            Some(r"c:\WORK\Project-1\")
+        );
+        assert_eq!(up(r"C:\"), None);
+        assert_eq!(up("C:/"), None);
+        let windows = PathStyle::Windows;
+        assert_eq!(
+            completed(windows, "C:/work/sr", "src", EntryKind::Folder),
+            r"C:\work\src\"
+        );
+        assert_eq!(searched_name(windows, r"src\lexer"), None);
+        assert_eq!(searched_name(windows, "src/lexer"), None);
     }
 
     #[test]
@@ -539,7 +584,40 @@ mod tests {
         assert_eq!(opened.path, PathBuf::from("src/lexer.rs"));
     }
 
-    #[cfg(unix)]
+    #[test]
+    fn on_a_windows_daemon_the_dialog_lists_and_opens_with_backslashes() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        state.ui.selected = Some(AgentId::new(1));
+        if let Some(entry) = state.agents.get_mut(&AgentId::new(1)) {
+            entry.summary.folder = PathBuf::from(WINDOWS_FOLDER);
+        }
+        let mut drafts = Drafts::default();
+        toggle(&mut state, &mut drafts);
+        assert_eq!(drafts.open_file.path, r"C:\work\project-1\");
+        if let Some(view) = view_mut(&mut state) {
+            view.listing = Loadable::Loaded(listing(WINDOWS_FOLDER));
+        }
+
+        // The same folder typed another way lists nothing new.
+        let typed = type_path(&state, &mut drafts, "c:/WORK/project-1/sr".to_owned());
+        assert!(!typed.follow);
+        let text = take(&mut state, &mut drafts, None, Take::Open);
+
+        assert_eq!(text.as_deref(), Some(r"c:\WORK\project-1\src\"));
+        let shown = view(&state).unwrap();
+        assert_eq!(shown.folder, PathBuf::from(r"c:\WORK\project-1\src"));
+        if let Some(view) = view_mut(&mut state) {
+            view.listing = Loadable::Loaded(DirListing {
+                entries: vec![entry("lexer.rs", EntryKind::File)],
+                ..listing(r"C:\work\project-1\src")
+            });
+        }
+        take(&mut state, &mut drafts, Some(1), Take::Open);
+
+        let opened = state.ui.file_view(AgentId::new(1)).unwrap();
+        assert_eq!(opened.path, PathBuf::from(r"src\lexer.rs"));
+    }
+
     #[test]
     fn tab_completes_a_name_and_backspace_goes_up() {
         let (mut state, mut drafts) = opened();
@@ -577,7 +655,6 @@ mod tests {
         assert_eq!(view(&state).unwrap().folder, PathBuf::from("/work"));
     }
 
-    #[cfg(unix)]
     #[test]
     fn the_up_row_of_a_parent_folder_typed_relative_lists_the_folder_above_it() {
         let (mut state, mut drafts) = opened();

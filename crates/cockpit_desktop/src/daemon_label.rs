@@ -1,5 +1,7 @@
 //! How the app names the daemon it reaches, in its texts.
 
+use crate::path_style::PathStyle;
+
 const THIS_MACHINE: &str = "this machine";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +46,15 @@ impl DaemonLabel {
         Self {
             machine: THIS_MACHINE.to_owned(),
             place,
+        }
+    }
+
+    /// The path rules of the daemon's machine. SSH reaches `agents-cockpit bridge`, which only
+    /// Unix builds.
+    pub fn path_style(&self) -> PathStyle {
+        match self.place {
+            DaemonPlace::Ssh => PathStyle::Unix,
+            DaemonPlace::Socket | DaemonPlace::Service | DaemonPlace::InApp => PathStyle::NATIVE,
         }
     }
 

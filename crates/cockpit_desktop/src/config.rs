@@ -276,19 +276,32 @@ impl FromStr for Config {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
+    /// A made-up home folder, and the defaults under it, as the platform the tests run on writes
+    /// them.
     #[cfg(unix)]
+    pub(crate) const HOME: &str = "/home/someone";
+    #[cfg(unix)]
+    const CONFIG_UNDER_HOME: &str = "/home/someone/.config/agents-cockpit/config.toml";
+    #[cfg(unix)]
+    const STATE_UNDER_HOME: &str = "/home/someone/.local/state/agents-cockpit";
+    #[cfg(windows)]
+    pub(crate) const HOME: &str = r"C:\Users\someone";
+    #[cfg(windows)]
+    const CONFIG_UNDER_HOME: &str = r"C:\Users\someone\AppData\Roaming\agents-cockpit\config.toml";
+    #[cfg(windows)]
+    const STATE_UNDER_HOME: &str = r"C:\Users\someone\AppData\Local\agents-cockpit";
+
     fn environment() -> Environment {
         Environment {
-            home: Some(PathBuf::from("/home/someone")),
+            home: Some(PathBuf::from(HOME)),
             config_home: None,
             state_home: None,
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn an_empty_file_means_the_local_daemon_with_notifications() {
         let config: Config = "".parse().unwrap();
@@ -375,11 +388,10 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn xdg_variables_take_precedence_over_home() {
         let environment = Environment {
-            home: Some(PathBuf::from("/home/someone")),
+            home: Some(PathBuf::from(HOME)),
             config_home: Some(PathBuf::from("/cfg")),
             state_home: Some(PathBuf::from("/state")),
         };
@@ -394,11 +406,11 @@ mod tests {
         );
         assert_eq!(
             self::environment().config_file().unwrap(),
-            PathBuf::from("/home/someone/.config/agents-cockpit/config.toml")
+            PathBuf::from(CONFIG_UNDER_HOME)
         );
         assert_eq!(
             self::environment().daemon_state_dir().unwrap(),
-            PathBuf::from("/home/someone/.local/state/agents-cockpit")
+            PathBuf::from(STATE_UNDER_HOME)
         );
     }
 

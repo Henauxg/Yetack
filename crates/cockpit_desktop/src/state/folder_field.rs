@@ -6,7 +6,7 @@
 //! alone: its text lives in the drafts, and a pick that changes it returns the new text for the
 //! window to put in the field.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use cockpit_protocol::{DirEntry, EntryKind};
 
@@ -15,6 +15,7 @@ use super::app_state::AppState;
 use super::drafts::Drafts;
 use super::open_file;
 use super::ui_state::{Dialog, FolderList, NewAgentForm};
+use crate::path_style::PathStyle;
 
 /// A row under the folder field, in the order it shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,18 +27,24 @@ pub enum FolderRow<'list> {
 
 /// The folder the text lists: its folder part, when it is absolute. The daemon refuses any other,
 /// as `agent.start` does.
-pub fn listed_folder(text: &str) -> Option<PathBuf> {
-    let (folder_part, _) = open_file::split(text);
-    let folder = Path::new(folder_part);
-    folder.is_absolute().then(|| folder.to_owned())
+pub fn listed_folder(style: PathStyle, text: &str) -> Option<PathBuf> {
+    let (folder_part, _) = style.split(text);
+    style
+        .is_absolute(folder_part)
+        .then(|| PathBuf::from(folder_part))
+}
+
+/// The rules of the paths the field names: the daemon's machine's.
+pub fn style(state: &AppState) -> PathStyle {
+    state.daemon.path_style()
 }
 
 /// The rows for `text`: ".." while the last segment is empty, then the listed folders the segment
 /// keeps.
-pub fn rows<'list>(list: &'list FolderList, text: &str) -> Vec<FolderRow<'list>> {
-    let (_, segment) = open_file::split(text);
+pub fn rows<'list>(style: PathStyle, list: &'list FolderList, text: &str) -> Vec<FolderRow<'list>> {
+    let (_, segment) = style.split(text);
     let mut rows = Vec::new();
-    if segment.is_empty() && list.folder.parent().is_some() {
+    if segment.is_empty() && style.parent(&list.folder.to_string_lossy()).is_some() {
         rows.push(FolderRow::Up);
     }
     if let Some(listing) = list.listing.loaded() {
@@ -69,31 +76,38 @@ pub fn list(state: &AppState) -> Option<&FolderList> {
 /// Keeps the typed text. The first row is highlighted while a segment filters the list. Returns
 /// whether the list must follow the text, which names another folder or none.
 pub fn type_folder(state: &AppState, drafts: &mut Drafts, text: String) -> bool {
-    let (_, segment) = open_file::split(&text);
+    let style = style(state);
+    let (_, segment) = style.split(&text);
     let filtering = !segment.is_empty();
     drafts.new_agent.folder_highlighted = filtering.then_some(0);
-    let wanted = listed_folder(&text);
+    let wanted = listed_folder(style, &text);
     drafts.new_agent.folder = text;
     let shown = list(state).map(|list| &list.folder);
-    shown != wanted.as_ref()
+    match (shown, wanted) {
+        (Some(shown), Some(wanted)) => {
+            !style.same_path(&shown.to_string_lossy(), &wanted.to_string_lossy())
+        }
+        (None, None) => false,
+        (Some(_), None) | (None, Some(_)) => true,
+    }
 }
 
 /// Makes the list show the folder the typed text names, and closes it when the text names none.
 pub fn follow(state: &mut AppState, drafts: &Drafts) {
     let folders_unknown = state.folders_unknown;
+    let style = style(state);
     let Some(form) = form_mut(state) else {
         return;
     };
-    let listed = listed_folder(&drafts.new_agent.folder).filter(|_| !folders_unknown);
+    let listed = listed_folder(style, &drafts.new_agent.folder).filter(|_| !folders_unknown);
     let Some(folder) = listed else {
         form.folders = None;
         return;
     };
-    if form
-        .folders
-        .as_ref()
-        .is_none_or(|list| list.folder != folder)
-    {
+    let shown = |list: &FolderList| {
+        style.same_path(&list.folder.to_string_lossy(), &folder.to_string_lossy())
+    };
+    if !form.folders.as_ref().is_some_and(shown) {
         form.folders = Some(FolderList::new(folder));
     }
 }
@@ -103,7 +117,7 @@ pub fn move_highlight(state: &AppState, drafts: &mut Drafts, direction: Directio
     let Some(list) = list(state) else {
         return;
     };
-    let count = rows(list, &drafts.new_agent.folder).len();
+    let count = rows(style(state), list, &drafts.new_agent.folder).len();
     let Some(last) = count.checked_sub(1) else {
         return;
     };
@@ -122,7 +136,7 @@ pub fn point(state: &AppState, drafts: &mut Drafts, index: usize) {
     let Some(list) = list(state) else {
         return;
     };
-    if index < rows(list, &drafts.new_agent.folder).len() {
+    if index < rows(style(state), list, &drafts.new_agent.folder).len() {
         drafts.new_agent.folder_highlighted = Some(index);
     }
 }
@@ -130,12 +144,15 @@ pub fn point(state: &AppState, drafts: &mut Drafts, index: usize) {
 /// Takes the row at `index`, or else the highlighted one: ".." goes up, and a folder completes the
 /// text and lists. Returns the field's new text, or `None` when no row was taken.
 pub fn take(state: &mut AppState, drafts: &mut Drafts, index: Option<usize>) -> Option<String> {
+    let style = style(state);
     let list = list(state)?;
     let text = &drafts.new_agent.folder;
     let index = index.or(drafts.new_agent.folder_highlighted)?;
-    let new_text = match rows(list, text).get(index).copied()? {
-        FolderRow::Up => up(text)?,
-        FolderRow::Folder(entry) => open_file::completed(text, &entry.name, EntryKind::Folder),
+    let new_text = match rows(style, list, text).get(index).copied()? {
+        FolderRow::Up => up(style, text)?,
+        FolderRow::Folder(entry) => {
+            open_file::completed(style, text, &entry.name, EntryKind::Folder)
+        }
     };
     set_text(state, drafts, new_text.clone());
     Some(new_text)
@@ -143,20 +160,24 @@ pub fn take(state: &mut AppState, drafts: &mut Drafts, index: Option<usize>) -> 
 
 /// What Backspace makes of the field: on an empty last segment, the folder above's text. `None`
 /// when the key should delete as usual.
-pub fn text_above(drafts: &Drafts) -> Option<String> {
+pub fn text_above(state: &AppState, drafts: &Drafts) -> Option<String> {
+    let style = style(state);
     let text = &drafts.new_agent.folder;
-    let (_, segment) = open_file::split(text);
+    let (_, segment) = style.split(text);
     if !segment.is_empty() {
         return None;
     }
-    up(text)
+    up(style, text)
 }
 
 /// The text naming the folder above the one `text` lists. The field lists absolute paths only.
-fn up(text: &str) -> Option<String> {
-    listed_folder(text)?;
-    let root = Path::new("/");
-    open_file::up(root, &open_file::listed_folder(root, text), text)
+fn up(style: PathStyle, text: &str) -> Option<String> {
+    let (folder_part, _) = style.split(text);
+    if !style.is_absolute(folder_part) {
+        return None;
+    }
+    let folder = style.resolve(folder_part, "");
+    Some(style.folder_text(style.parent(&folder)?))
 }
 
 /// Puts `text` in the field's draft, and makes the list follow it.
@@ -168,15 +189,12 @@ pub fn set_text(state: &mut AppState, drafts: &mut Drafts, text: String) {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
     use cockpit_protocol::DirListing;
 
     use super::*;
-    #[cfg(unix)]
     use crate::state::Loadable;
     use crate::state::app_state::tests::state_with;
 
-    #[cfg(unix)]
     fn folder(name: &str) -> DirEntry {
         DirEntry {
             name: name.to_owned(),
@@ -186,7 +204,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     fn listing(path: &str, names: &[&str]) -> Loadable<DirListing> {
         Loadable::Loaded(DirListing {
             path: PathBuf::from(path),
@@ -211,7 +228,6 @@ mod tests {
     }
 
     /// Answers the list's folder with `names`.
-    #[cfg(unix)]
     fn answer(state: &mut AppState, names: &[&str]) {
         let list = form_mut(state)
             .and_then(|form| form.folders.as_mut())
@@ -219,9 +235,8 @@ mod tests {
         list.listing = listing(&list.folder.display().to_string(), names);
     }
 
-    #[cfg(unix)]
     fn row_names(state: &AppState, drafts: &Drafts) -> Vec<String> {
-        rows(list(state).unwrap(), &drafts.new_agent.folder)
+        rows(style(state), list(state).unwrap(), &drafts.new_agent.folder)
             .into_iter()
             .map(|row| match row {
                 FolderRow::Up => "..".to_owned(),
@@ -230,9 +245,9 @@ mod tests {
             .collect()
     }
 
-    #[cfg(unix)]
     #[test]
     fn only_an_absolute_folder_part_lists() {
+        let listed_folder = |text| listed_folder(PathStyle::Unix, text);
         assert_eq!(
             listed_folder("/home/dev/pro"),
             Some(PathBuf::from("/home/dev"))
@@ -242,10 +257,42 @@ mod tests {
         assert_eq!(listed_folder("~/projects/"), None);
         assert_eq!(listed_folder("projects/"), None);
         assert_eq!(listed_folder("projects"), None);
+        assert_eq!(listed_folder(r"C:\Users\"), None);
         assert_eq!(listed_folder(""), None);
     }
 
-    #[cfg(unix)]
+    #[test]
+    fn on_windows_a_drive_lists_and_has_no_folder_above() {
+        let windows = PathStyle::Windows;
+        assert_eq!(
+            listed_folder(windows, r"C:\Users\me\pro"),
+            Some(PathBuf::from(r"C:\Users\me\"))
+        );
+        assert_eq!(
+            listed_folder(windows, "c:/Users/"),
+            Some(PathBuf::from("c:/Users/"))
+        );
+        assert_eq!(listed_folder(windows, r"C:\"), Some(PathBuf::from(r"C:\")));
+        assert_eq!(listed_folder(windows, "/home/dev/"), None);
+        assert_eq!(listed_folder(windows, r"\Users\"), None);
+        assert_eq!(listed_folder(windows, "C:"), None);
+
+        assert_eq!(up(windows, r"C:\Users\me\").as_deref(), Some(r"C:\Users\"));
+        assert_eq!(up(windows, "C:/Users/").as_deref(), Some(r"C:\"));
+        assert_eq!(up(windows, r"C:\"), None);
+        assert_eq!(up(windows, "C:/"), None);
+        assert_eq!(up(windows, r"Users\"), None);
+
+        let list = FolderList::new(PathBuf::from(r"C:\"));
+        let text = r"C:\";
+        assert!(
+            rows(windows, &list, text).is_empty(),
+            "the drive has no folder above"
+        );
+        let list = FolderList::new(PathBuf::from(r"C:\Users"));
+        assert_eq!(rows(windows, &list, r"C:\Users\"), [FolderRow::Up]);
+    }
+
     #[test]
     fn typing_opens_the_list_and_the_last_segment_filters_it() {
         let (mut state, mut drafts) = opened();
@@ -274,7 +321,6 @@ mod tests {
         assert_eq!(list(&state), None);
     }
 
-    #[cfg(unix)]
     #[test]
     fn tab_completes_a_folder_which_then_lists() {
         let (mut state, mut drafts) = opened();
@@ -298,16 +344,15 @@ mod tests {
         assert_eq!(text.as_deref(), Some("/home/dev/projects/calc-parser/"));
     }
 
-    #[cfg(unix)]
     #[test]
     fn backspace_and_the_up_row_go_to_the_folder_above() {
         let (mut state, mut drafts) = opened();
         type_text(&mut state, &mut drafts, "/home/dev/pro");
         // Backspace in a segment deletes as usual.
-        assert_eq!(text_above(&drafts), None);
+        assert_eq!(text_above(&state, &drafts), None);
 
         type_text(&mut state, &mut drafts, "/home/dev/projects/");
-        assert_eq!(text_above(&drafts).as_deref(), Some("/home/dev/"));
+        assert_eq!(text_above(&state, &drafts).as_deref(), Some("/home/dev/"));
 
         let text = take(&mut state, &mut drafts, Some(0));
         assert_eq!(text.as_deref(), Some("/home/dev/"));
@@ -320,7 +365,7 @@ mod tests {
             ["home"],
             "the root has no folder above"
         );
-        assert_eq!(text_above(&drafts), None);
+        assert_eq!(text_above(&state, &drafts), None);
     }
 
     #[test]
@@ -328,11 +373,10 @@ mod tests {
         let (mut state, mut drafts) = opened();
         for text in ["~/projects/", "projects/", "projects/../"] {
             type_text(&mut state, &mut drafts, text);
-            assert_eq!(text_above(&drafts), None, "{text}");
+            assert_eq!(text_above(&state, &drafts), None, "{text}");
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn the_keys_move_the_highlight_and_esc_closes_the_list_first() {
         let (mut state, mut drafts) = opened();
@@ -353,7 +397,6 @@ mod tests {
         assert_eq!(state.ui.dialog, None);
     }
 
-    #[cfg(unix)]
     #[test]
     fn the_pointer_moves_the_highlight_within_the_listed_rows() {
         let (mut state, mut drafts) = opened();

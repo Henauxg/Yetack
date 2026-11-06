@@ -983,9 +983,7 @@ fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall, stage: CallStage) -
     } else {
         LineNumbers::Hidden
     };
-    let shown_path = file_edits::relative_path(&folder, &edit.path)
-        .display()
-        .to_string();
+    let shown_path = file_edits::shown_path(&folder, &edit.path);
     let path = edit.path.clone();
     let open = move |_: MouseEvent| {
         let path = path.clone();
@@ -1115,9 +1113,7 @@ pub(crate) fn CompactItem(
             let meta = tool_meta(call, stage);
             let title = match &call.edit {
                 Some(edit) => {
-                    let path = file_edits::relative_path(&folder, &edit.path)
-                        .display()
-                        .to_string();
+                    let path = file_edits::shown_path(&folder, &edit.path);
                     rsx! {
                         span { class: "tool-name", "{call.tool}" }
                         code { class: "tool-summary", "{path}" }

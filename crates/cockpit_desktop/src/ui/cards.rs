@@ -38,7 +38,7 @@ pub fn ApprovalCard(agent: AgentId, folder: PathBuf, approval: Approval) -> Elem
     } else if let Some(edit) = &approval.edit {
         format!(
             "Claude asks to change {}",
-            file_edits::relative_path(&folder, &edit.path).display()
+            file_edits::shown_path(&folder, &edit.path)
         )
     } else {
         format!("Claude asks to use {}", approval.tool)

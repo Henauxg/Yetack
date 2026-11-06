@@ -1,15 +1,14 @@
 //! The read-only file view on the right: tabs of the changed files, the diff or the whole file,
 //! and the line a `path:line` link marks.
 
-use std::borrow::Cow;
-use std::ffi::OsStr;
-use std::path::{Component, MAIN_SEPARATOR_STR, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use cockpit_protocol::{AgentId, FileEdit};
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
+use crate::path_style::PathStyle;
 use crate::render::{self, Diff, Language, MAX_RENDERED_LINES, diff_lines};
 use crate::state::{FileRead, Loadable, ViewMode, actions, file_edits};
 use crate::ui::changes_list;
@@ -49,8 +48,8 @@ pub fn FileViewPanel() -> Element {
         .cloned()
         .collect();
     let short = ShortPath::new(folder, &view.path);
-    let full = folder.join(&view.path).display().to_string();
-    let labels = tab_labels(&tabs);
+    let full = full_path(folder, &view.path);
+    let labels = tab_labels(PathStyle::of(folder), &tabs);
     let note = if edits.is_empty() {
         "This agent did not change the file.".to_owned()
     } else {
@@ -85,7 +84,7 @@ pub fn FileViewPanel() -> Element {
                             key: "{tab.display()}",
                             agent,
                             selected: tab == view.path,
-                            full: folder.join(&tab).display().to_string(),
+                            full: full_path(folder, &tab),
                             path: tab,
                             label,
                         }
@@ -226,18 +225,21 @@ fn FileChoices(
 ) -> Element {
     let cockpit: Cockpit = use_context();
     let count = matches.len();
+    let style = PathStyle::of(&folder);
+    let shown_name = style.shown(&name.to_string_lossy()).into_owned();
     rsx! {
         div { class: "file-choices",
-            p { class: "file-note", "{count} files end with {name.display()}. Pick one:" }
+            p { class: "file-note", "{count} files end with {shown_name}. Pick one:" }
             for choice in matches {
                 {
                     let short = ShortPath::new(&folder, &choice);
                     let name = name.clone();
+                    let full = style.shown(&choice.to_string_lossy()).into_owned();
                     rsx! {
                         button {
-                            key: "{choice.display()}",
+                            key: "{full}",
                             class: "file-choice mono",
-                            title: "{choice.display()}",
+                            title: "{full}",
                             onclick: move |_| {
                                 let choice = choice.clone();
                                 cockpit.update(|state| actions::pick_file(state, agent, &name, choice, line));
@@ -262,23 +264,37 @@ pub struct ShortPath {
 
 impl ShortPath {
     pub fn new(folder: &Path, path: &Path) -> Self {
+        let style = PathStyle::of(folder);
         let path = file_edits::relative_path(folder, path);
-        if path.is_relative() {
+        let path = path.to_string_lossy();
+        if !style.is_absolute(&path) {
             return Self {
                 root: None,
-                rest: path.display().to_string(),
+                rest: style.shown(&path).into_owned(),
             };
         }
-        let root = changes_list::outside_root(folder, &path);
-        let rest = path.strip_prefix(&root).map_or_else(
-            |_| path.display().to_string(),
-            |rest| rest.display().to_string(),
-        );
+        let root = changes_list::outside_root(folder, Path::new(path.as_ref()));
+        let rest = style
+            .strip_prefix(&path, &root.to_string_lossy())
+            .unwrap_or(&path)
+            .to_owned();
         Self {
             root: Some(changes_list::root_label(&root)),
-            rest,
+            rest: style.shown(&rest).into_owned(),
         }
     }
+}
+
+/// A tab's path in full, as its tooltip shows it.
+fn full_path(folder: &Path, tab: &Path) -> String {
+    let style = PathStyle::of(folder);
+    let tab = tab.to_string_lossy();
+    let full = if style.is_absolute(&tab) {
+        tab.into_owned()
+    } else {
+        style.join(&folder.to_string_lossy(), &tab)
+    };
+    style.shown(&full).into_owned()
 }
 
 /// On one line cut at its start, the outside folder dim.
@@ -295,8 +311,15 @@ pub fn short_path(short: &ShortPath) -> Element {
 
 /// Each tab's file name, with as many of its folders as tell it apart from another tab of the same
 /// name: "lib.rs", or "src/lib.rs" beside "tests/lib.rs".
-fn tab_labels(tabs: &[PathBuf]) -> Vec<String> {
-    let names: Vec<Vec<&OsStr>> = tabs.iter().map(|tab| names_from_the_end(tab)).collect();
+fn tab_labels(style: PathStyle, tabs: &[PathBuf]) -> Vec<String> {
+    let texts: Vec<String> = tabs
+        .iter()
+        .map(|tab| tab.to_string_lossy().into_owned())
+        .collect();
+    let names: Vec<Vec<&str>> = texts
+        .iter()
+        .map(|tab| style.names_from_the_end(tab))
+        .collect();
     let mut labels = Vec::with_capacity(tabs.len());
     for (index, own) in names.iter().enumerate() {
         let others = names
@@ -307,33 +330,18 @@ fn tab_labels(tabs: &[PathBuf]) -> Vec<String> {
         let mut shown = 1;
         for other in others {
             // The fewest names that differ from this other tab's, as far as this path goes.
-            let shared = own.iter().zip(other).take_while(|(a, b)| a == b).count();
+            let shared = own
+                .iter()
+                .zip(other)
+                .take_while(|(left, right)| style.same_name(left, right))
+                .count();
             shown = shown.max((shared + 1).min(own.len()));
         }
-        let mut label: Vec<Cow<'_, str>> = own
-            .iter()
-            .take(shown)
-            .map(|name| name.to_string_lossy())
-            .collect();
+        let mut label: Vec<&str> = own.iter().take(shown).copied().collect();
         label.reverse();
-        labels.push(label.join(MAIN_SEPARATOR_STR));
+        labels.push(label.join(&style.separator().to_string()));
     }
     labels
-}
-
-/// A path's names, the file's first.
-fn names_from_the_end(path: &Path) -> Vec<&OsStr> {
-    let names = path
-        .components()
-        .rev()
-        .filter_map(|component| match component {
-            Component::Normal(name) => Some(name),
-            Component::Prefix(_)
-            | Component::RootDir
-            | Component::CurDir
-            | Component::ParentDir => None,
-        });
-    names.collect()
 }
 
 /// The rows are rebuilt only when the text, the mode, the line or the edits change.
@@ -418,15 +426,12 @@ fn FileContent(
 }
 
 #[cfg(test)]
-#[cfg(unix)]
 mod tests {
-    use std::path::MAIN_SEPARATOR;
-
     use super::*;
 
     fn labels(tabs: &[&str]) -> Vec<String> {
         let tabs: Vec<PathBuf> = tabs.iter().map(PathBuf::from).collect();
-        tab_labels(&tabs)
+        tab_labels(PathStyle::Unix, &tabs)
     }
 
     #[test]
@@ -446,6 +451,18 @@ mod tests {
         assert_eq!(
             labels(&["src/lib.rs", "/work/app_feature/src/lib.rs"]),
             ["src/lib.rs", "app_feature/src/lib.rs"]
+        );
+        let tabs: Vec<PathBuf> = [
+            r"src\lib.rs",
+            r"Tests\lib.rs",
+            r"C:\work\feature\SRC\lib.rs",
+        ]
+        .iter()
+        .map(PathBuf::from)
+        .collect();
+        assert_eq!(
+            tab_labels(PathStyle::Windows, &tabs),
+            [r"src\lib.rs", r"Tests\lib.rs", r"feature\SRC\lib.rs"]
         );
     }
 
@@ -469,9 +486,29 @@ mod tests {
         assert_eq!(
             beside,
             ShortPath {
-                root: Some(format!("app_GH42Q-a-long-branch-name{MAIN_SEPARATOR}")),
+                root: Some("app_GH42Q-a-long-branch-name/".to_owned()),
                 rest: "crates/lexer/src/position.rs".to_owned()
             }
+        );
+
+        let folder = Path::new(r"C:\work\app");
+        assert_eq!(
+            ShortPath::new(folder, Path::new("c:/work/app/src/main.rs")),
+            ShortPath {
+                root: None,
+                rest: r"src\main.rs".to_owned()
+            }
+        );
+        assert_eq!(
+            ShortPath::new(folder, Path::new("C:/work/app_feature/src/lib.rs")),
+            ShortPath {
+                root: Some(r"app_feature\".to_owned()),
+                rest: r"src\lib.rs".to_owned()
+            }
+        );
+        assert_eq!(
+            full_path(folder, Path::new("src/main.rs")),
+            r"C:\work\app\src\main.rs"
         );
     }
 }

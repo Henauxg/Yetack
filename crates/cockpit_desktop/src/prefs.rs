@@ -455,21 +455,19 @@ mod tests {
         assert_eq!(Prefs::load(&file), Prefs::default());
     }
 
-    #[cfg(unix)]
     #[test]
     fn the_file_is_apart_from_the_daemons_folder() {
         let environment = Environment {
-            home: Some(PathBuf::from("/home/someone")),
+            home: Some(PathBuf::from(crate::config::tests::HOME)),
             config_home: None,
             state_home: None,
         };
+        #[cfg(unix)]
+        let expected = "/home/someone/.local/state/agents-cockpit-desktop/prefs.json";
+        #[cfg(windows)]
+        let expected = r"C:\Users\someone\AppData\Local\agents-cockpit-desktop\prefs.json";
 
-        assert_eq!(
-            file(&environment),
-            Some(PathBuf::from(
-                "/home/someone/.local/state/agents-cockpit-desktop/prefs.json"
-            ))
-        );
+        assert_eq!(file(&environment), Some(PathBuf::from(expected)));
         assert_eq!(file(&Environment::default()), None);
     }
 }

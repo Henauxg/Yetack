@@ -3,13 +3,14 @@
 //! shows under the folder that holds it, named once at the head of its group.
 
 use std::collections::BTreeMap;
-use std::path::{Component, MAIN_SEPARATOR, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use cockpit_protocol::{AgentId, ChangedFile};
 use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
 use crate::format;
+use crate::path_style::PathStyle;
 use crate::state::actions;
 use crate::ui::icons::{Icon, IconKind};
 
@@ -33,15 +34,12 @@ struct ChangeRow {
 }
 
 impl ChangeRow {
-    fn new(file: &ChangedFile, relative: &Path) -> Self {
-        let name = relative.file_name().map_or_else(
-            || relative.display().to_string(),
-            |name| name.to_string_lossy().into_owned(),
-        );
-        let folder = relative
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .map(|parent| format!("{}{MAIN_SEPARATOR}", parent.display()))
+    fn new(style: PathStyle, file: &ChangedFile, relative: &str) -> Self {
+        let name = style.file_name(relative).unwrap_or(relative).to_owned();
+        let folder = style
+            .parent(relative)
+            .filter(|parent| !parent.is_empty())
+            .map(|parent| style.folder_text(parent))
             .unwrap_or_default();
         Self {
             path: file.path.clone(),
@@ -56,23 +54,26 @@ impl ChangeRow {
 /// The agent's folder first, then each folder outside it, by path. Within a group the files sort
 /// by path, so that the files of a folder sit together.
 fn group_changes(folder: &Path, files: &[ChangedFile]) -> Vec<ChangeGroup> {
+    let style = PathStyle::of(folder);
+    let folder_text = folder.to_string_lossy();
     let mut groups: BTreeMap<Option<PathBuf>, Vec<ChangeRow>> = BTreeMap::new();
     for file in files {
-        let (root, relative) = match file.path.strip_prefix(folder) {
-            Ok(relative) if !relative.as_os_str().is_empty() => (None, relative.to_owned()),
-            Ok(_) | Err(_) => {
+        let path = file.path.to_string_lossy();
+        let (root, relative) = match style.strip_prefix(&path, &folder_text) {
+            Some(relative) if !relative.is_empty() => (None, relative.to_owned()),
+            Some(_) | None => {
                 let root = outside_root(folder, &file.path);
-                let relative = file
-                    .path
-                    .strip_prefix(&root)
-                    .map_or_else(|_| file.path.clone(), Path::to_owned);
+                let relative = style
+                    .strip_prefix(&path, &root.to_string_lossy())
+                    .map_or_else(|| path.as_ref(), |relative| relative)
+                    .to_owned();
                 (Some(root), relative)
             }
         };
         groups
             .entry(root)
             .or_default()
-            .push(ChangeRow::new(file, &relative));
+            .push(ChangeRow::new(style, file, &relative));
     }
     let mut sorted = Vec::with_capacity(groups.len());
     for (root, mut rows) in groups {
@@ -86,26 +87,38 @@ fn group_changes(folder: &Path, files: &[ChangedFile]) -> Vec<ChangeGroup> {
 /// paths share. Beside "/work/app", "/work/app_feature/src/lib.rs" shows under
 /// "/work/app_feature", as "src/lib.rs".
 pub fn outside_root(folder: &Path, path: &Path) -> PathBuf {
-    let shared = folder
-        .components()
-        .zip(path.components())
-        .take_while(|(left, right)| left == right)
-        .count();
-    let mut components = path.components();
-    let mut root: PathBuf = components.by_ref().take(shared).collect();
-    let rest: Vec<Component<'_>> = components.collect();
-    // A file right in the shared folder shows under it, not under itself.
-    if let [first, _, ..] = rest.as_slice() {
-        root.push(first);
+    let style = PathStyle::of(folder);
+    let path = path.to_string_lossy();
+    let mut root = path.as_ref();
+    let mut rest_names = 0;
+    // The longest folder above the path that holds the agent's folder too.
+    while style
+        .strip_prefix(&folder.to_string_lossy(), root)
+        .is_none()
+    {
+        let Some(parent) = style.parent(root) else {
+            break;
+        };
+        root = parent;
+        rest_names += 1;
     }
-    root
+    // A file right in the shared folder shows under it, not under itself.
+    if rest_names >= 2 {
+        let rest = style.strip_prefix(&path, root).unwrap_or_default();
+        if let Some(first) = style.first_name(rest) {
+            return PathBuf::from(style.join(root, first));
+        }
+    }
+    PathBuf::from(root)
 }
 
 /// A group's head: its folder's own name, as "app_feature/".
 pub fn root_label(root: &Path) -> String {
-    match root.file_name() {
-        Some(name) => format!("{}{MAIN_SEPARATOR}", name.to_string_lossy()),
-        None => root.display().to_string(),
+    let style = PathStyle::of(root);
+    let root = root.to_string_lossy();
+    match style.file_name(&root) {
+        Some(name) => style.folder_text(name),
+        None => style.shown(&root).into_owned(),
     }
 }
 
@@ -203,10 +216,8 @@ mod tests {
     }
 
     /// A group's root, and each row's folder and name.
-    #[cfg(unix)]
     type ShownGroup<'groups> = (Option<&'groups str>, Vec<(&'groups str, &'groups str)>);
 
-    #[cfg(unix)]
     fn shown(groups: &[ChangeGroup]) -> Vec<ShownGroup<'_>> {
         groups
             .iter()
@@ -222,7 +233,6 @@ mod tests {
             .collect()
     }
 
-    #[cfg(unix)]
     #[test]
     fn files_in_the_agent_folder_show_relative_to_it_sorted_by_path() {
         let files = [
@@ -253,7 +263,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn files_of_a_worktree_beside_the_folder_group_under_it() {
         let files = [
@@ -287,7 +296,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn files_of_several_folders_outside_get_one_group_each() {
         let files = [
@@ -310,7 +318,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_group_head_names_its_folder_once() {
         assert_eq!(
@@ -318,6 +325,32 @@ mod tests {
             "app_GH42Q-report-columns/"
         );
         assert_eq!(root_label(Path::new("/")), "/");
+        assert_eq!(
+            root_label(Path::new("C:/work/app_feature")),
+            r"app_feature\"
+        );
+        assert_eq!(root_label(Path::new("C:/")), r"C:\");
+    }
+
+    #[test]
+    fn on_windows_files_group_whatever_their_case_and_show_backslashes() {
+        let files = [
+            file(r"c:\work\APP\src\lexer.rs", 1, 1),
+            file("C:/work/app/README.md", 1, 0),
+            file(r"C:\work\app_columns\src\token.rs", 3, 0),
+            file(r"D:\notes\todo.md", 1, 0),
+        ];
+
+        let groups = group_changes(Path::new(r"C:\work\app"), &files);
+
+        assert_eq!(
+            shown(&groups),
+            [
+                (None, vec![("", "README.md"), (r"src\", "lexer.rs")]),
+                (Some(r"C:\work\app_columns"), vec![(r"src\", "token.rs")]),
+                (Some(r"D:\notes"), vec![("", "todo.md")]),
+            ]
+        );
     }
 
     #[test]

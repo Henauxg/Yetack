@@ -5,14 +5,25 @@ use std::path::{Path, PathBuf};
 use cockpit_protocol::{FileEdit, ItemBody, ToolCallStatus};
 
 use super::transcript::Transcript;
+use crate::path_style::PathStyle;
 
 /// `path` relative to `folder` when it is inside it, so that a link, a changed file and an edit
-/// name the same file the same way.
+/// name the same file the same way. On Windows, the relative path has `\` between its names.
 pub fn relative_path(folder: &Path, path: &Path) -> PathBuf {
-    match path.strip_prefix(folder) {
-        Ok(relative) if !relative.as_os_str().is_empty() => relative.to_owned(),
-        Ok(_) | Err(_) => path.to_owned(),
+    let style = PathStyle::of(folder);
+    let text = path.to_string_lossy();
+    match style.strip_prefix(&text, &folder.to_string_lossy()) {
+        Some(relative) if !relative.is_empty() => PathBuf::from(style.shown(relative).as_ref()),
+        Some(_) | None => path.to_owned(),
     }
+}
+
+/// `path` as a line names it: relative to `folder` when it is inside it.
+pub fn shown_path(folder: &Path, path: &Path) -> String {
+    let relative = relative_path(folder, path);
+    PathStyle::of(folder)
+        .shown(&relative.to_string_lossy())
+        .into_owned()
 }
 
 /// The edits that ran on `path`, in transcript order, subagents' included.
@@ -21,6 +32,8 @@ pub fn edits_for<'transcript>(
     folder: &Path,
     path: &Path,
 ) -> Vec<&'transcript FileEdit> {
+    let style = PathStyle::of(folder);
+    let path = path.to_string_lossy();
     let mut edits = Vec::new();
     for item in transcript.items() {
         let (ItemBody::ToolCall(call) | ItemBody::Subagent(call)) = &item.body else {
@@ -29,7 +42,9 @@ pub fn edits_for<'transcript>(
         let Some(edit) = &call.edit else {
             continue;
         };
-        if call.status == ToolCallStatus::Done && relative_path(folder, &edit.path) == path {
+        let edited = relative_path(folder, &edit.path);
+        if call.status == ToolCallStatus::Done && style.same_path(&edited.to_string_lossy(), &path)
+        {
             edits.push(edit);
         }
     }
@@ -102,6 +117,24 @@ mod tests {
         assert_eq!(
             relative_path(folder, Path::new("src/main.rs")),
             PathBuf::from("src/main.rs")
+        );
+    }
+
+    #[test]
+    fn paths_inside_a_windows_folder_become_relative_whatever_their_case_or_separators() {
+        let folder = Path::new(r"C:\Users\me\app");
+
+        assert_eq!(
+            relative_path(folder, Path::new(r"c:\users\me\app\src\main.rs")),
+            PathBuf::from(r"src\main.rs")
+        );
+        assert_eq!(
+            relative_path(folder, Path::new("C:/Users/me/app/src/main.rs")),
+            PathBuf::from(r"src\main.rs")
+        );
+        assert_eq!(
+            shown_path(folder, Path::new("D:/notes.txt")),
+            r"D:\notes.txt"
         );
     }
 

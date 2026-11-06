@@ -1,9 +1,11 @@
 //! Agent text as a tree of blocks and inlines, with `path:line` references found in the text.
 
 use std::iter::Peekable;
-use std::path::{Component, Path};
+use std::path::Path;
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+
+use crate::path_style::PathStyle;
 
 /// Nesting deeper than this (quotes in quotes, lists in lists) is flattened, so a hostile text
 /// cannot exhaust the stack.
@@ -79,6 +81,7 @@ pub fn parse_markdown(markdown: &str, folder: &Path) -> Vec<Block> {
     let mut builder = Builder {
         events: Parser::new_ext(markdown, options).peekable(),
         folder,
+        style: PathStyle::of(folder),
     };
     builder.blocks(None, 0)
 }
@@ -108,6 +111,8 @@ fn push_plain_text(text: &mut String, inlines: &[Inline]) {
 struct Builder<'input> {
     events: Peekable<Parser<'input>>,
     folder: &'input Path,
+    /// The rules of the agent's folder, which the paths in the text follow.
+    style: PathStyle,
 }
 
 impl<'input> Builder<'input> {
@@ -260,7 +265,7 @@ impl<'input> Builder<'input> {
                 Event::TaskListMarker(_) | Event::FootnoteReference(_) => {}
             }
         }
-        finish_inlines(inlines)
+        finish_inlines(inlines, self.style)
     }
 
     /// Inline events up to the next block-level event, without consuming it.
@@ -272,7 +277,7 @@ impl<'input> Builder<'input> {
             };
             self.push_inline(&mut inlines, event, depth);
         }
-        finish_inlines(inlines)
+        finish_inlines(inlines, self.style)
     }
 
     /// Inlines until `end`.
@@ -286,7 +291,7 @@ impl<'input> Builder<'input> {
             }
             self.push_inline(&mut inlines, event, depth);
         }
-        finish_inlines(inlines)
+        finish_inlines(inlines, self.style)
     }
 
     fn push_inline(&mut self, inlines: &mut Vec<Inline>, event: Event<'input>, depth: usize) {
@@ -295,7 +300,7 @@ impl<'input> Builder<'input> {
                 inlines.push(Inline::Text(text.into_string()));
             }
             Event::Code(code) | Event::InlineMath(code) | Event::DisplayMath(code) => {
-                inlines.push(code_span(&code));
+                inlines.push(code_span(&code, self.style));
             }
             // A single newline breaks the line, as GitHub comments and claude.ai show it: Claude
             // often writes one item per line without list markers.
@@ -317,7 +322,7 @@ impl<'input> Builder<'input> {
                     Tag::Strong => inlines.push(Inline::Strong(content)),
                     Tag::Strikethrough => inlines.push(Inline::Strikethrough(content)),
                     Tag::Link { dest_url, .. } => {
-                        inlines.extend(link(&dest_url, content, self.folder));
+                        inlines.extend(link(&dest_url, content, self.folder, self.style));
                     }
                     // An image shows as its alt text; other tags keep their content.
                     _ => inlines.extend(content),
@@ -367,9 +372,9 @@ fn heading_number(level: HeadingLevel) -> u8 {
 }
 
 /// A code span that holds only a `path:line` reference opens the file view.
-fn code_span(code: &str) -> Inline {
+fn code_span(code: &str, style: PathStyle) -> Inline {
     let trimmed = code.trim();
-    match find_file_refs(trimmed).as_slice() {
+    match find_file_refs(trimmed, style).as_slice() {
         [TextPiece::File(file)] => Inline::File(file.clone()),
         _ => Inline::Code(code.to_owned()),
     }
@@ -378,14 +383,14 @@ fn code_span(code: &str) -> Inline {
 /// A link to a file in the agent's folder opens the file view instead of a browser. Any other
 /// link than a web one keeps only its text: the system would open it with whatever program
 /// handles its scheme or file.
-fn link(url: &str, content: Vec<Inline>, folder: &Path) -> Vec<Inline> {
+fn link(url: &str, content: Vec<Inline>, folder: &Path, style: PathStyle) -> Vec<Inline> {
     if is_web_url(url) {
         return vec![Inline::Link {
             url: url.to_owned(),
             content,
         }];
     }
-    let Some((path, line)) = local_file_target(url, folder) else {
+    let Some((path, line)) = local_file_target(url, folder, style) else {
         return content;
     };
     let text = plain_text(&content);
@@ -411,23 +416,30 @@ fn is_web_url(url: &str) -> bool {
 /// The path and line of a link to a file in `folder`: a relative path, or an absolute one under
 /// `folder`, then an optional `:line` (with `:column` or `-end`) or `#L12` (with `-L20`). Another
 /// fragment, such as a heading's, opens the file at its top. A colon followed by anything but a
-/// line, as in `javascript:` or `mailto:`, makes it no file.
+/// line, as in `javascript:` or `mailto:`, makes it no file. A Windows drive's colon, as in
+/// `C:\`, is the path's.
 fn local_file_target<'target>(
     target: &'target str,
     folder: &Path,
+    style: PathStyle,
 ) -> Option<(&'target str, Option<u32>)> {
     let (location, fragment) = match target.split_once(FRAGMENT) {
         Some((location, fragment)) => (location, Some(fragment)),
         None => (target, None),
     };
-    let (path, suffix_line) = match location.split_once(':') {
-        Some((path, suffix)) => (path, Some(line_suffix(suffix)?)),
+    let drive = style.drive_len(location);
+    let colon = location.get(drive..)?.find(':').map(|at| drive + at);
+    let (path, suffix_line) = match colon {
+        Some(at) => {
+            let suffix = location.get(at + 1..)?;
+            (location.get(..at)?, Some(line_suffix(suffix)?))
+        }
         None => (location, None),
     };
     let fragment_line = fragment
         .and_then(|fragment| fragment.strip_prefix(LINE_FRAGMENT))
         .and_then(|anchor| line_number(anchor.split('-').next().unwrap_or_default()));
-    is_in_folder(path, folder).then_some((path, suffix_line.or(fragment_line)))
+    is_in_folder(path, folder, style).then_some((path, suffix_line.or(fragment_line)))
 }
 
 /// The line of what follows a path's colon: `12`, `12:5`, `40-52` or `12:5-7`.
@@ -449,29 +461,23 @@ fn line_suffix(suffix: &str) -> Option<u32> {
 
 /// Whether `path` names a file in `folder`: relative, or absolute and under `folder`, and without
 /// `..`, which the daemon refuses as well. A `?` or a leading `~` belongs to a URL or a shell.
-fn is_in_folder(path: &str, folder: &Path) -> bool {
+fn is_in_folder(path: &str, folder: &Path, style: PathStyle) -> bool {
     if path.contains('?') || path.starts_with('~') || path.chars().any(char::is_control) {
         return false;
     }
-    let path = Path::new(path);
-    let inside = if path.is_absolute() {
-        path.strip_prefix(folder).ok()
+    let inside = if style.is_absolute(path) {
+        style.strip_prefix(path, &folder.to_string_lossy())
+    } else if path.starts_with(|character| style.is_separator(character)) {
+        // `\folder` on Windows: a drive's root, not a file in the folder.
+        None
     } else {
         Some(path)
     };
-    inside.is_some_and(|inside| {
-        let named = inside
-            .components()
-            .any(|component| matches!(component, Component::Normal(_)));
-        named
-            && inside
-                .components()
-                .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
-    })
+    inside.is_some_and(|inside| style.first_name(inside).is_some() && !style.goes_up(inside))
 }
 
 /// Merges adjacent texts, then splits them around `path:line` references.
-fn finish_inlines(inlines: Vec<Inline>) -> Vec<Inline> {
+fn finish_inlines(inlines: Vec<Inline>, style: PathStyle) -> Vec<Inline> {
     let mut merged: Vec<Inline> = Vec::with_capacity(inlines.len());
     for inline in inlines {
         if let Inline::Text(text) = &inline
@@ -488,7 +494,7 @@ fn finish_inlines(inlines: Vec<Inline>) -> Vec<Inline> {
             finished.push(inline);
             continue;
         };
-        for piece in find_file_refs(&text) {
+        for piece in find_file_refs(&text, style) {
             match piece {
                 TextPiece::Text(part) => finished.push(Inline::Text(part.to_owned())),
                 TextPiece::File(file) => finished.push(Inline::File(file)),
@@ -504,13 +510,32 @@ enum TextPiece<'text> {
     File(FileRef),
 }
 
-fn is_path_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || b"_./~+@-".contains(&byte)
+fn is_path_byte(byte: u8, style: PathStyle) -> bool {
+    byte.is_ascii_alphanumeric()
+        || b"_./~+@-".contains(&byte)
+        || style.is_separator(char::from(byte))
 }
 
-/// A path holds a `/` or a `.` and a letter or a digit, so that "12:30" or "foo:12" are not paths.
-fn is_path(path: &str) -> bool {
-    path.contains(['/', '.']) && path.bytes().any(|byte| byte.is_ascii_alphanumeric())
+/// A path holds a separator or a `.` and a letter or a digit, so that "12:30" or "foo:12" are
+/// not paths.
+fn is_path(path: &str, style: PathStyle) -> bool {
+    let marked = path.contains(|character| character == '.' || style.is_separator(character));
+    marked && path.bytes().any(|byte| byte.is_ascii_alphanumeric())
+}
+
+/// Where a path that starts at `start` starts once a drive before it is counted, as `C:` before
+/// `\work\a.rs`.
+fn drive_start(text: &str, start: usize, style: PathStyle) -> usize {
+    let Some(drive_at) = start.checked_sub(2) else {
+        return start;
+    };
+    let alone = drive_at == 0
+        || text
+            .as_bytes()
+            .get(drive_at - 1)
+            .is_some_and(|&byte| !is_path_byte(byte, style) && byte != b':');
+    let drive = text.get(drive_at..).map_or(0, |rest| style.drive_len(rest));
+    if alone && drive > 0 { drive_at } else { start }
 }
 
 /// A line number from 1 to `u32::MAX`.
@@ -527,7 +552,7 @@ fn digits_len(text: &str) -> usize {
 }
 
 /// Splits `text` into plain pieces and `path:line` references. The pieces join back to `text`.
-fn find_file_refs(text: &str) -> Vec<TextPiece<'_>> {
+fn find_file_refs(text: &str, style: PathStyle) -> Vec<TextPiece<'_>> {
     let bytes = text.as_bytes();
     let mut pieces = Vec::new();
     let mut plain_start = 0;
@@ -539,16 +564,22 @@ fn find_file_refs(text: &str) -> Vec<TextPiece<'_>> {
         while path_start > plain_start
             && bytes
                 .get(path_start - 1)
-                .is_some_and(|&byte| is_path_byte(byte))
+                .is_some_and(|&byte| is_path_byte(byte, style))
         {
             path_start -= 1;
         }
+        let with_drive = drive_start(text, path_start, style);
+        let path_start = if with_drive >= plain_start {
+            with_drive
+        } else {
+            path_start
+        };
         let Some(path) = text.get(path_start..colon) else {
             continue;
         };
         // A path right after a colon is part of a URL, such as "https://example.org:8080".
         let after_colon = path_start > 0 && bytes.get(path_start - 1) == Some(&b':');
-        if after_colon || !is_path(path) {
+        if after_colon || !is_path(path, style) {
             continue;
         }
         let rest = text.get(colon + 1..).unwrap_or_default();
@@ -630,7 +661,7 @@ mod tests {
     }
 
     fn references(input: &str) -> Vec<(String, String, u32)> {
-        find_file_refs(input)
+        find_file_refs(input, PathStyle::Unix)
             .into_iter()
             .filter_map(|piece| match piece {
                 TextPiece::File(file) => Some((file.text, file.path, file.line?)),
@@ -885,7 +916,7 @@ mod tests {
     fn pieces_join_back_to_the_text() {
         let input = "x src/a.rs:1 y b.md:2:3, ok";
 
-        let joined: String = find_file_refs(input)
+        let joined: String = find_file_refs(input, PathStyle::Unix)
             .into_iter()
             .map(|piece| match piece {
                 TextPiece::Text(part) => part.to_owned(),
@@ -917,7 +948,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn links_to_files_in_the_folder_open_the_file_view() {
         let opened = |target: &str| -> Option<(String, Option<u32>)> {
@@ -944,6 +974,62 @@ mod tests {
         for (target, path, line) in cases {
             assert_eq!(opened(target), Some((path.to_owned(), line)), "{target}");
         }
+    }
+
+    #[test]
+    fn on_windows_links_and_references_take_drives_and_backslashes() {
+        let folder = Path::new(r"C:\work\calc");
+        let opened = |target: &str| -> Option<(String, Option<u32>)> {
+            match parse_markdown(&format!("[x]({target})"), folder).as_slice() {
+                [Block::Paragraph(inlines)] => match inlines.as_slice() {
+                    [Inline::File(file)] => Some((file.path.clone(), file.line)),
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+        let cases = [
+            (r"src\lexer.rs:17", r"src\lexer.rs", Some(17)),
+            (
+                r"C:\work\calc\src\error.rs:12",
+                r"C:\work\calc\src\error.rs",
+                Some(12),
+            ),
+            ("c:/WORK/calc/src/a.rs#L3", "c:/WORK/calc/src/a.rs", Some(3)),
+            (r"C:\work\calc\README.md", r"C:\work\calc\README.md", None),
+        ];
+        for (target, path, line) in cases {
+            assert_eq!(opened(target), Some((path.to_owned(), line)), "{target}");
+        }
+        let refused = [
+            r"C:\work\other\a.rs",
+            r"D:\a.rs",
+            r"\work\calc\a.rs",
+            r"..\secrets.txt",
+            r"C:\work\calc",
+        ];
+        for target in refused {
+            assert_eq!(opened(target), None, "{target}");
+        }
+
+        let windows = PathStyle::Windows;
+        let found: Vec<(String, u32)> = find_file_refs(
+            r"see C:\work\calc\src\main.rs:12, src\lib.rs:3 and https://example.org:8080",
+            windows,
+        )
+        .into_iter()
+        .filter_map(|piece| match piece {
+            TextPiece::File(file) => Some((file.path, file.line?)),
+            TextPiece::Text(_) => None,
+        })
+        .collect();
+        assert_eq!(
+            found,
+            [
+                (r"C:\work\calc\src\main.rs".to_owned(), 12),
+                (r"src\lib.rs".to_owned(), 3)
+            ]
+        );
     }
 
     #[test]

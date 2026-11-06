@@ -10,6 +10,7 @@ use dioxus::prelude::*;
 use crate::bridge::{self, HIGHLIGHTED_CLASS, OPEN_FILE_FIELD_ID};
 use crate::connection::Cockpit;
 use crate::format;
+use crate::path_style::PathStyle;
 use crate::state::actions::Direction;
 use crate::state::open_file::{self, NameSearch, Row, Take};
 use crate::state::{FileSearch, Loadable, OpenFileView};
@@ -48,7 +49,7 @@ pub fn OpenFileDialog(view: OpenFileView) -> Element {
         .map(|entry| entry.summary.folder.clone())
         .unwrap_or_default();
     let rows = open_file::rows(&view, &text);
-    let (_, segment) = open_file::split(&text);
+    let (_, segment) = open_file::style(&view).split(&text);
     let segment = segment.to_owned();
     let first_match = rows.iter().position(|row| matches!(row, Row::Match(_)));
     let entry_rows = first_match.unwrap_or(rows.len());
@@ -199,7 +200,9 @@ fn row_view(
         },
         Row::Match(path) => {
             let short = ShortPath::new(agent_folder, path);
-            let full = path.display().to_string();
+            let full = PathStyle::of(agent_folder)
+                .shown(&path.to_string_lossy())
+                .into_owned();
             rsx! {
                 button { key: "{full}", class, title: "{full}", onmousemove: point, onclick: click,
                     Icon { kind: IconKind::File, size: 14 }

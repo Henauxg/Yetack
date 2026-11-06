@@ -16,6 +16,7 @@ use super::transcript::Transcript;
 use super::ui_state::UiState;
 use crate::daemon_label::DaemonLabel;
 use crate::format;
+use crate::path_style::PathStyle;
 use crate::prefs::{Prefs, StatusFilter};
 
 /// Data the app asks the daemon for when it needs it.
@@ -283,9 +284,9 @@ impl AppState {
     }
 
     /// Folders where agents ran, with their last use, most recent first, for the new agent
-    /// dialog.
+    /// dialog. One folder written two ways, as `C:\Work` and `c:/work`, shows once.
     pub fn recent_folders(&self) -> Vec<(PathBuf, Timestamp)> {
-        let mut uses: BTreeMap<PathBuf, Timestamp> = BTreeMap::new();
+        let mut uses: Vec<(PathBuf, Timestamp)> = Vec::new();
         let agent_uses = self
             .agents
             .values()
@@ -297,12 +298,20 @@ impl AppState {
             .flatten()
             .map(|session: &PastSession| (&session.folder, session.last_activity));
         for (folder, moment) in agent_uses.chain(session_uses) {
-            let latest = uses.entry(folder.clone()).or_insert(moment);
-            *latest = (*latest).max(moment);
+            let text = folder.to_string_lossy();
+            let style = PathStyle::of_text(&text);
+            let seen = uses
+                .iter_mut()
+                .find(|(seen, _)| style.same_path(&seen.to_string_lossy(), &text));
+            match seen {
+                Some((_, latest)) => *latest = (*latest).max(moment),
+                None => uses.push((folder.clone(), moment)),
+            }
         }
-        let mut folders: Vec<(PathBuf, Timestamp)> = uses.into_iter().collect();
-        folders.sort_by(|(_, left), (_, right)| right.cmp(left));
-        folders
+        uses.sort_by(|(left_folder, left), (right_folder, right)| {
+            right.cmp(left).then_with(|| left_folder.cmp(right_folder))
+        });
+        uses
     }
 }
 
