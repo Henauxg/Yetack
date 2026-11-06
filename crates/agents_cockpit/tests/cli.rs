@@ -10,6 +10,7 @@
 )]
 
 use std::fs::{File, Permissions};
+use std::io;
 use std::io::BufReader;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -36,6 +37,7 @@ impl Daemon {
         let claude = temp.path().join("echo-claude");
         std::fs::write(&claude, "#!/bin/sh\nexec cat\n").unwrap();
         std::fs::set_permissions(&claude, Permissions::from_mode(0o755)).unwrap();
+        wait_until_it_runs(&claude);
         std::fs::create_dir(temp.path().join("work")).unwrap();
         let log = File::create(temp.path().join("serve.log")).unwrap();
         let serve = Command::new(BINARY)
@@ -106,6 +108,25 @@ impl Drop for Daemon {
     fn drop(&mut self) {
         let _ = self.serve.kill();
         let _ = self.serve.wait();
+    }
+}
+
+/// A process another test forks while a script is written keeps it open for writing until it
+/// runs its own program, and running the script fails with "Text file busy" until then. Once the
+/// script ran, no process can hold it open for writing again.
+fn wait_until_it_runs(script: &Path) {
+    for _ in 0..200 {
+        let run = Command::new(script)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        match run {
+            Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(_) | Err(_) => return,
+        }
     }
 }
 

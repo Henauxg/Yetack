@@ -724,6 +724,7 @@ mod tests {
 
     use crate::sessions::SessionPast;
     use crate::store::PastFile;
+    use crate::test_script;
 
     use super::*;
 
@@ -881,14 +882,10 @@ mod tests {
     /// reach `claude`.
     #[tokio::test]
     async fn a_stopping_agent_takes_no_prompt() {
-        use std::fs::Permissions;
-        use std::os::unix::fs::PermissionsExt;
-
         let temp = tempfile::tempdir().unwrap();
         let mut hub = Hub::for_tests(&temp.path().join("state"));
         let claude = temp.path().join("claude");
-        std::fs::write(&claude, "#!/bin/sh\nexec cat >/dev/null\n").unwrap();
-        std::fs::set_permissions(&claude, Permissions::from_mode(0o755)).unwrap();
+        test_script::write_script(&claude, "#!/bin/sh\nexec cat >/dev/null\n");
         hub.config.claude_program = claude;
         let start = StartParams {
             folder: temp.path().to_owned(),
