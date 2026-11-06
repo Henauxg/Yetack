@@ -5,9 +5,9 @@ use std::path::PathBuf;
 
 use claude_protocol::{ControlRequest, TaskId};
 use cockpit_protocol::{
-    AgentId, ErrorBody, ErrorCode, Event, FindFilesParams, HistoryParams, ListDirParams,
-    McpRemoveParams, ReadFileParams, Request, ResponseBody, SessionResumeParams, Settings,
-    StopProcessParams,
+    AgentId, ErrorBody, ErrorCode, Event, FindFilesParams, FoldersListParams, HistoryParams,
+    ListDirParams, McpRemoveParams, ReadFileParams, Request, ResponseBody, SessionResumeParams,
+    Settings, StopProcessParams,
 };
 
 use crate::daemon_config::HOME_ENV;
@@ -107,6 +107,7 @@ impl Hub {
             Request::SettingsSet(settings) => agents::respond(reply, self.set_settings(settings)),
             Request::SessionsList => self.sessions_list(reply),
             Request::SessionsResume(params) => self.sessions_resume(params, reply),
+            Request::FoldersList(params) => list_folders(params, reply),
             Request::MachineLoad => {
                 let roots = self.agent_roots();
                 self.load.query(roots, reply);
@@ -324,11 +325,57 @@ impl Hub {
     }
 }
 
+fn list_folders(params: FoldersListParams, reply: Reply) {
+    tokio::spawn(async move {
+        let listed = tokio::task::spawn_blocking(move || browse::list_folders(&params.path)).await;
+        let result = match listed {
+            Ok(Ok(listing)) => Ok(ResponseBody::Directory(listing)),
+            Ok(Err(error)) => Err(error.to_error_body()),
+            Err(error) => Err(errors::internal(error.to_string())),
+        };
+        agents::respond(reply, result);
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+
+    #[tokio::test]
+    async fn folders_list_answers_the_folders_and_refuses_a_relative_path() {
+        use cockpit_protocol::{EntryKind, ResponseResult};
+        use tokio::sync::oneshot;
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut hub = Hub::for_tests(temp.path());
+        let projects = temp.path().canonicalize().unwrap().join("projects");
+        std::fs::create_dir_all(projects.join("shop")).unwrap();
+        std::fs::write(projects.join("notes.txt"), "notes").unwrap();
+        let mut ask = |path: PathBuf| {
+            let (reply, answer) = oneshot::channel();
+            hub.request(Request::FoldersList(FoldersListParams { path }), reply);
+            answer
+        };
+
+        let listed = ask(projects.clone()).await.unwrap();
+        let refused = ask(PathBuf::from("~/projects")).await.unwrap();
+
+        let ResponseResult::Ok(ResponseBody::Directory(listing)) = listed else {
+            panic!("a listing, not {listed:?}");
+        };
+        let names: Vec<(&str, EntryKind)> = listing
+            .entries
+            .iter()
+            .map(|entry| (entry.name.as_str(), entry.kind))
+            .collect();
+        assert_eq!(names, [("shop", EntryKind::Folder)]);
+        let ResponseResult::Error(error) = refused else {
+            panic!("an error, not {refused:?}");
+        };
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+    }
 
     #[test]
     fn settings_that_cannot_be_saved_are_not_applied() {

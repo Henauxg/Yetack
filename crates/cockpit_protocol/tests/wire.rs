@@ -19,9 +19,9 @@ use cockpit_protocol::{
     BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus, CancelQueuedParams,
     Catchup, ChangedFile, ClaudeSessionId, ClientMessage, CommandKind, CommandLoad,
     ContextCategory, ContextUsage, Cores, CostUsd, DirEntry, DirListing, Effort, EntryKind,
-    ErrorBody, ErrorCode, Event, EventRecord, FileEdit, FindFilesParams, HistoryPage,
-    HistoryParams, Image, ImageMediaType, ItemBody, ItemId, ListDirParams, LoadAverage,
-    LoadHistory, MachineLoad, McpRemoveParams, McpScope, McpServer, McpServerParams,
+    ErrorBody, ErrorCode, Event, EventRecord, FileEdit, FindFilesParams, FoldersListParams,
+    HistoryPage, HistoryParams, Image, ImageMediaType, ItemBody, ItemId, ListDirParams,
+    LoadAverage, LoadHistory, MachineLoad, McpRemoveParams, McpScope, McpServer, McpServerParams,
     McpServerStatus, McpToggleParams, McpTool, McpTransport, Method, MoveParams, PROTOCOL_VERSION,
     PastSession, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, PlanUsage, Position,
     ProcessId, Prompt, PromptParams, Question, QuestionAnswer, QuestionOption, RateLimitStatus,
@@ -527,6 +527,9 @@ fn requests() -> Vec<Request> {
         Request::SessionsResume(SessionResumeParams {
             session: session_id(),
         }),
+        Request::FoldersList(FoldersListParams {
+            path: PathBuf::from("/srv/projects"),
+        }),
         Request::MachineLoad,
     ]
 }
@@ -876,6 +879,7 @@ fn method_names_are_pinned() {
             "settings.set",
             "sessions.list",
             "sessions.resume",
+            "folders.list",
             "machine.load",
         ]
     );
@@ -1167,6 +1171,62 @@ fn a_folder_listing_on_the_wire() {
                     {"name": "shared", "kind": "other", "size": null, "symlink": true},
                 ],
                 "truncated": false,
+            }},
+        }),
+    );
+}
+
+#[test]
+fn a_folders_listing_on_the_wire() {
+    let request = ClientMessage::Request {
+        id: RequestId::new(13),
+        request: Request::FoldersList(FoldersListParams {
+            path: PathBuf::from("/srv/projects"),
+        }),
+    };
+    let answer = ServerMessage::Response {
+        id: RequestId::new(13),
+        result: ResponseResult::Ok(ResponseBody::Directory(DirListing {
+            path: PathBuf::from("/srv/projects"),
+            entries: vec![
+                DirEntry {
+                    name: ".archive".to_owned(),
+                    kind: EntryKind::Folder,
+                    size: None,
+                    symlink: false,
+                },
+                DirEntry {
+                    name: "shop".to_owned(),
+                    kind: EntryKind::Folder,
+                    size: None,
+                    symlink: true,
+                },
+            ],
+            truncated: true,
+        })),
+    };
+
+    assert_wire(
+        &request,
+        json!({
+            "type": "request",
+            "id": 13,
+            "request": {"method": "folders.list", "params": {"path": "/srv/projects"}},
+        }),
+    );
+    assert_wire(
+        &answer,
+        json!({
+            "type": "response",
+            "id": 13,
+            "result": {"ok": {
+                "type": "directory",
+                "path": "/srv/projects",
+                "entries": [
+                    {"name": ".archive", "kind": "folder", "size": null, "symlink": false},
+                    {"name": "shop", "kind": "folder", "size": null, "symlink": true},
+                ],
+                "truncated": true,
             }},
         }),
     );

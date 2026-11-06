@@ -6,6 +6,9 @@
 //! doc. The files it allows alone allow no folder. The listing shows at most [`MAX_ENTRIES`]
 //! entries, and reads at most [`MAX_READ`] of a folder's, so that a huge folder answers quickly.
 //!
+//! `folders.list` lists the folders alone, of any folder the daemon's user can read, for the new
+//! agent dialog, within the same bounds.
+//!
 //! [`read_file`]: crate::read_file
 
 use std::ffi::{CStr, OsStr};
@@ -33,6 +36,8 @@ pub(crate) enum ListDirError {
     Missing(PathBuf),
     #[error("{} is not a folder", .0.display())]
     NotAFolder(PathBuf),
+    #[error("the folder {} is not absolute", .0.display())]
+    NotAbsolute(PathBuf),
     #[error("cannot read the folder: {0}")]
     Io(#[source] io::Error),
     #[error(transparent)]
@@ -42,7 +47,7 @@ pub(crate) enum ListDirError {
 impl ListDirError {
     pub(crate) fn to_error_body(&self) -> ErrorBody {
         let code = match self {
-            Self::Outside | Self::NotAFolder(_) => ErrorCode::InvalidRequest,
+            Self::Outside | Self::NotAFolder(_) | Self::NotAbsolute(_) => ErrorCode::InvalidRequest,
             Self::Missing(_) => ErrorCode::NotFound,
             Self::Io(_) => ErrorCode::FileUnreadable,
             Self::Access(error) => return error.to_error_body(),
@@ -108,6 +113,13 @@ fn read_entries(folder: &File) -> Result<(Vec<DirEntry>, bool), ListDirError> {
         }
         entries.push(describe(folder, entry.file_name(), entry.file_type()));
     }
+    truncated |= sort_and_cap(&mut entries);
+    Ok((entries, truncated))
+}
+
+/// Sorts entries as a listing shows them, then keeps the first [`MAX_ENTRIES`]. Returns whether
+/// it left some out.
+fn sort_and_cap(entries: &mut Vec<DirEntry>) -> bool {
     entries.sort_by_cached_key(|entry| {
         (
             entry.kind != EntryKind::Folder,
@@ -115,11 +127,62 @@ fn read_entries(folder: &File) -> Result<(Vec<DirEntry>, bool), ListDirError> {
             entry.name.clone(),
         )
     });
-    if entries.len() > MAX_ENTRIES {
-        entries.truncate(MAX_ENTRIES);
-        truncated = true;
+    let cut = entries.len() > MAX_ENTRIES;
+    entries.truncate(MAX_ENTRIES);
+    cut
+}
+
+/// Lists the folders in `path`, which must be absolute. A symbolic link to a folder counts as one.
+pub(crate) fn list_folders(path: &Path) -> Result<DirListing, ListDirError> {
+    if !path.is_absolute() {
+        return Err(ListDirError::NotAbsolute(path.to_owned()));
     }
-    Ok((entries, truncated))
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+    let opened = rustix::fs::open(path, flags, Mode::empty()).map_err(|error| match error {
+        rustix::io::Errno::NOENT => ListDirError::Missing(path.to_owned()),
+        rustix::io::Errno::NOTDIR => ListDirError::NotAFolder(path.to_owned()),
+        other => ListDirError::Io(other.into()),
+    })?;
+    let (entries, truncated) = read_folders(&File::from(opened))?;
+    Ok(DirListing {
+        path: path.to_owned(),
+        entries,
+        truncated,
+    })
+}
+
+/// The folders of an open folder, by name. Every entry read counts towards [`MAX_READ`], so a
+/// folder of many files answers as quickly as for `agent.list_dir`.
+fn read_folders(folder: &File) -> Result<(Vec<DirEntry>, bool), ListDirError> {
+    let mut dir = Dir::read_from(folder).map_err(|error| ListDirError::Io(error.into()))?;
+    let mut folders: Vec<DirEntry> = Vec::new();
+    let mut read: usize = 0;
+    let mut truncated = false;
+    while let Some(entry) = dir.read() {
+        let entry = entry.map_err(|error| ListDirError::Io(error.into()))?;
+        let name = entry.file_name().to_bytes();
+        if name == b"." || name == b".." {
+            continue;
+        }
+        if read >= MAX_READ {
+            truncated = true;
+            break;
+        }
+        read += 1;
+        let listed = entry.file_type();
+        // Only these can lead to a folder: the others need no `stat`.
+        if matches!(
+            listed,
+            FileType::Directory | FileType::Symlink | FileType::Unknown
+        ) {
+            let described = describe(folder, entry.file_name(), listed);
+            if described.kind == EntryKind::Folder {
+                folders.push(described);
+            }
+        }
+    }
+    truncated |= sort_and_cap(&mut folders);
+    Ok((folders, truncated))
 }
 
 /// One entry, with what a symbolic link points to and a file's size. An entry that vanished since
@@ -343,6 +406,98 @@ mod tests {
             listing.entries.first().map(|entry| entry.name.as_str()),
             Some("file-00000.txt")
         );
+    }
+
+    #[test]
+    fn lists_the_folders_alone_hidden_ones_included_by_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        for folder in ["beta", "Alpha/inner", ".config"] {
+            std::fs::create_dir_all(root.join(folder)).unwrap();
+        }
+        write(&root.join("notes.txt"), "notes");
+        write(&root.join("elsewhere/target/README.md"), "# Target\n");
+        symlink(root.join("elsewhere/target"), root.join("linked")).unwrap();
+        symlink(root.join("notes.txt"), root.join("file_link")).unwrap();
+        symlink(root.join("gone"), root.join("broken")).unwrap();
+
+        let listing = list_folders(&root).unwrap();
+
+        assert_eq!(listing.path, root);
+        assert!(!listing.truncated);
+        assert_eq!(
+            names(&listing),
+            [
+                (".config", EntryKind::Folder, None, false),
+                ("Alpha", EntryKind::Folder, None, false),
+                ("beta", EntryKind::Folder, None, false),
+                ("elsewhere", EntryKind::Folder, None, false),
+                ("linked", EntryKind::Folder, None, true),
+            ]
+        );
+        let through_link = list_folders(&root.join("linked")).unwrap();
+        assert!(through_link.entries.is_empty(), "{through_link:?}");
+    }
+
+    #[test]
+    fn a_folder_listing_refuses_a_relative_path_and_says_what_is_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        write(&root.join("notes.txt"), "notes");
+
+        for relative in ["projects", "~/projects", "~"] {
+            let refused = list_folders(Path::new(relative)).unwrap_err();
+            assert!(
+                matches!(refused, ListDirError::NotAbsolute(_)),
+                "{relative}: {refused:?}"
+            );
+            assert_eq!(refused.to_error_body().code, ErrorCode::InvalidRequest);
+        }
+        assert_eq!(
+            list_folders(Path::new("~/projects"))
+                .unwrap_err()
+                .to_string(),
+            "the folder ~/projects is not absolute"
+        );
+        let missing = list_folders(&root.join("gone")).unwrap_err();
+        assert_eq!(missing.to_error_body().code, ErrorCode::NotFound);
+        assert!(matches!(
+            list_folders(&root.join("notes.txt")),
+            Err(ListDirError::NotAFolder(_))
+        ));
+    }
+
+    #[test]
+    fn a_folder_listing_sends_at_most_the_cap() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        for index in 0..MAX_ENTRIES + 5 {
+            std::fs::create_dir(root.join(format!("folder-{index:05}"))).unwrap();
+        }
+
+        let listing = list_folders(&root).unwrap();
+
+        assert_eq!(listing.entries.len(), MAX_ENTRIES);
+        assert!(listing.truncated);
+        assert_eq!(
+            listing.entries.first().map(|entry| entry.name.as_str()),
+            Some("folder-00000")
+        );
+    }
+
+    /// The files count towards the entries read, though none is sent.
+    #[test]
+    fn a_folder_listing_reads_at_most_the_cap() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        for index in 0..MAX_READ + 5 {
+            std::fs::write(root.join(format!("file-{index:05}.txt")), "").unwrap();
+        }
+
+        let listing = list_folders(&root).unwrap();
+
+        assert!(listing.entries.is_empty());
+        assert!(listing.truncated);
     }
 
     #[tokio::test]

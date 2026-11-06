@@ -4147,6 +4147,12 @@ html.splitting * {
   gap: 2px;
 }
 
+/* As tall as six recent folders, whose place it takes, so the Start button stays in view. */
+.dialog-list.folder-browse {
+  max-height: 214px;
+  padding: 0;
+}
+
 .folder-option {
   display: flex;
   align-items: center;

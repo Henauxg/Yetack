@@ -17,7 +17,7 @@ use crate::ui::file_view::{ShortPath, short_path};
 use crate::ui::icons::{Icon, IconKind};
 
 /// The row of the folder above, and its key.
-const UP_ROW: &str = "..";
+pub const UP_ROW: &str = "..";
 
 /// How long typing pauses before a bare name is searched for in the project.
 const SEARCH_PAUSE: Duration = Duration::from_millis(300);
@@ -191,7 +191,7 @@ fn row_view(
     }
 }
 
-fn entry_view(
+pub fn entry_view(
     entry: &DirEntry,
     class: &'static str,
     click: impl FnMut(MouseEvent) + 'static,
@@ -216,7 +216,7 @@ fn entry_view(
 }
 
 /// The daemon's message as a sentence.
-fn sentence(message: &str) -> String {
+pub fn sentence(message: &str) -> String {
     let mut characters = message.chars();
     let first: String = characters
         .next()

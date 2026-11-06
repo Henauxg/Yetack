@@ -1,6 +1,7 @@
 //! `--demo`: the window filled with made-up agents and no daemon, to look at the interface. The
 //! requests that read data are answered from the sample; the others do nothing.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -435,6 +436,7 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
         Request::AgentReadFile(params) => read_file(&params.path),
         Request::AgentListDir(params) => list_dir(&params.path),
         Request::AgentFindFiles(params) => Ok(find_files(&params.name)),
+        Request::FoldersList(params) => list_folders(state, &params.path),
         Request::AgentHistory(params) if params.agent == AgentId::new(LIVE_AGENT) => {
             let before = params.before.map_or(LIVE_PAGE_FIRST_ID, ItemId::get);
             let items = (LIVE_OLDER_FIRST_ID..before)
@@ -718,6 +720,70 @@ fn list_dir(path: &Path) -> Result<ResponseBody, RequestError> {
     entries.sort_by_key(|entry| (entry.kind != EntryKind::Folder, entry.name.to_lowercase()));
     Ok(ResponseBody::Directory(DirListing {
         path: folder,
+        entries,
+        truncated: false,
+    }))
+}
+
+/// Folders of the demo server that hold no agent, past session or sample file.
+const OTHER_FOLDERS: [&str; 5] = [
+    "/home/dev/.config/agents-cockpit",
+    "/home/dev/.cache",
+    "/home/dev/notes",
+    "/home/dev/projects/archive/2025-prototypes",
+    "/tmp/scratch",
+];
+
+/// As the daemon lists the folders in `path` for the new agent dialog: the folders of the sample's
+/// agents, past sessions and files, the folders above them, and a few others.
+fn list_folders(state: &AppState, path: &Path) -> Result<ResponseBody, RequestError> {
+    if !path.is_absolute() {
+        return Err(refused(
+            ErrorCode::InvalidRequest,
+            &format!("the folder {} is not absolute", path.display()),
+        ));
+    }
+    let agents = state
+        .agents
+        .values()
+        .map(|entry| entry.summary.folder.clone());
+    let past = sessions(SystemTime::now())
+        .into_iter()
+        .map(|session| session.folder);
+    let holding = files()
+        .into_iter()
+        .filter_map(|(file, _)| file.parent().map(Path::to_owned));
+    let others = OTHER_FOLDERS.iter().map(PathBuf::from);
+    let mut exists = false;
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    for folder in agents.chain(past).chain(holding).chain(others) {
+        for above in folder.ancestors() {
+            exists |= above == path;
+            if above.parent() == Some(path)
+                && let Some(name) = above.file_name()
+            {
+                names.insert(name.to_string_lossy().into_owned());
+            }
+        }
+    }
+    if !exists {
+        return Err(refused(
+            ErrorCode::NotFound,
+            &format!("{} does not exist", path.display()),
+        ));
+    }
+    let mut entries: Vec<DirEntry> = names
+        .into_iter()
+        .map(|name| DirEntry {
+            name,
+            kind: EntryKind::Folder,
+            size: None,
+            symlink: false,
+        })
+        .collect();
+    entries.sort_by_key(|entry| entry.name.to_lowercase());
+    Ok(ResponseBody::Directory(DirListing {
+        path: path.to_owned(),
         entries,
         truncated: false,
     }))
@@ -1794,7 +1860,7 @@ fn sessions(now: SystemTime) -> Vec<PastSession> {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::{HistoryParams, ReadFileParams, RenameParams};
+    use cockpit_protocol::{FoldersListParams, HistoryParams, ReadFileParams, RenameParams};
 
     use super::*;
     use crate::state::{WaitingKind, file_edits};
@@ -1821,6 +1887,37 @@ mod tests {
         let building = first.agents.first().unwrap();
         assert_eq!(building.agent, AgentId::new(BUILDING_AGENT));
         assert!(building.cpu.get() > 8.0);
+    }
+
+    #[test]
+    fn the_demo_lists_made_up_folders_as_the_daemon_would() {
+        let state = state(label());
+        let list = |path: &str| {
+            answer(
+                &state,
+                &Request::FoldersList(FoldersListParams {
+                    path: PathBuf::from(path),
+                }),
+            )
+        };
+        let names = |path: &str| match list(path) {
+            Ok(ResponseBody::Directory(listing)) => listing
+                .entries
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect::<Vec<String>>(),
+            other => panic!("a listing of {path}, not {other:?}"),
+        };
+
+        assert_eq!(names("/"), ["home", "tmp"]);
+        assert_eq!(
+            names("/home/dev/"),
+            [".cache", ".config", "notes", "projects"]
+        );
+        assert!(names("/home/dev/projects").contains(&"calc-parser".to_owned()));
+        assert!(names("/home/dev/projects/calc-parser").contains(&"src".to_owned()));
+        assert!(list("/home/dev/nowhere").is_err());
+        assert!(list("~/projects").is_err());
     }
 
     #[test]

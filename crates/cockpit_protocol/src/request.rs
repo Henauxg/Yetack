@@ -86,6 +86,10 @@ pub enum Request {
     SessionsList,
     /// Starts an agent from a past Claude session. Answered by `AgentStarted`.
     SessionsResume(SessionResumeParams),
+    /// The folders inside a folder of the daemon's machine, for the new agent dialog. Answered by
+    /// `Directory`, which holds folders alone. Any folder the daemon's user can read lists: an
+    /// agent can start in any of them.
+    FoldersList(FoldersListParams),
     /// The machine's load now and over the last five minutes. Answered by `MachineLoad`, or by
     /// `Unsupported` on a machine without `/proc`. The daemon samples only while clients ask.
     MachineLoad,
@@ -156,6 +160,8 @@ pub enum Method {
     SessionsList,
     #[strum(serialize = "sessions.resume")]
     SessionsResume,
+    #[strum(serialize = "folders.list")]
+    FoldersList,
     #[strum(serialize = "machine.load")]
     MachineLoad,
 }
@@ -345,6 +351,13 @@ pub struct SessionResumeParams {
     pub session: ClaudeSessionId,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FoldersListParams {
+    /// Absolute. The daemon refuses a relative path, and one that starts with `~`, as
+    /// `agent.start` does.
+    pub path: PathBuf,
+}
+
 /// A request on the wire. `params` is absent for a method without parameters.
 #[derive(Serialize, Deserialize)]
 struct Tagged<P> {
@@ -387,6 +400,7 @@ impl Request {
             Self::SettingsSet(_) => Method::SettingsSet,
             Self::SessionsList => Method::SessionsList,
             Self::SessionsResume(_) => Method::SessionsResume,
+            Self::FoldersList(_) => Method::FoldersList,
             Self::MachineLoad => Method::MachineLoad,
         }
     }
@@ -442,6 +456,7 @@ impl Serialize for Request {
             }
             .serialize(serializer),
             Self::SessionsResume(params) => tagged(method, params, serializer),
+            Self::FoldersList(params) => tagged(method, params, serializer),
         }
     }
 }
@@ -489,6 +504,7 @@ impl<'de> Deserialize<'de> for Request {
             Method::SettingsSet => Self::SettingsSet(params(raw)?),
             Method::SessionsList => Self::SessionsList,
             Method::SessionsResume => Self::SessionsResume(params(raw)?),
+            Method::FoldersList => Self::FoldersList(params(raw)?),
             Method::MachineLoad => Self::MachineLoad,
         };
         Ok(request)

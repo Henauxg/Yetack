@@ -126,6 +126,26 @@ pub struct NewAgentForm {
     pub menu: Option<FormMenu>,
     /// A start or resume request is on its way.
     pub starting: bool,
+    /// The folders under the folder field, in the recent folders' place. `None` until the field is
+    /// typed in.
+    pub folders: Option<FolderList>,
+}
+
+/// The folder the new agent dialog's folder field names, with the folders the daemon listed in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderList {
+    /// Absolute.
+    pub folder: PathBuf,
+    pub listing: Loadable<DirListing>,
+}
+
+impl FolderList {
+    pub fn new(folder: PathBuf) -> Self {
+        Self {
+            folder,
+            listing: Loadable::NotRequested,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -364,9 +384,11 @@ impl UiState {
     /// cancels a title edit. Returns whether anything was open.
     pub fn close_overlays(&mut self) -> bool {
         if let Some(Dialog::NewAgent(form)) = &mut self.dialog
-            && form.menu.is_some()
+            && (form.menu.is_some() || form.folders.is_some())
         {
-            form.menu = None;
+            if form.menu.take().is_none() {
+                form.folders = None;
+            }
             return true;
         }
         let open = self.popover.is_some()
