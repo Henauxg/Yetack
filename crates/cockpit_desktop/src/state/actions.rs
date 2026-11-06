@@ -1377,7 +1377,11 @@ pub fn retry_history(state: &mut AppState, agent: AgentId) {
     }
 }
 
+/// Opens or closes the agent switcher. The new agent dialog stays open, with what its fields hold.
 pub fn toggle_switcher(state: &mut AppState, drafts: &mut Drafts) {
+    if matches!(state.ui.dialog, Some(Dialog::NewAgent(_))) {
+        return;
+    }
     let open = state.ui.dialog == Some(Dialog::Switcher);
     state.ui.popover = None;
     state.ui.dialog = (!open).then_some(Dialog::Switcher);
@@ -3659,6 +3663,28 @@ mod tests {
             &state.ui.dialog,
             Some(Dialog::NewAgent(form)) if form.effort == Some(Effort::Max)
         ));
+    }
+
+    /// Ctrl+K would replace the dialog, and Ctrl+N then open it empty.
+    #[test]
+    fn ctrl_k_leaves_the_new_agent_dialog_open_with_what_it_holds() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        open_new_agent(&mut state, &mut drafts);
+        drafts.new_agent.folder = "/work/calc".to_owned();
+        drafts.new_agent.prompt = "Fix the flaky test".to_owned();
+
+        toggle_switcher(&mut state, &mut drafts);
+        open_new_agent(&mut state, &mut drafts);
+
+        assert!(matches!(state.ui.dialog, Some(Dialog::NewAgent(_))));
+        assert_eq!(
+            (
+                drafts.new_agent.folder.as_str(),
+                drafts.new_agent.prompt.as_str()
+            ),
+            ("/work/calc", "Fix the flaky test")
+        );
     }
 
     #[test]
