@@ -138,6 +138,7 @@ pub fn text_above(drafts: &Drafts) -> Option<String> {
 
 /// The text naming the folder above the one `text` lists. The field lists absolute paths only.
 fn up(text: &str) -> Option<String> {
+    listed_folder(text)?;
     let root = Path::new("/");
     open_file::up(root, &open_file::listed_folder(root, text), text)
 }
@@ -294,6 +295,15 @@ mod tests {
             "the root has no folder above"
         );
         assert_eq!(text_above(&drafts), None);
+    }
+
+    #[test]
+    fn backspace_deletes_as_usual_in_a_text_the_field_does_not_list() {
+        let (mut state, mut drafts) = opened();
+        for text in ["~/projects/", "projects/", "projects/../"] {
+            type_text(&mut state, &mut drafts, text);
+            assert_eq!(text_above(&drafts), None, "{text}");
+        }
     }
 
     #[test]
