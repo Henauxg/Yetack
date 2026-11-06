@@ -4,15 +4,6 @@
 //! `agents-cockpit serve`. [`InAppDaemon`] runs it inside the desktop app, for clients in the
 //! same process.
 
-#![cfg_attr(
-    windows,
-    allow(
-        dead_code,
-        unused_imports,
-        reason = "on Windows, the file browsing, the machine load and the socket service are not built yet"
-    )
-)]
-
 mod browse;
 mod daemon;
 mod daemon_config;

@@ -98,6 +98,7 @@ impl StateDir {
         }
     }
 
+    #[cfg(unix)]
     pub(crate) fn socket(&self) -> PathBuf {
         socket_path(&self.root)
     }

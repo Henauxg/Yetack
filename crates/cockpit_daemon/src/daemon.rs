@@ -1,6 +1,7 @@
 //! What `serve` and the daemon in the app share: the state folder's lock, the state read back,
 //! and the hub's task. The socket, the signals and the logging belong to `serve` and its binary.
 
+#[cfg(unix)]
 use std::path::PathBuf;
 
 use tokio::sync::mpsc;
@@ -52,6 +53,7 @@ impl Daemon {
     }
 
     /// Completes when the hub's task ends, which happens only when it fails.
+    #[cfg(unix)]
     pub(crate) async fn hub_ended(&mut self) {
         // Either way the hub is gone.
         let _ = (&mut self.hub).await;
@@ -64,6 +66,7 @@ impl Daemon {
 }
 
 impl PreparedDaemon {
+    #[cfg(unix)]
     pub(crate) fn socket(&self) -> PathBuf {
         self.state.socket()
     }

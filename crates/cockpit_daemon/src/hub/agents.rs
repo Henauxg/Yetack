@@ -727,9 +727,12 @@ fn default_title(prompt: Option<&Prompt>, folder: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use cockpit_protocol::{PastSession, Timestamp};
 
+    #[cfg(unix)]
     use crate::sessions::SessionPast;
+    #[cfg(unix)]
     use crate::store::PastFile;
     #[cfg(unix)]
     use crate::test_script;
