@@ -395,6 +395,7 @@ When the process ends and its pid goes to another one during the check, the sign
   - `transport = "local"` takes an optional `socket` (default: the daemon's default socket), and `start_service = true` to start `agents-cockpit serve` when the socket does not answer.
   - `transport = "in_app"` runs the daemon in the app.
   - A missing file means the local daemon at its default socket.
+  - A `config.toml` that is a symbolic link, as home-manager or a dotfiles repository makes, stays one: the app writes the link's target.
 - **Reaching the daemon** (module `reach`): the connection task turns the config's daemon into a transport.
   For `in_app`, it starts `InAppDaemon` with the default state folder (`InAppHost` keeps it), or connects to the socket with a note when another daemon holds the lock.
   For `start_service`, it starts the service unless its socket answers.
@@ -402,6 +403,8 @@ When the process ends and its pid goes to another one during the check, the sign
   It names the daemon the app tried and the error, and offers Retry (the daemon it tried), "Run agents in this app", and "Start the background service here" (on Unix only).
   A choice holds for this run only, so the next start tries the config's daemon again.
   With "Use this every time" ticked, the app writes the choice into the config first (`save_daemon`, which keeps the file's other settings and comments): `in_app`, or `local` with `start_service`.
+  When the config is a symbolic link, `save_daemon` writes its target through a temporary file beside it, which takes the target's mode, and the link stays.
+  A read-only config, such as a link into the Nix store, is not written: the screen shows why, and the choice still holds for this run.
   The screen's state is pure (`state/no_daemon.rs`): which choice is under way, the tick, and which daemon a choice runs and saves.
   A connection that drops after it connected reconnects as before, with no screen.
 - **The background service**: the app runs `agents-cockpit --state-dir <folder> serve`, found in the app's own folder, then on `PATH`.
@@ -409,6 +412,21 @@ When the process ends and its pid goes to another one during the check, the sign
   Its stderr goes to `serve.log` in the app's state folder.
   The app waits up to 20 seconds for its socket, and shows the screen again with the reason when the program is missing or the service stops at once (the log's last line).
 - **Closing the window**: the event loop ends the process right after its last event, without dropping anything, so the app stops the daemon in the app in that event (`LoopDestroyed`), waiting at most 5 seconds after the agents are killed.
+- **Log** (module `logging`): the app logs to stderr, at the level `RUST_LOG` sets (`warn` by default).
+  A release build on Windows is a GUI program, which opens no console window, and one started from the desktop has no stderr: its log goes to `app.log` in the app's state folder, and the run before stays as `app.previous.log`.
+- **Notifications** (module `notifications`): at most one per agent, for an agent that needs you or finished, and a click on one brings the window up and opens its agent.
+  On Linux they go through the freedesktop notification service, and a "needs you" one closes once the agent no longer needs you.
+  On Windows they are toasts, from notify-rust's Windows backend.
+  Windows shows toasts only for an app the Start menu registers, which the app is not, so the toasts carry PowerShell's name and icon.
+  A click reaches the app only while the toast is on screen: once the toast is in the notification center, a click goes to PowerShell.
+  notify-rust cannot withdraw a toast, so a "needs you" toast stays until it times out.
+- **Paths** (module `path_style`): the app follows the path rules of the daemon's machine, not its own, since the app on Windows may reach a Linux daemon over SSH.
+  `PathStyle` holds the rules, on text, so the Linux tests check both.
+  On Unix, `/` separates names and case matters.
+  On Windows, `\` and `/` separate names, `C:\` and `\\server\share\` are roots with no folder above, names compare whatever their case, and paths show with `\`.
+  A path tells its machine by its root: an agent's folder starts with a drive or `\\` on Windows, and with `/` on Unix.
+  The new agent dialog's folder field has no agent: it takes the daemon's machine, Unix over SSH (only Unix runs `agents-cockpit bridge`) and the app's own platform otherwise.
+  Ctrl+O, the folder field, the changes list, the file view's tabs and short paths, markdown file links and `path:line` references, the header, the switcher and the recent folders follow these rules.
 - **Preferences**: `$XDG_STATE_HOME/agents-cockpit-desktop/prefs.json` (default `~/.local/state/agents-cockpit-desktop/`), on the machine the app runs on, keeps one viewer's choices: the file view's width and its wrap toggle, and the sidebar's status filter.
   A missing or broken file means the defaults.
 - **State**: `AppState` holds the summaries, the open transcripts, the plan usage and the UI state (selected agent, unread agents, open blocks).
@@ -439,7 +457,7 @@ When the process ends and its pid goes to another one during the check, the sign
 - **New agent dialog**: the folder field works as the "Open file" dialog's path field.
   Once it is typed in, the folders of the folder its text names (`folders.list`) take the recent folders' place, filtered by the last segment.
   Tab or Enter completes the highlighted folder, Backspace on an empty segment goes up, and Esc brings the recent folders back.
-  A text that names no absolute folder lists nothing.
+  A text that names no absolute folder, by the rules of the daemon's machine (see Paths), lists nothing.
 - **One highlight in a list**: in the Ctrl+K switcher, the Ctrl+O list, the folder completion, the resume list and the "/" palette, the pointer moves the keyboard's highlight, so one row is lit, with no CSS hover and no fade.
   WebKitGTK also sends a mousemove when a list scrolls under a still pointer, so only a pointer that moved takes the highlight (`PointerMoves` in `ui/dialogs.rs`).
   In the Ctrl+O list, the pointer picks its row as a key does, so a cut listing highlights it too.
@@ -487,7 +505,7 @@ When the process ends and its pid goes to another one during the check, the sign
 - `cockpit_protocol`: round trips of every message, and the method names pinned.
 - `cockpit_daemon`: the transcript conversion on fixture sequences; the store in a temporary folder; the server end to end with a fake `claude` (a small test binary that replays a script of lines, selected with `AGENTS_COCKPIT_CLAUDE`); the daemon in the app over in-memory streams, closed mid-turn and started again, and the lock it shares with the service (`tests/in_app.rs`).
 - `cockpit_client`: against an in-process fake daemon over a socket pair.
-- `cockpit_desktop`: `apply` on event sequences; rendering helpers (markdown, diffs) on sample input; the "No daemon answers" choices and the config they write.
+- `cockpit_desktop`: `apply` on event sequences; rendering helpers (markdown, diffs) on sample input; the "No daemon answers" choices and the config they write, through a symbolic link too; the path rules of both platforms.
 
 ## Platforms
 
@@ -502,6 +520,9 @@ The code marks what needs Unix with `#[cfg(unix)]` and gives Windows its own ver
 | daemon's state folder | `$XDG_STATE_HOME/agents-cockpit` | `%LOCALAPPDATA%\agents-cockpit` |
 | app's config file | `$XDG_CONFIG_HOME/agents-cockpit/config.toml` | `%APPDATA%\agents-cockpit\config.toml` |
 | app's preferences | `$XDG_STATE_HOME/agents-cockpit-desktop/prefs.json` | `%LOCALAPPDATA%\agents-cockpit-desktop\prefs.json` |
+| app's log | stderr | stderr, or `%LOCALAPPDATA%\agents-cockpit-desktop\app.log` when the app has none (a release build is a GUI program, with no console window) |
+| notifications | the freedesktop notification service | toasts, under PowerShell's name (see the desktop app's Notifications) |
+| paths the app shows | `/work/app` | `C:\work\app`, typed with `\` or `/`; a Linux daemon's paths keep Unix's rules |
 | home folder (Claude Code's folder is `.claude` in it) | `HOME` | `USERPROFILE` |
 
 Each path comes from its environment variable, and falls back to its default under the home folder, as on Linux.
@@ -512,10 +533,9 @@ On Windows, for now:
 - `machine.load` and `agent.stop_process` answer `unsupported`. The app shows "Load unknown", and so no stop buttons.
 - `agent.read_file`, `agent.list_dir`, `agent.find_files` and `folders.list` answer `unsupported`, since the daemon cannot yet check where an open file is. The file view and the dialogs show the daemon's sentence.
 - Stopping an agent kills its `claude` alone: its MCP servers and commands live on. On Linux the daemon kills the process group.
-- The app shows no notifications.
 - Nothing sets file modes. A file or folder takes the permissions of the folder it is in, and those of `%LOCALAPPDATA%` admit only the user.
 - The tests that need a shell, `/proc`, a Unix socket or file modes are left out, among them the end-to-end tests and the command line's tests.
-  So are the tests whose made-up paths are Unix paths, such as `/work/app`: Windows does not read them as absolute.
+  The app's tests with made-up Unix paths, such as `/work/app`, run on Windows too: they stand for a Linux daemon's paths, which the app reads by Unix's rules on either platform.
 
 ## Development
 
