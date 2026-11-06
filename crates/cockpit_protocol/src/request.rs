@@ -171,6 +171,13 @@ impl Method {
     pub fn as_str(self) -> &'static str {
         self.into()
     }
+
+    /// The start of the error a daemon sends for a method `name` it does not know. A client
+    /// tells an older daemon by it, so the text never changes.
+    #[must_use]
+    pub fn unknown_message(name: &str) -> String {
+        format!("unknown method `{name}`")
+    }
 }
 
 impl Serialize for Method {
@@ -185,7 +192,7 @@ impl<'de> Deserialize<'de> for Method {
 
         let name = String::deserialize(deserializer)?;
         name.parse()
-            .map_err(|_| D::Error::custom(format!("unknown method `{name}`")))
+            .map_err(|_| D::Error::custom(Method::unknown_message(&name)))
     }
 }
 

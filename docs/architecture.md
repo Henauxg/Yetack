@@ -194,6 +194,9 @@ Titles and model names go into every snapshot, so the daemon refuses a title ove
 It cuts a past session's title at 200 characters.
 
 The method names are an enum with fixed strings, pinned by a test ([standards/rust/api_design.md](standards/rust/api_design.md#declare-a-reusable-string-once)).
+A daemon answers a method it does not know with `invalid_request` and a message that starts with ``unknown method `<name>` ``.
+`Method::unknown_message` writes that text for the daemon, and the app finds it in an error to tell an older daemon.
+Older daemons send it as it is, so a test pins it.
 
 ### Events
 

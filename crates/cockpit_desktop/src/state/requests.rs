@@ -478,7 +478,7 @@ impl Failure {
     fn from_request(error: &RequestError, method: Method) -> Self {
         // A daemon that does not know the method cannot decode the request. The error code alone
         // also answers parameters that do not fit, but only this decode error names the method.
-        let unknown = format!("unknown method `{}`", method.as_str());
+        let unknown = Method::unknown_message(method.as_str());
         Self {
             message: error.to_string(),
             transient: matches!(

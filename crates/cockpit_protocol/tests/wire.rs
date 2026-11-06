@@ -1861,6 +1861,15 @@ fn an_unknown_method_does_not_decode() {
 }
 
 #[test]
+fn the_unknown_method_message_is_pinned() {
+    // Older daemons send this text for a method they do not know, and clients match it.
+    assert_eq!(
+        Method::unknown_message("agent.fly"),
+        "unknown method `agent.fly`"
+    );
+}
+
+#[test]
 fn params_that_do_not_fit_the_method_do_not_decode() {
     let result = serde_json::from_str::<Request>(r#"{"method":"agent.stop","params":{}}"#);
 
