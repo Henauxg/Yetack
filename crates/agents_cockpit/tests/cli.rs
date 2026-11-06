@@ -302,6 +302,43 @@ fn list_prints_no_control_character() {
 }
 
 #[test]
+fn adds_an_account_starts_an_agent_with_it_and_refuses_to_remove_it_while_used() {
+    let daemon = Daemon::start();
+    let folder = daemon.temp.path().join("claude-work");
+    let work = daemon.work();
+
+    let added = daemon.ok(&["account", "add", "Work", "--folder", folder_arg(&folder)]);
+    daemon.ok(&[
+        "start",
+        "--account",
+        "1",
+        folder_arg(&work),
+        "Fix the parser",
+    ]);
+    let refused = daemon.run(&["account", "remove", "1"]);
+    daemon.ok(&["account", "change", "1", "--name", "Client work"]);
+    let listed = daemon.ok(&["account", "list"]);
+
+    let command = format!("CLAUDE_CONFIG_DIR='{}' claude", folder.display());
+    assert!(added.contains("not_signed_in"), "{added}");
+    assert!(
+        added.contains(&format!("Sign in to Work: {command}")),
+        "{added}"
+    );
+    assert!(!refused.status.success());
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("use the account"), "{stderr}");
+    let ids: Vec<&str> = listed
+        .lines()
+        .skip(1)
+        .take(2)
+        .filter_map(|row| row.split_whitespace().next())
+        .collect();
+    assert_eq!(ids, ["0", "1"], "{listed}");
+    assert!(listed.contains("Client work"), "{listed}");
+}
+
+#[test]
 fn errors_go_to_stderr_with_a_failure_status() {
     let daemon = Daemon::start();
 

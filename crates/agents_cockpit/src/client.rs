@@ -9,16 +9,17 @@ use anyhow::bail;
 use cockpit_client::BRIDGE_SUBCOMMAND;
 use cockpit_client::{Backoff, Connection, Session, SessionUpdate, Transport};
 use cockpit_protocol::{
-    AccountId, AgentId, AgentParams, Answer, AnswerParams, ApprovalAnswer, ApprovalDecision,
-    Catchup, Effort, Event, MoveParams, PermissionMode, PlanAnswer, PlanDecision, Prompt,
-    PromptParams, QuestionAnswer, RenameParams, Request, ResponseBody, StartParams,
+    AccountAddParams, AccountChangeParams, AccountParams, AccountState, AgentId, AgentParams,
+    Answer, AnswerParams, ApprovalAnswer, ApprovalDecision, Catchup, Effort, Event, MoveParams,
+    PermissionMode, PlanAnswer, PlanDecision, Prompt, PromptParams, QuestionAnswer, RenameParams,
+    Request, ResponseBody, StartParams,
 };
 use serde::Serialize;
 use serde_json::Value;
 
 #[cfg(unix)]
 use crate::cli::SERVE_SUBCOMMAND;
-use crate::cli::{AnswerCommand, Command, PROGRAM, SSH_FLAG, Target};
+use crate::cli::{AccountCommand, AnswerCommand, Command, PROGRAM, SSH_FLAG, Target};
 
 /// The argument that makes a command read its text from stdin.
 const STDIN_ARG: &str = "-";
@@ -40,6 +41,7 @@ pub(crate) async fn run(target: &Target, command: Command) -> anyhow::Result<()>
     let request = match command {
         Command::List => return list(&transport).await,
         Command::Tail { agent } => return tail(transport, agent).await,
+        Command::Account { command } => return account(&transport, command).await,
         #[cfg(unix)]
         Command::Serve | Command::Bridge => {
             bail!("{SERVE_SUBCOMMAND} and {BRIDGE_SUBCOMMAND} run on their own")
@@ -51,6 +53,7 @@ pub(crate) async fn run(target: &Target, command: Command) -> anyhow::Result<()>
             model,
             mode,
             effort,
+            account,
         } => Request::AgentStart(StartParams {
             folder: agent_folder(target, folder)?,
             title,
@@ -60,7 +63,7 @@ pub(crate) async fn run(target: &Target, command: Command) -> anyhow::Result<()>
             prompt: prompt
                 .map(|text| read_text(text).map(text_prompt))
                 .transpose()?,
-            account: AccountId::DEFAULT,
+            account: account.unwrap_or_default(),
         }),
         Command::Prompt { agent, text } => Request::AgentPrompt(PromptParams {
             agent,
@@ -123,6 +126,79 @@ async fn list(transport: &Transport) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Lists the accounts, or changes them and prints the account as it is now.
+async fn account(transport: &Transport, command: AccountCommand) -> anyhow::Result<()> {
+    let request = match command {
+        AccountCommand::List => Request::AccountsList,
+        AccountCommand::Add {
+            name,
+            folder,
+            use_environment_api_key,
+        } => Request::AccountsAdd(AccountAddParams {
+            name,
+            folder,
+            use_environment_api_key,
+        }),
+        AccountCommand::Change {
+            account,
+            name,
+            use_environment_api_key,
+        } => Request::AccountsChange(AccountChangeParams {
+            account,
+            name,
+            use_environment_api_key,
+        }),
+        AccountCommand::Remove { account } => Request::AccountsRemove(AccountParams { account }),
+    };
+    let (connection, _) = Connection::connect(transport, None).await?;
+    let accounts = match connection.request(request).await? {
+        ResponseBody::Accounts { accounts, .. } => accounts,
+        ResponseBody::Account(state) => vec![state],
+        ResponseBody::Done => return Ok(()),
+        other => bail!("unexpected answer: {}", serde_json::to_string(&other)?),
+    };
+    let header = format!(
+        "{:<4} {:<13} {:<7} {:<20} FOLDER",
+        "ID", "SIGN-IN", "API KEY", "NAME"
+    );
+    if print_line(&header)? == Stdout::Closed {
+        return Ok(());
+    }
+    for state in &accounts {
+        if print_line(&account_row(state)?)? == Stdout::Closed {
+            return Ok(());
+        }
+    }
+    for state in &accounts {
+        let line = format!(
+            "Sign in to {}: {}",
+            printable(&state.account.name),
+            printable(&state.sign_in_command)
+        );
+        if print_line(&line)? == Stdout::Closed {
+            return Ok(());
+        }
+    }
+    Ok(())
+}
+
+fn account_row(state: &AccountState) -> anyhow::Result<String> {
+    let account = &state.account;
+    let api_key = if account.use_environment_api_key {
+        "daemon"
+    } else {
+        "-"
+    };
+    Ok(format!(
+        "{:<4} {:<13} {:<7} {:<20} {}",
+        account.id.get(),
+        word(state.sign_in)?,
+        api_key,
+        shorten(&printable(&account.name), 20),
+        printable(&account.folder.display().to_string())
+    ))
 }
 
 /// Prints events as JSON lines until interrupted or stdout closes, reconnecting after a drop.

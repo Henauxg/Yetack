@@ -9,7 +9,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use cockpit_client::BRIDGE_SUBCOMMAND;
 use cockpit_client::Transport;
 use cockpit_daemon::{HOME_ENV, STATE_DIR_FLAG};
-use cockpit_protocol::{AgentId, Effort, PendingId, PermissionMode, PlanDecision};
+use cockpit_protocol::{AccountId, AgentId, Effort, PendingId, PermissionMode, PlanDecision};
 
 /// The program's name, as the command line and its messages show it.
 pub(crate) const PROGRAM: &str = "agents-cockpit";
@@ -71,6 +71,9 @@ pub(crate) enum Command {
         mode: Option<ModeArg>,
         #[arg(long, value_enum)]
         effort: Option<EffortArg>,
+        /// The id of the Claude account to run with [default: the default account, 0]
+        #[arg(long, value_parser = account_id)]
+        account: Option<AccountId>,
     },
     /// Send a prompt; `-` reads it from stdin
     Prompt {
@@ -122,6 +125,41 @@ pub(crate) enum Command {
     Tail {
         #[arg(value_parser = agent_id)]
         agent: Option<AgentId>,
+    },
+    /// List, add, change or remove the Claude accounts agents run with
+    Account {
+        #[command(subcommand)]
+        command: AccountCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum AccountCommand {
+    /// List the accounts, whether each is signed in, and the command that signs in to it
+    List,
+    /// Add an account, and print the command that signs in to it, to run on the daemon's machine
+    Add {
+        name: String,
+        /// Its Claude Code folder, absolute [default: .claude-<name> in the home folder]
+        #[arg(long)]
+        folder: Option<PathBuf>,
+        /// Give its agents the daemon's own ANTHROPIC_API_KEY
+        #[arg(long)]
+        use_environment_api_key: bool,
+    },
+    /// Rename an account, or change whether its agents get the daemon's ANTHROPIC_API_KEY
+    Change {
+        #[arg(value_parser = account_id)]
+        account: AccountId,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        use_environment_api_key: Option<bool>,
+    },
+    /// Remove an account no agent uses; its folder stays
+    Remove {
+        #[arg(value_parser = account_id)]
+        account: AccountId,
     },
 }
 
@@ -243,6 +281,10 @@ impl From<PlanArg> for PlanDecision {
 
 fn agent_id(text: &str) -> Result<AgentId, ParseIntError> {
     text.parse().map(AgentId::new)
+}
+
+fn account_id(text: &str) -> Result<AccountId, ParseIntError> {
+    text.parse().map(AccountId::new)
 }
 
 fn pending_id(text: &str) -> Result<PendingId, Infallible> {
