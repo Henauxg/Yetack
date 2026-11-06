@@ -24,6 +24,13 @@ pub enum HistoryState {
     Failed(String),
 }
 
+impl HistoryState {
+    /// Whether a page of the history has come.
+    pub fn has_page(&self) -> bool {
+        matches!(self, Self::Loaded { .. } | Self::LoadingOlder)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Transcript {
     items: BTreeMap<ItemId, TranscriptItem>,
@@ -457,5 +464,16 @@ mod tests {
         let ids: Vec<u32> = awaiting_approval(&refs).iter().map(|id| id.get()).collect();
 
         assert_eq!(ids, [1]);
+    }
+
+    #[test]
+    fn the_history_has_a_page_once_one_came() {
+        let has_page = |history: HistoryState| history.has_page();
+
+        assert!(!has_page(HistoryState::NotLoaded));
+        assert!(!has_page(HistoryState::Loading));
+        assert!(!has_page(HistoryState::Failed("refused".to_owned())));
+        assert!(has_page(HistoryState::Loaded { has_older: true }));
+        assert!(has_page(HistoryState::LoadingOlder));
     }
 }

@@ -107,7 +107,8 @@ const settle = () => {
   }
 };
 // Another agent's entries replace the chat's: keep the place of the one that leaves, and go back
-// to the place of the one that comes, or to its bottom.
+// to the place of the one that comes, or to its bottom. A chat that draws only some of its
+// agent's entries names no agent, so the place waits for all of them.
 const changed = () => {
   if (box === null) {
     return;

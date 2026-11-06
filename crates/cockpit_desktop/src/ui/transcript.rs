@@ -15,7 +15,7 @@ use serde_json::Value;
 
 use crate::connection::{Clock, Cockpit};
 use crate::render::{Diff, Language, diff_lines};
-use crate::state::{self, HistoryState, TurnStart, actions, file_edits};
+use crate::state::{self, AgentEntry, HistoryState, TurnStart, actions, file_edits};
 use crate::ui::cards::{ApprovalCard, PlanCard, QuestionCard};
 use crate::ui::chat_scroll::{self, CHAT_SCROLL_ID, ENTRY_CLASS, JumpToLatest, NewDivider};
 use crate::ui::code::{LineNumbers, diff_row};
@@ -107,11 +107,60 @@ const DESCRIPTION_FIELD: &str = "description";
 /// Claude Code's shell tool. Without its input, its summary is the command's first line.
 const BASH_TOOL: &str = "Bash";
 
+/// The rows a chat draws in the frame it opens, enough to fill the window. The older rows follow
+/// in the next frame: drawing a long conversation at once delays the whole window's switch.
+const FIRST_ROWS: usize = 25;
+
+/// Which rows of the main conversation the chat draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShownRows {
+    All,
+    /// The latest rows, from this index on, in the frame the chat opens.
+    Latest(usize),
+    /// No row but the skeleton, in the frame the chat opens on a place scrolled up: the latest
+    /// rows may not hold that place.
+    Skeleton,
+}
+
+impl ShownRows {
+    /// In the frame a chat of `rows` rows opens.
+    fn opening(rows: usize, scrolled_up: bool) -> Self {
+        if rows <= FIRST_ROWS {
+            Self::All
+        } else if scrolled_up {
+            Self::Skeleton
+        } else {
+            Self::Latest(rows - FIRST_ROWS)
+        }
+    }
+
+    /// The index of the first row drawn, `rows` when none is.
+    fn first(self, rows: usize) -> usize {
+        match self {
+            Self::All => 0,
+            Self::Latest(first) => first,
+            Self::Skeleton => rows,
+        }
+    }
+}
+
 #[component]
 pub fn TranscriptView() -> Element {
     use_hook(start_fold_script);
     let cockpit: Cockpit = use_context();
     chat_scroll::use_chat_scroll(cockpit);
+    // The agent whose conversation the chat opened, once it has a page of it.
+    let opened = use_memo(move || {
+        let state = cockpit.state.read();
+        state
+            .selected()
+            .filter(|entry| entry.transcript.history().has_page())
+            .map(AgentEntry::id)
+    });
+    // Effects run once the frame's changes are on the page: the chat draws its latest rows in
+    // one frame, and all of them in the next.
+    let mut whole = use_signal(|| None::<AgentId>);
+    use_effect(move || whole.set(opened()));
     let state = cockpit.state.read();
     let Some(entry) = state.selected() else {
         return rsx! {
@@ -151,11 +200,19 @@ pub fn TranscriptView() -> Element {
     let links = step_links(&is_step, working);
     let working_linked = is_step.last().copied().unwrap_or(false);
     let notes = older_step_notes(top_items, &loaded);
+    let scrolled_up = state.ui.chat_scrolled_up.get(&agent).copied();
+    let shown = if whole() == Some(agent) {
+        ShownRows::All
+    } else {
+        ShownRows::opening(top_items.len(), scrolled_up.is_some())
+    };
+    let first = shown.first(top_items.len());
     let top: Vec<TopRow> = top_items
         .iter()
         .zip(states)
         .zip(links)
         .zip(notes)
+        .skip(first)
         .map(|(((item, state), links), older_step)| TopRow {
             item: (*item).clone(),
             nested: subtree(&children, item.id),
@@ -165,52 +222,28 @@ pub fn TranscriptView() -> Element {
         })
         .collect();
     let history = entry.transcript.history().clone();
-    let scrolled_up = state.ui.chat_scrolled_up.get(&agent).copied();
     let waiting = scrolled_up.map_or(0, |last_seen| actions::new_entries(entry, last_seen).count);
     let divider = actions::new_divider(&state, agent);
     rsx! {
         div {
             id: CHAT_SCROLL_ID,
             class: "chat-scroll scroll",
-            // The chat's scroll script keeps each agent's place.
-            "data-agent": "{agent.get()}",
+            // The chat's scroll script keeps each agent's place. It goes back to that place once
+            // the chat draws all the agent's rows.
+            "data-agent": (shown == ShownRows::All).then(|| agent.get().to_string()),
             div { class: "chat-column",
-                match history {
-                    HistoryState::NotLoaded | HistoryState::Loading => rsx! {
-                        TranscriptSkeleton {}
-                    },
-                    HistoryState::LoadingOlder => rsx! {
-                        p { class: "history-note loading-note", role: "status",
-                            span { class: "spinner", aria_hidden: true }
-                            "Loading older messages"
-                        }
-                    },
-                    HistoryState::Loaded { has_older: true } => rsx! {
-                        button {
-                            class: "link-button history-note",
-                            onclick: move |_| cockpit.change(|state| actions::load_older(state, agent)),
-                            "Load older messages"
-                        }
-                    },
-                    HistoryState::Loaded { has_older: false } => rsx! {},
-                    HistoryState::Failed(error) => rsx! {
-                        p { class: "history-note",
-                            "The conversation did not load: {error}. "
+                if shown == ShownRows::Skeleton {
+                    TranscriptSkeleton {}
+                } else if shown == ShownRows::All {
+                    {history_note(history, cockpit, agent)}
+                    if status == AgentStatus::Exited {
+                        div { class: "exited-banner",
+                            span { "The claude process ended. Resume starts it again on the same conversation." }
                             button {
-                                class: "link-button",
-                                onclick: move |_| cockpit.update(|state| actions::retry_history(state, agent)),
-                                "Retry"
+                                class: "button primary",
+                                onclick: move |_| cockpit.change(|_| actions::resume_agent(agent)),
+                                "Resume"
                             }
-                        }
-                    },
-                }
-                if status == AgentStatus::Exited {
-                    div { class: "exited-banner",
-                        span { "The claude process ended. Resume starts it again on the same conversation." }
-                        button {
-                            class: "button primary",
-                            onclick: move |_| cockpit.change(|_| actions::resume_agent(agent)),
-                            "Resume"
                         }
                     }
                 }
@@ -219,15 +252,51 @@ pub fn TranscriptView() -> Element {
                 for TopRow { item, nested, awaits_approval, step, older_step } in top {
                     TranscriptRow { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), new_above: divider == Some(item.id), item, nested, awaits_approval, step, older_step }
                 }
-                if working {
+                if working && shown != ShownRows::Skeleton {
                     WorkingLine { since: turn_start, linked: working_linked }
                 }
-                for item in queued {
-                    TranscriptRow { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), new_above: divider == Some(item.id), item, nested: Vec::new(), awaits_approval: false, step: None, older_step: false }
+                if shown != ShownRows::Skeleton {
+                    for item in queued {
+                        TranscriptRow { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), new_above: divider == Some(item.id), item, nested: Vec::new(), awaits_approval: false, step: None, older_step: false }
+                    }
                 }
             }
         }
         JumpToLatest { shown: scrolled_up.is_some(), count: waiting }
+    }
+}
+
+/// What stands above the conversation's first loaded item: the skeleton while the first page
+/// loads, the way to older messages, or why they did not load.
+fn history_note(history: HistoryState, cockpit: Cockpit, agent: AgentId) -> Element {
+    match history {
+        HistoryState::NotLoaded | HistoryState::Loading => rsx! {
+            TranscriptSkeleton {}
+        },
+        HistoryState::LoadingOlder => rsx! {
+            p { class: "history-note loading-note", role: "status",
+                span { class: "spinner", aria_hidden: true }
+                "Loading older messages"
+            }
+        },
+        HistoryState::Loaded { has_older: true } => rsx! {
+            button {
+                class: "link-button history-note",
+                onclick: move |_| cockpit.change(|state| actions::load_older(state, agent)),
+                "Load older messages"
+            }
+        },
+        HistoryState::Loaded { has_older: false } => rsx! {},
+        HistoryState::Failed(error) => rsx! {
+            p { class: "history-note",
+                "The conversation did not load: {error}. "
+                button {
+                    class: "link-button",
+                    onclick: move |_| cockpit.update(|state| actions::retry_history(state, agent)),
+                    "Retry"
+                }
+            }
+        },
     }
 }
 
@@ -1399,5 +1468,19 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn an_opening_chat_draws_its_latest_rows_or_the_skeleton_over_a_place_scrolled_up() {
+        let short = ShownRows::opening(FIRST_ROWS, true);
+        let long = ShownRows::opening(140, false);
+        let scrolled_up = ShownRows::opening(140, true);
+
+        assert_eq!(short, ShownRows::All);
+        assert_eq!(long, ShownRows::Latest(140 - FIRST_ROWS));
+        assert_eq!(scrolled_up, ShownRows::Skeleton);
+        assert_eq!(ShownRows::All.first(140), 0);
+        assert_eq!(long.first(140), 140 - FIRST_ROWS);
+        assert_eq!(scrolled_up.first(140), 140);
     }
 }
