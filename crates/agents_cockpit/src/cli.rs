@@ -8,13 +8,13 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 #[cfg(unix)]
 use cockpit_client::BRIDGE_SUBCOMMAND;
 use cockpit_client::Transport;
-use cockpit_daemon::HOME_ENV;
+use cockpit_daemon::{HOME_ENV, STATE_DIR_FLAG};
 use cockpit_protocol::{AgentId, Effort, PendingId, PermissionMode, PlanDecision};
 
 /// The program's name, as the command line and its messages show it.
 pub(crate) const PROGRAM: &str = "agents-cockpit";
 #[cfg(unix)]
-pub(crate) const SERVE_SUBCOMMAND: &str = "serve";
+pub(crate) use cockpit_daemon::SERVE_SUBCOMMAND;
 pub(crate) const SSH_FLAG: &str = "ssh";
 const DEFAULT_REMOTE_COMMAND: &str = PROGRAM;
 
@@ -35,7 +35,7 @@ pub(crate) struct Cli {
 #[derive(Debug, Args)]
 pub(crate) struct Target {
     /// The daemon's state folder [default: $XDG_STATE_HOME/agents-cockpit]
-    #[arg(long, global = true)]
+    #[arg(long = STATE_DIR_FLAG, global = true)]
     pub(crate) state_dir: Option<PathBuf>,
     /// Reach the daemon on this host over SSH, through its bridge
     #[arg(long = SSH_FLAG, global = true, conflicts_with = "state_dir")]

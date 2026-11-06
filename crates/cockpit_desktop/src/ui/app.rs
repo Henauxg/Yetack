@@ -14,6 +14,7 @@ use crate::ui::dialogs::Dialogs;
 use crate::ui::file_view::FileViewPanel;
 use crate::ui::header::Header;
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::no_daemon::NoDaemonScreen;
 use crate::ui::reorder::use_reorder;
 use crate::ui::sidebar::Sidebar;
 use crate::ui::splitter::{APP_ID, SHARE_PROPERTY, Splitter, use_splitter};
@@ -30,6 +31,11 @@ pub fn App() -> Element {
     use_splitter(cockpit);
     use_reorder(cockpit);
     let state = cockpit.state.read();
+    if let ConnectionState::NoDaemon(_) = state.connection {
+        return rsx! {
+            NoDaemonScreen {}
+        };
+    }
     let file_view_open = state
         .ui
         .selected

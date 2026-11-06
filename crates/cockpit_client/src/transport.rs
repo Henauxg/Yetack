@@ -1,14 +1,16 @@
-//! The two ways to reach a daemon: its Unix socket, or `agents-cockpit bridge` over SSH.
+//! The ways to reach a daemon: its Unix socket, `agents-cockpit bridge` over SSH, or an
+//! in-memory stream to a daemon in this process.
 
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
+use tokio::io::DuplexStream;
 #[cfg(unix)]
 use tokio::net::UnixStream;
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::error::ConnectError;
 
@@ -24,7 +26,11 @@ const STDERR_TAIL_BYTES: usize = 4 * 1024;
 /// How long a failed connection waits for ssh to exit and close its stderr.
 const STDERR_WAIT: Duration = Duration::from_secs(2);
 
-/// Where the daemon is. Both variants come from the app's config, never from the daemon.
+/// The bytes an in-memory stream holds in each direction before its writer waits.
+const IN_APP_BUFFER: usize = 64 * 1024;
+
+/// Where the daemon is. It comes from the app's config or the app's own choice, never from the
+/// daemon.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Transport {
     /// The daemon runs on this machine.
@@ -37,7 +43,35 @@ pub enum Transport {
         host: String,
         remote_command: String,
     },
+    /// The daemon runs in this process. Each connection is an in-memory stream that carries the
+    /// same frames as a socket.
+    InApp(InAppLink),
 }
+
+/// The way to a daemon in this process: each connection sends the daemon its end of a new
+/// in-memory stream.
+#[derive(Debug, Clone)]
+pub struct InAppLink {
+    streams: mpsc::UnboundedSender<DuplexStream>,
+}
+
+impl InAppLink {
+    /// The link, and the receiver the daemon takes each connection's stream from.
+    #[must_use]
+    pub fn new() -> (Self, mpsc::UnboundedReceiver<DuplexStream>) {
+        let (streams, received) = mpsc::unbounded_channel();
+        (Self { streams }, received)
+    }
+}
+
+/// Two links are equal when they reach the same daemon.
+impl PartialEq for InAppLink {
+    fn eq(&self, other: &Self) -> bool {
+        self.streams.same_channel(&other.streams)
+    }
+}
+
+impl Eq for InAppLink {}
 
 pub(crate) struct SshLink {
     pub(crate) stdin: ChildStdin,
@@ -83,6 +117,15 @@ pub(crate) fn socket_unsupported(socket: &Path) -> ConnectError {
             "the app reaches a daemon's socket on Unix only",
         ),
     }
+}
+
+/// Opens an in-memory stream and hands its other end to the daemon.
+pub(crate) fn connect_in_app(link: &InAppLink) -> Result<DuplexStream, ConnectError> {
+    let (client, daemon) = tokio::io::duplex(IN_APP_BUFFER);
+    link.streams
+        .send(daemon)
+        .map_err(|_| ConnectError::InAppStopped)?;
+    Ok(client)
 }
 
 /// Starts ssh. Its stdin and stdout carry the protocol.
@@ -246,6 +289,29 @@ mod tests {
                 format!("{path}\nbridge\n")
             );
         }
+    }
+
+    #[tokio::test]
+    async fn an_in_app_link_hands_the_daemon_its_end_of_each_stream() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (link, mut streams) = InAppLink::new();
+        let (other, _) = InAppLink::new();
+        assert_eq!(link, link.clone());
+        assert_ne!(link, other);
+
+        let mut client = connect_in_app(&link).unwrap();
+        let mut daemon = streams.recv().await.unwrap();
+        client.write_all(b"hello\n").await.unwrap();
+        let mut read = [0; 6];
+        daemon.read_exact(&mut read).await.unwrap();
+        assert_eq!(&read, b"hello\n");
+
+        drop(streams);
+        assert!(matches!(
+            connect_in_app(&link),
+            Err(ConnectError::InAppStopped)
+        ));
     }
 
     #[test]

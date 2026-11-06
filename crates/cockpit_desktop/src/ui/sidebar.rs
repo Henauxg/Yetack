@@ -355,14 +355,7 @@ fn ConnectionFooter() -> Element {
     let state = cockpit.state.read();
     let machine = &state.daemon.machine;
     let (class, line, detail) = match &state.connection {
-        ConnectionState::Connected => {
-            let line = if state.daemon.over_ssh {
-                format!("{machine}, over SSH")
-            } else {
-                "The daemon on this machine".to_owned()
-            };
-            ("connection connected", line, None)
-        }
+        ConnectionState::Connected => ("connection connected", state.daemon.connected_line(), None),
         ConnectionState::Connecting { attempt } => {
             let mut line = format!("Connecting to {machine}");
             if *attempt > 1 {
@@ -381,6 +374,11 @@ fn ConnectionFooter() -> Element {
                 Some(detail),
             )
         }
+        ConnectionState::NoDaemon(screen) => (
+            "connection disconnected",
+            "No daemon answers".to_owned(),
+            Some(screen.error.clone()),
+        ),
     };
     rsx! {
         div { class: "sidebar-foot",

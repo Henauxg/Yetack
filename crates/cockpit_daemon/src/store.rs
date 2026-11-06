@@ -12,6 +12,6 @@ pub(crate) use agents_file::{AgentRecord, AgentsFile, PastFile};
 pub(crate) use daemon_settings::DaemonSettings;
 pub(crate) use event_log::{EventLogs, LogName, ReplayRead, for_each_event, read_replay};
 pub(crate) use raw_log::{Direction, RawLog};
-pub(crate) use state_dir::StateDir;
+pub(crate) use state_dir::{ServeLock, StateDir};
 pub use state_dir::{default_state_dir, socket_path};
 pub use store_error::StoreError;

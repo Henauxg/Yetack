@@ -5,16 +5,24 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
-use cockpit_client::{Backoff, Requester, Session, Transport};
+use cockpit_client::{
+    Backoff, RequestError, Requester, Session, SessionError, SessionUpdate, Transport,
+};
 use cockpit_protocol::{AgentId, Request};
 use dioxus::desktop::DesktopContext;
 use dioxus::prelude::*;
 use tokio::sync::mpsc;
 
+use crate::config::DaemonConfig;
+use crate::daemon_label::DaemonLabel;
+use crate::in_app::InAppHost;
 use crate::notifications::Notifier;
+use crate::reach::{self, Places, Unreached};
 use crate::state::machine_load::{LOAD_POLL, LoadView};
+use crate::state::no_daemon::{self, Chosen, DaemonChoice};
 use crate::state::{
-    self, AgentEntry, AppState, Drafts, Outgoing, Purpose, TitlePlace, Utf16Offset, actions,
+    self, AgentEntry, AppState, ConnectionState, Drafts, Outgoing, Purpose, TitlePlace,
+    Utf16Offset, actions,
 };
 use crate::{bridge, demo};
 
@@ -22,12 +30,23 @@ use crate::{bridge, demo};
 #[derive(Debug, Clone, PartialEq)]
 pub struct Startup {
     pub state: AppState,
-    pub transport: Transport,
+    /// The daemon the config names.
+    pub daemon: DaemonConfig,
+    pub places: Places,
+    /// The daemon the app runs itself, which the window's close stops.
+    pub in_app: InAppHost,
     pub notifications: bool,
     /// Answers requests from the sample state instead of a daemon.
     pub demo: bool,
     /// Where the preferences are saved, `None` without a home folder.
     pub prefs_file: Option<PathBuf>,
+}
+
+/// What components ask of the connection task.
+pub enum ToDaemon {
+    Send(Outgoing),
+    /// A choice on the "No daemon answers" screen.
+    Choose(Chosen),
 }
 
 /// What components hold to read and change the state and to reach the daemon. The drafts are a
@@ -39,7 +58,7 @@ pub struct Cockpit {
     pub state: Signal<AppState>,
     pub drafts: Signal<Drafts>,
     pub load: Signal<LoadView>,
-    daemon: Coroutine<Outgoing>,
+    daemon: Coroutine<ToDaemon>,
 }
 
 impl Cockpit {
@@ -54,7 +73,16 @@ impl Cockpit {
             requests
         };
         for request in requests {
-            self.daemon.send(request);
+            self.daemon.send(ToDaemon::Send(request));
+        }
+    }
+
+    /// A click on one of the "No daemon answers" screen's buttons.
+    pub fn choose_daemon(&self, choice: DaemonChoice) {
+        let mut signal = self.state;
+        let chosen = no_daemon::choose(&mut signal.write(), choice);
+        if let Some(chosen) = chosen {
+            self.daemon.send(ToDaemon::Choose(chosen));
         }
     }
 
@@ -152,7 +180,9 @@ pub fn use_clock() -> Clock {
 pub fn use_cockpit(startup: Startup) -> Cockpit {
     let Startup {
         state: initial,
-        transport,
+        daemon: configured,
+        places,
+        in_app,
         notifications,
         demo,
         prefs_file: _,
@@ -160,13 +190,18 @@ pub fn use_cockpit(startup: Startup) -> Cockpit {
     let state = use_signal(move || initial);
     let drafts = use_signal(Drafts::default);
     let load = use_signal(LoadView::default);
-    let daemon = use_coroutine(move |requests: UnboundedReceiver<Outgoing>| {
-        let transport = transport.clone();
+    let daemon = use_coroutine(move |requests: UnboundedReceiver<ToDaemon>| {
+        let live = Live {
+            configured: configured.clone(),
+            places: places.clone(),
+            in_app: in_app.clone(),
+            notify: notifications,
+        };
         async move {
             if demo {
                 run_demo(state, drafts, load, requests).await;
             } else {
-                run(state, drafts, load, transport, notifications, requests).await;
+                run(state, drafts, load, live, requests).await;
             }
         }
     });
@@ -191,7 +226,7 @@ async fn run_demo(
     mut state: Signal<AppState>,
     mut drafts: Signal<Drafts>,
     load: Signal<LoadView>,
-    mut requests: UnboundedReceiver<Outgoing>,
+    mut requests: UnboundedReceiver<ToDaemon>,
 ) {
     use futures_util::StreamExt;
 
@@ -207,8 +242,10 @@ async fn run_demo(
                 show_load(load, LoadView::from_result(answer));
             }
             outgoing = requests.next() => {
-                let Some(outgoing) = outgoing else {
-                    return;
+                let outgoing = match outgoing {
+                    Some(ToDaemon::Send(outgoing)) => outgoing,
+                    Some(ToDaemon::Choose(_)) => continue,
+                    None => return,
                 };
                 let mut queue = VecDeque::from([outgoing]);
                 while let Some(Outgoing { request, purpose }) = queue.pop_front() {
@@ -235,14 +272,123 @@ async fn run_demo(
     }
 }
 
+/// What the connection task needs to reach a daemon.
+struct Live {
+    configured: DaemonConfig,
+    places: Places,
+    in_app: InAppHost,
+    notify: bool,
+}
+
+/// How a session ended.
+enum Served {
+    /// The window is gone.
+    Closed,
+    /// The first connection failed: the error says why.
+    NoAnswer(String),
+}
+
+/// Reaches the config's daemon. When that fails before a first connection, shows the "No daemon
+/// answers" screen and reaches the daemon the user picks there.
 async fn run(
+    mut state: Signal<AppState>,
+    drafts: Signal<Drafts>,
+    load: Signal<LoadView>,
+    live: Live,
+    mut requests: UnboundedReceiver<ToDaemon>,
+) {
+    let Live {
+        mut configured,
+        places,
+        in_app,
+        notify,
+    } = live;
+    let mut daemon = configured.clone();
+    loop {
+        let unreached = match reach::reach(&daemon, &places, &in_app).await {
+            Ok(reached) => {
+                {
+                    let mut state = state.write();
+                    state.daemon = reached.label.clone();
+                    state.connection = ConnectionState::Connecting { attempt: 1 };
+                    if let Some(note) = reached.note {
+                        state.ui.inform(note.to_owned());
+                    }
+                }
+                let served = serve(
+                    state,
+                    drafts,
+                    load,
+                    reached.transport,
+                    notify,
+                    &mut requests,
+                );
+                match served.await {
+                    Served::Closed => return,
+                    Served::NoAnswer(error) => Unreached {
+                        label: reached.label,
+                        error,
+                    },
+                }
+            }
+            Err(unreached) => unreached,
+        };
+        show_no_daemon(state, &unreached.label, unreached.error);
+        let Some(chosen) = next_choice(state, drafts, &mut requests).await else {
+            return;
+        };
+        let (next, error) = reach::settle(chosen, &daemon, &mut configured, &places.config_file);
+        if let Some(error) = error {
+            state
+                .write()
+                .ui
+                .report(format!("Cannot keep the choice for next time: {error}"));
+        }
+        daemon = next;
+    }
+}
+
+fn show_no_daemon(mut state: Signal<AppState>, tried: &DaemonLabel, error: String) {
+    let mut state = state.write();
+    state.daemon = tried.clone();
+    no_daemon::show(&mut state, tried.name(), error);
+}
+
+/// Waits for a choice on the screen. No daemon answers the requests that come meanwhile.
+async fn next_choice(
+    mut state: Signal<AppState>,
+    mut drafts: Signal<Drafts>,
+    requests: &mut UnboundedReceiver<ToDaemon>,
+) -> Option<Chosen> {
+    use futures_util::StreamExt;
+
+    loop {
+        match requests.next().await? {
+            ToDaemon::Choose(chosen) => return Some(chosen),
+            ToDaemon::Send(Outgoing { request, purpose }) => {
+                let refused = Err(RequestError::NotConnected);
+                let mut state = state.write();
+                state::apply_response(
+                    &mut state,
+                    &mut drafts.write(),
+                    request.method(),
+                    purpose,
+                    refused,
+                );
+            }
+        }
+    }
+}
+
+/// Runs a session over `transport`, which reconnects after every drop once it connected.
+async fn serve(
     mut state: Signal<AppState>,
     mut drafts: Signal<Drafts>,
     load: Signal<LoadView>,
     transport: Transport,
     notify: bool,
-    mut requests: UnboundedReceiver<Outgoing>,
-) {
+    requests: &mut UnboundedReceiver<ToDaemon>,
+) -> Served {
     use futures_util::StreamExt;
 
     let mut session = Session::start(transport, Backoff::default());
@@ -253,6 +399,7 @@ async fn run(
     let (load_sender, mut load_answers) = mpsc::unbounded_channel();
     // One question at a time: a slow daemon does not pile them up.
     let mut load_asked = false;
+    let mut connected_once = false;
     loop {
         tokio::select! {
             _ = load_ticks.tick() => {
@@ -275,8 +422,19 @@ async fn run(
             }
             update = session.next_update() => {
                 let Some(update) = update else {
-                    return;
+                    return Served::Closed;
                 };
+                match &update {
+                    SessionUpdate::Connected(_) => connected_once = true,
+                    SessionUpdate::Disconnected { error: error @ SessionError::Connect(_), .. }
+                        if !connected_once =>
+                    {
+                        return Served::NoAnswer(state::error_chain(error));
+                    }
+                    SessionUpdate::Connecting { .. }
+                    | SessionUpdate::Disconnected { .. }
+                    | SessionUpdate::Event(_) => {}
+                }
                 let (alerts, follow_up) = {
                     let mut state = state.write();
                     let mut drafts = drafts.write();
@@ -291,12 +449,12 @@ async fn run(
                     notifier.update(alerts, &state.peek());
                 }
             }
-            outgoing = requests.next() => {
-                let Some(outgoing) = outgoing else {
-                    return;
-                };
-                send(state, drafts, requester.clone(), outgoing);
-            }
+            outgoing = requests.next() => match outgoing {
+                Some(ToDaemon::Send(outgoing)) => send(state, drafts, requester.clone(), outgoing),
+                // The screen shows only before a first connection.
+                Some(ToDaemon::Choose(_)) => {}
+                None => return Served::Closed,
+            },
             Some(agent) = opened.recv() => {
                 focus_window();
                 let follow_up = {
@@ -367,7 +525,7 @@ mod tests {
         });
         let drafts = use_signal(Drafts::default);
         let load = use_signal(LoadView::default);
-        let daemon = use_coroutine(|_: UnboundedReceiver<Outgoing>| async {});
+        let daemon = use_coroutine(|_: UnboundedReceiver<ToDaemon>| async {});
         let cockpit = use_context_provider(|| Cockpit {
             state,
             drafts,

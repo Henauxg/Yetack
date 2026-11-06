@@ -11,18 +11,21 @@
 //! enabled = true
 //! ```
 //!
-//! A missing file means the local daemon, at its default socket.
+//! The daemon may also be `transport = "local"`, with an optional `socket` and `start_service`,
+//! or `transport = "in_app"`, the daemon in the app's own process. A missing file means the local
+//! daemon, at its default socket.
 
 use std::io;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use cockpit_client::Transport;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 const APP_FOLDER: &str = "agents-cockpit";
 const CONFIG_FILE: &str = "config.toml";
-const SOCKET_FILE: &str = "agents-cockpit.sock";
+const DAEMON_SECTION: &str = "daemon";
+/// Where a new config file is written before it replaces the old one.
+const TEMPORARY_EXTENSION: &str = "toml.new";
 
 #[cfg(unix)]
 const HOME_VAR: &str = "HOME";
@@ -57,25 +60,44 @@ pub struct Config {
     pub notifications: NotificationsConfig,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "transport", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DaemonConfig {
-    /// `socket` defaults to `$XDG_STATE_HOME/agents-cockpit/agents-cockpit.sock`.
+    /// `socket` defaults to `$XDG_STATE_HOME/agents-cockpit/agents-cockpit.sock`. With
+    /// `start_service`, the app starts `agents-cockpit serve` when the socket does not answer.
     Local {
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         socket: Option<PathBuf>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        start_service: bool,
     },
     /// `remote_command` is the absolute path of `agents-cockpit` on the host.
     Ssh {
         host: String,
         remote_command: String,
     },
+    /// The daemon runs in the app: its agents stop when the app closes, and resume the next
+    /// time the app runs them.
+    InApp,
 }
 
 impl Default for DaemonConfig {
     fn default() -> Self {
-        Self::Local { socket: None }
+        Self::Local {
+            socket: None,
+            start_service: false,
+        }
     }
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
+/// The `[daemon]` section alone, to write it.
+#[derive(Serialize)]
+struct DaemonSection<'config> {
+    daemon: &'config DaemonConfig,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -88,14 +110,6 @@ impl Default for NotificationsConfig {
     fn default() -> Self {
         Self { enabled: true }
     }
-}
-
-/// How the app names the daemon's machine in its texts.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DaemonLabel {
-    /// The SSH host, or "this machine".
-    pub machine: String,
-    pub over_ssh: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -111,6 +125,20 @@ pub enum ConfigError {
         path: PathBuf,
         #[source]
         source: toml::de::Error,
+    },
+    #[error("{} is not a valid TOML file", path.display())]
+    Edit {
+        path: PathBuf,
+        #[source]
+        source: toml_edit::TomlError,
+    },
+    #[error("cannot encode the daemon's config")]
+    Encode(#[source] toml::ser::Error),
+    #[error("cannot write {}", path.display())]
+    Write {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
     },
     #[error("cannot find the {what}: neither {var} nor {HOME_VAR} is an absolute path")]
     NoHome {
@@ -153,13 +181,14 @@ impl Environment {
         Ok(base.join(APP_FOLDER).join(CONFIG_FILE))
     }
 
-    /// Where a daemon on this machine listens, as the daemon computes it.
-    pub fn default_socket(&self) -> Result<PathBuf, ConfigError> {
+    /// The state folder of a daemon on this machine, the background service's or the app's own,
+    /// as the daemon computes it.
+    pub fn daemon_state_dir(&self) -> Result<PathBuf, ConfigError> {
         let base = self.state_base().ok_or(ConfigError::NoHome {
-            what: "daemon's socket",
+            what: "daemon's state folder",
             var: STATE_HOME_VAR,
         })?;
-        Ok(base.join(APP_FOLDER).join(SOCKET_FILE))
+        Ok(base.join(APP_FOLDER))
     }
 
     /// `$XDG_STATE_HOME`, or its default under the home folder.
@@ -190,39 +219,51 @@ impl Config {
         text.parse::<Self>()
             .map_err(|source| ConfigError::Parse { path, source })
     }
+}
 
-    pub fn transport(&self, environment: &Environment) -> Result<Transport, ConfigError> {
-        match &self.daemon {
-            DaemonConfig::Local {
-                socket: Some(socket),
-            } => Ok(Transport::Local {
-                socket: socket.clone(),
-            }),
-            DaemonConfig::Local { socket: None } => Ok(Transport::Local {
-                socket: environment.default_socket()?,
-            }),
-            DaemonConfig::Ssh {
-                host,
-                remote_command,
-            } => Ok(Transport::Ssh {
-                host: host.clone(),
-                remote_command: remote_command.clone(),
-            }),
-        }
-    }
+/// Makes `daemon` the daemon of the config file `file`, which keeps its other settings and its
+/// comments. A missing file is created.
+pub fn save_daemon(file: &Path, daemon: &DaemonConfig) -> Result<(), ConfigError> {
+    use toml_edit::{DocumentMut, Item};
 
-    pub fn daemon_label(&self) -> DaemonLabel {
-        match &self.daemon {
-            DaemonConfig::Local { .. } => DaemonLabel {
-                machine: "this machine".to_owned(),
-                over_ssh: false,
-            },
-            DaemonConfig::Ssh { host, .. } => DaemonLabel {
-                machine: host.clone(),
-                over_ssh: true,
-            },
+    let edit_error = |source| ConfigError::Edit {
+        path: file.to_owned(),
+        source,
+    };
+    let write_error = |source| ConfigError::Write {
+        path: file.to_owned(),
+        source,
+    };
+    let text = match std::fs::read_to_string(file) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(source) => {
+            return Err(ConfigError::Read {
+                path: file.to_owned(),
+                source,
+            });
         }
+    };
+    let mut document: DocumentMut = text.parse().map_err(edit_error)?;
+    let section = toml::to_string(&DaemonSection { daemon }).map_err(ConfigError::Encode)?;
+    let mut section: DocumentMut = section.parse().map_err(edit_error)?;
+    if let Some(mut daemon) = section.remove(DAEMON_SECTION) {
+        // The comments above the old section's header.
+        let decor = document
+            .get(DAEMON_SECTION)
+            .and_then(Item::as_table)
+            .map(|table| table.decor().clone());
+        if let (Some(decor), Some(table)) = (decor, daemon.as_table_mut()) {
+            *table.decor_mut() = decor;
+        }
+        document.insert(DAEMON_SECTION, daemon);
     }
+    if let Some(folder) = file.parent() {
+        std::fs::create_dir_all(folder).map_err(write_error)?;
+    }
+    let temporary = file.with_extension(TEMPORARY_EXTENSION);
+    std::fs::write(&temporary, document.to_string()).map_err(write_error)?;
+    std::fs::rename(&temporary, file).map_err(write_error)
 }
 
 impl FromStr for Config {
@@ -237,6 +278,7 @@ impl FromStr for Config {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     fn environment() -> Environment {
         Environment {
             home: Some(PathBuf::from("/home/someone")),
@@ -252,11 +294,10 @@ mod tests {
 
         assert_eq!(config, Config::default());
         assert_eq!(
-            config.transport(&environment()).unwrap(),
-            Transport::Local {
-                socket: PathBuf::from(
-                    "/home/someone/.local/state/agents-cockpit/agents-cockpit.sock"
-                )
+            config.daemon,
+            DaemonConfig::Local {
+                socket: None,
+                start_service: false
             }
         );
         assert!(config.notifications.enabled);
@@ -277,20 +318,13 @@ mod tests {
         let config: Config = text.parse().unwrap();
 
         assert_eq!(
-            config.transport(&environment()).unwrap(),
-            Transport::Ssh {
+            config.daemon,
+            DaemonConfig::Ssh {
                 host: "build-box".to_owned(),
                 remote_command: "/opt/agents-cockpit/bin/agents-cockpit".to_owned(),
             }
         );
         assert!(!config.notifications.enabled);
-        assert_eq!(
-            config.daemon_label(),
-            DaemonLabel {
-                machine: "build-box".to_owned(),
-                over_ssh: true
-            }
-        );
     }
 
     #[test]
@@ -300,9 +334,27 @@ mod tests {
         let config: Config = text.parse().unwrap();
 
         assert_eq!(
-            config.transport(&Environment::default()).unwrap(),
-            Transport::Local {
-                socket: PathBuf::from("/run/cockpit.sock")
+            config.daemon,
+            DaemonConfig::Local {
+                socket: Some(PathBuf::from("/run/cockpit.sock")),
+                start_service: false
+            }
+        );
+    }
+
+    #[test]
+    fn reads_the_daemon_in_the_app_and_a_service_to_start() {
+        let in_app: Config = "[daemon]\ntransport = \"in_app\"\n".parse().unwrap();
+        let service: Config = "[daemon]\ntransport = \"local\"\nstart_service = true\n"
+            .parse()
+            .unwrap();
+
+        assert_eq!(in_app.daemon, DaemonConfig::InApp);
+        assert_eq!(
+            service.daemon,
+            DaemonConfig::Local {
+                socket: None,
+                start_service: true
             }
         );
     }
@@ -336,12 +388,16 @@ mod tests {
             PathBuf::from("/cfg/agents-cockpit/config.toml")
         );
         assert_eq!(
-            environment.default_socket().unwrap(),
-            PathBuf::from("/state/agents-cockpit/agents-cockpit.sock")
+            environment.daemon_state_dir().unwrap(),
+            PathBuf::from("/state/agents-cockpit")
         );
         assert_eq!(
             self::environment().config_file().unwrap(),
             PathBuf::from("/home/someone/.config/agents-cockpit/config.toml")
+        );
+        assert_eq!(
+            self::environment().daemon_state_dir().unwrap(),
+            PathBuf::from("/home/someone/.local/state/agents-cockpit")
         );
     }
 
@@ -354,7 +410,7 @@ mod tests {
             Err(ConfigError::NoHome { .. })
         ));
         assert!(matches!(
-            Config::default().transport(&environment),
+            environment.daemon_state_dir(),
             Err(ConfigError::NoHome { .. })
         ));
     }
@@ -368,5 +424,43 @@ mod tests {
         };
 
         assert_eq!(Config::load(&environment).unwrap(), Config::default());
+    }
+
+    #[test]
+    fn saving_a_daemon_keeps_the_rest_of_the_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join(CONFIG_FILE);
+        let text = "# Reach the build box.\n[daemon]\ntransport = \"ssh\"\nhost = \"build-box\"\nremote_command = \"/opt/agents-cockpit\"\n\n[notifications]\n# Too many.\nenabled = false\n";
+        std::fs::write(&file, text).unwrap();
+
+        save_daemon(&file, &DaemonConfig::InApp).unwrap();
+
+        let saved = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(
+            saved,
+            "# Reach the build box.\n[daemon]\ntransport = \"in_app\"\n\n[notifications]\n# Too many.\nenabled = false\n"
+        );
+        let config: Config = saved.parse().unwrap();
+        assert_eq!(config.daemon, DaemonConfig::InApp);
+        assert!(!config.notifications.enabled);
+    }
+
+    #[test]
+    fn saving_a_daemon_creates_the_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join(APP_FOLDER).join(CONFIG_FILE);
+        let service = DaemonConfig::Local {
+            socket: None,
+            start_service: true,
+        };
+
+        save_daemon(&file, &service).unwrap();
+
+        let saved = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(
+            saved,
+            "[daemon]\ntransport = \"local\"\nstart_service = true\n"
+        );
+        assert_eq!(saved.parse::<Config>().unwrap().daemon, service);
     }
 }

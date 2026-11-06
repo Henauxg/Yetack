@@ -12,5 +12,5 @@ mod restore;
 mod state;
 
 pub(crate) use input::{HubInput, Joined, Registration};
-pub(crate) use restore::restore;
+pub(crate) use restore::{Restored, restore};
 pub(crate) use state::Hub;

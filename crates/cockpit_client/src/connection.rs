@@ -61,6 +61,10 @@ impl Connection {
                 let ssh = transport::spawn_ssh(host, remote_command)?;
                 establish(ssh.stdout, ssh.stdin, Some(ssh.process), last_seq).await
             }
+            Transport::InApp(link) => {
+                let (read, write) = tokio::io::split(transport::connect_in_app(link)?);
+                establish(read, write, None, last_seq).await
+            }
         }
     }
 
