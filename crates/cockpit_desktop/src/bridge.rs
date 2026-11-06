@@ -3,7 +3,7 @@
 //! Rust sends it, and passes them on with the window's focus and pasted images.
 
 use cockpit_protocol::{AgentId, Image, ImageMediaType};
-use dioxus::dioxus_core::spawn_forever;
+use dioxus::dioxus_core::{queue_effect, spawn_forever};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -309,11 +309,9 @@ document.getElementById(element_id)?.scrollIntoView({ block: "nearest" });
 /// window's own loss of focus when that caused the blur.
 const WINDOW_FOCUSED_SCRIPT: &str = "return document.hasFocus();";
 
-/// Brings a dialog's highlighted row into view, after the render that moved the highlight.
-const SCROLL_TO_HIGHLIGHTED_SCRIPT: &str = r#"
-await new Promise((resolve) => requestAnimationFrame(resolve));
-document.querySelector(".dialog .highlighted")?.scrollIntoView({ block: "nearest" });
-"#;
+/// Brings a dialog's highlighted row into view.
+const SCROLL_TO_HIGHLIGHTED_SCRIPT: &str =
+    r#"document.querySelector(".dialog .highlighted")?.scrollIntoView({ block: "nearest" });"#;
 
 #[derive(Debug, Serialize)]
 struct FieldText {
@@ -550,9 +548,16 @@ pub fn save_on_blur(save: impl FnOnce() + 'static, keep: impl FnOnce() + 'static
     });
 }
 
-/// For a list moved by the keyboard: its highlighted row may sit below the scrolled view.
+/// For a list moved by the keyboard: its highlighted row may sit below the scrolled view. Call it
+/// from the event handler that moved the highlight.
 pub fn scroll_to_highlighted() {
-    document::eval(SCROLL_TO_HIGHLIGHTED_SCRIPT);
+    // The render's changes reach the page through a websocket, often after a script sent now,
+    // which would scroll to the row highlighted before. Dioxus runs effects once the page has
+    // applied them. An effect runs outside any component, so the document is looked up here.
+    let page = document::document();
+    queue_effect(move || {
+        page.eval(SCROLL_TO_HIGHLIGHTED_SCRIPT.to_owned());
+    });
 }
 
 #[cfg(test)]
