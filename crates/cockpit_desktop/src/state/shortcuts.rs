@@ -16,15 +16,15 @@ use super::utf16_offset::Utf16Offset;
 
 /// `KeyboardEvent.key` values.
 const KEY_ESCAPE: &str = "Escape";
-const KEY_ENTER: &str = "Enter";
+pub(super) const KEY_ENTER: &str = "Enter";
 const KEY_TAB: &str = "Tab";
-const KEY_UP: &str = "ArrowUp";
-const KEY_DOWN: &str = "ArrowDown";
+pub(super) const KEY_UP: &str = "ArrowUp";
+pub(super) const KEY_DOWN: &str = "ArrowDown";
 const KEY_F2: &str = "F2";
 
 /// The letters that answer an approval or a plan.
-const KEY_YES: &str = "y";
-const KEY_NO: &str = "n";
+pub(super) const KEY_YES: &str = "y";
+pub(super) const KEY_NO: &str = "n";
 
 /// A key press the page's script passes on.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

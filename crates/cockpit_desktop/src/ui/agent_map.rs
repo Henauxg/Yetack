@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime};
 
 use cockpit_protocol::{
     AgentId, AgentStatus, ItemBody, ItemId, Subagent, SubagentRun, SubagentStatus, Timestamp,
-    ToolCall, ToolCallStatus, TranscriptItem,
+    ToolCall, TranscriptItem,
 };
 use dioxus::prelude::*;
 use serde_json::Value;
@@ -20,7 +20,9 @@ use crate::state::{self, HistoryState, actions};
 use crate::ui::cards::{ApprovalCard, PlanCard, QuestionCard};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::markdown::MarkdownView;
-use crate::ui::transcript::{CompactItem, ItemView, children_by_parent, subtree, waits_for_answer};
+use crate::ui::transcript::{
+    CallStage, CompactItem, ItemView, children_by_parent, subtree, waits_for_answer,
+};
 
 /// The input field of an `Agent` call that holds its prompt.
 const PROMPT_FIELD: &str = "prompt";
@@ -646,25 +648,21 @@ fn subagent_details(input: SubagentDetailsInput<'_>) -> Element {
 
 /// The class that colors a tool call's dot in the list of calls.
 fn call_stage(body: &ItemBody, awaits_approval: bool) -> &'static str {
-    match body {
-        ItemBody::ToolCall(call) => match call.status {
-            ToolCallStatus::Running if awaits_approval => "waiting",
-            ToolCallStatus::Running => "running",
-            ToolCallStatus::Done => "done",
-            ToolCallStatus::Failed => "failed",
-        },
-        _ => "done",
-    }
+    let stage = match body {
+        ItemBody::ToolCall(call) => CallStage::new(call, awaits_approval),
+        _ => CallStage::Done,
+    };
+    stage.name()
 }
 
 /// The class of a tool line that stands for a subagent: its dot's color.
-fn subagent_line_class(status: SubagentStatus) -> &'static str {
+fn subagent_line_class(status: SubagentStatus) -> String {
     match status {
-        SubagentStatus::Running => "tool running",
-        SubagentStatus::NeedsYou => "tool waiting",
-        SubagentStatus::Done => "tool done",
-        SubagentStatus::Failed => "tool failed",
-        SubagentStatus::Stopped => "tool stopped",
+        SubagentStatus::Running => CallStage::Running.class(),
+        SubagentStatus::NeedsYou => CallStage::AwaitsApproval.class(),
+        SubagentStatus::Done => CallStage::Done.class(),
+        SubagentStatus::Failed => CallStage::Failed.class(),
+        SubagentStatus::Stopped => "tool stopped".to_owned(),
     }
 }
 

@@ -667,7 +667,7 @@ fn ThinkingView(text: String) -> Element {
 
 /// Where a tool call stands, as its line says it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CallStage {
+pub(crate) enum CallStage {
     /// Claude Code asked whether the call may run, and nobody answered yet.
     AwaitsApproval,
     Running,
@@ -676,7 +676,7 @@ enum CallStage {
 }
 
 impl CallStage {
-    fn new(call: &ToolCall, awaits_approval: bool) -> Self {
+    pub(crate) fn new(call: &ToolCall, awaits_approval: bool) -> Self {
         match call.status {
             ToolCallStatus::Running if awaits_approval => Self::AwaitsApproval,
             ToolCallStatus::Running => Self::Running,
@@ -685,13 +685,18 @@ impl CallStage {
         }
     }
 
-    fn class(self) -> &'static str {
+    /// The stage's class alone. A tool line's class adds it to "tool".
+    pub(crate) fn name(self) -> &'static str {
         match self {
-            Self::AwaitsApproval => "tool waiting",
-            Self::Running => "tool running",
-            Self::Done => "tool done",
-            Self::Failed => "tool failed",
+            Self::AwaitsApproval => "waiting",
+            Self::Running => "running",
+            Self::Done => "done",
+            Self::Failed => "failed",
         }
+    }
+
+    pub(crate) fn class(self) -> String {
+        format!("tool {}", self.name())
     }
 }
 

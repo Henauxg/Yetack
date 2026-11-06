@@ -84,11 +84,11 @@ pub fn subagent_status_label(status: SubagentStatus) -> &'static str {
 /// way it ended.
 pub fn subagent_status_class(status: SubagentStatus) -> &'static str {
     match status {
-        SubagentStatus::Running => "status-working",
-        SubagentStatus::NeedsYou => "status-needs-you",
+        SubagentStatus::Running => status_class(AgentStatus::Working),
+        SubagentStatus::NeedsYou => status_class(AgentStatus::NeedsYou),
         SubagentStatus::Done => "status-done",
         SubagentStatus::Failed => "status-failed",
-        SubagentStatus::Stopped => "status-exited",
+        SubagentStatus::Stopped => status_class(AgentStatus::Exited),
     }
 }
 
