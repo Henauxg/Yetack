@@ -22,6 +22,5 @@ Ideas and fixes noted for later. None of them is planned yet.
   - The 2px gap between rows leaves no row under the pointer for a moment.
 
   A likely fix: the pointer moves the keyboard highlight, so only one row is ever highlighted, and the button appears without a fade or a slide.
-- **Hide empty status chips.** The sidebar's status filter shows only the chips with agents in them ("Needs you", "Working", "Idle", "Exited"), plus "All". The selected chip stays even at 0, so the last agent leaving it does not make the filter vanish under the user.
 - **Agent map.** A map of the selected agent and every subagent it started, as in the Claude Code extension: each node with its status, description, duration and tokens, and its details on a click. Designed in `plan.md` (Planned after v1, milestone 5), not built yet.
 - **Machine load sparklines.** On each sidebar row, a 52 by 18 pixel line of the agent's CPU over the last five minutes: teal while it works, amber past a quarter of the server's cores, grey when idle. The row's second line shows its cores now, and a tooltip its cores over five minutes, its memory and its heaviest command. `machine.load` already answers each agent's five-minute history.

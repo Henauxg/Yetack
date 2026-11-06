@@ -5,7 +5,6 @@ use std::time::Instant;
 
 use cockpit_protocol::{AgentId, AgentStatus, MAX_TITLE_CHARS};
 use dioxus::prelude::*;
-use strum::VariantArray;
 
 use crate::bridge::{self, ROW_TITLE_FIELD_ID};
 use crate::connection::{Clock, Cockpit};
@@ -88,11 +87,12 @@ pub fn Sidebar() -> Element {
     let cockpit: Cockpit = use_context();
     let state = cockpit.state.read();
     let filter = state.prefs.sidebar.filter;
-    let chips: Vec<FilterChip> = StatusFilter::VARIANTS
-        .iter()
-        .map(|&chip| FilterChip {
+    let chips: Vec<FilterChip> = state
+        .filter_chips()
+        .into_iter()
+        .map(|(chip, count)| FilterChip {
             filter: chip,
-            count: state.filter_count(chip),
+            count,
             chosen: chip == filter,
         })
         .collect();
@@ -134,7 +134,9 @@ pub fn Sidebar() -> Element {
                     Icon { kind: IconKind::Plus, size: 16 }
                 }
             }
-            StatusFilters { chips }
+            if !chips.is_empty() {
+                StatusFilters { chips }
+            }
             div { id: LIST_ID, class: "agent-list scroll",
                 if selected_hidden {
                     p { class: "hidden-note",
@@ -158,8 +160,8 @@ pub fn Sidebar() -> Element {
     }
 }
 
-/// One chip per status, with its count: a chip hides the other agents' rows, and never changes
-/// their order.
+/// The chips of the statuses agents have, with their counts: a chip hides the other agents'
+/// rows, and never changes their order.
 #[component]
 fn StatusFilters(chips: Vec<FilterChip>) -> Element {
     let cockpit: Cockpit = use_context();

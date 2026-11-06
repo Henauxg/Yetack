@@ -311,6 +311,8 @@ When the process ends and its pid goes to another one during the check, the sign
   A page script follows the drag (`ui/reorder.rs`), as the splitter's does: a lifted copy of the row follows the pointer, a line shows where the row will land, and Rust hears of it once, on release.
   A press that moves less than 4 pixels stays a click.
 - **Status filter**: chips at the top of the sidebar (All, Needs you, Working, Idle, Exited, each with its count) hide the other agents' rows and never change the order.
+  A status's chip shows only while an agent has that status, and the chosen chip stays even at 0, so the last agent leaving it does not take the filter away.
+  All shows beside the other chips, and the filter hides when All would be its only chip (no agents, with All chosen).
   An agent the filter hides still raises its notifications.
   When the filter hides the selected agent, the center keeps showing it and the sidebar says so, with a link that shows all agents.
   Alt+Up, Alt+Down and a drop move an agent among the rows the sidebar shows, and the hidden agents keep their places.
