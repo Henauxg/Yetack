@@ -170,11 +170,16 @@ fn read_folders(folder: &File) -> Result<(Vec<DirEntry>, bool), ListDirError> {
         }
         read += 1;
         let listed = entry.file_type();
+        // The protocol carries paths as text, so no request could reach a folder whose name is
+        // not UTF-8.
+        let text_name = std::str::from_utf8(name).is_ok();
         // Only these can lead to a folder: the others need no `stat`.
-        if matches!(
-            listed,
-            FileType::Directory | FileType::Symlink | FileType::Unknown
-        ) {
+        if text_name
+            && matches!(
+                listed,
+                FileType::Directory | FileType::Symlink | FileType::Unknown
+            )
+        {
             let described = describe(folder, entry.file_name(), listed);
             if described.kind == EntryKind::Folder {
                 folders.push(described);
@@ -437,6 +442,18 @@ mod tests {
         );
         let through_link = list_folders(&root.join("linked")).unwrap();
         assert!(through_link.entries.is_empty(), "{through_link:?}");
+    }
+
+    #[test]
+    fn a_folder_whose_name_is_not_utf8_is_left_out_of_the_folders() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join(OsStr::from_bytes(b"caf\xe9"))).unwrap();
+        std::fs::create_dir(root.join("cafe")).unwrap();
+
+        let listing = list_folders(&root).unwrap();
+
+        assert_eq!(names(&listing), [("cafe", EntryKind::Folder, None, false)]);
     }
 
     #[test]

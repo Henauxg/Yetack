@@ -170,6 +170,7 @@ The daemon and the app run as the same user, and the agent's commands already re
 It reaches any folder the daemon's user can read, since an agent can start in any of them, and it sends no file names.
 It refuses a relative path, and one that starts with `~`, as `agent.start` does.
 It keeps the bounds of `agent.list_dir`: it reads at most 20,000 entries, files included, sends at most 2,000 folders, and says when it cut the list.
+It leaves out a folder whose name is not UTF-8: the protocol carries paths as text, so no request could reach that folder.
 A symbolic link to a folder counts as a folder, and a hidden folder lists as any other.
 It runs off the hub's task.
 
