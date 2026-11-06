@@ -7,24 +7,26 @@ The Rust code follows [standards/rust/](standards/rust/README.md).
 ## Overview
 
 ```text
-desktop app or CLI                       daemon (agents-cockpit serve)
+desktop app or CLI                       daemon (agents-cockpit serve, or in the app)
   cockpit_client                           cockpit_daemon
     transport:                               server: Unix socket, peer checks
       Local: the Unix socket       ──────►   hub: agents, sequence numbers, broadcast
       Ssh: ssh <host> agents-cockpit bridge  store: state folder, event logs
            (stdin/stdout, copied to the socket)
-                                             claude process per agent:
-                                               claude_protocol (JSON mode, control protocol)
+      InApp: an in-memory stream             claude process per agent:
+           (the daemon in the app's process)   claude_protocol (JSON mode, control protocol)
 ```
 
-There are two ways to reach a daemon:
+There are three ways to reach a daemon:
 
 - **Remote**: the app runs `ssh <host> agents-cockpit bridge`.
   The bridge copies bytes between its stdin/stdout and the daemon's socket on that host.
 - **Local**: the daemon runs on the same machine as the app.
   The app connects to the daemon's Unix socket directly, with no SSH and no bridge.
+- **In the app**: the daemon runs inside the desktop app's process (see [The daemon in the app](#the-daemon-in-the-app)).
+  Each connection is an in-memory stream, and no socket listens.
 
-Both carry the same protocol, so everything above the transport is identical.
+All three carry the same protocol and the same session (hello, catch-up, requests, events), so everything above the transport is identical.
 
 ## Crates
 
@@ -34,18 +36,21 @@ All crates live in `crates/` and are application code ([standards/rust/README.md
 | --- | --- | --- |
 | `claude_protocol` | lib | Claude Code's JSON mode: the lines `claude` reads and writes, and the control protocol. Types and parsing only, no IO. |
 | `cockpit_protocol` | lib | The daemon API: ids, the transcript model, requests, responses, events, snapshots, and the line framing. |
-| `cockpit_client` | lib | A connection to a daemon over a transport (local socket or SSH bridge): requests, responses, events, reconnection. |
-| `cockpit_daemon` | lib | The daemon: claude processes, the hub, the store, the socket server and its peer checks. |
+| `cockpit_client` | lib | A connection to a daemon over a transport (local socket, SSH bridge, or in-memory stream): requests, responses, events, reconnection. |
+| `cockpit_daemon` | lib | The daemon: claude processes, the hub, the store, the socket server and its peer checks, and `InAppDaemon`, the daemon inside the app. |
 | `agents_cockpit` | bin `agents-cockpit` | The command line: `serve`, `bridge`, and client commands (`list`, `start`, `prompt`, `answer`, `stop`, `close`, `rename`, `move`, `tail`). |
 | `cockpit_desktop` | bin `agents-cockpit-desktop` | The Dioxus desktop app. |
 
 Dependencies point one way:
 
 ```text
-claude_protocol ◄── cockpit_daemon ──► cockpit_protocol ◄── cockpit_client ◄── cockpit_desktop
-                          ▲                                       ▲
-                          └──────────── agents_cockpit ───────────┘
+claude_protocol ◄── cockpit_daemon ──► cockpit_protocol ◄── cockpit_client
+                      ▲      ▲                                  ▲      ▲
+                      │      └────────── agents_cockpit ────────┘      │
+                      └──────────────── cockpit_desktop ───────────────┘
 ```
+
+The app depends on the daemon to run it in its own process. Outside the daemon's tests, `cockpit_daemon` and `cockpit_client` do not depend on each other: the app hands the daemon the receiving end of the client's in-memory link.
 
 - `cockpit_protocol` does not depend on `claude_protocol`.
   The daemon turns Claude Code's events into the cockpit's own transcript model.
@@ -207,6 +212,33 @@ Each carries its `Seq`.
 
 ## Daemon (`cockpit_daemon`)
 
+### Entry points
+
+The daemon starts the same way behind a socket and inside the app (module `daemon`):
+
+1. `Daemon::prepare` creates the state folder, takes `serve.lock`, and reads `agents.json`, the settings and the event logs back.
+2. `PreparedDaemon::start` starts the hub, which resumes the agents that were running.
+
+`serve` (`agents-cockpit serve`) binds the socket between the two steps, so a failed bind starts no agent, then runs the server with its peer checks until its shutdown future completes.
+The binary owns the rest of what a separate process needs: the SIGTERM and Ctrl+C handlers, the log output, and the Tokio runtime, whose end kills the agents' processes.
+
+### The daemon in the app
+
+`InAppDaemon` runs the daemon inside another program, the desktop app:
+
+- It runs on a Tokio runtime of its own, which owns every task of the daemon, the agents' processes included.
+- It uses the background service's state folder and takes the same `serve.lock`, so the two never serve one folder at once, and each resumes the agents the other left running.
+  When the lock is held, `InAppDaemon::start` fails with `StoreError::AlreadyRunning`, and the app connects to that daemon's socket instead.
+- Each client is a `tokio::io::duplex` stream whose daemon end comes through a channel (`InAppLink` on the client's side).
+  The connection task is the socket's, generic over the stream, so a client gets the same hello, catch-up, requests and events.
+- No socket listens, so the peer check does not apply. Only the app holds the channel's sending end, and an agent's command, the threat the peer check is for (plan.md, "Security"), has no endpoint to connect to.
+- `InAppDaemon::shutdown` stops it as a service's stop does: it stops the hub, then shuts the runtime down, which drops the process tasks and kills each `claude`'s process group.
+  The agents stay marked as running, so the next daemon resumes them, and a turn the stop cut off carries on.
+  It waits at most the given time for tasks that block, then releases the lock.
+  It blocks, so the app calls it from a thread outside any runtime.
+
+The in-app daemon's own code needs nothing Unix-only beyond what the hub, the store and the claude processes already use.
+
 ### Tasks and ownership
 
 The daemon is a set of tokio tasks that talk over channels; no state is shared behind a mutex.
@@ -251,7 +283,7 @@ The hub turns Claude Code messages into transcript items and status changes (mod
 Everything lives in `$XDG_STATE_HOME/agents-cockpit/` (default `~/.local/state/agents-cockpit/`), mode 700:
 
 - `agents-cockpit.sock`: the socket, mode 600;
-- `serve.lock`: held while a daemon runs, so a second daemon refuses to start and a leftover socket is safe to delete;
+- `serve.lock`: held while a daemon runs, the background service or the app's own, so a second daemon refuses to start and a leftover socket is safe to delete;
 - `agents.json`: one entry per agent (id, title, folder, Claude session id, model, effort, mode, position in the list, and for an agent made from a past session the part of the session file it shows), written atomically (write to a temporary file, then rename);
 - `settings.json`: the hidden MCP servers and other daemon-side settings;
 - `events/<agent-id>.jsonl`: the agent's cockpit events, each with its `Seq`, appended;
@@ -332,6 +364,7 @@ When the process ends and its pid goes to another one during the check, the sign
   2. the peer's parent chain in `/proc` does not reach the daemon's pid, so a command an agent runs cannot drive the daemon.
      The walk stops, and accepts, at a process of another user or one that `/proc` hides (`hidepid=1` or `2`): the daemon's descendants all run as its user, and `/proc` always shows a user's own processes.
 - `agents-cockpit bridge` connects to the socket like any client; it descends from `sshd`, not from the daemon.
+- The daemon in the app listens on no socket, so it has no peer to check (see [The daemon in the app](#the-daemon-in-the-app)).
 
 ## Client (`cockpit_client`)
 
@@ -340,6 +373,8 @@ When the process ends and its pid goes to another one during the check, the sign
   `BatchMode` makes a missing key fail at once instead of waiting for a password the app cannot show.
   `ForwardAgent=no`, `-x` and `ClearAllForwardings=yes` open no agent, X11 or port forwarding to the laptop, even when the user's ssh config asks for one.
   `--` keeps ssh from reading the host or the remote command as an option, and the quotes keep the host's shell from reading anything in the remote command.
+- `Transport::InApp(InAppLink)` reaches a daemon in the same process.
+  Each connection opens a `tokio::io::duplex` stream and sends the daemon its other end through the link's channel. A link whose daemon has stopped fails with `ConnectError::InAppStopped`.
 - `Connection` sends requests and matches responses by `RequestId`, and yields events.
   It reads the daemon at all times, so a response never waits behind events the app has not read.
   Events wait for the app in a queue of 4096: when an event finds it full, the waiting events are dropped and `next_event` returns `CloseError::EventsLost`.
@@ -348,8 +383,32 @@ When the process ends and its pid goes to another one during the check, the sign
 
 ## Desktop app (`cockpit_desktop`)
 
-- **Config**: `~/.config/agents-cockpit/config.toml` lists the daemons to reach, each local or over SSH.
-  v1 connects to one.
+- **Config**: `~/.config/agents-cockpit/config.toml`, per machine, names the daemon to reach (module `config`):
+
+  ```toml
+  [daemon]
+  transport = "ssh"            # or "local", or "in_app"
+  host = "build-box"
+  remote_command = "/opt/agents-cockpit/bin/agents-cockpit"
+  ```
+
+  - `transport = "local"` takes an optional `socket` (default: the daemon's default socket), and `start_service = true` to start `agents-cockpit serve` when the socket does not answer.
+  - `transport = "in_app"` runs the daemon in the app.
+  - A missing file means the local daemon at its default socket.
+- **Reaching the daemon** (module `reach`): the connection task turns the config's daemon into a transport.
+  For `in_app`, it starts `InAppDaemon` with the default state folder (`InAppHost` keeps it), or connects to the socket with a note when another daemon holds the lock.
+  For `start_service`, it starts the service unless its socket answers.
+- **"No daemon answers"**: when the first connection to the daemon fails, the session stops and the window shows this screen in place of its panes.
+  It names the daemon the app tried and the error, and offers Retry (the daemon it tried), "Run agents in this app", and "Start the background service here" (on Unix only).
+  A choice holds for this run only, so the next start tries the config's daemon again.
+  With "Use this every time" ticked, the app writes the choice into the config first (`save_daemon`, which keeps the file's other settings and comments): `in_app`, or `local` with `start_service`.
+  The screen's state is pure (`state/no_daemon.rs`): which choice is under way, the tick, and which daemon a choice runs and saves.
+  A connection that drops after it connected reconnects as before, with no screen.
+- **The background service**: the app runs `agents-cockpit --state-dir <folder> serve`, found in the app's own folder, then on `PATH`.
+  It runs in a process group of its own, so Ctrl+C in the terminal that started the app does not reach it, and it outlives the app.
+  Its stderr goes to `serve.log` in the app's state folder.
+  The app waits up to 20 seconds for its socket, and shows the screen again with the reason when the program is missing or the service stops at once (the log's last line).
+- **Closing the window**: the event loop ends the process right after its last event, without dropping anything, so the app stops the daemon in the app in that event (`LoopDestroyed`), waiting at most 5 seconds after the agents are killed.
 - **Preferences**: `$XDG_STATE_HOME/agents-cockpit-desktop/prefs.json` (default `~/.local/state/agents-cockpit-desktop/`), on the machine the app runs on, keeps one viewer's choices: the file view's width and its wrap toggle, and the sidebar's status filter.
   A missing or broken file means the defaults.
 - **State**: `AppState` holds the summaries, the open transcripts, the plan usage and the UI state (selected agent, unread agents, open blocks).
@@ -426,9 +485,9 @@ When the process ends and its pid goes to another one during the check, the sign
 - `claude_protocol`: parsing of fixture lines in `crates/claude_protocol/tests/fixtures/`.
   Fixtures are written by hand from the shapes Claude Code sends, with made-up paths, ids and text.
 - `cockpit_protocol`: round trips of every message, and the method names pinned.
-- `cockpit_daemon`: the transcript conversion on fixture sequences; the store in a temporary folder; the server end to end with a fake `claude` (a small test binary that replays a script of lines, selected with `AGENTS_COCKPIT_CLAUDE`).
+- `cockpit_daemon`: the transcript conversion on fixture sequences; the store in a temporary folder; the server end to end with a fake `claude` (a small test binary that replays a script of lines, selected with `AGENTS_COCKPIT_CLAUDE`); the daemon in the app over in-memory streams, closed mid-turn and started again, and the lock it shares with the service (`tests/in_app.rs`).
 - `cockpit_client`: against an in-process fake daemon over a socket pair.
-- `cockpit_desktop`: `apply` on event sequences; rendering helpers (markdown, diffs) on sample input.
+- `cockpit_desktop`: `apply` on event sequences; rendering helpers (markdown, diffs) on sample input; the "No daemon answers" choices and the config they write.
 
 ## Development
 

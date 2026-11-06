@@ -11,6 +11,7 @@ Agents keep working when the laptop disconnects.
 - Answer approvals, send prompts and stop agents from that app.
 - Keep agents running when the laptop sleeps or the SSH connection drops.
 - Also connect to a daemon on the same machine as the app, directly over its Unix socket, without SSH.
+- Or run the agents inside the app itself, when no daemon answers: they stop when the app closes, and resume the next time the app runs them.
 - Use the Claude subscription, through the unmodified `claude` binary signed in with your own account.
 
 ## Out of scope for v1
@@ -27,6 +28,7 @@ Agents keep working when the laptop disconnects.
 2. A daemon on the server owns the `claude` processes, so they survive the laptop disconnecting.
 3. The daemon listens only on a Unix socket in a folder of mode 700.
    No TCP port is open, on the server or on the laptop.
+   The daemon in the app listens on nothing: the app reaches it through memory.
 4. The laptop reaches the daemon through `ssh <server> agents-cockpit bridge`.
    Your SSH key is the only login.
 5. The front end is a Dioxus desktop app on the laptop (HTML and CSS in a webview).
@@ -109,6 +111,7 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
 
 - Runs as a systemd user service on the server.
   It needs linger on the account (`loginctl enable-linger`), so it keeps running after logout.
+- Or runs inside the desktop app, with the same state folder and the same `serve.lock`, so the app and a service never run at once on one folder (see "How the app reaches a daemon").
 - Leaves the umask alone, so `claude` and the agents' commands create files as the user would.
   Each of its own files and folders gets a private mode when it is created.
 - Keeps everything in `~/.local/state/agents-cockpit/` (mode 700):
@@ -152,6 +155,7 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
 - A peer check on every connection:
   - Get the peer's user Id and pid with `SO_PEERCRED`, and reject any user Id other than your own.
   - Walk the peer's parent chain in `/proc` and reject it when the chain reaches the daemon (the agents' commands descend from it, the bridge descends from `sshd`).
+- The daemon in the app has no socket, so no peer check applies and the agents' commands have nothing to connect to.
 - The parent-chain check stops an agent that simply calls the socket.
   It does not stop code that detaches on purpose (double fork, `setsid`), because such a process gets a new parent.
   The real protection against that is Claude Code's sandbox, configured to deny the agents' commands access to `~/.local/state/agents-cockpit/`: the probe checks whether this works with a Unix socket.
@@ -219,6 +223,16 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
 - It starts `ssh <server> /absolute/path/to/agents-cockpit bridge` and speaks the daemon API over the process's stdin and stdout.
   Use an absolute path: a non-interactive SSH command does not load your interactive shell setup, so `~/.cargo/bin` may be missing from `PATH`.
 - It reconnects after an SSH drop and sends its last sequence number.
+- How the app reaches a daemon:
+  - The app's config file, per machine, names its default daemon: a local socket, a host over SSH, or the daemon in the app (`transport = "in_app"`).
+  - When the first connection fails at startup, the app shows a "No daemon answers" screen.
+    It names the daemon it tried and why it failed, and offers Retry, "Run agents in this app", and "Start the background service here" (on Unix, where the app starts `agents-cockpit serve` as a process that outlives it).
+  - A choice holds for this run only, so a laptop that usually reaches a server can run locally for a day while the server is down.
+    With "Use this every time" ticked, the choice becomes the config's default.
+  - The daemon in the app is the daemon's own code in the app's process, reached through an in-memory stream that carries the same protocol.
+    When a background service already holds the state folder's lock, the app connects to its socket instead, and says so.
+  - Closing the app stops its agents as a daemon's stop does, so their cut-off turns resume the next time the app runs them.
+  - A connection that drops later reconnects, as above.
 - Views in v1:
   - The agent list with statuses.
   - The conversation, with markdown and code blocks.
