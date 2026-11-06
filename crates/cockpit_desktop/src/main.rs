@@ -68,6 +68,7 @@ fn main() -> anyhow::Result<()> {
     }
     let in_app = InAppHost::default();
     in_app_host::stop_on_signals(in_app.clone());
+    in_app_host::stop_on_panic(in_app.clone());
     let startup = Startup {
         state,
         daemon: config.daemon,

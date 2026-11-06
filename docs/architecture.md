@@ -412,6 +412,11 @@ When the process ends and its pid goes to another one during the check, the sign
   Its stderr goes to `serve.log` in the app's state folder.
   The app waits up to 20 seconds for its socket, and shows the screen again with the reason when the program is missing or the service stops at once (the log's last line).
 - **Closing the window**: the event loop ends the process right after its last event, without dropping anything, so the app stops the daemon in the app in that event (`LoopDestroyed`), waiting at most 5 seconds after the agents are killed.
+- **A panic** (`stop_on_panic`): the app's panic hook reports the panic through the default hook and the log, then, while the app runs agents itself, stops the daemon in the app as the window's close does and exits with status 101.
+  Otherwise the agents' processes, in process groups of their own on Unix, would outlive the app, and the next start would resume their sessions a second time.
+  Only the first panic stops the daemon, and a panic in the stop ends the app at once.
+  The stop waits at most 1 second for the host's lock, which the panicking thread may hold.
+  A panic on the window's thread waits for the stop, since that thread's unwinding would end the process. A panic on another thread unwinds at once, so that its task's drop kills the processes the task holds.
 - **Log** (module `logging`): the app logs to stderr, at the level `RUST_LOG` sets (`warn` by default).
   A release build on Windows is a GUI program, which opens no console window, and one started from the desktop has no stderr: its log goes to `app.log` in the app's state folder, and the run before stays as `app.previous.log`.
 - **Notifications** (module `notifications`): at most one per agent, for an agent that needs you or finished, and a click on one brings the window up and opens its agent.

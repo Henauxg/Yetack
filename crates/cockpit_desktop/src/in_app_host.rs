@@ -2,9 +2,11 @@
 
 use std::fmt;
 use std::io;
+use std::panic::PanicHookInfo;
 use std::pin::pin;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, TryLockError};
+use std::time::{Duration, Instant};
 
 use cockpit_client::InAppLink;
 use cockpit_daemon::{DaemonConfig, InAppDaemon, START_TASK, ServeError};
@@ -14,8 +16,18 @@ use tokio::sync::{Notify, oneshot};
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
 /// How long the app's close waits for a daemon that is still reading its state folder back.
 const START_WAIT: Duration = Duration::from_secs(5);
+/// How long a stop after a panic waits for the host's lock, which the panicking thread may hold.
+const PANIC_LOCK_WAIT: Duration = Duration::from_secs(1);
+/// How often that stop tries the lock again.
+const PANIC_LOCK_RETRY: Duration = Duration::from_millis(10);
 const START_THREAD: &str = "agents-cockpit-start";
 const SIGNAL_THREAD: &str = "agents-cockpit-signals";
+const PANIC_THREAD: &str = "agents-cockpit-panic";
+/// The thread `main` runs on, which runs the window.
+const MAIN_THREAD: &str = "main";
+
+/// The app's exit status after a panic, as Rust's own for a panic that ends `main`.
+const EXIT_PANICKED: i32 = 101;
 
 /// The app's exit status after a signal, as a shell reports a process the signal ended.
 #[cfg(unix)]
@@ -97,8 +109,44 @@ impl InAppHost {
     /// app runs them. Blocks until it stopped, at most `START_WAIT` for a start under way, then
     /// `SHUTDOWN_WAIT` after the agents.
     pub fn shutdown(&self) {
+        self.stop(self.shared.lock());
+    }
+
+    /// As `shutdown`, from a panic: the panicking thread may hold the lock, so this waits for it
+    /// at most `PANIC_LOCK_WAIT`, and leaves the daemon running when it stays held.
+    pub fn shutdown_after_panic(&self) {
+        let deadline = Instant::now() + PANIC_LOCK_WAIT;
+        loop {
+            match self.shared.hosted.try_lock() {
+                Ok(hosted) => return self.stop(hosted),
+                // Stopping the agents matters more than what the panicking holder left.
+                Err(TryLockError::Poisoned(poisoned)) => return self.stop(poisoned.into_inner()),
+                Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                    std::thread::sleep(PANIC_LOCK_RETRY);
+                }
+                Err(TryLockError::WouldBlock) => {
+                    tracing::error!("cannot stop the daemon in this app: its lock stays held");
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Whether the app may run a daemon: one runs or starts, or the lock is held, so that a stop
+    /// after a panic cannot tell.
+    fn may_host(&self) -> bool {
+        match self.shared.hosted.try_lock() {
+            Ok(hosted) => !matches!(*hosted, Hosted::Stopped),
+            // Every value of `Hosted` is valid, whatever a panicking holder left.
+            Err(TryLockError::Poisoned(poisoned)) => {
+                !matches!(*poisoned.into_inner(), Hosted::Stopped)
+            }
+            Err(TryLockError::WouldBlock) => true,
+        }
+    }
+
+    fn stop(&self, hosted: MutexGuard<'_, Hosted>) {
         let running = {
-            let hosted = self.shared.lock();
             let (mut hosted, _) = self
                 .shared
                 .start_ended
@@ -120,10 +168,13 @@ impl InAppHost {
         };
         tracing::info!("stopping the daemon in this app");
         // The caller may be inside a Tokio runtime, where waiting for another one is refused.
-        let stopping = std::thread::spawn(move || running.daemon.shutdown(SHUTDOWN_WAIT));
-        match stopping.join() {
-            Ok(()) => tracing::info!("stopped the daemon in this app"),
-            Err(_) => tracing::error!("the in-app daemon's shutdown failed"),
+        let stopping = std::thread::Builder::new()
+            .spawn(move || running.daemon.shutdown(SHUTDOWN_WAIT))
+            .map(std::thread::JoinHandle::join);
+        match stopping {
+            Ok(Ok(())) => tracing::info!("stopped the daemon in this app"),
+            Ok(Err(_)) => tracing::error!("the in-app daemon's shutdown failed"),
+            Err(error) => tracing::error!("cannot stop the daemon in this app: {error}"),
         }
     }
 
@@ -208,6 +259,67 @@ pub fn stop_on_signals(host: InAppHost) {
     if let Err(error) = watcher {
         tracing::warn!("cannot watch for the signals that stop the app: {error}");
     }
+}
+
+/// What a panic does once the default hook has reported it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OnPanic {
+    /// No daemon runs in the app, or an earlier panic stops it already.
+    Nothing,
+    /// Stops the daemon in the app, then ends the app.
+    StopAndExit,
+}
+
+/// The first panic while the app may run a daemon stops it. `stopping` keeps a later one, such as
+/// a panic in the stop itself, from starting another stop.
+fn on_panic(host: &InAppHost, stopping: &AtomicBool) -> OnPanic {
+    if !host.may_host() || stopping.swap(true, Ordering::SeqCst) {
+        return OnPanic::Nothing;
+    }
+    OnPanic::StopAndExit
+}
+
+/// Stops the daemon in the app and ends the app on a panic in any thread: on Unix the agents'
+/// processes lead process groups of their own, which outlive the app, and the next start would
+/// resume their sessions a second time. The default hook still reports the panic, and the log gets it
+/// too, since a GUI program on Windows has no stderr.
+pub fn stop_on_panic(host: InAppHost) {
+    let report = std::panic::take_hook();
+    let stopping = AtomicBool::new(false);
+    std::panic::set_hook(Box::new(move |info: &PanicHookInfo<'_>| {
+        report(info);
+        tracing::error!("{info}");
+        let current = std::thread::current();
+        if current.name() == Some(PANIC_THREAD) {
+            // The stop itself failed.
+            std::process::exit(EXIT_PANICKED);
+        }
+        if on_panic(&host, &stopping) == OnPanic::Nothing {
+            return;
+        }
+        let stop_host = host.clone();
+        let stop = move || {
+            stop_host.shutdown_after_panic();
+            std::process::exit(EXIT_PANICKED);
+        };
+        let stopper = std::thread::Builder::new()
+            .name(PANIC_THREAD.to_owned())
+            .spawn(stop);
+        match stopper {
+            // The window's thread would end the process as it unwinds. Another thread unwinds
+            // at once, so that the drop of its task kills the processes the task holds.
+            Ok(stopper) if current.name() == Some(MAIN_THREAD) => {
+                let _ = stopper.join();
+                std::process::exit(EXIT_PANICKED);
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::error!("cannot start the stop after a panic: {error}");
+                host.shutdown_after_panic();
+                std::process::exit(EXIT_PANICKED);
+            }
+        }
+    }));
 }
 
 /// Waits for Ctrl+C, a hang-up or a request to terminate, and returns the exit status it calls for.
@@ -307,6 +419,56 @@ mod tests {
             Transport::InApp(second.unwrap())
         );
         host.shutdown();
+    }
+
+    #[test]
+    fn only_the_first_panic_while_a_daemon_may_run_stops_it() {
+        let host = InAppHost::default();
+        let stopping = AtomicBool::new(false);
+
+        assert_eq!(on_panic(&host, &stopping), OnPanic::Nothing);
+
+        *host.shared.lock() = Hosted::Starting { stop: false };
+        assert_eq!(on_panic(&host, &stopping), OnPanic::StopAndExit);
+        assert_eq!(on_panic(&host, &stopping), OnPanic::Nothing);
+    }
+
+    #[test]
+    fn a_stop_after_a_panic_gives_up_on_a_lock_its_own_thread_holds() {
+        let host = InAppHost::default();
+        let held = host.shared.lock();
+        let started = Instant::now();
+
+        host.shutdown_after_panic();
+
+        assert!(started.elapsed() < PANIC_LOCK_WAIT * 3);
+        drop(held);
+    }
+
+    #[test]
+    fn a_stop_after_a_panic_stops_the_daemon_through_a_poisoned_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let host = InAppHost::default();
+        let app = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        app.block_on(host.start(config(temp.path()))).unwrap();
+        let poisoner = host.clone();
+        let panicked = std::thread::spawn(move || {
+            let _held = poisoner.shared.lock();
+            panic!("a panic while the lock is held");
+        })
+        .join();
+        assert!(panicked.is_err());
+        assert!(host.shared.hosted.is_poisoned());
+
+        host.shutdown_after_panic();
+
+        assert!(!host.may_host());
+        let (_link, connections) = InAppLink::new();
+        let again = app.block_on(InAppDaemon::start(config(temp.path()), connections));
+        assert!(again.is_ok(), "the lock is free again: {:?}", again.err());
     }
 
     #[cfg(unix)]
