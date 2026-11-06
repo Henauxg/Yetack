@@ -18,14 +18,14 @@ use strum::VariantArray;
 
 use super::app_state::{AgentEntry, AppState, FileRead, Loadable};
 use super::apply::forget_agent;
-use super::drafts::{Drafts, NewAgentDraft, Palette, QuestionDraft, SwitcherDraft};
+use super::drafts::{Drafts, NewAgentDraft, Palette, QuestionDraft, SlashWord, SwitcherDraft};
 use super::requests::{Outgoing, Purpose, Shift, history_request};
 use super::transcript::HistoryState;
 use super::ui_state::{
     Block, Dialog, FileView, NewAgentForm, NewAgentTab, PaletteOrigin, Popover, Reopening,
     TitleEdit, TitlePlace, ViewMode,
 };
-use super::{export, file_edits};
+use super::{export, file_edits, title_emoji};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::prefs::{self, StatusFilter};
 
@@ -172,25 +172,32 @@ pub enum PaletteChange {
     Close,
 }
 
-/// The composer's text changed. A `/` word alone filters the palette, and opens it; other text
-/// closes a palette opened by typing. A palette opened by the slash button has a filter field of
-/// its own, so the composer's text leaves it as it is. Only the drafts change: the caller applies
-/// the returned change with `change_palette`, so that a keystroke that leaves the palette as it
-/// is leaves the rest of the state alone.
+/// The composer's text changed, with the caret at `caret`, in UTF-16 units as the page counts
+/// them. The "/" word the caret is in filters the palette, and opens it, unless Esc closed it on
+/// that word; anywhere else, the caret closes a palette opened by typing. A palette opened by the
+/// slash button has a filter field of its own, so the composer's text leaves it as it is. Only
+/// the drafts change: the caller applies the returned change with `change_palette`, so that a
+/// keystroke that leaves the palette as it is leaves the rest of the state alone.
 pub fn composer_input(
     state: &AppState,
     drafts: &mut Drafts,
     agent: AgentId,
     text: String,
+    caret: usize,
 ) -> Option<PaletteChange> {
-    let command_query = text
-        .strip_prefix(COMMAND_PREFIX)
-        .filter(|rest| !rest.contains(char::is_whitespace));
-    let change = match (state.ui.popover, command_query) {
+    let caret = byte_offset(&text, caret);
+    let word = slash_word_at(&text, caret);
+    if drafts.palette_dismissed != word.map(|word| word.start) {
+        drafts.palette_dismissed = None;
+    }
+    let word = word.filter(|word| drafts.palette_dismissed != Some(word.start));
+    let change = match (state.ui.popover, word) {
         (Some(Popover::Palette(PaletteOrigin::Button)), _) => None,
-        (popover, Some(query)) => {
+        (popover, Some(word)) => {
+            let query = text.get(word.start + 1..caret).unwrap_or_default();
             drafts.palette = Palette {
                 query: query.to_owned(),
+                word: Some(word),
                 ..Palette::default()
             };
             let typed_open = popover == Some(Popover::Palette(PaletteOrigin::Typed));
@@ -200,7 +207,49 @@ pub fn composer_input(
         (_, None) => None,
     };
     drafts.draft_mut(agent).text = text;
+    drafts.draft_typed(agent);
     change
+}
+
+/// The byte offset in `text` of the caret the page puts `utf16` UTF-16 units in.
+fn byte_offset(text: &str, utf16: usize) -> usize {
+    let mut units = 0;
+    for (offset, character) in text.char_indices() {
+        if units >= utf16 {
+            return offset;
+        }
+        units += character.len_utf16();
+    }
+    text.len()
+}
+
+/// The "/" word the caret, a byte offset, is in: a "/" at the start of the text or after a space
+/// or a line break, then the rest of the word, without a second "/". So "src/lib.rs" and a path
+/// such as "/home/dev" are no command.
+pub fn slash_word_at(text: &str, caret: usize) -> Option<SlashWord> {
+    let before = text.get(..caret)?;
+    let start = before
+        .char_indices()
+        .rev()
+        .find(|(_, character)| character.is_whitespace())
+        .map_or(0, |(offset, character)| offset + character.len_utf8());
+    let after = text.get(caret..)?;
+    let end = caret + after.find(char::is_whitespace).unwrap_or(after.len());
+    let word = text.get(start..end)?.strip_prefix(COMMAND_PREFIX)?;
+    (!word.contains(COMMAND_PREFIX)).then_some(SlashWord { start, end })
+}
+
+/// `text` with the command in place of `word`, and the caret after it, in UTF-16 units. A space
+/// follows the command, the one already there or an added one.
+fn with_command_at(text: &str, word: SlashWord, name: &str) -> Option<(String, usize)> {
+    let before = text.get(..word.start)?;
+    let after = text.get(word.end..)?;
+    let spaced = after.starts_with(' ');
+    let space = if spaced { "" } else { " " };
+    let written = format!("{before}{COMMAND_PREFIX}{name}{space}{after}");
+    let caret = before.len() + COMMAND_PREFIX.len_utf8() + name.len() + 1;
+    let caret_units = written.get(..caret)?.encode_utf16().count();
+    Some((written, caret_units))
 }
 
 /// Opens or closes the palette as the composer's text asks.
@@ -285,6 +334,8 @@ pub enum MenuAction {
     ExportConversation,
     /// Turns the header's title into a field.
     Rename,
+    /// Opens the emoji picker, whose emoji starts the title.
+    SetEmoji,
     CloseAgent,
     /// A setting: its row holds its choices, which Left and Right move through.
     Model,
@@ -308,6 +359,7 @@ impl MenuAction {
             Self::CompactConversation => "Compact conversation",
             Self::ExportConversation => "Export conversation",
             Self::Rename => "Rename",
+            Self::SetEmoji => "Set emoji",
             Self::CloseAgent => "Close agent",
             Self::Model => "Model",
             Self::Effort => "Effort",
@@ -322,6 +374,7 @@ impl MenuAction {
             | Self::CompactConversation
             | Self::ExportConversation
             | Self::Rename
+            | Self::SetEmoji
             | Self::CloseAgent => MenuSection::Context,
             Self::Model | Self::Effort | Self::Mode => MenuSection::Model,
         }
@@ -339,6 +392,7 @@ impl MenuAction {
             Self::AttachImage
             | Self::ExportConversation
             | Self::Rename
+            | Self::SetEmoji
             | Self::CloseAgent
             | Self::Model
             | Self::Effort
@@ -376,6 +430,7 @@ impl MenuAction {
             | Self::CompactConversation
             | Self::ExportConversation
             | Self::Rename
+            | Self::SetEmoji
             | Self::CloseAgent => Vec::new(),
         };
         let mut words = words.into_iter().chain([self.label()]);
@@ -481,9 +536,21 @@ pub fn palette_pick(
         Some(PaletteEntry::Action(action)) => action,
         Some(PaletteEntry::Command(command)) => {
             let name = command.name.clone();
+            let word = drafts.palette.word;
             let draft = drafts.draft_mut(agent);
-            draft.text = with_command(&draft.text, &name);
-            drafts.draft_written(agent);
+            // A command picked while typing replaces its "/" word; one from the slash button's
+            // menu goes at the start.
+            let typed = word.and_then(|word| with_command_at(&draft.text, word, &name));
+            match typed {
+                Some((text, caret)) => {
+                    draft.text = text;
+                    drafts.draft_written_at(agent, caret);
+                }
+                None => {
+                    draft.text = with_command(&draft.text, &name);
+                    drafts.draft_written(agent);
+                }
+            }
             state.ui.popover = None;
             return Picked {
                 requests: Vec::new(),
@@ -527,6 +594,10 @@ pub fn palette_pick(
             start_rename(state, drafts, agent);
             Picked::default()
         }
+        MenuAction::SetEmoji => {
+            state.ui.popover = Some(Popover::TitleEmoji);
+            return Picked::default();
+        }
         MenuAction::CloseAgent => Picked {
             requests: request_close(state, drafts, agent),
             window: None,
@@ -535,6 +606,25 @@ pub fn palette_pick(
     };
     state.ui.popover = None;
     picked
+}
+
+/// Starts the agent's title with `emoji`, in place of the emoji it starts with, or removes that
+/// emoji for `None`. The rename shows it wherever the title shows, Claude Code's resume list
+/// included.
+pub fn set_title_emoji(state: &mut AppState, agent: AgentId, emoji: Option<&str>) -> Vec<Outgoing> {
+    state.ui.popover = None;
+    let Some(entry) = state.agents.get(&agent) else {
+        return Vec::new();
+    };
+    let title = title_emoji::with_emoji(&entry.summary.title, emoji);
+    // A title of an emoji alone has nothing left without it, and the daemon refuses it empty.
+    if title.is_empty() || title == entry.summary.title {
+        return Vec::new();
+    }
+    vec![Outgoing::action(Request::AgentRename(RenameParams {
+        agent,
+        title,
+    }))]
 }
 
 /// Turns the header's title into a field holding it.
@@ -735,6 +825,7 @@ pub fn setting_choices(summary: &AgentSummary, action: MenuAction) -> Vec<Settin
         | MenuAction::CompactConversation
         | MenuAction::ExportConversation
         | MenuAction::Rename
+        | MenuAction::SetEmoji
         | MenuAction::CloseAgent => Vec::new(),
     }
 }
@@ -764,6 +855,7 @@ pub fn choose_setting(
         | MenuAction::CompactConversation
         | MenuAction::ExportConversation
         | MenuAction::Rename
+        | MenuAction::SetEmoji
         | MenuAction::CloseAgent => None,
     };
     requests.unwrap_or_default()
@@ -825,6 +917,7 @@ fn unknown_value_choice(action: MenuAction) -> Option<usize> {
         | MenuAction::CompactConversation
         | MenuAction::ExportConversation
         | MenuAction::Rename
+        | MenuAction::SetEmoji
         | MenuAction::CloseAgent => None,
     }
 }
@@ -1892,7 +1985,8 @@ mod tests {
 
     /// Types in the composer as the window does: the drafts, then the palette when it changes.
     fn type_text(state: &mut AppState, drafts: &mut Drafts, text: &str) -> Vec<Outgoing> {
-        match composer_input(state, drafts, agent(), text.to_owned()) {
+        let caret = text.encode_utf16().count();
+        match composer_input(state, drafts, agent(), text.to_owned(), caret) {
             Some(change) => change_palette(state, agent(), change),
             None => Vec::new(),
         }
@@ -2115,11 +2209,11 @@ mod tests {
         let mut drafts = Drafts::default();
         with_commands(&mut state, vec![command("review", "")]);
 
-        let plain = composer_input(&state, &mut drafts, agent(), "Run the te".to_owned());
-        let opening = composer_input(&state, &mut drafts, agent(), "/re".to_owned());
+        let plain = composer_input(&state, &mut drafts, agent(), "Run the te".to_owned(), 10);
+        let opening = composer_input(&state, &mut drafts, agent(), "/re".to_owned(), 3);
         change_palette(&mut state, agent(), PaletteChange::Open);
-        let filtering = composer_input(&state, &mut drafts, agent(), "/rev".to_owned());
-        let closing = composer_input(&state, &mut drafts, agent(), "/rev the".to_owned());
+        let filtering = composer_input(&state, &mut drafts, agent(), "/rev".to_owned(), 4);
+        let closing = composer_input(&state, &mut drafts, agent(), "/rev the".to_owned(), 8);
 
         assert_eq!(
             (plain, opening, filtering, closing),
@@ -2203,6 +2297,108 @@ mod tests {
             .collect();
 
         assert_eq!(names, ["context", "compact"]);
+    }
+
+    #[test]
+    fn a_slash_word_starts_the_text_or_follows_a_space_or_a_line_break() {
+        let word = |text: &'static str, caret: usize| {
+            slash_word_at(text, caret).and_then(|word| text.get(word.start..word.end))
+        };
+
+        assert_eq!(word("/rev", 4), Some("/rev"));
+        assert_eq!(word("please run /rev", 15), Some("/rev"));
+        assert_eq!(word("first line\n/rev", 15), Some("/rev"));
+        // A "/" inside a word, and a path, are no command.
+        assert_eq!(word("open src/lib.rs", 15), None);
+        assert_eq!(word("look in /home", 13), Some("/home"));
+        assert_eq!(word("look in /home/dev", 17), None);
+        // The word the caret is in counts, up to the next space.
+        assert_eq!(word("/rev the branch", 2), Some("/rev"));
+        assert_eq!(word("/rev the branch", 8), None);
+        assert_eq!(word("/rev ", 5), None);
+    }
+
+    #[test]
+    fn a_slash_word_mid_message_opens_the_palette_filtered_by_it() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        with_commands(
+            &mut state,
+            vec![command("review", ""), command("compact", "")],
+        );
+        let palette = Some(Popover::Palette(PaletteOrigin::Typed));
+
+        type_text(&mut state, &mut drafts, "please run /rev");
+        let opened = (state.ui.popover, drafts.palette.query.clone());
+        type_text(&mut state, &mut drafts, "please run /rev ");
+        let after_space = state.ui.popover;
+        type_text(
+            &mut state,
+            &mut drafts,
+            "please run /rev now and look in src/",
+        );
+        let inside_a_word = state.ui.popover;
+        type_text(
+            &mut state,
+            &mut drafts,
+            "please run /rev now and look in /home/",
+        );
+        let a_path = state.ui.popover;
+
+        assert_eq!(opened, (palette, "rev".to_owned()));
+        assert_eq!((after_space, inside_a_word, a_path), (None, None, None));
+    }
+
+    #[test]
+    fn a_pick_replaces_only_the_slash_word_and_puts_the_caret_after_the_command() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        with_commands(&mut state, vec![command("review", "")]);
+        let mut pick = |text: &str, caret: usize| {
+            let change = composer_input(&state, &mut drafts, agent(), text.to_owned(), caret);
+            if let Some(change) = change {
+                change_palette(&mut state, agent(), change);
+            }
+            let _ = palette_pick(&mut state, &mut drafts, agent(), None);
+            let text = drafts.draft(agent()).map(|draft| draft.text.clone());
+            (text.unwrap_or_default(), drafts.written_caret(agent()))
+        };
+
+        // In the middle of the message, before a space: the space stays, the caret goes after it.
+        let middle = pick("please run /rev now", 15);
+        // At the end: a space follows the command.
+        let end = pick("please run /rev", 15);
+        // Before a line break: a space goes in before it.
+        let line_break = pick("/re\nthen the docs", 3);
+
+        assert_eq!(middle, ("please run /review now".to_owned(), Some(19)));
+        assert_eq!(end, ("please run /review ".to_owned(), Some(19)));
+        assert_eq!(line_break, ("/review \nthen the docs".to_owned(), Some(8)));
+    }
+
+    #[test]
+    fn the_caret_counts_utf16_units_as_the_page_does() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        with_commands(&mut state, vec![command("review", "")]);
+        // "é" is one UTF-16 unit and two bytes; "🙂" is two units and four bytes.
+        let text = "café 🙂 /re";
+        let caret = text.encode_utf16().count();
+
+        let change = composer_input(&state, &mut drafts, agent(), text.to_owned(), caret);
+        if let Some(change) = change {
+            change_palette(&mut state, agent(), change);
+        }
+        let query = drafts.palette.query.clone();
+        let _ = palette_pick(&mut state, &mut drafts, agent(), None);
+
+        let written = drafts.draft(agent()).map(|draft| draft.text.clone());
+        assert_eq!(query, "re");
+        assert_eq!(written.as_deref(), Some("café 🙂 /review "));
+        assert_eq!(
+            drafts.written_caret(agent()),
+            Some("café 🙂 /review ".encode_utf16().count())
+        );
     }
 
     #[test]
@@ -2503,6 +2699,7 @@ mod tests {
                 "Compact conversation",
                 "Export conversation",
                 "Rename",
+                "Set emoji",
                 "Close agent",
                 "Model",
                 "Effort",
@@ -2534,6 +2731,46 @@ mod tests {
     }
 
     #[test]
+    fn set_emoji_in_the_menu_opens_the_picker_whose_pick_renames_the_agent() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        open_menu(&mut state, &mut drafts, "emoji");
+
+        let picked = palette_pick(&mut state, &mut drafts, agent(), None);
+        let opened = state.ui.popover;
+        let renamed = set_title_emoji(&mut state, agent(), Some("🐛"));
+
+        assert_eq!(picked, Picked::default());
+        assert_eq!(opened, Some(Popover::TitleEmoji));
+        assert_eq!(state.ui.popover, None, "a pick closes the picker");
+        assert_eq!(
+            sent(&renamed),
+            [&Request::AgentRename(RenameParams {
+                agent: agent(),
+                title: "🐛 Agent 1".to_owned()
+            })]
+        );
+    }
+
+    #[test]
+    fn an_emoji_pick_that_changes_nothing_or_empties_the_title_renames_nothing() {
+        let mut state = state(AgentStatus::Idle);
+        let titled = |state: &mut AppState, title: &str| {
+            if let Some(entry) = state.agents.get_mut(&agent()) {
+                entry.summary.title = title.to_owned();
+            }
+        };
+
+        titled(&mut state, "🐛 Agent 1");
+        let same = set_title_emoji(&mut state, agent(), Some("🐛"));
+        titled(&mut state, "🐛");
+        let emptied = set_title_emoji(&mut state, agent(), None);
+
+        assert!(same.is_empty());
+        assert!(emptied.is_empty());
+    }
+
+    #[test]
     fn up_and_down_move_through_actions_then_commands_and_stop_at_the_ends() {
         let mut state = state(AgentStatus::Idle);
         let mut drafts = Drafts::default();
@@ -2550,7 +2787,7 @@ mod tests {
         };
 
         let up_at_the_top = press(Direction::Up, 1);
-        let on_the_first_command = press(Direction::Down, 9);
+        let on_the_first_command = press(Direction::Down, 10);
         let at_the_bottom = press(Direction::Down, 5);
         let back_on_the_settings = press(Direction::Up, 3);
 
@@ -2561,7 +2798,7 @@ mod tests {
                 at_the_bottom,
                 back_on_the_settings
             ),
-            (0, 9, 10, 7)
+            (0, 10, 11, 8)
         );
     }
 

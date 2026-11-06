@@ -26,6 +26,8 @@ pub enum Popover {
     Model,
     Mode,
     Palette(PaletteOrigin),
+    /// The grid of emoji that can start the selected agent's title.
+    TitleEmoji,
 }
 
 /// How the command palette opened, which decides when it closes.

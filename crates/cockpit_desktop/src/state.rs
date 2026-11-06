@@ -9,6 +9,7 @@ mod export;
 pub mod file_edits;
 mod requests;
 mod shortcuts;
+pub mod title_emoji;
 mod transcript;
 mod ui_state;
 

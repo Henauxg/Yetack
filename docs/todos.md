@@ -3,8 +3,6 @@
 Ideas and fixes noted for later. None of them is planned yet.
 
 - **Pinned messages per agent.** Pin a message of an agent's chat. A "Pins" block in the right column lists that agent's pinned messages, and a click on one scrolls the chat to it.
-- **Close sessions.** Close an agent's session from the app.
-- **An emoji per session.** Choose an emoji that prefixes the agent's title, in the sidebar and the header.
 - **Timing and progress on sidebar rows.** As the mockups showed, each row shows next to the agent's title how long ago it last did something (or how long its turn has run), and its task list's progress ("3/5", which today sits on the row's second line). The daemon must first send the time of the agent's last activity: `AgentSummary` has no such field yet (see the follow-up pass in `plan.md`).
 - **Scheduled jobs.** An agent with a job scheduled through `/loop` or `CronCreate` shows as Idle, with nothing saying it will run again.
   - The daemon keeps each agent's active jobs from the `CronCreate` and `CronDelete` calls it already sees (job id, schedule, repeating or not, prompt), and computes the next run from the schedule rather than from Claude Code's sentence. A job leaves the list when it is deleted, when it expires (Claude Code drops a recurring job after 7 days) and when the `claude` process ends.
@@ -13,4 +11,7 @@ Ideas and fixes noted for later. None of them is planned yet.
   - These jobs live only inside the `claude` process: stopping the agent, or restarting or updating the daemon, loses them. The app warns before a stop that would lose one, and the daemon's update procedure checks for scheduled jobs, not only for idle agents.
 - **Voice control.** Talk to an agent instead of typing: dictate a message into the composer, and possibly answer an approval or pick an agent by voice.
 - **Agents from several Claude accounts.** Run agents signed in to different Claude accounts from one app, for example a personal and a work subscription. Each account has its own Claude Code config folder (its own login and settings), and the app shows which account an agent uses.
+- **Faster agent switch.** A click on an agent in the sidebar takes a moment before anything changes, so the switch does not feel instant. The click should move the selection, the header and the composer at once, and show the transcript's skeleton until the chat is ready. First measure where the time goes:
+  - The first click on an agent asks the daemon for its last 100 entries and its details (`needed_requests` in `requests.rs`). The chat shows a skeleton until they arrive, so this wait is the round trip to the daemon.
+  - A later click already holds the entries, but the chat rebuilds its whole column for the other agent: 100 entries or more, in the same render as the sidebar and the header. If that render is the cost, render the last entries first and the older ones a moment later, or keep the chats of recently shown agents in the page, hidden.
 - **Machine load per agent.** Show how much of the server each agent uses: CPU and memory of its `claude` process and of the commands it runs (builds, tests, servers), summed over its process group, which the daemon already keeps per agent. A small figure on each sidebar row or in the header, with the server's total load beside it, so a heavy agent stands out when the machine is slow.

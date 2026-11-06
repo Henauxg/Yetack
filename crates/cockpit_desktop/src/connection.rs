@@ -85,9 +85,11 @@ impl Cockpit {
 
     /// Typing in the composer changes the drafts, and the state only when the palette opens or
     /// closes.
-    pub fn type_in_composer(&self, agent: AgentId, text: String) {
-        let palette =
-            self.with_drafts(|state, drafts| actions::composer_input(state, drafts, agent, text));
+    /// `caret` counts UTF-16 units, as the page does.
+    pub fn type_in_composer(&self, agent: AgentId, text: String, caret: usize) {
+        let palette = self.with_drafts(|state, drafts| {
+            actions::composer_input(state, drafts, agent, text, caret)
+        });
         if let Some(palette) = palette {
             self.change(|state| actions::change_palette(state, agent, palette));
         }
@@ -198,6 +200,9 @@ async fn run_demo(
                     let reopened = demo::reopen(&mut state.write(), &mut closed, &request);
                     let result = reopened.unwrap_or_else(|| demo::answer(&state.read(), &request));
                     let mut state = state.write();
+                    if result.is_ok() {
+                        demo::apply(&mut state, &request);
+                    }
                     let method = request.method();
                     state::apply_response(&mut state, &mut drafts.write(), method, purpose, result);
                     queue.extend(state::needed_requests(&mut state));
@@ -354,7 +359,7 @@ mod tests {
         let agent = AgentId::new(1);
 
         for text in ["R", "Ru", "Run the tests"] {
-            dom.in_runtime(|| cockpit.type_in_composer(agent, text.to_owned()));
+            dom.in_runtime(|| cockpit.type_in_composer(agent, text.to_owned(), text.len()));
             dom.render_immediate(&mut NoOpMutations);
         }
         dom.in_runtime(|| {

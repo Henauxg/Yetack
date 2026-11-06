@@ -19,6 +19,7 @@ use crate::process::{ClaudeCommand, InterruptedTurn, ProcessEvent};
 use crate::sessions;
 use crate::sessions::FoundSession;
 use crate::store::{AgentRecord, LogName, RawLog};
+use crate::transcript::prompts::TypedSetting;
 use crate::transcript::{
     AgentView, AnswerError, FollowUp, ProcessSession, PromptDelivery, plan_usage, prompts, words,
 };
@@ -320,6 +321,7 @@ impl Hub {
         };
         let line = prompts::prompt_line(&prompt)
             .ok_or_else(|| errors::internal("cannot encode the prompt".to_owned()))?;
+        let mut record_changed = false;
         if agent.view.is_busy() || !agent.queue.is_empty() {
             let item = agent.view.add_prompt(&prompt, PromptDelivery::Queued);
             agent.queue.push_back(QueuedPrompt {
@@ -330,6 +332,10 @@ impl Hub {
         } else {
             agent.view.add_prompt(&prompt, PromptDelivery::Now);
             process.write(line);
+            record_changed = record_typed_setting(agent, &prompt.text);
+        }
+        if record_changed {
+            self.save_agents();
         }
         self.publish(id);
         Ok(ResponseBody::Done)
@@ -343,15 +349,20 @@ impl Hub {
         let Some(process) = &agent.process else {
             return;
         };
+        let mut shown_text = None;
         while let Some(queued) = agent.queue.pop_front() {
             process.write(queued.line);
             match queued.item {
                 Some(item) => {
                     agent.view.prompt_sent(item);
+                    shown_text = Some(queued.text);
                     break;
                 }
                 None => agent.view.expect_echo(queued.text),
             }
+        }
+        if shown_text.is_some_and(|text| record_typed_setting(agent, &text)) {
+            self.save_agents();
         }
     }
 
@@ -568,6 +579,25 @@ impl Hub {
     }
 }
 
+/// Records the setting a prompt typed in the composer changes, as the agent's menus do, once the
+/// prompt goes to `claude`. True when the agent's record changed.
+fn record_typed_setting(agent: &mut Agent, text: &str) -> bool {
+    match TypedSetting::parse(text) {
+        Some(TypedSetting::Effort(effort)) => {
+            agent.record.effort = Some(effort);
+            agent.view.set_effort(effort);
+            true
+        }
+        // The summary shows the model once a turn's `system/init` reports it, and the daemon then
+        // asks for the effort it applies.
+        Some(TypedSetting::Model(model)) if check_model(&model).is_ok() => {
+            agent.record.model = Some(model);
+            true
+        }
+        Some(TypedSetting::Model(_)) | None => false,
+    }
+}
+
 /// Sends a prompt the transcript does not show, such as `/effort high`, now or after the current
 /// turn. An agent without a process gets nothing.
 fn send_hidden_prompt(agent: &mut Agent, text: String) {
@@ -694,6 +724,7 @@ mod tests {
 
     use crate::sessions::SessionPast;
     use crate::store::PastFile;
+    use crate::test_script;
 
     use super::*;
 
@@ -851,14 +882,10 @@ mod tests {
     /// reach `claude`.
     #[tokio::test]
     async fn a_stopping_agent_takes_no_prompt() {
-        use std::fs::Permissions;
-        use std::os::unix::fs::PermissionsExt;
-
         let temp = tempfile::tempdir().unwrap();
         let mut hub = Hub::for_tests(&temp.path().join("state"));
         let claude = temp.path().join("claude");
-        std::fs::write(&claude, "#!/bin/sh\nexec cat >/dev/null\n").unwrap();
-        std::fs::set_permissions(&claude, Permissions::from_mode(0o755)).unwrap();
+        test_script::write_script(&claude, "#!/bin/sh\nexec cat >/dev/null\n");
         hub.config.claude_program = claude;
         let start = StartParams {
             folder: temp.path().to_owned(),
