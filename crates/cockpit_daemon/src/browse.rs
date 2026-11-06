@@ -88,16 +88,21 @@ pub(crate) fn list(
     let access = Access::new(folder, touched, home)?;
     let asked = folder.join(path);
     #[cfg(windows)]
-    access
-        .check_before_open(&asked)
-        .map_err(|error| match error {
+    let check_before_open = |path: &Path| {
+        access.check_before_open(path).map_err(|error| match error {
             ReadFileError::NotAFile => ListDirError::NotAFolder(asked.clone()),
             _ => ListDirError::Outside,
-        })?;
+        })
+    };
+    #[cfg(windows)]
+    check_before_open(&asked)?;
     let resolved = read_file::canonical(&asked).map_err(|error| match error.kind() {
         io::ErrorKind::NotFound => ListDirError::Missing(asked.clone()),
         _ => ListDirError::Io(error),
     })?;
+    // A link may lead to a folder named `CON`, which the path opens as the device.
+    #[cfg(windows)]
+    check_before_open(&resolved)?;
     let holder = access
         .folder_holding(&resolved)
         .ok_or(ListDirError::Outside)?;
@@ -750,6 +755,28 @@ mod tests {
             layout.list(Path::new("nul")),
             Err(ListDirError::NotAFolder(_))
         ));
+    }
+
+    /// Only a verbatim path makes a folder named `CON`. Its plain path opens the device.
+    #[cfg(windows)]
+    #[test]
+    fn a_link_to_a_folder_with_a_device_name_is_no_folder() {
+        let layout = Layout::new();
+        let device = PathBuf::from(format!(r"\\?\{}\con", layout.agent.display()));
+        std::fs::create_dir(&device).unwrap();
+        std::os::windows::fs::symlink_dir(&device, layout.agent.join("console")).unwrap();
+        if std::fs::symlink_metadata(layout.agent.join("console")).is_err() {
+            // Wine makes the link but cannot read it.
+            eprintln!("skipped: the symbolic link cannot be read back");
+            return;
+        }
+
+        let listing = layout.list(Path::new("console"));
+
+        assert!(
+            matches!(listing, Err(ListDirError::NotAFolder(_))),
+            "{listing:?}"
+        );
     }
 
     #[cfg(windows)]

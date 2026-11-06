@@ -144,10 +144,11 @@ pub(crate) fn may_open<'allowed>(
     }
 }
 
-/// Whether a name of `path` is one Windows reads as a device, such as `NUL` or `COM1.txt`.
+/// Whether a name of `path` is one Windows reads as a device, such as `NUL`, `COM1.txt` or
+/// `AUX:`.
 pub(crate) fn names_a_device(path: &str) -> bool {
     path.split(is_separator).any(|name| {
-        let stem = name.split('.').next().unwrap_or(name).trim_end();
+        let stem = name.split(['.', ':']).next().unwrap_or(name).trim_end();
         let port = PORT_NAMES.iter().any(|port| {
             stem.get(..port.len())
                 .is_some_and(|start| start.eq_ignore_ascii_case(port))
@@ -250,6 +251,9 @@ mod tests {
             r"C:\work\aux .md",
             r"C:\work\conin$",
             r"nul\file.txt",
+            r"C:\work\nul:",
+            r"C:\work\COM1:",
+            r"C:\work\aux:stream",
         ] {
             assert!(names_a_device(path), "{path}");
         }

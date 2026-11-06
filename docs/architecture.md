@@ -185,7 +185,8 @@ On Windows, a folder's entries come from `GetFileInformationByHandleEx` on the o
 
 - The verbatim prefix that `canonicalize` adds, `\\?\C:\` or `\\?\UNC\host\share\`, counts as absent. The daemon keeps canonical paths without it, so they show as a user writes them.
 - Names compare whatever their case, as Windows does, with one upper case character for each: `ß` stays `ß`. Drive letters and shares must match.
-- A device path (`\\.\pipe\...`), a device name such as `NUL` or `COM1` in any folder, and a network share that none of the agent's allowed folders and files is on, are refused before any file system call, so that a check never makes Windows connect to another host. A symbolic link in an allowed folder that leads to a share is still followed when the path is resolved, then refused: the agent can reach that host itself.
+- A device path (`\\.\pipe\...`), a device name such as `NUL`, `COM1` or `AUX:` in any folder, and a network share that none of the agent's allowed folders and files is on, are refused before any file system call, so that a check never makes Windows connect to another host. A symbolic link in an allowed folder that leads to a share is still followed when the path is resolved, then refused: the agent can reach that host itself.
+  A link that leads to a device name is refused once resolved, before the file opens. A search leaves out a path that `git ls-files` lists outside its checkout, which an index file the agent wrote can hold.
 - `folders.list` takes a share, since the user types it.
 
 - `agent.read_file` sends a text file of at most 4 MiB. A relative path that names no file in the agent's folder is looked up: the most recent file the agent read or changed whose path ends with it, then a `git ls-files` search of the folders above, which stops at 20 matches or 3 seconds. Several matches come back as `FileMatches`, for the user to pick.

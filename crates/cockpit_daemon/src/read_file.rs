@@ -237,6 +237,9 @@ pub(crate) fn read(access: &Access, path: &Path) -> Result<String, ReadFileError
         io::ErrorKind::NotFound => ReadFileError::Missing(path.to_owned()),
         _ => ReadFileError::NotFound(error),
     })?;
+    // A link may lead to a file named `AUX`, which the path opens as the device.
+    #[cfg(windows)]
+    access.check_before_open(&resolved)?;
     let holder = access.holder(&resolved).ok_or(ReadFileError::Outside)?;
     let file = open_to_read(&resolved).map_err(ReadFileError::NotFound)?;
     // The checks use the open file, so a swap after them does not matter.
@@ -404,6 +407,10 @@ pub(crate) async fn search(
                 continue;
             }
             let found = root.join(relative);
+            #[cfg(windows)]
+            if access.check_before_open(&found).is_err() {
+                continue;
+            }
             let Ok(resolved) = canonical(&found) else {
                 continue;
             };
@@ -420,19 +427,27 @@ pub(crate) async fn search(
     matches
 }
 
-/// A path as `git ls-files -z` writes it.
-#[cfg(unix)]
+/// A path as `git ls-files -z` writes it, relative to the checkout. `None` for an absolute path or
+/// one with `..`, which the checkout's index file can hold when the agent wrote it: on Windows,
+/// `//host/share/file` would make the search connect to that host.
 fn git_path(bytes: &[u8]) -> Option<PathBuf> {
+    let path = written_path(bytes)?;
+    path.components()
+        .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
+        .then_some(path)
+}
+
+#[cfg(unix)]
+fn written_path(bytes: &[u8]) -> Option<PathBuf> {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
 
     Some(PathBuf::from(OsStr::from_bytes(bytes)))
 }
 
-/// A path as `git ls-files -z` writes it: Git for Windows writes UTF-8, with `/` between names,
-/// which the path gets as `\`.
+/// Git for Windows writes UTF-8, with `/` between names, which the path gets as `\`.
 #[cfg(windows)]
-fn git_path(bytes: &[u8]) -> Option<PathBuf> {
+fn written_path(bytes: &[u8]) -> Option<PathBuf> {
     let text = std::str::from_utf8(bytes).ok()?;
     Some(Path::new(text).components().collect())
 }
@@ -809,6 +824,31 @@ mod tests {
         assert_outside(dots.map(|_| String::new()));
     }
 
+    #[test]
+    fn a_git_path_outside_its_checkout_is_left_out() {
+        assert_eq!(
+            git_path(b"src/main.rs"),
+            Some(Path::new("src").join("main.rs"))
+        );
+        for outside in [
+            "/etc/passwd",
+            "../app_other/src/secret.ts",
+            "src/../../secret.ts",
+        ] {
+            assert_eq!(git_path(outside.as_bytes()), None, "{outside}");
+        }
+        #[cfg(windows)]
+        for outside in [
+            "//attacker.invalid/share/notes.txt",
+            r"\\attacker.invalid\share\notes.txt",
+            "C:/Windows/win.ini",
+            "C:notes.txt",
+            r"\Windows\win.ini",
+        ] {
+            assert_eq!(git_path(outside.as_bytes()), None, "{outside}");
+        }
+    }
+
     /// Listing a large checkout takes much of the search's time.
     #[test]
     fn a_search_lists_the_agents_own_checkout_once() {
@@ -1001,6 +1041,27 @@ mod tests {
                 "{device}: {refused:?}"
             );
         }
+    }
+
+    /// Only a verbatim path makes a file named `AUX`. Its plain path opens the device.
+    #[cfg(windows)]
+    #[test]
+    fn a_link_to_a_file_with_a_device_name_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = canonical(temp.path()).unwrap();
+        let device = PathBuf::from(format!(r"\\?\{}\aux", folder.display()));
+        std::fs::write(&device, "a file").unwrap();
+        std::os::windows::fs::symlink_file(&device, folder.join("notes.txt")).unwrap();
+        if std::fs::symlink_metadata(folder.join("notes.txt")).is_err() {
+            // Wine makes the link but cannot read it.
+            eprintln!("skipped: the symbolic link cannot be read back");
+            return;
+        }
+        let access = only_folder(&folder);
+
+        let read = read(&access, Path::new("notes.txt"));
+
+        assert!(matches!(read, Err(ReadFileError::NotAFile)), "{read:?}");
     }
 
     #[cfg(windows)]
