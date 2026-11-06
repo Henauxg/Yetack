@@ -7,6 +7,7 @@ use strum::VariantArray;
 
 use crate::details::{AgentDetails, ContextUsage, McpServer, SlashCommand};
 use crate::ids::{AgentId, ClaudeSessionId};
+use crate::machine_load::MachineLoad;
 use crate::time::Timestamp;
 use crate::transcript::TranscriptItem;
 
@@ -70,6 +71,7 @@ pub enum ResponseBody {
     Sessions {
         sessions: Vec<PastSession>,
     },
+    MachineLoad(MachineLoad),
 }
 
 /// A folder's entries: its folders first, then its other entries, each group by name.
@@ -140,7 +142,7 @@ pub enum ErrorCode {
     /// pending approval.
     InvalidRequest,
     /// The agent, pending answer, queued message, task, MCP server, session or file it names
-    /// does not exist.
+    /// does not exist, or the process it names is not one of the agent's.
     NotFound,
     /// The request needs a running `claude` process: `agent.resume` first.
     AgentExited,
@@ -152,6 +154,8 @@ pub enum ErrorCode {
     ClaudeFailed,
     /// Claude Code did not answer in time.
     Timeout,
+    /// The daemon's machine cannot do it, such as measuring its load without `/proc`.
+    Unsupported,
     /// A fault in the daemon.
     Internal,
 }

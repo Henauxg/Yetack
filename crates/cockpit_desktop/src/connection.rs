@@ -6,12 +6,13 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_client::{Backoff, Requester, Session, Transport};
-use cockpit_protocol::AgentId;
+use cockpit_protocol::{AgentId, Request};
 use dioxus::desktop::DesktopContext;
 use dioxus::prelude::*;
 use tokio::sync::mpsc;
 
 use crate::notifications::Notifier;
+use crate::state::machine_load::{LOAD_POLL, LoadView};
 use crate::state::{self, AgentEntry, AppState, Drafts, Outgoing, Purpose, TitlePlace, actions};
 use crate::{bridge, demo};
 
@@ -29,11 +30,13 @@ pub struct Startup {
 
 /// What components hold to read and change the state and to reach the daemon. The drafts are a
 /// signal of their own: typing changes them alone, so the views that read the state, the
-/// transcript first, do not render again.
+/// transcript first, do not render again. The machine's load is one too: it changes every few
+/// seconds, and only the views that show it render again.
 #[derive(Clone, Copy)]
 pub struct Cockpit {
     pub state: Signal<AppState>,
     pub drafts: Signal<Drafts>,
+    pub load: Signal<LoadView>,
     daemon: Coroutine<Outgoing>,
 }
 
@@ -155,21 +158,30 @@ pub fn use_cockpit(startup: Startup) -> Cockpit {
     } = startup;
     let state = use_signal(move || initial);
     let drafts = use_signal(Drafts::default);
+    let load = use_signal(LoadView::default);
     let daemon = use_coroutine(move |requests: UnboundedReceiver<Outgoing>| {
         let transport = transport.clone();
         async move {
             if demo {
-                run_demo(state, drafts, requests).await;
+                run_demo(state, drafts, load, requests).await;
             } else {
-                run(state, drafts, transport, notifications, requests).await;
+                run(state, drafts, load, transport, notifications, requests).await;
             }
         }
     });
     use_context_provider(|| Cockpit {
         state,
         drafts,
+        load,
         daemon,
     })
+}
+
+/// Shows `view`, unless the load already shows it: setting a signal renders its readers again.
+fn show_load(mut load: Signal<LoadView>, view: LoadView) {
+    if *load.peek() != view {
+        load.set(view);
+    }
 }
 
 /// Answers every request from the sample state, in order, and makes the live agent's
@@ -177,16 +189,22 @@ pub fn use_cockpit(startup: Startup) -> Cockpit {
 async fn run_demo(
     mut state: Signal<AppState>,
     mut drafts: Signal<Drafts>,
+    load: Signal<LoadView>,
     mut requests: UnboundedReceiver<Outgoing>,
 ) {
     use futures_util::StreamExt;
 
     let mut ticks = tokio::time::interval(demo::LIVE_TICK);
+    let mut load_ticks = tokio::time::interval(LOAD_POLL);
     let mut tick: u32 = 0;
     // The agents closed, which Undo brings back.
     let mut closed: Vec<AgentEntry> = Vec::new();
     loop {
         tokio::select! {
+            _ = load_ticks.tick() => {
+                let answer = demo::answer(&state.peek(), &Request::MachineLoad);
+                show_load(load, LoadView::from_result(answer));
+            }
             outgoing = requests.next() => {
                 let Some(outgoing) = outgoing else {
                     return;
@@ -219,6 +237,7 @@ async fn run_demo(
 async fn run(
     mut state: Signal<AppState>,
     mut drafts: Signal<Drafts>,
+    load: Signal<LoadView>,
     transport: Transport,
     notify: bool,
     mut requests: UnboundedReceiver<Outgoing>,
@@ -229,8 +248,30 @@ async fn run(
     let requester = session.requester().clone();
     let (opened_sender, mut opened) = mpsc::unbounded_channel::<AgentId>();
     let mut notifier = notify.then(|| Notifier::new(opened_sender));
+    let mut load_ticks = tokio::time::interval(LOAD_POLL);
+    let (load_sender, mut load_answers) = mpsc::unbounded_channel();
+    // One question at a time: a slow daemon does not pile them up.
+    let mut load_asked = false;
     loop {
         tokio::select! {
+            _ = load_ticks.tick() => {
+                if !state.peek().is_connected() {
+                    show_load(load, LoadView::Waiting);
+                } else if !load_asked {
+                    load_asked = true;
+                    let requester = requester.clone();
+                    let answers = load_sender.clone();
+                    spawn(async move {
+                        let answer = requester.request(Request::MachineLoad).await;
+                        // The connection task ended: nobody shows the load any more.
+                        let _ = answers.send(answer);
+                    });
+                }
+            }
+            Some(answer) = load_answers.recv() => {
+                load_asked = false;
+                show_load(load, LoadView::from_result(answer));
+            }
             update = session.next_update() => {
                 let Some(update) = update else {
                     return;
@@ -324,10 +365,12 @@ mod tests {
             state
         });
         let drafts = use_signal(Drafts::default);
+        let load = use_signal(LoadView::default);
         let daemon = use_coroutine(|_: UnboundedReceiver<Outgoing>| async {});
         let cockpit = use_context_provider(|| Cockpit {
             state,
             drafts,
+            load,
             daemon,
         });
         COCKPIT.with(|slot| slot.replace(Some(cockpit)));

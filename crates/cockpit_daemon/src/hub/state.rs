@@ -13,6 +13,7 @@ use tokio::sync::mpsc;
 use crate::daemon_config::DaemonConfig;
 use crate::hub::input::{ControlPurpose, HubInput, Joined, Registration};
 use crate::hub::restore::Restored;
+use crate::machine_load::LoadSampler;
 use crate::process::ProcessHandle;
 use crate::store::{AgentRecord, AgentsFile, DaemonSettings, EventLogs, LogName, StateDir};
 use crate::transcript::AgentView;
@@ -35,6 +36,8 @@ pub(crate) struct Hub {
     pub(super) clients: Vec<mpsc::Sender<Frame>>,
     /// For the process tasks and the helper tasks, which report to the hub.
     pub(super) inputs: mpsc::Sender<HubInput>,
+    /// Samples the machine's load while clients ask for it.
+    pub(super) load: LoadSampler,
 }
 
 pub(super) struct Agent {
@@ -90,6 +93,7 @@ impl Hub {
             last_seq: restored.last_seq,
             clients: Vec::new(),
             inputs,
+            load: LoadSampler::default(),
         }
     }
 

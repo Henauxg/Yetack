@@ -5,7 +5,8 @@ use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, Local, NaiveDateTime};
 use cockpit_protocol::{
-    AgentStatus, CostUsd, Effort, McpScope, McpServerStatus, PermissionMode, Timestamp, UsageWindow,
+    AgentStatus, Cores, CostUsd, Effort, McpScope, McpServerStatus, PermissionMode, Timestamp,
+    UsageWindow,
 };
 
 /// A model Claude Code accepts by its alias, for the model menu.
@@ -279,6 +280,42 @@ pub fn cost(cost: CostUsd) -> String {
     format!("${:.2}", cost.get())
 }
 
+/// Cores in use, with one decimal: "18.4".
+pub fn cores(cores: Cores) -> String {
+    format!("{:.1}", cores.get())
+}
+
+/// A gigabyte of 2^30 bytes, as `free` and the kernel count memory.
+const GIGABYTE: u64 = 1 << 30;
+
+/// "412 MB" under a gigabyte, "22.1 GB", and without the decimal from 100 GB: "312 GB".
+pub fn memory(bytes: u64) -> String {
+    const MEGABYTE: u64 = 1 << 20;
+    if bytes < GIGABYTE {
+        return format!("{} MB", bytes.saturating_add(MEGABYTE / 2) / MEGABYTE);
+    }
+    format!("{} GB", gigabytes(bytes, bytes))
+}
+
+/// "312 / 503 GB": the total decides whether both show a decimal.
+pub fn memory_of(used: u64, total: u64) -> String {
+    format!(
+        "{} / {} GB",
+        gigabytes(used, total),
+        gigabytes(total, total)
+    )
+}
+
+fn gigabytes(bytes: u64, scale: u64) -> String {
+    const NO_DECIMAL_FROM: u64 = 100 * GIGABYTE;
+    let half = GIGABYTE / 2;
+    if scale >= NO_DECIMAL_FROM {
+        return (bytes.saturating_add(half) / GIGABYTE).to_string();
+    }
+    let tenths = bytes.saturating_mul(10).saturating_add(half) / GIGABYTE;
+    format!("{}.{}", tenths / 10, tenths % 10)
+}
+
 /// A rate limit's utilization, from 0 to 1, as a whole percentage.
 pub fn percent(utilization: f64) -> u8 {
     let clamped = (utilization * 100.0).round().clamp(0.0, 100.0);
@@ -365,6 +402,20 @@ mod tests {
     use chrono::{NaiveDate, Utc};
 
     use super::*;
+
+    #[test]
+    fn cores_and_memory_read_as_the_mockups_show_them() {
+        const GIB: u64 = 1 << 30;
+
+        assert_eq!(cores(Cores::new(18.44)), "18.4");
+        assert_eq!(cores(Cores::new(0.0)), "0.0");
+        assert_eq!(memory(22 * GIB + GIB / 10), "22.1 GB");
+        assert_eq!(memory(GIB * 4 / 10), "410 MB");
+        assert_eq!(memory(3 << 20), "3 MB");
+        assert_eq!(memory(312 * GIB), "312 GB");
+        assert_eq!(memory_of(312 * GIB, 503 * GIB), "312 / 503 GB");
+        assert_eq!(memory_of(6 * GIB, 16 * GIB), "6.0 / 16.0 GB");
+    }
 
     fn at(day: u32, hour: u32, minute: u32) -> NaiveDateTime {
         NaiveDate::from_ymd_opt(2026, 11, day)

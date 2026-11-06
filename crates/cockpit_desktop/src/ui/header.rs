@@ -1,5 +1,6 @@
-//! The center header: the agent's title, status and folder, the usage chip and the changes chip.
-//! It stays on one line; when narrow, the title shortens, then the chips shrink to icons.
+//! The center header: the agent's title, status and folder, the usage chip, the load chip and the
+//! changes chip. It stays on one line; when narrow, the title shortens, then the chips shrink to
+//! icons.
 
 use std::time::SystemTime;
 
@@ -15,6 +16,7 @@ use crate::state::{AgentEntry, Loadable, Popover, TitlePlace, actions, title_emo
 use crate::ui::changes_list::{self, ChangesList};
 use crate::ui::emoji_picker::EmojiPicker;
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::load_card::{LoadCard, LoadChip};
 use crate::ui::presence::Presence;
 use crate::{bridge, format};
 
@@ -133,6 +135,7 @@ pub fn Header() -> Element {
     let files = changed_files(entry);
     let (added, removed) = changes_list::line_totals(&files);
     let usage_open = state.ui.popover == Some(Popover::Usage);
+    let load_open = state.ui.popover == Some(Popover::Load);
     let emoji_open = state.ui.popover == Some(Popover::TitleEmoji);
     let (title_emoji, title_rest) = match title_emoji::split(&summary.title) {
         Some((emoji, rest)) => (Some(emoji.to_owned()), rest.to_owned()),
@@ -241,6 +244,10 @@ pub fn Header() -> Element {
                     span { class: "chip-compact", dangerous_inner_html: rings(plan, context) }
                 }
                 Presence { open: usage_open, UsageCard {} }
+            }
+            div { class: "chip-anchor",
+                LoadChip { open: load_open }
+                Presence { open: load_open, LoadCard {} }
             }
             div { class: "chip-anchor",
                 button {

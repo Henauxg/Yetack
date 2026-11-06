@@ -14,19 +14,21 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use cockpit_protocol::{
-    AgentDetails, AgentId, AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams,
-    AnswerState, Approval, ApprovalAnswer, ApprovalDecision, AskedQuestion, BackgroundTask,
-    BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus, CancelQueuedParams, Catchup,
-    ChangedFile, ClaudeSessionId, ClientMessage, CommandKind, ContextCategory, ContextUsage,
-    CostUsd, DirEntry, DirListing, Effort, EntryKind, ErrorBody, ErrorCode, Event, EventRecord,
-    FileEdit, FindFilesParams, HistoryPage, HistoryParams, Image, ImageMediaType, ItemBody, ItemId,
-    ListDirParams, McpRemoveParams, McpScope, McpServer, McpServerParams, McpServerStatus,
-    McpToggleParams, McpTool, McpTransport, Method, MoveParams, PROTOCOL_VERSION, PastSession,
-    PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, PlanUsage, Position, Prompt,
-    PromptParams, Question, QuestionAnswer, QuestionOption, RateLimitStatus, ReadFileParams,
-    RenameParams, Request, RequestId, ResponseBody, ResponseResult, Seq, ServerMessage,
-    SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, Settings, SlashCommand,
-    Snapshot, StartParams, StopTaskParams, TaskListItem, TaskProgress, TaskStatus, Timestamp,
+    AgentDetails, AgentHistory, AgentId, AgentLoad, AgentParams, AgentStatus, AgentSummary, Answer,
+    AnswerParams, AnswerState, Approval, ApprovalAnswer, ApprovalDecision, AskedQuestion,
+    BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus, CancelQueuedParams,
+    Catchup, ChangedFile, ClaudeSessionId, ClientMessage, CommandKind, CommandLoad,
+    ContextCategory, ContextUsage, Cores, CostUsd, DirEntry, DirListing, Effort, EntryKind,
+    ErrorBody, ErrorCode, Event, EventRecord, FileEdit, FindFilesParams, HistoryPage,
+    HistoryParams, Image, ImageMediaType, ItemBody, ItemId, ListDirParams, LoadAverage,
+    LoadHistory, MachineLoad, McpRemoveParams, McpScope, McpServer, McpServerParams,
+    McpServerStatus, McpToggleParams, McpTool, McpTransport, Method, MoveParams, PROTOCOL_VERSION,
+    PastSession, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, PlanUsage, Position,
+    ProcessId, Prompt, PromptParams, Question, QuestionAnswer, QuestionOption, RateLimitStatus,
+    ReadFileParams, RenameParams, Request, RequestId, ResourceUse, ResponseBody, ResponseResult,
+    Seq, ServerLoad, ServerMessage, ServerPoint, SessionResumeParams, SetEffortParams,
+    SetModeParams, SetModelParams, Settings, SlashCommand, Snapshot, StartParams,
+    StopProcessParams, StopTaskParams, TaskListItem, TaskProgress, TaskStatus, Timestamp,
     TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, UsageWindow, UserMessage,
     WindowUsage,
 };
@@ -488,6 +490,10 @@ fn requests() -> Vec<Request> {
             agent,
             task: BackgroundTaskId::new("task-1".to_owned()),
         }),
+        Request::AgentStopProcess(StopProcessParams {
+            agent,
+            pid: ProcessId::new(4242),
+        }),
         Request::AgentMcpStatus(AgentParams { agent }),
         Request::AgentMcpReconnect(McpServerParams {
             agent,
@@ -521,6 +527,7 @@ fn requests() -> Vec<Request> {
         Request::SessionsResume(SessionResumeParams {
             session: session_id(),
         }),
+        Request::MachineLoad,
     ]
 }
 
@@ -565,6 +572,71 @@ fn answers() -> Vec<Answer> {
     ]
 }
 
+/// A server of 64 cores where one agent builds and another waits, over two samples.
+fn machine_load() -> MachineLoad {
+    MachineLoad {
+        taken_at: at(1_700_000_003_000),
+        server: ServerLoad {
+            cores: 64,
+            cpu: Cores::new(46.5),
+            memory_used_bytes: 312_000_000_000,
+            memory_total_bytes: 540_000_000_000,
+            load_average: LoadAverage {
+                one_minute: 43.5,
+                five_minutes: 38.25,
+                fifteen_minutes: 30.0,
+            },
+        },
+        agents: vec![
+            AgentLoad {
+                agent: agent(),
+                cpu: Cores::new(18.5),
+                memory_bytes: 22_000_000_000,
+                processes: 14,
+                heaviest: vec![CommandLoad {
+                    pid: ProcessId::new(4242),
+                    command: "rustc --crate-name shop_api --edition=2024".to_owned(),
+                    cpu: Cores::new(7.75),
+                    memory_bytes: 6_000_000_000,
+                }],
+            },
+            AgentLoad {
+                agent: AgentId::new(4),
+                cpu: Cores::new(0.0),
+                memory_bytes: 400_000_000,
+                processes: 1,
+                heaviest: Vec::new(),
+            },
+        ],
+        others: ResourceUse {
+            cpu: Cores::new(28.0),
+            memory_bytes: 289_600_000_000,
+        },
+        history: LoadHistory {
+            server: vec![
+                ServerPoint {
+                    taken_at: at(1_700_000_000_000),
+                    cpu: Cores::new(44.0),
+                },
+                ServerPoint {
+                    taken_at: at(1_700_000_003_000),
+                    cpu: Cores::new(46.5),
+                },
+            ],
+            agents: vec![
+                AgentHistory {
+                    agent: agent(),
+                    cpu: vec![Some(Cores::new(16.0)), Some(Cores::new(18.5))],
+                },
+                AgentHistory {
+                    agent: AgentId::new(4),
+                    cpu: vec![None, Some(Cores::new(0.0))],
+                },
+            ],
+        },
+    }
+}
+
 /// One body of every kind.
 fn response_bodies() -> Vec<ResponseBody> {
     vec![
@@ -602,6 +674,7 @@ fn response_bodies() -> Vec<ResponseBody> {
                 turns: 7,
             }],
         },
+        ResponseBody::MachineLoad(machine_load()),
     ]
 }
 
@@ -791,6 +864,7 @@ fn method_names_are_pinned() {
             "agent.move",
             "agent.context_usage",
             "agent.stop_task",
+            "agent.stop_process",
             "agent.mcp_status",
             "agent.mcp_reconnect",
             "agent.mcp_toggle",
@@ -802,6 +876,7 @@ fn method_names_are_pinned() {
             "settings.set",
             "sessions.list",
             "sessions.resume",
+            "machine.load",
         ]
     );
 }
@@ -839,6 +914,7 @@ fn message_and_body_tags_are_pinned() {
             "directory",
             "file_matches",
             "sessions",
+            "machine_load",
         ]
     );
     assert_eq!(
@@ -967,6 +1043,7 @@ fn words_are_pinned() {
             "file_unreadable",
             "claude_failed",
             "timeout",
+            "unsupported",
             "internal",
         ]
     );
@@ -1249,6 +1326,80 @@ fn responses_on_the_wire() {
     assert_eq!(
         serde_json::to_string(&failed).unwrap(),
         r#"{"type":"response","id":8,"result":{"error":{"code":"not_found","message":"no agent 9"}}}"#
+    );
+}
+
+#[test]
+fn machine_load_requests_on_the_wire() {
+    let load = ClientMessage::Request {
+        id: RequestId::new(11),
+        request: Request::MachineLoad,
+    };
+    let stop = ClientMessage::Request {
+        id: RequestId::new(12),
+        request: Request::AgentStopProcess(StopProcessParams {
+            agent: agent(),
+            pid: ProcessId::new(4242),
+        }),
+    };
+
+    assert_wire(
+        &load,
+        json!({"type": "request", "id": 11, "request": {"method": "machine.load"}}),
+    );
+    assert_wire(
+        &stop,
+        json!({
+            "type": "request",
+            "id": 12,
+            "request": {"method": "agent.stop_process", "params": {"agent": 3, "pid": 4242}},
+        }),
+    );
+}
+
+#[test]
+fn a_machine_load_answer_on_the_wire() {
+    let answer = ResponseBody::MachineLoad(machine_load());
+
+    assert_wire(
+        &answer,
+        json!({
+            "type": "machine_load",
+            "taken_at": 1_700_000_003_000_u64,
+            "server": {
+                "cores": 64,
+                "cpu": 46.5,
+                "memory_used_bytes": 312_000_000_000_u64,
+                "memory_total_bytes": 540_000_000_000_u64,
+                "load_average": {"one_minute": 43.5, "five_minutes": 38.25, "fifteen_minutes": 30.0},
+            },
+            "agents": [
+                {
+                    "agent": 3,
+                    "cpu": 18.5,
+                    "memory_bytes": 22_000_000_000_u64,
+                    "processes": 14,
+                    "heaviest": [{
+                        "pid": 4242,
+                        "command": "rustc --crate-name shop_api --edition=2024",
+                        "cpu": 7.75,
+                        "memory_bytes": 6_000_000_000_u64,
+                    }],
+                },
+                {"agent": 4, "cpu": 0.0, "memory_bytes": 400_000_000, "processes": 1, "heaviest": []},
+            ],
+            "others": {"cpu": 28.0, "memory_bytes": 289_600_000_000_u64},
+            "history": {
+                "server": [
+                    {"taken_at": 1_700_000_000_000_u64, "cpu": 44.0},
+                    {"taken_at": 1_700_000_003_000_u64, "cpu": 46.5},
+                ],
+                "agents": [
+                    {"agent": 3, "cpu": [16.0, 18.5]},
+                    {"agent": 4, "cpu": [null, 0.0]},
+                ],
+            },
+        }),
     );
 }
 

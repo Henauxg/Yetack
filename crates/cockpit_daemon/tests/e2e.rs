@@ -21,10 +21,10 @@ use cockpit_protocol::{
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, CancelQueuedParams, Catchup,
     ClaudeSessionId, CommandKind, CostUsd, Effort, ErrorCode, Event, EventRecord, HistoryParams,
     ItemBody, ItemId, McpRemoveParams, McpScope, McpServerParams, McpServerStatus, McpToggleParams,
-    MoveParams, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, Prompt, PromptParams,
-    Question, QuestionAnswer, ReadFileParams, RenameParams, Request, ResponseBody, Seq,
-    SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, Settings, StartParams,
-    StopTaskParams, TranscriptItem,
+    MoveParams, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, ProcessId, Prompt,
+    PromptParams, Question, QuestionAnswer, ReadFileParams, RenameParams, Request, ResponseBody,
+    Seq, SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, Settings,
+    StartParams, StopProcessParams, StopTaskParams, TranscriptItem,
 };
 use rustix::process::{Pid, Signal};
 use serde_json::Value;
@@ -1234,6 +1234,83 @@ async fn a_stopped_agent_that_hangs_is_killed_with_its_children() {
         rustix::process::kill_process(pid, Signal::KILL).unwrap();
     }
     assert!(!survived, "the child of the killed claude still runs");
+}
+
+/// `machine.load` shows the agent's `claude` and the command it runs, and `agent.stop_process`
+/// stops that command and refuses a process outside the agent.
+#[tokio::test]
+async fn the_machine_load_shows_an_agents_command_which_it_can_stop() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let agent = client.start(&setup.work(), "linger").await;
+    let started = client
+        .item_with(agent, |body| {
+            matches!(body, ItemBody::AssistantText { markdown } if markdown.starts_with("Started child "))
+        })
+        .await;
+    let ItemBody::AssistantText { markdown } = started.body else {
+        panic!("expected the child's pid");
+    };
+    let child: u32 = markdown["Started child ".len()..].parse().unwrap();
+    client.idle(agent).await;
+    // The fake `claude` lingers, and outlives the daemon the test kills: the test ends it.
+    let claude = parent_of(i32::try_from(child).unwrap());
+
+    let ResponseBody::MachineLoad(load) = client.ok(Request::MachineLoad).await else {
+        panic!("expected the machine's load");
+    };
+    let outside = client
+        .error_code(Request::AgentStopProcess(StopProcessParams {
+            agent,
+            pid: ProcessId::new(std::process::id()),
+        }))
+        .await;
+    client
+        .ok(Request::AgentStopProcess(StopProcessParams {
+            agent,
+            pid: ProcessId::new(child),
+        }))
+        .await;
+
+    let child = i32::try_from(child).unwrap();
+    let deadline = Instant::now() + WAIT;
+    while is_running(child) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let survived = is_running(child);
+    if survived {
+        let pid = Pid::from_raw(child).unwrap();
+        rustix::process::kill_process(pid, Signal::KILL).unwrap();
+    }
+    rustix::process::kill_process(Pid::from_raw(claude).unwrap(), Signal::KILL).unwrap();
+    assert!(load.server.cores >= 1);
+    assert!(load.server.memory_used_bytes <= load.server.memory_total_bytes);
+    let ours = load
+        .agents
+        .iter()
+        .find(|found| found.agent == agent)
+        .expect("the agent's load");
+    assert_eq!(ours.processes, 2, "claude and its child: {ours:?}");
+    let sleep = ours.heaviest.first().expect("the child's command");
+    assert_eq!(
+        (sleep.pid.get(), sleep.command.as_str()),
+        (child.unsigned_abs(), "sleep 600")
+    );
+    assert_eq!(load.history.server.len(), 1);
+    assert_eq!(outside, ErrorCode::NotFound);
+    assert!(!survived, "the child still runs after agent.stop_process");
+}
+
+/// The parent in `/proc/<pid>/stat`: `pid (name) state ppid ...`.
+fn parent_of(pid: i32) -> i32 {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let end = stat.rfind(')').unwrap();
+    stat[end + 1..]
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap()
 }
 
 /// Whether a process runs: it exists and is not a zombie waiting for its parent.

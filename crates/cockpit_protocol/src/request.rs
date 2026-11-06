@@ -11,7 +11,7 @@ use strum::{Display, EnumString, IntoStaticStr, VariantArray};
 
 use crate::agent::{Effort, PermissionMode};
 use crate::details::McpScope;
-use crate::ids::{AgentId, BackgroundTaskId, ClaudeSessionId, ItemId, PendingId};
+use crate::ids::{AgentId, BackgroundTaskId, ClaudeSessionId, ItemId, PendingId, ProcessId};
 use crate::settings::Settings;
 use crate::transcript::{ApprovalAnswer, Image, PlanAnswer, QuestionAnswer};
 
@@ -59,6 +59,9 @@ pub enum Request {
     AgentContextUsage(AgentParams),
     /// Answered by `Done`.
     AgentStopTask(StopTaskParams),
+    /// Sends SIGTERM to a process under the agent's `claude`, which the daemon checks at the
+    /// moment of the request. Answered by `Done`, or by `NotFound` for any other process.
+    AgentStopProcess(StopProcessParams),
     /// Asks Claude Code for the MCP servers' status now. Answered by `McpServers`.
     AgentMcpStatus(AgentParams),
     /// Answered by `Done`.
@@ -83,6 +86,9 @@ pub enum Request {
     SessionsList,
     /// Starts an agent from a past Claude session. Answered by `AgentStarted`.
     SessionsResume(SessionResumeParams),
+    /// The machine's load now and over the last five minutes. Answered by `MachineLoad`, or by
+    /// `Unsupported` on a machine without `/proc`. The daemon samples only while clients ask.
+    MachineLoad,
 }
 
 /// The method names on the wire.
@@ -126,6 +132,8 @@ pub enum Method {
     AgentContextUsage,
     #[strum(serialize = "agent.stop_task")]
     AgentStopTask,
+    #[strum(serialize = "agent.stop_process")]
+    AgentStopProcess,
     #[strum(serialize = "agent.mcp_status")]
     AgentMcpStatus,
     #[strum(serialize = "agent.mcp_reconnect")]
@@ -148,6 +156,8 @@ pub enum Method {
     SessionsList,
     #[strum(serialize = "sessions.resume")]
     SessionsResume,
+    #[strum(serialize = "machine.load")]
+    MachineLoad,
 }
 
 impl Method {
@@ -280,6 +290,12 @@ pub struct StopTaskParams {
     pub task: BackgroundTaskId,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StopProcessParams {
+    pub agent: AgentId,
+    pub pid: ProcessId,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpServerParams {
     pub agent: AgentId,
@@ -359,6 +375,7 @@ impl Request {
             Self::AgentMove(_) => Method::AgentMove,
             Self::AgentContextUsage(_) => Method::AgentContextUsage,
             Self::AgentStopTask(_) => Method::AgentStopTask,
+            Self::AgentStopProcess(_) => Method::AgentStopProcess,
             Self::AgentMcpStatus(_) => Method::AgentMcpStatus,
             Self::AgentMcpReconnect(_) => Method::AgentMcpReconnect,
             Self::AgentMcpToggle(_) => Method::AgentMcpToggle,
@@ -370,6 +387,7 @@ impl Request {
             Self::SettingsSet(_) => Method::SettingsSet,
             Self::SessionsList => Method::SessionsList,
             Self::SessionsResume(_) => Method::SessionsResume,
+            Self::MachineLoad => Method::MachineLoad,
         }
     }
 }
@@ -408,6 +426,7 @@ impl Serialize for Request {
             Self::AgentMove(params) => tagged(method, params, serializer),
             Self::AgentContextUsage(params) => tagged(method, params, serializer),
             Self::AgentStopTask(params) => tagged(method, params, serializer),
+            Self::AgentStopProcess(params) => tagged(method, params, serializer),
             Self::AgentMcpStatus(params) => tagged(method, params, serializer),
             Self::AgentMcpReconnect(params) => tagged(method, params, serializer),
             Self::AgentMcpToggle(params) => tagged(method, params, serializer),
@@ -417,7 +436,7 @@ impl Serialize for Request {
             Self::AgentFindFiles(params) => tagged(method, params, serializer),
             Self::McpRemove(params) => tagged(method, params, serializer),
             Self::SettingsSet(params) => tagged(method, params, serializer),
-            Self::SessionsList => Tagged::<()> {
+            Self::SessionsList | Self::MachineLoad => Tagged::<()> {
                 method,
                 params: None,
             }
@@ -458,6 +477,7 @@ impl<'de> Deserialize<'de> for Request {
             Method::AgentMove => Self::AgentMove(params(raw)?),
             Method::AgentContextUsage => Self::AgentContextUsage(params(raw)?),
             Method::AgentStopTask => Self::AgentStopTask(params(raw)?),
+            Method::AgentStopProcess => Self::AgentStopProcess(params(raw)?),
             Method::AgentMcpStatus => Self::AgentMcpStatus(params(raw)?),
             Method::AgentMcpReconnect => Self::AgentMcpReconnect(params(raw)?),
             Method::AgentMcpToggle => Self::AgentMcpToggle(params(raw)?),
@@ -469,6 +489,7 @@ impl<'de> Deserialize<'de> for Request {
             Method::SettingsSet => Self::SettingsSet(params(raw)?),
             Method::SessionsList => Self::SessionsList,
             Method::SessionsResume => Self::SessionsResume(params(raw)?),
+            Method::MachineLoad => Self::MachineLoad,
         };
         Ok(request)
     }

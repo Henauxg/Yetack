@@ -6,14 +6,16 @@ use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_client::RequestError;
 use cockpit_protocol::{
-    AgentDetails, AgentId, AgentStatus, AgentSummary, AnswerState, Approval, AskedQuestion,
-    BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus, ChangedFile,
-    ClaudeSessionId, CommandKind, ContextCategory, ContextUsage, CostUsd, DirEntry, DirListing,
-    Effort, EntryKind, ErrorBody, ErrorCode, FileEdit, HistoryPage, ItemBody, ItemId, McpScope,
+    AgentDetails, AgentHistory, AgentId, AgentLoad, AgentStatus, AgentSummary, AnswerState,
+    Approval, AskedQuestion, BackgroundTask, BackgroundTaskId, BackgroundTaskKind,
+    BackgroundTaskStatus, ChangedFile, ClaudeSessionId, CommandKind, CommandLoad, ContextCategory,
+    ContextUsage, Cores, CostUsd, DirEntry, DirListing, Effort, EntryKind, ErrorBody, ErrorCode,
+    FileEdit, HistoryPage, ItemBody, ItemId, LoadAverage, LoadHistory, MachineLoad, McpScope,
     McpServer, McpServerStatus, McpTool, McpTransport, PastSession, PendingId, PermissionMode,
-    Plan, PlanUsage, Position, Question, QuestionOption, RateLimitStatus, Request, ResponseBody,
-    SlashCommand, TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall,
-    ToolCallStatus, TranscriptItem, TurnEnd, UsageWindow, UserMessage, WindowUsage,
+    Plan, PlanUsage, Position, ProcessId, Question, QuestionOption, RateLimitStatus, Request,
+    ResourceUse, ResponseBody, ServerLoad, ServerPoint, SlashCommand, TaskListItem, TaskProgress,
+    TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
+    UsageWindow, UserMessage, WindowUsage,
 };
 use serde_json::Value;
 
@@ -450,6 +452,7 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
         Request::SessionsList => Ok(ResponseBody::Sessions {
             sessions: sessions(SystemTime::now()),
         }),
+        Request::MachineLoad => Ok(ResponseBody::MachineLoad(machine_load(SystemTime::now()))),
         Request::AgentMove(params) => {
             let known = |agent: AgentId| state.agents.contains_key(&agent);
             if known(params.agent) && params.before.is_none_or(known) {
@@ -463,6 +466,173 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
             "The demo does not start agents.",
         )),
         _ => Ok(ResponseBody::Done),
+    }
+}
+
+/// The demo server: 64 cores and 503 GB, as a large build machine.
+const DEMO_CORES: u16 = 64;
+const GIGABYTE: u64 = 1 << 30;
+const DEMO_MEMORY: u64 = 503 * GIGABYTE;
+/// The daemon's sampling interval and history length.
+const LOAD_INTERVAL_SECONDS: u64 = 3;
+const LOAD_SAMPLES: u64 = 100;
+/// The building agent, the testing one, and the waiting and idle ones, which a daemon measures:
+/// the exited agent has no process.
+const BUILDING_AGENT: u32 = 1;
+const TESTING_AGENT: u32 = LIVE_AGENT;
+const QUIET_AGENTS: [u32; 4] = [2, 3, 4, 5];
+
+/// What one agent uses at sample `step`, in cores: a release build that ramps up and holds, a
+/// test loop that spikes, and quiet agents.
+fn demo_cores(agent: u32, step: u64) -> f64 {
+    let phase = f64::from(u32::try_from(step % 10_000).unwrap_or(0));
+    match agent {
+        BUILDING_AGENT => 18.5 + 2.5 * (phase * 0.13).sin() + (phase * 0.71).sin(),
+        TESTING_AGENT => 3.5 + 3.0 * (phase * 0.9).sin().abs(),
+        3 => 0.1,
+        _ => 0.0,
+    }
+}
+
+/// The server's CPU at sample `step`: its agents', and 21 to 35 cores of other processes.
+fn demo_server_cores(step: u64) -> f64 {
+    let phase = f64::from(u32::try_from(step % 10_000).unwrap_or(0));
+    let agents: f64 = [BUILDING_AGENT, TESTING_AGENT]
+        .iter()
+        .chain(QUIET_AGENTS.iter())
+        .map(|&agent| demo_cores(agent, step))
+        .sum();
+    agents + 28.0 + 7.0 * (phase * 0.05).sin()
+}
+
+fn demo_memory(agent: u32) -> u64 {
+    match agent {
+        BUILDING_AGENT => 22 * GIGABYTE + GIGABYTE / 10,
+        TESTING_AGENT => 8 * GIGABYTE + 4 * GIGABYTE / 10,
+        3 => 4 * GIGABYTE / 10,
+        _ => 3 * GIGABYTE / 10,
+    }
+}
+
+fn demo_command(pid: u32, command: &str, cores: f64, memory_bytes: u64) -> CommandLoad {
+    CommandLoad {
+        pid: ProcessId::new(pid),
+        command: command.to_owned(),
+        cpu: rounded_cores(cores),
+        memory_bytes,
+    }
+}
+
+fn rounded_cores(cores: f64) -> Cores {
+    Cores::new((cores * 100.0).round() / 100.0)
+}
+
+/// What the agent runs, its heaviest command first, at `cores` for the whole agent.
+fn demo_heaviest(agent: u32, cores: f64) -> Vec<CommandLoad> {
+    match agent {
+        BUILDING_AGENT => vec![
+            demo_command(
+                41_872,
+                "rustc --crate-name calc_parser --edition=2024 src/lib.rs --crate-type lib -C opt-level=3",
+                cores * 0.45,
+                6 * GIGABYTE,
+            ),
+            demo_command(
+                41_866,
+                "rustc --crate-name calc_lexer --edition=2024 src/lib.rs --crate-type lib -C opt-level=3",
+                cores * 0.3,
+                4 * GIGABYTE + 8 * GIGABYTE / 10,
+            ),
+            demo_command(41_790, "cargo build --release", 0.3, GIGABYTE / 5),
+        ],
+        TESTING_AGENT => vec![
+            demo_command(
+                52_310,
+                "calc_stream-9c1d2e0f4b7a8e31 case_ --test-threads=8",
+                cores * 0.8,
+                3 * GIGABYTE,
+            ),
+            demo_command(52_288, "cargo test -p calc-stream case_", 0.2, GIGABYTE / 4),
+        ],
+        3 => vec![demo_command(
+            33_402,
+            "mdbook serve --port 3000",
+            0.1,
+            GIGABYTE / 10,
+        )],
+        _ => Vec::new(),
+    }
+}
+
+/// The demo's answer to `machine.load`: the numbers move with the clock, every 3 seconds.
+fn machine_load(now: SystemTime) -> MachineLoad {
+    let seconds = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    let current = seconds / LOAD_INTERVAL_SECONDS;
+    let measured: Vec<u32> = [BUILDING_AGENT, TESTING_AGENT]
+        .into_iter()
+        .chain(QUIET_AGENTS)
+        .collect();
+    let agents: Vec<AgentLoad> = measured
+        .iter()
+        .map(|&agent| {
+            let cores = demo_cores(agent, current);
+            let heaviest = demo_heaviest(agent, cores);
+            AgentLoad {
+                agent: AgentId::new(agent),
+                cpu: rounded_cores(cores),
+                memory_bytes: demo_memory(agent),
+                processes: u32::try_from(heaviest.len()).unwrap_or(0) + 1,
+                heaviest,
+            }
+        })
+        .collect();
+    let server_cores = demo_server_cores(current);
+    let agents_cores: f64 = agents.iter().map(|agent| agent.cpu.get()).sum();
+    let agents_memory: u64 = agents.iter().map(|agent| agent.memory_bytes).sum();
+    let memory_used = 312 * GIGABYTE;
+    let steps: Vec<u64> = (0..LOAD_SAMPLES)
+        .map(|back| current.saturating_sub(LOAD_SAMPLES - 1 - back))
+        .collect();
+    let history = LoadHistory {
+        server: steps
+            .iter()
+            .map(|&step| ServerPoint {
+                taken_at: at(now, (current - step) * LOAD_INTERVAL_SECONDS),
+                cpu: rounded_cores(demo_server_cores(step)),
+            })
+            .collect(),
+        agents: measured
+            .iter()
+            .map(|&agent| AgentHistory {
+                agent: AgentId::new(agent),
+                cpu: steps
+                    .iter()
+                    .map(|&step| Some(rounded_cores(demo_cores(agent, step))))
+                    .collect(),
+            })
+            .collect(),
+    };
+    MachineLoad {
+        taken_at: at(now, 0),
+        server: ServerLoad {
+            cores: DEMO_CORES,
+            cpu: rounded_cores(server_cores),
+            memory_used_bytes: memory_used,
+            memory_total_bytes: DEMO_MEMORY,
+            load_average: LoadAverage {
+                one_minute: (server_cores * 0.95 * 10.0).round() / 10.0,
+                five_minutes: 38.2,
+                fifteen_minutes: 31.4,
+            },
+        },
+        agents,
+        others: ResourceUse {
+            cpu: rounded_cores(server_cores - agents_cores),
+            memory_bytes: memory_used - agents_memory,
+        },
+        history,
     }
 }
 
@@ -1628,6 +1798,30 @@ mod tests {
 
     use super::*;
     use crate::state::{WaitingKind, file_edits};
+
+    #[test]
+    fn the_demo_load_moves_with_the_clock_and_adds_up() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let later = now + Duration::from_secs(LOAD_INTERVAL_SECONDS);
+
+        let first = machine_load(now);
+        let second = machine_load(later);
+
+        assert_ne!(first.server.cpu, second.server.cpu);
+        assert_eq!(first.history.server.len(), 100);
+        assert!(
+            first
+                .history
+                .agents
+                .iter()
+                .all(|agent| agent.cpu.len() == 100)
+        );
+        assert!(first.others.cpu.get() > 0.0);
+        assert!(first.server.cpu.get() < f64::from(first.server.cores));
+        let building = first.agents.first().unwrap();
+        assert_eq!(building.agent, AgentId::new(BUILDING_AGENT));
+        assert!(building.cpu.get() > 8.0);
+    }
 
     #[test]
     fn a_rename_shows_in_the_demo_title() {

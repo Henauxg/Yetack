@@ -7,16 +7,18 @@ use claude_protocol::{ControlRequest, TaskId};
 use cockpit_protocol::{
     AgentId, ErrorBody, ErrorCode, Event, FindFilesParams, HistoryParams, ListDirParams,
     McpRemoveParams, ReadFileParams, Request, ResponseBody, SessionResumeParams, Settings,
+    StopProcessParams,
 };
 
 use crate::daemon_config::HOME_ENV;
 use crate::hub::input::{ControlPurpose, HubInput, Reply};
 use crate::hub::state::{Agent, Hub};
 use crate::hub::{agents, errors, history};
+use crate::machine_load::AgentRoot;
 use crate::read_file::Found;
 use crate::store::{DaemonSettings, LogName};
 use crate::transcript::{touched_files, words};
-use crate::{browse, mcp_remove, read_file, sessions};
+use crate::{browse, machine_load, mcp_remove, read_file, sessions};
 
 /// What the requests that read the agent's files need, taken from the hub before they leave it.
 struct FileAccess {
@@ -69,6 +71,7 @@ impl Hub {
                 },
                 ControlPurpose::Done(reply),
             ),
+            Request::AgentStopProcess(params) => self.stop_process(params, reply),
             Request::AgentMcpStatus(params) => self.control(
                 params.agent,
                 ControlRequest::McpStatus,
@@ -104,6 +107,10 @@ impl Hub {
             Request::SettingsSet(settings) => agents::respond(reply, self.set_settings(settings)),
             Request::SessionsList => self.sessions_list(reply),
             Request::SessionsResume(params) => self.sessions_resume(params, reply),
+            Request::MachineLoad => {
+                let roots = self.agent_roots();
+                self.load.query(roots, reply);
+            }
         }
     }
 
@@ -147,6 +154,37 @@ impl Hub {
                 }),
                 Ok(Found::Several(matches)) => Ok(ResponseBody::FileMatches { matches }),
                 Err(error) => Err(error.to_error_body()),
+            };
+            agents::respond(reply, result);
+        });
+    }
+
+    /// The `claude` process of each agent whose process runs.
+    fn agent_roots(&self) -> Vec<AgentRoot> {
+        let running = self.agents.iter().filter_map(|(&agent, found)| {
+            let pid = found.process.as_ref()?.pid()?;
+            Some(AgentRoot { agent, pid })
+        });
+        running.collect()
+    }
+
+    fn stop_process(&self, params: StopProcessParams, reply: Reply) {
+        let root = match self.agent(params.agent) {
+            Ok(agent) => agent.process.as_ref().and_then(|process| process.pid()),
+            Err(error) => return agents::respond(reply, Err(error)),
+        };
+        let Some(root) = root else {
+            return agents::respond(reply, Err(errors::agent_exited(params.agent)));
+        };
+        tokio::spawn(async move {
+            let stopped = tokio::task::spawn_blocking(move || {
+                machine_load::stop_descendant(root, params.pid)
+            })
+            .await;
+            let result = match stopped {
+                Ok(Ok(())) => Ok(ResponseBody::Done),
+                Ok(Err(error)) => Err(error.to_error_body()),
+                Err(error) => Err(errors::internal(error.to_string())),
             };
             agents::respond(reply, result);
         });

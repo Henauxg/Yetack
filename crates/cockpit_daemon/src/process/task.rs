@@ -9,7 +9,7 @@ use claude_protocol::{
     ControlRequest, ControlRequestId, ControlResponse, IncomingRequest, InputLine, OutputLine,
     ParseError,
 };
-use cockpit_protocol::Timestamp;
+use cockpit_protocol::{ProcessId, Timestamp};
 use serde_json::Value;
 use tokio::io::BufReader;
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
@@ -73,9 +73,15 @@ pub(crate) enum ControlFailure {
 #[derive(Debug)]
 pub(crate) struct ProcessHandle<T> {
     commands: mpsc::UnboundedSender<ProcessCommand<T>>,
+    /// `claude`'s process, which every command the agent runs descends from.
+    pid: Option<ProcessId>,
 }
 
 impl<T> ProcessHandle<T> {
+    pub(crate) fn pid(&self) -> Option<ProcessId> {
+        self.pid
+    }
+
     pub(crate) fn write(&self, line: InputLine) {
         // A process that ended reports it with `Exited`.
         let _ = self.commands.send(ProcessCommand::Write(line));
@@ -147,6 +153,7 @@ where
     let (stderr_sender, stderr_lines) = mpsc::channel(STDERR_BUFFER);
     tokio::spawn(read_stderr(stderr, stderr_sender));
     let (commands_sender, commands) = mpsc::unbounded_channel();
+    let pid = child.id().map(ProcessId::new);
     let task = Task {
         child,
         stdin: Some(stdin_lines),
@@ -164,6 +171,7 @@ where
     ));
     Ok(ProcessHandle {
         commands: commands_sender,
+        pid,
     })
 }
 

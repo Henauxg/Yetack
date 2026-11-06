@@ -66,6 +66,7 @@ Each id is a newtype ([standards/rust/api_design.md](standards/rust/api_design.m
 | `ClaudeSessionId` | `String` | Claude Code's `session_id`, used with `--resume` |
 | `PendingId` | `String` | the `request_id` of a `can_use_tool` control request from Claude Code |
 | `ItemId` | `u32` | the daemon, per transcript item of an agent, so an update can target an item |
+| `ProcessId` | `u32` | `/proc` on the daemon's machine, for an agent's commands in `machine.load` and `agent.stop_process` |
 
 ### Agents
 
@@ -141,7 +142,7 @@ Transcripts are not in the snapshot: the app asks for an agent's transcript with
 
 ### Requests
 
-`agent.start`, `agent.prompt`, `agent.cancel_queued`, `agent.answer` (approval, question or plan), `agent.interrupt`, `agent.stop`, `agent.resume`, `agent.remove` (an exited agent), `agent.close` (any agent), `agent.history`, `agent.details`, `agent.set_model`, `agent.set_effort`, `agent.set_mode`, `agent.rename`, `agent.move` (the agent goes just above `before`, or to the bottom when `before` is `null`), `agent.context_usage`, `agent.stop_task`, `agent.mcp_status`, `agent.mcp_reconnect`, `agent.mcp_toggle`, `agent.commands` (slash commands and skills), `agent.read_file` (the file view), `agent.list_dir` and `agent.find_files` (the "Open file" dialog), `mcp.remove` (with the agent, whose folder decides the project and local scopes), `settings.set`, `sessions.list`, `sessions.resume`.
+`agent.start`, `agent.prompt`, `agent.cancel_queued`, `agent.answer` (approval, question or plan), `agent.interrupt`, `agent.stop`, `agent.resume`, `agent.remove` (an exited agent), `agent.close` (any agent), `agent.history`, `agent.details`, `agent.set_model`, `agent.set_effort`, `agent.set_mode`, `agent.rename`, `agent.move` (the agent goes just above `before`, or to the bottom when `before` is `null`), `agent.context_usage`, `agent.stop_task`, `agent.mcp_status`, `agent.mcp_reconnect`, `agent.mcp_toggle`, `agent.commands` (slash commands and skills), `agent.read_file` (the file view), `agent.list_dir` and `agent.find_files` (the "Open file" dialog), `agent.stop_process` (one of the agent's commands), `mcp.remove` (with the agent, whose folder decides the project and local scopes), `settings.set`, `sessions.list`, `sessions.resume`, `machine.load` (see [Machine load](#machine-load)).
 
 `agent.close` ends an agent whatever its process does, in one request.
 `agent.stop` then `agent.remove` would not do it: `remove` refuses an agent whose process still runs, and the process exits some time after `stop` closes its stdin.
@@ -241,6 +242,37 @@ On start the daemon reads `agents.json`, finds the last `Seq` in the logs, and r
   `agents.json` records the session and the bytes read, and a restarted daemon reads those bytes again.
   Claude Code only appends to a session file, so the same bytes give the same items, and a large session does not add megabytes to the event log.
 
+### Machine load
+
+`machine.load` answers the latest sample and the samples of the last five minutes, for the server and for each agent: CPU in cores in use, memory, the load average, and each agent's three heaviest commands.
+
+- A task samples every 3 seconds, and only while clients ask: the first `machine.load` starts it, and it ends 30 seconds after the last one. Its history then starts afresh with the next request.
+  The last 100 samples stay in memory: the event logs never see them.
+- The server's figures come from `/proc/stat` (CPU), `/proc/meminfo` (used memory is the total minus `MemAvailable`) and `/proc/loadavg`.
+- An agent's processes are its `claude` and every process under it.
+  The daemon walks down from `claude` through the kernel's children lists, one per thread (`/proc/<pid>/task/<tid>/children`), and reads each process's `stat`.
+  It reads no other process of the machine, except on a kernel without those lists, where it reads every process's parent instead and logs a warning.
+- An agent's CPU counts each process's own time and the time of the children it reaped (`cutime` and `cstime`), so a command that starts and ends between two samples still counts.
+  For example, over 3 seconds at 100 ticks a second, `cargo` grows from 40 to 340 ticks, 250 of them from a `rustc` it reaped that had 150 ticks at the previous sample: the agent used 150 ticks, 0.5 cores.
+  A process that leaves the tree and still runs, as a server started in the background does when its shell exits, gives nothing back, and counts no more.
+  A new `claude` for the agent starts its counts afresh.
+- "Other processes" is the server's use minus the agents', never below zero.
+  Memory is resident memory summed over the processes, so a page that several of them share counts once for each.
+- The daemon reads the command line of each agent's three heaviest processes only.
+- The `/proc` files stay open from one sample to the next and are read again at offset 0, which costs about a tenth of an open.
+  A file opened under `/proc/<pid>` stays bound to that process, so a pid that another process takes is never read in its place.
+  One reading walks at most 4,096 processes, and the daemon keeps at most 4,096 files open, and no more than a quarter of its open-file limit.
+- The cost, measured on a 64-core server running 3,700 processes, in CPU time per sample: 80 µs for the server's figures, 63 µs of them for `/proc/stat`; 300 µs for one busy agent of 21 processes and 146 threads; 1.5 ms for 11 agents of 117 processes and 793 threads in all, or for a made-up tree of 321 processes.
+  Most of an agent's cost is one read per thread: `claude` alone runs about 80.
+  The full scan of the fallback costs 45 ms there.
+  The test `sampling_cost` measures it: `cargo test --release -p cockpit_daemon sampling_cost -- --ignored --nocapture`.
+- On a machine without `/proc`, `machine.load` answers `unsupported`.
+
+`agent.stop_process` sends SIGTERM to one of the agent's processes.
+The daemon opens a pidfd on the process, checks at that moment that its parents in `/proc` reach the agent's `claude`, then signals through the pidfd.
+A process outside the agent is refused with `not_found`, and `claude` itself with `invalid_request`: `agent.stop` stops it.
+When the process ends and its pid goes to another one during the check, the signal goes to the ended process through the pidfd, and fails.
+
 ### Server and peer checks
 
 - The daemon listens only on the Unix socket: no TCP port.
@@ -272,7 +304,7 @@ On start the daemon reads `agents.json`, finds the last `Seq` in the logs, and r
 - **State**: `AppState` holds the summaries, the open transcripts, the plan usage and the UI state (selected agent, unread agents, open blocks).
   A pure function `apply(&mut AppState, Event)` updates it, so the state logic is tested without a window.
 - **Connection task**: a Dioxus coroutine owns the `Connection`, applies events to the state signal, and sends the requests the components ask for.
-- **Components** follow the mockups: sidebar, center header (the title, which its pencil, a double-click or Rename in the "/" menu turns into a field that renames the agent; usage chip, changes chip), transcript, composer (model, mode, cache timer, Send or Stop), floating blocks and badges (tasks, running, MCP servers), file view, command palette, agent switcher, new agent dialog, notifications.
+- **Components** follow the mockups: sidebar, center header (the title, which its pencil, a double-click or Rename in the "/" menu turns into a field that renames the agent; usage chip, load chip, changes chip), transcript, composer (model, mode, cache timer, Send or Stop), floating blocks and badges (tasks, running, MCP servers), file view, command palette, agent switcher, new agent dialog, notifications.
 - **Agent order**: the sidebar lists the agents in the daemon's order, and the first of that order is selected when the selection goes.
   A row moves by drag and drop, or Alt+Up and Alt+Down on the selected agent; both send `agent.move`.
   The sidebar shows the new order at once, with the positions the daemon then sends, and puts the agents back when the daemon refuses the move.
@@ -283,6 +315,11 @@ On start the daemon reads `agents.json`, finds the last `Seq` in the logs, and r
   When the filter hides the selected agent, the center keeps showing it and the sidebar says so, with a link that shows all agents.
   Alt+Up, Alt+Down and a drop move an agent among the rows the sidebar shows, and the hidden agents keep their places.
   The Ctrl+K switcher lists every agent, the ones that wait for you first: it finds an agent, and Ctrl+K then Enter opens the one that needs you.
+- **Machine load**: the app asks for `machine.load` every 3 seconds while connected, and keeps the last answer only, in a signal of its own (`Cockpit.load`): a new sample renders the Load chip and its card, never the transcript.
+  The chip shows the share of the server's cores in use, amber from 75 % and red from 95 %.
+  Its card shows the server's CPU, memory and load average, each agent's cores and memory with their share of the server's cores as a bar (amber past a quarter), the idle agents folded into one line, what the other processes use, and the selected agent's heaviest commands, each with a stop button.
+  A click on an agent opens it and keeps the card open.
+  A daemon that cannot measure its load, or does not know the request, shows "Load unknown".
 - **Rendering**: markdown with `pulldown-cmark`, syntax colors with `syntect` (Rust, SQL, Markdown, JSON, Bash, Nix), diffs with `similar` (line diff, then word highlights inside changed lines).
 - **Renaming in the sidebar**: F2, or a double-click on a row's title, turns the selected agent's row title into a field, as the header's pencil does for the header's title.
   Enter or leaving the field saves with `agent.rename`, and Esc cancels.
