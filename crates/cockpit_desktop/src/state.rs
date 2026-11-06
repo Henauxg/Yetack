@@ -22,7 +22,7 @@ pub use app_state::{AgentEntry, AppState, ConnectionState, FileRead, Loadable, T
 pub use apply::{Alert, AlertKind, apply_update};
 pub use drafts::Drafts;
 pub use requests::{Outgoing, Purpose, apply_response, needed_requests};
-pub use shortcuts::{KeyPress, handle_key};
+pub use shortcuts::{ANSWER_KEYS, CLOSE_AGENT_KEY, COMMAND_KEYS, KeyPress, handle_key};
 pub use transcript::{HistoryState, WaitingKind, awaiting_approval};
 pub use ui_state::{
     Block, Dialog, FileSearch, FolderList, FormMenu, McpView, NewAgentForm, NewAgentTab, NoteKind,

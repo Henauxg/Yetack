@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::connection::Cockpit;
 use crate::state::{
-    AppState, Dialog, KeyPress, PaletteOrigin, Popover, Utf16Offset, WaitingKind, actions,
-    agent_map, handle_key,
+    ANSWER_KEYS, AppState, CLOSE_AGENT_KEY, COMMAND_KEYS, Dialog, KeyPress, PaletteOrigin, Popover,
+    Utf16Offset, WaitingKind, actions, agent_map, handle_key,
 };
 
 /// The composer's text area, whose keys the script treats apart.
@@ -167,13 +167,13 @@ document.addEventListener("keydown", (event) => {
     undo(target, letter === "y" || event.shiftKey);
     return;
   }
-  const answers = (mode.answer_letters && (letter === "y" || letter === "n"))
+  const answers = (mode.answer_letters && settings.answer_keys.includes(letter))
     || (mode.answer_numbers && (/^[1-9]$/.test(key) || key === "Enter"));
   const text = composer ? target.value : "";
   let take = false;
-  if (command && !event.altKey && !event.shiftKey && ["k", "n", "o", "m"].includes(letter)) {
+  if (command && !event.altKey && !event.shiftKey && settings.command_keys.includes(letter)) {
     take = true;
-  } else if (command && !event.altKey && event.shiftKey && letter === "w") {
+  } else if (command && !event.altKey && event.shiftKey && letter === settings.close_agent_key) {
     // Ctrl+Shift+W closes the selected agent. The file view takes Ctrl+W alone.
     take = true;
   } else if (key === "Escape") {
@@ -188,7 +188,7 @@ document.addEventListener("keydown", (event) => {
   } else if (mode.map) {
     // The map moves and folds with its keys wherever the focus is, but in a text field. Enter on
     // one of its buttons still presses the button.
-    const mapKey = settings.map_keys.includes(key) || (mode.answer_letters && (letter === "y" || letter === "n"));
+    const mapKey = settings.map_keys.includes(key) || (mode.answer_letters && settings.answer_keys.includes(letter));
     take = where !== "field" && plain && !event.shiftKey && mapKey
       && !(key === "Enter" && target !== null && target.tagName === "BUTTON");
   } else if (where === "composer" && plain) {
@@ -343,6 +343,12 @@ struct Settings {
     undo_steps: u16,
     /// The keys the agent map takes.
     map_keys: [&'static str; 5],
+    /// The letters that answer an approval or a plan.
+    answer_keys: [&'static str; 2],
+    /// The letters that take Ctrl alone.
+    command_keys: [&'static str; 4],
+    /// The letter that closes the selected agent with Ctrl+Shift.
+    close_agent_key: &'static str,
 }
 
 /// Which plain keys the script takes, beyond Ctrl+K, Ctrl+N, Ctrl+O, Ctrl+M, Ctrl+Shift+W, Esc,
@@ -413,6 +419,9 @@ pub fn use_bridge(cockpit: Cockpit) {
             undo_pause_ms: UNDO_PAUSE_MS,
             undo_steps: UNDO_STEPS,
             map_keys: agent_map::MAP_KEYS,
+            answer_keys: ANSWER_KEYS,
+            command_keys: COMMAND_KEYS,
+            close_agent_key: CLOSE_AGENT_KEY,
         }) {
             tracing::warn!("cannot start the page's script: {error}");
         }
@@ -629,6 +638,9 @@ mod tests {
             undo_pause_ms: 500,
             undo_steps: 200,
             map_keys: agent_map::MAP_KEYS,
+            answer_keys: ANSWER_KEYS,
+            command_keys: COMMAND_KEYS,
+            close_agent_key: CLOSE_AGENT_KEY,
         };
         let mode = KeyMode {
             answer_letters: true,
@@ -653,6 +665,9 @@ mod tests {
                 "undo_pause_ms": 500,
                 "undo_steps": 200,
                 "map_keys": ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter"],
+                "answer_keys": ["y", "n"],
+                "command_keys": ["k", "n", "o", "m"],
+                "close_agent_key": "w",
             })
         );
         assert_eq!(

@@ -25,6 +25,17 @@ const KEY_F2: &str = "F2";
 /// The letters that answer an approval or a plan.
 pub(super) const KEY_YES: &str = "y";
 pub(super) const KEY_NO: &str = "n";
+pub const ANSWER_KEYS: [&str; 2] = [KEY_YES, KEY_NO];
+
+/// The letters that take Ctrl alone.
+const KEY_SWITCHER: &str = "k";
+const KEY_NEW_AGENT: &str = "n";
+const KEY_OPEN_FILE: &str = "o";
+const KEY_AGENT_MAP: &str = "m";
+pub const COMMAND_KEYS: [&str; 4] = [KEY_SWITCHER, KEY_NEW_AGENT, KEY_OPEN_FILE, KEY_AGENT_MAP];
+
+/// The letter that closes the selected agent, with Ctrl+Shift.
+pub const CLOSE_AGENT_KEY: &str = "w";
 
 /// A key press the page's script passes on.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -57,16 +68,16 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
     let letter = press.key.to_lowercase();
     if command && !press.alt && !press.shift {
         match letter.as_str() {
-            "k" => actions::toggle_switcher(state, drafts),
-            "n" => actions::open_new_agent(state, drafts),
-            "o" => open_file::toggle(state, drafts),
-            "m" => agent_map::toggle(state),
+            KEY_SWITCHER => actions::toggle_switcher(state, drafts),
+            KEY_NEW_AGENT => actions::open_new_agent(state, drafts),
+            KEY_OPEN_FILE => open_file::toggle(state, drafts),
+            KEY_AGENT_MAP => agent_map::toggle(state),
             _ => {}
         }
         return Vec::new();
     }
     // Ctrl+Shift+W asks to close the selected agent, and confirms when asked.
-    if command && !press.alt && press.shift && letter == "w" {
+    if command && !press.alt && press.shift && letter == CLOSE_AGENT_KEY {
         return match (&state.ui.dialog, state.ui.selected) {
             (Some(Dialog::CloseAgent(agent)), _) => actions::close_agent(state, drafts, *agent),
             (None, Some(agent)) => actions::request_close(state, drafts, agent),
