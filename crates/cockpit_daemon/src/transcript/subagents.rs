@@ -61,7 +61,10 @@ pub(super) fn start(subagents: &mut Vec<Subagent>, started: Started) {
         item,
         parent,
         description,
-        agent_type: input.subagent_type.filter(|kind| !kind.trim().is_empty()),
+        agent_type: input
+            .subagent_type
+            .map(|kind| tools::one_line(&kind))
+            .filter(|kind| !kind.is_empty()),
         run,
         status: SubagentStatus::Running,
         started_at: now,
@@ -282,6 +285,22 @@ mod tests {
         assert_eq!(subagent.agent_type, None);
         assert_eq!(subagent.run, SubagentRun::Background);
         assert_eq!(subagent.turn, 2);
+    }
+
+    #[test]
+    fn a_long_type_is_cut_to_one_line() {
+        let mut subagents = Vec::new();
+        let mut call = started(5, None, false);
+        call.input.subagent_type = Some(format!("Explore\n{}", "x".repeat(10_000)));
+        let mut long = started(6, None, false);
+        long.input.subagent_type = Some("y".repeat(10_000));
+
+        start(&mut subagents, call);
+        start(&mut subagents, long);
+
+        assert_eq!(subagents[0].agent_type.as_deref(), Some("Explore"));
+        let cut = subagents[1].agent_type.as_deref().unwrap_or_default();
+        assert!(cut.len() < 1_000, "{} bytes", cut.len());
     }
 
     #[test]
