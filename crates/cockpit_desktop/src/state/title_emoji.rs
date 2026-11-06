@@ -8,14 +8,14 @@ use cockpit_protocol::MAX_TITLE_CHARS;
 /// its colored form.
 #[rustfmt::skip]
 pub const TITLE_EMOJI: [&str; 72] = [
-    "🚀", "🐛", "🧪", "📦", "🔧", "🛠️", "🏗️", "🧩",
-    "📝", "📄", "📚", "🗂️", "🔍", "🔎", "💬", "📣",
+    "🚀", "🐛", "🧪", "📦", "🔧", "🛠\u{fe0f}", "🏗\u{fe0f}", "🧩",
+    "📝", "📄", "📚", "🗂\u{fe0f}", "🔍", "🔎", "💬", "📣",
     "📊", "📈", "📉", "🎯", "💡", "🧠", "🤖", "💻",
-    "✅", "❌", "⚠️", "❗", "❓", "🚧", "🔥", "🧯",
-    "⏱️", "🕒", "🕰️", "📆", "⚡", "🧹", "💾", "🔒",
+    "✅", "❌", "⚠\u{fe0f}", "❗", "❓", "🚧", "🔥", "🧯",
+    "⏱\u{fe0f}", "🕒", "🕰\u{fe0f}", "📆", "⚡", "🧹", "💾", "🔒",
     "🌐", "🌍", "🧭", "🌊", "🐳", "🎨", "🎭", "🔑",
-    "👁️", "👀", "😃", "🤩", "💯", "🥇", "💎", "🏋️‍♀️",
-    "❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "💘",
+    "👁\u{fe0f}", "👀", "😃", "🤩", "💯", "🥇", "💎", "🏋\u{fe0f}\u{200d}♀\u{fe0f}",
+    "❤\u{fe0f}", "🧡", "💛", "💚", "💙", "💜", "🖤", "💘",
     "🔴", "🟠", "🟡", "🟢", "🔵", "🟣", "⚫", "⚪",
 ];
 
@@ -163,14 +163,14 @@ mod tests {
     #[test]
     fn an_emoji_of_several_characters_goes_whole() {
         let titles = [
-            "🛠️ Build",
+            "🛠\u{fe0f} Build",
             "🛠 Build",
-            "👩🏽‍💻 Build",
-            "👨‍👩‍👧 Build",
+            "👩🏽\u{200d}💻 Build",
+            "👨\u{200d}👩\u{200d}👧 Build",
             "🇫🇷 Build",
-            "1️⃣ Build",
+            "1\u{fe0f}\u{20e3} Build",
             "#⃣ Build",
-            "⏱️ Build",
+            "⏱\u{fe0f} Build",
             "✅ Build",
         ];
         for title in titles {
@@ -219,16 +219,16 @@ mod tests {
     fn the_title_keeps_to_the_length_limit_and_keeps_its_emoji() {
         let long = "x".repeat(MAX_TITLE_CHARS);
 
-        let titled = with_emoji(&long, Some("🛠️"));
+        let titled = with_emoji(&long, Some("🛠\u{fe0f}"));
 
         assert_eq!(titled.chars().count(), MAX_TITLE_CHARS);
-        assert!(titled.starts_with("🛠️ x"));
+        assert!(titled.starts_with("🛠\u{fe0f} x"));
     }
 
     #[test]
     fn the_split_keeps_the_space_with_the_rest() {
         assert_eq!(split("🔥 Hot fix"), Some(("🔥", " Hot fix")));
-        assert_eq!(split("🗂️ Files"), Some(("🗂️", " Files")));
+        assert_eq!(split("🗂\u{fe0f} Files"), Some(("🗂\u{fe0f}", " Files")));
         assert_eq!(split("Hot fix"), None);
     }
 

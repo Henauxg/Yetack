@@ -1533,7 +1533,7 @@ fn benchmark_agent(now: SystemTime) -> Sample {
     let mut summary = summary(
         SummaryParts {
             id: 5,
-            title: "⏱️ Benchmark in CI",
+            title: "⏱\u{fe0f} Benchmark in CI",
             folder: SERVICE_FOLDER,
             status: AgentStatus::Idle,
             activity: Some("Done: the benchmark runs in CI"),
@@ -1631,7 +1631,7 @@ fn exited_agent(now: SystemTime) -> Sample {
     let mut summary = summary(
         SummaryParts {
             id: 6,
-            title: "🏗️ Schema migration",
+            title: "🏗\u{fe0f} Schema migration",
             folder: "/home/dev/projects/legacy-db",
             status: AgentStatus::Exited,
             activity: None,
