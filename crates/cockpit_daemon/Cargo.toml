@@ -34,7 +34,7 @@ tracing-subscriber.workspace = true
 rustix = { version = "1", features = ["fs", "param", "process"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation"] }
+windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation", "Win32_System_Threading"] }
 
 [dev-dependencies]
 cockpit_client.workspace = true

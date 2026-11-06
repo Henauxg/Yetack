@@ -183,6 +183,13 @@ fn ssh_command(host: &str, remote_command: &str) -> Command {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+
+        // The desktop app has no console to share: Windows would open a window for ssh.
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
     command
 }
 

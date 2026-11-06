@@ -4,6 +4,9 @@
 //! or in the installer's folder, and an npm install's `claude.cmd` otherwise. A `.cmd` runs
 //! through `cmd.exe`, which reads its command line by rules of its own. A program the daemon's
 //! configuration names is run as it is.
+//!
+//! Every program the daemon starts on Windows starts without a console window: the desktop app
+//! that runs the daemon has no console to share, so Windows would open one for each.
 
 use std::ffi::OsString;
 use std::io;
@@ -39,8 +42,8 @@ pub(crate) fn command(program: &Path, args: &[OsString]) -> io::Result<Command> 
     Ok(command)
 }
 
-/// Runs `program` with `args`, through `cmd.exe` for a batch file. Fails for an argument that
-/// `cmd.exe` cannot take safely.
+/// Runs `program` with `args`, through `cmd.exe` for a batch file, without a console window.
+/// Fails for an argument that `cmd.exe` cannot take safely.
 #[cfg(windows)]
 pub(crate) fn command(program: &Path, args: &[OsString]) -> io::Result<Command> {
     let program = if program == Path::new(DEFAULT_CLAUDE_PROGRAM) {
@@ -48,15 +51,26 @@ pub(crate) fn command(program: &Path, args: &[OsString]) -> io::Result<Command> 
     } else {
         program.to_owned()
     };
-    if !is_batch_file(&program) {
+    let mut command = if is_batch_file(&program) {
+        let line = batch_command_line(&program, args)?;
+        let mut command = Command::new(interpreter()?);
+        command.raw_arg(line);
+        command
+    } else {
         let mut command = Command::new(&program);
         command.args(args);
-        return Ok(command);
-    }
-    let line = batch_command_line(&program, args)?;
-    let mut command = Command::new(interpreter()?);
-    command.raw_arg(line);
+        command
+    };
+    hide_console(&mut command);
     Ok(command)
+}
+
+/// Starts a console program without a console window. It replaces the command's creation flags.
+#[cfg(windows)]
+pub(crate) fn hide_console(command: &mut Command) {
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+
+    command.creation_flags(CREATE_NO_WINDOW);
 }
 
 /// The default `claude`, from `PATH` and the home folder.

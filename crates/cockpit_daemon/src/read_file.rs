@@ -37,6 +37,9 @@ use tokio::process::Command;
 use tokio::task::JoinError;
 use tokio::time::Instant;
 
+#[cfg(windows)]
+use crate::process::program;
+
 /// The largest file the view shows.
 pub(crate) const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 /// Links to the process's open files, each naming the file's path.
@@ -362,17 +365,18 @@ pub(crate) async fn search(
     // The agent's folder may sit in one of the checkouts: a file found twice is listed once.
     let mut seen: Vec<PathBuf> = Vec::new();
     for root in roots {
-        let Ok(mut child) = Command::new(GIT_PROGRAM)
-            .args(NO_MONITOR)
+        let mut git = Command::new(GIT_PROGRAM);
+        git.args(NO_MONITOR)
             .arg(GIT_FOLDER_OPTION)
             .arg(&root)
             .args(LIST_FILES)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-        else {
+            .kill_on_drop(true);
+        #[cfg(windows)]
+        program::hide_console(&mut git);
+        let Ok(mut child) = git.spawn() else {
             continue;
         };
         let Some(stdout) = child.stdout.take() else {
