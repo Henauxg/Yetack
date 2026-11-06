@@ -89,6 +89,17 @@ impl OpenFileView {
     }
 }
 
+impl Dialog {
+    /// The agent whose leaving closes the dialog: the one it asks to close, or the one it maps.
+    pub fn agent(&self) -> Option<AgentId> {
+        match self {
+            Self::CloseAgent(agent) => Some(*agent),
+            Self::AgentMap(view) => Some(view.agent),
+            Self::NewAgent(_) | Self::Switcher | Self::OpenFile(_) => None,
+        }
+    }
+}
+
 /// A chat entry the chat's scroll script scrolls to and highlights for a moment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChatReveal {

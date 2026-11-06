@@ -14,7 +14,6 @@ use super::actions;
 use super::app_state::{AgentEntry, AppState, ConnectionState, Loadable};
 use super::drafts::Drafts;
 use super::transcript::KEPT_ITEMS_AWAY;
-use super::ui_state::Dialog;
 
 /// A desktop notification to show.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,9 +111,11 @@ pub fn apply_catchup(state: &mut AppState, drafts: &mut Drafts, catchup: Catchup
     // The snapshot holds the agents the daemon still has, closed or not.
     state.ui.closing.clear();
     let agents = &state.agents;
-    state.ui.dialog.take_if(
-        |dialog| matches!(dialog, Dialog::CloseAgent(agent) if !agents.contains_key(agent)),
-    );
+    state.ui.dialog.take_if(|dialog| {
+        dialog
+            .agent()
+            .is_some_and(|agent| !agents.contains_key(&agent))
+    });
     state.ui.unread.retain(|agent| agents.contains_key(agent));
     state
         .ui
@@ -227,7 +228,7 @@ pub fn forget_agent(
     state
         .ui
         .dialog
-        .take_if(|dialog| *dialog == Dialog::CloseAgent(agent));
+        .take_if(|dialog| dialog.agent() == Some(agent));
     entry
 }
 
@@ -311,8 +312,9 @@ mod tests {
 
     use super::*;
     use crate::prefs::StatusFilter;
+    use crate::state::agent_map;
     use crate::state::app_state::tests::{placed, state_with, summary};
-    use crate::state::ui_state::{Block, PaletteOrigin, Popover, TitleEdit, TitlePlace};
+    use crate::state::ui_state::{Block, Dialog, PaletteOrigin, Popover, TitleEdit, TitlePlace};
 
     fn record(event: Event) -> EventRecord {
         EventRecord {
@@ -593,6 +595,52 @@ mod tests {
                 (vec![&AgentId::new(2)], vec![&AgentId::new(2)])
             );
         }
+    }
+
+    #[test]
+    fn a_removed_agent_closes_its_map_and_leaves_another_agents_map_open() {
+        let mapped = |agent| {
+            let mut state = state_with(vec![
+                summary(1, AgentStatus::Working),
+                summary(2, AgentStatus::Working),
+            ]);
+            state.ui.selected = Some(AgentId::new(agent));
+            agent_map::toggle(&mut state);
+            state
+        };
+        let mut removed = mapped(1);
+        let mut dropped = mapped(1);
+        let mut other = mapped(2);
+
+        apply(
+            &mut removed,
+            &mut Drafts::default(),
+            record(Event::AgentRemoved {
+                agent: AgentId::new(1),
+            }),
+        );
+        apply_catchup(
+            &mut dropped,
+            &mut Drafts::default(),
+            Catchup::Snapshot(Snapshot {
+                agents: vec![summary(2, AgentStatus::Working)],
+                plan_usage: PlanUsage::default(),
+                settings: Settings::default(),
+                last_seq: Some(Seq::new(40)),
+            }),
+        );
+        apply(
+            &mut other,
+            &mut Drafts::default(),
+            record(Event::AgentRemoved {
+                agent: AgentId::new(1),
+            }),
+        );
+
+        assert_eq!(removed.ui.dialog, None);
+        assert_eq!(dropped.ui.dialog, None);
+        let shown = other.ui.dialog.as_ref().and_then(Dialog::agent);
+        assert_eq!(shown, Some(AgentId::new(2)));
     }
 
     #[test]

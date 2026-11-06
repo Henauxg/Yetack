@@ -94,12 +94,16 @@ pub enum Step {
 }
 
 /// A rename the window left open, which no field shows once another agent is selected, ends
-/// without saving.
+/// without saving. The map of another agent closes, as it would cover the one selected.
 pub fn select_agent(state: &mut AppState, agent: AgentId) {
     state
         .ui
         .title_edit
         .take_if(|edit| edit.kept_open && edit.agent != agent);
+    state
+        .ui
+        .dialog
+        .take_if(|dialog| matches!(dialog, Dialog::AgentMap(view) if view.agent != agent));
     state.ui.selected = Some(agent);
     state.ui.chat_new_from.clear();
     state.ui.unread.remove(&agent);

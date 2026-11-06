@@ -445,11 +445,16 @@ fn with_running_descendants(subagents: &[Subagent], item: ItemId) -> Vec<&Subage
     found
 }
 
-/// Ctrl+M: opens the map of the selected agent, or closes it.
+/// Ctrl+M: opens the map of the selected agent, or closes it. The new agent dialog stays open,
+/// with what its fields hold.
 pub fn toggle(state: &mut AppState) {
-    if matches!(state.ui.dialog, Some(Dialog::AgentMap(_))) {
-        state.ui.dialog = None;
-        return;
+    match state.ui.dialog {
+        Some(Dialog::AgentMap(_)) => {
+            state.ui.dialog = None;
+            return;
+        }
+        Some(Dialog::NewAgent(_)) => return,
+        Some(Dialog::Switcher | Dialog::OpenFile(_) | Dialog::CloseAgent(_)) | None => {}
     }
     if let Some(agent) = state.ui.selected {
         open_on_agent(state, agent);
@@ -787,8 +792,9 @@ mod tests {
     };
 
     use super::*;
-    use crate::state::app_state::Loadable;
     use crate::state::app_state::tests::{state_with, summary};
+    use crate::state::app_state::{AgentEntry, Loadable};
+    use crate::state::drafts::Drafts;
 
     const TURN: u32 = 3;
 
@@ -1169,6 +1175,35 @@ mod tests {
 
         assert!(matches!(state.ui.dialog, Some(Dialog::AgentMap(_))));
         assert_eq!(state.ui.chat_reveal, Some(second));
+    }
+
+    #[test]
+    fn ctrl_m_leaves_the_new_agent_dialog_open() {
+        let mut state = map_state(Vec::new());
+        let mut drafts = Drafts::default();
+        state.ui.dialog = None;
+        actions::open_new_agent(&mut state, &mut drafts);
+        let form = state.ui.dialog.clone();
+
+        toggle(&mut state);
+
+        assert!(matches!(form, Some(Dialog::NewAgent(_))));
+        assert_eq!(state.ui.dialog, form);
+    }
+
+    #[test]
+    fn opening_another_agent_closes_the_map_of_the_last() {
+        let mut state = map_state(Vec::new());
+        state.agents.insert(
+            AgentId::new(2),
+            AgentEntry::new(summary(2, AgentStatus::Idle)),
+        );
+
+        actions::select_agent(&mut state, AgentId::new(1));
+        assert!(matches!(state.ui.dialog, Some(Dialog::AgentMap(_))));
+        actions::select_agent(&mut state, AgentId::new(2));
+
+        assert_eq!(state.ui.dialog, None);
     }
 
     #[test]
