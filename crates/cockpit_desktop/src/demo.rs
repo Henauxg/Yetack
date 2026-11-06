@@ -32,7 +32,8 @@ const SERVICE_FOLDER: &str = "/home/dev/projects/calc-service";
 const PLATFORM_FOLDER: &str = "/home/dev/projects/acme-platform";
 const STREAM_FOLDER: &str = "/home/dev/projects/calc-stream";
 
-/// The agent whose conversation grows while the demo runs, to try the chat's scrolling.
+/// The agent whose conversation grows while the demo runs, to try the chat's scrolling. Its
+/// conversation is long, and it loads when the agent first opens, as a daemon's would.
 const LIVE_AGENT: u32 = 7;
 
 /// How often the live agent adds or finishes an entry.
@@ -42,7 +43,7 @@ pub const LIVE_TICK: Duration = Duration::from_millis(1500);
 /// then the live ones, one id per tick.
 const LIVE_OLDER_FIRST_ID: u32 = 60;
 const LIVE_PAGE_FIRST_ID: u32 = 100;
-const LIVE_PAGE_LAST_ID: u32 = 123;
+const LIVE_PAGE_LAST_ID: u32 = 239;
 const LIVE_TICK_FIRST_ID: u32 = 1000;
 
 /// Other git worktrees of the parser, beside its folder, where the parser agent also edited files.
@@ -367,11 +368,12 @@ pub fn state(daemon: DaemonLabel) -> AppState {
     ];
     for sample in agents {
         let mut entry = AgentEntry::new(sample.summary);
-        let has_older = entry.id() == AgentId::new(LIVE_AGENT);
-        entry.transcript.merge_page(HistoryPage {
-            items: sample.items,
-            has_older,
-        });
+        if entry.id() != AgentId::new(LIVE_AGENT) {
+            entry.transcript.merge_page(HistoryPage {
+                items: sample.items,
+                has_older: false,
+            });
+        }
         entry.details = Loadable::Loaded(sample.details);
         state.agents.insert(entry.id(), entry);
     }
@@ -387,12 +389,13 @@ pub fn state(daemon: DaemonLabel) -> AppState {
     state
 }
 
-/// How long the demo takes to answer, as a daemon would for the past sessions and the context
-/// usage, so that their loading states show.
+/// How long the demo takes to answer, as a daemon would for the past sessions, the context usage
+/// and the conversation's pages, so that their loading states show.
 pub fn latency(request: &Request) -> Duration {
     match request {
         Request::SessionsList => Duration::from_millis(900),
         Request::AgentContextUsage(_) => Duration::from_millis(700),
+        Request::AgentHistory(_) => Duration::from_millis(300),
         _ => Duration::ZERO,
     }
 }
@@ -438,14 +441,19 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
         Request::AgentFindFiles(params) => Ok(find_files(&params.name)),
         Request::FoldersList(params) => list_folders(state, &params.path),
         Request::AgentHistory(params) if params.agent == AgentId::new(LIVE_AGENT) => {
-            let before = params.before.map_or(LIVE_PAGE_FIRST_ID, ItemId::get);
-            let items = (LIVE_OLDER_FIRST_ID..before)
-                .map(|id| item(id, None, live_entry(id)))
-                .collect();
-            Ok(ResponseBody::History(HistoryPage {
-                items,
-                has_older: false,
-            }))
+            let page = match params.before {
+                None => HistoryPage {
+                    items: live_page(),
+                    has_older: true,
+                },
+                Some(before) => HistoryPage {
+                    items: (LIVE_OLDER_FIRST_ID..before.get())
+                        .map(|id| item(id, None, live_entry(id)))
+                        .collect(),
+                    has_older: false,
+                },
+            };
+            Ok(ResponseBody::History(page))
         }
         Request::AgentHistory(_) => Ok(ResponseBody::History(HistoryPage {
             items: Vec::new(),
@@ -1682,6 +1690,15 @@ fn live_agent(now: SystemTime) -> Sample {
         },
         now,
     );
+    Sample {
+        summary,
+        items: Vec::new(),
+        details: details(),
+    }
+}
+
+/// The live agent's latest page, which `agent.history` answers.
+fn live_page() -> Vec<TranscriptItem> {
     let first = item(
         LIVE_PAGE_FIRST_ID,
         None,
@@ -1692,23 +1709,22 @@ fn live_agent(now: SystemTime) -> Sample {
     );
     let page =
         (LIVE_PAGE_FIRST_ID + 1..=LIVE_PAGE_LAST_ID).map(|id| item(id, None, live_entry(id)));
-    Sample {
-        summary,
-        items: std::iter::once(first).chain(page).collect(),
-        details: details(),
-    }
+    std::iter::once(first).chain(page).collect()
 }
 
 /// The kinds of the live agent's entries, as `live_entry` makes them.
 const LIVE_TEXT: u32 = 0;
 const LIVE_READ: u32 = 2;
 
+/// How many kinds of entries `live_entry_of` makes.
+const LIVE_KINDS: u32 = 6;
+
 /// A made-up entry of the live agent, picked by its id.
 fn live_entry(id: u32) -> ItemBody {
-    live_entry_of(id % 4, id)
+    live_entry_of(id % LIVE_KINDS, id)
 }
 
-/// An entry of the live agent of the `kind` (0 to 3) about the case `id`.
+/// An entry of the live agent of the `kind` (0 to 5) about the case `id`.
 fn live_entry_of(kind: u32, id: u32) -> ItemBody {
     match kind {
         LIVE_TEXT => text(&format!(
@@ -1726,6 +1742,24 @@ fn live_entry_of(kind: u32, id: u32) -> ItemBody {
             ToolCallStatus::Done,
             None,
         )),
+        4 => text(&format!(
+            "Case {id} needed one change: the reader kept a partial token across two chunks.\n\n- The chunk boundary falls inside a number.\n- The column comes from the token's start, not the chunk's.\n\n```rust\nfn case_{id}() {{\n    let mut stream = Stream::new(Chunks::of(\"12 + 3\", 2));\n    assert_eq!(stream.next(), Some(Token::number(12, 1)));\n    assert_eq!(stream.next(), Some(Token::plus(4)));\n}}\n```"
+        )),
+        5 => ItemBody::ToolCall(ToolCall {
+            edit: Some(FileEdit {
+                path: Path::new(STREAM_FOLDER).join(format!("src/stream/case_{id}.rs")),
+                old_text: format!("    let input = \"case {id}\";\n    let chunks = 1;\n"),
+                new_text: format!(
+                    "    let input = \"case {id}\";\n    let chunks = 4;\n    let keep_partial = true;\n"
+                ),
+            }),
+            ..call(
+                "Edit",
+                &format!("src/stream/case_{id}.rs"),
+                ToolCallStatus::Done,
+                None,
+            )
+        }),
         _ => ItemBody::ToolCall(call(
             "Grep",
             &format!("fn case_{id}"),
@@ -2473,7 +2507,7 @@ mod tests {
     use cockpit_protocol::{FoldersListParams, HistoryParams, ReadFileParams, RenameParams};
 
     use super::*;
-    use crate::state::{WaitingKind, file_edits};
+    use crate::state::{HistoryState, WaitingKind, file_edits};
 
     #[test]
     fn the_demo_load_moves_with_the_clock_and_adds_up() {
@@ -2570,6 +2604,28 @@ mod tests {
         assert_eq!(started, Some((ToolCallStatus::Running, false)));
         assert_eq!(finished, Some((ToolCallStatus::Done, true)));
         assert_eq!(count(&state), before + 3);
+    }
+
+    #[test]
+    fn the_live_agent_loads_a_long_conversation_when_it_opens() {
+        let state = state(label());
+        let agent = AgentId::new(LIVE_AGENT);
+        let request = Request::AgentHistory(HistoryParams {
+            agent,
+            before: None,
+            limit: 100,
+        });
+
+        let Ok(ResponseBody::History(page)) = answer(&state, &request) else {
+            panic!("the live agent answers its history");
+        };
+
+        assert_eq!(
+            state.agents[&agent].transcript.history(),
+            &HistoryState::NotLoaded
+        );
+        assert_eq!(page.items.len(), 140);
+        assert!(page.has_older);
     }
 
     #[test]

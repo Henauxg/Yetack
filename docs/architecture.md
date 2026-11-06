@@ -386,6 +386,13 @@ When the process ends and its pid goes to another one during the check, the sign
   In the Ctrl+O list, the pointer picks its row as a key does, so a cut listing highlights it too.
   The keys scroll the list to the row they highlight. The pointer's row is in view already, so the palette does not scroll to it, and the list never moves under the mouse.
 - **Rendering**: markdown with `pulldown-cmark`, syntax colors with `syntect` (Rust, SQL, Markdown, JSON, Bash, Nix), diffs with `similar` (line diff, then word highlights inside changed lines).
+- **Switching agents**: a click on a sidebar row, or an agent picked in the Ctrl+K switcher, moves the selection, the header and the composer in the next frame.
+  In that frame the chat draws only the agent's latest 25 rows, and it draws all of them in the frame after (`ShownRows` in `ui/transcript.rs`).
+  Dioxus runs effects once the webview has applied a frame's changes, so an effect starts the second frame.
+  Drawing a whole conversation is what made the switch slow: for 150 entries, the syntax colors, the page's new elements and their layout put the switch on screen about 180 ms after the click, against about 90 ms for 25 rows or a short chat (release build, the demo under Xvfb).
+  When the chat goes back to a place scrolled up, it shows the skeleton in that frame instead, as the latest rows may not hold that place.
+  The chat's scroll script keeps each agent's place, and only a chat that draws all its agent's rows names that agent (`data-agent`), so the script goes back to the place once every row is there.
+  On the first click on an agent, the chat shows the skeleton until the daemon sends the first page, then draws it in the same two frames.
 - **Renaming in the sidebar**: F2, or a double-click on a row's title, turns the selected agent's row title into a field, as the header's pencil does for the header's title.
   Enter or leaving the field saves with `agent.rename`, and Esc cancels.
   One title field shows at a time: F2 in the header's field moves the edit to the row with the text typed so far, and F2 in the row's field moves it back.
