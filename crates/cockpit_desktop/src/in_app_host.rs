@@ -310,10 +310,12 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_hang_up_stops_the_app() {
+        use std::process::Command;
+
         let mut waiting = Box::pin(stop_signal());
         assert!(futures_util::poll!(&mut waiting).is_pending());
 
-        let sent = std::process::Command::new("kill")
+        let sent = Command::new("kill")
             .args(["-HUP", &std::process::id().to_string()])
             .status()
             .unwrap();

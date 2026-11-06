@@ -10,6 +10,8 @@
     reason = "test code: a failure is a failed test"
 )]
 
+use std::fs::Permissions;
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -49,7 +51,7 @@ impl Setup {
             fake = env!("CARGO_BIN_EXE_fake-claude"),
         );
         std::fs::write(setup.claude(), script).unwrap();
-        std::fs::set_permissions(setup.claude(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(setup.claude(), Permissions::from_mode(0o700)).unwrap();
         setup
     }
 
@@ -95,7 +97,7 @@ impl Setup {
             .unwrap();
         let socket = cockpit_daemon::socket_path(&self.state());
         let deadline = Instant::now() + WAIT;
-        while std::os::unix::net::UnixStream::connect(&socket).is_err() {
+        while UnixStream::connect(&socket).is_err() {
             assert!(Instant::now() < deadline, "the service did not start");
             std::thread::sleep(Duration::from_millis(20));
         }

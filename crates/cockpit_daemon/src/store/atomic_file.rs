@@ -57,8 +57,10 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     // A folder opens as a file on Unix only.
     #[cfg(unix)]
     if let Some(folder) = path.parent() {
+        use std::fs::File;
+
         // The rename is durable once the folder is synced.
-        std::fs::File::open(folder)?.sync_all()?;
+        File::open(folder)?.sync_all()?;
     }
     Ok(())
 }

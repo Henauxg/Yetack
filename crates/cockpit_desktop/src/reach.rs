@@ -322,6 +322,9 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn the_app_runs_one_daemon_and_connects_to_another_that_holds_the_lock() {
+        #[cfg(unix)]
+        use tokio::net::UnixListener;
+
         let temp = tempfile::tempdir().unwrap();
         let places = places(temp.path());
         let first = InAppHost::default();
@@ -330,7 +333,7 @@ mod tests {
         let in_app = reach(&DaemonConfig::InApp, &places, &first).await.unwrap();
         let again = reach(&DaemonConfig::InApp, &places, &first).await.unwrap();
         #[cfg(unix)]
-        let listener = tokio::net::UnixListener::bind(places.socket(None)).unwrap();
+        let listener = UnixListener::bind(places.socket(None)).unwrap();
         let other = reach(&DaemonConfig::InApp, &places, &second).await;
 
         assert!(matches!(in_app.transport, Transport::InApp(_)));

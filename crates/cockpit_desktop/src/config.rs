@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
+use toml_edit::TomlError;
 
 const APP_FOLDER: &str = "agents-cockpit";
 const CONFIG_FILE: &str = "config.toml";
@@ -130,7 +131,7 @@ pub enum ConfigError {
     Edit {
         path: PathBuf,
         #[source]
-        source: toml_edit::TomlError,
+        source: TomlError,
     },
     #[error("cannot encode the daemon's config")]
     Encode(#[source] toml::ser::Error),

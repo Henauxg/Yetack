@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
+use tokio::net::UnixStream;
 use tokio::process::{Child, Command};
 use tokio::time::Instant;
 
@@ -140,7 +141,7 @@ fn spawn(program: &Path, state_dir: &Path, log: &Path) -> Result<Child, ServiceE
 }
 
 pub async fn answers(socket: &Path) -> bool {
-    tokio::net::UnixStream::connect(socket).await.is_ok()
+    UnixStream::connect(socket).await.is_ok()
 }
 
 /// The last line the service wrote to its log past `from`, where `agents-cockpit` says why it
@@ -158,6 +159,7 @@ fn last_line(log: &Path, from: u64) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::fs::Permissions;
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
@@ -166,7 +168,7 @@ mod tests {
         std::fs::create_dir_all(folder).unwrap();
         let program = folder.join(PROGRAM);
         std::fs::write(&program, "#!/bin/sh\n").unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(mode)).unwrap();
+        std::fs::set_permissions(&program, Permissions::from_mode(mode)).unwrap();
         program
     }
 
