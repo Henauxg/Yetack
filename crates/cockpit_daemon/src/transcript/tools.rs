@@ -246,7 +246,8 @@ pub(crate) fn changed_lines(old: &str, new: &str) -> ChangedLines {
     }
 }
 
-fn one_line(text: &str) -> String {
+/// The first line that is not blank, cut to a summary's length.
+pub(crate) fn one_line(text: &str) -> String {
     let line = text
         .lines()
         .map(str::trim)

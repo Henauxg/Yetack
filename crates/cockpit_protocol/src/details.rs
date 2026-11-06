@@ -1,12 +1,12 @@
-//! What the floating blocks show about an agent: tasks, background work, changed files, context
-//! usage, MCP servers and slash commands.
+//! What the floating blocks and the agent map show about an agent: tasks, background work,
+//! subagents, changed files, context usage, MCP servers and slash commands.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use strum::VariantArray;
 
-use crate::ids::BackgroundTaskId;
+use crate::ids::{BackgroundTaskId, ItemId};
 use crate::time::Timestamp;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -19,6 +19,10 @@ pub struct AgentDetails {
     pub context: Option<ContextUsage>,
     pub mcp_servers: Vec<McpServer>,
     pub commands: Vec<SlashCommand>,
+    /// Every subagent the agent started, at any depth, in the order they started. Empty when
+    /// missing, so details from an older daemon still load.
+    #[serde(default)]
+    pub subagents: Vec<Subagent>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,6 +68,75 @@ pub enum BackgroundTaskStatus {
     Stopped,
     Done,
     Failed,
+}
+
+/// A subagent, for the agent map.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Subagent {
+    /// The item of the call that started it, which its own items name as their `parent`.
+    pub item: ItemId,
+    /// The item of the subagent that started it; `None` when the agent did.
+    pub parent: Option<ItemId>,
+    pub description: String,
+    /// Such as `Explore` or `general-purpose`; `None` for Claude Code's default.
+    pub agent_type: Option<String>,
+    pub run: SubagentRun,
+    pub status: SubagentStatus,
+    pub started_at: Timestamp,
+    pub ended_at: Option<Timestamp>,
+    /// `None` until Claude Code reports the subagent's usage, which it may never do.
+    pub tokens: Option<u64>,
+    pub tool_calls: u32,
+    /// Its latest tool call. When that call started a subagent, it waits for that one.
+    pub last_tool: Option<SubagentToolCall>,
+    /// Why it failed, in one line.
+    pub error: Option<String>,
+    /// The agent's turn it started in, counted from 1 as [`AgentSummary::turns`] counts them.
+    ///
+    /// [`AgentSummary::turns`]: crate::AgentSummary::turns
+    pub turn: u32,
+    /// Its background task, which `agent.stop_task` stops. `None` while Claude Code reports none.
+    pub task: Option<BackgroundTaskId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentToolCall {
+    /// `None` when only Claude Code's progress report names the tool, without its call.
+    pub item: Option<ItemId>,
+    pub tool: String,
+    /// The call's one-line summary, as its item has it. Empty without the call.
+    pub summary: String,
+}
+
+/// Whether the call that started the subagent waits for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, VariantArray)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentRun {
+    Foreground,
+    /// Its call returns at once, and the subagent runs as a background task.
+    Background,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, VariantArray)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentStatus {
+    Running,
+    /// One of its approvals, questions or plans waits for an answer.
+    NeedsYou,
+    Done,
+    Failed,
+    Stopped,
+}
+
+impl SubagentStatus {
+    /// Whether it still runs, waiting for you or not.
+    #[must_use]
+    pub fn is_running(self) -> bool {
+        match self {
+            Self::Running | Self::NeedsYou => true,
+            Self::Done | Self::Failed | Self::Stopped => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
