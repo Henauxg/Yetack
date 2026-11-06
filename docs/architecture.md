@@ -180,6 +180,14 @@ The three file requests reach the same folders, once symlinks are resolved and w
 `agent.read_file` also reads a file the agent touched that no such checkout holds, and that file only.
 The daemon and the app run as the same user, and the agent's commands already read what that user can, so these limits keep the views to the agent's work rather than hide anything from the user.
 
+Each request checks the file or folder once it is open, so a folder of its path swapped for a symbolic link after the checks changes nothing: on Linux through `/proc/self/fd`, on Windows through `GetFinalPathNameByHandleW`.
+On Windows, a folder's entries come from `GetFileInformationByHandleEx` on the open folder, and the checks read paths as text (module `windows_path`):
+
+- The verbatim prefix that `canonicalize` adds, `\\?\C:\` or `\\?\UNC\host\share\`, counts as absent. The daemon keeps canonical paths without it, so they show as a user writes them.
+- Names compare whatever their case, as Windows does, with one upper case character for each: `ß` stays `ß`. Drive letters and shares must match.
+- A device path (`\\.\pipe\...`), a device name such as `NUL` or `COM1` in any folder, and a network share that none of the agent's allowed folders and files is on, are refused before any file system call, so that a check never makes Windows connect to another host. A symbolic link in an allowed folder that leads to a share is still followed when the path is resolved, then refused: the agent can reach that host itself.
+- `folders.list` takes a share, since the user types it.
+
 - `agent.read_file` sends a text file of at most 4 MiB. A relative path that names no file in the agent's folder is looked up: the most recent file the agent read or changed whose path ends with it, then a `git ls-files` search of the folders above, which stops at 20 matches or 3 seconds. Several matches come back as `FileMatches`, for the user to pick.
 - `agent.list_dir` answers a folder's entries, folders first, each with its kind (folder, file or other), a file's size, and whether it is a symbolic link. It reads at most 20,000 entries and sends at most 2,000, and says when it cut the list. It runs off the hub's task.
 - `agent.find_files` answers the files whose name holds a text, whatever its case, from the same bounded search.
@@ -232,7 +240,7 @@ The binary owns the rest of what a separate process needs: the SIGTERM and Ctrl+
 - Each client is a `tokio::io::duplex` stream whose daemon end comes through a channel (`InAppLink` on the client's side).
   The connection task is the socket's, generic over the stream, so a client gets the same hello, catch-up, requests and events.
 - No socket listens, so the peer check does not apply. Only the app holds the channel's sending end, and an agent's command, the threat the peer check is for (plan.md, "Security"), has no endpoint to connect to.
-- `InAppDaemon::shutdown` stops it as a service's stop does: it stops the hub, then shuts the runtime down, which drops the process tasks and kills each `claude`'s process group.
+- `InAppDaemon::shutdown` stops it as a service's stop does: it stops the hub, then shuts the runtime down, which drops the process tasks and kills each `claude`'s process group, or on Windows its Job Object.
   The agents stay marked as running, so the next daemon resumes them, and a turn the stop cut off carries on.
   It waits at most the given time for tasks that block, then releases the lock.
   It blocks, so the app calls it from a thread outside any runtime.
@@ -257,6 +265,14 @@ The hub turns Claude Code messages into transcript items and status changes (mod
 - Command: `claude --output-format stream-json --input-format stream-json --verbose --permission-prompt-tool stdio --replay-user-messages`, plus `--resume <session>`, `--model`, `--effort`, `--permission-mode` when set.
   It runs in the agent's folder.
   The binary is `claude` from `PATH`, or `AGENTS_COCKPIT_CLAUDE` for tests.
+  On Windows, the default is the native installer's `claude.exe` on `PATH`, then in `.local\bin` in the home folder, then an npm install's `claude.cmd` on `PATH`; relative folders of `PATH` are skipped.
+  A `.cmd` or `.bat` runs through the system folder's `cmd.exe` with `/d /v:off /s /c`, each argument in double quotes with a trailing backslash doubled; an argument holding a quote, a `%`, a line break or a NUL is refused, since `cmd.exe` would read it.
+  On Windows, every program the daemon starts, `claude`, `claude mcp remove` and `git`, and the client's `ssh`, starts with `CREATE_NO_WINDOW`: the app has no console to share.
+- On Unix, `claude` leads a process group of its own, which the daemon kills to stop the agent's MCP servers and commands with it.
+  On Windows, `claude` starts suspended, joins a Job Object of its own, then runs, so every process it starts is in the job from the start.
+  The job has `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and no breakaway: stopping the agent terminates the job, and Windows ends it when its last handle closes, as when the app dies.
+  The threads resume through a Toolhelp snapshot, since tokio gives no handle to the main thread.
+  When Windows cannot make the job, `claude` runs without one, is stopped alone, and the log says so.
 - First message: the `initialize` control request.
   Its answer lists the slash commands and skills.
   The daemon then asks for the MCP status and the context usage, which Claude Code answers before the first prompt, so a new or resumed agent shows them at once.
@@ -327,7 +343,7 @@ Stopping: a subagent with a task stops with `agent.stop_task`, which the app sen
 
 ### Machine load
 
-`machine.load` answers the latest sample and the samples of the last five minutes, for the server and for each agent: CPU in cores in use, memory, the load average, and each agent's three heaviest commands.
+`machine.load` answers the latest sample and the samples of the last five minutes, for the server and for each agent: CPU in cores in use, memory, the load average (`None` on Windows, which has none), and each agent's three heaviest commands.
 
 - A task samples every 3 seconds, and only while clients ask: the first `machine.load` starts it, and it ends 30 seconds after the last one. Its history then starts afresh with the next request.
   The last 100 samples stay in memory: the event logs never see them.
@@ -351,10 +367,18 @@ Stopping: a subagent with a task stops with `agent.stop_task`, which the app sen
   The test `sampling_cost` measures it: `cargo test --release -p cockpit_daemon sampling_cost -- --ignored --nocapture`.
 - On a machine without `/proc`, `machine.load` answers `unsupported`.
 
+On Windows, the same task samples other counters (modules `job_reading` and `job_sample`):
+
+- The server's CPU comes from `GetSystemTimes`, its cores from `GetActiveProcessorCount`, its memory from `GlobalMemoryStatusEx` (used is the total minus the available).
+- An agent's processes are those of its Job Object. Its CPU is the growth of the job's accounting (`QueryInformationJobObject`), which counts the processes that ended too. Its memory is the working sets of the processes in the job, summed.
+- Each process's CPU comes from `GetProcessTimes`, and its start time tells it from a later process with its id. The heaviest three show their command line (`NtQueryInformationProcess`) or their program's name.
+- An agent whose `claude` runs without a job counts `claude` alone. One reading opens at most 4,096 processes.
+
 `agent.stop_process` sends SIGTERM to one of the agent's processes.
 The daemon opens a pidfd on the process, checks at that moment that its parents in `/proc` reach the agent's `claude`, then signals through the pidfd.
 A process outside the agent is refused with `not_found`, and `claude` itself with `invalid_request`: `agent.stop` stops it.
 When the process ends and its pid goes to another one during the check, the signal goes to the ended process through the pidfd, and fails.
+On Windows, the daemon opens the process, checks with `IsProcessInJob` that it is in the agent's job, then ends it with `TerminateProcess` through the same handle, which keeps its id from going to another process meanwhile.
 
 ### Server and peer checks
 
@@ -514,12 +538,14 @@ When the process ends and its pid goes to another one during the check, the sign
 
 ## Platforms
 
-Linux runs everything. The workspace also builds and passes its tests on Windows, where the daemon will run inside the desktop app and its agents run Windows' own `claude`.
+Linux runs everything. The workspace also builds and passes its tests on Windows, where the daemon runs inside the desktop app and its agents run Windows' own `claude`.
 The code marks what needs Unix with `#[cfg(unix)]` and gives Windows its own version with `#[cfg(windows)]`.
 
 | | Linux | Windows |
 | --- | --- | --- |
-| daemon | `agents-cockpit serve`, on a Unix socket | none yet: the desktop app is to run it |
+| daemon | `agents-cockpit serve`, on a Unix socket, or inside the desktop app | inside the desktop app (`InAppDaemon`) |
+| `claude` | `claude` on `PATH`, in a process group of its own | `claude.exe`, else npm's `claude.cmd` through `cmd.exe`, in a Job Object of its own |
+| machine load | `/proc` | `GetSystemTimes`, `GlobalMemoryStatusEx` and each agent's job; no load average |
 | `agents-cockpit` | every command | the client commands, with `--ssh`; no `serve` and no `bridge` |
 | desktop app | WebKitGTK | WebView2 |
 | daemon's state folder | `$XDG_STATE_HOME/agents-cockpit` | `%LOCALAPPDATA%\agents-cockpit` |
@@ -535,11 +561,9 @@ Each path comes from its environment variable, and falls back to its default und
 On Windows, for now:
 
 - `Transport::Local` fails at once: tokio has no Unix sockets there. The socket server and its peer checks are not built.
-- `machine.load` and `agent.stop_process` answer `unsupported`. The app shows "Load unknown", and so no stop buttons.
-- `agent.read_file`, `agent.list_dir`, `agent.find_files` and `folders.list` answer `unsupported`, since the daemon cannot yet check where an open file is. The file view and the dialogs show the daemon's sentence.
-- Stopping an agent kills its `claude` alone: its MCP servers and commands live on. On Linux the daemon kills the process group.
 - Nothing sets file modes. A file or folder takes the permissions of the folder it is in, and those of `%LOCALAPPDATA%` admit only the user.
-- The tests that need a shell, `/proc`, a Unix socket or file modes are left out, among them the end-to-end tests and the command line's tests.
+- The tests that need a shell, `/proc`, a Unix socket, file modes or symbolic links are left out, among them the end-to-end tests and the command line's tests.
+  Tests of their own cover the Job Objects, the stop of a process, the machine load, the file requests' paths, and `cmd.exe`'s quoting. The path rules (module `windows_path`) and the Windows sample's arithmetic are plain functions, tested on Linux too.
   The app's tests with made-up Unix paths, such as `/work/app`, run on Windows too: they stand for a Linux daemon's paths, which the app reads by Unix's rules on either platform.
 
 ## Development
