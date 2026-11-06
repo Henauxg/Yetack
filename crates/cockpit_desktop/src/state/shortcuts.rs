@@ -71,6 +71,10 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
     // Esc only closes what is open: the Stop button alone stops an agent, so a stray Esc never
     // cuts a turn short.
     if press.key == KEY_ESCAPE {
+        // A palette opened by typing stays closed for the rest of its "/" word.
+        if state.ui.popover == Some(Popover::Palette(PaletteOrigin::Typed)) {
+            drafts.palette_dismissed = drafts.palette.word.map(|word| word.start);
+        }
         state.ui.close_overlays();
         return Vec::new();
     }
@@ -148,7 +152,9 @@ fn sync_composer_text(state: &mut AppState, drafts: &mut Drafts, agent: AgentId,
     if draft == Some(text) {
         return;
     }
-    if let Some(change) = actions::composer_input(state, drafts, agent, text.to_owned()) {
+    // A key press carries no caret: the end of the text stands in for it.
+    let caret = text.encode_utf16().count();
+    if let Some(change) = actions::composer_input(state, drafts, agent, text.to_owned(), caret) {
         actions::change_palette(state, agent, change);
     }
 }
@@ -326,7 +332,7 @@ mod tests {
                     ..AgentDetails::default()
                 });
             }
-            let typed = actions::composer_input(&state, &mut drafts, agent, "/rev".to_owned());
+            let typed = actions::composer_input(&state, &mut drafts, agent, "/rev".to_owned(), 4);
             if let Some(change) = typed {
                 actions::change_palette(&mut state, agent, change);
             }
@@ -363,7 +369,7 @@ mod tests {
                     ..AgentDetails::default()
                 });
             }
-            let typed = actions::composer_input(&state, &mut drafts, agent, "/re".to_owned());
+            let typed = actions::composer_input(&state, &mut drafts, agent, "/re".to_owned(), 3);
             if let Some(change) = typed {
                 actions::change_palette(&mut state, agent, change);
             }
@@ -395,6 +401,33 @@ mod tests {
     }
 
     #[test]
+    fn escape_keeps_the_palette_closed_for_the_rest_of_its_slash_word() {
+        let mut drafts = Drafts::default();
+        let mut state = state(AgentStatus::Idle, None);
+        let agent = AgentId::new(1);
+        let type_text = |state: &mut AppState, drafts: &mut Drafts, text: &str| {
+            let caret = text.encode_utf16().count();
+            let change = actions::composer_input(state, drafts, agent, text.to_owned(), caret);
+            if let Some(change) = change {
+                actions::change_palette(state, agent, change);
+            }
+            state.ui.popover
+        };
+
+        let opened = type_text(&mut state, &mut drafts, "run /re");
+        handle_key(
+            &mut state,
+            &mut drafts,
+            &press(KEY_ESCAPE, KeyTarget::Composer),
+        );
+        let same_word = type_text(&mut state, &mut drafts, "run /rev");
+        let next_word = type_text(&mut state, &mut drafts, "run /rev then /co");
+
+        let typed = Some(Popover::Palette(PaletteOrigin::Typed));
+        assert_eq!((opened, same_word, next_word), (typed, None, typed));
+    }
+
+    #[test]
     fn escape_closes_the_palette_whatever_opened_it() {
         let mut drafts = Drafts::default();
         let mut state = state(AgentStatus::Idle, None);
@@ -404,7 +437,7 @@ mod tests {
         actions::toggle_palette(&mut state, &mut drafts, agent);
         handle_key(&mut state, &mut drafts, &escape);
         let after_button = state.ui.popover;
-        let typed = actions::composer_input(&state, &mut drafts, agent, "/".to_owned());
+        let typed = actions::composer_input(&state, &mut drafts, agent, "/".to_owned(), 1);
         if let Some(change) = typed {
             actions::change_palette(&mut state, agent, change);
         }
