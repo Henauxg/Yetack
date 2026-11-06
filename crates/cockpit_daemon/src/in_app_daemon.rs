@@ -189,17 +189,43 @@ mod tests {
     }
 
     /// The app drops a start it no longer waits for, as when it closes meanwhile.
+    ///
+    /// `agents.json` is a FIFO the test holds open: the start's read of it cannot end before the
+    /// test closes it, so the start is still running when the test drops it.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_start_dropped_before_it_ends_releases_the_folder() {
+        use std::io::Write;
         use std::task::{Context, Poll, Waker};
         use std::time::Instant;
 
+        use rustix::fs::Mode;
+
+        use crate::store::{AgentsFile, StateDir};
+
         let temp = tempfile::tempdir().unwrap();
+        let agents_file = StateDir::create(&config(temp.path()).state_dir)
+            .unwrap()
+            .agents_file();
+        rustix::fs::mkfifoat(rustix::fs::CWD, &agents_file, Mode::RUSR | Mode::WUSR).unwrap();
+        // Read and write: the open does not wait for a reader, and the daemon's does not wait
+        // for a writer.
+        let mut fifo = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&agents_file)
+            .unwrap();
         let (_streams, connections) = mpsc::unbounded_channel();
         let mut start = Box::pin(InAppDaemon::start(config(temp.path()), connections));
         let polled = start.as_mut().poll(&mut Context::from_waker(Waker::noop()));
         assert!(matches!(polled, Poll::Pending));
         drop(start);
+        // A start that has not opened the FIFO yet finds no file. One that has reads the file,
+        // then ends once the test closes the FIFO.
+        std::fs::remove_file(&agents_file).unwrap();
+        fifo.write_all(&serde_json::to_vec(&AgentsFile::default()).unwrap())
+            .unwrap();
+        drop(fifo);
 
         let deadline = Instant::now() + Duration::from_secs(10);
         let daemon = loop {
