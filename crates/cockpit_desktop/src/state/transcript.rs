@@ -54,7 +54,7 @@ pub struct Waiting {
 
 impl Waiting {
     /// The item, when it is an approval, a question or a plan that waits for an answer.
-    fn of(item: &TranscriptItem) -> Option<Self> {
+    fn new(item: &TranscriptItem) -> Option<Self> {
         let (pending, kind) = match &item.body {
             ItemBody::Approval(approval) if approval.answer == AnswerState::Waiting => {
                 (&approval.pending, WaitingKind::Approval)
@@ -156,7 +156,7 @@ impl Transcript {
 
     /// The newest approval, question or plan that waits for an answer.
     pub fn waiting(&self) -> Option<Waiting> {
-        self.items.values().rev().find_map(Waiting::of)
+        self.items.values().rev().find_map(Waiting::new)
     }
 
     /// The newest approval, question or plan of the subagent of item `parent` that waits for an
@@ -166,7 +166,7 @@ impl Transcript {
             .values()
             .rev()
             .filter(|item| item.parent == Some(parent))
-            .find_map(Waiting::of)
+            .find_map(Waiting::new)
     }
 }
 

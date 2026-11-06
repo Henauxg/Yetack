@@ -2348,7 +2348,10 @@ fn apply_map_request(state: &mut AppState, request: &Request) {
                 return;
             };
             let waiting = entry.transcript.items().find(|item| {
-                matches!(&item.body, ItemBody::Approval(approval) if approval.pending == params.pending)
+                matches!(
+                    &item.body,
+                    ItemBody::Approval(approval) if approval.pending == params.pending
+                )
             });
             let (Some(waiting), Answer::Approval(answer)) = (waiting.cloned(), &params.answer)
             else {

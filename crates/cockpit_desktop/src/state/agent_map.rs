@@ -180,7 +180,8 @@ fn with_ancestors(
     pick: impl Fn(&Subagent) -> bool,
 ) -> BTreeSet<ItemId> {
     let mut found = BTreeSet::new();
-    for subagent in subagents.iter().filter(|subagent| pick(subagent)) {
+    let picked = subagents.iter().filter(|subagent| pick(subagent));
+    for subagent in picked {
         // Bounded by the list's length, so that parents in a cycle end the walk.
         let mut next = Some(subagent);
         for _ in 0..subagents.len() {
@@ -802,6 +803,7 @@ mod tests {
     use cockpit_protocol::{
         BackgroundTaskId, ItemBody, Request, Timestamp, ToolCall, ToolCallStatus, TranscriptItem,
     };
+    use serde_json::Value;
 
     use super::*;
     use crate::state::app_state::tests::{state_with, summary};
@@ -1165,7 +1167,7 @@ mod tests {
             body: ItemBody::Subagent(ToolCall {
                 tool: "Agent".to_owned(),
                 summary: format!("Subagent {item}"),
-                input: serde_json::Value::Null,
+                input: Value::Null,
                 status: ToolCallStatus::Running,
                 output: None,
                 exit_code: None,

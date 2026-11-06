@@ -20,9 +20,7 @@ use crate::state::{self, HistoryState, actions};
 use crate::ui::cards::{ApprovalCard, PlanCard, QuestionCard};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::markdown::MarkdownView;
-use crate::ui::transcript::{
-    CallStage, CompactItem, ItemView, children_by_parent, subtree, waits_for_answer,
-};
+use crate::ui::transcript::{self, CallStage, CompactItem, ItemView};
 
 /// The input field of an `Agent` call that holds its prompt.
 const PROMPT_FIELD: &str = "prompt";
@@ -74,7 +72,7 @@ fn waiting_by_subagent<'item>(
 ) -> BTreeMap<ItemId, String> {
     let mut waiting = BTreeMap::new();
     for item in items {
-        let Some(parent) = item.parent.filter(|_| waits_for_answer(item)) else {
+        let Some(parent) = item.parent.filter(|_| transcript::waits_for_answer(item)) else {
             continue;
         };
         let what = match &item.body {
@@ -617,7 +615,7 @@ fn subagent_details(input: SubagentDetailsInput<'_>) -> Element {
         has_older,
         tab,
     } = input;
-    let by_parent = children_by_parent(&items);
+    let by_parent = transcript::children_by_parent(&items);
     let call = items
         .iter()
         .find(|item| item.id == subagent.item)
@@ -625,7 +623,7 @@ fn subagent_details(input: SubagentDetailsInput<'_>) -> Element {
             ItemBody::Subagent(call) => Some(call.clone()),
             _ => None,
         });
-    let nested = subtree(&by_parent, subagent.item);
+    let nested = transcript::subtree(&by_parent, subagent.item);
     let started_by = subagent.parent.and_then(|parent| {
         subagents
             .iter()
@@ -713,7 +711,7 @@ fn SubagentDetails(
         SubagentRun::Background => "Background",
     };
     let nested_refs: Vec<&TranscriptItem> = nested.iter().collect();
-    let by_parent = children_by_parent(&nested_refs);
+    let by_parent = transcript::children_by_parent(&nested_refs);
     let awaiting = state::awaiting_approval(&nested_refs);
     let direct: Vec<&TranscriptItem> = nested
         .iter()
@@ -721,7 +719,7 @@ fn SubagentDetails(
         .collect();
     let waiting: Vec<TranscriptItem> = direct
         .iter()
-        .filter(|nested_item| waits_for_answer(nested_item))
+        .filter(|nested_item| transcript::waits_for_answer(nested_item))
         .map(|nested_item| (*nested_item).clone())
         .collect();
     let calls: Vec<&TranscriptItem> = direct
@@ -753,11 +751,11 @@ fn SubagentDetails(
         MapTab::Transcript => {
             let entries: Vec<(TranscriptItem, Vec<TranscriptItem>, bool)> = direct
                 .iter()
-                .filter(|nested_item| !waits_for_answer(nested_item))
+                .filter(|nested_item| !transcript::waits_for_answer(nested_item))
                 .map(|nested_item| {
                     (
                         (*nested_item).clone(),
-                        subtree(&by_parent, nested_item.id),
+                        transcript::subtree(&by_parent, nested_item.id),
                         awaiting.contains(&nested_item.id),
                     )
                 })
