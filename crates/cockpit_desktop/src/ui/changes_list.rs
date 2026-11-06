@@ -10,7 +10,7 @@ use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
 use crate::format;
-use crate::path_style::PathStyle;
+use crate::path_style::{self, PathStyle};
 use crate::state::actions;
 use crate::ui::icons::{Icon, IconKind};
 
@@ -150,14 +150,15 @@ pub fn ChangesList(agent: AgentId, files: Vec<ChangedFile>, folder: PathBuf) -> 
                     for group in groups {
                         {
                             let root = group.root.clone().unwrap_or_else(|| folder.clone());
+                            let shown_root = path_style::shown(&root);
                             rsx! {
                                 div {
                                     key: "{root.display()}",
                                     class: if heads { "changes-group headed" } else { "changes-group" },
                                     role: "group",
-                                    aria_label: "{root.display()}",
+                                    aria_label: "{shown_root}",
                                     if heads {
-                                        div { class: "changes-root", title: "{root.display()}",
+                                        div { class: "changes-root", title: "{shown_root}",
                                             Icon { kind: IconKind::Folder, size: 13 }
                                             span { class: "mono changes-root-name", "{root_label(&root)}" }
                                         }
@@ -181,10 +182,11 @@ pub fn ChangesList(agent: AgentId, files: Vec<ChangedFile>, folder: PathBuf) -> 
 fn ChangeLine(agent: AgentId, row: ChangeRow) -> Element {
     let cockpit: Cockpit = use_context();
     let path = row.path.clone();
+    let full = path_style::shown(&row.path);
     rsx! {
         button {
             class: "change-row",
-            title: "{row.path.display()}",
+            title: "{full}",
             onclick: move |_| {
                 let path = path.clone();
                 cockpit.update(|state| actions::open_file(state, agent, path, None));
