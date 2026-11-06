@@ -37,9 +37,9 @@ pub use daemon_config::{
 };
 pub use in_app_daemon::InAppDaemon;
 pub use process::ProcessError;
-pub use serve::ServeError;
 #[cfg(unix)]
 pub use serve::serve;
+pub use serve::{START_TASK, ServeError};
 #[cfg(unix)]
 pub use server::{PeerError, UserId};
 pub use store::{StoreError, default_state_dir, socket_path};

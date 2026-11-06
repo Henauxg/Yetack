@@ -47,8 +47,8 @@ impl Daemon {
         })
     }
 
-    pub(crate) fn inputs(&self) -> mpsc::Sender<HubInput> {
-        self.inputs.clone()
+    pub(crate) fn inputs(&self) -> &mpsc::Sender<HubInput> {
+        &self.inputs
     }
 
     /// Completes when the hub's task ends, which happens only when it fails.

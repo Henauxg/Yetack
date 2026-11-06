@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use crate::daemon::Daemon;
 use crate::daemon_config::DaemonConfig;
 use crate::hub::HubInput;
-use crate::serve::ServeError;
+use crate::serve::{START_TASK, ServeError};
 use crate::server;
 
 const THREAD_NAME: &str = "agents-cockpit-daemon";
@@ -44,7 +44,7 @@ impl InAppDaemon {
             .map_err(ServeError::Runtime)?;
         let started = runtime.spawn(async move {
             let daemon = Daemon::prepare(config)?.start();
-            tokio::spawn(accept(connections, daemon.inputs()));
+            tokio::spawn(accept(connections, daemon.inputs().clone()));
             Ok::<Daemon, ServeError>(daemon)
         });
         // Its drop stops the runtime without waiting, should this future be dropped or fail.
@@ -54,7 +54,7 @@ impl InAppDaemon {
         };
         let daemon = started
             .await
-            .unwrap_or(Err(ServeError::TaskEnded("start")))?;
+            .unwrap_or(Err(ServeError::TaskEnded(START_TASK)))?;
         this.daemon = Some(daemon);
         Ok(this)
     }

@@ -7,7 +7,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use cockpit_client::InAppLink;
-use cockpit_daemon::{DaemonConfig, InAppDaemon, ServeError};
+use cockpit_daemon::{DaemonConfig, InAppDaemon, START_TASK, ServeError};
 use tokio::sync::{Notify, oneshot};
 
 /// How long the app's close waits for the daemon's tasks, after it killed the agents' processes.
@@ -88,7 +88,9 @@ impl InAppHost {
         if let Err(source) = thread {
             return self.shared.finish_start(Err(ServeError::Runtime(source)));
         }
-        started.await.unwrap_or(Err(ServeError::TaskEnded("start")))
+        started
+            .await
+            .unwrap_or(Err(ServeError::TaskEnded(START_TASK)))
     }
 
     /// Stops the daemon as a background service stops, so its agents resume the next time the

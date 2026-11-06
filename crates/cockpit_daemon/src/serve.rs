@@ -13,6 +13,9 @@ use crate::server;
 use crate::server::DaemonIdentity;
 use crate::store::StoreError;
 
+/// The task that starts a daemon, as [`ServeError::TaskEnded`] names it.
+pub const START_TASK: &str = "start";
+
 #[derive(Debug, thiserror::Error)]
 pub enum ServeError {
     #[error(transparent)]
@@ -52,7 +55,7 @@ pub async fn serve(
     let mut daemon = prepared.start();
     let mut server_task = tokio::spawn(server::accept_loop(
         listener,
-        daemon.inputs(),
+        daemon.inputs().clone(),
         DaemonIdentity::current(),
     ));
     tracing::info!(socket = %socket.display(), "serving");
