@@ -208,8 +208,14 @@ fn SwitcherDialog() -> Element {
                     },
                     oninput: move |event: FormEvent| cockpit.with_drafts(|_, drafts| actions::switcher_query(drafts, event.value())),
                     onkeydown: move |event: KeyboardEvent| match event.key() {
-                        Key::ArrowDown => cockpit.with_drafts(|state, drafts| actions::switcher_move(state, drafts, Direction::Down)),
-                        Key::ArrowUp => cockpit.with_drafts(|state, drafts| actions::switcher_move(state, drafts, Direction::Up)),
+                        Key::ArrowDown => {
+                            cockpit.with_drafts(|state, drafts| actions::switcher_move(state, drafts, Direction::Down));
+                            bridge::scroll_to_highlighted();
+                        }
+                        Key::ArrowUp => {
+                            cockpit.with_drafts(|state, drafts| actions::switcher_move(state, drafts, Direction::Up));
+                            bridge::scroll_to_highlighted();
+                        }
                         Key::Enter => cockpit.update_with_drafts(|state, drafts| actions::switcher_pick(state, drafts, None)),
                         _ => {}
                     },
