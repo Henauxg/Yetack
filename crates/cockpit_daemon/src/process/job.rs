@@ -16,7 +16,7 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
 };
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
     SetInformationJobObject, TerminateJobObject,
 };
@@ -78,6 +78,23 @@ impl Job {
             return Err(io::Error::last_os_error());
         }
         Ok(())
+    }
+
+    /// Whether `process`, an open handle, is in the job. An open handle keeps its process's id
+    /// from going to another process, so the answer stays true for that process.
+    pub(crate) fn contains(&self, process: RawHandle) -> io::Result<bool> {
+        let mut result = 0;
+        // SAFETY: both handles are open for the length of the call, and `result` is a `BOOL`.
+        let checked = unsafe { IsProcessInJob(process, self.raw(), &raw mut result) };
+        if checked == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(result != 0)
+    }
+
+    /// Another handle to the same job, which keeps it open as this one does.
+    pub(crate) fn try_clone(&self) -> io::Result<Self> {
+        self.0.try_clone().map(Self)
     }
 
     fn raw(&self) -> HANDLE {

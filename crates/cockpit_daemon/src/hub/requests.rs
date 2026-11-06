@@ -162,16 +162,19 @@ impl Hub {
 
     /// The `claude` process of each agent whose process runs.
     fn agent_roots(&self) -> Vec<AgentRoot> {
-        let running = self.agents.iter().filter_map(|(&agent, found)| {
-            let pid = found.process.as_ref()?.pid()?;
-            Some(AgentRoot { agent, pid })
-        });
+        let running = self
+            .agents
+            .iter()
+            .filter_map(|(&agent, found)| AgentRoot::new(agent, found.process.as_ref()?));
         running.collect()
     }
 
     fn stop_process(&self, params: StopProcessParams, reply: Reply) {
         let root = match self.agent(params.agent) {
-            Ok(agent) => agent.process.as_ref().and_then(|process| process.pid()),
+            Ok(agent) => agent
+                .process
+                .as_ref()
+                .and_then(|process| AgentRoot::new(params.agent, process)),
             Err(error) => return agents::respond(reply, Err(error)),
         };
         let Some(root) = root else {

@@ -3,12 +3,14 @@
 
 mod claude_command;
 #[cfg(windows)]
-mod job;
+pub(crate) mod job;
 mod line_reader;
 mod process_error;
 pub(crate) mod program;
 mod task;
 
 pub(crate) use claude_command::{ClaudeCommand, InterruptedTurn};
+#[cfg(windows)]
+pub(crate) use job::Job;
 pub use process_error::ProcessError;
 pub(crate) use task::{ControlFailure, ProcessEvent, ProcessHandle, spawn};

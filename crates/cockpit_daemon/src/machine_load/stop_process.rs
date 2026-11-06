@@ -11,6 +11,7 @@ use rustix::io::Errno;
 use rustix::process::{Pid, PidfdFlags, Signal};
 
 use crate::error_chain;
+use crate::machine_load::agent_root::AgentRoot;
 use crate::machine_load::proc_files::{PROC_ROOT, ProcessStat, STAT_FILE};
 
 /// Longer than any real chain: a loop in a corrupt `/proc` cannot run forever.
@@ -50,7 +51,8 @@ impl StopProcessError {
 }
 
 /// Sends SIGTERM to `target` when it descends from `root`, the agent's `claude`.
-pub(crate) fn stop_descendant(root: ProcessId, target: ProcessId) -> Result<(), StopProcessError> {
+pub(crate) fn stop_descendant(root: AgentRoot, target: ProcessId) -> Result<(), StopProcessError> {
+    let root = root.pid;
     if target == root {
         return Err(StopProcessError::IsTheAgent { pid: target });
     }
@@ -125,7 +127,17 @@ mod tests {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
+    use cockpit_protocol::AgentId;
+
     use super::*;
+
+    /// This test's process, standing for the agent's `claude`.
+    fn this_process() -> AgentRoot {
+        AgentRoot {
+            agent: AgentId::new(1),
+            pid: ProcessId::new(std::process::id()),
+        }
+    }
 
     /// 1 init; 20 an agent's claude, 21 its shell, 22 the build the shell runs; 30 another
     /// agent's claude; 40 the user's editor.
@@ -166,11 +178,11 @@ mod tests {
 
     #[test]
     fn the_agent_itself_and_a_process_outside_it_are_refused() {
-        let claude = ProcessId::new(std::process::id());
+        let claude = this_process();
 
-        let itself = stop_descendant(claude, claude);
+        let itself = stop_descendant(claude, claude.pid);
         // The test's parent does not descend from the test.
-        let parent = read_parent(claude).unwrap().unwrap();
+        let parent = read_parent(claude.pid).unwrap().unwrap();
         let outside = stop_descendant(claude, parent);
         let gone = stop_descendant(claude, ProcessId::new(u32::MAX));
 
@@ -199,9 +211,7 @@ mod tests {
             .stdin(Stdio::null())
             .spawn()
             .unwrap();
-        let claude = ProcessId::new(std::process::id());
-
-        let stopped = stop_descendant(claude, ProcessId::new(child.id()));
+        let stopped = stop_descendant(this_process(), ProcessId::new(child.id()));
 
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut status = child.try_wait().unwrap();
@@ -238,9 +248,7 @@ mod tests {
             .unwrap();
         let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
         let sleep: u32 = lines.next().unwrap().unwrap().parse().unwrap();
-        let claude = ProcessId::new(std::process::id());
-
-        let stopped = stop_descendant(claude, ProcessId::new(sleep));
+        let stopped = stop_descendant(this_process(), ProcessId::new(sleep));
 
         if stopped.is_err() {
             let _ = Command::new("kill").arg(sleep.to_string()).status();

@@ -5,7 +5,8 @@
 //! and walks each agent's process tree down from its `claude` process. It never reads the other
 //! processes of the machine, unless the kernel lacks the children files ([`process_tree`]).
 //!
-//! On Windows, both requests answer `unsupported`.
+//! On Windows, `machine.load` answers `unsupported`, and `agent.stop_process` ends a process of
+//! the agent's Job Object (module `stop_in_job`).
 
 mod agent_root;
 #[cfg(unix)]
@@ -14,6 +15,8 @@ mod history;
 mod kept_file;
 #[cfg(unix)]
 mod load_sampler;
+#[cfg(windows)]
+mod opened_process;
 #[cfg(unix)]
 mod proc_files;
 #[cfg(unix)]
@@ -24,6 +27,8 @@ mod reading;
 mod sample;
 #[cfg(unix)]
 mod sampler;
+#[cfg(windows)]
+mod stop_in_job;
 #[cfg(unix)]
 mod stop_process;
 #[cfg(windows)]
@@ -34,7 +39,9 @@ pub(crate) use agent_root::AgentRoot;
 pub(crate) use load_sampler::LoadSampler;
 #[cfg(unix)]
 pub(crate) use proc_files::{PROC_ROOT, STAT_FILE};
+#[cfg(windows)]
+pub(crate) use stop_in_job::stop_descendant;
 #[cfg(unix)]
 pub(crate) use stop_process::stop_descendant;
 #[cfg(windows)]
-pub(crate) use unsupported::{LoadSampler, stop_descendant};
+pub(crate) use unsupported::LoadSampler;

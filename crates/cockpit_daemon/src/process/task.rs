@@ -77,11 +77,19 @@ pub(crate) struct ProcessHandle<T> {
     commands: mpsc::UnboundedSender<ProcessCommand<T>>,
     /// `claude`'s process, which every command the agent runs descends from.
     pid: Option<ProcessId>,
+    /// Another handle to the job of the task, which holds every command the agent runs.
+    #[cfg(windows)]
+    job: Option<Job>,
 }
 
 impl<T> ProcessHandle<T> {
     pub(crate) fn pid(&self) -> Option<ProcessId> {
         self.pid
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn job(&self) -> Option<&Job> {
+        self.job.as_ref()
     }
 
     pub(crate) fn write(&self, line: InputLine) {
@@ -166,6 +174,12 @@ where
     tokio::spawn(read_stderr(stderr, stderr_sender));
     let (commands_sender, commands) = mpsc::unbounded_channel();
     let pid = child.id().map(ProcessId::new);
+    #[cfg(windows)]
+    let handle_job = job.as_ref().and_then(|job| {
+        job.try_clone()
+            .inspect_err(|error| tracing::warn!(%error, "cannot open claude's job again"))
+            .ok()
+    });
     let task = Task {
         child,
         #[cfg(windows)]
@@ -186,6 +200,8 @@ where
     Ok(ProcessHandle {
         commands: commands_sender,
         pid,
+        #[cfg(windows)]
+        job: handle_job,
     })
 }
 
