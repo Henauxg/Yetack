@@ -11,9 +11,10 @@ use cockpit_protocol::{
 use strum::VariantArray;
 
 use super::file_edits;
+use super::no_daemon::NoDaemon;
 use super::transcript::Transcript;
 use super::ui_state::UiState;
-use crate::config::DaemonLabel;
+use crate::daemon_label::DaemonLabel;
 use crate::format;
 use crate::prefs::{Prefs, StatusFilter};
 
@@ -65,6 +66,8 @@ pub enum ConnectionState {
         error: String,
         retry_at: Instant,
     },
+    /// The first connection failed: the "No daemon answers" screen asks what to run.
+    NoDaemon(NoDaemon),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -335,10 +338,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn state_with(summaries: Vec<AgentSummary>) -> AppState {
-        let mut state = AppState::new(DaemonLabel {
-            machine: "build-box".to_owned(),
-            over_ssh: true,
-        });
+        let mut state = AppState::new(DaemonLabel::ssh("build-box".to_owned()));
         for summary in summaries {
             state.agents.insert(summary.id, AgentEntry::new(summary));
         }

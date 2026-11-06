@@ -3,23 +3,31 @@
 mod bridge;
 mod config;
 mod connection;
+mod daemon_label;
 mod demo;
 mod fonts;
 mod format;
+mod in_app;
 mod notifications;
 mod prefs;
+mod reach;
 mod render;
+#[cfg(unix)]
+mod service;
 mod state;
 mod ui;
 
 use dioxus::LaunchBuilder;
+use dioxus::desktop::tao::event::Event;
 use dioxus::desktop::tao::window::Icon;
 use dioxus::desktop::{LogicalSize, WindowBuilder};
 use tracing_subscriber::EnvFilter;
 
 use crate::config::{Config, Environment};
 use crate::connection::Startup;
+use crate::in_app::InAppHost;
 use crate::prefs::Prefs;
+use crate::reach::Places;
 use crate::state::AppState;
 
 const STYLESHEET: &str = include_str!("style.css");
@@ -44,18 +52,23 @@ fn main() -> anyhow::Result<()> {
     let demo = demo::is_requested(&arguments);
     let environment = Environment::from_process();
     let config = Config::load(&environment)?;
+    let places = Places::new(&environment)?;
+    let label = reach::label(&config.daemon);
     let mut state = if demo {
-        demo::state(config.daemon_label())
+        demo::state(label)
     } else {
-        AppState::new(config.daemon_label())
+        AppState::new(label)
     };
     let prefs_file = prefs::file(&environment);
     if let Some(file) = &prefs_file {
         state.prefs = Prefs::load(file);
     }
+    let in_app = InAppHost::default();
     let startup = Startup {
         state,
-        transport: config.transport(&environment)?,
+        daemon: config.daemon,
+        places,
+        in_app: in_app.clone(),
         notifications: config.notifications.enabled && !demo,
         demo,
         prefs_file,
@@ -71,7 +84,13 @@ fn main() -> anyhow::Result<()> {
         .with_custom_head(format!(
             "<style>{}{STYLESHEET}</style>",
             fonts::font_faces()
-        ));
+        ))
+        .with_custom_event_handler(move |event, _| {
+            // The event loop ends the process right after this event, without dropping anything.
+            if let Event::LoopDestroyed = event {
+                in_app.shutdown();
+            }
+        });
     match dioxus::desktop::icon_from_memory::<Icon>(ICON_PNG) {
         Ok(icon) => desktop = desktop.with_icon(icon),
         Err(error) => tracing::warn!("cannot load the window icon: {error}"),

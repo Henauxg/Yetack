@@ -17,6 +17,7 @@ mod load_card;
 mod loading;
 mod markdown;
 mod mcp;
+mod no_daemon;
 mod open_file;
 mod palette;
 mod presence;

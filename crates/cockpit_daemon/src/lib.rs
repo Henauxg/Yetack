@@ -22,7 +22,9 @@ mod store;
 mod test_script;
 mod transcript;
 
-pub use daemon_config::{CLAUDE_PROGRAM_ENV, DaemonConfig, HOME_ENV};
+pub use daemon_config::{
+    CLAUDE_PROGRAM_ENV, DaemonConfig, HOME_ENV, SERVE_SUBCOMMAND, STATE_DIR_FLAG,
+};
 pub use in_app_daemon::InAppDaemon;
 pub use process::ProcessError;
 pub use serve::{ServeError, serve};

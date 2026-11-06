@@ -21,7 +21,7 @@ use cockpit_protocol::{
 };
 use serde_json::Value;
 
-use crate::config::DaemonLabel;
+use crate::daemon_label::DaemonLabel;
 use crate::state::{AgentEntry, AppState, ConnectionState, Loadable};
 
 /// The command-line flag that starts the demo.
@@ -2657,10 +2657,7 @@ pub struct ParseError {
 ";
 
     fn label() -> DaemonLabel {
-        DaemonLabel {
-            machine: "demo".to_owned(),
-            over_ssh: false,
-        }
+        DaemonLabel::ssh("demo".to_owned())
     }
 
     #[test]

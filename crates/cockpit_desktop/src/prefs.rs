@@ -30,7 +30,7 @@ use strum::{EnumString, IntoStaticStr, VariantArray};
 use crate::config::Environment;
 use crate::connection::Cockpit;
 
-const PREFS_FOLDER: &str = "agents-cockpit-desktop";
+pub const PREFS_FOLDER: &str = "agents-cockpit-desktop";
 const PREFS_FILE: &str = "prefs.json";
 const TEMPORARY_SUFFIX: &str = ".tmp";
 

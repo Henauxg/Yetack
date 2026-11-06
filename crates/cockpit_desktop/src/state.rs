@@ -10,6 +10,7 @@ mod export;
 pub mod file_edits;
 pub mod folder_field;
 pub mod machine_load;
+pub mod no_daemon;
 pub mod open_file;
 mod requests;
 mod shortcuts;
@@ -19,7 +20,7 @@ mod ui_state;
 mod utf16_offset;
 
 pub use app_state::{AgentEntry, AppState, ConnectionState, FileRead, Loadable, TurnStart};
-pub use apply::{Alert, AlertKind, apply_update};
+pub use apply::{Alert, AlertKind, apply_update, error_chain};
 pub use drafts::Drafts;
 pub use requests::{Outgoing, Purpose, apply_response, needed_requests};
 pub use shortcuts::{KeyPress, handle_key};
