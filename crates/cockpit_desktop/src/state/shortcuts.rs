@@ -582,6 +582,7 @@ mod tests {
         ]);
         // Equal positions list the newer agent first: agent 1 is at the bottom.
         state.ui.selected = Some(AgentId::new(1));
+        state.connection = ConnectionState::Connected;
         let alt = |key: &str, target| KeyPress {
             alt: true,
             ..press(key, target)

@@ -208,6 +208,12 @@ pub fn forget_agent(
     agent: AgentId,
 ) -> Option<AgentEntry> {
     let entry = state.agents.remove(&agent);
+    let items = entry.iter().flat_map(|entry| entry.transcript.items());
+    for item in items {
+        if let ItemBody::Question(question) = &item.body {
+            drafts.questions.remove(&question.pending);
+        }
+    }
     state.ui.unread.remove(&agent);
     state.ui.file_views.remove(&agent);
     state.ui.finished_tasks_unfolded.remove(&agent);
@@ -501,6 +507,43 @@ mod tests {
         assert!(!drafts.questions.contains_key(&pending));
     }
 
+    /// The question of an agent that is gone is never answered, so its draft would stay.
+    #[test]
+    fn a_removed_agent_leaves_no_question_draft() {
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::NeedsYou),
+            summary(2, AgentStatus::NeedsYou),
+        ]);
+        let mut drafts = Drafts::default();
+        for agent in [1, 2] {
+            let pending = PendingId::new(format!("request-{agent}"));
+            drafts.questions.insert(pending.clone(), Default::default());
+            let question = Question {
+                pending,
+                questions: Vec::new(),
+                answer: AnswerState::Waiting,
+            };
+            if let Some(entry) = state.agents.get_mut(&AgentId::new(agent)) {
+                entry.transcript.append(TranscriptItem {
+                    id: ItemId::new(4),
+                    parent: Some(ItemId::new(3)),
+                    body: ItemBody::Question(question),
+                });
+            }
+        }
+
+        apply(
+            &mut state,
+            &mut drafts,
+            record(Event::AgentRemoved {
+                agent: AgentId::new(1),
+            }),
+        );
+
+        let kept: Vec<&PendingId> = drafts.questions.keys().collect();
+        assert_eq!(kept, [&PendingId::new("request-2".to_owned())]);
+    }
+
     /// Ids are not reused, so a removed agent's marks would stay for the app's life.
     #[test]
     fn a_removed_agent_leaves_no_chat_marks() {
@@ -637,6 +680,7 @@ mod tests {
             title: format!("Agent {agent}"),
             place: TitlePlace::Header,
             select_all: true,
+            kept_open: false,
         };
         let mut removed = state_with(vec![
             summary(1, AgentStatus::Idle),
@@ -717,6 +761,7 @@ mod tests {
             title: "Cart tot".to_owned(),
             place: TitlePlace::Header,
             select_all: false,
+            kept_open: false,
         });
         assert_eq!(updated.ui.title_edit, header);
         assert_eq!(dropped.ui.title_edit, header);

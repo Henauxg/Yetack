@@ -3536,8 +3536,9 @@ html.splitting * {
   color: var(--text);
 }
 
-/* Focused by a click, for Ctrl+W, without a ring around the whole view. */
-.file-view:focus {
+/* Focused by a click, for Ctrl+W and the scrolling keys, without a ring around the view. */
+.file-view:focus,
+.file-body:focus {
   outline: none;
 }
 

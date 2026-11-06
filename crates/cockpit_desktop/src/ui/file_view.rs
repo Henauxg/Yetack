@@ -134,7 +134,10 @@ pub fn FileViewPanel() -> Element {
                     }
                 }
             }
-            div { class: if wrap { "file-body scroll mono wrap" } else { "file-body scroll mono" },
+            div {
+                class: if wrap { "file-body scroll mono wrap" } else { "file-body scroll mono" },
+                // Focusable, so that after a click in the text End and Home scroll it.
+                tabindex: -1,
                 match text {
                     Loadable::NotRequested | Loadable::Loading => rsx! {
                         div { class: "file-loading", aria_hidden: true,

@@ -186,6 +186,9 @@ pub struct TitleEdit {
     /// The field selects its text when the edit starts. After a move to the other place it puts
     /// the caret at the end, so typing goes on after the text instead of replacing it.
     pub select_all: bool,
+    /// The window lost the focus while the field had it, which keeps the edit open until the
+    /// field takes the focus back. Selecting another agent meanwhile cancels the edit.
+    pub kept_open: bool,
 }
 
 /// Where the title field shows: one place at a time.

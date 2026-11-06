@@ -5,6 +5,7 @@ use std::cmp::Reverse;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use cockpit_client::RequestError;
 use cockpit_protocol::{
     AgentId, AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState,
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, CancelQueuedParams, ClaudeSessionId,
@@ -91,7 +92,13 @@ pub enum Step {
     Next,
 }
 
+/// A rename the window left open, which no field shows once another agent is selected, ends
+/// without saving.
 pub fn select_agent(state: &mut AppState, agent: AgentId) {
+    state
+        .ui
+        .title_edit
+        .take_if(|edit| edit.kept_open && edit.agent != agent);
     state.ui.selected = Some(agent);
     state.ui.chat_new_from.clear();
     state.ui.unread.remove(&agent);
@@ -649,8 +656,17 @@ fn start_rename_at(state: &mut AppState, drafts: &mut Drafts, agent: AgentId, pl
         title: drafts.title.clone(),
         place,
         select_all: !moving,
+        kept_open: false,
     });
     state.ui.popover = None;
+}
+
+/// The window lost the focus while a title field had it, which keeps the edit open, or the field
+/// took the focus back.
+pub fn set_title_kept_open(state: &mut AppState, kept_open: bool) {
+    if let Some(edit) = &mut state.ui.title_edit {
+        edit.kept_open = kept_open;
+    }
 }
 
 /// F2: renames the selected agent in its sidebar row, or moves an open title field to the other
@@ -1454,7 +1470,11 @@ pub fn retry_history(state: &mut AppState, agent: AgentId) {
     }
 }
 
+/// Opens or closes the agent switcher. The new agent dialog stays open, with what its fields hold.
 pub fn toggle_switcher(state: &mut AppState, drafts: &mut Drafts) {
+    if matches!(state.ui.dialog, Some(Dialog::NewAgent(_))) {
+        return;
+    }
     let open = state.ui.dialog == Some(Dialog::Switcher);
     state.ui.popover = None;
     state.ui.dialog = (!open).then_some(Dialog::Switcher);
@@ -1462,8 +1482,14 @@ pub fn toggle_switcher(state: &mut AppState, drafts: &mut Drafts) {
 }
 
 /// Moves `agent` just above `before`, or to the bottom of the list. The sidebar shows the new
-/// order at once, with the positions the daemon then sends in its events.
+/// order at once, with the positions the daemon then sends in its events. Without a connection
+/// nothing moves: a refused move puts the agents back only where no later move took them.
 pub fn move_agent(state: &mut AppState, agent: AgentId, before: Option<AgentId>) -> Vec<Outgoing> {
+    if !state.is_connected() {
+        let error = RequestError::NotConnected;
+        state.ui.report(format!("The agent was not moved: {error}"));
+        return Vec::new();
+    }
     let list: Vec<Placed> = state
         .agents_in_order()
         .iter()
@@ -2893,6 +2919,7 @@ mod tests {
                 title: "Agent 1".to_owned(),
                 place: TitlePlace::Header,
                 select_all: true,
+                kept_open: false,
             })
         );
         assert_eq!(typed_from, "Agent 1");
@@ -2932,6 +2959,7 @@ mod tests {
                 title: "Agent 1".to_owned(),
                 place: TitlePlace::Sidebar,
                 select_all: true,
+                kept_open: false,
             })
         );
         assert_eq!(in_header, Some(TitlePlace::Header));
@@ -2962,6 +2990,47 @@ mod tests {
         assert_eq!(
             state.ui.title_edit.map(|edit| edit.place),
             Some(TitlePlace::Header)
+        );
+    }
+
+    /// A notification selects another agent without a click in the window, which would have
+    /// saved the edit: a hidden edit would then take the first Esc meant to stop that agent.
+    #[test]
+    fn selecting_another_agent_cancels_a_rename_the_window_left_open() {
+        let mut state = state_with(vec![
+            summary(AGENT, AgentStatus::Idle),
+            summary(2, AgentStatus::Working),
+        ]);
+        state.ui.selected = Some(agent());
+        let mut drafts = Drafts::default();
+        let renamed = |state: &mut AppState, drafts: &mut Drafts, kept_open: bool| {
+            select_agent(state, agent());
+            start_rename(state, drafts, agent());
+            rename_text(state, drafts, "Half typ".to_owned());
+            set_title_kept_open(state, kept_open);
+            select_agent(state, AgentId::new(2));
+            state.ui.title_edit.as_ref().map(|edit| edit.agent)
+        };
+
+        let left_open = renamed(&mut state, &mut drafts, true);
+        let after_left_open = finish_rename(&mut state, &mut drafts);
+        let focused = renamed(&mut state, &mut drafts, false);
+        select_agent(&mut state, agent());
+        start_rename(&mut state, &mut drafts, agent());
+        set_title_kept_open(&mut state, true);
+        select_agent(&mut state, agent());
+
+        assert_eq!(left_open, None);
+        assert!(after_left_open.is_empty(), "nothing is renamed");
+        assert_eq!(
+            focused,
+            Some(agent()),
+            "the blur of a field that had the focus saves it"
+        );
+        assert_eq!(
+            state.ui.title_edit.map(|edit| edit.agent),
+            Some(agent()),
+            "the same agent keeps its edit"
         );
     }
 
@@ -3512,6 +3581,34 @@ mod tests {
         assert!(move_agent(&mut state, AgentId::new(1), Some(AgentId::new(3))).is_empty());
     }
 
+    /// Two refused moves of one agent would leave it where the first one put it: the second
+    /// puts back the position the first gave.
+    #[test]
+    fn a_move_while_disconnected_leaves_the_order_and_says_why() {
+        let mut state = ordered();
+        state.connection = ConnectionState::Connecting { attempt: 2 };
+
+        let dropped = drop_agent(&mut state, AgentId::new(1), Some(AgentId::new(3)));
+        let pressed = move_selected(&mut state, Direction::Up);
+
+        assert!(dropped.is_empty());
+        assert!(pressed.is_empty());
+        assert_eq!(sidebar(&state), [3, 2, 1]);
+        let notes: Vec<&str> = state
+            .ui
+            .errors
+            .iter()
+            .map(|note| note.text.as_str())
+            .collect();
+        assert_eq!(
+            notes,
+            [
+                "The agent was not moved: not connected to the daemon",
+                "The agent was not moved: not connected to the daemon"
+            ]
+        );
+    }
+
     #[test]
     fn a_refused_move_puts_the_agents_back_unless_an_event_moved_them() {
         let mut state = ordered();
@@ -3803,6 +3900,28 @@ mod tests {
             &state.ui.dialog,
             Some(Dialog::NewAgent(form)) if form.effort == Some(Effort::Max)
         ));
+    }
+
+    /// Ctrl+K would replace the dialog, and Ctrl+N then open it empty.
+    #[test]
+    fn ctrl_k_leaves_the_new_agent_dialog_open_with_what_it_holds() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        open_new_agent(&mut state, &mut drafts);
+        drafts.new_agent.folder = "/work/calc".to_owned();
+        drafts.new_agent.prompt = "Fix the flaky test".to_owned();
+
+        toggle_switcher(&mut state, &mut drafts);
+        open_new_agent(&mut state, &mut drafts);
+
+        assert!(matches!(state.ui.dialog, Some(Dialog::NewAgent(_))));
+        assert_eq!(
+            (
+                drafts.new_agent.folder.as_str(),
+                drafts.new_agent.prompt.as_str()
+            ),
+            ("/work/calc", "Fix the flaky test")
+        );
     }
 
     #[test]
