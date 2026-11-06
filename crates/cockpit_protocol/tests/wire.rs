@@ -73,6 +73,8 @@ fn summary() -> AgentSummary {
         turns: 7,
         cost: CostUsd::new(1.25),
         started_at: at(1_700_000_000_000),
+        last_activity_at: Some(at(1_700_000_250_000)),
+        turn_started_at: Some(at(1_700_000_200_000)),
         session: Some(session_id()),
         position: Position::new(2048),
     }
@@ -96,6 +98,8 @@ fn idle_summary() -> AgentSummary {
         turns: 0,
         cost: CostUsd::default(),
         started_at: at(1_700_000_000_000),
+        last_activity_at: Some(at(1_700_000_000_000)),
+        turn_started_at: None,
         session: None,
         position: Position::new(1024),
     }
@@ -1433,6 +1437,8 @@ fn an_agent_update_on_the_wire() {
                 "turns": 7,
                 "cost": 1.25,
                 "started_at": 1_700_000_000_000_u64,
+                "last_activity_at": 1_700_000_250_000_u64,
+                "turn_started_at": 1_700_000_200_000_u64,
                 "session": "0b7e1c2a-3d4f-4a5b-8c6d-7e8f9a0b1c2d",
                 "position": 2048,
             },
@@ -1459,6 +1465,27 @@ fn a_summary_saved_without_its_effort_source_still_loads() {
 
     assert_eq!(loaded.effort, Some(Effort::High));
     assert!(!loaded.effort_is_default);
+}
+
+#[test]
+fn a_summary_from_a_daemon_without_activity_times_reads_none() {
+    let mut logged = serde_json::to_value(summary()).unwrap();
+    let fields = logged.as_object_mut().unwrap();
+    fields.remove("last_activity_at");
+    fields.remove("turn_started_at");
+
+    let read: AgentSummary = serde_json::from_value(logged).unwrap();
+
+    assert_eq!(read.last_activity_at, None);
+    assert_eq!(read.turn_started_at, None);
+}
+
+#[test]
+fn an_idle_agent_sends_no_turn_start() {
+    let sent = serde_json::to_value(idle_summary()).unwrap();
+
+    assert_eq!(sent["last_activity_at"], json!(1_700_000_000_000_u64));
+    assert_eq!(sent["turn_started_at"], Value::Null);
 }
 
 #[test]

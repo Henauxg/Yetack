@@ -1,9 +1,9 @@
 //! The agent list: a status filter, compact two-line rows in the order the user sets, and the
 //! connection's state.
 
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
-use cockpit_protocol::{AgentId, AgentStatus, MAX_TITLE_CHARS};
+use cockpit_protocol::{AgentId, AgentStatus, AgentSummary, MAX_TITLE_CHARS, Timestamp};
 use dioxus::prelude::*;
 
 use crate::bridge::{self, ROW_TITLE_FIELD_ID};
@@ -25,6 +25,7 @@ struct AgentRow {
     selected: bool,
     /// "3/5".
     tasks: Option<String>,
+    time: Option<RowTime>,
     /// The title edit, while the agent is renamed in this row.
     edit: Option<TitleEdit>,
 }
@@ -43,9 +44,44 @@ impl AgentRow {
             tasks: summary
                 .task_progress
                 .map(|progress| format!("{}/{}", progress.done, progress.total)),
+            time: row_time(summary),
             edit,
         }
     }
+}
+
+/// What the time next to a row's title counts, from the daemon's clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowTime {
+    /// How long the running turn has run.
+    Turn(Timestamp),
+    /// How long the agent has waited for you.
+    Waiting(Timestamp),
+    /// How long ago the agent last did something.
+    LastActive(Timestamp),
+}
+
+/// `None` from a daemon that does not send the times.
+fn row_time(summary: &AgentSummary) -> Option<RowTime> {
+    match summary.status {
+        AgentStatus::Working => summary.turn_started_at.map(RowTime::Turn),
+        AgentStatus::NeedsYou => summary.last_activity_at.map(RowTime::Waiting),
+        AgentStatus::Idle | AgentStatus::Exited => {
+            summary.last_activity_at.map(RowTime::LastActive)
+        }
+    }
+}
+
+/// The short text next to the title, and its tooltip.
+fn row_time_text(time: RowTime, now: SystemTime) -> (String, String) {
+    let (moment, describe): (Timestamp, fn(&str) -> String) = match time {
+        RowTime::Turn(moment) => (moment, |text| format!("Turn running: {text}")),
+        RowTime::Waiting(moment) => (moment, |text| format!("Waiting for you: {text}")),
+        RowTime::LastActive(moment) => (moment, |text| format!("Last active {text} ago")),
+    };
+    let text = format::elapsed(format::since(moment, now));
+    let tooltip = describe(&text);
+    (text, tooltip)
 }
 
 /// What the agent does now, or what its status says when it reports nothing.
@@ -275,6 +311,12 @@ fn AgentRowButton(row: AgentRow, class: String) -> Element {
                     }),
                     "{row.title}"
                 }
+                if let Some(tasks) = &row.tasks {
+                    span { class: "row-tasks", title: "Tasks done", "{tasks}" }
+                }
+                if let Some(time) = row.time {
+                    RowTimeView { time }
+                }
                 if row.pending > 0 {
                     span { class: "pending-badge", "{row.pending}" }
                 }
@@ -285,11 +327,18 @@ fn AgentRowButton(row: AgentRow, class: String) -> Element {
             }
             span { class: "row-line row-second",
                 span { class: "row-activity", "{row.activity}" }
-                if let Some(tasks) = &row.tasks {
-                    span { class: "row-tasks", "{tasks}" }
-                }
             }
         }
+    }
+}
+
+/// The only part of a row that reads the clock, so its tick renders this text alone.
+#[component]
+fn RowTimeView(time: RowTime) -> Element {
+    let Clock(now) = use_context::<Clock>();
+    let (text, tooltip) = row_time_text(time, now());
+    rsx! {
+        span { class: "row-time", title: "{tooltip}", "{text}" }
     }
 }
 
@@ -337,5 +386,69 @@ fn ConnectionFooter() -> Element {
                 span { class: "connection-error", "{detail}" }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::state::summary;
+
+    fn at(seconds: u64) -> Timestamp {
+        Timestamp::from_unix_millis(seconds * 1000)
+    }
+
+    fn timed(status: AgentStatus) -> AgentSummary {
+        AgentSummary {
+            last_activity_at: Some(at(1_000)),
+            turn_started_at: Some(at(700)),
+            ..summary(1, status)
+        }
+    }
+
+    #[test]
+    fn a_working_row_counts_its_turn_and_the_others_their_last_activity() {
+        assert_eq!(
+            row_time(&timed(AgentStatus::Working)),
+            Some(RowTime::Turn(at(700)))
+        );
+        assert_eq!(
+            row_time(&timed(AgentStatus::NeedsYou)),
+            Some(RowTime::Waiting(at(1_000)))
+        );
+        assert_eq!(
+            row_time(&timed(AgentStatus::Idle)),
+            Some(RowTime::LastActive(at(1_000)))
+        );
+        assert_eq!(
+            row_time(&timed(AgentStatus::Exited)),
+            Some(RowTime::LastActive(at(1_000)))
+        );
+    }
+
+    #[test]
+    fn a_daemon_without_the_times_shows_none() {
+        assert_eq!(row_time(&summary(1, AgentStatus::Working)), None);
+        assert_eq!(row_time(&summary(1, AgentStatus::Idle)), None);
+    }
+
+    #[test]
+    fn the_text_is_short_and_its_tooltip_says_what_it_counts() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_252);
+
+        assert_eq!(
+            row_time_text(RowTime::Turn(at(1_000)), now),
+            ("4 min".to_owned(), "Turn running: 4 min".to_owned())
+        );
+        assert_eq!(
+            row_time_text(RowTime::Waiting(at(1_240)), now),
+            ("12 s".to_owned(), "Waiting for you: 12 s".to_owned())
+        );
+        assert_eq!(
+            row_time_text(RowTime::LastActive(at(1_300)), now),
+            ("0 s".to_owned(), "Last active 0 s ago".to_owned())
+        );
     }
 }

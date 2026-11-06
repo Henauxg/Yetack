@@ -90,6 +90,13 @@ pub struct AgentSummary {
     /// The total cost so far at API prices, which a subscription does not pay.
     pub cost: CostUsd,
     pub started_at: Timestamp,
+    /// When the agent last did something: it started, a prompt went to it, it began to wait for
+    /// you, a turn ended, or its process ended. `None` from a daemon that predates it.
+    #[serde(default)]
+    pub last_activity_at: Option<Timestamp>,
+    /// When the running turn started. `None` between turns, and from a daemon that predates it.
+    #[serde(default)]
+    pub turn_started_at: Option<Timestamp>,
     /// `None` until Claude Code reports its session.
     pub session: Option<ClaudeSessionId>,
     /// Where the agent shows in the list. An event logged before positions existed reads 0.

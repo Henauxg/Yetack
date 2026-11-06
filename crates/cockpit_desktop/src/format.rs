@@ -232,6 +232,28 @@ pub fn duration(duration: Duration) -> String {
     }
 }
 
+/// The largest whole unit only, for a narrow place: "12 s", "4 min", "2 h", "3 d".
+pub fn elapsed(duration: Duration) -> String {
+    const MINUTE: u64 = 60;
+    const HOUR: u64 = 60 * MINUTE;
+    const DAY: u64 = 24 * HOUR;
+    match duration.as_secs() {
+        seconds @ 0..MINUTE => format!("{seconds} s"),
+        seconds @ MINUTE..HOUR => format!("{} min", seconds / MINUTE),
+        seconds @ HOUR..DAY => format!("{} h", seconds / HOUR),
+        seconds => format!("{} d", seconds / DAY),
+    }
+}
+
+/// The time from `moment` to `now`, or zero when `moment` is later, as with a daemon whose clock
+/// runs ahead of this machine's.
+pub fn since(moment: Timestamp, now: SystemTime) -> Duration {
+    moment
+        .to_system_time()
+        .and_then(|time| now.duration_since(time).ok())
+        .unwrap_or_default()
+}
+
 /// "950", "12k", "88.3k", "1.2M".
 pub fn tokens(count: u64) -> String {
     const THOUSAND: u64 = 1_000;
@@ -481,6 +503,35 @@ mod tests {
             "3 h 12 min"
         );
         assert_eq!(duration(Duration::from_secs(7200)), "2 h");
+    }
+
+    #[test]
+    fn elapsed_times_read_in_one_whole_unit() {
+        assert_eq!(elapsed(Duration::ZERO), "0 s");
+        assert_eq!(elapsed(Duration::from_millis(12_900)), "12 s");
+        assert_eq!(elapsed(Duration::from_secs(59)), "59 s");
+        assert_eq!(elapsed(Duration::from_secs(60)), "1 min");
+        assert_eq!(elapsed(Duration::from_secs(4 * 60 + 59)), "4 min");
+        assert_eq!(elapsed(Duration::from_secs(2 * 3600 + 59 * 60)), "2 h");
+        assert_eq!(elapsed(Duration::from_secs(24 * 3600)), "1 d");
+        assert_eq!(
+            elapsed(Duration::from_secs(3 * 24 * 3600 + 5 * 3600)),
+            "3 d"
+        );
+    }
+
+    #[test]
+    fn the_time_since_a_later_moment_is_zero() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+
+        assert_eq!(
+            since(Timestamp::from_unix_millis(988_000), now),
+            Duration::from_secs(12)
+        );
+        assert_eq!(
+            since(Timestamp::from_unix_millis(1_005_000), now),
+            Duration::ZERO
+        );
     }
 
     #[test]

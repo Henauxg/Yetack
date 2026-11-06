@@ -249,7 +249,6 @@ Options set aside:
 Data the mockups show but the protocol does not carry yet, and choices approved during the reviews:
 
 - Queued prompts leave the transcript: they live in a queue in `AgentDetails`, which the app draws pinned under the transcript with Cancel. When the daemon sends one to Claude, it leaves the queue and a normal user message is appended at the end of the transcript, so each message sits where Claude read it.
-- `AgentSummary` gains the time of the last activity (the "12 s" on sidebar rows).
 - Tool calls gain start and end times (the "exit 0, 18 s" on tool lines).
 - An `Edit` gains the line where it applies, for line numbers in inline diffs.
 - Recent folders carry their git branch; past sessions say where they started (a terminal, an editor); pasted images keep their file name.
