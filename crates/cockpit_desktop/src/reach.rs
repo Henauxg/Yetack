@@ -8,7 +8,7 @@ use cockpit_daemon::{ServeError, StoreError};
 
 use crate::config::{ConfigError, DaemonConfig, Environment, save_daemon};
 use crate::daemon_label::DaemonLabel;
-use crate::in_app::InAppHost;
+use crate::in_app_host::InAppHost;
 use crate::prefs::PREFS_FOLDER;
 use crate::state::error_chain;
 use crate::state::no_daemon::{self, Chosen};

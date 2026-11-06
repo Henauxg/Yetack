@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 
 use crate::config::DaemonConfig;
 use crate::daemon_label::DaemonLabel;
-use crate::in_app::InAppHost;
+use crate::in_app_host::InAppHost;
 use crate::notifications::Notifier;
 use crate::reach::{self, Places, Unreached};
 use crate::state::machine_load::{LOAD_POLL, LoadView};

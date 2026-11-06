@@ -7,7 +7,7 @@ mod daemon_label;
 mod demo;
 mod fonts;
 mod format;
-mod in_app;
+mod in_app_host;
 mod notifications;
 mod prefs;
 mod reach;
@@ -25,7 +25,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::config::{Config, Environment};
 use crate::connection::Startup;
-use crate::in_app::InAppHost;
+use crate::in_app_host::InAppHost;
 use crate::prefs::Prefs;
 use crate::reach::Places;
 use crate::state::AppState;
@@ -64,7 +64,7 @@ fn main() -> anyhow::Result<()> {
         state.prefs = Prefs::load(file);
     }
     let in_app = InAppHost::default();
-    in_app::stop_on_signals(in_app.clone());
+    in_app_host::stop_on_signals(in_app.clone());
     let startup = Startup {
         state,
         daemon: config.daemon,
