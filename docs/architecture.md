@@ -262,7 +262,8 @@ On start the daemon reads `agents.json`, finds the last `Seq` in the logs, and r
 - The `/proc` files stay open from one sample to the next and are read again at offset 0, which costs about a tenth of an open.
   A file opened under `/proc/<pid>` stays bound to that process, so a pid that another process takes is never read in its place.
   One reading walks at most 4,096 processes, and the daemon keeps at most 4,096 files open, and no more than a quarter of its open-file limit.
-- The cost, measured on a 64-core server running 3,700 processes, in CPU time per sample: 80 µs for the server's figures, 63 µs of them for `/proc/stat`; 300 µs with two real agents of 21 processes and 147 threads in all; 1.5 ms for a made-up tree of 321 processes.
+- The cost, measured on a 64-core server running 3,700 processes, in CPU time per sample: 80 µs for the server's figures, 63 µs of them for `/proc/stat`; 300 µs for one busy agent of 21 processes and 146 threads; 1.5 ms for 11 agents of 117 processes and 793 threads in all, or for a made-up tree of 321 processes.
+  Most of an agent's cost is one read per thread: `claude` alone runs about 80.
   The full scan of the fallback costs 45 ms there.
   The test `sampling_cost` measures it: `cargo test --release -p cockpit_daemon sampling_cost -- --ignored --nocapture`.
 - On a machine without `/proc`, `machine.load` answers `unsupported`.
