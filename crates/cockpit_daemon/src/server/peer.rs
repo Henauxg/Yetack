@@ -140,7 +140,8 @@ fn read_proc_entry(pid: ProcessId) -> io::Result<ProcEntry> {
 
     let folder = Path::new(PROC_ROOT).join(pid.get().to_string());
     let owner = UserId::new(std::fs::metadata(&folder)?.uid());
-    let stat = std::fs::read_to_string(folder.join(STAT_FILE))?;
+    // A name the kernel cut at 15 bytes can end inside a character.
+    let stat = String::from_utf8_lossy(&std::fs::read(folder.join(STAT_FILE))?).into_owned();
     Ok(ProcEntry { owner, stat })
 }
 
@@ -302,6 +303,42 @@ mod tests {
             from_itself,
             Err(PeerError::DescendsFromDaemon { .. })
         ));
+        assert!(from_another.is_ok(), "{from_another:?}");
+    }
+
+    #[test]
+    fn a_parent_whose_name_is_not_utf8_is_walked_through() {
+        use std::io::BufRead;
+        use std::os::unix::ffi::OsStrExt;
+        use std::process::{Command, Stdio};
+
+        let folder = tempfile::tempdir().unwrap();
+        let shell = folder.path().join(std::ffi::OsStr::from_bytes(b"sh\xff"));
+        std::os::unix::fs::symlink("/bin/sh", &shell).unwrap();
+        let mut child = Command::new(&shell)
+            .arg("-c")
+            .arg("sleep 30 & echo $!; wait")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        let sleep: u32 = lines.next().unwrap().unwrap().parse().unwrap();
+        let me = DaemonIdentity::current();
+        let another = DaemonIdentity {
+            pid: ProcessId::new(u32::MAX),
+            ..me
+        };
+
+        let from_me = check_ancestry(ProcessId::new(sleep), me, read_proc_entry);
+        let from_another = check_ancestry(ProcessId::new(sleep), another, read_proc_entry);
+
+        let _ = Command::new("kill").arg(sleep.to_string()).status();
+        let _ = child.wait();
+        assert!(
+            matches!(from_me, Err(PeerError::DescendsFromDaemon { .. })),
+            "{from_me:?}"
+        );
         assert!(from_another.is_ok(), "{from_another:?}");
     }
 }
