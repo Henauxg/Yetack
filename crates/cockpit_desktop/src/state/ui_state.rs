@@ -380,10 +380,11 @@ impl UiState {
         self.mcp.filter = ToolFilter::All;
     }
 
-    /// Closes every popover and the dialog, or only the dialog's menu when one is open, and
-    /// cancels a title edit. Returns whether anything was open.
+    /// Closes every popover and the dialog, or only the start tab's menu or folder list when one
+    /// is open, and cancels a title edit. Returns whether anything was open.
     pub fn close_overlays(&mut self) -> bool {
         if let Some(Dialog::NewAgent(form)) = &mut self.dialog
+            && form.tab == NewAgentTab::Start
             && (form.menu.is_some() || form.folders.is_some())
         {
             if form.menu.take().is_none() {
@@ -449,6 +450,21 @@ mod tests {
 
         assert!(ui.close_overlays());
         assert!(matches!(&ui.dialog, Some(Dialog::NewAgent(form)) if form.menu.is_none()));
+
+        assert!(ui.close_overlays());
+        assert_eq!(ui.dialog, None);
+    }
+
+    #[test]
+    fn escape_on_the_resume_tab_closes_the_dialog() {
+        let mut ui = UiState {
+            dialog: Some(Dialog::NewAgent(NewAgentForm {
+                tab: NewAgentTab::Resume,
+                folders: Some(FolderList::new(PathBuf::from("/home/dev"))),
+                ..NewAgentForm::default()
+            })),
+            ..UiState::default()
+        };
 
         assert!(ui.close_overlays());
         assert_eq!(ui.dialog, None);
