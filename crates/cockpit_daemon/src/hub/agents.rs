@@ -7,11 +7,12 @@ use std::path::{Path, PathBuf};
 
 use claude_protocol::{ControlRequest, InputLine, OutputLine};
 use cockpit_protocol::{
-    AgentId, AgentStatus, AgentSummary, AnswerParams, CancelQueuedParams, ClaudeSessionId, CostUsd,
-    ErrorBody, ErrorCode, Event, MAX_TITLE_CHARS, Position, Prompt, RenameParams, ResponseBody,
-    ResponseResult, SetEffortParams, StartParams, TranscriptItem,
+    AccountId, AgentId, AgentStatus, AgentSummary, AnswerParams, CancelQueuedParams,
+    ClaudeSessionId, CostUsd, ErrorBody, ErrorCode, Event, MAX_TITLE_CHARS, Position, Prompt,
+    RenameParams, ResponseBody, ResponseResult, SetEffortParams, StartParams, TranscriptItem,
 };
 
+use crate::accounts::ClaudeEnv;
 use crate::hub::input::{ControlPurpose, HubInput, Reply};
 use crate::hub::state::{Agent, Hub, QueuedPrompt};
 use crate::hub::{errors, state};
@@ -22,7 +23,7 @@ use crate::sessions::FoundSession;
 use crate::store::{AgentRecord, LogName, RawLog};
 use crate::transcript::prompts::TypedSetting;
 use crate::transcript::{
-    AgentView, AnswerError, FollowUp, ProcessSession, PromptDelivery, plan_usage, prompts, words,
+    AgentView, AnswerError, FollowUp, ProcessSession, PromptDelivery, prompts, words,
 };
 
 /// A title made from a prompt keeps this many characters.
@@ -52,6 +53,7 @@ impl Hub {
             check_model(model)?;
         }
         let folder = agent_folder(&params.folder)?;
+        let account = self.account(params.account)?;
         let title = title.unwrap_or_else(|| default_title(params.prompt.as_ref(), &folder));
         let record = AgentRecord {
             id: self.next_agent,
@@ -66,6 +68,7 @@ impl Hub {
             past: None,
             position: Position::default(),
             process: None,
+            account: account.id,
         };
         let agent = self.add_agent(record, params.prompt, None)?;
         Ok(ResponseBody::AgentStarted { agent })
@@ -133,6 +136,14 @@ impl Hub {
         interrupted_turn: InterruptedTurn,
     ) -> Result<(), String> {
         let raw_path = self.raw_log_path(id);
+        let account_id = self
+            .agents
+            .get(&id)
+            .map(|agent| agent.record.account)
+            .ok_or_else(|| format!("no agent {}", id.get()))?;
+        let account = self
+            .account(account_id)
+            .map_err(|_| format!("the agent's account {} no longer exists", account_id.get()))?;
         let Some(agent) = self.agents.get_mut(&id) else {
             return Err(format!("no agent {}", id.get()));
         };
@@ -145,6 +156,7 @@ impl Hub {
             effort: record.effort.and_then(words::effort_word),
             resume: record.session.clone(),
             interrupted_turn,
+            env: ClaudeEnv::new(&account),
         };
         let raw_log = RawLog::open(&raw_path)
             .inspect_err(|error| {
@@ -170,7 +182,7 @@ impl Hub {
         match command.resume {
             Some(session) => {
                 agent.view.process_started(ProcessSession::Resumed);
-                self.read_restored_cost(id, generation, session);
+                self.read_restored_cost(id, generation, account.folder, session);
             }
             None => agent.view.process_started(ProcessSession::New),
         }
@@ -180,8 +192,14 @@ impl Hub {
 
     /// Reads the cost Claude Code restores from the session file, in a task, for the first turn's
     /// cost.
-    fn read_restored_cost(&self, id: AgentId, generation: u32, session: ClaudeSessionId) {
-        let folder = self.config.claude_config_dir.clone();
+    /// `folder` is the agent's account's, which holds the session file.
+    fn read_restored_cost(
+        &self,
+        id: AgentId,
+        generation: u32,
+        folder: PathBuf,
+        session: ClaudeSessionId,
+    ) {
         let inputs = self.inputs.clone();
         tokio::spawn(async move {
             let read =
@@ -255,6 +273,7 @@ impl Hub {
         let refresh_effort = model_before.is_some()
             && agent.view.summary().model != model_before
             && agent.record.effort.is_none();
+        let account = agent.record.account;
         let session = agent.view.summary().session.clone();
         let session_changed = session.is_some() && session != agent.record.session;
         if session_changed {
@@ -275,12 +294,7 @@ impl Hub {
                     );
                     self.send_next_queued(id);
                 }
-                FollowUp::RateLimit(info) => {
-                    if plan_usage::apply(&mut self.plan_usage, &info) {
-                        let usage = self.plan_usage.clone();
-                        self.emit(LogName::Daemon, Event::PlanUsageChanged(usage));
-                    }
-                }
+                FollowUp::RateLimit(info) => self.plan_usage_reported(account, &info),
             }
         }
         if session_changed || title_changed {
@@ -557,7 +571,8 @@ impl Hub {
 
     fn agent_for_session(&mut self, found: FoundSession) -> Result<ResponseBody, ErrorBody> {
         let FoundSession { session, past } = found;
-        if let Some(agent) = self.agent_with_session(&session.id) {
+        let account = self.account(session.account)?;
+        if let Some(agent) = self.agent_with_session(&session.id, account.id) {
             if self
                 .agents
                 .get(&agent)
@@ -580,15 +595,23 @@ impl Hub {
             past: Some(past.file),
             position: Position::default(),
             process: None,
+            account: account.id,
         };
         let agent = self.add_agent(record, None, Some(past.items))?;
         Ok(ResponseBody::AgentStarted { agent })
     }
 
-    pub(super) fn agent_with_session(&self, session: &ClaudeSessionId) -> Option<AgentId> {
+    /// The agent that has the session of the account's folder.
+    pub(super) fn agent_with_session(
+        &self,
+        session: &ClaudeSessionId,
+        account: AccountId,
+    ) -> Option<AgentId> {
         self.agents
             .values()
-            .find(|agent| agent.record.session.as_ref() == Some(session))
+            .find(|agent| {
+                agent.record.session.as_ref() == Some(session) && agent.record.account == account
+            })
             .map(|agent| agent.record.id)
     }
 }
@@ -659,6 +682,7 @@ pub(super) fn initial_summary(record: &AgentRecord) -> AgentSummary {
         turn_started_at: None,
         session: record.session.clone(),
         position: record.position,
+        account: record.account,
     }
 }
 
@@ -798,6 +822,7 @@ mod tests {
                 effort: None,
                 mode: None,
                 prompt: None,
+                account: AccountId::DEFAULT,
             };
             hub.start_agent(params).unwrap_err().code
         };
@@ -836,6 +861,7 @@ mod tests {
                 folder: PathBuf::from(folder),
                 last_activity: Timestamp::from_unix_millis(0),
                 turns: 1,
+                account: AccountId::DEFAULT,
             },
             past: SessionPast {
                 items: Vec::new(),
@@ -878,6 +904,7 @@ mod tests {
             effort: None,
             mode: None,
             prompt: None,
+            account: AccountId::DEFAULT,
         };
         let Ok(ResponseBody::AgentStarted { agent }) = hub.start_agent(start) else {
             panic!("the agent did not start");
@@ -917,6 +944,7 @@ mod tests {
             effort: None,
             mode: None,
             prompt: None,
+            account: AccountId::DEFAULT,
         };
         let Ok(ResponseBody::AgentStarted { agent }) = hub.start_agent(start) else {
             panic!("the agent did not start");

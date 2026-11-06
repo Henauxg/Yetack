@@ -13,6 +13,7 @@
 //! [`ClientMessage`] and [`ServerMessage`] are the two directions. This crate does not know
 //! Claude Code's wire format: the daemon converts it into these types.
 
+mod account;
 mod agent;
 mod details;
 mod event;
@@ -28,6 +29,7 @@ mod time;
 mod transcript;
 mod usage;
 
+pub use account::{Account, AccountState, MAX_ACCOUNT_NAME_CHARS, SignIn};
 pub use agent::{AgentStatus, AgentSummary, Effort, PermissionMode, TaskProgress};
 pub use details::{
     AgentDetails, BackgroundTask, BackgroundTaskKind, BackgroundTaskStatus, ChangedFile,
@@ -38,7 +40,8 @@ pub use details::{
 pub use event::{Event, EventRecord};
 pub use frame::{Frame, FrameError, FrameReader, FrameWriter, MAX_LINE_BYTES};
 pub use ids::{
-    AgentId, BackgroundTaskId, ClaudeSessionId, ItemId, PendingId, ProcessId, RequestId, Seq,
+    AccountId, AgentId, BackgroundTaskId, ClaudeSessionId, ItemId, PendingId, ProcessId, RequestId,
+    Seq,
 };
 pub use machine_load::{
     AgentHistory, AgentLoad, CommandLoad, Cores, LoadAverage, LoadHistory, MachineLoad,
@@ -46,11 +49,11 @@ pub use machine_load::{
 };
 pub use position::{Placed, Position, list_order, move_agent, place_on_top};
 pub use request::{
-    AgentParams, Answer, AnswerParams, CancelQueuedParams, FindFilesParams, FoldersListParams,
-    HistoryParams, ListDirParams, MAX_TITLE_CHARS, McpRemoveParams, McpServerParams,
-    McpToggleParams, Method, MoveParams, Prompt, PromptParams, ReadFileParams, RenameParams,
-    Request, SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, StartParams,
-    StopProcessParams, StopTaskParams,
+    AccountAddParams, AccountChangeParams, AccountParams, AgentParams, Answer, AnswerParams,
+    CancelQueuedParams, FindFilesParams, FoldersListParams, HistoryParams, ListDirParams,
+    MAX_TITLE_CHARS, McpRemoveParams, McpServerParams, McpToggleParams, Method, MoveParams, Prompt,
+    PromptParams, ReadFileParams, RenameParams, Request, SessionResumeParams, SetEffortParams,
+    SetModeParams, SetModelParams, StartParams, StopProcessParams, StopTaskParams,
 };
 pub use response::{
     DirEntry, DirListing, EntryKind, ErrorBody, ErrorCode, HistoryPage, PastSession, ResponseBody,
@@ -64,4 +67,6 @@ pub use transcript::{
     ImageMediaType, ItemBody, Plan, PlanAnswer, PlanDecision, Question, QuestionAnswer,
     QuestionOption, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, UserMessage,
 };
-pub use usage::{CostUsd, PlanUsage, RateLimitStatus, TokenUsage, UsageWindow, WindowUsage};
+pub use usage::{
+    AccountPlanUsage, CostUsd, PlanUsage, RateLimitStatus, TokenUsage, UsageWindow, WindowUsage,
+};

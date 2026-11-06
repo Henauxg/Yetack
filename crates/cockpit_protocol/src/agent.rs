@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use strum::VariantArray;
 
-use crate::ids::{AgentId, ClaudeSessionId};
+use crate::ids::{AccountId, AgentId, ClaudeSessionId};
 use crate::position::Position;
 use crate::time::Timestamp;
 use crate::usage::CostUsd;
@@ -102,4 +102,8 @@ pub struct AgentSummary {
     /// Where the agent shows in the list. An event logged before positions existed reads 0.
     #[serde(default)]
     pub position: Position,
+    /// The account the agent's `claude` runs with. The default account when missing, as for an
+    /// agent from a daemon that predates accounts.
+    #[serde(default)]
+    pub account: AccountId,
 }

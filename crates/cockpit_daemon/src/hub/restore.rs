@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use cockpit_protocol::{
-    AgentDetails, AgentId, AgentSummary, Event, ItemId, PlanUsage, Seq, TranscriptItem,
+    AccountId, AgentDetails, AgentId, AgentSummary, Event, ItemId, PlanUsage, Seq, TranscriptItem,
 };
 
 use crate::hub::agents::initial_summary;
@@ -20,7 +20,8 @@ pub(crate) struct Restored {
     pub(crate) next_agent: AgentId,
     pub(crate) replay_floor: Option<Seq>,
     pub(crate) settings: DaemonSettings,
-    pub(crate) plan_usage: PlanUsage,
+    /// Each account's plan usage, once one of its agents reported it.
+    pub(crate) plan_usage: BTreeMap<AccountId, PlanUsage>,
     /// The last sequence number in the logs or the replay floor, which numbering continues from.
     pub(crate) last_seq: Option<Seq>,
 }
@@ -33,22 +34,27 @@ struct LoggedAgent {
     items: BTreeMap<ItemId, TranscriptItem>,
 }
 
-/// `claude_folder` holds the session files that agents made from past sessions read again.
-pub(crate) fn restore(state: &StateDir, claude_folder: &Path) -> Result<Restored, StoreError> {
+/// `default_folder` is the default account's Claude Code folder. An account's folder holds the
+/// session files that agents made from past sessions read again.
+pub(crate) fn restore(state: &StateDir, default_folder: &Path) -> Result<Restored, StoreError> {
     let file = AgentsFile::load(&state.agents_file())?;
     let settings = DaemonSettings::load(&state.settings_file())?;
     let mut last_seq: Option<Seq> = None;
-    let mut plan_usage = PlanUsage::default();
+    let mut plan_usage: BTreeMap<AccountId, PlanUsage> = BTreeMap::new();
     let mut logged: HashMap<AgentId, LoggedAgent> = HashMap::new();
     for (log, path) in EventLogs::new(state.events()).list()? {
         for_each_event(&path, |record| {
             last_seq = last_seq.max(Some(record.seq));
             match log {
-                LogName::Daemon => {
-                    if let Event::PlanUsageChanged(usage) = record.event {
-                        plan_usage = usage;
+                LogName::Daemon => match record.event {
+                    Event::PlanUsageChanged(usage) => {
+                        plan_usage.insert(AccountId::DEFAULT, usage);
                     }
-                }
+                    Event::AccountPlanUsageChanged(changed) => {
+                        plan_usage.insert(changed.account, changed.usage);
+                    }
+                    _ => {}
+                },
                 LogName::Agent(agent) => logged.entry(agent).or_default().apply(record.event),
             }
         })?;
@@ -64,10 +70,12 @@ pub(crate) fn restore(state: &StateDir, claude_folder: &Path) -> Result<Restored
             summary.title = record.title.clone();
             summary.folder = record.folder.clone();
             summary.position = record.position;
+            summary.account = record.account;
             let items: Vec<TranscriptItem> = logged.items.into_values().collect();
             let mut view = AgentView::restore(summary, logged.details, items, ttl);
-            if let Some(file) = &record.past {
-                view.show_past(sessions::past_items(claude_folder, &record.folder, file));
+            let account = settings.accounts.get(record.account, default_folder);
+            if let (Some(file), Some(account)) = (&record.past, account) {
+                view.show_past(sessions::past_items(&account.folder, &record.folder, file));
             }
             (record, view)
         })
@@ -93,8 +101,11 @@ impl LoggedAgent {
                 self.items.insert(item.id, item);
             }
             Event::DetailsChanged { details, .. } => self.details = details,
-            Event::AgentRemoved { .. } | Event::PlanUsageChanged(_) | Event::SettingsChanged(_) => {
-            }
+            Event::AgentRemoved { .. }
+            | Event::PlanUsageChanged(_)
+            | Event::SettingsChanged(_)
+            | Event::AccountPlanUsageChanged(_)
+            | Event::AccountsChanged { .. } => {}
         }
     }
 }
@@ -126,6 +137,7 @@ mod tests {
             past: None,
             position: Position::default(),
             process: None,
+            account: AccountId::DEFAULT,
         }
     }
 
@@ -295,7 +307,10 @@ mod tests {
         let restored = restore(&state, &temp.path().join("claude")).unwrap();
 
         assert_eq!(restored.last_seq, Some(Seq::new(6)));
-        assert_eq!(restored.plan_usage, usage);
+        assert_eq!(
+            restored.plan_usage,
+            BTreeMap::from([(AccountId::DEFAULT, usage)])
+        );
         let (_, first) = &restored.agents[0];
         assert_eq!(first.summary().turns, 2);
         assert_eq!(first.details(), &details);
@@ -383,6 +398,45 @@ mod tests {
             panic!("expected the past prompt, got {:?}", view.items());
         };
         assert_eq!(message.text, "Fix the cart");
+    }
+
+    /// Each account keeps the last usage logged for it.
+    #[test]
+    fn plan_usage_comes_back_per_account() {
+        use cockpit_protocol::{AccountPlanUsage, RateLimitStatus, UsageWindow, WindowUsage};
+
+        let temp = tempfile::tempdir().unwrap();
+        let state = StateDir::create(temp.path()).unwrap();
+        let usage = |utilization| PlanUsage {
+            windows: BTreeMap::from([(
+                UsageWindow::FiveHour,
+                WindowUsage {
+                    utilization: Some(utilization),
+                    resets_at: None,
+                    status: RateLimitStatus::Allowed,
+                },
+            )]),
+        };
+        let work = AccountId::new(2);
+        let mut logs = EventLogs::new(state.events());
+        let events = [
+            Event::PlanUsageChanged(usage(0.1)),
+            Event::AccountPlanUsageChanged(AccountPlanUsage {
+                account: work,
+                usage: usage(0.6),
+            }),
+            Event::PlanUsageChanged(usage(0.2)),
+        ];
+        for (seq, event) in (1..).zip(events) {
+            log(&mut logs, LogName::Daemon, seq, event);
+        }
+
+        let restored = restore(&state, &temp.path().join("claude")).unwrap();
+
+        assert_eq!(
+            restored.plan_usage,
+            BTreeMap::from([(AccountId::DEFAULT, usage(0.2)), (work, usage(0.6))])
+        );
     }
 
     #[test]

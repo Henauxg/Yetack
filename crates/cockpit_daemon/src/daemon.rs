@@ -109,7 +109,7 @@ mod tests {
     use std::os::unix::process::{CommandExt, ExitStatusExt};
     use std::process::{Command, Stdio};
 
-    use cockpit_protocol::{AgentId, Position, ProcessId, Timestamp};
+    use cockpit_protocol::{AccountId, AgentId, Position, ProcessId, Timestamp};
     use rustix::process::Signal;
 
     use super::*;
@@ -150,6 +150,7 @@ mod tests {
                 past: None,
                 position: Position::default(),
                 process,
+                account: AccountId::DEFAULT,
             }],
         }
         .save(&state.agents_file())

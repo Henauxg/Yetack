@@ -25,6 +25,40 @@ impl AgentId {
     }
 }
 
+/// A Claude account the daemon runs agents with, numbered by the daemon at `accounts.add`.
+/// [`AccountId::DEFAULT`] is the login `claude` has without `CLAUDE_CONFIG_DIR`, which every
+/// daemon has, so a message without an account reads as that one.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Serialize, Deserialize,
+)]
+#[serde(transparent)]
+pub struct AccountId(u32);
+
+impl AccountId {
+    pub const DEFAULT: Self = Self(0);
+
+    #[must_use]
+    pub fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    #[must_use]
+    pub fn get(self) -> u32 {
+        self.0
+    }
+
+    #[must_use]
+    pub fn is_default(self) -> bool {
+        self == Self::DEFAULT
+    }
+
+    /// The id after this one, or `None` past `u32::MAX`.
+    #[must_use]
+    pub fn next(self) -> Option<Self> {
+        self.0.checked_add(1).map(Self)
+    }
+}
+
 /// The daemon's global sequence number: one per event, increasing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]

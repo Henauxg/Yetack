@@ -101,6 +101,8 @@ pub fn apply_catchup(state: &mut AppState, drafts: &mut Drafts, catchup: Catchup
         plan_usage,
         settings,
         last_seq: _,
+        accounts,
+        other_plan_usage,
     } = snapshot;
     state.agents = agents
         .into_iter()
@@ -108,6 +110,11 @@ pub fn apply_catchup(state: &mut AppState, drafts: &mut Drafts, catchup: Catchup
         .collect();
     state.plan_usage = plan_usage;
     state.settings = settings;
+    state.accounts = accounts;
+    state.other_plan_usage = other_plan_usage
+        .into_iter()
+        .map(|account| (account.account, account.usage))
+        .collect();
     // The snapshot holds the agents the daemon still has, closed or not.
     state.ui.closing.clear();
     let agents = &state.agents;
@@ -199,6 +206,16 @@ pub fn apply(state: &mut AppState, drafts: &mut Drafts, record: EventRecord) -> 
         }
         Event::SettingsChanged(settings) => {
             state.settings = settings;
+            None
+        }
+        Event::AccountPlanUsageChanged(changed) => {
+            state
+                .other_plan_usage
+                .insert(changed.account, changed.usage);
+            None
+        }
+        Event::AccountsChanged { accounts } => {
+            state.accounts = accounts;
             None
         }
     }
@@ -584,6 +601,8 @@ mod tests {
                 plan_usage: PlanUsage::default(),
                 settings: Settings::default(),
                 last_seq: Some(Seq::new(40)),
+                accounts: Vec::new(),
+                other_plan_usage: Vec::new(),
             }),
         );
 
@@ -627,6 +646,8 @@ mod tests {
                 plan_usage: PlanUsage::default(),
                 settings: Settings::default(),
                 last_seq: Some(Seq::new(40)),
+                accounts: Vec::new(),
+                other_plan_usage: Vec::new(),
             }),
         );
         apply(
@@ -694,6 +715,8 @@ mod tests {
                 plan_usage: PlanUsage::default(),
                 settings: Settings::default(),
                 last_seq: Some(Seq::new(40)),
+                accounts: Vec::new(),
+                other_plan_usage: Vec::new(),
             }),
         );
         apply(
@@ -758,6 +781,8 @@ mod tests {
                 plan_usage: PlanUsage::default(),
                 settings: Settings::default(),
                 last_seq: Some(Seq::new(40)),
+                accounts: Vec::new(),
+                other_plan_usage: Vec::new(),
             }),
         );
         apply(
@@ -804,6 +829,8 @@ mod tests {
                 plan_usage: PlanUsage::default(),
                 settings: Settings::default(),
                 last_seq: Some(Seq::new(40)),
+                accounts: Vec::new(),
+                other_plan_usage: Vec::new(),
             }),
         );
 
@@ -856,6 +883,8 @@ mod tests {
                 plan_usage: PlanUsage::default(),
                 settings: settings.clone(),
                 last_seq: Some(Seq::new(40)),
+                accounts: Vec::new(),
+                other_plan_usage: Vec::new(),
             }),
         );
 

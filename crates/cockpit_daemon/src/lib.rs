@@ -4,6 +4,7 @@
 //! `agents-cockpit serve`. [`InAppDaemon`] runs it inside the desktop app, for clients in the
 //! same process.
 
+mod accounts;
 mod browse;
 mod daemon;
 mod daemon_config;

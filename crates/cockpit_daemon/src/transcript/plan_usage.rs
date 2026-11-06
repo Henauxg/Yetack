@@ -1,4 +1,4 @@
-//! The account's plan usage, from `rate_limit_event` lines of any agent.
+//! An account's plan usage, from the `rate_limit_event` lines of its agents.
 
 use std::time::SystemTime;
 

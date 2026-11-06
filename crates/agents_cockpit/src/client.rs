@@ -9,9 +9,9 @@ use anyhow::bail;
 use cockpit_client::BRIDGE_SUBCOMMAND;
 use cockpit_client::{Backoff, Connection, Session, SessionUpdate, Transport};
 use cockpit_protocol::{
-    AgentId, AgentParams, Answer, AnswerParams, ApprovalAnswer, ApprovalDecision, Catchup, Effort,
-    Event, MoveParams, PermissionMode, PlanAnswer, PlanDecision, Prompt, PromptParams,
-    QuestionAnswer, RenameParams, Request, ResponseBody, StartParams,
+    AccountId, AgentId, AgentParams, Answer, AnswerParams, ApprovalAnswer, ApprovalDecision,
+    Catchup, Effort, Event, MoveParams, PermissionMode, PlanAnswer, PlanDecision, Prompt,
+    PromptParams, QuestionAnswer, RenameParams, Request, ResponseBody, StartParams,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -60,6 +60,7 @@ pub(crate) async fn run(target: &Target, command: Command) -> anyhow::Result<()>
             prompt: prompt
                 .map(|text| read_text(text).map(text_prompt))
                 .transpose()?,
+            account: AccountId::DEFAULT,
         }),
         Command::Prompt { agent, text } => Request::AgentPrompt(PromptParams {
             agent,
@@ -152,7 +153,10 @@ fn event_agent(event: &Event) -> Option<AgentId> {
         | Event::TranscriptAppended { agent, .. }
         | Event::TranscriptChanged { agent, .. }
         | Event::DetailsChanged { agent, .. } => Some(*agent),
-        Event::PlanUsageChanged(_) | Event::SettingsChanged(_) => None,
+        Event::PlanUsageChanged(_)
+        | Event::SettingsChanged(_)
+        | Event::AccountPlanUsageChanged(_)
+        | Event::AccountsChanged { .. } => None,
     }
 }
 

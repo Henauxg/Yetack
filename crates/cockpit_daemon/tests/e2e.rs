@@ -18,17 +18,18 @@ use std::time::{Duration, Instant};
 
 use cockpit_client::{Connection, RequestError, Transport};
 use cockpit_protocol::{
-    AgentId, AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState, Approval,
+    Account, AccountAddParams, AccountId, AccountParams, AccountPlanUsage, AccountState, AgentId,
+    AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState, Approval,
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, CancelQueuedParams, Catchup,
     ClaudeSessionId, CommandKind, CostUsd, Effort, ErrorCode, Event, EventRecord, HistoryParams,
     ItemBody, ItemId, McpRemoveParams, McpScope, McpServerParams, McpServerStatus, McpToggleParams,
-    MoveParams, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, ProcessId, Prompt,
-    PromptParams, Question, QuestionAnswer, ReadFileParams, RenameParams, Request, ResponseBody,
-    Seq, SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, Settings,
-    StartParams, StopProcessParams, StopTaskParams, TranscriptItem,
+    MoveParams, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, PlanUsage, ProcessId,
+    Prompt, PromptParams, Question, QuestionAnswer, ReadFileParams, RenameParams, Request,
+    ResponseBody, Seq, SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams,
+    Settings, SignIn, StartParams, StopProcessParams, StopTaskParams, TranscriptItem, UsageWindow,
 };
 use rustix::process::{Pid, Signal};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tempfile::TempDir;
 
 const WAIT: Duration = Duration::from_secs(15);
@@ -37,6 +38,23 @@ const SESSION_ID: &str = "11111111-2222-3333-4444-555555555555";
 /// that was cut off.
 const RESUME_INTERRUPTED_TURN: &str = "CLAUDE_CODE_RESUME_INTERRUPTED_TURN=1";
 
+/// The variables that carry a login, which the daemon's environment has only when a test sets
+/// them.
+const LOGIN_VARIABLES: [&str; 3] = [
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+];
+
+/// Where the daemon's default account keeps its Claude Code folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DefaultFolder {
+    /// `claude` in the test's folder, which the daemon's `CLAUDE_CONFIG_DIR` names.
+    Variable,
+    /// `.claude` in a home folder of the test's, without `CLAUDE_CONFIG_DIR`.
+    Home,
+}
+
 /// A state folder, an agent folder and a Claude folder, and the daemon serving them.
 struct Setup {
     temp: TempDir,
@@ -44,6 +62,9 @@ struct Setup {
     starts: u32,
     /// The umask the daemon starts with, as `umask` takes it; `None` keeps the test's.
     umask: Option<&'static str>,
+    default_folder: DefaultFolder,
+    /// Variables the daemon's environment has, beyond those every test sets.
+    env: Vec<(&'static str, &'static str)>,
 }
 
 impl Setup {
@@ -52,18 +73,58 @@ impl Setup {
     }
 
     fn new_with_umask(umask: Option<&'static str>) -> Self {
+        Self::new_with(umask, DefaultFolder::Variable, Vec::new())
+    }
+
+    fn new_with(
+        umask: Option<&'static str>,
+        default_folder: DefaultFolder,
+        env: Vec<(&'static str, &'static str)>,
+    ) -> Self {
         let temp = tempfile::tempdir().unwrap();
-        for folder in ["state", "work", "claude"] {
-            std::fs::create_dir(temp.path().join(folder)).unwrap();
+        for folder in ["state", "work", "claude", "home/.claude"] {
+            std::fs::create_dir_all(temp.path().join(folder)).unwrap();
         }
         let mut setup = Self {
             temp,
             daemon: None,
             starts: 0,
             umask,
+            default_folder,
+            env,
         };
         setup.start();
         setup
+    }
+
+    /// The default account's Claude Code folder.
+    fn default_folder(&self) -> PathBuf {
+        match self.default_folder {
+            DefaultFolder::Variable => self.temp.path().join("claude"),
+            DefaultFolder::Home => self.temp.path().join("home/.claude"),
+        }
+    }
+
+    fn env_file(&self) -> PathBuf {
+        self.temp.path().join("claude-env.jsonl")
+    }
+
+    /// The login variables of every `claude` started so far, once `count` of them have started.
+    fn wait_for_envs(&self, count: usize) -> Vec<Value> {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let text = std::fs::read_to_string(self.env_file()).unwrap_or_default();
+            let envs: Vec<Value> = text
+                .split_inclusive('\n')
+                .filter_map(|line| line.strip_suffix('\n'))
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            if envs.len() >= count {
+                return envs;
+            }
+            assert!(Instant::now() < deadline, "claude did not start: {envs:?}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     fn state(&self) -> PathBuf {
@@ -105,8 +166,8 @@ impl Setup {
                 cockpit_daemon::CLAUDE_PROGRAM_ENV,
                 env!("CARGO_BIN_EXE_fake-claude"),
             )
-            .env("CLAUDE_CONFIG_DIR", self.temp.path().join("claude"))
             .env("FAKE_CLAUDE_ARGS_FILE", self.args_file())
+            .env("FAKE_CLAUDE_ENV_FILE", self.env_file())
             .env(
                 "FAKE_CLAUDE_SESSION_NAMES",
                 self.temp.path().join("session-names"),
@@ -114,6 +175,18 @@ impl Setup {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(log);
+        for name in LOGIN_VARIABLES {
+            command.env_remove(name);
+        }
+        match self.default_folder {
+            DefaultFolder::Variable => {
+                command.env("CLAUDE_CONFIG_DIR", self.default_folder());
+            }
+            DefaultFolder::Home => {
+                command.env("HOME", self.temp.path().join("home"));
+            }
+        }
+        command.envs(self.env.iter().copied());
         command
     }
 
@@ -251,6 +324,10 @@ impl Client {
     }
 
     async fn start(&mut self, folder: &Path, prompt: &str) -> AgentId {
+        self.start_with(folder, prompt, AccountId::DEFAULT).await
+    }
+
+    async fn start_with(&mut self, folder: &Path, prompt: &str, account: AccountId) -> AgentId {
         let params = StartParams {
             folder: folder.to_owned(),
             title: None,
@@ -258,6 +335,7 @@ impl Client {
             effort: None,
             mode: None,
             prompt: Some(text(prompt)),
+            account,
         };
         match self.ok(Request::AgentStart(params)).await {
             ResponseBody::AgentStarted { agent } => agent,
@@ -333,6 +411,25 @@ impl Client {
     async fn idle(&mut self, agent: AgentId) -> AgentSummary {
         self.summary_with(agent, |summary| summary.status == AgentStatus::Idle)
             .await
+    }
+
+    async fn add_account(&self, name: &str, folder: Option<&Path>, api_key: bool) -> AccountState {
+        let params = AccountAddParams {
+            name: name.to_owned(),
+            folder: folder.map(Path::to_owned),
+            use_environment_api_key: api_key,
+        };
+        match self.ok(Request::AccountsAdd(params)).await {
+            ResponseBody::Account(state) => state,
+            other => panic!("expected an account, got {other:?}"),
+        }
+    }
+
+    async fn accounts(&self) -> Vec<AccountState> {
+        match self.ok(Request::AccountsList).await {
+            ResponseBody::Accounts { accounts, .. } => accounts,
+            other => panic!("expected the accounts, got {other:?}"),
+        }
     }
 
     async fn history(&self, agent: AgentId) -> Vec<TranscriptItem> {
@@ -454,6 +551,7 @@ async fn an_agent_without_an_effort_shows_the_one_claude_code_applies() {
             effort,
             mode: None,
             prompt: None,
+            account: AccountId::DEFAULT,
         })
     };
 
@@ -656,6 +754,7 @@ async fn a_start_reads_its_title_as_a_rename_does() {
             effort: None,
             mode: None,
             prompt: Some(text("Fix the cart\nand its test")),
+            account: AccountId::DEFAULT,
         })
     };
 
@@ -687,6 +786,7 @@ async fn a_new_agent_shows_its_mcp_servers_and_context_before_any_prompt() {
         effort: None,
         mode: None,
         prompt: None,
+        account: AccountId::DEFAULT,
     };
     let ResponseBody::AgentStarted { agent } = client.ok(Request::AgentStart(params)).await else {
         panic!("expected AgentStarted");
@@ -1620,6 +1720,7 @@ async fn files_settings_sessions_and_agent_settings() {
     let resumed = client
         .ok(Request::SessionsResume(SessionResumeParams {
             session: ClaudeSessionId::new(SESSION_ID.to_owned()),
+            account: AccountId::DEFAULT,
         }))
         .await;
     let ResponseBody::AgentStarted { agent: second } = resumed else {
@@ -1642,6 +1743,7 @@ async fn files_settings_sessions_and_agent_settings() {
     let again = client
         .ok(Request::SessionsResume(SessionResumeParams {
             session: ClaudeSessionId::new(SESSION_ID.to_owned()),
+            account: AccountId::DEFAULT,
         }))
         .await;
     assert_eq!(again, ResponseBody::AgentStarted { agent: second });
@@ -1662,7 +1764,261 @@ async fn files_settings_sessions_and_agent_settings() {
     let missing = client
         .error_code(Request::SessionsResume(SessionResumeParams {
             session: ClaudeSessionId::new("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_owned()),
+            account: AccountId::DEFAULT,
         }))
         .await;
     assert_eq!(missing, ErrorCode::NotFound);
+}
+
+/// A session file in a Claude Code folder, made with the work folder as its `cwd`.
+fn write_session(claude_folder: &Path, work: &Path, id: &str, prompt: &str) {
+    let project = claude_folder.join("projects/-srv-work");
+    std::fs::create_dir_all(&project).unwrap();
+    let line = json!({
+        "type": "user", "cwd": work,
+        "message": {"role": "user", "content": prompt}
+    });
+    std::fs::write(project.join(format!("{id}.jsonl")), format!("{line}\n")).unwrap();
+}
+
+#[tokio::test]
+async fn each_accounts_claude_gets_its_folder_and_only_the_login_it_may_use() {
+    let setup = Setup::new_with(
+        None,
+        DefaultFolder::Variable,
+        vec![
+            ("ANTHROPIC_API_KEY", "test-api-key"),
+            ("CLAUDE_CODE_OAUTH_TOKEN", "test-oauth-token"),
+        ],
+    );
+    let mut client = setup.connect().await;
+    let keyed_folder = setup.temp.path().join("claude-keyed");
+    let plain_folder = setup.temp.path().join("claude-plain");
+    let keyed = client.add_account("Keyed", Some(&keyed_folder), true).await;
+    let plain = client
+        .add_account("Plain", Some(&plain_folder), false)
+        .await;
+
+    for account in [AccountId::DEFAULT, keyed.account.id, plain.account.id] {
+        let agent = client.start_with(&setup.work(), "hello", account).await;
+        let summary = client.summary_with(agent, |_| true).await;
+        assert_eq!(summary.account, account);
+    }
+    let envs = setup.wait_for_envs(3);
+
+    assert_eq!(
+        envs,
+        [
+            json!({"CLAUDE_CONFIG_DIR": setup.default_folder(),
+                   "CLAUDE_CODE_OAUTH_TOKEN": null, "ANTHROPIC_API_KEY": null}),
+            json!({"CLAUDE_CONFIG_DIR": keyed_folder,
+                   "CLAUDE_CODE_OAUTH_TOKEN": null, "ANTHROPIC_API_KEY": "test-api-key"}),
+            json!({"CLAUDE_CONFIG_DIR": plain_folder,
+                   "CLAUDE_CODE_OAUTH_TOKEN": null, "ANTHROPIC_API_KEY": null}),
+        ]
+    );
+    let ResponseBody::Accounts {
+        environment_api_key,
+        ..
+    } = client.ok(Request::AccountsList).await
+    else {
+        panic!("expected the accounts");
+    };
+    assert!(environment_api_key);
+}
+
+/// Without `CLAUDE_CONFIG_DIR`, the default account is `.claude` in the home folder, and a new
+/// account's folder sits beside it.
+#[tokio::test]
+async fn the_default_account_runs_without_the_variable_and_a_new_one_signs_in_beside_it() {
+    let setup = Setup::new_with(None, DefaultFolder::Home, Vec::new());
+    let mut client = setup.connect().await;
+    let home = setup.temp.path().join("home");
+
+    let agent = client.start(&setup.work(), "hello").await;
+    client.says(agent, "Echo: hello").await;
+    let before = client.accounts().await;
+    std::fs::write(setup.default_folder().join(".credentials.json"), "{}").unwrap();
+    let after = client.accounts().await;
+    let added = client.add_account("Client Work", None, false).await;
+
+    let envs = setup.wait_for_envs(1);
+    assert_eq!(envs[0]["CLAUDE_CONFIG_DIR"], Value::Null);
+    let [default] = before.as_slice() else {
+        panic!("expected the default account alone: {before:?}");
+    };
+    assert_eq!(default.account.folder, setup.default_folder());
+    assert_eq!(default.sign_in, SignIn::NotSignedIn);
+    assert_eq!(default.sign_in_command, "claude");
+    assert_eq!(after[0].sign_in, SignIn::SignedIn);
+    let folder = home.join(".claude-client-work");
+    assert_eq!(added.account.folder, folder);
+    assert_eq!(added.sign_in, SignIn::NotSignedIn);
+    assert_eq!(
+        added.sign_in_command,
+        format!("CLAUDE_CONFIG_DIR='{}' claude", folder.display())
+    );
+}
+
+#[tokio::test]
+async fn an_agent_keeps_its_account_through_a_stop_a_resume_and_a_restart() {
+    let mut setup = Setup::new();
+    let mut client = setup.connect().await;
+    let folder = setup.temp.path().join("claude-work");
+    let work = client
+        .add_account("Work", Some(&folder), false)
+        .await
+        .account;
+    let agent = client.start_with(&setup.work(), "hello", work.id).await;
+    client.says(agent, "Echo: hello").await;
+
+    client.ok(Request::AgentStop(AgentParams { agent })).await;
+    client
+        .summary_with(agent, |summary| summary.status == AgentStatus::Exited)
+        .await;
+    client.ok(Request::AgentResume(AgentParams { agent })).await;
+    setup.wait_for_envs(2);
+    setup.restart();
+    let (_, catchup) = setup.connect_after(None).await;
+
+    let envs = setup.wait_for_envs(3);
+    for env in &envs {
+        assert_eq!(env["CLAUDE_CONFIG_DIR"], json!(folder), "{envs:?}");
+    }
+    let Catchup::Snapshot(snapshot) = catchup else {
+        panic!("expected a snapshot");
+    };
+    assert_eq!(snapshot.agents[0].account, work.id);
+    let names: Vec<&str> = snapshot
+        .accounts
+        .iter()
+        .map(|account| account.name.as_str())
+        .collect();
+    assert_eq!(names, ["Default", "Work"]);
+}
+
+#[tokio::test]
+async fn plan_usage_is_kept_per_account() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let folder = setup.temp.path().join("claude-work");
+    let work = client
+        .add_account("Work", Some(&folder), false)
+        .await
+        .account;
+    let five_hour = |usage: &PlanUsage| usage.windows.get(&UsageWindow::FiveHour)?.utilization;
+
+    client.start(&setup.work(), "usage 0.4").await;
+    let default_usage = client
+        .wait_for(|event| match event {
+            Event::PlanUsageChanged(usage) if five_hour(usage) == Some(0.4) => Some(usage.clone()),
+            _ => None,
+        })
+        .await;
+    client.start_with(&setup.work(), "usage 0.7", work.id).await;
+    let work_usage = client
+        .wait_for(|event| match event {
+            Event::AccountPlanUsageChanged(changed) if five_hour(&changed.usage) == Some(0.7) => {
+                Some(changed.clone())
+            }
+            Event::PlanUsageChanged(usage) => panic!("the default account changed: {usage:?}"),
+            _ => None,
+        })
+        .await;
+    let (_, catchup) = setup.connect_after(None).await;
+
+    assert_eq!(work_usage.account, work.id);
+    let Catchup::Snapshot(snapshot) = catchup else {
+        panic!("expected a snapshot");
+    };
+    assert_eq!(snapshot.plan_usage, default_usage);
+    assert_eq!(
+        snapshot.other_plan_usage,
+        [AccountPlanUsage {
+            account: work.id,
+            usage: work_usage.usage,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn past_sessions_list_and_resume_with_their_account() {
+    const WORK_SESSION: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let folder = setup.temp.path().join("claude-work");
+    let work = client
+        .add_account("Work", Some(&folder), false)
+        .await
+        .account;
+    write_session(
+        &setup.default_folder(),
+        &setup.work(),
+        SESSION_ID,
+        "Personal task",
+    );
+    write_session(&folder, &setup.work(), WORK_SESSION, "Work task");
+
+    let ResponseBody::Sessions { sessions } = client.ok(Request::SessionsList).await else {
+        panic!("expected sessions");
+    };
+    let mut listed: Vec<(&str, AccountId)> = sessions
+        .iter()
+        .map(|session| (session.title.as_str(), session.account))
+        .collect();
+    listed.sort();
+    assert_eq!(
+        listed,
+        [
+            ("Personal task", AccountId::DEFAULT),
+            ("Work task", work.id)
+        ]
+    );
+    let resume = |account| {
+        Request::SessionsResume(SessionResumeParams {
+            session: ClaudeSessionId::new(WORK_SESSION.to_owned()),
+            account,
+        })
+    };
+    let elsewhere = client.error_code(resume(AccountId::DEFAULT)).await;
+    let ResponseBody::AgentStarted { agent } = client.ok(resume(work.id)).await else {
+        panic!("expected AgentStarted");
+    };
+
+    assert_eq!(elsewhere, ErrorCode::NotFound);
+    let summary = client.summary_with(agent, |_| true).await;
+    assert_eq!(summary.account, work.id);
+    let envs = setup.wait_for_envs(1);
+    assert_eq!(envs[0]["CLAUDE_CONFIG_DIR"], json!(folder));
+    let launches = setup.wait_for_launches(1);
+    assert!(launches[0].contains(&format!("--resume={WORK_SESSION}")));
+}
+
+#[tokio::test]
+async fn an_account_an_agent_uses_cannot_be_removed() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let folder = setup.temp.path().join("claude-work");
+    let work = client
+        .add_account("Work", Some(&folder), false)
+        .await
+        .account;
+    let agent = client.start_with(&setup.work(), "hello", work.id).await;
+    let remove = |account| Request::AccountsRemove(AccountParams { account });
+
+    let used = client.error_code(remove(work.id)).await;
+    let default = client.error_code(remove(AccountId::DEFAULT)).await;
+    client.ok(Request::AgentClose(AgentParams { agent })).await;
+    let removed = client.ok(remove(work.id)).await;
+    let accounts: Vec<Account> = client
+        .wait_for(|event| match event {
+            Event::AccountsChanged { accounts } if accounts.len() == 1 => Some(accounts.clone()),
+            _ => None,
+        })
+        .await;
+
+    assert_eq!(used, ErrorCode::AccountInUse);
+    assert_eq!(default, ErrorCode::InvalidRequest);
+    assert_eq!(removed, ResponseBody::Done);
+    assert_eq!(accounts[0].id, AccountId::DEFAULT);
 }

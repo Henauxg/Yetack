@@ -7,6 +7,7 @@ use claude_protocol::PermissionMode;
 use cockpit_protocol::ClaudeSessionId;
 use tokio::process::Command;
 
+use crate::accounts::ClaudeEnv;
 use crate::process::program;
 
 const STREAM_JSON: &str = "stream-json";
@@ -56,6 +57,8 @@ pub(crate) struct ClaudeCommand {
     /// The Claude session to resume.
     pub(crate) resume: Option<ClaudeSessionId>,
     pub(crate) interrupted_turn: InterruptedTurn,
+    /// What the agent's account sets in the environment.
+    pub(crate) env: ClaudeEnv,
 }
 
 impl ClaudeCommand {
@@ -91,6 +94,7 @@ impl ClaudeCommand {
             .kill_on_drop(true);
         #[cfg(unix)]
         command.process_group(0);
+        self.env.apply(&mut command);
         if self.resume.is_some() && self.interrupted_turn == InterruptedTurn::Resume {
             command.env(RESUME_INTERRUPTED_TURN_ENV, ENABLED);
         }
@@ -117,6 +121,7 @@ mod tests {
             effort: None,
             resume: None,
             interrupted_turn: InterruptedTurn::Leave,
+            env: ClaudeEnv::for_tests(),
         }
     }
 

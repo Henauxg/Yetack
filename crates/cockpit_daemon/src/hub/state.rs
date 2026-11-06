@@ -6,7 +6,8 @@ use std::time::SystemTime;
 
 use claude_protocol::InputLine;
 use cockpit_protocol::{
-    AgentId, Event, EventRecord, Frame, ItemId, PlanUsage, Seq, ServerMessage, Snapshot, Timestamp,
+    AccountId, AccountPlanUsage, AgentId, Event, EventRecord, Frame, ItemId, PlanUsage, Seq,
+    ServerMessage, Snapshot, Timestamp,
 };
 use tokio::sync::mpsc;
 
@@ -30,7 +31,8 @@ pub(crate) struct Hub {
     pub(super) next_agent: AgentId,
     pub(super) replay_floor: Option<Seq>,
     pub(super) settings: DaemonSettings,
-    pub(super) plan_usage: PlanUsage,
+    /// Each account's plan usage, once one of its agents reported it.
+    pub(super) plan_usage: BTreeMap<AccountId, PlanUsage>,
     pub(super) logs: EventLogs,
     pub(super) last_seq: Option<Seq>,
     pub(super) clients: Vec<mpsc::Sender<Frame>>,
@@ -150,15 +152,33 @@ impl Hub {
     }
 
     pub(super) fn snapshot(&self) -> Snapshot {
+        let accounts = self.accounts();
+        let other_plan_usage = accounts
+            .iter()
+            .filter(|account| !account.id.is_default())
+            .filter_map(|account| {
+                let usage = self.plan_usage.get(&account.id)?.clone();
+                Some(AccountPlanUsage {
+                    account: account.id,
+                    usage,
+                })
+            })
+            .collect();
         Snapshot {
             agents: self
                 .agents
                 .values()
                 .map(|agent| agent.view.summary().clone())
                 .collect(),
-            plan_usage: self.plan_usage.clone(),
+            plan_usage: self
+                .plan_usage
+                .get(&AccountId::DEFAULT)
+                .cloned()
+                .unwrap_or_default(),
             settings: self.settings.shared.clone(),
             last_seq: self.last_seq,
+            accounts,
+            other_plan_usage,
         }
     }
 

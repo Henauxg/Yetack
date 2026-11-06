@@ -4,7 +4,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use cockpit_protocol::{AgentId, ClaudeSessionId, DirListing, Effort, ItemId, PermissionMode};
+use cockpit_protocol::{
+    AccountId, AgentId, ClaudeSessionId, DirListing, Effort, ItemId, PermissionMode,
+};
 
 use super::agent_map::MapView;
 use super::app_state::Loadable;
@@ -119,6 +121,8 @@ pub struct ClosedAgent {
     pub title: String,
     /// `None` for an agent Claude Code gave no session yet: nothing can bring it back.
     pub session: Option<ClaudeSessionId>,
+    /// The account whose folder holds the session.
+    pub account: AccountId,
     /// The agent that was just below it, which it goes back above.
     pub before: Option<AgentId>,
 }
@@ -390,6 +394,7 @@ impl UiState {
         agent: AgentId,
         title: String,
         session: Option<ClaudeSessionId>,
+        account: AccountId,
         before: Option<AgentId>,
     ) {
         self.closed = Some(ClosedAgent {
@@ -397,6 +402,7 @@ impl UiState {
             agent,
             title,
             session,
+            account,
             before,
         });
         self.next_closed = self.next_closed.wrapping_add(1);

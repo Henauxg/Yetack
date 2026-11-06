@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_protocol::{
-    AgentDetails, AgentId, AgentStatus, AgentSummary, PastSession, PlanUsage, Settings, Timestamp,
-    list_order,
+    Account, AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, PastSession, PlanUsage,
+    Settings, Timestamp, list_order,
 };
 use strum::VariantArray;
 
@@ -158,8 +158,14 @@ pub struct AppState {
     pub daemon: DaemonLabel,
     pub connection: ConnectionState,
     pub agents: BTreeMap<AgentId, AgentEntry>,
+    /// The default account's plan usage.
     pub plan_usage: PlanUsage,
     pub settings: Settings,
+    /// The daemon's Claude accounts, the default one first. Empty from a daemon that predates
+    /// accounts.
+    pub accounts: Vec<Account>,
+    /// The plan usage of each account other than the default one.
+    pub other_plan_usage: BTreeMap<AccountId, PlanUsage>,
     /// Past Claude sessions, for the new agent dialog.
     pub sessions: Loadable<Vec<PastSession>>,
     /// The daemon is older than `folders.list`: the folder field lists nothing until the app
@@ -188,6 +194,8 @@ impl AppState {
             agents: BTreeMap::new(),
             plan_usage: PlanUsage::default(),
             settings: Settings::default(),
+            accounts: Vec::new(),
+            other_plan_usage: BTreeMap::new(),
             sessions: Loadable::NotRequested,
             folders_unknown: false,
             ui: UiState::default(),
@@ -343,6 +351,7 @@ pub(crate) mod tests {
             turn_started_at: None,
             session: None,
             position: Position::default(),
+            account: AccountId::DEFAULT,
         }
     }
 

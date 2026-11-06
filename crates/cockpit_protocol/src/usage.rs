@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use strum::VariantArray;
 
+use crate::ids::AccountId;
 use crate::time::Timestamp;
 
 /// An amount in US dollars, as Claude Code estimates it at API prices.
@@ -36,6 +37,13 @@ pub struct TokenUsage {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PlanUsage {
     pub windows: BTreeMap<UsageWindow, WindowUsage>,
+}
+
+/// The plan usage of one account.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct AccountPlanUsage {
+    pub account: AccountId,
+    pub usage: PlanUsage,
 }
 
 #[derive(

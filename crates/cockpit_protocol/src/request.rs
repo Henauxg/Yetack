@@ -11,7 +11,9 @@ use strum::{Display, EnumString, IntoStaticStr, VariantArray};
 
 use crate::agent::{Effort, PermissionMode};
 use crate::details::McpScope;
-use crate::ids::{AgentId, BackgroundTaskId, ClaudeSessionId, ItemId, PendingId, ProcessId};
+use crate::ids::{
+    AccountId, AgentId, BackgroundTaskId, ClaudeSessionId, ItemId, PendingId, ProcessId,
+};
 use crate::settings::Settings;
 use crate::transcript::{ApprovalAnswer, Image, PlanAnswer, QuestionAnswer};
 
@@ -93,6 +95,17 @@ pub enum Request {
     /// The machine's load now and over the last five minutes. Answered by `MachineLoad`, or by
     /// `Unsupported` on a machine without `/proc`. The daemon samples only while clients ask.
     MachineLoad,
+    /// Every account, with whether it is signed in. Answered by `Accounts`.
+    AccountsList,
+    /// Adds an account, which the user then signs in to with its sign-in command. Answered by
+    /// `Account`, and an `AccountsChanged` event to every client.
+    AccountsAdd(AccountAddParams),
+    /// Renames an account, or changes whether it uses the daemon's API key. Its agents get a new
+    /// key setting at their next start. Answered by `Account`, and an `AccountsChanged` event.
+    AccountsChange(AccountChangeParams),
+    /// Removes an account that no agent uses, and leaves its folder as it is. Answered by
+    /// `Done`, and an `AccountsChanged` event, or by `AccountInUse`.
+    AccountsRemove(AccountParams),
 }
 
 /// The method names on the wire.
@@ -164,6 +177,14 @@ pub enum Method {
     FoldersList,
     #[strum(serialize = "machine.load")]
     MachineLoad,
+    #[strum(serialize = "accounts.list")]
+    AccountsList,
+    #[strum(serialize = "accounts.add")]
+    AccountsAdd,
+    #[strum(serialize = "accounts.change")]
+    AccountsChange,
+    #[strum(serialize = "accounts.remove")]
+    AccountsRemove,
 }
 
 impl Method {
@@ -207,6 +228,9 @@ pub struct StartParams {
     pub effort: Option<Effort>,
     pub mode: Option<PermissionMode>,
     pub prompt: Option<Prompt>,
+    /// The default account when missing.
+    #[serde(default)]
+    pub account: AccountId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -356,6 +380,10 @@ pub struct McpRemoveParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionResumeParams {
     pub session: ClaudeSessionId,
+    /// The account whose folder holds the session, which the agent runs with. The default
+    /// account when missing.
+    #[serde(default)]
+    pub account: AccountId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -363,6 +391,31 @@ pub struct FoldersListParams {
     /// Absolute. The daemon refuses a relative path, and one that starts with `~`, as
     /// `agent.start` does.
     pub path: PathBuf,
+}
+
+/// The daemon trims the name, and refuses it empty, over [`crate::MAX_ACCOUNT_NAME_CHARS`]
+/// characters, or another account's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountAddParams {
+    pub name: String,
+    /// Absolute, on the daemon's machine, and no other account's. `None` takes the one the daemon
+    /// proposes: `.claude-<name>` in the home folder, with the name made safe for a folder name.
+    pub folder: Option<PathBuf>,
+    #[serde(default)]
+    pub use_environment_api_key: bool,
+}
+
+/// `None` leaves that setting as it is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountChangeParams {
+    pub account: AccountId,
+    pub name: Option<String>,
+    pub use_environment_api_key: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountParams {
+    pub account: AccountId,
 }
 
 /// A request on the wire. `params` is absent for a method without parameters.
@@ -409,6 +462,10 @@ impl Request {
             Self::SessionsResume(_) => Method::SessionsResume,
             Self::FoldersList(_) => Method::FoldersList,
             Self::MachineLoad => Method::MachineLoad,
+            Self::AccountsList => Method::AccountsList,
+            Self::AccountsAdd(_) => Method::AccountsAdd,
+            Self::AccountsChange(_) => Method::AccountsChange,
+            Self::AccountsRemove(_) => Method::AccountsRemove,
         }
     }
 }
@@ -457,13 +514,16 @@ impl Serialize for Request {
             Self::AgentFindFiles(params) => tagged(method, params, serializer),
             Self::McpRemove(params) => tagged(method, params, serializer),
             Self::SettingsSet(params) => tagged(method, params, serializer),
-            Self::SessionsList | Self::MachineLoad => Tagged::<()> {
+            Self::SessionsList | Self::MachineLoad | Self::AccountsList => Tagged::<()> {
                 method,
                 params: None,
             }
             .serialize(serializer),
             Self::SessionsResume(params) => tagged(method, params, serializer),
             Self::FoldersList(params) => tagged(method, params, serializer),
+            Self::AccountsAdd(params) => tagged(method, params, serializer),
+            Self::AccountsChange(params) => tagged(method, params, serializer),
+            Self::AccountsRemove(params) => tagged(method, params, serializer),
         }
     }
 }
@@ -513,6 +573,10 @@ impl<'de> Deserialize<'de> for Request {
             Method::SessionsResume => Self::SessionsResume(params(raw)?),
             Method::FoldersList => Self::FoldersList(params(raw)?),
             Method::MachineLoad => Self::MachineLoad,
+            Method::AccountsList => Self::AccountsList,
+            Method::AccountsAdd => Self::AccountsAdd(params(raw)?),
+            Method::AccountsChange => Self::AccountsChange(params(raw)?),
+            Method::AccountsRemove => Self::AccountsRemove(params(raw)?),
         };
         Ok(request)
     }

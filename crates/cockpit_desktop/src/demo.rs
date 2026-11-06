@@ -1,23 +1,23 @@
 //! `--demo`: the window filled with made-up agents and no daemon, to look at the interface. The
 //! requests that read data are answered from the sample; the others do nothing.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use cockpit_client::RequestError;
 use cockpit_protocol::{
-    AgentDetails, AgentHistory, AgentId, AgentLoad, AgentStatus, AgentSummary, Answer, AnswerState,
-    Approval, AskedQuestion, BackgroundTask, BackgroundTaskId, BackgroundTaskKind,
-    BackgroundTaskStatus, ChangedFile, ClaudeSessionId, CommandKind, CommandLoad, ContextCategory,
-    ContextUsage, Cores, CostUsd, DirEntry, DirListing, Effort, EntryKind, ErrorBody, ErrorCode,
-    FileEdit, HistoryPage, ItemBody, ItemId, LoadAverage, LoadHistory, MachineLoad, McpScope,
-    McpServer, McpServerStatus, McpTool, McpTransport, PastSession, PendingId, PermissionMode,
-    Plan, PlanUsage, Position, ProcessId, Question, QuestionOption, RateLimitStatus, Request,
-    ResourceUse, ResponseBody, ServerLoad, ServerPoint, SlashCommand, Subagent, SubagentRun,
-    SubagentStatus, SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, Timestamp,
-    TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, UsageWindow, UserMessage,
-    WindowUsage,
+    Account, AccountId, AgentDetails, AgentHistory, AgentId, AgentLoad, AgentStatus, AgentSummary,
+    Answer, AnswerState, Approval, AskedQuestion, BackgroundTask, BackgroundTaskId,
+    BackgroundTaskKind, BackgroundTaskStatus, ChangedFile, ClaudeSessionId, CommandKind,
+    CommandLoad, ContextCategory, ContextUsage, Cores, CostUsd, DirEntry, DirListing, Effort,
+    EntryKind, ErrorBody, ErrorCode, FileEdit, HistoryPage, ItemBody, ItemId, LoadAverage,
+    LoadHistory, MachineLoad, McpScope, McpServer, McpServerStatus, McpTool, McpTransport,
+    PastSession, PendingId, PermissionMode, Plan, PlanUsage, Position, ProcessId, Question,
+    QuestionOption, RateLimitStatus, Request, ResourceUse, ResponseBody, ServerLoad, ServerPoint,
+    SlashCommand, Subagent, SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem,
+    TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem,
+    TurnEnd, UsageWindow, UserMessage, WindowUsage,
 };
 use serde_json::Value;
 
@@ -36,6 +36,10 @@ const STREAM_FOLDER: &str = "/home/dev/projects/calc-stream";
 /// The agent whose conversation grows while the demo runs, to try the chat's scrolling. Its
 /// conversation is long, and it loads when the agent first opens, as a daemon's would.
 const LIVE_AGENT: u32 = 7;
+/// A second Claude account, which the service's agents and the platform's past sessions use.
+const WORK_ACCOUNT: u32 = 1;
+/// The agents of the work account.
+const WORK_AGENTS: [u32; 2] = [4, 5];
 
 /// How often the live agent adds or finishes an entry.
 pub const LIVE_TICK: Duration = Duration::from_millis(1500);
@@ -384,7 +388,14 @@ pub fn state(daemon: DaemonLabel) -> AppState {
             entry.summary.position = Position::new(step * POSITION_STEP);
         }
     }
+    for id in WORK_AGENTS {
+        if let Some(entry) = state.agents.get_mut(&AgentId::new(id)) {
+            entry.summary.account = AccountId::new(WORK_ACCOUNT);
+        }
+    }
     state.plan_usage = plan_usage(now);
+    state.accounts = accounts();
+    state.other_plan_usage = BTreeMap::from([(AccountId::new(WORK_ACCOUNT), work_plan_usage(now))]);
     state.ui.selected = Some(AgentId::new(1));
     state.ui.unread.insert(AgentId::new(5));
     state
@@ -906,6 +917,7 @@ fn summary(parts: SummaryParts<'_>, now: SystemTime) -> AgentSummary {
         turn_started_at: turn_started.map(|seconds| at(now, seconds)),
         session: Some(ClaudeSessionId::new(format!("demo-session-{}", parts.id))),
         position: Position::default(),
+        account: AccountId::DEFAULT,
     }
 }
 
@@ -2468,6 +2480,44 @@ fn plan_usage(now: SystemTime) -> PlanUsage {
     usage
 }
 
+fn accounts() -> Vec<Account> {
+    vec![
+        Account {
+            id: AccountId::DEFAULT,
+            name: "Personal".to_owned(),
+            folder: PathBuf::from("/home/dev/.claude"),
+            use_environment_api_key: false,
+        },
+        Account {
+            id: AccountId::new(WORK_ACCOUNT),
+            name: "Work".to_owned(),
+            folder: PathBuf::from("/home/dev/.claude-work"),
+            use_environment_api_key: false,
+        },
+    ]
+}
+
+fn work_plan_usage(now: SystemTime) -> PlanUsage {
+    let mut usage = PlanUsage::default();
+    usage.windows.insert(
+        UsageWindow::FiveHour,
+        WindowUsage {
+            utilization: Some(0.17),
+            resets_at: Some(in_future(now, 4 * 3600 + 40 * 60)),
+            status: RateLimitStatus::Allowed,
+        },
+    );
+    usage.windows.insert(
+        UsageWindow::SevenDay,
+        WindowUsage {
+            utilization: Some(0.31),
+            resets_at: Some(in_future(now, 6 * 24 * 3600)),
+            status: RateLimitStatus::Allowed,
+        },
+    );
+    usage
+}
+
 fn sessions(now: SystemTime) -> Vec<PastSession> {
     // Long folders used more recently than the agents', so the new agent dialog lists six of them.
     let long_folders = [
@@ -2501,6 +2551,7 @@ fn sessions(now: SystemTime) -> Vec<PastSession> {
             folder: in_folder(PLATFORM_FOLDER, folder),
             last_activity: at(now, index * 7 * 60),
             turns: 12,
+            account: AccountId::new(WORK_ACCOUNT),
         });
     }
     sessions.extend([
@@ -2510,6 +2561,7 @@ fn sessions(now: SystemTime) -> Vec<PastSession> {
             folder: PathBuf::from(PARSER_FOLDER),
             last_activity: at(now, 3 * 3600),
             turns: 37,
+            account: AccountId::DEFAULT,
         },
         PastSession {
             id: ClaudeSessionId::new("demo-past-2".to_owned()),
@@ -2517,6 +2569,7 @@ fn sessions(now: SystemTime) -> Vec<PastSession> {
             folder: PathBuf::from("/home/dev/projects/docs-site"),
             last_activity: at(now, 3 * 24 * 3600),
             turns: 22,
+            account: AccountId::DEFAULT,
         },
     ]);
     sessions

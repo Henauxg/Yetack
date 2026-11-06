@@ -13,7 +13,9 @@ use std::time::Duration;
 
 use cockpit_client::{Connection, InAppLink, Transport};
 use cockpit_daemon::{DaemonConfig, InAppDaemon};
-use cockpit_protocol::{AgentStatus, Catchup, Event, Prompt, Request, ResponseBody, StartParams};
+use cockpit_protocol::{
+    AccountId, AgentStatus, Catchup, Event, Prompt, Request, ResponseBody, StartParams,
+};
 
 const WAIT: Duration = Duration::from_secs(15);
 
@@ -62,6 +64,7 @@ async fn an_agent_runs_and_is_still_there_after_the_app_runs_agents_again() {
             text: "slow".to_owned(),
             images: Vec::new(),
         }),
+        account: AccountId::DEFAULT,
     };
     let ResponseBody::AgentStarted { agent } = connection
         .request(Request::AgentStart(start_params))

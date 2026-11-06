@@ -60,7 +60,7 @@ mod tests {
     use std::path::Path;
 
     use cockpit_protocol::{
-        ClaudeSessionId, ErrorCode, PastSession, Position, RenameParams, ResponseResult,
+        AccountId, ClaudeSessionId, ErrorCode, PastSession, Position, RenameParams, ResponseResult,
         StartParams, Timestamp,
     };
     use tokio::sync::{mpsc, oneshot};
@@ -87,6 +87,7 @@ mod tests {
             effort: None,
             mode: None,
             prompt: None,
+            account: AccountId::DEFAULT,
         };
         match hub.start_agent(params) {
             Ok(ResponseBody::AgentStarted { agent }) => agent,
@@ -216,6 +217,7 @@ mod tests {
             past: None,
             position: Position::default(),
             process: None,
+            account: AccountId::DEFAULT,
         };
         AgentsFile {
             next_agent: AgentId::new(4),
@@ -247,6 +249,7 @@ mod tests {
                 folder: temp.path().to_owned(),
                 last_activity: Timestamp::from_unix_millis(0),
                 turns: 1,
+                account: AccountId::DEFAULT,
             },
             past: SessionPast {
                 items: Vec::new(),

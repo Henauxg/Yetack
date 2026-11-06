@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use cockpit_protocol::{
-    AgentId, ClaudeSessionId, Effort, PermissionMode, Position, ProcessId, Seq, Timestamp,
+    AccountId, AgentId, ClaudeSessionId, Effort, PermissionMode, Position, ProcessId, Seq,
+    Timestamp,
 };
 use serde::{Deserialize, Serialize};
 
@@ -45,6 +46,10 @@ pub(crate) struct AgentRecord {
     /// its predecessor left. `None` once it exited, and in a file saved before it existed.
     #[serde(default)]
     pub(crate) process: Option<RecordedProcess>,
+    /// The account the agent runs with. The default account in a file saved before accounts
+    /// existed.
+    #[serde(default)]
+    pub(crate) account: AccountId,
 }
 
 /// A process, told apart from a later one that reuses its id by when it started.
@@ -114,7 +119,8 @@ mod tests {
       "process": {
         "pid": 4242,
         "started": 987654
-      }
+      },
+      "account": 5
     }
   ]
 }
@@ -143,6 +149,7 @@ mod tests {
                     pid: ProcessId::new(4242),
                     started: 987_654,
                 }),
+                account: AccountId::new(5),
             }],
         }
     }
@@ -196,6 +203,23 @@ mod tests {
         let file = AgentsFile::load(&path).unwrap();
 
         assert_eq!(file.agents[0].process, None);
+    }
+
+    #[test]
+    fn an_agent_saved_without_an_account_runs_with_the_default_one() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("agents.json");
+        let without_account = AGENTS_JSON.replace(
+            r#",
+      "account": 5"#,
+            "",
+        );
+        assert_ne!(without_account, AGENTS_JSON);
+        std::fs::write(&path, without_account).unwrap();
+
+        let file = AgentsFile::load(&path).unwrap();
+
+        assert_eq!(file.agents[0].account, AccountId::DEFAULT);
     }
 
     #[test]

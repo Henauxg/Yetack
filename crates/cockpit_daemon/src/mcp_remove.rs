@@ -10,6 +10,7 @@ use std::time::Duration;
 use claude_protocol::McpScope;
 use cockpit_protocol::{ErrorBody, ErrorCode};
 
+use crate::accounts::ClaudeEnv;
 use crate::process::program;
 
 const MCP_SUBCOMMAND: &str = "mcp";
@@ -21,9 +22,11 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 /// How much of `claude`'s output an error quotes.
 const OUTPUT_TAIL_BYTES: usize = 2 * 1024;
 
+/// `env` is the agent's account's, whose config holds the user scope.
 pub(crate) async fn remove(
     program: &Path,
     folder: &Path,
+    env: &ClaudeEnv,
     server: &str,
     scope: McpScope,
 ) -> Result<(), ErrorBody> {
@@ -40,6 +43,7 @@ pub(crate) async fn remove(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    env.apply(&mut command);
     let output = tokio::time::timeout(TIMEOUT, command.output())
         .await
         .map_err(|_| {
@@ -106,7 +110,8 @@ mod tests {
             "#!/bin/sh\necho \"No MCP server named $5\" >&2\nexit 1\n",
         );
 
-        let result = remove(&program, temp.path(), "notes", McpScope::Local).await;
+        let env = ClaudeEnv::for_tests();
+        let result = remove(&program, temp.path(), &env, "notes", McpScope::Local).await;
 
         let error = result.unwrap_err();
         assert_eq!(error.code, ErrorCode::ClaudeFailed);

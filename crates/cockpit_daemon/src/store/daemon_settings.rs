@@ -4,6 +4,7 @@ use std::time::Duration;
 use cockpit_protocol::Settings;
 use serde::{Deserialize, Serialize};
 
+use crate::accounts::AccountList;
 use crate::store::atomic_file;
 use crate::store::store_error::StoreError;
 
@@ -17,6 +18,8 @@ pub(crate) struct DaemonSettings {
     /// How long Claude's prompt cache lives after the last API request. A subscription gets one
     /// hour.
     pub(crate) prompt_cache_ttl_minutes: u32,
+    /// The Claude accounts agents run with.
+    pub(crate) accounts: AccountList,
 }
 
 const DEFAULT_PROMPT_CACHE_TTL_MINUTES: u32 = 60;
@@ -27,6 +30,7 @@ impl Default for DaemonSettings {
         Self {
             shared: Settings::default(),
             prompt_cache_ttl_minutes: DEFAULT_PROMPT_CACHE_TTL_MINUTES,
+            accounts: AccountList::default(),
         }
     }
 }
@@ -60,7 +64,20 @@ mod tests {
     "notes",
     "tracker"
   ],
-  "prompt_cache_ttl_minutes": 5
+  "prompt_cache_ttl_minutes": 5,
+  "accounts": {
+    "default_name": "Personal",
+    "default_uses_environment_api_key": true,
+    "added": [
+      {
+        "id": 2,
+        "name": "Work",
+        "folder": "/home/sam/.claude-work",
+        "use_environment_api_key": false
+      }
+    ],
+    "next_account": 4
+  }
 }
 "#;
 
@@ -70,6 +87,7 @@ mod tests {
                 hidden_mcp_servers: BTreeSet::from(["notes".to_owned(), "tracker".to_owned()]),
             },
             prompt_cache_ttl_minutes: 5,
+            accounts: AccountList::sample(),
         }
     }
 
@@ -85,6 +103,7 @@ mod tests {
             BTreeSet::from(["notes".to_owned()])
         );
         assert_eq!(settings.prompt_cache_ttl(), Duration::from_secs(3600));
+        assert_eq!(settings.accounts, AccountList::default());
 
         settings.prompt_cache_ttl_minutes = 5;
         settings.save(&path).unwrap();

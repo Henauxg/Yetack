@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use cockpit_client::RequestError;
 use cockpit_protocol::{
-    AgentId, AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState,
+    AccountId, AgentId, AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState,
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, CancelQueuedParams, ClaudeSessionId,
     Effort, Image, ItemBody, ItemId, McpRemoveParams, McpScope, McpServerParams, McpToggleParams,
     MoveParams, PastSession, PendingId, PermissionMode, Placed, PlanAnswer, PlanDecision, Prompt,
@@ -1701,6 +1701,7 @@ pub fn close_agent(state: &mut AppState, drafts: &mut Drafts, agent: AgentId) ->
         agent,
         summary.title.clone(),
         summary.session.clone(),
+        summary.account,
         before,
     );
     if state.ui.selected == Some(agent) {
@@ -1734,7 +1735,10 @@ pub fn undo_close(state: &mut AppState) -> Vec<Outgoing> {
         before: closed.before,
     });
     vec![Outgoing {
-        request: Request::SessionsResume(SessionResumeParams { session }),
+        request: Request::SessionsResume(SessionResumeParams {
+            session,
+            account: closed.account,
+        }),
         purpose: Purpose::Reopen,
     }]
 }
@@ -1866,6 +1870,7 @@ pub fn start_agent(state: &mut AppState, drafts: &Drafts) -> Vec<Outgoing> {
             text: prompt.to_owned(),
             images: Vec::new(),
         }),
+        account: AccountId::DEFAULT,
     };
     vec![Outgoing {
         request: Request::AgentStart(params),
@@ -1934,16 +1939,21 @@ pub fn session_pick(state: &mut AppState, drafts: &Drafts, index: Option<usize>)
     }
     let new_agent = &drafts.new_agent;
     let index = index.unwrap_or(new_agent.session_highlighted);
-    let Some(session) = resumable_sessions(state, &new_agent.session_query)
+    let Some((session, account)) = resumable_sessions(state, &new_agent.session_query)
         .get(index)
-        .map(|session| session.id.clone())
+        .map(|session| (session.id.clone(), session.account))
     else {
         return Vec::new();
     };
-    resume_session(state, session)
+    resume_session(state, session, account)
 }
 
-pub fn resume_session(state: &mut AppState, session: ClaudeSessionId) -> Vec<Outgoing> {
+/// Resumes a session of the account's folder.
+pub fn resume_session(
+    state: &mut AppState,
+    session: ClaudeSessionId,
+    account: AccountId,
+) -> Vec<Outgoing> {
     if let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog {
         if form.starting {
             return Vec::new();
@@ -1951,7 +1961,7 @@ pub fn resume_session(state: &mut AppState, session: ClaudeSessionId) -> Vec<Out
         form.starting = true;
     }
     vec![Outgoing {
-        request: Request::SessionsResume(SessionResumeParams { session }),
+        request: Request::SessionsResume(SessionResumeParams { session, account }),
         purpose: Purpose::Start,
     }]
 }
@@ -4148,6 +4158,7 @@ mod tests {
             folder: PathBuf::from(folder),
             last_activity: Timestamp::from_unix_millis(10_000_000 - minutes_ago * 60_000),
             turns: 4,
+            account: AccountId::DEFAULT,
         }
     }
 
@@ -4184,7 +4195,8 @@ mod tests {
         assert_eq!(
             requests.first().map(|outgoing| &outgoing.request),
             Some(&Request::SessionsResume(SessionResumeParams {
-                session: ClaudeSessionId::new("lexer".to_owned())
+                session: ClaudeSessionId::new("lexer".to_owned()),
+                account: AccountId::DEFAULT,
             }))
         );
         session_query(&mut drafts, "nothing like it".to_owned());
@@ -4217,7 +4229,8 @@ mod tests {
         assert_eq!(
             requests.first().map(|outgoing| &outgoing.request),
             Some(&Request::SessionsResume(SessionResumeParams {
-                session: ClaudeSessionId::new("lexer".to_owned())
+                session: ClaudeSessionId::new("lexer".to_owned()),
+                account: AccountId::DEFAULT,
             }))
         );
     }

@@ -45,6 +45,8 @@ pub(crate) fn snapshot(last_seq: Option<u64>) -> Snapshot {
         plan_usage: PlanUsage::default(),
         settings: Settings::default(),
         last_seq: last_seq.map(Seq::new),
+        accounts: Vec::new(),
+        other_plan_usage: Vec::new(),
     }
 }
 

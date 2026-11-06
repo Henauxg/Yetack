@@ -5,8 +5,9 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use strum::VariantArray;
 
+use crate::account::AccountState;
 use crate::details::{AgentDetails, ContextUsage, McpServer, SlashCommand};
-use crate::ids::{AgentId, ClaudeSessionId};
+use crate::ids::{AccountId, AgentId, ClaudeSessionId};
 use crate::machine_load::MachineLoad;
 use crate::time::Timestamp;
 use crate::transcript::TranscriptItem;
@@ -72,6 +73,15 @@ pub enum ResponseBody {
         sessions: Vec<PastSession>,
     },
     MachineLoad(MachineLoad),
+    /// Every account, the default one first.
+    Accounts {
+        accounts: Vec<AccountState>,
+        /// Whether the daemon's environment has `ANTHROPIC_API_KEY`, which an account that uses
+        /// it passes to its agents.
+        environment_api_key: bool,
+    },
+    /// The account added or changed.
+    Account(AccountState),
 }
 
 /// A folder's entries: its folders first, then its other entries, each group by name.
@@ -120,6 +130,10 @@ pub struct PastSession {
     pub folder: PathBuf,
     pub last_activity: Timestamp,
     pub turns: u32,
+    /// The account whose folder holds the session. The default account when missing, as from a
+    /// daemon that predates accounts.
+    #[serde(default)]
+    pub account: AccountId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,6 +171,8 @@ pub enum ErrorCode {
     Timeout,
     /// The daemon's machine cannot do it, such as measuring its load without `/proc`.
     Unsupported,
+    /// The account cannot go: an agent uses it.
+    AccountInUse,
     /// A fault in the daemon.
     Internal,
 }

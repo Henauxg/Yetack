@@ -14,23 +14,24 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use cockpit_protocol::{
-    AgentDetails, AgentHistory, AgentId, AgentLoad, AgentParams, AgentStatus, AgentSummary, Answer,
-    AnswerParams, AnswerState, Approval, ApprovalAnswer, ApprovalDecision, AskedQuestion,
-    BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus, CancelQueuedParams,
-    Catchup, ChangedFile, ClaudeSessionId, ClientMessage, CommandKind, CommandLoad,
-    ContextCategory, ContextUsage, Cores, CostUsd, DirEntry, DirListing, Effort, EntryKind,
-    ErrorBody, ErrorCode, Event, EventRecord, FileEdit, FindFilesParams, FoldersListParams,
-    HistoryPage, HistoryParams, Image, ImageMediaType, ItemBody, ItemId, ListDirParams,
-    LoadAverage, LoadHistory, MachineLoad, McpRemoveParams, McpScope, McpServer, McpServerParams,
-    McpServerStatus, McpToggleParams, McpTool, McpTransport, Method, MoveParams, PROTOCOL_VERSION,
-    PastSession, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, PlanUsage, Position,
-    ProcessId, Prompt, PromptParams, Question, QuestionAnswer, QuestionOption, RateLimitStatus,
-    ReadFileParams, RenameParams, Request, RequestId, ResourceUse, ResponseBody, ResponseResult,
-    Seq, ServerLoad, ServerMessage, ServerPoint, SessionResumeParams, SetEffortParams,
-    SetModeParams, SetModelParams, Settings, SlashCommand, Snapshot, StartParams,
-    StopProcessParams, StopTaskParams, Subagent, SubagentRun, SubagentStatus, SubagentToolCall,
-    TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus,
-    TranscriptItem, TurnEnd, UsageWindow, UserMessage, WindowUsage,
+    Account, AccountAddParams, AccountChangeParams, AccountId, AccountParams, AccountPlanUsage,
+    AccountState, AgentDetails, AgentHistory, AgentId, AgentLoad, AgentParams, AgentStatus,
+    AgentSummary, Answer, AnswerParams, AnswerState, Approval, ApprovalAnswer, ApprovalDecision,
+    AskedQuestion, BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus,
+    CancelQueuedParams, Catchup, ChangedFile, ClaudeSessionId, ClientMessage, CommandKind,
+    CommandLoad, ContextCategory, ContextUsage, Cores, CostUsd, DirEntry, DirListing, Effort,
+    EntryKind, ErrorBody, ErrorCode, Event, EventRecord, FileEdit, FindFilesParams,
+    FoldersListParams, HistoryPage, HistoryParams, Image, ImageMediaType, ItemBody, ItemId,
+    ListDirParams, LoadAverage, LoadHistory, MachineLoad, McpRemoveParams, McpScope, McpServer,
+    McpServerParams, McpServerStatus, McpToggleParams, McpTool, McpTransport, Method, MoveParams,
+    PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision,
+    PlanUsage, Position, ProcessId, Prompt, PromptParams, Question, QuestionAnswer, QuestionOption,
+    RateLimitStatus, ReadFileParams, RenameParams, Request, RequestId, ResourceUse, ResponseBody,
+    ResponseResult, Seq, ServerLoad, ServerMessage, ServerPoint, SessionResumeParams,
+    SetEffortParams, SetModeParams, SetModelParams, Settings, SignIn, SlashCommand, Snapshot,
+    StartParams, StopProcessParams, StopTaskParams, Subagent, SubagentRun, SubagentStatus,
+    SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall,
+    ToolCallStatus, TranscriptItem, TurnEnd, UsageWindow, UserMessage, WindowUsage,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -77,6 +78,7 @@ fn summary() -> AgentSummary {
         turn_started_at: Some(at(1_700_000_200_000)),
         session: Some(session_id()),
         position: Position::new(2048),
+        account: work_account().id,
     }
 }
 
@@ -102,6 +104,33 @@ fn idle_summary() -> AgentSummary {
         turn_started_at: None,
         session: None,
         position: Position::new(1024),
+        account: AccountId::DEFAULT,
+    }
+}
+
+fn default_account() -> Account {
+    Account {
+        id: AccountId::DEFAULT,
+        name: "Personal".to_owned(),
+        folder: PathBuf::from("/home/sam/.claude"),
+        use_environment_api_key: false,
+    }
+}
+
+fn work_account() -> Account {
+    Account {
+        id: AccountId::new(2),
+        name: "Work".to_owned(),
+        folder: PathBuf::from("/home/sam/.claude-work"),
+        use_environment_api_key: true,
+    }
+}
+
+fn work_account_state() -> AccountState {
+    AccountState {
+        account: work_account(),
+        sign_in: SignIn::NotSignedIn,
+        sign_in_command: "CLAUDE_CONFIG_DIR='/home/sam/.claude-work' claude".to_owned(),
     }
 }
 
@@ -473,6 +502,11 @@ fn snapshot() -> Snapshot {
         plan_usage: plan_usage(),
         settings: settings(),
         last_seq: Some(Seq::new(41)),
+        accounts: vec![default_account(), work_account()],
+        other_plan_usage: vec![AccountPlanUsage {
+            account: work_account().id,
+            usage: plan_usage(),
+        }],
     }
 }
 
@@ -487,6 +521,7 @@ fn requests() -> Vec<Request> {
             effort: Some(Effort::Medium),
             mode: Some(PermissionMode::Plan),
             prompt: Some(prompt()),
+            account: work_account().id,
         }),
         Request::AgentPrompt(PromptParams {
             agent,
@@ -573,11 +608,26 @@ fn requests() -> Vec<Request> {
         Request::SessionsList,
         Request::SessionsResume(SessionResumeParams {
             session: session_id(),
+            account: work_account().id,
         }),
         Request::FoldersList(FoldersListParams {
             path: PathBuf::from("/srv/projects"),
         }),
         Request::MachineLoad,
+        Request::AccountsList,
+        Request::AccountsAdd(AccountAddParams {
+            name: "Work".to_owned(),
+            folder: None,
+            use_environment_api_key: false,
+        }),
+        Request::AccountsChange(AccountChangeParams {
+            account: work_account().id,
+            name: Some("Client work".to_owned()),
+            use_environment_api_key: None,
+        }),
+        Request::AccountsRemove(AccountParams {
+            account: work_account().id,
+        }),
     ]
 }
 
@@ -722,9 +772,22 @@ fn response_bodies() -> Vec<ResponseBody> {
                 folder: PathBuf::from("/srv/projects/shop"),
                 last_activity: at(1_700_000_500_000),
                 turns: 7,
+                account: work_account().id,
             }],
         },
         ResponseBody::MachineLoad(machine_load()),
+        ResponseBody::Accounts {
+            accounts: vec![
+                AccountState {
+                    account: default_account(),
+                    sign_in: SignIn::SignedIn,
+                    sign_in_command: "claude".to_owned(),
+                },
+                work_account_state(),
+            ],
+            environment_api_key: true,
+        },
+        ResponseBody::Account(work_account_state()),
     ]
 }
 
@@ -756,6 +819,13 @@ fn events() -> Vec<Event> {
         },
         Event::PlanUsageChanged(plan_usage()),
         Event::SettingsChanged(settings()),
+        Event::AccountPlanUsageChanged(AccountPlanUsage {
+            account: work_account().id,
+            usage: plan_usage(),
+        }),
+        Event::AccountsChanged {
+            accounts: vec![default_account(), work_account()],
+        },
     ]);
     events
 }
@@ -928,6 +998,10 @@ fn method_names_are_pinned() {
             "sessions.resume",
             "folders.list",
             "machine.load",
+            "accounts.list",
+            "accounts.add",
+            "accounts.change",
+            "accounts.remove",
         ]
     );
 }
@@ -966,6 +1040,8 @@ fn message_and_body_tags_are_pinned() {
             "file_matches",
             "sessions",
             "machine_load",
+            "accounts",
+            "account",
         ]
     );
     assert_eq!(
@@ -979,6 +1055,8 @@ fn message_and_body_tags_are_pinned() {
             "details_changed",
             "plan_usage_changed",
             "settings_changed",
+            "account_plan_usage_changed",
+            "accounts_changed",
         ]
     );
     assert_eq!(
@@ -1100,9 +1178,11 @@ fn words_are_pinned() {
             "claude_failed",
             "timeout",
             "unsupported",
+            "account_in_use",
             "internal",
         ]
     );
+    assert_eq!(words::<SignIn>(), ["signed_in", "not_signed_in", "unknown"]);
 }
 
 #[test]
@@ -1388,6 +1468,11 @@ fn a_welcome_with_a_snapshot_on_the_wire() {
             plan_usage: plan_usage(),
             settings: settings(),
             last_seq: None,
+            accounts: vec![work_account()],
+            other_plan_usage: vec![AccountPlanUsage {
+                account: work_account().id,
+                usage: PlanUsage::default(),
+            }],
         }),
     };
 
@@ -1415,6 +1500,13 @@ fn a_welcome_with_a_snapshot_on_the_wire() {
                 },
                 "settings": {"hidden_mcp_servers": ["events"]},
                 "last_seq": null,
+                "accounts": [{
+                    "id": 2,
+                    "name": "Work",
+                    "folder": "/home/sam/.claude-work",
+                    "use_environment_api_key": true,
+                }],
+                "other_plan_usage": [{"account": 2, "usage": {"windows": {}}}],
             },
         }),
     );
@@ -1581,6 +1673,7 @@ fn an_agent_update_on_the_wire() {
                 "turn_started_at": 1_700_000_200_000_u64,
                 "session": "0b7e1c2a-3d4f-4a5b-8c6d-7e8f9a0b1c2d",
                 "position": 2048,
+                "account": 2,
             },
         }),
     );
@@ -1630,6 +1723,16 @@ fn a_summary_logged_before_positions_reads_position_zero() {
     let read: AgentSummary = serde_json::from_value(logged).unwrap();
 
     assert_eq!(read.position, Position::new(0));
+}
+
+#[test]
+fn a_summary_logged_before_accounts_reads_the_default_account() {
+    let mut logged = serde_json::to_value(summary()).unwrap();
+    logged.as_object_mut().unwrap().remove("account");
+
+    let read: AgentSummary = serde_json::from_value(logged).unwrap();
+
+    assert_eq!(read.account, AccountId::DEFAULT);
 }
 
 #[test]
@@ -1920,4 +2023,163 @@ fn a_response_result_converts_to_a_result() {
         error.into_result(),
         Err(ErrorBody::new(ErrorCode::Timeout, "slow".to_owned()))
     );
+}
+
+#[test]
+fn account_requests_on_the_wire() {
+    let list = Request::AccountsList;
+    let add = Request::AccountsAdd(AccountAddParams {
+        name: "Work".to_owned(),
+        folder: Some(PathBuf::from("/home/sam/.claude-work")),
+        use_environment_api_key: true,
+    });
+    let change = Request::AccountsChange(AccountChangeParams {
+        account: AccountId::new(2),
+        name: None,
+        use_environment_api_key: Some(false),
+    });
+    let remove = Request::AccountsRemove(AccountParams {
+        account: AccountId::new(2),
+    });
+
+    assert_wire(&list, json!({"method": "accounts.list"}));
+    assert_wire(
+        &add,
+        json!({"method": "accounts.add", "params": {
+            "name": "Work",
+            "folder": "/home/sam/.claude-work",
+            "use_environment_api_key": true,
+        }}),
+    );
+    assert_wire(
+        &change,
+        json!({"method": "accounts.change", "params": {
+            "account": 2,
+            "name": null,
+            "use_environment_api_key": false,
+        }}),
+    );
+    assert_wire(
+        &remove,
+        json!({"method": "accounts.remove", "params": {"account": 2}}),
+    );
+}
+
+#[test]
+fn an_account_added_with_only_a_name_takes_the_proposed_folder_and_no_api_key() {
+    let added: Request =
+        serde_json::from_value(json!({"method": "accounts.add", "params": {"name": "Work"}}))
+            .unwrap();
+
+    assert_eq!(
+        added,
+        Request::AccountsAdd(AccountAddParams {
+            name: "Work".to_owned(),
+            folder: None,
+            use_environment_api_key: false,
+        })
+    );
+}
+
+#[test]
+fn the_accounts_answer_on_the_wire() {
+    let body = ResponseBody::Accounts {
+        accounts: vec![work_account_state()],
+        environment_api_key: false,
+    };
+
+    assert_wire(
+        &body,
+        json!({
+            "type": "accounts",
+            "accounts": [{
+                "account": {
+                    "id": 2,
+                    "name": "Work",
+                    "folder": "/home/sam/.claude-work",
+                    "use_environment_api_key": true,
+                },
+                "sign_in": "not_signed_in",
+                "sign_in_command": "CLAUDE_CONFIG_DIR='/home/sam/.claude-work' claude",
+            }],
+            "environment_api_key": false,
+        }),
+    );
+}
+
+#[test]
+fn account_events_on_the_wire() {
+    let usage = Event::AccountPlanUsageChanged(AccountPlanUsage {
+        account: AccountId::new(2),
+        usage: PlanUsage::default(),
+    });
+    let accounts = Event::AccountsChanged {
+        accounts: vec![default_account()],
+    };
+
+    assert_wire(
+        &usage,
+        json!({"type": "account_plan_usage_changed", "account": 2, "usage": {"windows": {}}}),
+    );
+    assert_wire(
+        &accounts,
+        json!({"type": "accounts_changed", "accounts": [{
+            "id": 0,
+            "name": "Personal",
+            "folder": "/home/sam/.claude",
+            "use_environment_api_key": false,
+        }]}),
+    );
+}
+
+/// An app that predates accounts reads the default account's usage from `plan_usage_changed`,
+/// whose shape stays the same.
+#[test]
+fn the_default_accounts_plan_usage_keeps_its_event() {
+    let event = Event::PlanUsageChanged(PlanUsage::default());
+
+    assert_wire(&event, json!({"type": "plan_usage_changed", "windows": {}}));
+}
+
+/// What a client or a daemon that predates accounts sends still reads, as the default account.
+#[test]
+fn messages_without_accounts_read_as_the_default_account() {
+    let start: Request = serde_json::from_value(json!({
+        "method": "agent.start",
+        "params": {"folder": "/srv/projects/shop", "title": null, "model": null,
+                   "effort": null, "mode": null, "prompt": null},
+    }))
+    .unwrap();
+    let resume: Request = serde_json::from_value(json!({
+        "method": "sessions.resume",
+        "params": {"session": "0b7e1c2a-3d4f-4a5b-8c6d-7e8f9a0b1c2d"},
+    }))
+    .unwrap();
+    let session: PastSession = serde_json::from_value(json!({
+        "id": "0b7e1c2a-3d4f-4a5b-8c6d-7e8f9a0b1c2d",
+        "title": "Fix the login form",
+        "folder": "/srv/projects/shop",
+        "last_activity": 1_700_000_500_000_u64,
+        "turns": 7,
+    }))
+    .unwrap();
+    let snapshot: Snapshot = serde_json::from_value(json!({
+        "agents": [],
+        "plan_usage": {"windows": {}},
+        "settings": {},
+        "last_seq": null,
+    }))
+    .unwrap();
+
+    let Request::AgentStart(start) = start else {
+        panic!("not a start: {start:?}");
+    };
+    assert_eq!(start.account, AccountId::DEFAULT);
+    let Request::SessionsResume(resume) = resume else {
+        panic!("not a resume: {resume:?}");
+    };
+    assert_eq!(resume.account, AccountId::DEFAULT);
+    assert_eq!(session.account, AccountId::DEFAULT);
+    assert!(snapshot.accounts.is_empty());
+    assert!(snapshot.other_plan_usage.is_empty());
 }

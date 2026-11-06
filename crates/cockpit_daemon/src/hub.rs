@@ -1,6 +1,7 @@
 //! The hub: one task that owns every agent, numbers the events, logs them, and sends them to every
 //! connected client.
 
+mod accounts;
 mod agents;
 mod control;
 mod errors;

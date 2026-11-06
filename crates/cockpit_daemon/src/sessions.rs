@@ -17,7 +17,7 @@ use std::time::SystemTime;
 
 use claude_protocol::{MessageOrigin, OutputLine, TypedCommand};
 use cockpit_protocol::{
-    ClaudeSessionId, CostUsd, MAX_LINE_BYTES, MAX_TITLE_CHARS, PastSession, Timestamp,
+    AccountId, ClaudeSessionId, CostUsd, MAX_LINE_BYTES, MAX_TITLE_CHARS, PastSession, Timestamp,
     TranscriptItem,
 };
 use serde::Deserialize;
@@ -63,12 +63,37 @@ enum TitleKey {
     Summary,
 }
 
-/// The newest sessions, newest first.
-pub(crate) fn list(claude_folder: &Path) -> Vec<PastSession> {
-    let mut files: Vec<(SystemTime, PathBuf)> = Vec::new();
-    let projects = claude_folder.join(PROJECTS_FOLDER);
+/// An account's Claude Code folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AccountFolder {
+    pub(crate) account: AccountId,
+    pub(crate) folder: PathBuf,
+}
+
+/// A session file found in an account's folder.
+struct SessionFile {
+    modified: SystemTime,
+    path: PathBuf,
+    account: AccountId,
+}
+
+/// The newest sessions of all the accounts, newest first.
+pub(crate) fn list(accounts: &[AccountFolder]) -> Vec<PastSession> {
+    let mut files: Vec<SessionFile> = Vec::new();
+    for account in accounts {
+        add_session_files(account, &mut files);
+    }
+    files.sort_by_key(|file| Reverse(file.modified));
+    let newest = files.into_iter().take(MAX_SESSIONS);
+    newest
+        .filter_map(|file| read_session(&file.path, file.account))
+        .collect()
+}
+
+fn add_session_files(account: &AccountFolder, files: &mut Vec<SessionFile>) {
+    let projects = account.folder.join(PROJECTS_FOLDER);
     let Ok(project_folders) = std::fs::read_dir(&projects) else {
-        return Vec::new();
+        return;
     };
     for project in project_folders.flatten() {
         let Ok(entries) = std::fs::read_dir(project.path()) else {
@@ -80,13 +105,14 @@ pub(crate) fn list(claude_folder: &Path) -> Vec<PastSession> {
                 continue;
             }
             if let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified()) {
-                files.push((modified, path));
+                files.push(SessionFile {
+                    modified,
+                    path,
+                    account: account.account,
+                });
             }
         }
     }
-    files.sort_by_key(|(modified, _)| Reverse(*modified));
-    let newest = files.into_iter().take(MAX_SESSIONS);
-    newest.filter_map(|(_, path)| read_session(&path)).collect()
 }
 
 /// A session `sessions.resume` takes over, and its transcript so far.
@@ -101,10 +127,11 @@ pub(crate) struct SessionPast {
     pub(crate) file: PastFile,
 }
 
-/// The session with this id, in any project, and the transcript of its whole lines.
-pub(crate) fn find(claude_folder: &Path, id: &ClaudeSessionId) -> Option<FoundSession> {
-    let path = find_file(claude_folder, id)?;
-    let session = read_session(&path)?;
+/// The session with this id, in any project of the account's folder, and the transcript of its
+/// whole lines.
+pub(crate) fn find(account: &AccountFolder, id: &ClaudeSessionId) -> Option<FoundSession> {
+    let path = find_file(&account.folder, id)?;
+    let session = read_session(&path, account.account)?;
     let past = read_past(&path, &session.folder, id, None);
     Some(FoundSession { session, past })
 }
@@ -284,7 +311,7 @@ fn find_file(claude_folder: &Path, id: &ClaudeSessionId) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-fn read_session(path: &Path) -> Option<PastSession> {
+fn read_session(path: &Path, account: AccountId) -> Option<PastSession> {
     let id = session_id(path)?;
     let mut file = read_file::open_to_read(path).ok()?;
     let metadata = file.metadata().ok()?;
@@ -321,6 +348,7 @@ fn read_session(path: &Path) -> Option<PastSession> {
         folder,
         last_activity,
         turns: count_prompts(file),
+        account,
     })
 }
 
@@ -469,6 +497,13 @@ mod tests {
     const FIRST: &str = "11111111-2222-3333-4444-555555555555";
     const SECOND: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 
+    fn default_account(folder: &Path) -> AccountFolder {
+        AccountFolder {
+            account: AccountId::DEFAULT,
+            folder: folder.to_owned(),
+        }
+    }
+
     fn write_session(claude: &Path, project: &str, id: &str, lines: &[Value]) {
         let folder = claude.join(PROJECTS_FOLDER).join(project);
         std::fs::create_dir_all(&folder).unwrap();
@@ -516,7 +551,7 @@ mod tests {
             &[prompt("x")],
         );
 
-        let mut sessions = list(temp.path());
+        let mut sessions = list(&[default_account(temp.path())]);
         sessions.sort_by(|left, right| left.title.cmp(&right.title));
 
         let summary: Vec<(&str, &str, u32)> = sessions
@@ -533,6 +568,53 @@ mod tests {
         assert_eq!(sessions[1].folder, PathBuf::from("/srv/work/shop"));
     }
 
+    /// Two accounts' folders list together, newest first, each session with its account.
+    #[test]
+    fn each_accounts_sessions_list_with_their_account() {
+        let temp = tempfile::tempdir().unwrap();
+        let personal = temp.path().join("claude");
+        let work = temp.path().join("claude-work");
+        write_session(
+            &personal,
+            "-srv-work-blog",
+            FIRST,
+            &[prompt("Draft a post")],
+        );
+        write_session(&work, "-srv-work-shop", SECOND, &[prompt("Fix the cart")]);
+        let work_account = AccountFolder {
+            account: AccountId::new(2),
+            folder: work,
+        };
+        let older = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let first_file = personal.join(format!(
+            "projects/-srv-work-blog/{FIRST}.{SESSION_EXTENSION}"
+        ));
+        OpenOptions::new()
+            .write(true)
+            .open(first_file)
+            .unwrap()
+            .set_modified(older)
+            .unwrap();
+
+        let sessions = list(&[default_account(&personal), work_account.clone()]);
+        let found = find(&work_account, &session(SECOND)).unwrap();
+        let elsewhere = find(&default_account(&personal), &session(SECOND));
+
+        let listed: Vec<(&str, AccountId, &str)> = sessions
+            .iter()
+            .map(|session| (session.id.as_str(), session.account, session.title.as_str()))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                (SECOND, AccountId::new(2), "Fix the cart"),
+                (FIRST, AccountId::DEFAULT, "Draft a post"),
+            ]
+        );
+        assert_eq!(found.session.account, AccountId::new(2));
+        assert!(elsewhere.is_none());
+    }
+
     #[test]
     fn a_message_claude_code_wrote_is_not_a_prompt() {
         let temp = tempfile::tempdir().unwrap();
@@ -545,7 +627,7 @@ mod tests {
         notification["origin"] = json!({"kind": "task-notification"});
         write_session(temp.path(), "p", FIRST, &[notification, typed]);
 
-        let sessions = list(temp.path());
+        let sessions = list(&[default_account(temp.path())]);
 
         let summary: Vec<(&str, u32)> = sessions
             .iter()
@@ -611,7 +693,7 @@ mod tests {
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
         file.write_all(br#"{"type":"user","message":"#).unwrap();
 
-        let found = find(temp.path(), &session(FIRST)).unwrap();
+        let found = find(&default_account(temp.path()), &session(FIRST)).unwrap();
 
         assert_eq!(
             texts(&found.past.items),
@@ -663,7 +745,7 @@ mod tests {
             ],
         );
 
-        let found = find(temp.path(), &session(FIRST)).unwrap();
+        let found = find(&default_account(temp.path()), &session(FIRST)).unwrap();
 
         let shown: Vec<&ItemBody> = found.past.items.iter().map(|item| &item.body).collect();
         assert_eq!(shown.len(), 3, "{shown:?}");
@@ -685,7 +767,7 @@ mod tests {
             FIRST,
             &[prompt("Before"), prompt("Also before")],
         );
-        let found = find(temp.path(), &session(FIRST)).unwrap();
+        let found = find(&default_account(temp.path()), &session(FIRST)).unwrap();
         write_session(
             temp.path(),
             "p",
@@ -719,7 +801,7 @@ mod tests {
             .collect();
         write_session(temp.path(), "p", FIRST, &prompts);
 
-        let found = find(temp.path(), &session(FIRST)).unwrap();
+        let found = find(&default_account(temp.path()), &session(FIRST)).unwrap();
 
         let items = &found.past.items;
         assert_eq!(items.len(), 2_001);
@@ -769,7 +851,7 @@ mod tests {
             .join(format!("{FIRST}.jsonl"));
         let whole = std::fs::metadata(&path).unwrap().len();
 
-        let found = find(temp.path(), &session(FIRST)).unwrap();
+        let found = find(&default_account(temp.path()), &session(FIRST)).unwrap();
 
         assert_eq!(texts(&found.past.items), ["user: Before", "user: After"]);
         assert_eq!(found.past.file.bytes, whole);
@@ -849,10 +931,16 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         write_session(temp.path(), "-srv-work-shop", FIRST, &[prompt("Hello")]);
 
-        let found = find(temp.path(), &ClaudeSessionId::new(FIRST.to_owned()));
-        let missing = find(temp.path(), &ClaudeSessionId::new(SECOND.to_owned()));
+        let found = find(
+            &default_account(temp.path()),
+            &ClaudeSessionId::new(FIRST.to_owned()),
+        );
+        let missing = find(
+            &default_account(temp.path()),
+            &ClaudeSessionId::new(SECOND.to_owned()),
+        );
         let path = find(
-            temp.path(),
+            &default_account(temp.path()),
             &ClaudeSessionId::new("../../etc/passwd".to_owned()),
         );
 
@@ -883,7 +971,7 @@ mod tests {
             &[json!({"type": "user", "message": {"content": "no folder"}})],
         );
 
-        assert!(list(temp.path()).is_empty());
+        assert!(list(&[default_account(temp.path())]).is_empty());
     }
 
     #[cfg(unix)]
@@ -903,7 +991,7 @@ mod tests {
         // Opening a FIFO waits for a writer: the listing runs in a thread the test can leave
         // behind.
         std::thread::spawn(move || {
-            let _ = sender.send(list(&claude));
+            let _ = sender.send(list(&[default_account(&claude)]));
         });
 
         let sessions = receiver

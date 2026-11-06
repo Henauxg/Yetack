@@ -19,7 +19,8 @@ use std::time::{Duration, Instant};
 use cockpit_client::{Connection, InAppLink, Transport};
 use cockpit_daemon::{DaemonConfig, InAppDaemon, ServeError, StoreError};
 use cockpit_protocol::{
-    AgentStatus, AgentSummary, Catchup, Event, Prompt, Request, ResponseBody, StartParams,
+    AccountId, AgentStatus, AgentSummary, Catchup, Event, Prompt, Request, ResponseBody,
+    StartParams,
 };
 use tempfile::TempDir;
 
@@ -192,6 +193,7 @@ async fn an_app_that_closes_mid_turn_resumes_the_turn_when_it_runs_agents_again(
             text: "slow".to_owned(),
             images: Vec::new(),
         }),
+        account: AccountId::DEFAULT,
     };
     let ResponseBody::AgentStarted { agent } = connection
         .request(Request::AgentStart(start))

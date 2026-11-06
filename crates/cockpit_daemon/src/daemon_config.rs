@@ -13,8 +13,8 @@ pub const STATE_DIR_FLAG: &str = "state-dir";
 /// Names the `claude` program to run instead of the one on `PATH`, for tests.
 pub const CLAUDE_PROGRAM_ENV: &str = "AGENTS_COCKPIT_CLAUDE";
 pub(crate) const DEFAULT_CLAUDE_PROGRAM: &str = "claude";
-/// Claude Code's own setting for its folder, which `sessions.list` reads.
-const CLAUDE_CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
+/// Claude Code's own setting for its folder, which holds its login, settings and sessions.
+pub(crate) const CLAUDE_CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
 const CLAUDE_HOME_FOLDER: &str = ".claude";
 /// Names the home folder, which the default state folder and Claude Code's folder need.
 #[cfg(unix)]
@@ -27,7 +27,8 @@ pub const HOME_ENV: &str = "USERPROFILE";
 pub struct DaemonConfig {
     pub state_dir: PathBuf,
     pub claude_program: PathBuf,
-    /// Claude Code's folder, where `sessions.list` finds past sessions under `projects/`.
+    /// The default account's Claude Code folder, which its `claude` gets from the daemon's own
+    /// environment: `CLAUDE_CONFIG_DIR`, or `.claude` in the home folder.
     pub claude_config_dir: PathBuf,
 }
 

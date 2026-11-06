@@ -12,6 +12,7 @@
 //!   set to a folder, it keeps the name there, and a resumed fake restates it before it answers
 //!   `initialize`.
 //! - `/model <model>`: uses that model from the next turn on, as Claude Code does.
+//! - `usage <utilization>`: reports that utilization of the five-hour window, then answers.
 //! - anything else: answers "Echo: <prompt>".
 //!
 //! Its `get_settings` answer applies the `--effort` it was given, or else a default that depends
@@ -19,7 +20,9 @@
 //!
 //! With `FAKE_CLAUDE_ARGS_FILE` set, it appends its command line to that file, one JSON array per
 //! line: `CLAUDE_CODE_RESUME_INTERRUPTED_TURN=<value>` first when that variable is set, as a shell
-//! writes it, then its arguments. It exits when its stdin closes.
+//! writes it, then its arguments. With `FAKE_CLAUDE_ENV_FILE` set, it appends the variables that
+//! carry a login, or the folder that holds one, as a JSON object per line, `null` for a variable
+//! it does not have. It exits when its stdin closes.
 
 use std::collections::VecDeque;
 use std::fs::OpenOptions;
@@ -32,6 +35,13 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 const ARGS_FILE_ENV: &str = "FAKE_CLAUDE_ARGS_FILE";
+const ENV_FILE_ENV: &str = "FAKE_CLAUDE_ENV_FILE";
+/// The variables `FAKE_CLAUDE_ENV_FILE` records.
+const RECORDED_ENV: [&str; 3] = [
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+];
 /// A folder that holds each session's name, in a file named after it.
 const SESSION_NAMES_ENV: &str = "FAKE_CLAUDE_SESSION_NAMES";
 const RESUME_INTERRUPTED_TURN_ENV: &str = "CLAUDE_CODE_RESUME_INTERRUPTED_TURN";
@@ -102,6 +112,15 @@ fn run() -> io::Result<()> {
             .collect();
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
         writeln!(file, "{}", json!(command_line))?;
+    }
+    if let Some(path) = std::env::var_os(ENV_FILE_ENV) {
+        let mut recorded = serde_json::Map::new();
+        for name in RECORDED_ENV {
+            let value = std::env::var(name).ok();
+            recorded.insert(name.to_owned(), json!(value));
+        }
+        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+        writeln!(file, "{}", Value::Object(recorded))?;
     }
     let flag = |prefix: &str| {
         args.iter()
@@ -329,6 +348,19 @@ impl<W: Write> Fake<W> {
                         "content": "<local-command-stdout>Effort set</local-command-stdout>"
                     }}),
                 )?;
+                self.end_turn()
+            }
+            "usage" => {
+                let utilization: f64 = prompt
+                    .trim_start_matches(first_word)
+                    .trim()
+                    .parse()
+                    .unwrap_or_default();
+                self.emit(&json!({"type": "rate_limit_event", "rate_limit_info": {
+                    "status": "allowed", "rateLimitType": "five_hour", "resetsAt": 1_900_000_000,
+                    "utilization": utilization
+                }}))?;
+                self.say("Usage reported.")?;
                 self.end_turn()
             }
             _ => {

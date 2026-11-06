@@ -14,7 +14,7 @@ use claude_protocol::{
     Usage, UserMessage as ClaudeUserMessage,
 };
 use cockpit_protocol::{
-    AgentDetails, AgentId, AgentStatus, AgentSummary, Answer, AnswerState, Approval,
+    AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, Answer, AnswerState, Approval,
     BackgroundTask, BackgroundTaskId, BackgroundTaskStatus, ClaudeSessionId, ContextUsage, CostUsd,
     Effort, Event, Image, ItemBody, ItemId, McpServer, PendingId, PermissionMode, Plan, Position,
     Prompt, Question, SubagentRun, SubagentStatus, SubagentToolCall, Timestamp, TokenUsage,
@@ -272,6 +272,7 @@ impl AgentView {
             turn_started_at: None,
             session: None,
             position: Position::default(),
+            account: AccountId::DEFAULT,
         };
         Self::new(summary, Duration::ZERO)
     }
@@ -1654,6 +1655,7 @@ mod tests {
             turn_started_at: None,
             session: None,
             position: Position::default(),
+            account: AccountId::DEFAULT,
         };
         let mut view = AgentView::new(summary, Duration::from_secs(3600));
         view.mark_published();

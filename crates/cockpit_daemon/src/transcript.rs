@@ -6,7 +6,7 @@
 //!   way.
 //! - [`answers`] turns a client's answer into the `control_response` Claude Code waits for, and
 //!   [`prompts`] a client's prompt into a `user` line.
-//! - [`plan_usage`] keeps the account's plan usage from `rate_limit_event` lines.
+//! - [`plan_usage`] keeps an account's plan usage from its agents' `rate_limit_event` lines.
 
 mod agent_view;
 mod answers;

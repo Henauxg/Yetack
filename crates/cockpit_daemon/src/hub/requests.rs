@@ -10,12 +10,14 @@ use cockpit_protocol::{
     Settings, StopProcessParams,
 };
 
+use crate::accounts::ClaudeEnv;
 use crate::daemon_config::HOME_ENV;
 use crate::hub::input::{ControlPurpose, HubInput, Reply};
 use crate::hub::state::{Agent, Hub};
 use crate::hub::{agents, errors, history};
 use crate::machine_load::AgentRoot;
 use crate::read_file::Found;
+use crate::sessions::AccountFolder;
 use crate::store::{DaemonSettings, LogName};
 use crate::transcript::{touched_files, words};
 use crate::{browse, machine_load, mcp_remove, read_file, sessions};
@@ -111,6 +113,12 @@ impl Hub {
             Request::MachineLoad => {
                 let roots = self.agent_roots();
                 self.load.query(roots, reply);
+            }
+            Request::AccountsList => self.accounts_list(reply),
+            Request::AccountsAdd(params) => self.accounts_add(params, reply),
+            Request::AccountsChange(params) => self.accounts_change(params, reply),
+            Request::AccountsRemove(params) => {
+                agents::respond(reply, self.accounts_remove(params.account));
             }
         }
     }
@@ -239,8 +247,12 @@ impl Hub {
     }
 
     fn mcp_remove(&self, params: McpRemoveParams, reply: Reply) {
-        let folder = match self.agent(params.agent) {
-            Ok(agent) => agent.record.folder.clone(),
+        let found = self.agent(params.agent).and_then(|agent| {
+            let account = self.account(agent.record.account)?;
+            Ok((agent.record.folder.clone(), ClaudeEnv::new(&account)))
+        });
+        let (folder, env) = match found {
+            Ok(found) => found,
             Err(error) => return agents::respond(reply, Err(error)),
         };
         let Some(scope) = words::removable_scope(params.scope) else {
@@ -251,7 +263,7 @@ impl Hub {
         };
         let program = self.config.claude_program.clone();
         tokio::spawn(async move {
-            let result = mcp_remove::remove(&program, &folder, &params.server, scope).await;
+            let result = mcp_remove::remove(&program, &folder, &env, &params.server, scope).await;
             agents::respond(reply, result.map(|()| ResponseBody::Done));
         });
     }
@@ -270,9 +282,9 @@ impl Hub {
     }
 
     fn sessions_list(&self, reply: Reply) {
-        let folder = self.config.claude_config_dir.clone();
+        let folders = self.account_folders();
         tokio::spawn(async move {
-            let listed = tokio::task::spawn_blocking(move || sessions::list(&folder)).await;
+            let listed = tokio::task::spawn_blocking(move || sessions::list(&folders)).await;
             let result = match listed {
                 Ok(sessions) => Ok(ResponseBody::Sessions { sessions }),
                 Err(error) => Err(errors::internal(error.to_string())),
@@ -284,7 +296,11 @@ impl Hub {
     /// Finds the session on disk and reads its transcript in a task, which hands them back to the
     /// hub before the agent exists.
     fn sessions_resume(&mut self, params: SessionResumeParams, reply: Reply) {
-        if let Some(agent) = self.agent_with_session(&params.session) {
+        let account = match self.account(params.account) {
+            Ok(account) => account,
+            Err(error) => return agents::respond(reply, Err(error)),
+        };
+        if let Some(agent) = self.agent_with_session(&params.session, account.id) {
             if self
                 .agents
                 .get(&agent)
@@ -295,7 +311,10 @@ impl Hub {
             }
             return agents::respond(reply, Ok(ResponseBody::AgentStarted { agent }));
         }
-        let folder = self.config.claude_config_dir.clone();
+        let folder = AccountFolder {
+            account: account.id,
+            folder: account.folder,
+        };
         let inputs = self.inputs.clone();
         tokio::spawn(async move {
             let id = params.session;
