@@ -187,11 +187,11 @@ pub fn composer_input(
 ) -> Option<PaletteChange> {
     let caret = byte_offset(&text, caret);
     let word = slash_word_at(&text, caret);
-    let dismissed = word.map(|word| (agent, word.start));
-    if drafts.palette_dismissed != dismissed {
-        drafts.palette_dismissed = None;
+    let dismissed = drafts.palette_dismissed.get(&agent).copied();
+    if dismissed != word.map(|word| word.start) {
+        drafts.palette_dismissed.remove(&agent);
     }
-    let word = word.filter(|word| drafts.palette_dismissed != Some((agent, word.start)));
+    let word = word.filter(|word| dismissed != Some(word.start));
     let change = match (state.ui.popover, word) {
         (Some(Popover::Palette(PaletteOrigin::Button)), _) => None,
         (popover, Some(word)) => {

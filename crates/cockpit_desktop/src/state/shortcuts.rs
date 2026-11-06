@@ -75,8 +75,9 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
     if press.key == KEY_ESCAPE {
         // A palette opened by typing stays closed for the rest of its "/" word.
         if state.ui.popover == Some(Popover::Palette(PaletteOrigin::Typed)) {
-            let word = drafts.palette.word.map(|word| word.start);
-            drafts.palette_dismissed = state.ui.selected.zip(word);
+            if let (Some(agent), Some(word)) = (state.ui.selected, drafts.palette.word) {
+                drafts.palette_dismissed.insert(agent, word.start);
+            }
         }
         state.ui.close_overlays();
         return Vec::new();
@@ -586,6 +587,29 @@ mod tests {
             state.ui.popover,
             Some(Popover::Palette(PaletteOrigin::Typed))
         );
+    }
+
+    #[test]
+    fn each_agent_keeps_the_slash_word_escape_closed() {
+        let (first, second) = (AgentId::new(1), AgentId::new(2));
+        let mut drafts = Drafts::default();
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::Idle),
+            summary(2, AgentStatus::Idle),
+        ]);
+        state.connection = ConnectionState::Connected;
+        let escape = press(KEY_ESCAPE, KeyTarget::Composer);
+
+        state.ui.selected = Some(first);
+        typed(&mut state, &mut drafts, first, "/re", 3);
+        handle_key(&mut state, &mut drafts, &escape);
+        actions::select_agent(&mut state, second);
+        typed(&mut state, &mut drafts, second, "/co", 3);
+        handle_key(&mut state, &mut drafts, &escape);
+        actions::select_agent(&mut state, first);
+        typed(&mut state, &mut drafts, first, "/rev", 4);
+
+        assert_eq!(state.ui.popover, None);
     }
 
     #[test]
