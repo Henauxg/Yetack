@@ -76,13 +76,14 @@ pub fn Composer() -> Element {
     });
     use_effect(move || {
         let (agent, _) = shown();
-        let text = agent
+        let (text, caret) = agent
             .and_then(|agent| {
                 let drafts = cockpit.drafts.peek();
-                drafts.draft(agent).map(|draft| draft.text.clone())
+                let caret = drafts.written_caret(agent);
+                drafts.draft(agent).map(|draft| (draft.text.clone(), caret))
             })
             .unwrap_or_default();
-        bridge::set_field_text(COMPOSER_ID, text);
+        bridge::set_field_text_at(COMPOSER_ID, text, caret);
     });
     let state = cockpit.state.read();
     let drafts = cockpit.drafts.read();
@@ -148,13 +149,13 @@ pub fn Composer() -> Element {
                     textarea {
                         id: COMPOSER_ID,
                         class: "composer-input",
-                        // The page's script keeps one undo history per agent.
-                        "data-undo-scope": "{agent.get()}",
+                        // The page's script sends the text with this agent, and keeps one undo
+                        // history per agent.
+                        "data-agent": "{agent.get()}",
                         rows: "2",
                         aria_label: "Message {title}",
                         placeholder: placeholder(status),
                         disabled: exited,
-                        oninput: move |event: FormEvent| cockpit.type_in_composer(agent, event.value()),
                     }
                     div { class: "composer-tools",
                         label {
