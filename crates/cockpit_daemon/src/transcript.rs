@@ -15,6 +15,7 @@ mod notices;
 mod past_transcript;
 pub(crate) mod plan_usage;
 pub(crate) mod prompts;
+mod subagents;
 mod tools;
 pub(crate) mod words;
 

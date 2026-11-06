@@ -4090,6 +4090,577 @@ html.splitting * {
   color: var(--muted);
 }
 
+/* The agent map (Ctrl+M): the outline of the agent and its subagents, the selected row's details
+   on the right. */
+
+.status-done {
+  --status: var(--green);
+  --status-fill: var(--green);
+  --status-bg: rgba(74, 194, 107, 0.12);
+}
+
+.status-failed {
+  --status: var(--red);
+  --status-fill: var(--red);
+  --status-bg: rgba(244, 112, 103, 0.12);
+}
+
+.tool.stopped {
+  --tool: var(--faint);
+}
+
+.overlay.map-overlay {
+  padding-top: 40px;
+}
+
+.dialog.agent-map {
+  width: min(1240px, calc(100% - 32px));
+  height: calc(100% - 32px);
+}
+
+.map-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 12px 12px 20px;
+  border-bottom: 1px solid var(--line-divider);
+}
+
+.map-head h2 {
+  flex: none;
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.map-head-icon {
+  display: inline-flex;
+  color: var(--dim);
+}
+
+.map-agent {
+  min-width: 0;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.map-stats {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-right: 6px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.map-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.map-stat .status-dot {
+  width: 7px;
+  height: 7px;
+}
+
+.map-filter[aria-pressed="true"] {
+  border-color: #3d6b64;
+  color: var(--teal);
+}
+
+.map-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.85fr) minmax(360px, 1fr);
+}
+
+.map-outline {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--line-divider);
+}
+
+.map-columns,
+.map-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 48px 84px 60px;
+  column-gap: 8px;
+}
+
+.map-columns {
+  flex: none;
+  padding: 10px 20px 8px;
+  border-bottom: 1px solid var(--line-divider);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.map-col {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* The selected row shows where the keys act: the outline needs no focus ring of its own. */
+.map-tree:focus {
+  outline: none;
+}
+
+.map-tree {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 6px 8px;
+}
+
+.map-row {
+  position: relative;
+  align-items: start;
+  padding: 7px 12px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+
+/* One guide line per level above the row, under the chevrons of the rows that start them. */
+.map-row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 21px;
+  width: var(--indent);
+  background: repeating-linear-gradient(to right, var(--line-strong) 0 1px, transparent 1px 20px);
+  pointer-events: none;
+}
+
+.map-row:hover {
+  background: var(--hover);
+}
+
+.map-row.highlighted {
+  border-color: var(--line-strong);
+  background: var(--selected);
+}
+
+.map-row .map-col {
+  padding-top: 1px;
+  font-size: 13px;
+  color: var(--text-soft);
+}
+
+.map-row.status-working .map-col.time,
+.map-row.status-needs-you .map-col.time,
+.map-row.status-failed .map-col.time {
+  color: var(--status);
+}
+
+.map-row-main {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+}
+
+.map-toggle {
+  flex: none;
+  width: 18px;
+  height: 20px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dim);
+}
+
+button.map-toggle:hover {
+  background: var(--line-divider);
+  color: var(--text);
+}
+
+.map-toggle.agent-glyph {
+  color: var(--teal);
+}
+
+.map-row .status-dot {
+  margin-top: 5px;
+}
+
+.map-row-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* One line each: the title and the second line cut with an ellipsis, the type and the tags
+   keep their width. */
+.map-line {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.map-line > * {
+  flex: none;
+}
+
+.map-title {
+  font-weight: 500;
+}
+
+.map-line > .map-title,
+.map-line > .map-tool-summary,
+.map-line > .map-line-text {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.map-row.root .map-title {
+  font-weight: 600;
+}
+
+.map-title.group-title {
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.map-row.group .map-toggle {
+  margin-right: 2px;
+}
+
+.map-type {
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.map-tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line-control);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.map-line.second {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.map-line.second.waiting {
+  color: var(--amber);
+}
+
+.map-line.second.failed {
+  color: var(--red);
+}
+
+.map-tool {
+  font-weight: 600;
+  color: var(--teal);
+}
+
+.map-tool-summary {
+  min-width: 0;
+  max-width: 100%;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.map-ref {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--teal);
+  font-weight: 600;
+  text-align: left;
+}
+
+.map-ref:hover,
+.map-ref:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.map-details {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 20px;
+}
+
+/* The column scrolls: its blocks keep their height rather than shrink to fit. */
+.map-details > * {
+  flex: none;
+}
+
+.map-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.map-detail-head .button {
+  flex: none;
+  white-space: nowrap;
+}
+
+.map-detail-head h3 {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.map-detail-sub {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.map-detail-sub .link-button {
+  font-size: 13px;
+}
+
+.map-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.map-fact {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 12px;
+  border-left: 1px solid var(--line);
+}
+
+.map-fact:first-child {
+  border-left: 0;
+}
+
+.map-fact-label {
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.map-fact-value {
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.map-fact-value.unknown {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--dim);
+}
+
+.map-waiting {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.map-tabs {
+  flex: none;
+  padding: 0;
+}
+
+.map-tab-count {
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.map-tab-body,
+.map-transcript,
+.map-calls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* The list of a subagent's calls, each with the dot of its status. */
+.map-calls {
+  gap: 0;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+}
+
+.map-call {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+  --tool: var(--green);
+}
+
+.map-call:first-child {
+  border-top: 0;
+}
+
+.map-call.running {
+  --tool: var(--teal);
+}
+
+.map-call.waiting {
+  --tool: var(--amber);
+}
+
+.map-call.failed {
+  --tool: var(--red);
+}
+
+.map-call > .tool-dot {
+  margin-top: 7px;
+}
+
+.map-call-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.map-working {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.map-section {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dim);
+}
+
+.map-error {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid #52302e;
+  background: rgba(244, 112, 103, 0.08);
+  color: var(--red);
+  font-size: 13px;
+}
+
+.map-note {
+  margin: 0;
+  font-size: 13px;
+  color: var(--dim);
+}
+
+.map-prompt {
+  padding: 4px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--well);
+}
+
+.map-root-text p {
+  margin: 0 0 8px;
+  color: var(--text-soft);
+}
+
+.map-root-text p.dim {
+  color: var(--dim);
+}
+
+.map-foot {
+  flex: none;
+  display: flex;
+  gap: 22px;
+  padding: 10px 20px;
+  border-top: 1px solid var(--line-divider);
+  font-size: 12.5px;
+  color: var(--dim);
+}
+
+/* The composer's map button, with a dot while a subagent runs or waits for you. */
+.map-button {
+  position: relative;
+}
+
+.live-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status);
+  box-shadow: 0 0 0 2px var(--panel);
+}
+
+.running-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.running-fold.map-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.task-description.task-link {
+  display: block;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.task-link:hover,
+.task-link:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+@media (max-width: 1000px) {
+  .map-body {
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 0.9fr);
+  }
+
+  .map-stats {
+    display: none;
+  }
+}
+
 .field-group {
   display: flex;
   flex-direction: column;

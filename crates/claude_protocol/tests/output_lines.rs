@@ -14,8 +14,8 @@ use claude_protocol::{
     MessageOrigin, OpenWord, OriginKind, OutputLine, ParseError, PermissionBehavior,
     PermissionDestination, PermissionMode, PermissionUpdate, RateLimitStatus, RateLimitType,
     ResetTrigger, ResultMessage, ResultSubtype, SessionId, SessionState, SettingsAnswer,
-    SystemEvent, TaskId, TaskNotificationText, TaskStatus, TerminalReason, ToolUseId, Usage,
-    UserMessage,
+    SystemEvent, TaskId, TaskNotificationText, TaskStatus, TerminalReason, ToolInput, ToolUseId,
+    Usage, UserMessage,
 };
 use serde_json::{Value, json};
 
@@ -297,6 +297,34 @@ fn assistant_tool_use_in_a_subagent() {
     assert_eq!(server_tool_use["type"], "server_tool_use");
 }
 
+/// The subagent's call, its task and its own lines share one tool call id: the task events name
+/// it as `tool_use_id`, the subagent's lines as `parent_tool_use_id`.
+#[test]
+fn assistant_agent_tool_use() {
+    let OutputLine::Assistant(assistant) = fixture("assistant_agent_tool_use.json") else {
+        panic!("not an assistant line");
+    };
+    assert_eq!(assistant.parent_tool_use_id, None);
+    let [ContentBlock::ToolUse(tool_use)] = assistant.message.content.as_slice() else {
+        panic!("not one tool use");
+    };
+    let ToolInput::Agent(input) = ToolInput::parse(&tool_use.name, &tool_use.input).unwrap() else {
+        panic!("not an Agent input");
+    };
+    assert_eq!(input.description, "Survey the test folder");
+    assert_eq!(input.subagent_type.as_deref(), Some("Explore"));
+    assert!(!input.run_in_background);
+
+    let SystemEvent::TaskStarted(task) = system_event("system_task_started.json") else {
+        panic!("not a task_started event");
+    };
+    let OutputLine::Assistant(nested) = fixture("assistant_tool_use_in_subagent.json") else {
+        panic!("not an assistant line");
+    };
+    assert_eq!(task.tool_use_id.as_ref(), Some(&tool_use.id));
+    assert_eq!(nested.parent_tool_use_id.as_ref(), Some(&tool_use.id));
+}
+
 #[test]
 fn user_replayed_prompt() {
     let OutputLine::User(user) = fixture("user_replayed_prompt.json") else {
@@ -378,6 +406,7 @@ fn user_task_notification() {
                 "Task \"Wait 60 seconds, then print finished\" was stopped by the user or by the app connected to this session"
                     .to_owned()
             ),
+            tool_use_id: Some(tool_use_id("toolu_01Example")),
         }]
     );
 }

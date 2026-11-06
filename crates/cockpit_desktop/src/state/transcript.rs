@@ -45,6 +45,29 @@ pub struct Waiting {
     pub kind: WaitingKind,
 }
 
+impl Waiting {
+    /// The item, when it is an approval, a question or a plan that waits for an answer.
+    fn of(item: &TranscriptItem) -> Option<Self> {
+        let (pending, kind) = match &item.body {
+            ItemBody::Approval(approval) if approval.answer == AnswerState::Waiting => {
+                (&approval.pending, WaitingKind::Approval)
+            }
+            ItemBody::Question(question) if question.answer == AnswerState::Waiting => {
+                (&question.pending, WaitingKind::Question)
+            }
+            ItemBody::Plan(plan) if plan.answer == AnswerState::Waiting => {
+                (&plan.pending, WaitingKind::Plan)
+            }
+            _ => return None,
+        };
+        Some(Self {
+            item: item.id,
+            pending: pending.clone(),
+            kind,
+        })
+    }
+}
+
 impl Transcript {
     /// In transcript order.
     pub fn items(&self) -> impl Iterator<Item = &TranscriptItem> {
@@ -126,25 +149,17 @@ impl Transcript {
 
     /// The newest approval, question or plan that waits for an answer.
     pub fn waiting(&self) -> Option<Waiting> {
-        self.items.values().rev().find_map(|item| {
-            let (pending, kind) = match &item.body {
-                ItemBody::Approval(approval) if approval.answer == AnswerState::Waiting => {
-                    (&approval.pending, WaitingKind::Approval)
-                }
-                ItemBody::Question(question) if question.answer == AnswerState::Waiting => {
-                    (&question.pending, WaitingKind::Question)
-                }
-                ItemBody::Plan(plan) if plan.answer == AnswerState::Waiting => {
-                    (&plan.pending, WaitingKind::Plan)
-                }
-                _ => return None,
-            };
-            Some(Waiting {
-                item: item.id,
-                pending: pending.clone(),
-                kind,
-            })
-        })
+        self.items.values().rev().find_map(Waiting::of)
+    }
+
+    /// The newest approval, question or plan of the subagent of item `parent` that waits for an
+    /// answer.
+    pub fn waiting_under(&self, parent: ItemId) -> Option<Waiting> {
+        self.items
+            .values()
+            .rev()
+            .filter(|item| item.parent == Some(parent))
+            .find_map(Waiting::of)
     }
 }
 

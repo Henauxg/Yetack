@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use cockpit_protocol::{AgentId, ClaudeSessionId, DirListing, Effort, ItemId, PermissionMode};
 
+use super::agent_map::MapView;
 use super::app_state::Loadable;
 
 /// How many error notes stay on screen; an older one goes when a new one comes.
@@ -53,6 +54,8 @@ pub enum Dialog {
     OpenFile(OpenFileView),
     /// Asks before closing an agent that works, waits for you, or holds an unsent draft.
     CloseAgent(AgentId),
+    /// The agent and every subagent it started (Ctrl+M).
+    AgentMap(MapView),
 }
 
 /// The "Open file" dialog's data: the folder its path field names, with what the daemon listed

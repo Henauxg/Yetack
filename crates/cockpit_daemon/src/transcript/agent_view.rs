@@ -8,23 +8,25 @@ use claude_protocol::{
     AssistantMessage, CanUseTool, ContentBlock, ContextUsage as ClaudeContextUsage,
     ControlRequestId, ConversationReset, ImageBlock, ImageSource, IncomingControlRequest,
     IncomingRequest, InitializeResponse, InputLine, InterruptNotice, McpStatus, OpenWord,
-    OutputLine, RateLimitInfo, ResetTrigger, ResultMessage, SessionState, SystemEvent, SystemInit,
-    TaskNotification, TaskStarted, TaskUsage, TerminalReason, ToolInput, ToolName, ToolResultBlock,
-    ToolUseBlock, ToolUseId, TypedCommand, Usage, UserMessage as ClaudeUserMessage,
+    OriginKind, OutputLine, RateLimitInfo, ResetTrigger, ResultMessage, SessionState, SystemEvent,
+    SystemInit, TaskNotification, TaskNotificationText, TaskProgress, TaskStarted, TaskUsage,
+    TerminalReason, ToolInput, ToolName, ToolResultBlock, ToolUseBlock, ToolUseId, TypedCommand,
+    Usage, UserMessage as ClaudeUserMessage,
 };
 use cockpit_protocol::{
     AgentDetails, AgentId, AgentStatus, AgentSummary, Answer, AnswerState, Approval,
     BackgroundTask, BackgroundTaskId, BackgroundTaskStatus, ClaudeSessionId, ContextUsage, CostUsd,
     Effort, Event, Image, ItemBody, ItemId, McpServer, PendingId, PermissionMode, Plan, Position,
-    Prompt, Question, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
-    UserMessage,
+    Prompt, Question, SubagentRun, SubagentStatus, SubagentToolCall, Timestamp, TokenUsage,
+    ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, UserMessage,
 };
 use serde_json::{Map, Value};
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
 use crate::sessions;
 use crate::transcript::past_transcript::LAST_PAST_ID;
-use crate::transcript::{answers, details, notices, tools, words};
+use crate::transcript::subagents::{Ended, Started};
+use crate::transcript::{answers, details, notices, subagents, tools, words};
 
 /// What the hub does after a line, beyond publishing the view's events.
 #[derive(Debug, Clone, PartialEq)]
@@ -236,6 +238,7 @@ impl AgentView {
             }
         }
         view.stop_background_tasks(None);
+        view.stop_subagents(None);
         view.summary.activity = None;
         // The log does not say when a turn the previous daemon cut off last did something: the
         // later of its start and the last activity logged stands for it.
@@ -277,7 +280,11 @@ impl AgentView {
     /// typed, which has no `isReplay` there.
     pub(super) fn apply_session_line(&mut self, line: OutputLine) {
         match line {
-            OutputLine::User(message) => self.apply_user(message, LineSource::SessionFile),
+            OutputLine::User(message) => self.apply_user(
+                message,
+                LineSource::SessionFile,
+                Timestamp::from_unix_millis(0),
+            ),
             OutputLine::System(SystemEvent::Other(value))
                 if untyped_subtype(&value) == Some(UntypedSystemSubtype::LocalCommand) =>
             {
@@ -359,6 +366,7 @@ impl AgentView {
     /// The events for everything that changed since the last call, in order.
     pub(crate) fn take_events(&mut self) -> Vec<Event> {
         self.refresh_status();
+        self.refresh_waiting_subagents();
         let agent = self.summary.id;
         let mut order: Vec<ItemChange> = Vec::new();
         for change in self.changes.drain(..) {
@@ -398,7 +406,7 @@ impl AgentView {
         match line {
             OutputLine::System(event) => self.apply_system(event, now),
             OutputLine::Assistant(message) => self.apply_assistant(message, now),
-            OutputLine::User(message) => self.apply_user(message, LineSource::Process),
+            OutputLine::User(message) => self.apply_user(message, LineSource::Process, now),
             OutputLine::Result(result) => {
                 self.apply_result(&result, now);
                 follow_ups.push(FollowUp::TurnEnded);
@@ -601,6 +609,7 @@ impl AgentView {
         self.cancel_all_pending();
         self.fail_running_calls();
         self.stop_background_tasks(Some(now));
+        self.stop_subagents(Some(now));
         self.summary.activity = None;
         self.push_item(
             None,
@@ -667,18 +676,7 @@ impl AgentView {
         match event {
             SystemEvent::Init(init) => self.apply_init(init, now),
             SystemEvent::TaskStarted(task) => self.task_started(task, now),
-            SystemEvent::TaskProgress(progress) => {
-                let id = BackgroundTaskId::new(progress.task_id.as_str().to_owned());
-                if let Some(task) = self.background_task_mut(&id) {
-                    if !progress.description.is_empty() {
-                        task.description = progress.description;
-                    }
-                    if let Some(usage) = progress.usage {
-                        task.tool_calls = usage.tool_uses;
-                    }
-                    self.details_changed = true;
-                }
-            }
+            SystemEvent::TaskProgress(progress) => self.task_progressed(progress),
             SystemEvent::TaskNotification(notification) => self.task_notified(notification, now),
             SystemEvent::TaskUpdated(updated) => {
                 if let Some(OpenWord::Known(status)) = updated.patch.status
@@ -686,6 +684,7 @@ impl AgentView {
                 {
                     let id = BackgroundTaskId::new(updated.task_id.as_str().to_owned());
                     self.end_background_task(&id, status, None, now);
+                    self.end_task_subagent(&id, status, None, None, now);
                 }
             }
             SystemEvent::SessionStateChanged(changed) => match changed.state {
@@ -812,7 +811,7 @@ impl AgentView {
                         },
                     );
                 }
-                ContentBlock::ToolUse(tool_use) => self.start_tool_call(tool_use, parent),
+                ContentBlock::ToolUse(tool_use) => self.start_tool_call(tool_use, parent, now),
                 ContentBlock::Text(_)
                 | ContentBlock::Thinking(_)
                 | ContentBlock::ToolResult(_)
@@ -822,7 +821,7 @@ impl AgentView {
         }
     }
 
-    fn start_tool_call(&mut self, tool_use: ToolUseBlock, parent: Option<ItemId>) {
+    fn start_tool_call(&mut self, tool_use: ToolUseBlock, parent: Option<ItemId>, now: Timestamp) {
         let ToolUseBlock { id, name, input } = tool_use;
         // A malformed input still shows, as an unknown tool's would.
         let parsed = ToolInput::parse(&name, &input).unwrap_or(ToolInput::Unknown);
@@ -843,6 +842,28 @@ impl AgentView {
         };
         let item = self.push_item(parent, body);
         self.tool_calls.insert(id, item);
+        if let Some(owner) = parent {
+            let call = SubagentToolCall {
+                item: Some(item),
+                tool: name.clone(),
+                summary: summary.clone(),
+            };
+            if subagents::note_call(&mut self.details.subagents, owner, call) {
+                self.details_changed = true;
+            }
+        }
+        if let ToolInput::Agent(input) = &parsed {
+            let started = Started {
+                item,
+                parent,
+                summary: summary.clone(),
+                input: input.clone(),
+                turn: self.summary.turns.saturating_add(1),
+                now,
+            };
+            subagents::start(&mut self.details.subagents, started);
+            self.details_changed = true;
+        }
         let count = self.tool_counts.entry(name.clone()).or_default();
         *count = count.saturating_add(1);
         if details::is_mcp_tool(&name) {
@@ -861,7 +882,7 @@ impl AgentView {
         }
     }
 
-    fn apply_user(&mut self, message: ClaudeUserMessage, source: LineSource) {
+    fn apply_user(&mut self, message: ClaudeUserMessage, source: LineSource, now: Timestamp) {
         let parent = self.parent_item(message.parent_tool_use_id.as_ref());
         let ClaudeUserMessage {
             message: body,
@@ -876,7 +897,7 @@ impl AgentView {
         for block in body.content {
             match block {
                 ContentBlock::ToolResult(result) => {
-                    self.finish_tool_call(&result, tool_use_result.as_ref());
+                    self.finish_tool_call(&result, tool_use_result.as_ref(), now);
                 }
                 ContentBlock::Text(text) => texts.push(text.text),
                 ContentBlock::Image(image) => images.extend(cockpit_image(&image)),
@@ -888,6 +909,12 @@ impl AgentView {
             return;
         }
         let text = texts.join("\n");
+        let task_notification = origin
+            .as_ref()
+            .is_some_and(|origin| origin.kind == OpenWord::Known(OriginKind::TaskNotification));
+        if task_notification {
+            self.subagent_tasks_notified(&text, now);
+        }
         if let Some(notices) = notices::notices(origin.as_ref(), &text) {
             // A message another source wrote whole, such as a subagent's report, unfolds to it.
             let detail = (is_synthetic && notices.len() == 1).then(|| text.clone());
@@ -963,7 +990,12 @@ impl AgentView {
         }
     }
 
-    fn finish_tool_call(&mut self, result: &ToolResultBlock, tool_use_result: Option<&Value>) {
+    fn finish_tool_call(
+        &mut self,
+        result: &ToolResultBlock,
+        tool_use_result: Option<&Value>,
+        now: Timestamp,
+    ) {
         let Some(&item_id) = self.tool_calls.get(&result.tool_use_id) else {
             return;
         };
@@ -983,6 +1015,7 @@ impl AgentView {
             self.expected_context = Some(ExpectedContext::Skill(skill));
         }
         let output = tools::result_text(&result.content);
+        self.subagent_call_finished(item_id, result.is_error, &output, now);
         let Some(item) = self.item_mut(item_id) else {
             return;
         };
@@ -1040,6 +1073,25 @@ impl AgentView {
         if result.is_error || interrupted {
             self.fail_running_calls();
         }
+        let ended_status = if interrupted {
+            SubagentStatus::Stopped
+        } else if result.is_error {
+            SubagentStatus::Failed
+        } else {
+            SubagentStatus::Done
+        };
+        let ended = Ended {
+            status: ended_status,
+            error: turn_error(result, interrupted),
+            now: Some(now),
+        };
+        if subagents::end_running(
+            &mut self.details.subagents,
+            Some(SubagentRun::Foreground),
+            &ended,
+        ) {
+            self.details_changed = true;
+        }
         self.cancel_all_pending();
         self.end_work();
         self.summary.activity = None;
@@ -1095,6 +1147,7 @@ impl AgentView {
             | ToolInput::Bash(_)
             | ToolInput::Read(_)
             | ToolInput::Skill(_)
+            | ToolInput::Agent(_)
             | ToolInput::Unknown => ItemBody::Approval(Approval {
                 pending: pending.clone(),
                 tool: request.tool_name.clone(),
@@ -1169,6 +1222,14 @@ impl AgentView {
 
     fn task_started(&mut self, task: TaskStarted, now: Timestamp) {
         let id = BackgroundTaskId::new(task.task_id.as_str().to_owned());
+        let subagent = task
+            .tool_use_id
+            .as_ref()
+            .and_then(|call| self.tool_calls.get(call).copied())
+            .and_then(|item| subagents::find_mut(&mut self.details.subagents, item));
+        if let Some(subagent) = subagent {
+            subagent.task = Some(id.clone());
+        }
         self.details
             .background_tasks
             .retain(|existing| existing.id != id);
@@ -1195,6 +1256,125 @@ impl AgentView {
         };
         let id = BackgroundTaskId::new(notification.task_id.as_str().to_owned());
         self.end_background_task(&id, status, notification.usage, now);
+        let summary = Some(notification.summary).filter(|summary| !summary.is_empty());
+        self.end_task_subagent(&id, status, notification.usage, summary, now);
+    }
+
+    fn task_progressed(&mut self, progress: TaskProgress) {
+        let id = BackgroundTaskId::new(progress.task_id.as_str().to_owned());
+        if let Some(task) = self.background_task_mut(&id) {
+            if !progress.description.is_empty() {
+                task.description = progress.description;
+            }
+            if let Some(usage) = progress.usage {
+                task.tool_calls = usage.tool_uses;
+            }
+            self.details_changed = true;
+        }
+        if let Some(subagent) = subagents::find_task_mut(&mut self.details.subagents, &id)
+            && subagents::note_progress(subagent, progress.usage, progress.last_tool_name)
+        {
+            self.details_changed = true;
+        }
+    }
+
+    /// The subagent whose task is `id` ended, with the usage and the summary Claude Code gives.
+    fn end_task_subagent(
+        &mut self,
+        id: &BackgroundTaskId,
+        status: BackgroundTaskStatus,
+        usage: Option<TaskUsage>,
+        summary: Option<String>,
+        now: Timestamp,
+    ) {
+        let Some(subagent) = subagents::find_task_mut(&mut self.details.subagents, id) else {
+            return;
+        };
+        if subagents::note_progress(subagent, usage, None) {
+            self.details_changed = true;
+        }
+        let item = subagent.item;
+        self.end_subagent(item, status, summary, now);
+    }
+
+    fn end_subagent(
+        &mut self,
+        item: ItemId,
+        status: BackgroundTaskStatus,
+        error: Option<String>,
+        now: Timestamp,
+    ) {
+        let Some(status) = subagents::status_from_task(status) else {
+            return;
+        };
+        let ended = Ended {
+            status,
+            error,
+            now: Some(now),
+        };
+        if subagents::end(&mut self.details.subagents, item, &ended) {
+            self.details_changed = true;
+        }
+    }
+
+    /// A subagent's call returned. A foreground subagent ends with it; a background one runs on,
+    /// unless its call failed to start it.
+    fn subagent_call_finished(&mut self, item: ItemId, failed: bool, output: &str, now: Timestamp) {
+        let Some(subagent) = subagents::find_mut(&mut self.details.subagents, item) else {
+            return;
+        };
+        if subagent.run == SubagentRun::Background && !failed {
+            return;
+        }
+        let status = if failed {
+            BackgroundTaskStatus::Failed
+        } else {
+            BackgroundTaskStatus::Done
+        };
+        self.end_subagent(item, status, Some(output.to_owned()), now);
+    }
+
+    /// The `<task-notification>` elements of a message Claude Code writes when background tasks
+    /// end. Each names the call that started its task.
+    fn subagent_tasks_notified(&mut self, text: &str, now: Timestamp) {
+        for notification in TaskNotificationText::parse_all(text) {
+            let item = notification
+                .tool_use_id
+                .as_ref()
+                .and_then(|call| self.tool_calls.get(call).copied());
+            let status = match notification.status {
+                Some(OpenWord::Known(status)) => words::ended_task_status(status),
+                Some(OpenWord::Unknown(_)) | None => None,
+            };
+            if let (Some(item), Some(status)) = (item, status) {
+                self.end_subagent(item, status, notification.summary, now);
+            }
+        }
+    }
+
+    /// Ends the subagents that still run, as stopped, at `now` when known.
+    fn stop_subagents(&mut self, now: Option<Timestamp>) {
+        let ended = Ended {
+            status: SubagentStatus::Stopped,
+            error: None,
+            now,
+        };
+        if subagents::end_running(&mut self.details.subagents, None, &ended) {
+            self.details_changed = true;
+        }
+    }
+
+    /// A subagent waits for you while one of its approvals, questions or plans waits.
+    fn refresh_waiting_subagents(&mut self) {
+        let waiting: BTreeSet<ItemId> = self
+            .pending
+            .values()
+            .filter_map(|pending| find_item(&self.items, pending.item))
+            .filter_map(|item| item.parent)
+            .collect();
+        if subagents::mark_waiting(&mut self.details.subagents, &waiting) {
+            self.details_changed = true;
+        }
     }
 
     fn end_background_task(
@@ -1447,7 +1627,8 @@ mod tests {
     use claude_protocol::PermissionDecision;
     use cockpit_protocol::{
         AgentId, ApprovalAnswer, ApprovalDecision, BackgroundTaskKind, CommandKind, FileEdit,
-        McpServerStatus, PlanAnswer, PlanDecision, QuestionAnswer, TaskProgress, TaskStatus,
+        McpServerStatus, PlanAnswer, PlanDecision, QuestionAnswer, Subagent, TaskProgress,
+        TaskStatus,
     };
     use serde_json::json;
 
@@ -2102,6 +2283,275 @@ mod tests {
             ]
         );
         assert_eq!(view.details().tasks[2].active_form, "Test");
+    }
+
+    /// A line of `claude_protocol`'s fixtures.
+    fn fixture(text: &str) -> Value {
+        serde_json::from_str(text).unwrap()
+    }
+
+    const AGENT_CALL: &str =
+        include_str!("../../../claude_protocol/tests/fixtures/assistant_agent_tool_use.json");
+    const CALL_IN_SUBAGENT: &str =
+        include_str!("../../../claude_protocol/tests/fixtures/assistant_tool_use_in_subagent.json");
+    const TASK_STARTED: &str =
+        include_str!("../../../claude_protocol/tests/fixtures/system_task_started.json");
+    const TASK_PROGRESS: &str =
+        include_str!("../../../claude_protocol/tests/fixtures/system_task_progress.json");
+    const TASK_NOTIFICATION: &str =
+        include_str!("../../../claude_protocol/tests/fixtures/system_task_notification.json");
+    const USER_TASK_NOTIFICATION: &str =
+        include_str!("../../../claude_protocol/tests/fixtures/user_task_notification.json");
+
+    /// The tool call id the fixtures of a subagent share.
+    const FIXTURE_CALL: &str = "toolu_00000000000000000000000001";
+
+    fn agent_call(id: &str, description: &str, background: bool) -> Value {
+        tool_use(
+            id,
+            "Agent",
+            json!({"description": description, "prompt": "Look", "run_in_background": background}),
+        )
+    }
+
+    fn nested(mut line: Value, parent: &str) -> Value {
+        line["parent_tool_use_id"] = json!(parent);
+        line
+    }
+
+    fn subagent(view: &AgentView, item: ItemId) -> &Subagent {
+        view.details()
+            .subagents
+            .iter()
+            .find(|subagent| subagent.item == item)
+            .unwrap()
+    }
+
+    fn subagent_statuses(view: &AgentView) -> Vec<SubagentStatus> {
+        view.details()
+            .subagents
+            .iter()
+            .map(|subagent| subagent.status)
+            .collect()
+    }
+
+    fn has_details_event(events: &[Event]) -> bool {
+        events
+            .iter()
+            .any(|event| matches!(event, Event::DetailsChanged { .. }))
+    }
+
+    #[test]
+    fn a_subagent_follows_its_call_its_own_lines_and_its_task() {
+        let mut view = view();
+        view.add_prompt(&prompt("Survey the tests"), PromptDelivery::Now, at(100));
+
+        apply(&mut view, fixture(AGENT_CALL));
+        apply(&mut view, fixture(TASK_STARTED));
+        apply(&mut view, fixture(CALL_IN_SUBAGENT));
+        let item = view.items()[1].id;
+        let running = subagent(&view, item).clone();
+        apply(&mut view, fixture(TASK_PROGRESS));
+        let progressed = subagent(&view, item).clone();
+        apply(
+            &mut view,
+            tool_result(FIXTURE_CALL, "Found 12 test files", false),
+        );
+        apply(&mut view, fixture(TASK_NOTIFICATION));
+
+        assert_eq!(running.description, "Survey the test folder");
+        assert_eq!(running.agent_type.as_deref(), Some("Explore"));
+        assert_eq!(running.run, SubagentRun::Foreground);
+        assert_eq!(running.status, SubagentStatus::Running);
+        assert_eq!(running.parent, None);
+        assert_eq!(running.turn, 1);
+        assert_eq!(
+            running.task,
+            Some(BackgroundTaskId::new("task-0001".to_owned()))
+        );
+        assert_eq!(running.tokens, None, "no usage reported yet");
+        assert_eq!(running.tool_calls, 1);
+        let edit = view.items()[2].id;
+        assert_eq!(
+            running.last_tool,
+            Some(SubagentToolCall {
+                item: Some(edit),
+                tool: "Edit".to_owned(),
+                summary: "/home/user/project/src/main.rs".to_owned(),
+            })
+        );
+        assert_eq!(progressed.tokens, Some(12_000));
+        assert_eq!(progressed.tool_calls, 3);
+        assert_eq!(
+            progressed.last_tool.map(|call| call.tool),
+            Some("Read".to_owned())
+        );
+        let ended = subagent(&view, item);
+        assert_eq!(ended.status, SubagentStatus::Done);
+        assert_eq!(ended.ended_at, Some(now()));
+        assert_eq!(
+            ended.tokens,
+            Some(15_000),
+            "the notification's usage counts"
+        );
+        assert_eq!(ended.tool_calls, 5);
+        assert_eq!(ended.error, None);
+    }
+
+    #[test]
+    fn a_subagent_without_task_events_shows_its_calls_and_no_tokens() {
+        let mut view = view();
+
+        apply(&mut view, agent_call("t1", "Map the request path", false));
+        apply(
+            &mut view,
+            nested(
+                tool_use("t2", "Read", json!({"file_path": "/srv/a.rs"})),
+                "t1",
+            ),
+        );
+        apply(
+            &mut view,
+            nested(tool_use("t3", "Grep", json!({"pattern": "limit"})), "t1"),
+        );
+        apply(
+            &mut view,
+            tool_result("t1", "API error 529: overloaded\nmore", true),
+        );
+
+        let failed = subagent(&view, view.items()[0].id);
+        assert_eq!(failed.status, SubagentStatus::Failed);
+        assert_eq!(failed.error.as_deref(), Some("API error 529: overloaded"));
+        assert_eq!(failed.tool_calls, 2);
+        assert_eq!(failed.tokens, None);
+    }
+
+    #[test]
+    fn a_background_subagent_runs_on_after_its_call_returns() {
+        let mut view = view();
+
+        apply(
+            &mut view,
+            agent_call("toolu_01Example", "Wait a minute", true),
+        );
+        apply(
+            &mut view,
+            tool_result("toolu_01Example", "Async agent launched", false),
+        );
+        assert_eq!(subagent_statuses(&view), [SubagentStatus::Running]);
+        assert_eq!(view.details().subagents[0].run, SubagentRun::Background);
+
+        apply(&mut view, fixture(USER_TASK_NOTIFICATION));
+
+        assert_eq!(subagent_statuses(&view), [SubagentStatus::Stopped]);
+    }
+
+    #[test]
+    fn a_nested_subagent_names_its_parent_and_is_its_parents_last_call() {
+        let mut view = view();
+
+        apply(&mut view, agent_call("t1", "Implement the bucket", true));
+        apply(
+            &mut view,
+            nested(agent_call("t2", "Write the property tests", false), "t1"),
+        );
+
+        let (outer, inner) = (view.items()[0].id, view.items()[1].id);
+        assert_eq!(subagent(&view, inner).parent, Some(outer));
+        let outer = subagent(&view, outer);
+        assert_eq!(outer.tool_calls, 1);
+        assert_eq!(
+            outer.last_tool.as_ref().and_then(|call| call.item),
+            Some(inner)
+        );
+    }
+
+    #[test]
+    fn a_subagent_waits_for_you_while_its_approval_waits() {
+        let mut view = view();
+        apply(&mut view, agent_call("t1", "Clean up", false));
+        apply(
+            &mut view,
+            nested(
+                tool_use("t2", "Bash", json!({"command": "rm -r build"})),
+                "t1",
+            ),
+        );
+
+        apply(
+            &mut view,
+            can_use_tool("req-1", "t2", "Bash", json!({"command": "rm -r build"})),
+        );
+        view.take_events();
+        assert_eq!(subagent_statuses(&view), [SubagentStatus::NeedsYou]);
+
+        let answer = Answer::Approval(ApprovalAnswer {
+            decision: ApprovalDecision::Allow,
+            message: None,
+        });
+        view.answer(&PendingId::new("req-1".to_owned()), answer)
+            .unwrap();
+        let events = view.take_events();
+        assert_eq!(subagent_statuses(&view), [SubagentStatus::Running]);
+        assert!(has_details_event(&events));
+    }
+
+    #[test]
+    fn an_interrupt_stops_the_foreground_subagents_and_an_exit_the_others() {
+        let mut view = view();
+        apply(&mut view, agent_call("t1", "Review the change", false));
+        apply(&mut view, agent_call("t2", "Benchmark", true));
+        apply(&mut view, tool_result("t2", "Async agent launched", false));
+
+        apply(&mut view, interrupted_result());
+        assert_eq!(
+            subagent_statuses(&view),
+            [SubagentStatus::Stopped, SubagentStatus::Running]
+        );
+
+        view.process_exited("claude exited".to_owned(), now());
+        assert_eq!(
+            subagent_statuses(&view),
+            [SubagentStatus::Stopped, SubagentStatus::Stopped]
+        );
+    }
+
+    #[test]
+    fn a_subagents_text_sends_no_details() {
+        let mut view = view();
+        apply(&mut view, agent_call("t1", "Survey", false));
+        view.take_events();
+
+        apply(
+            &mut view,
+            nested(
+                assistant(json!([{"type": "text", "text": "Reading the tests."}])),
+                "t1",
+            ),
+        );
+        let after_text = view.take_events();
+        apply(
+            &mut view,
+            nested(
+                tool_use("t2", "Read", json!({"file_path": "/srv/a.rs"})),
+                "t1",
+            ),
+        );
+        let after_call = view.take_events();
+
+        assert!(!has_details_event(&after_text));
+        assert!(has_details_event(&after_call));
+    }
+
+    #[test]
+    fn a_subagent_belongs_to_the_turn_it_started_in() {
+        let mut view = view();
+        apply(&mut view, result(0.1));
+        apply(&mut view, result(0.2));
+
+        apply(&mut view, agent_call("t1", "Survey", false));
+
+        assert_eq!(view.details().subagents[0].turn, 3);
     }
 
     #[test]

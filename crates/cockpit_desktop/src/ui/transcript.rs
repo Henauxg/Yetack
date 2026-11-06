@@ -385,7 +385,7 @@ fn is_queued(item: &TranscriptItem) -> bool {
     matches!(&item.body, ItemBody::UserMessage(message) if message.queued)
 }
 
-fn waits_for_answer(item: &TranscriptItem) -> bool {
+pub(crate) fn waits_for_answer(item: &TranscriptItem) -> bool {
     match &item.body {
         ItemBody::Approval(approval) => approval.answer == AnswerState::Waiting,
         ItemBody::Question(question) => question.answer == AnswerState::Waiting,
@@ -396,9 +396,9 @@ fn waits_for_answer(item: &TranscriptItem) -> bool {
 
 /// Each item's direct children. Built once per render, so that the subtrees cost one pass over
 /// the transcript instead of one per item.
-type Children<'item> = BTreeMap<ItemId, Vec<&'item TranscriptItem>>;
+pub(crate) type Children<'item> = BTreeMap<ItemId, Vec<&'item TranscriptItem>>;
 
-fn children_by_parent<'item>(items: &[&'item TranscriptItem]) -> Children<'item> {
+pub(crate) fn children_by_parent<'item>(items: &[&'item TranscriptItem]) -> Children<'item> {
     let mut children = Children::new();
     for item in items {
         if let Some(parent) = item.parent {
@@ -410,7 +410,7 @@ fn children_by_parent<'item>(items: &[&'item TranscriptItem]) -> Children<'item>
 
 /// Every item nested under `root`, at any depth, in transcript order. Each item comes once, even
 /// when parents form a cycle.
-fn subtree(children: &Children<'_>, root: ItemId) -> Vec<TranscriptItem> {
+pub(crate) fn subtree(children: &Children<'_>, root: ItemId) -> Vec<TranscriptItem> {
     let mut found: Vec<TranscriptItem> = Vec::new();
     let mut seen = BTreeSet::from([root]);
     let mut pending = vec![root];
@@ -1030,7 +1030,7 @@ fn SubagentView(
 
 /// A subagent's item: tool calls on one line, the rest as in the main conversation.
 #[component]
-fn CompactItem(
+pub(crate) fn CompactItem(
     agent: AgentId,
     folder: PathBuf,
     item: TranscriptItem,

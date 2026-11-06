@@ -28,9 +28,9 @@ use cockpit_protocol::{
     ReadFileParams, RenameParams, Request, RequestId, ResourceUse, ResponseBody, ResponseResult,
     Seq, ServerLoad, ServerMessage, ServerPoint, SessionResumeParams, SetEffortParams,
     SetModeParams, SetModelParams, Settings, SlashCommand, Snapshot, StartParams,
-    StopProcessParams, StopTaskParams, TaskListItem, TaskProgress, TaskStatus, Timestamp,
-    TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, UsageWindow, UserMessage,
-    WindowUsage,
+    StopProcessParams, StopTaskParams, Subagent, SubagentRun, SubagentStatus, SubagentToolCall,
+    TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus,
+    TranscriptItem, TurnEnd, UsageWindow, UserMessage, WindowUsage,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -392,7 +392,50 @@ fn details() -> AgentDetails {
         context: Some(context_usage()),
         mcp_servers: mcp_servers(),
         commands: commands(),
+        subagents: subagents(),
     }
+}
+
+/// A background subagent that waits for a foreground one it started.
+fn subagents() -> Vec<Subagent> {
+    vec![
+        Subagent {
+            item: ItemId::new(40),
+            parent: None,
+            description: "Search the callers".to_owned(),
+            agent_type: Some("Explore".to_owned()),
+            run: SubagentRun::Background,
+            status: SubagentStatus::Running,
+            started_at: at(1_700_000_100_000),
+            ended_at: None,
+            tokens: Some(18_400),
+            tool_calls: 7,
+            last_tool: Some(SubagentToolCall {
+                item: Some(ItemId::new(44)),
+                tool: "Agent".to_owned(),
+                summary: "Check the lockfile".to_owned(),
+            }),
+            error: None,
+            turn: 3,
+            task: Some(BackgroundTaskId::new("task-2".to_owned())),
+        },
+        Subagent {
+            item: ItemId::new(44),
+            parent: Some(ItemId::new(40)),
+            description: "Check the lockfile".to_owned(),
+            agent_type: None,
+            run: SubagentRun::Foreground,
+            status: SubagentStatus::Failed,
+            started_at: at(1_700_000_130_000),
+            ended_at: Some(at(1_700_000_142_000)),
+            tokens: None,
+            tool_calls: 2,
+            last_tool: None,
+            error: Some("API error 529: overloaded".to_owned()),
+            turn: 3,
+            task: None,
+        },
+    ]
 }
 
 fn plan_usage() -> PlanUsage {
@@ -1027,6 +1070,11 @@ fn words_are_pinned() {
         ]
     );
     assert_eq!(words::<CommandKind>(), ["skill", "command"]);
+    assert_eq!(words::<SubagentRun>(), ["foreground", "background"]);
+    assert_eq!(
+        words::<SubagentStatus>(),
+        ["running", "needs_you", "done", "failed", "stopped"]
+    );
     assert_eq!(
         words::<UsageWindow>(),
         [
@@ -1504,6 +1552,42 @@ fn an_agent_update_on_the_wire() {
             },
         }),
     );
+}
+
+#[test]
+fn a_subagent_on_the_wire() {
+    let [running, _] = subagents().try_into().unwrap();
+
+    assert_wire(
+        &running,
+        json!({
+            "item": 40,
+            "parent": null,
+            "description": "Search the callers",
+            "agent_type": "Explore",
+            "run": "background",
+            "status": "running",
+            "started_at": 1_700_000_100_000_u64,
+            "ended_at": null,
+            "tokens": 18_400,
+            "tool_calls": 7,
+            "last_tool": {"item": 44, "tool": "Agent", "summary": "Check the lockfile"},
+            "error": null,
+            "turn": 3,
+            "task": "task-2",
+        }),
+    );
+}
+
+#[test]
+fn details_from_a_daemon_without_subagents_still_load() {
+    let mut sent = serde_json::to_value(details()).unwrap();
+    sent.as_object_mut().unwrap().remove("subagents");
+
+    let read: AgentDetails = serde_json::from_value(sent).unwrap();
+
+    assert_eq!(read.subagents, []);
+    assert_eq!(read.background_tasks, details().background_tasks);
 }
 
 #[test]

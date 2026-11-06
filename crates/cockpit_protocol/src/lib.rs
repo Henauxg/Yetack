@@ -32,7 +32,8 @@ pub use agent::{AgentStatus, AgentSummary, Effort, PermissionMode, TaskProgress}
 pub use details::{
     AgentDetails, BackgroundTask, BackgroundTaskKind, BackgroundTaskStatus, ChangedFile,
     CommandKind, ContextCategory, ContextUsage, McpScope, McpServer, McpServerStatus, McpTool,
-    McpTransport, SlashCommand, TaskListItem, TaskStatus,
+    McpTransport, SlashCommand, Subagent, SubagentRun, SubagentStatus, SubagentToolCall,
+    TaskListItem, TaskStatus,
 };
 pub use event::{Event, EventRecord};
 pub use frame::{Frame, FrameError, FrameReader, FrameWriter, MAX_LINE_BYTES};

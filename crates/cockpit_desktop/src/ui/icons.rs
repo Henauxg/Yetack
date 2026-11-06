@@ -38,6 +38,8 @@ pub enum IconKind {
     Warning,
     Folder,
     File,
+    /// The agent map: an agent above the subagents it started.
+    Map,
 }
 
 impl IconKind {
@@ -110,6 +112,9 @@ impl IconKind {
             }
             Self::File => {
                 r#"<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"></path><path d="M14 3v5h5"></path>"#
+            }
+            Self::Map => {
+                r#"<rect x="9" y="3" width="6" height="5" rx="1"></rect><rect x="3" y="16" width="6" height="5" rx="1"></rect><rect x="15" y="16" width="6" height="5" rx="1"></rect><path d="M12 8v4"></path><path d="M6 16v-2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2"></path>"#
             }
             Self::Folder => {
                 r#"<path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>"#

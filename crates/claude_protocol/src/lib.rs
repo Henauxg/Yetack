@@ -114,7 +114,7 @@ pub use system_event::{
 };
 pub use task_notification_text::TaskNotificationText;
 pub use tool_input::{
-    AskUserQuestionInput, BashInput, EditInput, ExitPlanModeInput, Question, QuestionAnswer,
+    AgentInput, AskUserQuestionInput, BashInput, EditInput, ExitPlanModeInput, Question, QuestionAnswer,
     QuestionOption, ReadInput, SkillInput, Todo, TodoStatus, TodoWriteInput, ToolInput, ToolName,
     WriteInput,
 };

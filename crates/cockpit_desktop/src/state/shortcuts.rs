@@ -5,6 +5,7 @@ use cockpit_protocol::{AgentId, ApprovalDecision, PlanDecision};
 use serde::Deserialize;
 
 use super::actions::{self, Direction};
+use super::agent_map;
 use super::app_state::{AgentEntry, AppState};
 use super::drafts::Drafts;
 use super::open_file;
@@ -58,6 +59,7 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
             "k" => actions::toggle_switcher(state, drafts),
             "n" => actions::open_new_agent(state, drafts),
             "o" => open_file::toggle(state, drafts),
+            "m" => agent_map::toggle(state),
             _ => {}
         }
         return Vec::new();
@@ -81,6 +83,13 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
         }
         state.ui.close_overlays();
         return Vec::new();
+    }
+    // The map takes its keys from anywhere, the composer behind it included.
+    if matches!(state.ui.dialog, Some(Dialog::AgentMap(_))) {
+        if command || press.alt {
+            return Vec::new();
+        }
+        return agent_map::press(state, &press.key);
     }
     // The script passes F2 on from outside text fields, and from the title fields.
     let plain = !command && !press.alt && !press.shift;
@@ -298,6 +307,80 @@ mod tests {
             Request::AgentAnswer(params) => Some(&params.answer),
             _ => None,
         }
+    }
+
+    #[test]
+    fn the_map_takes_its_keys_and_y_answers_its_selected_subagents_approval() {
+        use cockpit_protocol::{
+            Subagent, SubagentRun, SubagentStatus, Timestamp, ToolCall, ToolCallStatus,
+        };
+
+        use crate::state::agent_map::MapRow;
+
+        let mut drafts = Drafts::default();
+        let mut state = state(AgentStatus::NeedsYou, None);
+        let subagent = ItemId::new(2);
+        let call = ToolCall {
+            tool: "Agent".to_owned(),
+            summary: "Clean up".to_owned(),
+            input: Value::Null,
+            status: ToolCallStatus::Running,
+            output: None,
+            exit_code: None,
+            edit: None,
+        };
+        if let Some(entry) = state.agents.get_mut(&AgentId::new(1)) {
+            entry.transcript.append(TranscriptItem {
+                id: subagent,
+                parent: None,
+                body: ItemBody::Subagent(call),
+            });
+            entry.transcript.append(TranscriptItem {
+                id: ItemId::new(3),
+                parent: Some(subagent),
+                body: approval(),
+            });
+            entry.details = Loadable::Loaded(AgentDetails {
+                subagents: vec![Subagent {
+                    item: subagent,
+                    parent: None,
+                    description: "Clean up".to_owned(),
+                    agent_type: None,
+                    run: SubagentRun::Foreground,
+                    status: SubagentStatus::NeedsYou,
+                    started_at: Timestamp::from_unix_millis(0),
+                    ended_at: None,
+                    tokens: None,
+                    tool_calls: 1,
+                    last_tool: None,
+                    error: None,
+                    turn: 1,
+                    task: None,
+                }],
+                ..AgentDetails::default()
+            });
+        }
+
+        handle_key(&mut state, &mut drafts, &ctrl("m"));
+        let on_the_agent = handle_key(&mut state, &mut drafts, &press("y", KeyTarget::Page));
+        handle_key(
+            &mut state,
+            &mut drafts,
+            &press("ArrowDown", KeyTarget::Composer),
+        );
+        let answered = handle_key(&mut state, &mut drafts, &press("y", KeyTarget::Page));
+
+        assert!(on_the_agent.is_empty(), "the agent's row has no card");
+        assert!(matches!(
+            &state.ui.dialog,
+            Some(Dialog::AgentMap(view)) if view.selected == MapRow::Subagent(subagent)
+        ));
+        assert!(matches!(
+            sent_answer(&answered),
+            Some(Answer::Approval(answer)) if answer.decision == ApprovalDecision::Allow
+        ));
+        handle_key(&mut state, &mut drafts, &ctrl("m"));
+        assert_eq!(state.ui.dialog, None);
     }
 
     #[test]

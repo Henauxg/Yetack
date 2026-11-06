@@ -19,6 +19,10 @@ pub enum ToolName {
     Read,
     /// Loads a skill: Claude Code then adds its instructions as a synthetic `user` line.
     Skill,
+    /// Starts a subagent.
+    Agent,
+    /// The name Claude Code gave [`ToolName::Agent`] before.
+    Task,
 }
 
 /// The input of a tool call, for the tools this crate knows.
@@ -32,6 +36,8 @@ pub enum ToolInput {
     Bash(BashInput),
     Read(ReadInput),
     Skill(SkillInput),
+    /// `Agent` or `Task`.
+    Agent(AgentInput),
     /// Another tool: its raw input is all there is.
     Unknown,
 }
@@ -54,6 +60,7 @@ impl ToolInput {
             ToolName::Bash => BashInput::deserialize(input).map(Self::Bash),
             ToolName::Read => ReadInput::deserialize(input).map(Self::Read),
             ToolName::Skill => SkillInput::deserialize(input).map(Self::Skill),
+            ToolName::Agent | ToolName::Task => AgentInput::deserialize(input).map(Self::Agent),
         };
         parsed.map_err(|error| ParseError::MalformedToolInput { tool, error })
     }
@@ -64,6 +71,20 @@ pub struct SkillInput {
     /// Without its slash, such as `review`.
     pub skill: String,
     pub args: Option<String>,
+}
+
+/// A subagent to start. Its own lines carry the call's id as their `parent_tool_use_id`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(default)]
+pub struct AgentInput {
+    /// A few words, such as "Survey the test folder".
+    pub description: String,
+    /// What the subagent is told to do.
+    pub prompt: String,
+    /// Such as `Explore` or `general-purpose`; `None` for the default one.
+    pub subagent_type: Option<String>,
+    /// The call returns at once, and the subagent runs as a background task.
+    pub run_in_background: bool,
 }
 
 /// The task list, which each call replaces whole.
