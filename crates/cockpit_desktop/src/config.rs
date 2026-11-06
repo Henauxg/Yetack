@@ -28,6 +28,9 @@ const DAEMON_SECTION: &str = "daemon";
 /// Where a new config file is written before it replaces the old one.
 const TEMPORARY_EXTENSION: &str = "toml.new";
 
+/// The most symbolic links followed to the config file, as Linux allows.
+const MAX_LINKS: usize = 40;
+
 #[cfg(unix)]
 const HOME_VAR: &str = "HOME";
 #[cfg(unix)]
@@ -141,6 +144,8 @@ pub enum ConfigError {
         #[source]
         source: io::Error,
     },
+    #[error("{} is read-only", path.display())]
+    ReadOnly { path: PathBuf },
     #[error("cannot find the {what}: neither {var} nor {HOME_VAR} is an absolute path")]
     NoHome {
         what: &'static str,
@@ -223,15 +228,13 @@ impl Config {
 }
 
 /// Makes `daemon` the daemon of the config file `file`, which keeps its other settings and its
-/// comments. A missing file is created.
+/// comments. A missing file is created. When `file` is a symbolic link, as home-manager or a
+/// dotfiles repository makes, its target is written and the link stays. The file keeps its mode,
+/// and a read-only one is not written.
 pub fn save_daemon(file: &Path, daemon: &DaemonConfig) -> Result<(), ConfigError> {
     use toml_edit::{DocumentMut, Item};
 
     let edit_error = |source| ConfigError::Edit {
-        path: file.to_owned(),
-        source,
-    };
-    let write_error = |source| ConfigError::Write {
         path: file.to_owned(),
         source,
     };
@@ -259,12 +262,58 @@ pub fn save_daemon(file: &Path, daemon: &DaemonConfig) -> Result<(), ConfigError
         }
         document.insert(DAEMON_SECTION, daemon);
     }
-    if let Some(folder) = file.parent() {
+    let target = link_target(file).map_err(|source| ConfigError::Read {
+        path: file.to_owned(),
+        source,
+    })?;
+    let write_error = |source| ConfigError::Write {
+        path: target.clone(),
+        source,
+    };
+    let permissions = match std::fs::metadata(&target) {
+        Ok(metadata) => Some(metadata.permissions()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(source) => return Err(write_error(source)),
+    };
+    if permissions
+        .as_ref()
+        .is_some_and(std::fs::Permissions::readonly)
+    {
+        return Err(ConfigError::ReadOnly { path: target });
+    }
+    if let Some(folder) = target.parent() {
         std::fs::create_dir_all(folder).map_err(write_error)?;
     }
-    let temporary = file.with_extension(TEMPORARY_EXTENSION);
+    let temporary = target.with_extension(TEMPORARY_EXTENSION);
     std::fs::write(&temporary, document.to_string()).map_err(write_error)?;
-    std::fs::rename(&temporary, file).map_err(write_error)
+    if let Some(permissions) = permissions {
+        std::fs::set_permissions(&temporary, permissions).map_err(write_error)?;
+    }
+    std::fs::rename(&temporary, &target).map_err(write_error)
+}
+
+/// The file `file` names once its symbolic links are followed, which may not exist yet.
+fn link_target(file: &Path) -> io::Result<PathBuf> {
+    let mut path = file.to_owned();
+    for _ in 0..MAX_LINKS {
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                let target = std::fs::read_link(&path)?;
+                // A relative target is relative to the link's folder.
+                path = match path.parent() {
+                    Some(folder) => folder.join(target),
+                    None => target,
+                };
+            }
+            Ok(_) => return Ok(path),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(path),
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::other(format!(
+        "more than {MAX_LINKS} symbolic links lead to {}",
+        file.display()
+    )))
 }
 
 impl FromStr for Config {
@@ -475,5 +524,90 @@ pub(crate) mod tests {
             "[daemon]\ntransport = \"local\"\nstart_service = true\n"
         );
         assert_eq!(saved.parse::<Config>().unwrap().daemon, service);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_through_a_symbolic_link_writes_its_target_and_keeps_its_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let dotfiles = temp.path().join("dotfiles");
+        let target = dotfiles.join(CONFIG_FILE);
+        let link = temp.path().join(APP_FOLDER).join(CONFIG_FILE);
+        std::fs::create_dir_all(&dotfiles).unwrap();
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::fs::write(
+            &target,
+            "# Mine.
+[daemon]
+transport = \"local\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o640)).unwrap();
+        std::os::unix::fs::symlink(Path::new("../dotfiles").join(CONFIG_FILE), &link).unwrap();
+
+        save_daemon(&link, &DaemonConfig::InApp).unwrap();
+
+        let link_type = std::fs::symlink_metadata(&link).unwrap().file_type();
+        assert!(link_type.is_symlink(), "the link stays a link");
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "# Mine.\n[daemon]\ntransport = \"in_app\"\n"
+        );
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o640);
+        let names: Vec<_> = std::fs::read_dir(&dotfiles).unwrap().collect();
+        assert_eq!(names.len(), 1, "no temporary file is left");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_read_only_target_is_not_written() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("store-config.toml");
+        let link = temp.path().join(CONFIG_FILE);
+        let text = "[daemon]\ntransport = \"local\"\n";
+        std::fs::write(&target, text).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o444)).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let saved = save_daemon(&link, &DaemonConfig::InApp);
+
+        assert!(
+            matches!(&saved, Err(ConfigError::ReadOnly { path }) if *path == target),
+            "{saved:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), text);
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_a_missing_file_creates_its_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("dotfiles").join(CONFIG_FILE);
+        let link = temp.path().join(CONFIG_FILE);
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        save_daemon(&link, &DaemonConfig::InApp).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "[daemon]\ntransport = \"in_app\"\n"
+        );
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
     }
 }
