@@ -7,6 +7,7 @@ use serde::Deserialize;
 use super::actions::{self, Direction};
 use super::app_state::AppState;
 use super::drafts::Drafts;
+use super::open_file;
 use super::requests::Outgoing;
 use super::transcript::WaitingKind;
 use super::ui_state::{Dialog, PaletteOrigin, Popover};
@@ -56,6 +57,7 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
         match letter.as_str() {
             "k" => actions::toggle_switcher(state, drafts),
             "n" => actions::open_new_agent(state, drafts),
+            "o" => open_file::toggle(state, drafts),
             _ => {}
         }
         return Vec::new();

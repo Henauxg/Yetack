@@ -16,6 +16,9 @@ pub const COMPOSER_ID: &str = "composer";
 /// The new agent dialog's folder field.
 pub const FOLDER_FIELD_ID: &str = "new-agent-folder";
 
+/// The "Open file" dialog's path field.
+pub const OPEN_FILE_FIELD_ID: &str = "open-file-path";
+
 /// The hidden file input the composer's attach button opens.
 pub const ATTACH_INPUT_ID: &str = "attach-input";
 
@@ -158,7 +161,7 @@ document.addEventListener("keydown", (event) => {
     || (mode.answer_numbers && (/^[1-9]$/.test(key) || key === "Enter"));
   const text = composer ? target.value : "";
   let take = false;
-  if (command && !event.altKey && !event.shiftKey && (letter === "k" || letter === "n")) {
+  if (command && !event.altKey && !event.shiftKey && ["k", "n", "o"].includes(letter)) {
     take = true;
   } else if (command && !event.altKey && event.shiftKey && letter === "w") {
     // Ctrl+Shift+W closes the selected agent. The file view takes Ctrl+W alone.
@@ -324,8 +327,8 @@ struct Settings {
     undo_steps: u16,
 }
 
-/// Which plain keys the script takes, beyond Ctrl+K, Ctrl+N, Ctrl+Shift+W, Esc, F2, Alt+Up,
-/// Alt+Down and the composer's Enter.
+/// Which plain keys the script takes, beyond Ctrl+K, Ctrl+N, Ctrl+O, Ctrl+Shift+W, Esc, F2,
+/// Alt+Up, Alt+Down and the composer's Enter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 struct KeyMode {
     /// Y and N answer an approval or a plan.
@@ -482,7 +485,7 @@ pub fn focus_field(field_id: &'static str) {
     }
 }
 
-fn focus_field_at_end(field_id: &'static str) {
+pub fn focus_field_at_end(field_id: &'static str) {
     let script = document::eval(FOCUS_AT_END_SCRIPT);
     if let Err(error) = script.send(field_id) {
         tracing::warn!("cannot focus the field {field_id}: {error}");

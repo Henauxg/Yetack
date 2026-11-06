@@ -123,15 +123,23 @@ impl Access {
 
     /// The allowed folder or file that holds `resolved`, a path without symlinks.
     fn holder(&self, resolved: &Path) -> Option<&Path> {
-        let mut folders = std::iter::once(&self.folder).chain(&self.checkouts);
-        let folder = folders.find(|folder| resolved.starts_with(folder));
         let file = || self.files.iter().find(|file| *file == resolved);
-        folder.or_else(file).map(PathBuf::as_path)
+        self.folder_holding(resolved)
+            .or_else(|| file().map(PathBuf::as_path))
+    }
+
+    /// The agent's folder or the allowed checkout that holds `resolved`, a path without symlinks.
+    /// The files allowed alone hold nothing.
+    pub(crate) fn folder_holding(&self, resolved: &Path) -> Option<&Path> {
+        let mut folders = std::iter::once(&self.folder).chain(&self.checkouts);
+        folders
+            .find(|folder| resolved.starts_with(folder))
+            .map(PathBuf::as_path)
     }
 
     /// The folders a search lists: `folder`, the agent's folder as its record names it, then the
     /// checkouts other than that folder, so that no checkout is listed twice.
-    fn search_roots(&self, folder: PathBuf) -> Vec<PathBuf> {
+    pub(crate) fn search_roots(&self, folder: PathBuf) -> Vec<PathBuf> {
         let others = self
             .checkouts
             .iter()
@@ -258,7 +266,8 @@ pub(crate) async fn find_and_read(
     }
     let roots = access.search_roots(folder);
     let tail = name_tail(&path).unwrap_or_else(|| path.clone());
-    let matches = search(&access, roots, &tail, Instant::now() + SEARCH_TIME).await;
+    let ends_with_tail = |relative: &Path| relative.ends_with(&tail);
+    let matches = search(&access, roots, ends_with_tail, Instant::now() + SEARCH_TIME).await;
     match matches.as_slice() {
         [] => Err(ReadFileError::Unknown(path)),
         [only] => {
@@ -275,7 +284,7 @@ pub(crate) async fn find_and_read(
     }
 }
 
-fn join_error(error: tokio::task::JoinError) -> ReadFileError {
+pub(crate) fn join_error(error: tokio::task::JoinError) -> ReadFileError {
     ReadFileError::Io(io::Error::other(error))
 }
 
@@ -322,13 +331,14 @@ fn name_tail(path: &Path) -> Option<PathBuf> {
     (!tail.as_os_str().is_empty()).then_some(tail)
 }
 
-/// The files under `roots` whose path ends with `path`, as `git ls-files` lists them, each once,
-/// until `deadline` or [`MAX_MATCHES`]. A root that is not in a git checkout adds nothing, and
-/// neither does a file `access` does not allow once its symlinks are resolved.
-async fn search(
+/// The files under `roots` whose path relative to their root passes `matches_path`, as `git
+/// ls-files` lists them, each once, until `deadline` or [`MAX_MATCHES`]. A root that is not in a
+/// git checkout adds nothing, and neither does a file `access` does not allow once its symlinks
+/// are resolved.
+pub(crate) async fn search(
     access: &Access,
     roots: Vec<PathBuf>,
-    path: &Path,
+    matches_path: impl Fn(&Path) -> bool,
     deadline: Instant,
 ) -> Vec<PathBuf> {
     let mut matches: Vec<PathBuf> = Vec::new();
@@ -362,7 +372,7 @@ async fn search(
             }
             let name = entry.strip_suffix(&[0]).unwrap_or(&entry);
             let relative = Path::new(OsStr::from_bytes(name));
-            if !relative.ends_with(path) {
+            if !matches_path(relative) {
                 continue;
             }
             let found = root.join(relative);
@@ -388,9 +398,9 @@ pub(crate) fn open_to_read(path: &Path) -> io::Result<File> {
     Ok(File::from(rustix::fs::open(path, flags, Mode::empty())?))
 }
 
-/// Refuses an open file outside `holder`, a folder or the file itself: a folder of its path may
-/// have become a symlink since the path was checked.
-fn ensure_inside(file: &File, holder: &Path) -> Result<(), ReadFileError> {
+/// Refuses an open file or folder outside `holder`, a folder or the file itself: a folder of its
+/// path may have become a symlink since the path was checked.
+pub(crate) fn ensure_inside(file: &File, holder: &Path) -> Result<(), ReadFileError> {
     use std::os::fd::AsRawFd;
 
     let link = Path::new(OPEN_FILES).join(file.as_raw_fd().to_string());

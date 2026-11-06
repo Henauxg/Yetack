@@ -1,0 +1,512 @@
+//! The "Open file" dialog (Ctrl+O), as VS Code's remote "Open File": a path field over the entries
+//! of the folder it names. What the field's text lists, which entries its last segment keeps, and
+//! what the keys and clicks make of it.
+//!
+//! The field follows the keyboard alone: its text lives in the drafts, and a pick that changes it
+//! returns the new text for the window to put in the field.
+
+use std::path::{Path, PathBuf};
+
+use cockpit_protocol::{DirEntry, EntryKind};
+
+use super::actions::{self, Direction};
+use super::app_state::{AppState, Loadable};
+use super::drafts::{Drafts, OpenFileDraft};
+use super::ui_state::{Dialog, OpenFileView};
+
+/// What separates the folders of a typed path.
+const SEPARATOR: char = '/';
+
+/// The shortest bare name searched for in the project: one letter would match nearly every file.
+const MIN_SEARCH_CHARS: usize = 2;
+
+/// A row of the dialog's list, in the order it shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Row<'dialog> {
+    /// "..": the folder above.
+    Up,
+    Entry(&'dialog DirEntry),
+    /// A file of the project whose name holds the bare name typed.
+    Match(&'dialog Path),
+}
+
+/// The text split after its last separator: the folder part, which ends with the separator or is
+/// empty, and the last segment.
+pub fn split(text: &str) -> (&str, &str) {
+    match text.rfind(SEPARATOR) {
+        Some(at) => text.split_at(at + SEPARATOR.len_utf8()),
+        None => ("", text),
+    }
+}
+
+/// The folder the text lists: its folder part, absolute or relative to `agent_folder`.
+pub fn listed_folder(agent_folder: &Path, text: &str) -> PathBuf {
+    agent_folder.join(split(text).0)
+}
+
+/// The name a text asks the project's files for: a bare name, without a separator, long enough.
+pub fn searched_name(text: &str) -> Option<&str> {
+    let name = text.trim();
+    let long_enough = name.chars().count() >= MIN_SEARCH_CHARS;
+    (!text.contains(SEPARATOR) && long_enough).then_some(name)
+}
+
+/// The text naming the folder above the one the text lists: "/work/app/src/" gives "/work/app/".
+/// `None` at the top.
+pub fn up(text: &str) -> Option<String> {
+    let (folder, _) = split(text);
+    let folder = folder.strip_suffix(SEPARATOR)?;
+    if folder.is_empty() {
+        return None;
+    }
+    Some(split(folder).0.to_owned())
+}
+
+/// The text after taking `name` from the listed folder. A folder's ends with a separator, so that
+/// it lists.
+pub fn completed(text: &str, name: &str, folder: bool) -> String {
+    let (folder_part, _) = split(text);
+    if folder {
+        format!("{folder_part}{name}{SEPARATOR}")
+    } else {
+        format!("{folder_part}{name}")
+    }
+}
+
+/// `folder` as the field shows it, ending with a separator.
+fn as_folder_text(folder: &Path) -> String {
+    let mut text = folder.display().to_string();
+    if !text.ends_with(SEPARATOR) {
+        text.push(SEPARATOR);
+    }
+    text
+}
+
+/// The rows for `text`: ".." while the last segment is empty, the listed entries the segment
+/// keeps, then the project's files for a bare name. The entries whose name starts with the segment
+/// come first, then those that hold it, whatever the case.
+pub fn rows<'view>(view: &'view OpenFileView, text: &str) -> Vec<Row<'view>> {
+    let (_, segment) = split(text);
+    let mut rows = Vec::new();
+    if segment.is_empty() && view.folder.parent().is_some() {
+        rows.push(Row::Up);
+    }
+    if let Some(listing) = view.listing.loaded() {
+        let needle = segment.to_lowercase();
+        let named = |entry: &&DirEntry| entry.name.to_lowercase();
+        let starting = listing
+            .entries
+            .iter()
+            .filter(|entry| named(entry).starts_with(&needle));
+        let holding = listing.entries.iter().filter(|entry| {
+            let name = named(entry);
+            !name.starts_with(&needle) && name.contains(&needle)
+        });
+        rows.extend(starting.chain(holding).map(Row::Entry));
+    }
+    if let Some((_, Loadable::Loaded(matches))) = &view.search {
+        rows.extend(matches.iter().map(|path| Row::Match(path)));
+    }
+    rows
+}
+
+fn view(state: &AppState) -> Option<&OpenFileView> {
+    match &state.ui.dialog {
+        Some(Dialog::OpenFile(view)) => Some(view),
+        _ => None,
+    }
+}
+
+fn view_mut(state: &mut AppState) -> Option<&mut OpenFileView> {
+    match &mut state.ui.dialog {
+        Some(Dialog::OpenFile(view)) => Some(view),
+        _ => None,
+    }
+}
+
+/// Ctrl+O: opens the dialog on the selected agent's folder, or closes it. Another dialog stays.
+pub fn toggle(state: &mut AppState, drafts: &mut Drafts) {
+    match &state.ui.dialog {
+        Some(Dialog::OpenFile(_)) => state.ui.dialog = None,
+        Some(_) => {}
+        None => open(state, drafts),
+    }
+}
+
+/// Opens the dialog on the selected agent's folder.
+pub fn open(state: &mut AppState, drafts: &mut Drafts) {
+    let Some(entry) = state.selected() else {
+        return;
+    };
+    let (agent, folder) = (entry.id(), entry.summary.folder.clone());
+    drafts.open_file = OpenFileDraft {
+        path: as_folder_text(&folder),
+        highlighted: None,
+    };
+    state.ui.popover = None;
+    state.ui.dialog = Some(Dialog::OpenFile(OpenFileView::new(agent, folder)));
+}
+
+/// What a new text in the field asks of the state, which typing leaves alone otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Typed {
+    /// The text names another folder, or no longer a bare name: the dialog follows it at once.
+    pub follow: bool,
+    /// The text is a new bare name: the dialog searches for it after a pause.
+    pub search: bool,
+}
+
+/// Keeps the typed text. The first row is highlighted while a segment filters the list.
+pub fn type_path(state: &AppState, drafts: &mut Drafts, text: String) -> Typed {
+    let filtering = !split(&text).1.is_empty();
+    drafts.open_file.highlighted = filtering.then_some(0);
+    drafts.open_file.path = text;
+    let Some(view) = view(state) else {
+        return Typed::default();
+    };
+    let Some(agent_folder) = agent_folder(state, view) else {
+        return Typed::default();
+    };
+    let text = &drafts.open_file.path;
+    let searched = view.search.as_ref().map(|(name, _)| name.as_str());
+    let wanted = searched_name(text);
+    Typed {
+        follow: listed_folder(agent_folder, text) != view.folder
+            || (wanted.is_none() && searched.is_some()),
+        search: wanted.is_some() && wanted != searched,
+    }
+}
+
+fn agent_folder<'state>(state: &'state AppState, view: &OpenFileView) -> Option<&'state Path> {
+    state
+        .agents
+        .get(&view.agent)
+        .map(|entry| entry.summary.folder.as_path())
+}
+
+/// Makes the dialog list the folder the typed text names, and drops a search the text no longer
+/// asks for. With `search`, it also searches for the text's bare name.
+pub fn follow(state: &mut AppState, drafts: &Drafts, search: bool) {
+    let text = drafts.open_file.path.as_str();
+    let Some(folder) = view(state).and_then(|view| agent_folder(state, view)) else {
+        return;
+    };
+    let folder = listed_folder(folder, text);
+    let Some(view) = view_mut(state) else {
+        return;
+    };
+    if view.folder != folder {
+        view.folder = folder;
+        view.listing = Loadable::NotRequested;
+    }
+    match searched_name(text) {
+        None => view.search = None,
+        Some(name) => {
+            let searched = view.search.as_ref().map(|(name, _)| name.as_str());
+            if search && searched != Some(name) {
+                view.search = Some((name.to_owned(), Loadable::NotRequested));
+            }
+        }
+    }
+}
+
+/// Moves the highlight over the rows.
+pub fn move_highlight(state: &AppState, drafts: &mut Drafts, direction: Direction) {
+    let Some(view) = view(state) else {
+        return;
+    };
+    let count = rows(view, &drafts.open_file.path).len();
+    let Some(last) = count.checked_sub(1) else {
+        return;
+    };
+    let highlighted = &mut drafts.open_file.highlighted;
+    *highlighted = Some(match (direction, *highlighted) {
+        (Direction::Down, None) => 0,
+        (Direction::Down, Some(index)) => (index + 1).min(last),
+        (Direction::Up, None) => last,
+        (Direction::Up, Some(index)) => index.saturating_sub(1).min(last),
+    });
+}
+
+/// How a row is taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Take {
+    /// Enter or a click: a folder lists, a file opens.
+    Open,
+    /// Tab: the field takes the row's name, and a file waits for Enter.
+    Complete,
+}
+
+/// Takes the row at `index`, or else the highlighted one. With no row, Enter opens the typed path
+/// as a file. Returns the field's new text, when it changes.
+pub fn take(
+    state: &mut AppState,
+    drafts: &mut Drafts,
+    index: Option<usize>,
+    how: Take,
+) -> Option<String> {
+    let view = view(state)?;
+    let agent = view.agent;
+    let text = drafts.open_file.path.clone();
+    let (_, segment) = split(&text);
+    let folder = view.folder.clone();
+    let index = index.or(drafts.open_file.highlighted);
+    let row = index.and_then(|index| rows(view, &text).get(index).copied());
+    let (new_text, file) = match row {
+        None if how == Take::Open && !segment.is_empty() => (None, Some(folder.join(segment))),
+        None => (None, None),
+        Some(Row::Up) => (up(&text), None),
+        Some(Row::Entry(entry)) if entry.kind == EntryKind::Folder => {
+            (Some(completed(&text, &entry.name, true)), None)
+        }
+        Some(Row::Entry(entry)) => match how {
+            Take::Open => (None, Some(folder.join(&entry.name))),
+            Take::Complete => (Some(completed(&text, &entry.name, false)), None),
+        },
+        Some(Row::Match(path)) => match how {
+            Take::Open => (None, Some(path.to_owned())),
+            Take::Complete => (Some(path.display().to_string()), None),
+        },
+    };
+    if let Some(file) = file {
+        state.ui.dialog = None;
+        actions::open_file(state, agent, file, None);
+        return None;
+    }
+    let new_text = new_text?;
+    set_text(state, drafts, new_text.clone());
+    Some(new_text)
+}
+
+/// What Backspace makes of the field: on an empty last segment, the folder above's text. `None`
+/// when the key should delete as usual. Reads the drafts alone, so that a key that deletes does
+/// not render the window.
+pub fn text_above(drafts: &Drafts) -> Option<String> {
+    let text = &drafts.open_file.path;
+    if !split(text).1.is_empty() {
+        return None;
+    }
+    up(text)
+}
+
+/// Whether the typed text is a bare name the dialog has not searched for yet.
+pub fn needs_search(state: &AppState, drafts: &Drafts) -> bool {
+    let Some(view) = view(state) else {
+        return false;
+    };
+    let searched = view.search.as_ref().map(|(name, _)| name.as_str());
+    let wanted = searched_name(&drafts.open_file.path);
+    wanted.is_some() && wanted != searched
+}
+
+/// Puts `text` in the field's draft, and makes the dialog follow it.
+pub fn set_text(state: &mut AppState, drafts: &mut Drafts, text: String) {
+    drafts.open_file = OpenFileDraft {
+        path: text,
+        highlighted: None,
+    };
+    follow(state, drafts, true);
+}
+
+#[cfg(test)]
+mod tests {
+    use cockpit_protocol::{AgentId, AgentStatus, DirListing};
+
+    use super::*;
+    use crate::state::app_state::tests::{state_with, summary};
+
+    const AGENT_FOLDER: &str = "/work/project-1";
+
+    fn entry(name: &str, kind: EntryKind) -> DirEntry {
+        DirEntry {
+            name: name.to_owned(),
+            kind,
+            size: (kind == EntryKind::File).then_some(10),
+            symlink: false,
+        }
+    }
+
+    fn listing(folder: &str) -> DirListing {
+        DirListing {
+            path: PathBuf::from(folder),
+            entries: vec![
+                entry("src", EntryKind::Folder),
+                entry("tests", EntryKind::Folder),
+                entry("Cargo.toml", EntryKind::File),
+                entry("README.md", EntryKind::File),
+                entry("build.rs", EntryKind::File),
+            ],
+            truncated: false,
+        }
+    }
+
+    /// The dialog open on agent 1's folder, listed.
+    fn opened() -> (AppState, Drafts) {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        state.ui.selected = Some(AgentId::new(1));
+        let mut drafts = Drafts::default();
+        toggle(&mut state, &mut drafts);
+        if let Some(view) = view_mut(&mut state) {
+            view.listing = Loadable::Loaded(listing(AGENT_FOLDER));
+        }
+        (state, drafts)
+    }
+
+    fn row_names(state: &AppState, drafts: &Drafts) -> Vec<String> {
+        let view = view(state).unwrap();
+        rows(view, &drafts.open_file.path)
+            .into_iter()
+            .map(|row| match row {
+                Row::Up => "..".to_owned(),
+                Row::Entry(entry) => entry.name.clone(),
+                Row::Match(path) => path.display().to_string(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_typed_path_splits_at_its_last_separator() {
+        assert_eq!(split("/work/app/src/ma"), ("/work/app/src/", "ma"));
+        assert_eq!(split("/work/app/"), ("/work/app/", ""));
+        assert_eq!(split("main.rs"), ("", "main.rs"));
+        assert_eq!(
+            listed_folder(Path::new(AGENT_FOLDER), "src/ma"),
+            PathBuf::from("/work/project-1/src")
+        );
+        assert_eq!(
+            listed_folder(Path::new(AGENT_FOLDER), "/etc/"),
+            PathBuf::from("/etc")
+        );
+        assert_eq!(
+            listed_folder(Path::new(AGENT_FOLDER), "lexer"),
+            PathBuf::from(AGENT_FOLDER)
+        );
+    }
+
+    #[test]
+    fn going_up_and_completing_rewrite_the_folder_part() {
+        assert_eq!(up("/work/app/src/").as_deref(), Some("/work/app/"));
+        assert_eq!(up("/work/").as_deref(), Some("/"));
+        assert_eq!(up("src/").as_deref(), Some(""));
+        assert_eq!(up("/"), None);
+        assert_eq!(up(""), None);
+        assert_eq!(completed("/work/app/sr", "src", true), "/work/app/src/");
+        assert_eq!(
+            completed("/work/app/RE", "README.md", false),
+            "/work/app/README.md"
+        );
+        assert_eq!(searched_name("lexer"), Some("lexer"));
+        assert_eq!(searched_name("l"), None);
+        assert_eq!(searched_name("src/lexer"), None);
+    }
+
+    #[test]
+    fn the_last_segment_filters_the_entries_starting_ones_first() {
+        let (state, mut drafts) = opened();
+        assert_eq!(drafts.open_file.path, "/work/project-1/");
+        assert_eq!(
+            row_names(&state, &drafts),
+            ["..", "src", "tests", "Cargo.toml", "README.md", "build.rs"]
+        );
+
+        type_path(&state, &mut drafts, "/work/project-1/r".to_owned());
+
+        assert_eq!(
+            row_names(&state, &drafts),
+            ["README.md", "src", "Cargo.toml", "build.rs"]
+        );
+        assert_eq!(drafts.open_file.highlighted, Some(0));
+    }
+
+    #[test]
+    fn enter_on_a_folder_lists_it_and_on_a_file_opens_it() {
+        let (mut state, mut drafts) = opened();
+        type_path(&state, &mut drafts, "/work/project-1/sr".to_owned());
+
+        let text = take(&mut state, &mut drafts, None, Take::Open);
+
+        assert_eq!(text.as_deref(), Some("/work/project-1/src/"));
+        let view = view(&state).unwrap();
+        assert_eq!(view.folder, PathBuf::from("/work/project-1/src"));
+        assert_eq!(view.listing, Loadable::NotRequested);
+
+        if let Some(view) = view_mut(&mut state) {
+            view.listing = Loadable::Loaded(DirListing {
+                entries: vec![entry("lexer.rs", EntryKind::File)],
+                ..listing("/work/project-1/src")
+            });
+        }
+        let text = take(&mut state, &mut drafts, Some(1), Take::Open);
+
+        assert_eq!(text, None);
+        assert_eq!(state.ui.dialog, None);
+        let opened = state.ui.file_view(AgentId::new(1)).unwrap();
+        assert_eq!(opened.path, PathBuf::from("src/lexer.rs"));
+    }
+
+    #[test]
+    fn tab_completes_a_name_and_backspace_goes_up() {
+        let (mut state, mut drafts) = opened();
+        type_path(&state, &mut drafts, "/work/project-1/READ".to_owned());
+
+        let text = take(&mut state, &mut drafts, None, Take::Complete);
+
+        assert_eq!(text.as_deref(), Some("/work/project-1/README.md"));
+        assert!(view(&state).is_some(), "Tab keeps the dialog open");
+        // Backspace on a segment deletes as usual.
+        assert_eq!(text_above(&drafts), None);
+
+        type_path(&state, &mut drafts, "/work/project-1/src/".to_owned());
+        let text = text_above(&drafts);
+
+        assert_eq!(text.as_deref(), Some("/work/project-1/"));
+    }
+
+    #[test]
+    fn a_bare_name_asks_for_a_search_after_the_folder() {
+        let (mut state, mut drafts) = opened();
+
+        let typed = type_path(&state, &mut drafts, "lex".to_owned());
+        assert_eq!(
+            typed,
+            Typed {
+                follow: false,
+                search: true
+            }
+        );
+        assert!(needs_search(&state, &drafts));
+        follow(&mut state, &drafts, true);
+        assert!(!needs_search(&state, &drafts));
+        let shown = view_mut(&mut state).unwrap();
+        assert_eq!(
+            shown.search,
+            Some(("lex".to_owned(), Loadable::NotRequested))
+        );
+        shown.search = Some((
+            "lex".to_owned(),
+            Loadable::Loaded(vec![PathBuf::from("/work/project-1/src/lexer.rs")]),
+        ));
+        assert_eq!(row_names(&state, &drafts), ["/work/project-1/src/lexer.rs"]);
+
+        // A path with a separator drops the search at once.
+        let typed = type_path(&state, &mut drafts, "src/".to_owned());
+        assert!(typed.follow && !typed.search);
+        follow(&mut state, &drafts, false);
+        assert_eq!(view(&state).unwrap().search, None);
+    }
+
+    #[test]
+    fn the_keys_move_the_highlight_within_the_rows() {
+        let (state, mut drafts) = opened();
+
+        move_highlight(&state, &mut drafts, Direction::Down);
+        assert_eq!(drafts.open_file.highlighted, Some(0));
+        move_highlight(&state, &mut drafts, Direction::Up);
+        assert_eq!(drafts.open_file.highlighted, Some(0));
+        drafts.open_file.highlighted = None;
+        move_highlight(&state, &mut drafts, Direction::Up);
+        assert_eq!(drafts.open_file.highlighted, Some(5));
+        move_highlight(&state, &mut drafts, Direction::Down);
+        assert_eq!(drafts.open_file.highlighted, Some(5));
+    }
+}

@@ -1,5 +1,5 @@
-//! The agent switcher (Ctrl+K), the new agent dialog (Ctrl+N), and the question before closing
-//! an agent.
+//! The agent switcher (Ctrl+K), the new agent dialog (Ctrl+N), the question before closing an
+//! agent, and the frame of the "Open file" dialog (Ctrl+O).
 
 use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 
@@ -13,6 +13,7 @@ use crate::state::actions::Direction;
 use crate::state::{Dialog, FormMenu, Loadable, NewAgentForm, NewAgentTab, actions};
 use crate::ui::composer::mode_icon;
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::open_file::OpenFileDialog;
 use crate::ui::presence::{Presence, Shown, use_presence};
 
 /// Recent folders the new agent dialog offers.
@@ -52,6 +53,9 @@ pub fn Dialogs() -> Element {
                     },
                     Dialog::NewAgent(form) => rsx! {
                         NewAgentDialog { form }
+                    },
+                    Dialog::OpenFile(view) => rsx! {
+                        OpenFileDialog { view }
                     },
                     Dialog::CloseAgent(agent) => rsx! {
                         CloseAgentDialog { agent }

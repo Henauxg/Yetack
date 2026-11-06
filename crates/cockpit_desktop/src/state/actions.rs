@@ -25,7 +25,7 @@ use super::ui_state::{
     Block, Dialog, FileView, NewAgentForm, NewAgentTab, PaletteOrigin, Popover, Reopening,
     TitleEdit, TitlePlace, ViewMode,
 };
-use super::{export, file_edits, title_emoji};
+use super::{export, file_edits, open_file, title_emoji};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::prefs::{self, StatusFilter};
 
@@ -336,6 +336,8 @@ pub enum MenuAction {
     Rename,
     /// Opens the emoji picker, whose emoji starts the title.
     SetEmoji,
+    /// Opens the "Open file" dialog.
+    OpenFile,
     CloseAgent,
     /// A setting: its row holds its choices, which Left and Right move through.
     Model,
@@ -360,6 +362,7 @@ impl MenuAction {
             Self::ExportConversation => "Export conversation",
             Self::Rename => "Rename",
             Self::SetEmoji => "Set emoji",
+            Self::OpenFile => "Open file",
             Self::CloseAgent => "Close agent",
             Self::Model => "Model",
             Self::Effort => "Effort",
@@ -375,6 +378,7 @@ impl MenuAction {
             | Self::ExportConversation
             | Self::Rename
             | Self::SetEmoji
+            | Self::OpenFile
             | Self::CloseAgent => MenuSection::Context,
             Self::Model | Self::Effort | Self::Mode => MenuSection::Model,
         }
@@ -393,6 +397,7 @@ impl MenuAction {
             | Self::ExportConversation
             | Self::Rename
             | Self::SetEmoji
+            | Self::OpenFile
             | Self::CloseAgent
             | Self::Model
             | Self::Effort
@@ -431,6 +436,7 @@ impl MenuAction {
             | Self::ExportConversation
             | Self::Rename
             | Self::SetEmoji
+            | Self::OpenFile
             | Self::CloseAgent => Vec::new(),
         };
         let mut words = words.into_iter().chain([self.label()]);
@@ -597,6 +603,10 @@ pub fn palette_pick(
         MenuAction::SetEmoji => {
             state.ui.popover = Some(Popover::TitleEmoji);
             return Picked::default();
+        }
+        MenuAction::OpenFile => {
+            open_file::open(state, drafts);
+            Picked::default()
         }
         MenuAction::CloseAgent => Picked {
             requests: request_close(state, drafts, agent),
@@ -826,6 +836,7 @@ pub fn setting_choices(summary: &AgentSummary, action: MenuAction) -> Vec<Settin
         | MenuAction::ExportConversation
         | MenuAction::Rename
         | MenuAction::SetEmoji
+        | MenuAction::OpenFile
         | MenuAction::CloseAgent => Vec::new(),
     }
 }
@@ -856,6 +867,7 @@ pub fn choose_setting(
         | MenuAction::ExportConversation
         | MenuAction::Rename
         | MenuAction::SetEmoji
+        | MenuAction::OpenFile
         | MenuAction::CloseAgent => None,
     };
     requests.unwrap_or_default()
@@ -918,6 +930,7 @@ fn unknown_value_choice(action: MenuAction) -> Option<usize> {
         | MenuAction::ExportConversation
         | MenuAction::Rename
         | MenuAction::SetEmoji
+        | MenuAction::OpenFile
         | MenuAction::CloseAgent => None,
     }
 }
@@ -2700,6 +2713,7 @@ mod tests {
                 "Export conversation",
                 "Rename",
                 "Set emoji",
+                "Open file",
                 "Close agent",
                 "Model",
                 "Effort",
@@ -2787,7 +2801,7 @@ mod tests {
         };
 
         let up_at_the_top = press(Direction::Up, 1);
-        let on_the_first_command = press(Direction::Down, 10);
+        let on_the_first_command = press(Direction::Down, 11);
         let at_the_bottom = press(Direction::Down, 5);
         let back_on_the_settings = press(Direction::Up, 3);
 
@@ -2798,7 +2812,7 @@ mod tests {
                 at_the_bottom,
                 back_on_the_settings
             ),
-            (0, 10, 11, 8)
+            (0, 11, 12, 9)
         );
     }
 

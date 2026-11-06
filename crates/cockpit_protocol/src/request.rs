@@ -70,6 +70,11 @@ pub enum Request {
     /// Answered by `File`, or by `FileMatches` when the path is relative, names no file in the
     /// agent's folder, and several files elsewhere end with it.
     AgentReadFile(ReadFileParams),
+    /// The entries of a folder the daemon reads files in. Answered by `Directory`.
+    AgentListDir(ListDirParams),
+    /// The files whose name holds a text, in the agent's folder and the checkouts it worked in.
+    /// Answered by `FileMatches`.
+    AgentFindFiles(FindFilesParams),
     /// Runs `claude mcp remove <server> -s <scope>` in the agent's folder. Answered by `Done`.
     McpRemove(McpRemoveParams),
     /// Replaces the settings. Answered by `Done`, and a `SettingsChanged` event to every client.
@@ -131,6 +136,10 @@ pub enum Method {
     AgentCommands,
     #[strum(serialize = "agent.read_file")]
     AgentReadFile,
+    #[strum(serialize = "agent.list_dir")]
+    AgentListDir,
+    #[strum(serialize = "agent.find_files")]
+    AgentFindFiles,
     #[strum(serialize = "mcp.remove")]
     McpRemove,
     #[strum(serialize = "settings.set")]
@@ -293,6 +302,20 @@ pub struct ReadFileParams {
     pub path: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListDirParams {
+    pub agent: AgentId,
+    /// Absolute, or relative to the agent's folder.
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FindFilesParams {
+    pub agent: AgentId,
+    /// Matched against file names, whatever their case.
+    pub name: String,
+}
+
 /// The agent gives the folder that `project` and `local` scopes depend on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpRemoveParams {
@@ -341,6 +364,8 @@ impl Request {
             Self::AgentMcpToggle(_) => Method::AgentMcpToggle,
             Self::AgentCommands(_) => Method::AgentCommands,
             Self::AgentReadFile(_) => Method::AgentReadFile,
+            Self::AgentListDir(_) => Method::AgentListDir,
+            Self::AgentFindFiles(_) => Method::AgentFindFiles,
             Self::McpRemove(_) => Method::McpRemove,
             Self::SettingsSet(_) => Method::SettingsSet,
             Self::SessionsList => Method::SessionsList,
@@ -388,6 +413,8 @@ impl Serialize for Request {
             Self::AgentMcpToggle(params) => tagged(method, params, serializer),
             Self::AgentCommands(params) => tagged(method, params, serializer),
             Self::AgentReadFile(params) => tagged(method, params, serializer),
+            Self::AgentListDir(params) => tagged(method, params, serializer),
+            Self::AgentFindFiles(params) => tagged(method, params, serializer),
             Self::McpRemove(params) => tagged(method, params, serializer),
             Self::SettingsSet(params) => tagged(method, params, serializer),
             Self::SessionsList => Tagged::<()> {
@@ -436,6 +463,8 @@ impl<'de> Deserialize<'de> for Request {
             Method::AgentMcpToggle => Self::AgentMcpToggle(params(raw)?),
             Method::AgentCommands => Self::AgentCommands(params(raw)?),
             Method::AgentReadFile => Self::AgentReadFile(params(raw)?),
+            Method::AgentListDir => Self::AgentListDir(params(raw)?),
+            Method::AgentFindFiles => Self::AgentFindFiles(params(raw)?),
             Method::McpRemove => Self::McpRemove(params(raw)?),
             Method::SettingsSet => Self::SettingsSet(params(raw)?),
             Method::SessionsList => Self::SessionsList,

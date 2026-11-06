@@ -254,14 +254,14 @@ fn FileChoices(
 /// A file's path as the file view shows it: relative to the agent's folder, or, for a file outside
 /// it, relative to the folder beside it that holds it, which `root` names.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ShortPath {
+pub struct ShortPath {
     /// The outside folder's name, as "app_feature/".
     root: Option<String>,
     rest: String,
 }
 
 impl ShortPath {
-    fn new(folder: &Path, path: &Path) -> Self {
+    pub fn new(folder: &Path, path: &Path) -> Self {
         let path = file_edits::relative_path(folder, path);
         if path.is_relative() {
             return Self {
@@ -282,7 +282,7 @@ impl ShortPath {
 }
 
 /// On one line cut at its start, the outside folder dim.
-fn short_path(short: &ShortPath) -> Element {
+pub fn short_path(short: &ShortPath) -> Element {
     rsx! {
         span { class: "file-path-text",
             if let Some(root) = &short.root {
