@@ -2,7 +2,7 @@
 //! prevented only in the page, so the script decides which key presses to take, from the mode
 //! Rust sends it, and passes them on with the window's focus and pasted images.
 
-use cockpit_protocol::{Image, ImageMediaType};
+use cockpit_protocol::{AgentId, Image, ImageMediaType};
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -78,7 +78,7 @@ const historyOf = (field) => {
     scopes = new Map();
     histories.set(field, scopes);
   }
-  const scope = field.dataset.undoScope ?? "";
+  const scope = field.dataset.agent ?? "";
   let history = scopes.get(scope);
   if (history === undefined) {
     history = { undo: [], redo: [], last: snapshot(field), kind: "", at: 0, wroteWord: false };
@@ -163,6 +163,9 @@ document.addEventListener("keydown", (event) => {
   let take = false;
   if (command && !event.altKey && !event.shiftKey && ["k", "n", "o"].includes(letter)) {
     take = true;
+  } else if (command && !event.altKey && event.shiftKey && letter === "w") {
+    // Ctrl+Shift+W closes the selected agent. The file view takes Ctrl+W alone.
+    take = true;
   } else if (key === "Escape") {
     take = true;
   } else if (key === "F2" && plain && !event.shiftKey) {
@@ -194,6 +197,17 @@ document.addEventListener("keydown", (event) => {
     composer_text: text,
   });
 }, true);
+// The composer's text goes to the app with the caret, which tells the "/" word being typed.
+document.addEventListener("input", (event) => {
+  const target = event.target;
+  if (target === null || target.id !== settings.composer_id) {
+    return;
+  }
+  const agent = Number(target.dataset.agent);
+  if (Number.isInteger(agent)) {
+    send({ type: "composer_input", agent, text: target.value, caret: target.selectionStart ?? target.value.length });
+  }
+});
 document.addEventListener("paste", (event) => {
   const items = event.clipboardData ? Array.from(event.clipboardData.items) : [];
   for (const item of items) {
@@ -236,12 +250,12 @@ try {
 /// Puts the text it receives in a text field, caret at the end. The field may not be on the page
 /// yet, as the composer when the agent was just selected: it then waits a few frames for it.
 const FIELD_TEXT_SCRIPT: &str = r#"
-const { field_id, text } = await dioxus.recv();
+const { field_id, text, caret } = await dioxus.recv();
 for (let frame = 0; frame < 30; frame++) {
   const field = document.getElementById(field_id);
   if (field !== null) {
     field.value = text;
-    field.selectionStart = field.selectionEnd = text.length;
+    field.selectionStart = field.selectionEnd = caret ?? text.length;
     break;
   }
   await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -298,6 +312,8 @@ document.querySelector(".dialog .highlighted")?.scrollIntoView({ block: "nearest
 struct FieldText {
     field_id: &'static str,
     text: String,
+    /// In UTF-16 units; `None` puts the caret at the end.
+    caret: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -311,8 +327,8 @@ struct Settings {
     undo_steps: u16,
 }
 
-/// Which plain keys the script takes, beyond Ctrl+K, Ctrl+N, Ctrl+O, Esc, F2, Alt+Up, Alt+Down and
-/// the composer's Enter.
+/// Which plain keys the script takes, beyond Ctrl+K, Ctrl+N, Ctrl+O, Ctrl+Shift+W, Esc, F2,
+/// Alt+Up, Alt+Down and the composer's Enter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 struct KeyMode {
     /// Y and N answer an approval or a plan.
@@ -344,8 +360,19 @@ impl KeyMode {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum BridgeMessage {
     Key(KeyPress),
-    Focus { focused: bool },
-    Image { media_type: String, data: String },
+    /// The composer's text, with the caret in UTF-16 units.
+    ComposerInput {
+        agent: u32,
+        text: String,
+        caret: usize,
+    },
+    Focus {
+        focused: bool,
+    },
+    Image {
+        media_type: String,
+        data: String,
+    },
 }
 
 /// Runs the script for the window's life, and keeps its key mode in step with the state.
@@ -385,6 +412,9 @@ fn receive(cockpit: Cockpit, message: BridgeMessage) {
     match message {
         BridgeMessage::Key(press) => {
             cockpit.change_with_drafts(|state, drafts| handle_key(state, drafts, &press));
+        }
+        BridgeMessage::ComposerInput { agent, text, caret } => {
+            cockpit.type_in_composer(AgentId::new(agent), text, caret);
         }
         BridgeMessage::Focus { focused } => {
             cockpit.update(|state| state.ui.window_focused = focused);
@@ -432,8 +462,17 @@ pub fn copy_to_clipboard(text: String) {
 
 /// For a field that follows the keyboard alone: a text the app chose reaches it only this way.
 pub fn set_field_text(field_id: &'static str, text: String) {
+    set_field_text_at(field_id, text, None);
+}
+
+/// As `set_field_text`, with the caret at `caret`, in UTF-16 units, or at the end with `None`.
+pub fn set_field_text_at(field_id: &'static str, text: String, caret: Option<usize>) {
     let script = document::eval(FIELD_TEXT_SCRIPT);
-    let message = FieldText { field_id, text };
+    let message = FieldText {
+        field_id,
+        text,
+        caret,
+    };
     if let Err(error) = script.send(message) {
         tracing::warn!("cannot fill the field {field_id}: {error}");
     }
@@ -562,7 +601,9 @@ mod tests {
         let field_text = FieldText {
             field_id: COMPOSER_ID,
             text: "Run the tests".to_owned(),
+            caret: Some(4),
         };
+        let input = r#"{"type":"composer_input","agent":3,"text":"please run /rev","caret":15}"#;
 
         assert_eq!(
             serde_json::to_value(settings).unwrap(),
@@ -584,7 +625,11 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_value(field_text).unwrap(),
-            json!({ "field_id": "composer", "text": "Run the tests" })
+            json!({ "field_id": "composer", "text": "Run the tests", "caret": 4 })
         );
+        assert!(matches!(
+            serde_json::from_str::<BridgeMessage>(input).unwrap(),
+            BridgeMessage::ComposerInput { agent: 3, text, caret: 15 } if text == "please run /rev"
+        ));
     }
 }

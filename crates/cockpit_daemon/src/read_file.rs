@@ -61,6 +61,9 @@ const LIST_FILES: [&str; 5] = [
     "--exclude-standard",
 ];
 const GIT_FOLDER_OPTION: &str = "-C";
+/// Keeps git from running the file system monitor, a command the agent can set in its checkout's
+/// git config.
+const NO_MONITOR: [&str; 2] = ["-c", "core.fsmonitor=false"];
 
 /// The folders and files `read` may open, all with their symlinks resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +84,9 @@ impl Access {
         home: Option<&Path>,
     ) -> Result<Self, ReadFileError> {
         let folder = folder.canonicalize().map_err(ReadFileError::NotFound)?;
+        // Compared with checkouts whose symlinks are resolved.
+        let home: Option<PathBuf> =
+            home.map(|home| home.canonicalize().unwrap_or_else(|_| home.to_owned()));
         let mut checkouts: Vec<PathBuf> = Vec::new();
         let mut files: Vec<PathBuf> = Vec::new();
         // Files of one folder share their checkout: each folder is looked up once.
@@ -91,7 +97,7 @@ impl Access {
             };
             let checkout = checkout_of
                 .entry(parent)
-                .or_insert_with_key(|parent| checkout_holding(parent, home))
+                .or_insert_with_key(|parent| checkout_holding(parent, home.as_deref()))
                 .clone();
             match checkout {
                 Some(checkout) => {
@@ -131,13 +137,15 @@ impl Access {
             .map(PathBuf::as_path)
     }
 
-    /// Where a search looks: `folder`, the agent's folder as the daemon records it, then the
-    /// allowed checkouts.
-    pub(crate) fn search_roots(&self, folder: &Path) -> Vec<PathBuf> {
-        let checkouts = self.checkouts.iter().cloned();
-        std::iter::once(folder.to_owned())
-            .chain(checkouts)
-            .collect()
+    /// The folders a search lists: `folder`, the agent's folder as its record names it, then the
+    /// checkouts other than that folder, so that no checkout is listed twice.
+    pub(crate) fn search_roots(&self, folder: PathBuf) -> Vec<PathBuf> {
+        let others = self
+            .checkouts
+            .iter()
+            .filter(|checkout| **checkout != self.folder)
+            .cloned();
+        std::iter::once(folder).chain(others).collect()
     }
 }
 
@@ -256,10 +264,10 @@ pub(crate) async fn find_and_read(
     if let Some(found) = found {
         return Ok(found);
     }
-    let roots = access.search_roots(&folder);
+    let roots = access.search_roots(folder);
     let tail = name_tail(&path).unwrap_or_else(|| path.clone());
     let ends_with_tail = |relative: &Path| relative.ends_with(&tail);
-    let matches = search(roots, ends_with_tail, Instant::now() + SEARCH_TIME).await;
+    let matches = search(&access, roots, ends_with_tail, Instant::now() + SEARCH_TIME).await;
     match matches.as_slice() {
         [] => Err(ReadFileError::Unknown(path)),
         [only] => {
@@ -323,10 +331,12 @@ fn name_tail(path: &Path) -> Option<PathBuf> {
     (!tail.as_os_str().is_empty()).then_some(tail)
 }
 
-/// The files under `roots` whose path relative to their root `matches`, as `git ls-files` lists
-/// them, each once, until `deadline` or [`MAX_MATCHES`]. A root that is not in a git checkout adds
-/// nothing.
+/// The files under `roots` whose path relative to their root passes `matches_path`, as `git
+/// ls-files` lists them, each once, until `deadline` or [`MAX_MATCHES`]. A root that is not in a
+/// git checkout adds nothing, and neither does a file `access` does not allow once its symlinks
+/// are resolved.
 pub(crate) async fn search(
+    access: &Access,
     roots: Vec<PathBuf>,
     matches_path: impl Fn(&Path) -> bool,
     deadline: Instant,
@@ -336,6 +346,7 @@ pub(crate) async fn search(
     let mut seen: Vec<PathBuf> = Vec::new();
     for root in roots {
         let Ok(mut child) = Command::new(GIT_PROGRAM)
+            .args(NO_MONITOR)
             .arg(GIT_FOLDER_OPTION)
             .arg(&root)
             .args(LIST_FILES)
@@ -365,8 +376,10 @@ pub(crate) async fn search(
                 continue;
             }
             let found = root.join(relative);
-            let canonical = found.canonicalize().unwrap_or_else(|_| found.clone());
-            if seen.contains(&canonical) {
+            let Ok(canonical) = found.canonicalize() else {
+                continue;
+            };
+            if access.holder(&canonical).is_none() || seen.contains(&canonical) {
                 continue;
             }
             seen.push(canonical);
@@ -615,6 +628,63 @@ mod tests {
         );
     }
 
+    /// A symlink out of the allowed folders, or to nothing, is no file the user can open.
+    #[tokio::test]
+    async fn a_search_lists_only_files_the_daemon_reads() {
+        let layout = Layout::new();
+        git_init(&layout.agent);
+        write(&layout.agent.join("src/a/widget.ts"), "widget\n");
+        std::fs::create_dir_all(layout.agent.join("src/b")).unwrap();
+        std::fs::create_dir_all(layout.agent.join("src/c")).unwrap();
+        symlink(
+            layout.untouched.join("src/secret.ts"),
+            layout.agent.join("src/b/widget.ts"),
+        )
+        .unwrap();
+        symlink(
+            layout.agent.join("src/gone.ts"),
+            layout.agent.join("src/c/widget.ts"),
+        )
+        .unwrap();
+
+        let found = find(&layout, &[], "widget.ts").await.unwrap();
+
+        assert_eq!(
+            found,
+            file(layout.agent.join("src/a/widget.ts"), "widget\n")
+        );
+    }
+
+    /// The agent can write its checkout's git config: listing the files must not run a command
+    /// it names.
+    #[tokio::test]
+    async fn the_search_runs_no_command_from_the_checkouts_git_config() {
+        let layout = Layout::new();
+        let marker = layout.loose.join("monitor-ran");
+        git_init(&layout.agent);
+        write(&layout.agent.join("src/deep/parcel.ts"), "parcel\n");
+        let monitor = format!("touch '{}'; false", marker.display());
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new(GIT_PROGRAM)
+                .arg(GIT_FOLDER_OPTION)
+                .arg(&layout.agent)
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["add", "."]);
+        git(&["config", "core.fsmonitor", &monitor]);
+
+        let found = find(&layout, &[], "parcel.ts").await.unwrap();
+
+        assert_eq!(
+            found,
+            file(layout.agent.join("src/deep/parcel.ts"), "parcel\n")
+        );
+        assert!(!marker.exists(), "the search ran core.fsmonitor");
+    }
+
     #[tokio::test]
     async fn a_missing_absolute_path_or_a_path_with_dots_is_not_looked_up() {
         let layout = Layout::new();
@@ -633,6 +703,21 @@ mod tests {
         assert_outside(dots.map(|_| String::new()));
     }
 
+    /// Listing a large checkout takes much of the search's time.
+    #[test]
+    fn a_search_lists_the_agents_own_checkout_once() {
+        let layout = Layout::new();
+        std::fs::create_dir(layout.agent.join(GIT_ENTRY)).unwrap();
+        let access = layout.access(&[
+            layout.agent.join("src/main.rs"),
+            layout.feature.join("src/app/touched.ts"),
+        ]);
+
+        let roots = access.search_roots(layout.agent.clone());
+
+        assert_eq!(roots, [layout.agent.clone(), layout.feature.clone()]);
+    }
+
     #[test]
     fn a_checkout_holding_the_home_folder_adds_only_the_touched_files() {
         let layout = Layout::new();
@@ -647,6 +732,31 @@ mod tests {
         );
         assert_outside(read(&access, &layout.loose.join("todo.txt")));
         assert_outside(read(&access, &layout.feature.join("src/app/beside.ts")));
+    }
+
+    /// Some systems keep the home folders behind a symlink, such as `/home` to `/var/home`.
+    #[test]
+    fn a_home_folder_reached_through_a_symlink_is_still_the_home_folder() {
+        let layout = Layout::new();
+        let home = layout.temp.path().canonicalize().unwrap();
+        std::fs::create_dir(home.join(GIT_ENTRY)).unwrap();
+        write(&home.join("dotfile.txt"), "dotfile\n");
+        let links = tempfile::tempdir().unwrap();
+        let linked_home = links.path().join("home");
+        symlink(&home, &linked_home).unwrap();
+
+        let access = Access::new(
+            &layout.agent,
+            &[home.join("dotfile.txt")],
+            Some(&linked_home),
+        )
+        .unwrap();
+
+        assert_eq!(
+            read(&access, &home.join("dotfile.txt")).unwrap(),
+            "dotfile\n"
+        );
+        assert_outside(read(&access, &layout.loose.join("todo.txt")));
     }
 
     #[test]

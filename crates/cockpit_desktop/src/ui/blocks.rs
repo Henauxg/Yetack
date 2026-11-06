@@ -308,7 +308,7 @@ fn TasksBody(tasks: Vec<TaskListItem>) -> Element {
 /// Which finished background tasks the block lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FinishedRows {
-    /// The `RECENT_FINISHED` latest, failed ones first.
+    /// The `RECENT_FINISHED` latest, where a failed one keeps its place.
     Recent,
     All,
 }

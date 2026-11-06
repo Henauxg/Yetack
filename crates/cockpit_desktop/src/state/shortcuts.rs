@@ -1,7 +1,7 @@
 //! The keyboard shortcuts of R4-parts, resolved against the state. The page's script decides
 //! which key presses reach here (`bridge`), so typing in a field is never taken over.
 
-use cockpit_protocol::{AgentId, AgentStatus, ApprovalDecision, PlanDecision};
+use cockpit_protocol::{AgentId, ApprovalDecision, PlanDecision};
 use serde::Deserialize;
 
 use super::actions::{self, Direction};
@@ -10,7 +10,7 @@ use super::drafts::Drafts;
 use super::open_file;
 use super::requests::Outgoing;
 use super::transcript::WaitingKind;
-use super::ui_state::{PaletteOrigin, Popover};
+use super::ui_state::{Dialog, PaletteOrigin, Popover};
 
 /// `KeyboardEvent.key` values.
 const KEY_ESCAPE: &str = "Escape";
@@ -62,18 +62,23 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
         }
         return Vec::new();
     }
+    // Ctrl+Shift+W asks to close the selected agent, and confirms when asked.
+    if command && !press.alt && press.shift && letter == "w" {
+        return match (&state.ui.dialog, state.ui.selected) {
+            (Some(Dialog::CloseAgent(agent)), _) => actions::close_agent(state, drafts, *agent),
+            (None, Some(agent)) => actions::request_close(state, drafts, agent),
+            (Some(_), _) | (None, None) => Vec::new(),
+        };
+    }
+    // Esc only closes what is open: the Stop button alone stops an agent, so a stray Esc never
+    // cuts a turn short.
     if press.key == KEY_ESCAPE {
-        if state.ui.close_overlays() {
-            return Vec::new();
+        // A palette opened by typing stays closed for the rest of its "/" word.
+        if state.ui.popover == Some(Popover::Palette(PaletteOrigin::Typed)) {
+            drafts.palette_dismissed = drafts.palette.word.map(|word| word.start);
         }
-        // Stop works only while the agent works: one that waits for you stops with the Stop
-        // button.
-        let working = state
-            .selected()
-            .filter(|entry| entry.summary.status == AgentStatus::Working);
-        return working
-            .map(|entry| actions::interrupt(state, entry.id()))
-            .unwrap_or_default();
+        state.ui.close_overlays();
+        return Vec::new();
     }
     // The script passes F2 on from outside text fields, and from the title fields.
     let plain = !command && !press.alt && !press.shift;
@@ -149,7 +154,9 @@ fn sync_composer_text(state: &mut AppState, drafts: &mut Drafts, agent: AgentId,
     if draft == Some(text) {
         return;
     }
-    if let Some(change) = actions::composer_input(state, drafts, agent, text.to_owned()) {
+    // A key press carries no caret: the end of the text stands in for it.
+    let caret = text.encode_utf16().count();
+    if let Some(change) = actions::composer_input(state, drafts, agent, text.to_owned(), caret) {
         actions::change_palette(state, agent, change);
     }
 }
@@ -194,7 +201,7 @@ fn card_key(state: &AppState, drafts: &mut Drafts, agent: AgentId, key: &str) ->
 mod tests {
     use cockpit_protocol::{
         AgentDetails, AgentStatus, Answer, AnswerState, Approval, AskedQuestion, CommandKind,
-        ItemBody, ItemId, PendingId, Question, QuestionOption, Request, SlashCommand,
+        ItemBody, ItemId, Method, PendingId, Question, QuestionOption, Request, SlashCommand,
         TranscriptItem,
     };
     use serde_json::Value;
@@ -292,20 +299,23 @@ mod tests {
     }
 
     #[test]
-    fn escape_closes_what_is_open_before_stopping_the_agent() {
+    fn escape_closes_what_is_open_and_never_stops_a_working_agent() {
         let mut drafts = Drafts::default();
         let mut state = state(AgentStatus::Working, None);
         state.ui.popover = Some(Popover::Usage);
 
         let first = handle_key(&mut state, &mut drafts, &press(KEY_ESCAPE, KeyTarget::Page));
         let second = handle_key(&mut state, &mut drafts, &press(KEY_ESCAPE, KeyTarget::Page));
+        let from_composer = handle_key(
+            &mut state,
+            &mut drafts,
+            &press(KEY_ESCAPE, KeyTarget::Composer),
+        );
 
         assert!(first.is_empty());
         assert_eq!(state.ui.popover, None);
-        assert!(matches!(
-            second.first().map(|outgoing| &outgoing.request),
-            Some(Request::AgentInterrupt(_))
-        ));
+        assert!(second.is_empty());
+        assert!(from_composer.is_empty());
     }
 
     #[test]
@@ -324,7 +334,7 @@ mod tests {
                     ..AgentDetails::default()
                 });
             }
-            let typed = actions::composer_input(&state, &mut drafts, agent, "/rev".to_owned());
+            let typed = actions::composer_input(&state, &mut drafts, agent, "/rev".to_owned(), 4);
             if let Some(change) = typed {
                 actions::change_palette(&mut state, agent, change);
             }
@@ -361,7 +371,7 @@ mod tests {
                     ..AgentDetails::default()
                 });
             }
-            let typed = actions::composer_input(&state, &mut drafts, agent, "/re".to_owned());
+            let typed = actions::composer_input(&state, &mut drafts, agent, "/re".to_owned(), 3);
             if let Some(change) = typed {
                 actions::change_palette(&mut state, agent, change);
             }
@@ -393,6 +403,33 @@ mod tests {
     }
 
     #[test]
+    fn escape_keeps_the_palette_closed_for_the_rest_of_its_slash_word() {
+        let mut drafts = Drafts::default();
+        let mut state = state(AgentStatus::Idle, None);
+        let agent = AgentId::new(1);
+        let type_text = |state: &mut AppState, drafts: &mut Drafts, text: &str| {
+            let caret = text.encode_utf16().count();
+            let change = actions::composer_input(state, drafts, agent, text.to_owned(), caret);
+            if let Some(change) = change {
+                actions::change_palette(state, agent, change);
+            }
+            state.ui.popover
+        };
+
+        let opened = type_text(&mut state, &mut drafts, "run /re");
+        handle_key(
+            &mut state,
+            &mut drafts,
+            &press(KEY_ESCAPE, KeyTarget::Composer),
+        );
+        let same_word = type_text(&mut state, &mut drafts, "run /rev");
+        let next_word = type_text(&mut state, &mut drafts, "run /rev then /co");
+
+        let typed = Some(Popover::Palette(PaletteOrigin::Typed));
+        assert_eq!((opened, same_word, next_word), (typed, None, typed));
+    }
+
+    #[test]
     fn escape_closes_the_palette_whatever_opened_it() {
         let mut drafts = Drafts::default();
         let mut state = state(AgentStatus::Idle, None);
@@ -402,7 +439,7 @@ mod tests {
         actions::toggle_palette(&mut state, &mut drafts, agent);
         handle_key(&mut state, &mut drafts, &escape);
         let after_button = state.ui.popover;
-        let typed = actions::composer_input(&state, &mut drafts, agent, "/".to_owned());
+        let typed = actions::composer_input(&state, &mut drafts, agent, "/".to_owned(), 1);
         if let Some(change) = typed {
             actions::change_palette(&mut state, agent, change);
         }
@@ -441,7 +478,7 @@ mod tests {
     }
 
     #[test]
-    fn escape_in_a_field_closes_a_menu_or_a_dialog_before_stopping() {
+    fn escape_in_a_field_closes_a_menu_then_a_dialog_and_stops_nothing() {
         let mut drafts = Drafts::default();
         let mut state = state(AgentStatus::Working, None);
         state.ui.popover = Some(Popover::Model);
@@ -465,10 +502,7 @@ mod tests {
 
         assert!(menu.is_empty() && dialog.is_empty());
         assert_eq!((state.ui.popover, &state.ui.dialog), (None, &None));
-        assert!(matches!(
-            stop.first().map(|outgoing| &outgoing.request),
-            Some(Request::AgentInterrupt(_))
-        ));
+        assert!(stop.is_empty());
     }
 
     #[test]
@@ -564,14 +598,8 @@ mod tests {
         let method =
             |requests: &[Outgoing]| requests.first().map(|outgoing| outgoing.request.method());
         assert!(from_field.is_empty());
-        assert_eq!(
-            method(&from_composer),
-            Some(cockpit_protocol::Method::AgentMove)
-        );
-        assert_eq!(
-            method(&from_page),
-            Some(cockpit_protocol::Method::AgentMove)
-        );
+        assert_eq!(method(&from_composer), Some(Method::AgentMove));
+        assert_eq!(method(&from_page), Some(Method::AgentMove));
         assert!(behind_a_dialog.is_empty());
     }
 
@@ -596,6 +624,29 @@ mod tests {
         assert_eq!(from_page, Some(TitlePlace::Sidebar));
         assert_eq!(from_header, Some(TitlePlace::Sidebar));
         assert_eq!(place(&state), None, "nothing behind a dialog");
+    }
+
+    #[test]
+    fn ctrl_shift_w_asks_to_close_the_selected_agent_and_confirms_when_asked() {
+        let mut drafts = Drafts::default();
+        let mut state = state(AgentStatus::Working, None);
+        let close = KeyPress {
+            shift: true,
+            key: "W".to_owned(),
+            ..ctrl("w")
+        };
+
+        let asked = handle_key(&mut state, &mut drafts, &close);
+        let dialog = state.ui.dialog.clone();
+        let confirmed = handle_key(&mut state, &mut drafts, &close);
+
+        assert!(asked.is_empty());
+        assert_eq!(dialog, Some(Dialog::CloseAgent(AgentId::new(1))));
+        assert!(matches!(
+            confirmed.first().map(|outgoing| &outgoing.request),
+            Some(Request::AgentClose(params)) if params.agent == AgentId::new(1)
+        ));
+        assert!(state.agents.is_empty());
     }
 
     #[test]

@@ -28,9 +28,18 @@ pub struct QuestionDraft {
     pub other: Vec<String>,
 }
 
+/// A "/" word in the composer's draft, as byte offsets: from its "/" to its end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlashWord {
+    pub start: usize,
+    pub end: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Palette {
     pub query: String,
+    /// The "/" word the caret is in, when typing opened the palette: a pick replaces it.
+    pub word: Option<SlashWord>,
     /// An index into the filtered commands.
     pub highlighted: usize,
     /// Up or Down moved the highlight since the filter last changed. Left and Right change the
@@ -73,9 +82,14 @@ pub struct Drafts {
     /// The composer takes the draft's text at each, and else leaves its text to the keyboard: a
     /// render that lags behind typing would put an older text back.
     composer_writes: BTreeMap<AgentId, u64>,
+    /// Where the caret goes in the text the app wrote last, in UTF-16 units as the page counts
+    /// them. Without one, it goes at the end.
+    composer_carets: BTreeMap<AgentId, usize>,
+    /// The start of the "/" word whose palette Esc closed: it stays closed until another word.
+    pub palette_dismissed: Option<usize>,
     pub questions: BTreeMap<PendingId, QuestionDraft>,
     pub palette: Palette,
-    /// The text of the header's title field while a title is edited.
+    /// The text of the title field, the header's or a sidebar row's, while a title is edited.
     pub title: String,
     pub new_agent: NewAgentDraft,
     pub switcher: SwitcherDraft,
@@ -93,8 +107,25 @@ impl Drafts {
 
     /// For a draft text the app changed, so that the composer shows it when it shows `agent`.
     pub fn draft_written(&mut self, agent: AgentId) {
+        self.composer_carets.remove(&agent);
         let writes = self.composer_writes.entry(agent).or_default();
         *writes = writes.wrapping_add(1);
+    }
+
+    /// As `draft_written`, with the caret at `caret`, in UTF-16 units.
+    pub fn draft_written_at(&mut self, agent: AgentId, caret: usize) {
+        self.draft_written(agent);
+        self.composer_carets.insert(agent, caret);
+    }
+
+    /// Where the caret goes in the text the app wrote last; `None` at its end.
+    pub fn written_caret(&self, agent: AgentId) -> Option<usize> {
+        self.composer_carets.get(&agent).copied()
+    }
+
+    /// Typing moved on from the text the app wrote.
+    pub fn draft_typed(&mut self, agent: AgentId) {
+        self.composer_carets.remove(&agent);
     }
 
     pub fn composer_writes(&self, agent: AgentId) -> u64 {
@@ -108,5 +139,6 @@ impl Drafts {
     pub fn retain_agents(&mut self, keep: impl Fn(AgentId) -> bool) {
         self.composer.retain(|&agent, _| keep(agent));
         self.composer_writes.retain(|&agent, _| keep(agent));
+        self.composer_carets.retain(|&agent, _| keep(agent));
     }
 }

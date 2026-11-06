@@ -85,4 +85,7 @@ pub(crate) enum ControlPurpose {
     McpStatus(Option<Reply>),
     /// A reconnect or toggle, answered by `Done` and followed by a refresh.
     McpChanged(Reply),
+    /// The interrupt that ends a working agent's turn as it closes. The agent is gone when the
+    /// answer comes.
+    Closing,
 }

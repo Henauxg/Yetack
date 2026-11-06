@@ -198,6 +198,7 @@ mod tests {
         Approval, ApprovalAnswer, ApprovalDecision, FileEdit, Plan, PlanAnswer, PlanDecision,
         ToolCall,
     };
+    use serde_json::Value;
 
     use super::*;
 
@@ -205,7 +206,7 @@ mod tests {
         ToolCall {
             tool: tool.to_owned(),
             summary: summary.to_owned(),
-            input: serde_json::Value::Null,
+            input: Value::Null,
             status,
             output: None,
             exit_code: None,
@@ -229,7 +230,7 @@ mod tests {
             pending: PendingId::new("request-1".to_owned()),
             tool: tool.to_owned(),
             summary: summary.to_owned(),
-            input: serde_json::Value::Null,
+            input: Value::Null,
             edit: None,
             reason: None,
             answer,

@@ -174,21 +174,19 @@ pub(crate) async fn find_files(
     if needle.is_empty() {
         return Ok(Vec::new());
     }
-    let roots = {
-        let folder = folder.clone();
-        tokio::task::spawn_blocking(move || {
-            let access = Access::new(&folder, &touched, home.as_deref())?;
-            Ok::<_, ReadFileError>(access.search_roots(&folder))
-        })
-        .await
-        .map_err(read_file::join_error)??
-    };
+    let (access, roots) = tokio::task::spawn_blocking(move || {
+        let access = Access::new(&folder, &touched, home.as_deref())?;
+        let roots = access.search_roots(folder);
+        Ok::<_, ReadFileError>((access, roots))
+    })
+    .await
+    .map_err(read_file::join_error)??;
     let name_holds = |relative: &Path| {
         relative
             .file_name()
             .is_some_and(|file| file.to_string_lossy().to_lowercase().contains(&needle))
     };
-    Ok(read_file::search(roots, name_holds, Instant::now() + SEARCH_TIME).await)
+    Ok(read_file::search(&access, roots, name_holds, Instant::now() + SEARCH_TIME).await)
 }
 
 #[cfg(test)]

@@ -36,7 +36,7 @@ All crates live in `crates/` and are application code ([standards/rust/README.md
 | `cockpit_protocol` | lib | The daemon API: ids, the transcript model, requests, responses, events, snapshots, and the line framing. |
 | `cockpit_client` | lib | A connection to a daemon over a transport (local socket or SSH bridge): requests, responses, events, reconnection. |
 | `cockpit_daemon` | lib | The daemon: claude processes, the hub, the store, the socket server and its peer checks. |
-| `agents_cockpit` | bin `agents-cockpit` | The command line: `serve`, `bridge`, and client commands (`list`, `start`, `prompt`, `answer`, `stop`, `rename`, `move`, `tail`). |
+| `agents_cockpit` | bin `agents-cockpit` | The command line: `serve`, `bridge`, and client commands (`list`, `start`, `prompt`, `answer`, `stop`, `close`, `rename`, `move`, `tail`). |
 | `cockpit_desktop` | bin `agents-cockpit-desktop` | The Dioxus desktop app. |
 
 Dependencies point one way:
@@ -141,7 +141,12 @@ Transcripts are not in the snapshot: the app asks for an agent's transcript with
 
 ### Requests
 
-`agent.start`, `agent.prompt`, `agent.cancel_queued`, `agent.answer` (approval, question or plan), `agent.interrupt`, `agent.stop`, `agent.resume`, `agent.remove`, `agent.history`, `agent.details`, `agent.set_model`, `agent.set_effort`, `agent.set_mode`, `agent.rename`, `agent.move` (the agent goes just above `before`, or to the bottom when `before` is `null`), `agent.context_usage`, `agent.stop_task`, `agent.mcp_status`, `agent.mcp_reconnect`, `agent.mcp_toggle`, `agent.commands` (slash commands and skills), `agent.read_file` (the file view), `agent.list_dir` and `agent.find_files` (the "Open file" dialog), `mcp.remove` (with the agent, whose folder decides the project and local scopes), `settings.set`, `sessions.list`, `sessions.resume`.
+`agent.start`, `agent.prompt`, `agent.cancel_queued`, `agent.answer` (approval, question or plan), `agent.interrupt`, `agent.stop`, `agent.resume`, `agent.remove` (an exited agent), `agent.close` (any agent), `agent.history`, `agent.details`, `agent.set_model`, `agent.set_effort`, `agent.set_mode`, `agent.rename`, `agent.move` (the agent goes just above `before`, or to the bottom when `before` is `null`), `agent.context_usage`, `agent.stop_task`, `agent.mcp_status`, `agent.mcp_reconnect`, `agent.mcp_toggle`, `agent.commands` (slash commands and skills), `agent.read_file` (the file view), `agent.list_dir` and `agent.find_files` (the "Open file" dialog), `mcp.remove` (with the agent, whose folder decides the project and local scopes), `settings.set`, `sessions.list`, `sessions.resume`.
+
+`agent.close` ends an agent whatever its process does, in one request.
+`agent.stop` then `agent.remove` would not do it: `remove` refuses an agent whose process still runs, and the process exits some time after `stop` closes its stdin.
+The daemon interrupts a working agent's turn, takes the agent out at once (`AgentRemoved`, its logs deleted), and the process handle leaving with it closes `claude`'s stdin.
+`claude` ends its session file and exits, or is killed after 10 seconds, so the session can come back with `sessions.resume`.
 
 The three file requests reach the same folders, once symlinks are resolved and with `..` refused: the agent's folder, and each git checkout that holds a file the agent read or changed (the folder with the `.git` entry nearest above it, unless that is `/` or holds the home folder).
 `agent.read_file` also reads a file the agent touched that no such checkout holds, and that file only.
@@ -196,6 +201,7 @@ The hub turns Claude Code messages into transcript items and status changes (mod
 - The daemon's own control requests (`interrupt`, `set_model`, `set_permission_mode`, `get_context_usage`, `get_settings`, `mcp_status`, `mcp_reconnect`, `mcp_toggle`, `stop_task`) carry ids of its own.
   Claude Code echoes control responses; one whose id the daemon did not send is ignored.
 - Effort has no control request: the daemon sends `/effort <level>` as a prompt.
+  A `/effort <level>` or `/model <model>` typed in the composer is recorded as the menus record it, once it goes to `claude`, so a restart keeps it. A level the cockpit does not know changes nothing.
 - Naming a session has none either: `agent.rename` sends `/rename <title>`, so Claude Code's resume list and `sessions.list` show the name. Claude Code then writes `system/session_title_changed`, which also renames the agent after a `/rename` typed in the composer.
   As it starts, before it answers `initialize`, Claude Code restates the session's saved name the same way: the daemon leaves the agent's name, so a rename made while the agent was stopped stays.
   When that saved name is not the agent's, the daemon sends `/rename <title>` once Claude Code has answered `initialize`, so the session takes the agent's name.
@@ -283,7 +289,13 @@ On start the daemon reads `agents.json`, finds the last `Seq` in the logs, and r
   One title field shows at a time: F2 in the header's field moves the edit to the row with the text typed so far, and F2 in the row's field moves it back.
   The typed text lives in the drafts, as the composer's does, so typing a title renders neither the transcript nor the sidebar.
   An agent the filter hides has no row, so F2 opens the header's field.
-- **Shortcuts**: Ctrl+K, Ctrl+N, Esc, Y, N, 1 to 9, as in plan.md, Alt+Up and Alt+Down to move the selected agent in the sidebar, and F2 to rename it.
+- **Closing an agent**: the close button on a sidebar row (shown on hover and on the selected row), "Close agent" in the "/" menu, or Ctrl+Shift+W sends `agent.close`.
+  Ctrl+W stays the file view's: it closes the shown tab.
+  An agent that works, waits for you, or holds a message you have not sent asks first, in a dialog that says what would be lost; Ctrl+Shift+W again, or Enter, confirms.
+  The agent leaves the sidebar at once, with its drafts and file view, and the selection goes to the next row, or to the one above for the last.
+  Its events until the daemon's `AgentRemoved` are not applied, so a late update does not bring it back; a refused close puts it back.
+  A note offers Undo for 8 seconds: `sessions.resume` brings the session back as a new agent, which the app then moves above the agent that was below it.
+- **Shortcuts**: Ctrl+K, Ctrl+N, Esc (closes what is open, never stops the agent), Y, N, 1 to 9, as in plan.md, Alt+Up and Alt+Down to move the selected agent in the sidebar, F2 to rename it, and Ctrl+Shift+W to close it.
 
 ## Errors
 

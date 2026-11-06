@@ -10,18 +10,19 @@ pub mod file_edits;
 pub mod open_file;
 mod requests;
 mod shortcuts;
+pub mod title_emoji;
 mod transcript;
 mod ui_state;
 
 pub use app_state::{AgentEntry, AppState, ConnectionState, FileRead, Loadable};
 pub use apply::{Alert, AlertKind, apply_update};
 pub use drafts::Drafts;
-pub use requests::{Outgoing, apply_response, needed_requests};
+pub use requests::{Outgoing, Purpose, apply_response, needed_requests};
 pub use shortcuts::{KeyPress, handle_key};
 pub use transcript::{HistoryState, WaitingKind, awaiting_approval};
 pub use ui_state::{
     Block, Dialog, FormMenu, McpView, NewAgentForm, NewAgentTab, NoteKind, OpenFileView,
-    PaletteOrigin, Popover, TitlePlace, ToolFilter, ViewMode,
+    PaletteOrigin, Popover, TitleEdit, TitlePlace, ToolFilter, ViewMode,
 };
 
 #[cfg(test)]

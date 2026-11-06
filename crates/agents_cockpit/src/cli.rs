@@ -93,6 +93,12 @@ pub(crate) enum Command {
         #[arg(value_parser = agent_id)]
         agent: AgentId,
     },
+    /// End an agent's claude process and take the agent off the list; its Claude session stays
+    /// for a later resume
+    Close {
+        #[arg(value_parser = agent_id)]
+        agent: AgentId,
+    },
     /// Rename an agent, and its Claude session while it runs
     Rename {
         #[arg(value_parser = agent_id)]
