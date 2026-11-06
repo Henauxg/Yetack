@@ -1,5 +1,9 @@
 //! The agents-cockpit desktop app: a window that watches and steers the agents of one daemon.
 
+// A GUI program on Windows, so that starting it opens no console window. A debug build keeps the
+// console, which shows its log.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod bridge;
 mod config;
 mod connection;
@@ -8,6 +12,7 @@ mod demo;
 mod fonts;
 mod format;
 mod in_app_host;
+mod logging;
 mod notifications;
 mod path_style;
 mod prefs;
@@ -22,9 +27,8 @@ use dioxus::LaunchBuilder;
 use dioxus::desktop::tao::event::Event;
 use dioxus::desktop::tao::window::Icon;
 use dioxus::desktop::{LogicalSize, WindowBuilder};
-use tracing_subscriber::EnvFilter;
 
-use crate::config::{Config, Environment};
+use crate::config::{Config, ConfigError, Environment};
 use crate::connection::Startup;
 use crate::in_app_host::InAppHost;
 use crate::prefs::Prefs;
@@ -43,17 +47,15 @@ const ICON_PNG: &[u8] = include_bytes!("../assets/agents-cockpit-256.png");
 /// The theme's background, so the window does not flash white before the page draws.
 const BACKGROUND: (u8, u8, u8, u8) = (24, 24, 24, 255);
 
-/// Log level when `RUST_LOG` is not set.
-const DEFAULT_LOG: &str = "warn";
-
 fn main() -> anyhow::Result<()> {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    let environment = Environment::from_process();
+    logging::init(&environment);
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let demo = demo::is_requested(&arguments);
-    let environment = Environment::from_process();
-    let config = Config::load(&environment)?;
-    let places = Places::new(&environment)?;
+    // Logged as well: a GUI program on Windows has no stderr for the error `main` returns.
+    let log = |error: &ConfigError| tracing::error!("{}", state::error_chain(error));
+    let config = Config::load(&environment).inspect_err(log)?;
+    let places = Places::new(&environment).inspect_err(log)?;
     let label = reach::label(&config.daemon);
     let mut state = if demo {
         demo::state(label)
