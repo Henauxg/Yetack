@@ -132,13 +132,24 @@ async fn run_in_app(
             label,
             note: None,
         }),
-        Err(ServeError::Store(StoreError::AlreadyRunning { .. })) => Ok(Reached {
-            transport: Transport::Local {
-                socket: places.socket(None),
-            },
-            label: DaemonLabel::socket(),
-            note: Some(ANOTHER_DAEMON_RUNS),
-        }),
+        Err(error @ ServeError::Store(StoreError::AlreadyRunning { .. })) => {
+            let socket = places.socket(None);
+            if !answers(&socket).await {
+                return Err(Unreached {
+                    label,
+                    error: format!(
+                        "{}, and nothing answers on {}: another copy of this app may run the agents",
+                        error_chain(&error),
+                        socket.display()
+                    ),
+                });
+            }
+            Ok(Reached {
+                transport: Transport::Local { socket },
+                label: DaemonLabel::socket(),
+                note: Some(ANOTHER_DAEMON_RUNS),
+            })
+        }
         Err(error) => Err(Unreached {
             label,
             error: error_chain(&error),
@@ -146,16 +157,44 @@ async fn run_in_app(
     }
 }
 
-/// The service serves the state folder of `socket`, or the default one.
+#[cfg(unix)]
+async fn answers(socket: &Path) -> bool {
+    crate::service::answers(socket).await
+}
+
+/// No daemon listens on a socket on this platform.
+#[cfg(not(unix))]
+async fn answers(_socket: &Path) -> bool {
+    false
+}
+
+/// The service serves the state folder of `socket`, or the default one. It listens in that folder
+/// on a socket of its own name, so a `socket` named otherwise is refused.
 #[cfg(unix)]
 async fn start_service(
     socket: Option<&Path>,
     places: &Places,
     label: DaemonLabel,
 ) -> Result<Reached, Unreached> {
-    let state_dir = match socket.and_then(Path::parent) {
-        Some(folder) => folder.to_owned(),
+    let state_dir = match socket {
         None => places.daemon_state.clone(),
+        Some(socket) => match socket.parent() {
+            Some(folder)
+                if socket.is_absolute() && cockpit_daemon::socket_path(folder) == socket =>
+            {
+                folder.to_owned()
+            }
+            Some(_) | None => {
+                return Err(Unreached {
+                    label,
+                    error: format!(
+                        "the app starts the service only for a socket such as {}, in the service's state folder: the config names {}",
+                        places.socket(None).display(),
+                        socket.display()
+                    ),
+                });
+            }
+        },
     };
     match crate::service::ensure(&state_dir, &places.app_state).await {
         Ok(socket) => Ok(Reached {
@@ -226,25 +265,31 @@ mod tests {
 
     #[test]
     fn places_follow_the_environment() {
+        #[cfg(unix)]
+        let (home, config, state) = ("/home/someone", ".config", ".local/state");
+        #[cfg(windows)]
+        let (home, config, state) = (r"C:\Users\someone", r"AppData\Roaming", r"AppData\Local");
+        let home = PathBuf::from(home);
         let environment = Environment {
-            home: Some(PathBuf::from("/home/someone")),
+            home: Some(home.clone()),
             config_home: None,
             state_home: None,
         };
 
         let places = Places::new(&environment).unwrap();
 
+        let state = home.join(state);
         assert_eq!(
             places,
             Places {
-                config_file: PathBuf::from("/home/someone/.config/agents-cockpit/config.toml"),
-                daemon_state: PathBuf::from("/home/someone/.local/state/agents-cockpit"),
-                app_state: PathBuf::from("/home/someone/.local/state/agents-cockpit-desktop"),
+                config_file: home.join(config).join("agents-cockpit").join("config.toml"),
+                daemon_state: state.join("agents-cockpit"),
+                app_state: state.join("agents-cockpit-desktop"),
             }
         );
         assert_eq!(
             places.socket(None),
-            PathBuf::from("/home/someone/.local/state/agents-cockpit/agents-cockpit.sock")
+            state.join("agents-cockpit").join("agents-cockpit.sock")
         );
     }
 
@@ -284,22 +329,81 @@ mod tests {
 
         let in_app = reach(&DaemonConfig::InApp, &places, &first).await.unwrap();
         let again = reach(&DaemonConfig::InApp, &places, &first).await.unwrap();
-        let other = reach(&DaemonConfig::InApp, &places, &second).await.unwrap();
+        #[cfg(unix)]
+        let listener = tokio::net::UnixListener::bind(places.socket(None)).unwrap();
+        let other = reach(&DaemonConfig::InApp, &places, &second).await;
 
         assert!(matches!(in_app.transport, Transport::InApp(_)));
         assert_eq!(in_app.label, DaemonLabel::in_app());
         assert_eq!(again.transport, in_app.transport, "the app starts it once");
-        assert_eq!(
-            other.transport,
-            Transport::Local {
-                socket: cockpit_daemon::socket_path(&places.daemon_state)
-            }
-        );
-        assert_eq!(other.note, Some(ANOTHER_DAEMON_RUNS));
+        #[cfg(unix)]
+        {
+            let other = other.unwrap();
+            assert_eq!(
+                other.transport,
+                Transport::Local {
+                    socket: cockpit_daemon::socket_path(&places.daemon_state)
+                }
+            );
+            assert_eq!(other.note, Some(ANOTHER_DAEMON_RUNS));
+            drop(listener);
+        }
+        #[cfg(not(unix))]
+        assert!(other.is_err());
         first.shutdown();
         let after = reach(&DaemonConfig::InApp, &places, &second).await.unwrap();
         assert!(matches!(after.transport, Transport::InApp(_)));
         second.shutdown();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_service_starts_only_for_a_socket_it_can_listen_on() {
+        let places = places(Path::new("/srv"));
+        let named_otherwise = DaemonConfig::Local {
+            socket: Some(PathBuf::from("/run/cockpit.sock")),
+            start_service: true,
+        };
+
+        let refused = reach(&named_otherwise, &places, &InAppHost::default()).await;
+
+        let Err(Unreached { label, error }) = refused else {
+            panic!("expected a refusal, got {refused:?}");
+        };
+        assert_eq!(label, DaemonLabel::service());
+        assert_eq!(
+            error,
+            "the app starts the service only for a socket such as /srv/state/agents-cockpit/agents-cockpit.sock, in the service's state folder: the config names /run/cockpit.sock"
+        );
+    }
+
+    /// Another copy of the app holds the lock, and has no socket.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_lock_held_without_a_socket_names_the_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let places = places(temp.path());
+        let first = InAppHost::default();
+        reach(&DaemonConfig::InApp, &places, &first).await.unwrap();
+
+        let second = reach(&DaemonConfig::InApp, &places, &InAppHost::default()).await;
+
+        let Err(Unreached { label, error }) = second else {
+            panic!("expected no daemon, got {second:?}");
+        };
+        assert_eq!(label, DaemonLabel::in_app());
+        let lock = places.daemon_state.join("serve.lock");
+        assert!(
+            error.starts_with(&format!(
+                "another daemon already runs on {}",
+                lock.display()
+            )),
+            "{error}"
+        );
+        assert!(
+            error.ends_with("another copy of this app may run the agents"),
+            "{error}"
+        );
+        first.shutdown();
     }
 
     #[test]
