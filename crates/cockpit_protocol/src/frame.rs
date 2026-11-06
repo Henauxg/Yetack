@@ -180,7 +180,7 @@ mod tests {
 
     use super::*;
     use crate::ids::{AgentId, Seq};
-    use crate::request::{AgentParams, Request};
+    use crate::request::{AgentParams, Method, Request};
     use crate::session::ClientMessage;
 
     fn hello(last_seq: u64) -> ClientMessage {
@@ -335,8 +335,11 @@ mod tests {
             panic!("expected a decode error, got {result:?}");
         };
         assert_eq!(request_id, Some(RequestId::new(7)));
+        // Clients tell an older daemon by the start of the error it answers with.
         assert!(
-            source.to_string().contains("unknown method `agent.fly`"),
+            source
+                .to_string()
+                .starts_with(&Method::unknown_message("agent.fly")),
             "{source}"
         );
     }
