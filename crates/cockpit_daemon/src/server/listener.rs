@@ -43,7 +43,8 @@ pub(crate) async fn accept_loop(
         match listener.accept().await {
             Ok((stream, _)) => match peer::check(&stream, daemon) {
                 Ok(()) => {
-                    tokio::spawn(connection::serve(stream, hub.clone()));
+                    let (read, write) = stream.into_split();
+                    tokio::spawn(connection::serve(read, write, hub.clone()));
                 }
                 Err(error) => {
                     tracing::warn!(

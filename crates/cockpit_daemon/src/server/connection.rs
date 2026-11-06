@@ -8,9 +8,7 @@ use cockpit_protocol::{
     Catchup, ClientMessage, ErrorBody, ErrorCode, Frame, FrameError, FrameReader, PROTOCOL_VERSION,
     RequestId, ResponseResult, Seq, ServerMessage,
 };
-use tokio::io::BufReader;
-use tokio::net::UnixStream;
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 
@@ -48,10 +46,14 @@ enum End {
     HubGone,
 }
 
-type Reader = FrameReader<BufReader<OwnedReadHalf>>;
+type Reader<R> = FrameReader<BufReader<R>>;
 
-pub(crate) async fn serve(stream: UnixStream, hub: mpsc::Sender<HubInput>) {
-    let (read, mut writer) = stream.into_split();
+/// Serves one client over `read` and `writer`: a socket's two halves, or an in-memory stream's.
+pub(crate) async fn serve<R, W>(read: R, mut writer: W, hub: mpsc::Sender<HubInput>)
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let mut reader = FrameReader::new(BufReader::new(read));
     match run(&mut reader, &mut writer, &hub).await {
         Ok(()) | Err(End::Closed) => tracing::debug!("a client left"),
@@ -59,11 +61,15 @@ pub(crate) async fn serve(stream: UnixStream, hub: mpsc::Sender<HubInput>) {
     }
 }
 
-async fn run(
-    reader: &mut Reader,
-    writer: &mut OwnedWriteHalf,
+async fn run<R, W>(
+    reader: &mut Reader<R>,
+    writer: &mut W,
     hub: &mpsc::Sender<HubInput>,
-) -> Result<(), End> {
+) -> Result<(), End>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let last_seq = hello(reader, writer).await?;
     let (frames, replay, catchup) = join(hub, last_seq).await?;
     let welcome = ServerMessage::Welcome {
@@ -78,7 +84,11 @@ async fn run(
 }
 
 /// Reads the `Hello`, refusing a client of another protocol version.
-async fn hello(reader: &mut Reader, writer: &mut OwnedWriteHalf) -> Result<Option<Seq>, End> {
+async fn hello<R, W>(reader: &mut Reader<R>, writer: &mut W) -> Result<Option<Seq>, End>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let message = tokio::time::timeout(HELLO_TIMEOUT, reader.next_message::<ClientMessage>())
         .await
         .map_err(|_| End::NoHello)?;
@@ -150,12 +160,16 @@ async fn register(
     registration.await.map_err(|_| End::HubGone)
 }
 
-async fn serve_requests(
-    reader: &mut Reader,
-    writer: &mut OwnedWriteHalf,
+async fn serve_requests<R, W>(
+    reader: &mut Reader<R>,
+    writer: &mut W,
     hub: &mpsc::Sender<HubInput>,
     mut frames: mpsc::Receiver<Frame>,
-) -> Result<(), End> {
+) -> Result<(), End>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let mut in_flight: JoinSet<(RequestId, ResponseResult)> = JoinSet::new();
     loop {
         tokio::select! {
@@ -205,8 +219,8 @@ async fn serve_requests(
 }
 
 /// Sends a response, or an error in its place when it is too large to send.
-async fn respond(
-    writer: &mut OwnedWriteHalf,
+async fn respond<W: AsyncWrite + Unpin>(
+    writer: &mut W,
     id: RequestId,
     result: ResponseResult,
 ) -> Result<(), End> {
@@ -223,12 +237,12 @@ async fn respond(
     }
 }
 
-async fn send(writer: &mut OwnedWriteHalf, message: &ServerMessage) -> Result<(), End> {
+async fn send<W: AsyncWrite + Unpin>(writer: &mut W, message: &ServerMessage) -> Result<(), End> {
     let frame = Frame::encode(message).map_err(End::Frame)?;
     write(writer, frame.as_bytes()).await
 }
 
-async fn write(writer: &mut OwnedWriteHalf, bytes: &[u8]) -> Result<(), End> {
+async fn write<W: AsyncWrite + Unpin>(writer: &mut W, bytes: &[u8]) -> Result<(), End> {
     use tokio::io::AsyncWriteExt;
 
     tokio::time::timeout(WRITE_TIMEOUT, writer.write_all(bytes))

@@ -13,6 +13,8 @@ pub enum ConnectError {
         #[source]
         source: io::Error,
     },
+    #[error("the daemon in this app has stopped")]
+    InAppStopped,
     #[error("the ssh host `{host}` is empty or starts with `-`")]
     InvalidHost { host: String },
     #[error("cannot start ssh")]
