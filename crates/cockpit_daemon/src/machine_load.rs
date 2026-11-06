@@ -16,5 +16,6 @@ mod sampler;
 mod stop_process;
 
 pub(crate) use load_sampler::LoadSampler;
+pub(crate) use proc_files::{PROC_ROOT, STAT_FILE};
 pub(crate) use reading::AgentRoot;
 pub(crate) use stop_process::stop_descendant;

@@ -15,8 +15,8 @@ use std::path::Path;
 use cockpit_protocol::ProcessId;
 use tokio::net::UnixStream;
 
-const PROC_ROOT: &str = "/proc";
-const STAT_FILE: &str = "stat";
+use crate::machine_load::{PROC_ROOT, STAT_FILE};
+
 /// Longer than any real chain: a loop in a corrupt `/proc` cannot run forever.
 const MAX_CHAIN: usize = 4096;
 

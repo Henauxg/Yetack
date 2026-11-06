@@ -3,8 +3,8 @@
 
 use cockpit_protocol::{LoadAverage, ProcessId};
 
-pub(super) const PROC_ROOT: &str = "/proc";
-pub(super) const STAT_FILE: &str = "stat";
+pub(crate) const PROC_ROOT: &str = "/proc";
+pub(crate) const STAT_FILE: &str = "stat";
 pub(super) const CMDLINE_FILE: &str = "cmdline";
 pub(super) const TASK_FOLDER: &str = "task";
 pub(super) const CHILDREN_FILE: &str = "children";

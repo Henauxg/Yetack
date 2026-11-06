@@ -8,8 +8,8 @@ use cockpit_protocol::{AgentId, LoadAverage, ProcessId, Timestamp};
 
 use crate::machine_load::kept_file::KeptFile;
 use crate::machine_load::proc_files::{
-    self, CMDLINE_FILE, LOADAVG_PATH, MEMINFO_PATH, MemoryInfo, PROC_ROOT, ProcessKey, ProcessStat,
-    SERVER_STAT_PATH, ServerCpu, UPTIME_PATH,
+    self, CHILDREN_FILE, CMDLINE_FILE, LOADAVG_PATH, MEMINFO_PATH, MemoryInfo, PROC_ROOT,
+    ProcessKey, ProcessStat, SERVER_STAT_PATH, ServerCpu, TASK_FOLDER, UPTIME_PATH,
 };
 use crate::machine_load::process_tree::{self, ChildrenFiles, FullScan, ProcessSource};
 
@@ -89,7 +89,7 @@ impl MachineReader {
             Tree::ChildrenFiles(ChildrenFiles::default())
         } else {
             tracing::warn!(
-                "this kernel has no /proc/<pid>/task/<tid>/children: the machine load reads every process"
+                "this kernel has no {PROC_ROOT}/<pid>/{TASK_FOLDER}/<tid>/{CHILDREN_FILE}: the machine load reads every process"
             );
             Tree::FullScan
         };

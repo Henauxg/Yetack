@@ -104,8 +104,7 @@ fn read_entries(folder: &File) -> Result<(Vec<DirEntry>, bool), ListDirError> {
     let mut truncated = false;
     while let Some(entry) = dir.read() {
         let entry = entry.map_err(|error| ListDirError::Io(error.into()))?;
-        let name = entry.file_name().to_bytes();
-        if name == b"." || name == b".." {
+        if is_self_or_parent(entry.file_name()) {
             continue;
         }
         if entries.len() >= MAX_READ {
@@ -116,6 +115,11 @@ fn read_entries(folder: &File) -> Result<(Vec<DirEntry>, bool), ListDirError> {
     }
     truncated |= sort_and_cap(&mut entries);
     Ok((entries, truncated))
+}
+
+/// Whether a folder's entry is `.` or `..`, which no listing shows.
+fn is_self_or_parent(name: &CStr) -> bool {
+    matches!(name.to_bytes(), b"." | b"..")
 }
 
 /// Sorts entries as a listing shows them, then keeps the first [`MAX_ENTRIES`]. Returns whether
@@ -162,7 +166,7 @@ fn read_folders(folder: &File) -> Result<(Vec<DirEntry>, bool), ListDirError> {
     while let Some(entry) = dir.read() {
         let entry = entry.map_err(|error| ListDirError::Io(error.into()))?;
         let name = entry.file_name().to_bytes();
-        if name == b"." || name == b".." {
+        if is_self_or_parent(entry.file_name()) {
             continue;
         }
         if read >= MAX_READ {
