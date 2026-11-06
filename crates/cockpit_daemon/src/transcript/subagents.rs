@@ -92,7 +92,7 @@ pub(super) fn find_task_mut<'list>(
         .find(|subagent| subagent.task.as_ref() == Some(task))
 }
 
-/// A call made by the subagent of item `owner`. False when no such subagent runs.
+/// A call made by the subagent of item `owner`. False when the list has no such subagent.
 pub(super) fn note_call(subagents: &mut [Subagent], owner: ItemId, call: SubagentToolCall) -> bool {
     let Some(subagent) = find_mut(subagents, owner) else {
         return false;
@@ -200,8 +200,8 @@ pub(super) fn end_turn(subagents: &mut [Subagent], ended: &Ended) -> bool {
     changed
 }
 
-/// Marks waiting for you the running subagents in `waiting`, and running again the others.
-/// True when one changed.
+/// Marks the running subagents in `waiting` as waiting for you, and the other running ones as
+/// running. True when one changed.
 pub(super) fn mark_waiting(subagents: &mut [Subagent], waiting: &BTreeSet<ItemId>) -> bool {
     let mut changed = false;
     for subagent in subagents.iter_mut() {

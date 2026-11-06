@@ -21,7 +21,7 @@ pub enum ToolName {
     Skill,
     /// Starts a subagent.
     Agent,
-    /// The name Claude Code gave [`ToolName::Agent`] before.
+    /// The name older Claude Code versions give [`ToolName::Agent`].
     Task,
 }
 
