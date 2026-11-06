@@ -962,6 +962,128 @@ html.reordering * {
   background: var(--green);
 }
 
+/* The machine's load: the header's chip and its card. A value or a bar is teal, amber from 75 %
+   of the server's cores and red from 95 % (state/machine_load.rs). */
+.load-value.load-busy {
+  color: var(--amber);
+}
+
+.load-value.load-saturated {
+  color: var(--red);
+}
+
+.load-value.load-unknown {
+  color: var(--dim);
+}
+
+.bar-fill.load-normal {
+  background: var(--teal);
+}
+
+.bar-fill.load-busy {
+  background: var(--amber);
+}
+
+.bar-fill.load-saturated {
+  background: var(--red);
+}
+
+.load-card {
+  right: 0;
+  top: calc(100% + 6px);
+  width: 440px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+
+.load-line {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) 128px;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.load-label {
+  color: var(--muted);
+}
+
+.load-figure {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.load-line .load-figure {
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.load-agents {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* An agent's line, the folded idle agents, and everything else: its name, its share of the
+   server's cores, then its cores and its memory. */
+.load-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px 72px 60px;
+  align-items: center;
+  gap: 10px;
+  width: calc(100% + 12px);
+  margin: 0 -6px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.load-row .load-figure {
+  color: var(--muted);
+}
+
+.load-agent:hover {
+  background: var(--hover);
+}
+
+.load-agent.selected .load-row-title {
+  color: var(--teal);
+}
+
+.load-row-title,
+.load-commands-title,
+.load-command-line {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.load-command {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px 60px;
+  align-items: center;
+  gap: 10px;
+  min-height: 26px;
+  font-size: 12px;
+}
+
+.load-command .load-figure {
+  color: var(--muted);
+}
+
+.load-command-line {
+  font-size: 11.5px;
+  color: var(--text);
+}
+
 /* Each part's share of the window, from its token count in an inline flex-grow. A gap of the
    card's color parts neighbors. */
 .context-bar {

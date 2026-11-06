@@ -7,6 +7,7 @@ mod apply;
 mod drafts;
 mod export;
 pub mod file_edits;
+pub mod machine_load;
 mod requests;
 mod shortcuts;
 mod transcript;

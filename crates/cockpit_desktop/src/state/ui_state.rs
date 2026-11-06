@@ -22,6 +22,8 @@ pub enum Block {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Popover {
     Usage,
+    /// The machine's load, from the header's Load chip.
+    Load,
     Changes,
     Model,
     Mode,

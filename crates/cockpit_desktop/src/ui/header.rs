@@ -1,5 +1,6 @@
-//! The center header: the agent's title, status and folder, the usage chip and the changes chip.
-//! It stays on one line; when narrow, the title shortens, then the chips shrink to icons.
+//! The center header: the agent's title, status and folder, the usage chip, the load chip and the
+//! changes chip. It stays on one line; when narrow, the title shortens, then the chips shrink to
+//! icons.
 
 use std::time::SystemTime;
 
@@ -14,6 +15,7 @@ use crate::connection::{Clock, Cockpit};
 use crate::state::{AgentEntry, Loadable, Popover, TitlePlace, actions};
 use crate::ui::changes_list::{ChangesList, line_totals};
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::load_card::{LoadCard, LoadChip};
 use crate::ui::presence::Presence;
 use crate::{bridge, format};
 
@@ -132,6 +134,7 @@ pub fn Header() -> Element {
     let files = changed_files(entry);
     let (added, removed) = line_totals(&files);
     let usage_open = state.ui.popover == Some(Popover::Usage);
+    let load_open = state.ui.popover == Some(Popover::Load);
     let changes_open = state.ui.popover == Some(Popover::Changes);
     let plan_text = plan.map_or_else(|| "?".to_owned(), |percent| format!("{percent}%"));
     let context_text = context.map_or_else(|| "?".to_owned(), |percent| format!("{percent}%"));
@@ -212,6 +215,10 @@ pub fn Header() -> Element {
                     span { class: "chip-compact", dangerous_inner_html: rings(plan, context) }
                 }
                 Presence { open: usage_open, UsageCard {} }
+            }
+            div { class: "chip-anchor",
+                LoadChip { open: load_open }
+                Presence { open: load_open, LoadCard {} }
             }
             div { class: "chip-anchor",
                 button {

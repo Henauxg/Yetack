@@ -11,6 +11,7 @@ mod dialogs;
 mod file_view;
 mod header;
 mod icons;
+mod load_card;
 mod loading;
 mod markdown;
 mod mcp;
