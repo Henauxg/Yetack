@@ -55,6 +55,7 @@ pub async fn ensure(state_dir: &Path, log_folder: &Path) -> Result<PathBuf, Serv
     let path = std::env::var_os(PATH_VAR);
     let program = find_program(own_program.as_deref(), path.as_deref())?;
     let log = log_folder.join(LOG_FILE);
+    let logged_before = std::fs::metadata(&log).map_or(0, |metadata| metadata.len());
     let mut child = spawn(&program, state_dir, &log)?;
     tracing::info!(program = %program.display(), "started the background service");
     let deadline = Instant::now() + START_WAIT;
@@ -65,7 +66,8 @@ pub async fn ensure(state_dir: &Path, log_folder: &Path) -> Result<PathBuf, Serv
             return Ok(socket);
         }
         if let Ok(Some(status)) = child.try_wait() {
-            let said = last_line(&log).unwrap_or_else(|| format!("see {}", log.display()));
+            let said =
+                last_line(&log, logged_before).unwrap_or_else(|| format!("see {}", log.display()));
             return Err(ServiceError::Exited { status, said });
         }
         if Instant::now() >= deadline {
@@ -75,13 +77,16 @@ pub async fn ensure(state_dir: &Path, log_folder: &Path) -> Result<PathBuf, Serv
     }
 }
 
-/// `agents-cockpit` beside `own_program`, else in a folder of `path`.
+/// `agents-cockpit` beside `own_program`, else in a folder of `path`. A relative folder of `path`
+/// is skipped: it names a folder under the app's working folder, which the service does not run
+/// in.
 fn find_program(own_program: Option<&Path>, path: Option<&OsStr>) -> Result<PathBuf, ServiceError> {
     let beside = own_program.and_then(Path::parent);
-    let folders = beside
-        .map(Path::to_owned)
-        .into_iter()
-        .chain(path.into_iter().flat_map(std::env::split_paths));
+    let folders = beside.map(Path::to_owned).into_iter().chain(
+        path.into_iter()
+            .flat_map(std::env::split_paths)
+            .filter(|folder| folder.is_absolute()),
+    );
     for folder in folders {
         let program = folder.join(PROGRAM);
         if is_executable(&program) {
@@ -134,14 +139,17 @@ fn spawn(program: &Path, state_dir: &Path, log: &Path) -> Result<Child, ServiceE
         })
 }
 
-async fn answers(socket: &Path) -> bool {
+pub async fn answers(socket: &Path) -> bool {
     tokio::net::UnixStream::connect(socket).await.is_ok()
 }
 
-/// The log's last line, where `agents-cockpit` says why it stopped.
-fn last_line(log: &Path) -> Option<String> {
+/// The last line the service wrote to its log past `from`, where `agents-cockpit` says why it
+/// stopped. The earlier lines are other runs'.
+fn last_line(log: &Path, from: u64) -> Option<String> {
     let bytes = std::fs::read(log).ok()?;
-    let tail = bytes.get(bytes.len().saturating_sub(LOG_TAIL_BYTES)..)?;
+    let from = usize::try_from(from).unwrap_or(usize::MAX);
+    let start = bytes.len().saturating_sub(LOG_TAIL_BYTES).max(from);
+    let tail = bytes.get(start..)?;
     let text = String::from_utf8_lossy(tail);
     let line = text.lines().rev().find(|line| !line.trim().is_empty())?;
     Some(line.trim().to_owned())
@@ -201,6 +209,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_relative_folder_on_path_does_not_count() {
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("bin");
+        program_in(&bin, 0o755);
+        // The same folder, named from the working folder.
+        let working = std::env::current_dir().unwrap();
+        let up = "../".repeat(working.components().count().saturating_sub(1));
+        let relative = PathBuf::from(up).join(bin.strip_prefix("/").unwrap());
+        assert!(relative.join(PROGRAM).exists());
+        let path = std::env::join_paths([OsString::new(), relative.into_os_string()]).unwrap();
+
+        let found = find_program(None, Some(&path));
+
+        assert!(
+            matches!(found, Err(ServiceError::NotFound { .. })),
+            "{found:?}"
+        );
+    }
+
     #[tokio::test]
     async fn a_service_that_stops_at_once_says_why() {
         let temp = tempfile::tempdir().unwrap();
@@ -218,11 +246,31 @@ mod tests {
 
         assert!(!status.success());
         assert_eq!(
-            last_line(&log),
+            last_line(&log, 0),
             Some(format!(
                 "agents-cockpit: another daemon already runs on {}/serve.lock",
                 state.display()
             ))
         );
+    }
+
+    #[tokio::test]
+    async fn a_silent_service_does_not_quote_an_earlier_run() {
+        let temp = tempfile::tempdir().unwrap();
+        let program = program_in(&temp.path().join("bin"), 0o755);
+        std::fs::write(&program, "#!/bin/sh\nexit 1\n").unwrap();
+        let log = temp.path().join("app").join(LOG_FILE);
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        std::fs::write(&log, "agents-cockpit: an earlier run stopped\n").unwrap();
+        let logged_before = std::fs::metadata(&log).unwrap().len();
+
+        let mut child = spawn(&program, &temp.path().join("state"), &log).unwrap();
+        child.wait().await.unwrap();
+
+        assert_eq!(
+            last_line(&log, 0).as_deref(),
+            Some("agents-cockpit: an earlier run stopped")
+        );
+        assert_eq!(last_line(&log, logged_before), None);
     }
 }
