@@ -113,7 +113,17 @@ The kinds of item:
 
 An answer state is `Waiting`, `Answered`, or `Cancelled` (Claude Code withdraws a pending request when the turn is interrupted).
 
-`AgentDetails` holds what the side blocks show: the task list (from `TodoWrite`), background tasks (`task_started`, `task_notification`), changed files, and the last context usage.
+`AgentDetails` holds what the side blocks and the agent map show: the task list (from `TodoWrite`), background tasks (`task_started`, `task_notification`), the subagents, changed files, and the last context usage.
+
+### Subagents
+
+`AgentDetails.subagents` lists every subagent the agent started, at any depth, in the order they started (details without the list read it as empty). A `Subagent` has:
+
+- `item`, the transcript item of the `Agent` call that started it, which its own items name as their `parent`, and `parent`, the item of the subagent that started it (`None` when the agent did);
+- its description, its type (`Explore`, `general-purpose`), and `run`: `foreground`, or `background` when its call returns at once;
+- `status`: `running`, `needs_you` (one of its approvals, questions or plans waits), `done`, `failed` or `stopped`, with `error` for a failed one;
+- start and end times, `tokens` (`None` until Claude Code reports its usage), `tool_calls`, and `last_tool`, its latest call (`tool`, `summary`, and the call's `item`, which names the subagent it waits for when that call started one);
+- `turn`, the agent's turn it started in, counted as `AgentSummary.turns` counts them, and `task`, its background task for `agent.stop_task`.
 
 ### Plan usage
 
@@ -169,6 +179,8 @@ The method names are an enum with fixed strings, pinned by a test ([standards/ru
 
 `AgentAdded`, `AgentUpdated(AgentSummary)`, `AgentRemoved`, `TranscriptAppended { agent, item }`, `TranscriptChanged { agent, item }`, `DetailsChanged { agent, details }`, `PlanUsageChanged`, `SettingsChanged`.
 Each carries its `Seq`.
+
+`DetailsChanged` carries the whole details, so it goes out only when something they hold changes: a subagent's text or a streamed delta sends none, its tool calls and its task events do.
 
 ## Daemon (`cockpit_daemon`)
 
@@ -242,6 +254,22 @@ On start the daemon reads `agents.json`, finds the last `Seq` in the logs, and r
   `agents.json` records the session and the bytes read, and a restarted daemon reads those bytes again.
   Claude Code only appends to a session file, so the same bytes give the same items, and a large session does not add megabytes to the event log.
 
+### Subagents for the agent map
+
+The daemon fills `AgentDetails.subagents` from the lines `claude` writes (module `transcript::subagents`):
+
+- An `Agent` (or `Task`) call starts a subagent, in the turn after the summary's `turns`. Its input gives the description, the type and `run_in_background`.
+- The lines whose `parent_tool_use_id` names a subagent's call are its own: each of its tool calls counts, and becomes its `last_tool`. A subagent started by a subagent names that one as its parent.
+- `task_started` links a subagent to its task through `tool_use_id`. `task_progress` and `task_notification` then give its tokens, and its tool calls when they count more.
+- A foreground subagent ends with its call's result, or with its task's end. A background subagent's call returns at once: it ends with its task's end, from `task_notification`, `task_updated`, or the `<task-notification>` message Claude Code writes, which names the call. A subagent that ends stops the foreground subagents under it, which cannot outlive it.
+- The turn's `result` ends the foreground subagents that still run: stopped after an interrupt, failed after an error, done otherwise. An exited process, or a restarted daemon, stops them all.
+- A subagent waits for you while an approval, question or plan of its own lines waits.
+- The list keeps every running subagent and the latest ended ones, 200 in all.
+
+The captured lines link a call, its task events and its own lines by one tool call id, but do not show whether a foreground subagent gets task events. Without them, a subagent still shows its calls, its time and its status, and shows no tokens.
+
+Stopping: a subagent with a task stops with `agent.stop_task`, which the app sends for it and for each running subagent under it that has a task. The control protocol the daemon uses has no request that stops one foreground subagent without a task. Only `agent.interrupt` stops it, with the agent's turn and every foreground subagent in that turn.
+
 ### Machine load
 
 `machine.load` answers the latest sample and the samples of the last five minutes, for the server and for each agent: CPU in cores in use, memory, the load average, and each agent's three heaviest commands.
@@ -304,7 +332,7 @@ When the process ends and its pid goes to another one during the check, the sign
 - **State**: `AppState` holds the summaries, the open transcripts, the plan usage and the UI state (selected agent, unread agents, open blocks).
   A pure function `apply(&mut AppState, Event)` updates it, so the state logic is tested without a window.
 - **Connection task**: a Dioxus coroutine owns the `Connection`, applies events to the state signal, and sends the requests the components ask for.
-- **Components** follow the mockups: sidebar, center header (the title, which its pencil, a double-click or Rename in the "/" menu turns into a field that renames the agent; usage chip, load chip, changes chip), transcript, composer (model, mode, cache timer, Send or Stop), floating blocks and badges (tasks, running, MCP servers), file view, command palette, agent switcher, new agent dialog, notifications.
+- **Components** follow the mockups: sidebar, center header (the title, which its pencil, a double-click or Rename in the "/" menu turns into a field that renames the agent; usage chip, load chip, changes chip), transcript, composer (model, mode, cache timer, agent map button, Send or Stop), floating blocks and badges (tasks, running, MCP servers), file view, command palette, agent switcher, new agent dialog, agent map, notifications.
 - **Agent order**: the sidebar lists the agents in the daemon's order, and the first of that order is selected when the selection goes.
   A row moves by drag and drop, or Alt+Up and Alt+Down on the selected agent; both send `agent.move`.
   The sidebar shows the new order at once, with the positions the daemon then sends, and puts the agents back when the daemon refuses the move.
@@ -332,7 +360,12 @@ When the process ends and its pid goes to another one during the check, the sign
   The agent leaves the sidebar at once, with its drafts and file view, and the selection goes to the next row, or to the one above for the last.
   Its events until the daemon's `AgentRemoved` are not applied, so a late update does not bring it back; a refused close puts it back.
   A note offers Undo for 8 seconds: `sessions.resume` brings the session back as a new agent, which the app then moves above the agent that was below it.
-- **Shortcuts**: Ctrl+K, Ctrl+N, Esc (closes what is open, never stops the agent), Y, N, 1 to 9, as in plan.md, Alt+Up and Alt+Down to move the selected agent in the sidebar, F2 to rename it, and Ctrl+Shift+W to close it.
+- **Agent map**: Ctrl+M, the composer's map button, or the Running block's link opens a dialog (`Dialog::AgentMap`) on the selected agent; a click on a subagent in the Running block opens it on that subagent.
+  The outline's logic is pure and tested (`state/agent_map.rs`): it builds the tree from each subagent's `parent` (one whose parent left the list shows at the top), splits the current turn from the earlier ones, folds a subtree with no running or failed subagent, folds the oldest ended siblings past eight into one row, applies the filter, and moves the selection with the keys.
+  The view keeps only what the user changed: the folds that differ from the default, the opened levels and earlier turns, the filter, the selected row and tab. Opening the map on a subagent unfolds what hides it.
+  The details of a subagent come from the transcript the app holds: the prompt from its call's input, its items from the ones nested under its call. When its call is older than the loaded messages, the details say so and offer to load them.
+  While the map is open, the page's script passes Up, Down, Left, Right and Enter to it, and Y and N when the selected subagent's approval or plan waits. The outline takes the focus when the map opens, so Enter never presses a button left focused behind the dialog.
+- **Shortcuts**: Ctrl+K, Ctrl+N, Ctrl+M (the agent map), Esc (closes what is open, never stops the agent), Y, N, 1 to 9, as in plan.md, Alt+Up and Alt+Down to move the selected agent in the sidebar, F2 to rename it, and Ctrl+Shift+W to close it.
 
 ## Errors
 
