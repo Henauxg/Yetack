@@ -120,6 +120,60 @@ mod tests {
         }
     }
 
+    /// What the app does on every platform, with no agent: it connects, finds the folder taken
+    /// by its own daemon, stops it, and runs it again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stopped_daemon_refuses_clients_and_frees_its_folder() {
+        use cockpit_client::{ConnectError, Connection, InAppLink, Transport};
+        use cockpit_protocol::Catchup;
+
+        use crate::store::StoreError;
+
+        let wait = Duration::from_secs(10);
+        let shut_down = |daemon: InAppDaemon| {
+            std::thread::spawn(move || daemon.shutdown(wait))
+                .join()
+                .unwrap();
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let (link, connections) = InAppLink::new();
+        let daemon = InAppDaemon::start(config(temp.path()), connections)
+            .await
+            .unwrap();
+        let transport = Transport::InApp(link);
+        let (mut connection, catchup) = Connection::connect(&transport, None).await.unwrap();
+        assert!(matches!(catchup, Catchup::Snapshot(_)));
+
+        let (_other, connections) = InAppLink::new();
+        let refused = InAppDaemon::start(config(temp.path()), connections)
+            .await
+            .err();
+        assert!(
+            matches!(
+                refused,
+                Some(ServeError::Store(StoreError::AlreadyRunning { .. }))
+            ),
+            "{refused:?}"
+        );
+
+        shut_down(daemon);
+        tokio::time::timeout(wait, async {
+            while connection.next_event().await.is_ok() {}
+        })
+        .await
+        .expect("the connection ends");
+        assert!(matches!(
+            Connection::connect(&transport, None).await,
+            Err(ConnectError::InAppStopped)
+        ));
+
+        let (_link, connections) = InAppLink::new();
+        let again = InAppDaemon::start(config(temp.path()), connections)
+            .await
+            .unwrap();
+        shut_down(again);
+    }
+
     /// A client of a daemon whose hub failed learns that the daemon stopped, as after a shutdown,
     /// instead of reconnecting to a hub that never answers.
     #[tokio::test]
