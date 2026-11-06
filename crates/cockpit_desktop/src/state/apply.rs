@@ -63,9 +63,10 @@ pub fn apply_update(
     }
 }
 
-/// Keeps when the agent's turn started, for the working line's elapsed time. A turn runs while
-/// the agent works or waits for an answer. The daemon sends a queued prompt as a turn ends, so
-/// the agent works on without a pause: a turn's end starts the next one, until the agent idles.
+/// Keeps when the app saw the agent's turn start, for a daemon that does not send its own. A
+/// turn runs while the agent works or waits for an answer. The daemon sends a queued prompt as a
+/// turn ends, so the agent works on without a pause: a turn's end starts the next one, until the
+/// agent idles.
 fn note_turn_start(state: &mut AppState, event: &Event, now: Instant) {
     let in_turn = |status| matches!(status, AgentStatus::Working | AgentStatus::NeedsYou);
     match event {

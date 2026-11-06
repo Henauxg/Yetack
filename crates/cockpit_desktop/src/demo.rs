@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use cockpit_client::RequestError;
 use cockpit_protocol::{
@@ -373,9 +373,6 @@ pub fn state(daemon: DaemonLabel) -> AppState {
             has_older,
         });
         entry.details = Loadable::Loaded(sample.details);
-        if entry.summary.status == AgentStatus::Working || entry.id() == AgentId::new(MAP_AGENT) {
-            entry.turn_started = Instant::now().checked_sub(TURN_ELAPSED);
-        }
         state.agents.insert(entry.id(), entry);
     }
     // The bottom agent first: positions grow towards the top.

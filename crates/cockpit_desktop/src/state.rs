@@ -17,7 +17,7 @@ pub mod title_emoji;
 mod transcript;
 mod ui_state;
 
-pub use app_state::{AgentEntry, AppState, ConnectionState, FileRead, Loadable};
+pub use app_state::{AgentEntry, AppState, ConnectionState, FileRead, Loadable, TurnStart};
 pub use apply::{Alert, AlertKind, apply_update};
 pub use drafts::Drafts;
 pub use requests::{Outgoing, Purpose, apply_response, needed_requests};

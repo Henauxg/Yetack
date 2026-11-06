@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_protocol::{
     AgentDetails, AgentId, AgentStatus, AgentSummary, PastSession, PlanUsage, Settings, Timestamp,
@@ -14,6 +14,7 @@ use super::file_edits;
 use super::transcript::Transcript;
 use super::ui_state::UiState;
 use crate::config::DaemonLabel;
+use crate::format;
 use crate::prefs::{Prefs, StatusFilter};
 
 /// Data the app asks the daemon for when it needs it.
@@ -77,9 +78,29 @@ pub struct AgentEntry {
     pub files: BTreeMap<PathBuf, Loadable<FileRead>>,
     /// An `agent.commands` request is on its way.
     pub commands_requested: bool,
-    /// When the app saw the agent's current turn start. `None` between turns, and for a turn
-    /// already running when the app connected: the daemon does not say when a turn started.
+    /// When the app saw the agent's current turn start, for a daemon that does not send
+    /// `turn_started_at`. `None` between turns, and for a turn already running when the app
+    /// connected.
     pub turn_started: Option<Instant>,
+}
+
+/// When the agent's running turn started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnStart {
+    /// The daemon's record, which a reconnect keeps.
+    Daemon(Timestamp),
+    /// When the app saw the turn start, from a daemon that does not send its own.
+    Seen(Instant),
+}
+
+impl TurnStart {
+    /// How long the turn has run at `now`, the daemon's start read on the daemon's clock.
+    pub fn elapsed(self, now: SystemTime) -> Duration {
+        match self {
+            Self::Daemon(moment) => format::since(moment, now),
+            Self::Seen(started) => started.elapsed(),
+        }
+    }
 }
 
 impl AgentEntry {
@@ -117,6 +138,14 @@ impl AgentEntry {
 
     pub fn id(&self) -> AgentId {
         self.summary.id
+    }
+
+    /// The daemon's start of the running turn, else the app's own record of it.
+    pub fn turn_start(&self) -> Option<TurnStart> {
+        self.summary
+            .turn_started_at
+            .map(TurnStart::Daemon)
+            .or(self.turn_started.map(TurnStart::Seen))
     }
 }
 
@@ -474,5 +503,31 @@ pub(crate) mod tests {
             folders,
             [PathBuf::from("/work/shared"), PathBuf::from("/work/other")]
         );
+    }
+
+    #[test]
+    fn the_turn_counts_from_the_daemon_start_when_it_sends_one() {
+        let daemon_start = Timestamp::from_unix_millis(1_000_000);
+        let seen = Instant::now();
+        let mut entry = AgentEntry::new(summary(1, AgentStatus::Working));
+        assert_eq!(entry.turn_start(), None);
+
+        entry.turn_started = Some(seen);
+        assert_eq!(entry.turn_start(), Some(TurnStart::Seen(seen)));
+
+        entry.summary.turn_started_at = Some(daemon_start);
+        assert_eq!(entry.turn_start(), Some(TurnStart::Daemon(daemon_start)));
+
+        // A turn already running when the app connected.
+        entry.turn_started = None;
+        assert_eq!(entry.turn_start(), Some(TurnStart::Daemon(daemon_start)));
+    }
+
+    #[test]
+    fn the_daemon_turn_start_reads_on_the_daemon_clock() {
+        let start = TurnStart::Daemon(Timestamp::from_unix_millis(1_000_000));
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_252);
+
+        assert_eq!(start.elapsed(now), Duration::from_secs(252));
     }
 }

@@ -82,6 +82,9 @@ The two times let the app count the time on a sidebar row by itself, so the daem
 - After a daemon restart, both come from the last summary in the event log. A turn the restart cut off has no turn start any more, and its last activity is the later of its start and the logged last activity.
   A log written before these fields existed reads `None` for both, and the row then shows no time, as with an older daemon. An older app ignores the two fields.
 
+The transcript's "Working, 4 min" line and the agent map's row for the agent count the turn from `turn_started_at` as well, so a turn's time survives a reconnect.
+With an older daemon, they count from when the app saw the turn start, and show no time for a turn already running when the app connected.
+
 The list's order belongs to the user, and the daemon keeps it, so every client and `agents-cockpit list` show the same one:
 
 - The list shows the highest `position` first, and the newer agent first between equal positions.

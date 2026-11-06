@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use cockpit_protocol::{
     AgentId, AgentStatus, ItemBody, ItemId, Subagent, SubagentRun, SubagentStatus, Timestamp,
@@ -305,9 +305,7 @@ pub fn AgentMapDialog(view: MapView) -> Element {
         title: &entry.summary.title,
         status: entry.summary.status,
         turn: agent_map::current_turn(&entry.summary),
-        turn_time: entry
-            .turn_started
-            .map(|started| Instant::now().saturating_duration_since(started)),
+        turn_time: entry.turn_start().map(|start| start.elapsed(now)),
     };
     let waiting = waiting_by_subagent(entry.transcript.items());
     let rows = agent_map::outline(&subagents, facts.turn, &view);

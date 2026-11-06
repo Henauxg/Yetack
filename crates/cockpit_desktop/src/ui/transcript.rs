@@ -4,7 +4,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::time::Instant;
 
 use cockpit_protocol::{
     AgentId, AgentStatus, AnswerState, ItemBody, ItemId, ToolCall, ToolCallStatus, TranscriptItem,
@@ -16,7 +15,7 @@ use serde_json::Value;
 
 use crate::connection::{Clock, Cockpit};
 use crate::render::{Diff, Language, diff_lines};
-use crate::state::{self, HistoryState, actions, file_edits};
+use crate::state::{self, HistoryState, TurnStart, actions, file_edits};
 use crate::ui::cards::{ApprovalCard, PlanCard, QuestionCard};
 use crate::ui::chat_scroll::{self, CHAT_SCROLL_ID, ENTRY_CLASS, JumpToLatest, NewDivider};
 use crate::ui::code::{LineNumbers, diff_row};
@@ -127,7 +126,7 @@ pub fn TranscriptView() -> Element {
     let folder = entry.summary.folder.clone();
     let status = entry.summary.status;
     let working = status == AgentStatus::Working;
-    let turn_started = entry.turn_started;
+    let turn_start = entry.turn_start();
     let items: Vec<&TranscriptItem> = entry.transcript.items().collect();
     let loaded: BTreeSet<ItemId> = items.iter().map(|item| item.id).collect();
     let children = children_by_parent(&items);
@@ -221,7 +220,7 @@ pub fn TranscriptView() -> Element {
                     TranscriptRow { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), new_above: divider == Some(item.id), item, nested, awaits_approval, step, older_step }
                 }
                 if working {
-                    WorkingLine { since: turn_started, linked: working_linked }
+                    WorkingLine { since: turn_start, linked: working_linked }
                 }
                 for item in queued {
                     TranscriptRow { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), new_above: divider == Some(item.id), item, nested: Vec::new(), awaits_approval: false, step: None, older_step: false }
@@ -341,14 +340,12 @@ fn step_links(is_step: &[bool], working: bool) -> Vec<StepLinks> {
 }
 
 /// The last step of a running turn: a spinner on the steps' line, and the time since the turn
-/// started when the app saw it start.
+/// started.
 #[component]
-fn WorkingLine(since: Option<Instant>, linked: bool) -> Element {
+fn WorkingLine(since: Option<TurnStart>, linked: bool) -> Element {
     let Clock(now) = use_context::<Clock>();
-    // Reading the clock refreshes the elapsed time every second.
-    let _tick = now();
     let text = match since {
-        Some(start) => format!("Working, {}", format::duration(start.elapsed())),
+        Some(start) => format!("Working, {}", format::duration(start.elapsed(now()))),
         None => "Working".to_owned(),
     };
     rsx! {
