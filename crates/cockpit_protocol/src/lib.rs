@@ -48,7 +48,7 @@ pub use request::{
     AgentParams, Answer, AnswerParams, CancelQueuedParams, HistoryParams, MAX_TITLE_CHARS,
     McpRemoveParams, McpServerParams, McpToggleParams, Method, MoveParams, Prompt, PromptParams,
     ReadFileParams, RenameParams, Request, SessionResumeParams, SetEffortParams, SetModeParams,
-    SetModelParams, StartParams, StopTaskParams,
+    SetModelParams, StartParams, StopProcessParams, StopTaskParams,
 };
 pub use response::{ErrorBody, ErrorCode, HistoryPage, PastSession, ResponseBody, ResponseResult};
 pub use session::{Catchup, ClientMessage, PROTOCOL_VERSION, ServerMessage, Snapshot};

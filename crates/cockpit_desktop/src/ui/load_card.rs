@@ -200,9 +200,11 @@ fn select(cockpit: Cockpit, agent: AgentId) {
     cockpit.update(|state| machine_load::select_from_card(state, agent));
 }
 
-/// The selected agent's heaviest commands.
+/// The selected agent's heaviest commands, each with a stop button.
 #[component]
 fn Commands(measured: AgentLoad, title: String) -> Element {
+    let cockpit: Cockpit = use_context();
+    let agent = measured.agent;
     rsx! {
         div { class: "card-section",
             span { class: "section-title load-commands-title", "{title}: heaviest commands" }
@@ -214,6 +216,13 @@ fn Commands(measured: AgentLoad, title: String) -> Element {
                     span { class: "load-command-line mono", title: "{command.command}", "{command.command}" }
                     span { class: "load-figure", "{format::cores(command.cpu)} cores" }
                     span { class: "load-figure", "{format::memory(command.memory_bytes)}" }
+                    button {
+                        class: "stop-button",
+                        aria_label: "Stop {command.command}",
+                        title: "Stop this command (SIGTERM to process {command.pid.get()})",
+                        onclick: move |_| cockpit.change(|_| machine_load::stop_process(agent, command.pid)),
+                        span { class: "stop-square", aria_hidden: true }
+                    }
                 }
             }
         }

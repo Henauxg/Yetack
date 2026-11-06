@@ -26,9 +26,10 @@ use cockpit_protocol::{
     ProcessId, Prompt, PromptParams, Question, QuestionAnswer, QuestionOption, RateLimitStatus,
     ReadFileParams, RenameParams, Request, RequestId, ResourceUse, ResponseBody, ResponseResult,
     Seq, ServerLoad, ServerMessage, ServerPoint, SessionResumeParams, SetEffortParams,
-    SetModeParams, SetModelParams, Settings, SlashCommand, Snapshot, StartParams, StopTaskParams,
-    TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus,
-    TranscriptItem, TurnEnd, UsageWindow, UserMessage, WindowUsage,
+    SetModeParams, SetModelParams, Settings, SlashCommand, Snapshot, StartParams,
+    StopProcessParams, StopTaskParams, TaskListItem, TaskProgress, TaskStatus, Timestamp,
+    TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, UsageWindow, UserMessage,
+    WindowUsage,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -487,6 +488,10 @@ fn requests() -> Vec<Request> {
             agent,
             task: BackgroundTaskId::new("task-1".to_owned()),
         }),
+        Request::AgentStopProcess(StopProcessParams {
+            agent,
+            pid: ProcessId::new(4242),
+        }),
         Request::AgentMcpStatus(AgentParams { agent }),
         Request::AgentMcpReconnect(McpServerParams {
             agent,
@@ -820,6 +825,7 @@ fn method_names_are_pinned() {
             "agent.move",
             "agent.context_usage",
             "agent.stop_task",
+            "agent.stop_process",
             "agent.mcp_status",
             "agent.mcp_reconnect",
             "agent.mcp_toggle",
@@ -1208,15 +1214,30 @@ fn responses_on_the_wire() {
 }
 
 #[test]
-fn a_machine_load_request_on_the_wire() {
+fn machine_load_requests_on_the_wire() {
     let load = ClientMessage::Request {
         id: RequestId::new(11),
         request: Request::MachineLoad,
+    };
+    let stop = ClientMessage::Request {
+        id: RequestId::new(12),
+        request: Request::AgentStopProcess(StopProcessParams {
+            agent: agent(),
+            pid: ProcessId::new(4242),
+        }),
     };
 
     assert_wire(
         &load,
         json!({"type": "request", "id": 11, "request": {"method": "machine.load"}}),
+    );
+    assert_wire(
+        &stop,
+        json!({
+            "type": "request",
+            "id": 12,
+            "request": {"method": "agent.stop_process", "params": {"agent": 3, "pid": 4242}},
+        }),
     );
 }
 

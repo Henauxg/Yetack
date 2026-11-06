@@ -24,7 +24,7 @@ use cockpit_protocol::{
     MoveParams, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, ProcessId, Prompt,
     PromptParams, Question, QuestionAnswer, ReadFileParams, RenameParams, Request, ResponseBody,
     Seq, SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, Settings,
-    StartParams, StopTaskParams, TranscriptItem,
+    StartParams, StopProcessParams, StopTaskParams, TranscriptItem,
 };
 use rustix::process::{Pid, Signal};
 use serde_json::Value;
@@ -1083,9 +1083,10 @@ async fn a_stopped_agent_that_hangs_is_killed_with_its_children() {
     assert!(!survived, "the child of the killed claude still runs");
 }
 
-/// `machine.load` shows the agent's `claude` and the command it runs.
+/// `machine.load` shows the agent's `claude` and the command it runs, and `agent.stop_process`
+/// stops that command and refuses a process outside the agent.
 #[tokio::test]
-async fn the_machine_load_shows_an_agents_command() {
+async fn the_machine_load_shows_an_agents_command_which_it_can_stop() {
     let setup = Setup::new();
     let mut client = setup.connect().await;
     let agent = client.start(&setup.work(), "linger").await;
@@ -1103,9 +1104,29 @@ async fn the_machine_load_shows_an_agents_command() {
     let ResponseBody::MachineLoad(load) = client.ok(Request::MachineLoad).await else {
         panic!("expected the machine's load");
     };
+    let outside = client
+        .error_code(Request::AgentStopProcess(StopProcessParams {
+            agent,
+            pid: ProcessId::new(std::process::id()),
+        }))
+        .await;
+    client
+        .ok(Request::AgentStopProcess(StopProcessParams {
+            agent,
+            pid: ProcessId::new(child),
+        }))
+        .await;
 
-    let pid = Pid::from_raw(i32::try_from(child).unwrap()).unwrap();
-    rustix::process::kill_process(pid, Signal::KILL).unwrap();
+    let child = i32::try_from(child).unwrap();
+    let deadline = Instant::now() + WAIT;
+    while is_running(child) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let survived = is_running(child);
+    if survived {
+        let pid = Pid::from_raw(child).unwrap();
+        rustix::process::kill_process(pid, Signal::KILL).unwrap();
+    }
     assert!(load.server.cores >= 1);
     assert!(load.server.memory_used_bytes <= load.server.memory_total_bytes);
     let ours = load
@@ -1116,10 +1137,12 @@ async fn the_machine_load_shows_an_agents_command() {
     assert_eq!(ours.processes, 2, "claude and its child: {ours:?}");
     let sleep = ours.heaviest.first().expect("the child's command");
     assert_eq!(
-        (sleep.pid, sleep.command.as_str()),
-        (ProcessId::new(child), "sleep 600")
+        (sleep.pid.get(), sleep.command.as_str()),
+        (child.unsigned_abs(), "sleep 600")
     );
     assert_eq!(load.history.server.len(), 1);
+    assert_eq!(outside, ErrorCode::NotFound);
+    assert!(!survived, "the child still runs after agent.stop_process");
 }
 
 /// Whether a process runs: it exists and is not a zombie waiting for its parent.

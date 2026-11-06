@@ -5,10 +5,13 @@
 use std::time::Duration;
 
 use cockpit_client::RequestError;
-use cockpit_protocol::{AgentId, Cores, MachineLoad, ResponseBody, ServerLoad};
+use cockpit_protocol::{
+    AgentId, Cores, MachineLoad, ProcessId, Request, ResponseBody, ServerLoad, StopProcessParams,
+};
 
 use super::actions;
 use super::app_state::AppState;
+use super::requests::Outgoing;
 use super::ui_state::Popover;
 
 /// How often the app asks for the load while connected: the daemon's sampling interval.
@@ -183,6 +186,14 @@ pub fn select_from_card(state: &mut AppState, agent: AgentId) {
     state.ui.popover = Some(Popover::Load);
 }
 
+/// SIGTERM to one of the agent's commands. The daemon checks that the process is the agent's; the
+/// command leaves the card with the next sample.
+pub fn stop_process(agent: AgentId, pid: ProcessId) -> Vec<Outgoing> {
+    vec![Outgoing::action(Request::AgentStopProcess(
+        StopProcessParams { agent, pid },
+    ))]
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use cockpit_protocol::{
@@ -333,6 +344,23 @@ pub(crate) mod tests {
         );
         let known = LoadView::from_result(Ok(ResponseBody::MachineLoad(load(Vec::new()))));
         assert!(matches!(known, LoadView::Known(_)));
+    }
+
+    #[test]
+    fn a_stop_names_the_agent_and_the_process() {
+        let requests = stop_process(AgentId::new(3), ProcessId::new(41_872));
+
+        let sent: Vec<Request> = requests
+            .into_iter()
+            .map(|outgoing| outgoing.request)
+            .collect();
+        assert_eq!(
+            sent,
+            [Request::AgentStopProcess(StopProcessParams {
+                agent: AgentId::new(3),
+                pid: ProcessId::new(41_872),
+            })]
+        );
     }
 
     #[test]

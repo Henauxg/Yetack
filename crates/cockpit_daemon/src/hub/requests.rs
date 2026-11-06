@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use claude_protocol::{ControlRequest, TaskId};
 use cockpit_protocol::{
     AgentId, ErrorBody, ErrorCode, Event, HistoryParams, McpRemoveParams, ReadFileParams, Request,
-    ResponseBody, SessionResumeParams, Settings,
+    ResponseBody, SessionResumeParams, Settings, StopProcessParams,
 };
 
 use crate::daemon_config::HOME_ENV;
@@ -17,7 +17,7 @@ use crate::machine_load::AgentRoot;
 use crate::read_file::Found;
 use crate::store::{DaemonSettings, LogName};
 use crate::transcript::{touched_files, words};
-use crate::{mcp_remove, read_file, sessions};
+use crate::{machine_load, mcp_remove, read_file, sessions};
 
 impl Hub {
     pub(super) fn request(&mut self, request: Request, reply: Reply) {
@@ -62,6 +62,7 @@ impl Hub {
                 },
                 ControlPurpose::Done(reply),
             ),
+            Request::AgentStopProcess(params) => self.stop_process(params, reply),
             Request::AgentMcpStatus(params) => self.control(
                 params.agent,
                 ControlRequest::McpStatus,
@@ -139,6 +140,28 @@ impl Hub {
             Some(AgentRoot { agent, pid })
         });
         running.collect()
+    }
+
+    fn stop_process(&self, params: StopProcessParams, reply: Reply) {
+        let root = match self.agent(params.agent) {
+            Ok(agent) => agent.process.as_ref().and_then(|process| process.pid()),
+            Err(error) => return agents::respond(reply, Err(error)),
+        };
+        let Some(root) = root else {
+            return agents::respond(reply, Err(errors::agent_exited(params.agent)));
+        };
+        tokio::spawn(async move {
+            let stopped = tokio::task::spawn_blocking(move || {
+                machine_load::stop_descendant(root, params.pid)
+            })
+            .await;
+            let result = match stopped {
+                Ok(Ok(())) => Ok(ResponseBody::Done),
+                Ok(Err(error)) => Err(error.to_error_body()),
+                Err(error) => Err(errors::internal(error.to_string())),
+            };
+            agents::respond(reply, result);
+        });
     }
 
     fn mcp_remove(&self, params: McpRemoveParams, reply: Reply) {

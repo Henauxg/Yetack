@@ -1068,7 +1068,7 @@ html.reordering * {
 
 .load-command {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 72px 60px;
+  grid-template-columns: minmax(0, 1fr) 72px 60px 26px;
   align-items: center;
   gap: 10px;
   min-height: 26px;
