@@ -84,11 +84,23 @@ impl Drop for InAppDaemon {
     }
 }
 
+/// Serves each stream as a client until the hub ends. Then it drops `connections`, so that the
+/// clients learn the daemon stopped.
 async fn accept(
     mut connections: mpsc::UnboundedReceiver<DuplexStream>,
     hub: mpsc::Sender<HubInput>,
 ) {
-    while let Some(stream) = connections.recv().await {
+    loop {
+        let stream = tokio::select! {
+            stream = connections.recv() => stream,
+            () = hub.closed() => {
+                tracing::info!("the daemon's hub stopped: it takes no more clients");
+                return;
+            }
+        };
+        let Some(stream) = stream else {
+            return;
+        };
         let (read, write) = tokio::io::split(stream);
         tokio::spawn(server::serve_connection(read, write, hub.clone()));
     }
@@ -106,6 +118,20 @@ mod tests {
             claude_program: temp.join("no-claude"),
             claude_config_dir: temp.join("claude"),
         }
+    }
+
+    /// A client of a daemon whose hub failed learns that the daemon stopped, as after a shutdown,
+    /// instead of reconnecting to a hub that never answers.
+    #[tokio::test]
+    async fn a_hub_that_ended_takes_no_more_clients() {
+        let (streams, connections) = mpsc::unbounded_channel();
+        let (hub, inputs) = mpsc::channel(1);
+        drop(inputs);
+
+        tokio::time::timeout(Duration::from_secs(2), accept(connections, hub))
+            .await
+            .expect("accept returns");
+        assert!(streams.is_closed());
     }
 
     /// The app drops a start it no longer waits for, as when it closes meanwhile.
