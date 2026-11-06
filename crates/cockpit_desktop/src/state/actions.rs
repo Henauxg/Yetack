@@ -5,6 +5,7 @@ use std::cmp::Reverse;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use cockpit_client::RequestError;
 use cockpit_protocol::{
     AgentId, AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState,
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, CancelQueuedParams, ClaudeSessionId,
@@ -1384,8 +1385,14 @@ pub fn toggle_switcher(state: &mut AppState, drafts: &mut Drafts) {
 }
 
 /// Moves `agent` just above `before`, or to the bottom of the list. The sidebar shows the new
-/// order at once, with the positions the daemon then sends in its events.
+/// order at once, with the positions the daemon then sends in its events. Without a connection
+/// nothing moves: a refused move puts the agents back only where no later move took them.
 pub fn move_agent(state: &mut AppState, agent: AgentId, before: Option<AgentId>) -> Vec<Outgoing> {
+    if !state.is_connected() {
+        let error = RequestError::NotConnected;
+        state.ui.report(format!("The agent was not moved: {error}"));
+        return Vec::new();
+    }
     let list: Vec<Placed> = state
         .agents_in_order()
         .iter()
@@ -3331,6 +3338,34 @@ mod tests {
             })
         );
         assert!(move_agent(&mut state, AgentId::new(1), Some(AgentId::new(3))).is_empty());
+    }
+
+    /// Two refused moves of one agent would leave it where the first one put it: the second
+    /// puts back the position the first gave.
+    #[test]
+    fn a_move_while_disconnected_leaves_the_order_and_says_why() {
+        let mut state = ordered();
+        state.connection = ConnectionState::Connecting { attempt: 2 };
+
+        let dropped = drop_agent(&mut state, AgentId::new(1), Some(AgentId::new(3)));
+        let pressed = move_selected(&mut state, Direction::Up);
+
+        assert!(dropped.is_empty());
+        assert!(pressed.is_empty());
+        assert_eq!(sidebar(&state), [3, 2, 1]);
+        let notes: Vec<&str> = state
+            .ui
+            .errors
+            .iter()
+            .map(|note| note.text.as_str())
+            .collect();
+        assert_eq!(
+            notes,
+            [
+                "The agent was not moved: not connected to the daemon",
+                "The agent was not moved: not connected to the daemon"
+            ]
+        );
     }
 
     #[test]
