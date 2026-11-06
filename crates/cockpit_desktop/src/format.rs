@@ -260,13 +260,15 @@ pub fn bytes(size: u64) -> String {
     if size < 1024 {
         return format!("{size} B");
     }
-    let mut unit_bytes: u64 = 1024;
+    let tenths_of = |unit_bytes: u128| (u128::from(size) * 10 + unit_bytes / 2) / unit_bytes;
+    let mut unit_bytes: u128 = 1024;
     let mut unit = 0;
-    while size / unit_bytes >= 1024 && unit + 1 < UNITS.len() {
+    // The unit is picked on the rounded size, so that 1023.96 KB reads "1.0 MB".
+    while tenths_of(unit_bytes) >= 10_240 && unit + 1 < UNITS.len() {
         unit_bytes *= 1024;
         unit += 1;
     }
-    let tenths = (size.saturating_mul(10) + unit_bytes / 2) / unit_bytes;
+    let tenths = tenths_of(unit_bytes);
     let name = UNITS.get(unit).copied().unwrap_or_default();
     if tenths >= 100 {
         format!("{} {name}", tenths / 10)
@@ -291,8 +293,9 @@ const GIGABYTE: u64 = 1 << 30;
 /// "412 MB" under a gigabyte, "22.1 GB", and without the decimal from 100 GB: "312 GB".
 pub fn memory(bytes: u64) -> String {
     const MEGABYTE: u64 = 1 << 20;
-    if bytes < GIGABYTE {
-        return format!("{} MB", bytes.saturating_add(MEGABYTE / 2) / MEGABYTE);
+    let megabytes = bytes.saturating_add(MEGABYTE / 2) / MEGABYTE;
+    if megabytes < 1024 {
+        return format!("{megabytes} MB");
     }
     format!("{} GB", gigabytes(bytes, bytes))
 }
@@ -429,6 +432,22 @@ mod tests {
         assert_eq!(bytes(4_300), "4.2 KB");
         assert_eq!(bytes(13 * 1024 * 1024 + 1), "13 MB");
         assert_eq!(bytes(2_254_857_830), "2.1 GB");
+    }
+
+    #[test]
+    fn a_size_just_under_a_unit_reads_in_that_unit() {
+        const MIB: u64 = 1 << 20;
+
+        assert_eq!(bytes(1_048_535), "1.0 MB");
+        assert_eq!(bytes(1_047_000), "1022 KB");
+        assert_eq!(memory(1023 * MIB + MIB * 6 / 10), "1.0 GB");
+        assert_eq!(memory(1023 * MIB), "1023 MB");
+    }
+
+    #[test]
+    fn a_sparse_file_of_two_exbibytes_shows_its_size() {
+        assert_eq!(bytes(1 << 61), "2097152 TB");
+        assert_eq!(bytes(u64::MAX), "16777216 TB");
     }
 
     #[test]

@@ -85,8 +85,9 @@ pub struct Drafts {
     /// Where the caret goes in the text the app wrote last, in UTF-16 units as the page counts
     /// them. Without one, it goes at the end.
     composer_carets: BTreeMap<AgentId, usize>,
-    /// The start of the "/" word whose palette Esc closed: it stays closed until another word.
-    pub palette_dismissed: Option<usize>,
+    /// The agent and the start of the "/" word whose palette Esc closed: it stays closed until
+    /// another word, or until the app writes that agent's draft.
+    pub palette_dismissed: Option<(AgentId, usize)>,
     pub questions: BTreeMap<PendingId, QuestionDraft>,
     pub palette: Palette,
     /// The text of the title field, the header's or a sidebar row's, while a title is edited.
@@ -108,6 +109,8 @@ impl Drafts {
     /// For a draft text the app changed, so that the composer shows it when it shows `agent`.
     pub fn draft_written(&mut self, agent: AgentId) {
         self.composer_carets.remove(&agent);
+        self.palette_dismissed
+            .take_if(|(dismissed, _)| *dismissed == agent);
         let writes = self.composer_writes.entry(agent).or_default();
         *writes = writes.wrapping_add(1);
     }

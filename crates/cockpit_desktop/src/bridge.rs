@@ -144,6 +144,13 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   const target = event.target;
+  // Backspace in the "Open file" field goes up a folder only from the end of its text, with
+  // nothing selected. Anywhere else it deletes, and the app's handler does not see it.
+  if (event.key === "Backspace" && target !== null && target.id === settings.open_file_field_id
+    && (target.selectionStart !== target.value.length || target.selectionEnd !== target.value.length)) {
+    event.stopPropagation();
+    return;
+  }
   const composer = target !== null && target.id === settings.composer_id;
   const field = !composer && target !== null
     && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable);
@@ -319,6 +326,7 @@ struct FieldText {
 #[derive(Debug, Serialize)]
 struct Settings {
     composer_id: &'static str,
+    open_file_field_id: &'static str,
     /// The fields where F2 moves the title edit to the other place.
     title_field_ids: [&'static str; 2],
     /// A pause in typing this long, in milliseconds, ends an undo step.
@@ -381,6 +389,7 @@ pub fn use_bridge(cockpit: Cockpit) {
         let mut script = document::eval(SCRIPT);
         if let Err(error) = script.send(Settings {
             composer_id: COMPOSER_ID,
+            open_file_field_id: OPEN_FILE_FIELD_ID,
             title_field_ids: [HEADER_TITLE_FIELD_ID, ROW_TITLE_FIELD_ID],
             undo_pause_ms: UNDO_PAUSE_MS,
             undo_steps: UNDO_STEPS,
@@ -588,6 +597,7 @@ mod tests {
 
         let settings = Settings {
             composer_id: COMPOSER_ID,
+            open_file_field_id: OPEN_FILE_FIELD_ID,
             title_field_ids: [HEADER_TITLE_FIELD_ID, ROW_TITLE_FIELD_ID],
             undo_pause_ms: 500,
             undo_steps: 200,
@@ -609,6 +619,7 @@ mod tests {
             serde_json::to_value(settings).unwrap(),
             json!({
                 "composer_id": "composer",
+                "open_file_field_id": "open-file-path",
                 "title_field_ids": ["agent-title-field", "row-title-field"],
                 "undo_pause_ms": 500,
                 "undo_steps": 200,

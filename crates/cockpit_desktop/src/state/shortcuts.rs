@@ -75,7 +75,8 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
     if press.key == KEY_ESCAPE {
         // A palette opened by typing stays closed for the rest of its "/" word.
         if state.ui.popover == Some(Popover::Palette(PaletteOrigin::Typed)) {
-            drafts.palette_dismissed = drafts.palette.word.map(|word| word.start);
+            let word = drafts.palette.word.map(|word| word.start);
+            drafts.palette_dismissed = state.ui.selected.zip(word);
         }
         state.ui.close_overlays();
         return Vec::new();
@@ -123,8 +124,13 @@ fn composer_key(
             // composer, which already has the focus the pick asks the window for.
             KEY_ENTER | KEY_TAB => {
                 sync_composer_text(state, drafts, agent, &press.composer_text);
-                if state.ui.popover == Some(Popover::Palette(PaletteOrigin::Typed)) {
+                let typed_open = state.ui.popover == Some(Popover::Palette(PaletteOrigin::Typed));
+                if typed_open && actions::palette_has_entries(state, drafts, agent) {
                     return actions::palette_pick(state, drafts, agent, None).requests;
+                }
+                // With no command to pick, Enter sends the message as typed.
+                if typed_open && press.key == KEY_ENTER {
+                    state.ui.popover = None;
                 }
             }
             _ => {}
@@ -427,6 +433,158 @@ mod tests {
 
         let typed = Some(Popover::Palette(PaletteOrigin::Typed));
         assert_eq!((opened, same_word, next_word), (typed, None, typed));
+    }
+
+    fn with_review_commands(state: &mut AppState) {
+        let command = |name: &str, description: &str, kind| SlashCommand {
+            name: name.to_owned(),
+            description: description.to_owned(),
+            kind,
+        };
+        if let Some(entry) = state.agents.get_mut(&AgentId::new(1)) {
+            entry.details = Loadable::Loaded(AgentDetails {
+                commands: vec![
+                    command(
+                        "review",
+                        "Review the changes on the branch",
+                        CommandKind::Skill,
+                    ),
+                    command(
+                        "mcp",
+                        "Manage MCP servers, tools, etc.",
+                        CommandKind::Command,
+                    ),
+                ],
+                ..AgentDetails::default()
+            });
+        }
+    }
+
+    fn typed(state: &mut AppState, drafts: &mut Drafts, agent: AgentId, text: &str, caret: usize) {
+        if let Some(change) = actions::composer_input(state, drafts, agent, text.to_owned(), caret)
+        {
+            actions::change_palette(state, agent, change);
+        }
+    }
+
+    fn enter(text: &str) -> KeyPress {
+        KeyPress {
+            composer_text: text.to_owned(),
+            ..press(KEY_ENTER, KeyTarget::Composer)
+        }
+    }
+
+    #[test]
+    fn a_caret_just_before_a_slash_opens_no_palette_and_enter_sends_the_text() {
+        let agent = AgentId::new(1);
+        let mut drafts = Drafts::default();
+        let mut state = state(AgentStatus::Idle, None);
+        with_review_commands(&mut state);
+        let text = "fix /mcp";
+
+        typed(&mut state, &mut drafts, agent, text, 4);
+        let opened = state.ui.popover;
+        let requests = handle_key(&mut state, &mut drafts, &enter(text));
+
+        let draft = drafts.draft(agent).map(|draft| draft.text.as_str());
+        assert_eq!((opened, requests.len(), draft), (None, 1, Some("")));
+    }
+
+    #[test]
+    fn enter_on_a_slash_word_no_command_matches_sends_the_message() {
+        let agent = AgentId::new(1);
+        let mut drafts = Drafts::default();
+        let mut state = state(AgentStatus::Idle, None);
+        with_review_commands(&mut state);
+        let text = "clean up /tmp";
+
+        typed(&mut state, &mut drafts, agent, text, text.len());
+        let opened = state.ui.popover;
+        let requests = handle_key(&mut state, &mut drafts, &enter(text));
+
+        assert_eq!(opened, Some(Popover::Palette(PaletteOrigin::Typed)));
+        assert!(matches!(
+            requests.first().map(|outgoing| &outgoing.request),
+            Some(Request::AgentPrompt(params)) if params.prompt.text == text
+        ));
+        assert_eq!(state.ui.popover, None);
+    }
+
+    #[test]
+    fn a_slash_word_inside_a_message_matches_command_names_alone() {
+        let agent = AgentId::new(1);
+        let mut drafts = Drafts::default();
+        let mut state = state(AgentStatus::Idle, None);
+        with_review_commands(&mut state);
+        // "etc" is in the description of /mcp.
+        let text = "look at /etc";
+
+        typed(&mut state, &mut drafts, agent, text, text.len());
+        let requests = handle_key(&mut state, &mut drafts, &enter(text));
+
+        let draft = drafts.draft(agent).map(|draft| draft.text.as_str());
+        assert_eq!((requests.len(), draft), (1, Some("")));
+    }
+
+    #[test]
+    fn a_message_of_one_slash_word_matches_command_descriptions_too() {
+        let agent = AgentId::new(1);
+        let mut drafts = Drafts::default();
+        let mut state = state(AgentStatus::Idle, None);
+        with_review_commands(&mut state);
+
+        typed(&mut state, &mut drafts, agent, "/etc", 4);
+        let requests = handle_key(&mut state, &mut drafts, &enter("/etc"));
+
+        let draft = drafts.draft(agent).map(|draft| draft.text.as_str());
+        assert_eq!((requests.len(), draft), (0, Some("/mcp ")));
+    }
+
+    #[test]
+    fn escape_on_one_agent_leaves_the_palette_of_another_agent_alone() {
+        let mut drafts = Drafts::default();
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::Idle),
+            summary(2, AgentStatus::Idle),
+        ]);
+        state.connection = ConnectionState::Connected;
+        state.ui.selected = Some(AgentId::new(1));
+
+        typed(&mut state, &mut drafts, AgentId::new(1), "/re", 3);
+        handle_key(
+            &mut state,
+            &mut drafts,
+            &press(KEY_ESCAPE, KeyTarget::Composer),
+        );
+        actions::select_agent(&mut state, AgentId::new(2));
+        typed(&mut state, &mut drafts, AgentId::new(2), "/", 1);
+
+        assert_eq!(
+            state.ui.popover,
+            Some(Popover::Palette(PaletteOrigin::Typed))
+        );
+    }
+
+    #[test]
+    fn a_slash_word_closed_with_escape_and_sent_leaves_the_next_message_its_palette() {
+        let agent = AgentId::new(1);
+        let mut drafts = Drafts::default();
+        let mut state = state(AgentStatus::Idle, None);
+
+        typed(&mut state, &mut drafts, agent, "/xyz", 4);
+        handle_key(
+            &mut state,
+            &mut drafts,
+            &press(KEY_ESCAPE, KeyTarget::Composer),
+        );
+        let sent = handle_key(&mut state, &mut drafts, &enter("/xyz"));
+        typed(&mut state, &mut drafts, agent, "/", 1);
+
+        assert_eq!(sent.len(), 1);
+        assert_eq!(
+            state.ui.popover,
+            Some(Popover::Palette(PaletteOrigin::Typed))
+        );
     }
 
     #[test]

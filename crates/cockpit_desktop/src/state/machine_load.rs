@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use cockpit_client::RequestError;
 use cockpit_protocol::{
-    AgentId, Cores, MachineLoad, ProcessId, Request, ResponseBody, ServerLoad, StopProcessParams,
+    AgentId, Cores, ErrorCode, MachineLoad, ProcessId, Request, ResponseBody, ServerLoad,
+    StopProcessParams,
 };
 
 use super::actions;
@@ -35,8 +36,8 @@ pub enum LoadView {
     #[default]
     Waiting,
     Known(Box<MachineLoad>),
-    /// The daemon cannot measure its machine, or does not know the request.
-    Unknown,
+    /// The daemon refused the request with this code, or gave another answer (`None`).
+    Unknown(Option<ErrorCode>),
 }
 
 impl LoadView {
@@ -44,8 +45,23 @@ impl LoadView {
         match result {
             Ok(ResponseBody::MachineLoad(load)) => Self::Known(Box::new(load)),
             Err(RequestError::NotConnected | RequestError::Disconnected) => Self::Waiting,
-            Ok(_) | Err(_) => Self::Unknown,
+            Err(RequestError::Failed(body)) => Self::Unknown(Some(body.code)),
+            Ok(_) | Err(_) => Self::Unknown(None),
         }
+    }
+}
+
+/// Why the load is unknown, as the card says it.
+pub fn unknown_note(code: Option<ErrorCode>) -> &'static str {
+    match code {
+        Some(ErrorCode::Unsupported) => {
+            "The daemon cannot measure its machine's load: it needs Linux's /proc."
+        }
+        // A daemon that does not know `machine.load` cannot parse it.
+        Some(ErrorCode::InvalidRequest) => {
+            "The daemon is older than this app and does not report the load. Update the daemon to see it."
+        }
+        Some(_) | None => "The daemon did not report its machine's load.",
     }
 }
 
@@ -327,16 +343,36 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_daemon_that_does_not_know_the_request_reads_apart_from_one_that_cannot_measure() {
+        let failed = |code| {
+            LoadView::from_result(Err(RequestError::Failed(ErrorBody::new(
+                code,
+                "the daemon refused".to_owned(),
+            ))))
+        };
+
+        assert_ne!(
+            failed(ErrorCode::InvalidRequest),
+            failed(ErrorCode::Unsupported)
+        );
+        assert!(unknown_note(Some(ErrorCode::InvalidRequest)).contains("Update the daemon"));
+        assert!(unknown_note(Some(ErrorCode::Unsupported)).contains("/proc"));
+    }
+
+    #[test]
     fn a_failed_answer_reads_as_unknown_and_a_dropped_connection_as_waiting() {
         let unsupported = RequestError::Failed(ErrorBody::new(
             ErrorCode::Unsupported,
             "no /proc".to_owned(),
         ));
 
-        assert_eq!(LoadView::from_result(Err(unsupported)), LoadView::Unknown);
+        assert_eq!(
+            LoadView::from_result(Err(unsupported)),
+            LoadView::Unknown(Some(ErrorCode::Unsupported))
+        );
         assert_eq!(
             LoadView::from_result(Ok(ResponseBody::Done)),
-            LoadView::Unknown
+            LoadView::Unknown(None)
         );
         assert_eq!(
             LoadView::from_result(Err(RequestError::Disconnected)),

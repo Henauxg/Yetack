@@ -22,8 +22,11 @@ pub const TITLE_EMOJI: [&str; 72] = [
 /// What follows the emoji in a title.
 const SEPARATOR: char = ' ';
 
-/// Selects the text form (U+FE0E) or the emoji form (U+FE0F) of the symbol before it.
-const VARIATION_SELECTORS: [char; 2] = ['\u{fe0e}', '\u{fe0f}'];
+/// Selects the emoji form of the symbol before it.
+const EMOJI_FORM: char = '\u{fe0f}';
+
+/// Selects the text form (U+FE0E) or the emoji form of the symbol before it.
+const VARIATION_SELECTORS: [char; 2] = ['\u{fe0e}', EMOJI_FORM];
 
 /// Joins two emoji into one, as in a family or a profession.
 const ZERO_WIDTH_JOINER: char = '\u{200d}';
@@ -74,7 +77,9 @@ fn emoji_length(text: &str) -> usize {
             return 0;
         }
         count = keycap_at + 1;
-    } else if !is_pictographic(first) {
+    } else if !is_pictographic(first) && chars.get(1) != Some(&EMOJI_FORM) {
+        // Outside the emoji blocks, a symbol such as "▶" or "©" is an emoji only when it asks
+        // for its emoji form.
         return 0;
     } else if is_regional_indicator(first)
         && chars.get(1).copied().is_some_and(is_regional_indicator)
@@ -174,11 +179,29 @@ mod tests {
     }
 
     #[test]
+    fn a_symbol_asking_for_its_emoji_form_is_an_emoji() {
+        let titles = [
+            "\u{25b6}\u{fe0f} Build",
+            "\u{2139}\u{fe0f} Build",
+            "\u{203c}\u{fe0f} Build",
+            "\u{21a9}\u{fe0f} Build",
+            "\u{25aa}\u{fe0f} Build",
+            "\u{a9}\u{fe0f} Build",
+        ];
+        for title in titles {
+            assert_eq!(with_emoji(title, Some("🚀")), "🚀 Build", "{title}");
+            assert_eq!(with_emoji(title, None), "Build", "{title}");
+        }
+    }
+
+    #[test]
     fn text_that_only_looks_like_an_emoji_stays() {
         let titles = [
             "1 Build",
             "#12 Build",
             "→ Build",
+            "\u{a9} Build",
+            "\u{25b6} Build",
             "Build ✅",
             "\u{200d} Build",
         ];

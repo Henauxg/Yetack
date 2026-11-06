@@ -32,7 +32,7 @@ pub fn LoadChip(open: bool) -> Element {
             UNKNOWN_CLASS,
             "Load: measuring".to_owned(),
         ),
-        LoadView::Unknown => (
+        LoadView::Unknown(_) => (
             "unknown".to_owned(),
             "?".to_owned(),
             UNKNOWN_CLASS,
@@ -76,10 +76,10 @@ pub fn LoadCard() -> Element {
                 }
             }
         },
-        LoadView::Unknown => rsx! {
+        LoadView::Unknown(code) => rsx! {
             div { class: "card-section",
                 span { class: "section-title", "Load unknown" }
-                span { class: "muted small", "The daemon cannot measure its machine's load: it needs Linux's /proc." }
+                span { class: "muted small", {machine_load::unknown_note(*code)} }
             }
         },
     };

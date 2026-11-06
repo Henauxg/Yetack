@@ -273,8 +273,12 @@ fn field_key(cockpit: Cockpit, event: &KeyboardEvent) {
             event.prevent_default();
             take(cockpit, None, Take::Open);
         }
+        // The page's script passes Backspace on only with the caret at the end and nothing
+        // selected.
         Key::Backspace => {
-            if let Some(text) = cockpit.with_drafts(|_, drafts| open_file::text_above(drafts)) {
+            if let Some(text) =
+                cockpit.with_drafts(|state, drafts| open_file::text_above(state, drafts))
+            {
                 event.prevent_default();
                 cockpit.update_with_drafts(|state, drafts| {
                     open_file::set_text(state, drafts, text.clone())

@@ -8,7 +8,8 @@ use dioxus::prelude::*;
 use crate::bridge::{self, ATTACH_INPUT_ID, COMPOSER_ID, HIGHLIGHTED_ENTRY_ID, PALETTE_FILTER_ID};
 use crate::connection::Cockpit;
 use crate::state::actions::{
-    self, Direction, MenuAction, MenuSection, PaletteEntry, SettingChoice, Step, WindowAction,
+    self, CommandMatch, Direction, MenuAction, MenuSection, PaletteEntry, SettingChoice, Step,
+    WindowAction,
 };
 use crate::state::{AgentEntry, PaletteOrigin};
 use crate::ui::icons::{Icon, IconKind};
@@ -42,13 +43,13 @@ enum Row {
 }
 
 /// The palette's rows. The one the slash button opens puts a title over each section.
-fn rows(entry: &AgentEntry, query: &str, origin: PaletteOrigin) -> Vec<Row> {
+fn rows(entry: &AgentEntry, query: &str, how: CommandMatch, origin: PaletteOrigin) -> Vec<Row> {
     let commands = entry
         .details
         .loaded()
         .map_or(&[][..], |details| details.commands.as_slice());
     let exited = entry.summary.status == AgentStatus::Exited;
-    let entries = actions::palette_entries(commands, query, origin);
+    let entries = actions::palette_entries(commands, query, how, origin);
     let mut rows = Vec::with_capacity(entries.len() + 3);
     let mut section = None;
     for (index, palette_entry) in entries.into_iter().enumerate() {
@@ -135,7 +136,8 @@ pub fn Palette(agent: AgentId, origin: PaletteOrigin) -> Element {
             return rsx! {};
         };
         let query = drafts.palette.query.clone();
-        (rows(entry, &query, origin), query)
+        let how = actions::command_match(&drafts.palette);
+        (rows(entry, &query, how, origin), query)
     };
     let highlighted = highlighted();
     let menu = origin == PaletteOrigin::Button;
@@ -382,10 +384,10 @@ mod tests {
                 .collect()
         };
 
-        let typed = rows(&entry, "", PaletteOrigin::Typed);
-        let menu = rows(&entry, "", PaletteOrigin::Button);
+        let typed = rows(&entry, "", CommandMatch::Anywhere, PaletteOrigin::Typed);
+        let menu = rows(&entry, "", CommandMatch::Anywhere, PaletteOrigin::Button);
         entry.commands_requested = true;
-        let reloading = rows(&entry, "", PaletteOrigin::Button);
+        let reloading = rows(&entry, "", CommandMatch::Anywhere, PaletteOrigin::Button);
 
         assert!(matches!(typed.as_slice(), [Row::Command { index: 0, .. }]));
         assert_eq!(

@@ -5,7 +5,7 @@
 //! The field follows the keyboard alone: its text lives in the drafts, and a pick that changes it
 //! returns the new text for the window to put in the field.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use cockpit_protocol::{DirEntry, EntryKind};
 
@@ -39,9 +39,20 @@ pub fn split(text: &str) -> (&str, &str) {
     }
 }
 
-/// The folder the text lists: its folder part, absolute or relative to `agent_folder`.
+/// The folder the text lists: its folder part, absolute or relative to `agent_folder`, with its
+/// ".." resolved, so that its parent is the folder above.
 pub fn listed_folder(agent_folder: &Path, text: &str) -> PathBuf {
-    agent_folder.join(split(text).0)
+    let mut folder = PathBuf::new();
+    for component in agent_folder.join(split(text).0).components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                folder.pop();
+            }
+            other => folder.push(other),
+        }
+    }
+    folder
 }
 
 /// The name a text asks the project's files for: a bare name, without a separator, long enough.
@@ -51,15 +62,17 @@ pub fn searched_name(text: &str) -> Option<&str> {
     (!text.contains(SEPARATOR) && long_enough).then_some(name)
 }
 
-/// The text naming the folder above the one the text lists: "/work/app/src/" gives "/work/app/".
+/// The text naming the folder above `folder`, the one `text` lists: "/work/app/src/" gives
+/// "/work/app/". A relative text stays relative while the folder above is in `agent_folder`.
 /// `None` at the top.
-pub fn up(text: &str) -> Option<String> {
-    let (folder, _) = split(text);
-    let folder = folder.strip_suffix(SEPARATOR)?;
-    if folder.is_empty() {
-        return None;
+pub fn up(agent_folder: &Path, folder: &Path, text: &str) -> Option<String> {
+    let above = folder.parent()?;
+    let relative = !split(text).0.starts_with(SEPARATOR);
+    match above.strip_prefix(agent_folder) {
+        Ok(inside) if relative && inside.as_os_str().is_empty() => Some(String::new()),
+        Ok(inside) if relative => Some(as_folder_text(inside)),
+        _ => Some(as_folder_text(above)),
     }
-    Some(split(folder).0.to_owned())
 }
 
 /// The text after taking `name` from the listed folder. A folder's ends with a separator, so that
@@ -255,7 +268,7 @@ pub fn take(
     let (new_text, file) = match row {
         None if how == Take::Open && !segment.is_empty() => (None, Some(folder.join(segment))),
         None => (None, None),
-        Some(Row::Up) => (up(&text), None),
+        Some(Row::Up) => (text_above_view(state, view, &text), None),
         Some(Row::Entry(entry)) if entry.kind == EntryKind::Folder => {
             (Some(completed(&text, &entry.name, true)), None)
         }
@@ -279,14 +292,18 @@ pub fn take(
 }
 
 /// What Backspace makes of the field: on an empty last segment, the folder above's text. `None`
-/// when the key should delete as usual. Reads the drafts alone, so that a key that deletes does
-/// not render the window.
-pub fn text_above(drafts: &Drafts) -> Option<String> {
+/// when the key should delete as usual. Changes nothing, so that a key that deletes does not
+/// render the window.
+pub fn text_above(state: &AppState, drafts: &Drafts) -> Option<String> {
     let text = &drafts.open_file.path;
     if !split(text).1.is_empty() {
         return None;
     }
-    up(text)
+    text_above_view(state, view(state)?, text)
+}
+
+fn text_above_view(state: &AppState, view: &OpenFileView, text: &str) -> Option<String> {
+    up(agent_folder(state, view)?, &view.folder, text)
 }
 
 /// Whether the typed text is a bare name the dialog has not searched for yet.
@@ -385,11 +402,21 @@ mod tests {
 
     #[test]
     fn going_up_and_completing_rewrite_the_folder_part() {
+        let up = |text: &str| {
+            let folder = listed_folder(Path::new(AGENT_FOLDER), text);
+            super::up(Path::new(AGENT_FOLDER), &folder, text)
+        };
         assert_eq!(up("/work/app/src/").as_deref(), Some("/work/app/"));
         assert_eq!(up("/work/").as_deref(), Some("/"));
+        assert_eq!(up("src/lib/").as_deref(), Some("src/"));
         assert_eq!(up("src/").as_deref(), Some(""));
+        assert_eq!(up("").as_deref(), Some("/work/"));
+        assert_eq!(up("../").as_deref(), Some("/"));
+        assert_eq!(
+            up("/work/project-1/src/").as_deref(),
+            Some("/work/project-1/")
+        );
         assert_eq!(up("/"), None);
-        assert_eq!(up(""), None);
         assert_eq!(completed("/work/app/sr", "src", true), "/work/app/src/");
         assert_eq!(
             completed("/work/app/RE", "README.md", false),
@@ -454,12 +481,60 @@ mod tests {
         assert_eq!(text.as_deref(), Some("/work/project-1/README.md"));
         assert!(view(&state).is_some(), "Tab keeps the dialog open");
         // Backspace on a segment deletes as usual.
-        assert_eq!(text_above(&drafts), None);
+        assert_eq!(text_above(&state, &drafts), None);
 
         type_path(&state, &mut drafts, "/work/project-1/src/".to_owned());
-        let text = text_above(&drafts);
+        follow(&mut state, &drafts, false);
+        let text = text_above(&state, &drafts);
 
         assert_eq!(text.as_deref(), Some("/work/project-1/"));
+    }
+
+    #[test]
+    fn the_up_row_of_the_agent_folder_typed_as_an_empty_text_lists_the_folder_above() {
+        let (mut state, mut drafts) = opened();
+        set_text(&mut state, &mut drafts, String::new());
+        if let Some(view) = view_mut(&mut state) {
+            view.listing = Loadable::Loaded(listing(AGENT_FOLDER));
+        }
+        assert_eq!(
+            row_names(&state, &drafts).first().map(String::as_str),
+            Some("..")
+        );
+
+        let text = take(&mut state, &mut drafts, Some(0), Take::Open);
+
+        assert_eq!(text.as_deref(), Some("/work/"));
+        assert_eq!(view(&state).unwrap().folder, PathBuf::from("/work"));
+    }
+
+    #[test]
+    fn the_up_row_of_a_parent_folder_typed_relative_lists_the_folder_above_it() {
+        let (mut state, mut drafts) = opened();
+        set_text(&mut state, &mut drafts, "../".to_owned());
+        assert_eq!(view(&state).unwrap().folder, PathBuf::from("/work"));
+
+        let text = take(&mut state, &mut drafts, Some(0), Take::Open);
+
+        assert_eq!(text.as_deref(), Some("/"));
+        assert_eq!(view(&state).unwrap().folder, PathBuf::from("/"));
+    }
+
+    #[test]
+    fn enter_on_a_full_name_a_cut_listing_left_out_opens_that_file() {
+        let (mut state, mut drafts) = opened();
+        if let Some(view) = view_mut(&mut state) {
+            view.listing = Loadable::Loaded(DirListing {
+                truncated: true,
+                ..listing(AGENT_FOLDER)
+            });
+        }
+        type_path(&state, &mut drafts, "/work/project-1/main.rs".to_owned());
+
+        take(&mut state, &mut drafts, None, Take::Open);
+
+        let opened = state.ui.file_view(AgentId::new(1)).unwrap();
+        assert_eq!(opened.path, PathBuf::from("main.rs"));
     }
 
     #[test]

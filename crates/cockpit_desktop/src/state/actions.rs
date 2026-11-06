@@ -187,10 +187,11 @@ pub fn composer_input(
 ) -> Option<PaletteChange> {
     let caret = byte_offset(&text, caret);
     let word = slash_word_at(&text, caret);
-    if drafts.palette_dismissed != word.map(|word| word.start) {
+    let dismissed = word.map(|word| (agent, word.start));
+    if drafts.palette_dismissed != dismissed {
         drafts.palette_dismissed = None;
     }
-    let word = word.filter(|word| drafts.palette_dismissed != Some(word.start));
+    let word = word.filter(|word| drafts.palette_dismissed != Some((agent, word.start)));
     let change = match (state.ui.popover, word) {
         (Some(Popover::Palette(PaletteOrigin::Button)), _) => None,
         (popover, Some(word)) => {
@@ -223,9 +224,9 @@ fn byte_offset(text: &str, utf16: usize) -> usize {
     text.len()
 }
 
-/// The "/" word the caret, a byte offset, is in: a "/" at the start of the text or after a space
-/// or a line break, then the rest of the word, without a second "/". So "src/lib.rs" and a path
-/// such as "/home/dev" are no command.
+/// The "/" word the caret, a byte offset, is in, after its "/": a "/" at the start of the text or
+/// after a space or a line break, then the rest of the word, without a second "/". So
+/// "src/lib.rs" and a path such as "/home/dev" are no command.
 pub fn slash_word_at(text: &str, caret: usize) -> Option<SlashWord> {
     let before = text.get(..caret)?;
     let start = before
@@ -233,6 +234,9 @@ pub fn slash_word_at(text: &str, caret: usize) -> Option<SlashWord> {
         .rev()
         .find(|(_, character)| character.is_whitespace())
         .map_or(0, |(offset, character)| offset + character.len_utf8());
+    if caret <= start {
+        return None;
+    }
     let after = text.get(caret..)?;
     let end = caret + after.find(char::is_whitespace).unwrap_or(after.len());
     let word = text.get(start..end)?.strip_prefix(COMMAND_PREFIX)?;
@@ -299,18 +303,41 @@ fn commands_request(state: &mut AppState, agent: AgentId) -> Option<Outgoing> {
     })
 }
 
+/// How the palette's query picks commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandMatch {
+    /// The name or the description holds the query.
+    Anywhere,
+    /// The name starts with the query: for a "/" word inside a message, which may be a path.
+    NameStart,
+}
+
+/// A "/" word that does not start the message matches command names by their start alone.
+pub fn command_match(palette: &Palette) -> CommandMatch {
+    match palette.word {
+        Some(word) if word.start > 0 => CommandMatch::NameStart,
+        Some(_) | None => CommandMatch::Anywhere,
+    }
+}
+
 /// Commands whose name starts with the query come first, then those that contain it in their
 /// name or description.
 pub fn filtered_commands<'command>(
     commands: &'command [SlashCommand],
     query: &str,
+    how: CommandMatch,
 ) -> Vec<&'command SlashCommand> {
     let query = query.trim_start_matches(COMMAND_PREFIX).to_lowercase();
     let mut matching: Vec<&SlashCommand> = commands
         .iter()
         .filter(|command| {
-            command.name.to_lowercase().contains(&query)
-                || command.description.to_lowercase().contains(&query)
+            let name = command.name.to_lowercase();
+            match how {
+                CommandMatch::Anywhere => {
+                    name.contains(&query) || command.description.to_lowercase().contains(&query)
+                }
+                CommandMatch::NameStart => name.starts_with(&query),
+            }
         })
         .collect();
     matching.sort_by_key(|command| !command.name.to_lowercase().starts_with(&query));
@@ -464,6 +491,7 @@ impl PaletteEntry<'_> {
 pub fn palette_entries<'command>(
     commands: &'command [SlashCommand],
     query: &str,
+    how: CommandMatch,
     origin: PaletteOrigin,
 ) -> Vec<PaletteEntry<'command>> {
     let mut entries = Vec::new();
@@ -475,7 +503,7 @@ pub fn palette_entries<'command>(
             .filter(|action| action.matches(&query));
         entries.extend(actions.map(PaletteEntry::Action));
     }
-    let commands = filtered_commands(commands, query);
+    let commands = filtered_commands(commands, query, how);
     entries.extend(commands.into_iter().map(PaletteEntry::Command));
     entries
 }
@@ -489,7 +517,18 @@ fn open_palette_entries<'state>(
     let Some(Popover::Palette(origin)) = state.ui.popover else {
         return Vec::new();
     };
-    palette_entries(agent_commands(state, agent), &drafts.palette.query, origin)
+    let how = command_match(&drafts.palette);
+    palette_entries(
+        agent_commands(state, agent),
+        &drafts.palette.query,
+        how,
+        origin,
+    )
+}
+
+/// Whether the open palette lists any entry.
+pub fn palette_has_entries(state: &AppState, drafts: &Drafts, agent: AgentId) -> bool {
+    !open_palette_entries(state, drafts, agent).is_empty()
 }
 
 pub fn palette_move(state: &AppState, drafts: &mut Drafts, agent: AgentId, direction: Direction) {
@@ -2304,12 +2343,20 @@ mod tests {
             command("review", "Review the branch"),
         ];
 
-        let names: Vec<&str> = filtered_commands(&commands, "/con")
-            .iter()
-            .map(|command| command.name.as_str())
-            .collect();
+        let names = |query: &str, how: CommandMatch| -> Vec<&str> {
+            filtered_commands(&commands, query, how)
+                .iter()
+                .map(|command| command.name.as_str())
+                .collect()
+        };
 
-        assert_eq!(names, ["context", "compact"]);
+        assert_eq!(
+            names("/con", CommandMatch::Anywhere),
+            ["context", "compact"]
+        );
+        assert_eq!(names("/con", CommandMatch::NameStart), ["context"]);
+        assert_eq!(names("/branch", CommandMatch::Anywhere), ["review"]);
+        assert!(names("/branch", CommandMatch::NameStart).is_empty());
     }
 
     #[test]
@@ -2329,6 +2376,9 @@ mod tests {
         assert_eq!(word("/rev the branch", 2), Some("/rev"));
         assert_eq!(word("/rev the branch", 8), None);
         assert_eq!(word("/rev ", 5), None);
+        // A caret just before the "/" is not in the word.
+        assert_eq!(word("fix /mcp", 4), None);
+        assert_eq!(word("/rev", 0), None);
     }
 
     #[test]
@@ -2470,7 +2520,7 @@ mod tests {
 
     /// The entries as the palette names them.
     fn entry_names(commands: &[SlashCommand], query: &str, origin: PaletteOrigin) -> Vec<String> {
-        let entries = palette_entries(commands, query, origin);
+        let entries = palette_entries(commands, query, CommandMatch::Anywhere, origin);
         let names = entries.into_iter().map(|entry| match entry {
             PaletteEntry::Action(action) => action.label().to_owned(),
             PaletteEntry::Command(command) => format!("/{}", command.name),
