@@ -585,6 +585,37 @@ async fn an_effort_typed_in_the_composer_is_kept_as_if_set_from_the_menu() {
 }
 
 #[tokio::test]
+async fn a_model_typed_in_the_composer_is_kept_by_a_resume() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let agent = client.start(&setup.work(), "first").await;
+
+    client.prompt(agent, "/model other-model").await;
+    client
+        .item_with(
+            agent,
+            |body| matches!(body, ItemBody::Notice { text, .. } if text == "Model set"),
+        )
+        .await;
+    client.ok(Request::AgentStop(AgentParams { agent })).await;
+    client
+        .summary_with(agent, |summary| summary.status == AgentStatus::Exited)
+        .await;
+    client.ok(Request::AgentResume(AgentParams { agent })).await;
+    let launches = setup.wait_for_launches(2);
+    // The fake applies `low` to any model but its own.
+    let resumed = client
+        .summary_with(agent, |summary| summary.effort == Some(Effort::Low))
+        .await;
+
+    assert!(
+        launches[1].contains(&"--model=other-model".to_owned()),
+        "{launches:?}"
+    );
+    assert!(resumed.effort_is_default);
+}
+
+#[tokio::test]
 async fn a_start_reads_its_title_as_a_rename_does() {
     let setup = Setup::new();
     let mut client = setup.connect().await;

@@ -588,7 +588,13 @@ fn record_typed_setting(agent: &mut Agent, text: &str) -> bool {
             agent.view.set_effort(effort);
             true
         }
-        None => false,
+        // The summary shows the model once a turn's `system/init` reports it, and the daemon then
+        // asks for the effort it applies.
+        Some(TypedSetting::Model(model)) if check_model(&model).is_ok() => {
+            agent.record.model = Some(model);
+            true
+        }
+        Some(TypedSetting::Model(_)) | None => false,
     }
 }
 

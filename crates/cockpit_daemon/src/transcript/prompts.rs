@@ -14,17 +14,20 @@ const RENAME_COMMAND: &str = "/rename";
 enum SettingCommand {
     #[strum(serialize = "/effort")]
     Effort,
+    #[strum(serialize = "/model")]
+    Model,
 }
 
 /// A setting that a prompt typed in the composer changes, as the agent's menus do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TypedSetting {
     Effort(Effort),
+    Model(String),
 }
 
 impl TypedSetting {
-    /// Reads `/effort <level>`. `None` for any other text, and for a command without its word,
-    /// with a word the cockpit does not know, or followed by more words.
+    /// Reads `/effort <level>` and `/model <model>`. `None` for any other text, and for a command
+    /// without its word, with a level the cockpit does not know, or followed by more words.
     pub(crate) fn parse(text: &str) -> Option<Self> {
         let mut parts = text.split_whitespace();
         let command: SettingCommand = parts.next()?.parse().ok()?;
@@ -34,6 +37,7 @@ impl TypedSetting {
         }
         match command {
             SettingCommand::Effort => words::effort_from_word(word).map(Self::Effort),
+            SettingCommand::Model => Some(Self::Model(word.to_owned())),
         }
     }
 }
@@ -128,7 +132,7 @@ mod tests {
             .map(|&command| command.into())
             .collect();
 
-        assert_eq!(commands, ["/effort"]);
+        assert_eq!(commands, ["/effort", "/model"]);
     }
 
     #[test]
@@ -148,5 +152,17 @@ mod tests {
         assert_eq!(read("/effort high please"), None);
         assert_eq!(read("/efforts high"), None);
         assert_eq!(read("Set /effort high"), None);
+    }
+
+    #[test]
+    fn a_typed_model_needs_one_name() {
+        let read = |text: &str| TypedSetting::parse(text);
+
+        assert_eq!(
+            read("/model other-model"),
+            Some(TypedSetting::Model("other-model".to_owned()))
+        );
+        assert_eq!(read("/model"), None);
+        assert_eq!(read("/model other model"), None);
     }
 }
