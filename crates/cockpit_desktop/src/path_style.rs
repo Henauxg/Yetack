@@ -235,24 +235,20 @@ impl PathStyle {
         }
     }
 
-    /// The folder `text` names from `base`, with "." and ".." resolved. An absolute text stands
-    /// alone; on Windows, a text that starts with a separator starts at `base`'s drive.
+    /// The folder `text` names from `base`, with "." and ".." resolved in both. An absolute text
+    /// stands alone; on Windows, a text that starts with a separator starts at `base`'s drive.
     pub fn resolve(self, base: &str, text: &str) -> String {
-        let (root, mut names) = match self.root_len(text) {
-            Some(length) => (text.get(..length).unwrap_or_default(), Vec::new()),
+        let (root, start) = match self.root_len(text) {
+            Some(length) => (text.get(..length).unwrap_or_default(), ""),
             None => {
                 let length = self.root_len(base).unwrap_or(0);
                 let root = base.get(..length).unwrap_or_default();
                 let starts_at_root = text.starts_with(|character| self.is_separator(character));
-                let names = if starts_at_root {
-                    Vec::new()
-                } else {
-                    self.names_at(base)
-                };
-                (root, names.into_iter().map(|(_, name)| name).collect())
+                (root, if starts_at_root { "" } else { base })
             }
         };
-        for (_, name) in self.names_at(text) {
+        let mut names = Vec::new();
+        for name in self.names(start).chain(self.names(text)) {
             if name == PARENT {
                 names.pop();
             } else {
@@ -392,6 +388,9 @@ mod tests {
         assert_eq!(Unix.resolve("/work/app", "../../../"), "/");
         assert_eq!(Unix.resolve("/work/app", "/etc/"), "/etc");
         assert_eq!(Unix.resolve("/work/app", ""), "/work/app");
+        assert_eq!(Unix.resolve("/work/app/../", ""), "/work");
+        assert_eq!(Unix.resolve("/work/../../", "app"), "/app");
+        assert_eq!(Windows.resolve(r"C:\work\..\", "app"), r"C:\app");
         assert_eq!(
             Windows.resolve(r"C:\work\app", r"src/lib\"),
             r"C:\work\app\src\lib"

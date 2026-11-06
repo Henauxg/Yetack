@@ -282,6 +282,7 @@ mod tests {
         assert_eq!(up(windows, r"C:\"), None);
         assert_eq!(up(windows, "C:/"), None);
         assert_eq!(up(windows, r"Users\"), None);
+        assert_eq!(up(windows, r"C:\Users\me\..\").as_deref(), Some(r"C:\"));
 
         let list = FolderList::new(PathBuf::from(r"C:\"));
         let text = r"C:\";
@@ -353,6 +354,9 @@ mod tests {
 
         type_text(&mut state, &mut drafts, "/home/dev/projects/");
         assert_eq!(text_above(&state, &drafts).as_deref(), Some("/home/dev/"));
+        type_text(&mut state, &mut drafts, "/home/dev/../");
+        assert_eq!(text_above(&state, &drafts).as_deref(), Some("/"));
+        type_text(&mut state, &mut drafts, "/home/dev/projects/");
 
         let text = take(&mut state, &mut drafts, Some(0));
         assert_eq!(text.as_deref(), Some("/home/dev/"));
