@@ -2,7 +2,6 @@
 
 Ideas and fixes noted for later. None of them is planned yet.
 
-- **Review pass on the latest blocks.** Run `/review fix`, then `/review-standard fix`, on the "/" palette anywhere in a message, Ctrl+O (with the daemon's `agent.list_dir` and `agent.find_files`), the title emoji grid and the machine load view.
 - **Pinned messages per agent.** Pin a message of an agent's chat. A "Pins" block in the right column lists that agent's pinned messages, and a click on one scrolls the chat to it.
 - **Scheduled jobs.** An agent with a job scheduled through `/loop` or `CronCreate` shows as Idle, with nothing saying it will run again.
   - The daemon keeps each agent's active jobs from the `CronCreate` and `CronDelete` calls it already sees (job id, schedule, repeating or not, prompt), and computes the next run from the schedule rather than from Claude Code's sentence. A job leaves the list when it is deleted, when it expires (Claude Code drops a recurring job after 7 days) and when the `claude` process ends.
