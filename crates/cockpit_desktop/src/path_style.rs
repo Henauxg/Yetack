@@ -181,10 +181,7 @@ impl PathStyle {
     pub fn same_name(self, left: &str, right: &str) -> bool {
         match self {
             Self::Unix => left == right,
-            Self::Windows => left
-                .chars()
-                .flat_map(char::to_lowercase)
-                .eq(right.chars().flat_map(char::to_lowercase)),
+            Self::Windows => left.chars().map(upper).eq(right.chars().map(upper)),
         }
     }
 
@@ -285,6 +282,15 @@ pub fn shown(path: &Path) -> String {
     PathStyle::of_text(&text).shown(&text).into_owned()
 }
 
+/// Windows maps each character to one upper case character, or leaves it: `ß` stays `ß`.
+fn upper(character: char) -> char {
+    let mut upper = character.to_uppercase();
+    match (upper.next(), upper.next()) {
+        (Some(single), None) => single,
+        _ => character,
+    }
+}
+
 /// Whether `text` starts with a drive and its root, as `C:\` or `C:/`.
 fn has_drive(text: &str) -> bool {
     let mut characters = text.chars();
@@ -379,6 +385,10 @@ mod tests {
         assert_eq!(Windows.strip_prefix(r"D:\Users\me", r"C:\Users"), None);
         assert!(Windows.same_path(r"C:\Users\Me\", "c:/users/me"));
         assert!(!Unix.same_path("/home/Me", "/home/me"));
+        // As the daemon compares them: one upper case character for each.
+        assert!(Windows.same_name("Ärger", "äRGER"));
+        assert!(!Windows.same_name("\u{212A}", "k"), "the Kelvin sign");
+        assert!(!Windows.same_name("\u{1E9E}", "ß"), "the capital sharp s");
     }
 
     #[test]
