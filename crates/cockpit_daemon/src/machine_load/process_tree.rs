@@ -8,12 +8,13 @@
 //! process count.
 
 use std::collections::{HashMap, HashSet};
-use std::fmt::Write;
+use std::fmt::{Arguments, Write};
 use std::fs::File;
 use std::io;
 use std::path::Path;
 
 use cockpit_protocol::ProcessId;
+use rustix::process::Resource;
 
 use crate::machine_load::kept_file;
 use crate::machine_load::proc_files::{
@@ -122,7 +123,7 @@ struct KeptThreads {
 
 impl Default for ChildrenFiles {
     fn default() -> Self {
-        let limit = rustix::process::getrlimit(rustix::process::Resource::Nofile).current;
+        let limit = rustix::process::getrlimit(Resource::Nofile).current;
         let quarter = limit.map_or(MAX_KEPT_FILES, |limit| {
             usize::try_from(limit / 4).unwrap_or(MAX_KEPT_FILES)
         });
@@ -171,7 +172,7 @@ impl ChildrenFiles {
         }
     }
 
-    fn set_path(&mut self, pid: ProcessId, rest: std::fmt::Arguments<'_>) {
+    fn set_path(&mut self, pid: ProcessId, rest: Arguments<'_>) {
         self.path.clear();
         let _ = write!(self.path, "{PROC_ROOT}/{}/{rest}", pid.get());
     }
@@ -572,10 +573,11 @@ pub(super) mod tests {
 
     #[test]
     fn a_process_whose_name_is_not_utf8_is_walked() {
+        use std::ffi::OsStr;
         use std::os::unix::ffi::OsStrExt;
 
         let folder = tempfile::tempdir().unwrap();
-        let shell = folder.path().join(std::ffi::OsStr::from_bytes(b"sh\xff"));
+        let shell = folder.path().join(OsStr::from_bytes(b"sh\xff"));
         std::os::unix::fs::symlink("/bin/sh", &shell).unwrap();
         let tree = spawn_tree(&shell);
 

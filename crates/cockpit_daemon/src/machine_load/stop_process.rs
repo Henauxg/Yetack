@@ -7,6 +7,7 @@
 use std::io;
 
 use cockpit_protocol::{ErrorBody, ErrorCode, ProcessId};
+use rustix::io::Errno;
 use rustix::process::{Pid, PidfdFlags, Signal};
 
 use crate::error_chain;
@@ -58,7 +59,7 @@ pub(crate) fn stop_descendant(root: ProcessId, target: ProcessId) -> Result<(), 
         .and_then(Pid::from_raw)
         .ok_or(StopProcessError::NotTheAgents { pid: target })?;
     let pidfd = rustix::process::pidfd_open(pid, PidfdFlags::empty()).map_err(|errno| {
-        if errno == rustix::io::Errno::SRCH {
+        if errno == Errno::SRCH {
             StopProcessError::Ended { pid: target }
         } else {
             StopProcessError::Signal {
@@ -71,7 +72,7 @@ pub(crate) fn stop_descendant(root: ProcessId, target: ProcessId) -> Result<(), 
         return Err(StopProcessError::NotTheAgents { pid: target });
     }
     rustix::process::pidfd_send_signal(&pidfd, Signal::TERM).map_err(|errno| {
-        if errno == rustix::io::Errno::SRCH {
+        if errno == Errno::SRCH {
             StopProcessError::Ended { pid: target }
         } else {
             StopProcessError::Signal {
@@ -221,11 +222,12 @@ mod tests {
 
     #[test]
     fn a_process_under_a_parent_whose_name_is_not_utf8_gets_sigterm() {
-        use std::io::BufRead;
+        use std::ffi::OsStr;
+        use std::io::{BufRead, BufReader};
         use std::os::unix::ffi::OsStrExt;
 
         let folder = tempfile::tempdir().unwrap();
-        let shell = folder.path().join(std::ffi::OsStr::from_bytes(b"sh\xff"));
+        let shell = folder.path().join(OsStr::from_bytes(b"sh\xff"));
         std::os::unix::fs::symlink("/bin/sh", &shell).unwrap();
         let mut child = Command::new(&shell)
             .arg("-c")
@@ -234,7 +236,7 @@ mod tests {
             .stdout(Stdio::piped())
             .spawn()
             .unwrap();
-        let mut lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
         let sleep: u32 = lines.next().unwrap().unwrap().parse().unwrap();
         let claude = ProcessId::new(std::process::id());
 

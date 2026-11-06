@@ -19,6 +19,7 @@ use std::path::{Component, Path, PathBuf};
 
 use cockpit_protocol::{DirEntry, DirListing, EntryKind, ErrorBody, ErrorCode};
 use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags};
+use rustix::io::Errno;
 use tokio::time::Instant;
 
 use crate::read_file::{self, Access, ReadFileError, SEARCH_TIME};
@@ -82,7 +83,7 @@ pub(crate) fn list(
     let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
     let opened =
         rustix::fs::open(&resolved, flags, Mode::empty()).map_err(|error| match error {
-            rustix::io::Errno::NOTDIR => ListDirError::NotAFolder(asked.clone()),
+            Errno::NOTDIR => ListDirError::NotAFolder(asked.clone()),
             other => ListDirError::Io(other.into()),
         })?;
     let opened = File::from(opened);
@@ -139,8 +140,8 @@ pub(crate) fn list_folders(path: &Path) -> Result<DirListing, ListDirError> {
     }
     let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
     let opened = rustix::fs::open(path, flags, Mode::empty()).map_err(|error| match error {
-        rustix::io::Errno::NOENT => ListDirError::Missing(path.to_owned()),
-        rustix::io::Errno::NOTDIR => ListDirError::NotAFolder(path.to_owned()),
+        Errno::NOENT => ListDirError::Missing(path.to_owned()),
+        Errno::NOTDIR => ListDirError::NotAFolder(path.to_owned()),
         other => ListDirError::Io(other.into()),
     })?;
     let (entries, truncated) = read_folders(&File::from(opened))?;
@@ -260,6 +261,7 @@ pub(crate) async fn find_files(
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::symlink;
+    use std::process::Command;
 
     use super::*;
 
@@ -520,7 +522,7 @@ mod tests {
     #[tokio::test]
     async fn finds_files_by_a_part_of_their_name_whatever_its_case() {
         let layout = Layout::new();
-        let status = std::process::Command::new("git")
+        let status = Command::new("git")
             .args(["init", "-q"])
             .current_dir(&layout.agent)
             .status()

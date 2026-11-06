@@ -308,12 +308,13 @@ mod tests {
 
     #[test]
     fn a_parent_whose_name_is_not_utf8_is_walked_through() {
-        use std::io::BufRead;
+        use std::ffi::OsStr;
+        use std::io::{BufRead, BufReader};
         use std::os::unix::ffi::OsStrExt;
         use std::process::{Command, Stdio};
 
         let folder = tempfile::tempdir().unwrap();
-        let shell = folder.path().join(std::ffi::OsStr::from_bytes(b"sh\xff"));
+        let shell = folder.path().join(OsStr::from_bytes(b"sh\xff"));
         std::os::unix::fs::symlink("/bin/sh", &shell).unwrap();
         let mut child = Command::new(&shell)
             .arg("-c")
@@ -322,7 +323,7 @@ mod tests {
             .stdout(Stdio::piped())
             .spawn()
             .unwrap();
-        let mut lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
         let sleep: u32 = lines.next().unwrap().unwrap().parse().unwrap();
         let me = DaemonIdentity::current();
         let another = DaemonIdentity {

@@ -241,6 +241,7 @@ fn left_running(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::machine_load::proc_files::CpuTimes;
     use crate::machine_load::process_tree::tests::FakeProc;
 
     fn root(agent: u32, pid: u32) -> AgentRoot {
@@ -268,7 +269,7 @@ mod tests {
             taken_at: Timestamp::from_unix_millis(0),
             uptime_ticks: 0,
             cpu: ServerCpu {
-                times: proc_files::CpuTimes { busy: 0, total: 0 },
+                times: CpuTimes { busy: 0, total: 0 },
                 cores: 1,
             },
             memory: MemoryInfo {

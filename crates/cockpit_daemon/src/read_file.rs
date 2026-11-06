@@ -37,6 +37,7 @@ use cockpit_protocol::{ErrorBody, ErrorCode};
 use rustix::fs::{Mode, OFlags};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+use tokio::task::JoinError;
 use tokio::time::Instant;
 
 /// The largest file the view shows.
@@ -284,7 +285,7 @@ pub(crate) async fn find_and_read(
     }
 }
 
-pub(crate) fn join_error(error: tokio::task::JoinError) -> ReadFileError {
+pub(crate) fn join_error(error: JoinError) -> ReadFileError {
     ReadFileError::Io(io::Error::other(error))
 }
 
