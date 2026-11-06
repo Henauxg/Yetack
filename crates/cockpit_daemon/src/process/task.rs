@@ -116,13 +116,11 @@ where
     M: Send + 'static,
     W: Fn(ProcessEvent<T>) -> M + Send + 'static,
 {
-    start(
-        command.to_command(),
-        &command.program,
-        raw_log,
-        events,
-        wrap,
-    )
+    let process = command.to_command().map_err(|source| ProcessError::Spawn {
+        program: command.program.clone(),
+        source,
+    })?;
+    start(process, &command.program, raw_log, events, wrap)
 }
 
 fn start<T, M, W>(

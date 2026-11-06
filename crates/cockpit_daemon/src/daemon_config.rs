@@ -12,7 +12,7 @@ pub const STATE_DIR_FLAG: &str = "state-dir";
 
 /// Names the `claude` program to run instead of the one on `PATH`, for tests.
 pub const CLAUDE_PROGRAM_ENV: &str = "AGENTS_COCKPIT_CLAUDE";
-const DEFAULT_CLAUDE_PROGRAM: &str = "claude";
+pub(crate) const DEFAULT_CLAUDE_PROGRAM: &str = "claude";
 /// Claude Code's own setting for its folder, which `sessions.list` reads.
 const CLAUDE_CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
 const CLAUDE_HOME_FOLDER: &str = ".claude";

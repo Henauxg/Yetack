@@ -4,6 +4,7 @@
 mod claude_command;
 mod line_reader;
 mod process_error;
+pub(crate) mod program;
 mod task;
 
 pub(crate) use claude_command::{ClaudeCommand, InterruptedTurn};

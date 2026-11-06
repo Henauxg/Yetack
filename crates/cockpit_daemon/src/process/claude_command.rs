@@ -1,10 +1,13 @@
 use std::ffi::OsString;
+use std::io;
 use std::path::PathBuf;
 use std::process::Stdio;
 
 use claude_protocol::PermissionMode;
 use cockpit_protocol::ClaudeSessionId;
 use tokio::process::Command;
+
+use crate::process::program;
 
 const STREAM_JSON: &str = "stream-json";
 /// JSON in and out, approvals over stdio, and prompts echoed back.
@@ -76,10 +79,9 @@ impl ClaudeCommand {
 
     /// On Unix, `claude` leads a process group of its own, so that killing the group also ends
     /// its MCP servers and the commands it started.
-    pub(crate) fn to_command(&self) -> Command {
-        let mut command = Command::new(&self.program);
+    pub(crate) fn to_command(&self) -> io::Result<Command> {
+        let mut command = program::command(&self.program, &self.args())?;
         command
-            .args(self.args())
             .current_dir(&self.folder)
             .env_remove(NESTED_SESSION_ENV)
             .env(WORKING_FOLDER_ENV, &self.folder)
@@ -92,7 +94,7 @@ impl ClaudeCommand {
         if self.resume.is_some() && self.interrupted_turn == InterruptedTurn::Resume {
             command.env(RESUME_INTERRUPTED_TURN_ENV, ENABLED);
         }
-        command
+        Ok(command)
     }
 }
 
@@ -177,7 +179,8 @@ mod tests {
                 interrupted_turn,
                 ..command()
             }
-            .to_command();
+            .to_command()
+            .unwrap();
             let envs: Vec<(&OsStr, Option<&OsStr>)> = command.as_std().get_envs().collect();
             envs.contains(&(
                 OsStr::new(RESUME_INTERRUPTED_TURN_ENV),

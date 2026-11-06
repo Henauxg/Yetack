@@ -2,13 +2,15 @@
 //! local scopes.
 
 use std::ffi::OsString;
+use std::io;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
 use claude_protocol::McpScope;
 use cockpit_protocol::{ErrorBody, ErrorCode};
-use tokio::process::Command;
+
+use crate::process::program;
 
 const MCP_SUBCOMMAND: &str = "mcp";
 const REMOVE_SUBCOMMAND: &str = "remove";
@@ -25,9 +27,14 @@ pub(crate) async fn remove(
     server: &str,
     scope: McpScope,
 ) -> Result<(), ErrorBody> {
-    let mut command = Command::new(program);
+    let cannot_run = |error: io::Error| {
+        ErrorBody::new(
+            ErrorCode::ClaudeFailed,
+            format!("cannot run {}: {error}", program.display()),
+        )
+    };
+    let mut command = program::command(program, &remove_args(server, scope)).map_err(cannot_run)?;
     command
-        .args(remove_args(server, scope))
         .current_dir(folder)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -41,12 +48,7 @@ pub(crate) async fn remove(
                 format!("claude {MCP_SUBCOMMAND} {REMOVE_SUBCOMMAND} did not finish in time"),
             )
         })?
-        .map_err(|error| {
-            ErrorBody::new(
-                ErrorCode::ClaudeFailed,
-                format!("cannot run {}: {error}", program.display()),
-            )
-        })?;
+        .map_err(cannot_run)?;
     if output.status.success() {
         return Ok(());
     }
