@@ -75,6 +75,8 @@ pub struct OpenFileDraft {
     pub path: String,
     /// An index into the dialog's rows. `None` until a filter or a key picks a row.
     pub highlighted: Option<usize>,
+    /// A key moved the highlight since the text last changed.
+    pub chosen: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

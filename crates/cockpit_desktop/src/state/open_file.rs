@@ -164,6 +164,7 @@ pub fn open(state: &mut AppState, drafts: &mut Drafts) {
     drafts.open_file = OpenFileDraft {
         path: as_folder_text(&folder),
         highlighted: None,
+        chosen: false,
     };
     state.ui.popover = None;
     state.ui.dialog = Some(Dialog::OpenFile(OpenFileView::new(agent, folder)));
@@ -182,6 +183,7 @@ pub struct Typed {
 pub fn type_path(state: &AppState, drafts: &mut Drafts, text: String) -> Typed {
     let filtering = !split(&text).1.is_empty();
     drafts.open_file.highlighted = filtering.then_some(0);
+    drafts.open_file.chosen = false;
     drafts.open_file.path = text;
     let Some(view) = view(state) else {
         return Typed::default();
@@ -241,6 +243,7 @@ pub fn move_highlight(state: &AppState, drafts: &mut Drafts, direction: Directio
     let Some(last) = count.checked_sub(1) else {
         return;
     };
+    drafts.open_file.chosen = true;
     let highlighted = &mut drafts.open_file.highlighted;
     *highlighted = Some(match (direction, *highlighted) {
         (Direction::Down, None) => 0,
@@ -272,8 +275,23 @@ pub fn take(
     let text = drafts.open_file.path.clone();
     let (_, segment) = split(&text);
     let folder = view.folder.clone();
+    // A cut listing may leave out the file the text names: Enter opens the typed name unless a
+    // key picked the row, or the row is that name or a folder.
+    let typed_wins = how == Take::Open
+        && index.is_none()
+        && !drafts.open_file.chosen
+        && view
+            .listing
+            .loaded()
+            .is_some_and(|listing| listing.truncated);
     let index = index.or(drafts.open_file.highlighted);
-    let row = index.and_then(|index| rows(view, &text).get(index).copied());
+    let row = index
+        .and_then(|index| rows(view, &text).get(index).copied())
+        .filter(|row| {
+            let other_file = matches!(row, Row::Entry(entry)
+                if entry.kind != EntryKind::Folder && entry.name != segment);
+            !(typed_wins && other_file)
+        });
     let (new_text, file) = match row {
         None if how == Take::Open && !segment.is_empty() => (None, Some(folder.join(segment))),
         None => (None, None),
@@ -330,6 +348,7 @@ pub fn set_text(state: &mut AppState, drafts: &mut Drafts, text: String) {
     drafts.open_file = OpenFileDraft {
         path: text,
         highlighted: None,
+        chosen: false,
     };
     follow(state, drafts, true);
 }
@@ -544,6 +563,45 @@ mod tests {
 
         let opened = state.ui.file_view(AgentId::new(1)).unwrap();
         assert_eq!(opened.path, PathBuf::from("main.rs"));
+    }
+
+    #[test]
+    fn enter_in_a_cut_listing_opens_the_typed_name_unless_a_key_picked_a_row() {
+        let (mut state, mut drafts) = opened();
+        let cut = |state: &mut AppState| {
+            if let Some(view) = view_mut(state) {
+                view.listing = Loadable::Loaded(DirListing {
+                    truncated: true,
+                    ..listing(AGENT_FOLDER)
+                });
+            }
+        };
+        cut(&mut state);
+        type_path(&state, &mut drafts, "/work/project-1/build".to_owned());
+
+        take(&mut state, &mut drafts, None, Take::Open);
+
+        let shown = state.ui.file_view(AgentId::new(1)).unwrap();
+        assert_eq!(shown.path, PathBuf::from("build"));
+
+        let (mut state, mut drafts) = opened();
+        cut(&mut state);
+        type_path(&state, &mut drafts, "/work/project-1/build".to_owned());
+        move_highlight(&state, &mut drafts, Direction::Down);
+
+        take(&mut state, &mut drafts, None, Take::Open);
+
+        let shown = state.ui.file_view(AgentId::new(1)).unwrap();
+        assert_eq!(shown.path, PathBuf::from("build.rs"));
+
+        // A folder's row still lists the folder.
+        let (mut state, mut drafts) = opened();
+        cut(&mut state);
+        type_path(&state, &mut drafts, "/work/project-1/sr".to_owned());
+
+        let text = take(&mut state, &mut drafts, None, Take::Open);
+
+        assert_eq!(text.as_deref(), Some("/work/project-1/src/"));
     }
 
     #[test]

@@ -118,7 +118,7 @@ pub fn OpenFileDialog(view: OpenFileView) -> Element {
                         }
                         if listing.truncated {
                             span { class: "dialog-empty",
-                                "The folder holds more entries than the {listed} listed. Type a name to narrow the list."
+                                "The folder holds more entries than the {listed} listed. Type a file's full name and press Enter to open it."
                             }
                         }
                     },
