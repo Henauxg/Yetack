@@ -3,11 +3,20 @@
 
 use cockpit_protocol::MAX_TITLE_CHARS;
 
-/// The emoji the picker offers: marks for kinds of work. A variation selector after a symbol
-/// asks for its colored form.
-pub const TITLE_EMOJI: [&str; 32] = [
-    "🚀", "🐛", "🧪", "📦", "🔧", "📝", "🔍", "💡", "⚡", "🔥", "🎯", "🧹", "🛠️", "📊", "🔒", "🌐",
-    "🎨", "📚", "🧭", "⏱️", "✅", "❗", "💬", "🤖", "🧩", "🗂️", "🏗️", "🚧", "🧯", "💾", "🧠", "📣",
+/// The emoji the picker offers, one line per row of its grid: kinds of work, documents, data,
+/// states, time, places, faces, hearts and colors. A variation selector after a symbol asks for
+/// its colored form.
+#[rustfmt::skip]
+pub const TITLE_EMOJI: [&str; 72] = [
+    "🚀", "🐛", "🧪", "📦", "🔧", "🛠️", "🏗️", "🧩",
+    "📝", "📄", "📚", "🗂️", "🔍", "🔎", "💬", "📣",
+    "📊", "📈", "📉", "🎯", "💡", "🧠", "🤖", "💻",
+    "✅", "❌", "⚠️", "❗", "❓", "🚧", "🔥", "🧯",
+    "⏱️", "🕒", "🕰️", "📆", "⚡", "🧹", "💾", "🔒",
+    "🌐", "🌍", "🧭", "🌊", "🐳", "🎨", "🎭", "🔑",
+    "👁️", "👀", "😃", "🤩", "💯", "🥇", "💎", "🏋️‍♀️",
+    "❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "💘",
+    "🔴", "🟠", "🟡", "🟢", "🔵", "🟣", "⚫", "⚪",
 ];
 
 /// What follows the emoji in a title.
