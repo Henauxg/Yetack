@@ -2,9 +2,8 @@
 
 Ideas and fixes noted for later. None of them is planned yet.
 
+- **Review pass on the latest blocks.** Run `/review fix`, then `/review-standard fix`, on the "/" palette anywhere in a message, Ctrl+O (with the daemon's `agent.list_dir` and `agent.find_files`), the title emoji grid and the machine load view.
 - **Pinned messages per agent.** Pin a message of an agent's chat. A "Pins" block in the right column lists that agent's pinned messages, and a click on one scrolls the chat to it.
-- **Close sessions.** Close an agent's session from the app.
-- **An emoji per session.** Choose an emoji that prefixes the agent's title, in the sidebar and the header.
 - **Timing and progress on sidebar rows.** As the mockups showed, each row shows next to the agent's title how long ago it last did something (or how long its turn has run), and its task list's progress ("3/5", which today sits on the row's second line). The daemon must first send the time of the agent's last activity: `AgentSummary` has no such field yet (see the follow-up pass in `plan.md`).
 - **Scheduled jobs.** An agent with a job scheduled through `/loop` or `CronCreate` shows as Idle, with nothing saying it will run again.
   - The daemon keeps each agent's active jobs from the `CronCreate` and `CronDelete` calls it already sees (job id, schedule, repeating or not, prompt), and computes the next run from the schedule rather than from Claude Code's sentence. A job leaves the list when it is deleted, when it expires (Claude Code drops a recurring job after 7 days) and when the `claude` process ends.
@@ -13,4 +12,16 @@ Ideas and fixes noted for later. None of them is planned yet.
   - These jobs live only inside the `claude` process: stopping the agent, or restarting or updating the daemon, loses them. The app warns before a stop that would lose one, and the daemon's update procedure checks for scheduled jobs, not only for idle agents.
 - **Voice control.** Talk to an agent instead of typing: dictate a message into the composer, and possibly answer an approval or pick an agent by voice.
 - **Agents from several Claude accounts.** Run agents signed in to different Claude accounts from one app, for example a personal and a work subscription. Each account has its own Claude Code config folder (its own login and settings), and the app shows which account an agent uses.
+- **Faster agent switch.** A click on an agent in the sidebar takes a moment before anything changes, so the switch does not feel instant. The click should move the selection, the header and the composer at once, and show the transcript's skeleton until the chat is ready. First measure where the time goes:
+  - The first click on an agent asks the daemon for its last 100 entries and its details (`needed_requests` in `requests.rs`). The chat shows a skeleton until they arrive, so this wait is the round trip to the daemon.
+  - A later click already holds the entries, but the chat rebuilds its whole column for the other agent: 100 entries or more, in the same render as the sidebar and the header. If that render is the cost, render the last entries first and the older ones a moment later, or keep the chats of recently shown agents in the page, hidden.
+- **Folder completion in the new agent dialog.** The "Folder on <server>" field takes a typed path with no completion and no list of folders. It should work as the Ctrl+O dialog's path field: the folders of the typed path listed under it, filtered by the last segment, Tab to complete, Backspace on an empty segment to go up. The daemon's `agent.list_dir` reads only an agent's folders, so this needs a folder listing that no agent owns, listing folders only (no files), since a new agent can start in any folder the daemon's user reaches.
+- **Steady highlight in the resume list.** Moving the pointer down the "Resume a session" list makes the row highlight and the Resume button flash and jump at each row change. Possible causes, to check on screen:
+  - The pointer's row (CSS `:hover`) and the keyboard's row (`.highlighted`) are two separate highlights, so two rows can show a Resume button at once.
+  - On each row change, the Resume button fades and slides in on the new row while the date and turns fade back in on the row left.
+  - The 2px gap between rows leaves no row under the pointer for a moment.
+
+  A likely fix: the pointer moves the keyboard highlight, so only one row is ever highlighted, and the button appears without a fade or a slide.
+- **Hide empty status chips.** The sidebar's status filter shows only the chips with agents in them ("Needs you", "Working", "Idle", "Exited"), plus "All". The selected chip stays even at 0, so the last agent leaving it does not make the filter vanish under the user.
+- **Agent map.** A map of the selected agent and every subagent it started, as in the Claude Code extension: each node with its status, description, duration and tokens, and its details on a click. Designed in `plan.md` (Planned after v1, milestone 5), not built yet.
 - **Machine load sparklines.** On each sidebar row, a 52 by 18 pixel line of the agent's CPU over the last five minutes: teal while it works, amber past a quarter of the server's cores, grey when idle. The row's second line shows its cores now, and a tooltip its cores over five minutes, its memory and its heaviest command. `machine.load` already answers each agent's five-minute history.

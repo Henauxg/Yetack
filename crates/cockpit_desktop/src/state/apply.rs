@@ -10,9 +10,11 @@ use cockpit_protocol::{
     Snapshot,
 };
 
+use super::actions;
 use super::app_state::{AgentEntry, AppState, ConnectionState, Loadable};
 use super::drafts::Drafts;
 use super::transcript::KEPT_ITEMS_AWAY;
+use super::ui_state::Dialog;
 
 /// A desktop notification to show.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,7 +106,12 @@ pub fn apply_catchup(state: &mut AppState, drafts: &mut Drafts, catchup: Catchup
         .collect();
     state.plan_usage = plan_usage;
     state.settings = settings;
+    // The snapshot holds the agents the daemon still has, closed or not.
+    state.ui.closing.clear();
     let agents = &state.agents;
+    state.ui.dialog.take_if(
+        |dialog| matches!(dialog, Dialog::CloseAgent(agent) if !agents.contains_key(agent)),
+    );
     state.ui.unread.retain(|agent| agents.contains_key(agent));
     state
         .ui
@@ -118,12 +125,22 @@ pub fn apply_catchup(state: &mut AppState, drafts: &mut Drafts, catchup: Catchup
         .ui
         .finished_tasks_unfolded
         .retain(|agent| agents.contains_key(agent));
+    state
+        .ui
+        .chat_scrolled_up
+        .retain(|agent, _| agents.contains_key(agent));
+    state
+        .ui
+        .chat_new_from
+        .retain(|agent, _| agents.contains_key(agent));
     drafts.retain_agents(|agent| agents.contains_key(&agent));
     state.fix_selection();
+    actions::follow_hidden_title_edit(state, drafts);
 }
 
 pub fn apply(state: &mut AppState, drafts: &mut Drafts, record: EventRecord) -> Option<Alert> {
     match record.event {
+        Event::AgentAdded(summary) if state.ui.closing.contains(&summary.id) => None,
         Event::AgentAdded(summary) => {
             state.agents.insert(summary.id, AgentEntry::new(summary));
             if state.ui.selected.is_none() {
@@ -131,14 +148,14 @@ pub fn apply(state: &mut AppState, drafts: &mut Drafts, record: EventRecord) -> 
             }
             None
         }
-        Event::AgentUpdated(summary) => update_agent(state, summary),
+        Event::AgentUpdated(summary) => {
+            let alert = update_agent(state, summary);
+            actions::follow_hidden_title_edit(state, drafts);
+            alert
+        }
         Event::AgentRemoved { agent } => {
-            state.agents.remove(&agent);
-            state.ui.unread.remove(&agent);
-            state.ui.file_views.remove(&agent);
-            state.ui.finished_tasks_unfolded.remove(&agent);
-            drafts.retain_agents(|kept| kept != agent);
-            state.ui.title_edit.take_if(|edit| edit.agent == agent);
+            forget_agent(state, drafts, agent);
+            state.ui.closing.remove(&agent);
             if state.ui.selected == Some(agent) {
                 state.ui.selected = None;
                 state.fix_selection();
@@ -183,8 +200,39 @@ pub fn apply(state: &mut AppState, drafts: &mut Drafts, record: EventRecord) -> 
     }
 }
 
+/// Forgets an agent the daemon removed or the app closed: its entry, which it returns, its drafts,
+/// its file view, and an edit or a dialog about it.
+pub fn forget_agent(
+    state: &mut AppState,
+    drafts: &mut Drafts,
+    agent: AgentId,
+) -> Option<AgentEntry> {
+    let entry = state.agents.remove(&agent);
+    let items = entry.iter().flat_map(|entry| entry.transcript.items());
+    for item in items {
+        if let ItemBody::Question(question) = &item.body {
+            drafts.questions.remove(&question.pending);
+        }
+    }
+    state.ui.unread.remove(&agent);
+    state.ui.file_views.remove(&agent);
+    state.ui.finished_tasks_unfolded.remove(&agent);
+    state.ui.chat_scrolled_up.remove(&agent);
+    state.ui.chat_new_from.remove(&agent);
+    drafts.retain_agents(|kept| kept != agent);
+    state.ui.title_edit.take_if(|edit| edit.agent == agent);
+    state
+        .ui
+        .dialog
+        .take_if(|dialog| *dialog == Dialog::CloseAgent(agent));
+    entry
+}
+
 fn update_agent(state: &mut AppState, summary: AgentSummary) -> Option<Alert> {
     let agent = summary.id;
+    if state.ui.closing.contains(&agent) {
+        return None;
+    }
     let selected = state.ui.selected == Some(agent);
     let looked_at = selected && state.ui.window_focused;
     let Some(entry) = state.agents.get_mut(&agent) else {
@@ -259,6 +307,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::prefs::StatusFilter;
     use crate::state::app_state::tests::{placed, state_with, summary};
     use crate::state::ui_state::{Block, PaletteOrigin, Popover, TitleEdit, TitlePlace};
 
@@ -316,7 +365,7 @@ mod tests {
             summary(2, AgentStatus::Working),
         ]);
         state.ui.selected = Some(AgentId::new(1));
-        state.prefs.sidebar.filter = crate::prefs::StatusFilter::Idle;
+        state.prefs.sidebar.filter = StatusFilter::Idle;
 
         let alert = apply(
             &mut state,
@@ -458,6 +507,91 @@ mod tests {
         assert!(!drafts.questions.contains_key(&pending));
     }
 
+    /// The question of an agent that is gone is never answered, so its draft would stay.
+    #[test]
+    fn a_removed_agent_leaves_no_question_draft() {
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::NeedsYou),
+            summary(2, AgentStatus::NeedsYou),
+        ]);
+        let mut drafts = Drafts::default();
+        for agent in [1, 2] {
+            let pending = PendingId::new(format!("request-{agent}"));
+            drafts.questions.insert(pending.clone(), Default::default());
+            let question = Question {
+                pending,
+                questions: Vec::new(),
+                answer: AnswerState::Waiting,
+            };
+            if let Some(entry) = state.agents.get_mut(&AgentId::new(agent)) {
+                entry.transcript.append(TranscriptItem {
+                    id: ItemId::new(4),
+                    parent: Some(ItemId::new(3)),
+                    body: ItemBody::Question(question),
+                });
+            }
+        }
+
+        apply(
+            &mut state,
+            &mut drafts,
+            record(Event::AgentRemoved {
+                agent: AgentId::new(1),
+            }),
+        );
+
+        let kept: Vec<&PendingId> = drafts.questions.keys().collect();
+        assert_eq!(kept, [&PendingId::new("request-2".to_owned())]);
+    }
+
+    /// Ids are not reused, so a removed agent's marks would stay for the app's life.
+    #[test]
+    fn a_removed_agent_leaves_no_chat_marks() {
+        let marked = || {
+            let mut state = state_with(vec![
+                summary(1, AgentStatus::Idle),
+                summary(2, AgentStatus::Idle),
+            ]);
+            for agent in [AgentId::new(1), AgentId::new(2)] {
+                state
+                    .ui
+                    .chat_scrolled_up
+                    .insert(agent, Some(ItemId::new(3)));
+                state.ui.chat_new_from.insert(agent, ItemId::new(4));
+            }
+            state
+        };
+        let mut removed = marked();
+        let mut dropped = marked();
+
+        apply(
+            &mut removed,
+            &mut Drafts::default(),
+            record(Event::AgentRemoved {
+                agent: AgentId::new(1),
+            }),
+        );
+        apply_catchup(
+            &mut dropped,
+            &mut Drafts::default(),
+            Catchup::Snapshot(Snapshot {
+                agents: vec![summary(2, AgentStatus::Idle)],
+                plan_usage: PlanUsage::default(),
+                settings: Settings::default(),
+                last_seq: Some(Seq::new(40)),
+            }),
+        );
+
+        for state in [&removed, &dropped] {
+            let scrolled: Vec<&AgentId> = state.ui.chat_scrolled_up.keys().collect();
+            let new_from: Vec<&AgentId> = state.ui.chat_new_from.keys().collect();
+            assert_eq!(
+                (scrolled, new_from),
+                (vec![&AgentId::new(2)], vec![&AgentId::new(2)])
+            );
+        }
+    }
+
     #[test]
     fn removing_the_selected_agent_selects_the_sidebars_first() {
         let mut state = state_with(vec![
@@ -546,6 +680,7 @@ mod tests {
             title: format!("Agent {agent}"),
             place: TitlePlace::Header,
             select_all: true,
+            kept_open: false,
         };
         let mut removed = state_with(vec![
             summary(1, AgentStatus::Idle),
@@ -586,6 +721,51 @@ mod tests {
         assert_eq!(dropped.ui.title_edit, None);
         assert_eq!(other.ui.title_edit, Some(renamed(2)));
         assert!(!removed.ui.close_overlays(), "nothing is left open for Esc");
+    }
+
+    /// The row's title field would leave the page in the middle of a word, and no field would
+    /// show the edit.
+    #[test]
+    fn a_title_edited_in_a_row_the_filter_then_hides_moves_to_the_header_with_its_text() {
+        let working = |id| placed(id, AgentStatus::Working, id * 1024);
+        let mut updated = state_with(vec![working(1), working(2)]);
+        let mut drafts = Drafts::default();
+        updated.ui.selected = Some(AgentId::new(1));
+        updated.prefs.sidebar.filter = StatusFilter::Working;
+        actions::rename_key(&mut updated, &mut drafts);
+        actions::rename_text(&updated, &mut drafts, "Cart tot".to_owned());
+        let mut dropped = updated.clone();
+        let mut dropped_drafts = drafts.clone();
+
+        apply(
+            &mut updated,
+            &mut drafts,
+            record(Event::AgentUpdated(with_status(1, AgentStatus::Idle))),
+        );
+        apply_catchup(
+            &mut dropped,
+            &mut dropped_drafts,
+            Catchup::Snapshot(Snapshot {
+                agents: vec![
+                    placed(1, AgentStatus::Idle, 1024),
+                    placed(2, AgentStatus::Working, 2048),
+                ],
+                plan_usage: PlanUsage::default(),
+                settings: Settings::default(),
+                last_seq: Some(Seq::new(40)),
+            }),
+        );
+
+        let header = Some(TitleEdit {
+            agent: AgentId::new(1),
+            title: "Cart tot".to_owned(),
+            place: TitlePlace::Header,
+            select_all: false,
+            kept_open: false,
+        });
+        assert_eq!(updated.ui.title_edit, header);
+        assert_eq!(dropped.ui.title_edit, header);
+        assert_eq!(drafts.title, "Cart tot");
     }
 
     #[test]

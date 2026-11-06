@@ -4,7 +4,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use cockpit_protocol::{AgentId, Effort, ItemId, PermissionMode};
+use cockpit_protocol::{AgentId, ClaudeSessionId, DirListing, Effort, ItemId, PermissionMode};
+
+use super::app_state::Loadable;
 
 /// How many error notes stay on screen; an older one goes when a new one comes.
 const MAX_ERRORS: usize = 4;
@@ -28,6 +30,8 @@ pub enum Popover {
     Model,
     Mode,
     Palette(PaletteOrigin),
+    /// The grid of emoji that can start the selected agent's title.
+    TitleEmoji,
 }
 
 /// How the command palette opened, which decides when it closes.
@@ -46,6 +50,54 @@ pub enum PaletteOrigin {
 pub enum Dialog {
     Switcher,
     NewAgent(NewAgentForm),
+    OpenFile(OpenFileView),
+    /// Asks before closing an agent that works, waits for you, or holds an unsent draft.
+    CloseAgent(AgentId),
+}
+
+/// The "Open file" dialog's data: the folder its path field names, with what the daemon listed
+/// there, and the project's files for a bare name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenFileView {
+    /// The agent whose folders the dialog browses.
+    pub agent: AgentId,
+    /// Absolute.
+    pub folder: PathBuf,
+    pub listing: Loadable<DirListing>,
+    /// The bare name searched for in the project, with the files found. `None` for a path.
+    pub search: Option<(String, Loadable<Vec<PathBuf>>)>,
+}
+
+impl OpenFileView {
+    pub fn new(agent: AgentId, folder: PathBuf) -> Self {
+        Self {
+            agent,
+            folder,
+            listing: Loadable::NotRequested,
+            search: None,
+        }
+    }
+}
+
+/// The agent closed last, which the undo note brings back for a few seconds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosedAgent {
+    /// Tells this close from the next one, whose note replaces it.
+    pub serial: u32,
+    pub agent: AgentId,
+    pub title: String,
+    /// `None` for an agent Claude Code gave no session yet: nothing can bring it back.
+    pub session: Option<ClaudeSessionId>,
+    /// The agent that was just below it, which it goes back above.
+    pub before: Option<AgentId>,
+}
+
+/// A closed agent's session on its way back. Once it is an agent again, it goes back to its
+/// place, above `before`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reopening {
+    pub session: ClaudeSessionId,
+    pub before: Option<AgentId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -163,6 +215,9 @@ pub struct TitleEdit {
     /// The field selects its text when the edit starts. After a move to the other place it puts
     /// the caret at the end, so typing goes on after the text instead of replacing it.
     pub select_all: bool,
+    /// The window lost the focus while the field had it, which keeps the edit open until the
+    /// field takes the focus back. Selecting another agent meanwhile cancels the edit.
+    pub kept_open: bool,
 }
 
 /// Where the title field shows: one place at a time.
@@ -202,6 +257,13 @@ pub struct UiState {
     pub chat_new_from: BTreeMap<AgentId, ItemId>,
     /// Counts the sends that take the chat to its bottom: the chat's scroll script jumps at each.
     pub chat_jumps: u64,
+    /// Agents the app closed and took off its list, until the daemon says they are removed:
+    /// their events in between are not applied.
+    pub closing: BTreeSet<AgentId>,
+    /// The undo note's agent.
+    pub closed: Option<ClosedAgent>,
+    next_closed: u32,
+    pub reopening: Option<Reopening>,
 }
 
 impl Default for UiState {
@@ -223,6 +285,10 @@ impl Default for UiState {
             chat_scrolled_up: BTreeMap::new(),
             chat_new_from: BTreeMap::new(),
             chat_jumps: 0,
+            closing: BTreeSet::new(),
+            closed: None,
+            next_closed: 0,
+            reopening: None,
         }
     }
 }
@@ -251,6 +317,29 @@ impl UiState {
 
     pub fn dismiss(&mut self, id: u32) {
         self.errors.retain(|note| note.id != id);
+    }
+
+    /// Shows the undo note for an agent just closed, in place of the last one's.
+    pub fn note_closed(
+        &mut self,
+        agent: AgentId,
+        title: String,
+        session: Option<ClaudeSessionId>,
+        before: Option<AgentId>,
+    ) {
+        self.closed = Some(ClosedAgent {
+            serial: self.next_closed,
+            agent,
+            title,
+            session,
+            before,
+        });
+        self.next_closed = self.next_closed.wrapping_add(1);
+    }
+
+    /// Hides the undo note of the close numbered `serial`, unless a later close replaced it.
+    pub fn expire_closed(&mut self, serial: u32) {
+        self.closed.take_if(|closed| closed.serial == serial);
     }
 
     pub fn file_view(&self, agent: AgentId) -> Option<&FileView> {

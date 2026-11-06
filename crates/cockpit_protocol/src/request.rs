@@ -35,6 +35,10 @@ pub enum Request {
     /// Removes an exited agent from the list. Its Claude session stays on disk, for
     /// `sessions.resume`. Answered by `Done`.
     AgentRemove(AgentParams),
+    /// Ends the agent's `claude`, if it runs, and removes the agent at once. Its Claude session
+    /// stays on disk, for `sessions.resume`. A working agent's turn is interrupted first. Answered
+    /// by `Done`, after the `AgentRemoved` event.
+    AgentClose(AgentParams),
     /// Answered by `History`.
     AgentHistory(HistoryParams),
     /// Answered by `Details`. `DetailsChanged` events keep them current after that.
@@ -69,6 +73,11 @@ pub enum Request {
     /// Answered by `File`, or by `FileMatches` when the path is relative, names no file in the
     /// agent's folder, and several files elsewhere end with it.
     AgentReadFile(ReadFileParams),
+    /// The entries of a folder the daemon reads files in. Answered by `Directory`.
+    AgentListDir(ListDirParams),
+    /// The files whose name holds a text, in the agent's folder and the checkouts it worked in.
+    /// Answered by `FileMatches`.
+    AgentFindFiles(FindFilesParams),
     /// Runs `claude mcp remove <server> -s <scope>` in the agent's folder. Answered by `Done`.
     McpRemove(McpRemoveParams),
     /// Replaces the settings. Answered by `Done`, and a `SettingsChanged` event to every client.
@@ -103,6 +112,8 @@ pub enum Method {
     AgentResume,
     #[strum(serialize = "agent.remove")]
     AgentRemove,
+    #[strum(serialize = "agent.close")]
+    AgentClose,
     #[strum(serialize = "agent.history")]
     AgentHistory,
     #[strum(serialize = "agent.details")]
@@ -133,6 +144,10 @@ pub enum Method {
     AgentCommands,
     #[strum(serialize = "agent.read_file")]
     AgentReadFile,
+    #[strum(serialize = "agent.list_dir")]
+    AgentListDir,
+    #[strum(serialize = "agent.find_files")]
+    AgentFindFiles,
     #[strum(serialize = "mcp.remove")]
     McpRemove,
     #[strum(serialize = "settings.set")]
@@ -303,6 +318,20 @@ pub struct ReadFileParams {
     pub path: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListDirParams {
+    pub agent: AgentId,
+    /// Absolute, or relative to the agent's folder.
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FindFilesParams {
+    pub agent: AgentId,
+    /// Matched against file names, whatever their case.
+    pub name: String,
+}
+
 /// The agent gives the folder that `project` and `local` scopes depend on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpRemoveParams {
@@ -336,6 +365,7 @@ impl Request {
             Self::AgentStop(_) => Method::AgentStop,
             Self::AgentResume(_) => Method::AgentResume,
             Self::AgentRemove(_) => Method::AgentRemove,
+            Self::AgentClose(_) => Method::AgentClose,
             Self::AgentHistory(_) => Method::AgentHistory,
             Self::AgentDetails(_) => Method::AgentDetails,
             Self::AgentSetModel(_) => Method::AgentSetModel,
@@ -351,6 +381,8 @@ impl Request {
             Self::AgentMcpToggle(_) => Method::AgentMcpToggle,
             Self::AgentCommands(_) => Method::AgentCommands,
             Self::AgentReadFile(_) => Method::AgentReadFile,
+            Self::AgentListDir(_) => Method::AgentListDir,
+            Self::AgentFindFiles(_) => Method::AgentFindFiles,
             Self::McpRemove(_) => Method::McpRemove,
             Self::SettingsSet(_) => Method::SettingsSet,
             Self::SessionsList => Method::SessionsList,
@@ -384,6 +416,7 @@ impl Serialize for Request {
             Self::AgentStop(params) => tagged(method, params, serializer),
             Self::AgentResume(params) => tagged(method, params, serializer),
             Self::AgentRemove(params) => tagged(method, params, serializer),
+            Self::AgentClose(params) => tagged(method, params, serializer),
             Self::AgentHistory(params) => tagged(method, params, serializer),
             Self::AgentDetails(params) => tagged(method, params, serializer),
             Self::AgentSetModel(params) => tagged(method, params, serializer),
@@ -399,6 +432,8 @@ impl Serialize for Request {
             Self::AgentMcpToggle(params) => tagged(method, params, serializer),
             Self::AgentCommands(params) => tagged(method, params, serializer),
             Self::AgentReadFile(params) => tagged(method, params, serializer),
+            Self::AgentListDir(params) => tagged(method, params, serializer),
+            Self::AgentFindFiles(params) => tagged(method, params, serializer),
             Self::McpRemove(params) => tagged(method, params, serializer),
             Self::SettingsSet(params) => tagged(method, params, serializer),
             Self::SessionsList | Self::MachineLoad => Tagged::<()> {
@@ -432,6 +467,7 @@ impl<'de> Deserialize<'de> for Request {
             Method::AgentStop => Self::AgentStop(params(raw)?),
             Method::AgentResume => Self::AgentResume(params(raw)?),
             Method::AgentRemove => Self::AgentRemove(params(raw)?),
+            Method::AgentClose => Self::AgentClose(params(raw)?),
             Method::AgentHistory => Self::AgentHistory(params(raw)?),
             Method::AgentDetails => Self::AgentDetails(params(raw)?),
             Method::AgentSetModel => Self::AgentSetModel(params(raw)?),
@@ -447,6 +483,8 @@ impl<'de> Deserialize<'de> for Request {
             Method::AgentMcpToggle => Self::AgentMcpToggle(params(raw)?),
             Method::AgentCommands => Self::AgentCommands(params(raw)?),
             Method::AgentReadFile => Self::AgentReadFile(params(raw)?),
+            Method::AgentListDir => Self::AgentListDir(params(raw)?),
+            Method::AgentFindFiles => Self::AgentFindFiles(params(raw)?),
             Method::McpRemove => Self::McpRemove(params(raw)?),
             Method::SettingsSet => Self::SettingsSet(params(raw)?),
             Method::SessionsList => Self::SessionsList,

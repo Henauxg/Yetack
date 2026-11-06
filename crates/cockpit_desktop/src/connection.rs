@@ -6,17 +6,15 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_client::{Backoff, Requester, Session, Transport};
-use cockpit_protocol::AgentId;
+use cockpit_protocol::{AgentId, Request};
 use dioxus::desktop::DesktopContext;
 use dioxus::prelude::*;
 use tokio::sync::mpsc;
 
-use cockpit_protocol::Request;
-
-use crate::demo;
 use crate::notifications::Notifier;
 use crate::state::machine_load::{LOAD_POLL, LoadView};
-use crate::state::{self, AppState, Drafts, Outgoing, actions};
+use crate::state::{self, AgentEntry, AppState, Drafts, Outgoing, Purpose, TitlePlace, actions};
+use crate::{bridge, demo};
 
 /// What the window was started with.
 #[derive(Debug, Clone, PartialEq)]
@@ -90,9 +88,11 @@ impl Cockpit {
 
     /// Typing in the composer changes the drafts, and the state only when the palette opens or
     /// closes.
-    pub fn type_in_composer(&self, agent: AgentId, text: String) {
-        let palette =
-            self.with_drafts(|state, drafts| actions::composer_input(state, drafts, agent, text));
+    /// `caret` counts UTF-16 units, as the page does.
+    pub fn type_in_composer(&self, agent: AgentId, text: String, caret: usize) {
+        let palette = self.with_drafts(|state, drafts| {
+            actions::composer_input(state, drafts, agent, text, caret)
+        });
         if let Some(palette) = palette {
             self.change(|state| actions::change_palette(state, agent, palette));
         }
@@ -101,6 +101,32 @@ impl Cockpit {
     /// Typing in a title field, the header's or a sidebar row's, changes the drafts alone.
     pub fn type_title(&self, text: String) {
         self.with_drafts(|state, drafts| actions::rename_text(state, drafts, text));
+    }
+
+    /// A title field at `place` lost the focus: the edit ends, unless the window lost it.
+    pub fn title_field_blurred(self, place: TitlePlace) {
+        bridge::save_on_blur(
+            move || {
+                self.change_with_drafts(|state, drafts| {
+                    actions::finish_rename_at(state, drafts, place)
+                });
+            },
+            move || self.update(|state| actions::set_title_kept_open(state, true)),
+        );
+    }
+
+    /// A title field took the focus, as it opened or when the window got it back.
+    pub fn title_field_focused(self) {
+        let kept_open = self
+            .state
+            .peek()
+            .ui
+            .title_edit
+            .as_ref()
+            .is_some_and(|edit| edit.kept_open);
+        if kept_open {
+            self.update(|state| actions::set_title_kept_open(state, false));
+        }
     }
 }
 
@@ -171,6 +197,8 @@ async fn run_demo(
     let mut ticks = tokio::time::interval(demo::LIVE_TICK);
     let mut load_ticks = tokio::time::interval(LOAD_POLL);
     let mut tick: u32 = 0;
+    // The agents closed, which Undo brings back.
+    let mut closed: Vec<AgentEntry> = Vec::new();
     loop {
         tokio::select! {
             _ = load_ticks.tick() => {
@@ -184,8 +212,15 @@ async fn run_demo(
                 let mut queue = VecDeque::from([outgoing]);
                 while let Some(Outgoing { request, purpose }) = queue.pop_front() {
                     tokio::time::sleep(demo::latency(&request)).await;
-                    let result = demo::answer(&state.read(), &request);
+                    if let Purpose::Close { entry } = &purpose {
+                        closed.push(entry.as_ref().clone());
+                    }
+                    let reopened = demo::reopen(&mut state.write(), &mut closed, &request);
+                    let result = reopened.unwrap_or_else(|| demo::answer(&state.read(), &request));
                     let mut state = state.write();
+                    if result.is_ok() {
+                        demo::apply(&mut state, &request);
+                    }
                     let method = request.method();
                     state::apply_response(&mut state, &mut drafts.write(), method, purpose, result);
                     queue.extend(state::needed_requests(&mut state));
@@ -367,7 +402,7 @@ mod tests {
         let agent = AgentId::new(1);
 
         for text in ["R", "Ru", "Run the tests"] {
-            dom.in_runtime(|| cockpit.type_in_composer(agent, text.to_owned()));
+            dom.in_runtime(|| cockpit.type_in_composer(agent, text.to_owned(), text.len()));
             dom.render_immediate(&mut NoOpMutations);
         }
         dom.in_runtime(|| {

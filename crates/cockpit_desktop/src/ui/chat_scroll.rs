@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::connection::Cockpit;
 use crate::state::actions;
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::splitter::FILE_VIEW_ID;
 
 /// The chat's scroll box.
 pub const CHAT_SCROLL_ID: &str = "chat-scroll";
@@ -30,7 +31,7 @@ const BOTTOM_THRESHOLD_PX: u16 = 40;
 const MAX_BADGE_COUNT: usize = 99;
 
 /// Waits for its settings, then keeps the chat's place. Message and field names are serde's names
-/// for `Settings` and `ScrollMessage`.
+/// for `Settings`, `ScrollCommand` and `ScrollMessage`.
 const SCRIPT: &str = r#"
 const settings = await dioxus.recv();
 let box = null;
@@ -175,11 +176,13 @@ let keysBlocked = false;
     }
   }
 })();
+// End in the file view scrolls the file.
 document.addEventListener("keydown", (event) => {
   const target = event.target;
   const typing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
     || target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable);
-  if (event.key !== "End" || typing || keysBlocked || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
+  const inFileView = target instanceof Element && target.closest(`#${settings.file_view_id}`) !== null;
+  if (event.key !== "End" || typing || inFileView || keysBlocked || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
     return;
   }
   event.preventDefault();
@@ -193,6 +196,8 @@ struct Settings {
     chat_scroll_id: &'static str,
     entry_class: &'static str,
     jump_button_id: &'static str,
+    /// End there is the file view's.
+    file_view_id: &'static str,
     bottom_threshold_px: u16,
 }
 
@@ -264,6 +269,7 @@ pub fn use_chat_scroll(cockpit: Cockpit) {
             chat_scroll_id: CHAT_SCROLL_ID,
             entry_class: ENTRY_CLASS,
             jump_button_id: JUMP_BUTTON_ID,
+            file_view_id: FILE_VIEW_ID,
             bottom_threshold_px: BOTTOM_THRESHOLD_PX,
         };
         if let Err(error) = script.send(settings) {
@@ -320,6 +326,7 @@ mod tests {
             chat_scroll_id: CHAT_SCROLL_ID,
             entry_class: ENTRY_CLASS,
             jump_button_id: JUMP_BUTTON_ID,
+            file_view_id: FILE_VIEW_ID,
             bottom_threshold_px: BOTTOM_THRESHOLD_PX,
         };
         let message: ScrollMessage =
@@ -332,6 +339,7 @@ mod tests {
                 "chat_scroll_id": "chat-scroll",
                 "entry_class": "transcript-entry",
                 "jump_button_id": "jump-to-latest",
+                "file_view_id": "file-view",
                 "bottom_threshold_px": 40,
             })
         );

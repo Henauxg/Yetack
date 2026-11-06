@@ -5,8 +5,9 @@ use std::path::PathBuf;
 
 use claude_protocol::{ControlRequest, TaskId};
 use cockpit_protocol::{
-    AgentId, ErrorBody, ErrorCode, Event, HistoryParams, McpRemoveParams, ReadFileParams, Request,
-    ResponseBody, SessionResumeParams, Settings, StopProcessParams,
+    AgentId, ErrorBody, ErrorCode, Event, FindFilesParams, HistoryParams, ListDirParams,
+    McpRemoveParams, ReadFileParams, Request, ResponseBody, SessionResumeParams, Settings,
+    StopProcessParams,
 };
 
 use crate::daemon_config::HOME_ENV;
@@ -17,7 +18,14 @@ use crate::machine_load::AgentRoot;
 use crate::read_file::Found;
 use crate::store::{DaemonSettings, LogName};
 use crate::transcript::{touched_files, words};
-use crate::{machine_load, mcp_remove, read_file, sessions};
+use crate::{browse, machine_load, mcp_remove, read_file, sessions};
+
+/// What the requests that read the agent's files need, taken from the hub before they leave it.
+struct FileAccess {
+    folder: PathBuf,
+    touched: Vec<PathBuf>,
+    home: Option<PathBuf>,
+}
 
 impl Hub {
     pub(super) fn request(&mut self, request: Request, reply: Reply) {
@@ -38,6 +46,7 @@ impl Hub {
             Request::AgentStop(params) => agents::respond(reply, self.stop(params.agent)),
             Request::AgentResume(params) => agents::respond(reply, self.resume(params.agent)),
             Request::AgentRemove(params) => agents::respond(reply, self.remove(params.agent)),
+            Request::AgentClose(params) => agents::respond(reply, self.close(params.agent)),
             Request::AgentHistory(params) => agents::respond(reply, self.history(params)),
             Request::AgentDetails(params) => {
                 let details = self
@@ -92,6 +101,8 @@ impl Hub {
                 agents::respond(reply, commands);
             }
             Request::AgentReadFile(params) => self.read_file(params, reply),
+            Request::AgentListDir(params) => self.list_dir(params, reply),
+            Request::AgentFindFiles(params) => self.find_files(params, reply),
             Request::McpRemove(params) => self.mcp_remove(params, reply),
             Request::SettingsSet(settings) => agents::respond(reply, self.set_settings(settings)),
             Request::SessionsList => self.sessions_list(reply),
@@ -113,19 +124,34 @@ impl Hub {
         Ok(ResponseBody::History(page))
     }
 
+    /// What the requests that read the agent's files need: its folder, the files it read or
+    /// changed, and the home folder.
+    fn file_access(&self, agent: AgentId) -> Result<FileAccess, ErrorBody> {
+        let agent = self.agent(agent)?;
+        Ok(FileAccess {
+            folder: agent.record.folder.clone(),
+            touched: touched_files(agent.view.items(), &agent.view.details().changed_files),
+            home: std::env::var_os(HOME_ENV).map(PathBuf::from),
+        })
+    }
+
     fn read_file(&self, params: ReadFileParams, reply: Reply) {
-        let (folder, touched) = match self.agent(params.agent) {
-            Ok(agent) => (
-                agent.record.folder.clone(),
-                touched_files(agent.view.items(), &agent.view.details().changed_files),
-            ),
+        let access = match self.file_access(params.agent) {
+            Ok(access) => access,
             Err(error) => return agents::respond(reply, Err(error)),
         };
-        let home = std::env::var_os(HOME_ENV).map(PathBuf::from);
         tokio::spawn(async move {
+            let FileAccess {
+                folder,
+                touched,
+                home,
+            } = access;
             let found = read_file::find_and_read(folder, touched, home, params.path).await;
             let result = match found {
-                Ok(Found::File { path, text }) => Ok(ResponseBody::File { path, text }),
+                Ok(Found::File { path, text }) => Ok(ResponseBody::File {
+                    path: Some(path),
+                    text,
+                }),
                 Ok(Found::Several(matches)) => Ok(ResponseBody::FileMatches { matches }),
                 Err(error) => Err(error.to_error_body()),
             };
@@ -159,6 +185,50 @@ impl Hub {
                 Ok(Ok(())) => Ok(ResponseBody::Done),
                 Ok(Err(error)) => Err(error.to_error_body()),
                 Err(error) => Err(errors::internal(error.to_string())),
+            };
+            agents::respond(reply, result);
+        });
+    }
+
+    fn list_dir(&self, params: ListDirParams, reply: Reply) {
+        let access = match self.file_access(params.agent) {
+            Ok(access) => access,
+            Err(error) => return agents::respond(reply, Err(error)),
+        };
+        tokio::spawn(async move {
+            let listed = tokio::task::spawn_blocking(move || {
+                let FileAccess {
+                    folder,
+                    touched,
+                    home,
+                } = access;
+                browse::list(&folder, &touched, home.as_deref(), &params.path)
+            })
+            .await;
+            let result = match listed {
+                Ok(Ok(listing)) => Ok(ResponseBody::Directory(listing)),
+                Ok(Err(error)) => Err(error.to_error_body()),
+                Err(error) => Err(errors::internal(error.to_string())),
+            };
+            agents::respond(reply, result);
+        });
+    }
+
+    fn find_files(&self, params: FindFilesParams, reply: Reply) {
+        let access = match self.file_access(params.agent) {
+            Ok(access) => access,
+            Err(error) => return agents::respond(reply, Err(error)),
+        };
+        tokio::spawn(async move {
+            let FileAccess {
+                folder,
+                touched,
+                home,
+            } = access;
+            let found = browse::find_files(folder, touched, home, params.name).await;
+            let result = match found {
+                Ok(matches) => Ok(ResponseBody::FileMatches { matches }),
+                Err(error) => Err(error.to_error_body()),
             };
             agents::respond(reply, result);
         });

@@ -5,6 +5,7 @@ use std::cmp::Reverse;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use cockpit_client::RequestError;
 use cockpit_protocol::{
     AgentId, AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState,
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, CancelQueuedParams, ClaudeSessionId,
@@ -16,14 +17,15 @@ use cockpit_protocol::{
 use strum::VariantArray;
 
 use super::app_state::{AgentEntry, AppState, FileRead, Loadable};
-use super::drafts::{Drafts, NewAgentDraft, Palette, QuestionDraft, SwitcherDraft};
+use super::apply::forget_agent;
+use super::drafts::{Drafts, NewAgentDraft, Palette, QuestionDraft, SlashWord, SwitcherDraft};
 use super::requests::{Outgoing, Purpose, Shift, history_request};
 use super::transcript::HistoryState;
 use super::ui_state::{
-    Block, Dialog, FileView, NewAgentForm, NewAgentTab, PaletteOrigin, Popover, TitleEdit,
-    TitlePlace, ViewMode,
+    Block, Dialog, FileView, NewAgentForm, NewAgentTab, PaletteOrigin, Popover, Reopening,
+    TitleEdit, TitlePlace, ViewMode,
 };
-use super::{export, file_edits};
+use super::{export, file_edits, open_file, title_emoji};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::prefs::{self, StatusFilter};
 
@@ -90,7 +92,13 @@ pub enum Step {
     Next,
 }
 
+/// A rename the window left open, which no field shows once another agent is selected, ends
+/// without saving.
 pub fn select_agent(state: &mut AppState, agent: AgentId) {
+    state
+        .ui
+        .title_edit
+        .take_if(|edit| edit.kept_open && edit.agent != agent);
     state.ui.selected = Some(agent);
     state.ui.chat_new_from.clear();
     state.ui.unread.remove(&agent);
@@ -164,25 +172,32 @@ pub enum PaletteChange {
     Close,
 }
 
-/// The composer's text changed. A `/` word alone filters the palette, and opens it; other text
-/// closes a palette opened by typing. A palette opened by the slash button has a filter field of
-/// its own, so the composer's text leaves it as it is. Only the drafts change: the caller applies
-/// the returned change with `change_palette`, so that a keystroke that leaves the palette as it
-/// is leaves the rest of the state alone.
+/// The composer's text changed, with the caret at `caret`, in UTF-16 units as the page counts
+/// them. The "/" word the caret is in filters the palette, and opens it, unless Esc closed it on
+/// that word; anywhere else, the caret closes a palette opened by typing. A palette opened by the
+/// slash button has a filter field of its own, so the composer's text leaves it as it is. Only
+/// the drafts change: the caller applies the returned change with `change_palette`, so that a
+/// keystroke that leaves the palette as it is leaves the rest of the state alone.
 pub fn composer_input(
     state: &AppState,
     drafts: &mut Drafts,
     agent: AgentId,
     text: String,
+    caret: usize,
 ) -> Option<PaletteChange> {
-    let command_query = text
-        .strip_prefix(COMMAND_PREFIX)
-        .filter(|rest| !rest.contains(char::is_whitespace));
-    let change = match (state.ui.popover, command_query) {
+    let caret = byte_offset(&text, caret);
+    let word = slash_word_at(&text, caret);
+    if drafts.palette_dismissed != word.map(|word| word.start) {
+        drafts.palette_dismissed = None;
+    }
+    let word = word.filter(|word| drafts.palette_dismissed != Some(word.start));
+    let change = match (state.ui.popover, word) {
         (Some(Popover::Palette(PaletteOrigin::Button)), _) => None,
-        (popover, Some(query)) => {
+        (popover, Some(word)) => {
+            let query = text.get(word.start + 1..caret).unwrap_or_default();
             drafts.palette = Palette {
                 query: query.to_owned(),
+                word: Some(word),
                 ..Palette::default()
             };
             let typed_open = popover == Some(Popover::Palette(PaletteOrigin::Typed));
@@ -192,7 +207,49 @@ pub fn composer_input(
         (_, None) => None,
     };
     drafts.draft_mut(agent).text = text;
+    drafts.draft_typed(agent);
     change
+}
+
+/// The byte offset in `text` of the caret the page puts `utf16` UTF-16 units in.
+fn byte_offset(text: &str, utf16: usize) -> usize {
+    let mut units = 0;
+    for (offset, character) in text.char_indices() {
+        if units >= utf16 {
+            return offset;
+        }
+        units += character.len_utf16();
+    }
+    text.len()
+}
+
+/// The "/" word the caret, a byte offset, is in: a "/" at the start of the text or after a space
+/// or a line break, then the rest of the word, without a second "/". So "src/lib.rs" and a path
+/// such as "/home/dev" are no command.
+pub fn slash_word_at(text: &str, caret: usize) -> Option<SlashWord> {
+    let before = text.get(..caret)?;
+    let start = before
+        .char_indices()
+        .rev()
+        .find(|(_, character)| character.is_whitespace())
+        .map_or(0, |(offset, character)| offset + character.len_utf8());
+    let after = text.get(caret..)?;
+    let end = caret + after.find(char::is_whitespace).unwrap_or(after.len());
+    let word = text.get(start..end)?.strip_prefix(COMMAND_PREFIX)?;
+    (!word.contains(COMMAND_PREFIX)).then_some(SlashWord { start, end })
+}
+
+/// `text` with the command in place of `word`, and the caret after it, in UTF-16 units. A space
+/// follows the command, the one already there or an added one.
+fn with_command_at(text: &str, word: SlashWord, name: &str) -> Option<(String, usize)> {
+    let before = text.get(..word.start)?;
+    let after = text.get(word.end..)?;
+    let spaced = after.starts_with(' ');
+    let space = if spaced { "" } else { " " };
+    let written = format!("{before}{COMMAND_PREFIX}{name}{space}{after}");
+    let caret = before.len() + COMMAND_PREFIX.len_utf8() + name.len() + 1;
+    let caret_units = written.get(..caret)?.encode_utf16().count();
+    Some((written, caret_units))
 }
 
 /// Opens or closes the palette as the composer's text asks.
@@ -277,6 +334,11 @@ pub enum MenuAction {
     ExportConversation,
     /// Turns the header's title into a field.
     Rename,
+    /// Opens the emoji picker, whose emoji starts the title.
+    SetEmoji,
+    /// Opens the "Open file" dialog.
+    OpenFile,
+    CloseAgent,
     /// A setting: its row holds its choices, which Left and Right move through.
     Model,
     Effort,
@@ -299,6 +361,9 @@ impl MenuAction {
             Self::CompactConversation => "Compact conversation",
             Self::ExportConversation => "Export conversation",
             Self::Rename => "Rename",
+            Self::SetEmoji => "Set emoji",
+            Self::OpenFile => "Open file",
+            Self::CloseAgent => "Close agent",
             Self::Model => "Model",
             Self::Effort => "Effort",
             Self::Mode => "Permission mode",
@@ -311,7 +376,10 @@ impl MenuAction {
             | Self::ClearConversation
             | Self::CompactConversation
             | Self::ExportConversation
-            | Self::Rename => MenuSection::Context,
+            | Self::Rename
+            | Self::SetEmoji
+            | Self::OpenFile
+            | Self::CloseAgent => MenuSection::Context,
             Self::Model | Self::Effort | Self::Mode => MenuSection::Model,
         }
     }
@@ -328,6 +396,9 @@ impl MenuAction {
             Self::AttachImage
             | Self::ExportConversation
             | Self::Rename
+            | Self::SetEmoji
+            | Self::OpenFile
+            | Self::CloseAgent
             | Self::Model
             | Self::Effort
             | Self::Mode => {
@@ -363,7 +434,10 @@ impl MenuAction {
             | Self::ClearConversation
             | Self::CompactConversation
             | Self::ExportConversation
-            | Self::Rename => Vec::new(),
+            | Self::Rename
+            | Self::SetEmoji
+            | Self::OpenFile
+            | Self::CloseAgent => Vec::new(),
         };
         let mut words = words.into_iter().chain([self.label()]);
         words.any(|word| word.to_lowercase().contains(query))
@@ -468,9 +542,21 @@ pub fn palette_pick(
         Some(PaletteEntry::Action(action)) => action,
         Some(PaletteEntry::Command(command)) => {
             let name = command.name.clone();
+            let word = drafts.palette.word;
             let draft = drafts.draft_mut(agent);
-            draft.text = with_command(&draft.text, &name);
-            drafts.draft_written(agent);
+            // A command picked while typing replaces its "/" word; one from the slash button's
+            // menu goes at the start.
+            let typed = word.and_then(|word| with_command_at(&draft.text, word, &name));
+            match typed {
+                Some((text, caret)) => {
+                    draft.text = text;
+                    drafts.draft_written_at(agent, caret);
+                }
+                None => {
+                    draft.text = with_command(&draft.text, &name);
+                    drafts.draft_written(agent);
+                }
+            }
             state.ui.popover = None;
             return Picked {
                 requests: Vec::new(),
@@ -514,10 +600,41 @@ pub fn palette_pick(
             start_rename(state, drafts, agent);
             Picked::default()
         }
+        MenuAction::SetEmoji => {
+            state.ui.popover = Some(Popover::TitleEmoji);
+            return Picked::default();
+        }
+        MenuAction::OpenFile => {
+            open_file::open(state, drafts);
+            Picked::default()
+        }
+        MenuAction::CloseAgent => Picked {
+            requests: request_close(state, drafts, agent),
+            window: None,
+        },
         MenuAction::Model | MenuAction::Effort | MenuAction::Mode => Picked::default(),
     };
     state.ui.popover = None;
     picked
+}
+
+/// Starts the agent's title with `emoji`, in place of the emoji it starts with, or removes that
+/// emoji for `None`. The rename shows it wherever the title shows, Claude Code's resume list
+/// included.
+pub fn set_title_emoji(state: &mut AppState, agent: AgentId, emoji: Option<&str>) -> Vec<Outgoing> {
+    state.ui.popover = None;
+    let Some(entry) = state.agents.get(&agent) else {
+        return Vec::new();
+    };
+    let title = title_emoji::with_emoji(&entry.summary.title, emoji);
+    // A title of an emoji alone has nothing left without it, and the daemon refuses it empty.
+    if title.is_empty() || title == entry.summary.title {
+        return Vec::new();
+    }
+    vec![Outgoing::action(Request::AgentRename(RenameParams {
+        agent,
+        title,
+    }))]
 }
 
 /// Turns the header's title into a field holding it.
@@ -549,8 +666,17 @@ fn start_rename_at(state: &mut AppState, drafts: &mut Drafts, agent: AgentId, pl
         title: drafts.title.clone(),
         place,
         select_all: !moving,
+        kept_open: false,
     });
     state.ui.popover = None;
+}
+
+/// The window lost the focus while a title field had it, which keeps the edit open, or the field
+/// took the focus back.
+pub fn set_title_kept_open(state: &mut AppState, kept_open: bool) {
+    if let Some(edit) = &mut state.ui.title_edit {
+        edit.kept_open = kept_open;
+    }
 }
 
 /// F2: renames the selected agent in its sidebar row, or moves an open title field to the other
@@ -566,12 +692,35 @@ pub fn rename_key(state: &mut AppState, drafts: &mut Drafts) {
             None => return,
         },
     };
-    let has_row = state
+    let place = if has_row(state, agent) {
+        wanted
+    } else {
+        TitlePlace::Header
+    };
+    start_rename_at(state, drafts, agent, place);
+}
+
+/// The filter hid the row whose title is being edited, as when the agent's status changed: the
+/// edit moves to the header with the text typed so far, as F2 opens it for an agent without a row.
+pub fn follow_hidden_title_edit(state: &mut AppState, drafts: &mut Drafts) {
+    let in_row = state
+        .ui
+        .title_edit
+        .as_ref()
+        .filter(|edit| edit.place == TitlePlace::Sidebar)
+        .map(|edit| edit.agent);
+    if let Some(agent) = in_row
+        && !has_row(state, agent)
+    {
+        start_rename_at(state, drafts, agent, TitlePlace::Header);
+    }
+}
+
+fn has_row(state: &AppState, agent: AgentId) -> bool {
+    state
         .sidebar_agents()
         .iter()
-        .any(|entry| entry.id() == agent);
-    let place = if has_row { wanted } else { TitlePlace::Header };
-    start_rename_at(state, drafts, agent, place);
+        .any(|entry| entry.id() == agent)
 }
 
 /// Only the drafts change, so that typing a title does not render the transcript again.
@@ -685,7 +834,10 @@ pub fn setting_choices(summary: &AgentSummary, action: MenuAction) -> Vec<Settin
         | MenuAction::ClearConversation
         | MenuAction::CompactConversation
         | MenuAction::ExportConversation
-        | MenuAction::Rename => Vec::new(),
+        | MenuAction::Rename
+        | MenuAction::SetEmoji
+        | MenuAction::OpenFile
+        | MenuAction::CloseAgent => Vec::new(),
     }
 }
 
@@ -713,7 +865,10 @@ pub fn choose_setting(
         | MenuAction::ClearConversation
         | MenuAction::CompactConversation
         | MenuAction::ExportConversation
-        | MenuAction::Rename => None,
+        | MenuAction::Rename
+        | MenuAction::SetEmoji
+        | MenuAction::OpenFile
+        | MenuAction::CloseAgent => None,
     };
     requests.unwrap_or_default()
 }
@@ -773,7 +928,10 @@ fn unknown_value_choice(action: MenuAction) -> Option<usize> {
         | MenuAction::ClearConversation
         | MenuAction::CompactConversation
         | MenuAction::ExportConversation
-        | MenuAction::Rename => None,
+        | MenuAction::Rename
+        | MenuAction::SetEmoji
+        | MenuAction::OpenFile
+        | MenuAction::CloseAgent => None,
     }
 }
 
@@ -840,6 +998,8 @@ pub fn send_prompt(
     let draft = std::mem::take(draft);
     drafts.draft_written(agent);
     state.ui.popover = None;
+    // The script reports the bottom once its jump got there: what arrived before is not new.
+    state.ui.chat_scrolled_up.remove(&agent);
     state.ui.chat_new_from.remove(&agent);
     state.ui.chat_jumps = state.ui.chat_jumps.wrapping_add(1);
     let prompt = Prompt {
@@ -1323,7 +1483,11 @@ pub fn retry_history(state: &mut AppState, agent: AgentId) {
     }
 }
 
+/// Opens or closes the agent switcher. The new agent dialog stays open, with what its fields hold.
 pub fn toggle_switcher(state: &mut AppState, drafts: &mut Drafts) {
+    if matches!(state.ui.dialog, Some(Dialog::NewAgent(_))) {
+        return;
+    }
     let open = state.ui.dialog == Some(Dialog::Switcher);
     state.ui.popover = None;
     state.ui.dialog = (!open).then_some(Dialog::Switcher);
@@ -1331,8 +1495,14 @@ pub fn toggle_switcher(state: &mut AppState, drafts: &mut Drafts) {
 }
 
 /// Moves `agent` just above `before`, or to the bottom of the list. The sidebar shows the new
-/// order at once, with the positions the daemon then sends in its events.
+/// order at once, with the positions the daemon then sends in its events. Without a connection
+/// nothing moves: a refused move puts the agents back only where no later move took them.
 pub fn move_agent(state: &mut AppState, agent: AgentId, before: Option<AgentId>) -> Vec<Outgoing> {
+    if !state.is_connected() {
+        let error = RequestError::NotConnected;
+        state.ui.report(format!("The agent was not moved: {error}"));
+        return Vec::new();
+    }
     let list: Vec<Placed> = state
         .agents_in_order()
         .iter()
@@ -1431,6 +1601,100 @@ fn below_in_order(state: &AppState, row: AgentId, moving: AgentId) -> Option<Age
 /// Shows only the agents of one status in the sidebar, or all of them. The selection stays.
 pub fn set_status_filter(state: &mut AppState, filter: StatusFilter) {
     state.prefs.sidebar.filter = filter;
+}
+
+/// What closing the agent would lose, as the confirmation says it, or `None` when nothing would
+/// be lost and the agent closes at once.
+pub fn close_warning(entry: &AgentEntry, drafts: &Drafts) -> Option<String> {
+    let mut losses = Vec::new();
+    match entry.summary.status {
+        AgentStatus::Working => losses.push("is working"),
+        AgentStatus::NeedsYou => losses.push("waits for your answer"),
+        AgentStatus::Idle | AgentStatus::Exited => {}
+    }
+    if drafts
+        .draft(entry.id())
+        .is_some_and(|draft| !draft.is_empty())
+    {
+        losses.push("holds a message you have not sent");
+    }
+    if losses.is_empty() {
+        return None;
+    }
+    Some(format!("{} {}.", entry.summary.title, losses.join(" and ")))
+}
+
+/// Closes the agent, after asking when it works, waits for you, or holds a draft.
+pub fn request_close(state: &mut AppState, drafts: &mut Drafts, agent: AgentId) -> Vec<Outgoing> {
+    let Some(entry) = state.agents.get(&agent) else {
+        return Vec::new();
+    };
+    if close_warning(entry, drafts).is_some() {
+        state.ui.popover = None;
+        state.ui.dialog = Some(Dialog::CloseAgent(agent));
+        return Vec::new();
+    }
+    close_agent(state, drafts, agent)
+}
+
+/// Closes the agent: it leaves the sidebar at once, with its drafts and file view, and the undo
+/// note offers it back. The selection goes to the next row, or to the one above for the last.
+pub fn close_agent(state: &mut AppState, drafts: &mut Drafts, agent: AgentId) -> Vec<Outgoing> {
+    let ids = |entries: Vec<&AgentEntry>| -> Vec<AgentId> {
+        entries.iter().map(|entry| entry.id()).collect()
+    };
+    let order = ids(state.agents_in_order());
+    let before = order.iter().skip_while(|id| **id != agent).nth(1).copied();
+    let rows = ids(state.sidebar_agents());
+    let neighbour = rows.iter().position(|id| *id == agent).and_then(|index| {
+        let above = index.checked_sub(1).and_then(|above| rows.get(above));
+        rows.get(index + 1).or(above).copied()
+    });
+    let Some(entry) = forget_agent(state, drafts, agent) else {
+        return Vec::new();
+    };
+    state.ui.closing.insert(agent);
+    let summary = &entry.summary;
+    state.ui.note_closed(
+        agent,
+        summary.title.clone(),
+        summary.session.clone(),
+        before,
+    );
+    if state.ui.selected == Some(agent) {
+        match neighbour {
+            Some(next) => select_agent(state, next),
+            None => {
+                state.ui.leave_agent();
+                state.ui.selected = None;
+                state.fix_selection();
+            }
+        }
+    }
+    vec![Outgoing {
+        request: Request::AgentClose(AgentParams { agent }),
+        purpose: Purpose::Close {
+            entry: Box::new(entry),
+        },
+    }]
+}
+
+/// Brings the agent of the undo note back from its session, to the place it left.
+pub fn undo_close(state: &mut AppState) -> Vec<Outgoing> {
+    let Some(closed) = state.ui.closed.take() else {
+        return Vec::new();
+    };
+    let Some(session) = closed.session else {
+        return Vec::new();
+    };
+    state.ui.reopening = Some(Reopening {
+        session: session.clone(),
+        before: closed.before,
+    });
+    vec![Outgoing {
+        request: Request::SessionsResume(SessionResumeParams { session }),
+        purpose: Purpose::Reopen,
+    }]
 }
 
 /// Agents whose title or folder holds the query, the ones that wait for you first: the switcher
@@ -1637,7 +1901,8 @@ mod tests {
     use cockpit_client::RequestError;
     use cockpit_protocol::{
         AgentDetails, AskedQuestion, ChangedFile, CommandKind, ErrorBody, ErrorCode, HistoryPage,
-        ImageMediaType, Method, QuestionOption, ResponseBody, Timestamp, TranscriptItem,
+        ImageMediaType, Method, Position, QuestionOption, ResponseBody, Timestamp, TranscriptItem,
+        UserMessage,
     };
 
     use super::*;
@@ -1733,7 +1998,8 @@ mod tests {
 
     /// Types in the composer as the window does: the drafts, then the palette when it changes.
     fn type_text(state: &mut AppState, drafts: &mut Drafts, text: &str) -> Vec<Outgoing> {
-        match composer_input(state, drafts, agent(), text.to_owned()) {
+        let caret = text.encode_utf16().count();
+        match composer_input(state, drafts, agent(), text.to_owned(), caret) {
             Some(change) => change_palette(state, agent(), change),
             None => Vec::new(),
         }
@@ -1846,7 +2112,7 @@ mod tests {
         append(
             &mut state,
             5,
-            ItemBody::UserMessage(cockpit_protocol::UserMessage {
+            ItemBody::UserMessage(UserMessage {
                 text: "Also the docs".to_owned(),
                 images: Vec::new(),
                 queued: true,
@@ -1897,6 +2163,24 @@ mod tests {
         assert_eq!(divider(&state), None);
     }
 
+    /// The script reports the bottom only once its jump got there, after the send.
+    #[test]
+    fn a_send_while_scrolled_up_leaves_no_divider_above_what_arrived_meanwhile() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        append_notice(&mut state, 1);
+        chat_at_bottom(&mut state, agent(), false);
+        append(&mut state, 2, text("Done."));
+
+        type_text(&mut state, &mut drafts, "Thanks");
+        send_prompt(&mut state, &mut drafts, agent(), None);
+        let jump_shown = state.ui.chat_scrolled_up.contains_key(&agent());
+        chat_at_bottom(&mut state, agent(), true);
+
+        assert!(!jump_shown);
+        assert_eq!(new_divider(&state, agent()), None);
+    }
+
     #[test]
     fn a_send_takes_the_chat_to_its_bottom_and_an_empty_one_does_not() {
         let mut state = state(AgentStatus::Idle);
@@ -1938,11 +2222,11 @@ mod tests {
         let mut drafts = Drafts::default();
         with_commands(&mut state, vec![command("review", "")]);
 
-        let plain = composer_input(&state, &mut drafts, agent(), "Run the te".to_owned());
-        let opening = composer_input(&state, &mut drafts, agent(), "/re".to_owned());
+        let plain = composer_input(&state, &mut drafts, agent(), "Run the te".to_owned(), 10);
+        let opening = composer_input(&state, &mut drafts, agent(), "/re".to_owned(), 3);
         change_palette(&mut state, agent(), PaletteChange::Open);
-        let filtering = composer_input(&state, &mut drafts, agent(), "/rev".to_owned());
-        let closing = composer_input(&state, &mut drafts, agent(), "/rev the".to_owned());
+        let filtering = composer_input(&state, &mut drafts, agent(), "/rev".to_owned(), 4);
+        let closing = composer_input(&state, &mut drafts, agent(), "/rev the".to_owned(), 8);
 
         assert_eq!(
             (plain, opening, filtering, closing),
@@ -2029,6 +2313,108 @@ mod tests {
     }
 
     #[test]
+    fn a_slash_word_starts_the_text_or_follows_a_space_or_a_line_break() {
+        let word = |text: &'static str, caret: usize| {
+            slash_word_at(text, caret).and_then(|word| text.get(word.start..word.end))
+        };
+
+        assert_eq!(word("/rev", 4), Some("/rev"));
+        assert_eq!(word("please run /rev", 15), Some("/rev"));
+        assert_eq!(word("first line\n/rev", 15), Some("/rev"));
+        // A "/" inside a word, and a path, are no command.
+        assert_eq!(word("open src/lib.rs", 15), None);
+        assert_eq!(word("look in /home", 13), Some("/home"));
+        assert_eq!(word("look in /home/dev", 17), None);
+        // The word the caret is in counts, up to the next space.
+        assert_eq!(word("/rev the branch", 2), Some("/rev"));
+        assert_eq!(word("/rev the branch", 8), None);
+        assert_eq!(word("/rev ", 5), None);
+    }
+
+    #[test]
+    fn a_slash_word_mid_message_opens_the_palette_filtered_by_it() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        with_commands(
+            &mut state,
+            vec![command("review", ""), command("compact", "")],
+        );
+        let palette = Some(Popover::Palette(PaletteOrigin::Typed));
+
+        type_text(&mut state, &mut drafts, "please run /rev");
+        let opened = (state.ui.popover, drafts.palette.query.clone());
+        type_text(&mut state, &mut drafts, "please run /rev ");
+        let after_space = state.ui.popover;
+        type_text(
+            &mut state,
+            &mut drafts,
+            "please run /rev now and look in src/",
+        );
+        let inside_a_word = state.ui.popover;
+        type_text(
+            &mut state,
+            &mut drafts,
+            "please run /rev now and look in /home/",
+        );
+        let a_path = state.ui.popover;
+
+        assert_eq!(opened, (palette, "rev".to_owned()));
+        assert_eq!((after_space, inside_a_word, a_path), (None, None, None));
+    }
+
+    #[test]
+    fn a_pick_replaces_only_the_slash_word_and_puts_the_caret_after_the_command() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        with_commands(&mut state, vec![command("review", "")]);
+        let mut pick = |text: &str, caret: usize| {
+            let change = composer_input(&state, &mut drafts, agent(), text.to_owned(), caret);
+            if let Some(change) = change {
+                change_palette(&mut state, agent(), change);
+            }
+            let _ = palette_pick(&mut state, &mut drafts, agent(), None);
+            let text = drafts.draft(agent()).map(|draft| draft.text.clone());
+            (text.unwrap_or_default(), drafts.written_caret(agent()))
+        };
+
+        // In the middle of the message, before a space: the space stays, the caret goes after it.
+        let middle = pick("please run /rev now", 15);
+        // At the end: a space follows the command.
+        let end = pick("please run /rev", 15);
+        // Before a line break: a space goes in before it.
+        let line_break = pick("/re\nthen the docs", 3);
+
+        assert_eq!(middle, ("please run /review now".to_owned(), Some(19)));
+        assert_eq!(end, ("please run /review ".to_owned(), Some(19)));
+        assert_eq!(line_break, ("/review \nthen the docs".to_owned(), Some(8)));
+    }
+
+    #[test]
+    fn the_caret_counts_utf16_units_as_the_page_does() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        with_commands(&mut state, vec![command("review", "")]);
+        // "é" is one UTF-16 unit and two bytes; "🙂" is two units and four bytes.
+        let text = "café 🙂 /re";
+        let caret = text.encode_utf16().count();
+
+        let change = composer_input(&state, &mut drafts, agent(), text.to_owned(), caret);
+        if let Some(change) = change {
+            change_palette(&mut state, agent(), change);
+        }
+        let query = drafts.palette.query.clone();
+        let _ = palette_pick(&mut state, &mut drafts, agent(), None);
+
+        let written = drafts.draft(agent()).map(|draft| draft.text.clone());
+        assert_eq!(query, "re");
+        assert_eq!(written.as_deref(), Some("café 🙂 /review "));
+        assert_eq!(
+            drafts.written_caret(agent()),
+            Some("café 🙂 /review ".encode_utf16().count())
+        );
+    }
+
+    #[test]
     fn picking_from_the_palette_fills_the_composer() {
         let mut state = state(AgentStatus::Idle);
         with_commands(
@@ -2096,6 +2482,219 @@ mod tests {
         requests.iter().map(|outgoing| &outgoing.request).collect()
     }
 
+    fn event(event: cockpit_protocol::Event) -> cockpit_protocol::EventRecord {
+        cockpit_protocol::EventRecord {
+            seq: cockpit_protocol::Seq::new(1),
+            event,
+        }
+    }
+
+    /// `ordered()` with every agent idle and its own session.
+    fn idle_ordered() -> AppState {
+        let mut state = ordered();
+        for entry in state.agents.values_mut() {
+            entry.summary.status = AgentStatus::Idle;
+            entry.summary.session = Some(ClaudeSessionId::new(format!(
+                "session-{}",
+                entry.id().get()
+            )));
+        }
+        state
+    }
+
+    fn sent_close(requests: &[Outgoing]) -> Option<AgentId> {
+        match &requests.first()?.request {
+            Request::AgentClose(params) => Some(params.agent),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn an_idle_agent_closes_at_once_and_the_next_row_is_selected() {
+        let mut state = idle_ordered();
+        let mut drafts = Drafts::default();
+        open_file(
+            &mut state,
+            AgentId::new(2),
+            PathBuf::from("src/lib.rs"),
+            None,
+        );
+
+        let requests = request_close(&mut state, &mut drafts, AgentId::new(2));
+
+        assert_eq!(sent_close(&requests), Some(AgentId::new(2)));
+        assert_eq!(sidebar(&state), [3, 1]);
+        assert_eq!(state.ui.selected, Some(AgentId::new(1)));
+        assert_eq!(state.ui.file_view(AgentId::new(2)), None);
+        assert_eq!(state.ui.dialog, None);
+        let closed = state.ui.closed.clone().unwrap();
+        assert_eq!(closed.title, "Agent 2");
+        assert_eq!(closed.before, Some(AgentId::new(1)));
+    }
+
+    #[test]
+    fn closing_the_last_row_selects_the_one_above() {
+        let mut state = idle_ordered();
+        state.ui.selected = Some(AgentId::new(1));
+
+        request_close(&mut state, &mut Drafts::default(), AgentId::new(1));
+
+        assert_eq!(state.ui.selected, Some(AgentId::new(2)));
+    }
+
+    #[test]
+    fn a_working_waiting_or_drafted_agent_asks_first() {
+        let mut state = ordered();
+        let mut drafts = Drafts::default();
+        drafts.draft_mut(AgentId::new(3)).text = "One more thing".to_owned();
+        let warning = |state: &AppState, drafts: &Drafts, agent: u32| {
+            close_warning(&state.agents[&AgentId::new(agent)], drafts)
+        };
+
+        let working = warning(&state, &drafts, 2);
+        let waiting_with_draft = warning(&state, &drafts, 3);
+        let idle = warning(&state, &drafts, 1);
+        let asked = request_close(&mut state, &mut drafts, AgentId::new(2));
+        let shown = sidebar(&state);
+        let confirmed = close_agent(&mut state, &mut drafts, AgentId::new(2));
+
+        assert_eq!(working.as_deref(), Some("Agent 2 is working."));
+        assert_eq!(
+            waiting_with_draft.as_deref(),
+            Some("Agent 3 waits for your answer and holds a message you have not sent.")
+        );
+        assert_eq!(idle, None);
+        assert!(asked.is_empty());
+        assert_eq!(shown, [3, 2, 1], "nothing closed before the answer");
+        assert_eq!(sent_close(&confirmed), Some(AgentId::new(2)));
+        assert_eq!(state.ui.dialog, None);
+        assert_eq!(sidebar(&state), [3, 1]);
+    }
+
+    #[test]
+    fn a_closing_agent_stays_off_until_the_daemon_removes_it() {
+        let mut state = idle_ordered();
+        let mut drafts = Drafts::default();
+        let late = state.agents[&AgentId::new(2)].summary.clone();
+        request_close(&mut state, &mut drafts, AgentId::new(2));
+
+        let alert = crate::state::apply::apply(
+            &mut state,
+            &mut drafts,
+            event(cockpit_protocol::Event::AgentUpdated(late)),
+        );
+        let before_removal = sidebar(&state);
+        crate::state::apply::apply(
+            &mut state,
+            &mut drafts,
+            event(cockpit_protocol::Event::AgentRemoved {
+                agent: AgentId::new(2),
+            }),
+        );
+
+        assert_eq!(alert, None);
+        assert_eq!(before_removal, [3, 1]);
+        assert!(state.ui.closing.is_empty());
+    }
+
+    #[test]
+    fn a_refused_close_brings_the_agent_back_unless_the_daemon_has_none() {
+        let mut drafts = Drafts::default();
+        let refused = |code| {
+            Err(RequestError::Failed(ErrorBody::new(
+                code,
+                "refused".to_owned(),
+            )))
+        };
+        let mut failed = idle_ordered();
+        let mut gone = idle_ordered();
+
+        for (state, code) in [
+            (&mut failed, ErrorCode::Internal),
+            (&mut gone, ErrorCode::NotFound),
+        ] {
+            let requests = request_close(state, &mut drafts, AgentId::new(2));
+            for outgoing in requests {
+                let method = outgoing.request.method();
+                apply_response(state, &mut drafts, method, outgoing.purpose, refused(code));
+            }
+        }
+
+        assert_eq!(sidebar(&failed), [3, 2, 1]);
+        assert_eq!(failed.ui.closed, None);
+        assert_eq!(failed.ui.errors.len(), 1);
+        assert_eq!(sidebar(&gone), [3, 1]);
+        assert!(gone.ui.errors.is_empty());
+        assert!(failed.ui.closing.is_empty() && gone.ui.closing.is_empty());
+    }
+
+    #[test]
+    fn undo_brings_the_session_back_to_its_place() {
+        let mut state = idle_ordered();
+        let mut drafts = Drafts::default();
+        let mut back = state.agents[&AgentId::new(2)].summary.clone();
+        request_close(&mut state, &mut drafts, AgentId::new(2));
+        crate::state::apply::apply(
+            &mut state,
+            &mut drafts,
+            event(cockpit_protocol::Event::AgentRemoved {
+                agent: AgentId::new(2),
+            }),
+        );
+
+        let undone = undo_close(&mut state);
+        // The daemon starts a new agent from the session, on top of the list.
+        back.id = AgentId::new(4);
+        back.position = cockpit_protocol::Position::new(4096);
+        crate::state::apply::apply(
+            &mut state,
+            &mut drafts,
+            event(cockpit_protocol::Event::AgentAdded(back)),
+        );
+        apply_response(
+            &mut state,
+            &mut drafts,
+            Method::SessionsResume,
+            Purpose::Reopen,
+            Ok(ResponseBody::AgentStarted {
+                agent: AgentId::new(4),
+            }),
+        );
+        let moved = needed_requests(&mut state);
+
+        assert!(matches!(
+            undone.first().map(|outgoing| &outgoing.request),
+            Some(Request::SessionsResume(params)) if params.session.as_str() == "session-2"
+        ));
+        assert_eq!(
+            sent_move(&moved),
+            Some(MoveParams {
+                agent: AgentId::new(4),
+                before: Some(AgentId::new(1)),
+            })
+        );
+        assert_eq!(sidebar(&state), [3, 4, 1]);
+        assert_eq!(state.ui.selected, Some(AgentId::new(4)));
+        assert_eq!(state.ui.reopening, None);
+        assert!(
+            undo_close(&mut state).is_empty(),
+            "the note went with the undo"
+        );
+    }
+
+    #[test]
+    fn an_agent_without_a_session_closes_without_undo() {
+        let mut state = idle_ordered();
+        if let Some(entry) = state.agents.get_mut(&AgentId::new(2)) {
+            entry.summary.session = None;
+        }
+
+        request_close(&mut state, &mut Drafts::default(), AgentId::new(2));
+
+        assert!(state.ui.closed.is_some());
+        assert!(undo_close(&mut state).is_empty());
+    }
+
     #[test]
     fn the_menu_filter_matches_actions_settings_and_commands() {
         let commands = vec![
@@ -2113,6 +2712,9 @@ mod tests {
                 "Compact conversation",
                 "Export conversation",
                 "Rename",
+                "Set emoji",
+                "Open file",
+                "Close agent",
                 "Model",
                 "Effort",
                 "Permission mode",
@@ -2143,6 +2745,46 @@ mod tests {
     }
 
     #[test]
+    fn set_emoji_in_the_menu_opens_the_picker_whose_pick_renames_the_agent() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        open_menu(&mut state, &mut drafts, "emoji");
+
+        let picked = palette_pick(&mut state, &mut drafts, agent(), None);
+        let opened = state.ui.popover;
+        let renamed = set_title_emoji(&mut state, agent(), Some("🐛"));
+
+        assert_eq!(picked, Picked::default());
+        assert_eq!(opened, Some(Popover::TitleEmoji));
+        assert_eq!(state.ui.popover, None, "a pick closes the picker");
+        assert_eq!(
+            sent(&renamed),
+            [&Request::AgentRename(RenameParams {
+                agent: agent(),
+                title: "🐛 Agent 1".to_owned()
+            })]
+        );
+    }
+
+    #[test]
+    fn an_emoji_pick_that_changes_nothing_or_empties_the_title_renames_nothing() {
+        let mut state = state(AgentStatus::Idle);
+        let titled = |state: &mut AppState, title: &str| {
+            if let Some(entry) = state.agents.get_mut(&agent()) {
+                entry.summary.title = title.to_owned();
+            }
+        };
+
+        titled(&mut state, "🐛 Agent 1");
+        let same = set_title_emoji(&mut state, agent(), Some("🐛"));
+        titled(&mut state, "🐛");
+        let emptied = set_title_emoji(&mut state, agent(), None);
+
+        assert!(same.is_empty());
+        assert!(emptied.is_empty());
+    }
+
+    #[test]
     fn up_and_down_move_through_actions_then_commands_and_stop_at_the_ends() {
         let mut state = state(AgentStatus::Idle);
         let mut drafts = Drafts::default();
@@ -2159,7 +2801,7 @@ mod tests {
         };
 
         let up_at_the_top = press(Direction::Up, 1);
-        let on_the_first_command = press(Direction::Down, 8);
+        let on_the_first_command = press(Direction::Down, 11);
         let at_the_bottom = press(Direction::Down, 5);
         let back_on_the_settings = press(Direction::Up, 3);
 
@@ -2170,7 +2812,7 @@ mod tests {
                 at_the_bottom,
                 back_on_the_settings
             ),
-            (0, 8, 9, 6)
+            (0, 11, 12, 9)
         );
     }
 
@@ -2291,6 +2933,7 @@ mod tests {
                 title: "Agent 1".to_owned(),
                 place: TitlePlace::Header,
                 select_all: true,
+                kept_open: false,
             })
         );
         assert_eq!(typed_from, "Agent 1");
@@ -2330,6 +2973,7 @@ mod tests {
                 title: "Agent 1".to_owned(),
                 place: TitlePlace::Sidebar,
                 select_all: true,
+                kept_open: false,
             })
         );
         assert_eq!(in_header, Some(TitlePlace::Header));
@@ -2360,6 +3004,47 @@ mod tests {
         assert_eq!(
             state.ui.title_edit.map(|edit| edit.place),
             Some(TitlePlace::Header)
+        );
+    }
+
+    /// A notification selects another agent without a click in the window, which would have
+    /// saved the edit: a hidden edit would then take the first Esc meant to stop that agent.
+    #[test]
+    fn selecting_another_agent_cancels_a_rename_the_window_left_open() {
+        let mut state = state_with(vec![
+            summary(AGENT, AgentStatus::Idle),
+            summary(2, AgentStatus::Working),
+        ]);
+        state.ui.selected = Some(agent());
+        let mut drafts = Drafts::default();
+        let renamed = |state: &mut AppState, drafts: &mut Drafts, kept_open: bool| {
+            select_agent(state, agent());
+            start_rename(state, drafts, agent());
+            rename_text(state, drafts, "Half typ".to_owned());
+            set_title_kept_open(state, kept_open);
+            select_agent(state, AgentId::new(2));
+            state.ui.title_edit.as_ref().map(|edit| edit.agent)
+        };
+
+        let left_open = renamed(&mut state, &mut drafts, true);
+        let after_left_open = finish_rename(&mut state, &mut drafts);
+        let focused = renamed(&mut state, &mut drafts, false);
+        select_agent(&mut state, agent());
+        start_rename(&mut state, &mut drafts, agent());
+        set_title_kept_open(&mut state, true);
+        select_agent(&mut state, agent());
+
+        assert_eq!(left_open, None);
+        assert!(after_left_open.is_empty(), "nothing is renamed");
+        assert_eq!(
+            focused,
+            Some(agent()),
+            "the blur of a field that had the focus saves it"
+        );
+        assert_eq!(
+            state.ui.title_edit.map(|edit| edit.agent),
+            Some(agent()),
+            "the same agent keeps its edit"
         );
     }
 
@@ -2774,7 +3459,7 @@ mod tests {
                     path: PathBuf::from(path),
                 },
                 Ok(ResponseBody::File {
-                    path: PathBuf::from("/work/project-1").join(path),
+                    path: Some(PathBuf::from("/work/project-1").join(path)),
                     text: format!("text of {path}"),
                 }),
             );
@@ -2815,7 +3500,7 @@ mod tests {
             &mut state,
             name,
             Ok(ResponseBody::File {
-                path: PathBuf::from(found),
+                path: Some(PathBuf::from(found)),
                 text: "export class RegisterParcel {}\n".to_owned(),
             }),
         );
@@ -2827,6 +3512,28 @@ mod tests {
         );
         let held: Vec<&PathBuf> = state.agents[&agent()].files.keys().collect();
         assert_eq!(held, [&PathBuf::from(found)]);
+    }
+
+    /// A daemon that predates the path in its answer reads only the path asked for.
+    #[test]
+    fn an_answer_without_its_path_shows_the_path_asked_for() {
+        let mut state = state(AgentStatus::Idle);
+        open_file(&mut state, agent(), PathBuf::from("src/main.rs"), None);
+
+        read_answer(
+            &mut state,
+            "src/main.rs",
+            Ok(ResponseBody::File {
+                path: None,
+                text: "fn main() {}\n".to_owned(),
+            }),
+        );
+
+        let view = state.ui.file_view(agent()).unwrap();
+        assert_eq!(view.path, Path::new("src/main.rs"));
+        let shown = state.agents[&agent()].files.get(Path::new("src/main.rs"));
+        let text = "fn main() {}\n".to_owned();
+        assert_eq!(shown, Some(&Loadable::Loaded(FileRead::Text(text))));
     }
 
     #[test]
@@ -2888,17 +3595,43 @@ mod tests {
         assert!(move_agent(&mut state, AgentId::new(1), Some(AgentId::new(3))).is_empty());
     }
 
+    /// Two refused moves of one agent would leave it where the first one put it: the second
+    /// puts back the position the first gave.
+    #[test]
+    fn a_move_while_disconnected_leaves_the_order_and_says_why() {
+        let mut state = ordered();
+        state.connection = ConnectionState::Connecting { attempt: 2 };
+
+        let dropped = drop_agent(&mut state, AgentId::new(1), Some(AgentId::new(3)));
+        let pressed = move_selected(&mut state, Direction::Up);
+
+        assert!(dropped.is_empty());
+        assert!(pressed.is_empty());
+        assert_eq!(sidebar(&state), [3, 2, 1]);
+        let notes: Vec<&str> = state
+            .ui
+            .errors
+            .iter()
+            .map(|note| note.text.as_str())
+            .collect();
+        assert_eq!(
+            notes,
+            [
+                "The agent was not moved: not connected to the daemon",
+                "The agent was not moved: not connected to the daemon"
+            ]
+        );
+    }
+
     #[test]
     fn a_refused_move_puts_the_agents_back_unless_an_event_moved_them() {
         let mut state = ordered();
         let mut drafts = Drafts::default();
         let refused = || {
-            Err(cockpit_client::RequestError::Failed(
-                cockpit_protocol::ErrorBody::new(
-                    cockpit_protocol::ErrorCode::NotFound,
-                    "no agent 3".to_owned(),
-                ),
-            ))
+            Err(RequestError::Failed(ErrorBody::new(
+                ErrorCode::NotFound,
+                "no agent 3".to_owned(),
+            )))
         };
 
         let first = move_agent(&mut state, AgentId::new(1), Some(AgentId::new(3)));
@@ -2914,7 +3647,7 @@ mod tests {
         let after_refusal = sidebar(&state);
         let second = move_agent(&mut state, AgentId::new(1), Some(AgentId::new(2)));
         if let Some(entry) = state.agents.get_mut(&AgentId::new(1)) {
-            entry.summary.position = cockpit_protocol::Position::new(9000);
+            entry.summary.position = Position::new(9000);
         }
         for outgoing in second {
             apply_response(
@@ -3181,6 +3914,28 @@ mod tests {
             &state.ui.dialog,
             Some(Dialog::NewAgent(form)) if form.effort == Some(Effort::Max)
         ));
+    }
+
+    /// Ctrl+K would replace the dialog, and Ctrl+N then open it empty.
+    #[test]
+    fn ctrl_k_leaves_the_new_agent_dialog_open_with_what_it_holds() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        open_new_agent(&mut state, &mut drafts);
+        drafts.new_agent.folder = "/work/calc".to_owned();
+        drafts.new_agent.prompt = "Fix the flaky test".to_owned();
+
+        toggle_switcher(&mut state, &mut drafts);
+        open_new_agent(&mut state, &mut drafts);
+
+        assert!(matches!(state.ui.dialog, Some(Dialog::NewAgent(_))));
+        assert_eq!(
+            (
+                drafts.new_agent.folder.as_str(),
+                drafts.new_agent.prompt.as_str()
+            ),
+            ("/work/calc", "Fix the flaky test")
+        );
     }
 
     #[test]

@@ -71,6 +71,7 @@ pub(crate) async fn run(target: &Target, command: Command) -> anyhow::Result<()>
         }),
         Command::Interrupt { agent } => Request::AgentInterrupt(AgentParams { agent }),
         Command::Stop { agent } => Request::AgentStop(AgentParams { agent }),
+        Command::Close { agent } => Request::AgentClose(AgentParams { agent }),
         Command::Rename { agent, title } => Request::AgentRename(RenameParams { agent, title }),
         Command::Move { agent, before } => Request::AgentMove(MoveParams { agent, before }),
     };

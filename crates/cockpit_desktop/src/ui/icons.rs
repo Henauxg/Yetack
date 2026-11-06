@@ -27,6 +27,8 @@ pub enum IconKind {
     Bolt,
     List,
     Pencil,
+    /// A smiling face, for the title's emoji.
+    Smile,
     Slash,
     Reconnect,
     Power,
@@ -81,6 +83,9 @@ impl IconKind {
             }
             Self::Pencil => {
                 r#"<path d="M4 20h4L19 9l-4-4L4 16z"></path><path d="M13 7l4 4"></path>"#
+            }
+            Self::Smile => {
+                r#"<circle cx="12" cy="12" r="9"></circle><path d="M8.5 14a4.5 4.5 0 0 0 7 0"></path><path d="M9 9.5h.01"></path><path d="M15 9.5h.01"></path>"#
             }
             Self::Slash => {
                 r#"<rect x="4" y="4" width="16" height="16" rx="3"></rect><path d="M14 8l-4 8"></path>"#

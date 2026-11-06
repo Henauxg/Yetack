@@ -4,15 +4,15 @@ use std::path::PathBuf;
 
 use cockpit_client::RequestError;
 use cockpit_protocol::{
-    AgentDetails, AgentId, AgentParams, ErrorCode, HistoryParams, ItemId, Method, Position,
-    ReadFileParams, Request, ResponseBody,
+    AgentDetails, AgentId, AgentParams, ErrorCode, FindFilesParams, HistoryParams, ItemId,
+    ListDirParams, Method, Position, ReadFileParams, Request, ResponseBody,
 };
 
 use super::actions;
-use super::app_state::{AppState, FileRead, Loadable};
+use super::app_state::{AgentEntry, AppState, FileRead, Loadable};
 use super::drafts::{Draft, Drafts};
 use super::transcript::HistoryState;
-use super::ui_state::Dialog;
+use super::ui_state::{Dialog, OpenFileView};
 
 /// The most transcript items one history request asks for.
 pub const HISTORY_PAGE: u16 = 100;
@@ -49,6 +49,16 @@ pub enum Purpose {
         path: PathBuf,
     },
     Sessions,
+    /// A folder for the "Open file" dialog.
+    ListDir {
+        agent: AgentId,
+        folder: PathBuf,
+    },
+    /// The project's files for the "Open file" dialog's bare name.
+    FindFiles {
+        agent: AgentId,
+        name: String,
+    },
     /// `agent.start` or `sessions.resume`: the new agent opens.
     Start,
     /// The draft comes back to the composer when the prompt fails.
@@ -61,6 +71,13 @@ pub enum Purpose {
     Move {
         shifts: Vec<Shift>,
     },
+    /// `agent.close`, whose agent the app already took off. It comes back when the close fails,
+    /// unless the daemon has no such agent.
+    Close {
+        entry: Box<AgentEntry>,
+    },
+    /// `sessions.resume` from the undo note: the agent opens, then goes back to its place.
+    Reopen,
 }
 
 /// An agent's position before and after a move the daemon has not answered yet.
@@ -87,6 +104,18 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
     if !state.is_connected() {
         return requests;
     }
+    if let Some(reopening) = &state.ui.reopening {
+        let back = state
+            .agents
+            .values()
+            .find(|entry| entry.summary.session.as_ref() == Some(&reopening.session))
+            .map(AgentEntry::id);
+        if let Some(agent) = back {
+            let before = reopening.before;
+            state.ui.reopening = None;
+            requests.extend(actions::move_agent(state, agent, before));
+        }
+    }
     if matches!(state.ui.dialog, Some(Dialog::NewAgent(_)))
         && state.sessions == Loadable::NotRequested
     {
@@ -95,6 +124,9 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
             request: Request::SessionsList,
             purpose: Purpose::Sessions,
         });
+    }
+    if let Some(Dialog::OpenFile(view)) = &mut state.ui.dialog {
+        open_file_requests(view, &mut requests);
     }
     let Some(agent) = state.ui.selected else {
         return requests;
@@ -128,6 +160,35 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
         }
     }
     requests
+}
+
+/// The "Open file" dialog's folder and search, when not asked for yet.
+fn open_file_requests(view: &mut OpenFileView, requests: &mut Vec<Outgoing>) {
+    let agent = view.agent;
+    if view.listing == Loadable::NotRequested {
+        view.listing = Loadable::Loading;
+        let folder = view.folder.clone();
+        requests.push(Outgoing {
+            request: Request::AgentListDir(ListDirParams {
+                agent,
+                path: folder.clone(),
+            }),
+            purpose: Purpose::ListDir { agent, folder },
+        });
+    }
+    if let Some((name, search)) = &mut view.search
+        && *search == Loadable::NotRequested
+    {
+        *search = Loadable::Loading;
+        let name = name.clone();
+        requests.push(Outgoing {
+            request: Request::AgentFindFiles(FindFilesParams {
+                agent,
+                name: name.clone(),
+            }),
+            purpose: Purpose::FindFiles { agent, name },
+        });
+    }
 }
 
 /// The page of items before `before`, or the latest page.
@@ -232,6 +293,7 @@ pub fn apply_response(
         Purpose::ReadFile { agent, path } => {
             let read = match result {
                 Ok(ResponseBody::File { path: found, text }) => {
+                    let found = found.unwrap_or_else(|| path.clone());
                     actions::show_read_file(state, agent, &path, &found, text);
                     return;
                 }
@@ -257,6 +319,30 @@ pub fn apply_response(
                 Ok(ResponseBody::Sessions { sessions }) => Loadable::Loaded(sessions),
                 other => Failure::from_result(other).into_loadable(),
             };
+        }
+        // An answer for a folder or a name the dialog no longer shows is dropped.
+        Purpose::ListDir { agent, folder } => {
+            if let Some(Dialog::OpenFile(view)) = &mut state.ui.dialog
+                && view.agent == agent
+                && view.folder == folder
+            {
+                view.listing = match result {
+                    Ok(ResponseBody::Directory(listing)) => Loadable::Loaded(listing),
+                    other => Failure::from_result(other).into_loadable(),
+                };
+            }
+        }
+        Purpose::FindFiles { agent, name } => {
+            if let Some(Dialog::OpenFile(view)) = &mut state.ui.dialog
+                && view.agent == agent
+                && let Some((searched, search)) = &mut view.search
+                && *searched == name
+            {
+                *search = match result {
+                    Ok(ResponseBody::FileMatches { matches }) => Loadable::Loaded(matches),
+                    other => Failure::from_result(other).into_loadable(),
+                };
+            }
         }
         Purpose::Start => match result {
             Ok(ResponseBody::AgentStarted { agent }) => {
@@ -300,6 +386,31 @@ pub fn apply_response(
                     .report(format!("The agent was not moved: {}", failure.message));
             }
         }
+        // On success the agent stays among the closing ones until its `AgentRemoved`, so that an
+        // event sent before the close does not bring it back.
+        Purpose::Close { entry } => {
+            if let Err(failure) = result {
+                let agent = entry.id();
+                state.ui.closing.remove(&agent);
+                state.ui.closed.take_if(|closed| closed.agent == agent);
+                if !failure.not_found {
+                    state.agents.entry(agent).or_insert(*entry);
+                    state
+                        .ui
+                        .report(format!("The agent was not closed: {}", failure.message));
+                }
+            }
+        }
+        Purpose::Reopen => match result {
+            Ok(ResponseBody::AgentStarted { agent }) => actions::select_agent(state, agent),
+            other => {
+                state.ui.reopening = None;
+                let failure = Failure::from_result(other);
+                state
+                    .ui
+                    .report(format!("The agent did not come back: {}", failure.message));
+            }
+        },
     }
 }
 
@@ -362,7 +473,7 @@ impl Failure {
 #[cfg(test)]
 mod tests {
     use cockpit_protocol::{
-        AgentStatus, ErrorBody, ErrorCode, HistoryPage, ItemBody, TranscriptItem,
+        AgentStatus, DirListing, ErrorBody, ErrorCode, HistoryPage, ItemBody, TranscriptItem,
     };
 
     use super::*;
@@ -404,6 +515,46 @@ mod tests {
         state.connection = ConnectionState::Connecting { attempt: 1 };
 
         assert!(needed_requests(&mut state).is_empty());
+    }
+
+    #[test]
+    fn the_open_file_dialog_asks_for_its_folder_and_drops_a_late_answer() {
+        let mut state = connected_with_selection();
+        let agent = AgentId::new(1);
+        needed_requests(&mut state);
+        crate::state::open_file::toggle(&mut state, &mut Drafts::default());
+
+        let requests = needed_requests(&mut state);
+
+        assert_eq!(methods(&requests), [Method::AgentListDir]);
+        let answer = |state: &mut AppState, folder: &str| {
+            let listing = DirListing {
+                path: PathBuf::from(folder),
+                entries: Vec::new(),
+                truncated: false,
+            };
+            apply_response(
+                state,
+                &mut Drafts::default(),
+                Method::AgentListDir,
+                Purpose::ListDir {
+                    agent,
+                    folder: PathBuf::from(folder),
+                },
+                Ok(ResponseBody::Directory(listing)),
+            );
+        };
+        answer(&mut state, "/work/project-1/src");
+        let Some(Dialog::OpenFile(view)) = &state.ui.dialog else {
+            panic!("the dialog stays open");
+        };
+        assert_eq!(view.listing, Loadable::Loading);
+
+        answer(&mut state, "/work/project-1");
+        let Some(Dialog::OpenFile(view)) = &state.ui.dialog else {
+            panic!("the dialog stays open");
+        };
+        assert!(matches!(view.listing, Loadable::Loaded(_)));
     }
 
     #[test]

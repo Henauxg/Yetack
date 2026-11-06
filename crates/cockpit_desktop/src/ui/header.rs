@@ -12,8 +12,9 @@ use dioxus::prelude::*;
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
 use crate::connection::{Clock, Cockpit};
-use crate::state::{AgentEntry, Loadable, Popover, TitlePlace, actions};
-use crate::ui::changes_list::{ChangesList, line_totals};
+use crate::state::{AgentEntry, Loadable, Popover, TitlePlace, actions, title_emoji};
+use crate::ui::changes_list::{self, ChangesList};
+use crate::ui::emoji_picker::EmojiPicker;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::load_card::{LoadCard, LoadChip};
 use crate::ui::presence::Presence;
@@ -132,9 +133,14 @@ pub fn Header() -> Element {
     let plan = plan_percent(&state.plan_usage);
     let context = context_percent(entry);
     let files = changed_files(entry);
-    let (added, removed) = line_totals(&files);
+    let (added, removed) = changes_list::line_totals(&files);
     let usage_open = state.ui.popover == Some(Popover::Usage);
     let load_open = state.ui.popover == Some(Popover::Load);
+    let emoji_open = state.ui.popover == Some(Popover::TitleEmoji);
+    let (title_emoji, title_rest) = match title_emoji::split(&summary.title) {
+        Some((emoji, rest)) => (Some(emoji.to_owned()), rest.to_owned()),
+        None => (None, summary.title.clone()),
+    };
     let changes_open = state.ui.popover == Some(Popover::Changes);
     let plan_text = plan.map_or_else(|| "?".to_owned(), |percent| format!("{percent}%"));
     let context_text = context.map_or_else(|| "?".to_owned(), |percent| format!("{percent}%"));
@@ -157,6 +163,9 @@ pub fn Header() -> Element {
             Vec::new()
         });
     };
+    let toggle_emoji = move || {
+        cockpit.update(|state| state.ui.toggle_popover(Popover::TitleEmoji));
+    };
     rsx! {
         header { class: "center-header",
             div { class: "header-title",
@@ -178,12 +187,21 @@ pub fn Header() -> Element {
                                     cockpit.change_with_drafts(actions::finish_rename);
                                 }
                             },
-                            onblur: move |_| bridge::save_on_blur(move || cockpit.change_with_drafts(|state, drafts| actions::finish_rename_at(state, drafts, TitlePlace::Header))),
+                            onfocus: move |_| cockpit.title_field_focused(),
+                            onblur: move |_| cockpit.title_field_blurred(TitlePlace::Header),
                         }
                     } else {
                         h1 {
                             ondoubleclick: move |_| start_rename(),
-                            "{summary.title}"
+                            if let Some(emoji) = &title_emoji {
+                                span {
+                                    class: "title-emoji",
+                                    title: "Change the emoji",
+                                    onclick: move |_| toggle_emoji(),
+                                    "{emoji}"
+                                }
+                            }
+                            "{title_rest}"
                         }
                         button {
                             class: "icon-button tiny rename-button",
@@ -192,6 +210,14 @@ pub fn Header() -> Element {
                             onclick: move |_| start_rename(),
                             Icon { kind: IconKind::Pencil, size: 13 }
                         }
+                        button {
+                            class: if emoji_open { "icon-button tiny rename-button active" } else { "icon-button tiny rename-button" },
+                            aria_label: "Set the title's emoji",
+                            aria_expanded: emoji_open,
+                            title: "Set the title's emoji",
+                            onclick: move |_| toggle_emoji(),
+                            Icon { kind: IconKind::Smile, size: 13 }
+                        }
                     }
                     span { class: "status-pill {status_class}", title: status_label,
                         span { class: "status-dot", aria_hidden: true }
@@ -199,6 +225,9 @@ pub fn Header() -> Element {
                     }
                 }
                 span { class: "header-folder", "{folder}" }
+                Presence { open: emoji_open,
+                    EmojiPicker { agent, current: title_emoji.clone() }
+                }
             }
             div { class: "chip-anchor",
                 button {

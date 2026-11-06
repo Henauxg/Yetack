@@ -2,6 +2,7 @@
 //!
 //! [`serve`] runs it. The `agents-cockpit` binary calls it for `agents-cockpit serve`.
 
+mod browse;
 mod daemon_config;
 mod error_chain;
 mod hub;
@@ -13,6 +14,8 @@ mod serve;
 mod server;
 mod sessions;
 mod store;
+#[cfg(test)]
+mod test_script;
 mod transcript;
 
 pub use daemon_config::{CLAUDE_PROGRAM_ENV, DaemonConfig, HOME_ENV};

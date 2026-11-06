@@ -12,7 +12,7 @@ use dioxus::prelude::*;
 use crate::connection::Cockpit;
 use crate::render::{self, Diff, Language, MAX_RENDERED_LINES, diff_lines};
 use crate::state::{FileRead, Loadable, ViewMode, actions, file_edits};
-use crate::ui::changes_list::{outside_root, root_label};
+use crate::ui::changes_list;
 use crate::ui::code::{LineNumbers, diff_line, diff_row, lines_not_shown};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::splitter::FILE_VIEW_ID;
@@ -134,7 +134,10 @@ pub fn FileViewPanel() -> Element {
                     }
                 }
             }
-            div { class: if wrap { "file-body scroll mono wrap" } else { "file-body scroll mono" },
+            div {
+                class: if wrap { "file-body scroll mono wrap" } else { "file-body scroll mono" },
+                // Focusable, so that after a click in the text End and Home scroll it.
+                tabindex: -1,
                 match text {
                     Loadable::NotRequested | Loadable::Loading => rsx! {
                         div { class: "file-loading", aria_hidden: true,
@@ -251,14 +254,14 @@ fn FileChoices(
 /// A file's path as the file view shows it: relative to the agent's folder, or, for a file outside
 /// it, relative to the folder beside it that holds it, which `root` names.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ShortPath {
+pub struct ShortPath {
     /// The outside folder's name, as "app_feature/".
     root: Option<String>,
     rest: String,
 }
 
 impl ShortPath {
-    fn new(folder: &Path, path: &Path) -> Self {
+    pub fn new(folder: &Path, path: &Path) -> Self {
         let path = file_edits::relative_path(folder, path);
         if path.is_relative() {
             return Self {
@@ -266,20 +269,20 @@ impl ShortPath {
                 rest: path.display().to_string(),
             };
         }
-        let root = outside_root(folder, &path);
+        let root = changes_list::outside_root(folder, &path);
         let rest = path.strip_prefix(&root).map_or_else(
             |_| path.display().to_string(),
             |rest| rest.display().to_string(),
         );
         Self {
-            root: Some(root_label(&root)),
+            root: Some(changes_list::root_label(&root)),
             rest,
         }
     }
 }
 
 /// On one line cut at its start, the outside folder dim.
-fn short_path(short: &ShortPath) -> Element {
+pub fn short_path(short: &ShortPath) -> Element {
     rsx! {
         span { class: "file-path-text",
             if let Some(root) = &short.root {

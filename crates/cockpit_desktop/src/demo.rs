@@ -9,12 +9,13 @@ use cockpit_protocol::{
     AgentDetails, AgentHistory, AgentId, AgentLoad, AgentStatus, AgentSummary, AnswerState,
     Approval, AskedQuestion, BackgroundTask, BackgroundTaskId, BackgroundTaskKind,
     BackgroundTaskStatus, ChangedFile, ClaudeSessionId, CommandKind, CommandLoad, ContextCategory,
-    ContextUsage, Cores, CostUsd, Effort, ErrorBody, ErrorCode, FileEdit, HistoryPage, ItemBody,
-    ItemId, LoadAverage, LoadHistory, MachineLoad, McpScope, McpServer, McpServerStatus, McpTool,
-    McpTransport, PastSession, PendingId, PermissionMode, Plan, PlanUsage, Position, ProcessId,
-    Question, QuestionOption, RateLimitStatus, Request, ResourceUse, ResponseBody, ServerLoad,
-    ServerPoint, SlashCommand, TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage,
-    ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, UsageWindow, UserMessage, WindowUsage,
+    ContextUsage, Cores, CostUsd, DirEntry, DirListing, Effort, EntryKind, ErrorBody, ErrorCode,
+    FileEdit, HistoryPage, ItemBody, ItemId, LoadAverage, LoadHistory, MachineLoad, McpScope,
+    McpServer, McpServerStatus, McpTool, McpTransport, PastSession, PendingId, PermissionMode,
+    Plan, PlanUsage, Position, ProcessId, Question, QuestionOption, RateLimitStatus, Request,
+    ResourceUse, ResponseBody, ServerLoad, ServerPoint, SlashCommand, TaskListItem, TaskProgress,
+    TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
+    UsageWindow, UserMessage, WindowUsage,
 };
 use serde_json::Value;
 
@@ -97,6 +98,68 @@ const LIB_TEXT: &str = "mod error;
 mod lexer;
 
 pub use error::ParseError;
+";
+
+const CARGO_TEXT: &str = "[package]
+name = \"calc-parser\"
+version = \"0.4.0\"
+edition = \"2024\"
+
+[dependencies]
+
+[dev-dependencies]
+criterion = \"0.5\"
+
+[[bench]]
+name = \"eval\"
+harness = false
+";
+
+const README_TEXT: &str = "# calc-parser
+
+Parses and evaluates arithmetic expressions, and says where an error is: line and column.
+
+    cargo run -- \"1 + 2 * 3\"
+";
+
+const MAIN_TEXT: &str = "use calc_parser::parse;
+
+fn main() {
+    let input = std::env::args().nth(1).unwrap_or_default();
+    match parse(&input) {
+        Ok(value) => println!(\"{value}\"),
+        Err(error) => eprintln!(\"{}:{}: {}\", error.line, error.column, error.message),
+    }
+}
+";
+
+const PARSER_TEXT: &str = "use crate::error::ParseError;
+use crate::lexer::tokens;
+
+/// Parses `input` and evaluates it.
+pub fn parse(input: &str) -> Result<f64, ParseError> {
+    let tokens = tokens(input);
+    evaluate(&tokens)
+}
+";
+
+const TOKEN_KIND_TEXT: &str = "/// What a token is.
+pub enum TokenKind {
+    Number,
+    Operator,
+    Parenthesis,
+}
+";
+
+const BENCH_TEXT: &str = "use criterion::{criterion_group, criterion_main, Criterion};
+
+fn deep_nesting(c: &mut Criterion) {
+    let input = format!(\"{}1{}\", \"(\".repeat(200), \")\".repeat(200));
+    c.bench_function(\"deep_nesting\", |b| b.iter(|| calc_parser::parse(&input)));
+}
+
+criterion_group!(benches, deep_nesting);
+criterion_main!(benches);
 ";
 
 /// Plain `name:line` references, which the daemon looks up: a file the agent read, one it
@@ -334,6 +397,16 @@ pub fn latency(request: &Request) -> Duration {
     }
 }
 
+/// What the daemon's events would change after a request it accepts: a rename shows in the
+/// title.
+pub fn apply(state: &mut AppState, request: &Request) {
+    if let Request::AgentRename(params) = request
+        && let Some(entry) = state.agents.get_mut(&params.agent)
+    {
+        entry.summary.title.clone_from(&params.title);
+    }
+}
+
 /// What a daemon holding the sample would answer.
 pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, RequestError> {
     let agent_details = |agent: AgentId| -> Result<AgentDetails, RequestError> {
@@ -360,6 +433,8 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
             .map(ResponseBody::ContextUsage)
             .ok_or_else(|| refused(ErrorCode::NotFound, "No context usage in the demo.")),
         Request::AgentReadFile(params) => read_file(&params.path),
+        Request::AgentListDir(params) => list_dir(&params.path),
+        Request::AgentFindFiles(params) => Ok(find_files(&params.name)),
         Request::AgentHistory(params) if params.agent == AgentId::new(LIVE_AGENT) => {
             let before = params.before.map_or(LIVE_PAGE_FIRST_ID, ItemId::get);
             let items = (LIVE_OLDER_FIRST_ID..before)
@@ -566,10 +641,17 @@ fn refused(code: ErrorCode, message: &str) -> RequestError {
 }
 
 /// The sample's files, absolute, with their text.
-fn files() -> [(PathBuf, &'static str); 9] {
+fn files() -> [(PathBuf, &'static str); 16] {
     let parser = Path::new(PARSER_FOLDER);
     let columns = Path::new(PARSER_COLUMNS_WORKTREE);
     [
+        (parser.join("Cargo.toml"), CARGO_TEXT),
+        (parser.join("README.md"), README_TEXT),
+        (parser.join(".gitignore"), "/target\n"),
+        (parser.join("src/main.rs"), MAIN_TEXT),
+        (parser.join("src/parser.rs"), PARSER_TEXT),
+        (parser.join("src/token.rs"), TOKEN_KIND_TEXT),
+        (parser.join("benches/eval.rs"), BENCH_TEXT),
         (parser.join(ERROR_FILE), ERROR_AFTER),
         (parser.join(TEST_FILE), TEST_TEXT),
         (parser.join(LEXER_FILE), LEXER_TEXT),
@@ -583,6 +665,76 @@ fn files() -> [(PathBuf, &'static str); 9] {
             NOTES_TEXT,
         ),
     ]
+}
+
+/// The folders the sample's agents reach, as the daemon allows them: the parser's folder and the
+/// worktrees beside it.
+const REACHABLE: [&str; 3] = [
+    PARSER_FOLDER,
+    PARSER_COLUMNS_WORKTREE,
+    PARSER_BENCH_WORKTREE,
+];
+
+/// As the daemon lists a folder for the parser agent: the sample's files under it, and the folders
+/// that hold them.
+fn list_dir(path: &Path) -> Result<ResponseBody, RequestError> {
+    let folder = Path::new(PARSER_FOLDER).join(path);
+    if !REACHABLE.iter().any(|root| folder.starts_with(root)) {
+        return Err(refused(
+            ErrorCode::InvalidRequest,
+            "the folder is outside the agent's folder and the checkouts it worked in",
+        ));
+    }
+    let mut entries: Vec<DirEntry> = Vec::new();
+    for (file, text) in files() {
+        let Ok(rest) = file.strip_prefix(&folder) else {
+            continue;
+        };
+        let mut names = rest.iter();
+        let Some(name) = names.next().map(|name| name.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        let inside = names.next().is_some();
+        if entries.iter().any(|entry| entry.name == name) {
+            continue;
+        }
+        entries.push(DirEntry {
+            name,
+            kind: if inside {
+                EntryKind::Folder
+            } else {
+                EntryKind::File
+            },
+            size: (!inside).then(|| u64::try_from(text.len()).unwrap_or(0)),
+            symlink: false,
+        });
+    }
+    if entries.is_empty() && !REACHABLE.iter().any(|root| folder == Path::new(root)) {
+        return Err(refused(
+            ErrorCode::NotFound,
+            &format!("{} does not exist", folder.display()),
+        ));
+    }
+    entries.sort_by_key(|entry| (entry.kind != EntryKind::Folder, entry.name.to_lowercase()));
+    Ok(ResponseBody::Directory(DirListing {
+        path: folder,
+        entries,
+        truncated: false,
+    }))
+}
+
+/// As the daemon finds files by name: the sample's files whose name holds `name`.
+fn find_files(name: &str) -> ResponseBody {
+    let needle = name.to_lowercase();
+    let matches = files()
+        .into_iter()
+        .map(|(file, _)| file)
+        .filter(|file| {
+            file.file_name()
+                .is_some_and(|file| file.to_string_lossy().to_lowercase().contains(&needle))
+        })
+        .collect();
+    ResponseBody::FileMatches { matches }
 }
 
 /// As the daemon answers for the parser agent: the path itself, else the sample's files whose
@@ -606,7 +758,7 @@ fn read_file(path: &Path) -> Result<ResponseBody, RequestError> {
             ),
         )),
         [(path, text)] => Ok(ResponseBody::File {
-            path: path.clone(),
+            path: Some(path.clone()),
             text: (*text).to_owned(),
         }),
         several => Ok(ResponseBody::FileMatches {
@@ -948,6 +1100,7 @@ fn parser_agent(now: SystemTime) -> Sample {
             Some(TICKETS_OUTPUT),
         )
     };
+    let position_read = read_call(&Path::new(PARSER_COLUMNS_WORKTREE).join(POSITION_FILE));
     let items = vec![
         item(
             1,
@@ -1038,7 +1191,7 @@ fn parser_agent(now: SystemTime) -> Sample {
             edit_call("Edit", LEXER_FILE, LEXER_LINE_BEFORE, LEXER_LINE_AFTER),
         ),
         item(16, None, text(FIX_ANSWER)),
-        item(17, None, ItemBody::ToolCall(read_call(&Path::new(PARSER_COLUMNS_WORKTREE).join(POSITION_FILE)))),
+        item(17, None, ItemBody::ToolCall(position_read)),
         item(18, None, text(LOOKUP_ANSWER)),
         item(
             19,
@@ -1140,7 +1293,7 @@ fn question_agent(now: SystemTime) -> Sample {
     let summary = summary(
         SummaryParts {
             id: 2,
-            title: "Release notes",
+            title: "📝 Release notes",
             folder: PARSER_FOLDER,
             status: AgentStatus::NeedsYou,
             activity: Some("Asks which changes to include"),
@@ -1258,7 +1411,7 @@ fn plan_agent(now: SystemTime) -> Sample {
     let mut summary = summary(
         SummaryParts {
             id: 4,
-            title: "Cache layer plan",
+            title: "🧭 Cache layer plan",
             folder: SERVICE_FOLDER,
             status: AgentStatus::NeedsYou,
             activity: Some("Waits for plan approval"),
@@ -1299,7 +1452,7 @@ fn benchmark_agent(now: SystemTime) -> Sample {
     let mut summary = summary(
         SummaryParts {
             id: 5,
-            title: "Benchmark in CI",
+            title: "⏱️ Benchmark in CI",
             folder: SERVICE_FOLDER,
             status: AgentStatus::Idle,
             activity: Some("Done: the benchmark runs in CI"),
@@ -1396,7 +1549,7 @@ fn exited_agent(now: SystemTime) -> Sample {
     let mut summary = summary(
         SummaryParts {
             id: 6,
-            title: "Schema migration",
+            title: "🏗️ Schema migration",
             folder: "/home/dev/projects/legacy-db",
             status: AgentStatus::Exited,
             activity: None,
@@ -1501,6 +1654,33 @@ fn live_test_output(id: u32) -> String {
     format!(
         "running 1 test\ntest case_{id}::splits_at_separators ... ok\ntest case_{id}::keeps_columns ... ok\ntest case_{id}::reads_in_chunks ... ok\ntest case_{id}::ends_cleanly ... ok\ntest case_{id}::reports_offsets ... ok\n\ntest result: ok. 5 passed; 0 failed"
     )
+}
+
+/// Brings back an agent the app closed, as a daemon would from its session: on top of the list,
+/// under its old id. Answers `sessions.resume` for a session in `closed`, and nothing else.
+pub fn reopen(
+    state: &mut AppState,
+    closed: &mut Vec<AgentEntry>,
+    request: &Request,
+) -> Option<Result<ResponseBody, RequestError>> {
+    let Request::SessionsResume(params) = request else {
+        return None;
+    };
+    let index = closed
+        .iter()
+        .position(|entry| entry.summary.session.as_ref() == Some(&params.session))?;
+    let mut entry = closed.remove(index);
+    let top = state
+        .agents
+        .values()
+        .map(|other| other.summary.position.get())
+        .max()
+        .unwrap_or(0);
+    entry.summary.position = Position::new(top.saturating_add(POSITION_STEP));
+    let agent = entry.id();
+    state.ui.closing.remove(&agent);
+    state.agents.insert(agent, entry);
+    Some(Ok(ResponseBody::AgentStarted { agent }))
 }
 
 /// One step of the live agent, as its daemon would send it: tick by tick, a test command starts,
@@ -1614,7 +1794,7 @@ fn sessions(now: SystemTime) -> Vec<PastSession> {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::ReadFileParams;
+    use cockpit_protocol::{HistoryParams, ReadFileParams, RenameParams};
 
     use super::*;
     use crate::state::{WaitingKind, file_edits};
@@ -1641,6 +1821,21 @@ mod tests {
         let building = first.agents.first().unwrap();
         assert_eq!(building.agent, AgentId::new(BUILDING_AGENT));
         assert!(building.cpu.get() > 8.0);
+    }
+
+    #[test]
+    fn a_rename_shows_in_the_demo_title() {
+        let mut state = state(label());
+        let agent = AgentId::new(LIVE_AGENT);
+        let rename = Request::AgentRename(RenameParams {
+            agent,
+            title: "🚀 Stream the input".to_owned(),
+        });
+
+        assert!(answer(&state, &rename).is_ok());
+        apply(&mut state, &rename);
+
+        assert_eq!(state.agents[&agent].summary.title, "🚀 Stream the input");
     }
 
     #[test]
@@ -1673,7 +1868,7 @@ mod tests {
     #[test]
     fn the_live_agent_has_an_older_page_to_load() {
         let state = state(label());
-        let request = Request::AgentHistory(cockpit_protocol::HistoryParams {
+        let request = Request::AgentHistory(HistoryParams {
             agent: AgentId::new(LIVE_AGENT),
             before: Some(ItemId::new(LIVE_PAGE_FIRST_ID)),
             limit: 100,
@@ -1727,24 +1922,89 @@ pub struct ParseError {
     }
 
     #[test]
+    fn folders_list_as_the_daemon_lists_them() {
+        let names = |path: &str| -> Vec<String> {
+            let Ok(ResponseBody::Directory(listing)) = list_dir(Path::new(path)) else {
+                panic!("{path} lists");
+            };
+            listing
+                .entries
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect()
+        };
+
+        assert_eq!(
+            names(""),
+            [
+                "benches",
+                "src",
+                "tests",
+                ".gitignore",
+                "AGENTS.md",
+                "Cargo.toml",
+                "README.md"
+            ]
+        );
+        assert_eq!(names(PARSER_COLUMNS_WORKTREE), ["crates"]);
+        assert!(matches!(
+            list_dir(Path::new("/home/dev/projects")),
+            Err(RequestError::Failed(body)) if body.code == ErrorCode::InvalidRequest
+        ));
+        assert!(matches!(
+            find_files("LEX"),
+            ResponseBody::FileMatches { matches } if matches.len() == 1
+        ));
+    }
+
+    #[test]
     fn names_are_looked_up_as_the_daemon_does() {
         let read = |path: &str| read_file(Path::new(path));
         let position = Path::new(PARSER_COLUMNS_WORKTREE).join(POSITION_FILE);
+        let lib = Path::new(PARSER_FOLDER).join(LIB_FILE);
 
-        assert!(
-            matches!(read("position.rs"), Ok(ResponseBody::File { path, .. }) if path == position)
-        );
+        assert!(matches!(
+            read("position.rs"),
+            Ok(ResponseBody::File { path, .. }) if path == Some(position)
+        ));
         assert!(
             matches!(read("lib.rs"), Ok(ResponseBody::FileMatches { matches }) if matches.len() == 2)
         );
         assert!(matches!(
             read("src/lib.rs"),
-            Ok(ResponseBody::File { path, .. }) if path == Path::new(PARSER_FOLDER).join(LIB_FILE)
+            Ok(ResponseBody::File { path, .. }) if path == Some(lib)
         ));
         assert!(matches!(
             read("cache.rs"),
             Err(RequestError::Failed(body)) if body.code == ErrorCode::NotFound
         ));
+    }
+
+    #[test]
+    fn undo_brings_back_an_agent_the_demo_closed() {
+        let mut state = state(label());
+        let mut drafts = crate::state::Drafts::default();
+        let closing =
+            crate::state::actions::request_close(&mut state, &mut drafts, AgentId::new(5));
+        let mut closed: Vec<AgentEntry> = closing
+            .iter()
+            .filter_map(|outgoing| match &outgoing.purpose {
+                crate::state::Purpose::Close { entry } => Some(entry.as_ref().clone()),
+                _ => None,
+            })
+            .collect();
+        let undo = crate::state::actions::undo_close(&mut state);
+
+        let reopened = undo
+            .first()
+            .and_then(|outgoing| reopen(&mut state, &mut closed, &outgoing.request));
+
+        assert!(matches!(
+            reopened,
+            Some(Ok(ResponseBody::AgentStarted { agent })) if agent == AgentId::new(5)
+        ));
+        assert!(state.agents.contains_key(&AgentId::new(5)));
+        assert!(closed.is_empty());
     }
 
     #[test]

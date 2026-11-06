@@ -18,9 +18,10 @@ use cockpit_protocol::{
     AnswerParams, AnswerState, Approval, ApprovalAnswer, ApprovalDecision, AskedQuestion,
     BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus, CancelQueuedParams,
     Catchup, ChangedFile, ClaudeSessionId, ClientMessage, CommandKind, CommandLoad,
-    ContextCategory, ContextUsage, Cores, CostUsd, Effort, ErrorBody, ErrorCode, Event,
-    EventRecord, FileEdit, HistoryPage, HistoryParams, Image, ImageMediaType, ItemBody, ItemId,
-    LoadAverage, LoadHistory, MachineLoad, McpRemoveParams, McpScope, McpServer, McpServerParams,
+    ContextCategory, ContextUsage, Cores, CostUsd, DirEntry, DirListing, Effort, EntryKind,
+    ErrorBody, ErrorCode, Event, EventRecord, FileEdit, FindFilesParams, HistoryPage,
+    HistoryParams, Image, ImageMediaType, ItemBody, ItemId, ListDirParams, LoadAverage,
+    LoadHistory, MachineLoad, McpRemoveParams, McpScope, McpServer, McpServerParams,
     McpServerStatus, McpToggleParams, McpTool, McpTransport, Method, MoveParams, PROTOCOL_VERSION,
     PastSession, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, PlanUsage, Position,
     ProcessId, Prompt, PromptParams, Question, QuestionAnswer, QuestionOption, RateLimitStatus,
@@ -457,6 +458,7 @@ fn requests() -> Vec<Request> {
         Request::AgentStop(AgentParams { agent }),
         Request::AgentResume(AgentParams { agent }),
         Request::AgentRemove(AgentParams { agent }),
+        Request::AgentClose(AgentParams { agent }),
         Request::AgentHistory(HistoryParams {
             agent,
             before: Some(ItemId::new(40)),
@@ -507,6 +509,14 @@ fn requests() -> Vec<Request> {
             agent,
             path: PathBuf::from("src/login.rs"),
         }),
+        Request::AgentListDir(ListDirParams {
+            agent,
+            path: PathBuf::from("src"),
+        }),
+        Request::AgentFindFiles(FindFilesParams {
+            agent,
+            name: "login".to_owned(),
+        }),
         Request::McpRemove(McpRemoveParams {
             agent,
             server: "issues".to_owned(),
@@ -519,6 +529,33 @@ fn requests() -> Vec<Request> {
         }),
         Request::MachineLoad,
     ]
+}
+
+fn dir_listing() -> DirListing {
+    DirListing {
+        path: PathBuf::from("/srv/projects/shop/src"),
+        entries: vec![
+            DirEntry {
+                name: "forms".to_owned(),
+                kind: EntryKind::Folder,
+                size: None,
+                symlink: false,
+            },
+            DirEntry {
+                name: "login.rs".to_owned(),
+                kind: EntryKind::File,
+                size: Some(2_048),
+                symlink: false,
+            },
+            DirEntry {
+                name: "shared".to_owned(),
+                kind: EntryKind::Other,
+                size: None,
+                symlink: true,
+            },
+        ],
+        truncated: false,
+    }
 }
 
 fn answers() -> Vec<Answer> {
@@ -618,9 +655,10 @@ fn response_bodies() -> Vec<ResponseBody> {
             commands: commands(),
         },
         ResponseBody::File {
-            path: PathBuf::from("/srv/projects/shop/src/main.rs"),
+            path: Some(PathBuf::from("/srv/projects/shop/src/main.rs")),
             text: "fn main() {}\n".to_owned(),
         },
+        ResponseBody::Directory(dir_listing()),
         ResponseBody::FileMatches {
             matches: vec![
                 PathBuf::from("/srv/projects/shop/src/login.rs"),
@@ -816,6 +854,7 @@ fn method_names_are_pinned() {
             "agent.stop",
             "agent.resume",
             "agent.remove",
+            "agent.close",
             "agent.history",
             "agent.details",
             "agent.set_model",
@@ -831,6 +870,8 @@ fn method_names_are_pinned() {
             "agent.mcp_toggle",
             "agent.commands",
             "agent.read_file",
+            "agent.list_dir",
+            "agent.find_files",
             "mcp.remove",
             "settings.set",
             "sessions.list",
@@ -870,6 +911,7 @@ fn message_and_body_tags_are_pinned() {
             "mcp_servers",
             "commands",
             "file",
+            "directory",
             "file_matches",
             "sessions",
             "machine_load",
@@ -955,6 +997,7 @@ fn words_are_pinned() {
         ["pending", "in_progress", "completed"]
     );
     assert_eq!(words::<BackgroundTaskKind>(), ["agent", "command"]);
+    assert_eq!(words::<EntryKind>(), ["folder", "file", "other"]);
     assert_eq!(
         words::<BackgroundTaskStatus>(),
         ["running", "stopped", "done", "failed"]
@@ -1069,6 +1112,79 @@ fn a_rename_request_on_the_wire() {
                 "method": "agent.rename",
                 "params": {"agent": 3, "title": "Login form"},
             },
+        }),
+    );
+}
+
+#[test]
+fn a_folder_listing_on_the_wire() {
+    let request = ClientMessage::Request {
+        id: RequestId::new(11),
+        request: Request::AgentListDir(ListDirParams {
+            agent: agent(),
+            path: PathBuf::from("src"),
+        }),
+    };
+    let search = ClientMessage::Request {
+        id: RequestId::new(12),
+        request: Request::AgentFindFiles(FindFilesParams {
+            agent: agent(),
+            name: "login".to_owned(),
+        }),
+    };
+    let answer = ServerMessage::Response {
+        id: RequestId::new(11),
+        result: ResponseResult::Ok(ResponseBody::Directory(dir_listing())),
+    };
+
+    assert_wire(
+        &request,
+        json!({
+            "type": "request",
+            "id": 11,
+            "request": {"method": "agent.list_dir", "params": {"agent": 3, "path": "src"}},
+        }),
+    );
+    assert_wire(
+        &search,
+        json!({
+            "type": "request",
+            "id": 12,
+            "request": {"method": "agent.find_files", "params": {"agent": 3, "name": "login"}},
+        }),
+    );
+    assert_wire(
+        &answer,
+        json!({
+            "type": "response",
+            "id": 11,
+            "result": {"ok": {
+                "type": "directory",
+                "path": "/srv/projects/shop/src",
+                "entries": [
+                    {"name": "forms", "kind": "folder", "size": null, "symlink": false},
+                    {"name": "login.rs", "kind": "file", "size": 2048, "symlink": false},
+                    {"name": "shared", "kind": "other", "size": null, "symlink": true},
+                ],
+                "truncated": false,
+            }},
+        }),
+    );
+}
+
+#[test]
+fn a_close_request_on_the_wire() {
+    let message = ClientMessage::Request {
+        id: RequestId::new(11),
+        request: Request::AgentClose(AgentParams { agent: agent() }),
+    };
+
+    assert_wire(
+        &message,
+        json!({
+            "type": "request",
+            "id": 11,
+            "request": {"method": "agent.close", "params": {"agent": 3}},
         }),
     );
 }
@@ -1343,6 +1459,29 @@ fn a_summary_saved_without_its_effort_source_still_loads() {
 
     assert_eq!(loaded.effort, Some(Effort::High));
     assert!(!loaded.effort_is_default);
+}
+
+#[test]
+fn a_file_answer_with_or_without_the_path_it_read() {
+    let with_path = ResponseBody::File {
+        path: Some(PathBuf::from("/srv/projects/shop/src/main.rs")),
+        text: "fn main() {}\n".to_owned(),
+    };
+
+    assert_wire(
+        &with_path,
+        json!({"type": "file", "path": "/srv/projects/shop/src/main.rs", "text": "fn main() {}\n"}),
+    );
+    // A daemon that predates the path.
+    let without_path: ResponseBody =
+        serde_json::from_value(json!({"type": "file", "text": "fn main() {}\n"})).unwrap();
+    assert_eq!(
+        without_path,
+        ResponseBody::File {
+            path: None,
+            text: "fn main() {}\n".to_owned(),
+        }
+    );
 }
 
 #[test]

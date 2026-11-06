@@ -1003,8 +1003,12 @@ impl AgentView {
     }
 
     fn apply_result(&mut self, result: &ResultMessage) {
-        self.awaits_restored_cost = false;
         let total = result.total_cost_usd.unwrap_or(self.process_cost);
+        if self.awaits_restored_cost {
+            // The restored cost is unknown: the total keeps what the agent counted.
+            self.cost_before_process = (self.summary.cost.get() - total).max(0.0);
+        }
+        self.awaits_restored_cost = false;
         let turn_cost = (total - self.process_cost).max(0.0);
         self.process_cost = total;
         self.summary.cost = CostUsd::new(self.cost_before_process + total);
@@ -2223,6 +2227,23 @@ mod tests {
         assert_eq!(restored, CostUsd::new(2.0));
         assert_eq!(view.summary().cost, CostUsd::new(2.25));
         assert_eq!(turn_costs(&view), [CostUsd::new(2.0), CostUsd::new(0.25)]);
+    }
+
+    /// The daemon reads the restored cost from the session file, which may take longer than the
+    /// first turn, or not be found.
+    #[test]
+    fn a_first_result_before_the_restored_cost_keeps_the_cost_the_agent_counted() {
+        let mut view = view();
+        apply(&mut view, result(2.0));
+        view.process_exited("claude was killed by signal 9".to_owned(), now());
+
+        view.process_started(ProcessSession::Resumed);
+        apply(&mut view, result(0.25));
+        let first = view.summary().cost;
+        apply(&mut view, result(0.75));
+
+        assert_eq!(first, CostUsd::new(2.0));
+        assert_eq!(view.summary().cost, CostUsd::new(2.5));
     }
 
     /// Claude Code restores the cost of the conversation a `/clear` started, not of the one

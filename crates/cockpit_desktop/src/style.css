@@ -602,6 +602,40 @@ button:disabled {
   color: var(--text-soft);
 }
 
+/* A row and its close button, which shows on hover and on the selected row, as a file tab's
+   does. The row's first line leaves it room then. */
+.row-wrap {
+  position: relative;
+  flex: none;
+}
+
+.row-close {
+  position: absolute;
+  top: 9px;
+  right: 6px;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--dim);
+  visibility: hidden;
+}
+
+.row-wrap:hover .row-close,
+.row-wrap.selected .row-close,
+.row-close:focus-visible {
+  visibility: visible;
+}
+
+.row-wrap:hover > .agent-row > .row-line:first-child,
+.row-wrap.selected > .agent-row > .row-line:first-child {
+  padding-right: 22px;
+}
+
 .row-tasks {
   flex: none;
   font-size: 11.5px;
@@ -759,8 +793,71 @@ html.reordering * {
 }
 
 .title-line:hover .rename-button,
-.rename-button:focus-visible {
+.rename-button:focus-visible,
+.rename-button.active {
   opacity: 1;
+}
+
+/* A click on the title's emoji opens the emoji picker. */
+.title-emoji {
+  cursor: pointer;
+}
+
+.header-title {
+  position: relative;
+}
+
+/* Under the title: the grid of emoji, then "No emoji". Rust sets the grid's columns. */
+.emoji-picker {
+  left: 0;
+  top: calc(100% + 6px);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  transform-origin: top left;
+}
+
+.emoji-grid {
+  display: grid;
+  gap: 2px;
+}
+
+.emoji-choice {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 19px;
+  line-height: 1;
+}
+
+.emoji-none {
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.emoji-choice:hover,
+.emoji-choice:focus-visible,
+.emoji-none:hover,
+.emoji-none:focus-visible {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.emoji-choice.chosen,
+.emoji-none.chosen {
+  background: var(--selected);
+  color: var(--text);
 }
 
 .title-field {
@@ -3429,6 +3526,16 @@ html.reordering * {
   overflow-wrap: anywhere;
 }
 
+.closed-note {
+  align-items: center;
+}
+
+.closed-note .undo-button {
+  flex: none;
+  color: var(--teal);
+  font-weight: 600;
+}
+
 /* Split between the chat and the file view. The file view takes its share of the window, set
    in `--file-view-share` on the app. The chat's basis is 0, so when space runs short the file
    view alone shrinks, down to its own minimum, and the chat keeps its minimum width. */
@@ -3551,8 +3658,9 @@ html.splitting * {
   color: var(--text);
 }
 
-/* Focused by a click, for Ctrl+W, without a ring around the whole view. */
-.file-view:focus {
+/* Focused by a click, for Ctrl+W and the scrolling keys, without a ring around the view. */
+.file-view:focus,
+.file-body:focus {
   outline: none;
 }
 
@@ -3832,11 +3940,96 @@ html.splitting * {
   padding: 14px 12px 8px 20px;
 }
 
+.dialog.close-agent {
+  width: 440px;
+}
+
+.dialog-text {
+  margin: 0;
+  padding: 4px 20px 18px;
+  color: var(--text-soft);
+}
+
+.dialog.close-agent .dialog-actions {
+  padding: 0 16px 16px;
+}
+
 .dialog-head h2 {
   flex: 1 1 auto;
   margin: 0;
   font-size: 16px;
   font-weight: 600;
+}
+
+/* The "Open file" dialog: a path field over the entries of the folder it names. */
+
+.dialog.open-file {
+  width: 640px;
+}
+
+.open-file-path {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 20px 12px;
+}
+
+.open-file-path .folder-field {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.open-file-list {
+  max-height: 420px;
+  border-top: 1px solid var(--line-divider);
+}
+
+.open-file-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+  padding: 0 10px;
+  color: var(--muted);
+}
+
+.switcher-row.open-file-row {
+  min-height: 32px;
+  color: var(--muted);
+}
+
+.open-file-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.open-file-link {
+  flex: none;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.open-file-size {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.open-file-section {
+  padding: 10px 10px 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.open-file-row.placeholder {
+  cursor: default;
 }
 
 .dialog-tabs {
@@ -4375,8 +4568,19 @@ label.icon-button,
   color: var(--text-soft);
 }
 
-.agent-row.selected:hover {
+.agent-row.selected:hover,
+.row-wrap.selected:hover > .agent-row {
   background: #2c2c2c;
+}
+
+/* The row keeps its hover while the pointer is on its close button. */
+.row-wrap:hover > .agent-row:not(.selected) {
+  background: #1c1c1c;
+}
+
+.row-close:hover {
+  background: var(--raised-hover);
+  color: var(--text);
 }
 
 .filter-chip:not(.chosen):hover {
