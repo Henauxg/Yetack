@@ -45,10 +45,11 @@ pub use machine_load::{
 };
 pub use position::{Placed, Position, list_order, move_agent, place_on_top};
 pub use request::{
-    AgentParams, Answer, AnswerParams, CancelQueuedParams, FindFilesParams, HistoryParams,
-    ListDirParams, MAX_TITLE_CHARS, McpRemoveParams, McpServerParams, McpToggleParams, Method,
-    MoveParams, Prompt, PromptParams, ReadFileParams, RenameParams, Request, SessionResumeParams,
-    SetEffortParams, SetModeParams, SetModelParams, StartParams, StopProcessParams, StopTaskParams,
+    AgentParams, Answer, AnswerParams, CancelQueuedParams, FindFilesParams, FoldersListParams,
+    HistoryParams, ListDirParams, MAX_TITLE_CHARS, McpRemoveParams, McpServerParams,
+    McpToggleParams, Method, MoveParams, Prompt, PromptParams, ReadFileParams, RenameParams,
+    Request, SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, StartParams,
+    StopProcessParams, StopTaskParams,
 };
 pub use response::{
     DirEntry, DirListing, EntryKind, ErrorBody, ErrorCode, HistoryPage, PastSession, ResponseBody,

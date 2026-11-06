@@ -151,7 +151,7 @@ Transcripts are not in the snapshot: the app asks for an agent's transcript with
 
 ### Requests
 
-`agent.start`, `agent.prompt`, `agent.cancel_queued`, `agent.answer` (approval, question or plan), `agent.interrupt`, `agent.stop`, `agent.resume`, `agent.remove` (an exited agent), `agent.close` (any agent), `agent.history`, `agent.details`, `agent.set_model`, `agent.set_effort`, `agent.set_mode`, `agent.rename`, `agent.move` (the agent goes just above `before`, or to the bottom when `before` is `null`), `agent.context_usage`, `agent.stop_task`, `agent.mcp_status`, `agent.mcp_reconnect`, `agent.mcp_toggle`, `agent.commands` (slash commands and skills), `agent.read_file` (the file view), `agent.list_dir` and `agent.find_files` (the "Open file" dialog), `agent.stop_process` (one of the agent's commands), `mcp.remove` (with the agent, whose folder decides the project and local scopes), `settings.set`, `sessions.list`, `sessions.resume`, `machine.load` (see [Machine load](#machine-load)).
+`agent.start`, `agent.prompt`, `agent.cancel_queued`, `agent.answer` (approval, question or plan), `agent.interrupt`, `agent.stop`, `agent.resume`, `agent.remove` (an exited agent), `agent.close` (any agent), `agent.history`, `agent.details`, `agent.set_model`, `agent.set_effort`, `agent.set_mode`, `agent.rename`, `agent.move` (the agent goes just above `before`, or to the bottom when `before` is `null`), `agent.context_usage`, `agent.stop_task`, `agent.mcp_status`, `agent.mcp_reconnect`, `agent.mcp_toggle`, `agent.commands` (slash commands and skills), `agent.read_file` (the file view), `agent.list_dir` and `agent.find_files` (the "Open file" dialog), `agent.stop_process` (one of the agent's commands), `mcp.remove` (with the agent, whose folder decides the project and local scopes), `settings.set`, `sessions.list`, `sessions.resume`, `folders.list` (the new agent dialog's folder field), `machine.load` (see [Machine load](#machine-load)).
 
 `agent.close` ends an agent whatever its process does, in one request.
 `agent.stop` then `agent.remove` would not do it: `remove` refuses an agent whose process still runs, and the process exits some time after `stop` closes its stdin.
@@ -165,6 +165,13 @@ The daemon and the app run as the same user, and the agent's commands already re
 - `agent.read_file` sends a text file of at most 4 MiB. A relative path that names no file in the agent's folder is looked up: the most recent file the agent read or changed whose path ends with it, then a `git ls-files` search of the folders above, which stops at 20 matches or 3 seconds. Several matches come back as `FileMatches`, for the user to pick.
 - `agent.list_dir` answers a folder's entries, folders first, each with its kind (folder, file or other), a file's size, and whether it is a symbolic link. It reads at most 20,000 entries and sends at most 2,000, and says when it cut the list. It runs off the hub's task.
 - `agent.find_files` answers the files whose name holds a text, whatever its case, from the same bounded search.
+
+`folders.list` answers the folders inside a folder, for the new agent dialog, as a `Directory` that holds folders alone.
+It reaches any folder the daemon's user can read, since an agent can start in any of them, and it sends no file names.
+It refuses a relative path, and one that starts with `~`, as `agent.start` does.
+It keeps the bounds of `agent.list_dir`: it reads at most 20,000 entries, files included, sends at most 2,000 folders, and says when it cut the list.
+A symbolic link to a folder counts as a folder, and a hidden folder lists as any other.
+It runs off the hub's task.
 
 A history page is limited by bytes as well as by count: images travel inline, and a line over the framing maximum is refused.
 An item too large for any response comes as a `Notice` that says so, under the item's id, so paging moves on.
@@ -335,6 +342,10 @@ When the process ends and its pid goes to another one during the check, the sign
   Its card shows the server's CPU, memory and load average, each agent's cores and memory with their share of the server's cores as a bar (amber past a quarter), the idle agents folded into one line, what the other processes use, and the selected agent's heaviest commands, each with a stop button.
   A click on an agent opens it and keeps the card open.
   A daemon that cannot measure its load, or does not know the request, shows "Load unknown".
+- **New agent dialog**: the folder field works as the "Open file" dialog's path field.
+  Once it is typed in, the folders of the folder its text names (`folders.list`) take the recent folders' place, filtered by the last segment.
+  Tab or Enter completes the highlighted folder, Backspace on an empty segment goes up, and Esc brings the recent folders back.
+  A text that names no absolute folder lists nothing.
 - **Rendering**: markdown with `pulldown-cmark`, syntax colors with `syntect` (Rust, SQL, Markdown, JSON, Bash, Nix), diffs with `similar` (line diff, then word highlights inside changed lines).
 - **Renaming in the sidebar**: F2, or a double-click on a row's title, turns the selected agent's row title into a field, as the header's pencil does for the header's title.
   Enter or leaving the field saves with `agent.rename`, and Esc cancels.

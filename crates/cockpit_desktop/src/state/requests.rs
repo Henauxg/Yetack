@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use cockpit_client::RequestError;
 use cockpit_protocol::{
-    AgentDetails, AgentId, AgentParams, ErrorCode, FindFilesParams, HistoryParams, ItemId,
-    ListDirParams, Method, Position, ReadFileParams, Request, ResponseBody,
+    AgentDetails, AgentId, AgentParams, ErrorCode, FindFilesParams, FoldersListParams,
+    HistoryParams, ItemId, ListDirParams, Method, Position, ReadFileParams, Request, ResponseBody,
 };
 
 use super::actions;
@@ -59,6 +59,10 @@ pub enum Purpose {
         agent: AgentId,
         name: String,
     },
+    /// The folders under the new agent dialog's folder field.
+    Folders {
+        folder: PathBuf,
+    },
     /// `agent.start` or `sessions.resume`: the new agent opens.
     Start,
     /// The draft comes back to the composer when the prompt fails.
@@ -98,7 +102,8 @@ impl Outgoing {
 }
 
 /// The requests the open views need and that are not on their way yet: the selected agent's
-/// history, details and open file, and the past sessions while the new agent dialog is open.
+/// history, details and open file, and the past sessions and the folder field's list while the new
+/// agent dialog is open.
 pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
     let mut requests = Vec::new();
     if !state.is_connected() {
@@ -123,6 +128,19 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
         requests.push(Outgoing {
             request: Request::SessionsList,
             purpose: Purpose::Sessions,
+        });
+    }
+    if let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog
+        && let Some(list) = &mut form.folders
+        && list.listing == Loadable::NotRequested
+    {
+        list.listing = Loadable::Loading;
+        let folder = list.folder.clone();
+        requests.push(Outgoing {
+            request: Request::FoldersList(FoldersListParams {
+                path: folder.clone(),
+            }),
+            purpose: Purpose::Folders { folder },
         });
     }
     if let Some(Dialog::OpenFile(view)) = &mut state.ui.dialog {
@@ -344,6 +362,17 @@ pub fn apply_response(
                 };
             }
         }
+        Purpose::Folders { folder } => {
+            if let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog
+                && let Some(list) = &mut form.folders
+                && list.folder == folder
+            {
+                list.listing = match result {
+                    Ok(ResponseBody::Directory(listing)) => Loadable::Loaded(listing),
+                    other => Failure::from_result(other).into_loadable(),
+                };
+            }
+        }
         Purpose::Start => match result {
             Ok(ResponseBody::AgentStarted { agent }) => {
                 actions::select_agent(state, agent);
@@ -555,6 +584,61 @@ mod tests {
             panic!("the dialog stays open");
         };
         assert!(matches!(view.listing, Loadable::Loaded(_)));
+    }
+
+    #[test]
+    fn the_folder_field_asks_for_its_folder_once_and_drops_a_late_answer() {
+        let mut state = connected_with_selection();
+        let mut drafts = Drafts::default();
+        needed_requests(&mut state);
+        actions::open_new_agent(&mut state, &mut drafts);
+        assert_eq!(
+            methods(&needed_requests(&mut state)),
+            [Method::SessionsList]
+        );
+        drafts.new_agent.folder = "/home/dev/".to_owned();
+        crate::state::folder_field::follow(&mut state, &drafts);
+
+        let first = needed_requests(&mut state);
+        let second = needed_requests(&mut state);
+
+        assert_eq!(
+            first,
+            [Outgoing {
+                request: Request::FoldersList(FoldersListParams {
+                    path: PathBuf::from("/home/dev"),
+                }),
+                purpose: Purpose::Folders {
+                    folder: PathBuf::from("/home/dev"),
+                },
+            }]
+        );
+        assert!(second.is_empty());
+        let answer = |state: &mut AppState, folder: &str| {
+            let listing = DirListing {
+                path: PathBuf::from(folder),
+                entries: Vec::new(),
+                truncated: false,
+            };
+            apply_response(
+                state,
+                &mut Drafts::default(),
+                Method::FoldersList,
+                Purpose::Folders {
+                    folder: PathBuf::from(folder),
+                },
+                Ok(ResponseBody::Directory(listing)),
+            );
+        };
+        let listing = |state: &AppState| match &state.ui.dialog {
+            Some(Dialog::NewAgent(form)) => form.folders.as_ref().map(|list| list.listing.clone()),
+            _ => None,
+        };
+        answer(&mut state, "/home");
+        assert_eq!(listing(&state), Some(Loadable::Loading));
+
+        answer(&mut state, "/home/dev");
+        assert!(matches!(listing(&state), Some(Loadable::Loaded(_))));
     }
 
     #[test]

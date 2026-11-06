@@ -105,22 +105,31 @@ pub fn rows<'view>(view: &'view OpenFileView, text: &str) -> Vec<Row<'view>> {
         rows.push(Row::Up);
     }
     if let Some(listing) = view.listing.loaded() {
-        let needle = segment.to_lowercase();
-        let named = |entry: &&DirEntry| entry.name.to_lowercase();
-        let starting = listing
-            .entries
-            .iter()
-            .filter(|entry| named(entry).starts_with(&needle));
-        let holding = listing.entries.iter().filter(|entry| {
-            let name = named(entry);
-            !name.starts_with(&needle) && name.contains(&needle)
-        });
-        rows.extend(starting.chain(holding).map(Row::Entry));
+        rows.extend(
+            matching(&listing.entries, segment)
+                .into_iter()
+                .map(Row::Entry),
+        );
     }
     if let Some((_, Loadable::Loaded(matches))) = &view.search {
         rows.extend(matches.iter().map(|path| Row::Match(path)));
     }
     rows
+}
+
+/// The entries a last segment keeps: those whose name starts with it first, then those that hold
+/// it, whatever the case.
+pub fn matching<'entries>(entries: &'entries [DirEntry], segment: &str) -> Vec<&'entries DirEntry> {
+    let needle = segment.to_lowercase();
+    let named = |entry: &&DirEntry| entry.name.to_lowercase();
+    let starting = entries
+        .iter()
+        .filter(|entry| named(entry).starts_with(&needle));
+    let holding = entries.iter().filter(|entry| {
+        let name = named(entry);
+        !name.starts_with(&needle) && name.contains(&needle)
+    });
+    starting.chain(holding).collect()
 }
 
 fn view(state: &AppState) -> Option<&OpenFileView> {

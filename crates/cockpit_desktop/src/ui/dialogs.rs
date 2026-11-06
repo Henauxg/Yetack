@@ -12,10 +12,13 @@ use crate::bridge::{self, FOLDER_FIELD_ID};
 use crate::connection::{Clock, Cockpit};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::state::actions::Direction;
-use crate::state::{Dialog, FormMenu, Loadable, NewAgentForm, NewAgentTab, actions};
+use crate::state::folder_field::{self, FolderRow};
+use crate::state::{
+    Dialog, FolderList, FormMenu, Loadable, NewAgentForm, NewAgentTab, actions, open_file,
+};
 use crate::ui::composer::mode_icon;
 use crate::ui::icons::{Icon, IconKind};
-use crate::ui::open_file::OpenFileDialog;
+use crate::ui::open_file::{self as open_file_view, OpenFileDialog, UP_ROW};
 use crate::ui::presence::{Presence, Shown, use_presence};
 
 /// Recent folders the new agent dialog offers.
@@ -23,6 +26,9 @@ const RECENT_FOLDERS: usize = 6;
 
 /// The widths of the rows that stand for folders and sessions on their way.
 const PLACEHOLDER_WIDTHS: [&str; RECENT_FOLDERS] = ["72%", "58%", "66%", "50%", "62%", "54%"];
+
+/// The widths of the rows that stand for the folder field's folders on their way.
+const FOLDER_LOADING_ROWS: [&str; 4] = ["34%", "22%", "46%", "28%"];
 
 /// What the menu buttons say when the form keeps Claude Code's default.
 const DEFAULT_MODEL: &str = "Default model";
@@ -362,12 +368,20 @@ fn StartForm(form: NewAgentForm) -> Element {
                         spellcheck: false,
                         placeholder: "Type the folder's path, or pick a recent folder below",
                         initial_value: "{folder_seed}",
-                        oninput: move |event: FormEvent| cockpit.with_drafts(|_, drafts| drafts.new_agent.folder = event.value()),
-                        onkeydown: start_on_command_enter,
+                        oninput: move |event: FormEvent| type_folder(cockpit, event.value()),
+                        onkeydown: move |event: KeyboardEvent| {
+                            if event.modifiers().ctrl() || event.modifiers().meta() {
+                                start_on_command_enter(event);
+                            } else {
+                                folder_key(cockpit, &event);
+                            }
+                        },
                     }
                 }
             }
-            if !folders.is_empty() || placeholders > 0 {
+            if let Some(list) = form.folders.clone() {
+                FolderRows { list }
+            } else if !folders.is_empty() || placeholders > 0 {
                 div { class: "field-group",
                     span { class: "field-label loading-note",
                         "Recent folders"
@@ -481,6 +495,153 @@ fn StartForm(form: NewAgentForm) -> Element {
             }
         }
     }
+}
+
+/// The folders of the folder the field names, in the recent folders' place.
+#[component]
+fn FolderRows(list: FolderList) -> Element {
+    let cockpit: Cockpit = use_context();
+    let (text, highlighted) = {
+        let drafts = cockpit.drafts.read();
+        (
+            drafts.new_agent.folder.clone(),
+            drafts.new_agent.folder_highlighted,
+        )
+    };
+    let rows = folder_field::rows(&list, &text);
+    let segment = open_file::split(&text).1.to_owned();
+    let folder_rows = rows
+        .iter()
+        .filter(|row| matches!(row, FolderRow::Folder(_)))
+        .count();
+    rsx! {
+        div { class: "field-group",
+            span { class: "field-label", "Folders" }
+            div { class: "dialog-list folder-browse scroll", role: "listbox", aria_label: "Folders",
+                for (index, row) in rows.iter().enumerate() {
+                    {folder_row(cockpit, *row, index, highlighted == Some(index))}
+                }
+                match &list.listing {
+                    Loadable::NotRequested | Loadable::Loading => rsx! {
+                        for width in FOLDER_LOADING_ROWS {
+                            div { class: "open-file-row placeholder", aria_hidden: true,
+                                span { class: "skeleton", style: "width: 14px; height: 14px" }
+                                span { class: "skeleton skeleton-line", style: "width: {width}" }
+                            }
+                        }
+                    },
+                    Loadable::Failed(error) => rsx! {
+                        span { class: "dialog-empty", "{open_file_view::sentence(error)}" }
+                    },
+                    Loadable::Loaded(listing) => rsx! {
+                        if folder_rows == 0 {
+                            span { class: "dialog-empty",
+                                if segment.is_empty() {
+                                    "This folder holds no folder."
+                                } else {
+                                    "No folder here holds \"{segment}\"."
+                                }
+                            }
+                        }
+                        if listing.truncated {
+                            span { class: "dialog-empty",
+                                "This folder holds too many entries: some folders are left out."
+                            }
+                        }
+                    },
+                }
+            }
+            span { class: "dialog-note",
+                "Tab to complete, Backspace to go up, Esc for the recent folders"
+            }
+        }
+    }
+}
+
+fn folder_row(cockpit: Cockpit, row: FolderRow<'_>, index: usize, highlighted: bool) -> Element {
+    let class = if highlighted {
+        "switcher-row open-file-row highlighted"
+    } else {
+        "switcher-row open-file-row"
+    };
+    let click = move |_| {
+        take_folder(cockpit, Some(index));
+    };
+    match row {
+        FolderRow::Up => rsx! {
+            button { key: "{UP_ROW}", class, onclick: click,
+                Icon { kind: IconKind::Folder, size: 14 }
+                span { class: "open-file-name mono", "{UP_ROW}" }
+            }
+        },
+        FolderRow::Folder(entry) => open_file_view::entry_view(entry, class, click),
+    }
+}
+
+/// Keeps the typed folder, and lists the folder it names when that changes.
+fn type_folder(cockpit: Cockpit, text: String) {
+    let follow =
+        cockpit.with_drafts(|state, drafts| folder_field::type_folder(state, drafts, text));
+    if follow {
+        cockpit.update_with_drafts(|state, drafts| folder_field::follow(state, drafts));
+    }
+}
+
+/// The folder field's keys, as the "Open file" dialog's path field has them.
+fn folder_key(cockpit: Cockpit, event: &KeyboardEvent) {
+    if event.modifiers().alt() {
+        return;
+    }
+    let direction = match event.key() {
+        Key::ArrowDown => Direction::Down,
+        Key::ArrowUp => Direction::Up,
+        Key::Tab if !event.modifiers().shift() => {
+            // With no row to take, Tab moves the focus as usual.
+            if take_folder(cockpit, None) {
+                event.prevent_default();
+            }
+            return;
+        }
+        Key::Enter => {
+            event.prevent_default();
+            take_folder(cockpit, None);
+            return;
+        }
+        Key::Backspace => {
+            if let Some(text) = cockpit.with_drafts(|_, drafts| folder_field::text_above(drafts)) {
+                event.prevent_default();
+                cockpit.update_with_drafts(|state, drafts| {
+                    folder_field::set_text(state, drafts, text.clone())
+                });
+                bridge::set_field_text(FOLDER_FIELD_ID, text);
+            }
+            return;
+        }
+        _ => return,
+    };
+    // The keys move the highlight, and the field's caret stays. The first opens the list.
+    event.prevent_default();
+    if cockpit.with_drafts(|state, _| folder_field::list(state).is_none()) {
+        cockpit.update_with_drafts(|state, drafts| folder_field::follow(state, drafts));
+    } else {
+        cockpit.with_drafts(|state, drafts| folder_field::move_highlight(state, drafts, direction));
+        bridge::scroll_to_highlighted();
+    }
+}
+
+/// Takes a row, or the highlighted one, and puts the field's new text in it. A click took the
+/// focus from the field: it goes back there. Returns whether a row was taken.
+fn take_folder(cockpit: Cockpit, index: Option<usize>) -> bool {
+    let mut new_text = None;
+    cockpit.update_with_drafts(|state, drafts| {
+        new_text = folder_field::take(state, drafts, index);
+    });
+    let Some(text) = new_text else {
+        return false;
+    };
+    bridge::set_field_text(FOLDER_FIELD_ID, text);
+    bridge::focus_field_at_end(FOLDER_FIELD_ID);
+    true
 }
 
 /// The composer's model menu, for the form: with "Default", and without a running agent.

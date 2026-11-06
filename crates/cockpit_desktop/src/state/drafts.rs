@@ -51,6 +51,8 @@ pub struct Palette {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NewAgentDraft {
     pub folder: String,
+    /// An index into the rows under the folder field. `None` until a filter or a key picks a row.
+    pub folder_highlighted: Option<usize>,
     /// The first message.
     pub prompt: String,
     /// What the "Resume a session" tab's search field holds.

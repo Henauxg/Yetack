@@ -77,7 +77,8 @@ pub enum ResponseBody {
 /// A folder's entries: its folders first, then its other entries, each group by name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DirListing {
-    /// The folder listed, absolute: the path asked for, joined to the agent's folder when relative.
+    /// The folder listed, absolute: the path asked for, joined to the agent's folder when relative
+    /// for `agent.list_dir`.
     pub path: PathBuf,
     pub entries: Vec<DirEntry>,
     /// The folder holds more entries than the listing's cap: some are left out.
