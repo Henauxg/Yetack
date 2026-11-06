@@ -242,6 +242,7 @@ The binary owns the rest of what a separate process needs: the SIGTERM and Ctrl+
 - No socket listens, so the peer check does not apply. Only the app holds the channel's sending end, and an agent's command, the threat the peer check is for (plan.md, "Security"), has no endpoint to connect to.
 - `InAppDaemon::shutdown` stops it as a service's stop does: it stops the hub, then shuts the runtime down, which drops the process tasks and kills each `claude`'s process group, or on Windows its Job Object.
   The agents stay marked as running, so the next daemon resumes them, and a turn the stop cut off carries on.
+  When the app dies instead, the next daemon first stops the `claude` processes left running (see [Store](#store)).
   It waits at most the given time for tasks that block, then releases the lock.
   It blocks, so the app calls it from a thread outside any runtime.
 
@@ -300,7 +301,7 @@ Everything lives in `$XDG_STATE_HOME/agents-cockpit/` (default `~/.local/state/a
 
 - `agents-cockpit.sock`: the socket, mode 600;
 - `serve.lock`: held while a daemon runs, the background service or the app's own, so a second daemon refuses to start and a leftover socket is safe to delete;
-- `agents.json`: one entry per agent (id, title, folder, Claude session id, model, effort, mode, position in the list, and for an agent made from a past session the part of the session file it shows), written atomically (write to a temporary file, then rename);
+- `agents.json`: one entry per agent (id, title, folder, Claude session id, model, effort, mode, position in the list, for an agent made from a past session the part of the session file it shows, and while its `claude` runs, that process's id and start time), written atomically (write to a temporary file, then rename);
 - `settings.json`: the hidden MCP servers and other daemon-side settings;
 - `events/<agent-id>.jsonl`: the agent's cockpit events, each with its `Seq`, appended;
 - `raw/<agent-id>.jsonl`: every line exchanged with `claude`, for debugging.
@@ -310,6 +311,15 @@ It creates each folder with mode 700 and each file with mode 600.
 The socket gets mode 600 right after the bind; until then, the 700 folder keeps other users away from it.
 
 On start the daemon reads `agents.json`, finds the last `Seq` in the logs, and resumes each agent that was running with `--resume`.
+
+A daemon that dies without stopping its agents (a forced kill, a crash, no memory left) leaves each `claude` running: its stdin closed, so it exits by itself, but once its turn ends, with its builds still running.
+A daemon that resumed the session meanwhile would run two `claude` on one session.
+So before any agent resumes, `Daemon::prepare`, shared by `serve` and the daemon in the app, stops each recorded process that still runs with the recorded start time (the kernel's clock ticks after boot from `/proc/<pid>/stat` on Linux, the creation time from `GetProcessTimes` on Windows), and logs it.
+On Unix, it sends SIGTERM to the process's group, waits up to 5 seconds for `claude` to end, then sends SIGKILL to the group.
+On Windows, a `claude` in a job died with the daemon, so only one that ran without a job can be left: `TerminateProcess` ends it alone.
+A process with the recorded id and another start time took the id since, and is left alone.
+The record is written when `claude` starts and cleared when it exits; a file without it reads as no process.
+A Unix without `/proc`, such as macOS, records nothing.
 
 ### Past sessions
 

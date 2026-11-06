@@ -64,6 +64,13 @@ impl OpenedProcess {
         unsafe { WaitForSingleObject(self.raw(), 0) == WAIT_OBJECT_0 }
     }
 
+    /// Waits up to `limit` for the process to end. Needs `PROCESS_SYNCHRONIZE`.
+    pub(super) fn wait(&self, limit: std::time::Duration) {
+        let milliseconds = u32::try_from(limit.as_millis()).unwrap_or(u32::MAX);
+        // SAFETY: the handle is open.
+        unsafe { WaitForSingleObject(self.raw(), milliseconds) };
+    }
+
     /// Needs `PROCESS_QUERY_LIMITED_INFORMATION`.
     pub(super) fn times(&self) -> io::Result<ProcessTimes> {
         let mut started = FILETIME::default();

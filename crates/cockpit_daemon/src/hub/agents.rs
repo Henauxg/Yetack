@@ -15,6 +15,7 @@ use cockpit_protocol::{
 use crate::hub::input::{ControlPurpose, HubInput, Reply};
 use crate::hub::state::{Agent, Hub, QueuedPrompt};
 use crate::hub::{errors, state};
+use crate::machine_load;
 use crate::process::{ClaudeCommand, InterruptedTurn, ProcessEvent};
 use crate::sessions;
 use crate::sessions::FoundSession;
@@ -64,6 +65,7 @@ impl Hub {
             started_at: state::now(),
             past: None,
             position: Position::default(),
+            process: None,
         };
         let agent = self.add_agent(record, params.prompt, None)?;
         Ok(ResponseBody::AgentStarted { agent })
@@ -163,6 +165,7 @@ impl Hub {
             purpose.fail(errors::agent_exited(id));
         }
         agent.generation = generation;
+        agent.record.process = handle.pid().and_then(machine_load::record_process);
         agent.process = Some(handle);
         match command.resume {
             Some(session) => {
@@ -171,6 +174,7 @@ impl Hub {
             }
             None => agent.view.process_started(ProcessSession::New),
         }
+        self.save_agents();
         Ok(())
     }
 
@@ -297,6 +301,7 @@ impl Hub {
             return;
         };
         agent.process = None;
+        let recorded = agent.record.process.take().is_some();
         for queued in agent.queue.drain(..) {
             if let Some(item) = queued.item {
                 agent.view.cancel_queued(item);
@@ -304,6 +309,9 @@ impl Hub {
         }
         agent.view.process_exited(notice, state::now());
         self.publish(id);
+        if recorded {
+            self.save_agents();
+        }
     }
 
     /// Sends a prompt now, or queues it while the agent works.
@@ -571,6 +579,7 @@ impl Hub {
             started_at: state::now(),
             past: Some(past.file),
             position: Position::default(),
+            process: None,
         };
         let agent = self.add_agent(record, None, Some(past.items))?;
         Ok(ResponseBody::AgentStarted { agent })

@@ -125,6 +125,7 @@ mod tests {
             started_at: Timestamp::from_unix_millis(0),
             past: None,
             position: Position::default(),
+            process: None,
         }
     }
 

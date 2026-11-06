@@ -9,6 +9,8 @@
 //! On Windows, it reads the server's totals from `GetSystemTimes` and `GlobalMemoryStatusEx`, and
 //! each agent's figures from its Job Object, which holds every process the agent runs. A stop
 //! ends a process of the agent's job.
+//!
+//! A daemon that starts stops the `claude` a daemon that died left running ([`leftover`]).
 
 mod agent_root;
 mod command_text;
@@ -21,6 +23,7 @@ mod job_sample;
 mod job_sampler;
 #[cfg(unix)]
 mod kept_file;
+mod leftover;
 mod load_sampler;
 #[cfg(windows)]
 mod opened_process;
@@ -44,6 +47,7 @@ pub(crate) use agent_root::AgentRoot;
 use job_reading::LoadError;
 #[cfg(windows)]
 use job_sampler::Sampler;
+pub(crate) use leftover::{record_process, stop_leftovers};
 pub(crate) use load_sampler::LoadSampler;
 #[cfg(unix)]
 pub(crate) use proc_files::{PROC_ROOT, STAT_FILE};

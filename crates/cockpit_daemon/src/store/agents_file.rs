@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use cockpit_protocol::{
-    AgentId, ClaudeSessionId, Effort, PermissionMode, Position, Seq, Timestamp,
+    AgentId, ClaudeSessionId, Effort, PermissionMode, Position, ProcessId, Seq, Timestamp,
 };
 use serde::{Deserialize, Serialize};
 
@@ -41,6 +41,19 @@ pub(crate) struct AgentRecord {
     /// every agent, which lists them newest first.
     #[serde(default)]
     pub(crate) position: Position,
+    /// The agent's `claude` while it runs, so that a daemon started after a crash stops the one
+    /// its predecessor left. `None` once it exited, and in a file saved before it existed.
+    #[serde(default)]
+    pub(crate) process: Option<RecordedProcess>,
+}
+
+/// A process, told apart from a later one that reuses its id by when it started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct RecordedProcess {
+    pub(crate) pid: ProcessId,
+    /// In the system's own unit: clock ticks after boot on Linux, 100 ns units since 1601 on
+    /// Windows.
+    pub(crate) started: u64,
 }
 
 /// The start of a session file, as it was when an agent took the session over. Claude Code only
@@ -97,7 +110,11 @@ mod tests {
         "session": "session-a",
         "bytes": 52000
       },
-      "position": 2048
+      "position": 2048,
+      "process": {
+        "pid": 4242,
+        "started": 987654
+      }
     }
   ]
 }
@@ -122,6 +139,10 @@ mod tests {
                     bytes: 52_000,
                 }),
                 position: Position::new(2048),
+                process: Some(RecordedProcess {
+                    pid: ProcessId::new(4242),
+                    started: 987_654,
+                }),
             }],
         }
     }
@@ -158,13 +179,33 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_saved_without_a_process_still_loads() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("agents.json");
+        let without_process = AGENTS_JSON.replace(
+            r#",
+      "process": {
+        "pid": 4242,
+        "started": 987654
+      }"#,
+            "",
+        );
+        assert_ne!(without_process, AGENTS_JSON);
+        std::fs::write(&path, without_process).unwrap();
+
+        let file = AgentsFile::load(&path).unwrap();
+
+        assert_eq!(file.agents[0].process, None);
+    }
+
+    #[test]
     fn an_agent_saved_without_a_position_still_loads() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("agents.json");
         let without_position = AGENTS_JSON.replace(
             r#",
-      "position": 2048"#,
-            "",
+      "position": 2048,"#,
+            ",",
         );
         assert_ne!(without_position, AGENTS_JSON);
         std::fs::write(&path, without_position).unwrap();
