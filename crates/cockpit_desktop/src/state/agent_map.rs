@@ -1,8 +1,8 @@
 //! The agent map: an outline of the selected agent and every subagent it started, folded so that
 //! many subagents stay readable, and the keys that move in it.
 //!
-//! - The outline shows the current turn's subagents, and those of earlier turns that still run.
-//!   The other earlier ones fold into one row.
+//! - The outline shows the current turn's subagents, and those of earlier turns that still run
+//!   or hold one that does. The other earlier ones fold into one row.
 //! - A subagent whose subtree holds no running or failed subagent starts folded.
 //! - Past `SIBLING_CAP` siblings, the ended ones that did not fail fold into one row.
 //! - The filter shows only the running and failed subagents, with the ones above them.
@@ -144,6 +144,8 @@ struct Tree<'list> {
     children: BTreeMap<Option<ItemId>, Vec<&'list Subagent>>,
     /// The subagents whose subtree holds a running or failed subagent, themselves included.
     lively: BTreeSet<ItemId>,
+    /// The subagents whose subtree holds a running subagent, themselves included.
+    running: BTreeSet<ItemId>,
 }
 
 impl<'list> Tree<'list> {
@@ -159,31 +161,47 @@ impl<'list> Tree<'list> {
                 .filter(|parent| *parent != subagent.item && by_item.contains_key(parent));
             children.entry(parent).or_default().push(subagent);
         }
-        let mut lively = BTreeSet::new();
-        for subagent in subagents {
-            if !is_lively(subagent) {
-                continue;
-            }
-            // Bounded by the list's length, so that parents in a cycle end the walk.
-            let mut next = Some(subagent);
-            for _ in 0..subagents.len() {
-                let Some(current) = next else {
-                    break;
-                };
-                if !lively.insert(current.item) {
-                    break;
-                }
-                next = current
-                    .parent
-                    .and_then(|parent| by_item.get(&parent).copied());
-            }
+        Self {
+            children,
+            lively: with_ancestors(subagents, &by_item, is_lively),
+            running: with_ancestors(subagents, &by_item, |subagent| subagent.status.is_running()),
         }
-        Self { children, lively }
     }
 
     fn children(&self, parent: Option<ItemId>) -> &[&'list Subagent] {
         self.children.get(&parent).map_or(&[], Vec::as_slice)
     }
+
+    /// Whether a subagent the agent started shows among the current turn's: one of an earlier
+    /// turn does while a subagent under it runs.
+    fn in_turn(&self, subagent: &Subagent, turn: u32) -> bool {
+        in_current_turn(subagent, turn) || self.running.contains(&subagent.item)
+    }
+}
+
+/// The subagents that `pick` takes, and every subagent above them.
+fn with_ancestors(
+    subagents: &[Subagent],
+    by_item: &BTreeMap<ItemId, &Subagent>,
+    pick: impl Fn(&Subagent) -> bool,
+) -> BTreeSet<ItemId> {
+    let mut found = BTreeSet::new();
+    for subagent in subagents.iter().filter(|subagent| pick(subagent)) {
+        // Bounded by the list's length, so that parents in a cycle end the walk.
+        let mut next = Some(subagent);
+        for _ in 0..subagents.len() {
+            let Some(current) = next else {
+                break;
+            };
+            if !found.insert(current.item) {
+                break;
+            }
+            next = current
+                .parent
+                .and_then(|parent| by_item.get(&parent).copied());
+        }
+    }
+    found
 }
 
 fn is_lively(subagent: &Subagent) -> bool {
@@ -208,7 +226,7 @@ pub fn outline<'list>(
     let (current, earlier): (Vec<&Subagent>, Vec<&Subagent>) = builder
         .shown(tree.children(None))
         .into_iter()
-        .partition(|subagent| in_current_turn(subagent, turn));
+        .partition(|subagent| tree.in_turn(subagent, turn));
     builder.push_level(&mut rows, Level::Turn, &current, 1, MapRow::Agent);
     if !earlier.is_empty() {
         let turns: BTreeSet<u32> = earlier.iter().map(|subagent| subagent.turn).collect();
@@ -514,7 +532,7 @@ pub fn reveal(view: &mut MapView, subagents: &[Subagent], turn: u32, item: ItemI
             Some(_) | None => break,
         }
     }
-    let level = if in_current_turn(current, turn) {
+    let level = if tree.in_turn(current, turn) {
         Level::Turn
     } else {
         view.earlier_open = true;
@@ -889,6 +907,25 @@ mod tests {
             shape(&subagents, &unfolded),
             ["agent", " -1", "  2", " +3", " -5", "  6"]
         );
+    }
+
+    #[test]
+    fn an_earlier_subagent_whose_subagent_still_runs_shows_in_the_turn() {
+        let subagents = [
+            in_turn(1, subagent(1, None, Done)),
+            in_turn(1, subagent(2, Some(1), Running)),
+            in_turn(1, subagent(3, None, Done)),
+        ];
+        let mut view = view();
+
+        assert_eq!(
+            shape(&subagents, &view),
+            ["agent", " -1", "  2", " +earlier 1/1"]
+        );
+
+        reveal(&mut view, &subagents, TURN, ItemId::new(2));
+        assert!(!view.earlier_open, "it is not among the earlier ones");
+        assert_eq!(view.selected, row(2));
     }
 
     #[test]
