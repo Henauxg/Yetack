@@ -13,6 +13,7 @@
 //!   `initialize`.
 //! - `/model <model>`: uses that model from the next turn on, as Claude Code does.
 //! - `usage <utilization>`: reports that utilization of the five-hour window, then answers.
+//! - `nologin`: fails as Claude Code does when its folder holds no login.
 //! - anything else: answers "Echo: <prompt>".
 //!
 //! Its `get_settings` answer applies the `--effort` it was given, or else a default that depends
@@ -362,6 +363,22 @@ impl<W: Write> Fake<W> {
                 }}))?;
                 self.say("Usage reported.")?;
                 self.end_turn()
+            }
+            "nologin" => {
+                self.emit(&json!({
+                    "type": "assistant", "session_id": self.session,
+                    "error": "authentication_failed",
+                    "message": {"model": "<synthetic>", "content": [
+                        {"type": "text", "text": "Not logged in · Please run /login"}
+                    ]}
+                }))?;
+                self.turn = None;
+                self.emit(&json!({
+                    "type": "result", "subtype": "success", "is_error": true, "num_turns": 1,
+                    "result": "Not logged in · Please run /login", "total_cost_usd": self.total_cost,
+                    "session_id": self.session
+                }))?;
+                self.next_queued()
             }
             _ => {
                 self.say(&format!("Echo: {prompt}"))?;

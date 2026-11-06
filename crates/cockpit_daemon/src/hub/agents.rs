@@ -295,6 +295,12 @@ impl Hub {
                     self.send_next_queued(id);
                 }
                 FollowUp::RateLimit(info) => self.plan_usage_reported(account, &info),
+                FollowUp::SignInNeeded => {
+                    let notice = self.sign_in_notice(account);
+                    if let Some(agent) = self.agents.get_mut(&id) {
+                        agent.view.add_notice(notice);
+                    }
+                }
             }
         }
         if session_changed || title_changed {

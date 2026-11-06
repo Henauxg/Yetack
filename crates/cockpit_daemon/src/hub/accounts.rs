@@ -1,5 +1,5 @@
-//! The accounts' requests, and what an agent gets from its account: its folder and its plan
-//! usage.
+//! The accounts' requests, and what an agent gets from its account: its folder, its plan usage,
+//! and the notice that says how to sign in to it.
 
 use std::path::PathBuf;
 
@@ -9,7 +9,9 @@ use cockpit_protocol::{
     ErrorBody, ErrorCode, Event, ResponseBody,
 };
 
-use crate::accounts::{AccountList, SignInShell, account_state, environment_has_api_key};
+use crate::accounts::{
+    API_KEY_ENV, AccountList, SignInShell, account_state, environment_has_api_key, sign_in_command,
+};
 use crate::daemon_config::HOME_ENV;
 use crate::hub::input::Reply;
 use crate::hub::state::Hub;
@@ -140,6 +142,26 @@ impl Hub {
             Event::AccountPlanUsageChanged(AccountPlanUsage { account, usage })
         };
         self.emit(LogName::Daemon, event);
+    }
+
+    /// What the transcript says when Claude Code finds no valid login for the account.
+    pub(super) fn sign_in_notice(&self, id: AccountId) -> String {
+        let Ok(account) = self.account(id) else {
+            return format!(
+                "Claude Code could not sign in, and the agent's account {} no longer exists.",
+                id.get()
+            );
+        };
+        let command = sign_in_command(&account, SignInShell::CURRENT);
+        let name = &account.name;
+        if account.use_environment_api_key && environment_has_api_key() {
+            return format!(
+                "Claude Code refused the API key in the daemon's {API_KEY_ENV}, which the account {name} uses. Check the key, or stop the account from using it and sign in with this command in a terminal on the daemon's machine: {command}"
+            );
+        }
+        format!(
+            "The account {name} is not signed in, or its login expired. Sign in with this command in a terminal on the daemon's machine, then send your message again: {command}"
+        )
     }
 }
 

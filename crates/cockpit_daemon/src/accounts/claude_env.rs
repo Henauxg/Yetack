@@ -9,7 +9,7 @@ use crate::daemon_config::CLAUDE_CONFIG_DIR_ENV;
 /// A login token that would take the place of any folder's login.
 const OAUTH_TOKEN_ENV: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 /// An API key, which Claude Code prefers to the folder's login.
-const API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
+pub(crate) const API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
 
 /// Whether the daemon's `ANTHROPIC_API_KEY` reaches an account's `claude`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

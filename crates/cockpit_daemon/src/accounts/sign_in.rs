@@ -82,19 +82,23 @@ impl LoginStore {
     }
 }
 
-/// The account, whether its folder holds a login, and how to sign in to it. Looks at the
-/// credentials file's metadata, never at its content: it blocks.
-///
-/// The default account's `claude` gets the daemon's own `CLAUDE_CONFIG_DIR`, so its command sets
-/// the variable only when the daemon's environment does.
-pub(crate) fn account_state(account: Account, shell: SignInShell) -> AccountState {
-    let has_credentials_file = account.folder.join(CREDENTIALS_FILE).is_file();
+/// The command that signs in to the account. The default account's `claude` gets the daemon's
+/// own `CLAUDE_CONFIG_DIR`, so its command sets the variable only when the daemon's environment
+/// does.
+pub(crate) fn sign_in_command(account: &Account, shell: SignInShell) -> String {
     let variable = if account.id.is_default() {
         std::env::var_os(CLAUDE_CONFIG_DIR_ENV).map(|_| account.folder.as_path())
     } else {
         Some(account.folder.as_path())
     };
-    let sign_in_command = shell.command(variable);
+    shell.command(variable)
+}
+
+/// The account, whether its folder holds a login, and how to sign in to it. Looks at the
+/// credentials file's metadata, never at its content: it blocks.
+pub(crate) fn account_state(account: Account, shell: SignInShell) -> AccountState {
+    let has_credentials_file = account.folder.join(CREDENTIALS_FILE).is_file();
+    let sign_in_command = sign_in_command(&account, shell);
     AccountState {
         sign_in: LoginStore::CURRENT.sign_in(has_credentials_file),
         sign_in_command,

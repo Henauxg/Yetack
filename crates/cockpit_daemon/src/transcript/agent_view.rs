@@ -35,6 +35,9 @@ pub(crate) enum FollowUp {
     TurnEnded,
     /// The account's plan usage may have changed.
     RateLimit(RateLimitInfo),
+    /// Claude Code could not sign in to the agent's account: the transcript needs to say how to
+    /// sign in. Once per turn.
+    SignInNeeded,
 }
 
 /// Whether a client's prompt goes to `claude` now or waits for the current turn.
@@ -88,6 +91,11 @@ const TITLE_KEY: &str = "title";
 /// The model of an assistant message Claude Code writes itself, such as a slash command's output
 /// or an API error.
 const SYNTHETIC_MODEL: &str = "<synthetic>";
+/// The `error` of an assistant message whose API call found no valid login.
+const AUTHENTICATION_FAILED: &str = "authentication_failed";
+/// The error of a turn that found no valid login, in place of Claude Code's advice to run
+/// `/login`, which a cockpit agent cannot.
+const NOT_SIGNED_IN_ERROR: &str = "The account is not signed in";
 const COMPACTED_NOTICE: &str = "Conversation compacted";
 /// Titles a skill's instructions, followed by the skill's command.
 const SKILL_INSTRUCTIONS_TITLE: &str = "Skill instructions";
@@ -170,6 +178,8 @@ pub(crate) struct AgentView {
     takes_session_titles: bool,
     /// Set by a `Skill` call's result or a compaction, for the synthetic `user` line after it.
     expected_context: Option<ExpectedContext>,
+    /// The current turn found no valid login.
+    sign_in_failed: bool,
     /// The name Claude Code restated as the process started, until it answers `initialize`.
     restated_title: Option<String>,
     awaited_echoes: VecDeque<String>,
@@ -200,6 +210,7 @@ impl AgentView {
             takes_session_titles: false,
             restated_title: None,
             expected_context: None,
+            sign_in_failed: false,
             awaited_echoes: VecDeque::new(),
             tool_counts: HashMap::new(),
             skills: BTreeSet::new(),
@@ -406,7 +417,14 @@ impl AgentView {
         let mut follow_ups = Vec::new();
         match line {
             OutputLine::System(event) => self.apply_system(event, now),
-            OutputLine::Assistant(message) => self.apply_assistant(message, now),
+            OutputLine::Assistant(message) => {
+                let sign_in_failed = message.error.as_deref() == Some(AUTHENTICATION_FAILED);
+                if sign_in_failed && !self.sign_in_failed {
+                    follow_ups.push(FollowUp::SignInNeeded);
+                }
+                self.sign_in_failed |= sign_in_failed;
+                self.apply_assistant(message, now);
+            }
             OutputLine::User(message) => self.apply_user(message, LineSource::Process, now),
             OutputLine::Result(result) => {
                 self.apply_result(&result, now);
@@ -563,6 +581,7 @@ impl AgentView {
         self.takes_session_titles = false;
         self.restated_title = None;
         self.expected_context = None;
+        self.sign_in_failed = false;
         self.pending.clear();
         self.tool_calls.clear();
     }
@@ -619,6 +638,11 @@ impl AgentView {
                 detail: None,
             },
         );
+    }
+
+    /// A line from the daemon in the transcript.
+    pub(crate) fn add_notice(&mut self, text: String) {
+        self.push_item(None, ItemBody::Notice { text, detail: None });
     }
 
     pub(crate) fn set_commands(&mut self, response: &InitializeResponse) {
@@ -785,8 +809,11 @@ impl AgentView {
                 self.summary.cache_expires_at = Some(add(now, self.prompt_cache_ttl));
             }
         }
+        // The notice the hub adds for a failed login takes the place of Claude Code's text.
+        let sign_in_failed = message.error.as_deref() == Some(AUTHENTICATION_FAILED);
         for block in message.message.content {
             match block {
+                ContentBlock::Text(_) if sign_in_failed => {}
                 ContentBlock::Text(text) if synthetic && !text.text.trim().is_empty() => {
                     self.push_item(
                         parent,
@@ -1081,9 +1108,15 @@ impl AgentView {
         } else {
             SubagentStatus::Done
         };
+        let error = if self.sign_in_failed && !interrupted {
+            Some(NOT_SIGNED_IN_ERROR.to_owned())
+        } else {
+            turn_error(result, interrupted)
+        };
+        self.sign_in_failed = false;
         let ended = Ended {
             status: ended_status,
-            error: turn_error(result, interrupted),
+            error: error.clone(),
             now: Some(now),
         };
         if subagents::end_turn(&mut self.details.subagents, &ended) {
@@ -1105,7 +1138,7 @@ impl AgentView {
                 duration: result.duration.unwrap_or_default(),
                 cost: CostUsd::new(turn_cost),
                 usage: token_usage(result.usage),
-                error: turn_error(result, interrupted),
+                error,
                 stopped: interrupted,
             }),
         );
@@ -2215,6 +2248,47 @@ mod tests {
             end.error.as_deref(),
             Some("Reached the maximum number of turns")
         );
+    }
+
+    /// Claude Code's own text says to run `/login`, which an agent of the cockpit cannot: the
+    /// hub's notice takes its place.
+    #[test]
+    fn a_failed_login_asks_for_the_sign_in_notice_once_and_names_the_turns_error() {
+        let mut view = view();
+        view.add_prompt(&prompt("Hello"), PromptDelivery::Now, now());
+        let failed_line = json!({
+            "type": "assistant", "error": "authentication_failed",
+            "message": {"model": "<synthetic>", "content": [
+                {"type": "text", "text": "Not logged in · Please run /login"}
+            ]}
+        });
+
+        let first = apply(&mut view, failed_line.clone());
+        let second = apply(&mut view, failed_line);
+        view.add_notice("The account Work is not signed in.".to_owned());
+        apply(
+            &mut view,
+            json!({
+                "type": "result", "subtype": "success", "is_error": true, "num_turns": 1,
+                "result": "Not logged in · Please run /login"
+            }),
+        );
+
+        assert_eq!(first, [FollowUp::SignInNeeded]);
+        assert!(second.is_empty(), "{second:?}");
+        let texts: Vec<String> = view
+            .items()
+            .iter()
+            .filter_map(|item| match &item.body {
+                ItemBody::Notice { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, ["The account Work is not signed in."]);
+        let Some(ItemBody::TurnEnd(end)) = view.items().last().map(|item| &item.body) else {
+            panic!("expected a turn end");
+        };
+        assert_eq!(end.error.as_deref(), Some(NOT_SIGNED_IN_ERROR));
     }
 
     #[test]

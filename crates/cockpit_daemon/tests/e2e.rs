@@ -2022,3 +2022,39 @@ async fn an_account_an_agent_uses_cannot_be_removed() {
     assert_eq!(removed, ResponseBody::Done);
     assert_eq!(accounts[0].id, AccountId::DEFAULT);
 }
+
+#[tokio::test]
+async fn an_account_without_a_login_says_how_to_sign_in() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let folder = setup.temp.path().join("claude-work");
+    let work = client.add_account("Work", Some(&folder), false).await;
+    let agent = client
+        .start_with(&setup.work(), "nologin", work.account.id)
+        .await;
+
+    let notice = client
+        .item_with(agent, |body| matches!(body, ItemBody::Notice { .. }))
+        .await;
+    let end = client
+        .item_with(agent, |body| matches!(body, ItemBody::TurnEnd(_)))
+        .await;
+
+    let ItemBody::Notice { text, .. } = notice.body else {
+        panic!("expected a notice");
+    };
+    assert!(text.contains("The account Work is not signed in"), "{text}");
+    assert!(text.ends_with(&work.sign_in_command), "{text}");
+    let ItemBody::TurnEnd(end) = end.body else {
+        panic!("expected a turn end");
+    };
+    assert_eq!(end.error.as_deref(), Some("The account is not signed in"));
+    let items = client.history(agent).await;
+    assert!(
+        !items.iter().any(|item| matches!(
+            &item.body,
+            ItemBody::Notice { text, .. } if text.contains("/login")
+        )),
+        "{items:?}"
+    );
+}
