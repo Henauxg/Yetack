@@ -1077,6 +1077,7 @@ impl AgentView {
             | ToolInput::Bash(_)
             | ToolInput::Read(_)
             | ToolInput::Skill(_)
+            | ToolInput::Agent(_)
             | ToolInput::Unknown => ItemBody::Approval(Approval {
                 pending: pending.clone(),
                 tool: request.tool_name.clone(),

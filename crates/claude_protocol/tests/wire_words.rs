@@ -168,7 +168,9 @@ fn tool_words_are_pinned() {
             "Write",
             "Bash",
             "Read",
-            "Skill"
+            "Skill",
+            "Agent",
+            "Task"
         ]
     );
 }

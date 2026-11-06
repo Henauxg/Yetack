@@ -8,8 +8,8 @@
 use std::path::Path;
 
 use claude_protocol::{
-    BashInput, EditInput, ExitPlanModeInput, OpenWord, ParseError, ReadInput, SkillInput,
-    TodoStatus, ToolInput, ToolName, WriteInput,
+    AgentInput, BashInput, EditInput, ExitPlanModeInput, OpenWord, ParseError, ReadInput,
+    SkillInput, TodoStatus, ToolInput, ToolName, WriteInput,
 };
 use serde_json::{Map, Value, json};
 
@@ -202,6 +202,36 @@ fn skill() {
             ToolInput::Skill(SkillInput {
                 skill: "review".to_owned(),
                 args: None,
+            }),
+        ]
+    );
+}
+
+#[test]
+fn agent_under_both_names() {
+    let background = parse(
+        "Agent",
+        json!({
+            "description": "Run the benchmarks",
+            "prompt": "Run the benchmarks and report the slowest case.",
+            "subagent_type": "general-purpose",
+            "run_in_background": true
+        }),
+    );
+    let bare = parse("Task", json!({"description": "Look around"}));
+
+    assert_eq!(
+        [background, bare],
+        [
+            ToolInput::Agent(AgentInput {
+                description: "Run the benchmarks".to_owned(),
+                prompt: "Run the benchmarks and report the slowest case.".to_owned(),
+                subagent_type: Some("general-purpose".to_owned()),
+                run_in_background: true,
+            }),
+            ToolInput::Agent(AgentInput {
+                description: "Look around".to_owned(),
+                ..AgentInput::default()
             }),
         ]
     );

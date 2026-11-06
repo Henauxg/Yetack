@@ -1,0 +1,21 @@
+{
+  "type": "assistant",
+  "message": {
+    "model": "claude-test-model",
+    "content": [
+      {
+        "type": "tool_use",
+        "id": "toolu_00000000000000000000000001",
+        "name": "Agent",
+        "input": {
+          "description": "Survey the test folder",
+          "prompt": "List the test files under tests/ and say what each one covers.",
+          "subagent_type": "Explore"
+        }
+      }
+    ]
+  },
+  "parent_tool_use_id": null,
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "uuid": "00000000-0000-4000-8000-000000000202"
+}

@@ -144,6 +144,7 @@ pub(crate) fn file_edit(input: &ToolInput) -> Option<FileEdit> {
         | ToolInput::Bash(_)
         | ToolInput::Read(_)
         | ToolInput::Skill(_)
+        | ToolInput::Agent(_)
         | ToolInput::Unknown => None,
     }
 }
