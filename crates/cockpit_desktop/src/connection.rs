@@ -11,9 +11,9 @@ use dioxus::desktop::DesktopContext;
 use dioxus::prelude::*;
 use tokio::sync::mpsc;
 
-use crate::demo;
 use crate::notifications::Notifier;
-use crate::state::{self, AgentEntry, AppState, Drafts, Outgoing, Purpose, actions};
+use crate::state::{self, AgentEntry, AppState, Drafts, Outgoing, Purpose, TitlePlace, actions};
+use crate::{bridge, demo};
 
 /// What the window was started with.
 #[derive(Debug, Clone, PartialEq)]
@@ -96,6 +96,32 @@ impl Cockpit {
     /// Typing in a title field, the header's or a sidebar row's, changes the drafts alone.
     pub fn type_title(&self, text: String) {
         self.with_drafts(|state, drafts| actions::rename_text(state, drafts, text));
+    }
+
+    /// A title field at `place` lost the focus: the edit ends, unless the window lost it.
+    pub fn title_field_blurred(self, place: TitlePlace) {
+        bridge::save_on_blur(
+            move || {
+                self.change_with_drafts(|state, drafts| {
+                    actions::finish_rename_at(state, drafts, place)
+                });
+            },
+            move || self.update(|state| actions::set_title_kept_open(state, true)),
+        );
+    }
+
+    /// A title field took the focus, as it opened or when the window got it back.
+    pub fn title_field_focused(self) {
+        let kept_open = self
+            .state
+            .peek()
+            .ui
+            .title_edit
+            .as_ref()
+            .is_some_and(|edit| edit.kept_open);
+        if kept_open {
+            self.update(|state| actions::set_title_kept_open(state, false));
+        }
     }
 }
 

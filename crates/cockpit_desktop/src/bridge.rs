@@ -485,14 +485,14 @@ pub fn reveal(element_id: &'static str) {
 }
 
 /// For a field whose edit a blur saves, such as a title being renamed: runs `save` when the focus
-/// went elsewhere in the window, and not when the window itself lost it (Alt+Tab), so the field
+/// went elsewhere in the window, and `keep` when the window itself lost it (Alt+Tab), so the field
 /// stays open with its text. Every such field uses this rule.
-pub fn save_on_blur(save: impl FnOnce() + 'static) {
+pub fn save_on_blur(save: impl FnOnce() + 'static, keep: impl FnOnce() + 'static) {
     // Not tied to the field's component, which the save may remove.
     spawn_forever(async move {
         match document::eval(WINDOW_FOCUSED_SCRIPT).join::<bool>().await {
             Ok(true) => save(),
-            Ok(false) => {}
+            Ok(false) => keep(),
             Err(error) => {
                 tracing::warn!("cannot tell whether the window has the focus, saving: {error}");
                 save();

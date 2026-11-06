@@ -175,7 +175,8 @@ pub fn Header() -> Element {
                                     cockpit.change_with_drafts(actions::finish_rename);
                                 }
                             },
-                            onblur: move |_| bridge::save_on_blur(move || cockpit.change_with_drafts(|state, drafts| actions::finish_rename_at(state, drafts, TitlePlace::Header))),
+                            onfocus: move |_| cockpit.title_field_focused(),
+                            onblur: move |_| cockpit.title_field_blurred(TitlePlace::Header),
                         }
                     } else {
                         h1 {

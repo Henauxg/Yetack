@@ -637,6 +637,7 @@ mod tests {
             title: format!("Agent {agent}"),
             place: TitlePlace::Header,
             select_all: true,
+            kept_open: false,
         };
         let mut removed = state_with(vec![
             summary(1, AgentStatus::Idle),
@@ -717,6 +718,7 @@ mod tests {
             title: "Cart tot".to_owned(),
             place: TitlePlace::Header,
             select_all: false,
+            kept_open: false,
         });
         assert_eq!(updated.ui.title_edit, header);
         assert_eq!(dropped.ui.title_edit, header);

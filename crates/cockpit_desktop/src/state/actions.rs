@@ -91,7 +91,13 @@ pub enum Step {
     Next,
 }
 
+/// A rename the window left open, which no field shows once another agent is selected, ends
+/// without saving.
 pub fn select_agent(state: &mut AppState, agent: AgentId) {
+    state
+        .ui
+        .title_edit
+        .take_if(|edit| edit.kept_open && edit.agent != agent);
     state.ui.selected = Some(agent);
     state.ui.chat_new_from.clear();
     state.ui.unread.remove(&agent);
@@ -559,8 +565,17 @@ fn start_rename_at(state: &mut AppState, drafts: &mut Drafts, agent: AgentId, pl
         title: drafts.title.clone(),
         place,
         select_all: !moving,
+        kept_open: false,
     });
     state.ui.popover = None;
+}
+
+/// The window lost the focus while a title field had it, which keeps the edit open, or the field
+/// took the focus back.
+pub fn set_title_kept_open(state: &mut AppState, kept_open: bool) {
+    if let Some(edit) = &mut state.ui.title_edit {
+        edit.kept_open = kept_open;
+    }
 }
 
 /// F2: renames the selected agent in its sidebar row, or moves an open title field to the other
@@ -2656,6 +2671,7 @@ mod tests {
                 title: "Agent 1".to_owned(),
                 place: TitlePlace::Header,
                 select_all: true,
+                kept_open: false,
             })
         );
         assert_eq!(typed_from, "Agent 1");
@@ -2695,6 +2711,7 @@ mod tests {
                 title: "Agent 1".to_owned(),
                 place: TitlePlace::Sidebar,
                 select_all: true,
+                kept_open: false,
             })
         );
         assert_eq!(in_header, Some(TitlePlace::Header));
@@ -2725,6 +2742,47 @@ mod tests {
         assert_eq!(
             state.ui.title_edit.map(|edit| edit.place),
             Some(TitlePlace::Header)
+        );
+    }
+
+    /// A notification selects another agent without a click in the window, which would have
+    /// saved the edit: a hidden edit would then take the first Esc meant to stop that agent.
+    #[test]
+    fn selecting_another_agent_cancels_a_rename_the_window_left_open() {
+        let mut state = state_with(vec![
+            summary(AGENT, AgentStatus::Idle),
+            summary(2, AgentStatus::Working),
+        ]);
+        state.ui.selected = Some(agent());
+        let mut drafts = Drafts::default();
+        let renamed = |state: &mut AppState, drafts: &mut Drafts, kept_open: bool| {
+            select_agent(state, agent());
+            start_rename(state, drafts, agent());
+            rename_text(state, drafts, "Half typ".to_owned());
+            set_title_kept_open(state, kept_open);
+            select_agent(state, AgentId::new(2));
+            state.ui.title_edit.as_ref().map(|edit| edit.agent)
+        };
+
+        let left_open = renamed(&mut state, &mut drafts, true);
+        let after_left_open = finish_rename(&mut state, &mut drafts);
+        let focused = renamed(&mut state, &mut drafts, false);
+        select_agent(&mut state, agent());
+        start_rename(&mut state, &mut drafts, agent());
+        set_title_kept_open(&mut state, true);
+        select_agent(&mut state, agent());
+
+        assert_eq!(left_open, None);
+        assert!(after_left_open.is_empty(), "nothing is renamed");
+        assert_eq!(
+            focused,
+            Some(agent()),
+            "the blur of a field that had the focus saves it"
+        );
+        assert_eq!(
+            state.ui.title_edit.map(|edit| edit.agent),
+            Some(agent()),
+            "the same agent keeps its edit"
         );
     }
 
