@@ -119,7 +119,7 @@ impl InAppHost {
         loop {
             match self.shared.hosted.try_lock() {
                 Ok(hosted) => return self.stop(hosted),
-                // Stopping the agents matters more than what the panicking holder left.
+                // A stop must run: any value of `Hosted` is valid after a panicking holder.
                 Err(TryLockError::Poisoned(poisoned)) => return self.stop(poisoned.into_inner()),
                 Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
                     std::thread::sleep(PANIC_LOCK_RETRY);
@@ -137,7 +137,7 @@ impl InAppHost {
     fn may_host(&self) -> bool {
         match self.shared.hosted.try_lock() {
             Ok(hosted) => !matches!(*hosted, Hosted::Stopped),
-            // Every value of `Hosted` is valid, whatever a panicking holder left.
+            // Any value of `Hosted` is valid after a panicking holder.
             Err(TryLockError::Poisoned(poisoned)) => {
                 !matches!(*poisoned.into_inner(), Hosted::Stopped)
             }
@@ -153,6 +153,7 @@ impl InAppHost {
                 .wait_timeout_while(hosted, START_WAIT, |hosted| {
                     matches!(hosted, Hosted::Starting { .. })
                 })
+                // A stop must run: any value of `Hosted` is valid after a panicking holder.
                 .unwrap_or_else(PoisonError::into_inner);
             match std::mem::take(&mut *hosted) {
                 Hosted::Running(running) => running,
@@ -188,6 +189,7 @@ impl InAppHost {
 
 impl Shared {
     fn lock(&self) -> MutexGuard<'_, Hosted> {
+        // Starts and stops must run: any value of `Hosted` is valid after a panicking holder.
         self.hosted.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -281,8 +283,8 @@ fn on_panic(host: &InAppHost, stopping: &AtomicBool) -> OnPanic {
 
 /// Stops the daemon in the app and ends the app on a panic in any thread: on Unix the agents'
 /// processes lead process groups of their own, which outlive the app, and the next start would
-/// resume their sessions a second time. The default hook still reports the panic, and the log gets it
-/// too, since a GUI program on Windows has no stderr.
+/// resume their sessions a second time. The default hook still reports the panic, and the log
+/// gets it too, since a GUI program on Windows has no stderr.
 pub fn stop_on_panic(host: InAppHost) {
     let report = std::panic::take_hook();
     let stopping = AtomicBool::new(false);

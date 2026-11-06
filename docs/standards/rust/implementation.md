@@ -279,6 +279,16 @@ Do not make code run before `main()`, for example with the
 Never reach inside a poisoned mutex to get at its content, however tempting
 the case.
 
+Exception: a shutdown or cleanup path may read through the poison when two
+things hold:
+
+- the content stays valid whatever a panicking holder left, such as an enum
+  whose every value is a state the code handles;
+- the path must run all the same, because skipping it costs more than the
+  panic did, such as processes left running after the program ends.
+
+A comment at each such read says why both hold there.
+
 ## Macros
 
 ### Prefer plain Rust to macros
