@@ -1,11 +1,18 @@
-//! Desktop notifications, through the freedesktop notification service: at most one per agent.
-//! Clicking one opens its agent. Windows has no such service, and shows none.
+//! Desktop notifications: at most one per agent, and a click on one opens its agent. On Linux
+//! they go through the freedesktop notification service, on Windows they are toasts.
+//!
+//! The toasts carry PowerShell's name and icon: Windows shows toasts only for an app the Start
+//! menu registers, which the app is not, and notify-rust then borrows PowerShell's. A click
+//! reaches the app only while the toast is on screen. Once the toast is in the notification
+//! center, a click goes to PowerShell instead. notify-rust cannot withdraw a toast, so a "needs
+//! you" toast stays until it times out, even after the agent is answered.
 
 use std::collections::BTreeMap;
 
 use cockpit_protocol::{AgentId, AgentStatus};
 #[cfg(unix)]
-use notify_rust::{Notification, NotificationResponse, Urgency};
+use notify_rust::Urgency;
+use notify_rust::{Notification, NotificationResponse};
 use tokio::sync::{mpsc, oneshot};
 
 #[cfg(unix)]
@@ -16,8 +23,8 @@ use crate::state::{Alert, AlertKind, AppState};
 #[cfg(unix)]
 const OPEN_ACTION: &str = "default";
 
-/// The notifications on screen. Each runs as a task that waits on D-Bus, with no thread of its
-/// own.
+/// The notifications on screen. On Linux each runs as a task that waits on D-Bus, with no thread
+/// of its own. On Windows each waits on a blocking thread while its toast is on screen.
 pub struct Notifier {
     ledger: Ledger,
     /// Ends the task of each agent's notification, which then closes it.
@@ -142,13 +149,34 @@ async fn present(
     }
 }
 
-/// Shows nothing.
+/// Shows the alert as a toast, and sends its agent to `opened` when the user clicks it while it
+/// is on screen. Windows reports the click or the toast's end, so the thread waits no longer.
+/// `close` cannot withdraw the toast.
 #[cfg(windows)]
 async fn present(
-    _alert: Alert,
+    alert: Alert,
     _close: oneshot::Receiver<()>,
-    _opened: mpsc::UnboundedSender<AgentId>,
+    opened: mpsc::UnboundedSender<AgentId>,
 ) {
+    let agent = alert.agent;
+    let toast = tokio::task::spawn_blocking(move || {
+        // A toast shows its text as it is: the agent's words cannot add markup.
+        let handle = Notification::new()
+            .summary(&alert.title)
+            .body(&alert.body)
+            .show()?;
+        handle.wait_for_response(|response: &NotificationResponse| {
+            if *response == NotificationResponse::Default {
+                // The window may have closed meanwhile.
+                let _ = opened.send(agent);
+            }
+        })
+    });
+    match toast.await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::warn!("cannot show a notification: {error}"),
+        Err(error) => tracing::warn!("the notification's thread failed: {error}"),
+    }
 }
 
 /// The body as text in the notification markup, which most services read: the agent's own words
