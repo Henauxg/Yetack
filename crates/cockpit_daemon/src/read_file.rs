@@ -249,6 +249,7 @@ pub(crate) enum Found {
 
 /// Reads `path`, absolute or relative to `folder`, the agent's folder, or looks a relative path
 /// up as the module says. `touched` holds the files the agent read or changed, most recent first.
+#[cfg(unix)]
 pub(crate) async fn find_and_read(
     folder: PathBuf,
     touched: Vec<PathBuf>,
@@ -286,6 +287,18 @@ pub(crate) async fn find_and_read(
         }
         _ => Ok(Found::Several(matches)),
     }
+}
+
+/// Reads nothing, and looks nothing up: the daemon cannot yet tell where an open file is on
+/// Windows.
+#[cfg(windows)]
+pub(crate) async fn find_and_read(
+    _folder: PathBuf,
+    _touched: Vec<PathBuf>,
+    _home: Option<PathBuf>,
+    _path: PathBuf,
+) -> Result<Found, ReadFileError> {
+    Err(ReadFileError::Unsupported)
 }
 
 pub(crate) fn join_error(error: JoinError) -> ReadFileError {
@@ -446,6 +459,27 @@ pub(crate) fn ensure_inside(file: &File, holder: &Path) -> Result<(), ReadFileEr
 #[cfg(windows)]
 pub(crate) fn ensure_inside(_file: &File, _holder: &Path) -> Result<(), ReadFileError> {
     Err(ReadFileError::Unsupported)
+}
+
+#[cfg(test)]
+#[cfg(windows)]
+mod windows_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn every_read_is_unsupported() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("notes.txt"), "text").unwrap();
+
+        for path in ["notes.txt", "missing.txt"] {
+            let folder = temp.path().to_owned();
+            let found = find_and_read(folder, Vec::new(), None, PathBuf::from(path)).await;
+            assert!(
+                matches!(found, Err(ReadFileError::Unsupported)),
+                "{path}: {found:?}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
