@@ -239,9 +239,7 @@ impl ProcessSource for ChildrenFiles {
         self.reached.insert(pid);
         if let Some(process) = self.processes.get(&pid) {
             if kept_file::read_again(&process.stat, &mut self.buffer).is_ok()
-                && let Some(stat) = std::str::from_utf8(&self.buffer)
-                    .ok()
-                    .and_then(ProcessStat::parse)
+                && let Some(stat) = ProcessStat::parse(&String::from_utf8_lossy(&self.buffer))
             {
                 return Some(stat);
             }
@@ -252,7 +250,7 @@ impl ProcessSource for ChildrenFiles {
         }
         self.set_path(pid, format_args!("{STAT_FILE}"));
         let kept = self.open_and_read()?;
-        let stat = ProcessStat::parse(std::str::from_utf8(&self.buffer).ok()?)?;
+        let stat = ProcessStat::parse(&String::from_utf8_lossy(&self.buffer))?;
         if let Some(file) = kept {
             self.processes.insert(
                 pid,
@@ -510,9 +508,9 @@ pub(super) mod tests {
         }
     }
 
-    /// A shell that runs two `sleep`s, as an agent runs commands.
-    fn spawn_tree() -> Tree {
-        let child = Command::new("/bin/sh")
+    /// `shell` run with `-c`, running two `sleep`s, as an agent runs commands.
+    fn spawn_tree(shell: &Path) -> Tree {
+        let child = Command::new(shell)
             .arg("-c")
             .arg("sleep 30 & sleep 30 & wait")
             .stdin(Stdio::null())
@@ -521,10 +519,8 @@ pub(super) mod tests {
         Tree(child)
     }
 
-    #[test]
-    fn the_real_proc_shows_a_shell_and_its_children() {
-        let tree = spawn_tree();
-        let shell = ProcessId::new(tree.0.id());
+    /// Walks the tree from `shell` with each source this kernel has, once its two `sleep`s run.
+    fn walk_each_source(shell: ProcessId) -> Vec<Vec<ProcessStat>> {
         let mut sources: Vec<Box<dyn FnMut() -> Vec<ProcessStat>>> = Vec::new();
         if children_files_exist() {
             sources.push(Box::new(move || {
@@ -544,17 +540,49 @@ pub(super) mod tests {
                 &mut HashSet::new(),
             )
         }));
+        sources
+            .into_iter()
+            .map(|mut walk_now| {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let mut found = walk_now();
+                while sleeps(&found) < 2 && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(20));
+                    found = walk_now();
+                }
+                found
+            })
+            .collect()
+    }
 
-        for mut walk_now in sources {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            let mut found = walk_now();
-            while found.len() < 3 && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(20));
-                found = walk_now();
-            }
+    /// A forked child is named after the shell until it runs `sleep`.
+    fn sleeps(found: &[ProcessStat]) -> usize {
+        found.iter().filter(|stat| stat.name == "sleep").count()
+    }
+
+    #[test]
+    fn the_real_proc_shows_a_shell_and_its_children() {
+        let tree = spawn_tree(Path::new("/bin/sh"));
+
+        for found in walk_each_source(ProcessId::new(tree.0.id())) {
             let names: Vec<&str> = found.iter().map(|stat| stat.name.as_str()).collect();
             assert_eq!(names.first(), Some(&"sh"), "{names:?}");
-            assert_eq!(names.iter().filter(|&&name| name == "sleep").count(), 2);
+            assert_eq!(sleeps(&found), 2, "{names:?}");
+        }
+    }
+
+    #[test]
+    fn a_process_whose_name_is_not_utf8_is_walked() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let folder = tempfile::tempdir().unwrap();
+        let shell = folder.path().join(std::ffi::OsStr::from_bytes(b"sh\xff"));
+        std::os::unix::fs::symlink("/bin/sh", &shell).unwrap();
+        let tree = spawn_tree(&shell);
+
+        for found in walk_each_source(ProcessId::new(tree.0.id())) {
+            let names: Vec<&str> = found.iter().map(|stat| stat.name.as_str()).collect();
+            assert_eq!(names.first(), Some(&"sh\u{fffd}"), "{names:?}");
+            assert_eq!(sleeps(&found), 2, "{names:?}");
         }
     }
 }

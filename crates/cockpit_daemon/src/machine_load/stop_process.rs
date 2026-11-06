@@ -109,8 +109,8 @@ fn descends_from(
 
 fn read_parent(pid: ProcessId) -> io::Result<Option<ProcessId>> {
     let path = format!("{PROC_ROOT}/{}/{STAT_FILE}", pid.get());
-    match std::fs::read_to_string(path) {
-        Ok(line) => ProcessStat::parse(&line)
+    match std::fs::read(path) {
+        Ok(line) => ProcessStat::parse(&String::from_utf8_lossy(&line))
             .map(|stat| Some(stat.parent))
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "a malformed stat line")),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -217,5 +217,37 @@ mod tests {
             status.signal()
         });
         assert_eq!(signal, Some(Signal::TERM.as_raw()));
+    }
+
+    #[test]
+    fn a_process_under_a_parent_whose_name_is_not_utf8_gets_sigterm() {
+        use std::io::BufRead;
+        use std::os::unix::ffi::OsStrExt;
+
+        let folder = tempfile::tempdir().unwrap();
+        let shell = folder.path().join(std::ffi::OsStr::from_bytes(b"sh\xff"));
+        std::os::unix::fs::symlink("/bin/sh", &shell).unwrap();
+        let mut child = Command::new(&shell)
+            .arg("-c")
+            .arg("sleep 30 & echo $!; wait $!; echo $?")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        let sleep: u32 = lines.next().unwrap().unwrap().parse().unwrap();
+        let claude = ProcessId::new(std::process::id());
+
+        let stopped = stop_descendant(claude, ProcessId::new(sleep));
+
+        if stopped.is_err() {
+            let _ = Command::new("kill").arg(sleep.to_string()).status();
+        }
+        let status = lines.next().map(Result::unwrap);
+        let _ = child.wait();
+        assert!(stopped.is_ok(), "{stopped:?}");
+        // The shell reports 128 plus the signal's number.
+        let terminated = 128 + Signal::TERM.as_raw();
+        assert_eq!(status, Some(terminated.to_string()));
     }
 }
