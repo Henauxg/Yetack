@@ -112,6 +112,17 @@ pub fn move_highlight(state: &AppState, drafts: &mut Drafts, direction: Directio
     });
 }
 
+/// The pointer moved onto the row at `index`: it takes the highlight, as the keys do. A row of a
+/// list the text has since narrowed changes nothing.
+pub fn point(state: &AppState, drafts: &mut Drafts, index: usize) {
+    let Some(list) = list(state) else {
+        return;
+    };
+    if index < rows(list, &drafts.new_agent.folder).len() {
+        drafts.new_agent.folder_highlighted = Some(index);
+    }
+}
+
 /// Takes the row at `index`, or else the highlighted one: ".." goes up, and a folder completes the
 /// text and lists. Returns the field's new text, or `None` when no row was taken.
 pub fn take(state: &mut AppState, drafts: &mut Drafts, index: Option<usize>) -> Option<String> {
@@ -324,5 +335,27 @@ mod tests {
         assert!(matches!(state.ui.dialog, Some(Dialog::NewAgent(_))));
         assert!(state.ui.close_overlays());
         assert_eq!(state.ui.dialog, None);
+    }
+
+    #[test]
+    fn the_pointer_moves_the_highlight_within_the_listed_rows() {
+        let (mut state, mut drafts) = opened();
+        type_text(&mut state, &mut drafts, "/home/dev/");
+        answer(&mut state, &["notes", "projects", "scratch"]);
+
+        point(&state, &mut drafts, 3);
+        assert_eq!(drafts.new_agent.folder_highlighted, Some(3));
+        move_highlight(&state, &mut drafts, Direction::Up);
+        assert_eq!(drafts.new_agent.folder_highlighted, Some(2));
+
+        // A row the narrowed list no longer has: the pointer was on the old list.
+        type_text(&mut state, &mut drafts, "/home/dev/s");
+        point(&state, &mut drafts, 1);
+        point(&state, &mut drafts, 3);
+        assert_eq!(drafts.new_agent.folder_highlighted, Some(1));
+        assert_eq!(
+            take(&mut state, &mut drafts, None).as_deref(),
+            Some("/home/dev/notes/")
+        );
     }
 }

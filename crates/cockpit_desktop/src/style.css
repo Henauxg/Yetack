@@ -4154,6 +4154,18 @@ html.splitting * {
   padding: 0;
 }
 
+/* The pointer moves the highlight, as in the resume list. A hover, or a fade, would light a
+   second row. */
+.folder-browse .switcher-row {
+  transition: none;
+}
+
+.folder-browse .switcher-row:not(.highlighted):hover {
+  background: transparent;
+}
+
+/* The pointer lights its row, which stays lit over the gap between rows. A fade would light two
+   rows at each row it crosses. The field's folder only has a teal icon. */
 .folder-option {
   display: flex;
   align-items: center;
@@ -4166,15 +4178,12 @@ html.splitting * {
   background: transparent;
   color: var(--text);
   text-align: left;
+  transition: none;
 }
 
-.folder-option:hover {
+.folder-option.highlighted {
   background: var(--hover);
-}
-
-.folder-option.checked {
-  border-color: rgba(45, 212, 191, 0.4);
-  background: rgba(45, 212, 191, 0.07);
+  border-color: var(--line-control);
 }
 
 .folder-icon {
@@ -4182,7 +4191,7 @@ html.splitting * {
   color: var(--dim);
 }
 
-.folder-option:hover .folder-icon {
+.folder-option.highlighted .folder-icon {
   color: var(--text-soft);
 }
 

@@ -177,7 +177,11 @@ fn row_view(
                 span { class: "open-file-name mono", "{UP_ROW}" }
             }
         },
-        Row::Entry(entry) => entry_view(entry, class, click),
+        Row::Entry(entry) => rsx! {
+            button { key: "{entry.name}", class, onclick: click,
+                {entry_parts(entry)}
+            }
+        },
         Row::Match(path) => {
             let short = ShortPath::new(agent_folder, path);
             let full = path.display().to_string();
@@ -191,27 +195,21 @@ fn row_view(
     }
 }
 
-pub fn entry_view(
-    entry: &DirEntry,
-    class: &'static str,
-    click: impl FnMut(MouseEvent) + 'static,
-) -> Element {
+/// What an entry's row shows, inside the row's button.
+pub fn entry_parts(entry: &DirEntry) -> Element {
     let icon = match entry.kind {
         EntryKind::Folder => IconKind::Folder,
         EntryKind::File | EntryKind::Other => IconKind::File,
     };
     let size = entry.size.map(format::bytes).unwrap_or_default();
-    let name = &entry.name;
     rsx! {
-        button { key: "{name}", class, onclick: click,
-            Icon { kind: icon, size: 14 }
-            span { class: "open-file-name mono", "{name}" }
-            if entry.symlink {
-                span { class: "open-file-link", title: "A symbolic link", "\u{2192}" }
-            }
-            span { class: "spacer" }
-            span { class: "open-file-size mono", "{size}" }
+        Icon { kind: icon, size: 14 }
+        span { class: "open-file-name mono", "{entry.name}" }
+        if entry.symlink {
+            span { class: "open-file-link", title: "A symbolic link", "\u{2192}" }
         }
+        span { class: "spacer" }
+        span { class: "open-file-size mono", "{size}" }
     }
 }
 

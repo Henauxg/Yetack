@@ -34,6 +34,27 @@ const FOLDER_LOADING_ROWS: [&str; 4] = ["34%", "22%", "46%", "28%"];
 const DEFAULT_MODEL: &str = "Default model";
 const DEFAULT_MODE: &str = "Default mode";
 
+/// Where the pointer last was, for a list whose highlight both the keys and the pointer move.
+/// WebKit also sends a mousemove when the list scrolls under a pointer that stays still. Only a
+/// pointer that moved takes the highlight, or the keys could not scroll past it.
+#[derive(Clone, Copy)]
+struct PointerMoves(Signal<Option<ScreenPoint>>);
+
+fn use_pointer_moves() -> PointerMoves {
+    PointerMoves(use_signal(|| None))
+}
+
+impl PointerMoves {
+    fn moved(mut self, event: &MouseEvent) -> bool {
+        let at = Some(event.screen_coordinates());
+        if *self.0.peek() == at {
+            return false;
+        }
+        self.0.set(at);
+        true
+    }
+}
+
 #[component]
 pub fn Dialogs() -> Element {
     let cockpit: Cockpit = use_context();
@@ -311,6 +332,8 @@ fn StartForm(form: NewAgentForm) -> Element {
     // render that lags behind typing would put an older text back.
     let folder_seed = use_hook(|| typed_folder.clone());
     let prompt_seed = use_hook(|| typed_prompt.clone());
+    // The recent folder under the pointer, the one row lit. The field's folder is only marked.
+    let mut pointed = use_signal(|| None::<PathBuf>);
     let (folders, machine, sessions_loading) = {
         let state = cockpit.state.read();
         let mut folders = state.recent_folders();
@@ -389,20 +412,37 @@ fn StartForm(form: NewAgentForm) -> Element {
                             span { class: "spinner", role: "status", aria_label: "Loading the recent folders" }
                         }
                     }
-                    div { class: "folder-list", role: "radiogroup", aria_label: "Recent folders",
+                    div {
+                        class: "folder-list",
+                        role: "radiogroup",
+                        aria_label: "Recent folders",
+                        onmouseleave: move |_| pointed.set(None),
                         for (folder, used) in folders {
                             {
                                 let shown = folder.display().to_string();
                                 let checked = typed_folder == shown;
+                                let lit = pointed.read().as_ref() == Some(&folder);
                                 let used = format::ago(used, now);
                                 let picked = shown.clone();
+                                let hovered = folder.clone();
                                 rsx! {
                                     button {
                                         key: "{shown}",
-                                        class: if checked { "folder-option checked" } else { "folder-option" },
+                                        class: match (checked, lit) {
+                                            (false, false) => "folder-option",
+                                            (true, false) => "folder-option checked",
+                                            (false, true) => "folder-option highlighted",
+                                            (true, true) => "folder-option checked highlighted",
+                                        },
                                         role: "radio",
                                         aria_checked: checked,
                                         title: "{shown}",
+                                        // Writing the signal renders the form: only a new row does.
+                                        onmousemove: move |_| {
+                                            if pointed.peek().as_ref() != Some(&hovered) {
+                                                pointed.set(Some(hovered.clone()));
+                                            }
+                                        },
                                         onclick: move |_| {
                                             let picked = picked.clone();
                                             bridge::set_field_text(FOLDER_FIELD_ID, picked.clone());
@@ -501,6 +541,7 @@ fn StartForm(form: NewAgentForm) -> Element {
 #[component]
 fn FolderRows(list: FolderList) -> Element {
     let cockpit: Cockpit = use_context();
+    let pointer = use_pointer_moves();
     let (text, highlighted) = {
         let drafts = cockpit.drafts.read();
         (
@@ -519,7 +560,7 @@ fn FolderRows(list: FolderList) -> Element {
             span { class: "field-label", "Folders" }
             div { class: "dialog-list folder-browse scroll", role: "listbox", aria_label: "Folders",
                 for (index, row) in rows.iter().enumerate() {
-                    {folder_row(cockpit, *row, index, highlighted == Some(index))}
+                    {folder_row(cockpit, pointer, *row, index, highlighted == Some(index))}
                 }
                 match &list.listing {
                     Loadable::NotRequested | Loadable::Loading => rsx! {
@@ -558,23 +599,41 @@ fn FolderRows(list: FolderList) -> Element {
     }
 }
 
-fn folder_row(cockpit: Cockpit, row: FolderRow<'_>, index: usize, highlighted: bool) -> Element {
+fn folder_row(
+    cockpit: Cockpit,
+    pointer: PointerMoves,
+    row: FolderRow<'_>,
+    index: usize,
+    highlighted: bool,
+) -> Element {
     let class = if highlighted {
         "switcher-row open-file-row highlighted"
     } else {
         "switcher-row open-file-row"
+    };
+    let point = move |event: MouseEvent| {
+        // Writing the drafts renders their readers: only a new row does.
+        if pointer.moved(&event)
+            && cockpit.drafts.peek().new_agent.folder_highlighted != Some(index)
+        {
+            cockpit.with_drafts(|state, drafts| folder_field::point(state, drafts, index));
+        }
     };
     let click = move |_| {
         take_folder(cockpit, Some(index));
     };
     match row {
         FolderRow::Up => rsx! {
-            button { key: "{UP_ROW}", class, onclick: click,
+            button { key: "{UP_ROW}", class, onmousemove: point, onclick: click,
                 Icon { kind: IconKind::Folder, size: 14 }
                 span { class: "open-file-name mono", "{UP_ROW}" }
             }
         },
-        FolderRow::Folder(entry) => open_file_view::entry_view(entry, class, click),
+        FolderRow::Folder(entry) => rsx! {
+            button { key: "{entry.name}", class, onmousemove: point, onclick: click,
+                {open_file_view::entry_parts(entry)}
+            }
+        },
     }
 }
 
@@ -772,9 +831,7 @@ fn ResumeList(starting: bool) -> Element {
     };
     // Follows the keyboard alone, as the other fields.
     let query_seed = use_hook(|| query.clone());
-    // WebKit also sends a mousemove when the list scrolls under a pointer that stays still. Only a
-    // pointer that moved takes the highlight, or the keys could not scroll past it.
-    let mut pointer = use_signal(|| None::<ScreenPoint>);
+    let pointer = use_pointer_moves();
     let (sessions, machine) = {
         let state = cockpit.state.read();
         let sessions = match &state.sessions {
@@ -862,13 +919,8 @@ fn ResumeList(starting: bool) -> Element {
                                         aria_selected: chosen,
                                         disabled: starting,
                                         onmousemove: move |event: MouseEvent| {
-                                            let at = Some(event.screen_coordinates());
-                                            if *pointer.peek() == at {
-                                                return;
-                                            }
-                                            pointer.set(at);
                                             // Writing the drafts renders their readers: only a new row does.
-                                            if !starting && cockpit.drafts.peek().new_agent.session_highlighted != index {
+                                            if pointer.moved(&event) && !starting && cockpit.drafts.peek().new_agent.session_highlighted != index {
                                                 cockpit.with_drafts(|state, drafts| actions::session_point(state, drafts, index));
                                             }
                                         },
