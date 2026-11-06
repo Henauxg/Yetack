@@ -3558,6 +3558,27 @@ mod tests {
     }
 
     #[test]
+    fn on_windows_a_link_with_slashes_opens_the_changed_files_tab() {
+        let mut state = state(AgentStatus::Idle);
+        let entry = state.agents.get_mut(&agent()).unwrap();
+        entry.summary.folder = PathBuf::from(r"C:\work\project-1");
+        entry.details = Loadable::Loaded(AgentDetails {
+            changed_files: vec![ChangedFile {
+                path: PathBuf::from(r"C:\work\project-1\src\a.rs"),
+                lines_added: 1,
+                lines_removed: 0,
+            }],
+            ..AgentDetails::default()
+        });
+
+        open_file(&mut state, agent(), PathBuf::from("src/a.rs"), None);
+
+        let changed = state.agents[&agent()].changed_paths();
+        let view = state.ui.file_view(agent()).unwrap();
+        assert_eq!(view.tabs(&changed), [PathBuf::from(r"src\a.rs")]);
+    }
+
+    #[test]
     fn a_picked_file_takes_the_tab_of_the_name() {
         let mut state = state(AgentStatus::Idle);
         let picked = PathBuf::from("/work/project-1_review/src/b/widget.ts");

@@ -8,14 +8,15 @@ use super::transcript::Transcript;
 use crate::path_style::PathStyle;
 
 /// `path` relative to `folder` when it is inside it, so that a link, a changed file and an edit
-/// name the same file the same way. On Windows, the relative path has `\` between its names.
+/// name the same file the same way. On Windows, the path has `\` between its names.
 pub fn relative_path(folder: &Path, path: &Path) -> PathBuf {
     let style = PathStyle::of(folder);
     let text = path.to_string_lossy();
-    match style.strip_prefix(&text, &folder.to_string_lossy()) {
-        Some(relative) if !relative.is_empty() => PathBuf::from(style.shown(relative).as_ref()),
-        Some(_) | None => path.to_owned(),
-    }
+    let kept = match style.strip_prefix(&text, &folder.to_string_lossy()) {
+        Some(relative) if !relative.is_empty() => relative,
+        Some(_) | None => &text,
+    };
+    PathBuf::from(style.shown(kept).as_ref())
 }
 
 /// `path` as a line names it: relative to `folder` when it is inside it.
@@ -135,6 +136,10 @@ mod tests {
         assert_eq!(
             shown_path(folder, Path::new("D:/notes.txt")),
             r"D:\notes.txt"
+        );
+        assert_eq!(
+            relative_path(folder, Path::new("src/main.rs")),
+            PathBuf::from(r"src\main.rs")
         );
     }
 
