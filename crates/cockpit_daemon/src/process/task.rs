@@ -17,6 +17,8 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use crate::process::claude_command::ClaudeCommand;
+#[cfg(windows)]
+use crate::process::job::{self, Job};
 use crate::process::line_reader::{LineReader, ReadLine};
 use crate::process::process_error::ProcessError;
 use crate::store::{Direction, RawLog};
@@ -135,7 +137,19 @@ where
     M: Send + 'static,
     W: Fn(ProcessEvent<T>) -> M + Send + 'static,
 {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED};
+
+        // Replaces the flags `program::command` set. `contain` resumes the process.
+        command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
+    }
     let mut child = command.spawn().map_err(|source| ProcessError::Spawn {
+        program: program.to_owned(),
+        source,
+    })?;
+    #[cfg(windows)]
+    let job = contain(&mut child).map_err(|source| ProcessError::Spawn {
         program: program.to_owned(),
         source,
     })?;
@@ -154,6 +168,8 @@ where
     let pid = child.id().map(ProcessId::new);
     let task = Task {
         child,
+        #[cfg(windows)]
+        job,
         stdin: Some(stdin_lines),
         raw_log,
         pending: HashMap::new(),
@@ -180,6 +196,9 @@ struct PendingControl<T> {
 
 struct Task<T, M, W> {
     child: Child,
+    /// Holds `claude` and every process it started. `None` when Windows could not make one.
+    #[cfg(windows)]
+    job: Option<Job>,
     /// `None` once stdin is closed.
     stdin: Option<mpsc::UnboundedSender<String>>,
     raw_log: Option<RawLog>,
@@ -193,10 +212,35 @@ struct Task<T, M, W> {
 /// The hub is gone: nothing more to report.
 struct HubGone;
 
-impl<T, M, W> Drop for Task<T, M, W> {
-    /// A task that ends before `claude` does, as when the daemon stops, takes its group along.
-    fn drop(&mut self) {
+impl<T, M, W> Task<T, M, W> {
+    /// Kills `claude` and the processes it started.
+    #[cfg(unix)]
+    fn kill_tree(&mut self) {
         kill_group(&mut self.child);
+    }
+
+    /// Kills every process of the job: `claude`, its MCP servers and the commands it started,
+    /// even once `claude` has ended.
+    #[cfg(windows)]
+    fn kill_tree(&mut self) {
+        if let Some(job) = &self.job {
+            match job.terminate() {
+                Ok(()) => return,
+                Err(error) => {
+                    tracing::warn!(%error, "cannot end claude's job: killing claude alone")
+                }
+            }
+        }
+        // An error means the process is already gone, which `wait` reports.
+        let _ = self.child.start_kill();
+    }
+}
+
+impl<T, M, W> Drop for Task<T, M, W> {
+    /// A task that ends before `claude` does, as when the daemon stops, takes the processes
+    /// `claude` started along.
+    fn drop(&mut self) {
+        self.kill_tree();
     }
 }
 
@@ -361,7 +405,7 @@ where
         if self.stop_deadline.is_some_and(|deadline| deadline <= now) {
             self.stop_deadline = None;
             tracing::warn!("claude did not exit after its stdin closed: killing it");
-            kill_group(&mut self.child);
+            self.kill_tree();
         }
         let expired: Vec<ControlRequestId> = self
             .pending
@@ -417,7 +461,7 @@ where
             return status.ok();
         }
         tracing::warn!("claude closed its output but did not exit: killing it");
-        kill_group(&mut self.child);
+        self.kill_tree();
         self.child.wait().await.ok()
     }
 
@@ -456,11 +500,17 @@ fn kill_group(child: &mut Child) {
     }
 }
 
-/// Kills `claude` alone: the processes it started live on.
+/// Puts `child`, started suspended, in a job of its own, then lets it run. On an error, the
+/// child is killed.
 #[cfg(windows)]
-fn kill_group(child: &mut Child) {
-    // An error means the process is already gone, which `wait` reports.
-    let _ = child.start_kill();
+fn contain(child: &mut Child) -> std::io::Result<Option<Job>> {
+    let (Some(process), Some(pid)) = (child.raw_handle(), child.id()) else {
+        return Err(std::io::Error::other("claude ended before it ran"));
+    };
+    job::start_in_job(process, pid).inspect_err(|_| {
+        // An error means the process is already gone.
+        let _ = child.start_kill();
+    })
 }
 
 #[cfg(unix)]

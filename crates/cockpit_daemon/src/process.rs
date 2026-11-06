@@ -2,6 +2,8 @@
 //! requests and their answers, and its exit.
 
 mod claude_command;
+#[cfg(windows)]
+mod job;
 mod line_reader;
 mod process_error;
 pub(crate) mod program;
