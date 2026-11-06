@@ -333,6 +333,16 @@ pub fn latency(request: &Request) -> Duration {
     }
 }
 
+/// What the daemon's events would change after a request it accepts: a rename shows in the
+/// title.
+pub fn apply(state: &mut AppState, request: &Request) {
+    if let Request::AgentRename(params) = request
+        && let Some(entry) = state.agents.get_mut(&params.agent)
+    {
+        entry.summary.title.clone_from(&params.title);
+    }
+}
+
 /// What a daemon holding the sample would answer.
 pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, RequestError> {
     let agent_details = |agent: AgentId| -> Result<AgentDetails, RequestError> {
@@ -972,7 +982,7 @@ fn question_agent(now: SystemTime) -> Sample {
     let summary = summary(
         SummaryParts {
             id: 2,
-            title: "Release notes",
+            title: "📝 Release notes",
             folder: PARSER_FOLDER,
             status: AgentStatus::NeedsYou,
             activity: Some("Asks which changes to include"),
@@ -1090,7 +1100,7 @@ fn plan_agent(now: SystemTime) -> Sample {
     let mut summary = summary(
         SummaryParts {
             id: 4,
-            title: "Cache layer plan",
+            title: "🧭 Cache layer plan",
             folder: SERVICE_FOLDER,
             status: AgentStatus::NeedsYou,
             activity: Some("Waits for plan approval"),
@@ -1131,7 +1141,7 @@ fn benchmark_agent(now: SystemTime) -> Sample {
     let mut summary = summary(
         SummaryParts {
             id: 5,
-            title: "Benchmark in CI",
+            title: "⏱️ Benchmark in CI",
             folder: SERVICE_FOLDER,
             status: AgentStatus::Idle,
             activity: Some("Done: the benchmark runs in CI"),
@@ -1228,7 +1238,7 @@ fn exited_agent(now: SystemTime) -> Sample {
     let mut summary = summary(
         SummaryParts {
             id: 6,
-            title: "Schema migration",
+            title: "🏗️ Schema migration",
             folder: "/home/dev/projects/legacy-db",
             status: AgentStatus::Exited,
             activity: None,
@@ -1473,10 +1483,25 @@ fn sessions(now: SystemTime) -> Vec<PastSession> {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::{HistoryParams, ReadFileParams};
+    use cockpit_protocol::{HistoryParams, ReadFileParams, RenameParams};
 
     use super::*;
     use crate::state::{WaitingKind, file_edits};
+
+    #[test]
+    fn a_rename_shows_in_the_demo_title() {
+        let mut state = state(label());
+        let agent = AgentId::new(LIVE_AGENT);
+        let rename = Request::AgentRename(RenameParams {
+            agent,
+            title: "🚀 Stream the input".to_owned(),
+        });
+
+        assert!(answer(&state, &rename).is_ok());
+        apply(&mut state, &rename);
+
+        assert_eq!(state.agents[&agent].summary.title, "🚀 Stream the input");
+    }
 
     #[test]
     fn the_live_agent_starts_a_command_finishes_it_then_adds_entries() {

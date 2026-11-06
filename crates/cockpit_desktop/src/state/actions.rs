@@ -24,7 +24,7 @@ use super::ui_state::{
     Block, Dialog, FileView, NewAgentForm, NewAgentTab, PaletteOrigin, Popover, Reopening,
     TitleEdit, TitlePlace, ViewMode,
 };
-use super::{export, file_edits};
+use super::{export, file_edits, title_emoji};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::prefs::{self, StatusFilter};
 
@@ -327,6 +327,8 @@ pub enum MenuAction {
     ExportConversation,
     /// Turns the header's title into a field.
     Rename,
+    /// Opens the emoji picker, whose emoji starts the title.
+    SetEmoji,
     CloseAgent,
     /// A setting: its row holds its choices, which Left and Right move through.
     Model,
@@ -350,6 +352,7 @@ impl MenuAction {
             Self::CompactConversation => "Compact conversation",
             Self::ExportConversation => "Export conversation",
             Self::Rename => "Rename",
+            Self::SetEmoji => "Set emoji",
             Self::CloseAgent => "Close agent",
             Self::Model => "Model",
             Self::Effort => "Effort",
@@ -364,6 +367,7 @@ impl MenuAction {
             | Self::CompactConversation
             | Self::ExportConversation
             | Self::Rename
+            | Self::SetEmoji
             | Self::CloseAgent => MenuSection::Context,
             Self::Model | Self::Effort | Self::Mode => MenuSection::Model,
         }
@@ -381,6 +385,7 @@ impl MenuAction {
             Self::AttachImage
             | Self::ExportConversation
             | Self::Rename
+            | Self::SetEmoji
             | Self::CloseAgent
             | Self::Model
             | Self::Effort
@@ -418,6 +423,7 @@ impl MenuAction {
             | Self::CompactConversation
             | Self::ExportConversation
             | Self::Rename
+            | Self::SetEmoji
             | Self::CloseAgent => Vec::new(),
         };
         let mut words = words.into_iter().chain([self.label()]);
@@ -581,6 +587,10 @@ pub fn palette_pick(
             start_rename(state, drafts, agent);
             Picked::default()
         }
+        MenuAction::SetEmoji => {
+            state.ui.popover = Some(Popover::TitleEmoji);
+            return Picked::default();
+        }
         MenuAction::CloseAgent => Picked {
             requests: request_close(state, drafts, agent),
             window: None,
@@ -589,6 +599,25 @@ pub fn palette_pick(
     };
     state.ui.popover = None;
     picked
+}
+
+/// Starts the agent's title with `emoji`, in place of the emoji it starts with, or removes that
+/// emoji for `None`. The rename shows it wherever the title shows, Claude Code's resume list
+/// included.
+pub fn set_title_emoji(state: &mut AppState, agent: AgentId, emoji: Option<&str>) -> Vec<Outgoing> {
+    state.ui.popover = None;
+    let Some(entry) = state.agents.get(&agent) else {
+        return Vec::new();
+    };
+    let title = title_emoji::with_emoji(&entry.summary.title, emoji);
+    // A title of an emoji alone has nothing left without it, and the daemon refuses it empty.
+    if title.is_empty() || title == entry.summary.title {
+        return Vec::new();
+    }
+    vec![Outgoing::action(Request::AgentRename(RenameParams {
+        agent,
+        title,
+    }))]
 }
 
 /// Turns the header's title into a field holding it.
@@ -780,6 +809,7 @@ pub fn setting_choices(summary: &AgentSummary, action: MenuAction) -> Vec<Settin
         | MenuAction::CompactConversation
         | MenuAction::ExportConversation
         | MenuAction::Rename
+        | MenuAction::SetEmoji
         | MenuAction::CloseAgent => Vec::new(),
     }
 }
@@ -809,6 +839,7 @@ pub fn choose_setting(
         | MenuAction::CompactConversation
         | MenuAction::ExportConversation
         | MenuAction::Rename
+        | MenuAction::SetEmoji
         | MenuAction::CloseAgent => None,
     };
     requests.unwrap_or_default()
@@ -870,6 +901,7 @@ fn unknown_value_choice(action: MenuAction) -> Option<usize> {
         | MenuAction::CompactConversation
         | MenuAction::ExportConversation
         | MenuAction::Rename
+        | MenuAction::SetEmoji
         | MenuAction::CloseAgent => None,
     }
 }
@@ -2641,6 +2673,7 @@ mod tests {
                 "Compact conversation",
                 "Export conversation",
                 "Rename",
+                "Set emoji",
                 "Close agent",
                 "Model",
                 "Effort",
@@ -2672,6 +2705,46 @@ mod tests {
     }
 
     #[test]
+    fn set_emoji_in_the_menu_opens_the_picker_whose_pick_renames_the_agent() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        open_menu(&mut state, &mut drafts, "emoji");
+
+        let picked = palette_pick(&mut state, &mut drafts, agent(), None);
+        let opened = state.ui.popover;
+        let renamed = set_title_emoji(&mut state, agent(), Some("🐛"));
+
+        assert_eq!(picked, Picked::default());
+        assert_eq!(opened, Some(Popover::TitleEmoji));
+        assert_eq!(state.ui.popover, None, "a pick closes the picker");
+        assert_eq!(
+            sent(&renamed),
+            [&Request::AgentRename(RenameParams {
+                agent: agent(),
+                title: "🐛 Agent 1".to_owned()
+            })]
+        );
+    }
+
+    #[test]
+    fn an_emoji_pick_that_changes_nothing_or_empties_the_title_renames_nothing() {
+        let mut state = state(AgentStatus::Idle);
+        let titled = |state: &mut AppState, title: &str| {
+            if let Some(entry) = state.agents.get_mut(&agent()) {
+                entry.summary.title = title.to_owned();
+            }
+        };
+
+        titled(&mut state, "🐛 Agent 1");
+        let same = set_title_emoji(&mut state, agent(), Some("🐛"));
+        titled(&mut state, "🐛");
+        let emptied = set_title_emoji(&mut state, agent(), None);
+
+        assert!(same.is_empty());
+        assert!(emptied.is_empty());
+    }
+
+    #[test]
     fn up_and_down_move_through_actions_then_commands_and_stop_at_the_ends() {
         let mut state = state(AgentStatus::Idle);
         let mut drafts = Drafts::default();
@@ -2688,7 +2761,7 @@ mod tests {
         };
 
         let up_at_the_top = press(Direction::Up, 1);
-        let on_the_first_command = press(Direction::Down, 9);
+        let on_the_first_command = press(Direction::Down, 10);
         let at_the_bottom = press(Direction::Down, 5);
         let back_on_the_settings = press(Direction::Up, 3);
 
@@ -2699,7 +2772,7 @@ mod tests {
                 at_the_bottom,
                 back_on_the_settings
             ),
-            (0, 9, 10, 7)
+            (0, 10, 11, 8)
         );
     }
 
