@@ -13,6 +13,7 @@ use crate::format;
 use crate::state::actions::Direction;
 use crate::state::open_file::{self, NameSearch, Row, Take};
 use crate::state::{FileSearch, Loadable, OpenFileView};
+use crate::ui::dialogs::{PointerMoves, use_pointer_moves};
 use crate::ui::file_view::{ShortPath, short_path};
 use crate::ui::icons::{Icon, IconKind};
 
@@ -38,6 +39,7 @@ pub fn OpenFileDialog(view: OpenFileView) -> Element {
     };
     // Follows the keyboard alone: a render that lags behind typing would put an older text back.
     let seed = use_hook(|| text.clone());
+    let pointer = use_pointer_moves();
     let agent_folder = cockpit
         .state
         .peek()
@@ -94,7 +96,7 @@ pub fn OpenFileDialog(view: OpenFileView) -> Element {
             }
             div { class: "dialog-list open-file-list scroll",
                 for (index, row) in rows.iter().take(entry_rows).enumerate() {
-                    {row_view(cockpit, &agent_folder, *row, index, highlighted == Some(index))}
+                    {row_view(cockpit, pointer, &agent_folder, *row, index, highlighted == Some(index))}
                 }
                 match &view.listing {
                     Loadable::NotRequested | Loadable::Loading => rsx! {
@@ -148,7 +150,7 @@ pub fn OpenFileDialog(view: OpenFileView) -> Element {
                         },
                     }
                     for (index, row) in rows.iter().enumerate().skip(entry_rows) {
-                        {row_view(cockpit, &agent_folder, *row, index, highlighted == Some(index))}
+                        {row_view(cockpit, pointer, &agent_folder, *row, index, highlighted == Some(index))}
                     }
                 }
             }
@@ -161,6 +163,7 @@ pub fn OpenFileDialog(view: OpenFileView) -> Element {
 
 fn row_view(
     cockpit: Cockpit,
+    pointer: PointerMoves,
     agent_folder: &Path,
     row: Row<'_>,
     index: usize,
@@ -171,16 +174,26 @@ fn row_view(
     } else {
         "switcher-row open-file-row"
     };
+    let point = move |event: MouseEvent| {
+        // Writing the drafts renders their readers: only a new row does.
+        let new_row = {
+            let drafts = cockpit.drafts.peek();
+            drafts.open_file.highlighted != Some(index) || !drafts.open_file.chosen
+        };
+        if pointer.moved(&event) && new_row {
+            cockpit.with_drafts(|state, drafts| open_file::point(state, drafts, index));
+        }
+    };
     let click = move |_| take(cockpit, Some(index), Take::Open);
     match row {
         Row::Up => rsx! {
-            button { key: "{UP_ROW}", class, onclick: click,
+            button { key: "{UP_ROW}", class, onmousemove: point, onclick: click,
                 Icon { kind: IconKind::Folder, size: 14 }
                 span { class: "open-file-name mono", "{UP_ROW}" }
             }
         },
         Row::Entry(entry) => rsx! {
-            button { key: "{entry.name}", class, onclick: click,
+            button { key: "{entry.name}", class, onmousemove: point, onclick: click,
                 {entry_parts(entry)}
             }
         },
@@ -188,7 +201,7 @@ fn row_view(
             let short = ShortPath::new(agent_folder, path);
             let full = path.display().to_string();
             rsx! {
-                button { key: "{full}", class, title: "{full}", onclick: click,
+                button { key: "{full}", class, title: "{full}", onmousemove: point, onclick: click,
                     Icon { kind: IconKind::File, size: 14 }
                     span { class: "open-file-name mono file-path", {short_path(&short)} }
                 }

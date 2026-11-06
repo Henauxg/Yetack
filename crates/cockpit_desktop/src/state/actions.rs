@@ -1758,6 +1758,14 @@ pub fn switcher_move(state: &AppState, drafts: &mut Drafts, direction: Direction
     switcher.highlighted = moved(switcher.highlighted, count, direction);
 }
 
+/// The pointer moved onto the agent at `index` of the filtered list: it takes the highlight, as
+/// the keys do. A row of a list the query has since narrowed changes nothing.
+pub fn switcher_point(state: &AppState, drafts: &mut Drafts, index: usize) {
+    if index < filtered_agents(state, &drafts.switcher.query).len() {
+        drafts.switcher.highlighted = index;
+    }
+}
+
 /// Opens the agent at `index` of the filtered list, or the highlighted one.
 pub fn switcher_pick(state: &mut AppState, drafts: &Drafts, index: Option<usize>) {
     if state.ui.dialog != Some(Dialog::Switcher) {
@@ -3871,6 +3879,30 @@ mod tests {
 
         assert_eq!(state.ui.selected, Some(AgentId::new(3)));
         assert_eq!(state.ui.dialog, None);
+    }
+
+    #[test]
+    fn the_pointer_moves_the_switcher_highlight_within_the_listed_agents() {
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::Idle),
+            summary(2, AgentStatus::Working),
+            summary(3, AgentStatus::Idle),
+        ]);
+        let mut drafts = Drafts::default();
+        toggle_switcher(&mut state, &mut drafts);
+
+        switcher_point(&state, &mut drafts, 2);
+        assert_eq!(drafts.switcher.highlighted, 2);
+        switcher_move(&state, &mut drafts, Direction::Up);
+        assert_eq!(drafts.switcher.highlighted, 1);
+
+        // A row the narrowed list no longer has: the pointer was on the old list.
+        switcher_query(&mut drafts, "project-3".to_owned());
+        switcher_point(&state, &mut drafts, 2);
+        assert_eq!(drafts.switcher.highlighted, 0);
+
+        switcher_pick(&mut state, &drafts, None);
+        assert_eq!(state.ui.selected, Some(AgentId::new(3)));
     }
 
     #[test]

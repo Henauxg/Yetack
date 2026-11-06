@@ -271,6 +271,19 @@ pub fn move_highlight(state: &AppState, drafts: &mut Drafts, direction: Directio
     });
 }
 
+/// The pointer moved onto the row at `index`: it takes the highlight and picks the row, as a key
+/// does, so that a cut listing shows it too. A row of a list the text has since narrowed changes
+/// nothing.
+pub fn point(state: &AppState, drafts: &mut Drafts, index: usize) {
+    let Some(view) = view(state) else {
+        return;
+    };
+    if index < rows(view, &drafts.open_file.path).len() {
+        drafts.open_file.highlighted = Some(index);
+        drafts.open_file.chosen = true;
+    }
+}
+
 /// The row the window highlights, which Enter and Tab take. A cut listing may leave out the file
 /// the text names: until a key picks a row, a file row with another name is not highlighted, and
 /// Enter opens the typed name.
@@ -682,6 +695,39 @@ mod tests {
             "/work/project-1/src/README.md".to_owned(),
         );
         assert_eq!(shown(&state, &drafts), Some(0));
+    }
+
+    #[test]
+    fn the_pointer_moves_the_highlight_within_the_rows_and_picks_a_row_of_a_cut_listing() {
+        let (mut state, mut drafts) = opened();
+
+        point(&state, &mut drafts, 5);
+        assert_eq!(drafts.open_file.highlighted, Some(5));
+        move_highlight(&state, &mut drafts, Direction::Up);
+        assert_eq!(drafts.open_file.highlighted, Some(4));
+
+        // A row the narrowed list no longer has: the pointer was on the old list.
+        type_path(&state, &mut drafts, "/work/project-1/r".to_owned());
+        point(&state, &mut drafts, 4);
+        assert_eq!(drafts.open_file.highlighted, Some(0));
+
+        // In a cut listing, the row under the pointer shows and opens, as one a key picked.
+        if let Some(view) = view_mut(&mut state) {
+            view.listing = Loadable::Loaded(DirListing {
+                truncated: true,
+                ..listing(AGENT_FOLDER)
+            });
+        }
+        type_path(&state, &mut drafts, "/work/project-1/Car".to_owned());
+        assert_eq!(highlighted(view(&state).unwrap(), &drafts.open_file), None);
+        point(&state, &mut drafts, 0);
+        assert_eq!(
+            highlighted(view(&state).unwrap(), &drafts.open_file),
+            Some(0)
+        );
+        take(&mut state, &mut drafts, None, Take::Open);
+        let opened_file = state.ui.file_view(AgentId::new(1)).unwrap();
+        assert_eq!(opened_file.path, PathBuf::from("Cargo.toml"));
     }
 
     #[test]

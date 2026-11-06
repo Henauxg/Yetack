@@ -3889,6 +3889,8 @@ html.splitting * {
   color: var(--dim);
 }
 
+/* The switcher's, the Ctrl+O list's and the folder completion's rows. The pointer moves the
+   keyboard's highlight, as in the resume list. A hover, or a fade, would light a second row. */
 .switcher-row {
   display: flex;
   align-items: center;
@@ -3901,10 +3903,10 @@ html.splitting * {
   background: transparent;
   color: var(--text);
   text-align: left;
+  transition: none;
 }
 
-.switcher-row.highlighted,
-.switcher-row:hover {
+.switcher-row.highlighted {
   background: var(--selected);
 }
 
@@ -4723,16 +4725,6 @@ button.map-toggle:hover {
 .dialog-list.folder-browse {
   max-height: 214px;
   padding: 0;
-}
-
-/* The pointer moves the highlight, as in the resume list. A hover, or a fade, would light a
-   second row. */
-.folder-browse .switcher-row {
-  transition: none;
-}
-
-.folder-browse .switcher-row:not(.highlighted):hover {
-  background: transparent;
 }
 
 /* The pointer lights its row, which stays lit over the gap between rows. A fade would light two

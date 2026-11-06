@@ -39,14 +39,14 @@ const DEFAULT_MODE: &str = "Default mode";
 /// WebKit also sends a mousemove when the list scrolls under a pointer that stays still. Only a
 /// pointer that moved takes the highlight, or the keys could not scroll past it.
 #[derive(Clone, Copy)]
-struct PointerMoves(Signal<Option<ScreenPoint>>);
+pub struct PointerMoves(Signal<Option<ScreenPoint>>);
 
-fn use_pointer_moves() -> PointerMoves {
+pub fn use_pointer_moves() -> PointerMoves {
     PointerMoves(use_signal(|| None))
 }
 
 impl PointerMoves {
-    fn moved(mut self, event: &MouseEvent) -> bool {
+    pub fn moved(mut self, event: &MouseEvent) -> bool {
         let at = Some(event.screen_coordinates());
         if *self.0.peek() == at {
             return false;
@@ -174,6 +174,7 @@ fn SwitcherDialog() -> Element {
     };
     // Follows the keyboard alone: a render that lags behind typing would put an older query back.
     let query_seed = use_hook(|| query.clone());
+    let pointer = use_pointer_moves();
     let rows: Vec<SwitcherRow> = {
         let state = cockpit.state.read();
         actions::filtered_agents(&state, &query)
@@ -229,6 +230,12 @@ fn SwitcherDialog() -> Element {
                     button {
                         key: "{row.id.get()}",
                         class: if index == highlighted { "switcher-row highlighted {format::status_class(row.status)}" } else { "switcher-row {format::status_class(row.status)}" },
+                        onmousemove: move |event: MouseEvent| {
+                            // Writing the drafts renders their readers: only a new row does.
+                            if pointer.moved(&event) && cockpit.drafts.peek().switcher.highlighted != index {
+                                cockpit.with_drafts(|state, drafts| actions::switcher_point(state, drafts, index));
+                            }
+                        },
                         onclick: move |_| cockpit.update_with_drafts(|state, drafts| actions::switcher_pick(state, drafts, Some(index))),
                         span { class: "status-dot", aria_hidden: true }
                         span { class: if row.unread { "switcher-title unread" } else { "switcher-title" }, "{row.title}" }
