@@ -25,6 +25,7 @@ use super::ui_state::{
     Block, Dialog, FileView, NewAgentForm, NewAgentTab, PaletteOrigin, Popover, Reopening,
     TitleEdit, TitlePlace, ViewMode,
 };
+use super::utf16_offset::Utf16Offset;
 use super::{export, file_edits, open_file, title_emoji};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::prefs::{self, StatusFilter};
@@ -172,20 +173,20 @@ pub enum PaletteChange {
     Close,
 }
 
-/// The composer's text changed, with the caret at `caret`, in UTF-16 units as the page counts
-/// them. The "/" word the caret is in filters the palette, and opens it, unless Esc closed it on
-/// that word; anywhere else, the caret closes a palette opened by typing. A palette opened by the
-/// slash button has a filter field of its own, so the composer's text leaves it as it is. Only
-/// the drafts change: the caller applies the returned change with `change_palette`, so that a
-/// keystroke that leaves the palette as it is leaves the rest of the state alone.
+/// The composer's text changed, with the caret at `caret`. The "/" word the caret is in filters
+/// the palette, and opens it, unless Esc closed it on that word; anywhere else, the caret closes
+/// a palette opened by typing. A palette opened by the slash button has a filter field of its
+/// own, so the composer's text leaves it as it is. Only the drafts change: the caller applies the
+/// returned change with `change_palette`, so that a keystroke that leaves the palette as it is
+/// leaves the rest of the state alone.
 pub fn composer_input(
     state: &AppState,
     drafts: &mut Drafts,
     agent: AgentId,
     text: String,
-    caret: usize,
+    caret: Utf16Offset,
 ) -> Option<PaletteChange> {
-    let caret = byte_offset(&text, caret);
+    let caret = caret.byte_offset(&text);
     let word = slash_word_at(&text, caret);
     let dismissed = drafts.palette_dismissed.get(&agent).copied();
     if dismissed != word.map(|word| word.start) {
@@ -212,18 +213,6 @@ pub fn composer_input(
     change
 }
 
-/// The byte offset in `text` of the caret the page puts `utf16` UTF-16 units in.
-fn byte_offset(text: &str, utf16: usize) -> usize {
-    let mut units = 0;
-    for (offset, character) in text.char_indices() {
-        if units >= utf16 {
-            return offset;
-        }
-        units += character.len_utf16();
-    }
-    text.len()
-}
-
 /// The "/" word the caret, a byte offset, is in, after its "/": a "/" at the start of the text or
 /// after a space or a line break, then the rest of the word, without a second "/". So
 /// "src/lib.rs" and a path such as "/home/dev" are no command.
@@ -243,16 +232,16 @@ pub fn slash_word_at(text: &str, caret: usize) -> Option<SlashWord> {
     (!word.contains(COMMAND_PREFIX)).then_some(SlashWord { start, end })
 }
 
-/// `text` with the command in place of `word`, and the caret after it, in UTF-16 units. A space
-/// follows the command, the one already there or an added one.
-fn with_command_at(text: &str, word: SlashWord, name: &str) -> Option<(String, usize)> {
+/// `text` with the command in place of `word`, and the caret after it. A space follows the
+/// command, the one already there or an added one.
+fn with_command_at(text: &str, word: SlashWord, name: &str) -> Option<(String, Utf16Offset)> {
     let before = text.get(..word.start)?;
     let after = text.get(word.end..)?;
     let spaced = after.starts_with(' ');
     let space = if spaced { "" } else { " " };
     let written = format!("{before}{COMMAND_PREFIX}{name}{space}{after}");
     let caret = before.len() + COMMAND_PREFIX.len_utf8() + name.len() + 1;
-    let caret_units = written.get(..caret)?.encode_utf16().count();
+    let caret_units = Utf16Offset::end_of(written.get(..caret)?);
     Some((written, caret_units))
 }
 
@@ -2047,7 +2036,7 @@ mod tests {
 
     /// Types in the composer as the window does: the drafts, then the palette when it changes.
     fn type_text(state: &mut AppState, drafts: &mut Drafts, text: &str) -> Vec<Outgoing> {
-        let caret = text.encode_utf16().count();
+        let caret = Utf16Offset::end_of(text);
         match composer_input(state, drafts, agent(), text.to_owned(), caret) {
             Some(change) => change_palette(state, agent(), change),
             None => Vec::new(),
@@ -2271,11 +2260,35 @@ mod tests {
         let mut drafts = Drafts::default();
         with_commands(&mut state, vec![command("review", "")]);
 
-        let plain = composer_input(&state, &mut drafts, agent(), "Run the te".to_owned(), 10);
-        let opening = composer_input(&state, &mut drafts, agent(), "/re".to_owned(), 3);
+        let plain = composer_input(
+            &state,
+            &mut drafts,
+            agent(),
+            "Run the te".to_owned(),
+            Utf16Offset::new(10),
+        );
+        let opening = composer_input(
+            &state,
+            &mut drafts,
+            agent(),
+            "/re".to_owned(),
+            Utf16Offset::new(3),
+        );
         change_palette(&mut state, agent(), PaletteChange::Open);
-        let filtering = composer_input(&state, &mut drafts, agent(), "/rev".to_owned(), 4);
-        let closing = composer_input(&state, &mut drafts, agent(), "/rev the".to_owned(), 8);
+        let filtering = composer_input(
+            &state,
+            &mut drafts,
+            agent(),
+            "/rev".to_owned(),
+            Utf16Offset::new(4),
+        );
+        let closing = composer_input(
+            &state,
+            &mut drafts,
+            agent(),
+            "/rev the".to_owned(),
+            Utf16Offset::new(8),
+        );
 
         assert_eq!(
             (plain, opening, filtering, closing),
@@ -2428,6 +2441,7 @@ mod tests {
         let mut drafts = Drafts::default();
         with_commands(&mut state, vec![command("review", "")]);
         let mut pick = |text: &str, caret: usize| {
+            let caret = Utf16Offset::new(caret);
             let change = composer_input(&state, &mut drafts, agent(), text.to_owned(), caret);
             if let Some(change) = change {
                 change_palette(&mut state, agent(), change);
@@ -2444,9 +2458,10 @@ mod tests {
         // Before a line break: a space goes in before it.
         let line_break = pick("/re\nthen the docs", 3);
 
-        assert_eq!(middle, ("please run /review now".to_owned(), Some(19)));
-        assert_eq!(end, ("please run /review ".to_owned(), Some(19)));
-        assert_eq!(line_break, ("/review \nthen the docs".to_owned(), Some(8)));
+        let at = |units| Some(Utf16Offset::new(units));
+        assert_eq!(middle, ("please run /review now".to_owned(), at(19)));
+        assert_eq!(end, ("please run /review ".to_owned(), at(19)));
+        assert_eq!(line_break, ("/review \nthen the docs".to_owned(), at(8)));
     }
 
     #[test]
@@ -2456,7 +2471,7 @@ mod tests {
         with_commands(&mut state, vec![command("review", "")]);
         // "é" is one UTF-16 unit and two bytes; "🙂" is two units and four bytes.
         let text = "café 🙂 /re";
-        let caret = text.encode_utf16().count();
+        let caret = Utf16Offset::end_of(text);
 
         let change = composer_input(&state, &mut drafts, agent(), text.to_owned(), caret);
         if let Some(change) = change {
@@ -2470,7 +2485,7 @@ mod tests {
         assert_eq!(written.as_deref(), Some("café 🙂 /review "));
         assert_eq!(
             drafts.written_caret(agent()),
-            Some("café 🙂 /review ".encode_utf16().count())
+            Some(Utf16Offset::end_of("café 🙂 /review "))
         );
     }
 

@@ -13,7 +13,9 @@ use tokio::sync::mpsc;
 
 use crate::notifications::Notifier;
 use crate::state::machine_load::{LOAD_POLL, LoadView};
-use crate::state::{self, AgentEntry, AppState, Drafts, Outgoing, Purpose, TitlePlace, actions};
+use crate::state::{
+    self, AgentEntry, AppState, Drafts, Outgoing, Purpose, TitlePlace, Utf16Offset, actions,
+};
 use crate::{bridge, demo};
 
 /// What the window was started with.
@@ -88,8 +90,7 @@ impl Cockpit {
 
     /// Typing in the composer changes the drafts, and the state only when the palette opens or
     /// closes.
-    /// `caret` counts UTF-16 units, as the page does.
-    pub fn type_in_composer(&self, agent: AgentId, text: String, caret: usize) {
+    pub fn type_in_composer(&self, agent: AgentId, text: String, caret: Utf16Offset) {
         let palette = self.with_drafts(|state, drafts| {
             actions::composer_input(state, drafts, agent, text, caret)
         });
@@ -402,7 +403,9 @@ mod tests {
         let agent = AgentId::new(1);
 
         for text in ["R", "Ru", "Run the tests"] {
-            dom.in_runtime(|| cockpit.type_in_composer(agent, text.to_owned(), text.len()));
+            dom.in_runtime(|| {
+                cockpit.type_in_composer(agent, text.to_owned(), Utf16Offset::end_of(text))
+            });
             dom.render_immediate(&mut NoOpMutations);
         }
         dom.in_runtime(|| {

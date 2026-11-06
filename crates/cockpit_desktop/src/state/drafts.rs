@@ -7,6 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use cockpit_protocol::{AgentId, Image, PendingId};
 
+use super::utf16_offset::Utf16Offset;
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Draft {
     pub text: String,
@@ -86,9 +88,8 @@ pub struct Drafts {
     /// The composer takes the draft's text at each, and else leaves its text to the keyboard: a
     /// render that lags behind typing would put an older text back.
     composer_writes: BTreeMap<AgentId, u64>,
-    /// Where the caret goes in the text the app wrote last, in UTF-16 units as the page counts
-    /// them. Without one, it goes at the end.
-    composer_carets: BTreeMap<AgentId, usize>,
+    /// Where the caret goes in the text the app wrote last. Without one, it goes at the end.
+    composer_carets: BTreeMap<AgentId, Utf16Offset>,
     /// Per agent, the start of the "/" word whose palette Esc closed: it stays closed until
     /// another word, or until the app writes that agent's draft.
     pub palette_dismissed: BTreeMap<AgentId, usize>,
@@ -118,14 +119,14 @@ impl Drafts {
         *writes = writes.wrapping_add(1);
     }
 
-    /// As `draft_written`, with the caret at `caret`, in UTF-16 units.
-    pub fn draft_written_at(&mut self, agent: AgentId, caret: usize) {
+    /// As `draft_written`, with the caret at `caret`.
+    pub fn draft_written_at(&mut self, agent: AgentId, caret: Utf16Offset) {
         self.draft_written(agent);
         self.composer_carets.insert(agent, caret);
     }
 
     /// Where the caret goes in the text the app wrote last; `None` at its end.
-    pub fn written_caret(&self, agent: AgentId) -> Option<usize> {
+    pub fn written_caret(&self, agent: AgentId) -> Option<Utf16Offset> {
         self.composer_carets.get(&agent).copied()
     }
 

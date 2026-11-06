@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::connection::Cockpit;
 use crate::state::{
-    AppState, Dialog, KeyPress, PaletteOrigin, Popover, WaitingKind, actions, agent_map, handle_key,
+    AppState, Dialog, KeyPress, PaletteOrigin, Popover, Utf16Offset, WaitingKind, actions,
+    agent_map, handle_key,
 };
 
 /// The composer's text area, whose keys the script treats apart.
@@ -325,8 +326,8 @@ const SCROLL_TO_HIGHLIGHTED_SCRIPT: &str =
 struct FieldText {
     field_id: &'static str,
     text: String,
-    /// In UTF-16 units; `None` puts the caret at the end.
-    caret: Option<usize>,
+    /// `None` puts the caret at the end.
+    caret: Option<Utf16Offset>,
 }
 
 #[derive(Debug, Serialize)]
@@ -386,11 +387,11 @@ impl KeyMode {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum BridgeMessage {
     Key(KeyPress),
-    /// The composer's text, with the caret in UTF-16 units.
+    /// The composer's text, with the caret.
     ComposerInput {
         agent: AgentId,
         text: String,
-        caret: usize,
+        caret: Utf16Offset,
     },
     Focus {
         focused: bool,
@@ -493,8 +494,8 @@ pub fn set_field_text(field_id: &'static str, text: String) {
     set_field_text_at(field_id, text, None);
 }
 
-/// As `set_field_text`, with the caret at `caret`, in UTF-16 units, or at the end with `None`.
-pub fn set_field_text_at(field_id: &'static str, text: String, caret: Option<usize>) {
+/// As `set_field_text`, with the caret at `caret`, or at the end with `None`.
+pub fn set_field_text_at(field_id: &'static str, text: String, caret: Option<Utf16Offset>) {
     let script = document::eval(FIELD_TEXT_SCRIPT);
     let message = FieldText {
         field_id,
@@ -639,7 +640,7 @@ mod tests {
         let field_text = FieldText {
             field_id: COMPOSER_ID,
             text: "Run the tests".to_owned(),
-            caret: Some(4),
+            caret: Some(Utf16Offset::new(4)),
         };
         let input = r#"{"type":"composer_input","agent":3,"text":"please run /rev","caret":15}"#;
 
@@ -670,8 +671,10 @@ mod tests {
         );
         assert!(matches!(
             serde_json::from_str::<BridgeMessage>(input).unwrap(),
-            BridgeMessage::ComposerInput { agent, text, caret: 15 }
-                if agent == AgentId::new(3) && text == "please run /rev"
+            BridgeMessage::ComposerInput { agent, text, caret }
+                if agent == AgentId::new(3)
+                    && text == "please run /rev"
+                    && caret == Utf16Offset::new(15)
         ));
     }
 }

@@ -12,6 +12,7 @@ use super::open_file;
 use super::requests::Outgoing;
 use super::transcript::WaitingKind;
 use super::ui_state::{Dialog, PaletteOrigin, Popover};
+use super::utf16_offset::Utf16Offset;
 
 /// `KeyboardEvent.key` values.
 const KEY_ESCAPE: &str = "Escape";
@@ -178,7 +179,7 @@ fn sync_composer_text(state: &mut AppState, drafts: &mut Drafts, agent: AgentId,
         return;
     }
     // A key press carries no caret: the end of the text stands in for it.
-    let caret = text.encode_utf16().count();
+    let caret = Utf16Offset::end_of(text);
     if let Some(change) = actions::composer_input(state, drafts, agent, text.to_owned(), caret) {
         actions::change_palette(state, agent, change);
     }
@@ -431,7 +432,13 @@ mod tests {
                     ..AgentDetails::default()
                 });
             }
-            let typed = actions::composer_input(&state, &mut drafts, agent, "/rev".to_owned(), 4);
+            let typed = actions::composer_input(
+                &state,
+                &mut drafts,
+                agent,
+                "/rev".to_owned(),
+                Utf16Offset::new(4),
+            );
             if let Some(change) = typed {
                 actions::change_palette(&mut state, agent, change);
             }
@@ -468,7 +475,13 @@ mod tests {
                     ..AgentDetails::default()
                 });
             }
-            let typed = actions::composer_input(&state, &mut drafts, agent, "/re".to_owned(), 3);
+            let typed = actions::composer_input(
+                &state,
+                &mut drafts,
+                agent,
+                "/re".to_owned(),
+                Utf16Offset::new(3),
+            );
             if let Some(change) = typed {
                 actions::change_palette(&mut state, agent, change);
             }
@@ -505,7 +518,7 @@ mod tests {
         let mut state = state(AgentStatus::Idle, None);
         let agent = AgentId::new(1);
         let type_text = |state: &mut AppState, drafts: &mut Drafts, text: &str| {
-            let caret = text.encode_utf16().count();
+            let caret = Utf16Offset::end_of(text);
             let change = actions::composer_input(state, drafts, agent, text.to_owned(), caret);
             if let Some(change) = change {
                 actions::change_palette(state, agent, change);
@@ -551,7 +564,18 @@ mod tests {
         }
     }
 
-    fn typed(state: &mut AppState, drafts: &mut Drafts, agent: AgentId, text: &str, caret: usize) {
+    /// Types `text` with the caret at its end.
+    fn typed(state: &mut AppState, drafts: &mut Drafts, agent: AgentId, text: &str) {
+        typed_at(state, drafts, agent, text, Utf16Offset::end_of(text));
+    }
+
+    fn typed_at(
+        state: &mut AppState,
+        drafts: &mut Drafts,
+        agent: AgentId,
+        text: &str,
+        caret: Utf16Offset,
+    ) {
         if let Some(change) = actions::composer_input(state, drafts, agent, text.to_owned(), caret)
         {
             actions::change_palette(state, agent, change);
@@ -573,7 +597,7 @@ mod tests {
         with_review_commands(&mut state);
         let text = "fix /mcp";
 
-        typed(&mut state, &mut drafts, agent, text, 4);
+        typed_at(&mut state, &mut drafts, agent, text, Utf16Offset::new(4));
         let opened = state.ui.popover;
         let requests = handle_key(&mut state, &mut drafts, &enter(text));
 
@@ -589,7 +613,7 @@ mod tests {
         with_review_commands(&mut state);
         let text = "clean up /tmp";
 
-        typed(&mut state, &mut drafts, agent, text, text.len());
+        typed(&mut state, &mut drafts, agent, text);
         let opened = state.ui.popover;
         let requests = handle_key(&mut state, &mut drafts, &enter(text));
 
@@ -607,7 +631,7 @@ mod tests {
         let mut drafts = Drafts::default();
         let mut state = state(AgentStatus::Idle, None);
 
-        typed(&mut state, &mut drafts, agent, "/rev", 4);
+        typed(&mut state, &mut drafts, agent, "/rev");
         let loading = state.agents.get(&agent).map(AgentEntry::commands_loading);
         let requests = handle_key(&mut state, &mut drafts, &enter("/rev"));
 
@@ -626,7 +650,7 @@ mod tests {
         // "etc" is in the description of /mcp.
         let text = "look at /etc";
 
-        typed(&mut state, &mut drafts, agent, text, text.len());
+        typed(&mut state, &mut drafts, agent, text);
         let requests = handle_key(&mut state, &mut drafts, &enter(text));
 
         let draft = drafts.draft(agent).map(|draft| draft.text.as_str());
@@ -640,7 +664,7 @@ mod tests {
         let mut state = state(AgentStatus::Idle, None);
         with_review_commands(&mut state);
 
-        typed(&mut state, &mut drafts, agent, "/etc", 4);
+        typed(&mut state, &mut drafts, agent, "/etc");
         let requests = handle_key(&mut state, &mut drafts, &enter("/etc"));
 
         let draft = drafts.draft(agent).map(|draft| draft.text.as_str());
@@ -657,14 +681,14 @@ mod tests {
         state.connection = ConnectionState::Connected;
         state.ui.selected = Some(AgentId::new(1));
 
-        typed(&mut state, &mut drafts, AgentId::new(1), "/re", 3);
+        typed(&mut state, &mut drafts, AgentId::new(1), "/re");
         handle_key(
             &mut state,
             &mut drafts,
             &press(KEY_ESCAPE, KeyTarget::Composer),
         );
         actions::select_agent(&mut state, AgentId::new(2));
-        typed(&mut state, &mut drafts, AgentId::new(2), "/", 1);
+        typed(&mut state, &mut drafts, AgentId::new(2), "/");
 
         assert_eq!(
             state.ui.popover,
@@ -684,13 +708,13 @@ mod tests {
         let escape = press(KEY_ESCAPE, KeyTarget::Composer);
 
         state.ui.selected = Some(first);
-        typed(&mut state, &mut drafts, first, "/re", 3);
+        typed(&mut state, &mut drafts, first, "/re");
         handle_key(&mut state, &mut drafts, &escape);
         actions::select_agent(&mut state, second);
-        typed(&mut state, &mut drafts, second, "/co", 3);
+        typed(&mut state, &mut drafts, second, "/co");
         handle_key(&mut state, &mut drafts, &escape);
         actions::select_agent(&mut state, first);
-        typed(&mut state, &mut drafts, first, "/rev", 4);
+        typed(&mut state, &mut drafts, first, "/rev");
 
         assert_eq!(state.ui.popover, None);
     }
@@ -701,14 +725,14 @@ mod tests {
         let mut drafts = Drafts::default();
         let mut state = state(AgentStatus::Idle, None);
 
-        typed(&mut state, &mut drafts, agent, "/xyz", 4);
+        typed(&mut state, &mut drafts, agent, "/xyz");
         handle_key(
             &mut state,
             &mut drafts,
             &press(KEY_ESCAPE, KeyTarget::Composer),
         );
         let sent = handle_key(&mut state, &mut drafts, &enter("/xyz"));
-        typed(&mut state, &mut drafts, agent, "/", 1);
+        typed(&mut state, &mut drafts, agent, "/");
 
         assert_eq!(sent.len(), 1);
         assert_eq!(
@@ -727,7 +751,13 @@ mod tests {
         actions::toggle_palette(&mut state, &mut drafts, agent);
         handle_key(&mut state, &mut drafts, &escape);
         let after_button = state.ui.popover;
-        let typed = actions::composer_input(&state, &mut drafts, agent, "/".to_owned(), 1);
+        let typed = actions::composer_input(
+            &state,
+            &mut drafts,
+            agent,
+            "/".to_owned(),
+            Utf16Offset::new(1),
+        );
         if let Some(change) = typed {
             actions::change_palette(&mut state, agent, change);
         }

@@ -16,6 +16,7 @@ mod shortcuts;
 pub mod title_emoji;
 mod transcript;
 mod ui_state;
+mod utf16_offset;
 
 pub use app_state::{AgentEntry, AppState, ConnectionState, FileRead, Loadable, TurnStart};
 pub use apply::{Alert, AlertKind, apply_update};
@@ -27,6 +28,7 @@ pub use ui_state::{
     Block, Dialog, FileSearch, FolderList, FormMenu, McpView, NewAgentForm, NewAgentTab, NoteKind,
     OpenFileView, PaletteOrigin, Popover, TitleEdit, TitlePlace, ToolFilter, ViewMode,
 };
+pub use utf16_offset::Utf16Offset;
 
 #[cfg(test)]
 pub(crate) use app_state::tests::{state_with, summary};
