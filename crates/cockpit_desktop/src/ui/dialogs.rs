@@ -4,6 +4,8 @@
 use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 
 use cockpit_protocol::{AgentId, AgentStatus, Effort, PastSession, PermissionMode};
+use dioxus::html::geometry::ScreenPoint;
+use dioxus::html::point_interaction::InteractionLocation;
 use dioxus::prelude::*;
 
 use crate::bridge::{self, FOLDER_FIELD_ID};
@@ -607,6 +609,9 @@ fn ResumeList(starting: bool) -> Element {
     };
     // Follows the keyboard alone, as the other fields.
     let query_seed = use_hook(|| query.clone());
+    // WebKit also sends a mousemove when the list scrolls under a pointer that stays still. Only a
+    // pointer that moved takes the highlight, or the keys could not scroll past it.
+    let mut pointer = use_signal(|| None::<ScreenPoint>);
     let (sessions, machine) = {
         let state = cockpit.state.read();
         let sessions = match &state.sessions {
@@ -693,6 +698,17 @@ fn ResumeList(starting: bool) -> Element {
                                         role: "option",
                                         aria_selected: chosen,
                                         disabled: starting,
+                                        onmousemove: move |event: MouseEvent| {
+                                            let at = Some(event.screen_coordinates());
+                                            if *pointer.peek() == at {
+                                                return;
+                                            }
+                                            pointer.set(at);
+                                            // Writing the drafts renders their readers: only a new row does.
+                                            if !starting && cockpit.drafts.peek().new_agent.session_highlighted != index {
+                                                cockpit.with_drafts(|state, drafts| actions::session_point(state, drafts, index));
+                                            }
+                                        },
                                         onclick: move |_| cockpit.change_with_drafts(|state, drafts| actions::session_pick(state, drafts, Some(index))),
                                         span { class: "session-text",
                                             span { class: "session-title", "{session.title}" }

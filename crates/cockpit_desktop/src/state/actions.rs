@@ -1906,6 +1906,16 @@ pub fn session_move(state: &AppState, drafts: &mut Drafts, direction: Direction)
     new_agent.session_highlighted = moved(new_agent.session_highlighted, count, direction);
 }
 
+/// The pointer moved onto the session at `index` of the listed ones: it takes the highlight, so
+/// that one row only shows its Resume button. A row of a list the query has since narrowed
+/// changes nothing.
+pub fn session_point(state: &AppState, drafts: &mut Drafts, index: usize) {
+    let new_agent = &mut drafts.new_agent;
+    if index < resumable_sessions(state, &new_agent.session_query).len() {
+        new_agent.session_highlighted = index;
+    }
+}
+
 /// Resumes the session at `index` of the listed ones, or the highlighted one.
 pub fn session_pick(state: &mut AppState, drafts: &Drafts, index: Option<usize>) -> Vec<Outgoing> {
     if !matches!(state.ui.dialog, Some(Dialog::NewAgent(_))) {
@@ -4064,6 +4074,37 @@ mod tests {
         );
         session_query(&mut drafts, "nothing like it".to_owned());
         assert_eq!(drafts.new_agent.session_highlighted, 0);
+    }
+
+    #[test]
+    fn the_pointer_moves_the_session_highlight_within_the_listed_sessions() {
+        let mut state = state_with(Vec::new());
+        let mut drafts = Drafts::default();
+        open_new_agent(&mut state, &mut drafts);
+        state.sessions = Loadable::Loaded(vec![
+            past_session("lexer", "Speed up the lexer", "/work/parser", 30),
+            past_session("docs", "Rewrite the error page", "/work/docs-site", 60),
+            past_session("columns", "Parser columns", "/work/tools", 10),
+        ]);
+
+        session_point(&state, &mut drafts, 2);
+        assert_eq!(drafts.new_agent.session_highlighted, 2);
+        session_move(&state, &mut drafts, Direction::Up);
+        assert_eq!(drafts.new_agent.session_highlighted, 1);
+
+        // A row the narrowed list no longer has: the pointer was on the old list.
+        session_query(&mut drafts, "parser".to_owned());
+        session_point(&state, &mut drafts, 1);
+        session_point(&state, &mut drafts, 2);
+        assert_eq!(drafts.new_agent.session_highlighted, 1);
+
+        let requests = session_pick(&mut state, &drafts, None);
+        assert_eq!(
+            requests.first().map(|outgoing| &outgoing.request),
+            Some(&Request::SessionsResume(SessionResumeParams {
+                session: ClaudeSessionId::new("lexer".to_owned())
+            }))
+        );
     }
 
     #[test]
