@@ -304,6 +304,8 @@ async fn run(
         notify,
     } = live;
     let mut daemon = configured.clone();
+    // The tick of the last choice on the screen.
+    let mut every_time = false;
     loop {
         let unreached = match reach::reach(&daemon, &places, &in_app).await {
             Ok(reached) => {
@@ -333,10 +335,11 @@ async fn run(
             }
             Err(unreached) => unreached,
         };
-        show_no_daemon(state, &unreached.label, unreached.error);
+        show_no_daemon(state, &unreached.label, unreached.error, every_time);
         let Some(chosen) = next_choice(state, drafts, &mut requests).await else {
             return;
         };
+        every_time = chosen.every_time;
         let (next, error) = reach::settle(chosen, &daemon, &mut configured, &places.config_file);
         if let Some(error) = error {
             state
@@ -348,10 +351,15 @@ async fn run(
     }
 }
 
-fn show_no_daemon(mut state: Signal<AppState>, tried: &DaemonLabel, error: String) {
+fn show_no_daemon(
+    mut state: Signal<AppState>,
+    tried: &DaemonLabel,
+    error: String,
+    every_time: bool,
+) {
     let mut state = state.write();
     state.daemon = tried.clone();
-    no_daemon::show(&mut state, tried.name(), error);
+    no_daemon::show(&mut state, tried.name(), error, every_time);
 }
 
 /// Waits for a choice on the screen. No daemon answers the requests that come meanwhile.

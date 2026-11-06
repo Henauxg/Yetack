@@ -43,14 +43,9 @@ pub struct ChoicePlan {
 /// Whether this platform can start the background service.
 pub const SERVICE_OFFERED: bool = cfg!(unix);
 
-/// Shows the screen: the app could not reach `tried`. A screen already shown keeps its tick.
-pub fn show(state: &mut AppState, tried: String, error: String) {
-    let every_time = match &state.connection {
-        ConnectionState::NoDaemon(shown) => shown.every_time,
-        ConnectionState::Connecting { .. }
-        | ConnectionState::Connected
-        | ConnectionState::Disconnected { .. } => false,
-    };
+/// Shows the screen: the app could not reach `tried`. `every_time` is the tick of the last choice
+/// on the screen, which it keeps.
+pub fn show(state: &mut AppState, tried: String, error: String, every_time: bool) {
     state.connection = ConnectionState::NoDaemon(NoDaemon {
         tried,
         error,
@@ -109,6 +104,7 @@ mod tests {
             &mut state,
             "build-box, over SSH".to_owned(),
             "ssh failed: Connection refused".to_owned(),
+            false,
         );
         state
     }
@@ -223,16 +219,19 @@ mod tests {
     fn the_screen_takes_one_choice_at_a_time_and_keeps_its_tick() {
         let mut state = screen();
         toggle_every_time(&mut state);
-        choose(&mut state, DaemonChoice::Retry).unwrap();
+        let chosen = choose(&mut state, DaemonChoice::Retry).unwrap();
 
         assert_eq!(choose(&mut state, DaemonChoice::InApp), None);
         toggle_every_time(&mut state);
         assert!(shown(&state).every_time, "the tick waits with the choice");
 
+        // The daemon answered the choice, then its first connection failed.
+        state.connection = ConnectionState::Connecting { attempt: 1 };
         show(
             &mut state,
             "the daemon in this app".to_owned(),
             "cannot create the folder /state".to_owned(),
+            chosen.every_time,
         );
 
         let screen = shown(&state);
