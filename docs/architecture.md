@@ -71,7 +71,16 @@ Each id is a newtype ([standards/rust/api_design.md](standards/rust/api_design.m
 ### Agents
 
 `AgentSummary` is what the sidebar and the header need:
-id, title, folder, status, activity line, pending count, model, effort, permission mode, task progress, context percentage, prompt cache expiry, turns, API-equivalent cost, start time, position in the list.
+id, title, folder, status, activity line, pending count, model, effort, permission mode, task progress, context percentage, prompt cache expiry, turns, API-equivalent cost, start time, last activity time, running turn's start time, position in the list.
+
+The two times let the app count the time on a sidebar row by itself, so the daemon sends no event to move a clock:
+
+- `turn_started_at` is set when a prompt goes to `claude`, or at the first line of a turn Claude Code starts without one (a resumed cut-off turn). It is `None` between turns.
+- `last_activity_at` moves when the agent starts, a prompt goes to `claude`, the agent begins to wait for you (the first of its pending requests), a turn ends, or its process ends.
+  Lines within a turn and streamed text do not move it, and neither does a slash command that runs no turn, such as the `/effort` the menu sends.
+- Each of these moments already changes the summary's status, pending count or turn count, so the times add no `AgentUpdated` event.
+- After a daemon restart, both come from the last summary in the event log. A turn the restart cut off has no turn start any more, and its last activity is the later of its start and the logged last activity.
+  A log written before these fields existed reads `None` for both, and the row then shows no time, as with an older daemon. An older app ignores the two fields.
 
 The list's order belongs to the user, and the daemon keeps it, so every client and `agents-cockpit list` show the same one:
 
@@ -310,6 +319,10 @@ When the process ends and its pid goes to another one during the check, the sign
   The sidebar shows the new order at once, with the positions the daemon then sends, and puts the agents back when the daemon refuses the move.
   A page script follows the drag (`ui/reorder.rs`), as the splitter's does: a lifted copy of the row follows the pointer, a line shows where the row will land, and Rust hears of it once, on release.
   A press that moves less than 4 pixels stays a click.
+- **Sidebar rows**: the first line holds the status dot, the title, the task progress ("3/5"), a time, the pending count and the unread dot. The second line holds the activity.
+  The time is how long the turn has run for a working agent, how long it has waited for an agent that needs you, and how long ago it last did something for an idle or exited one, in one unit: "12 s", "4 min", "2 h", "3 d".
+  The app's one-second clock (`Clock`) ticks it. Only a small component per row reads the clock, so a tick renders those texts and nothing else.
+  The times come from the daemon's clock: when it runs ahead of the laptop's, a time reads 0 s rather than below.
 - **Status filter**: chips at the top of the sidebar (All, Needs you, Working, Idle, Exited, each with its count) hide the other agents' rows and never change the order.
   An agent the filter hides still raises its notifications.
   When the filter hides the selected agent, the center keeps showing it and the sidebar says so, with a link that shows all agents.
