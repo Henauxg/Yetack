@@ -607,6 +607,8 @@ fn folder_key(cockpit: Cockpit, event: &KeyboardEvent) {
             take_folder(cockpit, None);
             return;
         }
+        // The page's script passes Backspace on only with the caret at the end and nothing
+        // selected.
         Key::Backspace => {
             if let Some(text) = cockpit.with_drafts(|_, drafts| folder_field::text_above(drafts)) {
                 event.prevent_default();

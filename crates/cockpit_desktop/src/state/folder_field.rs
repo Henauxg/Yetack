@@ -119,7 +119,7 @@ pub fn take(state: &mut AppState, drafts: &mut Drafts, index: Option<usize>) -> 
     let text = &drafts.new_agent.folder;
     let index = index.or(drafts.new_agent.folder_highlighted)?;
     let new_text = match rows(list, text).get(index).copied()? {
-        FolderRow::Up => open_file::up(text)?,
+        FolderRow::Up => up(text)?,
         FolderRow::Folder(entry) => open_file::completed(text, &entry.name, true),
     };
     set_text(state, drafts, new_text.clone());
@@ -133,7 +133,13 @@ pub fn text_above(drafts: &Drafts) -> Option<String> {
     if !open_file::split(text).1.is_empty() {
         return None;
     }
-    open_file::up(text)
+    up(text)
+}
+
+/// The text naming the folder above the one `text` lists. The field lists absolute paths only.
+fn up(text: &str) -> Option<String> {
+    let root = Path::new("/");
+    open_file::up(root, &open_file::listed_folder(root, text), text)
 }
 
 /// Puts `text` in the field's draft, and makes the list follow it.
