@@ -554,6 +554,32 @@ async fn a_stopped_agent_given_another_model_shows_no_effort_until_it_starts() {
 }
 
 #[tokio::test]
+async fn resuming_an_exited_agent_is_activity_of_the_agent() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let agent = client.start(&setup.work(), "first").await;
+    client.idle(agent).await;
+    client.ok(Request::AgentStop(AgentParams { agent })).await;
+    let exited = client
+        .summary_with(agent, |summary| summary.status == AgentStatus::Exited)
+        .await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    client.ok(Request::AgentResume(AgentParams { agent })).await;
+    let resumed = client
+        .summary_with(agent, |summary| summary.status != AgentStatus::Exited)
+        .await;
+
+    assert!(exited.last_activity_at.is_some());
+    assert!(
+        resumed.last_activity_at > exited.last_activity_at,
+        "{:?} after {:?}",
+        resumed.last_activity_at,
+        exited.last_activity_at
+    );
+}
+
+#[tokio::test]
 async fn an_effort_typed_in_the_composer_is_kept_as_if_set_from_the_menu() {
     let setup = Setup::new();
     let mut client = setup.connect().await;

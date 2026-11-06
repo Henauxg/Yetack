@@ -451,6 +451,7 @@ impl Hub {
             .map_err(|error| ErrorBody::new(ErrorCode::ClaudeFailed, error))?;
         if let Some(agent) = self.agents.get_mut(&id) {
             agent.record.running = true;
+            agent.view.resumed_by_user(state::now());
         }
         self.save_agents();
         self.publish(id);

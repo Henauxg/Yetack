@@ -76,7 +76,7 @@ id, title, folder, status, activity line, pending count, model, effort, permissi
 The two times let the app count the time on a sidebar row by itself, so the daemon sends no event to move a clock:
 
 - `turn_started_at` is set when a prompt goes to `claude`, or at the first line of a turn Claude Code starts without one (a resumed cut-off turn). It is `None` between turns.
-- `last_activity_at` moves when the agent starts, a prompt goes to `claude`, the agent begins to wait for you (the first of its pending requests), a turn ends, or its process ends.
+- `last_activity_at` moves when the agent starts, the user resumes it, a prompt goes to `claude`, the agent begins to wait for you (the first of its pending requests), a turn ends, or its process ends.
   Lines within a turn and streamed text do not move it, and neither does a slash command that runs no turn, such as the `/effort` the menu sends.
 - Each of these moments already changes the summary's status, pending count or turn count, so the times add no `AgentUpdated` event.
 - After a daemon restart, both come from the last summary in the event log. A turn the restart cut off has no turn start any more, and its last activity is the later of its start and the logged last activity.

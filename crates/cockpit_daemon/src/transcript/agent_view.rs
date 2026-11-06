@@ -588,6 +588,11 @@ impl AgentView {
         self.summary.cost = CostUsd::new(self.cost_before_process + cost.get());
     }
 
+    /// The user resumed the exited agent. A daemon restart that resumes it is no activity.
+    pub(crate) fn resumed_by_user(&mut self, now: Timestamp) {
+        self.summary.last_activity_at = Some(now);
+    }
+
     /// The `claude` process ended: what waited is cancelled, what ran failed.
     pub(crate) fn process_exited(&mut self, notice: String, now: Timestamp) {
         self.exited = true;
@@ -2918,6 +2923,47 @@ mod tests {
         );
 
         assert_eq!(times(&view), (Some(at(150)), None));
+    }
+
+    #[test]
+    fn the_session_state_starts_and_ends_a_turn() {
+        let mut view = view();
+        let state = |state: &str| json!({"type": "system", "subtype": "session_state_changed", "state": state});
+
+        apply_at(&mut view, state("running"), 300);
+        let running = times(&view);
+        apply_at(&mut view, state("running"), 320);
+        let again = times(&view);
+        apply_at(&mut view, state("idle"), 340);
+
+        assert_eq!(running, (None, Some(at(300))));
+        assert_eq!(again, (None, Some(at(300))), "a turn starts once");
+        assert_eq!(times(&view), (None, None));
+    }
+
+    #[test]
+    fn an_interrupted_turn_is_activity_when_it_ends() {
+        let mut view = view();
+        view.add_prompt(&prompt("Go"), PromptDelivery::Now, at(100));
+
+        apply_at(
+            &mut view,
+            json!({"type": "result", "subtype": "error_during_execution", "is_error": true,
+                   "num_turns": 0, "terminal_reason": "aborted_streaming"}),
+            130,
+        );
+
+        assert_eq!(times(&view), (Some(at(130)), None));
+    }
+
+    #[test]
+    fn a_new_process_starts_with_no_turn() {
+        let mut view = view();
+        view.add_prompt(&prompt("Go"), PromptDelivery::Now, at(100));
+
+        view.process_started(ProcessSession::Resumed);
+
+        assert_eq!(times(&view), (Some(at(100)), None));
     }
 
     #[test]
