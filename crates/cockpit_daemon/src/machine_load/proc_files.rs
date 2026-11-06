@@ -31,6 +31,8 @@ pub(super) struct ProcessStat {
     pub(super) total_ticks: u64,
     pub(super) threads: u32,
     pub(super) resident_pages: u64,
+    /// It ended, and its parent has not reaped it yet: it runs nothing, and a signal does nothing.
+    pub(super) zombie: bool,
 }
 
 /// A process, told apart from a later one that reuses its pid.
@@ -43,6 +45,7 @@ pub(super) struct ProcessKey {
 
 /// The fields of a `stat` line, counted from the state, which follows the name.
 const STATE_FIELD: usize = 3;
+const ZOMBIE_STATE: &str = "Z";
 const PARENT_FIELD: usize = 4;
 const USER_TICKS_FIELD: usize = 14;
 const SYSTEM_TICKS_FIELD: usize = 15;
@@ -82,6 +85,7 @@ impl ProcessStat {
             total_ticks: own_ticks.saturating_add(children_ticks),
             threads: field(THREADS_FIELD)?.parse().ok()?,
             resident_pages: unsigned(RESIDENT_FIELD)?,
+            zombie: field(STATE_FIELD)? == ZOMBIE_STATE,
         })
     }
 }
@@ -278,6 +282,7 @@ mod tests {
                 total_ticks: 480,
                 threads: 3,
                 resident_pages: 1500,
+                zombie: false,
             }
         );
     }
@@ -306,6 +311,9 @@ mod tests {
         let stat = ProcessStat::parse(line).unwrap();
 
         assert_eq!((stat.own_ticks, stat.total_ticks), (15, 15));
+        assert!(!stat.zombie);
+        let ended = ProcessStat::parse(&line.replace(" R ", " Z ")).unwrap();
+        assert!(ended.zombie);
     }
 
     #[test]

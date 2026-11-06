@@ -41,7 +41,7 @@ pub(super) struct AgentSample {
     pub(super) cpu: Cores,
     pub(super) memory_bytes: u64,
     pub(super) processes: u32,
-    /// Heaviest first, the agent's `claude` left out.
+    /// Heaviest first, the agent's `claude` and ended processes left out.
     pub(super) heaviest: Vec<HeavyProcess>,
 }
 
@@ -162,7 +162,7 @@ fn agent_sample(
     for (index, stat) in now.processes.iter().enumerate() {
         gained = gained.saturating_add(grown(stat, |stat| stat.total_ticks));
         pages = pages.saturating_add(stat.resident_pages);
-        if index > 0 {
+        if index > 0 && !stat.zombie {
             heavy.push(HeavyProcess {
                 pid: stat.key.pid,
                 name: stat.name.clone(),
@@ -238,6 +238,7 @@ mod tests {
             total_ticks: ticks.1,
             threads: 1,
             resident_pages: 1000,
+            zombie: false,
         }
     }
 
@@ -377,6 +378,11 @@ mod tests {
                     stat(24, "cargo test", 20, 100_100, (150, 150)),
                     // Missed by the previous walk: its 9000 ticks are older.
                     stat(25, "postgres", 20, 2_000, (9_000, 9_000)),
+                    // Ended, not reaped yet.
+                    ProcessStat {
+                        zombie: true,
+                        ..stat(26, "sleep", 20, 100_050, (1, 1))
+                    },
                 ],
                 &[],
             )],
@@ -386,6 +392,7 @@ mod tests {
 
         let agent = sample.agents.first().unwrap();
         assert_eq!(agent.cpu, Cores::new(0.5));
+        assert_eq!(agent.processes, 4);
         let heaviest: Vec<(u32, Cores)> = agent
             .heaviest
             .iter()
