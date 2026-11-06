@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use cockpit_client::RequestError;
 use cockpit_protocol::{
-    AgentId, Cores, ErrorCode, MachineLoad, ProcessId, Request, ResponseBody, ServerLoad,
-    StopProcessParams,
+    AgentId, AgentLoad, Cores, ErrorCode, MachineLoad, ProcessId, Request, ResponseBody,
+    ServerLoad, StopProcessParams,
 };
 
 use super::actions;
@@ -147,7 +147,7 @@ pub enum AgentLine {
 /// Every agent the answer measured, the heaviest first; the idle ones fold into one line at the
 /// end, except the selected one.
 pub fn agent_lines(load: &MachineLoad, state: &AppState) -> Vec<AgentLine> {
-    let mut agents: Vec<_> = load
+    let mut agents: Vec<(&AgentLoad, String)> = load
         .agents
         .iter()
         .filter_map(|measured| {
@@ -213,8 +213,7 @@ pub fn stop_process(agent: AgentId, pid: ProcessId) -> Vec<Outgoing> {
 #[cfg(test)]
 pub(crate) mod tests {
     use cockpit_protocol::{
-        AgentLoad, AgentStatus, ErrorBody, ErrorCode, LoadAverage, LoadHistory, ResourceUse,
-        Timestamp,
+        AgentStatus, ErrorBody, ErrorCode, LoadAverage, LoadHistory, ResourceUse, Timestamp,
     };
 
     use super::*;

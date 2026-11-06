@@ -12,7 +12,7 @@ use cockpit_protocol::{DirEntry, EntryKind};
 use super::actions::{self, Direction};
 use super::app_state::{AppState, Loadable};
 use super::drafts::{Drafts, OpenFileDraft};
-use super::ui_state::{Dialog, OpenFileView};
+use super::ui_state::{Dialog, FileSearch, OpenFileView};
 
 /// What separates the folders of a typed path.
 const SEPARATOR: char = '/';
@@ -42,8 +42,9 @@ pub fn split(text: &str) -> (&str, &str) {
 /// The folder the text lists: its folder part, absolute or relative to `agent_folder`, with its
 /// ".." resolved, so that its parent is the folder above.
 pub fn listed_folder(agent_folder: &Path, text: &str) -> PathBuf {
+    let (folder_part, _) = split(text);
     let mut folder = PathBuf::new();
-    for component in agent_folder.join(split(text).0).components() {
+    for component in agent_folder.join(folder_part).components() {
         match component {
             Component::CurDir => {}
             Component::ParentDir => {
@@ -67,7 +68,8 @@ pub fn searched_name(text: &str) -> Option<&str> {
 /// `None` at the top.
 pub fn up(agent_folder: &Path, folder: &Path, text: &str) -> Option<String> {
     let above = folder.parent()?;
-    let relative = !split(text).0.starts_with(SEPARATOR);
+    let (folder_part, _) = split(text);
+    let relative = !folder_part.starts_with(SEPARATOR);
     match above.strip_prefix(agent_folder) {
         Ok(inside) if relative && inside.as_os_str().is_empty() => Some(String::new()),
         Ok(inside) if relative => Some(as_folder_text(inside)),
@@ -77,9 +79,9 @@ pub fn up(agent_folder: &Path, folder: &Path, text: &str) -> Option<String> {
 
 /// The text after taking `name` from the listed folder. A folder's ends with a separator, so that
 /// it lists.
-pub fn completed(text: &str, name: &str, folder: bool) -> String {
+pub fn completed(text: &str, name: &str, kind: EntryKind) -> String {
     let (folder_part, _) = split(text);
-    if folder {
+    if kind == EntryKind::Folder {
         format!("{folder_part}{name}{SEPARATOR}")
     } else {
         format!("{folder_part}{name}")
@@ -111,7 +113,11 @@ pub fn rows<'view>(view: &'view OpenFileView, text: &str) -> Vec<Row<'view>> {
                 .map(Row::Entry),
         );
     }
-    if let Some((_, Loadable::Loaded(matches))) = &view.search {
+    if let Some(FileSearch {
+        found: Loadable::Loaded(matches),
+        ..
+    }) = &view.search
+    {
         rows.extend(matches.iter().map(|path| Row::Match(path)));
     }
     rows
@@ -181,7 +187,8 @@ pub struct Typed {
 
 /// Keeps the typed text. The first row is highlighted while a segment filters the list.
 pub fn type_path(state: &AppState, drafts: &mut Drafts, text: String) -> Typed {
-    let filtering = !split(&text).1.is_empty();
+    let (_, segment) = split(&text);
+    let filtering = !segment.is_empty();
     drafts.open_file.highlighted = filtering.then_some(0);
     drafts.open_file.chosen = false;
     drafts.open_file.path = text;
@@ -192,7 +199,7 @@ pub fn type_path(state: &AppState, drafts: &mut Drafts, text: String) -> Typed {
         return Typed::default();
     };
     let text = &drafts.open_file.path;
-    let searched = view.search.as_ref().map(|(name, _)| name.as_str());
+    let searched = view.search.as_ref().map(|search| search.name.as_str());
     let wanted = searched_name(text);
     Typed {
         follow: listed_folder(agent_folder, text) != view.folder
@@ -208,9 +215,17 @@ fn agent_folder<'state>(state: &'state AppState, view: &OpenFileView) -> Option<
         .map(|entry| entry.summary.folder.as_path())
 }
 
+/// Whether `follow` searches for the text's bare name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameSearch {
+    Start,
+    /// Typing goes on: the search waits for a pause.
+    Wait,
+}
+
 /// Makes the dialog list the folder the typed text names, and drops a search the text no longer
-/// asks for. With `search`, it also searches for the text's bare name.
-pub fn follow(state: &mut AppState, drafts: &Drafts, search: bool) {
+/// asks for.
+pub fn follow(state: &mut AppState, drafts: &Drafts, search: NameSearch) {
     let text = drafts.open_file.path.as_str();
     let Some(folder) = view(state).and_then(|view| agent_folder(state, view)) else {
         return;
@@ -226,9 +241,12 @@ pub fn follow(state: &mut AppState, drafts: &Drafts, search: bool) {
     match searched_name(text) {
         None => view.search = None,
         Some(name) => {
-            let searched = view.search.as_ref().map(|(name, _)| name.as_str());
-            if search && searched != Some(name) {
-                view.search = Some((name.to_owned(), Loadable::NotRequested));
+            let searched = view.search.as_ref().map(|search| search.name.as_str());
+            if search == NameSearch::Start && searched != Some(name) {
+                view.search = Some(FileSearch {
+                    name: name.to_owned(),
+                    found: Loadable::NotRequested,
+                });
             }
         }
     }
@@ -265,7 +283,7 @@ pub fn highlighted(view: &OpenFileView, draft: &OpenFileDraft) -> Option<usize> 
     if draft.chosen || !cut {
         return Some(index);
     }
-    let segment = split(&draft.path).1;
+    let (_, segment) = split(&draft.path);
     match rows(view, &draft.path).get(index)? {
         Row::Entry(entry) if entry.kind != EntryKind::Folder && entry.name != segment => None,
         _ => Some(index),
@@ -301,11 +319,11 @@ pub fn take(
         None => (None, None),
         Some(Row::Up) => (text_above_view(state, view, &text), None),
         Some(Row::Entry(entry)) if entry.kind == EntryKind::Folder => {
-            (Some(completed(&text, &entry.name, true)), None)
+            (Some(completed(&text, &entry.name, EntryKind::Folder)), None)
         }
         Some(Row::Entry(entry)) => match how {
             Take::Open => (None, Some(folder.join(&entry.name))),
-            Take::Complete => (Some(completed(&text, &entry.name, false)), None),
+            Take::Complete => (Some(completed(&text, &entry.name, EntryKind::File)), None),
         },
         Some(Row::Match(path)) => match how {
             Take::Open => (None, Some(path.to_owned())),
@@ -327,7 +345,8 @@ pub fn take(
 /// render the window.
 pub fn text_above(state: &AppState, drafts: &Drafts) -> Option<String> {
     let text = &drafts.open_file.path;
-    if !split(text).1.is_empty() {
+    let (_, segment) = split(text);
+    if !segment.is_empty() {
         return None;
     }
     text_above_view(state, view(state)?, text)
@@ -342,7 +361,7 @@ pub fn needs_search(state: &AppState, drafts: &Drafts) -> bool {
     let Some(view) = view(state) else {
         return false;
     };
-    let searched = view.search.as_ref().map(|(name, _)| name.as_str());
+    let searched = view.search.as_ref().map(|search| search.name.as_str());
     let wanted = searched_name(&drafts.open_file.path);
     wanted.is_some() && wanted != searched
 }
@@ -354,7 +373,7 @@ pub fn set_text(state: &mut AppState, drafts: &mut Drafts, text: String) {
         highlighted: None,
         chosen: false,
     };
-    follow(state, drafts, true);
+    follow(state, drafts, NameSearch::Start);
 }
 
 #[cfg(test)]
@@ -449,9 +468,12 @@ mod tests {
             Some("/work/project-1/")
         );
         assert_eq!(up("/"), None);
-        assert_eq!(completed("/work/app/sr", "src", true), "/work/app/src/");
         assert_eq!(
-            completed("/work/app/RE", "README.md", false),
+            completed("/work/app/sr", "src", EntryKind::Folder),
+            "/work/app/src/"
+        );
+        assert_eq!(
+            completed("/work/app/RE", "README.md", EntryKind::File),
             "/work/app/README.md"
         );
         assert_eq!(searched_name("lexer"), Some("lexer"));
@@ -516,7 +538,7 @@ mod tests {
         assert_eq!(text_above(&state, &drafts), None);
 
         type_path(&state, &mut drafts, "/work/project-1/src/".to_owned());
-        follow(&mut state, &drafts, false);
+        follow(&mut state, &drafts, NameSearch::Wait);
         let text = text_above(&state, &drafts);
 
         assert_eq!(text.as_deref(), Some("/work/project-1/"));
@@ -646,7 +668,7 @@ mod tests {
         let (mut state, mut drafts) = opened();
         let typed = type_path(&state, &mut drafts, "/work/project-1/src/Car".to_owned());
         assert!(typed.follow);
-        follow(&mut state, &drafts, false);
+        follow(&mut state, &drafts, NameSearch::Wait);
         if let Some(view) = view_mut(&mut state) {
             view.listing = cut("/work/project-1/src");
         }
@@ -675,23 +697,26 @@ mod tests {
             }
         );
         assert!(needs_search(&state, &drafts));
-        follow(&mut state, &drafts, true);
+        follow(&mut state, &drafts, NameSearch::Start);
         assert!(!needs_search(&state, &drafts));
         let shown = view_mut(&mut state).unwrap();
         assert_eq!(
             shown.search,
-            Some(("lex".to_owned(), Loadable::NotRequested))
+            Some(FileSearch {
+                name: "lex".to_owned(),
+                found: Loadable::NotRequested,
+            })
         );
-        shown.search = Some((
-            "lex".to_owned(),
-            Loadable::Loaded(vec![PathBuf::from("/work/project-1/src/lexer.rs")]),
-        ));
+        shown.search = Some(FileSearch {
+            name: "lex".to_owned(),
+            found: Loadable::Loaded(vec![PathBuf::from("/work/project-1/src/lexer.rs")]),
+        });
         assert_eq!(row_names(&state, &drafts), ["/work/project-1/src/lexer.rs"]);
 
         // A path with a separator drops the search at once.
         let typed = type_path(&state, &mut drafts, "src/".to_owned());
         assert!(typed.follow && !typed.search);
-        follow(&mut state, &drafts, false);
+        follow(&mut state, &drafts, NameSearch::Wait);
         assert_eq!(view(&state).unwrap().search, None);
     }
 

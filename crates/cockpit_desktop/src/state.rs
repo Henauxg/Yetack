@@ -23,7 +23,7 @@ pub use requests::{Outgoing, Purpose, apply_response, needed_requests};
 pub use shortcuts::{KeyPress, handle_key};
 pub use transcript::{HistoryState, WaitingKind, awaiting_approval};
 pub use ui_state::{
-    Block, Dialog, FolderList, FormMenu, McpView, NewAgentForm, NewAgentTab, NoteKind,
+    Block, Dialog, FileSearch, FolderList, FormMenu, McpView, NewAgentForm, NewAgentTab, NoteKind,
     OpenFileView, PaletteOrigin, Popover, TitleEdit, TitlePlace, ToolFilter, ViewMode,
 };
 

@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
-use cockpit_protocol::DirEntry;
+use cockpit_protocol::{DirEntry, EntryKind};
 
 use super::actions::Direction;
 use super::app_state::AppState;
@@ -27,7 +27,8 @@ pub enum FolderRow<'list> {
 /// The folder the text lists: its folder part, when it is absolute. The daemon refuses any other,
 /// as `agent.start` does.
 pub fn listed_folder(text: &str) -> Option<PathBuf> {
-    let folder = Path::new(open_file::split(text).0);
+    let (folder_part, _) = open_file::split(text);
+    let folder = Path::new(folder_part);
     folder.is_absolute().then(|| folder.to_owned())
 }
 
@@ -68,7 +69,8 @@ pub fn list(state: &AppState) -> Option<&FolderList> {
 /// Keeps the typed text. The first row is highlighted while a segment filters the list. Returns
 /// whether the list must follow the text, which names another folder or none.
 pub fn type_folder(state: &AppState, drafts: &mut Drafts, text: String) -> bool {
-    let filtering = !open_file::split(&text).1.is_empty();
+    let (_, segment) = open_file::split(&text);
+    let filtering = !segment.is_empty();
     drafts.new_agent.folder_highlighted = filtering.then_some(0);
     let wanted = listed_folder(&text);
     drafts.new_agent.folder = text;
@@ -133,7 +135,7 @@ pub fn take(state: &mut AppState, drafts: &mut Drafts, index: Option<usize>) -> 
     let index = index.or(drafts.new_agent.folder_highlighted)?;
     let new_text = match rows(list, text).get(index).copied()? {
         FolderRow::Up => up(text)?,
-        FolderRow::Folder(entry) => open_file::completed(text, &entry.name, true),
+        FolderRow::Folder(entry) => open_file::completed(text, &entry.name, EntryKind::Folder),
     };
     set_text(state, drafts, new_text.clone());
     Some(new_text)
@@ -143,7 +145,8 @@ pub fn take(state: &mut AppState, drafts: &mut Drafts, index: Option<usize>) -> 
 /// when the key should delete as usual.
 pub fn text_above(drafts: &Drafts) -> Option<String> {
     let text = &drafts.new_agent.folder;
-    if !open_file::split(text).1.is_empty() {
+    let (_, segment) = open_file::split(text);
+    if !segment.is_empty() {
         return None;
     }
     up(text)
@@ -165,7 +168,7 @@ pub fn set_text(state: &mut AppState, drafts: &mut Drafts, text: String) {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::{DirListing, EntryKind};
+    use cockpit_protocol::DirListing;
 
     use super::*;
     use crate::state::Loadable;

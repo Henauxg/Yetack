@@ -369,7 +369,7 @@ enum BridgeMessage {
     Key(KeyPress),
     /// The composer's text, with the caret in UTF-16 units.
     ComposerInput {
-        agent: u32,
+        agent: AgentId,
         text: String,
         caret: usize,
     },
@@ -422,7 +422,7 @@ fn receive(cockpit: Cockpit, message: BridgeMessage) {
             cockpit.change_with_drafts(|state, drafts| handle_key(state, drafts, &press));
         }
         BridgeMessage::ComposerInput { agent, text, caret } => {
-            cockpit.type_in_composer(AgentId::new(agent), text, caret);
+            cockpit.type_in_composer(agent, text, caret);
         }
         BridgeMessage::Focus { focused } => {
             cockpit.update(|state| state.ui.window_focused = focused);
@@ -646,7 +646,8 @@ mod tests {
         );
         assert!(matches!(
             serde_json::from_str::<BridgeMessage>(input).unwrap(),
-            BridgeMessage::ComposerInput { agent: 3, text, caret: 15 } if text == "please run /rev"
+            BridgeMessage::ComposerInput { agent, text, caret: 15 }
+                if agent == AgentId::new(3) && text == "please run /rev"
         ));
     }
 }

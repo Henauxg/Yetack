@@ -194,11 +194,11 @@ fn open_file_requests(view: &mut OpenFileView, requests: &mut Vec<Outgoing>) {
             purpose: Purpose::ListDir { agent, folder },
         });
     }
-    if let Some((name, search)) = &mut view.search
-        && *search == Loadable::NotRequested
+    if let Some(search) = &mut view.search
+        && search.found == Loadable::NotRequested
     {
-        *search = Loadable::Loading;
-        let name = name.clone();
+        search.found = Loadable::Loading;
+        let name = search.name.clone();
         requests.push(Outgoing {
             request: Request::AgentFindFiles(FindFilesParams {
                 agent,
@@ -353,10 +353,10 @@ pub fn apply_response(
         Purpose::FindFiles { agent, name } => {
             if let Some(Dialog::OpenFile(view)) = &mut state.ui.dialog
                 && view.agent == agent
-                && let Some((searched, search)) = &mut view.search
-                && *searched == name
+                && let Some(search) = &mut view.search
+                && search.name == name
             {
-                *search = match result {
+                search.found = match result {
                     Ok(ResponseBody::FileMatches { matches }) => Loadable::Loaded(matches),
                     other => Failure::from_result(other).into_loadable(),
                 };

@@ -11,8 +11,8 @@ use crate::bridge::{self, OPEN_FILE_FIELD_ID};
 use crate::connection::Cockpit;
 use crate::format;
 use crate::state::actions::Direction;
-use crate::state::open_file::{self, Row, Take};
-use crate::state::{Loadable, OpenFileView};
+use crate::state::open_file::{self, NameSearch, Row, Take};
+use crate::state::{FileSearch, Loadable, OpenFileView};
 use crate::ui::file_view::{ShortPath, short_path};
 use crate::ui::icons::{Icon, IconKind};
 
@@ -46,7 +46,8 @@ pub fn OpenFileDialog(view: OpenFileView) -> Element {
         .map(|entry| entry.summary.folder.clone())
         .unwrap_or_default();
     let rows = open_file::rows(&view, &text);
-    let segment = open_file::split(&text).1.to_owned();
+    let (_, segment) = open_file::split(&text);
+    let segment = segment.to_owned();
     let first_match = rows.iter().position(|row| matches!(row, Row::Match(_)));
     let entry_rows = first_match.unwrap_or(rows.len());
     let listed = view
@@ -124,9 +125,9 @@ pub fn OpenFileDialog(view: OpenFileView) -> Element {
                         }
                     },
                 }
-                if let Some((name, search)) = &view.search {
+                if let Some(FileSearch { name, found }) = &view.search {
                     div { class: "open-file-section", "Matches in the project" }
-                    match search {
+                    match found {
                         Loadable::NotRequested | Loadable::Loading => rsx! {
                             for width in SEARCHING_ROWS {
                                 div { class: "open-file-row placeholder", aria_hidden: true,
@@ -232,7 +233,8 @@ fn type_path(cockpit: Cockpit, text: String) {
     let typed =
         cockpit.with_drafts(|state, drafts| open_file::type_path(state, drafts, text.clone()));
     if typed.follow {
-        cockpit.update_with_drafts(|state, drafts| open_file::follow(state, drafts, false));
+        cockpit
+            .update_with_drafts(|state, drafts| open_file::follow(state, drafts, NameSearch::Wait));
     }
     if typed.search {
         spawn(async move {
@@ -241,7 +243,9 @@ fn type_path(cockpit: Cockpit, text: String) {
                 drafts.open_file.path == text && open_file::needs_search(state, drafts)
             });
             if still {
-                cockpit.update_with_drafts(|state, drafts| open_file::follow(state, drafts, true));
+                cockpit.update_with_drafts(|state, drafts| {
+                    open_file::follow(state, drafts, NameSearch::Start)
+                });
             }
         });
     }

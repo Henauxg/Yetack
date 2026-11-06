@@ -64,8 +64,15 @@ pub struct OpenFileView {
     /// Absolute.
     pub folder: PathBuf,
     pub listing: Loadable<DirListing>,
-    /// The bare name searched for in the project, with the files found. `None` for a path.
-    pub search: Option<(String, Loadable<Vec<PathBuf>>)>,
+    /// `None` for a path.
+    pub search: Option<FileSearch>,
+}
+
+/// The bare name searched for in the project, with the files found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileSearch {
+    pub name: String,
+    pub found: Loadable<Vec<PathBuf>>,
 }
 
 impl OpenFileView {

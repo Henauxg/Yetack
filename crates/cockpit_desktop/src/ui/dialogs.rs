@@ -556,7 +556,8 @@ fn FolderRows(list: FolderList) -> Element {
         )
     };
     let rows = folder_field::rows(&list, &text);
-    let segment = open_file::split(&text).1.to_owned();
+    let (_, segment) = open_file::split(&text);
+    let segment = segment.to_owned();
     let folder_rows = rows
         .iter()
         .filter(|row| matches!(row, FolderRow::Folder(_)))

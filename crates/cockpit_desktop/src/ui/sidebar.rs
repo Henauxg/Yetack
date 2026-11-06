@@ -73,7 +73,13 @@ fn row_time(summary: &AgentSummary) -> Option<RowTime> {
 }
 
 /// The short text next to the title, and its tooltip.
-fn row_time_text(time: RowTime, now: SystemTime) -> (String, String) {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RowTimeText {
+    text: String,
+    tooltip: String,
+}
+
+fn row_time_text(time: RowTime, now: SystemTime) -> RowTimeText {
     let (moment, describe): (Timestamp, fn(&str) -> String) = match time {
         RowTime::Turn(moment) => (moment, |text| format!("Turn running: {text}")),
         RowTime::Waiting(moment) => (moment, |text| format!("Waiting for you: {text}")),
@@ -81,7 +87,7 @@ fn row_time_text(time: RowTime, now: SystemTime) -> (String, String) {
     };
     let text = format::elapsed(format::since(moment, now));
     let tooltip = describe(&text);
-    (text, tooltip)
+    RowTimeText { text, tooltip }
 }
 
 /// What the agent does now, or what its status says when it reports nothing.
@@ -336,7 +342,7 @@ fn AgentRowButton(row: AgentRow, class: String) -> Element {
 #[component]
 fn RowTimeView(time: RowTime) -> Element {
     let Clock(now) = use_context::<Clock>();
-    let (text, tooltip) = row_time_text(time, now());
+    let RowTimeText { text, tooltip } = row_time_text(time, now());
     rsx! {
         span { class: "row-time", title: "{tooltip}", "{text}" }
     }
@@ -437,18 +443,22 @@ mod tests {
     #[test]
     fn the_text_is_short_and_its_tooltip_says_what_it_counts() {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_252);
+        let shown = |text: &str, tooltip: &str| RowTimeText {
+            text: text.to_owned(),
+            tooltip: tooltip.to_owned(),
+        };
 
         assert_eq!(
             row_time_text(RowTime::Turn(at(1_000)), now),
-            ("4 min".to_owned(), "Turn running: 4 min".to_owned())
+            shown("4 min", "Turn running: 4 min")
         );
         assert_eq!(
             row_time_text(RowTime::Waiting(at(1_240)), now),
-            ("12 s".to_owned(), "Waiting for you: 12 s".to_owned())
+            shown("12 s", "Waiting for you: 12 s")
         );
         assert_eq!(
             row_time_text(RowTime::LastActive(at(1_300)), now),
-            ("0 s".to_owned(), "Last active 0 s ago".to_owned())
+            shown("0 s", "Last active 0 s ago")
         );
     }
 }
