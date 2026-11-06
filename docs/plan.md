@@ -13,6 +13,7 @@ Agents keep working when the laptop disconnects.
 - Also connect to a daemon on the same machine as the app, directly over its Unix socket, without SSH.
 - Or run the agents inside the app itself, when no daemon answers: they stop when the app closes, and resume the next time the app runs them.
 - Use the Claude subscription, through the unmodified `claude` binary signed in with your own account.
+- Run agents with several Claude accounts, such as a personal and a work subscription: each account is a Claude Code config folder with its own login (`CLAUDE_CONFIG_DIR`).
 
 ## Out of scope for v1
 
@@ -131,7 +132,7 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
 - After `hello`, the daemon sends a snapshot (agents and their statuses), then live events.
 - Every event carries a global sequence number.
   A UI that reconnects sends its last sequence number and receives what it missed, read from the logs.
-- Requests in v1: `agent.list`, `agent.start` (folder, title), `agent.prompt`, `agent.approve` (allow or deny, optional message), `agent.interrupt`, `agent.stop`, `agent.history` (older events, for scrolling up), `agent.set_model`, `agent.set_effort`, `agent.set_mode`, `agent.context_usage`, `agent.answer` (a question or a plan), `agent.stop_task`, `agent.mcp_status`, `agent.mcp_reconnect`, `agent.mcp_toggle`, `mcp.remove` (runs `claude mcp remove <name> -s <scope>`), `settings.set` (the hidden MCP servers, kept by the daemon), `sessions.list` and `sessions.resume` (past Claude sessions on the server).
+- Requests in v1: `agent.list`, `agent.start` (folder, title), `agent.prompt`, `agent.approve` (allow or deny, optional message), `agent.interrupt`, `agent.stop`, `agent.history` (older events, for scrolling up), `agent.set_model`, `agent.set_effort`, `agent.set_mode`, `agent.context_usage`, `agent.answer` (a question or a plan), `agent.stop_task`, `agent.mcp_status`, `agent.mcp_reconnect`, `agent.mcp_toggle`, `mcp.remove` (runs `claude mcp remove <name> -s <scope>`), `settings.set` (the hidden MCP servers, kept by the daemon), `sessions.list` and `sessions.resume` (past Claude sessions on the server, of every account), `accounts.list`, `accounts.add`, `accounts.change` and `accounts.remove` (the Claude accounts agents run with).
 - MCP server details come from the `mcp_status` control request: status (`connected`, `failed`, `needs-auth`, `pending`, `disabled`), server version, error, config, scope, and tools with their `readOnly`, `destructive` and `openWorld` annotations. The daemon counts tool calls per agent from its event log.
 
 ## Security
@@ -161,6 +162,10 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   The real protection against that is Claude Code's sandbox, configured to deny the agents' commands access to `~/.local/state/agents-cockpit/`: the probe checks whether this works with a Unix socket.
 - `ForwardAgent` stays off for the server in the laptop's `~/.ssh/config`, so a process on the server cannot use your laptop's key to log back in through `sshd`.
 - Prompts go only through stdin.
+- The daemon never reads, stores or passes a credential or an API key.
+  An account is a config folder: the daemon sets `CLAUDE_CONFIG_DIR` to it, the user signs in by running `claude` once with that variable, and the login stays in the folder (or the macOS Keychain).
+  The daemon removes `CLAUDE_CODE_OAUTH_TOKEN` from every agent's environment, and `ANTHROPIC_API_KEY` unless the agent's account chose to use it, without reading either.
+  To tell whether an account is signed in, it checks only that the credentials file exists.
 
 ## Front end
 
