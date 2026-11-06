@@ -149,12 +149,13 @@ pub fn TranscriptView() -> Element {
     use_hook(start_fold_script);
     let cockpit: Cockpit = use_context();
     chat_scroll::use_chat_scroll(cockpit);
-    // The agent whose conversation the chat opened, once it has a page of it.
+    // The agent whose conversation the chat opened, once its first page came or failed. A
+    // failure shows above all the rows.
     let opened = use_memo(move || {
         let state = cockpit.state.read();
         state
             .selected()
-            .filter(|entry| entry.transcript.history().has_page())
+            .filter(|entry| !entry.transcript.history().awaits_first_page())
             .map(AgentEntry::id)
     });
     // Effects run once the frame's changes are on the page: the chat draws its latest rows in

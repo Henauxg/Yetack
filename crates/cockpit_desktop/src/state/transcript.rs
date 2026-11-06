@@ -25,9 +25,9 @@ pub enum HistoryState {
 }
 
 impl HistoryState {
-    /// Whether a page of the history has come.
-    pub fn has_page(&self) -> bool {
-        matches!(self, Self::Loaded { .. } | Self::LoadingOlder)
+    /// Whether the first page of the history is still to come. A failed one is not.
+    pub fn awaits_first_page(&self) -> bool {
+        matches!(self, Self::NotLoaded | Self::Loading)
     }
 }
 
@@ -467,13 +467,13 @@ mod tests {
     }
 
     #[test]
-    fn the_history_has_a_page_once_one_came() {
-        let has_page = |history: HistoryState| history.has_page();
+    fn the_history_awaits_its_first_page_until_it_comes_or_fails() {
+        let awaits = |history: HistoryState| history.awaits_first_page();
 
-        assert!(!has_page(HistoryState::NotLoaded));
-        assert!(!has_page(HistoryState::Loading));
-        assert!(!has_page(HistoryState::Failed("refused".to_owned())));
-        assert!(has_page(HistoryState::Loaded { has_older: true }));
-        assert!(has_page(HistoryState::LoadingOlder));
+        assert!(awaits(HistoryState::NotLoaded));
+        assert!(awaits(HistoryState::Loading));
+        assert!(!awaits(HistoryState::Failed("refused".to_owned())));
+        assert!(!awaits(HistoryState::Loaded { has_older: true }));
+        assert!(!awaits(HistoryState::LoadingOlder));
     }
 }
