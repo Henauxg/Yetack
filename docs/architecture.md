@@ -400,6 +400,9 @@ When the process ends and its pid goes to another one during the check, the sign
   The outline's logic is pure and tested (`state/agent_map.rs`): it builds the tree from each subagent's `parent` (one whose parent left the list shows at the top), splits the current turn from the earlier ones, folds a subtree with no running or failed subagent, folds the oldest ended siblings past eight into one row, applies the filter, and moves the selection with the keys.
   The view keeps only what the user changed: the folds that differ from the default, the opened levels and earlier turns, the filter, the selected row and tab. Opening the map on a subagent unfolds what hides it.
   The details of a subagent come from the transcript the app holds: the prompt from its call's input, its items from the ones nested under its call. When its call is older than the loaded messages, the details say so and offer to load them.
+  Once the app holds the call, "Show its call in the chat" at the bottom of the details closes the map and scrolls the chat to the entry that holds the call, which it highlights for a moment.
+  That entry is the call's own, or, for a subagent started by a subagent, the entry of the top-level call it nests under.
+  The chat's scroll script scrolls and highlights (`ChatReveal` in the UI state), and keeps the new place as after a scroll by the user.
   While the map is open, the page's script passes Up, Down, Left, Right and Enter to it, and Y and N when the selected subagent's approval or plan waits. The outline takes the focus when the map opens, so Enter never presses a button left focused behind the dialog.
 - **Shortcuts**: Ctrl+K, Ctrl+N, Ctrl+M (the agent map), Esc (closes what is open, never stops the agent), Y, N, 1 to 9, as in plan.md, Alt+Up and Alt+Down to move the selected agent in the sidebar, F2 to rename it, and Ctrl+Shift+W to close it.
 

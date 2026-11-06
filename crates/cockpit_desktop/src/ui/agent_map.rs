@@ -983,6 +983,14 @@ fn SubagentDetails(
                 }
             }
         }
+        // Only a call the app holds has an entry in the chat to scroll to.
+        if loaded {
+            button {
+                class: "link-button map-show-call",
+                onclick: move |_| cockpit.update(|state| agent_map::show_call(state, item)),
+                "Show its call in the chat"
+            }
+        }
     }
 }
 

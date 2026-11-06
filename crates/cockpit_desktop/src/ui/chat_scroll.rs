@@ -24,6 +24,9 @@ pub const JUMP_BUTTON_ID: &str = "jump-to-latest";
 /// The wrapper of each entry, which the script anchors on. It lays nothing out of its own.
 pub const ENTRY_CLASS: &str = "transcript-entry";
 
+/// The class that highlights an entry the chat scrolled to, for as long as its animation runs.
+const REVEALED_CLASS: &str = "chat-revealed";
+
 /// How close to the bottom, in pixels, the chat still follows new entries.
 const BOTTOM_THRESHOLD_PX: u16 = 40;
 
@@ -159,6 +162,25 @@ const jump = () => {
   settle();
   report();
 };
+// Scrolls an entry to the middle of the chat, or its top to the chat's top when it is taller, and
+// highlights it for a moment. The view then keeps it, as after a scroll by the user.
+const reveal = (entryId) => {
+  const entry = document.getElementById(entryId);
+  const element = entry === null ? null : shown(entry);
+  if (box === null || element === null) {
+    return;
+  }
+  const height = element.getBoundingClientRect().height;
+  const above = Math.max(0, (box.clientHeight - height) / 2);
+  corrected = null;
+  box.scrollTop += element.getBoundingClientRect().top - boxTop() - above;
+  record();
+  element.classList.remove(settings.revealed_class);
+  // Restarts the animation when the same entry is revealed again.
+  void element.offsetWidth;
+  element.classList.add(settings.revealed_class);
+  element.addEventListener("animationend", () => element.classList.remove(settings.revealed_class), { once: true });
+};
 document.addEventListener("click", (event) => {
   if (event.target instanceof Element && event.target.closest(`#${settings.jump_button_id}`) !== null) {
     jump();
@@ -171,6 +193,8 @@ let keysBlocked = false;
     const command = await dioxus.recv();
     if (command.type === "jump") {
       jump();
+    } else if (command.type === "reveal") {
+      reveal(command.entry_id);
     } else if (command.type === "keys_blocked") {
       keysBlocked = command.blocked;
     }
@@ -198,6 +222,7 @@ struct Settings {
     jump_button_id: &'static str,
     /// End there is the file view's.
     file_view_id: &'static str,
+    revealed_class: &'static str,
     bottom_threshold_px: u16,
 }
 
@@ -207,6 +232,10 @@ struct Settings {
 enum ScrollCommand {
     /// Go to the bottom and follow new entries, as after a send.
     Jump,
+    /// Scroll to an entry and highlight it.
+    Reveal {
+        entry_id: String,
+    },
     KeysBlocked {
         blocked: bool,
     },
@@ -270,6 +299,7 @@ pub fn use_chat_scroll(cockpit: Cockpit) {
             entry_class: ENTRY_CLASS,
             jump_button_id: JUMP_BUTTON_ID,
             file_view_id: FILE_VIEW_ID,
+            revealed_class: REVEALED_CLASS,
             bottom_threshold_px: BOTTOM_THRESHOLD_PX,
         };
         if let Err(error) = script.send(settings) {
@@ -310,6 +340,18 @@ pub fn use_chat_scroll(cockpit: Cockpit) {
             tracing::warn!("cannot take the chat to its bottom: {error}");
         }
     });
+    let reveal = use_memo(move || cockpit.state.read().ui.chat_reveal);
+    use_effect(move || {
+        let Some(reveal) = reveal() else {
+            return;
+        };
+        let command = ScrollCommand::Reveal {
+            entry_id: entry_id(reveal.agent, reveal.item),
+        };
+        if let Err(error) = script.send(command) {
+            tracing::warn!("cannot scroll the chat to an entry: {error}");
+        }
+    });
 }
 
 #[cfg(test)]
@@ -327,6 +369,7 @@ mod tests {
             entry_class: ENTRY_CLASS,
             jump_button_id: JUMP_BUTTON_ID,
             file_view_id: FILE_VIEW_ID,
+            revealed_class: REVEALED_CLASS,
             bottom_threshold_px: BOTTOM_THRESHOLD_PX,
         };
         let message: ScrollMessage =
@@ -340,6 +383,7 @@ mod tests {
                 "entry_class": "transcript-entry",
                 "jump_button_id": "jump-to-latest",
                 "file_view_id": "file-view",
+                "revealed_class": "chat-revealed",
                 "bottom_threshold_px": 40,
             })
         );
@@ -353,6 +397,13 @@ mod tests {
         assert_eq!(
             serde_json::to_value(ScrollCommand::Jump).unwrap(),
             json!({ "type": "jump" })
+        );
+        assert_eq!(
+            serde_json::to_value(ScrollCommand::Reveal {
+                entry_id: "entry-1-2".to_owned()
+            })
+            .unwrap(),
+            json!({ "type": "reveal", "entry_id": "entry-1-2" })
         );
         assert_eq!(
             serde_json::to_value(ScrollCommand::KeysBlocked { blocked: true }).unwrap(),

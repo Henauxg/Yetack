@@ -17,7 +17,7 @@ use cockpit_protocol::{
 use super::actions;
 use super::app_state::AppState;
 use super::requests::Outgoing;
-use super::transcript::{Waiting, WaitingKind};
+use super::transcript::{Transcript, Waiting, WaitingKind};
 use super::ui_state::Dialog;
 
 /// Siblings a level shows before its ended ones fold into one row.
@@ -744,9 +744,47 @@ pub fn select_subagent(state: &mut AppState, item: ItemId) {
     });
 }
 
+/// "Show its call in the chat": closes the map, and scrolls the agent's chat to the entry that
+/// holds the call of `item`'s subagent, which it highlights for a moment. A call the app does not
+/// hold changes nothing.
+pub fn show_call(state: &mut AppState, item: ItemId) {
+    let Some(Dialog::AgentMap(view)) = &state.ui.dialog else {
+        return;
+    };
+    let agent = view.agent;
+    let Some(entry) = state
+        .agents
+        .get(&agent)
+        .and_then(|entry| chat_entry(&entry.transcript, item))
+    else {
+        return;
+    };
+    state.ui.dialog = None;
+    if state.ui.selected != Some(agent) {
+        actions::select_agent(state, agent);
+    }
+    state.ui.reveal_in_chat(agent, entry);
+}
+
+/// The top-level item the chat shows `item` in: `item` itself, or the loaded item it nests under,
+/// at any depth.
+fn chat_entry(transcript: &Transcript, item: ItemId) -> Option<ItemId> {
+    let mut current = transcript.get(item)?;
+    // Bounded by the transcript's length, so that parents in a cycle end the walk.
+    for _ in 0..transcript.items().count() {
+        match current.parent.and_then(|parent| transcript.get(parent)) {
+            Some(parent) if parent.id != current.id => current = parent,
+            Some(_) | None => break,
+        }
+    }
+    Some(current.id)
+}
+
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::{BackgroundTaskId, Request, Timestamp};
+    use cockpit_protocol::{
+        BackgroundTaskId, ItemBody, Request, Timestamp, ToolCall, ToolCallStatus, TranscriptItem,
+    };
 
     use super::*;
     use crate::state::app_state::Loadable;
@@ -1081,6 +1119,56 @@ mod tests {
 
         assert_eq!(shape(&subagents, &view).last().unwrap(), " +more 4 done");
         assert_eq!(view.selected, row(12));
+    }
+
+    fn agent_call(item: u32, parent: Option<u32>) -> TranscriptItem {
+        TranscriptItem {
+            id: ItemId::new(item),
+            parent: parent.map(ItemId::new),
+            body: ItemBody::Subagent(ToolCall {
+                tool: "Agent".to_owned(),
+                summary: format!("Subagent {item}"),
+                input: serde_json::Value::Null,
+                status: ToolCallStatus::Running,
+                output: None,
+                exit_code: None,
+                edit: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn showing_a_call_closes_the_map_and_reveals_the_entry_that_holds_it() {
+        let mut state = map_state(vec![
+            subagent(1, None, Running),
+            subagent(2, Some(1), Running),
+            subagent(3, None, Done),
+        ]);
+        if let Some(entry) = state.agents.get_mut(&AgentId::new(1)) {
+            entry.transcript.append(agent_call(1, None));
+            entry.transcript.append(agent_call(2, Some(1)));
+        }
+
+        show_call(&mut state, ItemId::new(1));
+
+        assert_eq!(state.ui.dialog, None);
+        let first = state.ui.chat_reveal.unwrap();
+        assert_eq!((first.agent, first.item), (AgentId::new(1), ItemId::new(1)));
+
+        // A call nested in another subagent's shows in that subagent's entry.
+        toggle(&mut state);
+        show_call(&mut state, ItemId::new(2));
+
+        let second = state.ui.chat_reveal.unwrap();
+        assert_eq!(second.item, ItemId::new(1));
+        assert_ne!(second.serial, first.serial, "the same entry scrolls again");
+
+        // A call older than the loaded messages: the map stays.
+        toggle(&mut state);
+        show_call(&mut state, ItemId::new(3));
+
+        assert!(matches!(state.ui.dialog, Some(Dialog::AgentMap(_))));
+        assert_eq!(state.ui.chat_reveal, Some(second));
     }
 
     #[test]

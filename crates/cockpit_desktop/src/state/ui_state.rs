@@ -89,6 +89,16 @@ impl OpenFileView {
     }
 }
 
+/// A chat entry the chat's scroll script scrolls to and highlights for a moment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChatReveal {
+    /// Tells this reveal from the last one, so that the same entry asked again scrolls again.
+    pub serial: u64,
+    pub agent: AgentId,
+    /// A top-level item, which has an entry of its own in the chat.
+    pub item: ItemId,
+}
+
 /// The agent closed last, which the undo note brings back for a few seconds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClosedAgent {
@@ -287,6 +297,7 @@ pub struct UiState {
     pub chat_new_from: BTreeMap<AgentId, ItemId>,
     /// Counts the sends that take the chat to its bottom: the chat's scroll script jumps at each.
     pub chat_jumps: u64,
+    pub chat_reveal: Option<ChatReveal>,
     /// Agents the app closed and took off its list, until the daemon says they are removed:
     /// their events in between are not applied.
     pub closing: BTreeSet<AgentId>,
@@ -315,6 +326,7 @@ impl Default for UiState {
             chat_scrolled_up: BTreeMap::new(),
             chat_new_from: BTreeMap::new(),
             chat_jumps: 0,
+            chat_reveal: None,
             closing: BTreeSet::new(),
             closed: None,
             next_closed: 0,
@@ -324,6 +336,18 @@ impl Default for UiState {
 }
 
 impl UiState {
+    /// Scrolls `agent`'s chat to the entry of the top-level `item` and highlights it.
+    pub fn reveal_in_chat(&mut self, agent: AgentId, item: ItemId) {
+        let serial = self
+            .chat_reveal
+            .map_or(0, |last| last.serial.wrapping_add(1));
+        self.chat_reveal = Some(ChatReveal {
+            serial,
+            agent,
+            item,
+        });
+    }
+
     /// Shows an error note until it is dismissed or pushed out by newer ones.
     pub fn report(&mut self, text: String) {
         self.note(text, NoteKind::Error);

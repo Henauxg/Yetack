@@ -1457,6 +1457,25 @@ html.reordering * {
   display: contents;
 }
 
+/* An entry the chat scrolled to, from the agent map, for a moment. */
+.chat-revealed {
+  border-radius: 8px;
+  animation: revealed 2s var(--ease) both;
+}
+
+@keyframes revealed {
+  0%,
+  40% {
+    background-color: rgba(45, 212, 191, 0.1);
+    box-shadow: 0 0 0 6px rgba(45, 212, 191, 0.1);
+  }
+
+  100% {
+    background-color: transparent;
+    box-shadow: 0 0 0 6px transparent;
+  }
+}
+
 /* The jump to the latest entry, at the bottom right of the chat's column: clear of the floating
    blocks on the right and of the text's start on the left. */
 .jump-latest {
@@ -4581,6 +4600,11 @@ button.map-toggle:hover {
   margin: 0;
   font-size: 13px;
   color: var(--dim);
+}
+
+.map-show-call {
+  align-self: flex-start;
+  font-size: 13px;
 }
 
 .map-prompt {
