@@ -1253,6 +1253,8 @@ async fn the_machine_load_shows_an_agents_command_which_it_can_stop() {
     };
     let child: u32 = markdown["Started child ".len()..].parse().unwrap();
     client.idle(agent).await;
+    // The fake `claude` lingers, and outlives the daemon the test kills: the test ends it.
+    let claude = parent_of(i32::try_from(child).unwrap());
 
     let ResponseBody::MachineLoad(load) = client.ok(Request::MachineLoad).await else {
         panic!("expected the machine's load");
@@ -1280,6 +1282,7 @@ async fn the_machine_load_shows_an_agents_command_which_it_can_stop() {
         let pid = Pid::from_raw(child).unwrap();
         rustix::process::kill_process(pid, Signal::KILL).unwrap();
     }
+    rustix::process::kill_process(Pid::from_raw(claude).unwrap(), Signal::KILL).unwrap();
     assert!(load.server.cores >= 1);
     assert!(load.server.memory_used_bytes <= load.server.memory_total_bytes);
     let ours = load
@@ -1296,6 +1299,18 @@ async fn the_machine_load_shows_an_agents_command_which_it_can_stop() {
     assert_eq!(load.history.server.len(), 1);
     assert_eq!(outside, ErrorCode::NotFound);
     assert!(!survived, "the child still runs after agent.stop_process");
+}
+
+/// The parent in `/proc/<pid>/stat`: `pid (name) state ppid ...`.
+fn parent_of(pid: i32) -> i32 {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let end = stat.rfind(')').unwrap();
+    stat[end + 1..]
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap()
 }
 
 /// Whether a process runs: it exists and is not a zombie waiting for its parent.
