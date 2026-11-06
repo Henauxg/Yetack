@@ -8,6 +8,7 @@ use cockpit_protocol::{
     AgentDetails, AgentId, AgentStatus, AgentSummary, PastSession, PlanUsage, Settings, Timestamp,
     list_order,
 };
+use strum::VariantArray;
 
 use super::file_edits;
 use super::transcript::Transcript;
@@ -184,6 +185,19 @@ impl AppState {
             .count()
     }
 
+    /// The status filter's chips, with their counts. A status's chip shows while an agent has
+    /// that status or the filter keeps it, and "All" shows beside them. When "All" would show
+    /// alone, no chip shows.
+    pub fn filter_chips(&self) -> Vec<(StatusFilter, usize)> {
+        let chosen = self.prefs.sidebar.filter;
+        let chips: Vec<(StatusFilter, usize)> = StatusFilter::VARIANTS
+            .iter()
+            .map(|&filter| (filter, self.filter_count(filter)))
+            .filter(|&(filter, count)| filter == StatusFilter::All || filter == chosen || count > 0)
+            .collect();
+        if chips.len() > 1 { chips } else { Vec::new() }
+    }
+
     /// Whether the status filter hides the selected agent, which the center still shows.
     pub fn selected_is_hidden(&self) -> bool {
         let filter = self.prefs.sidebar.filter;
@@ -344,6 +358,48 @@ pub(crate) mod tests {
         assert_eq!(state.filter_count(StatusFilter::Exited), 0);
         assert!(state.selected_is_hidden());
         assert_eq!(state.selected().map(AgentEntry::id), Some(AgentId::new(2)));
+    }
+
+    #[test]
+    fn the_filter_shows_only_the_chips_with_agents_and_the_chosen_one() {
+        let mut state = state_with(vec![
+            placed(1, AgentStatus::Idle, 1024),
+            placed(2, AgentStatus::Working, 2048),
+            placed(3, AgentStatus::Idle, 3072),
+        ]);
+        let shown = state.filter_chips();
+        state.prefs.sidebar.filter = StatusFilter::Exited;
+
+        assert_eq!(
+            shown,
+            [
+                (StatusFilter::All, 3),
+                (StatusFilter::Working, 1),
+                (StatusFilter::Idle, 2),
+            ]
+        );
+        assert_eq!(
+            state.filter_chips(),
+            [
+                (StatusFilter::All, 3),
+                (StatusFilter::Working, 1),
+                (StatusFilter::Idle, 2),
+                (StatusFilter::Exited, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_filter_hides_when_all_would_be_its_only_chip() {
+        let mut state = state_with(Vec::new());
+        let without_agents = state.filter_chips();
+        state.prefs.sidebar.filter = StatusFilter::NeedsYou;
+
+        assert_eq!(without_agents, []);
+        assert_eq!(
+            state.filter_chips(),
+            [(StatusFilter::All, 0), (StatusFilter::NeedsYou, 0)]
+        );
     }
 
     #[test]
