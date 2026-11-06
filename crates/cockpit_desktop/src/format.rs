@@ -5,8 +5,8 @@ use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, Local, NaiveDateTime};
 use cockpit_protocol::{
-    AgentStatus, Cores, CostUsd, Effort, McpScope, McpServerStatus, PermissionMode, Timestamp,
-    UsageWindow,
+    AgentStatus, Cores, CostUsd, Effort, McpScope, McpServerStatus, PermissionMode, SubagentStatus,
+    Timestamp, UsageWindow,
 };
 
 /// A model Claude Code accepts by its alias, for the model menu.
@@ -67,6 +67,28 @@ pub fn status_class(status: AgentStatus) -> &'static str {
         AgentStatus::Working => "status-working",
         AgentStatus::Idle => "status-idle",
         AgentStatus::Exited => "status-exited",
+    }
+}
+
+pub fn subagent_status_label(status: SubagentStatus) -> &'static str {
+    match status {
+        SubagentStatus::Running => "Running",
+        SubagentStatus::NeedsYou => "Waits for you",
+        SubagentStatus::Done => "Done",
+        SubagentStatus::Failed => "Failed",
+        SubagentStatus::Stopped => "Stopped",
+    }
+}
+
+/// The class that gives a subagent's status its colors: an agent's, or green and red for the
+/// way it ended.
+pub fn subagent_status_class(status: SubagentStatus) -> &'static str {
+    match status {
+        SubagentStatus::Running => "status-working",
+        SubagentStatus::NeedsYou => "status-needs-you",
+        SubagentStatus::Done => "status-done",
+        SubagentStatus::Failed => "status-failed",
+        SubagentStatus::Stopped => "status-exited",
     }
 }
 
@@ -341,6 +363,11 @@ fn local(moment: Timestamp) -> Option<NaiveDateTime> {
 
 fn local_now(now: SystemTime) -> NaiveDateTime {
     DateTime::<Local>::from(now).naive_local()
+}
+
+/// The local time of day, to the second: "14:07:11".
+pub fn time_of_day(moment: Timestamp) -> Option<String> {
+    Some(local(moment)?.format("%H:%M:%S").to_string())
 }
 
 /// When a plan window resets: "at 16:00, in 3 h 12 min" today, "Monday at 09:00" within a week.

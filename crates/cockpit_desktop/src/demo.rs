@@ -6,16 +6,17 @@ use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_client::RequestError;
 use cockpit_protocol::{
-    AgentDetails, AgentHistory, AgentId, AgentLoad, AgentStatus, AgentSummary, AnswerState,
+    AgentDetails, AgentHistory, AgentId, AgentLoad, AgentStatus, AgentSummary, Answer, AnswerState,
     Approval, AskedQuestion, BackgroundTask, BackgroundTaskId, BackgroundTaskKind,
     BackgroundTaskStatus, ChangedFile, ClaudeSessionId, CommandKind, CommandLoad, ContextCategory,
     ContextUsage, Cores, CostUsd, DirEntry, DirListing, Effort, EntryKind, ErrorBody, ErrorCode,
     FileEdit, HistoryPage, ItemBody, ItemId, LoadAverage, LoadHistory, MachineLoad, McpScope,
     McpServer, McpServerStatus, McpTool, McpTransport, PastSession, PendingId, PermissionMode,
     Plan, PlanUsage, Position, ProcessId, Question, QuestionOption, RateLimitStatus, Request,
-    ResourceUse, ResponseBody, ServerLoad, ServerPoint, SlashCommand, TaskListItem, TaskProgress,
-    TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
-    UsageWindow, UserMessage, WindowUsage,
+    ResourceUse, ResponseBody, ServerLoad, ServerPoint, SlashCommand, Subagent, SubagentRun,
+    SubagentStatus, SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, Timestamp,
+    TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, UsageWindow, UserMessage,
+    WindowUsage,
 };
 use serde_json::Value;
 
@@ -339,7 +340,7 @@ const PLAN_TEXT: &str = "## Add a result cache
 4. Add a test that evaluates the same expression twice.";
 
 /// The sidebar's order, top first, as a user arranged it: neither by id nor by status.
-const SIDEBAR_ORDER: [u32; 7] = [1, LIVE_AGENT, 4, 2, 5, 3, 6];
+const SIDEBAR_ORDER: [u32; 8] = [1, MAP_AGENT, LIVE_AGENT, 4, 2, 5, 3, 6];
 
 /// The room between two agents' positions, as the daemon leaves it.
 const POSITION_STEP: u32 = 1024;
@@ -361,6 +362,7 @@ pub fn state(daemon: DaemonLabel) -> AppState {
         benchmark_agent(now),
         exited_agent(now),
         live_agent(now),
+        map_agent(now),
     ];
     for sample in agents {
         let mut entry = AgentEntry::new(sample.summary);
@@ -370,7 +372,7 @@ pub fn state(daemon: DaemonLabel) -> AppState {
             has_older,
         });
         entry.details = Loadable::Loaded(sample.details);
-        if entry.summary.status == AgentStatus::Working {
+        if entry.summary.status == AgentStatus::Working || entry.id() == AgentId::new(MAP_AGENT) {
             entry.turn_started = Instant::now().checked_sub(TURN_ELAPSED);
         }
         state.agents.insert(entry.id(), entry);
@@ -398,8 +400,9 @@ pub fn latency(request: &Request) -> Duration {
 }
 
 /// What the daemon's events would change after a request it accepts: a rename shows in the
-/// title.
+/// title, an answered approval and a stopped task show in the agent map.
 pub fn apply(state: &mut AppState, request: &Request) {
+    apply_map_request(state, request);
     if let Request::AgentRename(params) = request
         && let Some(entry) = state.agents.get_mut(&params.agent)
     {
@@ -1223,6 +1226,7 @@ fn parser_agent(now: SystemTime) -> Sample {
             task("Cover a token at the end of the input", TaskStatus::Pending),
         ],
         background_tasks: parser_background_tasks(now),
+        subagents: parser_subagents(now),
         changed_files: vec![
             ChangedFile {
                 path: Path::new(PARSER_FOLDER).join(ERROR_FILE),
@@ -1717,6 +1721,596 @@ pub fn live_tick(state: &mut AppState, tick: u32) {
     }
 }
 
+/// The agent of the agent map's sample, as the mockup draws it: subagents in the foreground and in
+/// the background, nested two deep, one failed, one stopped, one waiting for you, and four of
+/// earlier turns.
+const MAP_AGENT: u32 = 8;
+const MAP_FOLDER: &str = "/home/dev/projects/parcel-api";
+/// The approval a subagent of the map's agent waits for.
+const MAP_APPROVAL: &str = "demo-map-approval";
+
+/// A subagent of the map's sample, before its times are set from now.
+struct DemoSubagent {
+    item: u32,
+    parent: Option<u32>,
+    description: &'static str,
+    agent_type: &'static str,
+    run: SubagentRun,
+    status: SubagentStatus,
+    /// Started and ended so many seconds ago.
+    started: u64,
+    ended: Option<u64>,
+    tokens: u64,
+    tool_calls: u32,
+    turn: u32,
+}
+
+impl DemoSubagent {
+    fn subagent(&self, now: SystemTime) -> Subagent {
+        Subagent {
+            item: ItemId::new(self.item),
+            parent: self.parent.map(ItemId::new),
+            description: self.description.to_owned(),
+            agent_type: Some(self.agent_type.to_owned()),
+            run: self.run,
+            status: self.status,
+            started_at: at(now, self.started),
+            ended_at: self.ended.map(|ended| at(now, ended)),
+            tokens: Some(self.tokens),
+            tool_calls: self.tool_calls,
+            last_tool: None,
+            error: None,
+            turn: self.turn,
+            task: None,
+        }
+    }
+}
+
+/// A subagent's call, as its item shows it.
+fn agent_call(
+    description: &str,
+    agent_type: &str,
+    prompt: &str,
+    status: ToolCallStatus,
+    output: Option<&str>,
+) -> ItemBody {
+    ItemBody::Subagent(ToolCall {
+        input: serde_json::json!({
+            "description": description,
+            "prompt": prompt,
+            "subagent_type": agent_type,
+        }),
+        ..call("Agent", description, status, output)
+    })
+}
+
+fn map_subagents(now: SystemTime) -> Vec<Subagent> {
+    use SubagentRun::{Background, Foreground};
+    use SubagentStatus::{Done, Failed, NeedsYou, Running, Stopped};
+    let demo = |item,
+                parent,
+                description,
+                agent_type,
+                run,
+                status,
+                started,
+                ended,
+                tokens,
+                tool_calls,
+                turn| {
+        DemoSubagent {
+            item,
+            parent,
+            description,
+            agent_type,
+            run,
+            status,
+            started,
+            ended,
+            tokens,
+            tool_calls,
+            turn,
+        }
+    };
+    #[rustfmt::skip]
+    let sample = [
+        demo(10, None, "Survey the upload handlers", "Explore", Foreground, Done, 3900, Some(3820), 21_300, 9, 1),
+        demo(20, None, "List the config options", "Explore", Foreground, Done, 3880, Some(3850), 6_200, 3, 1),
+        demo(30, None, "Find the rate limit crates in use", "Explore", Foreground, Done, 2400, Some(2340), 8_800, 4, 2),
+        demo(40, None, "Check the existing upload tests", "general-purpose", Foreground, Done, 2390, Some(2280), 15_100, 6, 2),
+        demo(103, None, "Map the upload request path", "Explore", Foreground, Done, 460, Some(388), 18_400, 4, 3),
+        demo(105, None, "Benchmark uploads before the change", "general-purpose", Background, Stopped, 380, Some(198), 40_100, 2, 3),
+        demo(106, None, "Implement the token bucket", "general-purpose", Background, Running, 368, None, 54_100, 5, 3),
+        demo(151, Some(106), "Find existing clock abstractions", "Explore", Foreground, Done, 340, Some(302), 9_100, 3, 3),
+        demo(154, Some(106), "Write property tests for the bucket", "general-purpose", Foreground, Running, 163, None, 22_300, 7, 3),
+        demo(171, Some(154), "Check the proptest version in the lockfile", "Explore", Foreground, Done, 158, Some(146), 3_400, 2, 3),
+        demo(107, None, "Review the auth middleware change", "code-reviewer", Foreground, Failed, 364, Some(204), 27_900, 3, 3),
+        demo(108, None, "Check the upload limits in the deploy config", "Explore", Foreground, NeedsYou, 120, None, 4_700, 2, 3),
+    ];
+    let mut subagents: Vec<Subagent> = sample.iter().map(|demo| demo.subagent(now)).collect();
+    let last_tool = |item: u32, tool: &str, summary: &str| SubagentToolCall {
+        item: Some(ItemId::new(item)),
+        tool: tool.to_owned(),
+        summary: summary.to_owned(),
+    };
+    for subagent in &mut subagents {
+        match subagent.item.get() {
+            105 => subagent.task = Some(BackgroundTaskId::new("demo-map-task-1".to_owned())),
+            106 => {
+                subagent.task = Some(BackgroundTaskId::new("demo-map-task-2".to_owned()));
+                subagent.last_tool = Some(last_tool(
+                    154,
+                    "Agent",
+                    "Write property tests for the bucket",
+                ));
+            }
+            154 => subagent.last_tool = Some(last_tool(178, "Edit", "tests/bucket_props.rs")),
+            107 => subagent.error = Some("API error 529: overloaded".to_owned()),
+            108 => {
+                subagent.last_tool = Some(last_tool(
+                    196,
+                    "Bash",
+                    "kubectl get configmap uploads -o yaml",
+                ));
+            }
+            _ => {}
+        }
+    }
+    subagents
+}
+
+const BUCKET_TEST_OUTPUT: &str = "running 6 tests
+test never_exceeds_capacity ... FAILED
+minimal failing input: refill = 0, takes = [1, 1]
+assertion failed: taken <= capacity (left: 21, right: 20)
+
+test result: FAILED. 5 passed; 1 failed";
+
+fn map_agent(now: SystemTime) -> Sample {
+    let mut summary = summary(
+        SummaryParts {
+            id: MAP_AGENT,
+            title: "Rate limits for uploads",
+            folder: MAP_FOLDER,
+            status: AgentStatus::NeedsYou,
+            activity: Some("Waits for approval: Bash"),
+            pending: 1,
+        },
+        now,
+    );
+    summary.turns = 2;
+    summary.task_progress = Some(TaskProgress { done: 2, total: 5 });
+    let done = ToolCallStatus::Done;
+    let read = |path: &str| ItemBody::ToolCall(call("Read", path, ToolCallStatus::Done, None));
+    let grep = |pattern: &str, output: &str| {
+        ItemBody::ToolCall(call("Grep", pattern, ToolCallStatus::Done, Some(output)))
+    };
+    let failed_test = ToolCall {
+        exit_code: Some(101),
+        ..bash(
+            "Run the bucket's property tests",
+            "cargo test -q -p parcel-limit --test bucket_props",
+            ToolCallStatus::Failed,
+            Some(BUCKET_TEST_OUTPUT),
+        )
+    };
+    let edit =
+        |path: &str, status: ToolCallStatus| ItemBody::ToolCall(call("Edit", path, status, None));
+    let items = vec![
+        item(
+            101,
+            None,
+            user(
+                "Add per-client rate limits to the upload endpoint. Use a token bucket, make the limits configurable, add tests, and benchmark before and after.",
+                false,
+            ),
+        ),
+        item(
+            102,
+            None,
+            text("I'll map the request path first, then build the limiter."),
+        ),
+        item(
+            103,
+            None,
+            agent_call(
+                "Map the upload request path",
+                "Explore",
+                "Trace an upload request from the router to the storage write. Name each function it passes through, and say where the client id is first known.",
+                done,
+                Some(
+                    "Uploads go through auth, then the size check, then storage. The client id is known right after auth, in `AuthLayer::call`.",
+                ),
+            ),
+        ),
+        item(131, Some(103), read("src/routes/upload.rs")),
+        item(132, Some(103), grep("fn upload", "src/routes/upload.rs:14")),
+        item(133, Some(103), read("src/auth/mod.rs")),
+        item(134, Some(103), read("src/middleware.rs")),
+        item(
+            104,
+            None,
+            text(
+                "Auth already knows the client id, so the limiter can sit right after it. I'll run the baseline benchmark and the implementation in the background, and get a review of the auth change meanwhile.",
+            ),
+        ),
+        item(
+            105,
+            None,
+            agent_call(
+                "Benchmark uploads before the change",
+                "general-purpose",
+                "Run the upload benchmarks on `main` and save the results to `target/bench-baseline.json`.",
+                done,
+                Some("Started in the background."),
+            ),
+        ),
+        item(141, Some(105), read("benches/uploads.rs")),
+        item(
+            142,
+            Some(105),
+            ItemBody::ToolCall(bash(
+                "Run the upload benchmarks",
+                "cargo bench --bench uploads -- --save-baseline main",
+                ToolCallStatus::Failed,
+                Some("Stopped."),
+            )),
+        ),
+        item(
+            106,
+            None,
+            agent_call(
+                "Implement the token bucket",
+                "general-purpose",
+                "Implement a per-client token bucket in `src/limit/bucket.rs`, with the capacity and the refill rate read from the config. Use the clock abstraction the code already has. Write property tests, run them, and fix what fails.",
+                done,
+                Some("Started in the background."),
+            ),
+        ),
+        item(150, Some(106), read("src/limit/mod.rs")),
+        item(
+            151,
+            Some(106),
+            agent_call(
+                "Find existing clock abstractions",
+                "Explore",
+                "Find how the code reads the time, and whether tests can fake it.",
+                done,
+                Some("There is a `Clock` trait in `src/clock.rs`, with a `FakeClock` for tests."),
+            ),
+        ),
+        item(160, Some(151), grep("Instant::now", "src/clock.rs:8")),
+        item(161, Some(151), read("src/clock.rs")),
+        item(162, Some(151), read("src/limit/mod.rs")),
+        item(
+            152,
+            Some(106),
+            ItemBody::ToolCall(call("Write", "src/limit/bucket.rs", done, None)),
+        ),
+        item(
+            153,
+            Some(106),
+            ItemBody::ToolCall(bash(
+                "Check that it builds",
+                "cargo check -q -p parcel-limit",
+                done,
+                Some(""),
+            )),
+        ),
+        item(
+            154,
+            Some(106),
+            agent_call(
+                "Write property tests for the bucket",
+                "general-purpose",
+                "Write property tests for `Bucket` in `src/limit/bucket.rs` with proptest. Cover: a client never takes more than the capacity in a burst; after waiting `n / refill` seconds, `n` more takes succeed; clients do not share tokens. Use `FakeClock`. Run the tests and fix the bucket if a property fails.",
+                ToolCallStatus::Running,
+                None,
+            ),
+        ),
+        item(
+            170,
+            Some(154),
+            text("I'll check which proptest version the lockfile pins before writing the tests."),
+        ),
+        item(
+            171,
+            Some(154),
+            agent_call(
+                "Check the proptest version in the lockfile",
+                "Explore",
+                "Which proptest version does Cargo.lock pin?",
+                done,
+                Some("proptest 1.5.0"),
+            ),
+        ),
+        item(180, Some(171), read("Cargo.lock")),
+        item(181, Some(171), grep("proptest", "Cargo.lock:1204")),
+        item(172, Some(154), read("src/limit/bucket.rs")),
+        item(
+            173,
+            Some(154),
+            ItemBody::ToolCall(call("Write", "tests/bucket_props.rs", done, None)),
+        ),
+        item(174, Some(154), ItemBody::ToolCall(failed_test)),
+        item(
+            175,
+            Some(154),
+            text(
+                "`try_take` checks the count before it subtracts, so one take passes over the capacity. I'll fix the comparison and rerun.",
+            ),
+        ),
+        item(176, Some(154), edit("src/limit/bucket.rs", done)),
+        item(
+            177,
+            Some(154),
+            ItemBody::ToolCall(bash(
+                "Run the bucket's property tests",
+                "cargo test -q -p parcel-limit --test bucket_props",
+                done,
+                Some("test result: ok. 6 passed; 0 failed"),
+            )),
+        ),
+        item(
+            178,
+            Some(154),
+            edit("tests/bucket_props.rs", ToolCallStatus::Running),
+        ),
+        item(
+            107,
+            None,
+            agent_call(
+                "Review the auth middleware change",
+                "code-reviewer",
+                "Review the change to `src/auth/middleware.rs` on this branch for correctness and for requests that skip auth.",
+                ToolCallStatus::Failed,
+                Some("API error 529: overloaded"),
+            ),
+        ),
+        item(190, Some(107), read("src/auth/middleware.rs")),
+        item(
+            191,
+            Some(107),
+            ItemBody::ToolCall(bash(
+                "Show the change",
+                "git diff main -- src/auth",
+                done,
+                Some("+    let client = ClientId::from_token(&token)?;"),
+            )),
+        ),
+        item(192, Some(107), read("src/auth/token.rs")),
+        item(
+            108,
+            None,
+            agent_call(
+                "Check the upload limits in the deploy config",
+                "Explore",
+                "Read the upload limits the deployment sets today, so the new defaults match them.",
+                ToolCallStatus::Running,
+                None,
+            ),
+        ),
+        item(195, Some(108), read("deploy/uploads.toml")),
+        item(
+            196,
+            Some(108),
+            ItemBody::ToolCall(bash(
+                "Read the live upload config",
+                "kubectl get configmap uploads -o yaml",
+                ToolCallStatus::Running,
+                None,
+            )),
+        ),
+        item(
+            197,
+            Some(108),
+            ItemBody::Approval(Approval {
+                pending: PendingId::new(MAP_APPROVAL.to_owned()),
+                tool: "Bash".to_owned(),
+                summary: "kubectl get configmap uploads -o yaml".to_owned(),
+                input: serde_json::json!({"command": "kubectl get configmap uploads -o yaml", "description": "Read the live upload config"}),
+                edit: None,
+                reason: Some("The command reads the cluster's configuration".to_owned()),
+                answer: AnswerState::Waiting,
+                tool_call: Some(ItemId::new(196)),
+            }),
+        ),
+        item(
+            109,
+            None,
+            text("The review stopped on an API error. I'll retry it once the bucket lands."),
+        ),
+    ];
+    let background =
+        |id: &str, kind, description: &str, status, started, ended: Option<u64>, tool_calls| {
+            BackgroundTask {
+                id: BackgroundTaskId::new(id.to_owned()),
+                kind,
+                description: description.to_owned(),
+                status,
+                started_at: at(now, started),
+                ended_at: ended.map(|ended| at(now, ended)),
+                tool_calls,
+            }
+        };
+    let details = AgentDetails {
+        background_tasks: vec![
+            background(
+                "demo-map-task-1",
+                BackgroundTaskKind::Agent,
+                "Benchmark uploads before the change",
+                BackgroundTaskStatus::Stopped,
+                380,
+                Some(198),
+                2,
+            ),
+            background(
+                "demo-map-task-2",
+                BackgroundTaskKind::Agent,
+                "Implement the token bucket",
+                BackgroundTaskStatus::Running,
+                368,
+                None,
+                5,
+            ),
+            background(
+                "demo-map-task-3",
+                BackgroundTaskKind::Command,
+                "cargo watch -x check",
+                BackgroundTaskStatus::Running,
+                423,
+                None,
+                0,
+            ),
+        ],
+        subagents: map_subagents(now),
+        ..details()
+    };
+    Sample {
+        summary,
+        items,
+        details,
+    }
+}
+
+/// The parser agent's background agents as the map shows them, with its foreground subagent:
+/// more than the map lists before it folds the oldest ended ones.
+fn parser_subagents(now: SystemTime) -> Vec<Subagent> {
+    let tasks = parser_background_tasks(now);
+    let foreground = Subagent {
+        item: ItemId::new(4),
+        parent: None,
+        description: "Find where the parser builds its errors".to_owned(),
+        agent_type: Some("Explore".to_owned()),
+        run: SubagentRun::Foreground,
+        status: SubagentStatus::Done,
+        started_at: at(now, 1600),
+        ended_at: Some(at(now, 1540)),
+        tokens: Some(11_800),
+        tool_calls: 4,
+        last_tool: None,
+        error: None,
+        turn: 20,
+        task: None,
+    };
+    let background = tasks
+        .into_iter()
+        .filter(|task| task.kind == BackgroundTaskKind::Agent)
+        .zip(200_u32..)
+        .map(|(task, item)| Subagent {
+            item: ItemId::new(item),
+            parent: None,
+            description: task.description,
+            agent_type: Some("general-purpose".to_owned()),
+            run: SubagentRun::Background,
+            status: match task.status {
+                BackgroundTaskStatus::Running => SubagentStatus::Running,
+                BackgroundTaskStatus::Done => SubagentStatus::Done,
+                BackgroundTaskStatus::Failed => SubagentStatus::Failed,
+                BackgroundTaskStatus::Stopped => SubagentStatus::Stopped,
+            },
+            started_at: task.started_at,
+            ended_at: task.ended_at,
+            tokens: Some(u64::from(task.tool_calls) * 2_300),
+            tool_calls: task.tool_calls,
+            last_tool: None,
+            error: (task.status == BackgroundTaskStatus::Failed)
+                .then(|| "The grammar file did not parse: unexpected `|` on line 41".to_owned()),
+            turn: 20,
+            task: Some(task.id),
+        });
+    std::iter::once(foreground).chain(background).collect()
+}
+
+/// What the daemon would change after an answer or a stop in the map's sample: the approval is
+/// answered and its subagent runs again, a stopped task's subagent stops.
+fn apply_map_request(state: &mut AppState, request: &Request) {
+    let now = SystemTime::now();
+    match request {
+        Request::AgentAnswer(params) => {
+            let Some(entry) = state.agents.get_mut(&params.agent) else {
+                return;
+            };
+            let waiting = entry.transcript.items().find(|item| {
+                matches!(&item.body, ItemBody::Approval(approval) if approval.pending == params.pending)
+            });
+            let (Some(waiting), Answer::Approval(answer)) = (waiting.cloned(), &params.answer)
+            else {
+                return;
+            };
+            let TranscriptItem {
+                id,
+                parent,
+                body: ItemBody::Approval(approval),
+            } = waiting
+            else {
+                return;
+            };
+            let answered = ItemBody::Approval(Approval {
+                answer: AnswerState::Answered(answer.clone()),
+                ..approval
+            });
+            entry.transcript.change(TranscriptItem {
+                id,
+                parent,
+                body: answered,
+            });
+            if let (Some(parent), Some(details)) = (parent, entry.details.loaded_mut())
+                && let Some(subagent) = details
+                    .subagents
+                    .iter_mut()
+                    .find(|subagent| subagent.item == parent)
+            {
+                subagent.status = SubagentStatus::Running;
+            }
+            if entry.transcript.waiting().is_none() {
+                entry.summary.status = AgentStatus::Working;
+                entry.summary.pending_count = 0;
+                entry.summary.activity = None;
+            }
+        }
+        Request::AgentStopTask(params) => {
+            let Some(details) = state
+                .agents
+                .get_mut(&params.agent)
+                .and_then(|entry| entry.details.loaded_mut())
+            else {
+                return;
+            };
+            let ended = Timestamp::from_system_time(now);
+            for task in &mut details.background_tasks {
+                if task.id == params.task && task.status == BackgroundTaskStatus::Running {
+                    task.status = BackgroundTaskStatus::Stopped;
+                    task.ended_at = ended;
+                }
+            }
+            let mut stopped: Vec<ItemId> = Vec::new();
+            for subagent in &mut details.subagents {
+                if subagent.task.as_ref() == Some(&params.task) && subagent.status.is_running() {
+                    subagent.status = SubagentStatus::Stopped;
+                    subagent.ended_at = ended;
+                    stopped.push(subagent.item);
+                }
+            }
+            // A foreground subagent cannot outlive the subagent that started it.
+            while let Some(parent) = stopped.pop() {
+                for subagent in &mut details.subagents {
+                    let under = subagent.parent == Some(parent);
+                    if under
+                        && subagent.run == SubagentRun::Foreground
+                        && subagent.status.is_running()
+                    {
+                        subagent.status = SubagentStatus::Stopped;
+                        subagent.ended_at = ended;
+                        stopped.push(subagent.item);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn plan_usage(now: SystemTime) -> PlanUsage {
     let mut usage = PlanUsage::default();
     usage.windows.insert(
@@ -1917,6 +2511,7 @@ pub struct ParseError {
                 None,
                 None,
                 None,
+                Some(WaitingKind::Approval),
             ]
         );
     }

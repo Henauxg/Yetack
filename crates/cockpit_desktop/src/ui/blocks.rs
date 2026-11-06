@@ -6,14 +6,14 @@ use std::cmp::Reverse;
 use std::time::{Duration, SystemTime};
 
 use cockpit_protocol::{
-    AgentId, AgentStatus, BackgroundTask, BackgroundTaskKind, BackgroundTaskStatus, TaskListItem,
-    TaskStatus,
+    AgentId, AgentStatus, BackgroundTask, BackgroundTaskId, BackgroundTaskKind,
+    BackgroundTaskStatus, ItemId, TaskListItem, TaskStatus,
 };
 use dioxus::prelude::*;
 
 use crate::connection::{Clock, Cockpit};
 use crate::format;
-use crate::state::{Block, actions};
+use crate::state::{Block, actions, agent_map};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::mcp::{McpPanel, mcp_summary};
 
@@ -43,6 +43,11 @@ pub fn FloatingBlocks() -> Element {
     let machine = state.daemon.machine.clone();
     let tasks = details.tasks;
     let background = details.background_tasks;
+    let subagent_tasks: Vec<(BackgroundTaskId, ItemId)> = details
+        .subagents
+        .iter()
+        .filter_map(|subagent| Some((subagent.task.clone()?, subagent.item)))
+        .collect();
     let servers = details.mcp_servers;
     let done = tasks
         .iter()
@@ -99,7 +104,7 @@ pub fn FloatingBlocks() -> Element {
                     open: running_open,
                     badge_mode,
                     wide: false,
-                    RunningBody { agent, tasks: background, finished_rows }
+                    RunningBody { agent, tasks: background, finished_rows, subagent_tasks }
                 }
             }
             if show_mcp {
@@ -400,7 +405,13 @@ fn task_meta(task: &BackgroundTask, now: SystemTime) -> String {
 }
 
 #[component]
-fn RunningBody(agent: AgentId, tasks: Vec<BackgroundTask>, finished_rows: FinishedRows) -> Element {
+fn RunningBody(
+    agent: AgentId,
+    tasks: Vec<BackgroundTask>,
+    finished_rows: FinishedRows,
+    /// The subagents' tasks, each with its subagent, which the map opens on.
+    subagent_tasks: Vec<(BackgroundTaskId, ItemId)>,
+) -> Element {
     let cockpit: Cockpit = use_context();
     let Clock(now) = use_context::<Clock>();
     let now = now();
@@ -432,11 +443,27 @@ fn RunningBody(agent: AgentId, tasks: Vec<BackgroundTask>, finished_rows: Finish
                     };
                     let stop_label = format!("Stop: {}", task.description);
                     let id = task.id.clone();
+                    let subagent = subagent_tasks
+                        .iter()
+                        .find(|(subagent_task, _)| *subagent_task == task.id)
+                        .map(|(_, item)| *item);
                     rsx! {
                         div { key: "{task.id.as_str()}", class: state_class,
                             span { class: "task-icon", Icon { kind: icon, size: 14 } }
                             span { class: "task-text",
-                                span { class: "task-description", "{task.description}" }
+                                match subagent {
+                                    Some(item) => rsx! {
+                                        button {
+                                            class: "task-description task-link",
+                                            title: "Show it in the agent map",
+                                            onclick: move |_| cockpit.update(|state| agent_map::open_on(state, agent, item)),
+                                            "{task.description}"
+                                        }
+                                    },
+                                    None => rsx! {
+                                        span { class: "task-description", "{task.description}" }
+                                    },
+                                }
                                 span { class: "task-meta",
                                     span { class: "task-state-dot", aria_hidden: true }
                                     "{meta}"
@@ -459,12 +486,22 @@ fn RunningBody(agent: AgentId, tasks: Vec<BackgroundTask>, finished_rows: Finish
                 }
             }
         }
-        if foldable {
+        div { class: "running-foot",
+            if foldable {
+                button {
+                    class: "running-fold",
+                    aria_expanded: hidden == 0,
+                    onclick: move |_| cockpit.update(|state| state.ui.toggle_finished_tasks(agent)),
+                    "{fold_text}"
+                }
+            }
+            span { class: "spacer" }
             button {
-                class: "running-fold",
-                aria_expanded: hidden == 0,
-                onclick: move |_| cockpit.update(|state| state.ui.toggle_finished_tasks(agent)),
-                "{fold_text}"
+                class: "running-fold map-link",
+                title: "Open the agent map (Ctrl+M)",
+                onclick: move |_| cockpit.update(|state| agent_map::open_on_agent(state, agent)),
+                Icon { kind: IconKind::Map, size: 13 }
+                "Agent map"
             }
         }
     }

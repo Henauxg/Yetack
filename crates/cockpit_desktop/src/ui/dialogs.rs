@@ -11,6 +11,7 @@ use crate::connection::{Clock, Cockpit};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::state::actions::Direction;
 use crate::state::{Dialog, FormMenu, Loadable, NewAgentForm, NewAgentTab, actions};
+use crate::ui::agent_map::AgentMapDialog;
 use crate::ui::composer::mode_icon;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::open_file::OpenFileDialog;
@@ -38,13 +39,21 @@ pub fn Dialogs() -> Element {
     else {
         return rsx! {};
     };
+    let mut overlay_class = vec!["overlay"];
+    if matches!(dialog, Dialog::AgentMap(_)) {
+        overlay_class.push("map-overlay");
+    }
+    if leaving {
+        overlay_class.push("leaving");
+    }
+    let overlay_class = overlay_class.join(" ");
     rsx! {
         // Keyed by opening: a dialog reopened while the last one leaves mounts afresh, its fields
         // empty.
         for opening in [opening] {
             div {
                 key: "{opening}",
-                class: if leaving { "overlay leaving" } else { "overlay" },
+                class: "{overlay_class}",
                 inert: leaving.then_some(true),
                 onclick: move |_| cockpit.update(|state| state.ui.dialog = None),
                 match dialog.clone() {
@@ -59,6 +68,9 @@ pub fn Dialogs() -> Element {
                     },
                     Dialog::CloseAgent(agent) => rsx! {
                         CloseAgentDialog { agent }
+                    },
+                    Dialog::AgentMap(view) => rsx! {
+                        AgentMapDialog { view }
                     },
                 }
             }

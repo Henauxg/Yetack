@@ -2,7 +2,9 @@
 //! effort and permission mode menus, and Send and Stop.
 
 use base64::engine::general_purpose::STANDARD as BASE64;
-use cockpit_protocol::{AgentId, AgentStatus, Effort, Image, ImageMediaType, PermissionMode};
+use cockpit_protocol::{
+    AgentId, AgentStatus, Effort, Image, ImageMediaType, PermissionMode, SubagentStatus,
+};
 use dioxus::html::FileData;
 use dioxus::prelude::*;
 
@@ -10,7 +12,7 @@ use crate::bridge::{self, ATTACH_INPUT_ID, COMPOSER_ID};
 use crate::connection::{Clock, Cockpit};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::state::actions::ImageTooLarge;
-use crate::state::{PaletteOrigin, Popover, actions};
+use crate::state::{PaletteOrigin, Popover, actions, agent_map};
 use crate::ui::header::cache_left;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::palette::Palette;
@@ -117,6 +119,12 @@ pub fn Composer() -> Element {
     let can_send = !exited && !draft.is_empty();
     let accept = accepted_images();
     let title = summary.title.clone();
+    let map_status = entry.details.loaded().and_then(agent_map::live_status);
+    let map_label = match map_status {
+        Some(SubagentStatus::NeedsYou) => "Agent map: a subagent waits for you (Ctrl+M)",
+        Some(_) => "Agent map: subagents running (Ctrl+M)",
+        None => "Agent map (Ctrl+M)",
+    };
     rsx! {
         div { class: "composer-wrap",
             div { class: "composer-column",
@@ -180,6 +188,16 @@ pub fn Composer() -> Element {
                             title: "Actions, commands and skills",
                             onclick: move |_| cockpit.change_with_drafts(|state, drafts| actions::toggle_palette(state, drafts, agent)),
                             Icon { kind: IconKind::Slash, size: 16 }
+                        }
+                        button {
+                            class: "icon-button small map-button",
+                            aria_label: "{map_label}",
+                            title: "{map_label}",
+                            onclick: move |_| cockpit.update(agent_map::toggle),
+                            Icon { kind: IconKind::Map, size: 16 }
+                            if let Some(status) = map_status {
+                                span { class: "live-dot {format::subagent_status_class(status)}", aria_hidden: true }
+                            }
                         }
                         span {
                             class: if cache_low { "cache-timer warning" } else { "cache-timer" },

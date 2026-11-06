@@ -8,7 +8,9 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::connection::Cockpit;
-use crate::state::{AppState, KeyPress, PaletteOrigin, Popover, WaitingKind, actions, handle_key};
+use crate::state::{
+    AppState, Dialog, KeyPress, PaletteOrigin, Popover, WaitingKind, actions, agent_map, handle_key,
+};
 
 /// The composer's text area, whose keys the script treats apart.
 pub const COMPOSER_ID: &str = "composer";
@@ -161,7 +163,7 @@ document.addEventListener("keydown", (event) => {
     || (mode.answer_numbers && (/^[1-9]$/.test(key) || key === "Enter"));
   const text = composer ? target.value : "";
   let take = false;
-  if (command && !event.altKey && !event.shiftKey && ["k", "n", "o"].includes(letter)) {
+  if (command && !event.altKey && !event.shiftKey && ["k", "n", "o", "m"].includes(letter)) {
     take = true;
   } else if (command && !event.altKey && event.shiftKey && letter === "w") {
     // Ctrl+Shift+W closes the selected agent. The file view takes Ctrl+W alone.
@@ -175,6 +177,12 @@ document.addEventListener("keydown", (event) => {
   } else if (event.altKey && !command && !event.shiftKey && (key === "ArrowUp" || key === "ArrowDown")) {
     // Alt+Up and Alt+Down move the selected agent in the sidebar.
     take = where !== "field" && !mode.dialog;
+  } else if (mode.map) {
+    // The map moves and folds with its keys wherever the focus is, but in a text field. Enter on
+    // one of its buttons still presses the button.
+    const mapKey = settings.map_keys.includes(key) || (mode.answer_letters && (letter === "y" || letter === "n"));
+    take = where !== "field" && plain && !event.shiftKey && mapKey
+      && !(key === "Enter" && target !== null && target.tagName === "BUTTON");
   } else if (where === "composer" && plain) {
     take = (mode.palette && ["ArrowUp", "ArrowDown", "Enter", "Tab"].includes(key))
       || (text === "" && answers)
@@ -325,13 +333,15 @@ struct Settings {
     undo_pause_ms: u32,
     /// The undo steps a field keeps.
     undo_steps: u16,
+    /// The keys the agent map takes.
+    map_keys: [&'static str; 5],
 }
 
-/// Which plain keys the script takes, beyond Ctrl+K, Ctrl+N, Ctrl+O, Ctrl+Shift+W, Esc, F2,
-/// Alt+Up, Alt+Down and the composer's Enter.
+/// Which plain keys the script takes, beyond Ctrl+K, Ctrl+N, Ctrl+O, Ctrl+M, Ctrl+Shift+W, Esc,
+/// F2, Alt+Up, Alt+Down and the composer's Enter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 struct KeyMode {
-    /// Y and N answer an approval or a plan.
+    /// Y and N answer an approval or a plan: in the agent map, the selected subagent's.
     answer_letters: bool,
     /// 1 to 9 and Enter answer a question.
     answer_numbers: bool,
@@ -339,19 +349,28 @@ struct KeyMode {
     /// slash button opens takes them in its own filter field.
     palette: bool,
     dialog: bool,
+    /// Up, Down, Left, Right and Enter move and fold in the agent map.
+    map: bool,
 }
 
 impl KeyMode {
     fn new(state: &AppState) -> Self {
-        let waiting = state
-            .selected()
-            .and_then(|entry| entry.transcript.waiting())
-            .map(|waiting| waiting.kind);
+        let map = matches!(state.ui.dialog, Some(Dialog::AgentMap(_)));
+        // In the map, the keys answer the selected subagent's card, not the agent's newest one.
+        let waiting = if map {
+            agent_map::selected_waiting(state)
+        } else {
+            state
+                .selected()
+                .and_then(|entry| entry.transcript.waiting())
+        };
+        let waiting = waiting.map(|waiting| waiting.kind);
         Self {
             answer_letters: matches!(waiting, Some(WaitingKind::Approval | WaitingKind::Plan)),
-            answer_numbers: waiting == Some(WaitingKind::Question),
+            answer_numbers: !map && waiting == Some(WaitingKind::Question),
             palette: state.ui.popover == Some(Popover::Palette(PaletteOrigin::Typed)),
             dialog: state.ui.dialog.is_some(),
+            map,
         }
     }
 }
@@ -384,6 +403,7 @@ pub fn use_bridge(cockpit: Cockpit) {
             title_field_ids: [HEADER_TITLE_FIELD_ID, ROW_TITLE_FIELD_ID],
             undo_pause_ms: UNDO_PAUSE_MS,
             undo_steps: UNDO_STEPS,
+            map_keys: agent_map::MAP_KEYS,
         }) {
             tracing::warn!("cannot start the page's script: {error}");
         }
@@ -591,12 +611,14 @@ mod tests {
             title_field_ids: [HEADER_TITLE_FIELD_ID, ROW_TITLE_FIELD_ID],
             undo_pause_ms: 500,
             undo_steps: 200,
+            map_keys: agent_map::MAP_KEYS,
         };
         let mode = KeyMode {
             answer_letters: true,
             answer_numbers: false,
             palette: true,
             dialog: false,
+            map: false,
         };
         let field_text = FieldText {
             field_id: COMPOSER_ID,
@@ -612,6 +634,7 @@ mod tests {
                 "title_field_ids": ["agent-title-field", "row-title-field"],
                 "undo_pause_ms": 500,
                 "undo_steps": 200,
+                "map_keys": ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter"],
             })
         );
         assert_eq!(
@@ -621,6 +644,7 @@ mod tests {
                 "answer_numbers": false,
                 "palette": true,
                 "dialog": false,
+                "map": false,
             })
         );
         assert_eq!(
