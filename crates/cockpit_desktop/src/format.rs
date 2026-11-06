@@ -252,6 +252,28 @@ pub fn tokens(count: u64) -> String {
     }
 }
 
+/// A file's size, to the nearest tenth: "512 B", "4.2 KB", "13 MB", "2.1 GB", in units of 1,024
+/// bytes.
+pub fn bytes(size: u64) -> String {
+    const UNITS: [&str; 4] = ["KB", "MB", "GB", "TB"];
+    if size < 1024 {
+        return format!("{size} B");
+    }
+    let mut unit_bytes: u64 = 1024;
+    let mut unit = 0;
+    while size / unit_bytes >= 1024 && unit + 1 < UNITS.len() {
+        unit_bytes *= 1024;
+        unit += 1;
+    }
+    let tenths = (size.saturating_mul(10) + unit_bytes / 2) / unit_bytes;
+    let name = UNITS.get(unit).copied().unwrap_or_default();
+    if tenths >= 100 {
+        format!("{} {name}", tenths / 10)
+    } else {
+        format!("{}.{} {name}", tenths / 10, tenths % 10)
+    }
+}
+
 /// "$3.40".
 pub fn cost(cost: CostUsd) -> String {
     format!("${:.2}", cost.get())
@@ -348,6 +370,14 @@ mod tests {
         NaiveDate::from_ymd_opt(2026, 11, day)
             .and_then(|date| date.and_hms_opt(hour, minute, 0))
             .unwrap()
+    }
+
+    #[test]
+    fn sizes_read_in_the_largest_whole_unit() {
+        assert_eq!(bytes(512), "512 B");
+        assert_eq!(bytes(4_300), "4.2 KB");
+        assert_eq!(bytes(13 * 1024 * 1024 + 1), "13 MB");
+        assert_eq!(bytes(2_254_857_830), "2.1 GB");
     }
 
     #[test]

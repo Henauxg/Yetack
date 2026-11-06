@@ -8,12 +8,12 @@ use cockpit_client::RequestError;
 use cockpit_protocol::{
     AgentDetails, AgentId, AgentStatus, AgentSummary, AnswerState, Approval, AskedQuestion,
     BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus, ChangedFile,
-    ClaudeSessionId, CommandKind, ContextCategory, ContextUsage, CostUsd, Effort, ErrorBody,
-    ErrorCode, FileEdit, HistoryPage, ItemBody, ItemId, McpScope, McpServer, McpServerStatus,
-    McpTool, McpTransport, PastSession, PendingId, PermissionMode, Plan, PlanUsage, Position,
-    Question, QuestionOption, RateLimitStatus, Request, ResponseBody, SlashCommand, TaskListItem,
-    TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem,
-    TurnEnd, UsageWindow, UserMessage, WindowUsage,
+    ClaudeSessionId, CommandKind, ContextCategory, ContextUsage, CostUsd, DirEntry, DirListing,
+    Effort, EntryKind, ErrorBody, ErrorCode, FileEdit, HistoryPage, ItemBody, ItemId, McpScope,
+    McpServer, McpServerStatus, McpTool, McpTransport, PastSession, PendingId, PermissionMode,
+    Plan, PlanUsage, Position, Question, QuestionOption, RateLimitStatus, Request, ResponseBody,
+    SlashCommand, TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall,
+    ToolCallStatus, TranscriptItem, TurnEnd, UsageWindow, UserMessage, WindowUsage,
 };
 use serde_json::Value;
 
@@ -96,6 +96,68 @@ const LIB_TEXT: &str = "mod error;
 mod lexer;
 
 pub use error::ParseError;
+";
+
+const CARGO_TEXT: &str = "[package]
+name = \"calc-parser\"
+version = \"0.4.0\"
+edition = \"2024\"
+
+[dependencies]
+
+[dev-dependencies]
+criterion = \"0.5\"
+
+[[bench]]
+name = \"eval\"
+harness = false
+";
+
+const README_TEXT: &str = "# calc-parser
+
+Parses and evaluates arithmetic expressions, and says where an error is: line and column.
+
+    cargo run -- \"1 + 2 * 3\"
+";
+
+const MAIN_TEXT: &str = "use calc_parser::parse;
+
+fn main() {
+    let input = std::env::args().nth(1).unwrap_or_default();
+    match parse(&input) {
+        Ok(value) => println!(\"{value}\"),
+        Err(error) => eprintln!(\"{}:{}: {}\", error.line, error.column, error.message),
+    }
+}
+";
+
+const PARSER_TEXT: &str = "use crate::error::ParseError;
+use crate::lexer::tokens;
+
+/// Parses `input` and evaluates it.
+pub fn parse(input: &str) -> Result<f64, ParseError> {
+    let tokens = tokens(input);
+    evaluate(&tokens)
+}
+";
+
+const TOKEN_KIND_TEXT: &str = "/// What a token is.
+pub enum TokenKind {
+    Number,
+    Operator,
+    Parenthesis,
+}
+";
+
+const BENCH_TEXT: &str = "use criterion::{criterion_group, criterion_main, Criterion};
+
+fn deep_nesting(c: &mut Criterion) {
+    let input = format!(\"{}1{}\", \"(\".repeat(200), \")\".repeat(200));
+    c.bench_function(\"deep_nesting\", |b| b.iter(|| calc_parser::parse(&input)));
+}
+
+criterion_group!(benches, deep_nesting);
+criterion_main!(benches);
 ";
 
 /// Plain `name:line` references, which the daemon looks up: a file the agent read, one it
@@ -359,6 +421,8 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
             .map(ResponseBody::ContextUsage)
             .ok_or_else(|| refused(ErrorCode::NotFound, "No context usage in the demo.")),
         Request::AgentReadFile(params) => read_file(&params.path),
+        Request::AgentListDir(params) => list_dir(&params.path),
+        Request::AgentFindFiles(params) => Ok(find_files(&params.name)),
         Request::AgentHistory(params) if params.agent == AgentId::new(LIVE_AGENT) => {
             let before = params.before.map_or(LIVE_PAGE_FIRST_ID, ItemId::get);
             let items = (LIVE_OLDER_FIRST_ID..before)
@@ -397,10 +461,17 @@ fn refused(code: ErrorCode, message: &str) -> RequestError {
 }
 
 /// The sample's files, absolute, with their text.
-fn files() -> [(PathBuf, &'static str); 9] {
+fn files() -> [(PathBuf, &'static str); 16] {
     let parser = Path::new(PARSER_FOLDER);
     let columns = Path::new(PARSER_COLUMNS_WORKTREE);
     [
+        (parser.join("Cargo.toml"), CARGO_TEXT),
+        (parser.join("README.md"), README_TEXT),
+        (parser.join(".gitignore"), "/target\n"),
+        (parser.join("src/main.rs"), MAIN_TEXT),
+        (parser.join("src/parser.rs"), PARSER_TEXT),
+        (parser.join("src/token.rs"), TOKEN_KIND_TEXT),
+        (parser.join("benches/eval.rs"), BENCH_TEXT),
         (parser.join(ERROR_FILE), ERROR_AFTER),
         (parser.join(TEST_FILE), TEST_TEXT),
         (parser.join(LEXER_FILE), LEXER_TEXT),
@@ -414,6 +485,76 @@ fn files() -> [(PathBuf, &'static str); 9] {
             NOTES_TEXT,
         ),
     ]
+}
+
+/// The folders the sample's agents reach, as the daemon allows them: the parser's folder and the
+/// worktrees beside it.
+const REACHABLE: [&str; 3] = [
+    PARSER_FOLDER,
+    PARSER_COLUMNS_WORKTREE,
+    PARSER_BENCH_WORKTREE,
+];
+
+/// As the daemon lists a folder for the parser agent: the sample's files under it, and the folders
+/// that hold them.
+fn list_dir(path: &Path) -> Result<ResponseBody, RequestError> {
+    let folder = Path::new(PARSER_FOLDER).join(path);
+    if !REACHABLE.iter().any(|root| folder.starts_with(root)) {
+        return Err(refused(
+            ErrorCode::InvalidRequest,
+            "the folder is outside the agent's folder and the checkouts it worked in",
+        ));
+    }
+    let mut entries: Vec<DirEntry> = Vec::new();
+    for (file, text) in files() {
+        let Ok(rest) = file.strip_prefix(&folder) else {
+            continue;
+        };
+        let mut names = rest.iter();
+        let Some(name) = names.next().map(|name| name.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        let inside = names.next().is_some();
+        if entries.iter().any(|entry| entry.name == name) {
+            continue;
+        }
+        entries.push(DirEntry {
+            name,
+            kind: if inside {
+                EntryKind::Folder
+            } else {
+                EntryKind::File
+            },
+            size: (!inside).then(|| u64::try_from(text.len()).unwrap_or(0)),
+            symlink: false,
+        });
+    }
+    if entries.is_empty() && !REACHABLE.iter().any(|root| folder == Path::new(root)) {
+        return Err(refused(
+            ErrorCode::NotFound,
+            &format!("{} does not exist", folder.display()),
+        ));
+    }
+    entries.sort_by_key(|entry| (entry.kind != EntryKind::Folder, entry.name.to_lowercase()));
+    Ok(ResponseBody::Directory(DirListing {
+        path: folder,
+        entries,
+        truncated: false,
+    }))
+}
+
+/// As the daemon finds files by name: the sample's files whose name holds `name`.
+fn find_files(name: &str) -> ResponseBody {
+    let needle = name.to_lowercase();
+    let matches = files()
+        .into_iter()
+        .map(|(file, _)| file)
+        .filter(|file| {
+            file.file_name()
+                .is_some_and(|file| file.to_string_lossy().to_lowercase().contains(&needle))
+        })
+        .collect();
+    ResponseBody::FileMatches { matches }
 }
 
 /// As the daemon answers for the parser agent: the path itself, else the sample's files whose
@@ -1531,6 +1672,42 @@ pub struct ParseError {
                 None,
             ]
         );
+    }
+
+    #[test]
+    fn folders_list_as_the_daemon_lists_them() {
+        let names = |path: &str| -> Vec<String> {
+            let Ok(ResponseBody::Directory(listing)) = list_dir(Path::new(path)) else {
+                panic!("{path} lists");
+            };
+            listing
+                .entries
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect()
+        };
+
+        assert_eq!(
+            names(""),
+            [
+                "benches",
+                "src",
+                "tests",
+                ".gitignore",
+                "AGENTS.md",
+                "Cargo.toml",
+                "README.md"
+            ]
+        );
+        assert_eq!(names(PARSER_COLUMNS_WORKTREE), ["crates"]);
+        assert!(matches!(
+            list_dir(Path::new("/home/dev/projects")),
+            Err(RequestError::Failed(body)) if body.code == ErrorCode::InvalidRequest
+        ));
+        assert!(matches!(
+            find_files("LEX"),
+            ResponseBody::FileMatches { matches } if matches.len() == 1
+        ));
     }
 
     #[test]

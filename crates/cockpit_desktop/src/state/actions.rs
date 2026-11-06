@@ -23,7 +23,7 @@ use super::ui_state::{
     Block, Dialog, FileView, NewAgentForm, NewAgentTab, PaletteOrigin, Popover, TitleEdit,
     TitlePlace, ViewMode,
 };
-use super::{export, file_edits};
+use super::{export, file_edits, open_file};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::prefs::{self, StatusFilter};
 
@@ -277,6 +277,8 @@ pub enum MenuAction {
     ExportConversation,
     /// Turns the header's title into a field.
     Rename,
+    /// Opens the "Open file" dialog.
+    OpenFile,
     /// A setting: its row holds its choices, which Left and Right move through.
     Model,
     Effort,
@@ -299,6 +301,7 @@ impl MenuAction {
             Self::CompactConversation => "Compact conversation",
             Self::ExportConversation => "Export conversation",
             Self::Rename => "Rename",
+            Self::OpenFile => "Open file",
             Self::Model => "Model",
             Self::Effort => "Effort",
             Self::Mode => "Permission mode",
@@ -311,7 +314,8 @@ impl MenuAction {
             | Self::ClearConversation
             | Self::CompactConversation
             | Self::ExportConversation
-            | Self::Rename => MenuSection::Context,
+            | Self::Rename
+            | Self::OpenFile => MenuSection::Context,
             Self::Model | Self::Effort | Self::Mode => MenuSection::Model,
         }
     }
@@ -328,6 +332,7 @@ impl MenuAction {
             Self::AttachImage
             | Self::ExportConversation
             | Self::Rename
+            | Self::OpenFile
             | Self::Model
             | Self::Effort
             | Self::Mode => {
@@ -363,7 +368,8 @@ impl MenuAction {
             | Self::ClearConversation
             | Self::CompactConversation
             | Self::ExportConversation
-            | Self::Rename => Vec::new(),
+            | Self::Rename
+            | Self::OpenFile => Vec::new(),
         };
         let mut words = words.into_iter().chain([self.label()]);
         words.any(|word| word.to_lowercase().contains(query))
@@ -512,6 +518,10 @@ pub fn palette_pick(
         }
         MenuAction::Rename => {
             start_rename(state, drafts, agent);
+            Picked::default()
+        }
+        MenuAction::OpenFile => {
+            open_file::open(state, drafts);
             Picked::default()
         }
         MenuAction::Model | MenuAction::Effort | MenuAction::Mode => Picked::default(),
@@ -685,7 +695,8 @@ pub fn setting_choices(summary: &AgentSummary, action: MenuAction) -> Vec<Settin
         | MenuAction::ClearConversation
         | MenuAction::CompactConversation
         | MenuAction::ExportConversation
-        | MenuAction::Rename => Vec::new(),
+        | MenuAction::Rename
+        | MenuAction::OpenFile => Vec::new(),
     }
 }
 
@@ -713,7 +724,8 @@ pub fn choose_setting(
         | MenuAction::ClearConversation
         | MenuAction::CompactConversation
         | MenuAction::ExportConversation
-        | MenuAction::Rename => None,
+        | MenuAction::Rename
+        | MenuAction::OpenFile => None,
     };
     requests.unwrap_or_default()
 }
@@ -773,7 +785,8 @@ fn unknown_value_choice(action: MenuAction) -> Option<usize> {
         | MenuAction::ClearConversation
         | MenuAction::CompactConversation
         | MenuAction::ExportConversation
-        | MenuAction::Rename => None,
+        | MenuAction::Rename
+        | MenuAction::OpenFile => None,
     }
 }
 
@@ -2113,6 +2126,7 @@ mod tests {
                 "Compact conversation",
                 "Export conversation",
                 "Rename",
+                "Open file",
                 "Model",
                 "Effort",
                 "Permission mode",
@@ -2159,7 +2173,7 @@ mod tests {
         };
 
         let up_at_the_top = press(Direction::Up, 1);
-        let on_the_first_command = press(Direction::Down, 8);
+        let on_the_first_command = press(Direction::Down, 9);
         let at_the_bottom = press(Direction::Down, 5);
         let back_on_the_settings = press(Direction::Up, 3);
 
@@ -2170,7 +2184,7 @@ mod tests {
                 at_the_bottom,
                 back_on_the_settings
             ),
-            (0, 8, 9, 6)
+            (0, 9, 10, 7)
         );
     }
 

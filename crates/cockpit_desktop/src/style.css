@@ -3717,6 +3717,77 @@ html.splitting * {
   font-weight: 600;
 }
 
+/* The "Open file" dialog: a path field over the entries of the folder it names. */
+
+.dialog.open-file {
+  width: 640px;
+}
+
+.open-file-path {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 20px 12px;
+}
+
+.open-file-path .folder-field {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.open-file-list {
+  max-height: 420px;
+  border-top: 1px solid var(--line-divider);
+}
+
+.open-file-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+  padding: 0 10px;
+  color: var(--muted);
+}
+
+.switcher-row.open-file-row {
+  min-height: 32px;
+  color: var(--muted);
+}
+
+.open-file-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.open-file-link {
+  flex: none;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.open-file-size {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.open-file-section {
+  padding: 10px 10px 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.open-file-row.placeholder {
+  cursor: default;
+}
+
 .dialog-tabs {
   display: flex;
   gap: 4px;

@@ -4,7 +4,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use cockpit_protocol::{AgentId, Effort, ItemId, PermissionMode};
+use cockpit_protocol::{AgentId, DirListing, Effort, ItemId, PermissionMode};
+
+use super::app_state::Loadable;
 
 /// How many error notes stay on screen; an older one goes when a new one comes.
 const MAX_ERRORS: usize = 4;
@@ -44,6 +46,31 @@ pub enum PaletteOrigin {
 pub enum Dialog {
     Switcher,
     NewAgent(NewAgentForm),
+    OpenFile(OpenFileView),
+}
+
+/// The "Open file" dialog's data: the folder its path field names, with what the daemon listed
+/// there, and the project's files for a bare name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenFileView {
+    /// The agent whose folders the dialog browses.
+    pub agent: AgentId,
+    /// Absolute.
+    pub folder: PathBuf,
+    pub listing: Loadable<DirListing>,
+    /// The bare name searched for in the project, with the files found. `None` for a path.
+    pub search: Option<(String, Loadable<Vec<PathBuf>>)>,
+}
+
+impl OpenFileView {
+    pub fn new(agent: AgentId, folder: PathBuf) -> Self {
+        Self {
+            agent,
+            folder,
+            listing: Loadable::NotRequested,
+            search: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

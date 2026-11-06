@@ -7,6 +7,7 @@ mod apply;
 mod drafts;
 mod export;
 pub mod file_edits;
+pub mod open_file;
 mod requests;
 mod shortcuts;
 mod transcript;
@@ -19,8 +20,8 @@ pub use requests::{Outgoing, apply_response, needed_requests};
 pub use shortcuts::{KeyPress, handle_key};
 pub use transcript::{HistoryState, WaitingKind, awaiting_approval};
 pub use ui_state::{
-    Block, Dialog, FormMenu, McpView, NewAgentForm, NewAgentTab, NoteKind, PaletteOrigin, Popover,
-    TitlePlace, ToolFilter, ViewMode,
+    Block, Dialog, FormMenu, McpView, NewAgentForm, NewAgentTab, NoteKind, OpenFileView,
+    PaletteOrigin, Popover, TitlePlace, ToolFilter, ViewMode,
 };
 
 #[cfg(test)]

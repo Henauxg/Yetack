@@ -14,6 +14,7 @@ mod icons;
 mod loading;
 mod markdown;
 mod mcp;
+mod open_file;
 mod palette;
 mod presence;
 mod reorder;

@@ -58,6 +58,14 @@ pub struct SwitcherDraft {
     pub highlighted: usize,
 }
 
+/// The "Open file" dialog's path field, while it is open.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct OpenFileDraft {
+    pub path: String,
+    /// An index into the dialog's rows. `None` until a filter or a key picks a row.
+    pub highlighted: Option<usize>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Drafts {
     pub composer: BTreeMap<AgentId, Draft>,
@@ -71,6 +79,7 @@ pub struct Drafts {
     pub title: String,
     pub new_agent: NewAgentDraft,
     pub switcher: SwitcherDraft,
+    pub open_file: OpenFileDraft,
 }
 
 impl Drafts {
