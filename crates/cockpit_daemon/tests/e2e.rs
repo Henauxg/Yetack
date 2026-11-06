@@ -164,7 +164,9 @@ impl Setup {
     /// The command lines of every `claude` started so far.
     fn claude_args(&self) -> Vec<Vec<String>> {
         let text = std::fs::read_to_string(self.args_file()).unwrap_or_default();
-        text.lines()
+        // The last line may still be being written.
+        text.split_inclusive('\n')
+            .filter_map(|line| line.strip_suffix('\n'))
             .map(|line| serde_json::from_str(line).unwrap())
             .collect()
     }
