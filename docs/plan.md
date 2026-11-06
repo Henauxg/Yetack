@@ -204,10 +204,15 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   - Clicking a server opens its detail: status, version, command or URL, scope, error, three icon buttons with tooltips on its title row (Reconnect, "Disable for this agent", "Hide from my view"), its tools with read-only or destructive tags, filters and per-agent call counts, and "Remove from the config" for user, project and local scopes.
   - A background task stops with a small round icon button.
 - Planned after v1: the agent map, as in the Claude Code extension.
-  - A composer button with a live dot (green while a subagent runs) opens a map of the selected agent: the agent at the root, every subagent it started under it, and subagents started by subagents under those.
-  - Each node shows a status dot, the subagent's description, its duration and its token count, updated live while it runs.
-  - Clicking a node shows its details: the prompt it got, its transcript (the items nested under it), its tool calls, and Stop while it runs.
-  - The "Running" block stays as the compact live view, with a link to open the map.
+  - A composer button with a live dot (teal, the Working colour, while a subagent runs) opens a map of the selected agent in a dialog: the agent at the root, every subagent it started under it, and subagents started by subagents under those.
+  - The map is an indented outline, one row per node, with the selected node's details on the right.
+  - Each row shows a status dot, the subagent's description, its type, a "background" tag where it applies, and on a second line its current tool call, what it waits for, its error, or "Stopped by you". Columns on the right give its tool calls, duration and token count, updated live while it runs. The root row's tokens are the total of its subagents'.
+  - The map shows the current turn's subagents. Earlier turns fold into one row that opens.
+  - Many subagents stay readable three ways: a subtree whose subagents all ended folds by itself, while running and failed ones stay open; past a cap, ended siblings collapse into one row ("12 more done"); and a toggle shows only the running and failed ones.
+  - A subagent waiting for an approval or a question shows amber, as "Needs you" does, and its details show the approval card, answered in place.
+  - Clicking a node shows its details: the prompt it got, its transcript (the items nested under it), its tool calls, and Stop while it runs. Stop also stops the subagents under it.
+  - Up and Down move between rows, Left and Right fold, Esc closes.
+  - The "Running" block stays as the compact live view, with a link to open the map. A click on a subagent there opens the map with that node selected.
   - Data: the tree comes from `parent_tool_use_id` (each subagent's messages carry the id of the tool call that started it); status, tokens, tool calls and duration from `task_started`, `task_progress` (its `usage`: total tokens, tool uses, duration) and `task_notification`.
   - Protocol: `AgentDetails` gains a list of subagents (id, parent, description, foreground or background, status, start and end time, tokens, tool calls, last tool), filled by the daemon.
 - It starts `ssh <server> /absolute/path/to/agents-cockpit bridge` and speaks the daemon API over the process's stdin and stdout.
