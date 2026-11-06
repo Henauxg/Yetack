@@ -165,16 +165,31 @@ fn finish(subagent: &mut Subagent, ended: &Ended) {
     }
 }
 
-/// Ends every subagent that still runs, as `status`. True when one ran.
-pub(super) fn end_running(
-    subagents: &mut [Subagent],
-    run: Option<SubagentRun>,
-    ended: &Ended,
-) -> bool {
+/// Ends every subagent that still runs. True when one ran.
+pub(super) fn end_running(subagents: &mut [Subagent], ended: &Ended) -> bool {
     let mut changed = false;
     for subagent in subagents.iter_mut() {
-        let selected = run.is_none_or(|run| subagent.run == run);
-        if selected && subagent.status.is_running() {
+        if subagent.status.is_running() {
+            finish(subagent, ended);
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Ends the foreground subagents of the agent's turn that still run. A foreground subagent under
+/// a background one belongs to that one, which outlives the turn. True when one ran.
+pub(super) fn end_turn(subagents: &mut [Subagent], ended: &Ended) -> bool {
+    // A subagent starts from its parent's lines, so its parent comes before it.
+    let mut in_background = BTreeSet::new();
+    let mut changed = false;
+    for subagent in subagents.iter_mut() {
+        let under_background = subagent
+            .parent
+            .is_some_and(|parent| in_background.contains(&parent));
+        if subagent.run == SubagentRun::Background || under_background {
+            in_background.insert(subagent.item);
+        } else if subagent.status.is_running() {
             finish(subagent, ended);
             changed = true;
         }
@@ -349,7 +364,6 @@ mod tests {
         start(&mut subagents, started(2, None, false));
         end_running(
             &mut subagents[1..],
-            None,
             &Ended {
                 status: SubagentStatus::Done,
                 error: None,

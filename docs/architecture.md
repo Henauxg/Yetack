@@ -285,7 +285,7 @@ The daemon fills `AgentDetails.subagents` from the lines `claude` writes (module
 - The lines whose `parent_tool_use_id` names a subagent's call are its own: each of its tool calls counts, and becomes its `last_tool`. A subagent started by a subagent names that one as its parent.
 - `task_started` links a subagent to its task through `tool_use_id`. `task_progress` and `task_notification` then give its tokens, and its tool calls when they count more.
 - A foreground subagent ends with its call's result, or with its task's end. A background subagent's call returns at once: it ends with its task's end, from `task_notification`, `task_updated`, or the `<task-notification>` message Claude Code writes, which names the call. A subagent that ends stops the foreground subagents under it, which cannot outlive it.
-- The turn's `result` ends the foreground subagents that still run: stopped after an interrupt, failed after an error, done otherwise. An exited process, or a restarted daemon, stops them all.
+- The turn's `result` ends the foreground subagents that still run: stopped after an interrupt, failed after an error, done otherwise. A foreground subagent under a background one is not the turn's: it runs on, and ends with its call's result or with that background subagent. An exited process, or a restarted daemon, stops them all.
 - A subagent waits for you while an approval, question or plan of its own lines waits.
 - The list keeps every running subagent and the latest ended ones, 200 in all.
 

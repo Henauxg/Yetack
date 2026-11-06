@@ -1085,11 +1085,7 @@ impl AgentView {
             error: turn_error(result, interrupted),
             now: Some(now),
         };
-        if subagents::end_running(
-            &mut self.details.subagents,
-            Some(SubagentRun::Foreground),
-            &ended,
-        ) {
+        if subagents::end_turn(&mut self.details.subagents, &ended) {
             self.details_changed = true;
         }
         self.cancel_all_pending();
@@ -1359,7 +1355,7 @@ impl AgentView {
             error: None,
             now,
         };
-        if subagents::end_running(&mut self.details.subagents, None, &ended) {
+        if subagents::end_running(&mut self.details.subagents, &ended) {
             self.details_changed = true;
         }
     }
@@ -2513,6 +2509,39 @@ mod tests {
         assert_eq!(
             subagent_statuses(&view),
             [SubagentStatus::Stopped, SubagentStatus::Stopped]
+        );
+    }
+
+    #[test]
+    fn a_turn_end_leaves_the_foreground_subagents_of_a_background_one() {
+        let mut view = view();
+        apply(&mut view, agent_call("t1", "Watch the build", true));
+        apply(&mut view, tool_result("t1", "Async agent launched", false));
+        apply(
+            &mut view,
+            nested(agent_call("t2", "Read the build log", false), "t1"),
+        );
+        apply(
+            &mut view,
+            nested(agent_call("t3", "Find the failing test", false), "t2"),
+        );
+
+        apply(&mut view, result(0.1));
+        apply(&mut view, interrupted_result());
+        let after_turns = subagent_statuses(&view);
+        apply(
+            &mut view,
+            nested(tool_result("t3", "Found it", false), "t2"),
+        );
+
+        assert_eq!(after_turns, [SubagentStatus::Running; 3]);
+        assert_eq!(
+            subagent_statuses(&view),
+            [
+                SubagentStatus::Running,
+                SubagentStatus::Running,
+                SubagentStatus::Done
+            ]
         );
     }
 
