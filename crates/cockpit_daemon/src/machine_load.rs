@@ -6,8 +6,12 @@
 
 mod history;
 mod kept_file;
+mod load_sampler;
 mod proc_files;
 mod process_tree;
 mod reading;
 mod sample;
 mod sampler;
+
+pub(crate) use load_sampler::LoadSampler;
+pub(crate) use reading::AgentRoot;

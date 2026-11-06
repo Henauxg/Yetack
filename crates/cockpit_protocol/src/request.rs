@@ -74,6 +74,9 @@ pub enum Request {
     SessionsList,
     /// Starts an agent from a past Claude session. Answered by `AgentStarted`.
     SessionsResume(SessionResumeParams),
+    /// The machine's load now and over the last five minutes. Answered by `MachineLoad`, or by
+    /// `Unsupported` on a machine without `/proc`. The daemon samples only while clients ask.
+    MachineLoad,
 }
 
 /// The method names on the wire.
@@ -133,6 +136,8 @@ pub enum Method {
     SessionsList,
     #[strum(serialize = "sessions.resume")]
     SessionsResume,
+    #[strum(serialize = "machine.load")]
+    MachineLoad,
 }
 
 impl Method {
@@ -338,6 +343,7 @@ impl Request {
             Self::SettingsSet(_) => Method::SettingsSet,
             Self::SessionsList => Method::SessionsList,
             Self::SessionsResume(_) => Method::SessionsResume,
+            Self::MachineLoad => Method::MachineLoad,
         }
     }
 }
@@ -382,7 +388,7 @@ impl Serialize for Request {
             Self::AgentReadFile(params) => tagged(method, params, serializer),
             Self::McpRemove(params) => tagged(method, params, serializer),
             Self::SettingsSet(params) => tagged(method, params, serializer),
-            Self::SessionsList => Tagged::<()> {
+            Self::SessionsList | Self::MachineLoad => Tagged::<()> {
                 method,
                 params: None,
             }
@@ -431,6 +437,7 @@ impl<'de> Deserialize<'de> for Request {
             Method::SettingsSet => Self::SettingsSet(params(raw)?),
             Method::SessionsList => Self::SessionsList,
             Method::SessionsResume => Self::SessionsResume(params(raw)?),
+            Method::MachineLoad => Self::MachineLoad,
         };
         Ok(request)
     }

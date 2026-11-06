@@ -13,6 +13,7 @@ use crate::daemon_config::HOME_ENV;
 use crate::hub::input::{ControlPurpose, HubInput, Reply};
 use crate::hub::state::{Agent, Hub};
 use crate::hub::{agents, errors, history};
+use crate::machine_load::AgentRoot;
 use crate::read_file::Found;
 use crate::store::{DaemonSettings, LogName};
 use crate::transcript::{touched_files, words};
@@ -94,6 +95,10 @@ impl Hub {
             Request::SettingsSet(settings) => agents::respond(reply, self.set_settings(settings)),
             Request::SessionsList => self.sessions_list(reply),
             Request::SessionsResume(params) => self.sessions_resume(params, reply),
+            Request::MachineLoad => {
+                let roots = self.agent_roots();
+                self.load.query(roots, reply);
+            }
         }
     }
 
@@ -125,6 +130,15 @@ impl Hub {
             };
             agents::respond(reply, result);
         });
+    }
+
+    /// The `claude` process of each agent whose process runs.
+    fn agent_roots(&self) -> Vec<AgentRoot> {
+        let running = self.agents.iter().filter_map(|(&agent, found)| {
+            let pid = found.process.as_ref()?.pid()?;
+            Some(AgentRoot { agent, pid })
+        });
+        running.collect()
     }
 
     fn mcp_remove(&self, params: McpRemoveParams, reply: Reply) {

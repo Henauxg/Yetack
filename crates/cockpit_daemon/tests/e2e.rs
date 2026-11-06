@@ -21,10 +21,10 @@ use cockpit_protocol::{
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, CancelQueuedParams, Catchup,
     ClaudeSessionId, CommandKind, CostUsd, Effort, ErrorCode, Event, EventRecord, HistoryParams,
     ItemBody, ItemId, McpRemoveParams, McpScope, McpServerParams, McpServerStatus, McpToggleParams,
-    MoveParams, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, Prompt, PromptParams,
-    Question, QuestionAnswer, ReadFileParams, RenameParams, Request, ResponseBody, Seq,
-    SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, Settings, StartParams,
-    StopTaskParams, TranscriptItem,
+    MoveParams, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, ProcessId, Prompt,
+    PromptParams, Question, QuestionAnswer, ReadFileParams, RenameParams, Request, ResponseBody,
+    Seq, SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, Settings,
+    StartParams, StopTaskParams, TranscriptItem,
 };
 use rustix::process::{Pid, Signal};
 use serde_json::Value;
@@ -1081,6 +1081,45 @@ async fn a_stopped_agent_that_hangs_is_killed_with_its_children() {
         rustix::process::kill_process(pid, Signal::KILL).unwrap();
     }
     assert!(!survived, "the child of the killed claude still runs");
+}
+
+/// `machine.load` shows the agent's `claude` and the command it runs.
+#[tokio::test]
+async fn the_machine_load_shows_an_agents_command() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let agent = client.start(&setup.work(), "linger").await;
+    let started = client
+        .item_with(agent, |body| {
+            matches!(body, ItemBody::AssistantText { markdown } if markdown.starts_with("Started child "))
+        })
+        .await;
+    let ItemBody::AssistantText { markdown } = started.body else {
+        panic!("expected the child's pid");
+    };
+    let child: u32 = markdown["Started child ".len()..].parse().unwrap();
+    client.idle(agent).await;
+
+    let ResponseBody::MachineLoad(load) = client.ok(Request::MachineLoad).await else {
+        panic!("expected the machine's load");
+    };
+
+    let pid = Pid::from_raw(i32::try_from(child).unwrap()).unwrap();
+    rustix::process::kill_process(pid, Signal::KILL).unwrap();
+    assert!(load.server.cores >= 1);
+    assert!(load.server.memory_used_bytes <= load.server.memory_total_bytes);
+    let ours = load
+        .agents
+        .iter()
+        .find(|found| found.agent == agent)
+        .expect("the agent's load");
+    assert_eq!(ours.processes, 2, "claude and its child: {ours:?}");
+    let sleep = ours.heaviest.first().expect("the child's command");
+    assert_eq!(
+        (sleep.pid, sleep.command.as_str()),
+        (ProcessId::new(child), "sleep 600")
+    );
+    assert_eq!(load.history.server.len(), 1);
 }
 
 /// Whether a process runs: it exists and is not a zombie waiting for its parent.

@@ -5,7 +5,6 @@
 mod daemon_config;
 mod error_chain;
 mod hub;
-#[allow(dead_code, reason = "the next commit answers machine.load with it")]
 mod machine_load;
 mod mcp_remove;
 mod process;

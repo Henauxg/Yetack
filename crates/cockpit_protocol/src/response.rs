@@ -7,6 +7,7 @@ use strum::VariantArray;
 
 use crate::details::{AgentDetails, ContextUsage, McpServer, SlashCommand};
 use crate::ids::{AgentId, ClaudeSessionId};
+use crate::machine_load::MachineLoad;
 use crate::time::Timestamp;
 use crate::transcript::TranscriptItem;
 
@@ -67,6 +68,7 @@ pub enum ResponseBody {
     Sessions {
         sessions: Vec<PastSession>,
     },
+    MachineLoad(MachineLoad),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -120,6 +122,8 @@ pub enum ErrorCode {
     ClaudeFailed,
     /// Claude Code did not answer in time.
     Timeout,
+    /// The daemon's machine cannot do it, such as measuring its load without `/proc`.
+    Unsupported,
     /// A fault in the daemon.
     Internal,
 }
