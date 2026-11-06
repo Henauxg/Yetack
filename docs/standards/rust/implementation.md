@@ -279,8 +279,8 @@ Do not make code run before `main()`, for example with the
 Never reach inside a poisoned mutex to get at its content, however tempting
 the case.
 
-Exception: a shutdown or cleanup path may read through the poison when two
-things hold:
+Exception: code whose work must still run after a panic, such as starting
+and stopping a child daemon, may read through the poison when two things hold:
 
 - the content stays valid whatever a panicking holder left, such as an enum
   whose every value is a state the code handles;
