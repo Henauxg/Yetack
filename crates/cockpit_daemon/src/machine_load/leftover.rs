@@ -88,11 +88,14 @@ pub(crate) fn stop_leftovers(recorded: &[RecordedProcess]) {
 /// When `pid` started, unless it has ended.
 #[cfg(windows)]
 fn started(pid: ProcessId) -> Option<u64> {
-    use windows_sys::Win32::System::Threading::PROCESS_QUERY_LIMITED_INFORMATION;
+    use windows_sys::Win32::System::Threading::{
+        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    };
 
     use crate::machine_load::opened_process::OpenedProcess;
 
-    let process = OpenedProcess::open(pid, PROCESS_QUERY_LIMITED_INFORMATION).ok()?;
+    let access = PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE;
+    let process = OpenedProcess::open(pid, access).ok()?;
     if process.has_ended() {
         return None;
     }
@@ -219,5 +222,15 @@ mod tests {
         let _ = leftover.wait();
         assert!(stopped, "the leftover ends");
         assert!(other_runs, "a process with another start time runs on");
+    }
+
+    /// The child's handle keeps the ended process's id from going to another process.
+    #[test]
+    fn an_ended_process_is_not_recorded() {
+        let mut ended = waiting_shell();
+        ended.kill().unwrap();
+        ended.wait().unwrap();
+
+        assert_eq!(record_process(ProcessId::new(ended.id())), None);
     }
 }
