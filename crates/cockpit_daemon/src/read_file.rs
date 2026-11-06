@@ -19,6 +19,10 @@
 //!    `git ls-files` lists them, within [`MAX_MATCHES`] and [`SEARCH_TIME`]. One match is read;
 //!    several are listed for the user to pick from.
 //!
+//! On Windows, names compare whatever their case, and a path on a network share opens only when
+//! the agent's folder or one of the allowed checkouts or files is on that share (module
+//! `windows_path`).
+//!
 //! This shows the user nothing they cannot already read. The daemon and the app run as the same
 //! user, and the agent's own commands read whatever that user can, so these checkouts are folders
 //! the agent already worked in. The limits keep the view to the agent's work: a link in the
@@ -39,6 +43,8 @@ use tokio::time::Instant;
 
 #[cfg(windows)]
 use crate::process::program;
+#[cfg(windows)]
+use crate::{windows_files, windows_path};
 
 /// The largest file the view shows.
 pub(crate) const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
@@ -85,16 +91,16 @@ impl Access {
         touched: &[PathBuf],
         home: Option<&Path>,
     ) -> Result<Self, ReadFileError> {
-        let folder = folder.canonicalize().map_err(ReadFileError::NotFound)?;
+        let folder = canonical(folder).map_err(ReadFileError::NotFound)?;
         // Compared with checkouts whose symlinks are resolved.
         let home: Option<PathBuf> =
-            home.map(|home| home.canonicalize().unwrap_or_else(|_| home.to_owned()));
+            home.map(|home| canonical(home).unwrap_or_else(|_| home.to_owned()));
         let mut checkouts: Vec<PathBuf> = Vec::new();
         let mut files: Vec<PathBuf> = Vec::new();
         // Files of one folder share their checkout: each folder is looked up once.
         let mut checkout_of: BTreeMap<PathBuf, Option<PathBuf>> = BTreeMap::new();
         for file in touched {
-            let Some(parent) = file.parent().and_then(|parent| parent.canonicalize().ok()) else {
+            let Some(parent) = file.parent().and_then(|parent| canonical(parent).ok()) else {
                 continue;
             };
             let checkout = checkout_of
@@ -108,7 +114,7 @@ impl Access {
                     }
                 }
                 None => {
-                    if let Ok(file) = file.canonicalize()
+                    if let Ok(file) = canonical(file)
                         && !files.contains(&file)
                     {
                         files.push(file);
@@ -125,7 +131,7 @@ impl Access {
 
     /// The allowed folder or file that holds `resolved`, a path without symlinks.
     fn holder(&self, resolved: &Path) -> Option<&Path> {
-        let file = || self.files.iter().find(|file| *file == resolved);
+        let file = || self.files.iter().find(|file| is_same(resolved, file));
         self.folder_holding(resolved)
             .or_else(|| file().map(PathBuf::as_path))
     }
@@ -135,8 +141,26 @@ impl Access {
     pub(crate) fn folder_holding(&self, resolved: &Path) -> Option<&Path> {
         let mut folders = std::iter::once(&self.folder).chain(&self.checkouts);
         folders
-            .find(|folder| resolved.starts_with(folder))
+            .find(|folder| is_inside(resolved, folder))
             .map(PathBuf::as_path)
+    }
+
+    /// Refuses a path the file system must not open even to resolve it: a device path, a name
+    /// such as `NUL`, or a network share that no allowed folder or file is on.
+    #[cfg(windows)]
+    pub(crate) fn check_before_open(&self, asked: &Path) -> Result<(), ReadFileError> {
+        let text = asked.to_str().ok_or(ReadFileError::Outside)?;
+        let allowed = std::iter::once(&self.folder)
+            .chain(&self.checkouts)
+            .chain(&self.files)
+            .filter_map(|path| path.to_str());
+        if !windows_path::may_open(text, allowed) {
+            return Err(ReadFileError::Outside);
+        }
+        if windows_path::names_a_device(text) {
+            return Err(ReadFileError::NotAFile);
+        }
+        Ok(())
     }
 
     /// The folders a search lists: `folder`, the agent's folder as its record names it, then the
@@ -157,7 +181,7 @@ fn checkout_holding(folder: &Path, home: Option<&Path>) -> Option<PathBuf> {
         .ancestors()
         .find(|ancestor| ancestor.join(GIT_ENTRY).symlink_metadata().is_ok())?;
     let too_wide =
-        checkout.parent().is_none() || home.is_some_and(|home| home.starts_with(checkout));
+        checkout.parent().is_none() || home.is_some_and(|home| is_inside(home, checkout));
     (!too_wide).then(|| checkout.to_owned())
 }
 
@@ -180,9 +204,6 @@ pub(crate) enum ReadFileError {
     NotText,
     #[error("cannot read the file: {0}")]
     Io(#[source] io::Error),
-    #[cfg(windows)]
-    #[error("the daemon cannot read files or list folders on Windows yet")]
-    Unsupported,
 }
 
 impl ReadFileError {
@@ -193,8 +214,6 @@ impl ReadFileError {
             Self::NotAFile | Self::TooLarge | Self::NotText | Self::Io(_) => {
                 ErrorCode::FileUnreadable
             }
-            #[cfg(windows)]
-            Self::Unsupported => ErrorCode::Unsupported,
         };
         ErrorBody::new(code, self.to_string())
     }
@@ -211,14 +230,13 @@ pub(crate) fn read(access: &Access, path: &Path) -> Result<String, ReadFileError
     {
         return Err(ReadFileError::Outside);
     }
-    let resolved = access
-        .folder
-        .join(path)
-        .canonicalize()
-        .map_err(|error| match error.kind() {
-            io::ErrorKind::NotFound => ReadFileError::Missing(path.to_owned()),
-            _ => ReadFileError::NotFound(error),
-        })?;
+    let asked = access.folder.join(path);
+    #[cfg(windows)]
+    access.check_before_open(&asked)?;
+    let resolved = canonical(&asked).map_err(|error| match error.kind() {
+        io::ErrorKind::NotFound => ReadFileError::Missing(path.to_owned()),
+        _ => ReadFileError::NotFound(error),
+    })?;
     let holder = access.holder(&resolved).ok_or(ReadFileError::Outside)?;
     let file = open_to_read(&resolved).map_err(ReadFileError::NotFound)?;
     // The checks use the open file, so a swap after them does not matter.
@@ -252,7 +270,6 @@ pub(crate) enum Found {
 
 /// Reads `path`, absolute or relative to `folder`, the agent's folder, or looks a relative path
 /// up as the module says. `touched` holds the files the agent read or changed, most recent first.
-#[cfg(unix)]
 pub(crate) async fn find_and_read(
     folder: PathBuf,
     touched: Vec<PathBuf>,
@@ -290,18 +307,6 @@ pub(crate) async fn find_and_read(
         }
         _ => Ok(Found::Several(matches)),
     }
-}
-
-/// Reads nothing, and looks nothing up: the daemon cannot yet tell where an open file is on
-/// Windows.
-#[cfg(windows)]
-pub(crate) async fn find_and_read(
-    _folder: PathBuf,
-    _touched: Vec<PathBuf>,
-    _home: Option<PathBuf>,
-    _path: PathBuf,
-) -> Result<Found, ReadFileError> {
-    Err(ReadFileError::Unsupported)
 }
 
 pub(crate) fn join_error(error: JoinError) -> ReadFileError {
@@ -395,17 +400,17 @@ pub(crate) async fn search(
             let Some(relative) = git_path(name) else {
                 continue;
             };
-            if !matches_path(relative) {
+            if !matches_path(&relative) {
                 continue;
             }
             let found = root.join(relative);
-            let Ok(canonical) = found.canonicalize() else {
+            let Ok(resolved) = canonical(&found) else {
                 continue;
             };
-            if access.holder(&canonical).is_none() || seen.contains(&canonical) {
+            if access.holder(&resolved).is_none() || seen.contains(&resolved) {
                 continue;
             }
-            seen.push(canonical);
+            seen.push(resolved);
             matches.push(found);
             if matches.len() >= MAX_MATCHES {
                 return matches;
@@ -417,17 +422,51 @@ pub(crate) async fn search(
 
 /// A path as `git ls-files -z` writes it.
 #[cfg(unix)]
-fn git_path(bytes: &[u8]) -> Option<&Path> {
+fn git_path(bytes: &[u8]) -> Option<PathBuf> {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
 
-    Some(Path::new(OsStr::from_bytes(bytes)))
+    Some(PathBuf::from(OsStr::from_bytes(bytes)))
 }
 
-/// A path as `git ls-files -z` writes it: Git for Windows writes UTF-8.
+/// A path as `git ls-files -z` writes it: Git for Windows writes UTF-8, with `/` between names,
+/// which the path gets as `\`.
 #[cfg(windows)]
-fn git_path(bytes: &[u8]) -> Option<&Path> {
-    std::str::from_utf8(bytes).ok().map(Path::new)
+fn git_path(bytes: &[u8]) -> Option<PathBuf> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    Some(Path::new(text).components().collect())
+}
+
+/// `path` with its symlinks resolved.
+#[cfg(unix)]
+pub(crate) fn canonical(path: &Path) -> io::Result<PathBuf> {
+    path.canonicalize()
+}
+
+/// `path` with its links resolved, written as a user writes it: `C:\work` rather than the
+/// verbatim `\\?\C:\work`, so that it shows as such and a relative path joins it.
+#[cfg(windows)]
+pub(crate) fn canonical(path: &Path) -> io::Result<PathBuf> {
+    Ok(windows_path::shown_path(&path.canonicalize()?))
+}
+
+/// Whether `path` is `folder` or inside it.
+#[cfg(unix)]
+fn is_inside(path: &Path, folder: &Path) -> bool {
+    path.starts_with(folder)
+}
+
+/// Whether `path` is `folder` or inside it, whatever the case of their names.
+#[cfg(windows)]
+fn is_inside(path: &Path, folder: &Path) -> bool {
+    match (path.to_str(), folder.to_str()) {
+        (Some(path), Some(folder)) => windows_path::is_inside(path, folder),
+        _ => false,
+    }
+}
+
+fn is_same(left: &Path, right: &Path) -> bool {
+    is_inside(left, right) && is_inside(right, left)
 }
 
 /// Opens a file for reading without waiting: opening a FIFO waits for a writer otherwise.
@@ -439,10 +478,10 @@ pub(crate) fn open_to_read(path: &Path) -> io::Result<File> {
     Ok(File::from(rustix::fs::open(path, flags, Mode::empty())?))
 }
 
-/// Opens a file for reading. A Windows path names no FIFO, so the open never waits.
+/// Opens a file or a folder for reading. [`Access::check_before_open`] refuses a device first.
 #[cfg(windows)]
 pub(crate) fn open_to_read(path: &Path) -> io::Result<File> {
-    File::open(path)
+    windows_files::open(path)
 }
 
 /// Refuses an open file or folder outside `holder`, a folder or the file itself: a folder of its
@@ -459,39 +498,25 @@ pub(crate) fn ensure_inside(file: &File, holder: &Path) -> Result<(), ReadFileEr
     Ok(())
 }
 
-/// Refuses every file: the daemon cannot yet tell where an open file is on Windows.
+/// Refuses an open file or folder outside `holder`, a folder or the file itself: a folder of its
+/// path may have become a link since the path was checked.
 #[cfg(windows)]
-pub(crate) fn ensure_inside(_file: &File, _holder: &Path) -> Result<(), ReadFileError> {
-    Err(ReadFileError::Unsupported)
-}
-
-#[cfg(test)]
-#[cfg(windows)]
-mod windows_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn every_read_is_unsupported() {
-        let temp = tempfile::tempdir().unwrap();
-        std::fs::write(temp.path().join("notes.txt"), "text").unwrap();
-
-        for path in ["notes.txt", "missing.txt"] {
-            let folder = temp.path().to_owned();
-            let found = find_and_read(folder, Vec::new(), None, PathBuf::from(path)).await;
-            assert!(
-                matches!(found, Err(ReadFileError::Unsupported)),
-                "{path}: {found:?}"
-            );
-        }
+pub(crate) fn ensure_inside(file: &File, holder: &Path) -> Result<(), ReadFileError> {
+    let opened = windows_files::final_path(file).map_err(ReadFileError::Io)?;
+    if !is_inside(&opened, holder) {
+        return Err(ReadFileError::Outside);
     }
+    Ok(())
 }
 
 #[cfg(test)]
-#[cfg(unix)]
 mod tests {
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
+    #[cfg(unix)]
     use std::time::Duration;
 
+    #[cfg(unix)]
     use rustix::fs::Mode;
 
     use super::*;
@@ -522,7 +547,7 @@ mod tests {
     impl Layout {
         fn new() -> Self {
             let temp = tempfile::tempdir().unwrap();
-            let root = temp.path().canonicalize().unwrap();
+            let root = canonical(temp.path()).unwrap();
             let agent = root.join("app");
             let feature = root.join("app_feature");
             let untouched = root.join("app_other");
@@ -550,7 +575,7 @@ mod tests {
         /// The temporary folder stands for the home folder, so that a checkout above it, as
         /// when the system's temporary folder sits in one, never counts.
         fn access(&self, touched: &[PathBuf]) -> Access {
-            let home = self.temp.path().canonicalize().unwrap();
+            let home = canonical(self.temp.path()).unwrap();
             Access::new(&self.agent, touched, Some(&home)).unwrap()
         }
     }
@@ -570,6 +595,7 @@ mod tests {
         assert_eq!(absolute, relative);
     }
 
+    #[cfg(unix)]
     #[test]
     fn refuses_to_leave_the_folder() {
         let temp = tempfile::tempdir().unwrap();
@@ -623,7 +649,7 @@ mod tests {
         touched: &[PathBuf],
         path: &str,
     ) -> Result<Found, ReadFileError> {
-        let home = layout.temp.path().canonicalize().unwrap();
+        let home = canonical(layout.temp.path()).unwrap();
         find_and_read(
             layout.agent.clone(),
             touched.to_vec(),
@@ -707,6 +733,7 @@ mod tests {
     }
 
     /// A symlink out of the allowed folders, or to nothing, is no file the user can open.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_search_lists_only_files_the_daemon_reads() {
         let layout = Layout::new();
@@ -735,6 +762,7 @@ mod tests {
 
     /// The agent can write its checkout's git config: listing the files must not run a command
     /// it names.
+    #[cfg(unix)]
     #[tokio::test]
     async fn the_search_runs_no_command_from_the_checkouts_git_config() {
         let layout = Layout::new();
@@ -799,7 +827,7 @@ mod tests {
     #[test]
     fn a_checkout_holding_the_home_folder_adds_only_the_touched_files() {
         let layout = Layout::new();
-        let home = layout.temp.path().canonicalize().unwrap();
+        let home = canonical(layout.temp.path()).unwrap();
         std::fs::create_dir(home.join(GIT_ENTRY)).unwrap();
         write(&home.join("dotfile.txt"), "dotfile\n");
         let access = Access::new(&layout.agent, &[home.join("dotfile.txt")], Some(&home)).unwrap();
@@ -813,10 +841,11 @@ mod tests {
     }
 
     /// Some systems keep the home folders behind a symlink, such as `/home` to `/var/home`.
+    #[cfg(unix)]
     #[test]
     fn a_home_folder_reached_through_a_symlink_is_still_the_home_folder() {
         let layout = Layout::new();
-        let home = layout.temp.path().canonicalize().unwrap();
+        let home = canonical(layout.temp.path()).unwrap();
         std::fs::create_dir(home.join(GIT_ENTRY)).unwrap();
         write(&home.join("dotfile.txt"), "dotfile\n");
         let links = tempfile::tempdir().unwrap();
@@ -837,6 +866,7 @@ mod tests {
         assert_outside(read(&access, &layout.loose.join("todo.txt")));
     }
 
+    #[cfg(unix)]
     #[test]
     fn symlinks_are_resolved_before_the_roots_are_checked() {
         let layout = Layout::new();
@@ -872,7 +902,7 @@ mod tests {
         std::fs::create_dir(&folder).unwrap();
         std::fs::write(folder.join("inside.txt"), "inside").unwrap();
         std::fs::write(temp.path().join("secret.txt"), "secret").unwrap();
-        let folder = folder.canonicalize().unwrap();
+        let folder = canonical(&folder).unwrap();
         let inside = open_to_read(&folder.join("inside.txt")).unwrap();
         let outside = open_to_read(&temp.path().join("secret.txt")).unwrap();
 
@@ -884,6 +914,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_fifo_is_refused_at_once() {
         let temp = tempfile::tempdir().unwrap();
@@ -925,5 +956,70 @@ mod tests {
         assert!(matches!(folder, Err(ReadFileError::NotAFile)), "{folder:?}");
         let error = missing.unwrap_err();
         assert_eq!(error.to_error_body().code, ErrorCode::NotFound);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn names_compare_whatever_their_case_and_slashes_join_names() {
+        let temp = tempfile::tempdir().unwrap();
+        write(&temp.path().join("Src/Main.rs"), "fn main() {}\n");
+        let folder = canonical(temp.path()).unwrap();
+        let upper = PathBuf::from(folder.to_str().unwrap().to_uppercase());
+        let access = only_folder(&folder);
+
+        let slashes = read(&access, Path::new("src/main.rs"));
+        let shouting = read(&access, &upper.join(r"SRC\MAIN.RS"));
+        let from_upper = read(&only_folder(&upper), Path::new(r"src\main.rs"));
+
+        assert_eq!(slashes.unwrap(), "fn main() {}\n");
+        assert_eq!(shouting.unwrap(), "fn main() {}\n");
+        assert_eq!(from_upper.unwrap(), "fn main() {}\n");
+    }
+
+    /// Such a path must not reach the file system: a share would make Windows connect to its
+    /// host, and a device may wait for input.
+    #[cfg(windows)]
+    #[test]
+    fn a_device_or_a_share_no_allowed_folder_is_on_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let access = only_folder(temp.path());
+
+        for path in [
+            r"\\attacker.invalid\share\notes.txt",
+            "//attacker.invalid/share/notes.txt",
+            r"\\?\UNC\attacker.invalid\share\notes.txt",
+            r"\\.\pipe\agents-cockpit",
+            r"\\.\C:\notes.txt",
+            r"\\?\GLOBALROOT\Device\Null",
+        ] {
+            assert_outside(read(&access, Path::new(path)));
+        }
+        for device in ["NUL", "con.txt", r"sub\COM1", "conin$"] {
+            let refused = read(&access, Path::new(device));
+            assert!(
+                matches!(refused, Err(ReadFileError::NotAFile)),
+                "{device}: {refused:?}"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_file_outside_the_folder_is_refused_whatever_the_case() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join("agent");
+        write(&folder.join("inside.txt"), "inside");
+        write(
+            &temp.path().join("agent_other").join("secret.txt"),
+            "secret",
+        );
+        let access = only_folder(&folder);
+
+        let sibling = read(&access, &temp.path().join(r"AGENT_OTHER\secret.txt"));
+        let drive_root = read(&access, Path::new(r"C:\windows\win.ini"));
+
+        assert_outside(sibling);
+        assert_outside(drive_root);
+        assert_eq!(read(&access, Path::new("INSIDE.TXT")).unwrap(), "inside");
     }
 }

@@ -31,6 +31,10 @@ mod store;
 #[cfg(unix)]
 mod test_script;
 mod transcript;
+#[cfg(windows)]
+mod windows_files;
+#[cfg(any(windows, test))]
+mod windows_path;
 
 pub use daemon_config::{
     CLAUDE_PROGRAM_ENV, DaemonConfig, HOME_ENV, SERVE_SUBCOMMAND, STATE_DIR_FLAG,

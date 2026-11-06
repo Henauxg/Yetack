@@ -9,38 +9,38 @@
 //! `folders.list` lists the folders alone, of any folder the daemon's user can read, for the new
 //! agent dialog, within the same bounds.
 //!
+//! `agent.list_dir` reads the open folder, whose path is checked once it is open, so that a
+//! folder swapped for a link after the checks is not the one listed. On Windows, what a link in
+//! it points to is read through its path, joined to the folder's.
+//!
 //! [`read_file`]: crate::read_file
 
 #[cfg(unix)]
 use std::ffi::{CStr, OsStr};
-#[cfg(unix)]
 use std::fs::File;
 use std::io;
+#[cfg(windows)]
+use std::ops::ControlFlow;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
-#[cfg(unix)]
-use std::path::Component;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
-#[cfg(unix)]
-use cockpit_protocol::{DirEntry, EntryKind};
-use cockpit_protocol::{DirListing, ErrorBody, ErrorCode};
+use cockpit_protocol::{DirEntry, DirListing, EntryKind, ErrorBody, ErrorCode};
 #[cfg(unix)]
 use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags};
 #[cfg(unix)]
 use rustix::io::Errno;
-#[cfg(unix)]
 use tokio::time::Instant;
 
-use crate::read_file::ReadFileError;
-#[cfg(unix)]
-use crate::read_file::{self, Access, SEARCH_TIME};
+use crate::read_file::{self, Access, ReadFileError, SEARCH_TIME};
+#[cfg(windows)]
+use crate::windows_files::{self, FolderEntry};
+#[cfg(windows)]
+use crate::windows_path;
 
 /// The most entries a listing holds.
-#[cfg(unix)]
 pub(crate) const MAX_ENTRIES: usize = 2_000;
 /// The most entries read from a folder. Past it, the listing is cut.
-#[cfg(unix)]
 pub(crate) const MAX_READ: usize = 20_000;
 
 #[derive(Debug, thiserror::Error)]
@@ -73,7 +73,6 @@ impl ListDirError {
 
 /// Lists `path`, absolute or relative to `folder`, the agent's folder. `touched` holds the files
 /// the agent read or changed, and `home` the home folder, as for `agent.read_file`.
-#[cfg(unix)]
 pub(crate) fn list(
     folder: &Path,
     touched: &[PathBuf],
@@ -88,28 +87,61 @@ pub(crate) fn list(
     }
     let access = Access::new(folder, touched, home)?;
     let asked = folder.join(path);
-    let resolved = asked.canonicalize().map_err(|error| match error.kind() {
+    #[cfg(windows)]
+    access
+        .check_before_open(&asked)
+        .map_err(|error| match error {
+            ReadFileError::NotAFile => ListDirError::NotAFolder(asked.clone()),
+            _ => ListDirError::Outside,
+        })?;
+    let resolved = read_file::canonical(&asked).map_err(|error| match error.kind() {
         io::ErrorKind::NotFound => ListDirError::Missing(asked.clone()),
         _ => ListDirError::Io(error),
     })?;
     let holder = access
         .folder_holding(&resolved)
         .ok_or(ListDirError::Outside)?;
-    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
-    let opened =
-        rustix::fs::open(&resolved, flags, Mode::empty()).map_err(|error| match error {
-            Errno::NOTDIR => ListDirError::NotAFolder(asked.clone()),
-            other => ListDirError::Io(other.into()),
-        })?;
-    let opened = File::from(opened);
+    let opened = open_folder(&resolved).map_err(|error| match error {
+        ListDirError::NotAFolder(_) => ListDirError::NotAFolder(asked.clone()),
+        other => other,
+    })?;
     // The checks use the open folder, so a swap after them does not matter.
     read_file::ensure_inside(&opened, holder).map_err(|_| ListDirError::Outside)?;
+    #[cfg(unix)]
     let (entries, truncated) = read_entries(&opened)?;
+    #[cfg(windows)]
+    let (entries, truncated) = read_entries(&opened, &resolved)?;
     Ok(DirListing {
         path: asked,
         entries,
         truncated,
     })
+}
+
+/// Opens the folder `path`.
+#[cfg(unix)]
+fn open_folder(path: &Path) -> Result<File, ListDirError> {
+    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
+    let opened = rustix::fs::open(path, flags, Mode::empty()).map_err(|error| match error {
+        Errno::NOENT => ListDirError::Missing(path.to_owned()),
+        Errno::NOTDIR => ListDirError::NotAFolder(path.to_owned()),
+        other => ListDirError::Io(other.into()),
+    })?;
+    Ok(File::from(opened))
+}
+
+/// Opens the folder `path`.
+#[cfg(windows)]
+fn open_folder(path: &Path) -> Result<File, ListDirError> {
+    let opened = windows_files::open(path).map_err(|error| match error.kind() {
+        io::ErrorKind::NotFound => ListDirError::Missing(path.to_owned()),
+        _ => ListDirError::Io(error),
+    })?;
+    let metadata = opened.metadata().map_err(ListDirError::Io)?;
+    if !metadata.is_dir() {
+        return Err(ListDirError::NotAFolder(path.to_owned()));
+    }
+    Ok(opened)
 }
 
 /// The entries of an open folder, its folders first, then the others, each group by name.
@@ -141,7 +173,6 @@ fn is_self_or_parent(name: &CStr) -> bool {
 
 /// Sorts entries as a listing shows them, then keeps the first [`MAX_ENTRIES`]. Returns whether
 /// it left some out.
-#[cfg(unix)]
 fn sort_and_cap(entries: &mut Vec<DirEntry>) -> bool {
     entries.sort_by_cached_key(|entry| {
         (
@@ -156,18 +187,25 @@ fn sort_and_cap(entries: &mut Vec<DirEntry>) -> bool {
 }
 
 /// Lists the folders in `path`, which must be absolute. A symbolic link to a folder counts as one.
-#[cfg(unix)]
 pub(crate) fn list_folders(path: &Path) -> Result<DirListing, ListDirError> {
     if !path.is_absolute() {
         return Err(ListDirError::NotAbsolute(path.to_owned()));
     }
-    let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
-    let opened = rustix::fs::open(path, flags, Mode::empty()).map_err(|error| match error {
-        Errno::NOENT => ListDirError::Missing(path.to_owned()),
-        Errno::NOTDIR => ListDirError::NotAFolder(path.to_owned()),
-        other => ListDirError::Io(other.into()),
-    })?;
-    let (entries, truncated) = read_folders(&File::from(opened))?;
+    // A device path, or a name such as `NUL`, is no folder; a network share is.
+    #[cfg(windows)]
+    {
+        let plain = path.to_str().is_some_and(|text| {
+            windows_path::may_open(text, [text]) && !windows_path::names_a_device(text)
+        });
+        if !plain {
+            return Err(ListDirError::NotAFolder(path.to_owned()));
+        }
+    }
+    let opened = open_folder(path)?;
+    #[cfg(unix)]
+    let (entries, truncated) = read_folders(&opened)?;
+    #[cfg(windows)]
+    let (entries, truncated) = read_folders(&opened, path)?;
     Ok(DirListing {
         path: path.to_owned(),
         entries,
@@ -258,7 +296,6 @@ fn describe(folder: &File, name: &CStr, listed: FileType) -> DirEntry {
 
 /// The files whose name holds `name`, whatever its case, in the agent's folder and the allowed
 /// checkouts, as `git ls-files` lists them, within the search's limits.
-#[cfg(unix)]
 pub(crate) async fn find_files(
     folder: PathBuf,
     touched: Vec<PathBuf>,
@@ -284,41 +321,99 @@ pub(crate) async fn find_files(
     Ok(read_file::search(&access, roots, name_holds, Instant::now() + SEARCH_TIME).await)
 }
 
-/// Lists nothing: the daemon cannot yet check where a folder is on Windows.
+/// The entries of the open folder `folder`, at `path`, its folders first, then the others, each
+/// group by name.
 #[cfg(windows)]
-pub(crate) fn list(
-    _folder: &Path,
-    _touched: &[PathBuf],
-    _home: Option<&Path>,
-    _path: &Path,
-) -> Result<DirListing, ListDirError> {
-    Err(ListDirError::Access(ReadFileError::Unsupported))
+fn read_entries(folder: &File, path: &Path) -> Result<(Vec<DirEntry>, bool), ListDirError> {
+    let mut entries: Vec<DirEntry> = Vec::new();
+    let mut truncated = false;
+    windows_files::read_entries(folder, |entry| {
+        if entries.len() >= MAX_READ {
+            truncated = true;
+            return ControlFlow::Break(());
+        }
+        entries.push(describe(path, &entry));
+        ControlFlow::Continue(())
+    })
+    .map_err(ListDirError::Io)?;
+    truncated |= sort_and_cap(&mut entries);
+    Ok((entries, truncated))
 }
 
-/// Lists nothing, as [`list`] does.
+/// The folders of the open folder `folder`, at `path`, by name. Every entry read counts towards
+/// [`MAX_READ`], so a folder of many files answers as quickly as for `agent.list_dir`.
 #[cfg(windows)]
-pub(crate) fn list_folders(_path: &Path) -> Result<DirListing, ListDirError> {
-    Err(ListDirError::Access(ReadFileError::Unsupported))
+fn read_folders(folder: &File, path: &Path) -> Result<(Vec<DirEntry>, bool), ListDirError> {
+    let mut folders: Vec<DirEntry> = Vec::new();
+    let mut read: usize = 0;
+    let mut truncated = false;
+    windows_files::read_entries(folder, |entry| {
+        if read >= MAX_READ {
+            truncated = true;
+            return ControlFlow::Break(());
+        }
+        read += 1;
+        // The protocol carries paths as text, so no request could reach a folder whose name is
+        // not valid UTF-16.
+        let text_name = entry.name.to_str().is_some();
+        // Only these can lead to a folder: the others need no look at their target.
+        if text_name && (entry.is_folder() || entry.is_link()) {
+            let described = describe(path, &entry);
+            if described.kind == EntryKind::Folder {
+                folders.push(described);
+            }
+        }
+        ControlFlow::Continue(())
+    })
+    .map_err(ListDirError::Io)?;
+    truncated |= sort_and_cap(&mut folders);
+    Ok((folders, truncated))
 }
 
-/// Finds nothing, as [`list`] lists nothing.
+/// One entry of the folder at `folder`, with what a link points to and a file's size. A link
+/// that leads nowhere shows as `Other`.
 #[cfg(windows)]
-pub(crate) async fn find_files(
-    _folder: PathBuf,
-    _touched: Vec<PathBuf>,
-    _home: Option<PathBuf>,
-    _name: String,
-) -> Result<Vec<PathBuf>, ReadFileError> {
-    Err(ReadFileError::Unsupported)
+fn describe(folder: &Path, entry: &FolderEntry) -> DirEntry {
+    let name = entry.name.to_string_lossy().into_owned();
+    if !entry.is_link() {
+        let kind = if entry.is_folder() {
+            EntryKind::Folder
+        } else {
+            EntryKind::File
+        };
+        return DirEntry {
+            name,
+            kind,
+            size: (kind == EntryKind::File).then_some(entry.size),
+            symlink: false,
+        };
+    }
+    // Follows the link, to say what it points to.
+    let metadata = std::fs::metadata(folder.join(&entry.name)).ok();
+    let kind = match &metadata {
+        Some(metadata) if metadata.is_dir() => EntryKind::Folder,
+        Some(metadata) if metadata.is_file() => EntryKind::File,
+        Some(_) | None => EntryKind::Other,
+    };
+    let size = metadata
+        .filter(|_| kind == EntryKind::File)
+        .map(|metadata| metadata.len());
+    DirEntry {
+        name,
+        kind,
+        size,
+        symlink: true,
+    }
 }
 
 #[cfg(test)]
-#[cfg(unix)]
 mod tests {
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
     use std::process::Command;
 
     use super::*;
+    use crate::read_file::canonical;
 
     /// Writes `text` at `path`, creating its folders.
     fn write(path: &Path, text: &str) {
@@ -348,7 +443,7 @@ mod tests {
     impl Layout {
         fn new() -> Self {
             let temp = tempfile::tempdir().unwrap();
-            let root = temp.path().canonicalize().unwrap();
+            let root = canonical(temp.path()).unwrap();
             let layout = Self {
                 agent: root.join("app"),
                 feature: root.join("app_feature"),
@@ -370,7 +465,7 @@ mod tests {
                 self.feature.join("src/app/touched.ts"),
                 self.loose.join("todo.txt"),
             ];
-            let home = self.temp.path().canonicalize().unwrap();
+            let home = canonical(self.temp.path()).unwrap();
             list(&self.agent, &touched, Some(&home), path)
         }
     }
@@ -379,6 +474,7 @@ mod tests {
         assert!(matches!(result, Err(ListDirError::Outside)), "{result:?}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn lists_folders_first_then_the_rest_by_name() {
         let layout = Layout::new();
@@ -434,6 +530,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_symlinked_folder_lists_only_where_its_target_is_allowed() {
         let layout = Layout::new();
@@ -470,10 +567,11 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn lists_the_folders_alone_hidden_ones_included_by_name() {
         let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().canonicalize().unwrap();
+        let root = canonical(temp.path()).unwrap();
         for folder in ["beta", "Alpha/inner", ".config"] {
             std::fs::create_dir_all(root.join(folder)).unwrap();
         }
@@ -501,10 +599,11 @@ mod tests {
         assert!(through_link.entries.is_empty(), "{through_link:?}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_folder_whose_name_is_not_utf8_is_left_out_of_the_folders() {
         let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().canonicalize().unwrap();
+        let root = canonical(temp.path()).unwrap();
         std::fs::create_dir(root.join(OsStr::from_bytes(b"caf\xe9"))).unwrap();
         std::fs::create_dir(root.join("cafe")).unwrap();
 
@@ -516,7 +615,7 @@ mod tests {
     #[test]
     fn a_folder_listing_refuses_a_relative_path_and_says_what_is_missing() {
         let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().canonicalize().unwrap();
+        let root = canonical(temp.path()).unwrap();
         write(&root.join("notes.txt"), "notes");
 
         for relative in ["projects", "~/projects", "~"] {
@@ -544,7 +643,7 @@ mod tests {
     #[test]
     fn a_folder_listing_sends_at_most_the_cap() {
         let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().canonicalize().unwrap();
+        let root = canonical(temp.path()).unwrap();
         for index in 0..MAX_ENTRIES + 5 {
             std::fs::create_dir(root.join(format!("folder-{index:05}"))).unwrap();
         }
@@ -563,7 +662,7 @@ mod tests {
     #[test]
     fn a_folder_listing_reads_at_most_the_cap() {
         let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().canonicalize().unwrap();
+        let root = canonical(temp.path()).unwrap();
         for index in 0..MAX_READ + 5 {
             std::fs::write(root.join(format!("file-{index:05}.txt")), "").unwrap();
         }
@@ -586,7 +685,7 @@ mod tests {
         write(&layout.agent.join("src/lexer.rs"), "");
         write(&layout.agent.join("tests/Lexer_cases.rs"), "");
         write(&layout.agent.join("docs/notes.md"), "");
-        let home = Some(layout.temp.path().canonicalize().unwrap());
+        let home = Some(canonical(layout.temp.path()).unwrap());
         let find = |name: &str| {
             find_files(
                 layout.agent.clone(),
@@ -607,5 +706,87 @@ mod tests {
             ]
         );
         assert!(find("  ").await.unwrap().is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn lists_folders_first_then_the_rest_by_name_on_windows() {
+        let layout = Layout::new();
+        let src = layout.agent.join("src");
+        write(&src.join("b.txt"), "bee");
+        write(&src.join("A.md"), "# A\n");
+        std::fs::create_dir(src.join("tests")).unwrap();
+
+        let listing = layout.list(Path::new("SRC")).unwrap();
+        let through_slash = layout.list(Path::new("src/tests")).unwrap();
+
+        assert_eq!(listing.path, layout.agent.join("SRC"));
+        assert!(!listing.truncated);
+        assert_eq!(
+            names(&listing),
+            [
+                ("tests", EntryKind::Folder, None, false),
+                ("A.md", EntryKind::File, Some(4), false),
+                ("b.txt", EntryKind::File, Some(3), false),
+                ("main.rs", EntryKind::File, Some(13), false),
+            ]
+        );
+        assert!(through_slash.entries.is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_device_or_a_share_is_no_folder_of_the_agent() {
+        let layout = Layout::new();
+
+        for path in [
+            r"\\attacker.invalid\share",
+            r"\\?\UNC\attacker.invalid\share",
+            r"\\.\pipe",
+        ] {
+            assert_outside(layout.list(Path::new(path)));
+        }
+        assert!(matches!(
+            layout.list(Path::new("nul")),
+            Err(ListDirError::NotAFolder(_))
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_folders_list_leaves_out_files_devices_and_names_that_are_not_text() {
+        use std::ffi::OsString;
+        use std::os::windows::ffi::OsStringExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = canonical(temp.path()).unwrap();
+        for folder in ["beta", "Alpha/inner", ".config"] {
+            std::fs::create_dir_all(root.join(folder)).unwrap();
+        }
+        write(&root.join("notes.txt"), "notes");
+        // A lone surrogate: a name Windows keeps that is not text.
+        let broken = OsString::from_wide(&[0x63, 0xd800]);
+        let made_broken = std::fs::create_dir(root.join(&broken)).is_ok();
+
+        let listing = list_folders(&root).unwrap();
+
+        assert_eq!(
+            names(&listing),
+            [
+                (".config", EntryKind::Folder, None, false),
+                ("Alpha", EntryKind::Folder, None, false),
+                ("beta", EntryKind::Folder, None, false),
+            ],
+            "a name that is not text was made: {made_broken}"
+        );
+        for device in [r"\\.\pipe", r"\\?\GLOBALROOT\Device", r"C:\nul"] {
+            assert!(
+                matches!(
+                    list_folders(Path::new(device)),
+                    Err(ListDirError::NotAFolder(_))
+                ),
+                "{device}"
+            );
+        }
     }
 }
