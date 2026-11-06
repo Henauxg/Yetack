@@ -2,6 +2,7 @@
 //!
 //! [`serve`] runs it. The `agents-cockpit` binary calls it for `agents-cockpit serve`.
 
+mod browse;
 mod daemon_config;
 mod error_chain;
 mod hub;

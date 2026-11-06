@@ -60,13 +60,44 @@ pub enum ResponseBody {
         path: PathBuf,
         text: String,
     },
-    /// Several files match the relative path asked for, and none was read. Absolute paths.
+    /// For `agent.read_file`, several files match the relative path asked for, and none was
+    /// read. For `agent.find_files`, the files found. Absolute paths.
     FileMatches {
         matches: Vec<PathBuf>,
     },
+    Directory(DirListing),
     Sessions {
         sessions: Vec<PastSession>,
     },
+}
+
+/// A folder's entries: its folders first, then its other entries, each group by name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirListing {
+    /// The folder listed, absolute: the path asked for, joined to the agent's folder when relative.
+    pub path: PathBuf,
+    pub entries: Vec<DirEntry>,
+    /// The folder holds more entries than the listing's cap: some are left out.
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirEntry {
+    pub name: String,
+    /// What the entry is, or for a symbolic link, what it points to.
+    pub kind: EntryKind,
+    /// In bytes, for a file.
+    pub size: Option<u64>,
+    pub symlink: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, VariantArray)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryKind {
+    Folder,
+    File,
+    /// A socket, a device, a FIFO, or a symbolic link that leads nowhere.
+    Other,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

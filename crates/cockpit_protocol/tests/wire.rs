@@ -18,16 +18,17 @@ use cockpit_protocol::{
     AnswerState, Approval, ApprovalAnswer, ApprovalDecision, AskedQuestion, BackgroundTask,
     BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus, CancelQueuedParams, Catchup,
     ChangedFile, ClaudeSessionId, ClientMessage, CommandKind, ContextCategory, ContextUsage,
-    CostUsd, Effort, ErrorBody, ErrorCode, Event, EventRecord, FileEdit, HistoryPage,
-    HistoryParams, Image, ImageMediaType, ItemBody, ItemId, McpRemoveParams, McpScope, McpServer,
-    McpServerParams, McpServerStatus, McpToggleParams, McpTool, McpTransport, Method, MoveParams,
-    PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision,
-    PlanUsage, Position, Prompt, PromptParams, Question, QuestionAnswer, QuestionOption,
-    RateLimitStatus, ReadFileParams, RenameParams, Request, RequestId, ResponseBody,
-    ResponseResult, Seq, ServerMessage, SessionResumeParams, SetEffortParams, SetModeParams,
-    SetModelParams, Settings, SlashCommand, Snapshot, StartParams, StopTaskParams, TaskListItem,
-    TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem,
-    TurnEnd, UsageWindow, UserMessage, WindowUsage,
+    CostUsd, DirEntry, DirListing, Effort, EntryKind, ErrorBody, ErrorCode, Event, EventRecord,
+    FileEdit, FindFilesParams, HistoryPage, HistoryParams, Image, ImageMediaType, ItemBody, ItemId,
+    ListDirParams, McpRemoveParams, McpScope, McpServer, McpServerParams, McpServerStatus,
+    McpToggleParams, McpTool, McpTransport, Method, MoveParams, PROTOCOL_VERSION, PastSession,
+    PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, PlanUsage, Position, Prompt,
+    PromptParams, Question, QuestionAnswer, QuestionOption, RateLimitStatus, ReadFileParams,
+    RenameParams, Request, RequestId, ResponseBody, ResponseResult, Seq, ServerMessage,
+    SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, Settings, SlashCommand,
+    Snapshot, StartParams, StopTaskParams, TaskListItem, TaskProgress, TaskStatus, Timestamp,
+    TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, UsageWindow, UserMessage,
+    WindowUsage,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -501,6 +502,14 @@ fn requests() -> Vec<Request> {
             agent,
             path: PathBuf::from("src/login.rs"),
         }),
+        Request::AgentListDir(ListDirParams {
+            agent,
+            path: PathBuf::from("src"),
+        }),
+        Request::AgentFindFiles(FindFilesParams {
+            agent,
+            name: "login".to_owned(),
+        }),
         Request::McpRemove(McpRemoveParams {
             agent,
             server: "issues".to_owned(),
@@ -512,6 +521,33 @@ fn requests() -> Vec<Request> {
             session: session_id(),
         }),
     ]
+}
+
+fn dir_listing() -> DirListing {
+    DirListing {
+        path: PathBuf::from("/srv/projects/shop/src"),
+        entries: vec![
+            DirEntry {
+                name: "forms".to_owned(),
+                kind: EntryKind::Folder,
+                size: None,
+                symlink: false,
+            },
+            DirEntry {
+                name: "login.rs".to_owned(),
+                kind: EntryKind::File,
+                size: Some(2_048),
+                symlink: false,
+            },
+            DirEntry {
+                name: "shared".to_owned(),
+                kind: EntryKind::Other,
+                size: None,
+                symlink: true,
+            },
+        ],
+        truncated: false,
+    }
 }
 
 fn answers() -> Vec<Answer> {
@@ -549,6 +585,7 @@ fn response_bodies() -> Vec<ResponseBody> {
             path: PathBuf::from("/srv/projects/shop/src/main.rs"),
             text: "fn main() {}\n".to_owned(),
         },
+        ResponseBody::Directory(dir_listing()),
         ResponseBody::FileMatches {
             matches: vec![
                 PathBuf::from("/srv/projects/shop/src/login.rs"),
@@ -757,6 +794,8 @@ fn method_names_are_pinned() {
             "agent.mcp_toggle",
             "agent.commands",
             "agent.read_file",
+            "agent.list_dir",
+            "agent.find_files",
             "mcp.remove",
             "settings.set",
             "sessions.list",
@@ -795,6 +834,7 @@ fn message_and_body_tags_are_pinned() {
             "mcp_servers",
             "commands",
             "file",
+            "directory",
             "file_matches",
             "sessions",
         ]
@@ -879,6 +919,7 @@ fn words_are_pinned() {
         ["pending", "in_progress", "completed"]
     );
     assert_eq!(words::<BackgroundTaskKind>(), ["agent", "command"]);
+    assert_eq!(words::<EntryKind>(), ["folder", "file", "other"]);
     assert_eq!(
         words::<BackgroundTaskStatus>(),
         ["running", "stopped", "done", "failed"]
@@ -992,6 +1033,62 @@ fn a_rename_request_on_the_wire() {
                 "method": "agent.rename",
                 "params": {"agent": 3, "title": "Login form"},
             },
+        }),
+    );
+}
+
+#[test]
+fn a_folder_listing_on_the_wire() {
+    let request = ClientMessage::Request {
+        id: RequestId::new(11),
+        request: Request::AgentListDir(ListDirParams {
+            agent: agent(),
+            path: PathBuf::from("src"),
+        }),
+    };
+    let search = ClientMessage::Request {
+        id: RequestId::new(12),
+        request: Request::AgentFindFiles(FindFilesParams {
+            agent: agent(),
+            name: "login".to_owned(),
+        }),
+    };
+    let answer = ServerMessage::Response {
+        id: RequestId::new(11),
+        result: ResponseResult::Ok(ResponseBody::Directory(dir_listing())),
+    };
+
+    assert_wire(
+        &request,
+        json!({
+            "type": "request",
+            "id": 11,
+            "request": {"method": "agent.list_dir", "params": {"agent": 3, "path": "src"}},
+        }),
+    );
+    assert_wire(
+        &search,
+        json!({
+            "type": "request",
+            "id": 12,
+            "request": {"method": "agent.find_files", "params": {"agent": 3, "name": "login"}},
+        }),
+    );
+    assert_wire(
+        &answer,
+        json!({
+            "type": "response",
+            "id": 11,
+            "result": {"ok": {
+                "type": "directory",
+                "path": "/srv/projects/shop/src",
+                "entries": [
+                    {"name": "forms", "kind": "folder", "size": null, "symlink": false},
+                    {"name": "login.rs", "kind": "file", "size": 2048, "symlink": false},
+                    {"name": "shared", "kind": "other", "size": null, "symlink": true},
+                ],
+                "truncated": false,
+            }},
         }),
     );
 }

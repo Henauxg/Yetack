@@ -117,10 +117,27 @@ impl Access {
 
     /// The allowed folder or file that holds `resolved`, a path without symlinks.
     fn holder(&self, resolved: &Path) -> Option<&Path> {
-        let mut folders = std::iter::once(&self.folder).chain(&self.checkouts);
-        let folder = folders.find(|folder| resolved.starts_with(folder));
         let file = || self.files.iter().find(|file| *file == resolved);
-        folder.or_else(file).map(PathBuf::as_path)
+        self.folder_holding(resolved)
+            .or_else(|| file().map(PathBuf::as_path))
+    }
+
+    /// The agent's folder or the allowed checkout that holds `resolved`, a path without symlinks.
+    /// The files allowed alone hold nothing.
+    pub(crate) fn folder_holding(&self, resolved: &Path) -> Option<&Path> {
+        let mut folders = std::iter::once(&self.folder).chain(&self.checkouts);
+        folders
+            .find(|folder| resolved.starts_with(folder))
+            .map(PathBuf::as_path)
+    }
+
+    /// Where a search looks: `folder`, the agent's folder as the daemon records it, then the
+    /// allowed checkouts.
+    pub(crate) fn search_roots(&self, folder: &Path) -> Vec<PathBuf> {
+        let checkouts = self.checkouts.iter().cloned();
+        std::iter::once(folder.to_owned())
+            .chain(checkouts)
+            .collect()
     }
 }
 
@@ -239,9 +256,10 @@ pub(crate) async fn find_and_read(
     if let Some(found) = found {
         return Ok(found);
     }
-    let roots = std::iter::once(folder).chain(access.checkouts.iter().cloned());
+    let roots = access.search_roots(&folder);
     let tail = name_tail(&path).unwrap_or_else(|| path.clone());
-    let matches = search(roots.collect(), &tail, Instant::now() + SEARCH_TIME).await;
+    let ends_with_tail = |relative: &Path| relative.ends_with(&tail);
+    let matches = search(roots, ends_with_tail, Instant::now() + SEARCH_TIME).await;
     match matches.as_slice() {
         [] => Err(ReadFileError::Unknown(path)),
         [only] => {
@@ -258,7 +276,7 @@ pub(crate) async fn find_and_read(
     }
 }
 
-fn join_error(error: tokio::task::JoinError) -> ReadFileError {
+pub(crate) fn join_error(error: tokio::task::JoinError) -> ReadFileError {
     ReadFileError::Io(io::Error::other(error))
 }
 
@@ -305,9 +323,14 @@ fn name_tail(path: &Path) -> Option<PathBuf> {
     (!tail.as_os_str().is_empty()).then_some(tail)
 }
 
-/// The files under `roots` whose path ends with `path`, as `git ls-files` lists them, each once,
-/// until `deadline` or [`MAX_MATCHES`]. A root that is not in a git checkout adds nothing.
-async fn search(roots: Vec<PathBuf>, path: &Path, deadline: Instant) -> Vec<PathBuf> {
+/// The files under `roots` whose path relative to their root `matches`, as `git ls-files` lists
+/// them, each once, until `deadline` or [`MAX_MATCHES`]. A root that is not in a git checkout adds
+/// nothing.
+pub(crate) async fn search(
+    roots: Vec<PathBuf>,
+    matches_path: impl Fn(&Path) -> bool,
+    deadline: Instant,
+) -> Vec<PathBuf> {
     let mut matches: Vec<PathBuf> = Vec::new();
     // The agent's folder may sit in one of the checkouts: a file found twice is listed once.
     let mut seen: Vec<PathBuf> = Vec::new();
@@ -338,7 +361,7 @@ async fn search(roots: Vec<PathBuf>, path: &Path, deadline: Instant) -> Vec<Path
             }
             let name = entry.strip_suffix(&[0]).unwrap_or(&entry);
             let relative = Path::new(OsStr::from_bytes(name));
-            if !relative.ends_with(path) {
+            if !matches_path(relative) {
                 continue;
             }
             let found = root.join(relative);
@@ -362,9 +385,9 @@ pub(crate) fn open_to_read(path: &Path) -> io::Result<File> {
     Ok(File::from(rustix::fs::open(path, flags, Mode::empty())?))
 }
 
-/// Refuses an open file outside `holder`, a folder or the file itself: a folder of its path may
-/// have become a symlink since the path was checked.
-fn ensure_inside(file: &File, holder: &Path) -> Result<(), ReadFileError> {
+/// Refuses an open file or folder outside `holder`, a folder or the file itself: a folder of its
+/// path may have become a symlink since the path was checked.
+pub(crate) fn ensure_inside(file: &File, holder: &Path) -> Result<(), ReadFileError> {
     use std::os::fd::AsRawFd;
 
     let link = Path::new(OPEN_FILES).join(file.as_raw_fd().to_string());
