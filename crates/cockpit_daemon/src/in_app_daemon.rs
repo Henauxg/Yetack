@@ -47,18 +47,16 @@ impl InAppDaemon {
             tokio::spawn(accept(connections, daemon.inputs()));
             Ok::<Daemon, ServeError>(daemon)
         });
-        let started = started.await.unwrap_or(Err(ServeError::TaskEnded("start")));
-        match started {
-            Ok(daemon) => Ok(Self {
-                runtime: Some(runtime),
-                daemon: Some(daemon),
-            }),
-            Err(error) => {
-                // Dropping a runtime waits for its threads, which an async caller must not do.
-                runtime.shutdown_background();
-                Err(error)
-            }
-        }
+        // Its drop stops the runtime without waiting, should this future be dropped or fail.
+        let mut this = Self {
+            runtime: Some(runtime),
+            daemon: None,
+        };
+        let daemon = started
+            .await
+            .unwrap_or(Err(ServeError::TaskEnded("start")))?;
+        this.daemon = Some(daemon);
+        Ok(this)
     }
 
     /// Stops the daemon as a background service stops: the agents stay marked as running, and
@@ -79,6 +77,7 @@ impl InAppDaemon {
 
 impl Drop for InAppDaemon {
     fn drop(&mut self) {
+        // Dropping a runtime waits for its threads, which an async caller must not do.
         if let Some(runtime) = self.runtime.take() {
             runtime.shutdown_background();
         }
@@ -92,5 +91,45 @@ async fn accept(
     while let Some(stream) = connections.recv().await {
         let (read, write) = tokio::io::split(stream);
         tokio::spawn(server::serve_connection(read, write, hub.clone()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    fn config(temp: &Path) -> DaemonConfig {
+        DaemonConfig {
+            state_dir: temp.join("state"),
+            claude_program: temp.join("no-claude"),
+            claude_config_dir: temp.join("claude"),
+        }
+    }
+
+    /// The app drops a start it no longer waits for, as when it closes meanwhile.
+    #[tokio::test]
+    async fn a_start_dropped_before_it_ends_releases_the_folder() {
+        use std::task::{Context, Poll, Waker};
+        use std::time::Instant;
+
+        let temp = tempfile::tempdir().unwrap();
+        let (_streams, connections) = mpsc::unbounded_channel();
+        let mut start = Box::pin(InAppDaemon::start(config(temp.path()), connections));
+        let polled = start.as_mut().poll(&mut Context::from_waker(Waker::noop()));
+        assert!(matches!(polled, Poll::Pending));
+        drop(start);
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let daemon = loop {
+            let (_streams, connections) = mpsc::unbounded_channel();
+            match InAppDaemon::start(config(temp.path()), connections).await {
+                Ok(daemon) => break daemon,
+                Err(error) => assert!(Instant::now() < deadline, "{error:?}"),
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        drop(daemon);
     }
 }
