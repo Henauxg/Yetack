@@ -12,7 +12,7 @@ use cockpit_protocol::{
 use dioxus::prelude::*;
 use serde_json::Value;
 
-use crate::bridge;
+use crate::bridge::{self, HIGHLIGHTED_CLASS};
 use crate::connection::{Clock, Cockpit};
 use crate::format;
 use crate::state::agent_map::{self, MapRow, MapTab, MapView, OutlineRow, RowKind, StopKind};
@@ -448,7 +448,7 @@ fn OutlineRowView(row: RowView, selected: bool) -> Element {
         class.push("root");
     }
     if selected {
-        class.push("highlighted");
+        class.push(HIGHLIGHTED_CLASS);
     }
     let indent = row.depth.saturating_mul(INDENT_PX);
     let level = row.depth.saturating_add(1);

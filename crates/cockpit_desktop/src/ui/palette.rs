@@ -5,7 +5,9 @@
 use cockpit_protocol::{AgentId, AgentStatus, CommandKind, SlashCommand};
 use dioxus::prelude::*;
 
-use crate::bridge::{self, ATTACH_INPUT_ID, COMPOSER_ID, HIGHLIGHTED_ENTRY_ID, PALETTE_FILTER_ID};
+use crate::bridge::{
+    self, ATTACH_INPUT_ID, COMPOSER_ID, HIGHLIGHTED_CLASS, HIGHLIGHTED_ENTRY_ID, PALETTE_FILTER_ID,
+};
 use crate::connection::Cockpit;
 use crate::state::actions::{
     self, CommandMatch, Direction, MenuAction, MenuSection, PaletteEntry, SettingChoice, Step,
@@ -298,7 +300,7 @@ fn ActionRow(
     rsx! {
         button {
             id: row_id(highlighted),
-            class: if highlighted { "palette-action highlighted" } else { "palette-action" },
+            class: if highlighted { "palette-action {HIGHLIGHTED_CLASS}" } else { "palette-action" },
             disabled,
             onmousemove: move |event: MouseEvent| pointer.point(cockpit, agent, index, &event),
             title: if disabled { "The agent exited: resume it first" },
@@ -324,7 +326,7 @@ fn SettingRow(
     rsx! {
         div {
             id: row_id(highlighted),
-            class: if highlighted { "palette-setting highlighted" } else { "palette-setting" },
+            class: if highlighted { "palette-setting {HIGHLIGHTED_CLASS}" } else { "palette-setting" },
             onmousemove: move |event: MouseEvent| pointer.point(cockpit, agent, index, &event),
             span { "{action.label()}" }
             div { class: "segmented", role: "group", aria_label: action.label(),
@@ -375,7 +377,7 @@ fn CommandRow(agent: AgentId, index: usize, command: SlashCommand, highlighted: 
     rsx! {
         button {
             id: row_id(highlighted),
-            class: if highlighted { "palette-item highlighted" } else { "palette-item" },
+            class: if highlighted { "palette-item {HIGHLIGHTED_CLASS}" } else { "palette-item" },
             onmousemove: move |event: MouseEvent| pointer.point(cockpit, agent, index, &event),
             onclick: move |_| act(cockpit, agent, Some(index)),
             span { class: "palette-item-head",

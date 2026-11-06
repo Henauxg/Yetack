@@ -7,7 +7,7 @@ use std::time::Duration;
 use cockpit_protocol::{DirEntry, EntryKind};
 use dioxus::prelude::*;
 
-use crate::bridge::{self, OPEN_FILE_FIELD_ID};
+use crate::bridge::{self, HIGHLIGHTED_CLASS, OPEN_FILE_FIELD_ID};
 use crate::connection::Cockpit;
 use crate::format;
 use crate::state::actions::Direction;
@@ -170,9 +170,9 @@ fn row_view(
     highlighted: bool,
 ) -> Element {
     let class = if highlighted {
-        "switcher-row open-file-row highlighted"
+        format!("switcher-row open-file-row {HIGHLIGHTED_CLASS}")
     } else {
-        "switcher-row open-file-row"
+        "switcher-row open-file-row".to_owned()
     };
     let point = move |event: MouseEvent| {
         // Writing the drafts renders their readers: only a new row does.

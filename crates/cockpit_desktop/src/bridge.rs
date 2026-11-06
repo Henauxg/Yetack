@@ -31,6 +31,9 @@ pub const PALETTE_FILTER_ID: &str = "palette-filter";
 /// The palette's highlighted entry, kept in view as the keys move it.
 pub const HIGHLIGHTED_ENTRY_ID: &str = "palette-highlighted";
 
+/// The class of the row the keys move to in a list.
+pub const HIGHLIGHTED_CLASS: &str = "highlighted";
+
 /// The field that replaces the agent's title in the header while it is renamed.
 pub const HEADER_TITLE_FIELD_ID: &str = "agent-title-field";
 
@@ -318,9 +321,11 @@ document.getElementById(element_id)?.scrollIntoView({ block: "nearest" });
 /// window's own loss of focus when that caused the blur.
 const WINDOW_FOCUSED_SCRIPT: &str = "return document.hasFocus();";
 
-/// Brings a dialog's highlighted row into view.
-const SCROLL_TO_HIGHLIGHTED_SCRIPT: &str =
-    r#"document.querySelector(".dialog .highlighted")?.scrollIntoView({ block: "nearest" });"#;
+/// Brings into view a dialog's row that has the class it receives.
+const SCROLL_TO_HIGHLIGHTED_SCRIPT: &str = r#"
+const class_name = await dioxus.recv();
+document.querySelector(`.dialog .${class_name}`)?.scrollIntoView({ block: "nearest" });
+"#;
 
 #[derive(Debug, Serialize)]
 struct FieldText {
@@ -586,7 +591,10 @@ pub fn scroll_to_highlighted() {
     // applied them. An effect runs outside any component, so the document is looked up here.
     let page = document::document();
     queue_effect(move || {
-        page.eval(SCROLL_TO_HIGHLIGHTED_SCRIPT.to_owned());
+        let script = page.eval(SCROLL_TO_HIGHLIGHTED_SCRIPT.to_owned());
+        if let Err(error) = script.send(HIGHLIGHTED_CLASS) {
+            tracing::warn!("cannot scroll the highlighted row into view: {error}");
+        }
     });
 }
 

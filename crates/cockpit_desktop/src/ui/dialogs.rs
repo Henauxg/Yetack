@@ -8,7 +8,7 @@ use dioxus::html::geometry::ScreenPoint;
 use dioxus::html::point_interaction::InteractionLocation;
 use dioxus::prelude::*;
 
-use crate::bridge::{self, FOLDER_FIELD_ID};
+use crate::bridge::{self, FOLDER_FIELD_ID, HIGHLIGHTED_CLASS};
 use crate::connection::{Clock, Cockpit};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::state::actions::Direction;
@@ -235,7 +235,7 @@ fn SwitcherDialog() -> Element {
                 for (index, row) in rows.into_iter().enumerate() {
                     button {
                         key: "{row.id.get()}",
-                        class: if index == highlighted { "switcher-row highlighted {format::status_class(row.status)}" } else { "switcher-row {format::status_class(row.status)}" },
+                        class: if index == highlighted { "switcher-row {HIGHLIGHTED_CLASS} {format::status_class(row.status)}" } else { "switcher-row {format::status_class(row.status)}" },
                         onmousemove: move |event: MouseEvent| {
                             // Writing the drafts renders their readers: only a new row does.
                             if pointer.moved(&event) && cockpit.drafts.peek().switcher.highlighted != index {
@@ -456,15 +456,17 @@ fn StartForm(form: NewAgentForm) -> Element {
                                 let used = format::ago(used, now);
                                 let picked = shown.clone();
                                 let hovered = folder.clone();
+                                let mut class = vec!["folder-option"];
+                                if checked {
+                                    class.push("checked");
+                                }
+                                if lit {
+                                    class.push(HIGHLIGHTED_CLASS);
+                                }
                                 rsx! {
                                     button {
                                         key: "{shown}",
-                                        class: match (checked, lit) {
-                                            (false, false) => "folder-option",
-                                            (true, false) => "folder-option checked",
-                                            (false, true) => "folder-option highlighted",
-                                            (true, true) => "folder-option checked highlighted",
-                                        },
+                                        class: class.join(" "),
                                         role: "radio",
                                         aria_checked: checked,
                                         title: "{shown}",
@@ -639,9 +641,9 @@ fn folder_row(
     highlighted: bool,
 ) -> Element {
     let class = if highlighted {
-        "switcher-row open-file-row highlighted"
+        format!("switcher-row open-file-row {HIGHLIGHTED_CLASS}")
     } else {
-        "switcher-row open-file-row"
+        "switcher-row open-file-row".to_owned()
     };
     let point = move |event: MouseEvent| {
         // Writing the drafts renders their readers: only a new row does.
@@ -946,7 +948,7 @@ fn ResumeList(starting: bool) -> Element {
                                 rsx! {
                                     button {
                                         key: "{index}",
-                                        class: if chosen { "session-row highlighted" } else { "session-row" },
+                                        class: if chosen { "session-row {HIGHLIGHTED_CLASS}" } else { "session-row" },
                                         role: "option",
                                         aria_selected: chosen,
                                         disabled: starting,
