@@ -331,6 +331,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn touched_files_come_most_recent_first_from_finished_file_tools() {
         let call = |id: u32, tool: &str, status: ToolCallStatus, input: Value| TranscriptItem {

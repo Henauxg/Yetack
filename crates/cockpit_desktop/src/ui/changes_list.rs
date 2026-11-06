@@ -203,8 +203,10 @@ mod tests {
     }
 
     /// A group's root, and each row's folder and name.
+    #[cfg(unix)]
     type ShownGroup<'groups> = (Option<&'groups str>, Vec<(&'groups str, &'groups str)>);
 
+    #[cfg(unix)]
     fn shown(groups: &[ChangeGroup]) -> Vec<ShownGroup<'_>> {
         groups
             .iter()
@@ -220,6 +222,7 @@ mod tests {
             .collect()
     }
 
+    #[cfg(unix)]
     #[test]
     fn files_in_the_agent_folder_show_relative_to_it_sorted_by_path() {
         let files = [
@@ -250,6 +253,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn files_of_a_worktree_beside_the_folder_group_under_it() {
         let files = [
@@ -283,6 +287,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn files_of_several_folders_outside_get_one_group_each() {
         let files = [
@@ -305,6 +310,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_group_head_names_its_folder_once() {
         assert_eq!(

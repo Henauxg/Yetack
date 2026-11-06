@@ -343,6 +343,7 @@ mod tests {
 
     use super::*;
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn folders_list_answers_the_folders_and_refuses_a_relative_path() {
         use cockpit_protocol::{EntryKind, ResponseResult};

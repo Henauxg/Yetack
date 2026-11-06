@@ -811,6 +811,7 @@ mod tests {
     }
 
     /// A session file's `cwd` is what `claude` wrote, or anything a process of the user wrote.
+    #[cfg(unix)]
     #[test]
     fn a_past_session_needs_a_folder_an_agent_can_start_in() {
         let temp = tempfile::tempdir().unwrap();

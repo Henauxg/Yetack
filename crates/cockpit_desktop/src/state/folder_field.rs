@@ -168,12 +168,15 @@ pub fn set_text(state: &mut AppState, drafts: &mut Drafts, text: String) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use cockpit_protocol::DirListing;
 
     use super::*;
+    #[cfg(unix)]
     use crate::state::Loadable;
     use crate::state::app_state::tests::state_with;
 
+    #[cfg(unix)]
     fn folder(name: &str) -> DirEntry {
         DirEntry {
             name: name.to_owned(),
@@ -183,6 +186,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn listing(path: &str, names: &[&str]) -> Loadable<DirListing> {
         Loadable::Loaded(DirListing {
             path: PathBuf::from(path),
@@ -207,6 +211,7 @@ mod tests {
     }
 
     /// Answers the list's folder with `names`.
+    #[cfg(unix)]
     fn answer(state: &mut AppState, names: &[&str]) {
         let list = form_mut(state)
             .and_then(|form| form.folders.as_mut())
@@ -214,6 +219,7 @@ mod tests {
         list.listing = listing(&list.folder.display().to_string(), names);
     }
 
+    #[cfg(unix)]
     fn row_names(state: &AppState, drafts: &Drafts) -> Vec<String> {
         rows(list(state).unwrap(), &drafts.new_agent.folder)
             .into_iter()
@@ -224,6 +230,7 @@ mod tests {
             .collect()
     }
 
+    #[cfg(unix)]
     #[test]
     fn only_an_absolute_folder_part_lists() {
         assert_eq!(
@@ -238,6 +245,7 @@ mod tests {
         assert_eq!(listed_folder(""), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn typing_opens_the_list_and_the_last_segment_filters_it() {
         let (mut state, mut drafts) = opened();
@@ -266,6 +274,7 @@ mod tests {
         assert_eq!(list(&state), None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn tab_completes_a_folder_which_then_lists() {
         let (mut state, mut drafts) = opened();
@@ -289,6 +298,7 @@ mod tests {
         assert_eq!(text.as_deref(), Some("/home/dev/projects/calc-parser/"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn backspace_and_the_up_row_go_to_the_folder_above() {
         let (mut state, mut drafts) = opened();
@@ -322,6 +332,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_keys_move_the_highlight_and_esc_closes_the_list_first() {
         let (mut state, mut drafts) = opened();
@@ -342,6 +353,7 @@ mod tests {
         assert_eq!(state.ui.dialog, None);
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_pointer_moves_the_highlight_within_the_listed_rows() {
         let (mut state, mut drafts) = opened();

@@ -917,6 +917,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn links_to_files_in_the_folder_open_the_file_view() {
         let opened = |target: &str| -> Option<(String, Option<u32>)> {

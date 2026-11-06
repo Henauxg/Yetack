@@ -2507,7 +2507,9 @@ fn sessions(now: SystemTime) -> Vec<PastSession> {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::{FoldersListParams, HistoryParams, ReadFileParams, RenameParams};
+    #[cfg(unix)]
+    use cockpit_protocol::FoldersListParams;
+    use cockpit_protocol::{HistoryParams, ReadFileParams, RenameParams};
 
     use super::*;
     use crate::state::{HistoryState, WaitingKind, file_edits};
@@ -2536,6 +2538,7 @@ mod tests {
         assert!(building.cpu.get() > 8.0);
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_demo_lists_made_up_folders_as_the_daemon_would() {
         let state = state(label());

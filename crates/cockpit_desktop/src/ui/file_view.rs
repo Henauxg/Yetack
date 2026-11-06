@@ -418,6 +418,7 @@ fn FileContent(
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use std::path::MAIN_SEPARATOR;
 
