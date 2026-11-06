@@ -78,10 +78,12 @@ pub fn type_folder(state: &AppState, drafts: &mut Drafts, text: String) -> bool 
 
 /// Makes the list show the folder the typed text names, and closes it when the text names none.
 pub fn follow(state: &mut AppState, drafts: &Drafts) {
+    let folders_unknown = state.folders_unknown;
     let Some(form) = form_mut(state) else {
         return;
     };
-    let Some(folder) = listed_folder(&drafts.new_agent.folder) else {
+    let listed = listed_folder(&drafts.new_agent.folder).filter(|_| !folders_unknown);
+    let Some(folder) = listed else {
         form.folders = None;
         return;
     };

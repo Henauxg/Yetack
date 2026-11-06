@@ -129,6 +129,9 @@ pub struct AppState {
     pub settings: Settings,
     /// Past Claude sessions, for the new agent dialog.
     pub sessions: Loadable<Vec<PastSession>>,
+    /// The daemon is older than `folders.list`: the folder field lists nothing until the app
+    /// connects again.
+    pub folders_unknown: bool,
     pub ui: UiState,
     /// The choices the app saves on this machine.
     pub prefs: Prefs,
@@ -153,6 +156,7 @@ impl AppState {
             plan_usage: PlanUsage::default(),
             settings: Settings::default(),
             sessions: Loadable::NotRequested,
+            folders_unknown: false,
             ui: UiState::default(),
             prefs: Prefs::default(),
         }

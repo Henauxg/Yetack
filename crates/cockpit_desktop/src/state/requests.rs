@@ -233,7 +233,7 @@ pub fn apply_response(
 ) {
     let result = match result {
         Ok(body) => Ok(body),
-        Err(error) => Err(Failure::from_request(&error)),
+        Err(error) => Err(Failure::from_request(&error, method)),
     };
     match purpose {
         Purpose::Action => {
@@ -363,6 +363,15 @@ pub fn apply_response(
             }
         }
         Purpose::Folders { folder } => {
+            if let Err(failure) = &result
+                && failure.unknown_method
+            {
+                state.folders_unknown = true;
+                if let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog {
+                    form.folders = None;
+                }
+                return;
+            }
             if let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog
                 && let Some(list) = &mut form.folders
                 && list.folder == folder
@@ -461,10 +470,15 @@ struct Failure {
     transient: bool,
     /// The daemon found nothing by that name.
     not_found: bool,
+    /// The daemon is older than the method.
+    unknown_method: bool,
 }
 
 impl Failure {
-    fn from_request(error: &RequestError) -> Self {
+    fn from_request(error: &RequestError, method: Method) -> Self {
+        // A daemon that does not know the method cannot decode the request. The error code alone
+        // also answers parameters that do not fit, but only this decode error names the method.
+        let unknown = format!("unknown method `{}`", method.as_str());
         Self {
             message: error.to_string(),
             transient: matches!(
@@ -474,6 +488,11 @@ impl Failure {
             not_found: matches!(
                 error,
                 RequestError::Failed(body) if body.code == ErrorCode::NotFound
+            ),
+            unknown_method: matches!(
+                error,
+                RequestError::Failed(body)
+                    if body.code == ErrorCode::InvalidRequest && body.message.starts_with(&unknown)
             ),
         }
     }
@@ -485,6 +504,7 @@ impl Failure {
                 message: "the daemon answered with an unexpected response".to_owned(),
                 transient: false,
                 not_found: false,
+                unknown_method: false,
             },
             Err(failure) => failure,
         }
@@ -501,13 +521,18 @@ impl Failure {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
+    use cockpit_client::SessionUpdate;
     use cockpit_protocol::{
-        AgentStatus, DirListing, ErrorBody, ErrorCode, HistoryPage, ItemBody, TranscriptItem,
+        AgentStatus, Catchup, DirListing, ErrorBody, ErrorCode, HistoryPage, ItemBody,
+        TranscriptItem,
     };
 
     use super::*;
     use crate::state::app_state::ConnectionState;
     use crate::state::app_state::tests::{state_with, summary};
+    use crate::state::folder_field;
     use crate::state::ui_state::{Block, FileView};
 
     fn connected_with_selection() -> AppState {
@@ -639,6 +664,56 @@ mod tests {
 
         answer(&mut state, "/home/dev");
         assert!(matches!(listing(&state), Some(Loadable::Loaded(_))));
+    }
+
+    #[test]
+    fn a_daemon_without_folders_list_leaves_the_recent_folders_until_it_reconnects() {
+        let mut state = connected_with_selection();
+        let mut drafts = Drafts::default();
+        actions::open_new_agent(&mut state, &mut drafts);
+        let mut type_folder = |state: &mut AppState, text: &str| {
+            drafts.new_agent.folder = text.to_owned();
+            folder_field::follow(state, &drafts);
+            needed_requests(state)
+        };
+        let refuse = |state: &mut AppState, folder: &str, message: &str| {
+            let body = ErrorBody::new(ErrorCode::InvalidRequest, message.to_owned());
+            apply_response(
+                state,
+                &mut Drafts::default(),
+                Method::FoldersList,
+                Purpose::Folders {
+                    folder: PathBuf::from(folder),
+                },
+                Err(RequestError::Failed(body)),
+            );
+        };
+        let list = |state: &AppState| folder_field::list(state).cloned();
+        needed_requests(&mut state);
+
+        // A folder the daemon refuses shows why.
+        type_folder(&mut state, "/home/dev/notes.txt/");
+        refuse(&mut state, "/home/dev/notes.txt", "not a folder");
+        let failed = list(&state).map(|list| list.listing);
+        assert_eq!(failed, Some(Loadable::Failed("not a folder".to_owned())));
+
+        type_folder(&mut state, "/home/dev/");
+        let unknown = "unknown method `folders.list` at line 1 column 61";
+        refuse(&mut state, "/home/dev", unknown);
+        assert_eq!(list(&state), None);
+        assert!(type_folder(&mut state, "/home/").is_empty());
+        assert_eq!(list(&state), None);
+
+        crate::state::apply::apply_update(
+            &mut state,
+            &mut Drafts::default(),
+            SessionUpdate::Connected(Catchup::Replay),
+            Instant::now(),
+        );
+        assert_eq!(
+            methods(&type_folder(&mut state, "/srv/")),
+            [Method::FoldersList]
+        );
     }
 
     #[test]

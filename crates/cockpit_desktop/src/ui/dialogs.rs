@@ -341,6 +341,7 @@ fn StartForm(form: NewAgentForm) -> Element {
         let loading = matches!(state.sessions, Loadable::NotRequested | Loadable::Loading);
         (folders, state.daemon.machine.clone(), loading)
     };
+    let folders_unknown = cockpit.state.read().folders_unknown;
     // The past sessions bring more recent folders: rows stand for them until they arrive, so the
     // list does not grow under the pointer.
     let placeholders = if sessions_loading {
@@ -399,6 +400,11 @@ fn StartForm(form: NewAgentForm) -> Element {
                                 folder_key(cockpit, &event);
                             }
                         },
+                    }
+                }
+                if folders_unknown {
+                    span { class: "dialog-note",
+                        "The daemon is older than this app and does not list folders as you type. Update the daemon to get them."
                     }
                 }
             }

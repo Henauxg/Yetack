@@ -44,6 +44,8 @@ pub fn apply_update(
         }
         SessionUpdate::Connected(catchup) => {
             state.connection = ConnectionState::Connected;
+            // The daemon may have been updated.
+            state.folders_unknown = false;
             apply_catchup(state, drafts, catchup);
             Vec::new()
         }
