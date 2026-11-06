@@ -43,10 +43,15 @@ pub fn FloatingBlocks() -> Element {
     let machine = state.daemon.machine.clone();
     let tasks = details.tasks;
     let background = details.background_tasks;
-    let subagent_tasks: Vec<(BackgroundTaskId, ItemId)> = details
+    let subagent_tasks: Vec<SubagentTask> = details
         .subagents
         .iter()
-        .filter_map(|subagent| Some((subagent.task.clone()?, subagent.item)))
+        .filter_map(|subagent| {
+            Some(SubagentTask {
+                task: subagent.task.clone()?,
+                item: subagent.item,
+            })
+        })
         .collect();
     let servers = details.mcp_servers;
     let done = tasks
@@ -404,13 +409,21 @@ fn task_meta(task: &BackgroundTask, now: SystemTime) -> String {
     }
 }
 
+/// A subagent's background task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SubagentTask {
+    task: BackgroundTaskId,
+    /// The subagent's item.
+    item: ItemId,
+}
+
 #[component]
 fn RunningBody(
     agent: AgentId,
     tasks: Vec<BackgroundTask>,
     finished_rows: FinishedRows,
-    /// The subagents' tasks, each with its subagent, which the map opens on.
-    subagent_tasks: Vec<(BackgroundTaskId, ItemId)>,
+    /// The subagents' tasks, which the map opens on.
+    subagent_tasks: Vec<SubagentTask>,
 ) -> Element {
     let cockpit: Cockpit = use_context();
     let Clock(now) = use_context::<Clock>();
@@ -445,8 +458,8 @@ fn RunningBody(
                     let id = task.id.clone();
                     let subagent = subagent_tasks
                         .iter()
-                        .find(|(subagent_task, _)| *subagent_task == task.id)
-                        .map(|(_, item)| *item);
+                        .find(|subagent_task| subagent_task.task == task.id)
+                        .map(|subagent_task| subagent_task.item);
                     rsx! {
                         div { key: "{task.id.as_str()}", class: state_class,
                             span { class: "task-icon", Icon { kind: icon, size: 14 } }

@@ -257,8 +257,15 @@ fn row_views(
         .collect()
 }
 
+/// A count the header shows, with the class that colors its dot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StatusCount {
+    class: &'static str,
+    text: String,
+}
+
 /// The counts the header shows for the current turn: "2 running", "3 done".
-fn status_counts(subagents: &[&Subagent]) -> Vec<(&'static str, String)> {
+fn status_counts(subagents: &[&Subagent]) -> Vec<StatusCount> {
     let words = [
         (SubagentStatus::NeedsYou, "waiting for you"),
         (SubagentStatus::Running, "running"),
@@ -273,10 +280,10 @@ fn status_counts(subagents: &[&Subagent]) -> Vec<(&'static str, String)> {
             .filter(|subagent| subagent.status == status)
             .count();
         if number > 0 {
-            counts.push((
-                format::subagent_status_class(status),
-                format!("{number} {word}"),
-            ));
+            counts.push(StatusCount {
+                class: format::subagent_status_class(status),
+                text: format!("{number} {word}"),
+            });
         }
     }
     counts
@@ -298,11 +305,10 @@ pub fn AgentMapDialog(view: MapView) -> Element {
     };
     let agent = view.agent;
     let folder = entry.summary.folder.clone();
-    let subagents: Vec<Subagent> = entry
+    let subagents: &[Subagent] = entry
         .details
         .loaded()
-        .map(|details| details.subagents.clone())
-        .unwrap_or_default();
+        .map_or(&[], |details| details.subagents.as_slice());
     let facts = AgentFacts {
         title: &entry.summary.title,
         status: entry.summary.status,
@@ -310,9 +316,9 @@ pub fn AgentMapDialog(view: MapView) -> Element {
         turn_time: entry.turn_start().map(|start| start.elapsed(now)),
     };
     let waiting = waiting_by_subagent(entry.transcript.items());
-    let rows = agent_map::outline(&subagents, facts.turn, &view);
-    let row_views = row_views(&rows, &subagents, &facts, &waiting, now);
-    let in_turn = agent_map::turn_subagents(&subagents, facts.turn);
+    let rows = agent_map::outline(subagents, facts.turn, &view);
+    let row_views = row_views(&rows, subagents, &facts, &waiting, now);
+    let in_turn = agent_map::turn_subagents(subagents, facts.turn);
     let counts = status_counts(&in_turn);
     let total = agent_map::total_tokens(in_turn.iter().copied())
         .map(|tokens| format!("{} tokens", format::tokens(tokens)));
@@ -328,7 +334,7 @@ pub fn AgentMapDialog(view: MapView) -> Element {
                         agent,
                         folder: folder.clone(),
                         subagent,
-                        subagents: &subagents,
+                        subagents,
                         items: entry.transcript.items().collect(),
                         has_older: matches!(
                             entry.transcript.history(),
@@ -345,7 +351,7 @@ pub fn AgentMapDialog(view: MapView) -> Element {
         title: title.clone(),
         status: facts.status,
         turn: facts.turn,
-        counts: counts.iter().map(|(_, text)| text.clone()).collect(),
+        counts: counts.iter().map(|count| count.text.clone()).collect(),
         started: in_turn.len(),
         earlier,
     };
@@ -361,7 +367,7 @@ pub fn AgentMapDialog(view: MapView) -> Element {
                 span { class: "map-agent", "{title}" }
                 span { class: "spacer" }
                 span { class: "map-stats",
-                    for (class, text) in counts {
+                    for StatusCount { class, text } in counts {
                         span { key: "{text}", class: "map-stat {class}",
                             span { class: "status-dot", aria_hidden: true }
                             "{text}"
@@ -624,7 +630,10 @@ fn subagent_details(input: SubagentDetailsInput<'_>) -> Element {
         subagents
             .iter()
             .find(|other| other.item == parent)
-            .map(|other| (other.item, other.description.clone()))
+            .map(|other| StartedBy {
+                item: other.item,
+                description: other.description.clone(),
+            })
     });
     let started_subagents: Vec<Subagent> = subagents
         .iter()
@@ -644,6 +653,13 @@ fn subagent_details(input: SubagentDetailsInput<'_>) -> Element {
             tab,
         }
     }
+}
+
+/// The subagent that started a subagent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StartedBy {
+    item: ItemId,
+    description: String,
 }
 
 /// The class that colors a tool call's dot in the list of calls.
@@ -671,8 +687,8 @@ fn SubagentDetails(
     agent: AgentId,
     folder: PathBuf,
     subagent: Subagent,
-    /// The subagent that started it; `None` when the agent did.
-    started_by: Option<(ItemId, String)>,
+    /// `None` when the agent started it.
+    started_by: Option<StartedBy>,
     started_subagents: Vec<Subagent>,
     /// Its call's item, when the app holds it.
     call: Option<ToolCall>,
@@ -719,9 +735,9 @@ fn SubagentDetails(
         })
         .collect();
     let call_count = calls.len();
-    let by_child: BTreeMap<ItemId, Subagent> = started_subagents
+    let by_child: BTreeMap<ItemId, &Subagent> = started_subagents
         .iter()
-        .map(|child| (child.item, child.clone()))
+        .map(|child| (child.item, child))
         .collect();
     let prompt = call
         .as_ref()
@@ -753,7 +769,7 @@ fn SubagentDetails(
                         p { class: "map-note", "No messages from it yet." }
                     }
                     for (entry, grandchildren, awaits_approval) in entries {
-                        match by_child.get(&entry.id) {
+                        match by_child.get(&entry.id).copied() {
                             Some(child) => rsx! {
                                 SubagentRef { key: "{entry.id.get()}", child: child.clone() }
                             },
@@ -790,7 +806,7 @@ fn SubagentDetails(
         MapTab::Prompt => {
             let sender = started_by.as_ref().map_or_else(
                 || "this agent".to_owned(),
-                |(_, description)| description.clone(),
+                |started_by| started_by.description.clone(),
             );
             rsx! {
                 match prompt {
@@ -821,7 +837,7 @@ fn SubagentDetails(
                 } else {
                     div { class: "map-calls",
                         for (card, awaits_approval, stage) in cards {
-                            match by_child.get(&card.id) {
+                            match by_child.get(&card.id).copied() {
                                 Some(child) => rsx! {
                                     div { key: "{card.id.get()}", class: "map-call",
                                         SubagentRef { child: child.clone() }
@@ -885,7 +901,7 @@ fn SubagentDetails(
             }
             span { "{run}" }
             match started_by.clone() {
-                Some((parent, description)) => rsx! {
+                Some(StartedBy { item: parent, description }) => rsx! {
                     span {
                         "Started by "
                         button {
@@ -1132,7 +1148,7 @@ mod tests {
 
         let texts: Vec<String> = status_counts(&refs)
             .into_iter()
-            .map(|(_, text)| text)
+            .map(|count| count.text)
             .collect();
 
         assert_eq!(texts, ["2 running", "1 failed"]);
