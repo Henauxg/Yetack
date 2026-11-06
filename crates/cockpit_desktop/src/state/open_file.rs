@@ -243,14 +243,33 @@ pub fn move_highlight(state: &AppState, drafts: &mut Drafts, direction: Directio
     let Some(last) = count.checked_sub(1) else {
         return;
     };
+    let shown = highlighted(view, &drafts.open_file);
     drafts.open_file.chosen = true;
-    let highlighted = &mut drafts.open_file.highlighted;
-    *highlighted = Some(match (direction, *highlighted) {
+    drafts.open_file.highlighted = Some(match (direction, shown) {
         (Direction::Down, None) => 0,
         (Direction::Down, Some(index)) => (index + 1).min(last),
         (Direction::Up, None) => last,
         (Direction::Up, Some(index)) => index.saturating_sub(1).min(last),
     });
+}
+
+/// The row the window highlights, which Enter and Tab take. A cut listing may leave out the file
+/// the text names: until a key picks a row, a file row with another name is not highlighted, and
+/// Enter opens the typed name.
+pub fn highlighted(view: &OpenFileView, draft: &OpenFileDraft) -> Option<usize> {
+    let index = draft.highlighted?;
+    let cut = view
+        .listing
+        .loaded()
+        .is_some_and(|listing| listing.truncated);
+    if draft.chosen || !cut {
+        return Some(index);
+    }
+    let segment = split(&draft.path).1;
+    match rows(view, &draft.path).get(index)? {
+        Row::Entry(entry) if entry.kind != EntryKind::Folder && entry.name != segment => None,
+        _ => Some(index),
+    }
 }
 
 /// How a row is taken.
@@ -275,23 +294,8 @@ pub fn take(
     let text = drafts.open_file.path.clone();
     let (_, segment) = split(&text);
     let folder = view.folder.clone();
-    // A cut listing may leave out the file the text names: Enter opens the typed name unless a
-    // key picked the row, or the row is that name or a folder.
-    let typed_wins = how == Take::Open
-        && index.is_none()
-        && !drafts.open_file.chosen
-        && view
-            .listing
-            .loaded()
-            .is_some_and(|listing| listing.truncated);
-    let index = index.or(drafts.open_file.highlighted);
-    let row = index
-        .and_then(|index| rows(view, &text).get(index).copied())
-        .filter(|row| {
-            let other_file = matches!(row, Row::Entry(entry)
-                if entry.kind != EntryKind::Folder && entry.name != segment);
-            !(typed_wins && other_file)
-        });
+    let index = index.or_else(|| highlighted(view, &drafts.open_file));
+    let row = index.and_then(|index| rows(view, &text).get(index).copied());
     let (new_text, file) = match row {
         None if how == Take::Open && !segment.is_empty() => (None, Some(folder.join(segment))),
         None => (None, None),
@@ -602,6 +606,60 @@ mod tests {
         let text = take(&mut state, &mut drafts, None, Take::Open);
 
         assert_eq!(text.as_deref(), Some("/work/project-1/src/"));
+    }
+
+    #[test]
+    fn a_cut_listing_highlights_only_a_row_enter_opens() {
+        let cut = |folder: &str| {
+            Loadable::Loaded(DirListing {
+                path: PathBuf::from(folder),
+                entries: vec![
+                    entry("Cargo.toml", EntryKind::File),
+                    entry("README.md", EntryKind::File),
+                ],
+                truncated: true,
+            })
+        };
+        let shown = |state: &AppState, drafts: &Drafts| {
+            highlighted(view(state).unwrap(), &drafts.open_file)
+        };
+        let (mut state, mut drafts) = opened();
+        if let Some(view) = view_mut(&mut state) {
+            view.listing = cut(AGENT_FOLDER);
+        }
+        type_path(&state, &mut drafts, "/work/project-1/Car".to_owned());
+        assert_eq!(row_names(&state, &drafts), ["Cargo.toml"]);
+        assert_eq!(shown(&state, &drafts), None);
+
+        let mut typed = (state.clone(), drafts.clone());
+        take(&mut typed.0, &mut typed.1, None, Take::Open);
+        let opened_file = typed.0.ui.file_view(AgentId::new(1)).unwrap();
+        assert_eq!(opened_file.path, PathBuf::from("Car"));
+
+        move_highlight(&state, &mut drafts, Direction::Down);
+        assert_eq!(shown(&state, &drafts), Some(0));
+        take(&mut state, &mut drafts, None, Take::Open);
+        let opened_file = state.ui.file_view(AgentId::new(1)).unwrap();
+        assert_eq!(opened_file.path, PathBuf::from("Cargo.toml"));
+
+        // The listing arrives after the text: the same rule.
+        let (mut state, mut drafts) = opened();
+        let typed = type_path(&state, &mut drafts, "/work/project-1/src/Car".to_owned());
+        assert!(typed.follow);
+        follow(&mut state, &drafts, false);
+        if let Some(view) = view_mut(&mut state) {
+            view.listing = cut("/work/project-1/src");
+        }
+        assert_eq!(row_names(&state, &drafts), ["Cargo.toml"]);
+        assert_eq!(shown(&state, &drafts), None);
+
+        // The row named as typed stays highlighted.
+        type_path(
+            &state,
+            &mut drafts,
+            "/work/project-1/src/README.md".to_owned(),
+        );
+        assert_eq!(shown(&state, &drafts), Some(0));
     }
 
     #[test]

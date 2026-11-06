@@ -33,7 +33,8 @@ pub fn OpenFileDialog(view: OpenFileView) -> Element {
     let cockpit: Cockpit = use_context();
     let (text, highlighted) = {
         let drafts = cockpit.drafts.read();
-        (drafts.open_file.path.clone(), drafts.open_file.highlighted)
+        let highlighted = open_file::highlighted(&view, &drafts.open_file);
+        (drafts.open_file.path.clone(), highlighted)
     };
     // Follows the keyboard alone: a render that lags behind typing would put an older text back.
     let seed = use_hook(|| text.clone());
