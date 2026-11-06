@@ -47,10 +47,13 @@ impl Connection {
         last_seq: Option<Seq>,
     ) -> Result<(Self, Catchup), ConnectError> {
         match transport {
+            #[cfg(unix)]
             Transport::Local { socket } => {
                 let (read, write) = transport::connect_socket(socket).await?.into_split();
                 establish(read, write, None, last_seq).await
             }
+            #[cfg(windows)]
+            Transport::Local { socket } => Err(transport::socket_unsupported(socket)),
             Transport::Ssh {
                 host,
                 remote_command,
@@ -310,6 +313,7 @@ async fn write_frames<W: AsyncWrite + Unpin>(
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use cockpit_protocol::{AgentId, AgentParams, ErrorBody, ErrorCode, Event, ResponseResult};
 

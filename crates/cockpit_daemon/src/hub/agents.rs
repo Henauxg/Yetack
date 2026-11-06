@@ -731,6 +731,7 @@ mod tests {
 
     use crate::sessions::SessionPast;
     use crate::store::PastFile;
+    #[cfg(unix)]
     use crate::test_script;
 
     use super::*;
@@ -843,6 +844,7 @@ mod tests {
     }
 
     /// A close takes out a running agent at once, with its log, and tells the clients.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_close_removes_a_running_agent_and_its_log() {
         use std::fs::Permissions;
@@ -887,6 +889,7 @@ mod tests {
 
     /// Once stopped, the process's stdin is closed: a prompt would be shown as sent and never
     /// reach `claude`.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_stopping_agent_takes_no_prompt() {
         let temp = tempfile::tempdir().unwrap();

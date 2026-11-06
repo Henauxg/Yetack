@@ -9,6 +9,7 @@ mod lossy_channel;
 mod requester;
 mod session;
 #[cfg(test)]
+#[cfg(unix)]
 mod test_daemon;
 mod transport;
 

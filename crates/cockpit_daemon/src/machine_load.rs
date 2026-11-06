@@ -4,18 +4,37 @@
 //! The sampling reads the server's totals from `/proc/stat`, `/proc/meminfo` and `/proc/loadavg`,
 //! and walks each agent's process tree down from its `claude` process. It never reads the other
 //! processes of the machine, unless the kernel lacks the children files ([`process_tree`]).
+//!
+//! On Windows, both requests answer `unsupported`.
 
+mod agent_root;
+#[cfg(unix)]
 mod history;
+#[cfg(unix)]
 mod kept_file;
+#[cfg(unix)]
 mod load_sampler;
+#[cfg(unix)]
 mod proc_files;
+#[cfg(unix)]
 mod process_tree;
+#[cfg(unix)]
 mod reading;
+#[cfg(unix)]
 mod sample;
+#[cfg(unix)]
 mod sampler;
+#[cfg(unix)]
 mod stop_process;
+#[cfg(windows)]
+mod unsupported;
 
+pub(crate) use agent_root::AgentRoot;
+#[cfg(unix)]
 pub(crate) use load_sampler::LoadSampler;
+#[cfg(unix)]
 pub(crate) use proc_files::{PROC_ROOT, STAT_FILE};
-pub(crate) use reading::AgentRoot;
+#[cfg(unix)]
 pub(crate) use stop_process::stop_descendant;
+#[cfg(windows)]
+pub(crate) use unsupported::{LoadSampler, stop_descendant};

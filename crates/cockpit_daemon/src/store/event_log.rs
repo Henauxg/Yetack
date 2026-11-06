@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use cockpit_protocol::{AgentId, EventRecord, Frame, Seq, ServerMessage};
 use serde::Deserialize;
 
-use crate::store::state_dir::FILE_MODE;
+use crate::store::state_dir;
 use crate::store::store_error::StoreError;
 
 const DAEMON_LOG: &str = "daemon";
@@ -138,23 +138,39 @@ fn list_logs(folder: &Path) -> Result<Vec<(LogName, PathBuf)>, StoreError> {
 /// on a line of its own.
 fn open_for_append(path: &Path) -> io::Result<File> {
     use std::io::Write;
-    use std::os::unix::fs::{FileExt, OpenOptionsExt};
 
-    let mut file = OpenOptions::new()
+    let mut file = state_dir::owner_only()
         .create(true)
         .append(true)
         .read(true)
-        .mode(FILE_MODE)
         .open(path)?;
     let length = file.metadata()?.len();
     if let Some(last) = length.checked_sub(1) {
         let mut byte = [0];
-        file.read_exact_at(&mut byte, last)?;
+        read_exact_at(&file, &mut byte, last)?;
         if byte != [NEWLINE] {
             file.write_all(&[NEWLINE])?;
         }
     }
     Ok(file)
+}
+
+#[cfg(unix)]
+fn read_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<()> {
+    use std::os::unix::fs::FileExt;
+
+    file.read_exact_at(buffer, offset)
+}
+
+/// Moves the file's cursor, which an append ignores. A file on disk reads short only at its end.
+#[cfg(windows)]
+fn read_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<()> {
+    use std::os::windows::fs::FileExt;
+
+    if file.seek_read(buffer, offset)? < buffer.len() {
+        return Err(io::ErrorKind::UnexpectedEof.into());
+    }
+    Ok(())
 }
 
 /// Calls `visit` with each event of one log, oldest first, as it reads them: a log never sits in
@@ -245,6 +261,8 @@ fn for_each_line(path: &Path, mut visit: impl FnMut(&[u8]) -> bool) -> Result<()
 
 #[cfg(test)]
 mod tests {
+    use std::fs::OpenOptions;
+
     use cockpit_protocol::{Event, PlanUsage, Settings};
 
     use super::*;
@@ -301,6 +319,7 @@ mod tests {
     }
 
     /// A restore applies each event as its line is read, before the rest of the log is there.
+    #[cfg(unix)]
     #[test]
     fn events_reach_the_visitor_as_their_lines_are_read() {
         use std::io::Write;

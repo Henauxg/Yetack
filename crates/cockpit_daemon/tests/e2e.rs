@@ -1,6 +1,7 @@
 //! The daemon end to end: `test-serve` in its own process, the fake `claude`, and clients over the
 //! socket.
 
+#![cfg(unix)]
 #![allow(
     clippy::panic,
     clippy::expect_used,

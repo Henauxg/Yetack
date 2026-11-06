@@ -5,7 +5,9 @@ use std::io;
 use std::path::PathBuf;
 
 use anyhow::bail;
-use cockpit_client::{BRIDGE_SUBCOMMAND, Backoff, Connection, Session, SessionUpdate, Transport};
+#[cfg(unix)]
+use cockpit_client::BRIDGE_SUBCOMMAND;
+use cockpit_client::{Backoff, Connection, Session, SessionUpdate, Transport};
 use cockpit_protocol::{
     AgentId, AgentParams, Answer, AnswerParams, ApprovalAnswer, ApprovalDecision, Catchup, Effort,
     Event, MoveParams, PermissionMode, PlanAnswer, PlanDecision, Prompt, PromptParams,
@@ -14,7 +16,9 @@ use cockpit_protocol::{
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::cli::{AnswerCommand, Command, PROGRAM, SERVE_SUBCOMMAND, SSH_FLAG, Target};
+#[cfg(unix)]
+use crate::cli::SERVE_SUBCOMMAND;
+use crate::cli::{AnswerCommand, Command, PROGRAM, SSH_FLAG, Target};
 
 /// The argument that makes a command read its text from stdin.
 const STDIN_ARG: &str = "-";
@@ -36,6 +40,7 @@ pub(crate) async fn run(target: &Target, command: Command) -> anyhow::Result<()>
     let request = match command {
         Command::List => return list(&transport).await,
         Command::Tail { agent } => return tail(transport, agent).await,
+        #[cfg(unix)]
         Command::Serve | Command::Bridge => {
             bail!("{SERVE_SUBCOMMAND} and {BRIDGE_SUBCOMMAND} run on their own")
         }

@@ -5,12 +5,15 @@ use std::num::ParseIntError;
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use cockpit_client::{BRIDGE_SUBCOMMAND, Transport};
+#[cfg(unix)]
+use cockpit_client::BRIDGE_SUBCOMMAND;
+use cockpit_client::Transport;
 use cockpit_daemon::HOME_ENV;
 use cockpit_protocol::{AgentId, Effort, PendingId, PermissionMode, PlanDecision};
 
 /// The program's name, as the command line and its messages show it.
 pub(crate) const PROGRAM: &str = "agents-cockpit";
+#[cfg(unix)]
 pub(crate) const SERVE_SUBCOMMAND: &str = "serve";
 pub(crate) const SSH_FLAG: &str = "ssh";
 const DEFAULT_REMOTE_COMMAND: &str = PROGRAM;
@@ -45,10 +48,12 @@ pub(crate) struct Target {
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
     /// Run the daemon in the foreground
+    #[cfg(unix)]
     #[command(name = SERVE_SUBCOMMAND)]
     Serve,
     /// Copy bytes between stdin and stdout and the daemon's socket, for
     /// `ssh <host> agents-cockpit bridge`
+    #[cfg(unix)]
     #[command(name = BRIDGE_SUBCOMMAND)]
     Bridge,
     /// List the agents
@@ -255,6 +260,7 @@ mod tests {
         Cli::command().debug_assert();
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_bridge_subcommand_is_the_one_clients_run() {
         let cli = Cli::try_parse_from(["agents-cockpit", BRIDGE_SUBCOMMAND]).unwrap();

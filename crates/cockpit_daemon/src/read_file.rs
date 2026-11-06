@@ -25,16 +25,13 @@
 //! agent's text cannot open an unrelated file of the user's.
 
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
 use std::fs::File;
 use std::io;
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
 use cockpit_protocol::{ErrorBody, ErrorCode};
-use rustix::fs::{Mode, OFlags};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::task::JoinError;
@@ -43,6 +40,7 @@ use tokio::time::Instant;
 /// The largest file the view shows.
 pub(crate) const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 /// Links to the process's open files, each naming the file's path.
+#[cfg(unix)]
 const OPEN_FILES: &str = "/proc/self/fd";
 /// The entry that marks a git checkout's top folder: a folder, or a file in a worktree.
 const GIT_ENTRY: &str = ".git";
@@ -179,6 +177,9 @@ pub(crate) enum ReadFileError {
     NotText,
     #[error("cannot read the file: {0}")]
     Io(#[source] io::Error),
+    #[cfg(windows)]
+    #[error("the daemon cannot read files or list folders on Windows yet")]
+    Unsupported,
 }
 
 impl ReadFileError {
@@ -189,6 +190,8 @@ impl ReadFileError {
             Self::NotAFile | Self::TooLarge | Self::NotText | Self::Io(_) => {
                 ErrorCode::FileUnreadable
             }
+            #[cfg(windows)]
+            Self::Unsupported => ErrorCode::Unsupported,
         };
         ErrorBody::new(code, self.to_string())
     }
@@ -372,7 +375,9 @@ pub(crate) async fn search(
                 Ok(Ok(_)) => {}
             }
             let name = entry.strip_suffix(&[0]).unwrap_or(&entry);
-            let relative = Path::new(OsStr::from_bytes(name));
+            let Some(relative) = git_path(name) else {
+                continue;
+            };
             if !matches_path(relative) {
                 continue;
             }
@@ -393,14 +398,39 @@ pub(crate) async fn search(
     matches
 }
 
+/// A path as `git ls-files -z` writes it.
+#[cfg(unix)]
+fn git_path(bytes: &[u8]) -> Option<&Path> {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    Some(Path::new(OsStr::from_bytes(bytes)))
+}
+
+/// A path as `git ls-files -z` writes it: Git for Windows writes UTF-8.
+#[cfg(windows)]
+fn git_path(bytes: &[u8]) -> Option<&Path> {
+    std::str::from_utf8(bytes).ok().map(Path::new)
+}
+
 /// Opens a file for reading without waiting: opening a FIFO waits for a writer otherwise.
+#[cfg(unix)]
 pub(crate) fn open_to_read(path: &Path) -> io::Result<File> {
+    use rustix::fs::{Mode, OFlags};
+
     let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC;
     Ok(File::from(rustix::fs::open(path, flags, Mode::empty())?))
 }
 
+/// Opens a file for reading. A Windows path names no FIFO, so the open never waits.
+#[cfg(windows)]
+pub(crate) fn open_to_read(path: &Path) -> io::Result<File> {
+    File::open(path)
+}
+
 /// Refuses an open file or folder outside `holder`, a folder or the file itself: a folder of its
 /// path may have become a symlink since the path was checked.
+#[cfg(unix)]
 pub(crate) fn ensure_inside(file: &File, holder: &Path) -> Result<(), ReadFileError> {
     use std::os::fd::AsRawFd;
 
@@ -412,10 +442,19 @@ pub(crate) fn ensure_inside(file: &File, holder: &Path) -> Result<(), ReadFileEr
     Ok(())
 }
 
+/// Refuses every file: the daemon cannot yet tell where an open file is on Windows.
+#[cfg(windows)]
+pub(crate) fn ensure_inside(_file: &File, _holder: &Path) -> Result<(), ReadFileError> {
+    Err(ReadFileError::Unsupported)
+}
+
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use std::os::unix::fs::symlink;
     use std::time::Duration;
+
+    use rustix::fs::Mode;
 
     use super::*;
 

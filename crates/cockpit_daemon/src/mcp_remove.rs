@@ -81,6 +81,7 @@ fn remove_args(server: &str, scope: McpScope) -> Vec<OsString> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::test_script;
 
     #[test]
@@ -93,6 +94,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_failure_quotes_what_claude_said() {
         let temp = tempfile::tempdir().unwrap();

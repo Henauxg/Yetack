@@ -456,9 +456,11 @@ pub(crate) fn shorten(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::fs::OpenOptions;
+    #[cfg(unix)]
     use std::time::Duration;
 
     use cockpit_protocol::ItemBody;
+    #[cfg(unix)]
     use rustix::fs::Mode;
     use serde_json::json;
 
@@ -884,6 +886,7 @@ mod tests {
         assert!(list(temp.path()).is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_fifo_named_as_a_session_is_skipped_at_once() {
         let temp = tempfile::tempdir().unwrap();

@@ -1,11 +1,11 @@
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use cockpit_protocol::Timestamp;
 use serde::Serialize;
 
-use crate::store::state_dir::FILE_MODE;
+use crate::store::state_dir;
 use crate::store::store_error::StoreError;
 
 /// `raw/<agent-id>.jsonl`: every line exchanged with one agent's `claude`, for debugging.
@@ -34,12 +34,9 @@ struct Entry<'line> {
 
 impl RawLog {
     pub(crate) fn open(path: &Path) -> Result<Self, StoreError> {
-        use std::os::unix::fs::OpenOptionsExt;
-
-        let file = OpenOptions::new()
+        let file = state_dir::owner_only()
             .create(true)
             .append(true)
-            .mode(FILE_MODE)
             .open(path)
             .map_err(|source| StoreError::Write {
                 path: path.to_owned(),

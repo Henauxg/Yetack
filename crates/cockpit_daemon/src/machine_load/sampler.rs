@@ -2,8 +2,9 @@
 
 use cockpit_protocol::{AgentLoad, CommandLoad, MachineLoad};
 
+use crate::machine_load::agent_root::AgentRoot;
 use crate::machine_load::history::History;
-use crate::machine_load::reading::{AgentRoot, LoadError, MachineReader, Reading};
+use crate::machine_load::reading::{LoadError, MachineReader, Reading};
 use crate::machine_load::sample::{self, Sample, Units};
 
 #[derive(Debug)]

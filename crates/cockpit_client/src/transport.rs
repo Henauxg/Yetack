@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
+#[cfg(unix)]
 use tokio::net::UnixStream;
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::oneshot;
@@ -62,6 +63,7 @@ impl SshProcess {
     }
 }
 
+#[cfg(unix)]
 pub(crate) async fn connect_socket(socket: &Path) -> Result<UnixStream, ConnectError> {
     UnixStream::connect(socket)
         .await
@@ -69,6 +71,18 @@ pub(crate) async fn connect_socket(socket: &Path) -> Result<UnixStream, ConnectE
             path: socket.to_owned(),
             source,
         })
+}
+
+/// The tokio runtime has Unix sockets on Unix only.
+#[cfg(windows)]
+pub(crate) fn socket_unsupported(socket: &Path) -> ConnectError {
+    ConnectError::Socket {
+        path: socket.to_owned(),
+        source: io::Error::new(
+            io::ErrorKind::Unsupported,
+            "the app reaches a daemon's socket on Unix only",
+        ),
+    }
 }
 
 /// Starts ssh. Its stdin and stdout carry the protocol.
@@ -204,6 +218,7 @@ mod tests {
         assert_eq!(args.get(host - 1), Some(&"--"), "{args:?}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_host_shell_reads_the_remote_command_as_it_is() {
         for path in [

@@ -10,7 +10,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
 use crate::error_chain;
-use crate::machine_load::reading::{AgentRoot, LoadError};
+use crate::machine_load::agent_root::AgentRoot;
+use crate::machine_load::reading::LoadError;
 use crate::machine_load::sampler::Sampler;
 
 /// Where the answer to a `machine.load` goes.

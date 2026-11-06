@@ -6,6 +6,7 @@ use std::time::{Instant, SystemTime};
 
 use cockpit_protocol::{AgentId, LoadAverage, ProcessId, Timestamp};
 
+use crate::machine_load::agent_root::AgentRoot;
 use crate::machine_load::kept_file::KeptFile;
 use crate::machine_load::proc_files::{
     self, CHILDREN_FILE, CMDLINE_FILE, LOADAVG_PATH, MEMINFO_PATH, MemoryInfo, PROC_ROOT,
@@ -16,13 +17,6 @@ use crate::machine_load::process_tree::{self, ChildrenFiles, FullScan, ProcessSo
 /// The most processes one reading walks, all agents together: a fork bomb under an agent costs
 /// the daemon a bounded amount of work.
 const MAX_PROCESSES: usize = 4096;
-
-/// An agent and its `claude` process, where the walk starts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct AgentRoot {
-    pub(crate) agent: AgentId,
-    pub(crate) pid: ProcessId,
-}
 
 /// Why the machine's load cannot be read: this machine has no `/proc`, or one of another shape.
 #[derive(Debug, thiserror::Error)]

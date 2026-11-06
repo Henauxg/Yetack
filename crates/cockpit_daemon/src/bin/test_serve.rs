@@ -1,16 +1,18 @@
 //! The daemon in a process of its own, for the integration tests: a client inside the daemon's
 //! process would fail the peer check. It reads the same environment as `agents-cockpit serve`.
 
-use std::path::PathBuf;
 use std::process::ExitCode;
 
-use cockpit_daemon::{DaemonConfig, HOME_ENV};
-use tokio::signal::unix;
-use tokio::signal::unix::SignalKind;
-use tracing_subscriber::EnvFilter;
-
+#[cfg(unix)]
 #[tokio::main]
 async fn main() -> ExitCode {
+    use std::path::PathBuf;
+
+    use cockpit_daemon::{DaemonConfig, HOME_ENV};
+    use tokio::signal::unix;
+    use tokio::signal::unix::SignalKind;
+    use tracing_subscriber::EnvFilter;
+
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(EnvFilter::new("debug"))
@@ -37,4 +39,11 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The daemon serves a Unix socket only.
+#[cfg(windows)]
+fn main() -> ExitCode {
+    eprintln!("test-serve runs on Unix only");
+    ExitCode::FAILURE
 }

@@ -55,6 +55,7 @@ impl Hub {
 }
 
 #[cfg(test)]
+#[cfg(unix)]
 mod tests {
     use std::path::Path;
 

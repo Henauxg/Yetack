@@ -1,6 +1,7 @@
 //! The command line against a real daemon. A shell script that echoes its stdin stands in for
 //! `claude`: every prompt comes back as a line, and no turn ever ends.
 
+#![cfg(unix)]
 #![allow(
     clippy::panic,
     clippy::expect_used,
