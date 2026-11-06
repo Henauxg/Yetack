@@ -74,10 +74,10 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
     // cuts a turn short.
     if press.key == KEY_ESCAPE {
         // A palette opened by typing stays closed for the rest of its "/" word.
-        if state.ui.popover == Some(Popover::Palette(PaletteOrigin::Typed)) {
-            if let (Some(agent), Some(word)) = (state.ui.selected, drafts.palette.word) {
-                drafts.palette_dismissed.insert(agent, word.start);
-            }
+        if state.ui.popover == Some(Popover::Palette(PaletteOrigin::Typed))
+            && let (Some(agent), Some(word)) = (state.ui.selected, drafts.palette.word)
+        {
+            drafts.palette_dismissed.insert(agent, word.start);
         }
         state.ui.close_overlays();
         return Vec::new();
