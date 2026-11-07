@@ -342,7 +342,7 @@ The event logs of an older daemon hold a `bool` in place of some enums, and stil
 - a turn end's `stopped` and `not_signed_in` give its `outcome`. Without them, a turn end with an error reads as `failed`, and one without as `completed`;
 - a user message's `queued` gives its `delivery`, and a question's `multi_select` its `selection`;
 - an account's `use_environment_api_key` gives its `credentials`;
-- a summary's `waits_for_sign_in` and `effort_is_default` are left out: the summary reads `not_waiting` and `chosen`.
+- a summary's `waits_for_sign_in` gives its `sign_in_wait`, and its `effort_is_default` its `effort_source`. Without them, the summary reads `not_waiting` and `chosen`.
 
 A daemon that dies without stopping its agents (a forced kill, a crash, no memory left) leaves each `claude` running: its stdin closed, so it exits by itself, but once its turn ends, with its builds still running.
 A daemon that resumed the session meanwhile would run two `claude` on one session.

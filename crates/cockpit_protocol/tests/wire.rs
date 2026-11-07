@@ -1756,29 +1756,42 @@ fn a_summary_logged_before_accounts_reads_the_default_account() {
 
 /// An event log of an older daemon holds `waits_for_sign_in`, a `bool`, or nothing.
 #[test]
-fn a_summary_logged_without_its_sign_in_wait_does_not_wait() {
-    let mut logged = serde_json::to_value(summary()).unwrap();
-    let fields = logged.as_object_mut().unwrap();
-    fields.remove("sign_in_wait");
-    fields.insert("waits_for_sign_in".to_owned(), Value::Bool(true));
+fn a_summary_logged_with_its_sign_in_wait_as_a_bool_keeps_it() {
+    let read = |waits: Option<bool>| {
+        let mut logged = serde_json::to_value(summary()).unwrap();
+        let fields = logged.as_object_mut().unwrap();
+        fields.remove("sign_in_wait");
+        if let Some(waits) = waits {
+            fields.insert("waits_for_sign_in".to_owned(), Value::Bool(waits));
+        }
+        serde_json::from_value::<AgentSummary>(logged)
+            .unwrap()
+            .sign_in_wait
+    };
 
-    let read: AgentSummary = serde_json::from_value(logged).unwrap();
-
-    assert_eq!(read.sign_in_wait, SignInWait::NotWaiting);
+    assert_eq!(read(Some(true)), SignInWait::Waiting);
+    assert_eq!(read(Some(false)), SignInWait::NotWaiting);
+    assert_eq!(read(None), SignInWait::NotWaiting);
 }
 
 /// An event log of an older daemon holds `effort_is_default`, a `bool`, or nothing.
 #[test]
-fn a_summary_saved_without_its_effort_source_still_loads() {
-    let mut saved = serde_json::to_value(summary()).unwrap();
-    let fields = saved.as_object_mut().unwrap();
-    fields.remove("effort_source");
-    fields.insert("effort_is_default".to_owned(), Value::Bool(true));
+fn a_summary_saved_with_its_effort_source_as_a_bool_keeps_it() {
+    let loaded = |is_default: Option<bool>| {
+        let mut saved = serde_json::to_value(summary()).unwrap();
+        let fields = saved.as_object_mut().unwrap();
+        fields.remove("effort_source");
+        if let Some(is_default) = is_default {
+            fields.insert("effort_is_default".to_owned(), Value::Bool(is_default));
+        }
+        let loaded: AgentSummary = serde_json::from_value(saved).unwrap();
+        (loaded.effort, loaded.effort_source)
+    };
 
-    let loaded: AgentSummary = serde_json::from_value(saved).unwrap();
-
-    assert_eq!(loaded.effort, Some(Effort::High));
-    assert_eq!(loaded.effort_source, EffortSource::Chosen);
+    let high = Some(Effort::High);
+    assert_eq!(loaded(Some(true)), (high, EffortSource::ClaudeCodeDefault));
+    assert_eq!(loaded(Some(false)), (high, EffortSource::Chosen));
+    assert_eq!(loaded(None), (high, EffortSource::Chosen));
 }
 
 #[test]

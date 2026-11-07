@@ -7,6 +7,7 @@ use strum::VariantArray;
 
 use crate::ids::{AccountId, AgentId, ClaudeSessionId};
 use crate::position::Position;
+use crate::stored_bool::{FromStoredBool, enum_or_stored_bool};
 use crate::time::Timestamp;
 use crate::usage::CostUsd;
 
@@ -76,8 +77,12 @@ pub struct AgentSummary {
     /// itself, from its settings or the model's default. `None` while unknown.
     pub effort: Option<Effort>,
     /// Where `effort` comes from. `Chosen` when missing, so a summary saved without it still
-    /// loads.
-    #[serde(default)]
+    /// loads. Event logs of older daemons hold `effort_is_default`, a `bool`, in its place.
+    #[serde(
+        default,
+        alias = "effort_is_default",
+        deserialize_with = "enum_or_stored_bool"
+    )]
     pub effort_source: EffortSource,
     pub mode: PermissionMode,
     /// `None` when the agent has no task list.
@@ -106,8 +111,13 @@ pub struct AgentSummary {
     /// agent from a daemon that predates accounts.
     #[serde(default)]
     pub account: AccountId,
-    /// `NotWaiting` when missing, so a summary saved without it still loads.
-    #[serde(default)]
+    /// `NotWaiting` when missing, so a summary saved without it still loads. Event logs of older
+    /// daemons hold `waits_for_sign_in`, a `bool`, in its place.
+    #[serde(
+        default,
+        alias = "waits_for_sign_in",
+        deserialize_with = "enum_or_stored_bool"
+    )]
     pub sign_in_wait: SignInWait,
 }
 
@@ -126,6 +136,16 @@ pub enum EffortSource {
     ClaudeCodeDefault,
 }
 
+impl FromStoredBool for EffortSource {
+    fn from_stored_bool(is_default: bool) -> Self {
+        if is_default {
+            Self::ClaudeCodeDefault
+        } else {
+            Self::Chosen
+        }
+    }
+}
+
 /// Whether an agent waits for its account to sign in.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, VariantArray,
@@ -137,4 +157,14 @@ pub enum SignInWait {
     /// The last turn found no valid login for the account, and the agent waits for you until you
     /// send a message or the account signs in.
     Waiting,
+}
+
+impl FromStoredBool for SignInWait {
+    fn from_stored_bool(waits: bool) -> Self {
+        if waits {
+            Self::Waiting
+        } else {
+            Self::NotWaiting
+        }
+    }
 }
