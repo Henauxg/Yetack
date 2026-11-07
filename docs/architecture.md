@@ -365,9 +365,12 @@ The daemon keeps the accounts in `settings.json`, outside the `Settings` that `s
 
 - `accounts.list` answers every account, the default one first, with whether it is signed in, the command that signs in to it, and whether the daemon's environment has `ANTHROPIC_API_KEY`.
 - `accounts.add` takes a name and, optionally, a folder and `use_environment_api_key`.
-  The name is trimmed, at most 60 characters, and no other account's whatever its case.
-  A given folder must be absolute, hold no `..` and no control character, and be no other account's, the default one's included: the default folder without `CLAUDE_CONFIG_DIR` keeps `.claude.json` in the home folder, and on macOS its Keychain entry, so the same folder named in the variable would be another login.
-  Without a folder, the daemon proposes `.claude-<name>` in the home folder, the name in lower case with each run of characters other than ASCII letters, digits, `_` and `.` made a `-` (`Client Work` gives `.claude-client-work`), and a number added when another account has that folder.
+  The name has each run of whitespace made one space and is trimmed.
+  It holds no control character, has at most 60 characters, and is no other account's whatever its case.
+  A given folder must be absolute, hold no `..` and no control character, and be no other account's, the default one's included, whatever its case on Windows and macOS: the default folder without `CLAUDE_CONFIG_DIR` keeps `.claude.json` in the home folder, and on macOS its Keychain entry, so the same folder named in the variable would be another login.
+  Without a folder, the daemon proposes `.claude-<name>` in the home folder, the name in lower case with each run of characters other than ASCII letters, digits, `_` and `.` made a `-`, without a `-` or `.` at either end, and `account` when nothing is left (`Client Work` gives `.claude-client-work`, `..` gives `.claude-account`).
+  A number is added when another account has that folder (`.claude-client-work-2`).
+  Without an absolute home folder, the daemon proposes none, and the request must name the folder.
   The daemon does not create the folder: `claude` does when the user signs in.
 - `accounts.change` renames an account or changes `use_environment_api_key`, for the default account too. The folder does not change. An agent gets the new key choice at its next start.
 - `accounts.remove` refuses the default account (`invalid_request`) and an account any agent uses, running or not (`account_in_use`). It leaves the folder as it is.
@@ -399,8 +402,10 @@ The agent then needs you: its summary has `waits_for_sign_in`, and its status is
 It waits until one of these:
 
 - A message goes to `claude`: its turn starts, and it fails again if the account still has no login.
-- An `accounts.list` finds the account's credentials file written after the failed turn (after the agent's last activity, which the turn's end set). The hub reads the file's time with the sign-in states, then ends the waits before it answers, so the app's "Check again" sees the agent idle.
+- An `accounts.list` finds the account's credentials file written after the failed turn ended, even when the agent was stopped or resumed since. After a daemon restart, the log does not say when the turn failed: the file must be newer than the agent's last activity.
+  The hub reads the file's time with the sign-in states, then ends the waits before it answers, so the app's "Check again" sees the agent idle.
   A login in the macOS Keychain writes no file there: only a message ends the wait.
+
 `--enable-auth-status`, which the editor extensions pass, adds `auth_status` lines, which report a login in progress (`isAuthenticating`, the output of a helper such as a cloud provider's refresh). A signed-in run gives one with `isAuthenticating: false` and no output. They do not tell a missing login, so the daemon does not pass the flag.
 
 A repository the account has not trusted yet: Claude Code turns trust verification off when it runs without a terminal, as in JSON mode, and asks nothing.
