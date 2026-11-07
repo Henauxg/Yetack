@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
 use cockpit_protocol::{
-    AgentId, CostUsd, Frame, PermissionMode, Request, ResponseResult, Seq, Snapshot,
+    AccountId, AccountState, AgentId, CostUsd, Frame, PermissionMode, Request, ResponseResult, Seq,
+    Snapshot, Timestamp,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -33,12 +34,25 @@ pub(crate) enum HubInput {
         found: Box<FoundSession>,
         reply: Reply,
     },
+    /// `accounts.list` read the accounts' folders. The hub answers once the agents that waited
+    /// for a sign-in that happened since no longer wait.
+    AccountsChecked {
+        accounts: Vec<AccountState>,
+        logins: Vec<AccountLogin>,
+        reply: Reply,
+    },
     /// The cost Claude Code restored as one of the agent's processes resumed its session.
     RestoredCost {
         agent: AgentId,
         generation: u32,
         cost: CostUsd,
     },
+}
+
+/// When an account's login was last written.
+pub(crate) struct AccountLogin {
+    pub(crate) account: AccountId,
+    pub(crate) written: Timestamp,
 }
 
 /// A client's place among the hub's clients.

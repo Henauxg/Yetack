@@ -918,6 +918,7 @@ fn summary(parts: SummaryParts<'_>, now: SystemTime) -> AgentSummary {
         session: Some(ClaudeSessionId::new(format!("demo-session-{}", parts.id))),
         position: Position::default(),
         account: AccountId::DEFAULT,
+        waits_for_sign_in: false,
     }
 }
 
@@ -1643,6 +1644,7 @@ fn benchmark_agent(now: SystemTime) -> Sample {
                 usage: TokenUsage::default(),
                 error: None,
                 stopped: false,
+                not_signed_in: false,
             }),
         ),
     ];

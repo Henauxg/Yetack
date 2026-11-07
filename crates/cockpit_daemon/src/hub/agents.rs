@@ -689,6 +689,7 @@ pub(super) fn initial_summary(record: &AgentRecord) -> AgentSummary {
         session: record.session.clone(),
         position: record.position,
         account: record.account,
+        waits_for_sign_in: false,
     }
 }
 

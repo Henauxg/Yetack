@@ -121,6 +121,11 @@ impl Hub {
                 event,
             } => self.process_event(agent, generation, event),
             HubInput::SessionFound { found, reply } => self.resume_session(*found, reply),
+            HubInput::AccountsChecked {
+                accounts,
+                logins,
+                reply,
+            } => self.accounts_checked(accounts, &logins, reply),
             HubInput::RestoredCost {
                 agent,
                 generation,

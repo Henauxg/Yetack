@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use cockpit_protocol::{Account, AccountState, SignIn};
+use cockpit_protocol::{Account, AccountState, SignIn, Timestamp};
 
 use crate::daemon_config::{CLAUDE_CONFIG_DIR_ENV, DEFAULT_CLAUDE_PROGRAM};
 
@@ -8,6 +8,8 @@ use crate::daemon_config::{CLAUDE_CONFIG_DIR_ENV, DEFAULT_CLAUDE_PROGRAM};
 const CREDENTIALS_FILE: &str = ".credentials.json";
 /// The characters PowerShell reads as a single quote: the ASCII one and four typographic ones.
 const POWERSHELL_QUOTES: [char; 5] = ['\'', '\u{2018}', '\u{2019}', '\u{201a}', '\u{201b}'];
+/// Claude Code's command that signs in and exits, after `claude`.
+const AUTH_LOGIN: &str = "auth login";
 
 /// The shell a sign-in command is written for: the daemon's machine's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,16 +32,19 @@ impl SignInShell {
     #[cfg(not(windows))]
     pub(crate) const CURRENT: Self = Self::Posix;
 
-    /// The command that runs `claude` with `folder` as its config folder, or with none.
+    /// The command that runs `claude auth login` with `folder` as its config folder, or with
+    /// none. In PowerShell, the variable is removed after, so the terminal's next `claude` uses
+    /// its own folder again.
     pub(crate) fn command(self, folder: Option<&Path>) -> String {
+        let login = format!("{DEFAULT_CLAUDE_PROGRAM} {AUTH_LOGIN}");
         let Some(folder) = folder else {
-            return DEFAULT_CLAUDE_PROGRAM.to_owned();
+            return login;
         };
         let folder = folder.to_string_lossy();
         match self {
             Self::Posix => {
                 let quoted = folder.replace('\'', r"'\''");
-                format!("{CLAUDE_CONFIG_DIR_ENV}='{quoted}' {DEFAULT_CLAUDE_PROGRAM}")
+                format!("{CLAUDE_CONFIG_DIR_ENV}='{quoted}' {login}")
             }
             Self::PowerShell => {
                 let mut quoted = String::with_capacity(folder.len());
@@ -49,7 +54,9 @@ impl SignInShell {
                     }
                     quoted.push(character);
                 }
-                format!("$env:{CLAUDE_CONFIG_DIR_ENV} = '{quoted}'; {DEFAULT_CLAUDE_PROGRAM}")
+                format!(
+                    "$env:{CLAUDE_CONFIG_DIR_ENV} = '{quoted}'; {login}; Remove-Item Env:{CLAUDE_CONFIG_DIR_ENV}"
+                )
             }
         }
     }
@@ -94,6 +101,13 @@ pub(crate) fn sign_in_command(account: &Account, shell: SignInShell) -> String {
     shell.command(variable)
 }
 
+/// When the account's credentials file was last written, as by a sign-in. `None` without the
+/// file, as on macOS, where the Keychain holds the login. Reads the file's metadata: it blocks.
+pub(crate) fn login_written(account: &Account) -> Option<Timestamp> {
+    let metadata = std::fs::metadata(account.folder.join(CREDENTIALS_FILE)).ok()?;
+    Timestamp::from_system_time(metadata.modified().ok()?)
+}
+
 /// The account, whether its folder holds a login, and how to sign in to it. Looks at the
 /// credentials file's metadata, never at its content: it blocks.
 pub(crate) fn account_state(account: Account, shell: SignInShell) -> AccountState {
@@ -117,10 +131,13 @@ mod tests {
         let plain = SignInShell::Posix.command(Some(Path::new("/home/sam/.claude-work")));
         let tricky = SignInShell::Posix.command(Some(Path::new("/home/sam/it's $HOME `x`")));
 
-        assert_eq!(plain, "CLAUDE_CONFIG_DIR='/home/sam/.claude-work' claude");
+        assert_eq!(
+            plain,
+            "CLAUDE_CONFIG_DIR='/home/sam/.claude-work' claude auth login"
+        );
         assert_eq!(
             tricky,
-            r#"CLAUDE_CONFIG_DIR='/home/sam/it'\''s $HOME `x`' claude"#
+            r#"CLAUDE_CONFIG_DIR='/home/sam/it'\''s $HOME `x`' claude auth login"#
         );
     }
 
@@ -133,18 +150,18 @@ mod tests {
 
         assert_eq!(
             plain,
-            r"$env:CLAUDE_CONFIG_DIR = 'C:\Users\sam\.claude-work'; claude"
+            r"$env:CLAUDE_CONFIG_DIR = 'C:\Users\sam\.claude-work'; claude auth login; Remove-Item Env:CLAUDE_CONFIG_DIR"
         );
         assert_eq!(
             tricky,
-            "$env:CLAUDE_CONFIG_DIR = 'C:\\Users\\sam\\it''s \u{2019}\u{2019}$env:x\u{2018}\u{2018}'; claude"
+            "$env:CLAUDE_CONFIG_DIR = 'C:\\Users\\sam\\it''s \u{2019}\u{2019}$env:x\u{2018}\u{2018}'; claude auth login; Remove-Item Env:CLAUDE_CONFIG_DIR"
         );
     }
 
     #[test]
-    fn without_a_folder_the_command_is_claude_alone() {
-        assert_eq!(SignInShell::Posix.command(None), "claude");
-        assert_eq!(SignInShell::PowerShell.command(None), "claude");
+    fn without_a_folder_the_command_is_the_login_alone() {
+        assert_eq!(SignInShell::Posix.command(None), "claude auth login");
+        assert_eq!(SignInShell::PowerShell.command(None), "claude auth login");
     }
 
     #[test]
@@ -171,6 +188,7 @@ mod tests {
         let after = account_state(account.clone(), SignInShell::Posix);
 
         assert_eq!(before.sign_in, LoginStore::CURRENT.sign_in(false));
+        assert!(login_written(&account).is_some());
         assert_eq!(after.sign_in, SignIn::SignedIn);
         assert_eq!(
             after.sign_in_command,

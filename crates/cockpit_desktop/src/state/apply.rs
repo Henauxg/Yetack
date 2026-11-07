@@ -946,6 +946,7 @@ mod tests {
                 usage: TokenUsage::default(),
                 error: None,
                 stopped: false,
+                not_signed_in: false,
             }),
         };
 

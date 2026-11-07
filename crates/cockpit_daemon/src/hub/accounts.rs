@@ -5,15 +5,16 @@ use std::path::PathBuf;
 
 use claude_protocol::RateLimitInfo;
 use cockpit_protocol::{
-    Account, AccountAddParams, AccountChangeParams, AccountId, AccountPlanUsage, AgentId,
-    ErrorBody, ErrorCode, Event, ResponseBody,
+    Account, AccountAddParams, AccountChangeParams, AccountId, AccountPlanUsage, AccountState,
+    AgentId, ErrorBody, ErrorCode, Event, ResponseBody,
 };
 
 use crate::accounts::{
-    API_KEY_ENV, AccountList, SignInShell, account_state, environment_has_api_key, sign_in_command,
+    API_KEY_ENV, AccountList, SignInShell, account_state, environment_has_api_key, login_written,
+    sign_in_command,
 };
 use crate::daemon_config::HOME_ENV;
-use crate::hub::input::Reply;
+use crate::hub::input::{AccountLogin, HubInput, Reply};
 use crate::hub::state::Hub;
 use crate::hub::{agents, errors};
 use crate::sessions::AccountFolder;
@@ -47,23 +48,74 @@ impl Hub {
 
     pub(super) fn accounts_list(&self, reply: Reply) {
         let accounts = self.accounts();
+        let inputs = self.inputs.clone();
         tokio::spawn(async move {
-            let listed = tokio::task::spawn_blocking(move || {
-                let states = accounts
-                    .into_iter()
-                    .map(|account| account_state(account, SignInShell::CURRENT));
-                states.collect()
+            let checked = tokio::task::spawn_blocking(move || {
+                let mut logins = Vec::new();
+                let mut states = Vec::with_capacity(accounts.len());
+                for account in accounts {
+                    if let Some(written) = login_written(&account) {
+                        logins.push(AccountLogin {
+                            account: account.id,
+                            written,
+                        });
+                    }
+                    states.push(account_state(account, SignInShell::CURRENT));
+                }
+                (states, logins)
             })
             .await;
-            let result = match listed {
-                Ok(accounts) => Ok(ResponseBody::Accounts {
-                    accounts,
-                    environment_api_key: environment_has_api_key(),
-                }),
-                Err(error) => Err(errors::internal(error.to_string())),
+            let (accounts, logins) = match checked {
+                Ok(checked) => checked,
+                Err(error) => {
+                    return agents::respond(reply, Err(errors::internal(error.to_string())));
+                }
             };
-            agents::respond(reply, result);
+            let input = HubInput::AccountsChecked {
+                accounts,
+                logins,
+                reply,
+            };
+            if let Err(unsent) = inputs.send(input).await
+                && let HubInput::AccountsChecked { reply, .. } = unsent.0
+            {
+                agents::respond(
+                    reply,
+                    Err(errors::internal("the daemon is stopping".to_owned())),
+                );
+            }
         });
+    }
+
+    /// Ends the wait of each agent whose account signed in after its turn found no login, then
+    /// answers `accounts.list`.
+    pub(super) fn accounts_checked(
+        &mut self,
+        accounts: Vec<AccountState>,
+        logins: &[AccountLogin],
+        reply: Reply,
+    ) {
+        let mut signed_in: Vec<AgentId> = Vec::new();
+        for agent in self.agents.values_mut() {
+            let login = logins
+                .iter()
+                .find(|login| login.account == agent.record.account);
+            if let Some(login) = login
+                && agent.view.account_signed_in(login.written)
+            {
+                signed_in.push(agent.record.id);
+            }
+        }
+        for agent in signed_in {
+            self.publish(agent);
+        }
+        agents::respond(
+            reply,
+            Ok(ResponseBody::Accounts {
+                accounts,
+                environment_api_key: environment_has_api_key(),
+            }),
+        );
     }
 
     pub(super) fn accounts_add(&mut self, params: AccountAddParams, reply: Reply) {
@@ -156,11 +208,11 @@ impl Hub {
         let name = &account.name;
         if account.use_environment_api_key && environment_has_api_key() {
             return format!(
-                "Claude Code refused the API key in the daemon's {API_KEY_ENV}, which the account {name} uses. Check the key, or stop the account from using it and sign in with this command in a terminal on the daemon's machine: {command}"
+                "Claude Code refused the API key in the daemon's {API_KEY_ENV}, which the account {name} uses. Check the key, or stop the account from using it and run this command in a terminal on the daemon's machine to sign in: {command}"
             );
         }
         format!(
-            "The account {name} is not signed in, or its login expired. Sign in with this command in a terminal on the daemon's machine, then send your message again: {command}"
+            "The account {name} is not signed in, or its login expired. Run this command in a terminal on the daemon's machine to sign in, then send your message again: {command}"
         )
     }
 }

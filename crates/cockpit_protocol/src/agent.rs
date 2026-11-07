@@ -16,7 +16,8 @@ use crate::usage::CostUsd;
 pub enum AgentStatus {
     /// From a prompt until the turn ends.
     Working,
-    /// An approval, a question or a plan waits for an answer.
+    /// An approval, a question or a plan waits for an answer, or the agent's account needs a
+    /// sign-in.
     NeedsYou,
     /// The turn ended and nothing waits.
     Idle,
@@ -106,4 +107,9 @@ pub struct AgentSummary {
     /// agent from a daemon that predates accounts.
     #[serde(default)]
     pub account: AccountId,
+    /// The last turn found no valid login for the account, and the agent waits for you until you
+    /// send a message or the account signs in. `false` when missing, as from a daemon that
+    /// predates it.
+    #[serde(default)]
+    pub waits_for_sign_in: bool,
 }

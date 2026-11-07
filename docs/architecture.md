@@ -77,7 +77,7 @@ Each id is a newtype ([standards/rust/api_design.md](standards/rust/api_design.m
 ### Agents
 
 `AgentSummary` is what the sidebar and the header need:
-id, title, folder, status, activity line, pending count, model, effort, permission mode, task progress, context percentage, prompt cache expiry, turns, API-equivalent cost, start time, last activity time, running turn's start time, position in the list, account.
+id, title, folder, status, activity line, pending count, model, effort, permission mode, task progress, context percentage, prompt cache expiry, turns, API-equivalent cost, start time, last activity time, running turn's start time, position in the list, account, and whether it waits for its account's sign-in.
 
 The two times let the app count the time on a sidebar row by itself, so the daemon sends no event to move a clock:
 
@@ -108,7 +108,7 @@ The list's order belongs to the user, and the daemon keeps it, so every client a
 | status | when |
 | --- | --- |
 | `Working` | from a prompt until the turn's `result` |
-| `NeedsYou` | an approval, a question or a plan waits for an answer |
+| `NeedsYou` | an approval, a question or a plan waits for an answer, or the agent's account needs a sign-in (`waits_for_sign_in`) |
 | `Idle` | after `result`, nothing pending |
 | `Exited` | the `claude` process ended |
 
@@ -125,7 +125,7 @@ The kinds of item:
 - `Approval`: tool, input (with the diff for an edit), reason, its answer state, and the item of its tool call (from the request's `tool_use_id`, which Claude Code sends after the call's `tool_use`);
 - `Question`: the `AskUserQuestion` questions and options, and its answer state;
 - `Plan`: the `ExitPlanMode` plan text, and its answer state (a decision, with an optional message when Claude should keep planning);
-- `TurnEnd`: duration, usage and cost of the turn, and whether the user stopped it (`stopped`, from the `result` line's `terminal_reason`), or the error that ended it;
+- `TurnEnd`: duration, usage and cost of the turn, and whether the user stopped it (`stopped`, from the `result` line's `terminal_reason`), or the error that ended it, and whether that error is a missing login (`not_signed_in`);
 - `Notice`: a line such as "Conversation compacted" or "Conversation cleared" (a `conversation_reset` line, after which Claude Code's total cost counts from 0 again), a local command's output such as `/effort`'s, or a message Claude Code writes itself (a user line whose `origin` is not `human`), such as its summary of a background task that ended.
   Context Claude Code adds for Claude (a user line marked `isSynthetic`) becomes a notice whose `detail` holds its text, which the app shows folded: "Skill instructions: /loop" after a `Skill` call that loaded it, "Conversation summary" after a compaction, else "Context added by Claude Code".
 
@@ -371,9 +371,10 @@ The daemon keeps the accounts in `settings.json`, outside the `Settings` that `s
 - `accounts.remove` refuses the default account (`invalid_request`) and an account any agent uses, running or not (`account_in_use`). It leaves the folder as it is.
 - Ids are never reused, so a removed account's id never names another one.
 
-Signing in: the user runs the sign-in command once in a terminal on the daemon's machine, and signs in there with a Claude subscription or an Anthropic Console account.
-The command is for a POSIX shell, `CLAUDE_CONFIG_DIR='<folder>' claude` (a `'` in the folder written `'\''`), or on a Windows daemon for PowerShell, `$env:CLAUDE_CONFIG_DIR = '<folder>'; claude` (each `'`, and each of PowerShell's typographic single quotes, doubled).
-The default account's command is `claude` alone, unless the daemon's environment has `CLAUDE_CONFIG_DIR`.
+Signing in: the user runs the sign-in command once in a terminal on the daemon's machine.
+It runs `claude auth login`, which signs in with a Claude subscription, or with an Anthropic Console account when `--console` is added, then exits.
+The command is for a POSIX shell, `CLAUDE_CONFIG_DIR='<folder>' claude auth login` (a `'` in the folder written `'\''`), or on a Windows daemon for PowerShell, `$env:CLAUDE_CONFIG_DIR = '<folder>'; claude auth login; Remove-Item Env:CLAUDE_CONFIG_DIR` (each `'`, and each of PowerShell's typographic single quotes, doubled). The last part takes the variable out of the PowerShell session again.
+The default account's command is `claude auth login` alone, unless the daemon's environment has `CLAUDE_CONFIG_DIR`.
 
 Whether an account is signed in (`SignIn`): the daemon checks only that `.credentials.json` exists in the folder, and never opens it.
 
@@ -388,9 +389,16 @@ An account can use an API key in two ways, neither of which passes a key through
 
 An agent of an account without a valid login starts as any other: `claude` answers `initialize`, and `system/init` says nothing about the login.
 Its first prompt fails: Claude Code writes an assistant line from `<synthetic>` whose `error` is `authentication_failed` (a word of the Agent SDK's types), with a text such as "Not logged in · Please run /login", then a `result` with `is_error`.
-The daemon leaves out that text, which names a command the cockpit has no place for, and adds a notice once per turn: "The account Work is not signed in, or its login expired. Sign in with this command in a terminal on the daemon's machine, then send your message again: `<command>`".
+The daemon leaves out that text, which names a command the cockpit has no place for, and adds a notice once per turn: "The account Work is not signed in, or its login expired. Run this command in a terminal on the daemon's machine to sign in, then send your message again: `<command>`".
 For an account that uses the daemon's API key, while the daemon has one, the notice says the key was refused instead.
-The turn ends with the error "The account is not signed in".
+The turn ends with the error "The account is not signed in", and its `TurnEnd` has `not_signed_in`.
+
+The agent then needs you: its summary has `waits_for_sign_in`, and its status is `NeedsYou` with no pending request, so the app raises a notification and the "Needs you" filter shows it.
+It waits until one of these:
+
+- A message goes to `claude`: its turn starts, and it fails again if the account still has no login.
+- An `accounts.list` finds the account's credentials file written after the failed turn (after the agent's last activity, which the turn's end set). The hub reads the file's time with the sign-in states, then ends the waits before it answers, so the app's "Check again" sees the agent idle.
+  A login in the macOS Keychain writes no file there: only a message ends the wait.
 `--enable-auth-status`, which the editor extensions pass, adds `auth_status` lines, which report a login in progress (`isAuthenticating`, the output of a helper such as a cloud provider's refresh). A signed-in run gives one with `isAuthenticating: false` and no output. They do not tell a missing login, so the daemon does not pass the flag.
 
 A repository the account has not trusted yet: Claude Code turns trust verification off when it runs without a terminal, as in JSON mode, and asks nothing.
@@ -611,7 +619,7 @@ On Windows, the daemon opens the process, checks with `IsProcessInJob` that it i
 - `claude_protocol`: parsing of fixture lines in `crates/claude_protocol/tests/fixtures/`.
   Fixtures are written by hand from the shapes Claude Code sends, with made-up paths, ids and text.
 - `cockpit_protocol`: round trips of every message, and the method names pinned.
-- `cockpit_daemon`: the transcript conversion on fixture sequences; the accounts (names, folders, the sign-in commands of both shells, the environment of a `claude`); the store in a temporary folder; the server end to end with a fake `claude` (a small test binary that replays a script of lines, selected with `AGENTS_COCKPIT_CLAUDE`); the daemon in the app over in-memory streams, closed mid-turn and started again, and the lock it shares with the service (`tests/in_app.rs`).
+- `cockpit_daemon`: the transcript conversion on fixture sequences; the accounts (names, the default one's name, folders, the sign-in commands of both shells, the environment of a `claude`, the wait for a sign-in); the store in a temporary folder; the server end to end with a fake `claude` (a small test binary that replays a script of lines, selected with `AGENTS_COCKPIT_CLAUDE`); the daemon in the app over in-memory streams, closed mid-turn and started again, and the lock it shares with the service (`tests/in_app.rs`).
 - `cockpit_client`: against an in-process fake daemon over a socket pair.
 - `cockpit_desktop`: `apply` on event sequences; rendering helpers (markdown, diffs) on sample input; the "No daemon answers" choices and the config they write, through a symbolic link too; the path rules of both platforms.
 

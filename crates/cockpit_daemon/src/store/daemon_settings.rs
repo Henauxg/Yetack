@@ -110,6 +110,25 @@ mod tests {
         assert_eq!(DaemonSettings::load(&path).unwrap(), settings);
     }
 
+    /// A settings file from before accounts names the default account "Default"; one where the
+    /// user renamed it keeps that name.
+    #[test]
+    fn the_default_account_is_named_default_until_the_user_renames_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let old = temp.path().join("old.json");
+        let renamed = temp.path().join("renamed.json");
+        std::fs::write(&old, br#"{"hidden_mcp_servers":[]}"#).unwrap();
+        std::fs::write(&renamed, br#"{"accounts":{"default_name":"Personal"}}"#).unwrap();
+        let default_name = |path: &Path| {
+            let settings = DaemonSettings::load(path).unwrap();
+            let accounts = settings.accounts.accounts(Path::new("/home/sam/.claude"));
+            accounts.first().map(|account| account.name.clone())
+        };
+
+        assert_eq!(default_name(&old).as_deref(), Some("Default"));
+        assert_eq!(default_name(&renamed).as_deref(), Some("Personal"));
+    }
+
     #[test]
     fn reads_the_saved_format() {
         let temp = tempfile::tempdir().unwrap();

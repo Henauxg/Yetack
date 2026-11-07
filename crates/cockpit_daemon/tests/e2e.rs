@@ -1849,14 +1849,14 @@ async fn the_default_account_runs_without_the_variable_and_a_new_one_signs_in_be
     };
     assert_eq!(default.account.folder, setup.default_folder());
     assert_eq!(default.sign_in, SignIn::NotSignedIn);
-    assert_eq!(default.sign_in_command, "claude");
+    assert_eq!(default.sign_in_command, "claude auth login");
     assert_eq!(after[0].sign_in, SignIn::SignedIn);
     let folder = home.join(".claude-client-work");
     assert_eq!(added.account.folder, folder);
     assert_eq!(added.sign_in, SignIn::NotSignedIn);
     assert_eq!(
         added.sign_in_command,
-        format!("CLAUDE_CONFIG_DIR='{}' claude", folder.display())
+        format!("CLAUDE_CONFIG_DIR='{}' claude auth login", folder.display())
     );
 }
 
@@ -2049,6 +2049,7 @@ async fn an_account_without_a_login_says_how_to_sign_in() {
         panic!("expected a turn end");
     };
     assert_eq!(end.error.as_deref(), Some("The account is not signed in"));
+    assert!(end.not_signed_in);
     let items = client.history(agent).await;
     assert!(
         !items.iter().any(|item| matches!(
@@ -2057,4 +2058,37 @@ async fn an_account_without_a_login_says_how_to_sign_in() {
         )),
         "{items:?}"
     );
+}
+
+#[tokio::test]
+async fn an_agent_without_a_login_needs_you_until_its_account_signs_in() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let folder = setup.temp.path().join("claude-work");
+    let work = client.add_account("Work", Some(&folder), false).await;
+    let agent = client
+        .start_with(&setup.work(), "nologin", work.account.id)
+        .await;
+    let waits = |event: &Event| match event {
+        Event::AgentUpdated(summary) if summary.id == agent => Some(summary.clone()),
+        _ => None,
+    };
+
+    let waiting = client
+        .wait_for(|event| waits(event).filter(|summary| summary.waits_for_sign_in))
+        .await;
+    // Still waiting: the folder holds no login yet.
+    client.ok(Request::AccountsList).await;
+    // The login must be written after the failed turn, on a clock that counts milliseconds.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join(".credentials.json"), "{}").unwrap();
+    client.ok(Request::AccountsList).await;
+    let signed_in = client
+        .wait_for(|event| waits(event).filter(|summary| !summary.waits_for_sign_in))
+        .await;
+
+    assert_eq!(waiting.status, AgentStatus::NeedsYou);
+    assert_eq!(waiting.pending_count, 0);
+    assert_eq!(signed_in.status, AgentStatus::Idle);
 }

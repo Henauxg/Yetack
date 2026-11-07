@@ -284,6 +284,7 @@ impl AgentView {
             session: None,
             position: Position::default(),
             account: AccountId::DEFAULT,
+            waits_for_sign_in: false,
         };
         Self::new(summary, Duration::ZERO)
     }
@@ -584,6 +585,20 @@ impl AgentView {
         self.sign_in_failed = false;
         self.pending.clear();
         self.tool_calls.clear();
+    }
+
+    /// The account's credentials file was written at `modified`. An agent whose turn found no
+    /// login before that stops waiting for you. Returns whether it did.
+    pub(crate) fn account_signed_in(&mut self, modified: Timestamp) -> bool {
+        let failed_before = self
+            .summary
+            .last_activity_at
+            .is_none_or(|failed| failed < modified);
+        if !self.summary.waits_for_sign_in || !failed_before {
+            return false;
+        }
+        self.summary.waits_for_sign_in = false;
+        true
     }
 
     /// The process answered `initialize`: from now on, a name Claude Code gives the session, as
@@ -1108,12 +1123,14 @@ impl AgentView {
         } else {
             SubagentStatus::Done
         };
-        let error = if self.sign_in_failed && !interrupted {
+        let not_signed_in = self.sign_in_failed && !interrupted;
+        let error = if not_signed_in {
             Some(NOT_SIGNED_IN_ERROR.to_owned())
         } else {
             turn_error(result, interrupted)
         };
         self.sign_in_failed = false;
+        self.summary.waits_for_sign_in = not_signed_in;
         let ended = Ended {
             status: ended_status,
             error: error.clone(),
@@ -1140,6 +1157,7 @@ impl AgentView {
                 usage: token_usage(result.usage),
                 error,
                 stopped: interrupted,
+                not_signed_in,
             }),
         );
     }
@@ -1481,6 +1499,7 @@ impl AgentView {
     /// A prompt went to `claude`: a new turn starts now, even when the last one had not ended.
     fn start_turn(&mut self, now: Timestamp) {
         self.working = true;
+        self.summary.waits_for_sign_in = false;
         self.summary.turn_started_at = Some(now);
         self.summary.last_activity_at = Some(now);
     }
@@ -1503,7 +1522,7 @@ impl AgentView {
         self.summary.pending_count = u16::try_from(pending).unwrap_or(u16::MAX);
         self.summary.status = if self.exited {
             AgentStatus::Exited
-        } else if pending > 0 {
+        } else if pending > 0 || self.summary.waits_for_sign_in {
             AgentStatus::NeedsYou
         } else if self.working {
             AgentStatus::Working
@@ -1689,6 +1708,7 @@ mod tests {
             session: None,
             position: Position::default(),
             account: AccountId::DEFAULT,
+            waits_for_sign_in: false,
         };
         let mut view = AgentView::new(summary, Duration::from_secs(3600));
         view.mark_published();
@@ -1808,6 +1828,7 @@ mod tests {
                     },
                     error: None,
                     stopped: false,
+                    not_signed_in: false,
                 }),
             ]
         );
@@ -2289,6 +2310,54 @@ mod tests {
             panic!("expected a turn end");
         };
         assert_eq!(end.error.as_deref(), Some(NOT_SIGNED_IN_ERROR));
+    }
+
+    /// The agent's account needs you: it waits until a message goes to Claude, or until the
+    /// account's login is written after the failed turn.
+    #[test]
+    fn a_failed_login_waits_for_you_until_a_message_or_a_later_login() {
+        let failed_turn = |view: &mut AgentView| {
+            view.add_prompt(&prompt("Hello"), PromptDelivery::Now, now());
+            apply(
+                view,
+                json!({
+                    "type": "assistant", "error": "authentication_failed",
+                    "message": {"model": "<synthetic>", "content": [
+                        {"type": "text", "text": "Not logged in · Please run /login"}
+                    ]}
+                }),
+            );
+            apply(
+                view,
+                json!({"type": "result", "subtype": "success", "is_error": true, "num_turns": 1}),
+            );
+            view.take_events();
+        };
+        let mut view = view();
+
+        failed_turn(&mut view);
+        let waiting = view.summary().clone();
+        let ended = view.items().last().map(|item| item.body.clone());
+        view.add_prompt(&prompt("Hello again"), PromptDelivery::Now, now());
+        view.take_events();
+        let after_message = view.summary().clone();
+        failed_turn(&mut view);
+        let failed_at = view.summary().last_activity_at.unwrap();
+        let earlier = Timestamp::from_unix_millis(failed_at.unix_millis() - 1);
+        let later = Timestamp::from_unix_millis(failed_at.unix_millis() + 1);
+        let stale_login = view.account_signed_in(earlier);
+        let new_login = view.account_signed_in(later);
+        view.take_events();
+
+        assert!(waiting.waits_for_sign_in);
+        assert_eq!(waiting.status, AgentStatus::NeedsYou);
+        assert_eq!(waiting.pending_count, 0);
+        assert!(matches!(ended, Some(ItemBody::TurnEnd(end)) if end.not_signed_in));
+        assert!(!after_message.waits_for_sign_in);
+        assert_eq!(after_message.status, AgentStatus::Working);
+        assert!(!stale_login);
+        assert!(new_login);
+        assert_eq!(view.summary().status, AgentStatus::Idle);
     }
 
     #[test]

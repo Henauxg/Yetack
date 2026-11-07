@@ -455,6 +455,7 @@ Thanks
                 usage: TokenUsage::default(),
                 error: error.map(str::to_owned),
                 stopped,
+                not_signed_in: false,
             })
         };
         let push = || ItemBody::ToolCall(call("Bash", "git push", ToolCallStatus::Running, None));

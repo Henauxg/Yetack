@@ -222,4 +222,8 @@ pub struct TurnEnd {
     /// without it still loads.
     #[serde(default)]
     pub stopped: bool,
+    /// The turn found no valid login for the agent's account. `false` when missing, so a turn end
+    /// saved without it still loads.
+    #[serde(default)]
+    pub not_signed_in: bool,
 }

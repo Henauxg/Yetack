@@ -79,6 +79,7 @@ fn summary() -> AgentSummary {
         session: Some(session_id()),
         position: Position::new(2048),
         account: work_account().id,
+        waits_for_sign_in: true,
     }
 }
 
@@ -105,6 +106,7 @@ fn idle_summary() -> AgentSummary {
         session: None,
         position: Position::new(1024),
         account: AccountId::DEFAULT,
+        waits_for_sign_in: false,
     }
 }
 
@@ -277,6 +279,7 @@ fn bodies() -> Vec<ItemBody> {
             },
             error: Some("The turn reached the maximum number of turns".to_owned()),
             stopped: false,
+            not_signed_in: false,
         }),
         ItemBody::Notice {
             text: "Conversation compacted".to_owned(),
@@ -1674,6 +1677,7 @@ fn an_agent_update_on_the_wire() {
                 "session": "0b7e1c2a-3d4f-4a5b-8c6d-7e8f9a0b1c2d",
                 "position": 2048,
                 "account": 2,
+                "waits_for_sign_in": true,
             },
         }),
     );
@@ -1733,6 +1737,16 @@ fn a_summary_logged_before_accounts_reads_the_default_account() {
     let read: AgentSummary = serde_json::from_value(logged).unwrap();
 
     assert_eq!(read.account, AccountId::DEFAULT);
+}
+
+#[test]
+fn a_summary_logged_before_sign_in_waits_does_not_wait() {
+    let mut logged = serde_json::to_value(summary()).unwrap();
+    logged.as_object_mut().unwrap().remove("waits_for_sign_in");
+
+    let read: AgentSummary = serde_json::from_value(logged).unwrap();
+
+    assert!(!read.waits_for_sign_in);
 }
 
 #[test]
@@ -1849,6 +1863,7 @@ fn an_approval_and_a_turn_end_on_the_wire() {
         usage: TokenUsage::default(),
         error: None,
         stopped: false,
+        not_signed_in: true,
     });
 
     assert_wire(
@@ -1881,6 +1896,7 @@ fn an_approval_and_a_turn_end_on_the_wire() {
             "usage": {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0},
             "error": null,
             "stopped": false,
+            "not_signed_in": true,
         }),
     );
 }
@@ -1930,6 +1946,7 @@ fn a_stopped_turn_end_on_the_wire_and_one_saved_without_the_field() {
         usage: TokenUsage::default(),
         error: None,
         stopped: true,
+        not_signed_in: false,
     });
     let saved = r#"{"type":"turn_end","duration_ms":6100,"cost":0.01,"usage":{"input":0,"output":0,"cache_creation":0,"cache_read":0},"error":"Interrupted"}"#;
 
@@ -1942,12 +1959,14 @@ fn a_stopped_turn_end_on_the_wire_and_one_saved_without_the_field() {
             "usage": {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0},
             "error": null,
             "stopped": true,
+            "not_signed_in": false,
         }),
     );
     let ItemBody::TurnEnd(saved) = serde_json::from_str::<ItemBody>(saved).unwrap() else {
         panic!("not a turn end");
     };
     assert!(!saved.stopped);
+    assert!(!saved.not_signed_in);
     assert_eq!(saved.error.as_deref(), Some("Interrupted"));
 }
 

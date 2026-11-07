@@ -102,7 +102,7 @@ The legal page says its rules do not prevent "an end user from signing in to the
 | Status | When |
 | --- | --- |
 | working | From a prompt until the `result` event |
-| blocked | A `can_use_tool` request or an `AskUserQuestion` call waits for an answer |
+| blocked | A `can_use_tool` request or an `AskUserQuestion` call waits for an answer, or the agent's account needs a sign-in |
 | idle | After the `result` event |
 | exited | The `claude` process ended |
 
@@ -163,9 +163,9 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
 - `ForwardAgent` stays off for the server in the laptop's `~/.ssh/config`, so a process on the server cannot use your laptop's key to log back in through `sshd`.
 - Prompts go only through stdin.
 - The daemon never reads, stores or passes a credential or an API key.
-  An account is a config folder: the daemon sets `CLAUDE_CONFIG_DIR` to it, the user signs in by running `claude` once with that variable, and the login stays in the folder (or the macOS Keychain).
+  An account is a config folder: the daemon sets `CLAUDE_CONFIG_DIR` to it, the user signs in by running `claude auth login` once with that variable, and the login stays in the folder (or the macOS Keychain).
   The daemon removes `CLAUDE_CODE_OAUTH_TOKEN` from every agent's environment, and `ANTHROPIC_API_KEY` unless the agent's account chose to use it, without reading either.
-  To tell whether an account is signed in, it checks only that the credentials file exists.
+  To tell whether an account is signed in, it checks only that the credentials file exists, and when it was written.
 
 ## Front end
 

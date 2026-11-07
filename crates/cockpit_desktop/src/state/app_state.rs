@@ -352,6 +352,7 @@ pub(crate) mod tests {
             session: None,
             position: Position::default(),
             account: AccountId::DEFAULT,
+            waits_for_sign_in: false,
         }
     }
 
