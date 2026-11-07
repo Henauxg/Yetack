@@ -9,13 +9,13 @@ use std::ptr;
 
 use cockpit_protocol::ProcessId;
 use windows_sys::Wdk::System::Threading::{
-    NtQueryInformationProcess, ProcessCommandLineInformation,
+    NtQueryInformationProcess, ProcessBasicInformation, ProcessCommandLineInformation,
 };
 use windows_sys::Win32::Foundation::{FILETIME, UNICODE_STRING, WAIT_OBJECT_0};
 use windows_sys::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows_sys::Win32::System::Threading::{
-    GetProcessTimes, OpenProcess, PROCESS_ACCESS_RIGHTS, PROCESS_NAME_WIN32,
-    QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
+    GetProcessTimes, OpenProcess, PROCESS_ACCESS_RIGHTS, PROCESS_BASIC_INFORMATION,
+    PROCESS_NAME_WIN32, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
 };
 
 /// The exit code of a process the daemon stops.
@@ -109,6 +109,30 @@ impl OpenedProcess {
             return Err(io::Error::last_os_error());
         }
         Ok(u64::try_from(counters.WorkingSetSize).unwrap_or(u64::MAX))
+    }
+
+    /// The id of the process that started it, which may have ended since and given its id to
+    /// another. Needs `PROCESS_QUERY_LIMITED_INFORMATION`.
+    pub(super) fn parent(&self) -> io::Result<ProcessId> {
+        let mut info = PROCESS_BASIC_INFORMATION::default();
+        // SAFETY: the handle is open, and the pointer and size describe `info`.
+        let status = unsafe {
+            NtQueryInformationProcess(
+                self.raw(),
+                ProcessBasicInformation,
+                (&raw mut info).cast(),
+                size_of_u32::<PROCESS_BASIC_INFORMATION>(),
+                ptr::null_mut(),
+            )
+        };
+        if status < 0 {
+            return Err(io::Error::other(format!(
+                "cannot read the parent: status {status:#x}"
+            )));
+        }
+        u32::try_from(info.InheritedFromUniqueProcessId)
+            .map(ProcessId::new)
+            .map_err(|_| io::Error::other("a parent id past 32 bits"))
     }
 
     /// The process's command line. Needs `PROCESS_QUERY_LIMITED_INFORMATION`.

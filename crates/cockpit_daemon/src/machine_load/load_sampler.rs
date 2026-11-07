@@ -204,6 +204,8 @@ mod tests {
             pid: ProcessId::new(std::process::id()),
             #[cfg(windows)]
             job: None,
+            #[cfg(windows)]
+            launch: crate::process::program::Launch::Direct,
         };
         let (reply, answer) = oneshot::channel();
         sampler.query(vec![own], reply);

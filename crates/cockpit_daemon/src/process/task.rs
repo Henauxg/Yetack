@@ -21,6 +21,9 @@ use crate::process::claude_command::ClaudeCommand;
 use crate::process::job::{self, Job};
 use crate::process::line_reader::{LineReader, ReadLine};
 use crate::process::process_error::ProcessError;
+use crate::process::program;
+#[cfg(windows)]
+use crate::process::program::Launch;
 use crate::store::{Direction, RawLog};
 
 /// How long Claude Code has to answer one of the daemon's control requests.
@@ -80,11 +83,19 @@ pub(crate) struct ProcessHandle<T> {
     /// Another handle to the job of the task, which holds every command the agent runs.
     #[cfg(windows)]
     job: Option<Job>,
+    /// Whether `pid` is `claude` itself, or `cmd.exe` running an npm `claude.cmd`.
+    #[cfg(windows)]
+    launch: Launch,
 }
 
 impl<T> ProcessHandle<T> {
     pub(crate) fn pid(&self) -> Option<ProcessId> {
         self.pid
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn launch(&self) -> Launch {
+        self.launch
     }
 
     #[cfg(windows)]
@@ -126,11 +137,24 @@ where
     M: Send + 'static,
     W: Fn(ProcessEvent<T>) -> M + Send + 'static,
 {
-    let process = command.to_command().map_err(|source| ProcessError::Spawn {
-        program: command.program.clone(),
-        source,
-    })?;
-    start(process, &command.program, raw_log, events, wrap)
+    let program = program::resolve(&command.program);
+    let process = command
+        .to_command(&program)
+        .map_err(|source| ProcessError::Spawn {
+            program: program.path.clone(),
+            source,
+        })?;
+    #[cfg(windows)]
+    let launch = program.launch();
+    start(
+        process,
+        &program.path,
+        raw_log,
+        events,
+        wrap,
+        #[cfg(windows)]
+        launch,
+    )
 }
 
 fn start<T, M, W>(
@@ -139,6 +163,7 @@ fn start<T, M, W>(
     raw_log: Option<RawLog>,
     events: mpsc::Sender<M>,
     wrap: W,
+    #[cfg(windows)] launch: Launch,
 ) -> Result<ProcessHandle<T>, ProcessError>
 where
     T: Send + 'static,
@@ -202,6 +227,8 @@ where
         pid,
         #[cfg(windows)]
         job: handle_job,
+        #[cfg(windows)]
+        launch,
     })
 }
 

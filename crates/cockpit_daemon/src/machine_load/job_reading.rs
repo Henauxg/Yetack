@@ -108,12 +108,14 @@ fn agent_figures(root: &AgentRoot, budget: &mut usize) -> Option<AgentFigures> {
         *budget = budget.saturating_sub(1);
         let figures = ProcessFigures {
             key: root_key,
+            parent: claude.parent().ok(),
             cpu_time: claude_times.cpu_time,
             memory_bytes: claude.working_set().unwrap_or(0),
         };
         return Some(AgentFigures {
             agent: root.agent,
             root: root_key,
+            launch: root.launch,
             cpu_time: claude_times.cpu_time,
             processes: vec![figures],
         });
@@ -126,6 +128,7 @@ fn agent_figures(root: &AgentRoot, budget: &mut usize) -> Option<AgentFigures> {
     Some(AgentFigures {
         agent: root.agent,
         root: root_key,
+        launch: root.launch,
         cpu_time,
         processes,
     })
@@ -148,6 +151,7 @@ fn job_processes(job: &Job, budget: &mut usize) -> Vec<ProcessFigures> {
                 pid,
                 started: times.started,
             },
+            parent: process.parent().ok(),
             cpu_time: times.cpu_time,
             memory_bytes: process.working_set().unwrap_or(0),
         });
@@ -207,6 +211,7 @@ mod tests {
 
     use super::*;
     use crate::process::job;
+    use crate::process::program::Launch;
 
     #[test]
     fn a_reading_has_the_server_and_each_agents_job() {
@@ -227,11 +232,13 @@ mod tests {
                 agent: AgentId::new(1),
                 pid: ProcessId::new(claude.id()),
                 job: Some(job),
+                launch: Launch::Direct,
             },
             AgentRoot {
                 agent: AgentId::new(2),
                 pid: ProcessId::new(std::process::id()),
                 job: None,
+                launch: Launch::Direct,
             },
         ];
 

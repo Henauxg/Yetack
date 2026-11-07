@@ -292,6 +292,7 @@ The hub turns Claude Code messages into transcript items and status changes (mod
   The binary is `claude` from `PATH`, or `AGENTS_COCKPIT_CLAUDE` for tests.
   On Windows, the default is the native installer's `claude.exe` on `PATH`, then in `.local\bin` in the home folder, then an npm install's `claude.cmd` on `PATH`; relative folders of `PATH` are skipped.
   A `.cmd` or `.bat` runs through the system folder's `cmd.exe` with `/d /v:off /s /c`, each argument in double quotes with a trailing backslash doubled; an argument holding a quote, a `%`, a line break or a NUL is refused, since `cmd.exe` would read it.
+  The agent's root process is then `cmd.exe`, and the real `claude` (`node.exe`) is its child. The process handle records this (`Launch::Interpreter`), and the root's direct children in the agent's job count as `claude` itself: `agent.stop_process` refuses them as it refuses the root, and the machine load leaves them out of the heaviest commands. A child of the root is one whose parent id is the root's: every process of the job started after the root, so that id names the root.
   On Windows, every program the daemon starts, `claude`, `claude mcp remove` and `git`, and the client's `ssh`, starts with `CREATE_NO_WINDOW`: the app has no console to share.
 - On Unix, `claude` leads a process group of its own, which the daemon kills to stop the agent's MCP servers and commands with it.
   On Windows, `claude` starts suspended, joins a Job Object of its own, then runs, so every process it starts is in the job from the start.
@@ -347,7 +348,7 @@ A daemon that dies without stopping its agents (a forced kill, a crash, no memor
 A daemon that resumed the session meanwhile would run two `claude` on one session.
 So before any agent resumes, `Daemon::prepare`, shared by `serve` and the daemon in the app, stops each recorded process that still runs with the recorded start time (the kernel's clock ticks after boot from `/proc/<pid>/stat` on Linux, the creation time from `GetProcessTimes` on Windows), and logs it.
 On Unix, it sends SIGTERM to the process's group, waits up to 5 seconds for `claude` to end, then sends SIGKILL to the group.
-On Windows, a `claude` in a job died with the daemon, so only one that ran without a job can be left: `TerminateProcess` ends it alone.
+On Windows, a `claude` in a job died with the daemon, so only one that ran without a job can be left. `TerminateProcess` ends it and every process under it: a snapshot of the machine's processes (Toolhelp) gives each process's parent, and the walk down keeps a process only when it started after the parent it names, since a parent that ended gives its id away. For an npm `claude.cmd`, this stops `cmd.exe` and the real `claude` under it.
 A process with the recorded id and another start time took the id since, and is left alone.
 The record is written when `claude` starts and cleared when it exits; a file without it reads as no process.
 A Unix without `/proc`, such as macOS, records nothing.
@@ -479,12 +480,14 @@ On Windows, the same task samples other counters (modules `job_reading` and `job
 - An agent's processes are those of its Job Object. Its CPU is the growth of the job's accounting (`QueryInformationJobObject`), which counts the processes that ended too. Its memory is the working sets of the processes in the job, summed.
 - Each process's CPU comes from `GetProcessTimes`, and its start time tells it from a later process with its id. The heaviest three show their command line (`NtQueryInformationProcess`) or their program's name.
 - An agent whose `claude` runs without a job counts `claude` alone. One reading opens at most 4,096 processes.
+- The heaviest commands leave out `claude`: the root process, and for an npm `claude.cmd`, the root's children (each process's parent comes from `NtQueryInformationProcess`).
 
 `agent.stop_process` sends SIGTERM to one of the agent's processes.
 The daemon opens a pidfd on the process, checks at that moment that its parents in `/proc` reach the agent's `claude`, then signals through the pidfd.
 A process outside the agent is refused with `not_found`, and `claude` itself with `invalid_request`: `agent.stop` stops it.
 When the process ends and its pid goes to another one during the check, the signal goes to the ended process through the pidfd, and fails.
 On Windows, the daemon opens the process, checks with `IsProcessInJob` that it is in the agent's job, then ends it with `TerminateProcess` through the same handle, which keeps its id from going to another process meanwhile.
+A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is refused with `invalid_request` as the root is.
 
 ### Server and peer checks
 

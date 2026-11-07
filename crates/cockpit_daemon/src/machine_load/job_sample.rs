@@ -4,11 +4,17 @@
 //! Windows counts CPU time in units of 100 ns. An agent's job counts the time of every process
 //! that was ever in it, those that ended since included, so the agent's CPU is the growth of its
 //! job's count. An agent whose `claude` runs without a job counts `claude` alone.
+//!
+//! The heaviest commands leave out the agent's `claude`: its root process, and for an npm
+//! `claude.cmd`, the root's children, which run the real `claude` under `cmd.exe`.
 
 use std::collections::HashMap;
 use std::time::Instant;
 
 use cockpit_protocol::{AgentId, Cores, ProcessId, ResourceUse, ServerLoad, Timestamp};
+
+use crate::machine_load::agent_root;
+use crate::process::program::Launch;
 
 /// CPU time units in a second.
 const UNITS_PER_SECOND: f64 = 10_000_000.0;
@@ -26,6 +32,8 @@ pub(super) struct ProcessKey {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ProcessFigures {
     pub(super) key: ProcessKey,
+    /// The process that started it, when Windows tells.
+    pub(super) parent: Option<ProcessId>,
     /// Its user and kernel time.
     pub(super) cpu_time: u64,
     /// Its working set: the memory it has resident.
@@ -35,8 +43,9 @@ pub(super) struct ProcessFigures {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct AgentFigures {
     pub(super) agent: AgentId,
-    /// The agent's `claude`.
+    /// The agent's `claude`, or the `cmd.exe` that runs it.
     pub(super) root: ProcessKey,
+    pub(super) launch: Launch,
     /// The user and kernel time of every process the job held, or of `claude` without a job.
     pub(super) cpu_time: u64,
     /// The processes running now, `claude` among them.
@@ -183,11 +192,10 @@ fn agent_sample(earlier: Option<&AgentFigures>, now: &AgentFigures, since: Since
         })
         .unwrap_or_default();
     let mut heavy: Vec<HeavyProcess> = Vec::new();
-    for process in now
-        .processes
-        .iter()
-        .filter(|process| process.key != now.root)
-    {
+    let commands = now.processes.iter().filter(|process| {
+        !agent_root::is_claude(now.root.pid, now.launch, process.key.pid, process.parent)
+    });
+    for process in commands {
         let grown = since.growth(
             process.cpu_time,
             before.get(&process.key).copied(),
@@ -254,6 +262,7 @@ mod tests {
     fn process(key: ProcessKey, cpu_time: u64) -> ProcessFigures {
         ProcessFigures {
             key,
+            parent: None,
             cpu_time,
             memory_bytes: 1_000_000,
         }
@@ -306,6 +315,7 @@ mod tests {
         let agent = |cpu_time: u64, processes: Vec<ProcessFigures>| AgentFigures {
             agent: AgentId::new(1),
             root: claude,
+            launch: Launch::Direct,
             cpu_time,
             processes,
         };
@@ -340,6 +350,41 @@ mod tests {
         assert_eq!(sample.others.cpu, Cores::new(2.0));
     }
 
+    /// An npm `claude.cmd` runs `node` under `cmd.exe`: `node` is the agent's `claude`, and the
+    /// commands it starts are its own.
+    #[test]
+    fn the_children_of_an_interpreter_root_are_left_out_of_the_heaviest() {
+        let interpreter = key(10, THEN - 50 * SECOND);
+        let node = key(11, THEN - 49 * SECOND);
+        let build = key(12, THEN - 10 * SECOND);
+        let child = |key: ProcessKey, parent: ProcessKey, cpu_time: u64| ProcessFigures {
+            parent: Some(parent.pid),
+            ..process(key, cpu_time)
+        };
+        let agent = |launch, cpu_time: u64, node_time: u64, build_time: u64| AgentFigures {
+            agent: AgentId::new(1),
+            root: interpreter,
+            launch,
+            cpu_time,
+            processes: vec![
+                process(interpreter, 0),
+                child(node, interpreter, node_time),
+                child(build, node, build_time),
+            ],
+        };
+        let heaviest = |launch| {
+            let before = agent(launch, 20 * SECOND, 10 * SECOND, 10 * SECOND);
+            let after = agent(launch, 26 * SECOND, 14 * SECOND, 12 * SECOND);
+            let sample = pair(vec![before], vec![after]);
+            let agent = sample.agents.first().unwrap().clone();
+            let keys: Vec<ProcessKey> = agent.heaviest.iter().map(|heavy| heavy.key).collect();
+            keys
+        };
+
+        assert_eq!(heaviest(Launch::Interpreter), [build]);
+        assert_eq!(heaviest(Launch::Direct), [node, build]);
+    }
+
     #[test]
     fn a_new_claude_counts_from_its_start_and_one_seen_late_from_now() {
         let old = key(10, THEN - 50 * SECOND);
@@ -347,6 +392,7 @@ mod tests {
         let agent = |id: u32, root: ProcessKey, cpu_time: u64| AgentFigures {
             agent: AgentId::new(id),
             root,
+            launch: Launch::Direct,
             cpu_time,
             processes: vec![process(root, cpu_time)],
         };

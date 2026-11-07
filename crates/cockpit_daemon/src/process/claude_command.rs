@@ -8,7 +8,7 @@ use cockpit_protocol::ClaudeSessionId;
 use tokio::process::Command;
 
 use crate::accounts::ClaudeEnv;
-use crate::process::program;
+use crate::process::program::{self, ClaudeProgram};
 
 const STREAM_JSON: &str = "stream-json";
 /// JSON in and out, approvals over stdio, and prompts echoed back.
@@ -82,8 +82,9 @@ impl ClaudeCommand {
 
     /// On Unix, `claude` leads a process group of its own, so that killing the group also ends
     /// its MCP servers and the commands it started.
-    pub(crate) fn to_command(&self) -> io::Result<Command> {
-        let mut command = program::command(&self.program, &self.args())?;
+    /// `program` is the one `self.program` names, from [`program::resolve`].
+    pub(crate) fn to_command(&self, program: &ClaudeProgram) -> io::Result<Command> {
+        let mut command = program::resolved_command(program, &self.args())?;
         command
             .current_dir(&self.folder)
             .env_remove(NESTED_SESSION_ENV)
@@ -179,13 +180,14 @@ mod tests {
     fn only_the_daemons_own_resume_carries_on_with_a_cut_turn() {
         let session = Some(ClaudeSessionId::new("session-1".to_owned()));
         let carries_on = |resume: Option<ClaudeSessionId>, interrupted_turn| {
-            let command = ClaudeCommand {
+            let claude = ClaudeCommand {
                 resume,
                 interrupted_turn,
                 ..command()
-            }
-            .to_command()
-            .unwrap();
+            };
+            let command = claude
+                .to_command(&program::resolve(&claude.program))
+                .unwrap();
             let envs: Vec<(&OsStr, Option<&OsStr>)> = command.as_std().get_envs().collect();
             envs.contains(&(
                 OsStr::new(RESUME_INTERRUPTED_TURN_ENV),

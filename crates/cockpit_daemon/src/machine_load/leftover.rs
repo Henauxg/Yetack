@@ -6,6 +6,11 @@
 //! starts stops each recorded process that still runs with the same start time, and leaves
 //! alone a process that got the id since. On Linux, the start time comes from `/proc`; on a
 //! Unix without `/proc`, nothing is recorded and nothing is stopped.
+//!
+//! On Linux, the stop reaches the processes `claude` started through its process group. On
+//! Windows, a `claude` without a job is stopped with every process under it, which a snapshot of
+//! the machine's processes finds: for an npm `claude.cmd`, the recorded process is `cmd.exe`, and
+//! the real `claude` is its child.
 
 use std::time::Duration;
 
@@ -15,6 +20,9 @@ use crate::store::RecordedProcess;
 
 /// How long the leftover processes have to end after the polite stop.
 const STOP_WAIT: Duration = Duration::from_secs(5);
+/// The most processes stopped under one leftover `claude`.
+#[cfg(any(windows, test))]
+const MAX_TREE: usize = 4096;
 #[cfg(unix)]
 const POLL: Duration = Duration::from_millis(50);
 
@@ -102,9 +110,9 @@ fn started(pid: ProcessId) -> Option<u64> {
     process.times().ok().map(|times| times.started)
 }
 
-/// Ends each of `recorded` that still runs, and waits up to [`STOP_WAIT`] for it. A `claude` in a
-/// job died with the daemon that held the job, so only one that ran without a job is left: it
-/// ends alone.
+/// Ends each of `recorded` that still runs, with every process under it, and waits up to
+/// [`STOP_WAIT`] for them. A `claude` in a job died with the daemon that held the job, so only
+/// one that ran without a job is left.
 #[cfg(windows)]
 pub(crate) fn stop_leftovers(recorded: &[RecordedProcess]) {
     use windows_sys::Win32::System::Threading::{
@@ -114,26 +122,174 @@ pub(crate) fn stop_leftovers(recorded: &[RecordedProcess]) {
     use crate::machine_load::opened_process::OpenedProcess;
 
     let access = PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE;
+    let open = |pid: ProcessId| {
+        let process = OpenedProcess::open(pid, access).ok()?;
+        let started = process.times().ok()?.started;
+        (!process.has_ended()).then_some((process, started))
+    };
+    let mut links: Option<Vec<ParentLink>> = None;
     for recorded in recorded {
-        // The open handle keeps the id from going to another process before the stop.
-        let Ok(process) = OpenedProcess::open(recorded.pid, access) else {
+        // The open handles keep the ids from going to other processes before the stop.
+        let Some((process, started)) = open(recorded.pid) else {
             continue;
         };
-        let same = process
-            .times()
-            .is_ok_and(|times| times.started == recorded.started);
-        if !same || process.has_ended() {
+        if started != recorded.started {
             continue;
         }
+        let links = links.get_or_insert_with(|| {
+            parent_links()
+                .inspect_err(|error| tracing::warn!(%error, "cannot list the processes"))
+                .unwrap_or_default()
+        });
+        let under = descendants(links, recorded.pid, started, open);
         tracing::warn!(
             pid = recorded.pid.get(),
-            "stopping the claude a previous daemon left running"
+            processes = under.len(),
+            "stopping the claude a previous daemon left running, and the processes under it"
         );
-        if let Err(error) = process.terminate() {
-            tracing::warn!(%error, pid = recorded.pid.get(), "cannot stop the leftover claude");
-            continue;
+        let deadline = std::time::Instant::now() + STOP_WAIT;
+        let tree: Vec<OpenedProcess> = std::iter::once(process).chain(under).collect();
+        for process in &tree {
+            if let Err(error) = process.terminate()
+                && !process.has_ended()
+            {
+                tracing::warn!(%error, pid = recorded.pid.get(), "cannot stop a leftover process");
+            }
         }
-        process.wait(STOP_WAIT);
+        for process in &tree {
+            process.wait(deadline.saturating_duration_since(std::time::Instant::now()));
+        }
+    }
+}
+
+/// A process and the one that started it, as a snapshot of the machine's processes lists them.
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParentLink {
+    pid: ProcessId,
+    parent: ProcessId,
+}
+
+/// Every process of the machine with its parent.
+#[cfg(windows)]
+fn parent_links() -> std::io::Result<Vec<ParentLink>> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+
+    // SAFETY: the flag asks for a snapshot of the processes; the process id is ignored for them.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: the handle is open and nothing else owns it.
+    let snapshot = unsafe { OwnedHandle::from_raw_handle(snapshot) };
+    let mut entry = PROCESSENTRY32W {
+        dwSize: u32::try_from(size_of::<PROCESSENTRY32W>()).unwrap_or(u32::MAX),
+        ..PROCESSENTRY32W::default()
+    };
+    let mut links = Vec::new();
+    // SAFETY: the snapshot is open, and `entry` is a `PROCESSENTRY32W` whose size field is set.
+    let mut more = unsafe { Process32FirstW(snapshot.as_raw_handle(), &raw mut entry) } != 0;
+    while more {
+        links.push(ParentLink {
+            pid: ProcessId::new(entry.th32ProcessID),
+            parent: ProcessId::new(entry.th32ParentProcessID),
+        });
+        // SAFETY: as for `Process32FirstW`.
+        more = unsafe { Process32NextW(snapshot.as_raw_handle(), &raw mut entry) } != 0;
+    }
+    Ok(links)
+}
+
+/// The processes under `root`, which started at `root_started`, each as `open` gives it with its
+/// start, at most [`MAX_TREE`]. A process that started before the process its parent id names
+/// is left out: its parent ended, and the id went to that other process.
+#[cfg(any(windows, test))]
+fn descendants<P>(
+    links: &[ParentLink],
+    root: ProcessId,
+    root_started: u64,
+    mut open: impl FnMut(ProcessId) -> Option<(P, u64)>,
+) -> Vec<P> {
+    use std::collections::{HashSet, VecDeque};
+
+    let mut found = Vec::new();
+    let mut seen: HashSet<ProcessId> = HashSet::from([root]);
+    let mut parents: VecDeque<(ProcessId, u64)> = VecDeque::from([(root, root_started)]);
+    while let Some((parent, parent_started)) = parents.pop_front() {
+        let children = links.iter().filter(|link| link.parent == parent);
+        for child in children {
+            if found.len() >= MAX_TREE || !seen.insert(child.pid) {
+                continue;
+            }
+            let Some((process, started)) = open(child.pid) else {
+                continue;
+            };
+            if started < parent_started {
+                continue;
+            }
+            parents.push_back((child.pid, started));
+            found.push(process);
+        }
+    }
+    found
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    fn link(pid: u32, parent: u32) -> ParentLink {
+        ParentLink {
+            pid: ProcessId::new(pid),
+            parent: ProcessId::new(parent),
+        }
+    }
+
+    #[test]
+    fn the_tree_holds_the_processes_started_under_the_root_since_it_started() {
+        // 10 cmd.exe, 11 node under it, 12 a build node runs, 13 its compiler; 20 a process
+        // that took the id of an ended child of 11 before 11 started; 30 another program.
+        let links = [
+            link(10, 1),
+            link(11, 10),
+            link(12, 11),
+            link(13, 12),
+            link(21, 20),
+            link(20, 11),
+            link(30, 1),
+        ];
+        let started: HashMap<u32, u64> = HashMap::from([
+            (10, 100),
+            (11, 101),
+            (12, 150),
+            (13, 160),
+            (20, 50),
+            (21, 60),
+            (30, 90),
+        ]);
+        let open = |pid: ProcessId| started.get(&pid.get()).map(|&time| (pid.get(), time));
+
+        let mut tree = descendants(&links, ProcessId::new(10), 100, open);
+        tree.sort_unstable();
+
+        assert_eq!(tree, [11, 12, 13]);
+    }
+
+    #[test]
+    fn a_loop_in_the_links_ends_the_walk() {
+        let links = [link(10, 11), link(11, 10)];
+
+        let tree = descendants(&links, ProcessId::new(10), 0, |pid| Some((pid, 1)));
+
+        assert_eq!(tree, [ProcessId::new(11)]);
     }
 }
 
@@ -189,6 +345,7 @@ mod tests {
 mod tests {
     use std::os::windows::process::CommandExt;
     use std::process::{Child, Command, Stdio};
+    use std::time::Duration;
 
     use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
@@ -222,6 +379,38 @@ mod tests {
         let _ = leftover.wait();
         assert!(stopped, "the leftover ends");
         assert!(other_runs, "a process with another start time runs on");
+    }
+
+    #[test]
+    fn a_leftover_without_a_job_is_stopped_with_the_processes_under_it() {
+        let mut leftover = waiting_shell();
+        let root = ProcessId::new(leftover.id());
+        let recorded = record_process(root).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let ping = loop {
+            let links = parent_links().unwrap();
+            if let Some(link) = links.iter().find(|link| link.parent == root) {
+                break link.pid;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the shell started no command"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let ping_started = record_process(ping).unwrap();
+
+        stop_leftovers(&[recorded]);
+
+        let stopped = leftover.try_wait().unwrap().is_some();
+        let _ = leftover.kill();
+        let _ = leftover.wait();
+        assert!(stopped, "the leftover ends");
+        assert_ne!(
+            record_process(ping),
+            Some(ping_started),
+            "the command under it ends too"
+        );
     }
 
     /// The child's handle keeps the ended process's id from going to another process.

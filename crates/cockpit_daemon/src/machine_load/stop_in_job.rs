@@ -2,7 +2,8 @@
 //!
 //! The daemon opens the process first, then checks that it is in the agent's job, then ends it
 //! through the same handle. The open handle keeps the process's id from going to another process
-//! in between.
+//! in between. When the agent's root process is `cmd.exe` running an npm `claude.cmd`, its
+//! children are the real `claude`, and are refused as the root is.
 
 use std::io;
 
@@ -13,7 +14,7 @@ use windows_sys::Win32::System::Threading::{
 };
 
 use crate::error_chain;
-use crate::machine_load::agent_root::AgentRoot;
+use crate::machine_load::agent_root::{self, AgentRoot};
 use crate::machine_load::opened_process::OpenedProcess;
 
 #[derive(Debug, thiserror::Error)]
@@ -77,6 +78,12 @@ pub(crate) fn stop_descendant(root: AgentRoot, target: ProcessId) -> Result<(), 
     if !in_job {
         return Err(StopProcessError::NotTheAgents { pid: target });
     }
+    // Every process of the job started after the root, so a parent id equal to the root's
+    // names the root.
+    let parent = process.parent().ok();
+    if agent_root::is_claude(root.pid, root.launch, target, parent) {
+        return Err(StopProcessError::IsTheAgent { pid: target });
+    }
     process.terminate().map_err(|source| {
         if process.has_ended() {
             StopProcessError::Ended { pid: target }
@@ -101,6 +108,7 @@ mod tests {
 
     use super::*;
     use crate::process::Job;
+    use crate::process::program::Launch;
 
     /// A shell that waits about 30 seconds.
     fn waiting_shell(flags: u32) -> Child {
@@ -123,6 +131,7 @@ mod tests {
             agent: AgentId::new(1),
             pid: ProcessId::new(child.id()),
             job: Some(job),
+            launch: Launch::Direct,
         };
         (child, root)
     }
@@ -132,6 +141,21 @@ mod tests {
             agent: root.agent,
             pid: root.pid,
             job: root.job.as_ref().map(|job| job.try_clone().unwrap()),
+            launch: root.launch,
+        }
+    }
+
+    /// The first process of the job other than the root, once the root has started it.
+    fn child_in_job(root: &AgentRoot) -> ProcessId {
+        let job = root.job.as_ref().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let ids = job.process_ids(16).unwrap();
+            if let Some(child) = ids.into_iter().find(|pid| *pid != root.pid) {
+                return child;
+            }
+            assert!(Instant::now() < deadline, "the shell started no command");
+            std::thread::sleep(Duration::from_millis(50));
         }
     }
 
@@ -211,5 +235,31 @@ mod tests {
             "{without_job:?}"
         );
         assert_eq!(other.unwrap_err().to_error_body().code, ErrorCode::NotFound);
+    }
+
+    #[test]
+    fn the_child_of_an_interpreter_root_counts_as_claude() {
+        let (mut claude, root) = agent();
+        let ping = child_in_job(&root);
+
+        let through_interpreter = stop_descendant(
+            AgentRoot {
+                launch: Launch::Interpreter,
+                ..again(&root)
+            },
+            ping,
+        );
+        let direct = stop_descendant(again(&root), ping);
+
+        let _ = claude.kill();
+        let _ = claude.wait();
+        assert!(
+            matches!(
+                through_interpreter,
+                Err(StopProcessError::IsTheAgent { .. })
+            ),
+            "{through_interpreter:?}"
+        );
+        assert!(direct.is_ok(), "{direct:?}");
     }
 }

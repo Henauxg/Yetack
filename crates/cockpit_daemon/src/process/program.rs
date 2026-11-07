@@ -52,6 +52,27 @@ pub(crate) struct ClaudeProgram {
     pub(crate) name: TerminalName,
 }
 
+/// How the daemon starts the program.
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Launch {
+    /// The program is `claude` itself.
+    Direct,
+    /// An npm `claude.cmd`, which `cmd.exe` runs: the real `claude` is a child of `cmd.exe`.
+    Interpreter,
+}
+
+#[cfg(windows)]
+impl ClaudeProgram {
+    pub(crate) fn launch(&self) -> Launch {
+        if is_batch_file(&self.path) {
+            Launch::Interpreter
+        } else {
+            Launch::Direct
+        }
+    }
+}
+
 /// How a terminal on the daemon's machine runs the program.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TerminalName {
@@ -155,10 +176,15 @@ fn terminal_name(
     }
 }
 
+/// Runs the program `configured` names with `args`. Looks for files on Windows: it blocks.
+pub(crate) fn command(configured: &Path, args: &[OsString]) -> io::Result<Command> {
+    resolved_command(&resolve(configured), args)
+}
+
 /// Runs `program` with `args`.
 #[cfg(unix)]
-pub(crate) fn command(program: &Path, args: &[OsString]) -> io::Result<Command> {
-    let mut command = Command::new(program);
+pub(crate) fn resolved_command(program: &ClaudeProgram, args: &[OsString]) -> io::Result<Command> {
+    let mut command = Command::new(&program.path);
     command.args(args);
     Ok(command)
 }
@@ -166,17 +192,19 @@ pub(crate) fn command(program: &Path, args: &[OsString]) -> io::Result<Command> 
 /// Runs `program` with `args`, through `cmd.exe` for a batch file, without a console window.
 /// Fails for an argument that `cmd.exe` cannot take safely.
 #[cfg(windows)]
-pub(crate) fn command(program: &Path, args: &[OsString]) -> io::Result<Command> {
-    let program = resolve(program).path;
-    let mut command = if is_batch_file(&program) {
-        let line = batch_command_line(&program, args)?;
-        let mut command = Command::new(interpreter()?);
-        command.raw_arg(line);
-        command
-    } else {
-        let mut command = Command::new(&program);
-        command.args(args);
-        command
+pub(crate) fn resolved_command(program: &ClaudeProgram, args: &[OsString]) -> io::Result<Command> {
+    let mut command = match program.launch() {
+        Launch::Interpreter => {
+            let line = batch_command_line(&program.path, args)?;
+            let mut command = Command::new(interpreter()?);
+            command.raw_arg(line);
+            command
+        }
+        Launch::Direct => {
+            let mut command = Command::new(&program.path);
+            command.args(args);
+            command
+        }
     };
     hide_console(&mut command);
     Ok(command)
