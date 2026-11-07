@@ -87,6 +87,9 @@ impl AccountList {
         params: AccountChangeParams,
         default_folder: &Path,
     ) -> Result<Account, ErrorBody> {
+        if self.get(params.account, default_folder).is_none() {
+            return Err(not_found(params.account));
+        }
         let name = params
             .name
             .map(|name| self.free_name(&name, Some(params.account)))
@@ -451,6 +454,12 @@ mod tests {
         let missing = list
             .change(change(AccountId::new(9), None, None), &default_folder())
             .unwrap_err();
+        let missing_renamed = list
+            .change(
+                change(AccountId::new(9), Some("Personal"), None),
+                &default_folder(),
+            )
+            .unwrap_err();
 
         assert_eq!(renamed.name, "Personal");
         assert_eq!(renamed.folder, default_folder());
@@ -459,6 +468,7 @@ mod tests {
         assert_eq!(same_name.name, "work");
         assert_eq!(taken.code, ErrorCode::InvalidRequest);
         assert_eq!(missing.code, ErrorCode::NotFound);
+        assert_eq!(missing_renamed.code, ErrorCode::NotFound);
     }
 
     #[test]
