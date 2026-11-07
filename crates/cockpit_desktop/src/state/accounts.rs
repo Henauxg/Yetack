@@ -322,26 +322,30 @@ pub fn sign_in_turn(entry: &AgentEntry) -> Option<SignInTurn> {
     })
 }
 
-/// Whether "Send the message again" sends: the account signed in, the app holds the message,
-/// and the card has not sent it yet.
-pub fn can_send_again(entry: &AgentEntry, turn: &SignInTurn) -> bool {
-    entry.summary.sign_in_wait == SignInWait::NotWaiting
-        && turn.message.is_some()
-        && entry.sent_again != Some(turn.turn_end)
+/// Whether "Send the message again" sends: the account signed in, or the daemon cannot see its
+/// sign-in (a login in the macOS Keychain), the app holds the message, and the card has not sent
+/// it yet.
+pub fn can_send_again(state: &AppState, entry: &AgentEntry, turn: &SignInTurn) -> bool {
+    let account = entry.summary.account;
+    let cannot_tell = state.sign_ins.sign_in(account) == Some(SignIn::Unknown);
+    let signed_in = entry.summary.sign_in_wait == SignInWait::NotWaiting || cannot_tell;
+    signed_in && turn.message.is_some() && entry.sent_again != Some(turn.turn_end)
 }
 
 /// Sends the message of the turn that found no login again, once.
 pub fn send_again(state: &mut AppState, agent: AgentId) -> Vec<Outgoing> {
-    let Some(entry) = state.agents.get_mut(&agent) else {
+    let Some(entry) = state.agents.get(&agent) else {
         return Vec::new();
     };
-    let Some(turn) = sign_in_turn(entry).filter(|turn| can_send_again(entry, turn)) else {
+    let Some(turn) = sign_in_turn(entry).filter(|turn| can_send_again(state, entry, turn)) else {
         return Vec::new();
     };
     let Some(message) = turn.message else {
         return Vec::new();
     };
-    entry.sent_again = Some(turn.turn_end);
+    if let Some(entry) = state.agents.get_mut(&agent) {
+        entry.sent_again = Some(turn.turn_end);
+    }
     state.ui.chat_scrolled_up.remove(&agent);
     state.ui.chat_jumps = state.ui.chat_jumps.wrapping_add(1);
     let prompt = Prompt {
@@ -1515,6 +1519,37 @@ mod tests {
 
         assert_eq!(second, []);
         assert_eq!(after_failure, first);
+    }
+
+    #[test]
+    fn the_message_goes_again_while_waiting_when_the_daemon_cannot_tell_the_sign_in() {
+        let mut waiting = in_folder(1, "/work/app", work());
+        waiting.sign_in_wait = SignInWait::Waiting;
+        waiting.status = AgentStatus::NeedsYou;
+        let mut state = state_with(vec![waiting]);
+        three_accounts(&mut state);
+        let agent = AgentId::new(1);
+        let entry = state.agents.get_mut(&agent).unwrap();
+        entry.transcript.merge_page(HistoryPage {
+            items: vec![
+                transcript_item(1, message("Export the invoices")),
+                transcript_item(2, failed_turn(TurnOutcome::NotSignedIn)),
+            ],
+            older_items: OlderItems::None,
+        });
+
+        signed(&mut state, work(), SignIn::NotSignedIn);
+        let not_signed_in = send_again(&mut state, agent);
+        signed(&mut state, work(), SignIn::Unknown);
+        let first = send_again(&mut state, agent);
+        let second = send_again(&mut state, agent);
+
+        assert_eq!(not_signed_in, []);
+        assert!(matches!(
+            first.as_slice(),
+            [Outgoing { request: Request::AgentPrompt(PromptParams { prompt, .. }), .. }] if prompt.text == "Export the invoices"
+        ));
+        assert_eq!(second, [], "the card sends the message once");
     }
 
     #[test]

@@ -896,7 +896,7 @@ pub fn SignInCard(agent: AgentId) -> Element {
         let others = accounts::others_waiting(&state, agent, id);
         let waits = entry.summary.sign_in_wait == SignInWait::Waiting;
         let sends = accounts::sign_in_turn(entry)
-            .is_some_and(|turn| accounts::can_send_again(entry, &turn));
+            .is_some_and(|turn| accounts::can_send_again(&state, entry, &turn));
         (id, data, others, waits, sends)
     };
     let (id, data, others, waits, sends) = card;
