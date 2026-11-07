@@ -4,9 +4,9 @@
 
 use std::time::{Duration, SystemTime};
 
-use cockpit_daemon::{API_KEY_ENV, CLAUDE_CONFIG_DIR_ENV};
+use cockpit_daemon::{API_KEY_ENV, AUTH_TOKEN_ENV, CLAUDE_CONFIG_DIR_ENV};
 use cockpit_protocol::{
-    AccountId, AgentId, CredentialSource, EnvironmentApiKey, SignIn, SignInWait, UsageWindow,
+    AccountId, AgentId, CredentialSource, EnvironmentCredentials, SignIn, SignInWait, UsageWindow,
     WindowUsage,
 };
 use dioxus::prelude::*;
@@ -289,7 +289,9 @@ fn percent_text(percent: Option<u8>) -> String {
 
 fn choice_detail(detail: ChoiceDetail) -> Element {
     match detail {
-        ChoiceDetail::ApiKey => rsx! { "API key from the environment, no plan limits" },
+        ChoiceDetail::Environment => {
+            rsx! { "API key or token from the environment, no plan limits" }
+        }
         ChoiceDetail::NotSignedIn => rsx! {
             span { class: "warn", "Not signed in" }
         },
@@ -363,15 +365,15 @@ fn PlanAccount(account: AccountId, current: bool) -> Element {
                 }
                 span { class: "kind",
                     match billing {
-                        Billing::ApiKey => rsx! { "API key from the environment" },
+                        Billing::Environment => rsx! { "API key or token from the environment" },
                         Billing::NotSignedIn => rsx! { span { class: "warning", "Not signed in" } },
                         Billing::Plan => rsx! { "Claude subscription" },
                     }
                 }
             }
             match billing {
-                Billing::ApiKey => rsx! {
-                    span { class: "muted small", "No plan limits: Claude bills the API key per token." }
+                Billing::Environment => rsx! {
+                    span { class: "muted small", "No plan limits: Claude bills the API key or token per token." }
                 },
                 Billing::NotSignedIn => rsx! {
                     span { class: "muted small",
@@ -443,9 +445,9 @@ fn Swatches(chosen: AccountColor, onpick: EventHandler<AccountColor>) -> Element
     }
 }
 
-/// The API key choice and what it means.
+/// Whether the account takes its credentials from the daemon's environment, and what it means.
 #[component]
-fn ApiKeyChoice(uses: bool, note: String, onchange: EventHandler<bool>) -> Element {
+fn EnvironmentChoice(uses: bool, note: String, onchange: EventHandler<bool>) -> Element {
     rsx! {
         label { class: "check-row",
             input {
@@ -455,8 +457,10 @@ fn ApiKeyChoice(uses: bool, note: String, onchange: EventHandler<bool>) -> Eleme
             }
             span { class: "check-text",
                 span {
-                    "Use the API key from my environment ("
+                    "Use the API key or token from my environment ("
                     code { "{API_KEY_ENV}" }
+                    ", "
+                    code { "{AUTH_TOKEN_ENV}" }
                     ")"
                 }
                 span { class: "hint", "{note}" }
@@ -465,7 +469,7 @@ fn ApiKeyChoice(uses: bool, note: String, onchange: EventHandler<bool>) -> Eleme
     }
 }
 
-/// Every account, each a card that opens to rename it, change its color or its API key choice,
+/// Every account, each a card that opens to rename it, change its color or its environment choice,
 /// sign in to it again, or remove it.
 #[component]
 pub fn AccountsDialog(view: AccountsView) -> Element {
@@ -531,7 +535,7 @@ pub fn AccountsDialog(view: AccountsView) -> Element {
 struct CardData {
     label: AccountLabel,
     folder: String,
-    uses_api_key: bool,
+    uses_environment: bool,
     billing: Billing,
     sign_in: Option<SignIn>,
     command: Option<String>,
@@ -545,7 +549,7 @@ fn card_data(state: &AppState, id: AccountId) -> Option<CardData> {
     Some(CardData {
         label: accounts::label_of(state, id)?,
         folder: path_style::shown(&account.folder),
-        uses_api_key: account.credentials == CredentialSource::EnvironmentApiKey,
+        uses_environment: account.credentials == CredentialSource::Environment,
         billing: accounts::billing(state, id),
         sign_in: state.sign_ins.sign_in(id),
         command: state.sign_ins.command(id).map(str::to_owned),
@@ -563,7 +567,7 @@ fn AccountCard(account: AccountId, open: bool) -> Element {
     };
     let agents = format::count(data.agents, "agent", "agents");
     let (state_class, state_text) = match (data.billing, data.sign_in) {
-        (Billing::ApiKey, _) => ("acct-card-state key", "API key"),
+        (Billing::Environment, _) => ("acct-card-state key", "API key"),
         (_, Some(SignIn::NotSignedIn)) => ("acct-card-state missing", "Not signed in"),
         (_, Some(SignIn::SignedIn)) => ("acct-card-state ok", "Signed in"),
         (_, Some(SignIn::Unknown)) => ("acct-card-state", "Cannot tell"),
@@ -624,16 +628,16 @@ fn AccountCard(account: AccountId, open: bool) -> Element {
                             }
                         }
                     }
-                    ApiKeyChoice {
-                        uses: data.uses_api_key,
-                        note: if data.uses_api_key {
-                            "On: its agents bill the API key per token. A change applies to the agents it starts from now on.".to_owned()
+                    EnvironmentChoice {
+                        uses: data.uses_environment,
+                        note: if data.uses_environment {
+                            "On: its agents bill the API key or token per token. A change applies to the agents it starts from now on.".to_owned()
                         } else {
-                            format!("Off: its agents use its sign-in, without {API_KEY_ENV}. A change applies to the agents it starts from now on.")
+                            format!("Off: its agents use its sign-in, without {API_KEY_ENV} or {AUTH_TOKEN_ENV}. A change applies to the agents it starts from now on.")
                         },
-                        onchange: move |uses| cockpit.change(|_| accounts::set_api_key(account, uses)),
+                        onchange: move |uses| cockpit.change(|_| accounts::set_environment_credentials(account, uses)),
                     }
-                    if !data.uses_api_key {
+                    if !data.uses_environment {
                         div { class: "field-group",
                             span { class: "field-label", "Sign in again, or to another login, in a terminal on {data.machine}" }
                             if let Some(command) = data.command.clone() {
@@ -671,7 +675,7 @@ fn AccountCard(account: AccountId, open: bool) -> Element {
     }
 }
 
-/// The two steps of a new account: its name, color, folder and API key choice, then, once the
+/// The two steps of a new account: its name, color, folder and environment choice, then, once the
 /// daemon added it, how to sign in to it.
 #[component]
 pub fn AddAccountDialog(form: AddAccountForm) -> Element {
@@ -691,7 +695,7 @@ pub fn AddAccountDialog(form: AddAccountForm) -> Element {
             .and_then(|id| card_data(&state, id).map(|data| (id, data)));
         (
             state.daemon.machine.clone(),
-            state.sign_ins.environment_api_key == EnvironmentApiKey::Set,
+            state.sign_ins.environment_credentials == EnvironmentCredentials::Set,
             added,
             state.daemon.path_style() == PathStyle::Windows,
             accounts::proposed_folder(&state, "").is_some(),
@@ -712,14 +716,14 @@ pub fn AddAccountDialog(form: AddAccountForm) -> Element {
         }
     };
     let close = move |_| cockpit.update(accounts::close_add_account);
-    let uses_api_key = form.use_api_key;
-    let key_note = if uses_api_key {
+    let uses_environment = form.use_environment;
+    let key_note = if uses_environment {
         format!(
-            "On: this account's agents get {API_KEY_ENV} from the daemon's environment, and Claude bills that key per token. No sign-in is needed."
+            "On: this account's agents get {API_KEY_ENV} and {AUTH_TOKEN_ENV} from the daemon's environment, and Claude bills the key or token per token. No sign-in is needed."
         )
     } else {
         format!(
-            "Off: this account's agents use its sign-in. The app removes {API_KEY_ENV} from their environment, so a subscription is never billed to an API key by accident."
+            "Off: this account's agents use its sign-in. The app removes {API_KEY_ENV} and {AUTH_TOKEN_ENV} from their environment, so a subscription is never billed to an API key or token by accident."
         )
     };
     let shell = if windows { "PowerShell" } else { "a terminal" };
@@ -802,32 +806,32 @@ pub fn AddAccountDialog(form: AddAccountForm) -> Element {
                             "). A folder you already use keeps its sign-in."
                         }
                     }
-                    ApiKeyChoice {
-                        uses: uses_api_key,
+                    EnvironmentChoice {
+                        uses: uses_environment,
                         note: key_note,
-                        onchange: move |uses| cockpit.update(|state| accounts::with_add_form(state, |form| form.use_api_key = uses)),
+                        onchange: move |uses| cockpit.update(|state| accounts::with_add_form(state, |form| form.use_environment = uses)),
                     }
                     if let Some(error) = &form.error {
                         span { class: "form-error", role: "alert", "The daemon did not add the account: {error}" }
                     }
                 }
                 div { class: "sep" }
-                if uses_api_key {
-                    div { class: "step-title", span { class: "step-number", "2" } "API key" }
+                if uses_environment {
+                    div { class: "step-title", span { class: "step-number", "2" } "API key or token" }
                     div { class: if key_is_set { "signin-status signed ok" } else { "signin-status missing" },
                         span { class: "status-dot", aria_hidden: true }
                         span { class: "signin-state",
                             if key_is_set {
-                                "{API_KEY_ENV} is set on {machine}"
+                                "{API_KEY_ENV} or {AUTH_TOKEN_ENV} is set on {machine}"
                             } else {
-                                "{API_KEY_ENV} is not set on {machine}"
+                                "Neither {API_KEY_ENV} nor {AUTH_TOKEN_ENV} is set on {machine}"
                             }
                         }
                         span { class: "spacer" }
                         CheckAgain { checking: cockpit.state.read().sign_ins.checking }
                     }
                     span { class: "hint",
-                        "The app only checks that the variable is set in the daemon's environment. It never reads, shows or stores the key."
+                        "The app only checks whether the variables are set in the daemon's environment. It never reads, shows or stores the key or token."
                     }
                 } else {
                     div { class: "step-title", span { class: "step-number", "2" } "Sign in" }
@@ -853,7 +857,7 @@ pub fn AddAccountDialog(form: AddAccountForm) -> Element {
             }
             div { class: "dialog-footer row",
                 span { class: "hint",
-                    if form.added.is_none() && !uses_api_key {
+                    if form.added.is_none() && !uses_environment {
                         "You can add it now and sign in later, from Accounts."
                     }
                 }
@@ -907,7 +911,7 @@ pub fn SignInCard(agent: AgentId) -> Element {
         || "the daemon's machine".to_owned(),
         |data| data.machine.clone(),
     );
-    let uses_api_key = data.as_ref().is_some_and(|data| data.uses_api_key);
+    let uses_environment = data.as_ref().is_some_and(|data| data.uses_environment);
     let command = data.and_then(|data| data.command);
     let others_note = match others {
         0 => None,
@@ -922,8 +926,8 @@ pub fn SignInCard(agent: AgentId) -> Element {
         div { class: if waits { "card waiting signin-card" } else { "card signin-card" },
             div { class: "card-head",
                 Icon { kind: IconKind::Warning, size: 16 }
-                if uses_api_key {
-                    span { "Claude Code refused the API key of {name}" }
+                if uses_environment {
+                    span { "Claude Code refused the API key or token of {name}" }
                 } else {
                     span { "The account {name} is not signed in" }
                 }
@@ -938,9 +942,9 @@ pub fn SignInCard(agent: AgentId) -> Element {
                 }
                 ". Claude Code did not send your message."
             }
-            if uses_api_key {
+            if uses_environment {
                 span { class: "card-note",
-                    "Check the daemon's {API_KEY_ENV}, or turn the key off for this account in Accounts and sign in."
+                    "Check the daemon's {API_KEY_ENV} and {AUTH_TOKEN_ENV}, or turn them off for this account in Accounts and sign in."
                 }
             } else {
                 span { class: "card-note",

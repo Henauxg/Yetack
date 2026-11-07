@@ -135,20 +135,20 @@ async fn account(transport: &Transport, command: AccountCommand) -> anyhow::Resu
         AccountCommand::Add {
             name,
             folder,
-            use_environment_api_key,
+            use_environment_credentials,
         } => Request::AccountsAdd(AccountAddParams {
             name,
             folder,
-            credentials: credentials(use_environment_api_key),
+            credentials: credentials(use_environment_credentials),
         }),
         AccountCommand::Change {
             account,
             name,
-            use_environment_api_key,
+            use_environment_credentials,
         } => Request::AccountsChange(AccountChangeParams {
             account,
             name,
-            credentials: use_environment_api_key.map(credentials),
+            credentials: use_environment_credentials.map(credentials),
         }),
         AccountCommand::Remove { account } => Request::AccountsRemove(AccountParams { account }),
     };
@@ -161,7 +161,7 @@ async fn account(transport: &Transport, command: AccountCommand) -> anyhow::Resu
     };
     let header = format!(
         "{:<4} {:<13} {:<7} {:<20} FOLDER",
-        "ID", "SIGN-IN", "API KEY", "NAME"
+        "ID", "SIGN-IN", "ENV KEY", "NAME"
     );
     if print_line(&header)? == Stdout::Closed {
         return Ok(());
@@ -184,9 +184,9 @@ async fn account(transport: &Transport, command: AccountCommand) -> anyhow::Resu
     Ok(())
 }
 
-fn credentials(use_environment_api_key: bool) -> CredentialSource {
-    if use_environment_api_key {
-        CredentialSource::EnvironmentApiKey
+fn credentials(use_environment_credentials: bool) -> CredentialSource {
+    if use_environment_credentials {
+        CredentialSource::Environment
     } else {
         CredentialSource::SignIn
     }
@@ -194,15 +194,15 @@ fn credentials(use_environment_api_key: bool) -> CredentialSource {
 
 fn account_row(state: &AccountState) -> anyhow::Result<String> {
     let account = &state.account;
-    let api_key = match account.credentials {
-        CredentialSource::EnvironmentApiKey => "daemon",
+    let from_environment = match account.credentials {
+        CredentialSource::Environment => "daemon",
         CredentialSource::SignIn => "-",
     };
     Ok(format!(
         "{:<4} {:<13} {:<7} {:<20} {}",
         account.id.get(),
         word(state.sign_in)?,
-        api_key,
+        from_environment,
         shorten(&printable(&account.name), 20),
         printable(&account.folder.display().to_string())
     ))

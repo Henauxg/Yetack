@@ -61,29 +61,32 @@ pub struct Account {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialSource {
-    /// The folder's login. The daemon removes `ANTHROPIC_API_KEY` from the agents' environment.
+    /// The folder's login. The daemon removes `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`
+    /// from the agents' environment.
     #[default]
     SignIn,
-    /// The daemon's own `ANTHROPIC_API_KEY`.
-    EnvironmentApiKey,
+    /// The daemon's own `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`, which Claude Code prefers
+    /// to the folder's login. Older daemons and their files write `environment_api_key`.
+    #[serde(alias = "environment_api_key")]
+    Environment,
 }
 
 impl FromStoredBool for CredentialSource {
     fn from_stored_bool(uses_environment_api_key: bool) -> Self {
         if uses_environment_api_key {
-            Self::EnvironmentApiKey
+            Self::Environment
         } else {
             Self::SignIn
         }
     }
 }
 
-/// Whether the daemon's environment has `ANTHROPIC_API_KEY`.
+/// Whether the daemon's environment has `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, VariantArray,
 )]
 #[serde(rename_all = "snake_case")]
-pub enum EnvironmentApiKey {
+pub enum EnvironmentCredentials {
     Set,
     #[default]
     Unset,

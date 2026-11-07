@@ -143,18 +143,19 @@ pub(crate) enum AccountCommand {
         /// Its Claude Code folder, absolute [default: .claude-<name> in the home folder]
         #[arg(long)]
         folder: Option<PathBuf>,
-        /// Give its agents the daemon's own ANTHROPIC_API_KEY
-        #[arg(long)]
-        use_environment_api_key: bool,
+        /// Give its agents the daemon's own ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN
+        #[arg(long, alias = "use-environment-api-key")]
+        use_environment_credentials: bool,
     },
-    /// Rename an account, or change whether its agents get the daemon's ANTHROPIC_API_KEY
+    /// Rename an account, or change whether its agents get the daemon's ANTHROPIC_API_KEY and
+    /// ANTHROPIC_AUTH_TOKEN
     Change {
         #[arg(value_parser = account_id)]
         account: AccountId,
         #[arg(long)]
         name: Option<String>,
-        #[arg(long)]
-        use_environment_api_key: Option<bool>,
+        #[arg(long, alias = "use-environment-api-key")]
+        use_environment_credentials: Option<bool>,
     },
     /// Remove an account no agent uses; its folder stays
     Remove {

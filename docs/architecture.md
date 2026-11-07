@@ -150,7 +150,7 @@ It belongs to an account, not to an agent: the daemon keeps one per account, fro
 
 ### Accounts
 
-An `Account` is a Claude Code config folder the daemon runs agents with: its id, a name the user chooses, the folder (absolute, on the daemon's machine), and `credentials`: `sign_in` (the folder's login) or `environment_api_key` (the daemon's own key).
+An `Account` is a Claude Code config folder the daemon runs agents with: its id, a name the user chooses, the folder (absolute, on the daemon's machine), and `credentials`: `sign_in` (the folder's login) or `environment` (the daemon's own `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`).
 The folder holds the account's login, user settings, `.claude.json` (the account, personal MCP servers, per-project trust), `projects/` (session transcripts), skills, agents, commands, plugins and global `CLAUDE.md`.
 A repository's own `.claude/`, `.mcp.json` and `CLAUDE.md` stay shared between accounts.
 
@@ -158,7 +158,7 @@ A repository's own `.claude/`, `.mcp.json` and `CLAUDE.md` stay shared between a
   Every daemon has it, and it cannot be removed. Its name starts as "Default", and the user can change it.
 - Every agent has one account, chosen at `agent.start` or `sessions.resume` (the default one when the request names none), and keeps it for good: across stops, resumes and daemon restarts.
 - A message from before accounts existed reads as the default account: an agent's summary, a past session, `agents.json`, a start or resume request (serde defaults).
-- `settings.json` and the event logs of older daemons hold `use_environment_api_key` and `default_uses_environment_api_key`, `bool`s, in place of `credentials` and `default_credentials`. They still read, as `environment_api_key` for `true`.
+- `settings.json` and the event logs of older daemons hold `use_environment_api_key` and `default_uses_environment_api_key`, `bool`s, in place of `credentials` and `default_credentials`. They still read, as `environment` for `true`. The word `environment_api_key`, which older daemons write for `environment`, still reads too.
 
 ## Protocol (`cockpit_protocol`)
 
@@ -282,8 +282,8 @@ The hub turns Claude Code messages into transcript items and status changes (mod
 - Environment: the daemon's own, except for what the agent's account changes (module `accounts`):
   - `CLAUDE_CONFIG_DIR` is set to the account's folder, except for the default account, whose `claude` gets the daemon's own variable, set or not.
   - `CLAUDE_CODE_OAUTH_TOKEN` is always removed: it would take the place of any folder's login.
-  - `ANTHROPIC_API_KEY` is removed, unless the account's `credentials` are `environment_api_key`: then it passes as the daemon's environment has it.
-  The daemon never reads either value. It only checks whether `ANTHROPIC_API_KEY` is set, for `accounts.list`.
+  - `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are removed, unless the account's `credentials` are `environment`: then both pass as the daemon's environment has them. Claude Code prefers either one to the folder's login, so one of them in the daemon's environment would otherwise run every account on it.
+  The daemon never reads or logs these values. It only checks whether `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` is set, for `accounts.list`.
   `claude mcp remove` gets the same environment, so it edits the agent's account's user scope.
 - Command: `claude --output-format stream-json --input-format stream-json --verbose --permission-prompt-tool stdio --replay-user-messages`, plus `--resume <session>`, `--model`, `--effort`, `--permission-mode` when set.
   It runs in the agent's folder.
@@ -376,7 +376,7 @@ A Unix without `/proc`, such as macOS, records nothing.
 
 The daemon keeps the accounts in `settings.json`, outside the `Settings` that `settings.set` replaces, so an app that predates accounts cannot erase them.
 
-- `accounts.list` answers every account, the default one first, with whether it is signed in, the command that signs in to it, and whether the daemon's environment has `ANTHROPIC_API_KEY` (`environment_api_key`: `set` or `unset`).
+- `accounts.list` answers every account, the default one first, with whether it is signed in, the command that signs in to it, and whether the daemon's environment has `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` (`environment_credentials`: `set` or `unset`; older daemons write `environment_api_key`, about the key alone, which still reads).
 - `accounts.add` takes a name and, optionally, a folder and `credentials` (`sign_in` when missing).
   The name has each run of whitespace made one space and is trimmed.
   It holds no control character, has at most 60 characters, and is no other account's whatever its case.
@@ -407,15 +407,15 @@ Whether an account is signed in (`SignIn`): the daemon checks only that `.creden
 - macOS: Claude Code keeps the login in the Keychain, under a name tied to the folder, so a missing file means `unknown`.
 - A folder signed in with a Console account, or with an `apiKeyHelper`, may keep its key outside that file: the check can say `not_signed_in` although `claude` works.
 
-An account can use an API key in two ways, neither of which passes a key through the cockpit:
+An account can use an API key or token in two ways, neither of which passes one through the cockpit:
 
-1. `credentials` set to `environment_api_key`: the account's agents get the daemon's own `ANTHROPIC_API_KEY`, set where the daemon starts (the systemd unit, or the environment the app starts in).
+1. `credentials` set to `environment`: the account's agents get the daemon's own `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`, set where the daemon starts (the systemd unit, or the environment the app starts in).
 2. The folder itself: signing in to it with an Anthropic Console account (API billing), or an `apiKeyHelper` in the folder's `settings.json`, needs nothing from the daemon.
 
 An agent of an account without a valid login starts as any other: `claude` answers `initialize`, and `system/init` says nothing about the login.
 Its first prompt fails: Claude Code writes an assistant line from `<synthetic>` whose `error` is `authentication_failed` (a word of the Agent SDK's types), with a text such as "Not logged in · Please run /login", then a `result` with `is_error`.
 The daemon leaves out that text, which names a command the cockpit has no place for, and adds a notice once per turn: "The account Work is not signed in, or its login expired. Run this command in a terminal on the daemon's machine to sign in, then send your message again: `<command>`".
-For an account that uses the daemon's API key, while the daemon has one, the notice says the key was refused instead.
+For an account that takes its credentials from the environment, while the daemon has a key or token, the notice says they were refused instead.
 The turn ends with the error "The account is not signed in", and its `TurnEnd` has the outcome `not_signed_in`.
 
 The agent then needs you: its summary's `sign_in_wait` is `waiting`, and its status is `NeedsYou` with no pending request, so the app raises a notification and the "Needs you" filter shows it.
@@ -578,10 +578,10 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
 - **Accounts** (`state/accounts.rs`, `ui/accounts.rs`): with two accounts or more, each agent shows its account as a tag, its name in its color: at the start of its sidebar row's second line, and after the status in the header. Past sessions and recent folders show theirs too. With one account, nothing names it.
   - The protocol carries no color: each viewer picks them, and the preferences keep them by the daemon's machine and the account's id. An account without a choice takes the color its id gives. The six colors avoid the status colors.
   - The app asks `accounts.list` once connected, after `AccountsChanged`, when the new agent or the accounts dialog opens, and on "Check again". The answer gives each account's sign-in state and command. The daemon ends the sign-in waits that are over before it answers.
-  - The new agent dialog's account button comes first in the prompt's row. It follows the folder: the account of the last agent or past session there, else the default account. A pick in its menu holds until a recent folder is picked. The menu shows each account's plan usage (the 5-hour figure amber from 80 %), "no plan limits" for an account that uses the API key, or "Not signed in", then "Manage accounts".
-  - "Accounts", in the sidebar's foot, opens a dialog with a card per account: its color, name, folder, sign-in state and number of agents. A card opens to rename the account, change its color or its API key choice, copy its sign-in command, or remove it. Remove is off for the default account and for an account any agent uses.
+  - The new agent dialog's account button comes first in the prompt's row. It follows the folder: the account of the last agent or past session there, else the default account. A pick in its menu holds until a recent folder is picked. The menu shows each account's plan usage (the 5-hour figure amber from 80 %), "no plan limits" for an account that uses the environment's API key or token, or "Not signed in", then "Manage accounts".
+  - "Accounts", in the sidebar's foot, opens a dialog with a card per account: its color, name, folder, sign-in state and number of agents. A card opens to rename the account, change its color or its environment choice ("Use the API key or token from my environment"), copy its sign-in command, or remove it. Remove is off for the default account and for an account any agent uses.
   - "Manage accounts" in the new agent dialog's menu opens the same dialog, which keeps the new agent dialog's form (`from_new_agent`), as "Add an account" opened from it does. Closing it (Close, Esc, or Esc in "Add an account") goes back to the new agent dialog with its folder, message, account, model and mode as they were: the typed text stays in the drafts. Opened from the sidebar's foot or the plan card, it closes to nothing. An answer to the form's folder listing or start that comes meanwhile goes to the form it keeps.
-  - "Add an account" takes the name, the color, the folder and the API key choice. The folder shows the daemon's proposal, `.claude-<name>` beside the default account's `.claude`, until it is typed in, and goes as none until then. Once the daemon added the account, the dialog shows its sign-in command with Copy, and whether it is signed in.
+  - "Add an account" takes the name, the color, the folder and the environment choice. The folder shows the daemon's proposal, `.claude-<name>` beside the default account's `.claude`, until it is typed in, and goes as none until then. Once the daemon added the account, the dialog shows its sign-in command with Copy, and whether it is signed in.
   - The Plan chip shows the selected agent's account: its dot and its 5-hour figure, "API key", or an amber "?" when it is not signed in. The plan card lists every account, this agent's first.
   - The resume list shows each session's account, with a filter by account beside the search field.
   - An agent that waits for its account's sign-in shows a card in the chat in place of the turn's notice and end: the sign-in command, the account's state with "Check again", and "Send the message again", which sends the turn's message once the account signed in. While the daemon cannot tell the account's sign-in (`unknown`, a login in the macOS Keychain), the button sends while the agent still waits, since no check would end the wait. Either way, it sends the message once. Enter presses it while it is on and no text field has the focus (the page's script passes Enter on only then, `send_again` in its key mode). The composer and Stop treat the agent as idle.

@@ -141,7 +141,7 @@ impl AccountList {
     pub(crate) fn sample() -> Self {
         Self {
             default_name: "Personal".to_owned(),
-            default_credentials: CredentialSource::EnvironmentApiKey,
+            default_credentials: CredentialSource::Environment,
             added: vec![Account {
                 id: AccountId::new(2),
                 name: "Work".to_owned(),
@@ -449,7 +449,7 @@ mod tests {
             .unwrap();
         let keyed = list
             .change(
-                change(work.id, None, Some(CredentialSource::EnvironmentApiKey)),
+                change(work.id, None, Some(CredentialSource::Environment)),
                 &default_folder(),
             )
             .unwrap();
@@ -471,7 +471,7 @@ mod tests {
 
         assert_eq!(renamed.name, "Personal");
         assert_eq!(renamed.folder, default_folder());
-        assert_eq!(keyed.credentials, CredentialSource::EnvironmentApiKey);
+        assert_eq!(keyed.credentials, CredentialSource::Environment);
         assert_eq!(keyed.folder, work.folder);
         assert_eq!(same_name.name, "work");
         assert_eq!(taken.code, ErrorCode::InvalidRequest);

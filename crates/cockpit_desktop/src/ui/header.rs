@@ -135,7 +135,7 @@ pub fn Header() -> Element {
     let chip = accounts::plan_chip(&state, account);
     let plan = match chip {
         PlanChip::Percent(percent) => percent,
-        PlanChip::ApiKey | PlanChip::NotSignedIn => None,
+        PlanChip::Environment | PlanChip::NotSignedIn => None,
     };
     let context = context_percent(entry);
     let files = changed_files(entry);
@@ -152,7 +152,7 @@ pub fn Header() -> Element {
     let context_text = context.map_or_else(|| "?".to_owned(), |percent| format!("{percent}%"));
     let plan_words = match chip {
         PlanChip::Percent(_) => format!("plan {plan_text}"),
-        PlanChip::ApiKey => "API key".to_owned(),
+        PlanChip::Environment => "API key".to_owned(),
         PlanChip::NotSignedIn => "not signed in".to_owned(),
     };
     let account_words = account_label
@@ -261,7 +261,7 @@ pub fn Header() -> Element {
                             PlanChip::Percent(_) => rsx! {
                                 span { span { class: "chip-key", "Plan" } " {plan_text}" }
                             },
-                            PlanChip::ApiKey => rsx! {
+                            PlanChip::Environment => rsx! {
                                 span { class: "chip-key", "API key" }
                             },
                             PlanChip::NotSignedIn => rsx! {
@@ -351,7 +351,7 @@ fn UsageCard() -> Element {
                 .collect()
         })
         .unwrap_or_default();
-    let billed_to_key = accounts::billing(&state, agent_account) == Billing::ApiKey;
+    let billed_to_key = accounts::billing(&state, agent_account) == Billing::Environment;
     // Before the connection, the plan's windows are unknown, not missing.
     let plan_loading = !state.is_connected();
     let summary = &entry.summary;

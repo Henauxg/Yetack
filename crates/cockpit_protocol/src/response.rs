@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use strum::VariantArray;
 
-use crate::account::{AccountState, EnvironmentApiKey};
+use crate::account::{AccountState, EnvironmentCredentials};
 use crate::details::{AgentDetails, ContextUsage, McpServer, SlashCommand};
 use crate::ids::{AccountId, AgentId, ClaudeSessionId};
 use crate::machine_load::MachineLoad;
@@ -76,9 +76,11 @@ pub enum ResponseBody {
     /// Every account, the default one first.
     Accounts {
         accounts: Vec<AccountState>,
-        /// Whether the daemon's environment has `ANTHROPIC_API_KEY`, which an account that uses
-        /// it passes to its agents.
-        environment_api_key: EnvironmentApiKey,
+        /// Whether the daemon's environment has `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`,
+        /// which an account that takes its credentials from it passes to its agents. Older
+        /// daemons write `environment_api_key`, about the key alone.
+        #[serde(alias = "environment_api_key")]
+        environment_credentials: EnvironmentCredentials,
     },
     /// The account added or changed.
     Account(AccountState),

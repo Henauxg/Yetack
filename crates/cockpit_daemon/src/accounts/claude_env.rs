@@ -1,7 +1,7 @@
 use std::env;
 use std::path::PathBuf;
 
-use cockpit_protocol::{Account, CredentialSource, EnvironmentApiKey};
+use cockpit_protocol::{Account, CredentialSource, EnvironmentCredentials};
 use tokio::process::Command;
 
 use crate::daemon_config::CLAUDE_CONFIG_DIR_ENV;
@@ -10,11 +10,16 @@ use crate::daemon_config::CLAUDE_CONFIG_DIR_ENV;
 const OAUTH_TOKEN_ENV: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 /// An API key, which Claude Code prefers to the folder's login.
 pub const API_KEY_ENV: &str = "ANTHROPIC_API_KEY";
+/// A token sent as a bearer token, which Claude Code also prefers to the folder's login.
+pub const AUTH_TOKEN_ENV: &str = "ANTHROPIC_AUTH_TOKEN";
+/// The variables an account that takes its credentials from the environment passes on.
+pub const ENVIRONMENT_CREDENTIALS_ENV: [&str; 2] = [API_KEY_ENV, AUTH_TOKEN_ENV];
 
-/// Whether the daemon's `ANTHROPIC_API_KEY` reaches an account's `claude`.
+/// Whether the daemon's `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` reach an account's
+/// `claude`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ApiKey {
-    /// The variable passes as the daemon's environment has it, set or not.
+pub(crate) enum FromEnvironment {
+    /// The variables pass as the daemon's environment has them, set or not.
     Keep,
     Remove,
 }
@@ -25,26 +30,26 @@ pub(crate) struct ClaudeEnv {
     /// `CLAUDE_CONFIG_DIR`, or `None` for the default account, whose `claude` gets the daemon's
     /// own.
     pub(crate) config_dir: Option<PathBuf>,
-    pub(crate) api_key: ApiKey,
+    pub(crate) credentials: FromEnvironment,
 }
 
 impl ClaudeEnv {
     pub(crate) fn new(account: &Account) -> Self {
         Self {
             config_dir: (!account.id.is_default()).then(|| account.folder.clone()),
-            api_key: match account.credentials {
-                CredentialSource::EnvironmentApiKey => ApiKey::Keep,
-                CredentialSource::SignIn => ApiKey::Remove,
+            credentials: match account.credentials {
+                CredentialSource::Environment => FromEnvironment::Keep,
+                CredentialSource::SignIn => FromEnvironment::Remove,
             },
         }
     }
 
-    /// The default account's, without the daemon's API key.
+    /// The default account's, without the daemon's credentials.
     #[cfg(test)]
     pub(crate) fn for_tests() -> Self {
         Self {
             config_dir: None,
-            api_key: ApiKey::Remove,
+            credentials: FromEnvironment::Remove,
         }
     }
 
@@ -52,8 +57,10 @@ impl ClaudeEnv {
     /// daemon's environment.
     pub(crate) fn apply(&self, command: &mut Command) {
         command.env_remove(OAUTH_TOKEN_ENV);
-        if self.api_key == ApiKey::Remove {
-            command.env_remove(API_KEY_ENV);
+        if self.credentials == FromEnvironment::Remove {
+            for name in ENVIRONMENT_CREDENTIALS_ENV {
+                command.env_remove(name);
+            }
         }
         if let Some(folder) = &self.config_dir {
             command.env(CLAUDE_CONFIG_DIR_ENV, folder);
@@ -61,12 +68,16 @@ impl ClaudeEnv {
     }
 }
 
-/// Whether the daemon's environment has `ANTHROPIC_API_KEY`. Its value is never read.
-pub(crate) fn environment_api_key() -> EnvironmentApiKey {
-    if env::var_os(API_KEY_ENV).is_some() {
-        EnvironmentApiKey::Set
+/// Whether the daemon's environment has `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`. Their
+/// values are never read.
+pub(crate) fn environment_credentials() -> EnvironmentCredentials {
+    if ENVIRONMENT_CREDENTIALS_ENV
+        .iter()
+        .any(|name| env::var_os(name).is_some())
+    {
+        EnvironmentCredentials::Set
     } else {
-        EnvironmentApiKey::Unset
+        EnvironmentCredentials::Unset
     }
 }
 
@@ -111,6 +122,7 @@ mod tests {
             changes(&env),
             [
                 (API_KEY_ENV.to_owned(), None),
+                (AUTH_TOKEN_ENV.to_owned(), None),
                 (OAUTH_TOKEN_ENV.to_owned(), None),
                 (
                     CLAUDE_CONFIG_DIR_ENV.to_owned(),
@@ -129,18 +141,24 @@ mod tests {
             changes(&env),
             [
                 (API_KEY_ENV.to_owned(), None),
+                (AUTH_TOKEN_ENV.to_owned(), None),
                 (OAUTH_TOKEN_ENV.to_owned(), None)
             ]
         );
     }
 
     #[test]
-    fn an_account_that_uses_the_api_key_keeps_it_and_still_loses_the_token() {
-        let env = ClaudeEnv::new(&account(2, CredentialSource::EnvironmentApiKey));
+    fn an_account_that_uses_the_environment_keeps_its_key_and_token_and_loses_the_oauth_one() {
+        let env = ClaudeEnv::new(&account(2, CredentialSource::Environment));
 
         let changes = changes(&env);
 
-        assert!(!changes.iter().any(|(name, _)| name == API_KEY_ENV));
+        for name in ENVIRONMENT_CREDENTIALS_ENV {
+            assert!(
+                !changes.iter().any(|(changed, _)| changed == name),
+                "{name}"
+            );
+        }
         assert!(changes.contains(&(OAUTH_TOKEN_ENV.to_owned(), None)));
         assert_eq!(
             env.config_dir.as_deref(),

@@ -162,9 +162,10 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   The real protection against that is Claude Code's sandbox, configured to deny the agents' commands access to `~/.local/state/agents-cockpit/`: the probe checks whether this works with a Unix socket.
 - `ForwardAgent` stays off for the server in the laptop's `~/.ssh/config`, so a process on the server cannot use your laptop's key to log back in through `sshd`.
 - Prompts go only through stdin.
-- The daemon never reads, stores or passes a credential or an API key.
+- The daemon never reads, stores or passes a credential, an API key or a token.
   An account is a config folder: the daemon sets `CLAUDE_CONFIG_DIR` to it, the user signs in by running `claude auth login` once with that variable, and the login stays in the folder (or the macOS Keychain).
-  The daemon removes `CLAUDE_CODE_OAUTH_TOKEN` from every agent's environment, and `ANTHROPIC_API_KEY` unless the agent's account chose to use it, without reading either.
+  The daemon removes `CLAUDE_CODE_OAUTH_TOKEN` from every agent's environment, and `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` unless the agent's account takes its credentials from the environment, without reading or logging any of them.
+  Claude Code prefers each of these to the account folder's login, so one left in the daemon's environment would run every account on it.
   To tell whether an account is signed in, it checks only that the credentials file exists, and when it was written.
 - Choosing a folder in the app trusts it.
   `claude` runs without a terminal, so it shows no trust prompt: a repository's project MCP servers (`.mcp.json`) and its project settings start as soon as an agent opens the folder, with any account, even one that never opened it before.
@@ -231,7 +232,7 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
 - Decided with the accounts mockup, and built: several Claude accounts in the app.
   - From two accounts, every agent shows its account as a tag in the account's color, the default account's too: on its sidebar row and after its status in the header.
   - The new agent dialog picks the account first in the prompt's row, the folder's last one by default; recent folders and past sessions show their account, and the resume list filters by account.
-  - "Accounts" in the sidebar's foot lists the accounts, adds one in two steps (its name, color, folder and API key choice, then its sign-in command), renames, recolors and removes them.
+  - "Accounts" in the sidebar's foot lists the accounts, adds one in two steps (its name, color, folder and whether it uses the API key or token from the environment, then its sign-in command), renames, recolors and removes them.
   - The Plan chip and card show the selected agent's account and every account's plan.
   - An agent whose account is not signed in needs you, with a card in the chat that says how to sign in.
   - Not in scope: moving an agent to another account, and a filter by account in the sidebar.

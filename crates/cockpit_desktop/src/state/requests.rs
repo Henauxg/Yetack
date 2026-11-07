@@ -89,7 +89,7 @@ pub enum Purpose {
     AccountAdded {
         color: AccountColor,
     },
-    /// `accounts.change`: a rename or the API key choice.
+    /// `accounts.change`: a rename or the environment choice.
     AccountChanged,
     /// The sign-in card's "Send the message again", which it offers again when the prompt fails.
     SendAgain {

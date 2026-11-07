@@ -67,7 +67,7 @@ mod tests {
   "prompt_cache_ttl_minutes": 5,
   "accounts": {
     "default_name": "Personal",
-    "default_credentials": "environment_api_key",
+    "default_credentials": "environment",
     "added": [
       {
         "id": 2,
@@ -168,6 +168,22 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("settings.json");
         std::fs::write(&path, BOOL_CREDENTIALS_JSON).unwrap();
+
+        let settings = DaemonSettings::load(&path).unwrap();
+
+        assert_eq!(settings, sample());
+    }
+
+    #[test]
+    fn reads_the_older_word_for_credentials_from_the_environment() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        let older = SETTINGS_JSON.replace(
+            r#""default_credentials": "environment""#,
+            r#""default_credentials": "environment_api_key""#,
+        );
+        assert_ne!(older, SETTINGS_JSON);
+        std::fs::write(&path, older).unwrap();
 
         let settings = DaemonSettings::load(&path).unwrap();
 

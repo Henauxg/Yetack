@@ -31,7 +31,7 @@ mod transcript;
 mod usage;
 
 pub use account::{
-    Account, AccountState, CredentialSource, EnvironmentApiKey, FOLDER_SEPARATOR,
+    Account, AccountState, CredentialSource, EnvironmentCredentials, FOLDER_SEPARATOR,
     MAX_ACCOUNT_NAME_CHARS, SignIn, account_folder_name,
 };
 pub use agent::{

@@ -22,7 +22,7 @@ use cockpit_protocol::{
     AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState, Approval,
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, CancelQueuedParams, Catchup,
     ClaudeSessionId, CommandKind, CostUsd, CredentialSource, Delivery, Effort, EffortSource,
-    EnvironmentApiKey, ErrorCode, Event, EventRecord, HistoryParams, ItemBody, ItemId,
+    EnvironmentCredentials, ErrorCode, Event, EventRecord, HistoryParams, ItemBody, ItemId,
     McpRemoveParams, McpScope, McpServerParams, McpServerStatus, McpToggleAction, McpToggleParams,
     MoveParams, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, PlanUsage, ProcessId,
     Prompt, PromptParams, Question, QuestionAnswer, ReadFileParams, RenameParams, Request,
@@ -42,10 +42,11 @@ const RESUME_INTERRUPTED_TURN: &str = "CLAUDE_CODE_RESUME_INTERRUPTED_TURN=1";
 
 /// The variables that carry a login, which the daemon's environment has only when a test sets
 /// them.
-const LOGIN_VARIABLES: [&str; 3] = [
+const LOGIN_VARIABLES: [&str; 4] = [
     "CLAUDE_CONFIG_DIR",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
 ];
 
 /// Where the daemon's default account keeps its Claude Code folder.
@@ -1809,6 +1810,7 @@ async fn each_accounts_claude_gets_its_folder_and_only_the_login_it_may_use() {
         DefaultFolder::Variable,
         vec![
             ("ANTHROPIC_API_KEY", "test-api-key"),
+            ("ANTHROPIC_AUTH_TOKEN", "test-auth-token"),
             ("CLAUDE_CODE_OAUTH_TOKEN", "test-oauth-token"),
         ],
     );
@@ -1816,11 +1818,7 @@ async fn each_accounts_claude_gets_its_folder_and_only_the_login_it_may_use() {
     let keyed_folder = setup.temp.path().join("claude-keyed");
     let plain_folder = setup.temp.path().join("claude-plain");
     let keyed = client
-        .add_account(
-            "Keyed",
-            Some(&keyed_folder),
-            CredentialSource::EnvironmentApiKey,
-        )
+        .add_account("Keyed", Some(&keyed_folder), CredentialSource::Environment)
         .await;
     let plain = client
         .add_account("Plain", Some(&plain_folder), CredentialSource::SignIn)
@@ -1837,21 +1835,44 @@ async fn each_accounts_claude_gets_its_folder_and_only_the_login_it_may_use() {
         envs,
         [
             json!({"CLAUDE_CONFIG_DIR": setup.default_folder(),
-                   "CLAUDE_CODE_OAUTH_TOKEN": null, "ANTHROPIC_API_KEY": null}),
+                   "CLAUDE_CODE_OAUTH_TOKEN": null, "ANTHROPIC_API_KEY": null,
+                   "ANTHROPIC_AUTH_TOKEN": null}),
             json!({"CLAUDE_CONFIG_DIR": keyed_folder,
-                   "CLAUDE_CODE_OAUTH_TOKEN": null, "ANTHROPIC_API_KEY": "test-api-key"}),
+                   "CLAUDE_CODE_OAUTH_TOKEN": null, "ANTHROPIC_API_KEY": "test-api-key",
+                   "ANTHROPIC_AUTH_TOKEN": "test-auth-token"}),
             json!({"CLAUDE_CONFIG_DIR": plain_folder,
-                   "CLAUDE_CODE_OAUTH_TOKEN": null, "ANTHROPIC_API_KEY": null}),
+                   "CLAUDE_CODE_OAUTH_TOKEN": null, "ANTHROPIC_API_KEY": null,
+                   "ANTHROPIC_AUTH_TOKEN": null}),
         ]
     );
     let ResponseBody::Accounts {
-        environment_api_key,
+        environment_credentials,
         ..
     } = client.ok(Request::AccountsList).await
     else {
         panic!("expected the accounts");
     };
-    assert_eq!(environment_api_key, EnvironmentApiKey::Set);
+    assert_eq!(environment_credentials, EnvironmentCredentials::Set);
+}
+
+#[tokio::test]
+async fn an_auth_token_alone_counts_as_credentials_in_the_environment() {
+    let setup = Setup::new_with(
+        None,
+        DefaultFolder::Variable,
+        vec![("ANTHROPIC_AUTH_TOKEN", "test-auth-token")],
+    );
+    let client = setup.connect().await;
+
+    let ResponseBody::Accounts {
+        environment_credentials,
+        ..
+    } = client.ok(Request::AccountsList).await
+    else {
+        panic!("expected the accounts");
+    };
+
+    assert_eq!(environment_credentials, EnvironmentCredentials::Set);
 }
 
 /// `claude mcp remove` edits the user scope of the agent's account, without the daemon's logins.
@@ -1862,6 +1883,7 @@ async fn removing_an_mcp_server_runs_claude_with_the_agents_account() {
         DefaultFolder::Variable,
         vec![
             ("ANTHROPIC_API_KEY", "test-api-key"),
+            ("ANTHROPIC_AUTH_TOKEN", "test-auth-token"),
             ("CLAUDE_CODE_OAUTH_TOKEN", "test-oauth-token"),
         ],
     );
@@ -1890,7 +1912,8 @@ async fn removing_an_mcp_server_runs_claude_with_the_agents_account() {
     assert_eq!(
         envs[1],
         json!({"CLAUDE_CONFIG_DIR": folder,
-               "CLAUDE_CODE_OAUTH_TOKEN": null, "ANTHROPIC_API_KEY": null})
+               "CLAUDE_CODE_OAUTH_TOKEN": null, "ANTHROPIC_API_KEY": null,
+               "ANTHROPIC_AUTH_TOKEN": null})
     );
 }
 

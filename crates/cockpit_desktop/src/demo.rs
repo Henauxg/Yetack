@@ -11,14 +11,15 @@ use cockpit_protocol::{
     AgentSummary, Answer, AnswerState, Approval, AskedQuestion, BackgroundTask, BackgroundTaskId,
     BackgroundTaskKind, BackgroundTaskStatus, ChangedFile, ClaudeSessionId, CommandKind,
     CommandLoad, Completeness, ContextCategory, ContextUsage, Cores, CostUsd, CredentialSource,
-    Delivery, DirEntry, DirListing, Effort, EffortSource, EntryKind, EntryLink, EnvironmentApiKey,
-    ErrorBody, ErrorCode, FileEdit, HistoryPage, ItemBody, ItemId, LoadAverage, LoadHistory,
-    MachineLoad, McpScope, McpServer, McpServerStatus, McpTool, McpTransport, OlderItems,
-    PastSession, PendingId, PermissionMode, Plan, PlanUsage, Position, ProcessId, Question,
-    QuestionOption, RateLimitStatus, Request, ResourceUse, ResponseBody, Selection, ServerLoad,
-    ServerPoint, SignIn, SignInWait, SlashCommand, Subagent, SubagentRun, SubagentStatus,
-    SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall,
-    ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UsageWindow, UserMessage, WindowUsage,
+    Delivery, DirEntry, DirListing, Effort, EffortSource, EntryKind, EntryLink,
+    EnvironmentCredentials, ErrorBody, ErrorCode, FileEdit, HistoryPage, ItemBody, ItemId,
+    LoadAverage, LoadHistory, MachineLoad, McpScope, McpServer, McpServerStatus, McpTool,
+    McpTransport, OlderItems, PastSession, PendingId, PermissionMode, Plan, PlanUsage, Position,
+    ProcessId, Question, QuestionOption, RateLimitStatus, Request, ResourceUse, ResponseBody,
+    Selection, ServerLoad, ServerPoint, SignIn, SignInWait, SlashCommand, Subagent, SubagentRun,
+    SubagentStatus, SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, Timestamp,
+    TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UsageWindow,
+    UserMessage, WindowUsage,
 };
 use serde_json::Value;
 
@@ -506,7 +507,7 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
                 .iter()
                 .map(|account| account_state(state, account.clone()))
                 .collect(),
-            environment_api_key: EnvironmentApiKey::Set,
+            environment_credentials: EnvironmentCredentials::Set,
         }),
         Request::AccountsAdd(params) => {
             let id = state
@@ -2631,7 +2632,7 @@ fn accounts() -> Vec<Account> {
             id: AccountId::new(LAB_ACCOUNT),
             name: "Lab".to_owned(),
             folder: PathBuf::from("/home/dev/.claude-lab"),
-            credentials: CredentialSource::EnvironmentApiKey,
+            credentials: CredentialSource::Environment,
         },
         Account {
             id: AccountId::new(CLIENT_ACCOUNT),

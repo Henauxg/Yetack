@@ -6,12 +6,12 @@ use std::path::PathBuf;
 use claude_protocol::RateLimitInfo;
 use cockpit_protocol::{
     Account, AccountAddParams, AccountChangeParams, AccountId, AccountPlanUsage, AccountState,
-    AgentId, CredentialSource, EnvironmentApiKey, ErrorBody, ErrorCode, Event, ResponseBody,
+    AgentId, CredentialSource, EnvironmentCredentials, ErrorBody, ErrorCode, Event, ResponseBody,
 };
 
 use crate::accounts::{
-    API_KEY_ENV, AccountList, SignInShell, account_state, environment_api_key, login_written,
-    sign_in_command,
+    API_KEY_ENV, AUTH_TOKEN_ENV, AccountList, SignInShell, account_state, environment_credentials,
+    login_written, sign_in_command,
 };
 use crate::daemon_config::HOME_ENV;
 use crate::hub::input::{AccountLogin, HubInput, Reply};
@@ -116,7 +116,7 @@ impl Hub {
             reply,
             Ok(ResponseBody::Accounts {
                 accounts,
-                environment_api_key: environment_api_key(),
+                environment_credentials: environment_credentials(),
             }),
         );
     }
@@ -211,11 +211,11 @@ impl Hub {
         let program = program::resolve(&self.config.claude_program).name;
         let command = sign_in_command(&account, SignInShell::CURRENT, &program);
         let name = &account.name;
-        if account.credentials == CredentialSource::EnvironmentApiKey
-            && environment_api_key() == EnvironmentApiKey::Set
+        if account.credentials == CredentialSource::Environment
+            && environment_credentials() == EnvironmentCredentials::Set
         {
             return format!(
-                "Claude Code refused the API key in the daemon's {API_KEY_ENV}, which the account {name} uses. Check the key, or stop the account from using it and run this command in a terminal on the daemon's machine to sign in: {command}"
+                "Claude Code refused the API key or token in the daemon's environment ({API_KEY_ENV}, {AUTH_TOKEN_ENV}), which the account {name} uses. Check them, or stop the account from using them and run this command in a terminal on the daemon's machine to sign in: {command}"
             );
         }
         format!(

@@ -38,10 +38,11 @@ use serde_json::{Map, Value, json};
 const ARGS_FILE_ENV: &str = "FAKE_CLAUDE_ARGS_FILE";
 const ENV_FILE_ENV: &str = "FAKE_CLAUDE_ENV_FILE";
 /// The variables `FAKE_CLAUDE_ENV_FILE` records.
-const RECORDED_ENV: [&str; 3] = [
+const RECORDED_ENV: [&str; 4] = [
     "CLAUDE_CONFIG_DIR",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
 ];
 /// A folder that holds each session's name, in a file named after it.
 const SESSION_NAMES_ENV: &str = "FAKE_CLAUDE_SESSION_NAMES";

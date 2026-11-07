@@ -9,7 +9,7 @@ use std::time::SystemTime;
 use cockpit_daemon::CLAUDE_HOME_FOLDER;
 use cockpit_protocol::{
     Account, AccountAddParams, AccountChangeParams, AccountId, AccountParams, AccountState,
-    AgentId, AgentStatus, AgentSummary, CredentialSource, Delivery, EnvironmentApiKey,
+    AgentId, AgentStatus, AgentSummary, CredentialSource, Delivery, EnvironmentCredentials,
     FOLDER_SEPARATOR, ItemBody, ItemId, PlanUsage, Prompt, PromptParams, Request, ResponseBody,
     SignIn, SignInWait, TranscriptItem, TurnOutcome, UsageWindow, UserMessage, account_folder_name,
 };
@@ -26,8 +26,8 @@ use crate::prefs::AccountColor;
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SignIns {
     pub states: BTreeMap<AccountId, AccountState>,
-    /// Whether the daemon's environment has `ANTHROPIC_API_KEY`.
-    pub environment_api_key: EnvironmentApiKey,
+    /// Whether the daemon's environment has `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`.
+    pub environment_credentials: EnvironmentCredentials,
     /// When the daemon last answered. `None` asks it again.
     pub checked_at: Option<SystemTime>,
     /// An `accounts.list` is on its way.
@@ -108,16 +108,16 @@ pub enum Billing {
     /// A Claude subscription's plan, with its windows. Also an account whose sign-in the daemon
     /// cannot tell, or has not told yet.
     Plan,
-    /// The daemon's `ANTHROPIC_API_KEY`: no plan limits.
-    ApiKey,
+    /// The daemon's `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`: no plan limits.
+    Environment,
     NotSignedIn,
 }
 
 pub fn billing(state: &AppState, id: AccountId) -> Billing {
     if account(state, id)
-        .is_some_and(|account| account.credentials == CredentialSource::EnvironmentApiKey)
+        .is_some_and(|account| account.credentials == CredentialSource::Environment)
     {
-        return Billing::ApiKey;
+        return Billing::Environment;
     }
     match state.sign_ins.sign_in(id) {
         Some(SignIn::NotSignedIn) => Billing::NotSignedIn,
@@ -150,13 +150,13 @@ pub fn plan_percent(usage: &PlanUsage) -> Option<u8> {
 pub enum PlanChip {
     /// The plan's percent, `None` while Claude Code has reported none.
     Percent(Option<u8>),
-    ApiKey,
+    Environment,
     NotSignedIn,
 }
 
 pub fn plan_chip(state: &AppState, id: AccountId) -> PlanChip {
     match billing(state, id) {
-        Billing::ApiKey => PlanChip::ApiKey,
+        Billing::Environment => PlanChip::Environment,
         Billing::NotSignedIn => PlanChip::NotSignedIn,
         Billing::Plan => PlanChip::Percent(plan_usage(state, id).and_then(plan_percent)),
     }
@@ -218,7 +218,7 @@ pub enum ChoiceDetail {
         five_hour: Option<u8>,
         seven_day: Option<u8>,
     },
-    ApiKey,
+    Environment,
     NotSignedIn,
 }
 
@@ -232,7 +232,7 @@ pub fn choices(state: &AppState) -> Vec<AccountChoice> {
     let all = labels(state).into_iter();
     let choices = all.map(|label| {
         let detail = match billing(state, label.id) {
-            Billing::ApiKey => ChoiceDetail::ApiKey,
+            Billing::Environment => ChoiceDetail::Environment,
             Billing::NotSignedIn => ChoiceDetail::NotSignedIn,
             Billing::Plan => {
                 let usage = plan_usage(state, label.id);
@@ -504,7 +504,7 @@ pub fn rename_account(state: &AppState, id: AccountId, name: &str) -> Vec<Outgoi
     })
 }
 
-pub fn set_api_key(id: AccountId, uses: bool) -> Vec<Outgoing> {
+pub fn set_environment_credentials(id: AccountId, uses: bool) -> Vec<Outgoing> {
     change_request(AccountChangeParams {
         account: id,
         name: None,
@@ -512,9 +512,9 @@ pub fn set_api_key(id: AccountId, uses: bool) -> Vec<Outgoing> {
     })
 }
 
-fn credentials(uses_api_key: bool) -> CredentialSource {
-    if uses_api_key {
-        CredentialSource::EnvironmentApiKey
+fn credentials(uses_environment: bool) -> CredentialSource {
+    if uses_environment {
+        CredentialSource::Environment
     } else {
         CredentialSource::SignIn
     }
@@ -560,7 +560,7 @@ pub fn remove_account(state: &mut AppState, id: AccountId) -> Vec<Outgoing> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddAccountForm {
     pub color: AccountColor,
-    pub use_api_key: bool,
+    pub use_environment: bool,
     /// The `accounts.add` request is on its way.
     pub adding: bool,
     /// The account, once the daemon added it: the dialog then shows how to sign in to it.
@@ -579,7 +579,7 @@ pub fn open_add_account(state: &mut AppState, drafts: &mut Drafts) {
     state.ui.popover = None;
     state.ui.dialog = Some(Dialog::AddAccount(AddAccountForm {
         color: free_color(state),
-        use_api_key: false,
+        use_environment: false,
         adding: false,
         added: None,
         error: None,
@@ -675,7 +675,7 @@ pub fn add_account(state: &mut AppState, drafts: &Drafts) -> Vec<Outgoing> {
         request: Request::AccountsAdd(AccountAddParams {
             name: name.to_owned(),
             folder,
-            credentials: credentials(form.use_api_key),
+            credentials: credentials(form.use_environment),
         }),
         purpose: Purpose::AccountAdded { color: form.color },
     }]
@@ -713,9 +713,9 @@ pub fn listed(state: &mut AppState, result: Result<ResponseBody, String>) {
     match result {
         Ok(ResponseBody::Accounts {
             accounts,
-            environment_api_key,
+            environment_credentials,
         }) => {
-            sign_ins.environment_api_key = environment_api_key;
+            sign_ins.environment_credentials = environment_credentials;
             sign_ins.states = accounts
                 .into_iter()
                 .map(|account| (account.account.id, account))
@@ -798,13 +798,14 @@ mod tests {
         }
     }
 
-    /// Three accounts: the default "Personal", "Work", and "Lab", which uses the API key.
+    /// Three accounts: the default "Personal", "Work", and "Lab", which uses the environment's
+    /// API key or token.
     fn three_accounts(state: &mut AppState) {
         state.accounts = vec![
             named(AccountId::DEFAULT, "Personal", "/home/sam/.claude"),
             named(work(), "Work", "/home/sam/.claude-work"),
             Account {
-                credentials: CredentialSource::EnvironmentApiKey,
+                credentials: CredentialSource::Environment,
                 ..named(lab(), "Lab", "/home/sam/.claude-lab")
             },
         ];
@@ -985,7 +986,7 @@ mod tests {
                     five_hour: Some(81),
                     seven_day: Some(34)
                 },
-                ChoiceDetail::ApiKey,
+                ChoiceDetail::Environment,
                 ChoiceDetail::NotSignedIn,
             ]
         );
@@ -1009,7 +1010,7 @@ mod tests {
 
         assert_eq!(personal, PlanChip::Percent(Some(42)));
         assert_eq!(job, PlanChip::Percent(Some(81)));
-        assert_eq!(keyed, PlanChip::ApiKey);
+        assert_eq!(keyed, PlanChip::Environment);
         assert_eq!(signed_out, PlanChip::NotSignedIn);
         assert_eq!(unknown, PlanChip::Percent(Some(81)));
         assert_eq!(unreported, PlanChip::Percent(None));
@@ -1139,7 +1140,7 @@ mod tests {
 
         type_account_folder(&mut drafts, "/srv/claude/client".to_owned());
         let follows = type_account_name(&state, &mut drafts, "Client".to_owned());
-        with_add_form(&mut state, |form| form.use_api_key = true);
+        with_add_form(&mut state, |form| form.use_environment = true);
         let request = add_account(&mut state, &drafts);
         added(
             &mut state,
@@ -1158,7 +1159,7 @@ mod tests {
             panic!("one add request, not {request:?}");
         };
         assert_eq!(params.folder, Some(PathBuf::from("/srv/claude/client")));
-        assert_eq!(params.credentials, CredentialSource::EnvironmentApiKey);
+        assert_eq!(params.credentials, CredentialSource::Environment);
         let Some(Dialog::AddAccount(form)) = &state.ui.dialog else {
             panic!("the add dialog");
         };
@@ -1323,7 +1324,7 @@ mod tests {
         let same_name = rename_account(&state, work(), " Work ");
         let empty = rename_account(&state, work(), "  ");
         let renamed = rename_account(&state, work(), "Job");
-        let key = set_api_key(work(), true);
+        let key = set_environment_credentials(work(), true);
         set_color(&mut state, lab(), AccountColor::Green);
 
         assert_eq!(
@@ -1345,7 +1346,7 @@ mod tests {
             [Outgoing {
                 request: Request::AccountsChange(AccountChangeParams {
                     name: None,
-                    credentials: Some(CredentialSource::EnvironmentApiKey),
+                    credentials: Some(CredentialSource::Environment),
                     ..
                 }),
                 ..
@@ -1376,7 +1377,7 @@ mod tests {
             &mut state,
             Ok(ResponseBody::Accounts {
                 accounts: Vec::new(),
-                environment_api_key: EnvironmentApiKey::Set,
+                environment_credentials: EnvironmentCredentials::Set,
             }),
         );
         let after = list_request(&mut state);
@@ -1392,7 +1393,10 @@ mod tests {
             })
         ));
         assert_eq!(while_asked, None);
-        assert_eq!(state.sign_ins.environment_api_key, EnvironmentApiKey::Set);
+        assert_eq!(
+            state.sign_ins.environment_credentials,
+            EnvironmentCredentials::Set
+        );
         assert_eq!(after, None);
         assert!(again.is_some());
     }
@@ -1415,7 +1419,7 @@ mod tests {
             &mut state,
             Ok(ResponseBody::Accounts {
                 accounts: Vec::new(),
-                environment_api_key: EnvironmentApiKey::Unset,
+                environment_credentials: EnvironmentCredentials::Unset,
             }),
         );
         let again = list_request(&mut state);
@@ -1423,7 +1427,7 @@ mod tests {
             &mut state,
             Ok(ResponseBody::Accounts {
                 accounts: Vec::new(),
-                environment_api_key: EnvironmentApiKey::Unset,
+                environment_credentials: EnvironmentCredentials::Unset,
             }),
         );
 

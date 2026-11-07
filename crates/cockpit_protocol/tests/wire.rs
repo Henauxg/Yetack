@@ -20,20 +20,20 @@ use cockpit_protocol::{
     AskedQuestion, BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus,
     CancelQueuedParams, Catchup, ChangedFile, ClaudeSessionId, ClientMessage, CommandKind,
     CommandLoad, Completeness, ContextCategory, ContextUsage, Cores, CostUsd, CredentialSource,
-    Delivery, DirEntry, DirListing, Effort, EffortSource, EntryKind, EntryLink, EnvironmentApiKey,
-    ErrorBody, ErrorCode, Event, EventRecord, FileEdit, FindFilesParams, FoldersListParams,
-    HistoryPage, HistoryParams, Image, ImageMediaType, ItemBody, ItemId, ListDirParams,
-    LoadAverage, LoadHistory, MachineLoad, McpRemoveParams, McpScope, McpServer, McpServerParams,
-    McpServerStatus, McpToggleAction, McpToggleParams, McpTool, McpTransport, Method, MoveParams,
-    OlderItems, PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan, PlanAnswer,
-    PlanDecision, PlanUsage, Position, ProcessId, Prompt, PromptParams, Question, QuestionAnswer,
-    QuestionOption, RateLimitStatus, ReadFileParams, RenameParams, Request, RequestId, ResourceUse,
-    ResponseBody, ResponseResult, Selection, Seq, ServerLoad, ServerMessage, ServerPoint,
-    SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, Settings, SignIn,
-    SignInWait, SlashCommand, Snapshot, StartParams, StopProcessParams, StopTaskParams, Subagent,
-    SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem, TaskProgress, TaskStatus,
-    Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome,
-    UsageWindow, UserMessage, WindowUsage,
+    Delivery, DirEntry, DirListing, Effort, EffortSource, EntryKind, EntryLink,
+    EnvironmentCredentials, ErrorBody, ErrorCode, Event, EventRecord, FileEdit, FindFilesParams,
+    FoldersListParams, HistoryPage, HistoryParams, Image, ImageMediaType, ItemBody, ItemId,
+    ListDirParams, LoadAverage, LoadHistory, MachineLoad, McpRemoveParams, McpScope, McpServer,
+    McpServerParams, McpServerStatus, McpToggleAction, McpToggleParams, McpTool, McpTransport,
+    Method, MoveParams, OlderItems, PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan,
+    PlanAnswer, PlanDecision, PlanUsage, Position, ProcessId, Prompt, PromptParams, Question,
+    QuestionAnswer, QuestionOption, RateLimitStatus, ReadFileParams, RenameParams, Request,
+    RequestId, ResourceUse, ResponseBody, ResponseResult, Selection, Seq, ServerLoad,
+    ServerMessage, ServerPoint, SessionResumeParams, SetEffortParams, SetModeParams,
+    SetModelParams, Settings, SignIn, SignInWait, SlashCommand, Snapshot, StartParams,
+    StopProcessParams, StopTaskParams, Subagent, SubagentRun, SubagentStatus, SubagentToolCall,
+    TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus,
+    TranscriptItem, TurnEnd, TurnOutcome, UsageWindow, UserMessage, WindowUsage,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -126,7 +126,7 @@ fn work_account() -> Account {
         id: AccountId::new(2),
         name: "Work".to_owned(),
         folder: PathBuf::from("/home/sam/.claude-work"),
-        credentials: CredentialSource::EnvironmentApiKey,
+        credentials: CredentialSource::Environment,
     }
 }
 
@@ -789,7 +789,7 @@ fn response_bodies() -> Vec<ResponseBody> {
                 },
                 work_account_state(),
             ],
-            environment_api_key: EnvironmentApiKey::Set,
+            environment_credentials: EnvironmentCredentials::Set,
         },
         ResponseBody::Account(work_account_state()),
     ]
@@ -1187,11 +1187,8 @@ fn words_are_pinned() {
         ]
     );
     assert_eq!(words::<SignIn>(), ["signed_in", "not_signed_in", "unknown"]);
-    assert_eq!(
-        words::<CredentialSource>(),
-        ["sign_in", "environment_api_key"]
-    );
-    assert_eq!(words::<EnvironmentApiKey>(), ["set", "unset"]);
+    assert_eq!(words::<CredentialSource>(), ["sign_in", "environment"]);
+    assert_eq!(words::<EnvironmentCredentials>(), ["set", "unset"]);
     assert_eq!(words::<EffortSource>(), ["chosen", "claude_code_default"]);
     assert_eq!(words::<SignInWait>(), ["not_waiting", "waiting"]);
     assert_eq!(words::<Delivery>(), ["queued", "delivered"]);
@@ -1525,7 +1522,7 @@ fn a_welcome_with_a_snapshot_on_the_wire() {
                     "id": 2,
                     "name": "Work",
                     "folder": "/home/sam/.claude-work",
-                    "credentials": "environment_api_key",
+                    "credentials": "environment",
                 }],
                 "other_plan_usage": [{"account": 2, "usage": {"windows": {}}}],
             },
@@ -2035,6 +2032,30 @@ fn fields_saved_as_bools_still_load() {
     assert_eq!(account, work_account());
 }
 
+/// Older daemons write `environment_api_key` for an account that takes its credentials from the
+/// daemon's environment, and for whether that environment holds them.
+#[test]
+fn the_older_words_for_the_environments_credentials_still_read() {
+    let account = r#"{"id":2,"name":"Work","folder":"/home/sam/.claude-work","credentials":"environment_api_key"}"#;
+    let answer = json!({
+        "type": "accounts",
+        "accounts": [],
+        "environment_api_key": "set",
+    });
+
+    let account: Account = serde_json::from_str(account).unwrap();
+    let answer: ResponseBody = serde_json::from_value(answer).unwrap();
+
+    assert_eq!(account, work_account());
+    assert_eq!(
+        answer,
+        ResponseBody::Accounts {
+            accounts: Vec::new(),
+            environment_credentials: EnvironmentCredentials::Set,
+        }
+    );
+}
+
 /// The transcript's items and pages, and the MCP toggle, with the enums that replaced `bool`s.
 #[test]
 fn transcript_pages_and_mcp_toggles_on_the_wire() {
@@ -2175,7 +2196,7 @@ fn account_requests_on_the_wire() {
     let add = Request::AccountsAdd(AccountAddParams {
         name: "Work".to_owned(),
         folder: Some(PathBuf::from("/home/sam/.claude-work")),
-        credentials: CredentialSource::EnvironmentApiKey,
+        credentials: CredentialSource::Environment,
     });
     let change = Request::AccountsChange(AccountChangeParams {
         account: AccountId::new(2),
@@ -2192,7 +2213,7 @@ fn account_requests_on_the_wire() {
         json!({"method": "accounts.add", "params": {
             "name": "Work",
             "folder": "/home/sam/.claude-work",
-            "credentials": "environment_api_key",
+            "credentials": "environment",
         }}),
     );
     assert_wire(
@@ -2229,7 +2250,7 @@ fn an_account_added_with_only_a_name_takes_the_proposed_folder_and_no_api_key() 
 fn the_accounts_answer_on_the_wire() {
     let body = ResponseBody::Accounts {
         accounts: vec![work_account_state()],
-        environment_api_key: EnvironmentApiKey::Unset,
+        environment_credentials: EnvironmentCredentials::Unset,
     };
 
     assert_wire(
@@ -2241,12 +2262,12 @@ fn the_accounts_answer_on_the_wire() {
                     "id": 2,
                     "name": "Work",
                     "folder": "/home/sam/.claude-work",
-                    "credentials": "environment_api_key",
+                    "credentials": "environment",
                 },
                 "sign_in": "not_signed_in",
                 "sign_in_command": "CLAUDE_CONFIG_DIR='/home/sam/.claude-work' claude",
             }],
-            "environment_api_key": "unset",
+            "environment_credentials": "unset",
         }),
     );
 }
