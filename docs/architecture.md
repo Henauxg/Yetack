@@ -326,7 +326,7 @@ Everything lives in `$XDG_STATE_HOME/agents-cockpit/` (default `~/.local/state/a
 
 - `agents-cockpit.sock`: the socket, mode 600;
 - `serve.lock`: held while a daemon runs, the background service or the app's own, so a second daemon refuses to start and a leftover socket is safe to delete;
-- `agents.json`: one entry per agent (id, title, folder, account, Claude session id, model, effort, mode, position in the list, for an agent made from a past session the part of the session file it shows, and while its `claude` runs, that process's id and start time), written atomically (write to a temporary file, then rename);
+- `agents.json`: one entry per agent (id, title, folder, account, Claude session id, model, effort, mode, position in the list, for an agent made from a past session the part of the session file it shows, and while its `claude` runs, that process's id, start time and, on Linux, boot), written atomically (write to a temporary file, then rename);
 - `settings.json`: the hidden MCP servers, the accounts (the default account's name and credentials, the added accounts, the next account id), and other daemon-side settings;
 - `events/<agent-id>.jsonl`: the agent's cockpit events, each with its `Seq`, appended;
 - `raw/<agent-id>.jsonl`: every line exchanged with `claude`, for debugging.
@@ -350,6 +350,8 @@ So before any agent resumes, `Daemon::prepare`, shared by `serve` and the daemon
 On Unix, it sends SIGTERM to the process's group, waits up to 5 seconds for `claude` to end, then sends SIGKILL to the group.
 On Windows, a `claude` in a job died with the daemon, so only one that ran without a job can be left. `TerminateProcess` ends it and every process under it: a snapshot of the machine's processes (Toolhelp) gives each process's parent, and the walk down keeps a process only when it started after the parent it names, since a parent that ended gives its id away. For an npm `claude.cmd`, this stops `cmd.exe` and the real `claude` under it.
 A process with the recorded id and another start time took the id since, and is left alone.
+On Linux, the start time counts clock ticks from the boot, so a process of a later boot can have the recorded id and start time: the record also holds the boot (`/proc/sys/kernel/random/boot_id`), and a record from another boot is left alone. A record saved before the boot existed, or a boot that cannot be read, leaves the start time alone to decide.
+On Windows, the start time is a date, in 100 ns units since 1601, so a process of a later boot cannot have the recorded one: the record holds no boot. A boot time from `GetTickCount64` against the clock would move with every clock change, so it could only be compared within a margin, and would add nothing to the start time.
 The record is written when `claude` starts and cleared when it exits; a file without it reads as no process.
 A Unix without `/proc`, such as macOS, records nothing.
 

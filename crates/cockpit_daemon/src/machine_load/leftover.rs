@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use cockpit_protocol::ProcessId;
 
-use crate::store::RecordedProcess;
+use crate::store::{BootId, RecordedProcess};
 
 /// How long the leftover processes have to end after the polite stop.
 const STOP_WAIT: Duration = Duration::from_secs(5);
@@ -26,9 +26,42 @@ const MAX_TREE: usize = 4096;
 #[cfg(unix)]
 const POLL: Duration = Duration::from_millis(50);
 
-/// The process `pid` with its start time, or `None` when it no longer runs.
+/// The process `pid` with its start time and the boot it runs in, or `None` when it no longer
+/// runs.
 pub(crate) fn record_process(pid: ProcessId) -> Option<RecordedProcess> {
-    started(pid).map(|started| RecordedProcess { pid, started })
+    started(pid).map(|started| RecordedProcess {
+        pid,
+        started,
+        boot: boot(),
+    })
+}
+
+/// This boot of the machine. A start time on Linux counts clock ticks from the boot, so a
+/// process of a later boot can have the recorded one's id and start time.
+#[cfg(unix)]
+fn boot() -> Option<BootId> {
+    const BOOT_ID_FILE: &str = "/proc/sys/kernel/random/boot_id";
+
+    let id = std::fs::read_to_string(BOOT_ID_FILE).ok()?;
+    let id = id.trim();
+    (!id.is_empty()).then(|| BootId::new(id.to_owned()))
+}
+
+/// Windows dates a process's start in 100 ns units since 1601: a process of a later boot cannot
+/// have the recorded start, so the start time alone tells the boots apart.
+#[cfg(windows)]
+fn boot() -> Option<BootId> {
+    None
+}
+
+/// Whether a process recorded in `recorded` can be one of this boot, `current`. Either one
+/// unknown leaves the start time alone to decide.
+#[cfg(any(unix, test))]
+fn same_boot(recorded: Option<&BootId>, current: Option<&BootId>) -> bool {
+    match (recorded, current) {
+        (Some(recorded), Some(current)) => recorded == current,
+        (None, _) | (_, None) => true,
+    }
 }
 
 /// When `pid` started, unless it has ended.
@@ -53,11 +86,19 @@ pub(crate) fn stop_leftovers(recorded: &[RecordedProcess]) {
             .ok()
             .and_then(Pid::from_raw)
     };
-    let mut stopping: Vec<RecordedProcess> = Vec::new();
+    let current = boot();
+    let mut stopping: Vec<&RecordedProcess> = Vec::new();
     for process in recorded {
         let Some(pid) = to_pid(process) else {
             continue;
         };
+        if !same_boot(process.boot.as_ref(), current.as_ref()) {
+            tracing::info!(
+                pid = process.pid.get(),
+                "the recorded claude ran before the machine restarted"
+            );
+            continue;
+        }
         if started(process.pid) != Some(process.started) {
             continue;
         }
@@ -69,7 +110,7 @@ pub(crate) fn stop_leftovers(recorded: &[RecordedProcess]) {
         if rustix::process::kill_process_group(pid, Signal::TERM).is_err() {
             let _ = rustix::process::kill_process(pid, Signal::TERM);
         }
-        stopping.push(*process);
+        stopping.push(process);
     }
     let deadline = std::time::Instant::now() + STOP_WAIT;
     while std::time::Instant::now() < deadline {
@@ -241,7 +282,7 @@ fn descendants<P>(
 }
 
 #[cfg(test)]
-mod tree_tests {
+mod logic_tests {
     use std::collections::HashMap;
 
     use super::*;
@@ -284,6 +325,17 @@ mod tree_tests {
     }
 
     #[test]
+    fn only_a_known_other_boot_rules_a_record_out() {
+        let this = BootId::new("this".to_owned());
+        let other = BootId::new("other".to_owned());
+
+        assert!(same_boot(Some(&this), Some(&this)));
+        assert!(!same_boot(Some(&other), Some(&this)));
+        assert!(same_boot(None, Some(&this)), "a file saved before boots");
+        assert!(same_boot(Some(&other), None), "a boot that cannot be read");
+    }
+
+    #[test]
     fn a_loop_in_the_links_ends_the_walk() {
         let links = [link(10, 11), link(11, 10)];
 
@@ -318,11 +370,38 @@ mod tests {
         let mut child = leader();
         let recorded = record_process(ProcessId::new(child.id())).unwrap();
 
+        stop_leftovers(std::slice::from_ref(&recorded));
+
+        let status = child.wait().unwrap();
+        assert!(recorded.boot.is_some(), "Linux records the boot");
+        assert_eq!(status.signal(), Some(Signal::TERM.as_raw()));
+        assert_eq!(record_process(recorded.pid), None);
+    }
+
+    #[test]
+    fn a_process_recorded_in_another_boot_is_left_alone() {
+        let mut child = leader();
+        let mut recorded = record_process(ProcessId::new(child.id())).unwrap();
+        recorded.boot = Some(BootId::new("another boot".to_owned()));
+
+        stop_leftovers(&[recorded]);
+
+        let running = child.try_wait().unwrap().is_none();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(running, "a process of this boot runs on");
+    }
+
+    #[test]
+    fn a_record_without_a_boot_is_stopped_by_its_start_time() {
+        let mut child = leader();
+        let mut recorded = record_process(ProcessId::new(child.id())).unwrap();
+        recorded.boot = None;
+
         stop_leftovers(&[recorded]);
 
         let status = child.wait().unwrap();
         assert_eq!(status.signal(), Some(Signal::TERM.as_raw()));
-        assert_eq!(record_process(recorded.pid), None);
     }
 
     #[test]

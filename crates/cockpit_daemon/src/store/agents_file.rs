@@ -53,12 +53,31 @@ pub(crate) struct AgentRecord {
 }
 
 /// A process, told apart from a later one that reuses its id by when it started.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct RecordedProcess {
     pub(crate) pid: ProcessId,
     /// In the system's own unit: clock ticks after boot on Linux, 100 ns units since 1601 on
     /// Windows.
     pub(crate) started: u64,
+    /// The boot the process ran in, on Linux, where a start time counts from the boot. `None` on
+    /// Windows, whose start times are dates, and in a file saved before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) boot: Option<BootId>,
+}
+
+/// One boot of the machine: Linux's `boot_id`, a random UUID the kernel draws at each boot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct BootId(String);
+
+impl BootId {
+    #[cfg_attr(
+        all(windows, not(test)),
+        expect(dead_code, reason = "Windows records no boot")
+    )]
+    pub(crate) fn new(id: String) -> Self {
+        Self(id)
+    }
 }
 
 /// The start of a session file, as it was when an agent took the session over. Claude Code only
@@ -118,7 +137,8 @@ mod tests {
       "position": 2048,
       "process": {
         "pid": 4242,
-        "started": 987654
+        "started": 987654,
+        "boot": "6e1f0c2a-3b4d-4e5f-8a9b-0c1d2e3f4a5b"
       },
       "account": 5
     }
@@ -148,6 +168,9 @@ mod tests {
                 process: Some(RecordedProcess {
                     pid: ProcessId::new(4242),
                     started: 987_654,
+                    boot: Some(BootId::new(
+                        "6e1f0c2a-3b4d-4e5f-8a9b-0c1d2e3f4a5b".to_owned(),
+                    )),
                 }),
                 account: AccountId::new(5),
             }],
@@ -193,7 +216,8 @@ mod tests {
             r#",
       "process": {
         "pid": 4242,
-        "started": 987654
+        "started": 987654,
+        "boot": "6e1f0c2a-3b4d-4e5f-8a9b-0c1d2e3f4a5b"
       }"#,
             "",
         );
@@ -203,6 +227,25 @@ mod tests {
         let file = AgentsFile::load(&path).unwrap();
 
         assert_eq!(file.agents[0].process, None);
+    }
+
+    #[test]
+    fn a_process_saved_without_its_boot_still_loads() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("agents.json");
+        let without_boot = AGENTS_JSON.replace(
+            r#",
+        "boot": "6e1f0c2a-3b4d-4e5f-8a9b-0c1d2e3f4a5b""#,
+            "",
+        );
+        assert_ne!(without_boot, AGENTS_JSON);
+        std::fs::write(&path, without_boot).unwrap();
+
+        let file = AgentsFile::load(&path).unwrap();
+
+        let process = file.agents[0].process.as_ref().unwrap();
+        assert_eq!(process.started, 987_654);
+        assert_eq!(process.boot, None);
     }
 
     #[test]
