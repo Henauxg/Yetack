@@ -166,6 +166,9 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   An account is a config folder: the daemon sets `CLAUDE_CONFIG_DIR` to it, the user signs in by running `claude auth login` once with that variable, and the login stays in the folder (or the macOS Keychain).
   The daemon removes `CLAUDE_CODE_OAUTH_TOKEN` from every agent's environment, and `ANTHROPIC_API_KEY` unless the agent's account chose to use it, without reading either.
   To tell whether an account is signed in, it checks only that the credentials file exists, and when it was written.
+- Choosing a folder in the app trusts it.
+  `claude` runs without a terminal, so it shows no trust prompt: a repository's project MCP servers (`.mcp.json`) and its project settings start as soon as an agent opens the folder, with any account, even one that never opened it before.
+  The app adds no confirmation, so pick only folders whose code you trust to run.
 
 ## Front end
 

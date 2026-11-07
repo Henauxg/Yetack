@@ -284,6 +284,8 @@ The hub turns Claude Code messages into transcript items and status changes (mod
   `claude mcp remove` gets the same environment, so it edits the agent's account's user scope.
 - Command: `claude --output-format stream-json --input-format stream-json --verbose --permission-prompt-tool stdio --replay-user-messages`, plus `--resume <session>`, `--model`, `--effort`, `--permission-mode` when set.
   It runs in the agent's folder.
+  Without a terminal, `claude` asks no trust question: it trusts the folder, and a repository's project MCP servers (`.mcp.json`) start with the agent, for any account.
+  Choosing a folder in the app trusts it.
   The binary is `claude` from `PATH`, or `AGENTS_COCKPIT_CLAUDE` for tests.
   On Windows, the default is the native installer's `claude.exe` on `PATH`, then in `.local\bin` in the home folder, then an npm install's `claude.cmd` on `PATH`; relative folders of `PATH` are skipped.
   A `.cmd` or `.bat` runs through the system folder's `cmd.exe` with `/d /v:off /s /c`, each argument in double quotes with a trailing backslash doubled; an argument holding a quote, a `%`, a line break or a NUL is refused, since `cmd.exe` would read it.
@@ -403,7 +405,7 @@ It waits until one of these:
 
 A repository the account has not trusted yet: Claude Code turns trust verification off when it runs without a terminal, as in JSON mode, and asks nothing.
 With a new config folder, a repository's `.mcp.json` server connects at once, and `.claude.json` records no trust for the folder.
-Choosing the folder in the app is what trusts it.
+Choosing the folder in the app is what trusts it, for every account: the app asks nothing more (plan.md, "Security").
 
 What an app that predates accounts sees:
 
