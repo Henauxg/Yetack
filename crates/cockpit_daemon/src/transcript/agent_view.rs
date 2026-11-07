@@ -180,6 +180,8 @@ pub(crate) struct AgentView {
     expected_context: Option<ExpectedContext>,
     /// The current turn found no valid login.
     sign_in_failed: bool,
+    /// When the last turn ended without a valid login. `None` in a view restored from the log.
+    sign_in_failed_at: Option<Timestamp>,
     /// The name Claude Code restated as the process started, until it answers `initialize`.
     restated_title: Option<String>,
     awaited_echoes: VecDeque<String>,
@@ -211,6 +213,7 @@ impl AgentView {
             restated_title: None,
             expected_context: None,
             sign_in_failed: false,
+            sign_in_failed_at: None,
             awaited_echoes: VecDeque::new(),
             tool_counts: HashMap::new(),
             skills: BTreeSet::new(),
@@ -591,8 +594,8 @@ impl AgentView {
     /// login before that stops waiting for you. Returns whether it did.
     pub(crate) fn account_signed_in(&mut self, modified: Timestamp) -> bool {
         let failed_before = self
-            .summary
-            .last_activity_at
+            .sign_in_failed_at
+            .or(self.summary.last_activity_at)
             .is_none_or(|failed| failed < modified);
         if !self.summary.waits_for_sign_in || !failed_before {
             return false;
@@ -1131,6 +1134,7 @@ impl AgentView {
         };
         self.sign_in_failed = false;
         self.summary.waits_for_sign_in = not_signed_in;
+        self.sign_in_failed_at = not_signed_in.then_some(now);
         let ended = Ended {
             status: ended_status,
             error: error.clone(),
@@ -2357,6 +2361,38 @@ mod tests {
         assert_eq!(after_message.status, AgentStatus::Working);
         assert!(!stale_login);
         assert!(new_login);
+        assert_eq!(view.summary().status, AgentStatus::Idle);
+    }
+
+    /// A stop and a resume after the failed turn are activity, but the login still counts from
+    /// the failed turn.
+    #[test]
+    fn a_login_after_the_failed_turn_ends_the_wait_after_a_stop_and_a_resume() {
+        let mut view = view();
+        view.add_prompt(&prompt("Hello"), PromptDelivery::Now, now());
+        apply(
+            &mut view,
+            json!({
+                "type": "assistant", "error": "authentication_failed",
+                "message": {"model": "<synthetic>", "content": [
+                    {"type": "text", "text": "Not logged in · Please run /login"}
+                ]}
+            }),
+        );
+        apply(
+            &mut view,
+            json!({"type": "result", "subtype": "success", "is_error": true, "num_turns": 1}),
+        );
+        let at = |millis| Timestamp::from_unix_millis(now().unix_millis() + millis);
+        view.process_exited("claude exited".to_owned(), at(10));
+        view.resumed_by_user(at(30));
+        view.process_started(ProcessSession::Resumed);
+
+        let ended = view.account_signed_in(at(20));
+        view.take_events();
+
+        assert!(ended);
+        assert!(!view.summary().waits_for_sign_in);
         assert_eq!(view.summary().status, AgentStatus::Idle);
     }
 
