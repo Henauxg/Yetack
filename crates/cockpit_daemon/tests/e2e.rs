@@ -1918,14 +1918,19 @@ async fn the_default_account_runs_without_the_variable_and_a_new_one_signs_in_be
     };
     assert_eq!(default.account.folder, setup.default_folder());
     assert_eq!(default.sign_in, SignIn::NotSignedIn);
-    assert_eq!(default.sign_in_command, "claude auth login");
+    // The daemon runs the program its configuration names, so the command names it too.
+    let claude = env!("CARGO_BIN_EXE_fake-claude");
+    assert_eq!(default.sign_in_command, format!("'{claude}' auth login"));
     assert_eq!(after[0].sign_in, SignIn::SignedIn);
     let folder = home.join(".claude-client-work");
     assert_eq!(added.account.folder, folder);
     assert_eq!(added.sign_in, SignIn::NotSignedIn);
     assert_eq!(
         added.sign_in_command,
-        format!("CLAUDE_CONFIG_DIR='{}' claude auth login", folder.display())
+        format!(
+            "CLAUDE_CONFIG_DIR='{}' '{claude}' auth login",
+            folder.display()
+        )
     );
 }
 

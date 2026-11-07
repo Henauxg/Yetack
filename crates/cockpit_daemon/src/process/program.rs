@@ -5,19 +5,21 @@
 //! through `cmd.exe`, which reads its command line by rules of its own. A program the daemon's
 //! configuration names is run as it is.
 //!
+//! The sign-in command names the program as a terminal on the daemon's machine can run it: plain
+//! `claude` when a terminal's own lookup finds the same program, else its path.
+//!
 //! Every program the daemon starts on Windows starts without a console window: the desktop app
 //! that runs the daemon has no console to share, so Windows would open one for each.
 
 use std::ffi::OsString;
 use std::io;
-use std::path::Path;
-#[cfg(any(windows, test))]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tokio::process::Command;
 
+use crate::daemon_config::DEFAULT_CLAUDE_PROGRAM;
 #[cfg(windows)]
-use crate::daemon_config::{DEFAULT_CLAUDE_PROGRAM, HOME_ENV};
+use crate::daemon_config::HOME_ENV;
 
 /// The native installer's folder, under the home folder.
 #[cfg(windows)]
@@ -26,6 +28,15 @@ const INSTALLER_FOLDER: [&str; 2] = [".local", "bin"];
 const EXE_NAME: &str = "claude.exe";
 #[cfg(any(windows, test))]
 const NPM_NAME: &str = "claude.cmd";
+/// What PowerShell finds for a plain `claude`: its own scripts first, then the extensions of
+/// `PATHEXT`.
+#[cfg(any(windows, test))]
+const POWERSHELL_SCRIPT_EXTENSION: &str = ".ps1";
+#[cfg(windows)]
+const PATHEXT_ENV: &str = "PATHEXT";
+/// Windows' own `PATHEXT`, for a daemon whose environment lacks it.
+#[cfg(windows)]
+const DEFAULT_PATHEXT: &str = ".COM;.EXE;.BAT;.CMD";
 /// `/d` skips the AutoRun commands of the registry, `/v:off` keeps `!` plain text, and `/s /c`
 /// runs the rest of the line once its outer quotes are taken off.
 #[cfg(any(windows, test))]
@@ -33,6 +44,116 @@ const INTERPRETER_OPTIONS: &str = "/d /v:off /s /c";
 /// `cmd.exe` expands `%` even between quotes, and a `"` would end the quoting.
 #[cfg(any(windows, test))]
 const UNQUOTABLE: [char; 5] = ['"', '%', '\r', '\n', '\0'];
+
+/// The program the daemon runs as `claude`, and how a terminal on its machine names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClaudeProgram {
+    pub(crate) path: PathBuf,
+    pub(crate) name: TerminalName,
+}
+
+/// How a terminal on the daemon's machine runs the program.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TerminalName {
+    /// `claude`: the terminal's lookup on `PATH` finds the program the daemon runs.
+    Plain,
+    Path(PathBuf),
+}
+
+/// The program `configured` names. A program other than the default one is named by its path.
+/// Looks for files on Windows: it blocks.
+#[cfg(unix)]
+pub(crate) fn resolve(configured: &Path) -> ClaudeProgram {
+    // `Command` looks the default one up on `PATH`, as a shell does.
+    let name = if configured == Path::new(DEFAULT_CLAUDE_PROGRAM) {
+        TerminalName::Plain
+    } else {
+        TerminalName::Path(configured.to_owned())
+    };
+    ClaudeProgram {
+        path: configured.to_owned(),
+        name,
+    }
+}
+
+/// The program `configured` names: for the default one, the `claude` found on `PATH` or in the
+/// installer's folder. A program other than the default one is named by its path. Looks for
+/// files: it blocks.
+#[cfg(windows)]
+pub(crate) fn resolve(configured: &Path) -> ClaudeProgram {
+    if configured != Path::new(DEFAULT_CLAUDE_PROGRAM) {
+        return ClaudeProgram {
+            path: configured.to_owned(),
+            name: TerminalName::Path(configured.to_owned()),
+        };
+    }
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let home = std::env::var_os(HOME_ENV);
+    let extensions = std::env::var_os(PATHEXT_ENV);
+    resolve_default(&path, home.as_deref(), extensions.as_deref(), Path::is_file)
+}
+
+/// The default `claude`, from the `PATH`, home folder and `PATHEXT` given.
+#[cfg(windows)]
+fn resolve_default(
+    path: &std::ffi::OsStr,
+    home: Option<&std::ffi::OsStr>,
+    extensions: Option<&std::ffi::OsStr>,
+    is_file: impl Fn(&Path) -> bool,
+) -> ClaudeProgram {
+    let folders: Vec<PathBuf> = std::env::split_paths(path).collect();
+    let installer = home.map(|home| {
+        INSTALLER_FOLDER
+            .iter()
+            .fold(PathBuf::from(home), |path, name| path.join(name))
+    });
+    let Some(found) = find_claude(&folders, installer.as_deref(), &is_file) else {
+        return ClaudeProgram {
+            path: PathBuf::from(DEFAULT_CLAUDE_PROGRAM),
+            name: TerminalName::Plain,
+        };
+    };
+    let extensions = extensions
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or(DEFAULT_PATHEXT);
+    let extensions: Vec<&str> = extensions.split(';').collect();
+    let name = terminal_name(&found, &folders, &extensions, &is_file);
+    ClaudeProgram { path: found, name }
+}
+
+/// `Plain` when PowerShell's lookup of `claude` on `path` finds `found`: in each folder in turn,
+/// `claude.ps1`, then `claude` with each of `extensions`. An npm install puts a `claude.ps1`
+/// beside its `claude.cmd`, which PowerShell's execution policy may refuse to run, so the npm
+/// `claude.cmd` is named by its path.
+#[cfg(any(windows, test))]
+fn terminal_name(
+    found: &Path,
+    path: &[PathBuf],
+    extensions: &[&str],
+    is_file: impl Fn(&Path) -> bool,
+) -> TerminalName {
+    let script = std::iter::once(POWERSHELL_SCRIPT_EXTENSION);
+    let extensions: Vec<String> = script
+        .chain(extensions.iter().copied())
+        .filter(|extension| !extension.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect();
+    let candidates = path
+        .iter()
+        .filter(|folder| folder.is_absolute())
+        .flat_map(|folder| {
+            let names = extensions
+                .iter()
+                .map(|extension| format!("{DEFAULT_CLAUDE_PROGRAM}{extension}"));
+            names.map(|name| folder.join(name))
+        });
+    let first = candidates.into_iter().find(|candidate| is_file(candidate));
+    if first.as_deref() == Some(found) {
+        TerminalName::Plain
+    } else {
+        TerminalName::Path(found.to_owned())
+    }
+}
 
 /// Runs `program` with `args`.
 #[cfg(unix)]
@@ -46,11 +167,7 @@ pub(crate) fn command(program: &Path, args: &[OsString]) -> io::Result<Command> 
 /// Fails for an argument that `cmd.exe` cannot take safely.
 #[cfg(windows)]
 pub(crate) fn command(program: &Path, args: &[OsString]) -> io::Result<Command> {
-    let program = if program == Path::new(DEFAULT_CLAUDE_PROGRAM) {
-        find_default().unwrap_or_else(|| program.to_owned())
-    } else {
-        program.to_owned()
-    };
+    let program = resolve(program).path;
     let mut command = if is_batch_file(&program) {
         let line = batch_command_line(&program, args)?;
         let mut command = Command::new(interpreter()?);
@@ -71,19 +188,6 @@ pub(crate) fn hide_console(command: &mut Command) {
     use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
     command.creation_flags(CREATE_NO_WINDOW);
-}
-
-/// The default `claude`, from `PATH` and the home folder.
-#[cfg(windows)]
-fn find_default() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    let folders: Vec<PathBuf> = std::env::split_paths(&path).collect();
-    let installer = std::env::var_os(HOME_ENV).map(|home| {
-        INSTALLER_FOLDER
-            .iter()
-            .fold(PathBuf::from(home), |path, name| path.join(name))
-    });
-    find_claude(&folders, installer.as_deref(), Path::is_file)
 }
 
 /// `claude.exe` in a folder of `path`, then in `installer`, then `claude.cmd` in a folder of
@@ -225,6 +329,72 @@ mod tests {
         assert_eq!(found(&[relative], None, &files), None);
     }
 
+    /// Windows' own `PATHEXT`, as a terminal reads it.
+    const PATHEXT: [&str; 4] = [".COM", ".EXE", ".BAT", ".CMD"];
+
+    fn named(found: &Path, path: &[PathBuf], files: &[PathBuf]) -> TerminalName {
+        terminal_name(found, path, &PATHEXT, |candidate| {
+            files.iter().any(|file| file == candidate)
+        })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_default_claude_is_named_plainly_and_a_configured_one_by_its_path() {
+        let configured = folder("bin").join("claude-dev");
+
+        let default = resolve(Path::new(DEFAULT_CLAUDE_PROGRAM));
+        let other = resolve(&configured);
+
+        assert_eq!(default.name, TerminalName::Plain);
+        assert_eq!(other.path, configured);
+        assert_eq!(other.name, TerminalName::Path(configured.clone()));
+    }
+
+    #[test]
+    fn a_claude_the_terminal_finds_first_is_named_plainly() {
+        let native = folder("native");
+        let exe = native.join(EXE_NAME);
+
+        let name = named(&exe, &[folder("tools"), native], std::slice::from_ref(&exe));
+
+        assert_eq!(name, TerminalName::Plain);
+    }
+
+    #[test]
+    fn a_claude_in_the_installers_folder_alone_is_named_by_its_path() {
+        let exe = folder("home").join(".local").join("bin").join(EXE_NAME);
+
+        let name = named(&exe, &[folder("tools")], std::slice::from_ref(&exe));
+
+        assert_eq!(name, TerminalName::Path(exe));
+    }
+
+    #[test]
+    fn a_claude_behind_another_on_the_path_is_named_by_its_path() {
+        let npm = folder("npm");
+        let native = folder("native");
+        let exe = native.join(EXE_NAME);
+        let files = [npm.join(NPM_NAME), exe.clone()];
+
+        let name = named(&exe, &[npm, native], &files);
+
+        assert_eq!(name, TerminalName::Path(exe));
+    }
+
+    #[test]
+    fn an_npm_claude_beside_its_powershell_script_is_named_by_its_path() {
+        let npm = folder("npm");
+        let batch = npm.join(NPM_NAME);
+        let with_script = [npm.join("claude.ps1"), batch.clone()];
+
+        let beside_script = named(&batch, std::slice::from_ref(&npm), &with_script);
+        let alone = named(&batch, &[npm], std::slice::from_ref(&batch));
+
+        assert_eq!(beside_script, TerminalName::Path(batch));
+        assert_eq!(alone, TerminalName::Plain);
+    }
+
     fn line(program: &str, args: &[&str]) -> io::Result<String> {
         let args: Vec<OsString> = args.iter().map(OsString::from).collect();
         batch_command_line(Path::new(program), &args)
@@ -284,5 +454,40 @@ mod tests {
             String::from_utf8_lossy(&output.stdout).trim(),
             r#"["--model=opus[1m]"] ["a&b|c<d>e"] ["C:\work\\"]"#
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_default_claude_is_found_and_named_from_the_environment() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let installer = home.join(".local").join("bin");
+        let npm = temp.path().join("npm");
+        for (folder, name) in [
+            (&installer, EXE_NAME),
+            (&npm, NPM_NAME),
+            (&npm, "claude.ps1"),
+        ] {
+            std::fs::create_dir_all(folder).unwrap();
+            std::fs::write(folder.join(name), "").unwrap();
+        }
+        let path = std::env::join_paths([&npm]).unwrap();
+        let installer_on_path = std::env::join_paths([&installer, &npm]).unwrap();
+        let resolve = |path: &std::ffi::OsStr, home: Option<&Path>| {
+            resolve_default(path, home.map(Path::as_os_str), None, Path::is_file)
+        };
+
+        let off_path = resolve(&path, Some(&home));
+        let on_path = resolve(&installer_on_path, Some(&home));
+        let npm_alone = resolve(&path, None);
+        let none = resolve(std::ffi::OsStr::new(""), None);
+
+        let exe = installer.join(EXE_NAME);
+        assert_eq!(off_path.path, exe);
+        assert_eq!(off_path.name, TerminalName::Path(exe.clone()));
+        assert_eq!(on_path.name, TerminalName::Plain);
+        assert_eq!(npm_alone.name, TerminalName::Path(npm.join(NPM_NAME)));
+        assert_eq!(none.path, PathBuf::from(DEFAULT_CLAUDE_PROGRAM));
+        assert_eq!(none.name, TerminalName::Plain);
     }
 }

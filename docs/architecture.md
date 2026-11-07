@@ -391,6 +391,13 @@ It runs `claude auth login`, which signs in with a Claude subscription, or with 
 The command is for a POSIX shell, `CLAUDE_CONFIG_DIR='<folder>' claude auth login` (a `'` in the folder written `'\''`), or on a Windows daemon for PowerShell, `$env:CLAUDE_CONFIG_DIR = '<folder>'; claude auth login; Remove-Item Env:CLAUDE_CONFIG_DIR` (each `'`, and each of PowerShell's typographic single quotes, doubled). The last part takes the variable out of the PowerShell session again.
 The default account's command is `claude auth login` alone, unless the daemon's environment has `CLAUDE_CONFIG_DIR`.
 
+The command names the program the daemon runs (module `process::program`), quoted the same way:
+
+- A program `AGENTS_COCKPIT_CLAUDE` names is named by its path: `'<path>' auth login`, or in PowerShell `& '<path>' auth login`.
+- On Unix, the default program is plain `claude`, which the daemon and a shell both find on `PATH`.
+- On Windows, the default program is plain `claude` only when PowerShell's own lookup finds the same file: in each folder of `PATH` in turn, `claude.ps1`, then `claude` with each extension of `PATHEXT`. Otherwise the command names its path. This covers a `claude.exe` that only the installer's `.local\bin` holds, one behind another `claude` on `PATH`, and an npm `claude.cmd`: npm puts a `claude.ps1` beside it, which PowerShell runs first and its execution policy may refuse.
+- The notice in the transcript, `accounts.list` and the app's sign-in card all show this one command. The daemon looks for the program when it writes the command, as it does when it starts an agent.
+
 Whether an account is signed in (`SignIn`): the daemon checks only that `.credentials.json` exists in the folder, and never opens it.
 
 - Linux and Windows: the file there means `signed_in`, else `not_signed_in`.
@@ -640,7 +647,7 @@ On Windows, the daemon opens the process, checks with `IsProcessInJob` that it i
 - `claude_protocol`: parsing of fixture lines in `crates/claude_protocol/tests/fixtures/`.
   Fixtures are written by hand from the shapes Claude Code sends, with made-up paths, ids and text.
 - `cockpit_protocol`: round trips of every message, and the method names pinned.
-- `cockpit_daemon`: the transcript conversion on fixture sequences; the accounts (names, the default one's name, folders, the sign-in commands of both shells, the environment of a `claude`, the wait for a sign-in); the store in a temporary folder; the server end to end with a fake `claude` (a small test binary that replays a script of lines, selected with `AGENTS_COCKPIT_CLAUDE`); the daemon in the app over in-memory streams, closed mid-turn and started again, and the lock it shares with the service (`tests/in_app.rs`).
+- `cockpit_daemon`: the transcript conversion on fixture sequences; the accounts (names, the default one's name, folders, the sign-in commands of both shells with the program plain or by its path, how a terminal names the program, the environment of a `claude`, the wait for a sign-in); the store in a temporary folder; the server end to end with a fake `claude` (a small test binary that replays a script of lines, selected with `AGENTS_COCKPIT_CLAUDE`); the daemon in the app over in-memory streams, closed mid-turn and started again, and the lock it shares with the service (`tests/in_app.rs`).
 - `cockpit_client`: against an in-process fake daemon over a socket pair.
 - `cockpit_desktop`: `apply` on event sequences; the accounts' state (the new agent's account, the labels, the plan chip, the resume filter, the two dialogs, the sign-in card); rendering helpers (markdown, diffs) on sample input; the "No daemon answers" choices and the config they write, through a symbolic link too; the path rules of both platforms.
 

@@ -319,7 +319,11 @@ fn adds_an_account_starts_an_agent_with_it_and_refuses_to_remove_it_while_used()
     daemon.ok(&["account", "change", "1", "--name", "Client work"]);
     let listed = daemon.ok(&["account", "list"]);
 
-    let command = format!("CLAUDE_CONFIG_DIR='{}' claude auth login", folder.display());
+    let command = format!(
+        "CLAUDE_CONFIG_DIR='{}' '{}' auth login",
+        folder.display(),
+        daemon.temp.path().join("echo-claude").display()
+    );
     assert!(added.contains("not_signed_in"), "{added}");
     assert!(
         added.contains(&format!("Sign in to Work: {command}")),

@@ -17,6 +17,7 @@ use crate::daemon_config::HOME_ENV;
 use crate::hub::input::{AccountLogin, HubInput, Reply};
 use crate::hub::state::Hub;
 use crate::hub::{agents, errors};
+use crate::process::program;
 use crate::sessions::AccountFolder;
 use crate::store::{DaemonSettings, LogName};
 use crate::transcript::plan_usage;
@@ -49,8 +50,10 @@ impl Hub {
     pub(super) fn accounts_list(&self, reply: Reply) {
         let accounts = self.accounts();
         let inputs = self.inputs.clone();
+        let configured = self.config.claude_program.clone();
         tokio::spawn(async move {
             let checked = tokio::task::spawn_blocking(move || {
+                let program = program::resolve(&configured).name;
                 let mut logins = Vec::new();
                 let mut states = Vec::with_capacity(accounts.len());
                 for account in accounts {
@@ -60,7 +63,7 @@ impl Hub {
                             written,
                         });
                     }
-                    states.push(account_state(account, SignInShell::CURRENT));
+                    states.push(account_state(account, SignInShell::CURRENT, &program));
                 }
                 (states, logins)
             })
@@ -126,7 +129,7 @@ impl Hub {
             self.save_accounts(accounts)?;
             Ok(account)
         });
-        answer_with_state(saved, reply);
+        self.answer_with_state(saved, reply);
     }
 
     pub(super) fn accounts_change(&mut self, params: AccountChangeParams, reply: Reply) {
@@ -136,7 +139,7 @@ impl Hub {
             self.save_accounts(accounts)?;
             Ok(account)
         });
-        answer_with_state(saved, reply);
+        self.answer_with_state(saved, reply);
     }
 
     /// Removes an account no agent uses, running or not: an agent keeps its account for good.
@@ -196,7 +199,8 @@ impl Hub {
         self.emit(LogName::Daemon, event);
     }
 
-    /// What the transcript says when Claude Code finds no valid login for the account.
+    /// What the transcript says when Claude Code finds no valid login for the account. Looks for
+    /// the `claude` program on Windows, as starting an agent does.
     pub(super) fn sign_in_notice(&self, id: AccountId) -> String {
         let Ok(account) = self.account(id) else {
             return format!(
@@ -204,7 +208,8 @@ impl Hub {
                 id.get()
             );
         };
-        let command = sign_in_command(&account, SignInShell::CURRENT);
+        let program = program::resolve(&self.config.claude_program).name;
+        let command = sign_in_command(&account, SignInShell::CURRENT, &program);
         let name = &account.name;
         if account.credentials == CredentialSource::EnvironmentApiKey
             && environment_api_key() == EnvironmentApiKey::Set
@@ -217,22 +222,26 @@ impl Hub {
             "The account {name} is not signed in, or its login expired. Run this command in a terminal on the daemon's machine to sign in, then send your message again: {command}"
         )
     }
-}
 
-/// Answers with the account, whether it is signed in and how to sign in to it, from a task: the
-/// sign-in check reads the folder.
-fn answer_with_state(account: Result<Account, ErrorBody>, reply: Reply) {
-    let account = match account {
-        Ok(account) => account,
-        Err(error) => return agents::respond(reply, Err(error)),
-    };
-    tokio::spawn(async move {
-        let state =
-            tokio::task::spawn_blocking(move || account_state(account, SignInShell::CURRENT)).await;
-        let result = match state {
-            Ok(state) => Ok(ResponseBody::Account(state)),
-            Err(error) => Err(errors::internal(error.to_string())),
+    /// Answers with the account, whether it is signed in and how to sign in to it, from a task:
+    /// the sign-in check reads the folder.
+    fn answer_with_state(&self, account: Result<Account, ErrorBody>, reply: Reply) {
+        let account = match account {
+            Ok(account) => account,
+            Err(error) => return agents::respond(reply, Err(error)),
         };
-        agents::respond(reply, result);
-    });
+        let configured = self.config.claude_program.clone();
+        tokio::spawn(async move {
+            let state = tokio::task::spawn_blocking(move || {
+                let program = program::resolve(&configured).name;
+                account_state(account, SignInShell::CURRENT, &program)
+            })
+            .await;
+            let result = match state {
+                Ok(state) => Ok(ResponseBody::Account(state)),
+                Err(error) => Err(errors::internal(error.to_string())),
+            };
+            agents::respond(reply, result);
+        });
+    }
 }
