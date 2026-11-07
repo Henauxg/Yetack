@@ -4,6 +4,7 @@
 
 use std::time::{Duration, SystemTime};
 
+use cockpit_daemon::{API_KEY_ENV, CLAUDE_CONFIG_DIR_ENV};
 use cockpit_protocol::{AccountId, AgentId, SignIn, UsageWindow, WindowUsage};
 use dioxus::prelude::*;
 
@@ -452,7 +453,7 @@ fn ApiKeyChoice(uses: bool, note: String, onchange: EventHandler<bool>) -> Eleme
             span { class: "check-text",
                 span {
                     "Use the API key from my environment ("
-                    code { "ANTHROPIC_API_KEY" }
+                    code { "{API_KEY_ENV}" }
                     ")"
                 }
                 span { class: "hint", "{note}" }
@@ -625,7 +626,7 @@ fn AccountCard(account: AccountId, open: bool) -> Element {
                         note: if data.uses_api_key {
                             "On: its agents bill the API key per token. A change applies to the agents it starts from now on.".to_owned()
                         } else {
-                            "Off: its agents use its sign-in, without ANTHROPIC_API_KEY. A change applies to the agents it starts from now on.".to_owned()
+                            format!("Off: its agents use its sign-in, without {API_KEY_ENV}. A change applies to the agents it starts from now on.")
                         },
                         onchange: move |uses| cockpit.change(|_| accounts::set_api_key(account, uses)),
                     }
@@ -710,9 +711,13 @@ pub fn AddAccountDialog(form: AddAccountForm) -> Element {
     let close = move |_| cockpit.update(accounts::close_add_account);
     let uses_api_key = form.use_api_key;
     let key_note = if uses_api_key {
-        "On: this account's agents get ANTHROPIC_API_KEY from the daemon's environment, and Claude bills that key per token. No sign-in is needed."
+        format!(
+            "On: this account's agents get {API_KEY_ENV} from the daemon's environment, and Claude bills that key per token. No sign-in is needed."
+        )
     } else {
-        "Off: this account's agents use its sign-in. The app removes ANTHROPIC_API_KEY from their environment, so a subscription is never billed to an API key by accident."
+        format!(
+            "Off: this account's agents use its sign-in. The app removes {API_KEY_ENV} from their environment, so a subscription is never billed to an API key by accident."
+        )
     };
     let shell = if windows { "PowerShell" } else { "a terminal" };
     rsx! {
@@ -790,13 +795,13 @@ pub fn AddAccountDialog(form: AddAccountForm) -> Element {
                         }
                         span { class: "hint",
                             "Claude Code keeps this account's sign-in, settings and sessions here ("
-                            span { class: "mono", "CLAUDE_CONFIG_DIR" }
+                            span { class: "mono", "{CLAUDE_CONFIG_DIR_ENV}" }
                             "). A folder you already use keeps its sign-in."
                         }
                     }
                     ApiKeyChoice {
                         uses: uses_api_key,
-                        note: key_note.to_owned(),
+                        note: key_note,
                         onchange: move |uses| cockpit.update(|state| accounts::with_add_form(state, |form| form.use_api_key = uses)),
                     }
                     if let Some(error) = &form.error {
@@ -810,9 +815,9 @@ pub fn AddAccountDialog(form: AddAccountForm) -> Element {
                         span { class: "status-dot", aria_hidden: true }
                         span { class: "signin-state",
                             if environment_api_key {
-                                "ANTHROPIC_API_KEY is set on {machine}"
+                                "{API_KEY_ENV} is set on {machine}"
                             } else {
-                                "ANTHROPIC_API_KEY is not set on {machine}"
+                                "{API_KEY_ENV} is not set on {machine}"
                             }
                         }
                         span { class: "spacer" }
@@ -933,7 +938,7 @@ pub fn SignInCard(agent: AgentId) -> Element {
             }
             if uses_api_key {
                 span { class: "card-note",
-                    "Check the daemon's ANTHROPIC_API_KEY, or turn the key off for this account in Accounts and sign in."
+                    "Check the daemon's {API_KEY_ENV}, or turn the key off for this account in Accounts and sign in."
                 }
             } else {
                 span { class: "card-note",

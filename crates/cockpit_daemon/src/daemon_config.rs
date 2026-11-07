@@ -14,8 +14,9 @@ pub const STATE_DIR_FLAG: &str = "state-dir";
 pub const CLAUDE_PROGRAM_ENV: &str = "AGENTS_COCKPIT_CLAUDE";
 pub(crate) const DEFAULT_CLAUDE_PROGRAM: &str = "claude";
 /// Claude Code's own setting for its folder, which holds its login, settings and sessions.
-pub(crate) const CLAUDE_CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
-const CLAUDE_HOME_FOLDER: &str = ".claude";
+pub const CLAUDE_CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
+/// The name of Claude Code's own config folder, in the home folder.
+pub const CLAUDE_HOME_FOLDER: &str = ".claude";
 /// Names the home folder, which the default state folder and Claude Code's folder need.
 #[cfg(unix)]
 pub const HOME_ENV: &str = "HOME";

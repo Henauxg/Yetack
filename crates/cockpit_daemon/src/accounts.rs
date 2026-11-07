@@ -7,5 +7,6 @@ mod claude_env;
 mod sign_in;
 
 pub(crate) use account_list::AccountList;
-pub(crate) use claude_env::{API_KEY_ENV, ClaudeEnv, environment_has_api_key};
+pub use claude_env::API_KEY_ENV;
+pub(crate) use claude_env::{ClaudeEnv, environment_has_api_key};
 pub(crate) use sign_in::{SignInShell, account_state, login_written, sign_in_command};

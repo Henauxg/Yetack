@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+use cockpit_daemon::CLAUDE_HOME_FOLDER;
 use cockpit_protocol::{
     Account, AccountAddParams, AccountChangeParams, AccountId, AccountParams, AccountState,
     AgentId, AgentStatus, AgentSummary, FOLDER_SEPARATOR, ItemBody, ItemId, PlanUsage, Prompt,
@@ -20,9 +21,6 @@ use super::ui_state::{Dialog, NewAgentForm};
 use crate::format;
 use crate::path_style::PathStyle;
 use crate::prefs::AccountColor;
-
-/// The name of Claude Code's own config folder, in the home folder.
-const CLAUDE_FOLDER: &str = ".claude";
 
 /// What `accounts.list` last answered.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -552,7 +550,7 @@ pub fn proposed_folder(state: &AppState, name: &str) -> Option<String> {
     let default = account(state, AccountId::DEFAULT)?;
     let text = default.folder.to_string_lossy();
     let style = PathStyle::of_text(&text);
-    if style.file_name(&text) != Some(CLAUDE_FOLDER) || !style.is_absolute(&text) {
+    if style.file_name(&text) != Some(CLAUDE_HOME_FOLDER) || !style.is_absolute(&text) {
         return None;
     }
     let home = style.parent(&text)?;

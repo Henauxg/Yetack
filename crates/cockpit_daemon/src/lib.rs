@@ -28,8 +28,10 @@ mod windows_files;
 #[cfg(any(windows, test))]
 mod windows_path;
 
+pub use accounts::API_KEY_ENV;
 pub use daemon_config::{
-    CLAUDE_PROGRAM_ENV, DaemonConfig, HOME_ENV, SERVE_SUBCOMMAND, STATE_DIR_FLAG,
+    CLAUDE_CONFIG_DIR_ENV, CLAUDE_HOME_FOLDER, CLAUDE_PROGRAM_ENV, DaemonConfig, HOME_ENV,
+    SERVE_SUBCOMMAND, STATE_DIR_FLAG,
 };
 pub use in_app_daemon::InAppDaemon;
 pub use process::ProcessError;
