@@ -548,7 +548,9 @@ On Windows, the daemon opens the process, checks with `IsProcessInJob` that it i
   The stop waits at most 1 second for the host's lock, which the panicking thread may hold.
   A panic on the window's thread waits for the stop, since that thread's unwinding would end the process. A panic on another thread unwinds at once, so that its task's drop kills the processes the task holds.
 - **Log** (module `logging`): the app logs to stderr, at the level `RUST_LOG` sets (`warn` by default).
-  A release build on Windows is a GUI program, which opens no console window, and one started from the desktop has no stderr: its log goes to `app.log` in the app's state folder, and the run before stays as `app.previous.log`.
+  A release build on Windows is a GUI program, which opens no console window, and one started from the desktop has no stderr: its log goes to `app.log` in the app's state folder.
+  The file rotates by size: once `app.log` would pass 10 MiB, it becomes `app.1.log`, `app.1.log` becomes `app.2.log`, and so on, and the oldest of the 5 files goes (50 MiB at most). A line is never split, and a new run appends to `app.log`, so the rotation carries on across runs. A rotation that fails, as when another program holds a file, leaves the log in the file it has and is tried again 10 MiB later, so no line is lost.
+  An older version's `app.previous.log` becomes `app.1.log`, which is the run before the current `app.log`, unless `app.1.log` exists already: then it is deleted.
 - **Notifications** (module `notifications`): at most one per agent, for an agent that needs you or finished, and a click on one brings the window up and opens its agent.
   On Linux they go through the freedesktop notification service, and a "needs you" one closes once the agent no longer needs you.
   On Windows they are toasts, from notify-rust's Windows backend.
@@ -668,7 +670,7 @@ The code marks what needs Unix with `#[cfg(unix)]` and gives Windows its own ver
 | daemon's state folder | `$XDG_STATE_HOME/agents-cockpit` | `%LOCALAPPDATA%\agents-cockpit` |
 | app's config file | `$XDG_CONFIG_HOME/agents-cockpit/config.toml` | `%APPDATA%\agents-cockpit\config.toml` |
 | app's preferences | `$XDG_STATE_HOME/agents-cockpit-desktop/prefs.json` | `%LOCALAPPDATA%\agents-cockpit-desktop\prefs.json` |
-| app's log | stderr | stderr, or `%LOCALAPPDATA%\agents-cockpit-desktop\app.log` when the app has none (a release build is a GUI program, with no console window) |
+| app's log | stderr | stderr, or `%LOCALAPPDATA%\agents-cockpit-desktop\app.log` when the app has none (a release build is a GUI program, with no console window), rotated by size into `app.1.log` to `app.4.log` |
 | notifications | the freedesktop notification service | toasts, under PowerShell's name (see the desktop app's Notifications) |
 | paths the app shows | `/work/app` | `C:\work\app`, typed with `\` or `/`; a Linux daemon's paths keep Unix's rules |
 | home folder (Claude Code's folder is `.claude` in it) | `HOME` | `USERPROFILE` |

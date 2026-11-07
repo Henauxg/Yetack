@@ -1,9 +1,13 @@
 //! Where the app's log goes: stderr, or a file in the app's state folder when the app has no
 //! stderr. A release build on Windows is a GUI program, and one started from the desktop or the
 //! Start menu has none: what it writes there is lost.
+//!
+//! The file rotates by size: `app.log` becomes `app.1.log` once it reaches its limit, the older
+//! files move up one number, and the oldest goes. A new run appends to `app.log`, so the
+//! rotation carries on across runs.
 
-use std::fs::File;
-use std::io;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -15,9 +19,14 @@ use crate::prefs::PREFS_FOLDER;
 /// Log level when `RUST_LOG` is not set.
 const DEFAULT_LOG: &str = "warn";
 
-const LOG_FILE: &str = "app.log";
+const LOG_NAME: &str = "app";
+const LOG_EXTENSION: &str = "log";
+/// The size at which `app.log` becomes `app.1.log`.
+const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
+/// The files kept, `app.log` included: at most 50 MiB in all.
+const KEPT_FILES: u32 = 5;
 
-/// The log of the run before, kept for a crash to be read after a restart.
+/// The log of the run before, as older versions kept it.
 const PREVIOUS_LOG_FILE: &str = "app.previous.log";
 
 /// Starts the log. Without stderr and without a state folder, nothing is logged.
@@ -27,7 +36,8 @@ pub fn init(environment: &Environment) {
     let file = if has_stderr() {
         None
     } else {
-        log_folder(environment).and_then(|folder| open_log(&folder).ok())
+        log_folder(environment)
+            .and_then(|folder| RotatingLog::open(&folder, MAX_LOG_BYTES, KEPT_FILES).ok())
     };
     match file {
         Some(file) => logger.with_ansi(false).with_writer(Mutex::new(file)).init(),
@@ -56,34 +66,194 @@ fn has_stderr() -> bool {
     true
 }
 
-/// Creates the log file in `folder`, after the last run's log becomes the previous one.
-fn open_log(folder: &Path) -> io::Result<File> {
-    std::fs::create_dir_all(folder)?;
-    let file = folder.join(LOG_FILE);
-    match std::fs::rename(&file, folder.join(PREVIOUS_LOG_FILE)) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error),
+/// `app.log`, which becomes `app.1.log` at `max_bytes`, keeping `kept` files in all.
+#[derive(Debug)]
+struct RotatingLog {
+    folder: PathBuf,
+    file: File,
+    /// The bytes in `file`.
+    written: u64,
+    max_bytes: u64,
+    kept: u32,
+}
+
+impl RotatingLog {
+    /// Appends to the log in `folder`, after an older version's `app.previous.log` becomes the
+    /// oldest file, as the run before the current `app.log`.
+    fn open(folder: &Path, max_bytes: u64, kept: u32) -> io::Result<Self> {
+        std::fs::create_dir_all(folder)?;
+        let previous = folder.join(PREVIOUS_LOG_FILE);
+        if previous.exists() {
+            let first = folder.join(file_name(1));
+            if kept > 1 && !first.exists() {
+                std::fs::rename(&previous, first)?;
+            } else {
+                std::fs::remove_file(&previous)?;
+            }
+        }
+        let file = append(&folder.join(file_name(0)))?;
+        let written = file.metadata()?.len();
+        Ok(Self {
+            folder: folder.to_owned(),
+            file,
+            written,
+            max_bytes,
+            kept,
+        })
     }
-    File::create(file)
+
+    /// Moves each file up one number, the oldest out, and starts `app.log` afresh.
+    fn rotate(&mut self) -> io::Result<()> {
+        debug_assert!(self.kept >= 2, "the rotation keeps the file it moves away");
+        let oldest = self.folder.join(file_name(self.kept - 1));
+        match std::fs::remove_file(&oldest) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        for number in (0..self.kept - 1).rev() {
+            let from = self.folder.join(file_name(number));
+            match std::fs::rename(&from, self.folder.join(file_name(number + 1))) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+        self.file = append(&self.folder.join(file_name(0)))?;
+        self.written = 0;
+        Ok(())
+    }
+}
+
+impl Write for RotatingLog {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let size = u64::try_from(buf.len()).unwrap_or(u64::MAX);
+        if self.written > 0
+            && self.written.saturating_add(size) > self.max_bytes
+            && self.rotate().is_err()
+        {
+            // The log goes on in the file it has, and tries again after as many bytes more.
+            self.written = 0;
+        }
+        let written = self.file.write(buf)?;
+        self.written = self
+            .written
+            .saturating_add(u64::try_from(written).unwrap_or(u64::MAX));
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
+
+/// `app.log` for 0, else `app.<number>.log`.
+fn file_name(number: u32) -> String {
+    if number == 0 {
+        format!("{LOG_NAME}.{LOG_EXTENSION}")
+    } else {
+        format!("{LOG_NAME}.{number}.{LOG_EXTENSION}")
+    }
+}
+
+fn append(path: &Path) -> io::Result<File> {
+    OpenOptions::new().create(true).append(true).open(path)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
-
     use super::*;
 
+    /// The files in `folder`, by name, with their text.
+    fn files(folder: &Path) -> Vec<(String, String)> {
+        let mut files: Vec<(String, String)> = std::fs::read_dir(folder)
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                let name = entry.file_name().to_string_lossy().into_owned();
+                (name, std::fs::read_to_string(entry.path()).unwrap())
+            })
+            .collect();
+        files.sort();
+        files
+    }
+
     #[test]
-    fn each_run_starts_a_log_and_keeps_the_last_one() {
+    fn the_log_rotates_by_size_and_keeps_the_last_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join(PREFS_FOLDER);
+        let mut log = RotatingLog::open(&folder, 10, 3).unwrap();
+
+        for line in ["line 1\n", "line 2\n", "line 3\n", "line 4\n"] {
+            log.write_all(line.as_bytes()).unwrap();
+        }
+
+        assert_eq!(
+            files(&folder),
+            [
+                ("app.1.log".to_owned(), "line 3\n".to_owned()),
+                ("app.2.log".to_owned(), "line 2\n".to_owned()),
+                ("app.log".to_owned(), "line 4\n".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_new_run_carries_on_the_rotation() {
         let temp = tempfile::tempdir().unwrap();
         let folder = temp.path().join(PREFS_FOLDER);
 
-        writeln!(open_log(&folder).unwrap(), "first run").unwrap();
-        writeln!(open_log(&folder).unwrap(), "second run").unwrap();
+        let mut first = RotatingLog::open(&folder, 20, 5).unwrap();
+        first.write_all(b"first run\n").unwrap();
+        drop(first);
+        let mut second = RotatingLog::open(&folder, 20, 5).unwrap();
+        second.write_all(b"second\n").unwrap();
+        second.write_all(b"second again\n").unwrap();
 
-        let read = |name: &str| std::fs::read_to_string(folder.join(name)).unwrap();
-        assert_eq!(read(LOG_FILE), "second run\n");
-        assert_eq!(read(PREVIOUS_LOG_FILE), "first run\n");
+        assert_eq!(
+            files(&folder),
+            [
+                ("app.1.log".to_owned(), "first run\nsecond\n".to_owned()),
+                ("app.log".to_owned(), "second again\n".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_line_longer_than_the_limit_is_written_whole() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join(PREFS_FOLDER);
+        let mut log = RotatingLog::open(&folder, 4, 2).unwrap();
+
+        log.write_all(b"a long line\n").unwrap();
+        log.write_all(b"next\n").unwrap();
+
+        assert_eq!(
+            files(&folder),
+            [
+                ("app.1.log".to_owned(), "a long line\n".to_owned()),
+                ("app.log".to_owned(), "next\n".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_older_versions_previous_log_becomes_the_first_rotated_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join(PREFS_FOLDER);
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join(PREVIOUS_LOG_FILE), "two runs ago\n").unwrap();
+        std::fs::write(folder.join("app.log"), "last run\n").unwrap();
+
+        let mut log = RotatingLog::open(&folder, 1024, 5).unwrap();
+        log.write_all(b"this run\n").unwrap();
+
+        assert_eq!(
+            files(&folder),
+            [
+                ("app.1.log".to_owned(), "two runs ago\n".to_owned()),
+                ("app.log".to_owned(), "last run\nthis run\n".to_owned()),
+            ]
+        );
     }
 }
