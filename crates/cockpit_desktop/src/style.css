@@ -5132,6 +5132,11 @@ button.map-toggle:hover {
   width: 660px;
 }
 
+/* Focused as it opens, so that Tab starts inside it, without a ring around the dialog. */
+.dialog.accounts:focus {
+  outline: none;
+}
+
 .form-row {
   display: grid;
   grid-template-columns: 1fr auto;

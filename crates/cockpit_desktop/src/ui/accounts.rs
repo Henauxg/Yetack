@@ -477,6 +477,11 @@ pub fn AccountsDialog(view: AccountsView) -> Element {
             class: "dialog accounts",
             role: "dialog",
             aria_label: "Accounts",
+            tabindex: "-1",
+            onmounted: move |event| async move {
+                // The dialog may have closed already: nothing to focus then.
+                let _ = event.data().set_focus(true).await;
+            },
             onclick: move |event| event.stop_propagation(),
             div { class: "dialog-head",
                 h2 { "Accounts" }
