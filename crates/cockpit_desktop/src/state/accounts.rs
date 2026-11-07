@@ -33,6 +33,8 @@ pub struct SignIns {
     pub checked_at: Option<SystemTime>,
     /// An `accounts.list` is on its way.
     pub checking: bool,
+    /// Something changed while the daemon was asked: its answer may predate it.
+    pub ask_again: bool,
 }
 
 impl SignIns {
@@ -46,9 +48,11 @@ impl SignIns {
             .map(|state| state.sign_in_command.as_str())
     }
 
-    /// Asks the daemon again, unless it is asked already.
+    /// Asks the daemon again, at once or once its answer on the way arrives.
     pub fn refresh(&mut self) {
-        if !self.checking {
+        if self.checking {
+            self.ask_again = true;
+        } else {
             self.checked_at = None;
         }
     }
@@ -630,7 +634,8 @@ fn keep_state(state: &mut AppState, account_state: AccountState) {
 pub fn listed(state: &mut AppState, result: Result<ResponseBody, String>) {
     let sign_ins = &mut state.sign_ins;
     sign_ins.checking = false;
-    sign_ins.checked_at = Some(SystemTime::now());
+    sign_ins.checked_at = (!sign_ins.ask_again).then(SystemTime::now);
+    sign_ins.ask_again = false;
     match result {
         Ok(ResponseBody::Accounts {
             accounts,
@@ -1181,6 +1186,41 @@ mod tests {
         assert!(state.sign_ins.environment_api_key);
         assert_eq!(after, None);
         assert!(again.is_some());
+    }
+
+    #[test]
+    fn an_account_change_while_the_daemon_is_asked_asks_it_again() {
+        let mut state = state_with(Vec::new());
+        three_accounts(&mut state);
+        let asked = list_request(&mut state);
+        let accounts = state.accounts.clone();
+        super::super::apply::apply(
+            &mut state,
+            &mut Drafts::default(),
+            EventRecord {
+                seq: Seq::new(1),
+                event: Event::AccountsChanged { accounts },
+            },
+        );
+        listed(
+            &mut state,
+            Ok(ResponseBody::Accounts {
+                accounts: Vec::new(),
+                environment_api_key: false,
+            }),
+        );
+        let again = list_request(&mut state);
+        listed(
+            &mut state,
+            Ok(ResponseBody::Accounts {
+                accounts: Vec::new(),
+                environment_api_key: false,
+            }),
+        );
+
+        assert!(asked.is_some());
+        assert!(again.is_some());
+        assert_eq!(list_request(&mut state), None);
     }
 
     fn transcript_item(id: u32, body: ItemBody) -> TranscriptItem {
