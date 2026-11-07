@@ -158,7 +158,7 @@ impl Hub {
 
     pub(super) fn snapshot(&self) -> Snapshot {
         let accounts = self.accounts();
-        let other_plan_usage = accounts
+        let other_plan_usage: Vec<AccountPlanUsage> = accounts
             .iter()
             .filter(|account| !account.id.is_default())
             .filter_map(|account| {

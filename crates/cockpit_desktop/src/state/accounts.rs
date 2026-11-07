@@ -9,7 +9,8 @@ use std::time::SystemTime;
 use cockpit_protocol::{
     Account, AccountAddParams, AccountChangeParams, AccountId, AccountParams, AccountState,
     AgentId, AgentStatus, AgentSummary, FOLDER_SEPARATOR, ItemBody, ItemId, PlanUsage, Prompt,
-    PromptParams, Request, ResponseBody, SignIn, UsageWindow, UserMessage, account_folder_name,
+    PromptParams, Request, ResponseBody, SignIn, TranscriptItem, UsageWindow, UserMessage,
+    account_folder_name,
 };
 
 use super::app_state::{AgentEntry, AppState};
@@ -286,7 +287,7 @@ pub struct SignInTurn {
 }
 
 pub fn sign_in_turn(entry: &AgentEntry) -> Option<SignInTurn> {
-    let items: Vec<_> = entry
+    let items: Vec<&TranscriptItem> = entry
         .transcript
         .items()
         .filter(|item| item.parent.is_none())
@@ -704,9 +705,12 @@ pub fn changed(state: &mut AppState, result: Result<ResponseBody, String>) {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use cockpit_client::RequestError;
     use cockpit_protocol::{
-        ClaudeSessionId, CostUsd, Event, EventRecord, PastSession, RateLimitStatus, Seq, Timestamp,
-        TokenUsage, TranscriptItem, TurnEnd, WindowUsage,
+        ClaudeSessionId, CostUsd, Event, EventRecord, HistoryPage, Method, PastSession,
+        RateLimitStatus, Seq, Timestamp, TokenUsage, TurnEnd, WindowUsage,
     };
 
     use super::*;
@@ -743,7 +747,7 @@ mod tests {
         ];
     }
 
-    fn in_folder(id: u32, folder: &str, account: AccountId) -> cockpit_protocol::AgentSummary {
+    fn in_folder(id: u32, folder: &str, account: AccountId) -> AgentSummary {
         let mut summary = summary(id, AgentStatus::Idle);
         summary.folder = PathBuf::from(folder);
         summary.account = account;
@@ -1264,7 +1268,7 @@ mod tests {
 
     fn signed_out_turn(not_signed_in: bool) -> ItemBody {
         ItemBody::TurnEnd(TurnEnd {
-            duration: std::time::Duration::from_millis(900),
+            duration: Duration::from_millis(900),
             cost: CostUsd::new(0.0),
             usage: TokenUsage::default(),
             error: Some("The account is not signed in".to_owned()),
@@ -1293,7 +1297,7 @@ mod tests {
             detail: None,
         };
         let entry = state.agents.get_mut(&AgentId::new(1)).unwrap();
-        entry.transcript.merge_page(cockpit_protocol::HistoryPage {
+        entry.transcript.merge_page(HistoryPage {
             items: vec![
                 transcript_item(1, message("Export the invoices")),
                 transcript_item(2, notice),
@@ -1343,7 +1347,7 @@ mod tests {
         three_accounts(&mut state);
         let agent = AgentId::new(1);
         let entry = state.agents.get_mut(&agent).unwrap();
-        entry.transcript.merge_page(cockpit_protocol::HistoryPage {
+        entry.transcript.merge_page(HistoryPage {
             items: vec![
                 transcript_item(1, message("Export the invoices")),
                 transcript_item(2, signed_out_turn(true)),
@@ -1360,9 +1364,9 @@ mod tests {
         super::super::requests::apply_response(
             &mut state,
             &mut drafts,
-            cockpit_protocol::Method::AgentPrompt,
+            Method::AgentPrompt,
             purpose.clone(),
-            Err(cockpit_client::RequestError::Disconnected),
+            Err(RequestError::Disconnected),
         );
         let after_failure = send_again(&mut state, agent);
 
@@ -1374,7 +1378,7 @@ mod tests {
     fn a_later_turn_with_a_login_shows_no_card() {
         let mut state = state_with(vec![in_folder(1, "/work/app", work())]);
         let entry = state.agents.get_mut(&AgentId::new(1)).unwrap();
-        entry.transcript.merge_page(cockpit_protocol::HistoryPage {
+        entry.transcript.merge_page(HistoryPage {
             items: vec![
                 transcript_item(1, message("Export")),
                 transcript_item(2, signed_out_turn(true)),

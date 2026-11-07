@@ -33,7 +33,7 @@ use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
 
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 const ARGS_FILE_ENV: &str = "FAKE_CLAUDE_ARGS_FILE";
 const ENV_FILE_ENV: &str = "FAKE_CLAUDE_ENV_FILE";
@@ -115,7 +115,7 @@ fn run() -> io::Result<()> {
         writeln!(file, "{}", json!(command_line))?;
     }
     if let Some(path) = std::env::var_os(ENV_FILE_ENV) {
-        let mut recorded = serde_json::Map::new();
+        let mut recorded = Map::new();
         for name in RECORDED_ENV {
             let value = std::env::var(name).ok();
             recorded.insert(name.to_owned(), json!(value));

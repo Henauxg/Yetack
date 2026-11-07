@@ -12,6 +12,7 @@ use crate::bridge::{self, FOLDER_FIELD_ID, HIGHLIGHTED_CLASS};
 use crate::connection::{Clock, Cockpit};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::path_style::{self, PathStyle};
+use crate::state::accounts::AccountLabel;
 use crate::state::actions::Direction;
 use crate::state::folder_field::{self, FolderRow};
 use crate::state::{
@@ -360,7 +361,7 @@ fn StartForm(form: NewAgentForm) -> Element {
     let mut pointed = use_signal(|| None::<PathBuf>);
     let (folders, machine, sessions_loading, account) = {
         let state = cockpit.state.read();
-        let mut folders: Vec<(PathBuf, Timestamp, Option<accounts::AccountLabel>)> = state
+        let mut folders: Vec<(PathBuf, Timestamp, Option<AccountLabel>)> = state
             .recent_folders()
             .into_iter()
             .map(|recent| {
@@ -895,7 +896,7 @@ fn ResumeList(starting: bool) -> Element {
                 actions::resumable_sessions(&state, &query, account)
                     .into_iter()
                     .map(|session| (session.clone(), accounts::label(&state, session.account)))
-                    .collect::<Vec<(PastSession, Option<accounts::AccountLabel>)>>(),
+                    .collect::<Vec<(PastSession, Option<AccountLabel>)>>(),
             ),
             Loadable::NotRequested => Loadable::NotRequested,
             Loadable::Loading => Loadable::Loading,

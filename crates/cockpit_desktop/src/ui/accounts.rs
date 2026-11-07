@@ -6,7 +6,6 @@ use std::time::{Duration, SystemTime};
 
 use cockpit_protocol::{AccountId, AgentId, SignIn, UsageWindow, WindowUsage};
 use dioxus::prelude::*;
-use strum::VariantArray;
 
 use crate::bridge;
 use crate::connection::{Clock, Cockpit};
@@ -421,6 +420,8 @@ fn PlanWindow(window: UsageWindow, usage: WindowUsage, now: SystemTime) -> Eleme
 /// Six swatches; a click picks one.
 #[component]
 fn Swatches(chosen: AccountColor, onpick: EventHandler<AccountColor>) -> Element {
+    use strum::VariantArray;
+
     rsx! {
         div { class: "swatches", role: "radiogroup", aria_label: "Color",
             for color in AccountColor::VARIANTS.iter().copied() {

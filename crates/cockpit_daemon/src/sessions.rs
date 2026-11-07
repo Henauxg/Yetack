@@ -484,7 +484,6 @@ pub(crate) fn shorten(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::fs::OpenOptions;
-    #[cfg(unix)]
     use std::time::Duration;
 
     use cockpit_protocol::ItemBody;
@@ -585,7 +584,7 @@ mod tests {
             account: AccountId::new(2),
             folder: work,
         };
-        let older = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        let older = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
         let first_file = personal.join(format!(
             "projects/-srv-work-blog/{FIRST}.{SESSION_EXTENSION}"
         ));
