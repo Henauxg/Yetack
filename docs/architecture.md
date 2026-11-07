@@ -545,12 +545,21 @@ On Windows, the daemon opens the process, checks with `IsProcessInJob` that it i
   A path tells its machine by its root: an agent's folder starts with a drive or `\\` on Windows, and with `/` on Unix.
   The new agent dialog's folder field has no agent: it takes the daemon's machine, Unix over SSH (only Unix runs `agents-cockpit bridge`) and the app's own platform otherwise.
   Ctrl+O, the folder field, the changes list, the file view's tabs and short paths, markdown file links and `path:line` references, the header, the switcher and the recent folders follow these rules.
-- **Preferences**: `$XDG_STATE_HOME/agents-cockpit-desktop/prefs.json` (default `~/.local/state/agents-cockpit-desktop/`), on the machine the app runs on, keeps one viewer's choices: the file view's width and its wrap toggle, and the sidebar's status filter.
+- **Preferences**: `$XDG_STATE_HOME/agents-cockpit-desktop/prefs.json` (default `~/.local/state/agents-cockpit-desktop/`), on the machine the app runs on, keeps one viewer's choices: the file view's width and its wrap toggle, the sidebar's status filter, and the accounts' colors.
   A missing or broken file means the defaults.
 - **State**: `AppState` holds the summaries, the open transcripts, the plan usage and the UI state (selected agent, unread agents, open blocks).
   A pure function `apply(&mut AppState, Event)` updates it, so the state logic is tested without a window.
 - **Connection task**: a Dioxus coroutine owns the `Connection`, applies events to the state signal, and sends the requests the components ask for.
 - **Components** follow the mockups: sidebar, center header (the title, which its pencil, a double-click or Rename in the "/" menu turns into a field that renames the agent; usage chip, load chip, changes chip), transcript, composer (model, mode, cache timer, agent map button, Send or Stop), floating blocks and badges (tasks, running, MCP servers), file view, command palette, agent switcher, new agent dialog, agent map, notifications.
+- **Accounts** (`state/accounts.rs`, `ui/accounts.rs`): with two accounts or more, each agent shows its account as a tag, its name in its color: at the start of its sidebar row's second line, and after the status in the header. Past sessions and recent folders show theirs too. With one account, nothing names it.
+  - The protocol carries no color: each viewer picks them, and the preferences keep them by the daemon's machine and the account's id. An account without a choice takes the color its id gives. The six colors avoid the status colors.
+  - The app asks `accounts.list` once connected, after `AccountsChanged`, when the new agent or the accounts dialog opens, and on "Check again". The answer gives each account's sign-in state and command. The daemon ends the sign-in waits that are over before it answers.
+  - The new agent dialog's account button comes first in the prompt's row. It follows the folder: the account of the last agent or past session there, else the default account. A pick in its menu holds until a recent folder is picked. The menu shows each account's plan usage (the 5-hour figure amber from 80 %), "no plan limits" for an account that uses the API key, or "Not signed in", then "Manage accounts".
+  - "Accounts", in the sidebar's foot, opens a dialog with a card per account: its color, name, folder, sign-in state and number of agents. A card opens to rename the account, change its color or its API key choice, copy its sign-in command, or remove it. Remove is off for the default account and for an account any agent uses.
+  - "Add an account" takes the name, the color, the folder and the API key choice. The folder shows the daemon's proposal, `.claude-<name>` beside the default account's `.claude`, until it is typed in, and goes as none until then. Once the daemon added the account, the dialog shows its sign-in command with Copy, and whether it is signed in.
+  - The Plan chip shows the selected agent's account: its dot and its 5-hour figure, "API key", or an amber "?" when it is not signed in. The plan card lists every account, this agent's first.
+  - The resume list shows each session's account, with a filter by account beside the search field.
+  - An agent that waits for its account's sign-in shows a card in the chat in place of the turn's notice and end: the sign-in command, the account's state with "Check again", and "Send the message again", which sends the turn's message once the account signed in. The composer and Stop treat the agent as idle.
 - **Agent order**: the sidebar lists the agents in the daemon's order, and the first of that order is selected when the selection goes.
   A row moves by drag and drop, or Alt+Up and Alt+Down on the selected agent; both send `agent.move`.
   The sidebar shows the new order at once, with the positions the daemon then sends, and puts the agents back when the daemon refuses the move.
@@ -623,7 +632,7 @@ On Windows, the daemon opens the process, checks with `IsProcessInJob` that it i
 - `cockpit_protocol`: round trips of every message, and the method names pinned.
 - `cockpit_daemon`: the transcript conversion on fixture sequences; the accounts (names, the default one's name, folders, the sign-in commands of both shells, the environment of a `claude`, the wait for a sign-in); the store in a temporary folder; the server end to end with a fake `claude` (a small test binary that replays a script of lines, selected with `AGENTS_COCKPIT_CLAUDE`); the daemon in the app over in-memory streams, closed mid-turn and started again, and the lock it shares with the service (`tests/in_app.rs`).
 - `cockpit_client`: against an in-process fake daemon over a socket pair.
-- `cockpit_desktop`: `apply` on event sequences; rendering helpers (markdown, diffs) on sample input; the "No daemon answers" choices and the config they write, through a symbolic link too; the path rules of both platforms.
+- `cockpit_desktop`: `apply` on event sequences; the accounts' state (the new agent's account, the labels, the plan chip, the resume filter, the two dialogs, the sign-in card); rendering helpers (markdown, diffs) on sample input; the "No daemon answers" choices and the config they write, through a symbolic link too; the path rules of both platforms.
 
 ## Platforms
 

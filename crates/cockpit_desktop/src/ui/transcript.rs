@@ -15,7 +15,8 @@ use serde_json::Value;
 
 use crate::connection::{Clock, Cockpit};
 use crate::render::{Diff, Language, diff_lines};
-use crate::state::{self, AgentEntry, HistoryState, TurnStart, actions, file_edits};
+use crate::state::{self, AgentEntry, HistoryState, TurnStart, accounts, actions, file_edits};
+use crate::ui::accounts::SignInCard;
 use crate::ui::cards::{ApprovalCard, PlanCard, QuestionCard};
 use crate::ui::chat_scroll::{self, CHAT_SCROLL_ID, ENTRY_CLASS, JumpToLatest, NewDivider};
 use crate::ui::code::{LineNumbers, diff_row};
@@ -181,10 +182,15 @@ pub fn TranscriptView() -> Element {
     let loaded: BTreeSet<ItemId> = items.iter().map(|item| item.id).collect();
     let children = children_by_parent(&items);
     let awaiting = state::awaiting_approval(&items);
+    // The card of a turn that found no login says what its notice says.
+    let sign_in = accounts::sign_in_turn(entry);
+    let sign_in_notice = sign_in.as_ref().and_then(|turn| turn.notice);
+    let sign_in_end = sign_in.as_ref().map(|turn| turn.turn_end);
+    let waits_for_sign_in = entry.summary.waits_for_sign_in;
     let top_items: Vec<&TranscriptItem> = items
         .iter()
         .copied()
-        .filter(|item| shows_at_top(item, &loaded))
+        .filter(|item| shows_at_top(item, &loaded) && Some(item.id) != sign_in_notice)
         .collect();
     // Messages queued at the end wait for the running turn, so they show under its working line.
     let split = top_items
@@ -195,7 +201,16 @@ pub fn TranscriptView() -> Element {
     let queued: Vec<TranscriptItem> = queued.iter().map(|item| (*item).clone()).collect();
     let states: Vec<Option<StepState>> = top_items
         .iter()
-        .map(|item| StepState::new(item, awaiting.contains(&item.id)))
+        .map(|item| {
+            if Some(item.id) == sign_in_end {
+                return Some(if waits_for_sign_in {
+                    StepState::Waiting
+                } else {
+                    StepState::Plain
+                });
+            }
+            StepState::new(item, awaiting.contains(&item.id))
+        })
         .collect();
     let is_step: Vec<bool> = states.iter().map(Option::is_some).collect();
     let links = step_links(&is_step, working);
@@ -215,6 +230,7 @@ pub fn TranscriptView() -> Element {
         .zip(notes)
         .skip(first)
         .map(|(((item, state), links), older_step)| TopRow {
+            sign_in_card: Some(item.id) == sign_in_end,
             item: (*item).clone(),
             nested: subtree(&children, item.id),
             awaits_approval: awaiting.contains(&item.id),
@@ -250,15 +266,15 @@ pub fn TranscriptView() -> Element {
                 }
                 // Item ids repeat across agents: with the agent in the key, another agent's item
                 // never takes over the state of this one's (a fold, a typed answer).
-                for TopRow { item, nested, awaits_approval, step, older_step } in top {
-                    TranscriptRow { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), new_above: divider == Some(item.id), item, nested, awaits_approval, step, older_step }
+                for TopRow { item, nested, awaits_approval, step, older_step, sign_in_card } in top {
+                    TranscriptRow { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), new_above: divider == Some(item.id), item, nested, awaits_approval, step, older_step, sign_in_card }
                 }
                 if working && shown != ShownRows::Skeleton {
                     WorkingLine { since: turn_start, linked: working_linked }
                 }
                 if shown != ShownRows::Skeleton {
                     for item in queued {
-                        TranscriptRow { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), new_above: divider == Some(item.id), item, nested: Vec::new(), awaits_approval: false, step: None, older_step: false }
+                        TranscriptRow { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), new_above: divider == Some(item.id), item, nested: Vec::new(), awaits_approval: false, step: None, older_step: false, sign_in_card: false }
                     }
                 }
             }
@@ -308,6 +324,7 @@ struct TopRow {
     awaits_approval: bool,
     step: Option<Step>,
     older_step: bool,
+    sign_in_card: bool,
 }
 
 /// Where a step of a turn stands, as its dot's color says it.
@@ -506,10 +523,18 @@ fn TranscriptRow(
     step: Option<Step>,
     /// The item starts a run whose step sits in older messages the window has not loaded.
     older_step: bool,
+    /// The item is the end of a turn that found no login: it shows as the sign-in card.
+    sign_in_card: bool,
 ) -> Element {
     let id = chat_scroll::entry_id(agent, item.id);
-    let view = rsx! {
-        ItemView { agent, folder, item, nested, awaits_approval }
+    let view = if sign_in_card {
+        rsx! {
+            SignInCard { agent }
+        }
+    } else {
+        rsx! {
+            ItemView { agent, folder, item, nested, awaits_approval }
+        }
     };
     let row = match step {
         Some(step) => rsx! {

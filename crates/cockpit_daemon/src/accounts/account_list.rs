@@ -2,16 +2,12 @@ use std::path::{Component, Path, PathBuf};
 
 use cockpit_protocol::{
     Account, AccountAddParams, AccountChangeParams, AccountId, ErrorBody, ErrorCode,
-    MAX_ACCOUNT_NAME_CHARS,
+    FOLDER_SEPARATOR, MAX_ACCOUNT_NAME_CHARS, account_folder_name,
 };
 use serde::{Deserialize, Serialize};
 
 /// The default account's name until the user changes it.
 const DEFAULT_NAME: &str = "Default";
-/// A proposed folder's name: this, then the account's name made safe.
-const FOLDER_PREFIX: &str = ".claude-";
-/// Takes the place of each run of characters a folder name should not hold.
-const FOLDER_SEPARATOR: char = '-';
 
 /// The accounts, as `settings.json` keeps them. The default account's folder is the daemon's own,
 /// so only its name and its API key choice are kept.
@@ -229,33 +225,14 @@ fn free_folder(folder: &Path, taken: &[&Path]) -> Result<PathBuf, ErrorBody> {
 /// `.claude-<name>` in `home`, the name made safe for a folder, and a number added when another
 /// account has that folder.
 fn proposed_folder(home: &Path, name: &str, taken: &[&Path]) -> PathBuf {
-    let word = folder_word(name);
-    let first = home.join(format!("{FOLDER_PREFIX}{word}"));
-    let mut folder = first.clone();
+    let folder_name = account_folder_name(name);
+    let mut folder = home.join(&folder_name);
     let mut number: u32 = 2;
     while taken.contains(&folder.as_path()) {
-        folder = home.join(format!("{FOLDER_PREFIX}{word}{FOLDER_SEPARATOR}{number}"));
+        folder = home.join(format!("{folder_name}{FOLDER_SEPARATOR}{number}"));
         number = number.saturating_add(1);
     }
     folder
-}
-
-/// The name in lower case, each run of characters other than ASCII letters, digits, `_` and `.`
-/// replaced by `-`, without a `-` or `.` at either end. "account" when nothing is left.
-fn folder_word(name: &str) -> String {
-    let mut word = String::with_capacity(name.len());
-    for character in name.chars() {
-        if character.is_ascii_alphanumeric() || character == '_' || character == '.' {
-            word.push(character.to_ascii_lowercase());
-        } else if !word.ends_with(FOLDER_SEPARATOR) {
-            word.push(FOLDER_SEPARATOR);
-        }
-    }
-    let trimmed = word.trim_matches(|character| character == FOLDER_SEPARATOR || character == '.');
-    if trimmed.is_empty() {
-        return "account".to_owned();
-    }
-    trimmed.to_owned()
 }
 
 fn invalid(message: String) -> ErrorBody {
@@ -301,14 +278,6 @@ mod tests {
             .map(|account| account.id)
             .collect();
         assert_eq!(ids, [AccountId::DEFAULT, work.id, again.id]);
-    }
-
-    #[test]
-    fn a_folder_name_keeps_only_safe_characters() {
-        assert_eq!(folder_word("Work"), "work");
-        assert_eq!(folder_word("Équipe: R&D / 2026"), "quipe-r-d-2026");
-        assert_eq!(folder_word("../.."), "account");
-        assert_eq!(folder_word("my_team.v2"), "my_team.v2");
     }
 
     #[test]

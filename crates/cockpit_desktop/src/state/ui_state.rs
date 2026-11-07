@@ -8,6 +8,7 @@ use cockpit_protocol::{
     AccountId, AgentId, ClaudeSessionId, DirListing, Effort, ItemId, PermissionMode,
 };
 
+use super::accounts::{AccountsView, AddAccountForm};
 use super::agent_map::MapView;
 use super::app_state::Loadable;
 
@@ -58,6 +59,9 @@ pub enum Dialog {
     CloseAgent(AgentId),
     /// The agent and every subagent it started (Ctrl+M).
     AgentMap(MapView),
+    /// Every Claude account, from the sidebar's foot.
+    Accounts(AccountsView),
+    AddAccount(AddAccountForm),
 }
 
 /// The "Open file" dialog's data: the folder its path field names, with what the daemon listed
@@ -97,7 +101,11 @@ impl Dialog {
         match self {
             Self::CloseAgent(agent) => Some(*agent),
             Self::AgentMap(view) => Some(view.agent),
-            Self::NewAgent(_) | Self::Switcher | Self::OpenFile(_) => None,
+            Self::NewAgent(_)
+            | Self::Switcher
+            | Self::OpenFile(_)
+            | Self::Accounts(_)
+            | Self::AddAccount(_) => None,
         }
     }
 }
@@ -146,6 +154,8 @@ pub enum NewAgentTab {
 /// the dialog.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormMenu {
+    /// The Claude account the agent runs with.
+    Account,
     /// The model and the effort.
     Model,
     Mode,
@@ -158,6 +168,9 @@ pub struct NewAgentForm {
     pub model: Option<String>,
     pub effort: Option<Effort>,
     pub mode: Option<PermissionMode>,
+    /// The account picked in the menu. `None` follows the folder: the account of the last agent
+    /// there, else the default one.
+    pub account: Option<AccountId>,
     pub menu: Option<FormMenu>,
     /// A start or resume request is on its way.
     pub starting: bool,

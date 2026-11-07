@@ -10,6 +10,7 @@ use cockpit_protocol::{
     Snapshot,
 };
 
+use super::accounts::{self, SignIns};
 use super::actions;
 use super::app_state::{AgentEntry, AppState, ConnectionState, Loadable};
 use super::drafts::Drafts;
@@ -111,6 +112,8 @@ pub fn apply_catchup(state: &mut AppState, drafts: &mut Drafts, catchup: Catchup
     state.plan_usage = plan_usage;
     state.settings = settings;
     state.accounts = accounts;
+    // A new connection may reach another daemon: its accounts' sign-ins are asked again.
+    state.sign_ins = SignIns::default();
     state.other_plan_usage = other_plan_usage
         .into_iter()
         .map(|account| (account.account, account.usage))
@@ -216,6 +219,7 @@ pub fn apply(state: &mut AppState, drafts: &mut Drafts, record: EventRecord) -> 
         }
         Event::AccountsChanged { accounts } => {
             state.accounts = accounts;
+            state.sign_ins.refresh();
             None
         }
     }
@@ -256,6 +260,8 @@ fn update_agent(state: &mut AppState, summary: AgentSummary) -> Option<Alert> {
     }
     let selected = state.ui.selected == Some(agent);
     let looked_at = selected && state.ui.window_focused;
+    let account_name =
+        accounts::account(state, summary.account).map(|account| account.name.clone());
     let Some(entry) = state.agents.get_mut(&agent) else {
         state.agents.insert(agent, AgentEntry::new(summary));
         return None;
@@ -265,9 +271,16 @@ fn update_agent(state: &mut AppState, summary: AgentSummary) -> Option<Alert> {
     let summary = &entry.summary;
     let after = summary.status;
     if after == AgentStatus::NeedsYou && before != AgentStatus::NeedsYou {
-        let body = summary.activity.clone().unwrap_or_else(|| {
-            "An approval, a question or a plan waits for your answer.".to_owned()
-        });
+        let body = if summary.waits_for_sign_in {
+            match account_name {
+                Some(name) => format!("The account {name} is not signed in."),
+                None => "Its account is not signed in.".to_owned(),
+            }
+        } else {
+            summary.activity.clone().unwrap_or_else(|| {
+                "An approval, a question or a plan waits for your answer.".to_owned()
+            })
+        };
         return Some(Alert {
             agent,
             kind: AlertKind::NeedsYou,

@@ -9,7 +9,9 @@ use dioxus::prelude::*;
 use crate::bridge::{self, ROW_TITLE_FIELD_ID};
 use crate::connection::{Clock, Cockpit};
 use crate::prefs::StatusFilter;
-use crate::state::{AgentEntry, ConnectionState, TitleEdit, TitlePlace, actions};
+use crate::state::accounts::{self, AccountLabel};
+use crate::state::{AgentEntry, AppState, ConnectionState, TitleEdit, TitlePlace, actions};
+use crate::ui::accounts::{AccountTag, AccountsButton};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::reorder::{self, LIST_ID, ROW_CLASS};
 use crate::{APP_NAME, format};
@@ -28,19 +30,26 @@ struct AgentRow {
     time: Option<RowTime>,
     /// The title edit, while the agent is renamed in this row.
     edit: Option<TitleEdit>,
+    /// The account, with two accounts or more.
+    account: Option<AccountLabel>,
+    /// The activity says the account is not signed in.
+    warns: bool,
 }
 
 impl AgentRow {
-    fn new(entry: &AgentEntry, selected: bool, unread: bool, edit: Option<TitleEdit>) -> Self {
+    fn new(state: &AppState, entry: &AgentEntry, edit: Option<TitleEdit>) -> Self {
         let summary = &entry.summary;
+        let waiting = accounts::waiting_line(state, entry);
         Self {
             id: summary.id,
             title: summary.title.clone(),
             status: summary.status,
-            activity: activity_line(entry),
+            warns: waiting.is_some(),
+            activity: waiting.unwrap_or_else(|| activity_line(entry)),
             pending: summary.pending_count,
-            unread,
-            selected,
+            unread: state.is_unread(entry.id()),
+            selected: state.ui.selected == Some(entry.id()),
+            account: accounts::label(state, summary.account),
             tasks: summary
                 .task_progress
                 .map(|progress| format!("{}/{}", progress.done, progress.total)),
@@ -149,12 +158,7 @@ pub fn Sidebar() -> Element {
                 .as_ref()
                 .filter(|edit| edit.agent == entry.id() && edit.place == TitlePlace::Sidebar)
                 .cloned();
-            AgentRow::new(
-                entry,
-                state.ui.selected == Some(entry.id()),
-                state.is_unread(entry.id()),
-                edit,
-            )
+            AgentRow::new(&state, entry, edit)
         })
         .collect();
     rsx! {
@@ -246,7 +250,7 @@ fn AgentRowView(row: AgentRow) -> Element {
     }
     if let Some(TitleEdit {
         title, select_all, ..
-    }) = row.edit
+    }) = row.edit.clone()
     {
         classes.push("editing");
         let class = classes.join(" ");
@@ -275,9 +279,7 @@ fn AgentRowView(row: AgentRow) -> Element {
                         onblur: move |_| cockpit.title_field_blurred(TitlePlace::Sidebar),
                     }
                 }
-                span { class: "row-line row-second",
-                    span { class: "row-activity", "{row.activity}" }
-                }
+                RowSecondLine { row: row.clone() }
             }
         };
     }
@@ -331,9 +333,20 @@ fn AgentRowButton(row: AgentRow, class: String) -> Element {
                     span { class: "visually-hidden", "unread" }
                 }
             }
-            span { class: "row-line row-second",
-                span { class: "row-activity", "{row.activity}" }
+            RowSecondLine { row: row.clone() }
+        }
+    }
+}
+
+/// The account's tag, then what the agent does.
+#[component]
+fn RowSecondLine(row: AgentRow) -> Element {
+    rsx! {
+        span { class: "row-line row-second",
+            if let Some(label) = row.account {
+                AccountTag { label }
             }
+            span { class: if row.warns { "row-activity warning" } else { "row-activity" }, "{row.activity}" }
         }
     }
 }
@@ -382,6 +395,7 @@ fn ConnectionFooter() -> Element {
     };
     rsx! {
         div { class: "sidebar-foot",
+            AccountsButton {}
             span { class,
                 span { class: "connection-dot", aria_hidden: true }
                 "{line}"

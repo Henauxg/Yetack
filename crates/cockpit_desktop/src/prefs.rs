@@ -9,20 +9,29 @@
 //!   },
 //!   "sidebar": {
 //!     "filter": "needs_you"
+//!   },
+//!   "accounts": {
+//!     "colors": {
+//!       "build-box": { "1": "violet" }
+//!     }
 //!   }
 //! }
 //! ```
+//!
+//! The daemon keeps no color for an account, so each viewer chooses them here, per daemon machine
+//! and account id.
 //!
 //! The file is on the machine the app runs on, in a folder apart from the daemon's, which holds a
 //! local daemon's socket. A missing or unreadable file means the defaults, and a field the app
 //! does not know is ignored.
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use cockpit_protocol::AgentStatus;
+use cockpit_protocol::{AccountId, AgentStatus};
 use dioxus::prelude::*;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use strum::{EnumString, IntoStaticStr, VariantArray};
@@ -45,6 +54,103 @@ const FILE_MODE: u32 = 0o600;
 pub struct Prefs {
     pub file_view: FileViewPrefs,
     pub sidebar: SidebarPrefs,
+    pub accounts: AccountPrefs,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AccountPrefs {
+    /// The colors chosen, by the daemon's machine as the app names it, then by account id.
+    pub colors: BTreeMap<String, BTreeMap<u32, AccountColor>>,
+}
+
+impl AccountPrefs {
+    /// The account's chosen color, else the one its id gives.
+    pub fn color(&self, machine: &str, account: AccountId) -> AccountColor {
+        self.colors
+            .get(machine)
+            .and_then(|colors| colors.get(&account.get()))
+            .copied()
+            .unwrap_or_else(|| AccountColor::for_id(account))
+    }
+
+    pub fn set_color(&mut self, machine: &str, account: AccountId, color: AccountColor) {
+        self.colors
+            .entry(machine.to_owned())
+            .or_default()
+            .insert(account.get(), color);
+    }
+}
+
+/// The colors an account can take: none is a status color (teal, amber, red, the greys).
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    EnumString,
+    IntoStaticStr,
+    VariantArray,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum AccountColor {
+    Blue,
+    Violet,
+    Pink,
+    Sand,
+    Slate,
+    Green,
+}
+
+impl AccountColor {
+    /// An account's color until one is chosen: the default account blue, the next violet, and
+    /// so on.
+    pub fn for_id(account: AccountId) -> Self {
+        let count = u32::try_from(Self::VARIANTS.len()).unwrap_or(1);
+        let index = usize::try_from(account.get() % count).unwrap_or(0);
+        Self::VARIANTS.get(index).copied().unwrap_or(Self::Blue)
+    }
+
+    pub fn css(self) -> &'static str {
+        match self {
+            Self::Blue => "#6ea8fe",
+            Self::Violet => "#b197fc",
+            Self::Pink => "#f08cc0",
+            Self::Sand => "#d4b483",
+            Self::Slate => "#9fb0c8",
+            Self::Green => "#8fd3a8",
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Blue => "Blue",
+            Self::Violet => "Violet",
+            Self::Pink => "Pink",
+            Self::Sand => "Sand",
+            Self::Slate => "Slate",
+            Self::Green => "Green",
+        }
+    }
+}
+
+impl Serialize for AccountColor {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.into())
+    }
+}
+
+/// A word this version does not know, from another version of the app, reads as blue rather than
+/// costing the whole file.
+impl<'de> Deserialize<'de> for AccountColor {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let word = String::deserialize(deserializer)?;
+        Ok(word.parse().unwrap_or(Self::Blue))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -294,6 +400,14 @@ mod tests {
   },
   "sidebar": {
     "filter": "needs_you"
+  },
+  "accounts": {
+    "colors": {
+      "build-box": {
+        "0": "sand",
+        "1": "violet"
+      }
+    }
   }
 }
 "#;
@@ -310,9 +424,45 @@ mod tests {
                 sidebar: SidebarPrefs {
                     filter: StatusFilter::NeedsYou,
                 },
+                accounts: AccountPrefs {
+                    colors: BTreeMap::from([(
+                        "build-box".to_owned(),
+                        BTreeMap::from([(0, AccountColor::Sand), (1, AccountColor::Violet)]),
+                    )]),
+                },
             }
         );
         assert_eq!(serde_json::to_string_pretty(&prefs).unwrap() + "\n", text);
+    }
+
+    #[test]
+    fn an_account_takes_its_chosen_color_else_the_one_its_id_gives() {
+        let mut prefs = AccountPrefs::default();
+        prefs.set_color("build-box", AccountId::new(1), AccountColor::Green);
+        let words: Vec<&str> = AccountColor::VARIANTS
+            .iter()
+            .map(|&color| color.into())
+            .collect();
+        let unknown: AccountColor = serde_json::from_str(r#""teal""#).unwrap();
+
+        assert_eq!(
+            prefs.color("build-box", AccountId::DEFAULT),
+            AccountColor::Blue
+        );
+        assert_eq!(
+            prefs.color("build-box", AccountId::new(1)),
+            AccountColor::Green
+        );
+        assert_eq!(
+            prefs.color("this machine", AccountId::new(1)),
+            AccountColor::Violet
+        );
+        assert_eq!(
+            prefs.color("build-box", AccountId::new(8)),
+            AccountColor::Pink
+        );
+        assert_eq!(words, ["blue", "violet", "pink", "sand", "slate", "green"]);
+        assert_eq!(unknown, AccountColor::Blue);
     }
 
     #[test]
@@ -390,6 +540,7 @@ mod tests {
             sidebar: SidebarPrefs {
                 filter: StatusFilter::Exited,
             },
+            accounts: AccountPrefs::default(),
         };
 
         prefs.save(&file).unwrap();
@@ -421,6 +572,7 @@ mod tests {
             sidebar: SidebarPrefs {
                 filter: StatusFilter::Exited,
             },
+            accounts: AccountPrefs::default(),
         };
 
         Prefs::default().save(&file).unwrap();

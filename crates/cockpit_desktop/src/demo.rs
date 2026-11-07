@@ -7,15 +7,15 @@ use std::time::{Duration, SystemTime};
 
 use cockpit_client::RequestError;
 use cockpit_protocol::{
-    Account, AccountId, AgentDetails, AgentHistory, AgentId, AgentLoad, AgentStatus, AgentSummary,
-    Answer, AnswerState, Approval, AskedQuestion, BackgroundTask, BackgroundTaskId,
+    Account, AccountId, AccountState, AgentDetails, AgentHistory, AgentId, AgentLoad, AgentStatus,
+    AgentSummary, Answer, AnswerState, Approval, AskedQuestion, BackgroundTask, BackgroundTaskId,
     BackgroundTaskKind, BackgroundTaskStatus, ChangedFile, ClaudeSessionId, CommandKind,
     CommandLoad, ContextCategory, ContextUsage, Cores, CostUsd, DirEntry, DirListing, Effort,
     EntryKind, ErrorBody, ErrorCode, FileEdit, HistoryPage, ItemBody, ItemId, LoadAverage,
     LoadHistory, MachineLoad, McpScope, McpServer, McpServerStatus, McpTool, McpTransport,
     PastSession, PendingId, PermissionMode, Plan, PlanUsage, Position, ProcessId, Question,
     QuestionOption, RateLimitStatus, Request, ResourceUse, ResponseBody, ServerLoad, ServerPoint,
-    SlashCommand, Subagent, SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem,
+    SignIn, SlashCommand, Subagent, SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem,
     TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem,
     TurnEnd, UsageWindow, UserMessage, WindowUsage,
 };
@@ -40,6 +40,12 @@ const LIVE_AGENT: u32 = 7;
 const WORK_ACCOUNT: u32 = 1;
 /// The agents of the work account.
 const WORK_AGENTS: [u32; 2] = [4, 5];
+/// An account that bills the daemon's API key, which the map's agent uses.
+const LAB_ACCOUNT: u32 = 2;
+/// An account no one signed in to yet, whose agent waits for the sign-in.
+const CLIENT_ACCOUNT: u32 = 3;
+const SIGN_IN_AGENT: u32 = 9;
+const SIGN_IN_FOLDER: &str = "/home/dev/projects/billing";
 
 /// How often the live agent adds or finishes an entry.
 pub const LIVE_TICK: Duration = Duration::from_millis(1500);
@@ -347,7 +353,7 @@ const PLAN_TEXT: &str = "## Add a result cache
 4. Add a test that evaluates the same expression twice.";
 
 /// The sidebar's order, top first, as a user arranged it: neither by id nor by status.
-const SIDEBAR_ORDER: [u32; 8] = [1, MAP_AGENT, LIVE_AGENT, 4, 2, 5, 3, 6];
+const SIDEBAR_ORDER: [u32; 9] = [1, SIGN_IN_AGENT, MAP_AGENT, LIVE_AGENT, 4, 2, 5, 3, 6];
 
 /// The room between two agents' positions, as the daemon leaves it.
 const POSITION_STEP: u32 = 1024;
@@ -370,6 +376,7 @@ pub fn state(daemon: DaemonLabel) -> AppState {
         exited_agent(now),
         live_agent(now),
         map_agent(now),
+        sign_in_agent(now),
     ];
     for sample in agents {
         let mut entry = AgentEntry::new(sample.summary);
@@ -388,9 +395,13 @@ pub fn state(daemon: DaemonLabel) -> AppState {
             entry.summary.position = Position::new(step * POSITION_STEP);
         }
     }
-    for id in WORK_AGENTS {
-        if let Some(entry) = state.agents.get_mut(&AgentId::new(id)) {
-            entry.summary.account = AccountId::new(WORK_ACCOUNT);
+    let agent_accounts = WORK_AGENTS
+        .map(|agent| (agent, WORK_ACCOUNT))
+        .into_iter()
+        .chain([(MAP_AGENT, LAB_ACCOUNT), (SIGN_IN_AGENT, CLIENT_ACCOUNT)]);
+    for (agent, account) in agent_accounts {
+        if let Some(entry) = state.agents.get_mut(&AgentId::new(agent)) {
+            entry.summary.account = AccountId::new(account);
         }
     }
     state.plan_usage = plan_usage(now);
@@ -413,9 +424,10 @@ pub fn latency(request: &Request) -> Duration {
 }
 
 /// What the daemon's events would change after a request it accepts: a rename shows in the
-/// title, an answered approval and a stopped task show in the agent map.
+/// title, an answered approval and a stopped task show in the agent map, and the accounts change.
 pub fn apply(state: &mut AppState, request: &Request) {
     apply_map_request(state, request);
+    apply_account_request(state, request);
     if let Request::AgentRename(params) = request
         && let Some(entry) = state.agents.get_mut(&params.agent)
     {
@@ -487,6 +499,56 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
             ErrorCode::InvalidRequest,
             "The demo does not start agents.",
         )),
+        Request::AccountsList => Ok(ResponseBody::Accounts {
+            accounts: state
+                .accounts
+                .iter()
+                .map(|account| account_state(state, account.clone()))
+                .collect(),
+            environment_api_key: true,
+        }),
+        Request::AccountsAdd(params) => {
+            let id = state
+                .accounts
+                .iter()
+                .map(|account| account.id)
+                .max()
+                .and_then(AccountId::next)
+                .unwrap_or(AccountId::DEFAULT);
+            let folder = params.folder.clone().unwrap_or_else(|| {
+                in_folder(
+                    DEMO_HOME,
+                    cockpit_protocol::account_folder_name(&params.name),
+                )
+            });
+            let account = Account {
+                id,
+                name: params.name.trim().to_owned(),
+                folder,
+                use_environment_api_key: params.use_environment_api_key,
+            };
+            Ok(ResponseBody::Account(account_state(state, account)))
+        }
+        Request::AccountsChange(params) => {
+            let Some(mut account) = state
+                .accounts
+                .iter()
+                .find(|account| account.id == params.account)
+                .cloned()
+            else {
+                return Err(refused(
+                    ErrorCode::NotFound,
+                    "The demo has no such account.",
+                ));
+            };
+            if let Some(name) = &params.name {
+                account.name.clone_from(name);
+            }
+            if let Some(uses) = params.use_environment_api_key {
+                account.use_environment_api_key = uses;
+            }
+            Ok(ResponseBody::Account(account_state(state, account)))
+        }
         _ => Ok(ResponseBody::Done),
     }
 }
@@ -1708,6 +1770,61 @@ fn exited_agent(now: SystemTime) -> Sample {
     }
 }
 
+/// An agent of the client account, whose first message found no login.
+fn sign_in_agent(now: SystemTime) -> Sample {
+    let mut summary = summary(
+        SummaryParts {
+            id: SIGN_IN_AGENT,
+            title: "Invoice export",
+            folder: SIGN_IN_FOLDER,
+            status: AgentStatus::NeedsYou,
+            activity: None,
+            pending: 0,
+            since: Duration::from_secs(60),
+        },
+        now,
+    );
+    summary.waits_for_sign_in = true;
+    summary.turn_started_at = None;
+    summary.turns = 1;
+    summary.cost = CostUsd::new(0.0);
+    let items = vec![
+        item(
+            1,
+            None,
+            user(
+                "Add a CSV export to the invoices page, with the same columns as the table. Keep the totals row out of it.",
+                false,
+            ),
+        ),
+        item(
+            2,
+            None,
+            ItemBody::Notice {
+                text: "The account Client is not signed in, or its login expired. Run this command in a terminal on the daemon's machine to sign in, then send your message again: CLAUDE_CONFIG_DIR='/home/dev/.claude-client' claude auth login".to_owned(),
+                detail: None,
+            },
+        ),
+        item(
+            3,
+            None,
+            ItemBody::TurnEnd(TurnEnd {
+                duration: Duration::from_millis(900),
+                cost: CostUsd::new(0.0),
+                usage: TokenUsage::default(),
+                error: Some("The account is not signed in".to_owned()),
+                stopped: false,
+                not_signed_in: true,
+            }),
+        ),
+    ];
+    Sample {
+        summary,
+        items,
+        details: details(),
+    }
+}
+
 fn live_agent(now: SystemTime) -> Sample {
     let summary = summary(
         SummaryParts {
@@ -2482,6 +2599,9 @@ fn plan_usage(now: SystemTime) -> PlanUsage {
     usage
 }
 
+/// The demo user's home folder on the server.
+const DEMO_HOME: &str = "/home/dev";
+
 fn accounts() -> Vec<Account> {
     vec![
         Account {
@@ -2496,7 +2616,89 @@ fn accounts() -> Vec<Account> {
             folder: PathBuf::from("/home/dev/.claude-work"),
             use_environment_api_key: false,
         },
+        Account {
+            id: AccountId::new(LAB_ACCOUNT),
+            name: "Lab".to_owned(),
+            folder: PathBuf::from("/home/dev/.claude-lab"),
+            use_environment_api_key: true,
+        },
+        Account {
+            id: AccountId::new(CLIENT_ACCOUNT),
+            name: "Client".to_owned(),
+            folder: PathBuf::from("/home/dev/.claude-client"),
+            use_environment_api_key: false,
+        },
     ]
+}
+
+/// Whether the demo's daemon finds a login. The client account signs in once its card asks
+/// again, and an added account once it is asked a second time: the demo's stand-in for the user
+/// running the command in a terminal.
+fn account_state(state: &AppState, account: Account) -> AccountState {
+    let known = state.sign_ins.sign_in(account.id);
+    let card_asks = state.ui.selected == Some(AgentId::new(SIGN_IN_AGENT))
+        && state.ui.dialog.is_none()
+        && !state.sign_ins.states.is_empty();
+    let signed_in = match account.id.get() {
+        CLIENT_ACCOUNT => known == Some(SignIn::SignedIn) || card_asks,
+        id if id > CLIENT_ACCOUNT => known.is_some(),
+        _ => true,
+    };
+    let sign_in = if signed_in {
+        SignIn::SignedIn
+    } else {
+        SignIn::NotSignedIn
+    };
+    let folder = account.folder.to_string_lossy().replace('\'', r"'\''");
+    let sign_in_command = if account.id.is_default() {
+        "claude auth login".to_owned()
+    } else {
+        format!("CLAUDE_CONFIG_DIR='{folder}' claude auth login")
+    };
+    AccountState {
+        account,
+        sign_in,
+        sign_in_command,
+    }
+}
+
+/// What the daemon would change after an account request: its accounts, and the agents whose
+/// account signed in.
+fn apply_account_request(state: &mut AppState, request: &Request) {
+    match request {
+        Request::AccountsList => {
+            let signed_in: Vec<AccountId> = state
+                .accounts
+                .iter()
+                .filter(|account| {
+                    account_state(state, (*account).clone()).sign_in == SignIn::SignedIn
+                })
+                .map(|account| account.id)
+                .collect();
+            for entry in state.agents.values_mut() {
+                let summary = &mut entry.summary;
+                if summary.waits_for_sign_in && signed_in.contains(&summary.account) {
+                    summary.waits_for_sign_in = false;
+                    summary.status = AgentStatus::Idle;
+                }
+            }
+        }
+        Request::AccountsAdd(_) | Request::AccountsChange(_) => {
+            if let Ok(ResponseBody::Account(added)) = answer(state, request) {
+                let account = added.account;
+                match state.accounts.iter_mut().find(|kept| kept.id == account.id) {
+                    Some(kept) => *kept = account,
+                    None => state.accounts.push(account),
+                }
+            }
+        }
+        Request::AccountsRemove(params) => {
+            state
+                .accounts
+                .retain(|account| account.id != params.account);
+        }
+        _ => {}
+    }
 }
 
 fn work_plan_usage(now: SystemTime) -> PlanUsage {
@@ -2504,8 +2706,8 @@ fn work_plan_usage(now: SystemTime) -> PlanUsage {
     usage.windows.insert(
         UsageWindow::FiveHour,
         WindowUsage {
-            utilization: Some(0.17),
-            resets_at: Some(in_future(now, 4 * 3600 + 40 * 60)),
+            utilization: Some(0.81),
+            resets_at: Some(in_future(now, 40 * 60)),
             status: RateLimitStatus::Allowed,
         },
     );
@@ -2553,7 +2755,12 @@ fn sessions(now: SystemTime) -> Vec<PastSession> {
             folder: in_folder(PLATFORM_FOLDER, folder),
             last_activity: at(now, index * 7 * 60),
             turns: 12,
-            account: AccountId::new(WORK_ACCOUNT),
+            // Every third one ran with the lab's API key.
+            account: AccountId::new(if index % 3 == 0 {
+                LAB_ACCOUNT
+            } else {
+                WORK_ACCOUNT
+            }),
         });
     }
     sessions.extend([
@@ -2754,8 +2961,13 @@ pub struct ParseError {
                 None,
                 None,
                 Some(WaitingKind::Approval),
+                // Its account waits for a sign-in: no answer is asked.
+                None,
             ]
         );
+        let sign_in = state.agents.get(&AgentId::new(SIGN_IN_AGENT)).unwrap();
+        assert!(sign_in.summary.waits_for_sign_in);
+        assert!(crate::state::accounts::sign_in_turn(sign_in).is_some());
     }
 
     #[test]

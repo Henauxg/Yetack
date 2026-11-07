@@ -29,7 +29,9 @@ mod time;
 mod transcript;
 mod usage;
 
-pub use account::{Account, AccountState, MAX_ACCOUNT_NAME_CHARS, SignIn};
+pub use account::{
+    Account, AccountState, FOLDER_SEPARATOR, MAX_ACCOUNT_NAME_CHARS, SignIn, account_folder_name,
+};
 pub use agent::{AgentStatus, AgentSummary, Effort, PermissionMode, TaskProgress};
 pub use details::{
     AgentDetails, BackgroundTask, BackgroundTaskKind, BackgroundTaskStatus, ChangedFile,

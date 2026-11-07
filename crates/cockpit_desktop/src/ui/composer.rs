@@ -12,7 +12,7 @@ use crate::bridge::{self, ATTACH_INPUT_ID, COMPOSER_ID};
 use crate::connection::{Clock, Cockpit};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::state::actions::ImageTooLarge;
-use crate::state::{PaletteOrigin, Popover, actions, agent_map};
+use crate::state::{PaletteOrigin, Popover, accounts, actions, agent_map};
 use crate::ui::header::cache_left;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::palette::Palette;
@@ -94,7 +94,7 @@ pub fn Composer() -> Element {
     };
     let agent = entry.id();
     let summary = &entry.summary;
-    let status = summary.status;
+    let status = accounts::turn_status(summary);
     let draft = drafts.draft(agent).cloned().unwrap_or_default();
     let popover = state.ui.popover;
     let exited = status == AgentStatus::Exited;

@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use cockpit_protocol::{AgentId, Image, PendingId};
+use cockpit_protocol::{AccountId, AgentId, Image, PendingId};
 
 use super::utf16_offset::Utf16Offset;
 
@@ -61,6 +61,17 @@ pub struct NewAgentDraft {
     pub session_query: String,
     /// An index into the sessions the query leaves.
     pub session_highlighted: usize,
+    /// The account whose sessions the list shows; `None` for every account's.
+    pub session_account: Option<AccountId>,
+}
+
+/// The "Add an account" dialog's fields, while it is open.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AddAccountDraft {
+    pub name: String,
+    pub folder: String,
+    /// The folder was typed in: it no longer follows the name.
+    pub folder_typed: bool,
 }
 
 /// The agent switcher's search, while it is open.
@@ -98,6 +109,7 @@ pub struct Drafts {
     /// The text of the title field, the header's or a sidebar row's, while a title is edited.
     pub title: String,
     pub new_agent: NewAgentDraft,
+    pub add_account: AddAccountDraft,
     pub switcher: SwitcherDraft,
     pub open_file: OpenFileDraft,
 }

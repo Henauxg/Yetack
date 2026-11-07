@@ -1,5 +1,6 @@
 //! The components, matching the round 5 mockups.
 
+mod accounts;
 mod agent_map;
 mod app;
 mod blocks;

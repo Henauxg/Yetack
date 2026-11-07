@@ -10,6 +10,7 @@ use cockpit_protocol::{
 };
 use strum::VariantArray;
 
+use super::accounts::SignIns;
 use super::file_edits;
 use super::no_daemon::NoDaemon;
 use super::transcript::Transcript;
@@ -69,6 +70,15 @@ pub enum ConnectionState {
     },
     /// The first connection failed: the "No daemon answers" screen asks what to run.
     NoDaemon(NoDaemon),
+}
+
+/// A folder where an agent ran, for the new agent dialog.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecentFolder {
+    pub folder: PathBuf,
+    pub used: Timestamp,
+    /// The account of the last agent or past session there.
+    pub account: AccountId,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -166,6 +176,8 @@ pub struct AppState {
     pub accounts: Vec<Account>,
     /// The plan usage of each account other than the default one.
     pub other_plan_usage: BTreeMap<AccountId, PlanUsage>,
+    /// What `accounts.list` last answered: whether each account is signed in, and how.
+    pub sign_ins: SignIns,
     /// Past Claude sessions, for the new agent dialog.
     pub sessions: Loadable<Vec<PastSession>>,
     /// The daemon is older than `folders.list`: the folder field lists nothing until the app
@@ -196,6 +208,7 @@ impl AppState {
             settings: Settings::default(),
             accounts: Vec::new(),
             other_plan_usage: BTreeMap::new(),
+            sign_ins: SignIns::default(),
             sessions: Loadable::NotRequested,
             folders_unknown: false,
             ui: UiState::default(),
@@ -291,33 +304,45 @@ impl AppState {
         }
     }
 
-    /// Folders where agents ran, with their last use, most recent first, for the new agent
-    /// dialog. One folder written two ways, as `C:\Work` and `c:/work`, shows once.
-    pub fn recent_folders(&self) -> Vec<(PathBuf, Timestamp)> {
-        let mut uses: Vec<(PathBuf, Timestamp)> = Vec::new();
-        let agent_uses = self
-            .agents
-            .values()
-            .map(|entry| (&entry.summary.folder, entry.summary.started_at));
+    /// Folders where agents ran, with their last use and the account of that use, most recent
+    /// first, for the new agent dialog. One folder written two ways, as `C:\Work` and `c:/work`,
+    /// shows once.
+    pub fn recent_folders(&self) -> Vec<RecentFolder> {
+        let mut uses: Vec<RecentFolder> = Vec::new();
+        let agent_uses = self.agents.values().map(|entry| {
+            let summary = &entry.summary;
+            (&summary.folder, summary.started_at, summary.account)
+        });
         let session_uses = self
             .sessions
             .loaded()
             .into_iter()
             .flatten()
-            .map(|session: &PastSession| (&session.folder, session.last_activity));
-        for (folder, moment) in agent_uses.chain(session_uses) {
+            .map(|session: &PastSession| (&session.folder, session.last_activity, session.account));
+        for (folder, moment, account) in agent_uses.chain(session_uses) {
             let text = folder.to_string_lossy();
             let style = PathStyle::of_text(&text);
             let seen = uses
                 .iter_mut()
-                .find(|(seen, _)| style.same_path(&seen.to_string_lossy(), &text));
+                .find(|seen| style.same_path(&seen.folder.to_string_lossy(), &text));
             match seen {
-                Some((_, latest)) => *latest = (*latest).max(moment),
-                None => uses.push((folder.clone(), moment)),
+                Some(seen) if moment > seen.used => {
+                    seen.used = moment;
+                    seen.account = account;
+                }
+                Some(_) => {}
+                None => uses.push(RecentFolder {
+                    folder: folder.clone(),
+                    used: moment,
+                    account,
+                }),
             }
         }
-        uses.sort_by(|(left_folder, left), (right_folder, right)| {
-            right.cmp(left).then_with(|| left_folder.cmp(right_folder))
+        uses.sort_by(|left, right| {
+            right
+                .used
+                .cmp(&left.used)
+                .then_with(|| left.folder.cmp(&right.folder))
         });
         uses
     }
@@ -516,7 +541,7 @@ pub(crate) mod tests {
         let folders: Vec<PathBuf> = state
             .recent_folders()
             .into_iter()
-            .map(|(folder, _)| folder)
+            .map(|recent| recent.folder)
             .collect();
         assert_eq!(
             folders,

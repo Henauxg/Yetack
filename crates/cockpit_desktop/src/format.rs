@@ -31,6 +31,9 @@ pub const MODEL_CHOICES: [ModelChoice; 3] = [
     },
 ];
 
+/// A plan window this full, in percent, is close to its limit.
+pub const CLOSE_TO_LIMIT_PERCENT: u8 = 80;
+
 /// The modes the mode menu offers; the others show only when an agent already runs in them.
 pub const MODE_CHOICES: [PermissionMode; 4] = [
     PermissionMode::Default,

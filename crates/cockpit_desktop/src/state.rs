@@ -1,6 +1,7 @@
 //! The app's state, and the pure functions that change it: daemon events, responses, clicks and
 //! keys. None of them needs a window, so they are tested on their own.
 
+pub mod accounts;
 pub mod actions;
 pub mod agent_map;
 mod app_state;

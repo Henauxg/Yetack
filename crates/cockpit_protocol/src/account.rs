@@ -10,6 +10,32 @@ use crate::ids::AccountId;
 
 /// The longest account name the daemon keeps: every snapshot carries the accounts.
 pub const MAX_ACCOUNT_NAME_CHARS: usize = 60;
+/// A proposed folder's name: this, then the account's name made safe.
+const FOLDER_PREFIX: &str = ".claude-";
+/// Takes the place of each run of characters a folder name should not hold.
+pub const FOLDER_SEPARATOR: char = '-';
+
+/// The name of the folder the daemon proposes for an account, in its home folder: `.claude-`
+/// and the name in lower case, each run of characters other than ASCII letters, digits, `_` and
+/// `.` replaced by `-`, without a `-` or `.` at either end ("account" when nothing is left).
+/// `Client Work` gives `.claude-client-work`.
+pub fn account_folder_name(name: &str) -> String {
+    let mut word = String::with_capacity(name.len());
+    for character in name.chars() {
+        if character.is_ascii_alphanumeric() || character == '_' || character == '.' {
+            word.push(character.to_ascii_lowercase());
+        } else if !word.ends_with(FOLDER_SEPARATOR) {
+            word.push(FOLDER_SEPARATOR);
+        }
+    }
+    let trimmed = word.trim_matches(|character| character == FOLDER_SEPARATOR || character == '.');
+    let word = if trimmed.is_empty() {
+        "account"
+    } else {
+        trimmed
+    };
+    format!("{FOLDER_PREFIX}{word}")
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Account {
@@ -45,4 +71,20 @@ pub struct AccountState {
     /// The command that signs in to the account, typed in a terminal on the daemon's machine:
     /// for a POSIX shell, or for PowerShell on Windows.
     pub sign_in_command: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_folder_name_keeps_only_safe_characters() {
+        assert_eq!(account_folder_name("Work"), ".claude-work");
+        assert_eq!(
+            account_folder_name("Équipe: R&D / 2026"),
+            ".claude-quipe-r-d-2026"
+        );
+        assert_eq!(account_folder_name("../.."), ".claude-account");
+        assert_eq!(account_folder_name("my_team.v2"), ".claude-my_team.v2");
+    }
 }

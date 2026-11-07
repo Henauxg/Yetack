@@ -4988,6 +4988,633 @@ button.map-toggle:hover {
   opacity: 1;
 }
 
+/* Claude accounts. Each account has a color, which `--acct` carries: its tag, its dot, the
+   account picker, the "Accounts" and "Add an account" dialogs, the plan card's accounts, and the
+   card of an agent whose account is not signed in. */
+.acct-tag {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--acct) 17%, transparent);
+  color: color-mix(in srgb, var(--acct) 80%, #ffffff);
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.title-line .acct-tag {
+  height: 22px;
+  padding: 0 8px;
+  font-size: 12px;
+  border-radius: 6px;
+}
+
+.row-second {
+  gap: 6px;
+}
+
+.row-activity.warning {
+  color: var(--amber);
+}
+
+.acct-dot {
+  flex: none;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--acct);
+}
+
+.acct-mini {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.acct-mini .acct-dot,
+.chip .acct-dot,
+.segment .acct-dot {
+  width: 7px;
+  height: 7px;
+}
+
+.segment .acct-dot {
+  margin-right: 6px;
+}
+
+.acct-button {
+  gap: 6px;
+}
+
+.form-menu.account-menu {
+  left: 0;
+  width: 320px;
+}
+
+.acct-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 48px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: 13px;
+}
+
+.acct-item:hover,
+.acct-item.chosen {
+  background: var(--selected);
+}
+
+.acct-item-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.acct-item-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
+
+.acct-item-detail {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.acct-item-detail .warn {
+  color: var(--amber);
+}
+
+.acct-item .icon {
+  color: var(--text-soft);
+}
+
+.default-word {
+  font-size: 11px;
+  color: var(--dim);
+  font-weight: 400;
+}
+
+.menu-item.quiet {
+  justify-content: flex-start;
+  gap: 8px;
+  color: var(--text-soft);
+}
+
+.menu-item.quiet .icon {
+  color: var(--dim);
+}
+
+.dialog.add-account {
+  width: 600px;
+}
+
+.dialog.accounts {
+  width: 660px;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 16px;
+  align-items: end;
+}
+
+.text-input {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line-control);
+  background: var(--bg);
+  color: var(--text);
+  outline: none;
+}
+
+.text-input:focus {
+  border-color: rgba(45, 212, 191, 0.55);
+  box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.12);
+}
+
+.swatches {
+  display: flex;
+  gap: 6px;
+  min-height: 40px;
+  align-items: center;
+}
+
+.swatch {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 50%;
+  border: 0;
+  background: var(--acct);
+  box-shadow: 0 0 0 2px var(--panel);
+}
+
+.swatch.chosen {
+  box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--acct);
+}
+
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  cursor: pointer;
+}
+
+.check-row input {
+  margin: 3px 0 0;
+  accent-color: var(--teal);
+}
+
+.check-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.check-text code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.step-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.step-number {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--line-divider);
+  color: var(--text-soft);
+  font-size: 11.5px;
+}
+
+.command-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 10px 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--code-bg);
+}
+
+.command-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-soft);
+}
+
+.command-box .copy-button {
+  position: static;
+  flex: none;
+  align-self: flex-start;
+}
+
+.signin-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--well);
+  font-size: 13px;
+  --status: var(--muted);
+  --status-fill: transparent;
+}
+
+.signin-status .status-dot {
+  width: 9px;
+  height: 9px;
+}
+
+.signin-status.signed {
+  border-color: rgba(74, 194, 107, 0.35);
+  background: rgba(74, 194, 107, 0.06);
+}
+
+.signin-status.missing {
+  --status: var(--amber);
+  --status-fill: transparent;
+}
+
+.signin-status.ok {
+  --status: var(--green);
+  --status-fill: var(--green);
+}
+
+.signin-state {
+  font-weight: 500;
+}
+
+.signin-detail {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.form-error {
+  font-size: 12.5px;
+  color: var(--red);
+}
+
+.sep {
+  flex: none;
+  height: 1px;
+  background: var(--line-divider);
+  margin: 2px 0;
+}
+
+.dialog-footer.row {
+  flex-direction: row;
+  align-items: center;
+}
+
+.dialog-footer.row .dialog-actions {
+  flex: none;
+}
+
+.dialog-footer.row .hint {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dialog .button {
+  white-space: nowrap;
+}
+
+.acct-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.acct-card {
+  flex: none;
+  border-radius: 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--well);
+}
+
+.acct-card.open {
+  border-color: var(--line-control);
+  background: var(--panel);
+}
+
+.acct-card-head,
+.added-account {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 52px;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  border-radius: 10px;
+}
+
+.added-account {
+  border: 1px solid var(--line-strong);
+  background: var(--well);
+}
+
+.acct-card-head:hover {
+  background: var(--hover);
+}
+
+.acct-swatch {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--acct);
+}
+
+.acct-card-name {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.acct-card-name b {
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.acct-card-folder {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.acct-card-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  --status: var(--muted);
+  --status-fill: transparent;
+}
+
+.acct-card-state .status-dot {
+  width: 8px;
+  height: 8px;
+}
+
+.acct-card-state.ok {
+  --status: var(--green);
+  --status-fill: var(--green);
+}
+
+.added-account .acct-card-state.ok {
+  color: var(--green);
+}
+
+.acct-card-state.missing {
+  --status: var(--amber);
+  --status-fill: transparent;
+  color: var(--amber);
+}
+
+.acct-card-state.key {
+  --status: var(--muted);
+  --status-fill: var(--muted);
+}
+
+.acct-card-agents {
+  font-size: 12px;
+  color: var(--dim);
+  min-width: 56px;
+  text-align: right;
+}
+
+.acct-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 4px 14px 14px 34px;
+}
+
+.acct-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.acct-card-actions .button:disabled {
+  opacity: 0.5;
+}
+
+.default-tag {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--line-control);
+  color: var(--muted);
+}
+
+.usage-card.accounts-card {
+  width: 420px;
+}
+
+.plan-acct {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line-divider);
+}
+
+.plan-acct.current {
+  border-color: var(--line-control);
+  background: var(--raised);
+}
+
+.plan-acct-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.plan-acct-head .name {
+  font-weight: 600;
+}
+
+.plan-acct-head .kind {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.this-agent {
+  font-size: 11px;
+  color: var(--teal);
+}
+
+.plan-windows {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 16px;
+}
+
+.plan-window {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.plan-window .card-row {
+  font-size: 12.5px;
+}
+
+.plan-window .muted.small {
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card-links {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.chip-full .acct-dot {
+  margin-right: 2px;
+}
+
+.card.signin-card {
+  background: #211e18;
+}
+
+.signin-card .card-note b {
+  color: var(--text-soft);
+  font-weight: 500;
+}
+
+.signin-card .command-box {
+  background: var(--bg);
+}
+
+.resume-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.resume-tools .session-search {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.resume-tools .segmented {
+  flex: none;
+}
+
+.resume-tools .segment {
+  padding: 0 8px;
+}
+
+.session-title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.session-title-line .session-title {
+  min-width: 0;
+}
+
+.foot-accounts {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.foot-accounts:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.foot-accounts .dots {
+  display: inline-flex;
+}
+
+.foot-accounts .dots .acct-dot {
+  width: 7px;
+  height: 7px;
+  box-shadow: 0 0 0 2px var(--sidebar);
+}
+
+.foot-accounts .dots .acct-dot + .acct-dot {
+  margin-left: -2px;
+}
+
 /* Motion: hover, press and focus, and how overlays, menus, blocks and notes come and go. Every
    duration and easing is a token below. A leaving element is one ui/presence.rs keeps on screen
    for its exit animation: it is inert, so input already goes past it. */

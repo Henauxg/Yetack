@@ -5,14 +5,16 @@
 use std::time::SystemTime;
 
 use cockpit_protocol::{
-    ChangedFile, ContextUsage, MAX_TITLE_CHARS, PlanUsage, RateLimitStatus, Timestamp, UsageWindow,
+    ChangedFile, ContextUsage, MAX_TITLE_CHARS, RateLimitStatus, Timestamp, UsageWindow,
     WindowUsage,
 };
 use dioxus::prelude::*;
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
 use crate::connection::{Clock, Cockpit};
+use crate::state::accounts::{self, Billing, PlanChip};
 use crate::state::{AgentEntry, Loadable, Popover, TitlePlace, actions, title_emoji};
+use crate::ui::accounts::{AccountDot, AccountTag, PlanAccounts};
 use crate::ui::changes_list::{self, ChangesList};
 use crate::ui::emoji_picker::EmojiPicker;
 use crate::ui::icons::{Icon, IconKind};
@@ -20,8 +22,6 @@ use crate::ui::load_card::{LoadCard, LoadChip};
 use crate::ui::presence::Presence;
 use crate::{bridge, format, path_style};
 
-/// A plan window this full, in percent, is close to its limit.
-const CLOSE_TO_LIMIT_PERCENT: u8 = 80;
 const AT_LIMIT_PERCENT: u8 = 100;
 
 /// How close a plan window is to its limit, which colors its bar.
@@ -41,7 +41,7 @@ impl WindowLevel {
             RateLimitStatus::Rejected => Self::AtLimit,
             _ if percent >= AT_LIMIT_PERCENT => Self::AtLimit,
             RateLimitStatus::AllowedWarning => Self::CloseToLimit,
-            _ if percent >= CLOSE_TO_LIMIT_PERCENT => Self::CloseToLimit,
+            _ if percent >= format::CLOSE_TO_LIMIT_PERCENT => Self::CloseToLimit,
             RateLimitStatus::Allowed => Self::Normal,
         }
     }
@@ -130,7 +130,13 @@ pub fn Header() -> Element {
     let summary = &entry.summary;
     let status_class = format::status_class(summary.status);
     let status_label = format::status_label(summary.status);
-    let plan = plan_percent(&state.plan_usage);
+    let account = summary.account;
+    let account_label = accounts::label(&state, account);
+    let chip = accounts::plan_chip(&state, account);
+    let plan = match chip {
+        PlanChip::Percent(percent) => percent,
+        PlanChip::ApiKey | PlanChip::NotSignedIn => None,
+    };
     let context = context_percent(entry);
     let files = changed_files(entry);
     let (added, removed) = changes_list::line_totals(&files);
@@ -144,7 +150,16 @@ pub fn Header() -> Element {
     let changes_open = state.ui.popover == Some(Popover::Changes);
     let plan_text = plan.map_or_else(|| "?".to_owned(), |percent| format!("{percent}%"));
     let context_text = context.map_or_else(|| "?".to_owned(), |percent| format!("{percent}%"));
-    let usage_label = format!("Usage: plan {plan_text}, context {context_text}");
+    let plan_words = match chip {
+        PlanChip::Percent(_) => format!("plan {plan_text}"),
+        PlanChip::ApiKey => "API key".to_owned(),
+        PlanChip::NotSignedIn => "not signed in".to_owned(),
+    };
+    let account_words = account_label
+        .as_ref()
+        .map(|label| format!(" of {}", label.name))
+        .unwrap_or_default();
+    let usage_label = format!("Usage: {plan_words}{account_words}, context {context_text}");
     let changes_label = format!(
         "Changes: {}, {added} lines added, {removed} removed",
         format::count(files.len(), "file", "files")
@@ -223,6 +238,9 @@ pub fn Header() -> Element {
                         span { class: "status-dot", aria_hidden: true }
                         span { class: "pill-label", "{status_label}" }
                     }
+                    if let Some(label) = account_label.clone() {
+                        AccountTag { label }
+                    }
                 }
                 span { class: "header-folder", "{folder}" }
                 Presence { open: emoji_open,
@@ -236,7 +254,20 @@ pub fn Header() -> Element {
                     aria_label: "{usage_label}",
                     onclick: move |_| cockpit.change(|state| actions::toggle_usage(state, agent)),
                     span { class: "chip-full",
-                        span { span { class: "chip-key", "Plan" } " {plan_text}" }
+                        if let Some(label) = &account_label {
+                            AccountDot { color: label.color }
+                        }
+                        match chip {
+                            PlanChip::Percent(_) => rsx! {
+                                span { span { class: "chip-key", "Plan" } " {plan_text}" }
+                            },
+                            PlanChip::ApiKey => rsx! {
+                                span { class: "chip-key", "API key" }
+                            },
+                            PlanChip::NotSignedIn => rsx! {
+                                span { span { class: "chip-key", "Plan" } " " span { class: "warning", "?" } }
+                            },
+                        }
                         span { class: "chip-separator", aria_hidden: true }
                         span { span { class: "chip-key", "Context" } " {context_text}" }
                         Icon { kind: IconKind::ChevronDown, size: 12 }
@@ -282,22 +313,6 @@ fn changed_files(entry: &AgentEntry) -> Vec<ChangedFile> {
         .unwrap_or_default()
 }
 
-/// The five-hour window, which the chip shows; another window when Claude Code reported only
-/// that one.
-fn plan_percent(plan_usage: &PlanUsage) -> Option<u8> {
-    let five_hour = plan_usage
-        .windows
-        .get(&UsageWindow::FiveHour)
-        .and_then(|usage| usage.utilization);
-    let any = || {
-        plan_usage
-            .windows
-            .values()
-            .find_map(|usage| usage.utilization)
-    };
-    five_hour.or_else(any).map(format::percent)
-}
-
 fn context_percent(entry: &AgentEntry) -> Option<u8> {
     let reported = entry
         .details
@@ -322,15 +337,21 @@ fn UsageCard() -> Element {
     let Clock(now) = use_context::<Clock>();
     let now = now();
     let state = cockpit.state.read();
-    let windows: Vec<(UsageWindow, WindowUsage)> = state
-        .plan_usage
-        .windows
-        .iter()
-        .map(|(window, usage)| (*window, *usage))
-        .collect();
     let Some(entry) = state.selected() else {
         return rsx! {};
     };
+    let agent_account = entry.summary.account;
+    let several = accounts::shows_labels(&state);
+    let windows: Vec<(UsageWindow, WindowUsage)> = accounts::plan_usage(&state, agent_account)
+        .map(|usage| {
+            usage
+                .windows
+                .iter()
+                .map(|(window, usage)| (*window, *usage))
+                .collect()
+        })
+        .unwrap_or_default();
+    let billed_to_key = accounts::billing(&state, agent_account) == Billing::ApiKey;
     // Before the connection, the plan's windows are unknown, not missing.
     let plan_loading = !state.is_connected();
     let summary = &entry.summary;
@@ -355,22 +376,26 @@ fn UsageCard() -> Element {
     let cost = format::cost(summary.cost);
     let turns = summary.turns;
     rsx! {
-        div { class: "popover usage-card",
-            div { class: "card-section",
-                span { class: "section-title", "Plan, all agents" }
-                if windows.is_empty() && plan_loading {
-                    for width in ["104px", "92px"] {
-                        div { class: "card-row", aria_hidden: true,
-                            span { class: "skeleton skeleton-line", style: "width: {width}" }
-                            span { class: "skeleton skeleton-line", style: "width: 30px" }
+        div { class: if several { "popover usage-card accounts-card" } else { "popover usage-card" },
+            if several {
+                PlanAccounts { agent_account }
+            } else {
+                div { class: "card-section",
+                    span { class: "section-title", "Plan, all agents" }
+                    if windows.is_empty() && plan_loading {
+                        for width in ["104px", "92px"] {
+                            div { class: "card-row", aria_hidden: true,
+                                span { class: "skeleton skeleton-line", style: "width: {width}" }
+                                span { class: "skeleton skeleton-line", style: "width: 30px" }
+                            }
+                            span { class: "skeleton", style: "height: 6px", aria_hidden: true }
                         }
-                        span { class: "skeleton", style: "height: 6px", aria_hidden: true }
+                    } else if windows.is_empty() {
+                        span { class: "muted small", "Claude Code has not reported the plan usage yet." }
                     }
-                } else if windows.is_empty() {
-                    span { class: "muted small", "Claude Code has not reported the plan usage yet." }
-                }
-                for (window, usage) in windows {
-                    WindowRow { window, usage, now }
+                    for (window, usage) in windows {
+                        WindowRow { window, usage, now }
+                    }
                 }
             }
             div { class: "card-divider" }
@@ -400,7 +425,11 @@ fn UsageCard() -> Element {
                 }
                 div { class: "card-row", span { "Turns" } span { "{turns}" } }
                 div { class: "card-row", span { "Cost at API prices" } span { "{cost}" } }
-                span { class: "muted small", "An estimate. The plan does not charge per token." }
+                if billed_to_key {
+                    span { class: "muted small", "Billed to the API key at these prices." }
+                } else {
+                    span { class: "muted small", "An estimate. The plan does not charge per token." }
+                }
             }
         }
     }

@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use cockpit_protocol::{AgentId, AgentStatus, Effort, PastSession, PermissionMode};
+use cockpit_protocol::{AgentId, AgentStatus, Effort, PastSession, PermissionMode, Timestamp};
 use dioxus::html::geometry::ScreenPoint;
 use dioxus::html::point_interaction::InteractionLocation;
 use dioxus::prelude::*;
@@ -14,7 +14,10 @@ use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::path_style::{self, PathStyle};
 use crate::state::actions::Direction;
 use crate::state::folder_field::{self, FolderRow};
-use crate::state::{Dialog, FolderList, FormMenu, Loadable, NewAgentForm, NewAgentTab, actions};
+use crate::state::{
+    Dialog, FolderList, FormMenu, Loadable, NewAgentForm, NewAgentTab, accounts, actions,
+};
+use crate::ui::accounts::{self as accounts_view, AccountMini, AccountPicker, AccountTag};
 use crate::ui::agent_map::AgentMapDialog;
 use crate::ui::composer::mode_icon;
 use crate::ui::icons::{Icon, IconKind};
@@ -100,6 +103,7 @@ pub fn Dialogs() -> Element {
                     Dialog::AgentMap(view) => rsx! {
                         AgentMapDialog { view }
                     },
+                    dialog @ (Dialog::Accounts(_) | Dialog::AddAccount(_)) => accounts_view::dialog(dialog),
                 }
             }
         }
@@ -354,12 +358,21 @@ fn StartForm(form: NewAgentForm) -> Element {
     let prompt_seed = use_hook(|| typed_prompt.clone());
     // The recent folder under the pointer, the one row lit. The field's folder is only marked.
     let mut pointed = use_signal(|| None::<PathBuf>);
-    let (folders, machine, sessions_loading) = {
+    let (folders, machine, sessions_loading, account) = {
         let state = cockpit.state.read();
-        let mut folders = state.recent_folders();
+        let mut folders: Vec<(PathBuf, Timestamp, Option<accounts::AccountLabel>)> = state
+            .recent_folders()
+            .into_iter()
+            .map(|recent| {
+                let label = accounts::label(&state, recent.account);
+                (recent.folder, recent.used, label)
+            })
+            .collect();
         folders.truncate(RECENT_FOLDERS);
         let loading = matches!(state.sessions, Loadable::NotRequested | Loadable::Loading);
-        (folders, state.daemon.machine.clone(), loading)
+        let account = accounts::shows_labels(&state)
+            .then(|| accounts::new_agent_account(&state, &form, &typed_folder));
+        (folders, state.daemon.machine.clone(), loading, account)
     };
     let folders_unknown = cockpit.state.read().folders_unknown;
     // The past sessions bring more recent folders: rows stand for them until they arrive, so the
@@ -395,6 +408,7 @@ fn StartForm(form: NewAgentForm) -> Element {
     let effort_label = form.effort.map(format::effort_label);
     let mode_label = form.mode.map_or(DEFAULT_MODE, format::mode_label);
     let mode_icon = mode_icon(form.mode.unwrap_or_default());
+    let account_open = form.menu == Some(FormMenu::Account);
     let model_open = form.menu == Some(FormMenu::Model);
     let mode_open = form.menu == Some(FormMenu::Mode);
     rsx! {
@@ -443,7 +457,7 @@ fn StartForm(form: NewAgentForm) -> Element {
                         role: "radiogroup",
                         aria_label: "Recent folders",
                         onmouseleave: move |_| pointed.set(None),
-                        for (folder, used) in folders {
+                        for (folder, used, label) in folders {
                             {
                                 let shown = path_style::shown(&folder);
                                 let checked = typed_folder == shown;
@@ -474,10 +488,16 @@ fn StartForm(form: NewAgentForm) -> Element {
                                         onclick: move |_| {
                                             let picked = picked.clone();
                                             bridge::set_field_text(FOLDER_FIELD_ID, picked.clone());
-                                            cockpit.with_drafts(|_, drafts| drafts.new_agent.folder = picked);
+                                            cockpit.update_with_drafts(|state, drafts| {
+                                                drafts.new_agent.folder = picked;
+                                                accounts::follow_folder_account(state);
+                                            });
                                         },
                                         span { class: "folder-icon", Icon { kind: IconKind::Folder, size: 14 } }
                                         FolderPath { folder }
+                                        if let Some(label) = label {
+                                            AccountMini { label }
+                                        }
                                         span { class: "folder-used", "{used}" }
                                     }
                                 }
@@ -507,6 +527,9 @@ fn StartForm(form: NewAgentForm) -> Element {
                     onkeydown: start_on_command_enter,
                 }
                 div { class: "prompt-tools",
+                    if let Some(account) = account {
+                        AccountPicker { account, open: account_open }
+                    }
                     div { class: "menu-anchor",
                         button {
                             class: if model_open { "menu-button raised open" } else { "menu-button raised" },
@@ -853,66 +876,105 @@ fn FormModeMenu(mode: Option<PermissionMode>) -> Element {
 fn ResumeList(starting: bool) -> Element {
     let cockpit: Cockpit = use_context();
     let Clock(now) = use_context::<Clock>();
-    let (query, highlighted) = {
+    let (query, highlighted, account) = {
         let drafts = cockpit.drafts.read();
         let new_agent = &drafts.new_agent;
         (
             new_agent.session_query.clone(),
             new_agent.session_highlighted,
+            new_agent.session_account,
         )
     };
     // Follows the keyboard alone, as the other fields.
     let query_seed = use_hook(|| query.clone());
     let pointer = use_pointer_moves();
-    let (sessions, machine) = {
+    let (sessions, machine, filters) = {
         let state = cockpit.state.read();
         let sessions = match &state.sessions {
             Loadable::Loaded(_) => Loadable::Loaded(
-                actions::resumable_sessions(&state, &query)
+                actions::resumable_sessions(&state, &query, account)
                     .into_iter()
-                    .cloned()
-                    .collect::<Vec<PastSession>>(),
+                    .map(|session| (session.clone(), accounts::label(&state, session.account)))
+                    .collect::<Vec<(PastSession, Option<accounts::AccountLabel>)>>(),
             ),
             Loadable::NotRequested => Loadable::NotRequested,
             Loadable::Loading => Loadable::Loading,
             Loadable::Failed(error) => Loadable::Failed(error.clone()),
         };
-        (sessions, state.daemon.machine.clone())
+        let filters = if accounts::shows_labels(&state) {
+            accounts::labels(&state)
+        } else {
+            Vec::new()
+        };
+        (sessions, state.daemon.machine.clone(), filters)
     };
+    let filtered = account.is_some_and(|id| filters.iter().any(|label| label.id == id));
     let now = now();
     let searching = !query.trim().is_empty();
     rsx! {
         div { class: "dialog-body",
-            div { class: "folder-field session-search",
-                Icon { kind: IconKind::Search, size: 16 }
-                input {
-                    class: "folder-input",
-                    r#type: "text",
-                    spellcheck: false,
-                    aria_label: "Find a session",
-                    placeholder: "Find a session by its title or folder",
-                    initial_value: "{query_seed}",
-                    onmounted: move |event| async move {
-                        // The tab may have changed already: nothing to focus then.
-                        let _ = event.data().set_focus(true).await;
-                    },
-                    oninput: move |event: FormEvent| cockpit.with_drafts(|_, drafts| actions::session_query(drafts, event.value())),
-                    onkeydown: move |event: KeyboardEvent| match event.key() {
-                        Key::ArrowDown => {
-                            cockpit.with_drafts(|state, drafts| actions::session_move(state, drafts, Direction::Down));
-                            bridge::scroll_to_highlighted();
-                        }
-                        Key::ArrowUp => {
-                            cockpit.with_drafts(|state, drafts| actions::session_move(state, drafts, Direction::Up));
-                            bridge::scroll_to_highlighted();
-                        }
-                        Key::Enter => cockpit.change_with_drafts(|state, drafts| actions::session_pick(state, drafts, None)),
-                        _ => {}
-                    },
+            div { class: "resume-tools",
+                div { class: "folder-field session-search",
+                    Icon { kind: IconKind::Search, size: 16 }
+                    input {
+                        class: "folder-input",
+                        r#type: "text",
+                        spellcheck: false,
+                        aria_label: "Find a session",
+                        placeholder: "Find a session by its title or folder",
+                        initial_value: "{query_seed}",
+                        onmounted: move |event| async move {
+                            // The tab may have changed already: nothing to focus then.
+                            let _ = event.data().set_focus(true).await;
+                        },
+                        oninput: move |event: FormEvent| cockpit.with_drafts(|_, drafts| actions::session_query(drafts, event.value())),
+                        onkeydown: move |event: KeyboardEvent| match event.key() {
+                            Key::ArrowDown => {
+                                cockpit.with_drafts(|state, drafts| actions::session_move(state, drafts, Direction::Down));
+                                bridge::scroll_to_highlighted();
+                            }
+                            Key::ArrowUp => {
+                                cockpit.with_drafts(|state, drafts| actions::session_move(state, drafts, Direction::Up));
+                                bridge::scroll_to_highlighted();
+                            }
+                            Key::Enter => cockpit.change_with_drafts(|state, drafts| actions::session_pick(state, drafts, None)),
+                            _ => {}
+                        },
+                    }
+                    span { class: "key-hint", "Enter" }
                 }
-                span { class: "key-hint", "Enter" }
+                if !filters.is_empty() {
+                    div { class: "segmented", role: "group", aria_label: "Sessions of",
+                        button {
+                            class: if filtered { "segment" } else { "segment chosen" },
+                            aria_pressed: !filtered,
+                            onclick: move |_| cockpit.with_drafts(|_, drafts| accounts::set_session_account(drafts, None)),
+                            "All"
+                        }
+                        for label in filters.clone() {
+                            {
+                                let id = label.id;
+                                let chosen = account == Some(id);
+                                rsx! {
+                                    button {
+                                        key: "{id.get()}",
+                                        class: if chosen { "segment chosen" } else { "segment" },
+                                        aria_pressed: chosen,
+                                        onclick: move |_| cockpit.with_drafts(|_, drafts| accounts::toggle_session_account(drafts, id)),
+                                        accounts_view::AccountDot { color: label.color }
+                                        "{label.name}"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            span { class: "dialog-note", "Claude sessions on {machine} that no agent runs now, newest first." }
+            if filters.is_empty() {
+                span { class: "dialog-note", "Claude sessions on {machine} that no agent runs now, newest first." }
+            } else {
+                span { class: "dialog-note", "Claude sessions on {machine} that no agent runs now, newest first, from every account. A session resumes with the account it ran with." }
+            }
             match sessions {
                 Loadable::NotRequested | Loadable::Loading => rsx! {
                     div { class: "session-list", role: "status", aria_label: "Loading the sessions",
@@ -933,13 +995,19 @@ fn ResumeList(starting: bool) -> Element {
                 Loadable::Loaded(sessions) => rsx! {
                     if sessions.is_empty() {
                         span { class: "dialog-note",
-                            if searching { "No session matches." } else { "No past session." }
+                            if searching {
+                                "No session matches."
+                            } else if filtered {
+                                "No past session of this account."
+                            } else {
+                                "No past session."
+                            }
                         }
                     }
                     div { class: "session-list", role: "listbox", aria_label: "Sessions",
                         // Keyed by position: the daemon's list does not promise one entry per
                         // session.
-                        for (index, session) in sessions.into_iter().enumerate() {
+                        for (index, (session, label)) in sessions.into_iter().enumerate() {
                             {
                                 let turns = format::count(usize::try_from(session.turns).unwrap_or(usize::MAX), "turn", "turns");
                                 let chosen = index == highlighted;
@@ -958,7 +1026,12 @@ fn ResumeList(starting: bool) -> Element {
                                         },
                                         onclick: move |_| cockpit.change_with_drafts(|state, drafts| actions::session_pick(state, drafts, Some(index))),
                                         span { class: "session-text",
-                                            span { class: "session-title", "{session.title}" }
+                                            span { class: "session-title-line",
+                                                span { class: "session-title", "{session.title}" }
+                                                if let Some(label) = label {
+                                                    AccountTag { label }
+                                                }
+                                            }
                                             FolderPath { folder: session.folder.clone() }
                                         }
                                         span { class: "session-meta",

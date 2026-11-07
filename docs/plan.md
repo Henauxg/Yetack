@@ -228,6 +228,13 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   - Data: the tree comes from `parent_tool_use_id` (each subagent's messages carry the id of the tool call that started it); tokens from `task_progress` (its `usage`: total tokens, tool uses, duration) and `task_notification`. The captured lines show that a subagent's call, its task events and its own lines share one tool call id. They do not show whether a foreground subagent gets task events, so the map does not need them: a subagent's calls, time and status come from its own lines and its call's result, and without task events it shows no tokens rather than a guess.
   - Protocol: `AgentDetails` gains a list of subagents (its call's item and its parent's, description, type, foreground or background, status with waiting for you, start and end time, tokens, tool calls, last tool call, error, turn, background task), filled by the daemon.
   - Stop: a subagent with a background task stops with `agent.stop_task`, and so do the running subagents under it. The control protocol has no stop for one foreground subagent without a task: its button stops the agent's turn, and says so.
+- Decided with the accounts mockup, and built: several Claude accounts in the app.
+  - From two accounts, every agent shows its account as a tag in the account's color, the default account's too: on its sidebar row and after its status in the header.
+  - The new agent dialog picks the account first in the prompt's row, the folder's last one by default; recent folders and past sessions show their account, and the resume list filters by account.
+  - "Accounts" in the sidebar's foot lists the accounts, adds one in two steps (its name, color, folder and API key choice, then its sign-in command), renames, recolors and removes them.
+  - The Plan chip and card show the selected agent's account and every account's plan.
+  - An agent whose account is not signed in needs you, with a card in the chat that says how to sign in.
+  - Not in scope: moving an agent to another account, and a filter by account in the sidebar.
 - It starts `ssh <server> /absolute/path/to/agents-cockpit bridge` and speaks the daemon API over the process's stdin and stdout.
   Use an absolute path: a non-interactive SSH command does not load your interactive shell setup, so `~/.cargo/bin` may be missing from `PATH`.
 - It reconnects after an SSH drop and sends its last sequence number.

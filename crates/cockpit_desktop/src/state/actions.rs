@@ -26,7 +26,7 @@ use super::ui_state::{
     TitleEdit, TitlePlace, ViewMode,
 };
 use super::utf16_offset::Utf16Offset;
-use super::{export, file_edits, open_file, title_emoji};
+use super::{accounts, export, file_edits, open_file, title_emoji};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::path_style;
 use crate::prefs::{self, StatusFilter};
@@ -1058,7 +1058,7 @@ pub fn send_prompt(
 pub fn interrupt(state: &AppState, agent: AgentId) -> Vec<Outgoing> {
     let has_turn = state.agents.get(&agent).is_some_and(|entry| {
         matches!(
-            entry.summary.status,
+            accounts::turn_status(&entry.summary),
             AgentStatus::Working | AgentStatus::NeedsYou
         )
     });
@@ -1649,7 +1649,7 @@ pub fn set_status_filter(state: &mut AppState, filter: StatusFilter) {
 /// be lost and the agent closes at once.
 pub fn close_warning(entry: &AgentEntry, drafts: &Drafts) -> Option<String> {
     let mut losses = Vec::new();
-    match entry.summary.status {
+    match accounts::turn_status(&entry.summary) {
         AgentStatus::Working => losses.push("is working"),
         AgentStatus::NeedsYou => losses.push("waits for your answer"),
         AgentStatus::Idle | AgentStatus::Exited => {}
@@ -1811,7 +1811,7 @@ pub fn open_new_agent(state: &mut AppState, drafts: &mut Drafts) {
     let folder = state
         .recent_folders()
         .first()
-        .map(|(folder, _)| path_style::shown(folder))
+        .map(|recent| path_style::shown(&recent.folder))
         .unwrap_or_default();
     let last = state
         .agents
@@ -1831,6 +1831,7 @@ pub fn open_new_agent(state: &mut AppState, drafts: &mut Drafts) {
     if state.sessions != Loadable::Loading {
         state.sessions = Loadable::NotRequested;
     }
+    state.sign_ins.refresh();
     state.ui.popover = None;
     state.ui.dialog = Some(Dialog::NewAgent(NewAgentForm {
         model,
@@ -1859,6 +1860,8 @@ pub fn start_agent(state: &mut AppState, drafts: &Drafts) -> Vec<Outgoing> {
         return Vec::new();
     }
     form.starting = true;
+    let form = form.clone();
+    let account = accounts::new_agent_account(state, &form, folder);
     let prompt = drafts.new_agent.prompt.trim();
     let params = StartParams {
         folder: PathBuf::from(folder),
@@ -1870,7 +1873,7 @@ pub fn start_agent(state: &mut AppState, drafts: &Drafts) -> Vec<Outgoing> {
             text: prompt.to_owned(),
             images: Vec::new(),
         }),
-        account: AccountId::DEFAULT,
+        account,
     };
     vec![Outgoing {
         request: Request::AgentStart(params),
@@ -1878,13 +1881,15 @@ pub fn start_agent(state: &mut AppState, drafts: &Drafts) -> Vec<Outgoing> {
     }]
 }
 
-/// The past sessions the "Resume a session" tab lists: those no agent runs, whose title or
-/// folder holds the query, newest first. A session's title is its first prompt unless it was
-/// named.
+/// The past sessions the "Resume a session" tab lists: those no agent runs, of `account` when
+/// it is one the daemon has, whose title or folder holds the query, newest first. A session's
+/// title is its first prompt unless it was named.
 pub fn resumable_sessions<'state>(
     state: &'state AppState,
     query: &str,
+    account: Option<AccountId>,
 ) -> Vec<&'state PastSession> {
+    let account = account.filter(|&id| accounts::account(state, id).is_some());
     let query = query.to_lowercase();
     let running: BTreeSet<&ClaudeSessionId> = state
         .agents
@@ -1897,6 +1902,7 @@ pub fn resumable_sessions<'state>(
         .into_iter()
         .flatten()
         .filter(|session| !running.contains(&session.id))
+        .filter(|session| account.is_none_or(|id| session.account == id))
         .filter(|session| {
             session.title.to_lowercase().contains(&query)
                 || session
@@ -1918,7 +1924,8 @@ pub fn session_query(drafts: &mut Drafts, query: String) {
 
 pub fn session_move(state: &AppState, drafts: &mut Drafts, direction: Direction) {
     let new_agent = &mut drafts.new_agent;
-    let count = resumable_sessions(state, &new_agent.session_query).len();
+    let count =
+        resumable_sessions(state, &new_agent.session_query, new_agent.session_account).len();
     new_agent.session_highlighted = moved(new_agent.session_highlighted, count, direction);
 }
 
@@ -1927,7 +1934,8 @@ pub fn session_move(state: &AppState, drafts: &mut Drafts, direction: Direction)
 /// changes nothing.
 pub fn session_point(state: &AppState, drafts: &mut Drafts, index: usize) {
     let new_agent = &mut drafts.new_agent;
-    if index < resumable_sessions(state, &new_agent.session_query).len() {
+    if index < resumable_sessions(state, &new_agent.session_query, new_agent.session_account).len()
+    {
         new_agent.session_highlighted = index;
     }
 }
@@ -1939,9 +1947,10 @@ pub fn session_pick(state: &mut AppState, drafts: &Drafts, index: Option<usize>)
     }
     let new_agent = &drafts.new_agent;
     let index = index.unwrap_or(new_agent.session_highlighted);
-    let Some((session, account)) = resumable_sessions(state, &new_agent.session_query)
-        .get(index)
-        .map(|session| (session.id.clone(), session.account))
+    let Some((session, account)) =
+        resumable_sessions(state, &new_agent.session_query, new_agent.session_account)
+            .get(index)
+            .map(|session| (session.id.clone(), session.account))
     else {
         return Vec::new();
     };
@@ -4176,7 +4185,7 @@ mod tests {
             past_session("columns", "Parser columns", "/work/tools", 10),
         ]);
         let ids = |state: &AppState, query: &str| -> Vec<String> {
-            resumable_sessions(state, query)
+            resumable_sessions(state, query, None)
                 .iter()
                 .map(|session| session.id.as_str().to_owned())
                 .collect()

@@ -8,11 +8,12 @@ use cockpit_protocol::{
     HistoryParams, ItemId, ListDirParams, Method, Position, ReadFileParams, Request, ResponseBody,
 };
 
-use super::actions;
 use super::app_state::{AgentEntry, AppState, FileRead, Loadable};
 use super::drafts::{Draft, Drafts};
 use super::transcript::HistoryState;
 use super::ui_state::{Dialog, OpenFileView};
+use super::{accounts, actions};
+use crate::prefs::AccountColor;
 
 /// The most transcript items one history request asks for.
 pub const HISTORY_PAGE: u16 = 100;
@@ -82,6 +83,14 @@ pub enum Purpose {
     },
     /// `sessions.resume` from the undo note: the agent opens, then goes back to its place.
     Reopen,
+    /// `accounts.list`: whether each account is signed in.
+    Accounts,
+    /// `accounts.add` from the "Add an account" dialog, with the color picked there.
+    AccountAdded {
+        color: AccountColor,
+    },
+    /// `accounts.change`: a rename or the API key choice.
+    AccountChanged,
 }
 
 /// An agent's position before and after a move the daemon has not answered yet.
@@ -121,6 +130,7 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
             requests.extend(actions::move_agent(state, agent, before));
         }
     }
+    requests.extend(accounts::list_request(state));
     if matches!(state.ui.dialog, Some(Dialog::NewAgent(_)))
         && state.sessions == Loadable::NotRequested
     {
@@ -331,6 +341,16 @@ pub fn apply_response(
             if let Some(held) = held {
                 *held = read;
             }
+        }
+        Purpose::Accounts => match result {
+            Err(failure) if failure.transient => state.sign_ins.checking = false,
+            other => accounts::listed(state, other.map_err(|failure| failure.message)),
+        },
+        Purpose::AccountAdded { color } => {
+            accounts::added(state, color, result.map_err(|failure| failure.message));
+        }
+        Purpose::AccountChanged => {
+            accounts::changed(state, result.map_err(|failure| failure.message));
         }
         Purpose::Sessions => {
             state.sessions = match result {
