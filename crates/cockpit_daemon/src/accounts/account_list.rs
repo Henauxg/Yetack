@@ -48,7 +48,8 @@ impl AccountList {
         self.added.iter().find(|account| account.id == id).cloned()
     }
 
-    /// Adds an account. Without a folder, it takes one in `home` named after the account.
+    /// Adds an account. Without a folder, it takes one in `home`, when absolute, named after the
+    /// account.
     pub(crate) fn add(
         &mut self,
         params: AccountAddParams,
@@ -58,12 +59,12 @@ impl AccountList {
         let name = self.free_name(&params.name, None)?;
         let taken = self.folders(default_folder);
         let folder = match params.folder {
-            Some(folder) => free_folder(&folder, &taken)?,
+            Some(folder) => free_folder(&folder, &taken, FolderCase::CURRENT)?,
             None => {
-                let home = home.ok_or_else(|| {
+                let home = home.filter(|home| home.is_absolute()).ok_or_else(|| {
                     invalid("the daemon has no home folder: give the account's folder".to_owned())
                 })?;
-                proposed_folder(home, &name, &taken)
+                proposed_folder(home, &name, &taken, FolderCase::CURRENT)
             }
         };
         let id = self.next_account;
@@ -191,8 +192,49 @@ impl AccountList {
     }
 }
 
+/// Whether the file system tells folders apart by the case of their names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FolderCase {
+    #[cfg_attr(
+        any(windows, all(target_os = "macos", not(test))),
+        expect(dead_code, reason = "Windows and macOS ignore case")
+    )]
+    Matters,
+    #[cfg_attr(
+        not(any(windows, target_os = "macos", test)),
+        expect(dead_code, reason = "only Windows and macOS ignore case")
+    )]
+    Ignored,
+}
+
+impl FolderCase {
+    /// The default file systems of Windows and macOS ignore case.
+    #[cfg(any(windows, target_os = "macos"))]
+    const CURRENT: Self = Self::Ignored;
+    #[cfg(not(any(windows, target_os = "macos")))]
+    const CURRENT: Self = Self::Matters;
+
+    fn same(self, left: &Path, right: &Path) -> bool {
+        match self {
+            Self::Matters => left == right,
+            Self::Ignored => {
+                let names = |path: &Path| -> Vec<String> {
+                    path.components()
+                        .map(|component| component.as_os_str().to_string_lossy().to_lowercase())
+                        .collect()
+                };
+                names(left) == names(right)
+            }
+        }
+    }
+
+    fn taken(self, folder: &Path, taken: &[&Path]) -> bool {
+        taken.iter().any(|other| self.same(other, folder))
+    }
+}
+
 /// A folder from a client: absolute, one line of text, and no other account's.
-fn free_folder(folder: &Path, taken: &[&Path]) -> Result<PathBuf, ErrorBody> {
+fn free_folder(folder: &Path, taken: &[&Path], case: FolderCase) -> Result<PathBuf, ErrorBody> {
     if !folder.is_absolute() {
         return Err(invalid(format!(
             "the folder {} is not absolute",
@@ -213,7 +255,7 @@ fn free_folder(folder: &Path, taken: &[&Path]) -> Result<PathBuf, ErrorBody> {
             "the folder's path holds a control character".to_owned(),
         ));
     }
-    if taken.contains(&folder) {
+    if case.taken(folder, taken) {
         return Err(invalid(format!(
             "another account uses the folder {}",
             folder.display()
@@ -224,11 +266,11 @@ fn free_folder(folder: &Path, taken: &[&Path]) -> Result<PathBuf, ErrorBody> {
 
 /// `.claude-<name>` in `home`, the name made safe for a folder, and a number added when another
 /// account has that folder.
-fn proposed_folder(home: &Path, name: &str, taken: &[&Path]) -> PathBuf {
+fn proposed_folder(home: &Path, name: &str, taken: &[&Path], case: FolderCase) -> PathBuf {
     let folder_name = account_folder_name(name);
     let mut folder = home.join(&folder_name);
     let mut number: u32 = 2;
-    while taken.contains(&folder.as_path()) {
+    while case.taken(&folder, taken) {
         folder = home.join(format!("{folder_name}{FOLDER_SEPARATOR}{number}"));
         number = number.saturating_add(1);
     }
@@ -313,6 +355,72 @@ mod tests {
             assert_eq!(error.code, ErrorCode::InvalidRequest, "{error:?}");
         }
         assert_eq!(list.accounts(&default_folder()).len(), 2);
+    }
+
+    /// Where the file system ignores case, a folder that differs from another account's only in
+    /// case is that account's, and a proposal moves past it. The folders are Unix paths.
+    #[cfg(unix)]
+    #[test]
+    fn folders_that_differ_only_in_case_clash_where_case_is_ignored() {
+        let work = Path::new("/home/sam/.Claude-Work");
+        let taken = [default_folder(), work.to_owned()];
+        let taken: Vec<&Path> = taken.iter().map(PathBuf::as_path).collect();
+        let given = Path::new("/home/sam/.CLAUDE");
+        let home = Path::new("/home/sam");
+
+        let refused = free_folder(given, &taken, FolderCase::Ignored).unwrap_err();
+        let accepted = free_folder(given, &taken, FolderCase::Matters).unwrap();
+        let proposed = proposed_folder(home, "Work", &taken, FolderCase::Ignored);
+        let kept = proposed_folder(home, "Work", &taken, FolderCase::Matters);
+
+        assert_eq!(refused.code, ErrorCode::InvalidRequest);
+        assert_eq!(accepted, given);
+        assert_eq!(proposed, Path::new("/home/sam/.claude-work-2"));
+        assert_eq!(kept, Path::new("/home/sam/.claude-work"));
+    }
+
+    /// Windows compares folder names whatever their case, and takes `/` for `\`.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_folder_is_no_other_accounts_whatever_its_case() {
+        let mut list = AccountList::default();
+        let default_folder = Path::new(r"C:\Users\Sam\.claude");
+        let home = Path::new(r"C:\Users\Sam");
+        let mut add = |name: &str, folder: Option<&str>| {
+            let params = AccountAddParams {
+                name: name.to_owned(),
+                folder: folder.map(PathBuf::from),
+                use_environment_api_key: false,
+            };
+            list.add(params, Some(home), default_folder)
+        };
+
+        let default = add("A", Some(r"c:\users\sam\.CLAUDE")).unwrap_err();
+        let slashes = add("B", Some("C:/Users/Sam/.claude")).unwrap_err();
+        add("Work", Some(r"C:\Users\Sam\.Claude-Work")).unwrap();
+        let proposed = add("work!", None).unwrap();
+
+        assert_eq!(default.code, ErrorCode::InvalidRequest);
+        assert_eq!(slashes.code, ErrorCode::InvalidRequest);
+        assert_eq!(proposed.folder, Path::new(r"C:\Users\Sam\.claude-work-2"));
+    }
+
+    /// A folder `claude` would take as relative to each agent's folder is no account's folder.
+    #[test]
+    fn a_relative_home_folder_proposes_no_folder() {
+        let mut list = AccountList::default();
+        let params = AccountAddParams {
+            name: "Work".to_owned(),
+            folder: None,
+            use_environment_api_key: false,
+        };
+
+        let error = list
+            .add(params, Some(Path::new("home")), &default_folder())
+            .unwrap_err();
+
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert_eq!(list.accounts(&default_folder()).len(), 1);
     }
 
     #[test]
