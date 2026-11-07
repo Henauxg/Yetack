@@ -8,8 +8,9 @@ use std::path::{Path, PathBuf};
 use claude_protocol::{ControlRequest, InputLine, OutputLine};
 use cockpit_protocol::{
     AccountId, AgentId, AgentStatus, AgentSummary, AnswerParams, CancelQueuedParams,
-    ClaudeSessionId, CostUsd, ErrorBody, ErrorCode, Event, MAX_TITLE_CHARS, Position, Prompt,
-    RenameParams, ResponseBody, ResponseResult, SetEffortParams, StartParams, TranscriptItem,
+    ClaudeSessionId, CostUsd, EffortSource, ErrorBody, ErrorCode, Event, MAX_TITLE_CHARS, Position,
+    Prompt, RenameParams, ResponseBody, ResponseResult, SetEffortParams, SignInWait, StartParams,
+    TranscriptItem,
 };
 
 use crate::accounts::ClaudeEnv;
@@ -676,7 +677,7 @@ pub(super) fn initial_summary(record: &AgentRecord) -> AgentSummary {
         pending_count: 0,
         model: record.model.clone(),
         effort: record.effort,
-        effort_is_default: false,
+        effort_source: EffortSource::Chosen,
         mode: record.mode.unwrap_or_default(),
         task_progress: None,
         context_percent: None,
@@ -689,7 +690,7 @@ pub(super) fn initial_summary(record: &AgentRecord) -> AgentSummary {
         session: record.session.clone(),
         position: record.position,
         account: record.account,
-        waits_for_sign_in: false,
+        sign_in_wait: SignInWait::NotWaiting,
     }
 }
 

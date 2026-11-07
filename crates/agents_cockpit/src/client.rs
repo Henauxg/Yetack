@@ -10,9 +10,9 @@ use cockpit_client::BRIDGE_SUBCOMMAND;
 use cockpit_client::{Backoff, Connection, Session, SessionUpdate, Transport};
 use cockpit_protocol::{
     AccountAddParams, AccountChangeParams, AccountParams, AccountState, AgentId, AgentParams,
-    Answer, AnswerParams, ApprovalAnswer, ApprovalDecision, Catchup, Effort, Event, MoveParams,
-    PermissionMode, PlanAnswer, PlanDecision, Prompt, PromptParams, QuestionAnswer, RenameParams,
-    Request, ResponseBody, StartParams,
+    Answer, AnswerParams, ApprovalAnswer, ApprovalDecision, Catchup, CredentialSource, Effort,
+    Event, MoveParams, PermissionMode, PlanAnswer, PlanDecision, Prompt, PromptParams,
+    QuestionAnswer, RenameParams, Request, ResponseBody, StartParams,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -139,7 +139,7 @@ async fn account(transport: &Transport, command: AccountCommand) -> anyhow::Resu
         } => Request::AccountsAdd(AccountAddParams {
             name,
             folder,
-            use_environment_api_key,
+            credentials: credentials(use_environment_api_key),
         }),
         AccountCommand::Change {
             account,
@@ -148,7 +148,7 @@ async fn account(transport: &Transport, command: AccountCommand) -> anyhow::Resu
         } => Request::AccountsChange(AccountChangeParams {
             account,
             name,
-            use_environment_api_key,
+            credentials: use_environment_api_key.map(credentials),
         }),
         AccountCommand::Remove { account } => Request::AccountsRemove(AccountParams { account }),
     };
@@ -184,12 +184,19 @@ async fn account(transport: &Transport, command: AccountCommand) -> anyhow::Resu
     Ok(())
 }
 
+fn credentials(use_environment_api_key: bool) -> CredentialSource {
+    if use_environment_api_key {
+        CredentialSource::EnvironmentApiKey
+    } else {
+        CredentialSource::SignIn
+    }
+}
+
 fn account_row(state: &AccountState) -> anyhow::Result<String> {
     let account = &state.account;
-    let api_key = if account.use_environment_api_key {
-        "daemon"
-    } else {
-        "-"
+    let api_key = match account.credentials {
+        CredentialSource::EnvironmentApiKey => "daemon",
+        CredentialSource::SignIn => "-",
     };
     Ok(format!(
         "{:<4} {:<13} {:<7} {:<20} {}",

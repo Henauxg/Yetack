@@ -5,8 +5,8 @@
 use std::collections::BTreeSet;
 
 use cockpit_protocol::{
-    AnswerState, Approval, ApprovalDecision, ItemBody, ItemId, Plan, PlanDecision, Question,
-    ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
+    AnswerState, Approval, ApprovalDecision, Delivery, ItemBody, ItemId, Plan, PlanDecision,
+    Question, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome,
 };
 
 use super::app_state::AgentEntry;
@@ -60,7 +60,7 @@ pub fn conversation_markdown(entry: &AgentEntry) -> String {
     let top_level = items.iter().filter(|item| item.parent.is_none());
     for item in top_level {
         match &item.body {
-            ItemBody::UserMessage(message) if !message.queued => {
+            ItemBody::UserMessage(message) if message.delivery == Delivery::Delivered => {
                 if !message.text.trim().is_empty() {
                     say(
                         &mut parts,
@@ -184,13 +184,13 @@ fn plan_line(plan: &Plan) -> Option<String> {
 /// "- The turn failed after 12 s: overloaded". `None` for a turn that ended well.
 fn turn_end_line(end: &TurnEnd) -> Option<String> {
     let duration = format::duration(end.duration);
-    match &end.error {
-        Some(error) => Some(format!(
+    match end.outcome {
+        TurnOutcome::Failed | TurnOutcome::NotSignedIn => Some(format!(
             "- The turn failed after {duration}: {}",
-            one_line(error)
+            one_line(end.error.as_deref().unwrap_or_default())
         )),
-        None if end.stopped => Some(format!("- Stopped after {duration}")),
-        None => None,
+        TurnOutcome::Stopped => Some(format!("- Stopped after {duration}")),
+        TurnOutcome::Completed => None,
     }
 }
 
@@ -267,7 +267,8 @@ mod tests {
 
     use cockpit_protocol::{
         AgentStatus, ApprovalAnswer, AskedQuestion, CostUsd, HistoryPage, Image, ImageMediaType,
-        PendingId, PlanAnswer, QuestionAnswer, QuestionOption, TokenUsage, UserMessage,
+        OlderItems, PendingId, PlanAnswer, QuestionAnswer, QuestionOption, Selection, TokenUsage,
+        UserMessage,
     };
     use serde_json::Value;
 
@@ -286,7 +287,7 @@ mod tests {
         }
     }
 
-    fn user(text: &str, images: usize, queued: bool) -> ItemBody {
+    fn user(text: &str, images: usize, delivery: Delivery) -> ItemBody {
         let image = Image {
             media_type: ImageMediaType::Png,
             data: "aGVsbG8=".to_owned(),
@@ -294,11 +295,11 @@ mod tests {
         ItemBody::UserMessage(UserMessage {
             text: text.to_owned(),
             images: vec![image; images],
-            queued,
+            delivery,
         })
     }
 
-    fn entry_with(bodies: Vec<(Option<u32>, ItemBody)>, has_older: bool) -> AgentEntry {
+    fn entry_with(bodies: Vec<(Option<u32>, ItemBody)>, older_items: OlderItems) -> AgentEntry {
         let mut entry = AgentEntry::new(summary(1, AgentStatus::Idle));
         let items = bodies
             .into_iter()
@@ -311,7 +312,7 @@ mod tests {
             .collect();
         entry
             .transcript
-            .merge_page(HistoryPage { items, has_older });
+            .merge_page(HistoryPage { items, older_items });
         entry
     }
 
@@ -326,7 +327,7 @@ mod tests {
                     label: "Unit".to_owned(),
                     description: String::new(),
                 }],
-                multi_select: false,
+                selection: Selection::Single,
             }],
             answer: AnswerState::Answered(vec![QuestionAnswer {
                 selected: vec!["Unit".to_owned()],
@@ -335,7 +336,10 @@ mod tests {
         };
         let entry = entry_with(
             vec![
-                (None, user("Fix the column numbers.", 1, false)),
+                (
+                    None,
+                    user("Fix the column numbers.", 1, Delivery::Delivered),
+                ),
                 (
                     None,
                     ItemBody::Thinking {
@@ -388,10 +392,10 @@ mod tests {
                         detail: None,
                     },
                 ),
-                (None, user("Thanks", 0, false)),
-                (None, user("Also the docs", 0, true)),
+                (None, user("Thanks", 0, Delivery::Delivered)),
+                (None, user("Also the docs", 0, Delivery::Queued)),
             ],
-            false,
+            OlderItems::None,
         );
 
         let markdown = conversation_markdown(&entry);
@@ -448,14 +452,13 @@ Thanks
                 answer,
             })
         };
-        let turn_end = |error: Option<&str>, stopped| {
+        let turn_end = |outcome, error: Option<&str>| {
             ItemBody::TurnEnd(TurnEnd {
                 duration: Duration::from_secs(12),
                 cost: CostUsd::new(0.1),
                 usage: TokenUsage::default(),
+                outcome,
                 error: error.map(str::to_owned),
-                stopped,
-                not_signed_in: false,
             })
         };
         let push = || ItemBody::ToolCall(call("Bash", "git push", ToolCallStatus::Running, None));
@@ -475,10 +478,10 @@ Thanks
             vec![
                 (None, push()),
                 (None, approval(1, denied)),
-                (None, turn_end(None, false)),
+                (None, turn_end(TurnOutcome::Completed, None)),
                 (None, plan(keep_planning)),
                 (None, plan(accepted)),
-                (None, turn_end(None, true)),
+                (None, turn_end(TurnOutcome::Stopped, None)),
                 (
                     None,
                     ItemBody::Notice {
@@ -486,11 +489,14 @@ Thanks
                         detail: None,
                     },
                 ),
-                (None, turn_end(Some("API error:\noverloaded"), false)),
+                (
+                    None,
+                    turn_end(TurnOutcome::Failed, Some("API error:\noverloaded")),
+                ),
                 (None, push()),
                 (None, approval(9, AnswerState::Waiting)),
             ],
-            false,
+            OlderItems::None,
         );
 
         let markdown = conversation_markdown(&entry);
@@ -528,7 +534,10 @@ Context usage
 
     #[test]
     fn an_export_with_older_messages_unloaded_is_not_complete() {
-        let entry = entry_with(vec![(None, user("Run the tests", 0, false))], true);
+        let entry = entry_with(
+            vec![(None, user("Run the tests", 0, Delivery::Delivered))],
+            OlderItems::Exist,
+        );
 
         assert!(!is_complete(&entry));
     }

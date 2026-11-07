@@ -3,7 +3,9 @@
 
 use std::collections::BTreeSet;
 
-use cockpit_protocol::{AgentId, McpScope, McpServer, McpServerStatus, McpTool, McpTransport};
+use cockpit_protocol::{
+    AgentId, McpScope, McpServer, McpServerStatus, McpToggleAction, McpTool, McpTransport,
+};
 use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
@@ -206,10 +208,10 @@ fn McpDetail(
     let removable_scope = server.scope.filter(|scope| format::removable_scope(*scope));
     let status_class = format::mcp_status_class(status);
     let status_label = format::mcp_status_label(status);
-    let toggle_label = if disabled {
-        "Enable for this agent"
+    let (toggle, toggle_label) = if disabled {
+        (McpToggleAction::Enable, "Enable for this agent")
     } else {
-        "Disable for this agent"
+        (McpToggleAction::Disable, "Disable for this agent")
     };
     let hide_label = if hidden {
         "Show in my view"
@@ -243,7 +245,7 @@ fn McpDetail(
                         class: if disabled { "icon-button framed toggled-warning" } else { "icon-button framed" },
                         aria_label: "{toggle_label}",
                         aria_pressed: disabled,
-                        onclick: move |_| cockpit.change(|_| actions::mcp_toggle(agent, toggle_name.clone(), /* enabled */ disabled)),
+                        onclick: move |_| cockpit.change(|_| actions::mcp_toggle(agent, toggle_name.clone(), toggle)),
                         Icon { kind: IconKind::Power, size: 14 }
                     }
                     span { class: "tooltip", role: "tooltip", "{toggle_label}" }

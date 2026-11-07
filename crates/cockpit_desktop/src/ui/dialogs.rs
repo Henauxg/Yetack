@@ -3,7 +3,9 @@
 
 use std::path::{Path, PathBuf};
 
-use cockpit_protocol::{AgentId, AgentStatus, Effort, PastSession, PermissionMode, Timestamp};
+use cockpit_protocol::{
+    AgentId, AgentStatus, Completeness, Effort, PastSession, PermissionMode, Timestamp,
+};
 use dioxus::html::geometry::ScreenPoint;
 use dioxus::html::point_interaction::InteractionLocation;
 use dioxus::prelude::*;
@@ -638,7 +640,7 @@ fn FolderRows(list: FolderList) -> Element {
                                 }
                             }
                         }
-                        if listing.truncated {
+                        if listing.completeness == Completeness::Truncated {
                             span { class: "dialog-empty",
                                 "This folder holds too many entries: some folders are left out."
                             }

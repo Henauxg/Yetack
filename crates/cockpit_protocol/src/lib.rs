@@ -3,8 +3,8 @@
 //! A connection carries one JSON object per line ([`FrameReader`], [`FrameWriter`]):
 //!
 //! ```text
-//! client: {"type":"hello","protocol_version":1,"last_seq":41}
-//! daemon: {"type":"welcome","protocol_version":1,"catchup":{"type":"replay"}}
+//! client: {"type":"hello","protocol_version":2,"last_seq":41}
+//! daemon: {"type":"welcome","protocol_version":2,"catchup":{"type":"replay"}}
 //! daemon: {"type":"event","seq":42,"event":{"type":"agent_removed","agent":3}}
 //! client: {"type":"request","id":1,"request":{"method":"agent.interrupt","params":{"agent":2}}}
 //! daemon: {"type":"response","id":1,"result":{"ok":{"type":"done"}}}
@@ -25,14 +25,18 @@ mod request;
 mod response;
 mod session;
 mod settings;
+mod stored_bool;
 mod time;
 mod transcript;
 mod usage;
 
 pub use account::{
-    Account, AccountState, FOLDER_SEPARATOR, MAX_ACCOUNT_NAME_CHARS, SignIn, account_folder_name,
+    Account, AccountState, CredentialSource, EnvironmentApiKey, FOLDER_SEPARATOR,
+    MAX_ACCOUNT_NAME_CHARS, SignIn, account_folder_name,
 };
-pub use agent::{AgentStatus, AgentSummary, Effort, PermissionMode, TaskProgress};
+pub use agent::{
+    AgentStatus, AgentSummary, Effort, EffortSource, PermissionMode, SignInWait, TaskProgress,
+};
 pub use details::{
     AgentDetails, BackgroundTask, BackgroundTaskKind, BackgroundTaskStatus, ChangedFile,
     CommandKind, ContextCategory, ContextUsage, McpScope, McpServer, McpServerStatus, McpTool,
@@ -53,21 +57,23 @@ pub use position::{Placed, Position, list_order, move_agent, place_on_top};
 pub use request::{
     AccountAddParams, AccountChangeParams, AccountParams, AgentParams, Answer, AnswerParams,
     CancelQueuedParams, FindFilesParams, FoldersListParams, HistoryParams, ListDirParams,
-    MAX_TITLE_CHARS, McpRemoveParams, McpServerParams, McpToggleParams, Method, MoveParams, Prompt,
-    PromptParams, ReadFileParams, RenameParams, Request, SessionResumeParams, SetEffortParams,
-    SetModeParams, SetModelParams, StartParams, StopProcessParams, StopTaskParams,
+    MAX_TITLE_CHARS, McpRemoveParams, McpServerParams, McpToggleAction, McpToggleParams, Method,
+    MoveParams, Prompt, PromptParams, ReadFileParams, RenameParams, Request, SessionResumeParams,
+    SetEffortParams, SetModeParams, SetModelParams, StartParams, StopProcessParams, StopTaskParams,
 };
 pub use response::{
-    DirEntry, DirListing, EntryKind, ErrorBody, ErrorCode, HistoryPage, PastSession, ResponseBody,
-    ResponseResult,
+    Completeness, DirEntry, DirListing, EntryKind, EntryLink, ErrorBody, ErrorCode, HistoryPage,
+    OlderItems, PastSession, ResponseBody, ResponseResult,
 };
 pub use session::{Catchup, ClientMessage, PROTOCOL_VERSION, ServerMessage, Snapshot};
 pub use settings::Settings;
+pub use stored_bool::{FromStoredBool, enum_or_stored_bool};
 pub use time::Timestamp;
 pub use transcript::{
-    AnswerState, Approval, ApprovalAnswer, ApprovalDecision, AskedQuestion, FileEdit, Image,
-    ImageMediaType, ItemBody, Plan, PlanAnswer, PlanDecision, Question, QuestionAnswer,
-    QuestionOption, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, UserMessage,
+    AnswerState, Approval, ApprovalAnswer, ApprovalDecision, AskedQuestion, Delivery, FileEdit,
+    Image, ImageMediaType, ItemBody, Plan, PlanAnswer, PlanDecision, Question, QuestionAnswer,
+    QuestionOption, Selection, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome,
+    UserMessage,
 };
 pub use usage::{
     AccountPlanUsage, CostUsd, PlanUsage, RateLimitStatus, TokenUsage, UsageWindow, WindowUsage,

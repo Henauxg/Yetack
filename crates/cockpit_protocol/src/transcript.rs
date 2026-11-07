@@ -8,6 +8,7 @@ use serde_json::Value;
 use strum::VariantArray;
 
 use crate::ids::{ItemId, PendingId};
+use crate::stored_bool::{FromStoredBool, enum_or_stored_bool};
 use crate::usage::{CostUsd, TokenUsage};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -52,8 +53,28 @@ pub enum ItemBody {
 pub struct UserMessage {
     pub text: String,
     pub images: Vec<Image>,
+    /// Event logs of older daemons hold `queued`, a `bool`, in its place.
+    #[serde(alias = "queued", deserialize_with = "enum_or_stored_bool")]
+    pub delivery: Delivery,
+}
+
+/// Whether a user message reached Claude Code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, VariantArray)]
+#[serde(rename_all = "snake_case")]
+pub enum Delivery {
     /// Sent while the agent works, and not yet passed to Claude Code.
-    pub queued: bool,
+    Queued,
+    Delivered,
+}
+
+impl FromStoredBool for Delivery {
+    fn from_stored_bool(queued: bool) -> Self {
+        if queued {
+            Self::Queued
+        } else {
+            Self::Delivered
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,7 +186,27 @@ pub struct AskedQuestion {
     pub header: String,
     pub text: String,
     pub options: Vec<QuestionOption>,
-    pub multi_select: bool,
+    /// Event logs of older daemons hold `multi_select`, a `bool`, in its place.
+    #[serde(alias = "multi_select", deserialize_with = "enum_or_stored_bool")]
+    pub selection: Selection,
+}
+
+/// How many options of a question the user may choose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, VariantArray)]
+#[serde(rename_all = "snake_case")]
+pub enum Selection {
+    Single,
+    Multiple,
+}
+
+impl FromStoredBool for Selection {
+    fn from_stored_bool(multi_select: bool) -> Self {
+        if multi_select {
+            Self::Multiple
+        } else {
+            Self::Single
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -206,24 +247,67 @@ pub enum PlanDecision {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "StoredTurnEnd")]
 pub struct TurnEnd {
     #[serde(
         rename = "duration_ms",
-        serialize_with = "crate::time::serialize_millis",
-        deserialize_with = "crate::time::deserialize_millis"
+        serialize_with = "crate::time::serialize_millis"
     )]
     pub duration: Duration,
     /// The cost of this turn alone.
     pub cost: CostUsd,
     pub usage: TokenUsage,
-    /// Why the turn failed; `None` when it succeeded or the user stopped it.
+    pub outcome: TurnOutcome,
+    /// Why the turn failed: `Some` with `Failed` and `NotSignedIn`, else `None`.
     pub error: Option<String>,
-    /// The user stopped the turn, with an interrupt. `false` when missing, so a turn end saved
-    /// without it still loads.
+}
+
+/// How a turn ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, VariantArray)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnOutcome {
+    Completed,
+    /// The user stopped the turn, with an interrupt.
+    Stopped,
+    Failed,
+    /// The turn found no valid login for the agent's account.
+    NotSignedIn,
+}
+
+/// A turn end as it reads, from this daemon or from the event log of an older one, which holds
+/// `stopped` and `not_signed_in`, two `bool`s, in place of `outcome`.
+#[derive(Deserialize)]
+struct StoredTurnEnd {
+    #[serde(
+        rename = "duration_ms",
+        deserialize_with = "crate::time::deserialize_millis"
+    )]
+    duration: Duration,
+    cost: CostUsd,
+    usage: TokenUsage,
+    outcome: Option<TurnOutcome>,
+    error: Option<String>,
     #[serde(default)]
-    pub stopped: bool,
-    /// The turn found no valid login for the agent's account. `false` when missing, so a turn end
-    /// saved without it still loads.
+    stopped: bool,
     #[serde(default)]
-    pub not_signed_in: bool,
+    not_signed_in: bool,
+}
+
+impl From<StoredTurnEnd> for TurnEnd {
+    fn from(stored: StoredTurnEnd) -> Self {
+        let outcome = match stored.outcome {
+            Some(outcome) => outcome,
+            None if stored.stopped => TurnOutcome::Stopped,
+            None if stored.not_signed_in => TurnOutcome::NotSignedIn,
+            None if stored.error.is_some() => TurnOutcome::Failed,
+            None => TurnOutcome::Completed,
+        };
+        Self {
+            duration: stored.duration,
+            cost: stored.cost,
+            usage: stored.usage,
+            outcome,
+            error: stored.error,
+        }
+    }
 }

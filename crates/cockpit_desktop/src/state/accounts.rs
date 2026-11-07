@@ -9,9 +9,9 @@ use std::time::SystemTime;
 use cockpit_daemon::CLAUDE_HOME_FOLDER;
 use cockpit_protocol::{
     Account, AccountAddParams, AccountChangeParams, AccountId, AccountParams, AccountState,
-    AgentId, AgentStatus, AgentSummary, FOLDER_SEPARATOR, ItemBody, ItemId, PlanUsage, Prompt,
-    PromptParams, Request, ResponseBody, SignIn, TranscriptItem, UsageWindow, UserMessage,
-    account_folder_name,
+    AgentId, AgentStatus, AgentSummary, CredentialSource, Delivery, EnvironmentApiKey,
+    FOLDER_SEPARATOR, ItemBody, ItemId, PlanUsage, Prompt, PromptParams, Request, ResponseBody,
+    SignIn, SignInWait, TranscriptItem, TurnOutcome, UsageWindow, UserMessage, account_folder_name,
 };
 
 use super::app_state::{AgentEntry, AppState};
@@ -27,7 +27,7 @@ use crate::prefs::AccountColor;
 pub struct SignIns {
     pub states: BTreeMap<AccountId, AccountState>,
     /// Whether the daemon's environment has `ANTHROPIC_API_KEY`.
-    pub environment_api_key: bool,
+    pub environment_api_key: EnvironmentApiKey,
     /// When the daemon last answered. `None` asks it again.
     pub checked_at: Option<SystemTime>,
     /// An `accounts.list` is on its way.
@@ -114,7 +114,9 @@ pub enum Billing {
 }
 
 pub fn billing(state: &AppState, id: AccountId) -> Billing {
-    if account(state, id).is_some_and(|account| account.use_environment_api_key) {
+    if account(state, id)
+        .is_some_and(|account| account.credentials == CredentialSource::EnvironmentApiKey)
+    {
         return Billing::ApiKey;
     }
     match state.sign_ins.sign_in(id) {
@@ -292,14 +294,14 @@ pub fn sign_in_turn(entry: &AgentEntry) -> Option<SignInTurn> {
         .collect();
     let end = items.iter().rposition(|item| match &item.body {
         ItemBody::TurnEnd(_) => true,
-        ItemBody::UserMessage(message) => !message.queued,
+        ItemBody::UserMessage(message) => message.delivery == Delivery::Delivered,
         _ => false,
     })?;
     let turn_end = items.get(end)?;
     let ItemBody::TurnEnd(ended) = &turn_end.body else {
         return None;
     };
-    if !ended.not_signed_in {
+    if ended.outcome != TurnOutcome::NotSignedIn {
         return None;
     }
     let before = items.get(..end).unwrap_or_default();
@@ -308,7 +310,9 @@ pub fn sign_in_turn(entry: &AgentEntry) -> Option<SignInTurn> {
         .filter(|item| matches!(item.body, ItemBody::Notice { .. }))
         .map(|item| item.id);
     let message = before.iter().rev().find_map(|item| match &item.body {
-        ItemBody::UserMessage(message) if !message.queued => Some(message.clone()),
+        ItemBody::UserMessage(message) if message.delivery == Delivery::Delivered => {
+            Some(message.clone())
+        }
         _ => None,
     });
     Some(SignInTurn {
@@ -321,7 +325,7 @@ pub fn sign_in_turn(entry: &AgentEntry) -> Option<SignInTurn> {
 /// Whether "Send the message again" sends: the account signed in, the app holds the message,
 /// and the card has not sent it yet.
 pub fn can_send_again(entry: &AgentEntry, turn: &SignInTurn) -> bool {
-    !entry.summary.waits_for_sign_in
+    entry.summary.sign_in_wait == SignInWait::NotWaiting
         && turn.message.is_some()
         && entry.sent_again != Some(turn.turn_end)
 }
@@ -366,7 +370,7 @@ pub fn send_again_failed(state: &mut AppState, agent: AgentId, turn_end: ItemId,
 /// The agent's status as its turn sees it: an agent that waits only for its account's sign-in
 /// has no turn running, so the composer sends, and nothing stops or is lost on close.
 pub fn turn_status(summary: &AgentSummary) -> AgentStatus {
-    let only_sign_in = summary.waits_for_sign_in && summary.pending_count == 0;
+    let only_sign_in = summary.sign_in_wait == SignInWait::Waiting && summary.pending_count == 0;
     if only_sign_in && summary.status == AgentStatus::NeedsYou {
         return AgentStatus::Idle;
     }
@@ -375,7 +379,7 @@ pub fn turn_status(summary: &AgentSummary) -> AgentStatus {
 
 /// The sidebar's line for an agent that waits for its account's sign-in.
 pub fn waiting_line(state: &AppState, entry: &AgentEntry) -> Option<String> {
-    if !entry.summary.waits_for_sign_in {
+    if entry.summary.sign_in_wait == SignInWait::NotWaiting {
         return None;
     }
     let line = match account(state, entry.summary.account) {
@@ -388,7 +392,9 @@ pub fn waiting_line(state: &AppState, entry: &AgentEntry) -> Option<String> {
 /// How many agents besides `agent` wait for the same account's sign-in.
 pub fn others_waiting(state: &AppState, agent: AgentId, id: AccountId) -> usize {
     let others = state.agents.values().filter(|entry| {
-        entry.id() != agent && entry.summary.account == id && entry.summary.waits_for_sign_in
+        entry.id() != agent
+            && entry.summary.account == id
+            && entry.summary.sign_in_wait == SignInWait::Waiting
     });
     others.count()
 }
@@ -451,7 +457,7 @@ pub fn rename_account(state: &AppState, id: AccountId, name: &str) -> Vec<Outgoi
     change_request(AccountChangeParams {
         account: id,
         name: Some(name.to_owned()),
-        use_environment_api_key: None,
+        credentials: None,
     })
 }
 
@@ -459,8 +465,16 @@ pub fn set_api_key(id: AccountId, uses: bool) -> Vec<Outgoing> {
     change_request(AccountChangeParams {
         account: id,
         name: None,
-        use_environment_api_key: Some(uses),
+        credentials: Some(credentials(uses)),
     })
+}
+
+fn credentials(uses_api_key: bool) -> CredentialSource {
+    if uses_api_key {
+        CredentialSource::EnvironmentApiKey
+    } else {
+        CredentialSource::SignIn
+    }
 }
 
 fn change_request(params: AccountChangeParams) -> Vec<Outgoing> {
@@ -611,7 +625,7 @@ pub fn add_account(state: &mut AppState, drafts: &Drafts) -> Vec<Outgoing> {
         request: Request::AccountsAdd(AccountAddParams {
             name: name.to_owned(),
             folder,
-            use_environment_api_key: form.use_api_key,
+            credentials: credentials(form.use_api_key),
         }),
         purpose: Purpose::AccountAdded { color: form.color },
     }]
@@ -707,7 +721,7 @@ mod tests {
 
     use cockpit_client::RequestError;
     use cockpit_protocol::{
-        ClaudeSessionId, CostUsd, Event, EventRecord, HistoryPage, Method, PastSession,
+        ClaudeSessionId, CostUsd, Event, EventRecord, HistoryPage, Method, OlderItems, PastSession,
         RateLimitStatus, Seq, Timestamp, TokenUsage, TurnEnd, WindowUsage,
     };
 
@@ -729,7 +743,7 @@ mod tests {
             id,
             name: name.to_owned(),
             folder: PathBuf::from(folder),
-            use_environment_api_key: false,
+            credentials: CredentialSource::SignIn,
         }
     }
 
@@ -739,7 +753,7 @@ mod tests {
             named(AccountId::DEFAULT, "Personal", "/home/sam/.claude"),
             named(work(), "Work", "/home/sam/.claude-work"),
             Account {
-                use_environment_api_key: true,
+                credentials: CredentialSource::EnvironmentApiKey,
                 ..named(lab(), "Lab", "/home/sam/.claude-lab")
             },
         ];
@@ -1092,7 +1106,7 @@ mod tests {
             panic!("one add request, not {request:?}");
         };
         assert_eq!(params.folder, Some(PathBuf::from("/srv/claude/client")));
-        assert!(params.use_environment_api_key);
+        assert_eq!(params.credentials, CredentialSource::EnvironmentApiKey);
         let Some(Dialog::AddAccount(form)) = &state.ui.dialog else {
             panic!("the add dialog");
         };
@@ -1162,14 +1176,14 @@ mod tests {
         assert_eq!(empty, []);
         assert!(matches!(
             renamed.as_slice(),
-            [Outgoing { request: Request::AccountsChange(AccountChangeParams { name: Some(name), use_environment_api_key: None, .. }), .. }] if name == "Job"
+            [Outgoing { request: Request::AccountsChange(AccountChangeParams { name: Some(name), credentials: None, .. }), .. }] if name == "Job"
         ));
         assert!(matches!(
             key.as_slice(),
             [Outgoing {
                 request: Request::AccountsChange(AccountChangeParams {
                     name: None,
-                    use_environment_api_key: Some(true),
+                    credentials: Some(CredentialSource::EnvironmentApiKey),
                     ..
                 }),
                 ..
@@ -1200,7 +1214,7 @@ mod tests {
             &mut state,
             Ok(ResponseBody::Accounts {
                 accounts: Vec::new(),
-                environment_api_key: true,
+                environment_api_key: EnvironmentApiKey::Set,
             }),
         );
         let after = list_request(&mut state);
@@ -1216,7 +1230,7 @@ mod tests {
             })
         ));
         assert_eq!(while_asked, None);
-        assert!(state.sign_ins.environment_api_key);
+        assert_eq!(state.sign_ins.environment_api_key, EnvironmentApiKey::Set);
         assert_eq!(after, None);
         assert!(again.is_some());
     }
@@ -1239,7 +1253,7 @@ mod tests {
             &mut state,
             Ok(ResponseBody::Accounts {
                 accounts: Vec::new(),
-                environment_api_key: false,
+                environment_api_key: EnvironmentApiKey::Unset,
             }),
         );
         let again = list_request(&mut state);
@@ -1247,7 +1261,7 @@ mod tests {
             &mut state,
             Ok(ResponseBody::Accounts {
                 accounts: Vec::new(),
-                environment_api_key: false,
+                environment_api_key: EnvironmentApiKey::Unset,
             }),
         );
 
@@ -1264,14 +1278,13 @@ mod tests {
         }
     }
 
-    fn signed_out_turn(not_signed_in: bool) -> ItemBody {
+    fn failed_turn(outcome: TurnOutcome) -> ItemBody {
         ItemBody::TurnEnd(TurnEnd {
             duration: Duration::from_millis(900),
             cost: CostUsd::new(0.0),
             usage: TokenUsage::default(),
+            outcome,
             error: Some("The account is not signed in".to_owned()),
-            stopped: false,
-            not_signed_in,
         })
     }
 
@@ -1279,14 +1292,14 @@ mod tests {
         ItemBody::UserMessage(UserMessage {
             text: text.to_owned(),
             images: Vec::new(),
-            queued: false,
+            delivery: Delivery::Delivered,
         })
     }
 
     #[test]
     fn a_turn_without_login_shows_its_card_until_a_message_goes_after_it() {
         let mut waiting = in_folder(1, "/work/app", work());
-        waiting.waits_for_sign_in = true;
+        waiting.sign_in_wait = SignInWait::Waiting;
         waiting.status = AgentStatus::NeedsYou;
         let mut state = state_with(vec![waiting.clone()]);
         three_accounts(&mut state);
@@ -1299,16 +1312,16 @@ mod tests {
             items: vec![
                 transcript_item(1, message("Export the invoices")),
                 transcript_item(2, notice),
-                transcript_item(3, signed_out_turn(true)),
+                transcript_item(3, failed_turn(TurnOutcome::NotSignedIn)),
             ],
-            has_older: false,
+            older_items: OlderItems::None,
         });
 
         let card = sign_in_turn(state.agents.get(&AgentId::new(1)).unwrap());
         let line = waiting_line(&state, state.agents.get(&AgentId::new(1)).unwrap());
         let while_waiting = send_again(&mut state, AgentId::new(1));
         let entry = state.agents.get_mut(&AgentId::new(1)).unwrap();
-        entry.summary.waits_for_sign_in = false;
+        entry.summary.sign_in_wait = SignInWait::NotWaiting;
         entry.summary.status = AgentStatus::Idle;
         let sent = send_again(&mut state, AgentId::new(1));
         let entry = state.agents.get_mut(&AgentId::new(1)).unwrap();
@@ -1325,7 +1338,7 @@ mod tests {
                 message: Some(UserMessage {
                     text: "Export the invoices".to_owned(),
                     images: Vec::new(),
-                    queued: false,
+                    delivery: Delivery::Delivered,
                 }),
             })
         );
@@ -1348,9 +1361,9 @@ mod tests {
         entry.transcript.merge_page(HistoryPage {
             items: vec![
                 transcript_item(1, message("Export the invoices")),
-                transcript_item(2, signed_out_turn(true)),
+                transcript_item(2, failed_turn(TurnOutcome::NotSignedIn)),
             ],
-            has_older: false,
+            older_items: OlderItems::None,
         });
         let mut drafts = Drafts::default();
 
@@ -1379,11 +1392,11 @@ mod tests {
         entry.transcript.merge_page(HistoryPage {
             items: vec![
                 transcript_item(1, message("Export")),
-                transcript_item(2, signed_out_turn(true)),
+                transcript_item(2, failed_turn(TurnOutcome::NotSignedIn)),
                 transcript_item(3, message("Export")),
-                transcript_item(4, signed_out_turn(false)),
+                transcript_item(4, failed_turn(TurnOutcome::Failed)),
             ],
-            has_older: false,
+            older_items: OlderItems::None,
         });
 
         assert_eq!(
@@ -1403,7 +1416,7 @@ mod tests {
         let mut drafts = Drafts::default();
         let mut waiting = in_folder(1, "/work/app", work());
         waiting.status = AgentStatus::NeedsYou;
-        waiting.waits_for_sign_in = true;
+        waiting.sign_in_wait = SignInWait::Waiting;
 
         let alert = super::super::apply::apply(
             &mut state,

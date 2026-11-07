@@ -10,14 +10,15 @@ use cockpit_protocol::{
     Account, AccountId, AccountState, AgentDetails, AgentHistory, AgentId, AgentLoad, AgentStatus,
     AgentSummary, Answer, AnswerState, Approval, AskedQuestion, BackgroundTask, BackgroundTaskId,
     BackgroundTaskKind, BackgroundTaskStatus, ChangedFile, ClaudeSessionId, CommandKind,
-    CommandLoad, ContextCategory, ContextUsage, Cores, CostUsd, DirEntry, DirListing, Effort,
-    EntryKind, ErrorBody, ErrorCode, FileEdit, HistoryPage, ItemBody, ItemId, LoadAverage,
-    LoadHistory, MachineLoad, McpScope, McpServer, McpServerStatus, McpTool, McpTransport,
+    CommandLoad, Completeness, ContextCategory, ContextUsage, Cores, CostUsd, CredentialSource,
+    Delivery, DirEntry, DirListing, Effort, EffortSource, EntryKind, EntryLink, EnvironmentApiKey,
+    ErrorBody, ErrorCode, FileEdit, HistoryPage, ItemBody, ItemId, LoadAverage, LoadHistory,
+    MachineLoad, McpScope, McpServer, McpServerStatus, McpTool, McpTransport, OlderItems,
     PastSession, PendingId, PermissionMode, Plan, PlanUsage, Position, ProcessId, Question,
-    QuestionOption, RateLimitStatus, Request, ResourceUse, ResponseBody, ServerLoad, ServerPoint,
-    SignIn, SlashCommand, Subagent, SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem,
-    TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem,
-    TurnEnd, UsageWindow, UserMessage, WindowUsage,
+    QuestionOption, RateLimitStatus, Request, ResourceUse, ResponseBody, Selection, ServerLoad,
+    ServerPoint, SignIn, SignInWait, SlashCommand, Subagent, SubagentRun, SubagentStatus,
+    SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall,
+    ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UsageWindow, UserMessage, WindowUsage,
 };
 use serde_json::Value;
 
@@ -383,7 +384,7 @@ pub fn state(daemon: DaemonLabel) -> AppState {
         if entry.id() != AgentId::new(LIVE_AGENT) {
             entry.transcript.merge_page(HistoryPage {
                 items: sample.items,
-                has_older: false,
+                older_items: OlderItems::None,
             });
         }
         entry.details = Loadable::Loaded(sample.details);
@@ -468,20 +469,20 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
             let page = match params.before {
                 None => HistoryPage {
                     items: live_page(),
-                    has_older: true,
+                    older_items: OlderItems::Exist,
                 },
                 Some(before) => HistoryPage {
                     items: (LIVE_OLDER_FIRST_ID..before.get())
                         .map(|id| item(id, None, live_entry(id)))
                         .collect(),
-                    has_older: false,
+                    older_items: OlderItems::None,
                 },
             };
             Ok(ResponseBody::History(page))
         }
         Request::AgentHistory(_) => Ok(ResponseBody::History(HistoryPage {
             items: Vec::new(),
-            has_older: false,
+            older_items: OlderItems::None,
         })),
         Request::SessionsList => Ok(ResponseBody::Sessions {
             sessions: sessions(SystemTime::now()),
@@ -505,7 +506,7 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
                 .iter()
                 .map(|account| account_state(state, account.clone()))
                 .collect(),
-            environment_api_key: true,
+            environment_api_key: EnvironmentApiKey::Set,
         }),
         Request::AccountsAdd(params) => {
             let id = state
@@ -525,7 +526,7 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
                 id,
                 name: params.name.trim().to_owned(),
                 folder,
-                use_environment_api_key: params.use_environment_api_key,
+                credentials: params.credentials,
             };
             Ok(ResponseBody::Account(account_state(state, account)))
         }
@@ -544,8 +545,8 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
             if let Some(name) = &params.name {
                 account.name.clone_from(name);
             }
-            if let Some(uses) = params.use_environment_api_key {
-                account.use_environment_api_key = uses;
+            if let Some(credentials) = params.credentials {
+                account.credentials = credentials;
             }
             Ok(ResponseBody::Account(account_state(state, account)))
         }
@@ -802,7 +803,7 @@ fn list_dir(path: &Path) -> Result<ResponseBody, RequestError> {
                 EntryKind::File
             },
             size: (!inside).then(|| u64::try_from(text.len()).unwrap_or(0)),
-            symlink: false,
+            link: EntryLink::Direct,
         });
     }
     if entries.is_empty() && !REACHABLE.iter().any(|root| folder == Path::new(root)) {
@@ -815,7 +816,7 @@ fn list_dir(path: &Path) -> Result<ResponseBody, RequestError> {
     Ok(ResponseBody::Directory(DirListing {
         path: folder,
         entries,
-        truncated: false,
+        completeness: Completeness::Complete,
     }))
 }
 
@@ -872,14 +873,14 @@ fn list_folders(state: &AppState, path: &Path) -> Result<ResponseBody, RequestEr
             name,
             kind: EntryKind::Folder,
             size: None,
-            symlink: false,
+            link: EntryLink::Direct,
         })
         .collect();
     entries.sort_by_key(|entry| entry.name.to_lowercase());
     Ok(ResponseBody::Directory(DirListing {
         path: path.to_owned(),
         entries,
-        truncated: false,
+        completeness: Completeness::Complete,
     }))
 }
 
@@ -967,7 +968,7 @@ fn summary(parts: SummaryParts<'_>, now: SystemTime) -> AgentSummary {
         pending_count: parts.pending,
         model: Some("claude-opus-5-5".to_owned()),
         effort: Some(Effort::High),
-        effort_is_default: false,
+        effort_source: EffortSource::Chosen,
         mode: PermissionMode::Default,
         task_progress: None,
         context_percent: Some(31),
@@ -980,7 +981,7 @@ fn summary(parts: SummaryParts<'_>, now: SystemTime) -> AgentSummary {
         session: Some(ClaudeSessionId::new(format!("demo-session-{}", parts.id))),
         position: Position::default(),
         account: AccountId::DEFAULT,
-        waits_for_sign_in: false,
+        sign_in_wait: SignInWait::NotWaiting,
     }
 }
 
@@ -992,11 +993,11 @@ fn item(id: u32, parent: Option<u32>, body: ItemBody) -> TranscriptItem {
     }
 }
 
-fn user(text: &str, queued: bool) -> ItemBody {
+fn user(text: &str, delivery: Delivery) -> ItemBody {
     ItemBody::UserMessage(UserMessage {
         text: text.to_owned(),
         images: Vec::new(),
-        queued,
+        delivery,
     })
 }
 
@@ -1281,7 +1282,7 @@ fn parser_agent(now: SystemTime) -> Sample {
             None,
             user(
                 "Make the parser report the column of an unexpected token, and add a test for it.",
-                false,
+                Delivery::Delivered,
             ),
         ),
         item(
@@ -1380,7 +1381,7 @@ fn parser_agent(now: SystemTime) -> Sample {
         item(
             20,
             None,
-            user("Also cover a token at the end of the input.", true),
+            user("Also cover a token at the end of the input.", Delivery::Queued),
         ),
     ];
     let task = |content: &str, status: TaskStatus| TaskListItem {
@@ -1489,7 +1490,10 @@ fn question_agent(now: SystemTime) -> Sample {
         item(
             1,
             None,
-            user("Draft the release notes for the next version.", false),
+            user(
+                "Draft the release notes for the next version.",
+                Delivery::Delivered,
+            ),
         ),
         item(
             2,
@@ -1514,7 +1518,7 @@ fn question_agent(now: SystemTime) -> Sample {
                         option("Everything", "List every merged change"),
                         option("Breaking changes first", "Start with what needs action"),
                     ],
-                    multi_select: false,
+                    selection: Selection::Single,
                 }],
                 answer: AnswerState::Waiting,
             }),
@@ -1544,7 +1548,10 @@ fn approval_agent(now: SystemTime) -> Sample {
         item(
             1,
             None,
-            user("Fix the broken links and push a preview.", false),
+            user(
+                "Fix the broken links and push a preview.",
+                Delivery::Delivered,
+            ),
         ),
         item(
             2,
@@ -1606,7 +1613,10 @@ fn plan_agent(now: SystemTime) -> Sample {
         item(
             1,
             None,
-            user("Plan a cache for repeated expressions.", false),
+            user(
+                "Plan a cache for repeated expressions.",
+                Delivery::Delivered,
+            ),
         ),
         item(
             2,
@@ -1652,7 +1662,7 @@ fn benchmark_agent(now: SystemTime) -> Sample {
             None,
             user(
                 "Run the benchmark in CI and tell me how to compare two runs.",
-                false,
+                Delivery::Delivered,
             ),
         ),
         item(
@@ -1704,9 +1714,8 @@ fn benchmark_agent(now: SystemTime) -> Sample {
                 duration: Duration::from_secs(252),
                 cost: CostUsd::new(0.62),
                 usage: TokenUsage::default(),
+                outcome: TurnOutcome::Completed,
                 error: None,
-                stopped: false,
-                not_signed_in: false,
             }),
         ),
     ];
@@ -1747,7 +1756,10 @@ fn exited_agent(now: SystemTime) -> Sample {
         item(
             1,
             None,
-            user("Write the migration that adds the archive table.", false),
+            user(
+                "Write the migration that adds the archive table.",
+                Delivery::Delivered,
+            ),
         ),
         item(
             2,
@@ -1784,7 +1796,7 @@ fn sign_in_agent(now: SystemTime) -> Sample {
         },
         now,
     );
-    summary.waits_for_sign_in = true;
+    summary.sign_in_wait = SignInWait::Waiting;
     summary.turn_started_at = None;
     summary.turns = 1;
     summary.cost = CostUsd::new(0.0);
@@ -1794,7 +1806,7 @@ fn sign_in_agent(now: SystemTime) -> Sample {
             None,
             user(
                 "Add a CSV export to the invoices page, with the same columns as the table. Keep the totals row out of it.",
-                false,
+                Delivery::Delivered,
             ),
         ),
         item(
@@ -1812,9 +1824,8 @@ fn sign_in_agent(now: SystemTime) -> Sample {
                 duration: Duration::from_millis(900),
                 cost: CostUsd::new(0.0),
                 usage: TokenUsage::default(),
+                outcome: TurnOutcome::NotSignedIn,
                 error: Some("The account is not signed in".to_owned()),
-                stopped: false,
-                not_signed_in: true,
             }),
         ),
     ];
@@ -1852,7 +1863,7 @@ fn live_page() -> Vec<TranscriptItem> {
         None,
         user(
             "Make the parser read its input as a stream, and run every case test.",
-            false,
+            Delivery::Delivered,
         ),
     );
     let page =
@@ -2166,7 +2177,7 @@ fn map_agent(now: SystemTime) -> Sample {
             None,
             user(
                 "Add per-client rate limits to the upload endpoint. Use a token bucket, make the limits configurable, add tests, and benchmark before and after.",
-                false,
+                Delivery::Delivered,
             ),
         ),
         item(
@@ -2608,25 +2619,25 @@ fn accounts() -> Vec<Account> {
             id: AccountId::DEFAULT,
             name: "Personal".to_owned(),
             folder: PathBuf::from("/home/dev/.claude"),
-            use_environment_api_key: false,
+            credentials: CredentialSource::SignIn,
         },
         Account {
             id: AccountId::new(WORK_ACCOUNT),
             name: "Work".to_owned(),
             folder: PathBuf::from("/home/dev/.claude-work"),
-            use_environment_api_key: false,
+            credentials: CredentialSource::SignIn,
         },
         Account {
             id: AccountId::new(LAB_ACCOUNT),
             name: "Lab".to_owned(),
             folder: PathBuf::from("/home/dev/.claude-lab"),
-            use_environment_api_key: true,
+            credentials: CredentialSource::EnvironmentApiKey,
         },
         Account {
             id: AccountId::new(CLIENT_ACCOUNT),
             name: "Client".to_owned(),
             folder: PathBuf::from("/home/dev/.claude-client"),
-            use_environment_api_key: false,
+            credentials: CredentialSource::SignIn,
         },
     ]
 }
@@ -2677,8 +2688,10 @@ fn apply_account_request(state: &mut AppState, request: &Request) {
                 .collect();
             for entry in state.agents.values_mut() {
                 let summary = &mut entry.summary;
-                if summary.waits_for_sign_in && signed_in.contains(&summary.account) {
-                    summary.waits_for_sign_in = false;
+                if summary.sign_in_wait == SignInWait::Waiting
+                    && signed_in.contains(&summary.account)
+                {
+                    summary.sign_in_wait = SignInWait::NotWaiting;
                     summary.status = AgentStatus::Idle;
                 }
             }
@@ -2908,7 +2921,7 @@ mod tests {
             &HistoryState::NotLoaded
         );
         assert_eq!(page.items.len(), 140);
-        assert!(page.has_older);
+        assert_eq!(page.older_items, OlderItems::Exist);
     }
 
     #[test]
@@ -2925,7 +2938,7 @@ mod tests {
         };
 
         assert_eq!(page.items.len(), 40);
-        assert!(!page.has_older);
+        assert_eq!(page.older_items, OlderItems::None);
     }
 
     /// `src/error.rs` before the sample's edit.
@@ -2966,7 +2979,7 @@ pub struct ParseError {
             ]
         );
         let sign_in = state.agents.get(&AgentId::new(SIGN_IN_AGENT)).unwrap();
-        assert!(sign_in.summary.waits_for_sign_in);
+        assert_eq!(sign_in.summary.sign_in_wait, SignInWait::Waiting);
         assert!(crate::state::accounts::sign_in_turn(sign_in).is_some());
     }
 

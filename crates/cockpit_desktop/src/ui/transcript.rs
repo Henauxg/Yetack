@@ -6,8 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use cockpit_protocol::{
-    AgentId, AgentStatus, AnswerState, ItemBody, ItemId, ToolCall, ToolCallStatus, TranscriptItem,
-    TurnEnd, UserMessage,
+    AgentId, AgentStatus, AnswerState, Delivery, ItemBody, ItemId, SignInWait, ToolCall,
+    ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UserMessage,
 };
 use dioxus::prelude::*;
 use serde::Serialize;
@@ -186,7 +186,7 @@ pub fn TranscriptView() -> Element {
     let sign_in = accounts::sign_in_turn(entry);
     let sign_in_notice = sign_in.as_ref().and_then(|turn| turn.notice);
     let sign_in_end = sign_in.as_ref().map(|turn| turn.turn_end);
-    let waits_for_sign_in = entry.summary.waits_for_sign_in;
+    let waits_for_sign_in = entry.summary.sign_in_wait == SignInWait::Waiting;
     let top_items: Vec<&TranscriptItem> = items
         .iter()
         .copied()
@@ -466,7 +466,7 @@ fn older_step_notes(top_items: &[&TranscriptItem], loaded: &BTreeSet<ItemId>) ->
 }
 
 fn is_queued(item: &TranscriptItem) -> bool {
-    matches!(&item.body, ItemBody::UserMessage(message) if message.queued)
+    matches!(&item.body, ItemBody::UserMessage(message) if message.delivery == Delivery::Queued)
 }
 
 pub(crate) fn waits_for_answer(item: &TranscriptItem) -> bool {
@@ -569,7 +569,7 @@ pub fn ItemView(
 ) -> Element {
     let id = item.id;
     match item.body {
-        ItemBody::UserMessage(message) if message.queued => rsx! {
+        ItemBody::UserMessage(message) if message.delivery == Delivery::Queued => rsx! {
             QueuedMessage { agent, item: id, message }
         },
         ItemBody::UserMessage(message) => rsx! {
@@ -1166,16 +1166,16 @@ pub(crate) fn CompactItem(
 fn TurnEndView(end: TurnEnd) -> Element {
     let duration = format::duration(end.duration);
     let cost = format::cost(end.cost);
-    let stopped = end.stopped;
+    let error = end.error.unwrap_or_default();
     rsx! {
-        match end.error {
-            Some(error) => rsx! {
+        match end.outcome {
+            TurnOutcome::Failed | TurnOutcome::NotSignedIn => rsx! {
                 p { class: "turn-end failed", "The turn failed after {duration}: {error}" }
             },
-            None if stopped => rsx! {
+            TurnOutcome::Stopped => rsx! {
                 p { class: "turn-end", "Stopped after {duration}, {cost} at API prices" }
             },
-            None => rsx! {
+            TurnOutcome::Completed => rsx! {
                 p { class: "turn-end", "Turn done in {duration}, {cost} at API prices" }
             },
         }
@@ -1452,7 +1452,7 @@ mod tests {
         let message = ItemBody::UserMessage(UserMessage {
             text: "Run the tests".to_owned(),
             images: Vec::new(),
-            queued: false,
+            delivery: Delivery::Delivered,
         });
 
         assert_eq!(

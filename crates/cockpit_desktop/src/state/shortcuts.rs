@@ -236,8 +236,8 @@ fn card_key(state: &AppState, drafts: &mut Drafts, agent: AgentId, key: &str) ->
 mod tests {
     use cockpit_protocol::{
         AgentDetails, AgentStatus, Answer, AnswerState, Approval, AskedQuestion, CommandKind,
-        ItemBody, ItemId, Method, PendingId, Question, QuestionOption, Request, SlashCommand,
-        TranscriptItem,
+        ItemBody, ItemId, Method, PendingId, Question, QuestionOption, Request, Selection,
+        SlashCommand, TranscriptItem,
     };
     use serde_json::Value;
 
@@ -308,7 +308,7 @@ mod tests {
                         description: String::new(),
                     },
                 ],
-                multi_select: false,
+                selection: Selection::Single,
             }],
             answer: AnswerState::Waiting,
         })

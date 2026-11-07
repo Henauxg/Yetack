@@ -5,7 +5,10 @@
 use std::time::{Duration, SystemTime};
 
 use cockpit_daemon::{API_KEY_ENV, CLAUDE_CONFIG_DIR_ENV};
-use cockpit_protocol::{AccountId, AgentId, SignIn, UsageWindow, WindowUsage};
+use cockpit_protocol::{
+    AccountId, AgentId, CredentialSource, EnvironmentApiKey, SignIn, SignInWait, UsageWindow,
+    WindowUsage,
+};
 use dioxus::prelude::*;
 
 use crate::bridge;
@@ -542,7 +545,7 @@ fn card_data(state: &AppState, id: AccountId) -> Option<CardData> {
     Some(CardData {
         label: accounts::label_of(state, id)?,
         folder: path_style::shown(&account.folder),
-        uses_api_key: account.use_environment_api_key,
+        uses_api_key: account.credentials == CredentialSource::EnvironmentApiKey,
         billing: accounts::billing(state, id),
         sign_in: state.sign_ins.sign_in(id),
         command: state.sign_ins.command(id).map(str::to_owned),
@@ -681,14 +684,14 @@ pub fn AddAccountDialog(form: AddAccountForm) -> Element {
     // The fields start from the drafts, then follow the keyboard alone.
     let name_seed = use_hook(|| name.clone());
     let folder_seed = use_hook(|| folder.clone());
-    let (machine, environment_api_key, added, windows, proposes) = {
+    let (machine, key_is_set, added, windows, proposes) = {
         let state = cockpit.state.read();
         let added = form
             .added
             .and_then(|id| card_data(&state, id).map(|data| (id, data)));
         (
             state.daemon.machine.clone(),
-            state.sign_ins.environment_api_key,
+            state.sign_ins.environment_api_key == EnvironmentApiKey::Set,
             added,
             state.daemon.path_style() == PathStyle::Windows,
             accounts::proposed_folder(&state, "").is_some(),
@@ -811,10 +814,10 @@ pub fn AddAccountDialog(form: AddAccountForm) -> Element {
                 div { class: "sep" }
                 if uses_api_key {
                     div { class: "step-title", span { class: "step-number", "2" } "API key" }
-                    div { class: if environment_api_key { "signin-status signed ok" } else { "signin-status missing" },
+                    div { class: if key_is_set { "signin-status signed ok" } else { "signin-status missing" },
                         span { class: "status-dot", aria_hidden: true }
                         span { class: "signin-state",
-                            if environment_api_key {
+                            if key_is_set {
                                 "{API_KEY_ENV} is set on {machine}"
                             } else {
                                 "{API_KEY_ENV} is not set on {machine}"
@@ -891,7 +894,7 @@ pub fn SignInCard(agent: AgentId) -> Element {
         let id = entry.summary.account;
         let data = card_data(&state, id);
         let others = accounts::others_waiting(&state, agent, id);
-        let waits = entry.summary.waits_for_sign_in;
+        let waits = entry.summary.sign_in_wait == SignInWait::Waiting;
         let sends = accounts::sign_in_turn(entry)
             .is_some_and(|turn| accounts::can_send_again(entry, &turn));
         (id, data, others, waits, sends)

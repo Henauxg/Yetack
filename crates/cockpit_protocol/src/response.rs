@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use strum::VariantArray;
 
-use crate::account::AccountState;
+use crate::account::{AccountState, EnvironmentApiKey};
 use crate::details::{AgentDetails, ContextUsage, McpServer, SlashCommand};
 use crate::ids::{AccountId, AgentId, ClaudeSessionId};
 use crate::machine_load::MachineLoad;
@@ -78,7 +78,7 @@ pub enum ResponseBody {
         accounts: Vec<AccountState>,
         /// Whether the daemon's environment has `ANTHROPIC_API_KEY`, which an account that uses
         /// it passes to its agents.
-        environment_api_key: bool,
+        environment_api_key: EnvironmentApiKey,
     },
     /// The account added or changed.
     Account(AccountState),
@@ -91,8 +91,16 @@ pub struct DirListing {
     /// for `agent.list_dir`.
     pub path: PathBuf,
     pub entries: Vec<DirEntry>,
+    pub completeness: Completeness,
+}
+
+/// Whether a listing holds every entry of the folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, VariantArray)]
+#[serde(rename_all = "snake_case")]
+pub enum Completeness {
+    Complete,
     /// The folder holds more entries than the listing's cap: some are left out.
-    pub truncated: bool,
+    Truncated,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,7 +110,17 @@ pub struct DirEntry {
     pub kind: EntryKind,
     /// In bytes, for a file.
     pub size: Option<u64>,
-    pub symlink: bool,
+    pub link: EntryLink,
+}
+
+/// Whether a folder entry is a symbolic link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, VariantArray)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryLink {
+    /// The entry is the folder, file or other thing its kind names.
+    Direct,
+    /// The entry is a symbolic link to what its kind names.
+    SymbolicLink,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, VariantArray)]
@@ -118,8 +136,15 @@ pub enum EntryKind {
 pub struct HistoryPage {
     /// Oldest first.
     pub items: Vec<TranscriptItem>,
-    /// Whether items older than the first one exist.
-    pub has_older: bool,
+    pub older_items: OlderItems,
+}
+
+/// Whether a transcript holds items older than a history page's first one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, VariantArray)]
+#[serde(rename_all = "snake_case")]
+pub enum OlderItems {
+    Exist,
+    None,
 }
 
 /// A Claude session on the daemon's machine, which `sessions.resume` can bring back.

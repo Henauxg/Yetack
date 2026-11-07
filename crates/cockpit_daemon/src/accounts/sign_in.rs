@@ -122,7 +122,7 @@ pub(crate) fn account_state(account: Account, shell: SignInShell) -> AccountStat
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::AccountId;
+    use cockpit_protocol::{AccountId, CredentialSource};
 
     use super::*;
 
@@ -179,7 +179,7 @@ mod tests {
             id: AccountId::new(1),
             name: "Work".to_owned(),
             folder: temp.path().join(".claude-work"),
-            use_environment_api_key: false,
+            credentials: CredentialSource::SignIn,
         };
 
         let before = account_state(account.clone(), SignInShell::Posix);

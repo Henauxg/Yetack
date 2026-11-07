@@ -75,11 +75,10 @@ pub struct AgentSummary {
     /// The effort the agent runs at: the one it was given, or else the one Claude Code applies by
     /// itself, from its settings or the model's default. `None` while unknown.
     pub effort: Option<Effort>,
-    /// `effort` is the one Claude Code applies by itself, which an agent in another folder or on
-    /// another model may not get: a client that starts a new agent like this one leaves its effort
-    /// out. `false` when missing, so a summary saved without it still loads.
+    /// Where `effort` comes from. `Chosen` when missing, so a summary saved without it still
+    /// loads.
     #[serde(default)]
-    pub effort_is_default: bool,
+    pub effort_source: EffortSource,
     pub mode: PermissionMode,
     /// `None` when the agent has no task list.
     pub task_progress: Option<TaskProgress>,
@@ -107,9 +106,35 @@ pub struct AgentSummary {
     /// agent from a daemon that predates accounts.
     #[serde(default)]
     pub account: AccountId,
-    /// The last turn found no valid login for the account, and the agent waits for you until you
-    /// send a message or the account signs in. `false` when missing, as from a daemon that
-    /// predates it.
+    /// `NotWaiting` when missing, so a summary saved without it still loads.
     #[serde(default)]
-    pub waits_for_sign_in: bool,
+    pub sign_in_wait: SignInWait,
+}
+
+/// Where an agent's effort comes from.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, VariantArray,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum EffortSource {
+    /// A client gave it, at the start or with `agent.set_effort`.
+    #[default]
+    Chosen,
+    /// Claude Code applies it by itself, from its settings or the model's default. An agent in
+    /// another folder or on another model may not get it: a client that starts a new agent like
+    /// this one leaves its effort out.
+    ClaudeCodeDefault,
+}
+
+/// Whether an agent waits for its account to sign in.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, VariantArray,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SignInWait {
+    #[default]
+    NotWaiting,
+    /// The last turn found no valid login for the account, and the agent waits for you until you
+    /// send a message or the account signs in.
+    Waiting,
 }

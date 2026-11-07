@@ -365,7 +365,7 @@ fn the_bridge_carries_the_protocol() {
         .stdin
         .as_mut()
         .unwrap()
-        .write_all(b"{\"type\":\"hello\",\"protocol_version\":1,\"last_seq\":null}\n")
+        .write_all(b"{\"type\":\"hello\",\"protocol_version\":2,\"last_seq\":null}\n")
         .unwrap();
     let lines = lines_of(&mut bridge);
     let welcome = line_with(&lines, "welcome", WAIT).expect("a welcome");

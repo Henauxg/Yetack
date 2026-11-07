@@ -353,7 +353,7 @@ impl AppState {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use cockpit_protocol::{CostUsd, PermissionMode, Position};
+    use cockpit_protocol::{CostUsd, EffortSource, PermissionMode, Position, SignInWait};
 
     use super::*;
 
@@ -367,7 +367,7 @@ pub(crate) mod tests {
             pending_count: 0,
             model: None,
             effort: None,
-            effort_is_default: false,
+            effort_source: EffortSource::Chosen,
             mode: PermissionMode::Default,
             task_progress: None,
             context_percent: None,
@@ -380,7 +380,7 @@ pub(crate) mod tests {
             session: None,
             position: Position::default(),
             account: AccountId::DEFAULT,
-            waits_for_sign_in: false,
+            sign_in_wait: SignInWait::NotWaiting,
         }
     }
 

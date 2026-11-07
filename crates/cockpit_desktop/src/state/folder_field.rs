@@ -189,7 +189,7 @@ pub fn set_text(state: &mut AppState, drafts: &mut Drafts, text: String) {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::DirListing;
+    use cockpit_protocol::{Completeness, DirListing, EntryLink};
 
     use super::*;
     use crate::state::Loadable;
@@ -200,7 +200,7 @@ mod tests {
             name: name.to_owned(),
             kind: EntryKind::Folder,
             size: None,
-            symlink: false,
+            link: EntryLink::Direct,
         }
     }
 
@@ -208,7 +208,7 @@ mod tests {
         Loadable::Loaded(DirListing {
             path: PathBuf::from(path),
             entries: names.iter().map(|name| folder(name)).collect(),
-            truncated: false,
+            completeness: Completeness::Complete,
         })
     }
 

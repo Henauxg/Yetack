@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use cockpit_protocol::{DirEntry, EntryKind};
+use cockpit_protocol::{Completeness, DirEntry, EntryKind};
 
 use super::actions::{self, Direction};
 use super::app_state::{AppState, Loadable};
@@ -286,7 +286,7 @@ pub fn highlighted(view: &OpenFileView, draft: &OpenFileDraft) -> Option<usize> 
     let cut = view
         .listing
         .loaded()
-        .is_some_and(|listing| listing.truncated);
+        .is_some_and(|listing| listing.completeness == Completeness::Truncated);
     if draft.chosen || !cut {
         return Some(index);
     }
@@ -395,7 +395,7 @@ pub fn set_text(state: &mut AppState, drafts: &mut Drafts, text: String) {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::{AgentId, AgentStatus, DirListing};
+    use cockpit_protocol::{AgentId, AgentStatus, DirListing, EntryLink};
 
     use super::*;
     use crate::state::app_state::tests::{state_with, summary};
@@ -410,7 +410,7 @@ mod tests {
             name: name.to_owned(),
             kind,
             size: (kind == EntryKind::File).then_some(10),
-            symlink: false,
+            link: EntryLink::Direct,
         }
     }
 
@@ -424,7 +424,7 @@ mod tests {
                 entry("README.md", EntryKind::File),
                 entry("build.rs", EntryKind::File),
             ],
-            truncated: false,
+            completeness: Completeness::Complete,
         }
     }
 
@@ -672,7 +672,7 @@ mod tests {
         let (mut state, mut drafts) = opened();
         if let Some(view) = view_mut(&mut state) {
             view.listing = Loadable::Loaded(DirListing {
-                truncated: true,
+                completeness: Completeness::Truncated,
                 ..listing(AGENT_FOLDER)
             });
         }
@@ -690,7 +690,7 @@ mod tests {
         let cut = |state: &mut AppState| {
             if let Some(view) = view_mut(state) {
                 view.listing = Loadable::Loaded(DirListing {
-                    truncated: true,
+                    completeness: Completeness::Truncated,
                     ..listing(AGENT_FOLDER)
                 });
             }
@@ -732,7 +732,7 @@ mod tests {
                     entry("Cargo.toml", EntryKind::File),
                     entry("README.md", EntryKind::File),
                 ],
-                truncated: true,
+                completeness: Completeness::Truncated,
             })
         };
         let shown = |state: &AppState, drafts: &Drafts| {
@@ -794,7 +794,7 @@ mod tests {
         // In a cut listing, the row under the pointer shows and opens, as one a key picked.
         if let Some(view) = view_mut(&mut state) {
             view.listing = Loadable::Loaded(DirListing {
-                truncated: true,
+                completeness: Completeness::Truncated,
                 ..listing(AGENT_FOLDER)
             });
         }

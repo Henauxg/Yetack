@@ -19,19 +19,21 @@ use cockpit_protocol::{
     AgentSummary, Answer, AnswerParams, AnswerState, Approval, ApprovalAnswer, ApprovalDecision,
     AskedQuestion, BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus,
     CancelQueuedParams, Catchup, ChangedFile, ClaudeSessionId, ClientMessage, CommandKind,
-    CommandLoad, ContextCategory, ContextUsage, Cores, CostUsd, DirEntry, DirListing, Effort,
-    EntryKind, ErrorBody, ErrorCode, Event, EventRecord, FileEdit, FindFilesParams,
-    FoldersListParams, HistoryPage, HistoryParams, Image, ImageMediaType, ItemBody, ItemId,
-    ListDirParams, LoadAverage, LoadHistory, MachineLoad, McpRemoveParams, McpScope, McpServer,
-    McpServerParams, McpServerStatus, McpToggleParams, McpTool, McpTransport, Method, MoveParams,
-    PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision,
-    PlanUsage, Position, ProcessId, Prompt, PromptParams, Question, QuestionAnswer, QuestionOption,
-    RateLimitStatus, ReadFileParams, RenameParams, Request, RequestId, ResourceUse, ResponseBody,
-    ResponseResult, Seq, ServerLoad, ServerMessage, ServerPoint, SessionResumeParams,
-    SetEffortParams, SetModeParams, SetModelParams, Settings, SignIn, SlashCommand, Snapshot,
-    StartParams, StopProcessParams, StopTaskParams, Subagent, SubagentRun, SubagentStatus,
-    SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall,
-    ToolCallStatus, TranscriptItem, TurnEnd, UsageWindow, UserMessage, WindowUsage,
+    CommandLoad, Completeness, ContextCategory, ContextUsage, Cores, CostUsd, CredentialSource,
+    Delivery, DirEntry, DirListing, Effort, EffortSource, EntryKind, EntryLink, EnvironmentApiKey,
+    ErrorBody, ErrorCode, Event, EventRecord, FileEdit, FindFilesParams, FoldersListParams,
+    HistoryPage, HistoryParams, Image, ImageMediaType, ItemBody, ItemId, ListDirParams,
+    LoadAverage, LoadHistory, MachineLoad, McpRemoveParams, McpScope, McpServer, McpServerParams,
+    McpServerStatus, McpToggleAction, McpToggleParams, McpTool, McpTransport, Method, MoveParams,
+    OlderItems, PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan, PlanAnswer,
+    PlanDecision, PlanUsage, Position, ProcessId, Prompt, PromptParams, Question, QuestionAnswer,
+    QuestionOption, RateLimitStatus, ReadFileParams, RenameParams, Request, RequestId, ResourceUse,
+    ResponseBody, ResponseResult, Selection, Seq, ServerLoad, ServerMessage, ServerPoint,
+    SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, Settings, SignIn,
+    SignInWait, SlashCommand, Snapshot, StartParams, StopProcessParams, StopTaskParams, Subagent,
+    SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem, TaskProgress, TaskStatus,
+    Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome,
+    UsageWindow, UserMessage, WindowUsage,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -66,7 +68,7 @@ fn summary() -> AgentSummary {
         pending_count: 1,
         model: Some("opus".to_owned()),
         effort: Some(Effort::High),
-        effort_is_default: true,
+        effort_source: EffortSource::ClaudeCodeDefault,
         mode: PermissionMode::AcceptEdits,
         task_progress: Some(TaskProgress { done: 3, total: 5 }),
         context_percent: Some(42),
@@ -79,7 +81,7 @@ fn summary() -> AgentSummary {
         session: Some(session_id()),
         position: Position::new(2048),
         account: work_account().id,
-        waits_for_sign_in: true,
+        sign_in_wait: SignInWait::Waiting,
     }
 }
 
@@ -93,7 +95,7 @@ fn idle_summary() -> AgentSummary {
         pending_count: 0,
         model: None,
         effort: None,
-        effort_is_default: false,
+        effort_source: EffortSource::Chosen,
         mode: PermissionMode::Default,
         task_progress: None,
         context_percent: None,
@@ -106,7 +108,7 @@ fn idle_summary() -> AgentSummary {
         session: None,
         position: Position::new(1024),
         account: AccountId::DEFAULT,
-        waits_for_sign_in: false,
+        sign_in_wait: SignInWait::NotWaiting,
     }
 }
 
@@ -115,7 +117,7 @@ fn default_account() -> Account {
         id: AccountId::DEFAULT,
         name: "Personal".to_owned(),
         folder: PathBuf::from("/home/sam/.claude"),
-        use_environment_api_key: false,
+        credentials: CredentialSource::SignIn,
     }
 }
 
@@ -124,7 +126,7 @@ fn work_account() -> Account {
         id: AccountId::new(2),
         name: "Work".to_owned(),
         folder: PathBuf::from("/home/sam/.claude-work"),
-        use_environment_api_key: true,
+        credentials: CredentialSource::EnvironmentApiKey,
     }
 }
 
@@ -184,7 +186,7 @@ fn asked_question() -> AskedQuestion {
                 description: "Like production".to_owned(),
             },
         ],
-        multi_select: false,
+        selection: Selection::Single,
     }
 }
 
@@ -215,7 +217,7 @@ fn bodies() -> Vec<ItemBody> {
         ItemBody::UserMessage(UserMessage {
             text: prompt().text,
             images: vec![image()],
-            queued: true,
+            delivery: Delivery::Queued,
         }),
         ItemBody::AssistantText {
             markdown: "The regex rejects `+` in the local part.".to_owned(),
@@ -277,9 +279,8 @@ fn bodies() -> Vec<ItemBody> {
                 cache_creation: 15_000,
                 cache_read: 210_000,
             },
+            outcome: TurnOutcome::Failed,
             error: Some("The turn reached the maximum number of turns".to_owned()),
-            stopped: false,
-            not_signed_in: false,
         }),
         ItemBody::Notice {
             text: "Conversation compacted".to_owned(),
@@ -587,7 +588,7 @@ fn requests() -> Vec<Request> {
         Request::AgentMcpToggle(McpToggleParams {
             agent,
             server: "issues".to_owned(),
-            enabled: false,
+            action: McpToggleAction::Disable,
         }),
         Request::AgentCommands(AgentParams { agent }),
         Request::AgentReadFile(ReadFileParams {
@@ -621,12 +622,12 @@ fn requests() -> Vec<Request> {
         Request::AccountsAdd(AccountAddParams {
             name: "Work".to_owned(),
             folder: None,
-            use_environment_api_key: false,
+            credentials: CredentialSource::SignIn,
         }),
         Request::AccountsChange(AccountChangeParams {
             account: work_account().id,
             name: Some("Client work".to_owned()),
-            use_environment_api_key: None,
+            credentials: None,
         }),
         Request::AccountsRemove(AccountParams {
             account: work_account().id,
@@ -642,22 +643,22 @@ fn dir_listing() -> DirListing {
                 name: "forms".to_owned(),
                 kind: EntryKind::Folder,
                 size: None,
-                symlink: false,
+                link: EntryLink::Direct,
             },
             DirEntry {
                 name: "login.rs".to_owned(),
                 kind: EntryKind::File,
                 size: Some(2_048),
-                symlink: false,
+                link: EntryLink::Direct,
             },
             DirEntry {
                 name: "shared".to_owned(),
                 kind: EntryKind::Other,
                 size: None,
-                symlink: true,
+                link: EntryLink::SymbolicLink,
             },
         ],
-        truncated: false,
+        completeness: Completeness::Complete,
     }
 }
 
@@ -747,7 +748,7 @@ fn response_bodies() -> Vec<ResponseBody> {
         ResponseBody::AgentStarted { agent: agent() },
         ResponseBody::History(HistoryPage {
             items: items(),
-            has_older: true,
+            older_items: OlderItems::Exist,
         }),
         ResponseBody::Details(details()),
         ResponseBody::ContextUsage(context_usage()),
@@ -788,7 +789,7 @@ fn response_bodies() -> Vec<ResponseBody> {
                 },
                 work_account_state(),
             ],
-            environment_api_key: true,
+            environment_api_key: EnvironmentApiKey::Set,
         },
         ResponseBody::Account(work_account_state()),
     ]
@@ -1186,6 +1187,23 @@ fn words_are_pinned() {
         ]
     );
     assert_eq!(words::<SignIn>(), ["signed_in", "not_signed_in", "unknown"]);
+    assert_eq!(
+        words::<CredentialSource>(),
+        ["sign_in", "environment_api_key"]
+    );
+    assert_eq!(words::<EnvironmentApiKey>(), ["set", "unset"]);
+    assert_eq!(words::<EffortSource>(), ["chosen", "claude_code_default"]);
+    assert_eq!(words::<SignInWait>(), ["not_waiting", "waiting"]);
+    assert_eq!(words::<Delivery>(), ["queued", "delivered"]);
+    assert_eq!(words::<Selection>(), ["single", "multiple"]);
+    assert_eq!(
+        words::<TurnOutcome>(),
+        ["completed", "stopped", "failed", "not_signed_in"]
+    );
+    assert_eq!(words::<Completeness>(), ["complete", "truncated"]);
+    assert_eq!(words::<EntryLink>(), ["direct", "symbolic_link"]);
+    assert_eq!(words::<OlderItems>(), ["exist", "none"]);
+    assert_eq!(words::<McpToggleAction>(), ["enable", "disable"]);
 }
 
 #[test]
@@ -1301,11 +1319,11 @@ fn a_folder_listing_on_the_wire() {
                 "type": "directory",
                 "path": "/srv/projects/shop/src",
                 "entries": [
-                    {"name": "forms", "kind": "folder", "size": null, "symlink": false},
-                    {"name": "login.rs", "kind": "file", "size": 2048, "symlink": false},
-                    {"name": "shared", "kind": "other", "size": null, "symlink": true},
+                    {"name": "forms", "kind": "folder", "size": null, "link": "direct"},
+                    {"name": "login.rs", "kind": "file", "size": 2048, "link": "direct"},
+                    {"name": "shared", "kind": "other", "size": null, "link": "symbolic_link"},
                 ],
-                "truncated": false,
+                "completeness": "complete",
             }},
         }),
     );
@@ -1328,16 +1346,16 @@ fn a_folders_listing_on_the_wire() {
                     name: ".archive".to_owned(),
                     kind: EntryKind::Folder,
                     size: None,
-                    symlink: false,
+                    link: EntryLink::Direct,
                 },
                 DirEntry {
                     name: "shop".to_owned(),
                     kind: EntryKind::Folder,
                     size: None,
-                    symlink: true,
+                    link: EntryLink::SymbolicLink,
                 },
             ],
-            truncated: true,
+            completeness: Completeness::Truncated,
         })),
     };
 
@@ -1358,10 +1376,10 @@ fn a_folders_listing_on_the_wire() {
                 "type": "directory",
                 "path": "/srv/projects",
                 "entries": [
-                    {"name": ".archive", "kind": "folder", "size": null, "symlink": false},
-                    {"name": "shop", "kind": "folder", "size": null, "symlink": true},
+                    {"name": ".archive", "kind": "folder", "size": null, "link": "direct"},
+                    {"name": "shop", "kind": "folder", "size": null, "link": "symbolic_link"},
                 ],
-                "truncated": true,
+                "completeness": "truncated",
             }},
         }),
     );
@@ -1507,7 +1525,7 @@ fn a_welcome_with_a_snapshot_on_the_wire() {
                     "id": 2,
                     "name": "Work",
                     "folder": "/home/sam/.claude-work",
-                    "use_environment_api_key": true,
+                    "credentials": "environment_api_key",
                 }],
                 "other_plan_usage": [{"account": 2, "usage": {"windows": {}}}],
             },
@@ -1664,7 +1682,7 @@ fn an_agent_update_on_the_wire() {
                 "pending_count": 1,
                 "model": "opus",
                 "effort": "high",
-                "effort_is_default": true,
+                "effort_source": "claude_code_default",
                 "mode": "acceptEdits",
                 "task_progress": {"done": 3, "total": 5},
                 "context_percent": 42,
@@ -1677,7 +1695,7 @@ fn an_agent_update_on_the_wire() {
                 "session": "0b7e1c2a-3d4f-4a5b-8c6d-7e8f9a0b1c2d",
                 "position": 2048,
                 "account": 2,
-                "waits_for_sign_in": true,
+                "sign_in_wait": "waiting",
             },
         }),
     );
@@ -1739,25 +1757,31 @@ fn a_summary_logged_before_accounts_reads_the_default_account() {
     assert_eq!(read.account, AccountId::DEFAULT);
 }
 
+/// An event log of an older daemon holds `waits_for_sign_in`, a `bool`, or nothing.
 #[test]
-fn a_summary_logged_before_sign_in_waits_does_not_wait() {
+fn a_summary_logged_without_its_sign_in_wait_does_not_wait() {
     let mut logged = serde_json::to_value(summary()).unwrap();
-    logged.as_object_mut().unwrap().remove("waits_for_sign_in");
+    let fields = logged.as_object_mut().unwrap();
+    fields.remove("sign_in_wait");
+    fields.insert("waits_for_sign_in".to_owned(), Value::Bool(true));
 
     let read: AgentSummary = serde_json::from_value(logged).unwrap();
 
-    assert!(!read.waits_for_sign_in);
+    assert_eq!(read.sign_in_wait, SignInWait::NotWaiting);
 }
 
+/// An event log of an older daemon holds `effort_is_default`, a `bool`, or nothing.
 #[test]
 fn a_summary_saved_without_its_effort_source_still_loads() {
     let mut saved = serde_json::to_value(summary()).unwrap();
-    saved.as_object_mut().unwrap().remove("effort_is_default");
+    let fields = saved.as_object_mut().unwrap();
+    fields.remove("effort_source");
+    fields.insert("effort_is_default".to_owned(), Value::Bool(true));
 
     let loaded: AgentSummary = serde_json::from_value(saved).unwrap();
 
     assert_eq!(loaded.effort, Some(Effort::High));
-    assert!(!loaded.effort_is_default);
+    assert_eq!(loaded.effort_source, EffortSource::Chosen);
 }
 
 #[test]
@@ -1861,9 +1885,8 @@ fn an_approval_and_a_turn_end_on_the_wire() {
         duration: Duration::from_millis(83_250),
         cost: CostUsd::new(0.42),
         usage: TokenUsage::default(),
-        error: None,
-        stopped: false,
-        not_signed_in: true,
+        outcome: TurnOutcome::NotSignedIn,
+        error: Some("The account is not signed in".to_owned()),
     });
 
     assert_wire(
@@ -1894,9 +1917,8 @@ fn an_approval_and_a_turn_end_on_the_wire() {
             "duration_ms": 83_250,
             "cost": 0.42,
             "usage": {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0},
-            "error": null,
-            "stopped": false,
-            "not_signed_in": true,
+            "outcome": "not_signed_in",
+            "error": "The account is not signed in",
         }),
     );
 }
@@ -1939,16 +1961,14 @@ fn an_approval_saved_without_its_tool_call_still_loads() {
 }
 
 #[test]
-fn a_stopped_turn_end_on_the_wire_and_one_saved_without_the_field() {
+fn a_stopped_turn_end_on_the_wire() {
     let stopped = ItemBody::TurnEnd(TurnEnd {
         duration: Duration::from_millis(6_100),
         cost: CostUsd::new(0.01),
         usage: TokenUsage::default(),
+        outcome: TurnOutcome::Stopped,
         error: None,
-        stopped: true,
-        not_signed_in: false,
     });
-    let saved = r#"{"type":"turn_end","duration_ms":6100,"cost":0.01,"usage":{"input":0,"output":0,"cache_creation":0,"cache_read":0},"error":"Interrupted"}"#;
 
     assert_wire(
         &stopped,
@@ -1957,17 +1977,122 @@ fn a_stopped_turn_end_on_the_wire_and_one_saved_without_the_field() {
             "duration_ms": 6_100,
             "cost": 0.01,
             "usage": {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0},
+            "outcome": "stopped",
             "error": null,
-            "stopped": true,
-            "not_signed_in": false,
         }),
     );
-    let ItemBody::TurnEnd(saved) = serde_json::from_str::<ItemBody>(saved).unwrap() else {
-        panic!("not a turn end");
+}
+
+/// An event log of an older daemon holds `stopped` and `not_signed_in`, two `bool`s that may be
+/// missing, in place of `outcome`.
+#[test]
+fn turn_ends_saved_without_their_outcome_still_load() {
+    let saved = |fields: &str| {
+        let line = format!(
+            r#"{{"type":"turn_end","duration_ms":6100,"cost":0.01,"usage":{{"input":0,"output":0,"cache_creation":0,"cache_read":0}},{fields}}}"#
+        );
+        let ItemBody::TurnEnd(end) = serde_json::from_str::<ItemBody>(&line).unwrap() else {
+            panic!("not a turn end");
+        };
+        (end.outcome, end.error)
     };
-    assert!(!saved.stopped);
-    assert!(!saved.not_signed_in);
-    assert_eq!(saved.error.as_deref(), Some("Interrupted"));
+    let error = |text: &str| Some(text.to_owned());
+
+    assert_eq!(saved(r#""error":null"#), (TurnOutcome::Completed, None));
+    assert_eq!(
+        saved(r#""error":"Interrupted""#),
+        (TurnOutcome::Failed, error("Interrupted"))
+    );
+    assert_eq!(
+        saved(r#""error":null,"stopped":true,"not_signed_in":false"#),
+        (TurnOutcome::Stopped, None)
+    );
+    assert_eq!(
+        saved(r#""error":"The account is not signed in","stopped":false,"not_signed_in":true"#),
+        (
+            TurnOutcome::NotSignedIn,
+            error("The account is not signed in")
+        )
+    );
+}
+
+/// An event log of an older daemon holds `queued` and `multi_select`, and `settings.json` holds
+/// `use_environment_api_key`: `bool`s in place of enums.
+#[test]
+fn fields_saved_as_bools_still_load() {
+    let message = r#"{"type":"user_message","text":"hello","images":[],"queued":true}"#;
+    let question = r#"{"header":"Database","text":"Which one?","options":[],"multi_select":true}"#;
+    let account = r#"{"id":2,"name":"Work","folder":"/home/sam/.claude-work","use_environment_api_key":true}"#;
+
+    let ItemBody::UserMessage(message) = serde_json::from_str::<ItemBody>(message).unwrap() else {
+        panic!("not a user message");
+    };
+    let question: AskedQuestion = serde_json::from_str(question).unwrap();
+    let account: Account = serde_json::from_str(account).unwrap();
+
+    assert_eq!(message.delivery, Delivery::Queued);
+    assert_eq!(question.selection, Selection::Multiple);
+    assert_eq!(account, work_account());
+}
+
+/// The transcript's items and pages, and the MCP toggle, with the enums that replaced `bool`s.
+#[test]
+fn transcript_pages_and_mcp_toggles_on_the_wire() {
+    let page = ResponseBody::History(HistoryPage {
+        items: vec![TranscriptItem {
+            id: ItemId::new(7),
+            parent: None,
+            body: ItemBody::UserMessage(UserMessage {
+                text: "Run the tests".to_owned(),
+                images: Vec::new(),
+                delivery: Delivery::Queued,
+            }),
+        }],
+        older_items: OlderItems::None,
+    });
+    let toggle = Request::AgentMcpToggle(McpToggleParams {
+        agent: agent(),
+        server: "issues".to_owned(),
+        action: McpToggleAction::Enable,
+    });
+
+    assert_wire(
+        &page,
+        json!({
+            "type": "history",
+            "items": [{
+                "id": 7,
+                "parent": null,
+                "body": {
+                    "type": "user_message",
+                    "text": "Run the tests",
+                    "images": [],
+                    "delivery": "queued",
+                },
+            }],
+            "older_items": "none",
+        }),
+    );
+    assert_wire(
+        &asked_question(),
+        json!({
+            "header": "Database",
+            "text": "Which database should the tests use?",
+            "options": [
+                {"label": "SQLite", "description": "In memory, no setup"},
+                {"label": "Postgres", "description": "Like production"},
+            ],
+            "selection": "single",
+        }),
+    );
+    assert_wire(
+        &toggle,
+        json!({"method": "agent.mcp_toggle", "params": {
+            "agent": 3,
+            "server": "issues",
+            "action": "enable",
+        }}),
+    );
 }
 
 #[test]
@@ -2050,12 +2175,12 @@ fn account_requests_on_the_wire() {
     let add = Request::AccountsAdd(AccountAddParams {
         name: "Work".to_owned(),
         folder: Some(PathBuf::from("/home/sam/.claude-work")),
-        use_environment_api_key: true,
+        credentials: CredentialSource::EnvironmentApiKey,
     });
     let change = Request::AccountsChange(AccountChangeParams {
         account: AccountId::new(2),
         name: None,
-        use_environment_api_key: Some(false),
+        credentials: Some(CredentialSource::SignIn),
     });
     let remove = Request::AccountsRemove(AccountParams {
         account: AccountId::new(2),
@@ -2067,7 +2192,7 @@ fn account_requests_on_the_wire() {
         json!({"method": "accounts.add", "params": {
             "name": "Work",
             "folder": "/home/sam/.claude-work",
-            "use_environment_api_key": true,
+            "credentials": "environment_api_key",
         }}),
     );
     assert_wire(
@@ -2075,7 +2200,7 @@ fn account_requests_on_the_wire() {
         json!({"method": "accounts.change", "params": {
             "account": 2,
             "name": null,
-            "use_environment_api_key": false,
+            "credentials": "sign_in",
         }}),
     );
     assert_wire(
@@ -2095,7 +2220,7 @@ fn an_account_added_with_only_a_name_takes_the_proposed_folder_and_no_api_key() 
         Request::AccountsAdd(AccountAddParams {
             name: "Work".to_owned(),
             folder: None,
-            use_environment_api_key: false,
+            credentials: CredentialSource::SignIn,
         })
     );
 }
@@ -2104,7 +2229,7 @@ fn an_account_added_with_only_a_name_takes_the_proposed_folder_and_no_api_key() 
 fn the_accounts_answer_on_the_wire() {
     let body = ResponseBody::Accounts {
         accounts: vec![work_account_state()],
-        environment_api_key: false,
+        environment_api_key: EnvironmentApiKey::Unset,
     };
 
     assert_wire(
@@ -2116,12 +2241,12 @@ fn the_accounts_answer_on_the_wire() {
                     "id": 2,
                     "name": "Work",
                     "folder": "/home/sam/.claude-work",
-                    "use_environment_api_key": true,
+                    "credentials": "environment_api_key",
                 },
                 "sign_in": "not_signed_in",
                 "sign_in_command": "CLAUDE_CONFIG_DIR='/home/sam/.claude-work' claude",
             }],
-            "environment_api_key": false,
+            "environment_api_key": "unset",
         }),
     );
 }
@@ -2146,7 +2271,7 @@ fn account_events_on_the_wire() {
             "id": 0,
             "name": "Personal",
             "folder": "/home/sam/.claude",
-            "use_environment_api_key": false,
+            "credentials": "sign_in",
         }]}),
     );
 }

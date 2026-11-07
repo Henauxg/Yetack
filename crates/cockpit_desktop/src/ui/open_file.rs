@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use cockpit_protocol::{DirEntry, EntryKind};
+use cockpit_protocol::{Completeness, DirEntry, EntryKind, EntryLink};
 use dioxus::prelude::*;
 
 use crate::bridge::{self, HIGHLIGHTED_CLASS, OPEN_FILE_FIELD_ID};
@@ -121,7 +121,7 @@ pub fn OpenFileDialog(view: OpenFileView) -> Element {
                                 }
                             }
                         }
-                        if listing.truncated {
+                        if listing.completeness == Completeness::Truncated {
                             span { class: "dialog-empty",
                                 "The folder holds more entries than the {listed} listed. Type a file's full name and press Enter to open it."
                             }
@@ -223,7 +223,7 @@ pub fn entry_parts(entry: &DirEntry) -> Element {
     rsx! {
         Icon { kind: icon, size: 14 }
         span { class: "open-file-name mono", "{entry.name}" }
-        if entry.symlink {
+        if entry.link == EntryLink::SymbolicLink {
             span { class: "open-file-link", title: "A symbolic link", "\u{2192}" }
         }
         span { class: "spacer" }

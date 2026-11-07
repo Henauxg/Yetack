@@ -1,8 +1,8 @@
 use std::path::{Component, Path, PathBuf};
 
 use cockpit_protocol::{
-    Account, AccountAddParams, AccountChangeParams, AccountId, ErrorBody, ErrorCode,
-    FOLDER_SEPARATOR, MAX_ACCOUNT_NAME_CHARS, account_folder_name,
+    Account, AccountAddParams, AccountChangeParams, AccountId, CredentialSource, ErrorBody,
+    ErrorCode, FOLDER_SEPARATOR, MAX_ACCOUNT_NAME_CHARS, account_folder_name, enum_or_stored_bool,
 };
 use serde::{Deserialize, Serialize};
 
@@ -10,12 +10,17 @@ use serde::{Deserialize, Serialize};
 const DEFAULT_NAME: &str = "Default";
 
 /// The accounts, as `settings.json` keeps them. The default account's folder is the daemon's own,
-/// so only its name and its API key choice are kept.
+/// so only its name and its credentials are kept.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct AccountList {
     default_name: String,
-    default_uses_environment_api_key: bool,
+    /// Files of older daemons hold `default_uses_environment_api_key`, a `bool`, in its place.
+    #[serde(
+        alias = "default_uses_environment_api_key",
+        deserialize_with = "enum_or_stored_bool"
+    )]
+    default_credentials: CredentialSource,
     added: Vec<Account>,
     /// Ids are never reused, so an agent never moves to a later account.
     next_account: AccountId,
@@ -25,7 +30,7 @@ impl Default for AccountList {
     fn default() -> Self {
         Self {
             default_name: DEFAULT_NAME.to_owned(),
-            default_uses_environment_api_key: false,
+            default_credentials: CredentialSource::SignIn,
             added: Vec::new(),
             next_account: AccountId::new(1),
         }
@@ -75,7 +80,7 @@ impl AccountList {
             id,
             name,
             folder,
-            use_environment_api_key: params.use_environment_api_key,
+            credentials: params.credentials,
         };
         self.added.push(account.clone());
         self.next_account = next;
@@ -98,8 +103,8 @@ impl AccountList {
             if let Some(name) = name {
                 self.default_name = name;
             }
-            if let Some(uses) = params.use_environment_api_key {
-                self.default_uses_environment_api_key = uses;
+            if let Some(credentials) = params.credentials {
+                self.default_credentials = credentials;
             }
             return Ok(self.default_account(default_folder));
         }
@@ -111,8 +116,8 @@ impl AccountList {
         if let Some(name) = name {
             account.name = name;
         }
-        if let Some(uses) = params.use_environment_api_key {
-            account.use_environment_api_key = uses;
+        if let Some(credentials) = params.credentials {
+            account.credentials = credentials;
         }
         Ok(account.clone())
     }
@@ -136,12 +141,12 @@ impl AccountList {
     pub(crate) fn sample() -> Self {
         Self {
             default_name: "Personal".to_owned(),
-            default_uses_environment_api_key: true,
+            default_credentials: CredentialSource::EnvironmentApiKey,
             added: vec![Account {
                 id: AccountId::new(2),
                 name: "Work".to_owned(),
                 folder: PathBuf::from("/home/sam/.claude-work"),
-                use_environment_api_key: false,
+                credentials: CredentialSource::SignIn,
             }],
             next_account: AccountId::new(4),
         }
@@ -152,7 +157,7 @@ impl AccountList {
             id: AccountId::DEFAULT,
             name: self.default_name.clone(),
             folder: default_folder.to_owned(),
-            use_environment_api_key: self.default_uses_environment_api_key,
+            credentials: self.default_credentials,
         }
     }
 
@@ -300,7 +305,7 @@ mod tests {
         let params = AccountAddParams {
             name: name.to_owned(),
             folder: folder.map(PathBuf::from),
-            use_environment_api_key: false,
+            credentials: CredentialSource::SignIn,
         };
         list.add(params, Some(Path::new("/home/sam")), &default_folder())
     }
@@ -393,7 +398,7 @@ mod tests {
             let params = AccountAddParams {
                 name: name.to_owned(),
                 folder: folder.map(PathBuf::from),
-                use_environment_api_key: false,
+                credentials: CredentialSource::SignIn,
             };
             list.add(params, Some(home), default_folder)
         };
@@ -415,7 +420,7 @@ mod tests {
         let params = AccountAddParams {
             name: "Work".to_owned(),
             folder: None,
-            use_environment_api_key: false,
+            credentials: CredentialSource::SignIn,
         };
 
         let error = list
@@ -430,10 +435,10 @@ mod tests {
     fn a_change_renames_or_sets_the_api_key_choice_of_any_account() {
         let mut list = AccountList::default();
         let work = add(&mut list, "Work", None).unwrap();
-        let change = |account, name: Option<&str>, uses| AccountChangeParams {
+        let change = |account, name: Option<&str>, credentials| AccountChangeParams {
             account,
             name: name.map(str::to_owned),
-            use_environment_api_key: uses,
+            credentials,
         };
 
         let renamed = list
@@ -443,7 +448,10 @@ mod tests {
             )
             .unwrap();
         let keyed = list
-            .change(change(work.id, None, Some(true)), &default_folder())
+            .change(
+                change(work.id, None, Some(CredentialSource::EnvironmentApiKey)),
+                &default_folder(),
+            )
             .unwrap();
         let same_name = list
             .change(change(work.id, Some("work"), None), &default_folder())
@@ -463,7 +471,7 @@ mod tests {
 
         assert_eq!(renamed.name, "Personal");
         assert_eq!(renamed.folder, default_folder());
-        assert!(keyed.use_environment_api_key);
+        assert_eq!(keyed.credentials, CredentialSource::EnvironmentApiKey);
         assert_eq!(keyed.folder, work.folder);
         assert_eq!(same_name.name, "work");
         assert_eq!(taken.code, ErrorCode::InvalidRequest);

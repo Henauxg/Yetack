@@ -7,7 +7,7 @@ use std::time::Instant;
 use cockpit_client::SessionUpdate;
 use cockpit_protocol::{
     AgentId, AgentStatus, AgentSummary, AnswerState, Catchup, Event, EventRecord, ItemBody,
-    Snapshot,
+    SignInWait, Snapshot,
 };
 
 use super::accounts::{self, SignIns};
@@ -276,7 +276,7 @@ fn update_agent(state: &mut AppState, summary: AgentSummary) -> Option<Alert> {
     let summary = &entry.summary;
     let after = summary.status;
     if after == AgentStatus::NeedsYou && before != AgentStatus::NeedsYou {
-        let body = if summary.waits_for_sign_in {
+        let body = if summary.sign_in_wait == SignInWait::Waiting {
             match account_name {
                 Some(name) => format!("The account {name} is not signed in."),
                 None => "Its account is not signed in.".to_owned(),
@@ -342,7 +342,7 @@ mod tests {
     use cockpit_client::{ConnectError, SessionError};
     use cockpit_protocol::{
         AgentDetails, CostUsd, ItemId, PendingId, PlanUsage, Question, Seq, Settings, TaskProgress,
-        TokenUsage, TranscriptItem, TurnEnd,
+        TokenUsage, TranscriptItem, TurnEnd, TurnOutcome,
     };
 
     use super::*;
@@ -944,7 +944,7 @@ mod tests {
         let agent = AgentId::new(1);
         let start = Instant::now();
         let mut waiting = summary(1, AgentStatus::NeedsYou);
-        waiting.waits_for_sign_in = true;
+        waiting.sign_in_wait = SignInWait::Waiting;
         let mut update = |summary, now| {
             apply_update(
                 &mut state,
@@ -985,9 +985,8 @@ mod tests {
                 duration: Duration::from_secs(360),
                 cost: CostUsd::new(0.4),
                 usage: TokenUsage::default(),
+                outcome: TurnOutcome::Completed,
                 error: None,
-                stopped: false,
-                not_signed_in: false,
             }),
         };
 

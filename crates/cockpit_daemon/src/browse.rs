@@ -25,7 +25,9 @@ use std::ops::ControlFlow;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 
-use cockpit_protocol::{DirEntry, DirListing, EntryKind, ErrorBody, ErrorCode};
+use cockpit_protocol::{
+    Completeness, DirEntry, DirListing, EntryKind, EntryLink, ErrorBody, ErrorCode,
+};
 #[cfg(unix)]
 use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags};
 #[cfg(unix)]
@@ -119,7 +121,7 @@ pub(crate) fn list(
     Ok(DirListing {
         path: asked,
         entries,
-        truncated,
+        completeness: completeness(truncated),
     })
 }
 
@@ -176,6 +178,14 @@ fn is_self_or_parent(name: &CStr) -> bool {
     matches!(name.to_bytes(), b"." | b"..")
 }
 
+fn completeness(truncated: bool) -> Completeness {
+    if truncated {
+        Completeness::Truncated
+    } else {
+        Completeness::Complete
+    }
+}
+
 /// Sorts entries as a listing shows them, then keeps the first [`MAX_ENTRIES`]. Returns whether
 /// it left some out.
 fn sort_and_cap(entries: &mut Vec<DirEntry>) -> bool {
@@ -214,7 +224,7 @@ pub(crate) fn list_folders(path: &Path) -> Result<DirListing, ListDirError> {
     Ok(DirListing {
         path: path.to_owned(),
         entries,
-        truncated,
+        completeness: completeness(truncated),
     })
 }
 
@@ -265,13 +275,17 @@ fn describe(folder: &File, name: &CStr, listed: FileType) -> DirEntry {
     let shown_name = OsStr::from_bytes(name.to_bytes())
         .to_string_lossy()
         .into_owned();
-    let symlink = listed == FileType::Symlink;
+    let link = if listed == FileType::Symlink {
+        EntryLink::SymbolicLink
+    } else {
+        EntryLink::Direct
+    };
     if listed == FileType::Directory {
         return DirEntry {
             name: shown_name,
             kind: EntryKind::Folder,
             size: None,
-            symlink,
+            link,
         };
     }
     // Follows a link, to say what it points to.
@@ -295,7 +309,7 @@ fn describe(folder: &File, name: &CStr, listed: FileType) -> DirEntry {
         name: shown_name,
         kind,
         size,
-        symlink,
+        link,
     }
 }
 
@@ -390,7 +404,7 @@ fn describe(folder: &Path, entry: &FolderEntry) -> DirEntry {
             name,
             kind,
             size: (kind == EntryKind::File).then_some(entry.size),
-            symlink: false,
+            link: EntryLink::Direct,
         };
     }
     // Follows the link, to say what it points to.
@@ -407,7 +421,7 @@ fn describe(folder: &Path, entry: &FolderEntry) -> DirEntry {
         name,
         kind,
         size,
-        symlink: true,
+        link: EntryLink::SymbolicLink,
     }
 }
 
@@ -426,11 +440,11 @@ mod tests {
         std::fs::write(path, text).unwrap();
     }
 
-    fn names(listing: &DirListing) -> Vec<(&str, EntryKind, Option<u64>, bool)> {
+    fn names(listing: &DirListing) -> Vec<(&str, EntryKind, Option<u64>, EntryLink)> {
         listing
             .entries
             .iter()
-            .map(|entry| (entry.name.as_str(), entry.kind, entry.size, entry.symlink))
+            .map(|entry| (entry.name.as_str(), entry.kind, entry.size, entry.link))
             .collect()
     }
 
@@ -493,16 +507,16 @@ mod tests {
         let listing = layout.list(Path::new("src")).unwrap();
 
         assert_eq!(listing.path, layout.agent.join("src"));
-        assert!(!listing.truncated);
+        assert_eq!(listing.completeness, Completeness::Complete);
         assert_eq!(
             names(&listing),
             [
-                ("linked", EntryKind::Folder, None, true),
-                ("tests", EntryKind::Folder, None, false),
-                ("A.md", EntryKind::File, Some(4), false),
-                ("b.txt", EntryKind::File, Some(3), false),
-                ("broken", EntryKind::Other, None, true),
-                ("main.rs", EntryKind::File, Some(13), false),
+                ("linked", EntryKind::Folder, None, EntryLink::SymbolicLink),
+                ("tests", EntryKind::Folder, None, EntryLink::Direct),
+                ("A.md", EntryKind::File, Some(4), EntryLink::Direct),
+                ("b.txt", EntryKind::File, Some(3), EntryLink::Direct),
+                ("broken", EntryKind::Other, None, EntryLink::SymbolicLink),
+                ("main.rs", EntryKind::File, Some(13), EntryLink::Direct),
             ]
         );
     }
@@ -513,7 +527,10 @@ mod tests {
 
         let feature = layout.list(&layout.feature.join("src")).unwrap();
 
-        assert_eq!(names(&feature), [("app", EntryKind::Folder, None, false)]);
+        assert_eq!(
+            names(&feature),
+            [("app", EntryKind::Folder, None, EntryLink::Direct)]
+        );
         assert_outside(layout.list(&layout.untouched));
         // A file the agent read on its own opens, but its folder does not list.
         assert_outside(layout.list(&layout.loose));
@@ -547,7 +564,7 @@ mod tests {
         assert_eq!(through_link.path, layout.agent.join("feature_src"));
         assert_eq!(
             names(&through_link),
-            [("app", EntryKind::Folder, None, false)]
+            [("app", EntryKind::Folder, None, EntryLink::Direct)]
         );
         assert_outside(layout.list(Path::new("escape")));
         assert_outside(layout.list(Path::new("escape/src")));
@@ -565,7 +582,7 @@ mod tests {
         let listing = layout.list(Path::new("many")).unwrap();
 
         assert_eq!(listing.entries.len(), MAX_ENTRIES);
-        assert!(listing.truncated);
+        assert_eq!(listing.completeness, Completeness::Truncated);
         assert_eq!(
             listing.entries.first().map(|entry| entry.name.as_str()),
             Some("file-00000.txt")
@@ -589,15 +606,15 @@ mod tests {
         let listing = list_folders(&root).unwrap();
 
         assert_eq!(listing.path, root);
-        assert!(!listing.truncated);
+        assert_eq!(listing.completeness, Completeness::Complete);
         assert_eq!(
             names(&listing),
             [
-                (".config", EntryKind::Folder, None, false),
-                ("Alpha", EntryKind::Folder, None, false),
-                ("beta", EntryKind::Folder, None, false),
-                ("elsewhere", EntryKind::Folder, None, false),
-                ("linked", EntryKind::Folder, None, true),
+                (".config", EntryKind::Folder, None, EntryLink::Direct),
+                ("Alpha", EntryKind::Folder, None, EntryLink::Direct),
+                ("beta", EntryKind::Folder, None, EntryLink::Direct),
+                ("elsewhere", EntryKind::Folder, None, EntryLink::Direct),
+                ("linked", EntryKind::Folder, None, EntryLink::SymbolicLink),
             ]
         );
         let through_link = list_folders(&root.join("linked")).unwrap();
@@ -614,7 +631,10 @@ mod tests {
 
         let listing = list_folders(&root).unwrap();
 
-        assert_eq!(names(&listing), [("cafe", EntryKind::Folder, None, false)]);
+        assert_eq!(
+            names(&listing),
+            [("cafe", EntryKind::Folder, None, EntryLink::Direct)]
+        );
     }
 
     #[test]
@@ -656,7 +676,7 @@ mod tests {
         let listing = list_folders(&root).unwrap();
 
         assert_eq!(listing.entries.len(), MAX_ENTRIES);
-        assert!(listing.truncated);
+        assert_eq!(listing.completeness, Completeness::Truncated);
         assert_eq!(
             listing.entries.first().map(|entry| entry.name.as_str()),
             Some("folder-00000")
@@ -675,7 +695,7 @@ mod tests {
         let listing = list_folders(&root).unwrap();
 
         assert!(listing.entries.is_empty());
-        assert!(listing.truncated);
+        assert_eq!(listing.completeness, Completeness::Truncated);
     }
 
     #[tokio::test]
@@ -726,14 +746,14 @@ mod tests {
         let through_slash = layout.list(Path::new("src/tests")).unwrap();
 
         assert_eq!(listing.path, layout.agent.join("SRC"));
-        assert!(!listing.truncated);
+        assert_eq!(listing.completeness, Completeness::Complete);
         assert_eq!(
             names(&listing),
             [
-                ("tests", EntryKind::Folder, None, false),
-                ("A.md", EntryKind::File, Some(4), false),
-                ("b.txt", EntryKind::File, Some(3), false),
-                ("main.rs", EntryKind::File, Some(13), false),
+                ("tests", EntryKind::Folder, None, EntryLink::Direct),
+                ("A.md", EntryKind::File, Some(4), EntryLink::Direct),
+                ("b.txt", EntryKind::File, Some(3), EntryLink::Direct),
+                ("main.rs", EntryKind::File, Some(13), EntryLink::Direct),
             ]
         );
         assert!(through_slash.entries.is_empty());
@@ -800,9 +820,9 @@ mod tests {
         assert_eq!(
             names(&listing),
             [
-                (".config", EntryKind::Folder, None, false),
-                ("Alpha", EntryKind::Folder, None, false),
-                ("beta", EntryKind::Folder, None, false),
+                (".config", EntryKind::Folder, None, EntryLink::Direct),
+                ("Alpha", EntryKind::Folder, None, EntryLink::Direct),
+                ("beta", EntryKind::Folder, None, EntryLink::Direct),
             ],
             "a name that is not text was made: {made_broken}"
         );

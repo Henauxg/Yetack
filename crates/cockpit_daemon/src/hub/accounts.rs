@@ -6,11 +6,11 @@ use std::path::PathBuf;
 use claude_protocol::RateLimitInfo;
 use cockpit_protocol::{
     Account, AccountAddParams, AccountChangeParams, AccountId, AccountPlanUsage, AccountState,
-    AgentId, ErrorBody, ErrorCode, Event, ResponseBody,
+    AgentId, CredentialSource, EnvironmentApiKey, ErrorBody, ErrorCode, Event, ResponseBody,
 };
 
 use crate::accounts::{
-    API_KEY_ENV, AccountList, SignInShell, account_state, environment_has_api_key, login_written,
+    API_KEY_ENV, AccountList, SignInShell, account_state, environment_api_key, login_written,
     sign_in_command,
 };
 use crate::daemon_config::HOME_ENV;
@@ -113,7 +113,7 @@ impl Hub {
             reply,
             Ok(ResponseBody::Accounts {
                 accounts,
-                environment_api_key: environment_has_api_key(),
+                environment_api_key: environment_api_key(),
             }),
         );
     }
@@ -206,7 +206,9 @@ impl Hub {
         };
         let command = sign_in_command(&account, SignInShell::CURRENT);
         let name = &account.name;
-        if account.use_environment_api_key && environment_has_api_key() {
+        if account.credentials == CredentialSource::EnvironmentApiKey
+            && environment_api_key() == EnvironmentApiKey::Set
+        {
             return format!(
                 "Claude Code refused the API key in the daemon's {API_KEY_ENV}, which the account {name} uses. Check the key, or stop the account from using it and run this command in a terminal on the daemon's machine to sign in: {command}"
             );

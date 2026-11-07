@@ -67,6 +67,29 @@ mod tests {
   "prompt_cache_ttl_minutes": 5,
   "accounts": {
     "default_name": "Personal",
+    "default_credentials": "environment_api_key",
+    "added": [
+      {
+        "id": 2,
+        "name": "Work",
+        "folder": "/home/sam/.claude-work",
+        "credentials": "sign_in"
+      }
+    ],
+    "next_account": 4
+  }
+}
+"#;
+
+    /// `SETTINGS_JSON` as older daemons write it, with a `bool` for each account's credentials.
+    const BOOL_CREDENTIALS_JSON: &str = r#"{
+  "hidden_mcp_servers": [
+    "notes",
+    "tracker"
+  ],
+  "prompt_cache_ttl_minutes": 5,
+  "accounts": {
+    "default_name": "Personal",
     "default_uses_environment_api_key": true,
     "added": [
       {
@@ -134,6 +157,17 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("settings.json");
         std::fs::write(&path, SETTINGS_JSON).unwrap();
+
+        let settings = DaemonSettings::load(&path).unwrap();
+
+        assert_eq!(settings, sample());
+    }
+
+    #[test]
+    fn reads_credentials_saved_as_a_bool() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("settings.json");
+        std::fs::write(&path, BOOL_CREDENTIALS_JSON).unwrap();
 
         let settings = DaemonSettings::load(&path).unwrap();
 

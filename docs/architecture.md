@@ -77,7 +77,7 @@ Each id is a newtype ([standards/rust/api_design.md](standards/rust/api_design.m
 ### Agents
 
 `AgentSummary` is what the sidebar and the header need:
-id, title, folder, status, activity line, pending count, model, effort, permission mode, task progress, context percentage, prompt cache expiry, turns, API-equivalent cost, start time, last activity time, running turn's start time, position in the list, account, and whether it waits for its account's sign-in.
+id, title, folder, status, activity line, pending count, model, effort, permission mode, task progress, context percentage, prompt cache expiry, turns, API-equivalent cost, start time, last activity time, running turn's start time, position in the list, account, and whether it waits for its account's sign-in (`sign_in_wait`).
 
 The two times let the app count the time on a sidebar row by itself, so the daemon sends no event to move a clock:
 
@@ -108,7 +108,7 @@ The list's order belongs to the user, and the daemon keeps it, so every client a
 | status | when |
 | --- | --- |
 | `Working` | from a prompt until the turn's `result` |
-| `NeedsYou` | an approval, a question or a plan waits for an answer, or the agent's account needs a sign-in (`waits_for_sign_in`) |
+| `NeedsYou` | an approval, a question or a plan waits for an answer, or the agent's account needs a sign-in (`sign_in_wait` is `waiting`) |
 | `Idle` | after `result`, nothing pending |
 | `Exited` | the `claude` process ended |
 
@@ -118,14 +118,14 @@ An agent's conversation is a list of `TranscriptItem`s, each with an `ItemId` an
 The daemon numbers items in transcript order, so the app can merge a history page with live appends by id.
 The kinds of item:
 
-- `UserMessage` (text, attached images), with `queued` while the agent works; a slash command shows as typed, such as `/review fix`, not as Claude Code's `command-name` wrapper;
+- `UserMessage` (text, attached images), with `delivery`: `queued` while the agent works, else `delivered`; a slash command shows as typed, such as `/review fix`, not as Claude Code's `command-name` wrapper;
 - `AssistantText` (markdown) and `Thinking` (folded in the app);
 - `ToolCall`: tool name, summary, input, status (running, done, failed), output, and for `Edit` and `Write` the file path with the old and new text (both left empty when either is over 1 MiB);
 - `Subagent`: a tool call whose own items carry it as `parent` (from `parent_tool_use_id`);
 - `Approval`: tool, input (with the diff for an edit), reason, its answer state, and the item of its tool call (from the request's `tool_use_id`, which Claude Code sends after the call's `tool_use`);
 - `Question`: the `AskUserQuestion` questions and options, and its answer state;
 - `Plan`: the `ExitPlanMode` plan text, and its answer state (a decision, with an optional message when Claude should keep planning);
-- `TurnEnd`: duration, usage and cost of the turn, and whether the user stopped it (`stopped`, from the `result` line's `terminal_reason`), or the error that ended it, and whether that error is a missing login (`not_signed_in`);
+- `TurnEnd`: duration, usage and cost of the turn, its `outcome`, and for a failed turn the error that ended it. The outcome is `completed`, `stopped` (the user stopped it, from the `result` line's `terminal_reason`), `failed`, or `not_signed_in` (the error is a missing login);
 - `Notice`: a line such as "Conversation compacted" or "Conversation cleared" (a `conversation_reset` line, after which Claude Code's total cost counts from 0 again), a local command's output such as `/effort`'s, or a message Claude Code writes itself (a user line whose `origin` is not `human`), such as its summary of a background task that ended.
   Context Claude Code adds for Claude (a user line marked `isSynthetic`) becomes a notice whose `detail` holds its text, which the app shows folded: "Skill instructions: /loop" after a `Skill` call that loaded it, "Conversation summary" after a compaction, else "Context added by Claude Code".
 
@@ -150,7 +150,7 @@ It belongs to an account, not to an agent: the daemon keeps one per account, fro
 
 ### Accounts
 
-An `Account` is a Claude Code config folder the daemon runs agents with: its id, a name the user chooses, the folder (absolute, on the daemon's machine), and `use_environment_api_key`.
+An `Account` is a Claude Code config folder the daemon runs agents with: its id, a name the user chooses, the folder (absolute, on the daemon's machine), and `credentials`: `sign_in` (the folder's login) or `environment_api_key` (the daemon's own key).
 The folder holds the account's login, user settings, `.claude.json` (the account, personal MCP servers, per-project trust), `projects/` (session transcripts), skills, agents, commands, plugins and global `CLAUDE.md`.
 A repository's own `.claude/`, `.mcp.json` and `CLAUDE.md` stay shared between accounts.
 
@@ -158,6 +158,7 @@ A repository's own `.claude/`, `.mcp.json` and `CLAUDE.md` stay shared between a
   Every daemon has it, and it cannot be removed. Its name starts as "Default", and the user can change it.
 - Every agent has one account, chosen at `agent.start` or `sessions.resume` (the default one when the request names none), and keeps it for good: across stops, resumes and daemon restarts.
 - A message from before accounts existed reads as the default account: an agent's summary, a past session, `agents.json`, a start or resume request (serde defaults).
+- `settings.json` and the event logs of older daemons hold `use_environment_api_key` and `default_uses_environment_api_key`, `bool`s, in place of `credentials` and `default_credentials`. They still read, as `environment_api_key` for `true`.
 
 ## Protocol (`cockpit_protocol`)
 
@@ -169,6 +170,7 @@ A reader refuses a line longer than a fixed maximum (16 MiB) instead of bufferin
 ### Session
 
 1. The client sends `Hello { protocol_version, last_seq }`.
+   The version is 2. An app and a daemon of different versions refuse each other.
 2. The daemon answers `Welcome { protocol_version, catchup }`, or `Refused { reason }` when the versions differ.
 3. `catchup` is `Replay` when `last_seq` was given and the logs still hold every event after it: the daemon then sends those events, then live events.
    Otherwise it is `Snapshot(snapshot)`: the client replaces its state with it, and live events follow.
@@ -181,7 +183,7 @@ Transcripts are not in the snapshot: the app asks for an agent's transcript with
 
 ### Requests
 
-`agent.start`, `agent.prompt`, `agent.cancel_queued`, `agent.answer` (approval, question or plan), `agent.interrupt`, `agent.stop`, `agent.resume`, `agent.remove` (an exited agent), `agent.close` (any agent), `agent.history`, `agent.details`, `agent.set_model`, `agent.set_effort`, `agent.set_mode`, `agent.rename`, `agent.move` (the agent goes just above `before`, or to the bottom when `before` is `null`), `agent.context_usage`, `agent.stop_task`, `agent.mcp_status`, `agent.mcp_reconnect`, `agent.mcp_toggle`, `agent.commands` (slash commands and skills), `agent.read_file` (the file view), `agent.list_dir` and `agent.find_files` (the "Open file" dialog), `agent.stop_process` (one of the agent's commands), `mcp.remove` (with the agent, whose folder decides the project and local scopes), `settings.set`, `sessions.list`, `sessions.resume`, `folders.list` (the new agent dialog's folder field), `machine.load` (see [Machine load](#machine-load)), `accounts.list`, `accounts.add`, `accounts.change`, `accounts.remove` (see [Accounts](#accounts-1)).
+`agent.start`, `agent.prompt`, `agent.cancel_queued`, `agent.answer` (approval, question or plan), `agent.interrupt`, `agent.stop`, `agent.resume`, `agent.remove` (an exited agent), `agent.close` (any agent), `agent.history`, `agent.details`, `agent.set_model`, `agent.set_effort`, `agent.set_mode`, `agent.rename`, `agent.move` (the agent goes just above `before`, or to the bottom when `before` is `null`), `agent.context_usage`, `agent.stop_task`, `agent.mcp_status`, `agent.mcp_reconnect`, `agent.mcp_toggle` (`action`: `enable` or `disable`), `agent.commands` (slash commands and skills), `agent.read_file` (the file view), `agent.list_dir` and `agent.find_files` (the "Open file" dialog), `agent.stop_process` (one of the agent's commands), `mcp.remove` (with the agent, whose folder decides the project and local scopes), `settings.set`, `sessions.list`, `sessions.resume`, `folders.list` (the new agent dialog's folder field), `machine.load` (see [Machine load](#machine-load)), `accounts.list`, `accounts.add`, `accounts.change`, `accounts.remove` (see [Accounts](#accounts-1)).
 
 `agent.close` ends an agent whatever its process does, in one request.
 `agent.stop` then `agent.remove` would not do it: `remove` refuses an agent whose process still runs, and the process exits some time after `stop` closes its stdin.
@@ -202,7 +204,7 @@ On Windows, a folder's entries come from `GetFileInformationByHandleEx` on the o
 - `folders.list` takes a share, since the user types it.
 
 - `agent.read_file` sends a text file of at most 4 MiB. A relative path that names no file in the agent's folder is looked up: the most recent file the agent read or changed whose path ends with it, then a `git ls-files` search of the folders above, which stops at 20 matches or 3 seconds. Several matches come back as `FileMatches`, for the user to pick.
-- `agent.list_dir` answers a folder's entries, folders first, each with its kind (folder, file or other), a file's size, and whether it is a symbolic link. It reads at most 20,000 entries and sends at most 2,000, and says when it cut the list. It runs off the hub's task.
+- `agent.list_dir` answers a folder's entries, folders first, each with its kind (folder, file or other), a file's size, and whether it is a symbolic link (`link`: `direct` or `symbolic_link`). It reads at most 20,000 entries and sends at most 2,000, and says when it cut the list (`completeness`: `complete` or `truncated`). It runs off the hub's task.
 - `agent.find_files` answers the files whose name holds a text, whatever its case, from the same bounded search.
 
 `folders.list` answers the folders inside a folder, for the new agent dialog, as a `Directory` that holds folders alone.
@@ -213,7 +215,8 @@ It leaves out a folder whose name is not UTF-8: the protocol carries paths as te
 A symbolic link to a folder counts as a folder, and a hidden folder lists as any other.
 It runs off the hub's task.
 
-A history page is limited by bytes as well as by count: images travel inline, and a line over the framing maximum is refused.
+A history page says whether older items exist (`older_items`: `exist` or `none`).
+It is limited by bytes as well as by count: images travel inline, and a line over the framing maximum is refused.
 An item too large for any response comes as a `Notice` that says so, under the item's id, so paging moves on.
 
 Titles and model names go into every snapshot, so the daemon refuses a title over 200 characters and a model name over 100 with `invalid_request`.
@@ -279,7 +282,7 @@ The hub turns Claude Code messages into transcript items and status changes (mod
 - Environment: the daemon's own, except for what the agent's account changes (module `accounts`):
   - `CLAUDE_CONFIG_DIR` is set to the account's folder, except for the default account, whose `claude` gets the daemon's own variable, set or not.
   - `CLAUDE_CODE_OAUTH_TOKEN` is always removed: it would take the place of any folder's login.
-  - `ANTHROPIC_API_KEY` is removed, unless the account has `use_environment_api_key`: then it passes as the daemon's environment has it.
+  - `ANTHROPIC_API_KEY` is removed, unless the account's `credentials` are `environment_api_key`: then it passes as the daemon's environment has it.
   The daemon never reads either value. It only checks whether `ANTHROPIC_API_KEY` is set, for `accounts.list`.
   `claude mcp remove` gets the same environment, so it edits the agent's account's user scope.
 - Command: `claude --output-format stream-json --input-format stream-json --verbose --permission-prompt-tool stdio --replay-user-messages`, plus `--resume <session>`, `--model`, `--effort`, `--permission-mode` when set.
@@ -298,7 +301,7 @@ The hub turns Claude Code messages into transcript items and status changes (mod
 - First message: the `initialize` control request.
   Its answer lists the slash commands and skills.
   The daemon then asks for the MCP status and the context usage, which Claude Code answers before the first prompt, so a new or resumed agent shows them at once.
-- An agent given no effort runs at the one Claude Code applies by itself. The daemon asks for it with `get_settings` once `initialize` is answered, and again after a model change, and the summary shows its `applied.effort` with `effort_is_default`.
+- An agent given no effort runs at the one Claude Code applies by itself. The daemon asks for it with `get_settings` once `initialize` is answered, and again after a model change, and the summary shows its `applied.effort` with `effort_source` set to `claude_code_default`.
   Claude Code resolves it: the local, then the project settings file of the folder it runs in, else the model's default. The user's own `effortLevel` counts only for some models, so the daemon does not read the files itself.
 - A prompt goes to stdin as a `user` message, never as an argument: other users can read arguments with `ps`.
 - Claude Code asks for approvals with `can_use_tool` control requests.
@@ -323,7 +326,7 @@ Everything lives in `$XDG_STATE_HOME/agents-cockpit/` (default `~/.local/state/a
 - `agents-cockpit.sock`: the socket, mode 600;
 - `serve.lock`: held while a daemon runs, the background service or the app's own, so a second daemon refuses to start and a leftover socket is safe to delete;
 - `agents.json`: one entry per agent (id, title, folder, account, Claude session id, model, effort, mode, position in the list, for an agent made from a past session the part of the session file it shows, and while its `claude` runs, that process's id and start time), written atomically (write to a temporary file, then rename);
-- `settings.json`: the hidden MCP servers, the accounts (the default account's name and API key choice, the added accounts, the next account id), and other daemon-side settings;
+- `settings.json`: the hidden MCP servers, the accounts (the default account's name and credentials, the added accounts, the next account id), and other daemon-side settings;
 - `events/<agent-id>.jsonl`: the agent's cockpit events, each with its `Seq`, appended;
 - `raw/<agent-id>.jsonl`: every line exchanged with `claude`, for debugging.
 
@@ -332,6 +335,13 @@ It creates each folder with mode 700 and each file with mode 600.
 The socket gets mode 600 right after the bind; until then, the 700 folder keeps other users away from it.
 
 On start the daemon reads `agents.json`, finds the last `Seq` in the logs, and resumes each agent that was running with `--resume`.
+
+The event logs of an older daemon hold a `bool` in place of some enums, and still read:
+
+- a turn end's `stopped` and `not_signed_in` give its `outcome`. Without them, a turn end with an error reads as `failed`, and one without as `completed`;
+- a user message's `queued` gives its `delivery`, and a question's `multi_select` its `selection`;
+- an account's `use_environment_api_key` gives its `credentials`;
+- a summary's `waits_for_sign_in` and `effort_is_default` are left out: the summary reads `not_waiting` and `chosen`.
 
 A daemon that dies without stopping its agents (a forced kill, a crash, no memory left) leaves each `claude` running: its stdin closed, so it exits by itself, but once its turn ends, with its builds still running.
 A daemon that resumed the session meanwhile would run two `claude` on one session.
@@ -363,8 +373,8 @@ A Unix without `/proc`, such as macOS, records nothing.
 
 The daemon keeps the accounts in `settings.json`, outside the `Settings` that `settings.set` replaces, so an app that predates accounts cannot erase them.
 
-- `accounts.list` answers every account, the default one first, with whether it is signed in, the command that signs in to it, and whether the daemon's environment has `ANTHROPIC_API_KEY`.
-- `accounts.add` takes a name and, optionally, a folder and `use_environment_api_key`.
+- `accounts.list` answers every account, the default one first, with whether it is signed in, the command that signs in to it, and whether the daemon's environment has `ANTHROPIC_API_KEY` (`environment_api_key`: `set` or `unset`).
+- `accounts.add` takes a name and, optionally, a folder and `credentials` (`sign_in` when missing).
   The name has each run of whitespace made one space and is trimmed.
   It holds no control character, has at most 60 characters, and is no other account's whatever its case.
   A given folder must be absolute, hold no `..` and no control character, and be no other account's, the default one's included, whatever its case on Windows and macOS: the default folder without `CLAUDE_CONFIG_DIR` keeps `.claude.json` in the home folder, and on macOS its Keychain entry, so the same folder named in the variable would be another login.
@@ -372,7 +382,7 @@ The daemon keeps the accounts in `settings.json`, outside the `Settings` that `s
   A number is added when another account has that folder (`.claude-client-work-2`).
   Without an absolute home folder, the daemon proposes none, and the request must name the folder.
   The daemon does not create the folder: `claude` does when the user signs in.
-- `accounts.change` renames an account or changes `use_environment_api_key`, for the default account too. The folder does not change. An agent gets the new key choice at its next start.
+- `accounts.change` renames an account or changes its `credentials`, for the default account too. The folder does not change. An agent gets the new key choice at its next start.
 - `accounts.remove` refuses the default account (`invalid_request`) and an account any agent uses, running or not (`account_in_use`). It leaves the folder as it is.
 - Ids are never reused, so a removed account's id never names another one.
 
@@ -389,16 +399,16 @@ Whether an account is signed in (`SignIn`): the daemon checks only that `.creden
 
 An account can use an API key in two ways, neither of which passes a key through the cockpit:
 
-1. `use_environment_api_key`: the account's agents get the daemon's own `ANTHROPIC_API_KEY`, set where the daemon starts (the systemd unit, or the environment the app starts in).
+1. `credentials` set to `environment_api_key`: the account's agents get the daemon's own `ANTHROPIC_API_KEY`, set where the daemon starts (the systemd unit, or the environment the app starts in).
 2. The folder itself: signing in to it with an Anthropic Console account (API billing), or an `apiKeyHelper` in the folder's `settings.json`, needs nothing from the daemon.
 
 An agent of an account without a valid login starts as any other: `claude` answers `initialize`, and `system/init` says nothing about the login.
 Its first prompt fails: Claude Code writes an assistant line from `<synthetic>` whose `error` is `authentication_failed` (a word of the Agent SDK's types), with a text such as "Not logged in · Please run /login", then a `result` with `is_error`.
 The daemon leaves out that text, which names a command the cockpit has no place for, and adds a notice once per turn: "The account Work is not signed in, or its login expired. Run this command in a terminal on the daemon's machine to sign in, then send your message again: `<command>`".
 For an account that uses the daemon's API key, while the daemon has one, the notice says the key was refused instead.
-The turn ends with the error "The account is not signed in", and its `TurnEnd` has `not_signed_in`.
+The turn ends with the error "The account is not signed in", and its `TurnEnd` has the outcome `not_signed_in`.
 
-The agent then needs you: its summary has `waits_for_sign_in`, and its status is `NeedsYou` with no pending request, so the app raises a notification and the "Needs you" filter shows it.
+The agent then needs you: its summary's `sign_in_wait` is `waiting`, and its status is `NeedsYou` with no pending request, so the app raises a notification and the "Needs you" filter shows it.
 It waits until one of these:
 
 - A message goes to `claude`: its turn starts, and it fails again if the account still has no login.
@@ -412,12 +422,7 @@ A repository the account has not trusted yet: Claude Code turns trust verificati
 With a new config folder, a repository's `.mcp.json` server connects at once, and `.claude.json` records no trust for the folder.
 Choosing the folder in the app is what trusts it, for every account: the app asks nothing more (plan.md, "Security").
 
-What an app that predates accounts sees:
-
-- the default account's plan usage, as before, from the snapshot's `plan_usage` and from `PlanUsageChanged`, which keeps its shape;
-- nothing of the other accounts: it skips `AccountPlanUsageChanged` and `AccountsChanged` as events it cannot decode (with a warning in its log), and ignores the new fields of the snapshot, the summaries and the past sessions;
-- every past session, of every account; resuming one of another account's fails with `not_found`, since its request names no account;
-- its new agents run with the default account.
+An app that predates accounts speaks protocol version 1, and the daemon refuses it (see [Session](#session)).
 
 ### Subagents for the agent map
 

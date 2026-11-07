@@ -21,12 +21,14 @@ use cockpit_protocol::{
     Account, AccountAddParams, AccountId, AccountParams, AccountPlanUsage, AccountState, AgentId,
     AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState, Approval,
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, CancelQueuedParams, Catchup,
-    ClaudeSessionId, CommandKind, CostUsd, Effort, ErrorCode, Event, EventRecord, HistoryParams,
-    ItemBody, ItemId, McpRemoveParams, McpScope, McpServerParams, McpServerStatus, McpToggleParams,
+    ClaudeSessionId, CommandKind, CostUsd, CredentialSource, Delivery, Effort, EffortSource,
+    EnvironmentApiKey, ErrorCode, Event, EventRecord, HistoryParams, ItemBody, ItemId,
+    McpRemoveParams, McpScope, McpServerParams, McpServerStatus, McpToggleAction, McpToggleParams,
     MoveParams, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, PlanUsage, ProcessId,
     Prompt, PromptParams, Question, QuestionAnswer, ReadFileParams, RenameParams, Request,
     ResponseBody, Seq, SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams,
-    Settings, SignIn, StartParams, StopProcessParams, StopTaskParams, TranscriptItem, UsageWindow,
+    Settings, SignIn, SignInWait, StartParams, StopProcessParams, StopTaskParams, TranscriptItem,
+    TurnOutcome, UsageWindow,
 };
 use rustix::process::{Pid, Signal};
 use serde_json::{Value, json};
@@ -413,11 +415,16 @@ impl Client {
             .await
     }
 
-    async fn add_account(&self, name: &str, folder: Option<&Path>, api_key: bool) -> AccountState {
+    async fn add_account(
+        &self,
+        name: &str,
+        folder: Option<&Path>,
+        credentials: CredentialSource,
+    ) -> AccountState {
         let params = AccountAddParams {
             name: name.to_owned(),
             folder: folder.map(Path::to_owned),
-            use_environment_api_key: api_key,
+            credentials,
         };
         match self.ok(Request::AccountsAdd(params)).await {
             ResponseBody::Account(state) => state,
@@ -588,14 +595,18 @@ async fn an_agent_without_an_effort_shows_the_one_claude_code_applies() {
         .await;
 
     assert_eq!(
-        (applied.effort, applied.effort_is_default),
-        (Some(Effort::Medium), true)
+        (applied.effort, applied.effort_source),
+        (Some(Effort::Medium), EffortSource::ClaudeCodeDefault)
     );
-    assert!(other_model.effort_is_default, "the new model's default");
-    assert!(!given.effort_is_default);
     assert_eq!(
-        (started.effort, started.effort_is_default),
-        (Some(Effort::Xhigh), false)
+        other_model.effort_source,
+        EffortSource::ClaudeCodeDefault,
+        "the new model's default"
+    );
+    assert_eq!(given.effort_source, EffortSource::Chosen);
+    assert_eq!(
+        (started.effort, started.effort_source),
+        (Some(Effort::Xhigh), EffortSource::Chosen)
     );
 }
 
@@ -616,7 +627,7 @@ async fn a_model_typed_in_the_composer_shows_its_own_default_effort() {
 
     assert_eq!(applied.effort, Some(Effort::Medium));
     assert_eq!(changed.model.as_deref(), Some("other-model"));
-    assert!(changed.effort_is_default);
+    assert_eq!(changed.effort_source, EffortSource::ClaudeCodeDefault);
 }
 
 #[tokio::test]
@@ -647,10 +658,13 @@ async fn a_stopped_agent_given_another_model_shows_no_effort_until_it_starts() {
         .summary_with(agent, |summary| summary.effort.is_some())
         .await;
 
-    assert_eq!((stopped.effort, stopped.effort_is_default), (None, false));
     assert_eq!(
-        (resumed.effort, resumed.effort_is_default),
-        (Some(Effort::Low), true)
+        (stopped.effort, stopped.effort_source),
+        (None, EffortSource::Chosen)
+    );
+    assert_eq!(
+        (resumed.effort, resumed.effort_source),
+        (Some(Effort::Low), EffortSource::ClaudeCodeDefault)
     );
 }
 
@@ -686,14 +700,16 @@ async fn an_effort_typed_in_the_composer_is_kept_as_if_set_from_the_menu() {
     let mut client = setup.connect().await;
     let agent = client.start(&setup.work(), "first").await;
     client
-        .summary_with(agent, |summary| summary.effort_is_default)
+        .summary_with(agent, |summary| {
+            summary.effort_source == EffortSource::ClaudeCodeDefault
+        })
         .await;
 
     client.prompt(agent, "/effort turbo").await;
     client.prompt(agent, "/effort high").await;
     let typed = client
         .summary_with(agent, |summary| {
-            summary.effort.is_some() && !summary.effort_is_default
+            summary.effort.is_some() && summary.effort_source == EffortSource::Chosen
         })
         .await;
     client.idle(agent).await;
@@ -739,7 +755,7 @@ async fn a_model_typed_in_the_composer_is_kept_by_a_resume() {
         launches[1].contains(&"--model=other-model".to_owned()),
         "{launches:?}"
     );
-    assert!(resumed.effort_is_default);
+    assert_eq!(resumed.effort_source, EffortSource::ClaudeCodeDefault);
 }
 
 #[tokio::test]
@@ -1044,7 +1060,8 @@ async fn an_interrupt_cancels_what_waits_and_queued_prompts_follow() {
         .item_with(agent, |body| {
             matches!(
                 body,
-                ItemBody::UserMessage(message) if message.queued && message.text == "hello queued"
+                ItemBody::UserMessage(message)
+                    if message.delivery == Delivery::Queued && message.text == "hello queued"
             )
         })
         .await;
@@ -1090,13 +1107,14 @@ async fn an_interrupt_cancels_what_waits_and_queued_prompts_follow() {
     let ItemBody::TurnEnd(end) = end.body else {
         panic!("expected a turn end");
     };
-    assert!(end.stopped);
+    assert_eq!(end.outcome, TurnOutcome::Stopped);
     assert_eq!(end.error, None);
     let sent = client
         .item_with(agent, |body| {
             matches!(
                 body,
-                ItemBody::UserMessage(message) if !message.queued && message.text == "hello queued"
+                ItemBody::UserMessage(message)
+                    if message.delivery == Delivery::Delivered && message.text == "hello queued"
             )
         })
         .await;
@@ -1529,7 +1547,7 @@ async fn malformed_requests_get_an_error_and_the_connection_stays() {
     };
 
     write
-        .write_all(b"{\"type\":\"hello\",\"protocol_version\":1,\"last_seq\":null}\n")
+        .write_all(b"{\"type\":\"hello\",\"protocol_version\":2,\"last_seq\":null}\n")
         .await
         .unwrap();
     assert_eq!(next_line().await["type"], "welcome");
@@ -1613,14 +1631,17 @@ async fn files_settings_sessions_and_agent_settings() {
     };
     assert_eq!(servers[0].name, "notes");
     assert!(servers[0].tools[0].read_only);
-    let mcp_server = |enabled| {
+    let mcp_server = |action| {
         Request::AgentMcpToggle(McpToggleParams {
             agent,
             server: "notes".to_owned(),
-            enabled,
+            action,
         })
     };
-    assert_eq!(client.ok(mcp_server(false)).await, ResponseBody::Done);
+    assert_eq!(
+        client.ok(mcp_server(McpToggleAction::Disable)).await,
+        ResponseBody::Done
+    );
     let reconnect = Request::AgentMcpReconnect(McpServerParams {
         agent,
         server: "notes".to_owned(),
@@ -1794,9 +1815,15 @@ async fn each_accounts_claude_gets_its_folder_and_only_the_login_it_may_use() {
     let mut client = setup.connect().await;
     let keyed_folder = setup.temp.path().join("claude-keyed");
     let plain_folder = setup.temp.path().join("claude-plain");
-    let keyed = client.add_account("Keyed", Some(&keyed_folder), true).await;
+    let keyed = client
+        .add_account(
+            "Keyed",
+            Some(&keyed_folder),
+            CredentialSource::EnvironmentApiKey,
+        )
+        .await;
     let plain = client
-        .add_account("Plain", Some(&plain_folder), false)
+        .add_account("Plain", Some(&plain_folder), CredentialSource::SignIn)
         .await;
 
     for account in [AccountId::DEFAULT, keyed.account.id, plain.account.id] {
@@ -1824,7 +1851,7 @@ async fn each_accounts_claude_gets_its_folder_and_only_the_login_it_may_use() {
     else {
         panic!("expected the accounts");
     };
-    assert!(environment_api_key);
+    assert_eq!(environment_api_key, EnvironmentApiKey::Set);
 }
 
 /// `claude mcp remove` edits the user scope of the agent's account, without the daemon's logins.
@@ -1840,7 +1867,9 @@ async fn removing_an_mcp_server_runs_claude_with_the_agents_account() {
     );
     let mut client = setup.connect().await;
     let folder = setup.temp.path().join("claude-work");
-    let work = client.add_account("Work", Some(&folder), false).await;
+    let work = client
+        .add_account("Work", Some(&folder), CredentialSource::SignIn)
+        .await;
     let agent = client
         .start_with(&setup.work(), "hello", work.account.id)
         .await;
@@ -1878,7 +1907,9 @@ async fn the_default_account_runs_without_the_variable_and_a_new_one_signs_in_be
     let before = client.accounts().await;
     std::fs::write(setup.default_folder().join(".credentials.json"), "{}").unwrap();
     let after = client.accounts().await;
-    let added = client.add_account("Client Work", None, false).await;
+    let added = client
+        .add_account("Client Work", None, CredentialSource::SignIn)
+        .await;
 
     let envs = setup.wait_for_envs(1);
     assert_eq!(envs[0]["CLAUDE_CONFIG_DIR"], Value::Null);
@@ -1904,7 +1935,7 @@ async fn an_agent_keeps_its_account_through_a_stop_a_resume_and_a_restart() {
     let mut client = setup.connect().await;
     let folder = setup.temp.path().join("claude-work");
     let work = client
-        .add_account("Work", Some(&folder), false)
+        .add_account("Work", Some(&folder), CredentialSource::SignIn)
         .await
         .account;
     let agent = client.start_with(&setup.work(), "hello", work.id).await;
@@ -1941,7 +1972,7 @@ async fn plan_usage_is_kept_per_account() {
     let mut client = setup.connect().await;
     let folder = setup.temp.path().join("claude-work");
     let work = client
-        .add_account("Work", Some(&folder), false)
+        .add_account("Work", Some(&folder), CredentialSource::SignIn)
         .await
         .account;
     let five_hour = |usage: &PlanUsage| usage.windows.get(&UsageWindow::FiveHour)?.utilization;
@@ -1986,7 +2017,7 @@ async fn past_sessions_list_and_resume_with_their_account() {
     let mut client = setup.connect().await;
     let folder = setup.temp.path().join("claude-work");
     let work = client
-        .add_account("Work", Some(&folder), false)
+        .add_account("Work", Some(&folder), CredentialSource::SignIn)
         .await
         .account;
     write_session(
@@ -2038,7 +2069,7 @@ async fn an_account_an_agent_uses_cannot_be_removed() {
     let mut client = setup.connect().await;
     let folder = setup.temp.path().join("claude-work");
     let work = client
-        .add_account("Work", Some(&folder), false)
+        .add_account("Work", Some(&folder), CredentialSource::SignIn)
         .await
         .account;
     let agent = client.start_with(&setup.work(), "hello", work.id).await;
@@ -2066,7 +2097,9 @@ async fn an_account_without_a_login_says_how_to_sign_in() {
     let setup = Setup::new();
     let mut client = setup.connect().await;
     let folder = setup.temp.path().join("claude-work");
-    let work = client.add_account("Work", Some(&folder), false).await;
+    let work = client
+        .add_account("Work", Some(&folder), CredentialSource::SignIn)
+        .await;
     let agent = client
         .start_with(&setup.work(), "nologin", work.account.id)
         .await;
@@ -2087,7 +2120,7 @@ async fn an_account_without_a_login_says_how_to_sign_in() {
         panic!("expected a turn end");
     };
     assert_eq!(end.error.as_deref(), Some("The account is not signed in"));
-    assert!(end.not_signed_in);
+    assert_eq!(end.outcome, TurnOutcome::NotSignedIn);
     let items = client.history(agent).await;
     assert!(
         !items.iter().any(|item| matches!(
@@ -2103,7 +2136,9 @@ async fn an_agent_without_a_login_needs_you_until_its_account_signs_in() {
     let setup = Setup::new();
     let mut client = setup.connect().await;
     let folder = setup.temp.path().join("claude-work");
-    let work = client.add_account("Work", Some(&folder), false).await;
+    let work = client
+        .add_account("Work", Some(&folder), CredentialSource::SignIn)
+        .await;
     let agent = client
         .start_with(&setup.work(), "nologin", work.account.id)
         .await;
@@ -2113,7 +2148,9 @@ async fn an_agent_without_a_login_needs_you_until_its_account_signs_in() {
     };
 
     let waiting = client
-        .wait_for(|event| waits(event).filter(|summary| summary.waits_for_sign_in))
+        .wait_for(|event| {
+            waits(event).filter(|summary| summary.sign_in_wait == SignInWait::Waiting)
+        })
         .await;
     // Still waiting: the folder holds no login yet.
     client.ok(Request::AccountsList).await;
@@ -2123,7 +2160,9 @@ async fn an_agent_without_a_login_needs_you_until_its_account_signs_in() {
     std::fs::write(folder.join(".credentials.json"), "{}").unwrap();
     client.ok(Request::AccountsList).await;
     let signed_in = client
-        .wait_for(|event| waits(event).filter(|summary| !summary.waits_for_sign_in))
+        .wait_for(|event| {
+            waits(event).filter(|summary| summary.sign_in_wait == SignInWait::NotWaiting)
+        })
         .await;
 
     assert_eq!(waiting.status, AgentStatus::NeedsYou);

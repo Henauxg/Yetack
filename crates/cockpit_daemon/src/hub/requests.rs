@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use claude_protocol::{ControlRequest, TaskId};
 use cockpit_protocol::{
     AgentId, ErrorBody, ErrorCode, Event, FindFilesParams, FoldersListParams, HistoryParams,
-    ListDirParams, McpRemoveParams, ReadFileParams, Request, ResponseBody, SessionResumeParams,
-    Settings, StopProcessParams,
+    ListDirParams, McpRemoveParams, McpToggleAction, ReadFileParams, Request, ResponseBody,
+    SessionResumeParams, Settings, StopProcessParams,
 };
 
 use crate::accounts::ClaudeEnv;
@@ -90,7 +90,7 @@ impl Hub {
                 params.agent,
                 ControlRequest::McpToggle {
                     server_name: params.server,
-                    enabled: params.enabled,
+                    enabled: params.action == McpToggleAction::Enable,
                 },
                 ControlPurpose::McpChanged(reply),
             ),

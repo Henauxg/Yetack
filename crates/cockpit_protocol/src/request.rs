@@ -9,6 +9,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 use strum::{Display, EnumString, IntoStaticStr, VariantArray};
 
+use crate::account::CredentialSource;
 use crate::agent::{Effort, PermissionMode};
 use crate::details::McpScope;
 use crate::ids::{
@@ -343,7 +344,14 @@ pub struct McpServerParams {
 pub struct McpToggleParams {
     pub agent: AgentId,
     pub server: String,
-    pub enabled: bool,
+    pub action: McpToggleAction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, VariantArray)]
+#[serde(rename_all = "snake_case")]
+pub enum McpToggleAction {
+    Enable,
+    Disable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -401,8 +409,9 @@ pub struct AccountAddParams {
     /// Absolute, on the daemon's machine, and no other account's. `None` takes the one the daemon
     /// proposes: `.claude-<name>` in the home folder, with the name made safe for a folder name.
     pub folder: Option<PathBuf>,
+    /// `SignIn` when missing.
     #[serde(default)]
-    pub use_environment_api_key: bool,
+    pub credentials: CredentialSource,
 }
 
 /// `None` leaves that setting as it is.
@@ -410,7 +419,7 @@ pub struct AccountAddParams {
 pub struct AccountChangeParams {
     pub account: AccountId,
     pub name: Option<String>,
-    pub use_environment_api_key: Option<bool>,
+    pub credentials: Option<CredentialSource>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

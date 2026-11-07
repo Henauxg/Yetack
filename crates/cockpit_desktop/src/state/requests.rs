@@ -554,10 +554,10 @@ mod tests {
     use std::time::Instant;
 
     use cockpit_client::SessionUpdate;
-    use cockpit_protocol::Catchup;
     use cockpit_protocol::{
         AgentStatus, DirListing, ErrorBody, ErrorCode, HistoryPage, ItemBody, TranscriptItem,
     };
+    use cockpit_protocol::{Catchup, Completeness, OlderItems};
 
     use super::*;
     use crate::state::app_state::ConnectionState;
@@ -615,7 +615,7 @@ mod tests {
             let listing = DirListing {
                 path: PathBuf::from(folder),
                 entries: Vec::new(),
-                truncated: false,
+                completeness: Completeness::Complete,
             };
             apply_response(
                 state,
@@ -673,7 +673,7 @@ mod tests {
             let listing = DirListing {
                 path: PathBuf::from(folder),
                 entries: Vec::new(),
-                truncated: false,
+                completeness: Completeness::Complete,
             };
             apply_response(
                 state,
@@ -780,7 +780,7 @@ mod tests {
                     detail: None,
                 },
             }],
-            has_older: false,
+            older_items: OlderItems::None,
         };
 
         apply_response(

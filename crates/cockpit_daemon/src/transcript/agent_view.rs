@@ -16,9 +16,10 @@ use claude_protocol::{
 use cockpit_protocol::{
     AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, Answer, AnswerState, Approval,
     BackgroundTask, BackgroundTaskId, BackgroundTaskStatus, ClaudeSessionId, ContextUsage, CostUsd,
-    Effort, Event, Image, ItemBody, ItemId, McpServer, PendingId, PermissionMode, Plan, Position,
-    Prompt, Question, SubagentRun, SubagentStatus, SubagentToolCall, Timestamp, TokenUsage,
-    ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, UserMessage,
+    Delivery, Effort, EffortSource, Event, Image, ItemBody, ItemId, McpServer, PendingId,
+    PermissionMode, Plan, Position, Prompt, Question, SignInWait, SubagentRun, SubagentStatus,
+    SubagentToolCall, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
+    TurnOutcome, UserMessage,
 };
 use serde_json::{Map, Value};
 use strum::{EnumString, IntoStaticStr, VariantArray};
@@ -274,7 +275,7 @@ impl AgentView {
             pending_count: 0,
             model: None,
             effort: None,
-            effort_is_default: false,
+            effort_source: EffortSource::Chosen,
             mode: PermissionMode::Default,
             task_progress: None,
             context_percent: None,
@@ -287,7 +288,7 @@ impl AgentView {
             session: None,
             position: Position::default(),
             account: AccountId::DEFAULT,
-            waits_for_sign_in: false,
+            sign_in_wait: SignInWait::NotWaiting,
         };
         Self::new(summary, Duration::ZERO)
     }
@@ -456,16 +457,19 @@ impl AgentView {
         delivery: PromptDelivery,
         now: Timestamp,
     ) -> ItemId {
-        let queued = delivery == PromptDelivery::Queued;
+        let message_delivery = match delivery {
+            PromptDelivery::Now => Delivery::Delivered,
+            PromptDelivery::Queued => Delivery::Queued,
+        };
         let item = self.push_item(
             None,
             ItemBody::UserMessage(UserMessage {
                 text: prompt.text.clone(),
                 images: prompt.images.clone(),
-                queued,
+                delivery: message_delivery,
             }),
         );
-        if !queued {
+        if delivery == PromptDelivery::Now {
             self.expect_echo(prompt.text.clone());
             self.start_turn(now);
         }
@@ -478,7 +482,7 @@ impl AgentView {
         if let Some(found) = self.item_mut(item)
             && let ItemBody::UserMessage(message) = &mut found.body
         {
-            message.queued = false;
+            message.delivery = Delivery::Delivered;
             sent_text = Some(message.text.clone());
         }
         if let Some(text) = sent_text {
@@ -597,10 +601,10 @@ impl AgentView {
             .sign_in_failed_at
             .or(self.summary.last_activity_at)
             .is_none_or(|failed| failed < modified);
-        if !self.summary.waits_for_sign_in || !failed_before {
+        if self.summary.sign_in_wait != SignInWait::Waiting || !failed_before {
             return false;
         }
-        self.summary.waits_for_sign_in = false;
+        self.summary.sign_in_wait = SignInWait::NotWaiting;
         true
     }
 
@@ -697,14 +701,18 @@ impl AgentView {
 
     pub(crate) fn set_effort(&mut self, effort: Effort) {
         self.summary.effort = Some(effort);
-        self.summary.effort_is_default = false;
+        self.summary.effort_source = EffortSource::Chosen;
     }
 
     /// The effort Claude Code applies by itself to an agent that was given none, from its
     /// settings or the model's default; `None` when it applies none, or does not say.
     pub(crate) fn set_default_effort(&mut self, effort: Option<Effort>) {
         self.summary.effort = effort;
-        self.summary.effort_is_default = effort.is_some();
+        self.summary.effort_source = if effort.is_some() {
+            EffortSource::ClaudeCodeDefault
+        } else {
+            EffortSource::Chosen
+        };
     }
 
     pub(crate) fn set_title(&mut self, title: String) {
@@ -1132,8 +1140,21 @@ impl AgentView {
         } else {
             turn_error(result, interrupted)
         };
+        let outcome = if interrupted {
+            TurnOutcome::Stopped
+        } else if not_signed_in {
+            TurnOutcome::NotSignedIn
+        } else if error.is_some() {
+            TurnOutcome::Failed
+        } else {
+            TurnOutcome::Completed
+        };
         self.sign_in_failed = false;
-        self.summary.waits_for_sign_in = not_signed_in;
+        self.summary.sign_in_wait = if not_signed_in {
+            SignInWait::Waiting
+        } else {
+            SignInWait::NotWaiting
+        };
         self.sign_in_failed_at = not_signed_in.then_some(now);
         let ended = Ended {
             status: ended_status,
@@ -1159,9 +1180,8 @@ impl AgentView {
                 duration: result.duration.unwrap_or_default(),
                 cost: CostUsd::new(turn_cost),
                 usage: token_usage(result.usage),
+                outcome,
                 error,
-                stopped: interrupted,
-                not_signed_in,
             }),
         );
     }
@@ -1503,7 +1523,7 @@ impl AgentView {
     /// A prompt went to `claude`: a new turn starts now, even when the last one had not ended.
     fn start_turn(&mut self, now: Timestamp) {
         self.working = true;
-        self.summary.waits_for_sign_in = false;
+        self.summary.sign_in_wait = SignInWait::NotWaiting;
         self.summary.turn_started_at = Some(now);
         self.summary.last_activity_at = Some(now);
     }
@@ -1526,7 +1546,7 @@ impl AgentView {
         self.summary.pending_count = u16::try_from(pending).unwrap_or(u16::MAX);
         self.summary.status = if self.exited {
             AgentStatus::Exited
-        } else if pending > 0 || self.summary.waits_for_sign_in {
+        } else if pending > 0 || self.summary.sign_in_wait == SignInWait::Waiting {
             AgentStatus::NeedsYou
         } else if self.working {
             AgentStatus::Working
@@ -1564,7 +1584,7 @@ fn user_message(text: String, images: Vec<Image>) -> ItemBody {
     ItemBody::UserMessage(UserMessage {
         text,
         images,
-        queued: false,
+        delivery: Delivery::Delivered,
     })
 }
 
@@ -1604,7 +1624,10 @@ fn is_unfinished(body: &ItemBody) -> bool {
             }) | ItemBody::Plan(Plan {
                 answer: AnswerState::Waiting,
                 ..
-            }) | ItemBody::UserMessage(UserMessage { queued: true, .. })
+            }) | ItemBody::UserMessage(UserMessage {
+                delivery: Delivery::Queued,
+                ..
+            })
         )
 }
 
@@ -1699,7 +1722,7 @@ mod tests {
             pending_count: 0,
             model: None,
             effort: None,
-            effort_is_default: false,
+            effort_source: EffortSource::Chosen,
             mode: PermissionMode::Default,
             task_progress: None,
             context_percent: None,
@@ -1712,7 +1735,7 @@ mod tests {
             session: None,
             position: Position::default(),
             account: AccountId::DEFAULT,
-            waits_for_sign_in: false,
+            sign_in_wait: SignInWait::NotWaiting,
         };
         let mut view = AgentView::new(summary, Duration::from_secs(3600));
         view.mark_published();
@@ -1830,9 +1853,8 @@ mod tests {
                         cache_creation: 30,
                         cache_read: 40,
                     },
+                    outcome: TurnOutcome::Completed,
                     error: None,
-                    stopped: false,
-                    not_signed_in: false,
                 }),
             ]
         );
@@ -2245,7 +2267,7 @@ mod tests {
         let [end] = ends.as_slice() else {
             panic!("expected one turn end, got {ends:?}");
         };
-        assert!(end.stopped);
+        assert_eq!(end.outcome, TurnOutcome::Stopped);
         assert_eq!(end.error, None);
         assert_eq!(view.summary().status, AgentStatus::Idle);
         assert_eq!(view.summary().pending_count, 0);
@@ -2268,7 +2290,7 @@ mod tests {
         let Some(ItemBody::TurnEnd(end)) = view.items().last().map(|item| &item.body) else {
             panic!("expected a turn end");
         };
-        assert!(!end.stopped);
+        assert_eq!(end.outcome, TurnOutcome::Failed);
         assert_eq!(
             end.error.as_deref(),
             Some("Reached the maximum number of turns")
@@ -2353,11 +2375,13 @@ mod tests {
         let new_login = view.account_signed_in(later);
         view.take_events();
 
-        assert!(waiting.waits_for_sign_in);
+        assert_eq!(waiting.sign_in_wait, SignInWait::Waiting);
         assert_eq!(waiting.status, AgentStatus::NeedsYou);
         assert_eq!(waiting.pending_count, 0);
-        assert!(matches!(ended, Some(ItemBody::TurnEnd(end)) if end.not_signed_in));
-        assert!(!after_message.waits_for_sign_in);
+        assert!(
+            matches!(ended, Some(ItemBody::TurnEnd(end)) if end.outcome == TurnOutcome::NotSignedIn)
+        );
+        assert_eq!(after_message.sign_in_wait, SignInWait::NotWaiting);
         assert_eq!(after_message.status, AgentStatus::Working);
         assert!(!stale_login);
         assert!(new_login);
@@ -2392,7 +2416,7 @@ mod tests {
         view.take_events();
 
         assert!(ended);
-        assert!(!view.summary().waits_for_sign_in);
+        assert_eq!(view.summary().sign_in_wait, SignInWait::NotWaiting);
         assert_eq!(view.summary().status, AgentStatus::Idle);
     }
 
@@ -2803,7 +2827,7 @@ mod tests {
         let ItemBody::UserMessage(message) = &view.items()[1].body else {
             panic!("expected a user message");
         };
-        assert!(message.queued);
+        assert_eq!(message.delivery, Delivery::Queued);
         apply(&mut view, result(0.1));
         view.prompt_sent(queued, now());
         apply(&mut view, echo("Second"));
@@ -2812,7 +2836,7 @@ mod tests {
         let ItemBody::UserMessage(message) = &view.items()[1].body else {
             panic!("expected a user message");
         };
-        assert!(!message.queued);
+        assert_eq!(message.delivery, Delivery::Delivered);
         let users = view
             .items()
             .iter()
@@ -3248,15 +3272,18 @@ mod tests {
         let mut view = view();
 
         view.set_default_effort(Some(Effort::Medium));
-        let default = (view.summary().effort, view.summary().effort_is_default);
+        let default = (view.summary().effort, view.summary().effort_source);
         view.set_effort(Effort::High);
-        let given = (view.summary().effort, view.summary().effort_is_default);
+        let given = (view.summary().effort, view.summary().effort_source);
         view.set_default_effort(None);
-        let unknown = (view.summary().effort, view.summary().effort_is_default);
+        let unknown = (view.summary().effort, view.summary().effort_source);
 
-        assert_eq!(default, (Some(Effort::Medium), true));
-        assert_eq!(given, (Some(Effort::High), false));
-        assert_eq!(unknown, (None, false));
+        assert_eq!(
+            default,
+            (Some(Effort::Medium), EffortSource::ClaudeCodeDefault)
+        );
+        assert_eq!(given, (Some(Effort::High), EffortSource::Chosen));
+        assert_eq!(unknown, (None, EffortSource::Chosen));
     }
 
     fn synthetic(text: &str) -> Value {

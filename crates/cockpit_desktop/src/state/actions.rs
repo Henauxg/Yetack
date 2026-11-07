@@ -9,10 +9,11 @@ use cockpit_client::RequestError;
 use cockpit_protocol::{
     AccountId, AgentId, AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState,
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, CancelQueuedParams, ClaudeSessionId,
-    Effort, Image, ItemBody, ItemId, McpRemoveParams, McpScope, McpServerParams, McpToggleParams,
-    MoveParams, PastSession, PendingId, PermissionMode, Placed, PlanAnswer, PlanDecision, Prompt,
-    PromptParams, Question, QuestionAnswer, RenameParams, Request, SessionResumeParams,
-    SetEffortParams, SetModeParams, SetModelParams, SlashCommand, StartParams, StopTaskParams,
+    Effort, EffortSource, Image, ItemBody, ItemId, McpRemoveParams, McpScope, McpServerParams,
+    McpToggleAction, McpToggleParams, MoveParams, PastSession, PendingId, PermissionMode, Placed,
+    PlanAnswer, PlanDecision, Prompt, PromptParams, Question, QuestionAnswer, RenameParams,
+    Request, Selection, SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams,
+    SlashCommand, StartParams, StopTaskParams,
 };
 use strum::VariantArray;
 
@@ -1115,11 +1116,7 @@ fn question_draft<'drafts>(
 /// Picks an option. In a single-choice question it replaces the pick, or clears it when picked
 /// again; in a multiple-choice question it toggles.
 pub fn pick_option(drafts: &mut Drafts, question: &Question, asked: usize, option: usize) {
-    let Some(multi_select) = question
-        .questions
-        .get(asked)
-        .map(|asked| asked.multi_select)
-    else {
+    let Some(selection) = question.questions.get(asked).map(|asked| asked.selection) else {
         return;
     };
     let draft = question_draft(drafts, question);
@@ -1129,7 +1126,7 @@ pub fn pick_option(drafts: &mut Drafts, question: &Question, asked: usize, optio
     if picks.remove(&option) {
         return;
     }
-    if !multi_select {
+    if selection == Selection::Single {
         picks.clear();
     }
     picks.insert(option);
@@ -1452,11 +1449,11 @@ pub fn mcp_reconnect(agent: AgentId, server: String) -> Vec<Outgoing> {
     ))]
 }
 
-pub fn mcp_toggle(agent: AgentId, server: String, enabled: bool) -> Vec<Outgoing> {
+pub fn mcp_toggle(agent: AgentId, server: String, action: McpToggleAction) -> Vec<Outgoing> {
     vec![Outgoing::action(Request::AgentMcpToggle(McpToggleParams {
         agent,
         server,
-        enabled,
+        action,
     }))]
 }
 
@@ -1823,7 +1820,7 @@ pub fn open_new_agent(state: &mut AppState, drafts: &mut Drafts) {
         .and_then(format::model_alias)
         .map(str::to_owned);
     let effort = last
-        .filter(|summary| !summary.effort_is_default)
+        .filter(|summary| summary.effort_source == EffortSource::Chosen)
         .and_then(|summary| summary.effort);
     let mode = last
         .map(|summary| summary.mode)
@@ -1978,9 +1975,9 @@ pub fn resume_session(
 mod tests {
     use cockpit_client::RequestError;
     use cockpit_protocol::{
-        AgentDetails, AskedQuestion, ChangedFile, CommandKind, ErrorBody, ErrorCode, HistoryPage,
-        ImageMediaType, Method, Position, QuestionOption, ResponseBody, Timestamp, TranscriptItem,
-        UserMessage,
+        AgentDetails, AskedQuestion, ChangedFile, CommandKind, Delivery, ErrorBody, ErrorCode,
+        HistoryPage, ImageMediaType, Method, OlderItems, Position, QuestionOption, ResponseBody,
+        Timestamp, TranscriptItem, UserMessage,
     };
 
     use super::*;
@@ -2042,7 +2039,7 @@ mod tests {
         }
     }
 
-    fn question(multi_select: bool) -> Question {
+    fn question(selection: Selection) -> Question {
         let options = ["Keep", "Rewrite", "Drop"]
             .into_iter()
             .map(|label| QuestionOption {
@@ -2056,7 +2053,7 @@ mod tests {
                 header: "Fixtures".to_owned(),
                 text: "What should happen to the fixtures?".to_owned(),
                 options,
-                multi_select,
+                selection,
             }],
             answer: AnswerState::Waiting,
         }
@@ -2193,10 +2190,14 @@ mod tests {
             ItemBody::UserMessage(UserMessage {
                 text: "Also the docs".to_owned(),
                 images: Vec::new(),
-                queued: true,
+                delivery: Delivery::Queued,
             }),
         );
-        append(&mut state, 6, ItemBody::Question(question(false)));
+        append(
+            &mut state,
+            6,
+            ItemBody::Question(question(Selection::Single)),
+        );
 
         let last_seen = state.ui.chat_scrolled_up[&agent()];
         let news = new_entries(&state.agents[&agent()], last_seen);
@@ -3016,7 +3017,7 @@ mod tests {
     fn export_copies_the_conversation_and_says_what_it_left_out() {
         let mut state = state(AgentStatus::Idle);
         let mut drafts = Drafts::default();
-        let mut export = |has_older| {
+        let mut export = |older_items| {
             if let Some(entry) = state.agents.get_mut(&agent()) {
                 entry.transcript.merge_page(HistoryPage {
                     items: vec![TranscriptItem {
@@ -3026,7 +3027,7 @@ mod tests {
                             markdown: "Done.".to_owned(),
                         },
                     }],
-                    has_older,
+                    older_items,
                 });
             }
             open_menu(&mut state, &mut drafts, "export");
@@ -3039,8 +3040,8 @@ mod tests {
             (picked, note)
         };
 
-        let (whole, whole_note) = export(false);
-        let (part, part_note) = export(true);
+        let (whole, whole_note) = export(OlderItems::None);
+        let (part, part_note) = export(OlderItems::Exist);
 
         let copied = "# Agent 1\n\n## Claude\n\nDone.\n".to_owned();
         assert_eq!(whole.window, Some(WindowAction::Copy(copied.clone())));
@@ -3425,7 +3426,7 @@ mod tests {
     #[test]
     fn a_single_choice_question_keeps_one_pick() {
         let mut drafts = Drafts::default();
-        let question = question(false);
+        let question = question(Selection::Single);
 
         pick_option(&mut drafts, &question, 0, 0);
         pick_option(&mut drafts, &question, 0, 2);
@@ -3443,7 +3444,7 @@ mod tests {
     #[test]
     fn a_multiple_choice_question_toggles_and_takes_other_text() {
         let mut drafts = Drafts::default();
-        let question = question(true);
+        let question = question(Selection::Multiple);
 
         pick_option(&mut drafts, &question, 0, 0);
         pick_option(&mut drafts, &question, 0, 1);
@@ -3464,7 +3465,7 @@ mod tests {
     fn a_question_is_sent_only_once_answered() {
         let mut state = state(AgentStatus::NeedsYou);
         let mut drafts = Drafts::default();
-        let item = with_question(&mut state, question(false));
+        let item = with_question(&mut state, question(Selection::Single));
 
         assert!(submit_question(&state, &drafts, agent(), item).is_empty());
 
@@ -3493,7 +3494,7 @@ mod tests {
     fn a_number_past_the_options_picks_nothing() {
         let mut state = state(AgentStatus::NeedsYou);
         let mut drafts = Drafts::default();
-        let item = with_question(&mut state, question(false));
+        let item = with_question(&mut state, question(Selection::Single));
 
         pick_by_number(&state, &mut drafts, agent(), item, 9);
 
@@ -4282,7 +4283,7 @@ mod tests {
                         detail: None,
                     },
                 }],
-                has_older: true,
+                older_items: OlderItems::Exist,
             });
         }
 

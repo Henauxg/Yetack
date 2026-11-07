@@ -4,7 +4,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use cockpit_protocol::{
-    AnswerState, HistoryPage, ItemBody, ItemId, PendingId, ToolCallStatus, TranscriptItem,
+    AnswerState, HistoryPage, ItemBody, ItemId, OlderItems, PendingId, ToolCallStatus,
+    TranscriptItem,
 };
 
 /// The most items the app keeps of an agent you are not looking at.
@@ -150,7 +151,7 @@ impl Transcript {
             self.items.entry(item.id).or_insert(item);
         }
         self.history = HistoryState::Loaded {
-            has_older: page.has_older,
+            has_older: page.older_items == OlderItems::Exist,
         };
     }
 
@@ -308,7 +309,7 @@ mod tests {
 
         transcript.merge_page(HistoryPage {
             items: vec![text(3, "three"), text(4, "four"), text(5, "stale five")],
-            has_older: true,
+            older_items: OlderItems::Exist,
         });
 
         assert_eq!(
@@ -327,7 +328,7 @@ mod tests {
         let mut transcript = Transcript::default();
         transcript.merge_page(HistoryPage {
             items: (1..=2_005).map(|id| text(id, "item")).collect(),
-            has_older: false,
+            older_items: OlderItems::None,
         });
 
         transcript.trim(KEPT_ITEMS_AWAY);

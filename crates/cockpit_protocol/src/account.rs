@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use strum::VariantArray;
 
 use crate::ids::AccountId;
+use crate::stored_bool::{FromStoredBool, enum_or_stored_bool};
 
 /// The longest account name the daemon keeps: every snapshot carries the accounts.
 pub const MAX_ACCOUNT_NAME_CHARS: usize = 60;
@@ -45,9 +46,47 @@ pub struct Account {
     /// account's `claude` with `CLAUDE_CONFIG_DIR` set to it, except for the default account,
     /// whose `claude` gets the daemon's own environment.
     pub folder: PathBuf,
-    /// The account's agents get the daemon's own `ANTHROPIC_API_KEY`. Without it, the daemon
-    /// removes that variable, and the agents use the folder's login.
-    pub use_environment_api_key: bool,
+    /// `settings.json` and the event logs of older daemons hold `use_environment_api_key`, a
+    /// `bool`, in its place.
+    #[serde(
+        alias = "use_environment_api_key",
+        deserialize_with = "enum_or_stored_bool"
+    )]
+    pub credentials: CredentialSource,
+}
+
+/// What the account's agents sign in to Claude with.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, VariantArray,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialSource {
+    /// The folder's login. The daemon removes `ANTHROPIC_API_KEY` from the agents' environment.
+    #[default]
+    SignIn,
+    /// The daemon's own `ANTHROPIC_API_KEY`.
+    EnvironmentApiKey,
+}
+
+impl FromStoredBool for CredentialSource {
+    fn from_stored_bool(uses_environment_api_key: bool) -> Self {
+        if uses_environment_api_key {
+            Self::EnvironmentApiKey
+        } else {
+            Self::SignIn
+        }
+    }
+}
+
+/// Whether the daemon's environment has `ANTHROPIC_API_KEY`.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, VariantArray,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentApiKey {
+    Set,
+    #[default]
+    Unset,
 }
 
 /// Whether an account's folder holds a login, as far as the daemon can tell without reading it.

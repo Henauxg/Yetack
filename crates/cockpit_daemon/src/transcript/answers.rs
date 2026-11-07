@@ -3,7 +3,7 @@
 use claude_protocol::{PermissionDecision, QuestionAnswer as ClaudeQuestionAnswer, ToolInput};
 use cockpit_protocol::{
     ApprovalAnswer, ApprovalDecision, AskedQuestion, PermissionMode, PlanAnswer, PlanDecision,
-    QuestionAnswer, QuestionOption,
+    QuestionAnswer, QuestionOption, Selection,
 };
 use serde_json::{Map, Value};
 
@@ -90,7 +90,11 @@ pub(crate) fn asked_questions(input: &ToolInput) -> Option<Vec<AskedQuestion>> {
                     description: option.description.clone(),
                 })
                 .collect(),
-            multi_select: question.multi_select,
+            selection: if question.multi_select {
+                Selection::Multiple
+            } else {
+                Selection::Single
+            },
         })
         .collect();
     Some(questions)
@@ -131,7 +135,7 @@ mod tests {
             header: "Database".to_owned(),
             text: "Which database?".to_owned(),
             options: Vec::new(),
-            multi_select: true,
+            selection: Selection::Multiple,
         }];
         let answers = vec![QuestionAnswer {
             selected: vec!["Postgres".to_owned()],

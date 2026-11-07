@@ -1,7 +1,7 @@
 use std::env;
 use std::path::PathBuf;
 
-use cockpit_protocol::Account;
+use cockpit_protocol::{Account, CredentialSource, EnvironmentApiKey};
 use tokio::process::Command;
 
 use crate::daemon_config::CLAUDE_CONFIG_DIR_ENV;
@@ -32,10 +32,9 @@ impl ClaudeEnv {
     pub(crate) fn new(account: &Account) -> Self {
         Self {
             config_dir: (!account.id.is_default()).then(|| account.folder.clone()),
-            api_key: if account.use_environment_api_key {
-                ApiKey::Keep
-            } else {
-                ApiKey::Remove
+            api_key: match account.credentials {
+                CredentialSource::EnvironmentApiKey => ApiKey::Keep,
+                CredentialSource::SignIn => ApiKey::Remove,
             },
         }
     }
@@ -63,8 +62,12 @@ impl ClaudeEnv {
 }
 
 /// Whether the daemon's environment has `ANTHROPIC_API_KEY`. Its value is never read.
-pub(crate) fn environment_has_api_key() -> bool {
-    env::var_os(API_KEY_ENV).is_some()
+pub(crate) fn environment_api_key() -> EnvironmentApiKey {
+    if env::var_os(API_KEY_ENV).is_some() {
+        EnvironmentApiKey::Set
+    } else {
+        EnvironmentApiKey::Unset
+    }
 }
 
 #[cfg(test)]
@@ -75,12 +78,12 @@ mod tests {
 
     use super::*;
 
-    fn account(id: u32, use_environment_api_key: bool) -> Account {
+    fn account(id: u32, credentials: CredentialSource) -> Account {
         Account {
             id: AccountId::new(id),
             name: "Work".to_owned(),
             folder: PathBuf::from("/home/sam/.claude-work"),
-            use_environment_api_key,
+            credentials,
         }
     }
 
@@ -102,7 +105,7 @@ mod tests {
 
     #[test]
     fn an_added_account_names_its_folder_and_leaves_out_the_daemons_logins() {
-        let env = ClaudeEnv::new(&account(2, false));
+        let env = ClaudeEnv::new(&account(2, CredentialSource::SignIn));
 
         assert_eq!(
             changes(&env),
@@ -119,7 +122,7 @@ mod tests {
 
     #[test]
     fn the_default_account_keeps_the_daemons_folder() {
-        let env = ClaudeEnv::new(&account(0, false));
+        let env = ClaudeEnv::new(&account(0, CredentialSource::SignIn));
 
         assert_eq!(env.config_dir, None);
         assert_eq!(
@@ -133,7 +136,7 @@ mod tests {
 
     #[test]
     fn an_account_that_uses_the_api_key_keeps_it_and_still_loses_the_token() {
-        let env = ClaudeEnv::new(&account(2, true));
+        let env = ClaudeEnv::new(&account(2, CredentialSource::EnvironmentApiKey));
 
         let changes = changes(&env);
 

@@ -1,6 +1,6 @@
 //! Pages of an agent's transcript, newest first, bounded by count and by bytes.
 
-use cockpit_protocol::{HistoryPage, ItemBody, ItemId, MAX_LINE_BYTES, TranscriptItem};
+use cockpit_protocol::{HistoryPage, ItemBody, ItemId, MAX_LINE_BYTES, OlderItems, TranscriptItem};
 
 /// The most items one page holds, whatever the client asks.
 const MAX_PAGE_ITEMS: usize = 500;
@@ -63,7 +63,11 @@ fn page_within(
     page.reverse();
     HistoryPage {
         items: page,
-        has_older: start > 0,
+        older_items: if start > 0 {
+            OlderItems::Exist
+        } else {
+            OlderItems::None
+        },
     }
 }
 
@@ -116,9 +120,18 @@ mod tests {
         let older = page(&items, Some(ItemId::new(4)), 2);
         let oldest = page(&items, Some(ItemId::new(2)), 2);
 
-        assert_eq!((ids(&latest), latest.has_older), (vec![4, 5], true));
-        assert_eq!((ids(&older), older.has_older), (vec![2, 3], true));
-        assert_eq!((ids(&oldest), oldest.has_older), (vec![1], false));
+        assert_eq!(
+            (ids(&latest), latest.older_items),
+            (vec![4, 5], OlderItems::Exist)
+        );
+        assert_eq!(
+            (ids(&older), older.older_items),
+            (vec![2, 3], OlderItems::Exist)
+        );
+        assert_eq!(
+            (ids(&oldest), oldest.older_items),
+            (vec![1], OlderItems::None)
+        );
     }
 
     #[test]
@@ -157,8 +170,14 @@ mod tests {
             panic!("expected a placeholder, got {:?}", large.items);
         };
         assert!(text.contains("too large"), "{text}");
-        assert_eq!((ids(&large), large.has_older), (vec![2], true));
-        assert_eq!((ids(&oldest), oldest.has_older), (vec![1], false));
+        assert_eq!(
+            (ids(&large), large.older_items),
+            (vec![2], OlderItems::Exist)
+        );
+        assert_eq!(
+            (ids(&oldest), oldest.older_items),
+            (vec![1], OlderItems::None)
+        );
     }
 
     /// The envelope's margin holds: a response with the largest item sent as it is still fits.
