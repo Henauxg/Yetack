@@ -555,7 +555,7 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
 - **Log** (module `logging`): the app logs to stderr, at the level `RUST_LOG` sets (`warn` by default).
   A release build on Windows is a GUI program, which opens no console window, and one started from the desktop has no stderr: its log goes to `app.log` in the app's state folder.
   The file rotates by size: once `app.log` would pass 10 MiB, it becomes `app.1.log`, `app.1.log` becomes `app.2.log`, and so on, and the oldest of the 5 files goes (50 MiB at most). A line is never split, and a new run appends to `app.log`, so the rotation carries on across runs. A rotation that fails, as when another program holds a file, leaves the log in the file it has and is tried again 10 MiB later, so no line is lost.
-  An older version's `app.previous.log` becomes `app.1.log`, which is the run before the current `app.log`, unless `app.1.log` exists already: then it is deleted.
+  An older version's `app.previous.log` becomes `app.1.log`, which is the run before the current `app.log`, unless `app.1.log` exists already: then it is deleted. When that file can be neither moved nor deleted, the log still starts, and its first line says why.
 - **Notifications** (module `notifications`): at most one per agent, for an agent that needs you or finished, and a click on one brings the window up and opens its agent.
   On Linux they go through the freedesktop notification service, and a "needs you" one closes once the agent no longer needs you.
   On Windows they are toasts, from notify-rust's Windows backend.

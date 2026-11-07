@@ -40,7 +40,12 @@ pub fn init(environment: &Environment) {
             .and_then(|folder| RotatingLog::open(&folder, MAX_LOG_BYTES, KEPT_FILES).ok())
     };
     match file {
-        Some(file) => logger.with_ansi(false).with_writer(Mutex::new(file)).init(),
+        Some((file, migration)) => {
+            logger.with_ansi(false).with_writer(Mutex::new(file)).init();
+            if let Err(error) = migration {
+                tracing::warn!("cannot move {PREVIOUS_LOG_FILE} to the rotated logs: {error}");
+            }
+        }
         None => logger.init(),
     }
 }
@@ -78,28 +83,22 @@ struct RotatingLog {
 }
 
 impl RotatingLog {
-    /// Appends to the log in `folder`, after an older version's `app.previous.log` becomes the
-    /// oldest file, as the run before the current `app.log`.
-    fn open(folder: &Path, max_bytes: u64, kept: u32) -> io::Result<Self> {
+    /// Appends to the log in `folder`, after an older version's `app.previous.log` becomes
+    /// `app.1.log`, as the run before the current `app.log`. A failed move of that file leaves
+    /// the log working, and comes back as the second value.
+    fn open(folder: &Path, max_bytes: u64, kept: u32) -> io::Result<(Self, io::Result<()>)> {
         std::fs::create_dir_all(folder)?;
-        let previous = folder.join(PREVIOUS_LOG_FILE);
-        if previous.exists() {
-            let first = folder.join(file_name(1));
-            if kept > 1 && !first.exists() {
-                std::fs::rename(&previous, first)?;
-            } else {
-                std::fs::remove_file(&previous)?;
-            }
-        }
+        let migration = migrate_previous_log(folder, kept);
         let file = append(&folder.join(file_name(0)))?;
         let written = file.metadata()?.len();
-        Ok(Self {
+        let log = Self {
             folder: folder.to_owned(),
             file,
             written,
             max_bytes,
             kept,
-        })
+        };
+        Ok((log, migration))
     }
 
     /// Moves each file up one number, the oldest out, and starts `app.log` afresh.
@@ -135,15 +134,29 @@ impl Write for RotatingLog {
             // The log goes on in the file it has, and tries again after as many bytes more.
             self.written = 0;
         }
-        let written = self.file.write(buf)?;
-        self.written = self
-            .written
-            .saturating_add(u64::try_from(written).unwrap_or(u64::MAX));
-        Ok(written)
+        // A short write would let the rest of the line start the next file.
+        self.file.write_all(buf)?;
+        self.written = self.written.saturating_add(size);
+        Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
         self.file.flush()
+    }
+}
+
+/// Moves an older version's `app.previous.log` to `app.1.log`, or deletes it when `app.1.log`
+/// exists already.
+fn migrate_previous_log(folder: &Path, kept: u32) -> io::Result<()> {
+    let previous = folder.join(PREVIOUS_LOG_FILE);
+    if !previous.exists() {
+        return Ok(());
+    }
+    let first = folder.join(file_name(1));
+    if kept > 1 && !first.exists() {
+        std::fs::rename(&previous, first)
+    } else {
+        std::fs::remove_file(&previous)
     }
 }
 
@@ -182,7 +195,7 @@ mod tests {
     fn the_log_rotates_by_size_and_keeps_the_last_files() {
         let temp = tempfile::tempdir().unwrap();
         let folder = temp.path().join(PREFS_FOLDER);
-        let mut log = RotatingLog::open(&folder, 10, 3).unwrap();
+        let (mut log, _) = RotatingLog::open(&folder, 10, 3).unwrap();
 
         for line in ["line 1\n", "line 2\n", "line 3\n", "line 4\n"] {
             log.write_all(line.as_bytes()).unwrap();
@@ -203,10 +216,10 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let folder = temp.path().join(PREFS_FOLDER);
 
-        let mut first = RotatingLog::open(&folder, 20, 5).unwrap();
+        let (mut first, _) = RotatingLog::open(&folder, 20, 5).unwrap();
         first.write_all(b"first run\n").unwrap();
         drop(first);
-        let mut second = RotatingLog::open(&folder, 20, 5).unwrap();
+        let (mut second, _) = RotatingLog::open(&folder, 20, 5).unwrap();
         second.write_all(b"second\n").unwrap();
         second.write_all(b"second again\n").unwrap();
 
@@ -223,7 +236,7 @@ mod tests {
     fn a_line_longer_than_the_limit_is_written_whole() {
         let temp = tempfile::tempdir().unwrap();
         let folder = temp.path().join(PREFS_FOLDER);
-        let mut log = RotatingLog::open(&folder, 4, 2).unwrap();
+        let (mut log, _) = RotatingLog::open(&folder, 4, 2).unwrap();
 
         log.write_all(b"a long line\n").unwrap();
         log.write_all(b"next\n").unwrap();
@@ -245,15 +258,34 @@ mod tests {
         std::fs::write(folder.join(PREVIOUS_LOG_FILE), "two runs ago\n").unwrap();
         std::fs::write(folder.join("app.log"), "last run\n").unwrap();
 
-        let mut log = RotatingLog::open(&folder, 1024, 5).unwrap();
+        let (mut log, migration) = RotatingLog::open(&folder, 1024, 5).unwrap();
         log.write_all(b"this run\n").unwrap();
 
+        assert!(migration.is_ok());
         assert_eq!(
             files(&folder),
             [
                 ("app.1.log".to_owned(), "two runs ago\n".to_owned()),
                 ("app.log".to_owned(), "last run\nthis run\n".to_owned()),
             ]
+        );
+    }
+
+    #[test]
+    fn a_previous_log_that_does_not_go_still_leaves_a_log() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join(PREFS_FOLDER);
+        // A folder in its place cannot be removed as a file.
+        std::fs::create_dir_all(folder.join(PREVIOUS_LOG_FILE)).unwrap();
+        std::fs::write(folder.join("app.1.log"), "two runs ago\n").unwrap();
+
+        let (mut log, migration) = RotatingLog::open(&folder, 1024, 5).unwrap();
+        log.write_all(b"this run\n").unwrap();
+
+        assert!(migration.is_err());
+        assert_eq!(
+            std::fs::read_to_string(folder.join("app.log")).unwrap(),
+            "this run\n"
         );
     }
 }
