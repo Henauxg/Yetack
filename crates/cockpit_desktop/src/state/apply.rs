@@ -66,15 +66,20 @@ pub fn apply_update(
 /// Keeps when the app saw the agent's turn start, for a daemon that does not send its own. A
 /// turn runs while the agent works or waits for an answer. The daemon sends a queued prompt as a
 /// turn ends, so the agent works on without a pause: a turn's end starts the next one, until the
-/// agent idles.
+/// agent idles. An agent that waits only for its account's sign-in runs no turn.
 fn note_turn_start(state: &mut AppState, event: &Event, now: Instant) {
-    let in_turn = |status| matches!(status, AgentStatus::Working | AgentStatus::NeedsYou);
+    let in_turn = |summary: &AgentSummary| {
+        matches!(
+            accounts::turn_status(summary),
+            AgentStatus::Working | AgentStatus::NeedsYou
+        )
+    };
     match event {
         Event::AgentUpdated(summary) => {
             let Some(entry) = state.agents.get_mut(&summary.id) else {
                 return;
             };
-            match (in_turn(entry.summary.status), in_turn(summary.status)) {
+            match (in_turn(&entry.summary), in_turn(summary)) {
                 (false, true) => entry.turn_started = Some(now),
                 (_, false) => entry.turn_started = None,
                 (true, true) => {}
@@ -82,7 +87,7 @@ fn note_turn_start(state: &mut AppState, event: &Event, now: Instant) {
         }
         Event::TranscriptAppended { agent, item } if matches!(item.body, ItemBody::TurnEnd(_)) => {
             if let Some(entry) = state.agents.get_mut(agent)
-                && in_turn(entry.summary.status)
+                && in_turn(&entry.summary)
             {
                 entry.turn_started = Some(now);
             }
@@ -931,6 +936,29 @@ mod tests {
         assert_eq!(change(AgentStatus::Working, later), Some(start));
         assert_eq!(change(AgentStatus::Idle, later), None);
         assert_eq!(change(AgentStatus::Working, later), Some(later));
+    }
+
+    #[test]
+    fn a_wait_for_the_accounts_sign_in_runs_no_turn() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        let agent = AgentId::new(1);
+        let start = Instant::now();
+        let mut waiting = summary(1, AgentStatus::NeedsYou);
+        waiting.waits_for_sign_in = true;
+        let mut update = |summary, now| {
+            apply_update(
+                &mut state,
+                &mut Drafts::default(),
+                SessionUpdate::Event(record(Event::AgentUpdated(summary))),
+                now,
+            );
+            state.agents[&agent].turn_start()
+        };
+
+        update(summary(1, AgentStatus::Working), start);
+        let after_the_failed_turn = update(waiting, start + Duration::from_secs(1));
+
+        assert_eq!(after_the_failed_turn, None);
     }
 
     /// The daemon sends a queued prompt as the turn before it ends: the agent goes on working,
