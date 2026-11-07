@@ -2030,19 +2030,36 @@ fn turn_ends_saved_without_their_outcome_still_load() {
 /// `use_environment_api_key`: `bool`s in place of enums.
 #[test]
 fn fields_saved_as_bools_still_load() {
-    let message = r#"{"type":"user_message","text":"hello","images":[],"queued":true}"#;
-    let question = r#"{"header":"Database","text":"Which one?","options":[],"multi_select":true}"#;
-    let account = r#"{"id":2,"name":"Work","folder":"/home/sam/.claude-work","use_environment_api_key":true}"#;
-
-    let ItemBody::UserMessage(message) = serde_json::from_str::<ItemBody>(message).unwrap() else {
-        panic!("not a user message");
+    let delivery = |queued: bool| {
+        let message =
+            format!(r#"{{"type":"user_message","text":"hello","images":[],"queued":{queued}}}"#);
+        let ItemBody::UserMessage(message) = serde_json::from_str::<ItemBody>(&message).unwrap()
+        else {
+            panic!("not a user message");
+        };
+        message.delivery
     };
-    let question: AskedQuestion = serde_json::from_str(question).unwrap();
-    let account: Account = serde_json::from_str(account).unwrap();
+    let selection = |multi_select: bool| {
+        let question = format!(
+            r#"{{"header":"Database","text":"Which one?","options":[],"multi_select":{multi_select}}}"#
+        );
+        serde_json::from_str::<AskedQuestion>(&question)
+            .unwrap()
+            .selection
+    };
+    let credentials = |uses: bool| {
+        let account = format!(
+            r#"{{"id":2,"name":"Work","folder":"/home/sam/.claude-work","use_environment_api_key":{uses}}}"#
+        );
+        serde_json::from_str::<Account>(&account).unwrap()
+    };
 
-    assert_eq!(message.delivery, Delivery::Queued);
-    assert_eq!(question.selection, Selection::Multiple);
-    assert_eq!(account, work_account());
+    assert_eq!(delivery(true), Delivery::Queued);
+    assert_eq!(delivery(false), Delivery::Delivered);
+    assert_eq!(selection(true), Selection::Multiple);
+    assert_eq!(selection(false), Selection::Single);
+    assert_eq!(credentials(true), work_account());
+    assert_eq!(credentials(false).credentials, CredentialSource::SignIn);
 }
 
 /// Older daemons write `environment_api_key` for an account that takes its credentials from the
