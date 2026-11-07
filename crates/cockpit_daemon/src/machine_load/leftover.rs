@@ -166,12 +166,20 @@ pub(crate) fn stop_leftovers(recorded: &[RecordedProcess]) {
     let open = |pid: ProcessId| {
         let process = OpenedProcess::open(pid, access).ok()?;
         let started = process.times().ok()?.started;
-        (!process.has_ended()).then_some((process, started))
+        let parent = process.parent().ok();
+        (!process.has_ended()).then_some(Opened {
+            process,
+            started,
+            parent,
+        })
     };
     let mut links: Option<Vec<ParentLink>> = None;
     for recorded in recorded {
         // The open handles keep the ids from going to other processes before the stop.
-        let Some((process, started)) = open(recorded.pid) else {
+        let Some(Opened {
+            process, started, ..
+        }) = open(recorded.pid)
+        else {
             continue;
         };
         if started != recorded.started {
@@ -211,6 +219,15 @@ struct ParentLink {
     parent: ProcessId,
 }
 
+/// A process as the walk down the tree opens it.
+#[cfg(any(windows, test))]
+struct Opened<P> {
+    process: P,
+    started: u64,
+    /// The id of the process that started it, as the process itself holds it.
+    parent: Option<ProcessId>,
+}
+
 /// Every process of the machine with its parent.
 #[cfg(windows)]
 fn parent_links() -> std::io::Result<Vec<ParentLink>> {
@@ -247,15 +264,16 @@ fn parent_links() -> std::io::Result<Vec<ParentLink>> {
     Ok(links)
 }
 
-/// The processes under `root`, which started at `root_started`, each as `open` gives it with its
-/// start, at most [`MAX_TREE`]. A process that started before the process its parent id names
-/// is left out: its parent ended, and the id went to that other process.
+/// The processes under `root`, which started at `root_started`, each as `open` gives it, at most
+/// [`MAX_TREE`]. A process that started before the process its parent id names is left out: its
+/// parent ended, and the id went to that other process. So is one whose own parent id is not the
+/// one `links` lists: its id went to it after the snapshot.
 #[cfg(any(windows, test))]
 fn descendants<P>(
     links: &[ParentLink],
     root: ProcessId,
     root_started: u64,
-    mut open: impl FnMut(ProcessId) -> Option<(P, u64)>,
+    mut open: impl FnMut(ProcessId) -> Option<Opened<P>>,
 ) -> Vec<P> {
     use std::collections::{HashSet, VecDeque};
 
@@ -268,14 +286,14 @@ fn descendants<P>(
             if found.len() >= MAX_TREE || !seen.insert(child.pid) {
                 continue;
             }
-            let Some((process, started)) = open(child.pid) else {
+            let Some(opened) = open(child.pid) else {
                 continue;
             };
-            if started < parent_started {
+            if opened.parent != Some(parent) || opened.started < parent_started {
                 continue;
             }
-            parents.push_back((child.pid, started));
-            found.push(process);
+            parents.push_back((child.pid, opened.started));
+            found.push(opened.process);
         }
     }
     found
@@ -292,6 +310,16 @@ mod logic_tests {
             pid: ProcessId::new(pid),
             parent: ProcessId::new(parent),
         }
+    }
+
+    /// `pid` as the walk opens it, with the parent `links` lists, when it runs.
+    fn opened(links: &[ParentLink], pid: ProcessId, started: Option<u64>) -> Option<Opened<u32>> {
+        let parent = links.iter().find(|link| link.pid == pid)?.parent;
+        Some(Opened {
+            process: pid.get(),
+            started: started?,
+            parent: Some(parent),
+        })
     }
 
     #[test]
@@ -316,7 +344,7 @@ mod logic_tests {
             (21, 60),
             (30, 90),
         ]);
-        let open = |pid: ProcessId| started.get(&pid.get()).map(|&time| (pid.get(), time));
+        let open = |pid: ProcessId| opened(&links, pid, started.get(&pid.get()).copied());
 
         let mut tree = descendants(&links, ProcessId::new(10), 100, open);
         tree.sort_unstable();
@@ -336,12 +364,48 @@ mod logic_tests {
     }
 
     #[test]
+    fn a_process_that_got_a_listed_id_after_the_snapshot_is_left_out() {
+        // 11 ended after the snapshot, and a process 77 started got its id, then started 12.
+        let links = [link(10, 1), link(11, 10), link(12, 11)];
+        let open = |pid: ProcessId| {
+            let parent = if pid.get() == 11 { 77 } else { 11 };
+            Some(Opened {
+                process: pid.get(),
+                started: 500,
+                parent: Some(ProcessId::new(parent)),
+            })
+        };
+
+        let tree = descendants(&links, ProcessId::new(10), 100, open);
+
+        assert_eq!(tree, Vec::<u32>::new());
+    }
+
+    #[test]
+    fn a_process_whose_parent_cannot_be_read_is_left_out() {
+        let links = [link(10, 1), link(11, 10)];
+        let open = |pid: ProcessId| {
+            Some(Opened {
+                process: pid.get(),
+                started: 500,
+                parent: None,
+            })
+        };
+
+        let tree = descendants(&links, ProcessId::new(10), 100, open);
+
+        assert_eq!(tree, Vec::<u32>::new());
+    }
+
+    #[test]
     fn a_loop_in_the_links_ends_the_walk() {
         let links = [link(10, 11), link(11, 10)];
 
-        let tree = descendants(&links, ProcessId::new(10), 0, |pid| Some((pid, 1)));
+        let tree = descendants(&links, ProcessId::new(10), 0, |pid| {
+            opened(&links, pid, Some(1))
+        });
 
-        assert_eq!(tree, [ProcessId::new(11)]);
+        assert_eq!(tree, [11]);
     }
 }
 
