@@ -61,7 +61,7 @@ pub struct Prefs {
 #[serde(default)]
 pub struct AccountPrefs {
     /// The colors chosen, by the daemon's machine as the app names it, then by account id.
-    pub colors: BTreeMap<String, BTreeMap<u32, AccountColor>>,
+    pub colors: BTreeMap<String, BTreeMap<AccountId, AccountColor>>,
 }
 
 impl AccountPrefs {
@@ -69,7 +69,7 @@ impl AccountPrefs {
     pub fn color(&self, machine: &str, account: AccountId) -> AccountColor {
         self.colors
             .get(machine)
-            .and_then(|colors| colors.get(&account.get()))
+            .and_then(|colors| colors.get(&account))
             .copied()
             .unwrap_or_else(|| AccountColor::for_id(account))
     }
@@ -78,7 +78,7 @@ impl AccountPrefs {
         self.colors
             .entry(machine.to_owned())
             .or_default()
-            .insert(account.get(), color);
+            .insert(account, color);
     }
 }
 
@@ -427,7 +427,10 @@ mod tests {
                 accounts: AccountPrefs {
                     colors: BTreeMap::from([(
                         "build-box".to_owned(),
-                        BTreeMap::from([(0, AccountColor::Sand), (1, AccountColor::Violet)]),
+                        BTreeMap::from([
+                            (AccountId::DEFAULT, AccountColor::Sand),
+                            (AccountId::new(1), AccountColor::Violet),
+                        ]),
                     )]),
                 },
             }

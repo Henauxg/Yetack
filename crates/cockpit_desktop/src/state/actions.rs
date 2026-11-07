@@ -1852,16 +1852,14 @@ pub fn with_new_agent_form(state: &mut AppState, change: impl FnOnce(&mut NewAge
 }
 
 pub fn start_agent(state: &mut AppState, drafts: &Drafts) -> Vec<Outgoing> {
-    let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog else {
+    let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
         return Vec::new();
     };
     let folder = drafts.new_agent.folder.trim();
     if folder.is_empty() || form.starting || form.tab != NewAgentTab::Start {
         return Vec::new();
     }
-    form.starting = true;
-    let form = form.clone();
-    let account = accounts::new_agent_account(state, &form, folder);
+    let account = accounts::new_agent_account(state, form, folder);
     let prompt = drafts.new_agent.prompt.trim();
     let params = StartParams {
         folder: PathBuf::from(folder),
@@ -1875,6 +1873,7 @@ pub fn start_agent(state: &mut AppState, drafts: &Drafts) -> Vec<Outgoing> {
         }),
         account,
     };
+    with_new_agent_form(state, |form| form.starting = true);
     vec![Outgoing {
         request: Request::AgentStart(params),
         purpose: Purpose::Start,

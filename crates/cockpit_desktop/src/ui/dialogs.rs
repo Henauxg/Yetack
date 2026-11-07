@@ -952,7 +952,7 @@ fn ResumeList(starting: bool) -> Element {
                             onclick: move |_| cockpit.with_drafts(|_, drafts| accounts::set_session_account(drafts, None)),
                             "All"
                         }
-                        for label in filters.clone() {
+                        for label in &filters {
                             {
                                 let id = label.id;
                                 let chosen = account == Some(id);
