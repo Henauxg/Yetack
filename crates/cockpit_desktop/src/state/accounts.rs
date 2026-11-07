@@ -425,14 +425,27 @@ pub fn check_again(state: &mut AppState) {
 }
 
 /// The "Accounts" dialog: which card is open.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AccountsView {
     pub expanded: Option<AccountId>,
+    /// The new agent dialog it was opened from, which closing it goes back to.
+    pub from_new_agent: Option<NewAgentForm>,
 }
 
+/// Opens the "Accounts" dialog. Opened from the new agent dialog, or from "Add an account" that
+/// came from there, it keeps that dialog to go back to.
 pub fn open_accounts(state: &mut AppState, expanded: Option<AccountId>) {
+    let from_new_agent = match state.ui.dialog.take() {
+        Some(Dialog::NewAgent(form)) => Some(NewAgentForm { menu: None, ..form }),
+        Some(Dialog::Accounts(view)) => view.from_new_agent,
+        Some(Dialog::AddAccount(form)) => form.from_new_agent,
+        Some(_) | None => None,
+    };
     state.ui.popover = None;
-    state.ui.dialog = Some(Dialog::Accounts(AccountsView { expanded }));
+    state.ui.dialog = Some(Dialog::Accounts(AccountsView {
+        expanded,
+        from_new_agent,
+    }));
     state.sign_ins.refresh();
 }
 
@@ -524,9 +537,15 @@ pub struct AddAccountForm {
     pub added: Option<AccountId>,
     /// Why the daemon refused the account.
     pub error: Option<String>,
+    /// The new agent dialog that the "Accounts" dialog it came from goes back to.
+    pub from_new_agent: Option<NewAgentForm>,
 }
 
 pub fn open_add_account(state: &mut AppState, drafts: &mut Drafts) {
+    let from_new_agent = match state.ui.dialog.take() {
+        Some(Dialog::Accounts(view)) => view.from_new_agent,
+        Some(_) | None => None,
+    };
     state.ui.popover = None;
     state.ui.dialog = Some(Dialog::AddAccount(AddAccountForm {
         color: free_color(state),
@@ -534,6 +553,7 @@ pub fn open_add_account(state: &mut AppState, drafts: &mut Drafts) {
         adding: false,
         added: None,
         error: None,
+        from_new_agent,
     }));
     drafts.add_account = Default::default();
 }
@@ -722,12 +742,13 @@ mod tests {
     use cockpit_client::RequestError;
     use cockpit_protocol::{
         ClaudeSessionId, CostUsd, Event, EventRecord, HistoryPage, Method, OlderItems, PastSession,
-        RateLimitStatus, Seq, Timestamp, TokenUsage, TurnEnd, WindowUsage,
+        PermissionMode, RateLimitStatus, Seq, Timestamp, TokenUsage, TurnEnd, WindowUsage,
     };
 
     use super::*;
     use crate::state::actions;
     use crate::state::app_state::Loadable;
+    use crate::state::ui_state::FormMenu;
     use crate::state::{state_with, summary};
 
     fn work() -> AccountId {
@@ -1069,7 +1090,8 @@ mod tests {
         assert_eq!(
             state.ui.dialog,
             Some(Dialog::Accounts(AccountsView {
-                expanded: Some(new.id)
+                expanded: Some(new.id),
+                from_new_agent: None,
             }))
         );
     }
@@ -1146,6 +1168,118 @@ mod tests {
         assert_eq!(windows.as_deref(), Some(r"C:\Users\sam\.claude-work-3"));
     }
 
+    /// The new agent dialog with a typed folder and message, a picked account, model and mode,
+    /// and its account menu open, as "Manage accounts" finds it.
+    fn new_agent_dialog(state: &mut AppState, drafts: &mut Drafts) -> NewAgentForm {
+        three_accounts(state);
+        actions::open_new_agent(state, drafts);
+        drafts.new_agent.folder = "/work/app".to_owned();
+        drafts.new_agent.prompt = "Fix the parser".to_owned();
+        pick_new_agent_account(state, lab());
+        actions::with_new_agent_form(state, |form| {
+            form.model = Some("opus".to_owned());
+            form.mode = Some(PermissionMode::AcceptEdits);
+            form.menu = Some(FormMenu::Account);
+        });
+        let Some(Dialog::NewAgent(form)) = state.ui.dialog.clone() else {
+            panic!("expected the new agent dialog");
+        };
+        NewAgentForm { menu: None, ..form }
+    }
+
+    #[test]
+    fn accounts_opened_from_the_new_agent_dialog_go_back_to_it_as_it_was() {
+        let mut state = state_with(Vec::new());
+        let mut drafts = Drafts::default();
+        let form = new_agent_dialog(&mut state, &mut drafts);
+        let typed = drafts.new_agent.clone();
+        let back = Some(Dialog::NewAgent(form.clone()));
+
+        open_accounts(&mut state, None);
+        let held = state.ui.dialog.clone();
+        state.ui.close_dialog();
+        let after_close = state.ui.dialog.clone();
+        open_accounts(&mut state, None);
+        let escaped = state.ui.close_overlays();
+        let after_escape = state.ui.dialog.clone();
+        open_accounts(&mut state, None);
+        open_add_account(&mut state, &mut drafts);
+        close_add_account(&mut state);
+        let after_done = state.ui.dialog.clone();
+        state.ui.close_dialog();
+        let after_done_and_close = state.ui.dialog.clone();
+        open_accounts(&mut state, None);
+        open_add_account(&mut state, &mut drafts);
+        state.ui.close_overlays();
+        let after_add_escape = state.ui.dialog.clone();
+
+        assert_eq!(
+            held,
+            Some(Dialog::Accounts(AccountsView {
+                expanded: None,
+                from_new_agent: Some(form.clone()),
+            }))
+        );
+        assert_eq!(after_close, back);
+        assert!(escaped);
+        assert_eq!(after_escape, back);
+        assert_eq!(
+            after_done,
+            Some(Dialog::Accounts(AccountsView {
+                expanded: None,
+                from_new_agent: Some(form),
+            }))
+        );
+        assert_eq!(after_done_and_close, back);
+        assert_eq!(after_add_escape, back);
+        assert_eq!(drafts.new_agent, typed);
+    }
+
+    #[test]
+    fn accounts_opened_elsewhere_close_to_nothing() {
+        let mut state = state_with(Vec::new());
+        three_accounts(&mut state);
+        let mut drafts = Drafts::default();
+
+        open_accounts(&mut state, Some(work()));
+        state.ui.close_dialog();
+        let after_close = state.ui.dialog.clone();
+        open_accounts(&mut state, None);
+        let escaped = state.ui.close_overlays();
+        let after_escape = state.ui.dialog.clone();
+        open_accounts(&mut state, None);
+        open_add_account(&mut state, &mut drafts);
+        close_add_account(&mut state);
+        state.ui.close_dialog();
+        let after_add = state.ui.dialog.clone();
+
+        assert_eq!(after_close, None);
+        assert!(escaped);
+        assert_eq!(after_escape, None);
+        assert_eq!(after_add, None);
+    }
+
+    #[test]
+    fn the_new_agent_dialog_behind_accounts_follows_its_start() {
+        let mut state = state_with(Vec::new());
+        let mut drafts = Drafts::default();
+        let form = new_agent_dialog(&mut state, &mut drafts);
+        actions::with_new_agent_form(&mut state, |form| form.starting = true);
+
+        open_accounts(&mut state, None);
+        if let Some(form) = state.ui.new_agent_form_mut() {
+            form.starting = false;
+        }
+        state.ui.close_dialog();
+        let after_refusal = state.ui.dialog.clone();
+        open_accounts(&mut state, None);
+        state.ui.new_agent_started();
+        state.ui.close_dialog();
+
+        assert_eq!(after_refusal, Some(Dialog::NewAgent(form)));
+        assert_eq!(state.ui.dialog, None);
+    }
+
     #[test]
     fn the_accounts_dialog_renames_changes_and_removes_only_a_free_account() {
         let mut state = state_with(vec![in_folder(1, "/work/app", work())]);
@@ -1165,13 +1299,11 @@ mod tests {
         assert_eq!(
             opened,
             Some(Dialog::Accounts(AccountsView {
-                expanded: Some(work())
+                expanded: Some(work()),
+                from_new_agent: None,
             }))
         );
-        assert_eq!(
-            closed,
-            Some(Dialog::Accounts(AccountsView { expanded: None }))
-        );
+        assert_eq!(closed, Some(Dialog::Accounts(AccountsView::default())));
         assert_eq!(same_name, []);
         assert_eq!(empty, []);
         assert!(matches!(

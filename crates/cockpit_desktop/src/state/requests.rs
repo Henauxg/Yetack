@@ -402,7 +402,7 @@ pub fn apply_response(
                 }
                 return;
             }
-            if let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog
+            if let Some(form) = state.ui.new_agent_form_mut()
                 && let Some(list) = &mut form.folders
                 && list.folder == folder
             {
@@ -415,12 +415,10 @@ pub fn apply_response(
         Purpose::Start => match result {
             Ok(ResponseBody::AgentStarted { agent }) => {
                 actions::select_agent(state, agent);
-                if matches!(state.ui.dialog, Some(Dialog::NewAgent(_))) {
-                    state.ui.dialog = None;
-                }
+                state.ui.new_agent_started();
             }
             other => {
-                if let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog {
+                if let Some(form) = state.ui.new_agent_form_mut() {
                     form.starting = false;
                 }
                 report(state, method, other);

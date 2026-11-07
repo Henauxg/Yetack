@@ -476,7 +476,7 @@ pub fn AccountsDialog(view: AccountsView) -> Element {
     };
     let single = ids.len() < 2;
     let older_daemon = ids.is_empty();
-    let close = move |_| cockpit.update(|state| state.ui.dialog = None);
+    let close = move |_| cockpit.update(|state| state.ui.close_dialog());
     rsx! {
         div {
             class: "dialog accounts",

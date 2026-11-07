@@ -444,6 +444,50 @@ impl UiState {
         self.mcp.filter = ToolFilter::All;
     }
 
+    /// Closes the dialog. The "Accounts" and "Add an account" dialogs go back to the new agent
+    /// dialog they were opened from, as it was.
+    pub fn close_dialog(&mut self) {
+        self.dialog = match self.dialog.take() {
+            Some(
+                Dialog::Accounts(AccountsView {
+                    from_new_agent: Some(form),
+                    ..
+                })
+                | Dialog::AddAccount(AddAccountForm {
+                    from_new_agent: Some(form),
+                    ..
+                }),
+            ) => Some(Dialog::NewAgent(form)),
+            Some(_) | None => None,
+        };
+    }
+
+    /// The new agent dialog's form: the open dialog's, or the one an "Accounts" dialog goes back
+    /// to, which a daemon's answer may still change.
+    pub fn new_agent_form_mut(&mut self) -> Option<&mut NewAgentForm> {
+        match &mut self.dialog {
+            Some(Dialog::NewAgent(form)) => Some(form),
+            Some(Dialog::Accounts(AccountsView { from_new_agent, .. }))
+            | Some(Dialog::AddAccount(AddAccountForm { from_new_agent, .. })) => {
+                from_new_agent.as_mut()
+            }
+            Some(_) | None => None,
+        }
+    }
+
+    /// The agent the new agent dialog asked for started: the dialog closes, and an "Accounts"
+    /// dialog no longer goes back to it.
+    pub fn new_agent_started(&mut self) {
+        match &mut self.dialog {
+            Some(Dialog::NewAgent(_)) => self.dialog = None,
+            Some(Dialog::Accounts(AccountsView { from_new_agent, .. }))
+            | Some(Dialog::AddAccount(AddAccountForm { from_new_agent, .. })) => {
+                *from_new_agent = None;
+            }
+            Some(_) | None => {}
+        }
+    }
+
     /// Closes every popover and the dialog, or only the start tab's menu or folder list when one
     /// is open, and cancels a title edit. Returns whether anything was open.
     pub fn close_overlays(&mut self) -> bool {
@@ -461,7 +505,7 @@ impl UiState {
             || self.badge.is_some()
             || self.title_edit.is_some();
         self.popover = None;
-        self.dialog = None;
+        self.close_dialog();
         self.badge = None;
         self.title_edit = None;
         open
