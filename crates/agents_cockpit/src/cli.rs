@@ -341,4 +341,43 @@ mod tests {
         assert_eq!(message.as_deref(), Some("Add tests"));
         assert_eq!(cli.target.ssh.as_deref(), Some("build-box"));
     }
+
+    #[test]
+    fn the_credentials_flag_parses_under_its_name_and_its_older_one() {
+        let added = |flag: &str| {
+            let cli = Cli::try_parse_from(["agents-cockpit", "account", "add", "Work", flag]);
+            match cli.unwrap().command {
+                Command::Account {
+                    command:
+                        AccountCommand::Add {
+                            use_environment_credentials,
+                            ..
+                        },
+                } => use_environment_credentials,
+                other => panic!("expected an account to add, got {other:?}"),
+            }
+        };
+        let changed = |flag: &str, value: &str| {
+            let cli =
+                Cli::try_parse_from(["agents-cockpit", "account", "change", "2", flag, value]);
+            match cli.unwrap().command {
+                Command::Account {
+                    command:
+                        AccountCommand::Change {
+                            use_environment_credentials,
+                            ..
+                        },
+                } => use_environment_credentials,
+                other => panic!("expected an account to change, got {other:?}"),
+            }
+        };
+
+        assert!(added("--use-environment-credentials"));
+        assert!(added("--use-environment-api-key"));
+        assert_eq!(
+            changed("--use-environment-credentials", "false"),
+            Some(false)
+        );
+        assert_eq!(changed("--use-environment-api-key", "true"), Some(true));
+    }
 }
