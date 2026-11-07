@@ -332,6 +332,14 @@ pub fn can_send_again(state: &AppState, entry: &AgentEntry, turn: &SignInTurn) -
     signed_in && turn.message.is_some() && entry.sent_again != Some(turn.turn_end)
 }
 
+/// Whether the agent's sign-in card shows, and its "Send the message again" sends.
+pub fn sends_again(state: &AppState, agent: AgentId) -> bool {
+    let Some(entry) = state.agents.get(&agent) else {
+        return false;
+    };
+    sign_in_turn(entry).is_some_and(|turn| can_send_again(state, entry, &turn))
+}
+
 /// Sends the message of the turn that found no login again, once.
 pub fn send_again(state: &mut AppState, agent: AgentId) -> Vec<Outgoing> {
     let Some(entry) = state.agents.get(&agent) else {
@@ -381,16 +389,34 @@ pub fn turn_status(summary: &AgentSummary) -> AgentStatus {
     summary.status
 }
 
-/// The sidebar's line for an agent that waits for its account's sign-in.
-pub fn waiting_line(state: &AppState, entry: &AgentEntry) -> Option<String> {
+/// The sidebar's second line for an agent whose turn found no login.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SignInLine {
+    /// The agent waits for its account's sign-in: "Work is not signed in".
+    NotSignedIn(String),
+    /// The account signed in, and the message waits to go again.
+    SendAgain,
+}
+
+impl SignInLine {
+    pub fn text(&self) -> &str {
+        match self {
+            Self::NotSignedIn(text) => text,
+            Self::SendAgain => "Signed in: send the message again",
+        }
+    }
+}
+
+/// The sidebar's line for an agent whose turn found no login, until its message goes again.
+pub fn sign_in_line(state: &AppState, entry: &AgentEntry) -> Option<SignInLine> {
     if entry.summary.sign_in_wait == SignInWait::NotWaiting {
-        return None;
+        return sends_again(state, entry.id()).then_some(SignInLine::SendAgain);
     }
     let line = match account(state, entry.summary.account) {
         Some(account) => format!("{} is not signed in", account.name),
         None => "Not signed in".to_owned(),
     };
-    Some(line)
+    Some(SignInLine::NotSignedIn(line))
 }
 
 /// How many agents besides `agent` wait for the same account's sign-in.
@@ -1454,12 +1480,14 @@ mod tests {
         });
 
         let card = sign_in_turn(state.agents.get(&AgentId::new(1)).unwrap());
-        let line = waiting_line(&state, state.agents.get(&AgentId::new(1)).unwrap());
+        let line = sign_in_line(&state, state.agents.get(&AgentId::new(1)).unwrap());
         let while_waiting = send_again(&mut state, AgentId::new(1));
         let entry = state.agents.get_mut(&AgentId::new(1)).unwrap();
         entry.summary.sign_in_wait = SignInWait::NotWaiting;
         entry.summary.status = AgentStatus::Idle;
+        let signed_in_line = sign_in_line(&state, state.agents.get(&AgentId::new(1)).unwrap());
         let sent = send_again(&mut state, AgentId::new(1));
+        let sent_line = sign_in_line(&state, state.agents.get(&AgentId::new(1)).unwrap());
         let entry = state.agents.get_mut(&AgentId::new(1)).unwrap();
         entry
             .transcript
@@ -1478,7 +1506,16 @@ mod tests {
                 }),
             })
         );
-        assert_eq!(line.as_deref(), Some("Work is not signed in"));
+        assert_eq!(
+            line,
+            Some(SignInLine::NotSignedIn("Work is not signed in".to_owned()))
+        );
+        assert_eq!(signed_in_line, Some(SignInLine::SendAgain));
+        assert_eq!(
+            signed_in_line.as_ref().map(SignInLine::text),
+            Some("Signed in: send the message again")
+        );
+        assert_eq!(sent_line, None, "the line goes once the message is sent");
         assert_eq!(turn_status(&waiting), AgentStatus::Idle);
         assert_eq!(while_waiting, []);
         assert!(matches!(
@@ -1571,7 +1608,7 @@ mod tests {
             None
         );
         assert_eq!(
-            waiting_line(&state, state.agents.get(&AgentId::new(1)).unwrap()),
+            sign_in_line(&state, state.agents.get(&AgentId::new(1)).unwrap()),
             None
         );
     }

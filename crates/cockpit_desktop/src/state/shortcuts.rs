@@ -4,6 +4,7 @@
 use cockpit_protocol::{AgentId, ApprovalDecision, PlanDecision};
 use serde::Deserialize;
 
+use super::accounts;
 use super::actions::{self, Direction};
 use super::agent_map;
 use super::app_state::{AgentEntry, AppState};
@@ -127,9 +128,22 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
     };
     match press.target {
         KeyTarget::Composer => composer_key(state, drafts, agent, press),
-        KeyTarget::Page if state.ui.dialog.is_none() => card_key(state, drafts, agent, &press.key),
+        KeyTarget::Page if state.ui.dialog.is_none() => page_key(state, drafts, agent, &press.key),
         KeyTarget::Page | KeyTarget::Field => Vec::new(),
     }
+}
+
+/// A key outside text fields: it answers the waiting card, or with nothing waiting, Enter
+/// presses the sign-in card's "Send the message again".
+fn page_key(state: &mut AppState, drafts: &mut Drafts, agent: AgentId, key: &str) -> Vec<Outgoing> {
+    let waits = state
+        .agents
+        .get(&agent)
+        .is_some_and(|entry| entry.transcript.waiting().is_some());
+    if !waits && key == KEY_ENTER {
+        return accounts::send_again(state, agent);
+    }
+    card_key(state, drafts, agent, key)
 }
 
 fn composer_key(
@@ -237,7 +251,7 @@ mod tests {
     use cockpit_protocol::{
         AgentDetails, AgentStatus, Answer, AnswerState, Approval, AskedQuestion, CommandKind,
         ItemBody, ItemId, Method, PendingId, Question, QuestionOption, Request, Selection,
-        SlashCommand, TranscriptItem,
+        SignInWait, SlashCommand, TranscriptItem,
     };
     use serde_json::Value;
 
@@ -997,5 +1011,72 @@ mod tests {
         actions::toggle_switcher(&mut state, &mut drafts);
 
         assert!(handle_key(&mut state, &mut drafts, &press("y", KeyTarget::Page)).is_empty());
+    }
+
+    /// An agent whose turn found no login: its message, then the turn's end.
+    fn sign_in_turn_state(wait: SignInWait) -> AppState {
+        use std::time::Duration;
+
+        use cockpit_protocol::{
+            CostUsd, Delivery, HistoryPage, OlderItems, TokenUsage, TurnEnd, TurnOutcome,
+            UserMessage,
+        };
+
+        let mut state = state(AgentStatus::Idle, None);
+        let entry = state.agents.get_mut(&AgentId::new(1)).unwrap();
+        entry.summary.sign_in_wait = wait;
+        let items = [
+            ItemBody::UserMessage(UserMessage {
+                text: "Export the invoices".to_owned(),
+                images: Vec::new(),
+                delivery: Delivery::Delivered,
+            }),
+            ItemBody::TurnEnd(TurnEnd {
+                duration: Duration::from_millis(900),
+                cost: CostUsd::new(0.0),
+                usage: TokenUsage::default(),
+                outcome: TurnOutcome::NotSignedIn,
+                error: Some("The account is not signed in".to_owned()),
+            }),
+        ];
+        let items = items
+            .into_iter()
+            .zip(10..)
+            .map(|(body, id)| TranscriptItem {
+                id: ItemId::new(id),
+                parent: None,
+                body,
+            });
+        entry.transcript.merge_page(HistoryPage {
+            items: items.collect(),
+            older_items: OlderItems::None,
+        });
+        state
+    }
+
+    #[test]
+    fn enter_outside_text_fields_sends_the_message_again_once_signed_in() {
+        let mut drafts = Drafts::default();
+        let mut waiting = sign_in_turn_state(SignInWait::Waiting);
+        let mut signed_in = sign_in_turn_state(SignInWait::NotWaiting);
+        let mut in_composer = sign_in_turn_state(SignInWait::NotWaiting);
+        let mut in_field = sign_in_turn_state(SignInWait::NotWaiting);
+        let enter = |target| press(KEY_ENTER, target);
+
+        let while_waiting = handle_key(&mut waiting, &mut drafts, &enter(KeyTarget::Page));
+        let sent = handle_key(&mut signed_in, &mut drafts, &enter(KeyTarget::Page));
+        let again = handle_key(&mut signed_in, &mut drafts, &enter(KeyTarget::Page));
+        let from_composer = handle_key(&mut in_composer, &mut drafts, &enter(KeyTarget::Composer));
+        let from_field = handle_key(&mut in_field, &mut drafts, &enter(KeyTarget::Field));
+
+        assert_eq!(while_waiting, []);
+        assert!(matches!(
+            sent.as_slice(),
+            [Outgoing { request: Request::AgentPrompt(params), .. }]
+                if params.prompt.text == "Export the invoices"
+        ));
+        assert_eq!(again, [], "the message goes once");
+        assert_eq!(from_composer, []);
+        assert_eq!(from_field, []);
     }
 }

@@ -9,7 +9,7 @@ use dioxus::prelude::*;
 use crate::bridge::{self, ROW_TITLE_FIELD_ID};
 use crate::connection::{Clock, Cockpit};
 use crate::prefs::StatusFilter;
-use crate::state::accounts::{self, AccountLabel};
+use crate::state::accounts::{self, AccountLabel, SignInLine};
 use crate::state::{AgentEntry, AppState, ConnectionState, TitleEdit, TitlePlace, actions};
 use crate::ui::accounts::{AccountTag, AccountsButton};
 use crate::ui::icons::{Icon, IconKind};
@@ -39,13 +39,13 @@ struct AgentRow {
 impl AgentRow {
     fn new(state: &AppState, entry: &AgentEntry, edit: Option<TitleEdit>) -> Self {
         let summary = &entry.summary;
-        let waiting = accounts::waiting_line(state, entry);
+        let sign_in = accounts::sign_in_line(state, entry);
         Self {
             id: summary.id,
             title: summary.title.clone(),
             status: summary.status,
-            warns: waiting.is_some(),
-            activity: waiting.unwrap_or_else(|| activity_line(entry)),
+            warns: matches!(sign_in, Some(SignInLine::NotSignedIn(_))),
+            activity: sign_in.map_or_else(|| activity_line(entry), |line| line.text().to_owned()),
             pending: summary.pending_count,
             unread: state.is_unread(entry.id()),
             selected: state.ui.selected == Some(entry.id()),

@@ -577,7 +577,8 @@ On Windows, the daemon opens the process, checks with `IsProcessInJob` that it i
   - "Add an account" takes the name, the color, the folder and the API key choice. The folder shows the daemon's proposal, `.claude-<name>` beside the default account's `.claude`, until it is typed in, and goes as none until then. Once the daemon added the account, the dialog shows its sign-in command with Copy, and whether it is signed in.
   - The Plan chip shows the selected agent's account: its dot and its 5-hour figure, "API key", or an amber "?" when it is not signed in. The plan card lists every account, this agent's first.
   - The resume list shows each session's account, with a filter by account beside the search field.
-  - An agent that waits for its account's sign-in shows a card in the chat in place of the turn's notice and end: the sign-in command, the account's state with "Check again", and "Send the message again", which sends the turn's message once the account signed in. While the daemon cannot tell the account's sign-in (`unknown`, a login in the macOS Keychain), the button sends while the agent still waits, since no check would end the wait. Either way, it sends the message once. The composer and Stop treat the agent as idle.
+  - An agent that waits for its account's sign-in shows a card in the chat in place of the turn's notice and end: the sign-in command, the account's state with "Check again", and "Send the message again", which sends the turn's message once the account signed in. While the daemon cannot tell the account's sign-in (`unknown`, a login in the macOS Keychain), the button sends while the agent still waits, since no check would end the wait. Either way, it sends the message once. Enter presses it while it is on and no text field has the focus (the page's script passes Enter on only then, `send_again` in its key mode). The composer and Stop treat the agent as idle.
+    The agent's sidebar row says "Work is not signed in" while it waits, in amber, then "Signed in: send the message again" until the message goes.
 - **Agent order**: the sidebar lists the agents in the daemon's order, and the first of that order is selected when the selection goes.
   A row moves by drag and drop, or Alt+Up and Alt+Down on the selected agent; both send `agent.move`.
   The sidebar shows the new order at once, with the positions the daemon then sends, and puts the agents back when the daemon refuses the move.
@@ -634,7 +635,7 @@ On Windows, the daemon opens the process, checks with `IsProcessInJob` that it i
   That entry is the call's own, or, for a subagent started by a subagent, the entry of the top-level call it nests under.
   The chat's scroll script scrolls and highlights (`ChatReveal` in the UI state), and keeps the new place as after a scroll by the user.
   While the map is open, the page's script passes Up, Down, Left, Right and Enter to it, and Y and N when the selected subagent's approval or plan waits. The outline takes the focus when the map opens, so Enter never presses a button left focused behind the dialog.
-- **Shortcuts**: Ctrl+K, Ctrl+N, Ctrl+M (the agent map), Esc (closes what is open, never stops the agent), Y, N, 1 to 9, as in plan.md, Alt+Up and Alt+Down to move the selected agent in the sidebar, F2 to rename it, and Ctrl+Shift+W to close it.
+- **Shortcuts**: Ctrl+K, Ctrl+N, Ctrl+M (the agent map), Esc (closes what is open, never stops the agent), Y, N, 1 to 9, as in plan.md, Enter outside text fields for the sign-in card's "Send the message again", Alt+Up and Alt+Down to move the selected agent in the sidebar, F2 to rename it, and Ctrl+Shift+W to close it.
 
 ## Errors
 

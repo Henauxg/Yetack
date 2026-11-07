@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::connection::Cockpit;
 use crate::state::{
     ANSWER_KEYS, AppState, CLOSE_AGENT_KEY, COMMAND_KEYS, Dialog, KeyPress, PaletteOrigin, Popover,
-    Utf16Offset, WaitingKind, actions, agent_map, handle_key,
+    Utf16Offset, WaitingKind, accounts, actions, agent_map, handle_key,
 };
 
 /// The composer's text area, whose keys the script treats apart.
@@ -198,7 +198,8 @@ document.addEventListener("keydown", (event) => {
     take = (mode.palette && ["ArrowUp", "ArrowDown", "Enter", "Tab"].includes(key))
       || (text === "" && answers)
       || (key === "Enter" && !event.shiftKey);
-  } else if (where === "page" && plain && !mode.dialog && answers) {
+  } else if (where === "page" && plain && !mode.dialog
+    && (answers || (mode.send_again && key === "Enter" && !event.shiftKey))) {
     take = !(key === "Enter" && target !== null && target.tagName === "BUTTON");
   }
   if (!take) {
@@ -370,6 +371,8 @@ struct KeyMode {
     dialog: bool,
     /// Up, Down, Left, Right and Enter move and fold in the agent map.
     map: bool,
+    /// Enter, outside text fields, presses the sign-in card's "Send the message again".
+    send_again: bool,
 }
 
 impl KeyMode {
@@ -390,6 +393,10 @@ impl KeyMode {
             palette: state.ui.popover == Some(Popover::Palette(PaletteOrigin::Typed)),
             dialog: state.ui.dialog.is_some(),
             map,
+            send_again: state
+                .ui
+                .selected
+                .is_some_and(|agent| accounts::sends_again(state, agent)),
         }
     }
 }
@@ -656,6 +663,7 @@ mod tests {
             palette: true,
             dialog: false,
             map: false,
+            send_again: true,
         };
         let field_text = FieldText {
             field_id: COMPOSER_ID,
@@ -686,6 +694,7 @@ mod tests {
                 "palette": true,
                 "dialog": false,
                 "map": false,
+                "send_again": true,
             })
         );
         assert_eq!(
