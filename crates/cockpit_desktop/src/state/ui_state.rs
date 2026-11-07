@@ -462,6 +462,18 @@ impl UiState {
         };
     }
 
+    /// Whether the new agent dialog is open, or an "Accounts" dialog goes back to it.
+    pub fn holds_new_agent_form(&self) -> bool {
+        match &self.dialog {
+            Some(Dialog::NewAgent(_)) => true,
+            Some(Dialog::Accounts(AccountsView { from_new_agent, .. }))
+            | Some(Dialog::AddAccount(AddAccountForm { from_new_agent, .. })) => {
+                from_new_agent.is_some()
+            }
+            Some(_) | None => false,
+        }
+    }
+
     /// The new agent dialog's form: the open dialog's, or the one an "Accounts" dialog goes back
     /// to, which a daemon's answer may still change.
     pub fn new_agent_form_mut(&mut self) -> Option<&mut NewAgentForm> {

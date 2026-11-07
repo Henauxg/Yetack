@@ -1312,6 +1312,31 @@ mod tests {
     }
 
     #[test]
+    fn shortcuts_keep_the_new_agent_dialog_behind_accounts() {
+        let mut state = state_with(vec![in_folder(1, "/work/app", work())]);
+        state.ui.selected = Some(AgentId::new(1));
+        let mut drafts = Drafts::default();
+        let form = new_agent_dialog(&mut state, &mut drafts);
+        let typed = drafts.new_agent.clone();
+        let held = Some(Dialog::Accounts(AccountsView {
+            expanded: None,
+            from_new_agent: Some(form.clone()),
+        }));
+
+        open_accounts(&mut state, None);
+        actions::toggle_switcher(&mut state, &mut drafts);
+        let after_switcher = state.ui.dialog.clone();
+        crate::state::agent_map::toggle(&mut state);
+        let after_map = state.ui.dialog.clone();
+        actions::open_new_agent(&mut state, &mut drafts);
+
+        assert_eq!(after_switcher, held);
+        assert_eq!(after_map, held);
+        assert_eq!(state.ui.dialog, Some(Dialog::NewAgent(form)));
+        assert_eq!(drafts.new_agent, typed);
+    }
+
+    #[test]
     fn the_accounts_dialog_renames_changes_and_removes_only_a_free_account() {
         let mut state = state_with(vec![in_folder(1, "/work/app", work())]);
         three_accounts(&mut state);

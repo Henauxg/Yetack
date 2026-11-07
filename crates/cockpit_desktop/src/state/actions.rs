@@ -1522,9 +1522,10 @@ pub fn retry_history(state: &mut AppState, agent: AgentId) {
     }
 }
 
-/// Opens or closes the agent switcher. The new agent dialog stays open, with what its fields hold.
+/// Opens or closes the agent switcher. The new agent dialog stays open, with what its fields
+/// hold, and so does an "Accounts" dialog that goes back to it.
 pub fn toggle_switcher(state: &mut AppState, drafts: &mut Drafts) {
-    if matches!(state.ui.dialog, Some(Dialog::NewAgent(_))) {
+    if state.ui.holds_new_agent_form() {
         return;
     }
     let open = state.ui.dialog == Some(Dialog::Switcher);
@@ -1800,9 +1801,14 @@ pub fn switcher_pick(state: &mut AppState, drafts: &Drafts, index: Option<usize>
 /// Opens the new agent dialog on the last used folder, with the model, effort and permission
 /// mode of the last agent started. A mode the mode menu does not offer, or Plan, which is
 /// usually for a while, is not carried over. The past sessions are listed again, since sessions
-/// end and start while the app runs. An open dialog stays as it is, with what its fields hold.
+/// end and start while the app runs. An open dialog stays as it is, with what its fields hold,
+/// and an "Accounts" dialog that goes back to it does so.
 pub fn open_new_agent(state: &mut AppState, drafts: &mut Drafts) {
     if matches!(state.ui.dialog, Some(Dialog::NewAgent(_))) {
+        return;
+    }
+    if state.ui.holds_new_agent_form() {
+        state.ui.close_dialog();
         return;
     }
     let folder = state

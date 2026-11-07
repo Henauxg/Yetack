@@ -459,8 +459,12 @@ fn with_running_descendants(subagents: &[Subagent], item: ItemId) -> Vec<&Subage
 }
 
 /// Ctrl+M: opens the map of the selected agent, or closes it. The new agent and "Add an account"
-/// dialogs stay open, with what their fields hold.
+/// dialogs stay open, with what their fields hold, and so does an "Accounts" dialog that goes
+/// back to the new agent dialog.
 pub fn toggle(state: &mut AppState) {
+    if state.ui.holds_new_agent_form() {
+        return;
+    }
     match state.ui.dialog {
         Some(Dialog::AgentMap(_)) => {
             state.ui.dialog = None;

@@ -89,7 +89,7 @@ pub fn Dialogs() -> Element {
                 key: "{opening}",
                 class: "{overlay_class}",
                 inert: leaving.then_some(true),
-                onclick: move |_| cockpit.update(|state| state.ui.dialog = None),
+                onclick: move |_| cockpit.update(|state| state.ui.close_dialog()),
                 match dialog.clone() {
                     Dialog::Switcher => rsx! {
                         SwitcherDialog {}
