@@ -8,8 +8,8 @@ use std::time::SystemTime;
 
 use cockpit_protocol::{
     Account, AccountAddParams, AccountChangeParams, AccountId, AccountParams, AccountState,
-    AgentId, AgentStatus, AgentSummary, ItemBody, ItemId, PlanUsage, Prompt, PromptParams, Request,
-    ResponseBody, SignIn, UsageWindow, UserMessage, account_folder_name,
+    AgentId, AgentStatus, AgentSummary, FOLDER_SEPARATOR, ItemBody, ItemId, PlanUsage, Prompt,
+    PromptParams, Request, ResponseBody, SignIn, UsageWindow, UserMessage, account_folder_name,
 };
 
 use super::app_state::{AgentEntry, AppState};
@@ -544,17 +544,28 @@ pub fn free_color(state: &AppState) -> AccountColor {
 }
 
 /// The folder the daemon proposes for a new account named `name`: `.claude-<name>` in the home
-/// folder, which the default account's `.claude` shows. `None` when its folder is elsewhere, as
-/// with `CLAUDE_CONFIG_DIR`.
+/// folder, which the default account's `.claude` shows, with a number added when another account
+/// has it. `None` when the default account's folder is elsewhere, as with `CLAUDE_CONFIG_DIR`,
+/// or relative, as from a home folder that is: the daemon then proposes none.
 pub fn proposed_folder(state: &AppState, name: &str) -> Option<String> {
     let default = account(state, AccountId::DEFAULT)?;
     let text = default.folder.to_string_lossy();
     let style = PathStyle::of_text(&text);
-    if style.file_name(&text) != Some(CLAUDE_FOLDER) {
+    if style.file_name(&text) != Some(CLAUDE_FOLDER) || !style.is_absolute(&text) {
         return None;
     }
     let home = style.parent(&text)?;
-    let folder = style.join(home, &account_folder_name(name));
+    let folder_name = account_folder_name(name);
+    let taken = |folder: &str| {
+        let mut folders = state.accounts.iter();
+        folders.any(|account| style.same_path(&account.folder.to_string_lossy(), folder))
+    };
+    let mut folder = style.join(home, &folder_name);
+    let mut number: u32 = 2;
+    while taken(&folder) {
+        folder = style.join(home, &format!("{folder_name}{FOLDER_SEPARATOR}{number}"));
+        number = number.saturating_add(1);
+    }
     Some(style.shown(&folder).into_owned())
 }
 
@@ -1095,8 +1106,28 @@ mod tests {
     fn no_folder_is_proposed_when_the_default_account_is_elsewhere() {
         let mut state = state_with(Vec::new());
         state.accounts = vec![named(AccountId::DEFAULT, "Default", "/srv/claude-config")];
+        let elsewhere = proposed_folder(&state, "Work");
+        state.accounts = vec![named(AccountId::DEFAULT, "Default", "home/.claude")];
+        let relative = proposed_folder(&state, "Work");
 
-        assert_eq!(proposed_folder(&state, "Work"), None);
+        assert_eq!(elsewhere, None);
+        assert_eq!(relative, None);
+    }
+
+    #[test]
+    fn the_proposed_folder_takes_a_number_as_the_daemon_does_when_another_account_has_it() {
+        let mut state = state_with(Vec::new());
+        three_accounts(&mut state);
+        let unix = proposed_folder(&state, "Work");
+        state.accounts = vec![
+            named(AccountId::DEFAULT, "Default", r"C:\Users\sam\.claude"),
+            named(work(), "Work", r"C:\Users\sam\.Claude-Work"),
+            named(lab(), "Work 2", r"c:/users/sam/.claude-work-2"),
+        ];
+        let windows = proposed_folder(&state, "work");
+
+        assert_eq!(unix.as_deref(), Some("/home/sam/.claude-work-2"));
+        assert_eq!(windows.as_deref(), Some(r"C:\Users\sam\.claude-work-3"));
     }
 
     #[test]
