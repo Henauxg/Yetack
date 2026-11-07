@@ -1215,7 +1215,7 @@ mod tests {
         let mut waiting = in_folder(1, "/work/app", work());
         waiting.waits_for_sign_in = true;
         waiting.status = AgentStatus::NeedsYou;
-        let mut state = state_with(vec![waiting]);
+        let mut state = state_with(vec![waiting.clone()]);
         three_accounts(&mut state);
         let notice = ItemBody::Notice {
             text: "The account Work is not signed in.".to_owned(),
@@ -1233,6 +1233,10 @@ mod tests {
 
         let card = sign_in_turn(state.agents.get(&AgentId::new(1)).unwrap());
         let line = waiting_line(&state, state.agents.get(&AgentId::new(1)).unwrap());
+        let while_waiting = send_again(&mut state, AgentId::new(1));
+        let entry = state.agents.get_mut(&AgentId::new(1)).unwrap();
+        entry.summary.waits_for_sign_in = false;
+        entry.summary.status = AgentStatus::Idle;
         let sent = send_again(&mut state, AgentId::new(1));
         let entry = state.agents.get_mut(&AgentId::new(1)).unwrap();
         entry
@@ -1253,8 +1257,8 @@ mod tests {
             })
         );
         assert_eq!(line.as_deref(), Some("Work is not signed in"));
-        let summary = &state.agents.get(&AgentId::new(1)).unwrap().summary;
-        assert_eq!(turn_status(summary), AgentStatus::Idle);
+        assert_eq!(turn_status(&waiting), AgentStatus::Idle);
+        assert_eq!(while_waiting, []);
         assert!(matches!(
             sent.as_slice(),
             [Outgoing { request: Request::AgentPrompt(PromptParams { prompt, .. }), .. }] if prompt.text == "Export the invoices"
