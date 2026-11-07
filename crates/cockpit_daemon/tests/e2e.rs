@@ -1827,6 +1827,44 @@ async fn each_accounts_claude_gets_its_folder_and_only_the_login_it_may_use() {
     assert!(environment_api_key);
 }
 
+/// `claude mcp remove` edits the user scope of the agent's account, without the daemon's logins.
+#[tokio::test]
+async fn removing_an_mcp_server_runs_claude_with_the_agents_account() {
+    let setup = Setup::new_with(
+        None,
+        DefaultFolder::Variable,
+        vec![
+            ("ANTHROPIC_API_KEY", "test-api-key"),
+            ("CLAUDE_CODE_OAUTH_TOKEN", "test-oauth-token"),
+        ],
+    );
+    let mut client = setup.connect().await;
+    let folder = setup.temp.path().join("claude-work");
+    let work = client.add_account("Work", Some(&folder), false).await;
+    let agent = client
+        .start_with(&setup.work(), "hello", work.account.id)
+        .await;
+    client.says(agent, "Echo: hello").await;
+
+    let removed = client
+        .ok(Request::McpRemove(McpRemoveParams {
+            agent,
+            server: "notes".to_owned(),
+            scope: McpScope::User,
+        }))
+        .await;
+
+    assert_eq!(removed, ResponseBody::Done);
+    let launches = setup.wait_for_launches(2);
+    assert!(launches[1].contains(&"mcp".to_owned()), "{launches:?}");
+    let envs = setup.wait_for_envs(2);
+    assert_eq!(
+        envs[1],
+        json!({"CLAUDE_CONFIG_DIR": folder,
+               "CLAUDE_CODE_OAUTH_TOKEN": null, "ANTHROPIC_API_KEY": null})
+    );
+}
+
 /// Without `CLAUDE_CONFIG_DIR`, the default account is `.claude` in the home folder, and a new
 /// account's folder sits beside it.
 #[tokio::test]
