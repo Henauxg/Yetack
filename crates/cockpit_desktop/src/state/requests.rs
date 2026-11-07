@@ -91,6 +91,11 @@ pub enum Purpose {
     },
     /// `accounts.change`: a rename or the API key choice.
     AccountChanged,
+    /// The sign-in card's "Send the message again", which it offers again when the prompt fails.
+    SendAgain {
+        agent: AgentId,
+        turn_end: ItemId,
+    },
 }
 
 /// An agent's position before and after a move the daemon has not answered yet.
@@ -351,6 +356,11 @@ pub fn apply_response(
         }
         Purpose::AccountChanged => {
             accounts::changed(state, result.map_err(|failure| failure.message));
+        }
+        Purpose::SendAgain { agent, turn_end } => {
+            if let Err(failure) = result {
+                accounts::send_again_failed(state, agent, turn_end, &failure.message);
+            }
         }
         Purpose::Sessions => {
             state.sessions = match result {

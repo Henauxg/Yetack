@@ -881,9 +881,11 @@ pub fn SignInCard(agent: AgentId) -> Element {
         let data = card_data(&state, id);
         let others = accounts::others_waiting(&state, agent, id);
         let waits = entry.summary.waits_for_sign_in;
-        (id, data, others, waits)
+        let sends = accounts::sign_in_turn(entry)
+            .is_some_and(|turn| accounts::can_send_again(entry, &turn));
+        (id, data, others, waits, sends)
     };
-    let (id, data, others, waits) = card;
+    let (id, data, others, waits, sends) = card;
     let name = data
         .as_ref()
         .map_or_else(|| "its account".to_owned(), |data| data.label.name.clone());
@@ -948,8 +950,8 @@ pub fn SignInCard(agent: AgentId) -> Element {
             }
             div { class: "card-actions",
                 button {
-                    class: if waits { "button disabled" } else { "button primary" },
-                    disabled: waits,
+                    class: if sends { "button primary" } else { "button disabled" },
+                    disabled: !sends,
                     onclick: move |_| cockpit.change(|state| accounts::send_again(state, agent)),
                     "Send the message again"
                 }

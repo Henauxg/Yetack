@@ -315,24 +315,49 @@ pub fn sign_in_turn(entry: &AgentEntry) -> Option<SignInTurn> {
     })
 }
 
-/// Sends the message of the turn that found no login again.
+/// Whether "Send the message again" sends: the account signed in, the app holds the message,
+/// and the card has not sent it yet.
+pub fn can_send_again(entry: &AgentEntry, turn: &SignInTurn) -> bool {
+    !entry.summary.waits_for_sign_in
+        && turn.message.is_some()
+        && entry.sent_again != Some(turn.turn_end)
+}
+
+/// Sends the message of the turn that found no login again, once.
 pub fn send_again(state: &mut AppState, agent: AgentId) -> Vec<Outgoing> {
-    let Some(entry) = state.agents.get(&agent) else {
+    let Some(entry) = state.agents.get_mut(&agent) else {
         return Vec::new();
     };
-    let Some(message) = sign_in_turn(entry).and_then(|turn| turn.message) else {
+    let Some(turn) = sign_in_turn(entry).filter(|turn| can_send_again(entry, turn)) else {
         return Vec::new();
     };
+    let Some(message) = turn.message else {
+        return Vec::new();
+    };
+    entry.sent_again = Some(turn.turn_end);
     state.ui.chat_scrolled_up.remove(&agent);
     state.ui.chat_jumps = state.ui.chat_jumps.wrapping_add(1);
     let prompt = Prompt {
         text: message.text,
         images: message.images,
     };
-    vec![Outgoing::action(Request::AgentPrompt(PromptParams {
-        agent,
-        prompt,
-    }))]
+    vec![Outgoing {
+        request: Request::AgentPrompt(PromptParams { agent, prompt }),
+        purpose: Purpose::SendAgain {
+            agent,
+            turn_end: turn.turn_end,
+        },
+    }]
+}
+
+/// The message did not go: the card offers to send it again.
+pub fn send_again_failed(state: &mut AppState, agent: AgentId, turn_end: ItemId, error: &str) {
+    if let Some(entry) = state.agents.get_mut(&agent) {
+        entry.sent_again.take_if(|sent| *sent == turn_end);
+    }
+    state
+        .ui
+        .report(format!("The message was not sent: {error}"));
 }
 
 /// The agent's status as its turn sees it: an agent that waits only for its account's sign-in
@@ -1235,6 +1260,39 @@ mod tests {
             [Outgoing { request: Request::AgentPrompt(PromptParams { prompt, .. }), .. }] if prompt.text == "Export the invoices"
         ));
         assert_eq!(after, None);
+    }
+
+    #[test]
+    fn the_message_goes_again_once_and_again_after_a_failed_send() {
+        let mut state = state_with(vec![in_folder(1, "/work/app", work())]);
+        three_accounts(&mut state);
+        let agent = AgentId::new(1);
+        let entry = state.agents.get_mut(&agent).unwrap();
+        entry.transcript.merge_page(cockpit_protocol::HistoryPage {
+            items: vec![
+                transcript_item(1, message("Export the invoices")),
+                transcript_item(2, signed_out_turn(true)),
+            ],
+            has_older: false,
+        });
+        let mut drafts = Drafts::default();
+
+        let first = send_again(&mut state, agent);
+        let second = send_again(&mut state, agent);
+        let [Outgoing { purpose, .. }] = first.as_slice() else {
+            panic!("one prompt, not {first:?}");
+        };
+        super::super::requests::apply_response(
+            &mut state,
+            &mut drafts,
+            cockpit_protocol::Method::AgentPrompt,
+            purpose.clone(),
+            Err(cockpit_client::RequestError::Disconnected),
+        );
+        let after_failure = send_again(&mut state, agent);
+
+        assert_eq!(second, []);
+        assert_eq!(after_failure, first);
     }
 
     #[test]

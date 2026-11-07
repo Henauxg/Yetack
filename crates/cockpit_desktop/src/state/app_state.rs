@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_protocol::{
-    Account, AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, PastSession, PlanUsage,
-    Settings, Timestamp, list_order,
+    Account, AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, ItemId, PastSession,
+    PlanUsage, Settings, Timestamp, list_order,
 };
 use strum::VariantArray;
 
@@ -96,6 +96,8 @@ pub struct AgentEntry {
     /// `turn_started_at`. `None` between turns, and for a turn already running when the app
     /// connected.
     pub turn_started: Option<Instant>,
+    /// The end of the turn whose message the sign-in card sent again: the card sends it once.
+    pub sent_again: Option<ItemId>,
 }
 
 /// When the agent's running turn started.
@@ -127,6 +129,7 @@ impl AgentEntry {
             files: BTreeMap::new(),
             commands_requested: false,
             turn_started: None,
+            sent_again: None,
         }
     }
 
