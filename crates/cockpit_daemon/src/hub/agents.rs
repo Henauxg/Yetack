@@ -7,9 +7,10 @@ use std::path::{Path, PathBuf};
 
 use claude_protocol::{ControlRequest, InputLine, OutputLine};
 use cockpit_protocol::{
-    AgentId, AgentStatus, AgentSummary, AnswerParams, CancelQueuedParams, ClaudeSessionId, CostUsd,
-    ErrorBody, ErrorCode, Event, MAX_TITLE_CHARS, Position, Prompt, RenameParams, ResponseBody,
-    ResponseResult, SetEffortParams, StartParams, TranscriptItem,
+    AgentId, AgentStatus, AgentSummary, AnswerParams, ClaudeSessionId, CostUsd, ErrorBody,
+    ErrorCode, Event, MAX_TITLE_CHARS, Position, Prompt, PromptDelivery, PromptId,
+    QueuedPromptParams, RenameParams, ResponseBody, ResponseResult, SetEffortParams, StartParams,
+    TranscriptItem, WaitingState,
 };
 
 use crate::hub::input::{ControlPurpose, HubInput, Reply};
@@ -21,7 +22,7 @@ use crate::sessions::FoundSession;
 use crate::store::{AgentRecord, LogName, RawLog};
 use crate::transcript::prompts::TypedSetting;
 use crate::transcript::{
-    AgentView, AnswerError, FollowUp, ProcessSession, PromptDelivery, plan_usage, prompts, words,
+    AgentView, AnswerError, FollowUp, ProcessSession, plan_usage, prompts, words,
 };
 
 /// A title made from a prompt keeps this many characters.
@@ -118,7 +119,7 @@ impl Hub {
             self.publish(place.agent);
         }
         if let Some(prompt) = prompt {
-            self.prompt(id, prompt)?;
+            self.prompt(id, prompt, PromptDelivery::Steer)?;
         }
         Ok(id)
     }
@@ -297,20 +298,17 @@ impl Hub {
             return;
         };
         agent.process = None;
-        for queued in agent.queue.drain(..) {
-            if let Some(item) = queued.item {
-                agent.view.cancel_queued(item);
-            }
-        }
+        agent.queue.clear();
         agent.view.process_exited(notice, state::now());
         self.publish(id);
     }
 
-    /// Sends a prompt now, or queues it while the agent works.
+    /// Sends a prompt now, or queues it while the agent works, as `delivery` asks.
     pub(super) fn prompt(
         &mut self,
         id: AgentId,
         prompt: Prompt,
+        delivery: PromptDelivery,
     ) -> Result<ResponseBody, ErrorBody> {
         let agent = self
             .agents
@@ -322,17 +320,22 @@ impl Hub {
         let line = prompts::prompt_line(&prompt)
             .ok_or_else(|| errors::internal("cannot encode the prompt".to_owned()))?;
         let mut record_changed = false;
-        if agent.view.is_busy() || !agent.queue.is_empty() {
-            let item = agent.view.add_prompt(&prompt, PromptDelivery::Queued);
-            agent.queue.push_back(QueuedPrompt {
-                item: Some(item),
-                line,
-                text: prompt.text,
-            });
-        } else {
-            agent.view.add_prompt(&prompt, PromptDelivery::Now);
+        let busy = agent.view.is_busy() || !agent.queue.is_empty();
+        let steers = delivery == PromptDelivery::Steer && !prompt.text.starts_with('/');
+        if !busy {
+            agent.view.add_prompt(&prompt);
             process.write(line);
             record_changed = record_typed_setting(agent, &prompt.text);
+        } else if steers {
+            agent.view.add_waiting_prompt(&prompt, WaitingState::Sent);
+            process.write(line);
+        } else {
+            let id = agent.view.add_waiting_prompt(&prompt, WaitingState::Queued);
+            agent.queue.push_back(QueuedPrompt {
+                id: Some(id),
+                line,
+                prompt,
+            });
         }
         if record_changed {
             self.save_agents();
@@ -342,6 +345,8 @@ impl Hub {
     }
 
     /// Sends the queued prompts up to the first one the transcript shows, which starts a turn.
+    /// While `claude` holds a prompt Claude has not read, that prompt starts the next turn, and
+    /// the queue waits for its end.
     fn send_next_queued(&mut self, id: AgentId) {
         let Some(agent) = self.agents.get_mut(&id) else {
             return;
@@ -349,16 +354,19 @@ impl Hub {
         let Some(process) = &agent.process else {
             return;
         };
+        if agent.view.has_unread_prompts() {
+            return;
+        }
         let mut shown_text = None;
         while let Some(queued) = agent.queue.pop_front() {
             process.write(queued.line);
-            match queued.item {
-                Some(item) => {
-                    agent.view.prompt_sent(item);
-                    shown_text = Some(queued.text);
+            match queued.id {
+                Some(prompt) => {
+                    agent.view.queued_prompt_started(prompt, &queued.prompt);
+                    shown_text = Some(queued.prompt.text);
                     break;
                 }
-                None => agent.view.expect_echo(queued.text),
+                None => agent.view.expect_echo(queued.prompt.text),
             }
         }
         if shown_text.is_some_and(|text| record_typed_setting(agent, &text)) {
@@ -366,27 +374,39 @@ impl Hub {
         }
     }
 
-    pub(super) fn cancel_queued(
+    /// Sends a queued prompt during the turn, for Claude to read at its next step.
+    pub(super) fn send_queued(
         &mut self,
-        params: CancelQueuedParams,
+        params: QueuedPromptParams,
     ) -> Result<ResponseBody, ErrorBody> {
         let id = params.agent;
         let agent = self
             .agents
             .get_mut(&id)
             .ok_or(errors::agent_not_found(id))?;
-        let position = agent
-            .queue
-            .iter()
-            .position(|queued| queued.item == Some(params.item))
-            .ok_or_else(|| {
-                ErrorBody::new(
-                    ErrorCode::NotFound,
-                    format!("item {} is not a queued prompt", params.item.get()),
-                )
-            })?;
-        agent.queue.remove(position);
-        agent.view.cancel_queued(params.item);
+        if agent.process.is_none() || !agent.record.running {
+            return Err(errors::agent_exited(id));
+        }
+        let queued = take_queued(agent, params.prompt)?;
+        if let Some(process) = &agent.process {
+            process.write(queued.line);
+        }
+        agent.view.queued_prompt_steered(params.prompt);
+        self.publish(id);
+        Ok(ResponseBody::Done)
+    }
+
+    pub(super) fn cancel_queued(
+        &mut self,
+        params: QueuedPromptParams,
+    ) -> Result<ResponseBody, ErrorBody> {
+        let id = params.agent;
+        let agent = self
+            .agents
+            .get_mut(&id)
+            .ok_or(errors::agent_not_found(id))?;
+        take_queued(agent, params.prompt)?;
+        agent.view.remove_waiting_prompt(params.prompt);
         self.publish(id);
         Ok(ResponseBody::Done)
     }
@@ -598,6 +618,21 @@ fn record_typed_setting(agent: &mut Agent, text: &str) -> bool {
     }
 }
 
+/// Takes a prompt out of the agent's queue, before `claude` gets it.
+fn take_queued(agent: &mut Agent, prompt: PromptId) -> Result<QueuedPrompt, ErrorBody> {
+    agent
+        .queue
+        .iter()
+        .position(|queued| queued.id == Some(prompt))
+        .and_then(|position| agent.queue.remove(position))
+        .ok_or_else(|| {
+            ErrorBody::new(
+                ErrorCode::NotFound,
+                format!("prompt {} is not queued", prompt.get()),
+            )
+        })
+}
+
 /// Sends a prompt the transcript does not show, such as `/effort high`, now or after the current
 /// turn. An agent without a process gets nothing.
 fn send_hidden_prompt(agent: &mut Agent, text: String) {
@@ -607,9 +642,12 @@ fn send_hidden_prompt(agent: &mut Agent, text: String) {
     let line = InputLine::prompt(text.clone());
     if agent.view.is_busy() || !agent.queue.is_empty() {
         agent.queue.push_back(QueuedPrompt {
-            item: None,
+            id: None,
             line,
-            text,
+            prompt: Prompt {
+                text,
+                images: Vec::new(),
+            },
         });
     } else {
         process.write(line);
@@ -905,7 +943,9 @@ mod tests {
             text: "one more thing".to_owned(),
             images: Vec::new(),
         };
-        let refused = hub.prompt(agent, prompt).unwrap_err();
+        let refused = hub
+            .prompt(agent, prompt, PromptDelivery::Steer)
+            .unwrap_err();
 
         assert_eq!(refused.code, ErrorCode::AgentExited);
         assert_eq!(hub.agents[&agent].view.items().len(), items_before);

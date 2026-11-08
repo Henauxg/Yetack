@@ -2,7 +2,9 @@
 //! effort and permission mode menus, and Send and Stop.
 
 use base64::engine::general_purpose::STANDARD as BASE64;
-use cockpit_protocol::{AgentId, AgentStatus, Effort, Image, ImageMediaType, PermissionMode};
+use cockpit_protocol::{
+    AgentId, AgentStatus, Effort, Image, ImageMediaType, PermissionMode, PromptDelivery,
+};
 use dioxus::html::FileData;
 use dioxus::prelude::*;
 
@@ -15,6 +17,7 @@ use crate::ui::header::cache_left;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::palette::Palette;
 use crate::ui::presence::Presence;
+use crate::ui::waiting_prompts::WaitingPrompts;
 
 pub fn mode_icon(mode: PermissionMode) -> IconKind {
     match mode {
@@ -28,7 +31,9 @@ pub fn mode_icon(mode: PermissionMode) -> IconKind {
 fn placeholder(status: AgentStatus) -> &'static str {
     match status {
         AgentStatus::NeedsYou => "Answer above, or tell Claude what to do instead",
-        AgentStatus::Working => "Add a message; Claude reads it after the current step",
+        AgentStatus::Working => {
+            "Claude reads this at its next step. Alt+Enter waits for the turn to end."
+        }
         AgentStatus::Idle => "Ask for a change. Type / for commands and skills.",
         AgentStatus::Exited => "Resume the agent to send a message",
     }
@@ -38,28 +43,31 @@ fn placeholder(status: AgentStatus) -> &'static str {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EndButtons {
     Send,
-    /// While the agent works, Stop takes the place of Send.
-    Stop,
-    /// While the agent waits for you, Esc does not stop it, and Send tells Claude what to do
-    /// instead.
+    /// While the agent works or waits for you, Esc does not stop it, and Send tells Claude what
+    /// to do at its next step.
     StopAndSend,
 }
 
 impl EndButtons {
     fn new(status: AgentStatus) -> Self {
         match status {
-            AgentStatus::Working => Self::Stop,
-            AgentStatus::NeedsYou => Self::StopAndSend,
+            AgentStatus::Working | AgentStatus::NeedsYou => Self::StopAndSend,
             AgentStatus::Idle | AgentStatus::Exited => Self::Send,
         }
     }
 
     fn stop(self) -> bool {
-        matches!(self, Self::Stop | Self::StopAndSend)
+        self == Self::StopAndSend
     }
 
-    fn send(self) -> bool {
-        matches!(self, Self::Send | Self::StopAndSend)
+    fn send_title(self) -> &'static str {
+        match self {
+            Self::Send => "Send the message (Enter)",
+            Self::StopAndSend => {
+                "Send now: Claude reads it at its next step (Enter). Alt+Enter queues it until the \
+                 turn ends."
+            }
+        }
     }
 }
 
@@ -117,6 +125,7 @@ pub fn Composer() -> Element {
     let can_send = !exited && !draft.is_empty();
     let accept = accepted_images();
     let title = summary.title.clone();
+    let waiting = entry.waiting_prompts().to_vec();
     rsx! {
         div { class: "composer-wrap",
             div { class: "composer-column",
@@ -129,6 +138,7 @@ pub fn Composer() -> Element {
                 Presence { open: popover == Some(Popover::Mode),
                     ModeMenu { agent, mode }
                 }
+                WaitingPrompts { agent, prompts: waiting }
                 div { class: "composer",
                     if !draft.images.is_empty() {
                         div { class: "attachments",
@@ -217,15 +227,13 @@ pub fn Composer() -> Element {
                                 span { class: "stop-square", aria_hidden: true }
                             }
                         }
-                        if buttons.send() {
-                            button {
-                                class: "send-button",
-                                aria_label: "Send the message",
-                                title: "Send the message (Enter)",
-                                disabled: !can_send,
-                                onclick: move |_| cockpit.change_with_drafts(|state, drafts| actions::send_prompt(state, drafts, agent, None)),
-                                Icon { kind: IconKind::Send, size: 16 }
-                            }
+                        button {
+                            class: "send-button",
+                            aria_label: "Send the message",
+                            title: buttons.send_title(),
+                            disabled: !can_send,
+                            onclick: move |_| cockpit.change_with_drafts(|state, drafts| actions::send_prompt(state, drafts, agent, None, PromptDelivery::Steer)),
+                            Icon { kind: IconKind::Send, size: 16 }
                         }
                     }
                 }
@@ -393,16 +401,13 @@ mod tests {
     }
 
     #[test]
-    fn stop_shows_beside_send_while_the_agent_waits_for_you() {
-        let shown = |status| {
-            let buttons = EndButtons::new(status);
-            (buttons.stop(), buttons.send())
-        };
+    fn stop_shows_beside_send_while_the_agent_works_or_waits_for_you() {
+        let stop = |status| EndButtons::new(status).stop();
 
-        assert_eq!(shown(AgentStatus::NeedsYou), (true, true));
-        assert_eq!(shown(AgentStatus::Working), (true, false));
-        assert_eq!(shown(AgentStatus::Idle), (false, true));
-        assert_eq!(shown(AgentStatus::Exited), (false, true));
+        assert!(stop(AgentStatus::NeedsYou));
+        assert!(stop(AgentStatus::Working));
+        assert!(!stop(AgentStatus::Idle));
+        assert!(!stop(AgentStatus::Exited));
     }
 
     #[test]

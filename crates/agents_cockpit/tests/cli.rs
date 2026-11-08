@@ -18,6 +18,7 @@ use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
+use cockpit_protocol::PROTOCOL_VERSION;
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -323,11 +324,14 @@ fn the_bridge_carries_the_protocol() {
         .spawn()
         .unwrap();
 
+    let hello = format!(
+        "{{\"type\":\"hello\",\"protocol_version\":{PROTOCOL_VERSION},\"last_seq\":null}}\n"
+    );
     bridge
         .stdin
         .as_mut()
         .unwrap()
-        .write_all(b"{\"type\":\"hello\",\"protocol_version\":1,\"last_seq\":null}\n")
+        .write_all(hello.as_bytes())
         .unwrap();
     let lines = lines_of(&mut bridge);
     let welcome = line_with(&lines, "welcome", WAIT).expect("a welcome");

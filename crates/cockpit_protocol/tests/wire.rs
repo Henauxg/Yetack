@@ -16,21 +16,21 @@ use std::time::Duration;
 use cockpit_protocol::{
     AgentDetails, AgentHistory, AgentId, AgentLoad, AgentParams, AgentStatus, AgentSummary, Answer,
     AnswerParams, AnswerState, Approval, ApprovalAnswer, ApprovalDecision, AskedQuestion,
-    BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus, CancelQueuedParams,
-    Catchup, ChangedFile, ClaudeSessionId, ClientMessage, CommandKind, CommandLoad,
-    ContextCategory, ContextUsage, Cores, CostUsd, DirEntry, DirListing, Effort, EntryKind,
-    ErrorBody, ErrorCode, Event, EventRecord, FileEdit, FindFilesParams, HistoryPage,
-    HistoryParams, Image, ImageMediaType, ItemBody, ItemId, ListDirParams, LoadAverage,
-    LoadHistory, MachineLoad, McpRemoveParams, McpScope, McpServer, McpServerParams,
-    McpServerStatus, McpToggleParams, McpTool, McpTransport, Method, MoveParams, PROTOCOL_VERSION,
-    PastSession, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, PlanUsage, Position,
-    ProcessId, Prompt, PromptParams, Question, QuestionAnswer, QuestionOption, RateLimitStatus,
-    ReadFileParams, RenameParams, Request, RequestId, ResourceUse, ResponseBody, ResponseResult,
-    Seq, ServerLoad, ServerMessage, ServerPoint, SessionResumeParams, SetEffortParams,
-    SetModeParams, SetModelParams, Settings, SlashCommand, Snapshot, StartParams,
-    StopProcessParams, StopTaskParams, TaskListItem, TaskProgress, TaskStatus, Timestamp,
-    TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, UsageWindow, UserMessage,
-    WindowUsage,
+    BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus, Catchup,
+    ChangedFile, ClaudeSessionId, ClientMessage, CommandKind, CommandLoad, ContextCategory,
+    ContextUsage, Cores, CostUsd, DirEntry, DirListing, Effort, EntryKind, ErrorBody, ErrorCode,
+    Event, EventRecord, FileEdit, FindFilesParams, HistoryPage, HistoryParams, Image,
+    ImageMediaType, ItemBody, ItemId, ListDirParams, LoadAverage, LoadHistory, MachineLoad,
+    McpRemoveParams, McpScope, McpServer, McpServerParams, McpServerStatus, McpToggleParams,
+    McpTool, McpTransport, Method, MoveParams, PROTOCOL_VERSION, PastSession, PendingId,
+    PermissionMode, Plan, PlanAnswer, PlanDecision, PlanUsage, Position, ProcessId, Prompt,
+    PromptDelivery, PromptId, PromptParams, Question, QuestionAnswer, QuestionOption,
+    QueuedPromptParams, RateLimitStatus, ReadFileParams, RenameParams, Request, RequestId,
+    ResourceUse, ResponseBody, ResponseResult, Seq, ServerLoad, ServerMessage, ServerPoint,
+    SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, Settings, SlashCommand,
+    Snapshot, StartParams, StopProcessParams, StopTaskParams, TaskListItem, TaskProgress,
+    TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
+    UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -180,7 +180,6 @@ fn bodies() -> Vec<ItemBody> {
         ItemBody::UserMessage(UserMessage {
             text: prompt().text,
             images: vec![image()],
-            queued: true,
         }),
         ItemBody::AssistantText {
             markdown: "The regex rejects `+` in the local part.".to_owned(),
@@ -388,6 +387,20 @@ fn details() -> AgentDetails {
         context: Some(context_usage()),
         mcp_servers: mcp_servers(),
         commands: commands(),
+        waiting_prompts: vec![
+            WaitingPrompt {
+                id: PromptId::new(4),
+                text: "Also check the signup form".to_owned(),
+                image_count: 1,
+                state: WaitingState::Sent,
+            },
+            WaitingPrompt {
+                id: PromptId::new(5),
+                text: "Then run the tests".to_owned(),
+                image_count: 0,
+                state: WaitingState::Queued,
+            },
+        ],
     }
 }
 
@@ -444,10 +457,15 @@ fn requests() -> Vec<Request> {
         Request::AgentPrompt(PromptParams {
             agent,
             prompt: prompt(),
+            delivery: PromptDelivery::Queue,
         }),
-        Request::AgentCancelQueued(CancelQueuedParams {
+        Request::AgentCancelQueued(QueuedPromptParams {
             agent,
-            item: ItemId::new(12),
+            prompt: PromptId::new(5),
+        }),
+        Request::AgentSendQueued(QueuedPromptParams {
+            agent,
+            prompt: PromptId::new(5),
         }),
         Request::AgentAnswer(AnswerParams {
             agent,
@@ -849,6 +867,7 @@ fn method_names_are_pinned() {
             "agent.start",
             "agent.prompt",
             "agent.cancel_queued",
+            "agent.send_queued",
             "agent.answer",
             "agent.interrupt",
             "agent.stop",
@@ -1019,6 +1038,8 @@ fn words_are_pinned() {
         ]
     );
     assert_eq!(words::<CommandKind>(), ["skill", "command"]);
+    assert_eq!(words::<PromptDelivery>(), ["steer", "queue"]);
+    assert_eq!(words::<WaitingState>(), ["queued", "sent"]);
     assert_eq!(
         words::<UsageWindow>(),
         [
@@ -1071,6 +1092,7 @@ fn a_prompt_request_on_the_wire() {
         request: Request::AgentPrompt(PromptParams {
             agent: agent(),
             prompt: prompt(),
+            delivery: PromptDelivery::Steer,
         }),
     };
 
@@ -1087,10 +1109,22 @@ fn a_prompt_request_on_the_wire() {
                         "text": "Why does the form reject valid emails?",
                         "images": [{"media_type": "image/png", "data": "iVBORw0KGgo="}],
                     },
+                    "delivery": "steer",
                 },
             },
         }),
     );
+}
+
+#[test]
+fn a_prompt_without_a_delivery_steers() {
+    let params: PromptParams = serde_json::from_value(json!({
+        "agent": 3,
+        "prompt": {"text": "Why does the form reject valid emails?", "images": []},
+    }))
+    .unwrap();
+
+    assert_eq!(params.delivery, PromptDelivery::Steer);
 }
 
 #[test]

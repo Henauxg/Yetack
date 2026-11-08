@@ -3,8 +3,8 @@
 //! A connection carries one JSON object per line ([`FrameReader`], [`FrameWriter`]):
 //!
 //! ```text
-//! client: {"type":"hello","protocol_version":1,"last_seq":41}
-//! daemon: {"type":"welcome","protocol_version":1,"catchup":{"type":"replay"}}
+//! client: {"type":"hello","protocol_version":2,"last_seq":41}
+//! daemon: {"type":"welcome","protocol_version":2,"catchup":{"type":"replay"}}
 //! daemon: {"type":"event","seq":42,"event":{"type":"agent_removed","agent":3}}
 //! client: {"type":"request","id":1,"request":{"method":"agent.interrupt","params":{"agent":2}}}
 //! daemon: {"type":"response","id":1,"result":{"ok":{"type":"done"}}}
@@ -32,12 +32,13 @@ pub use agent::{AgentStatus, AgentSummary, Effort, PermissionMode, TaskProgress}
 pub use details::{
     AgentDetails, BackgroundTask, BackgroundTaskKind, BackgroundTaskStatus, ChangedFile,
     CommandKind, ContextCategory, ContextUsage, McpScope, McpServer, McpServerStatus, McpTool,
-    McpTransport, SlashCommand, TaskListItem, TaskStatus,
+    McpTransport, SlashCommand, TaskListItem, TaskStatus, WaitingPrompt, WaitingState,
 };
 pub use event::{Event, EventRecord};
 pub use frame::{Frame, FrameError, FrameReader, FrameWriter, MAX_LINE_BYTES};
 pub use ids::{
-    AgentId, BackgroundTaskId, ClaudeSessionId, ItemId, PendingId, ProcessId, RequestId, Seq,
+    AgentId, BackgroundTaskId, ClaudeSessionId, ItemId, PendingId, ProcessId, PromptId, RequestId,
+    Seq,
 };
 pub use machine_load::{
     AgentHistory, AgentLoad, CommandLoad, Cores, LoadAverage, LoadHistory, MachineLoad,
@@ -45,10 +46,11 @@ pub use machine_load::{
 };
 pub use position::{Placed, Position, list_order, move_agent, place_on_top};
 pub use request::{
-    AgentParams, Answer, AnswerParams, CancelQueuedParams, FindFilesParams, HistoryParams,
-    ListDirParams, MAX_TITLE_CHARS, McpRemoveParams, McpServerParams, McpToggleParams, Method,
-    MoveParams, Prompt, PromptParams, ReadFileParams, RenameParams, Request, SessionResumeParams,
-    SetEffortParams, SetModeParams, SetModelParams, StartParams, StopProcessParams, StopTaskParams,
+    AgentParams, Answer, AnswerParams, FindFilesParams, HistoryParams, ListDirParams,
+    MAX_TITLE_CHARS, McpRemoveParams, McpServerParams, McpToggleParams, Method, MoveParams, Prompt,
+    PromptDelivery, PromptParams, QueuedPromptParams, ReadFileParams, RenameParams, Request,
+    SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, StartParams,
+    StopProcessParams, StopTaskParams,
 };
 pub use response::{
     DirEntry, DirListing, EntryKind, ErrorBody, ErrorCode, HistoryPage, PastSession, ResponseBody,

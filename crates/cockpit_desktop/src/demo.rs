@@ -12,10 +12,10 @@ use cockpit_protocol::{
     ContextUsage, Cores, CostUsd, DirEntry, DirListing, Effort, EntryKind, ErrorBody, ErrorCode,
     FileEdit, HistoryPage, ItemBody, ItemId, LoadAverage, LoadHistory, MachineLoad, McpScope,
     McpServer, McpServerStatus, McpTool, McpTransport, PastSession, PendingId, PermissionMode,
-    Plan, PlanUsage, Position, ProcessId, Question, QuestionOption, RateLimitStatus, Request,
-    ResourceUse, ResponseBody, ServerLoad, ServerPoint, SlashCommand, TaskListItem, TaskProgress,
-    TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
-    UsageWindow, UserMessage, WindowUsage,
+    Plan, PlanUsage, Position, ProcessId, PromptId, Question, QuestionOption, RateLimitStatus,
+    Request, ResourceUse, ResponseBody, ServerLoad, ServerPoint, SlashCommand, TaskListItem,
+    TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem,
+    TurnEnd, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
 };
 use serde_json::Value;
 
@@ -819,11 +819,10 @@ fn item(id: u32, parent: Option<u32>, body: ItemBody) -> TranscriptItem {
     }
 }
 
-fn user(text: &str, queued: bool) -> ItemBody {
+fn user(text: &str) -> ItemBody {
     ItemBody::UserMessage(UserMessage {
         text: text.to_owned(),
         images: Vec::new(),
-        queued,
     })
 }
 
@@ -1107,7 +1106,6 @@ fn parser_agent(now: SystemTime) -> Sample {
             None,
             user(
                 "Make the parser report the column of an unexpected token, and add a test for it.",
-                false,
             ),
         ),
         item(
@@ -1203,11 +1201,6 @@ fn parser_agent(now: SystemTime) -> Sample {
                 None,
             )),
         ),
-        item(
-            20,
-            None,
-            user("Also cover a token at the end of the input.", true),
-        ),
     ];
     let task = |content: &str, status: TaskStatus| TaskListItem {
         content: content.to_owned(),
@@ -1223,6 +1216,22 @@ fn parser_agent(now: SystemTime) -> Sample {
             task("Cover a token at the end of the input", TaskStatus::Pending),
         ],
         background_tasks: parser_background_tasks(now),
+        waiting_prompts: vec![
+            WaitingPrompt {
+                id: PromptId::new(1),
+                text: "Also cover a token at the end of the input.".to_owned(),
+                image_count: 0,
+                state: WaitingState::Sent,
+            },
+            WaitingPrompt {
+                id: PromptId::new(2),
+                text: "Then add a line about the column fix to the changelog, under the next \
+                       version."
+                    .to_owned(),
+                image_count: 1,
+                state: WaitingState::Queued,
+            },
+        ],
         changed_files: vec![
             ChangedFile {
                 path: Path::new(PARSER_FOLDER).join(ERROR_FILE),
@@ -1309,7 +1318,7 @@ fn question_agent(now: SystemTime) -> Sample {
         item(
             1,
             None,
-            user("Draft the release notes for the next version.", false),
+            user("Draft the release notes for the next version."),
         ),
         item(
             2,
@@ -1360,11 +1369,7 @@ fn approval_agent(now: SystemTime) -> Sample {
         now,
     );
     let items = vec![
-        item(
-            1,
-            None,
-            user("Fix the broken links and push a preview.", false),
-        ),
+        item(1, None, user("Fix the broken links and push a preview.")),
         item(
             2,
             None,
@@ -1421,11 +1426,7 @@ fn plan_agent(now: SystemTime) -> Sample {
     );
     summary.mode = PermissionMode::Plan;
     let items = vec![
-        item(
-            1,
-            None,
-            user("Plan a cache for repeated expressions.", false),
-        ),
+        item(1, None, user("Plan a cache for repeated expressions.")),
         item(
             2,
             None,
@@ -1467,10 +1468,7 @@ fn benchmark_agent(now: SystemTime) -> Sample {
         item(
             1,
             None,
-            user(
-                "Run the benchmark in CI and tell me how to compare two runs.",
-                false,
-            ),
+            user("Run the benchmark in CI and tell me how to compare two runs."),
         ),
         item(
             2,
@@ -1562,7 +1560,7 @@ fn exited_agent(now: SystemTime) -> Sample {
         item(
             1,
             None,
-            user("Write the migration that adds the archive table.", false),
+            user("Write the migration that adds the archive table."),
         ),
         item(
             2,
@@ -1600,10 +1598,7 @@ fn live_agent(now: SystemTime) -> Sample {
     let first = item(
         LIVE_PAGE_FIRST_ID,
         None,
-        user(
-            "Make the parser read its input as a stream, and run every case test.",
-            false,
-        ),
+        user("Make the parser read its input as a stream, and run every case test."),
     );
     let page =
         (LIVE_PAGE_FIRST_ID + 1..=LIVE_PAGE_LAST_ID).map(|id| item(id, None, live_entry(id)));

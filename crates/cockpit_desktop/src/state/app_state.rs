@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use cockpit_protocol::{
     AgentDetails, AgentId, AgentStatus, AgentSummary, PastSession, PlanUsage, Settings, Timestamp,
-    list_order,
+    WaitingPrompt, list_order,
 };
 
 use super::file_edits;
@@ -103,6 +103,13 @@ impl AgentEntry {
             .flat_map(|details| details.changed_files.iter())
             .map(|file| file_edits::relative_path(folder, &file.path))
             .collect()
+    }
+
+    /// The prompts the agent has not read yet, oldest first.
+    pub fn waiting_prompts(&self) -> &[WaitingPrompt] {
+        self.details
+            .loaded()
+            .map_or(&[], |details| details.waiting_prompts.as_slice())
     }
 
     /// Whether the commands and skills are on their way, with the details or on their own.

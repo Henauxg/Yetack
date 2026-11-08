@@ -178,7 +178,6 @@ mod tests {
             ItemBody::UserMessage(UserMessage {
                 text: text.to_owned(),
                 images: Vec::new(),
-                queued: false,
             })
         };
         let notice = |text: &str| ItemBody::Notice {

@@ -8,8 +8,8 @@ use anyhow::bail;
 use cockpit_client::{BRIDGE_SUBCOMMAND, Backoff, Connection, Session, SessionUpdate, Transport};
 use cockpit_protocol::{
     AgentId, AgentParams, Answer, AnswerParams, ApprovalAnswer, ApprovalDecision, Catchup, Effort,
-    Event, MoveParams, PermissionMode, PlanAnswer, PlanDecision, Prompt, PromptParams,
-    QuestionAnswer, RenameParams, Request, ResponseBody, StartParams,
+    Event, MoveParams, PermissionMode, PlanAnswer, PlanDecision, Prompt, PromptDelivery,
+    PromptParams, QuestionAnswer, RenameParams, Request, ResponseBody, StartParams,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -56,9 +56,14 @@ pub(crate) async fn run(target: &Target, command: Command) -> anyhow::Result<()>
                 .map(|text| read_text(text).map(text_prompt))
                 .transpose()?,
         }),
-        Command::Prompt { agent, text } => Request::AgentPrompt(PromptParams {
+        Command::Prompt { agent, text, queue } => Request::AgentPrompt(PromptParams {
             agent,
             prompt: text_prompt(read_text(text)?),
+            delivery: if queue {
+                PromptDelivery::Queue
+            } else {
+                PromptDelivery::Steer
+            },
         }),
         Command::Answer {
             agent,

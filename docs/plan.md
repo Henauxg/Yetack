@@ -172,7 +172,7 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   - Usage goes in the header of the center pane, not in the sidebar.
   - Small edits show inline in the chat as compact diffs.
   - Code blocks in agent answers have a copy button.
-  - Stop takes the place of Send while an agent works.
+  - Stop shows beside Send while an agent works. Send (Enter) steers the agent: Claude reads the message at its next step. Alt+Enter queues it until the turn ends.
   - The composer shows the model and effort, the prompt cache timer and the permission mode.
   - Changed files open from a compact list, not a full side panel.
   - A read-only file view opens on the right and closes with a cross.
@@ -192,7 +192,7 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   - `file:line` references in agent text open the file view at that line; agent text renders as markdown (headings, lists, tables).
   - "/" opens a palette of commands and skills, filtered as you type.
   - Pasted screenshots show as thumbnails in the composer and in the sent message.
-  - A message sent while the agent works shows as queued, with Cancel.
+  - Messages Claude has not read yet show in a list pinned above the composer: "Next step" for a sent one, "After this turn" for a queued one, which has Send now and Cancel.
   - Command output collapses after 5 lines; a failed command has a red dot and its exit code.
   - Ctrl+N opens the new agent dialog (recent folders, or resume a past session); Ctrl+K opens the agent switcher; Esc closes what is open (a menu, a dialog, an edit) and never stops the agent, which only the Stop button does; Y and N answer an approval or a plan.
   - No rewind of file changes in v1.
@@ -248,7 +248,7 @@ Options set aside:
 
 Data the mockups show but the protocol does not carry yet, and choices approved during the reviews:
 
-- Queued prompts leave the transcript: they live in a queue in `AgentDetails`, which the app draws pinned under the transcript with Cancel. When the daemon sends one to Claude, it leaves the queue and a normal user message is appended at the end of the transcript, so each message sits where Claude read it.
+- Queued prompts leave the transcript: they live in `AgentDetails.waiting_prompts`, which the app draws pinned above the composer. A prompt leaves the list and joins the transcript where Claude reads it, so each message sits where Claude read it. Done, with steering as the default delivery.
 - `AgentSummary` gains the time of the last activity (the "12 s" on sidebar rows).
 - Tool calls gain start and end times (the "exit 0, 18 s" on tool lines).
 - An `Edit` gains the line where it applies, for line numbers in inline diffs.

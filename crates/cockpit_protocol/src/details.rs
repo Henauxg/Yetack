@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use strum::VariantArray;
 
-use crate::ids::BackgroundTaskId;
+use crate::ids::{BackgroundTaskId, PromptId};
 use crate::time::Timestamp;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -19,6 +19,28 @@ pub struct AgentDetails {
     pub context: Option<ContextUsage>,
     pub mcp_servers: Vec<McpServer>,
     pub commands: Vec<SlashCommand>,
+    /// The prompts Claude has not read yet, oldest first. Each joins the transcript where Claude
+    /// reads it.
+    #[serde(default)]
+    pub waiting_prompts: Vec<WaitingPrompt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaitingPrompt {
+    pub id: PromptId,
+    pub text: String,
+    /// The images travel with the prompt only, so that each details change stays small.
+    pub image_count: usize,
+    pub state: WaitingState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, VariantArray)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitingState {
+    /// The daemon holds it until the turn ends. It can still be cancelled.
+    Queued,
+    /// `claude` has it: Claude reads it at its next step, or starts a turn with it.
+    Sent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

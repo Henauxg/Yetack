@@ -175,6 +175,9 @@ document.addEventListener("keydown", (event) => {
   } else if (event.altKey && !command && !event.shiftKey && (key === "ArrowUp" || key === "ArrowDown")) {
     // Alt+Up and Alt+Down move the selected agent in the sidebar.
     take = where !== "field" && !mode.dialog;
+  } else if (where === "composer" && event.altKey && !command && !event.shiftKey && key === "Enter") {
+    // Alt+Enter queues the message until the turn ends.
+    take = true;
   } else if (where === "composer" && plain) {
     take = (mode.palette && ["ArrowUp", "ArrowDown", "Enter", "Tab"].includes(key))
       || (text === "" && answers)

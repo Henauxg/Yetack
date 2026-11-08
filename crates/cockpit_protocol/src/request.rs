@@ -11,7 +11,9 @@ use strum::{Display, EnumString, IntoStaticStr, VariantArray};
 
 use crate::agent::{Effort, PermissionMode};
 use crate::details::McpScope;
-use crate::ids::{AgentId, BackgroundTaskId, ClaudeSessionId, ItemId, PendingId, ProcessId};
+use crate::ids::{
+    AgentId, BackgroundTaskId, ClaudeSessionId, ItemId, PendingId, ProcessId, PromptId,
+};
 use crate::settings::Settings;
 use crate::transcript::{ApprovalAnswer, Image, PlanAnswer, QuestionAnswer};
 
@@ -20,10 +22,13 @@ use crate::transcript::{ApprovalAnswer, Image, PlanAnswer, QuestionAnswer};
 pub enum Request {
     /// Answered by `AgentStarted`.
     AgentStart(StartParams),
-    /// Answered by `Done`. A prompt sent while the agent works is queued.
+    /// Answered by `Done`. While the agent works, the prompt waits in `waiting_prompts` until
+    /// Claude reads it.
     AgentPrompt(PromptParams),
     /// Removes a queued prompt before Claude Code gets it. Answered by `Done`.
-    AgentCancelQueued(CancelQueuedParams),
+    AgentCancelQueued(QueuedPromptParams),
+    /// Sends a queued prompt now, for Claude to read at its next step. Answered by `Done`.
+    AgentSendQueued(QueuedPromptParams),
     /// Answers an approval, a question or a plan. Answered by `Done`.
     AgentAnswer(AnswerParams),
     /// Stops the current turn; the process keeps running. Answered by `Done`.
@@ -102,6 +107,8 @@ pub enum Method {
     AgentPrompt,
     #[strum(serialize = "agent.cancel_queued")]
     AgentCancelQueued,
+    #[strum(serialize = "agent.send_queued")]
+    AgentSendQueued,
     #[strum(serialize = "agent.answer")]
     AgentAnswer,
     #[strum(serialize = "agent.interrupt")]
@@ -206,13 +213,29 @@ pub struct Prompt {
 pub struct PromptParams {
     pub agent: AgentId,
     pub prompt: Prompt,
+    /// How the prompt reaches a working agent. An idle agent gets it at once either way.
+    #[serde(default)]
+    pub delivery: PromptDelivery,
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, VariantArray,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptDelivery {
+    /// Goes to Claude Code now: Claude reads it at its next step, in the current turn. A slash
+    /// command is queued instead: Claude Code does not echo every one, so the daemon could not
+    /// tell when it was read.
+    #[default]
+    Steer,
+    /// Waits until the turn ends and every earlier prompt has been read.
+    Queue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CancelQueuedParams {
+pub struct QueuedPromptParams {
     pub agent: AgentId,
-    /// The queued user message.
-    pub item: ItemId,
+    pub prompt: PromptId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -360,6 +383,7 @@ impl Request {
             Self::AgentStart(_) => Method::AgentStart,
             Self::AgentPrompt(_) => Method::AgentPrompt,
             Self::AgentCancelQueued(_) => Method::AgentCancelQueued,
+            Self::AgentSendQueued(_) => Method::AgentSendQueued,
             Self::AgentAnswer(_) => Method::AgentAnswer,
             Self::AgentInterrupt(_) => Method::AgentInterrupt,
             Self::AgentStop(_) => Method::AgentStop,
@@ -411,6 +435,7 @@ impl Serialize for Request {
             Self::AgentStart(params) => tagged(method, params, serializer),
             Self::AgentPrompt(params) => tagged(method, params, serializer),
             Self::AgentCancelQueued(params) => tagged(method, params, serializer),
+            Self::AgentSendQueued(params) => tagged(method, params, serializer),
             Self::AgentAnswer(params) => tagged(method, params, serializer),
             Self::AgentInterrupt(params) => tagged(method, params, serializer),
             Self::AgentStop(params) => tagged(method, params, serializer),
@@ -462,6 +487,7 @@ impl<'de> Deserialize<'de> for Request {
             Method::AgentStart => Self::AgentStart(params(raw)?),
             Method::AgentPrompt => Self::AgentPrompt(params(raw)?),
             Method::AgentCancelQueued => Self::AgentCancelQueued(params(raw)?),
+            Method::AgentSendQueued => Self::AgentSendQueued(params(raw)?),
             Method::AgentAnswer => Self::AgentAnswer(params(raw)?),
             Method::AgentInterrupt => Self::AgentInterrupt(params(raw)?),
             Method::AgentStop => Self::AgentStop(params(raw)?),

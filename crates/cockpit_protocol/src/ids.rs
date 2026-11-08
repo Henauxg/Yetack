@@ -95,6 +95,29 @@ impl ItemId {
     }
 }
 
+/// A prompt of one agent that Claude has not read yet, numbered by the daemon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PromptId(u32);
+
+impl PromptId {
+    #[must_use]
+    pub fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    #[must_use]
+    pub fn get(self) -> u32 {
+        self.0
+    }
+
+    /// The id after this one, back to 0 after `u32::MAX`.
+    #[must_use]
+    pub fn next(self) -> Self {
+        Self(self.0.wrapping_add(1))
+    }
+}
+
 /// Claude Code's `session_id`, which `--resume` takes.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]

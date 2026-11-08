@@ -60,7 +60,7 @@ pub fn conversation_markdown(entry: &AgentEntry) -> String {
     let top_level = items.iter().filter(|item| item.parent.is_none());
     for item in top_level {
         match &item.body {
-            ItemBody::UserMessage(message) if !message.queued => {
+            ItemBody::UserMessage(message) => {
                 if !message.text.trim().is_empty() {
                     say(
                         &mut parts,
@@ -118,7 +118,7 @@ pub fn conversation_markdown(entry: &AgentEntry) -> String {
                 }
             }
             ItemBody::Notice { text, .. } => parts.push(notice(text)),
-            ItemBody::UserMessage(_) | ItemBody::Thinking { .. } => {}
+            ItemBody::Thinking { .. } => {}
         }
     }
     joined(&parts)
@@ -286,7 +286,7 @@ mod tests {
         }
     }
 
-    fn user(text: &str, images: usize, queued: bool) -> ItemBody {
+    fn user(text: &str, images: usize) -> ItemBody {
         let image = Image {
             media_type: ImageMediaType::Png,
             data: "aGVsbG8=".to_owned(),
@@ -294,7 +294,6 @@ mod tests {
         ItemBody::UserMessage(UserMessage {
             text: text.to_owned(),
             images: vec![image; images],
-            queued,
         })
     }
 
@@ -335,7 +334,7 @@ mod tests {
         };
         let entry = entry_with(
             vec![
-                (None, user("Fix the column numbers.", 1, false)),
+                (None, user("Fix the column numbers.", 1)),
                 (
                     None,
                     ItemBody::Thinking {
@@ -388,8 +387,7 @@ mod tests {
                         detail: None,
                     },
                 ),
-                (None, user("Thanks", 0, false)),
-                (None, user("Also the docs", 0, true)),
+                (None, user("Thanks", 0)),
             ],
             false,
         );
@@ -527,7 +525,7 @@ Context usage
 
     #[test]
     fn an_export_with_older_messages_unloaded_is_not_complete() {
-        let entry = entry_with(vec![(None, user("Run the tests", 0, false))], true);
+        let entry = entry_with(vec![(None, user("Run the tests", 0))], true);
 
         assert!(!is_complete(&entry));
     }

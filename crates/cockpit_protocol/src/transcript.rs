@@ -52,8 +52,6 @@ pub enum ItemBody {
 pub struct UserMessage {
     pub text: String,
     pub images: Vec<Image>,
-    /// Sent while the agent works, and not yet passed to Claude Code.
-    pub queued: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

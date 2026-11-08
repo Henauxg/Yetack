@@ -18,13 +18,14 @@ use std::time::{Duration, Instant};
 use cockpit_client::{Connection, RequestError, Transport};
 use cockpit_protocol::{
     AgentId, AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState, Approval,
-    ApprovalAnswer, ApprovalDecision, BackgroundTaskId, CancelQueuedParams, Catchup,
-    ClaudeSessionId, CommandKind, CostUsd, Effort, ErrorCode, Event, EventRecord, HistoryParams,
-    ItemBody, ItemId, McpRemoveParams, McpScope, McpServerParams, McpServerStatus, McpToggleParams,
-    MoveParams, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, ProcessId, Prompt,
-    PromptParams, Question, QuestionAnswer, ReadFileParams, RenameParams, Request, ResponseBody,
-    Seq, SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, Settings,
-    StartParams, StopProcessParams, StopTaskParams, TranscriptItem,
+    ApprovalAnswer, ApprovalDecision, BackgroundTaskId, Catchup, ClaudeSessionId, CommandKind,
+    CostUsd, Effort, ErrorCode, Event, EventRecord, HistoryParams, ItemBody, McpRemoveParams,
+    McpScope, McpServerParams, McpServerStatus, McpToggleParams, MoveParams, PROTOCOL_VERSION,
+    PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, ProcessId, Prompt, PromptDelivery,
+    PromptParams, Question, QuestionAnswer, QueuedPromptParams, ReadFileParams, RenameParams,
+    Request, ResponseBody, Seq, SessionResumeParams, SetEffortParams, SetModeParams,
+    SetModelParams, Settings, StartParams, StopProcessParams, StopTaskParams, TranscriptItem,
+    WaitingPrompt, WaitingState,
 };
 use rustix::process::{Pid, Signal};
 use serde_json::Value;
@@ -263,9 +264,14 @@ impl Client {
     }
 
     async fn prompt(&self, agent: AgentId, prompt: &str) {
+        self.prompt_with(agent, prompt, PromptDelivery::Steer).await;
+    }
+
+    async fn prompt_with(&self, agent: AgentId, prompt: &str, delivery: PromptDelivery) {
         let params = PromptParams {
             agent,
             prompt: text(prompt),
+            delivery,
         };
         assert_eq!(
             self.ok(Request::AgentPrompt(params)).await,
@@ -295,6 +301,24 @@ impl Client {
                 if summary.id == agent && matches(summary) =>
             {
                 Some(summary.clone())
+            }
+            _ => None,
+        })
+        .await
+    }
+
+    /// Waits for the agent's waiting prompts to match, and gives them.
+    async fn waiting_with(
+        &mut self,
+        agent: AgentId,
+        mut matches: impl FnMut(&[WaitingPrompt]) -> bool,
+    ) -> Vec<WaitingPrompt> {
+        self.wait_for(|event| match event {
+            Event::DetailsChanged {
+                agent: from,
+                details,
+            } if *from == agent && matches(&details.waiting_prompts) => {
+                Some(details.waiting_prompts.clone())
             }
             _ => None,
         })
@@ -902,7 +926,7 @@ async fn questions_and_plans_get_their_answers() {
 }
 
 #[tokio::test]
-async fn an_interrupt_cancels_what_waits_and_queued_prompts_follow() {
+async fn an_interrupt_cancels_what_waits_and_waiting_prompts_follow_in_order() {
     let setup = Setup::new();
     let mut client = setup.connect().await;
     let agent = client.start(&setup.work(), "approve this").await;
@@ -910,34 +934,62 @@ async fn an_interrupt_cancels_what_waits_and_queued_prompts_follow() {
         .item_with(agent, |body| pending_of(body).is_some())
         .await;
 
-    client.prompt(agent, "hello queued").await;
-    let queued = client
-        .item_with(agent, |body| {
-            matches!(
-                body,
-                ItemBody::UserMessage(message) if message.queued && message.text == "hello queued"
-            )
-        })
-        .await;
-    client.prompt(agent, "drop me").await;
-    let dropped = client
-        .item_with(
+    client.prompt(agent, "hello steered").await;
+    client
+        .waiting_with(
             agent,
-            |body| matches!(body, ItemBody::UserMessage(message) if message.text == "drop me"),
+            |prompts| matches!(prompts, [prompt] if prompt.state == WaitingState::Sent),
         )
         .await;
-    let cancel = CancelQueuedParams {
+    client
+        .prompt_with(agent, "drop me", PromptDelivery::Queue)
+        .await;
+    let prompts = client
+        .waiting_with(agent, |prompts| prompts.len() == 2)
+        .await;
+    let cancel = QueuedPromptParams {
         agent,
-        item: dropped.id,
+        prompt: prompts[1].id,
     };
     assert_eq!(
         client.ok(Request::AgentCancelQueued(cancel)).await,
         ResponseBody::Done
     );
-    let notice = client
-        .item_with(agent, |body| matches!(body, ItemBody::Notice { .. }))
+    client
+        .waiting_with(agent, |prompts| prompts.len() == 1)
         .await;
-    assert_eq!(notice.id, dropped.id);
+    assert_eq!(
+        client.error_code(Request::AgentSendQueued(cancel)).await,
+        ErrorCode::NotFound,
+        "a cancelled prompt is gone"
+    );
+    client
+        .prompt_with(agent, "then queued", PromptDelivery::Queue)
+        .await;
+    client
+        .prompt_with(agent, "/effort high", PromptDelivery::Steer)
+        .await;
+    let prompts = client
+        .waiting_with(agent, |prompts| prompts.len() == 3)
+        .await;
+    let states: Vec<WaitingState> = prompts.iter().map(|prompt| prompt.state).collect();
+    assert_eq!(
+        states,
+        [
+            WaitingState::Sent,
+            WaitingState::Queued,
+            WaitingState::Queued
+        ],
+        "a slash command waits for the turn's end"
+    );
+    let effort = QueuedPromptParams {
+        agent,
+        prompt: prompts[2].id,
+    };
+    assert_eq!(
+        client.ok(Request::AgentCancelQueued(effort)).await,
+        ResponseBody::Done
+    );
 
     assert_eq!(
         client
@@ -963,32 +1015,62 @@ async fn an_interrupt_cancels_what_waits_and_queued_prompts_follow() {
     };
     assert!(end.stopped);
     assert_eq!(end.error, None);
-    let sent = client
-        .item_with(agent, |body| {
-            matches!(
-                body,
-                ItemBody::UserMessage(message) if !message.queued && message.text == "hello queued"
-            )
+    client.says(agent, "Echo: hello steered").await;
+    client.says(agent, "Echo: then queued").await;
+    client.idle(agent).await;
+    let users: Vec<String> = client
+        .history(agent)
+        .await
+        .into_iter()
+        .filter_map(|item| match item.body {
+            ItemBody::UserMessage(message) => Some(message.text),
+            _ => None,
         })
-        .await;
-    assert_eq!(sent.id, queued.id);
-    client.says(agent, "Echo: hello queued").await;
-    let history = client.history(agent).await;
-    let users = history
-        .iter()
-        .filter(|item| matches!(item.body, ItemBody::UserMessage(_)))
-        .count();
-    assert_eq!(users, 2, "the echo of a sent prompt adds no item");
-    let notices: Vec<ItemId> = history
-        .iter()
-        .filter(|item| matches!(item.body, ItemBody::Notice { .. }))
-        .map(|item| item.id)
         .collect();
+    assert_eq!(users, ["approve this", "hello steered", "then queued"]);
+}
+
+#[tokio::test]
+async fn a_queued_prompt_sent_now_waits_for_claude_to_read_it() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let agent = client.start(&setup.work(), "approve this").await;
+    client
+        .item_with(agent, |body| pending_of(body).is_some())
+        .await;
+    client
+        .prompt_with(agent, "hello later", PromptDelivery::Queue)
+        .await;
+    let prompts = client
+        .waiting_with(agent, |prompts| prompts.len() == 1)
+        .await;
+
+    let send = QueuedPromptParams {
+        agent,
+        prompt: prompts[0].id,
+    };
     assert_eq!(
-        notices,
-        [dropped.id],
-        "the turn end says the user stopped the turn"
+        client.ok(Request::AgentSendQueued(send)).await,
+        ResponseBody::Done
     );
+    client
+        .waiting_with(
+            agent,
+            |prompts| matches!(prompts, [prompt] if prompt.state == WaitingState::Sent),
+        )
+        .await;
+    assert_eq!(
+        client
+            .ok(Request::AgentInterrupt(AgentParams { agent }))
+            .await,
+        ResponseBody::Done
+    );
+
+    client
+        .waiting_with(agent, <[WaitingPrompt]>::is_empty)
+        .await;
+    client.says(agent, "Echo: hello later").await;
+    client.idle(agent).await;
 }
 
 #[tokio::test]
@@ -1056,6 +1138,7 @@ async fn a_restarted_daemon_resumes_its_agents_and_replays_or_snapshots() {
         .error_code(Request::AgentPrompt(PromptParams {
             agent,
             prompt: text("hello"),
+            delivery: PromptDelivery::Steer,
         }))
         .await;
     assert_eq!(code, ErrorCode::AgentExited);
@@ -1393,10 +1476,10 @@ async fn malformed_requests_get_an_error_and_the_connection_stays() {
         serde_json::from_str(&line).unwrap()
     };
 
-    write
-        .write_all(b"{\"type\":\"hello\",\"protocol_version\":1,\"last_seq\":null}\n")
-        .await
-        .unwrap();
+    let hello = format!(
+        "{{\"type\":\"hello\",\"protocol_version\":{PROTOCOL_VERSION},\"last_seq\":null}}\n"
+    );
+    write.write_all(hello.as_bytes()).await.unwrap();
     assert_eq!(next_line().await["type"], "welcome");
     write
         .write_all(b"{\"type\":\"request\",\"id\":5,\"request\":{\"method\":\"agent.fly\"}}\nnot json at all\n")

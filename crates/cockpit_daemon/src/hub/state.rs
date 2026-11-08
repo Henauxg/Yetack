@@ -6,7 +6,8 @@ use std::time::SystemTime;
 
 use claude_protocol::InputLine;
 use cockpit_protocol::{
-    AgentId, Event, EventRecord, Frame, ItemId, PlanUsage, Seq, ServerMessage, Snapshot, Timestamp,
+    AgentId, Event, EventRecord, Frame, PlanUsage, Prompt, PromptId, Seq, ServerMessage, Snapshot,
+    Timestamp,
 };
 use tokio::sync::mpsc;
 
@@ -54,9 +55,9 @@ pub(super) struct Agent {
 
 pub(super) struct QueuedPrompt {
     /// `None` for a prompt the transcript does not show, such as `/effort high`.
-    pub(super) item: Option<ItemId>,
+    pub(super) id: Option<PromptId>,
     pub(super) line: InputLine,
-    pub(super) text: String,
+    pub(super) prompt: Prompt,
 }
 
 impl Hub {
