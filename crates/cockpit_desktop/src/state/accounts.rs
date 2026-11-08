@@ -14,7 +14,7 @@ use cockpit_protocol::{
     SignIn, SignInWait, TranscriptItem, TurnOutcome, UsageWindow, UserMessage, account_folder_name,
 };
 
-use super::app_state::{AgentEntry, AppState};
+use super::app_state::{AgentEntry, AppState, MachineState};
 use super::drafts::Drafts;
 use super::requests::{Outgoing, Purpose};
 use super::ui_state::{Dialog, NewAgentForm};
@@ -66,50 +66,54 @@ pub struct AccountLabel {
     pub color: AccountColor,
 }
 
-/// Labels show once there is a choice: two accounts or more.
-pub fn shows_labels(state: &AppState) -> bool {
-    state.machines.this.accounts.len() >= 2
+/// What the app knows of `machine`, whose daemon has the accounts. Each machine numbers its own
+/// accounts, so an account id means something only with its machine.
+fn known(state: &AppState, machine: MachineId) -> &MachineState {
+    state.machines.get(machine).unwrap_or(&state.machines.this)
 }
 
-pub fn account(state: &AppState, id: AccountId) -> Option<&Account> {
-    state
-        .machines
-        .this
+/// Labels show once there is a choice: two accounts or more on the machine.
+pub fn shows_labels(state: &AppState, machine: MachineId) -> bool {
+    known(state, machine).accounts.len() >= 2
+}
+
+pub fn account(state: &AppState, machine: MachineId, id: AccountId) -> Option<&Account> {
+    known(state, machine)
         .accounts
         .iter()
         .find(|account| account.id == id)
 }
 
-pub fn color(state: &AppState, id: AccountId) -> AccountColor {
+pub fn color(state: &AppState, machine: MachineId, id: AccountId) -> AccountColor {
     state
         .prefs
         .accounts
-        .color(&state.machines.this.daemon.machine, id)
+        .color(&known(state, machine).daemon.machine, id)
 }
 
 /// The account's label, whatever the number of accounts.
-pub fn label_of(state: &AppState, id: AccountId) -> Option<AccountLabel> {
-    let account = account(state, id)?;
+pub fn label_of(state: &AppState, machine: MachineId, id: AccountId) -> Option<AccountLabel> {
+    let account = account(state, machine, id)?;
     Some(AccountLabel {
         id,
         name: account.name.clone(),
-        color: color(state, id),
+        color: color(state, machine, id),
     })
 }
 
 /// The label an agent, a folder or a session shows: `None` with fewer than two accounts.
-pub fn label(state: &AppState, id: AccountId) -> Option<AccountLabel> {
-    shows_labels(state).then(|| label_of(state, id)).flatten()
+pub fn label(state: &AppState, machine: MachineId, id: AccountId) -> Option<AccountLabel> {
+    shows_labels(state, machine)
+        .then(|| label_of(state, machine, id))
+        .flatten()
 }
 
 /// Every account's label, the default one first.
-pub fn labels(state: &AppState) -> Vec<AccountLabel> {
-    state
-        .machines
-        .this
+pub fn labels(state: &AppState, machine: MachineId) -> Vec<AccountLabel> {
+    known(state, machine)
         .accounts
         .iter()
-        .filter_map(|account| label_of(state, account.id))
+        .filter_map(|account| label_of(state, machine, account.id))
         .collect()
 }
 
@@ -124,24 +128,25 @@ pub enum Billing {
     NotSignedIn,
 }
 
-pub fn billing(state: &AppState, id: AccountId) -> Billing {
-    if account(state, id)
+pub fn billing(state: &AppState, machine: MachineId, id: AccountId) -> Billing {
+    if account(state, machine, id)
         .is_some_and(|account| account.credentials == CredentialSource::Environment)
     {
         return Billing::Environment;
     }
-    match state.machines.this.sign_ins.sign_in(id) {
+    match known(state, machine).sign_ins.sign_in(id) {
         Some(SignIn::NotSignedIn) => Billing::NotSignedIn,
         Some(SignIn::SignedIn | SignIn::Unknown) | None => Billing::Plan,
     }
 }
 
 /// The account's plan usage: the default account's comes apart from the others'.
-pub fn plan_usage(state: &AppState, id: AccountId) -> Option<&PlanUsage> {
+pub fn plan_usage(state: &AppState, machine: MachineId, id: AccountId) -> Option<&PlanUsage> {
+    let known = known(state, machine);
     if id.is_default() {
-        return Some(&state.machines.this.plan_usage);
+        return Some(&known.plan_usage);
     }
-    state.machines.this.other_plan_usage.get(&id)
+    known.other_plan_usage.get(&id)
 }
 
 pub fn window_percent(usage: Option<&PlanUsage>, window: UsageWindow) -> Option<u8> {
@@ -165,24 +170,26 @@ pub enum PlanChip {
     NotSignedIn,
 }
 
-pub fn plan_chip(state: &AppState, id: AccountId) -> PlanChip {
-    match billing(state, id) {
+pub fn plan_chip(state: &AppState, machine: MachineId, id: AccountId) -> PlanChip {
+    match billing(state, machine, id) {
         Billing::Environment => PlanChip::Environment,
         Billing::NotSignedIn => PlanChip::NotSignedIn,
-        Billing::Plan => PlanChip::Percent(plan_usage(state, id).and_then(plan_percent)),
+        Billing::Plan => PlanChip::Percent(plan_usage(state, machine, id).and_then(plan_percent)),
     }
 }
 
 /// The plan card's accounts: the agent's first, then the others in the daemon's order.
-pub fn plan_card_accounts(state: &AppState, agent_account: AccountId) -> Vec<AccountId> {
-    let mut ids: Vec<AccountId> = Vec::with_capacity(state.machines.this.accounts.len());
-    if account(state, agent_account).is_some() {
+pub fn plan_card_accounts(
+    state: &AppState,
+    machine: MachineId,
+    agent_account: AccountId,
+) -> Vec<AccountId> {
+    let accounts = &known(state, machine).accounts;
+    let mut ids: Vec<AccountId> = Vec::with_capacity(accounts.len());
+    if account(state, machine, agent_account).is_some() {
         ids.push(agent_account);
     }
-    let others = state
-        .machines
-        .this
-        .accounts
+    let others = accounts
         .iter()
         .map(|account| account.id)
         .filter(|&id| id != agent_account);
@@ -192,14 +199,14 @@ pub fn plan_card_accounts(state: &AppState, agent_account: AccountId) -> Vec<Acc
 
 /// The account of the last agent or past session in `folder`, by the daemon machine's path
 /// rules.
-pub fn folder_account(state: &AppState, folder: &str) -> Option<AccountId> {
+pub fn folder_account(state: &AppState, machine: MachineId, folder: &str) -> Option<AccountId> {
     let folder = folder.trim();
     if folder.is_empty() {
         return None;
     }
     let style = PathStyle::of_text(folder);
     state
-        .recent_folders(MachineId::THIS)
+        .recent_folders(machine)
         .into_iter()
         .find(|recent| style.same_path(&recent.folder.to_string_lossy(), folder))
         .map(|recent| recent.account)
@@ -208,16 +215,17 @@ pub fn folder_account(state: &AppState, folder: &str) -> Option<AccountId> {
 /// The account a new agent in `folder` runs with: the one picked, else the folder's last one,
 /// else the default one. An account the daemon no longer has counts as none.
 pub fn new_agent_account(state: &AppState, form: &NewAgentForm, folder: &str) -> AccountId {
-    let known = |id: &AccountId| account(state, *id).is_some();
+    let machine = form.machine;
+    let has = |id: &AccountId| account(state, machine, *id).is_some();
     form.account
-        .filter(known)
-        .or_else(|| folder_account(state, folder).filter(known))
+        .filter(has)
+        .or_else(|| folder_account(state, machine, folder).filter(has))
         .unwrap_or(AccountId::DEFAULT)
 }
 
 /// The account menu's title: why the button shows the account it shows.
-pub fn picker_title(state: &AppState, folder: &str) -> String {
-    let last = folder_account(state, folder).and_then(|id| account(state, id));
+pub fn picker_title(state: &AppState, machine: MachineId, folder: &str) -> String {
+    let last = folder_account(state, machine, folder).and_then(|id| account(state, machine, id));
     match last {
         Some(last) => format!("Account · {} ran the last agent in this folder", last.name),
         None => "Account · the default account for a new folder".to_owned(),
@@ -241,14 +249,14 @@ pub struct AccountChoice {
     pub detail: ChoiceDetail,
 }
 
-pub fn choices(state: &AppState) -> Vec<AccountChoice> {
-    let all = labels(state).into_iter();
+pub fn choices(state: &AppState, machine: MachineId) -> Vec<AccountChoice> {
+    let all = labels(state, machine).into_iter();
     let choices = all.map(|label| {
-        let detail = match billing(state, label.id) {
+        let detail = match billing(state, machine, label.id) {
             Billing::Environment => ChoiceDetail::Environment,
             Billing::NotSignedIn => ChoiceDetail::NotSignedIn,
             Billing::Plan => {
-                let usage = plan_usage(state, label.id);
+                let usage = plan_usage(state, machine, label.id);
                 ChoiceDetail::Plan {
                     five_hour: window_percent(usage, UsageWindow::FiveHour),
                     seven_day: window_percent(usage, UsageWindow::SevenDay),
@@ -333,9 +341,9 @@ pub fn sign_in_turn(entry: &AgentEntry) -> Option<SignInTurn> {
 
 /// Whether Claude Code refused the API key or token the account takes from the daemon's
 /// environment. With neither variable set, Claude Code used the folder's login instead.
-pub fn credentials_refused(state: &AppState, id: AccountId) -> bool {
-    state.machines.this.sign_ins.environment_credentials == EnvironmentCredentials::Set
-        && account(state, id)
+pub fn credentials_refused(state: &AppState, machine: MachineId, id: AccountId) -> bool {
+    known(state, machine).sign_ins.environment_credentials == EnvironmentCredentials::Set
+        && account(state, machine, id)
             .is_some_and(|account| account.credentials == CredentialSource::Environment)
 }
 
@@ -345,8 +353,9 @@ pub fn credentials_refused(state: &AppState, id: AccountId) -> bool {
 /// credentials come from the environment.
 pub fn can_send_again(state: &AppState, entry: &AgentEntry, turn: &SignInTurn) -> bool {
     let id = entry.summary.account;
-    let cannot_tell = state.machines.this.sign_ins.sign_in(id) == Some(SignIn::Unknown)
-        || account(state, id)
+    let machine = MachineId::of(entry.id());
+    let cannot_tell = known(state, machine).sign_ins.sign_in(id) == Some(SignIn::Unknown)
+        || account(state, machine, id)
             .is_some_and(|account| account.credentials == CredentialSource::Environment);
     let signed_in = entry.summary.sign_in_wait == SignInWait::NotWaiting || cannot_tell;
     signed_in && turn.message.is_some() && entry.sent_again != Some(turn.turn_end)
@@ -390,7 +399,7 @@ pub fn send_again(state: &mut AppState, agent: AgentId) -> Vec<Outgoing> {
             agent,
             turn_end: turn.turn_end,
         },
-        to: MachineId::THIS,
+        to: MachineId::of(agent),
     }]
 }
 
@@ -437,53 +446,61 @@ pub fn sign_in_line(state: &AppState, entry: &AgentEntry) -> Option<SignInLine> 
     if entry.summary.sign_in_wait == SignInWait::NotWaiting {
         return sends_again(state, entry.id()).then_some(SignInLine::SendAgain);
     }
-    let line = match account(state, entry.summary.account) {
+    let line = match account(state, MachineId::of(entry.id()), entry.summary.account) {
         Some(account) => format!("{} is not signed in", account.name),
         None => "Not signed in".to_owned(),
     };
     Some(SignInLine::NotSignedIn(line))
 }
 
-/// How many agents besides `agent` wait for the same account's sign-in.
+/// How many agents besides `agent`, on its machine, wait for the same account's sign-in.
 pub fn others_waiting(state: &AppState, agent: AgentId, id: AccountId) -> usize {
+    let machine = MachineId::of(agent);
     let others = state.agents.values().filter(|entry| {
         entry.id() != agent
+            && MachineId::of(entry.id()) == machine
             && entry.summary.account == id
             && entry.summary.sign_in_wait == SignInWait::Waiting
     });
     others.count()
 }
 
-/// The agents of an account, running or not.
-pub fn agent_count(state: &AppState, id: AccountId) -> usize {
+/// The agents of an account of `machine`, running or not.
+pub fn agent_count(state: &AppState, machine: MachineId, id: AccountId) -> usize {
     let agents = state.agents.values();
-    agents.filter(|entry| entry.summary.account == id).count()
+    agents
+        .filter(|entry| MachineId::of(entry.id()) == machine && entry.summary.account == id)
+        .count()
 }
 
-/// `accounts.list`, when the window needs the sign-in states and they are not on their way.
-pub fn list_request(state: &mut AppState) -> Option<Outgoing> {
-    let sign_ins = &mut state.machines.this.sign_ins;
-    if state.machines.this.accounts.is_empty() || sign_ins.checked_at.is_some() || sign_ins.checking
-    {
+/// `accounts.list` to `machine`, when the window needs its sign-in states and they are not on
+/// their way.
+pub fn list_request(state: &mut AppState, machine: MachineId) -> Option<Outgoing> {
+    let known = state.machines.get_mut(machine)?;
+    let sign_ins = &mut known.sign_ins;
+    if known.accounts.is_empty() || sign_ins.checked_at.is_some() || sign_ins.checking {
         return None;
     }
     sign_ins.checking = true;
     Some(Outgoing {
         request: Request::AccountsList,
         purpose: Purpose::Accounts,
-        to: MachineId::THIS,
+        to: machine,
     })
 }
 
 /// "Check again": the daemon looks at the accounts' folders, and ends the waits of the agents
 /// whose account signed in since.
-pub fn check_again(state: &mut AppState) {
-    state.machines.this.sign_ins.refresh();
+pub fn check_again(state: &mut AppState, machine: MachineId) {
+    if let Some(known) = state.machines.get_mut(machine) {
+        known.sign_ins.refresh();
+    }
 }
 
-/// The "Accounts" dialog: which card is open.
+/// The "Accounts" dialog: which machine's accounts it shows, and which card is open.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AccountsView {
+    pub machine: MachineId,
     pub expanded: Option<AccountId>,
     /// The new agent dialog it was opened from, which closing it goes back to.
     pub from_new_agent: Option<NewAgentForm>,
@@ -491,19 +508,35 @@ pub struct AccountsView {
 
 /// Opens the "Accounts" dialog. Opened from the new agent dialog, or from "Add an account" that
 /// came from there, it keeps that dialog to go back to.
+///
+/// It shows the accounts of the machine the dialog it comes from is about, else the selected
+/// agent's.
 pub fn open_accounts(state: &mut AppState, expanded: Option<AccountId>) {
-    let from_new_agent = match state.ui.dialog.take() {
-        Some(Dialog::NewAgent(form)) => Some(NewAgentForm { menu: None, ..form }),
-        Some(Dialog::Accounts(view)) => view.from_new_agent,
-        Some(Dialog::AddAccount(form)) => form.from_new_agent,
-        Some(_) | None => None,
+    let selected = state.selected_machine();
+    let (machine, from_new_agent) = match state.ui.dialog.take() {
+        Some(Dialog::NewAgent(form)) => (form.machine, Some(NewAgentForm { menu: None, ..form })),
+        Some(Dialog::Accounts(view)) => (view.machine, view.from_new_agent),
+        Some(Dialog::AddAccount(form)) => (form.machine, form.from_new_agent),
+        Some(_) | None => (selected, None),
     };
     state.ui.popover = None;
     state.ui.dialog = Some(Dialog::Accounts(AccountsView {
+        machine,
         expanded,
         from_new_agent,
     }));
-    state.machines.this.sign_ins.refresh();
+    check_again(state, machine);
+}
+
+/// Shows another machine's accounts in the "Accounts" dialog.
+pub fn pick_accounts_machine(state: &mut AppState, machine: MachineId) {
+    if let Some(Dialog::Accounts(view)) = &mut state.ui.dialog
+        && view.machine != machine
+    {
+        view.machine = machine;
+        view.expanded = None;
+        check_again(state, machine);
+    }
 }
 
 pub fn toggle_account(state: &mut AppState, id: AccountId) {
@@ -512,31 +545,42 @@ pub fn toggle_account(state: &mut AppState, id: AccountId) {
     }
 }
 
-pub fn set_color(state: &mut AppState, id: AccountId, color: AccountColor) {
-    let machine = state.machines.this.daemon.machine.clone();
-    state.prefs.accounts.set_color(&machine, id, color);
+pub fn set_color(state: &mut AppState, machine: MachineId, id: AccountId, color: AccountColor) {
+    let name = known(state, machine).daemon.machine.clone();
+    state.prefs.accounts.set_color(&name, id, color);
 }
 
 /// Renames the account, when the name changed and is not empty.
-pub fn rename_account(state: &AppState, id: AccountId, name: &str) -> Vec<Outgoing> {
+pub fn rename_account(
+    state: &AppState,
+    machine: MachineId,
+    id: AccountId,
+    name: &str,
+) -> Vec<Outgoing> {
     let name = name.trim();
-    let unchanged = account(state, id).is_none_or(|account| account.name == name);
+    let unchanged = account(state, machine, id).is_none_or(|account| account.name == name);
     if name.is_empty() || unchanged {
         return Vec::new();
     }
-    change_request(AccountChangeParams {
-        account: id,
-        name: Some(name.to_owned()),
-        credentials: None,
-    })
+    change_request(
+        machine,
+        AccountChangeParams {
+            account: id,
+            name: Some(name.to_owned()),
+            credentials: None,
+        },
+    )
 }
 
-pub fn set_environment_credentials(id: AccountId, uses: bool) -> Vec<Outgoing> {
-    change_request(AccountChangeParams {
-        account: id,
-        name: None,
-        credentials: Some(credentials(uses)),
-    })
+pub fn set_environment_credentials(machine: MachineId, id: AccountId, uses: bool) -> Vec<Outgoing> {
+    change_request(
+        machine,
+        AccountChangeParams {
+            account: id,
+            name: None,
+            credentials: Some(credentials(uses)),
+        },
+    )
 }
 
 fn credentials(uses_environment: bool) -> CredentialSource {
@@ -547,11 +591,11 @@ fn credentials(uses_environment: bool) -> CredentialSource {
     }
 }
 
-fn change_request(params: AccountChangeParams) -> Vec<Outgoing> {
+fn change_request(machine: MachineId, params: AccountChangeParams) -> Vec<Outgoing> {
     vec![Outgoing {
         request: Request::AccountsChange(params),
         purpose: Purpose::AccountChanged,
-        to: MachineId::THIS,
+        to: machine,
     }]
 }
 
@@ -564,29 +608,33 @@ pub enum RemoveBlock {
     InUse(usize),
 }
 
-pub fn remove_block(state: &AppState, id: AccountId) -> Option<RemoveBlock> {
+pub fn remove_block(state: &AppState, machine: MachineId, id: AccountId) -> Option<RemoveBlock> {
     if id.is_default() {
         return Some(RemoveBlock::Default);
     }
-    let count = agent_count(state, id);
+    let count = agent_count(state, machine, id);
     (count > 0).then_some(RemoveBlock::InUse(count))
 }
 
-pub fn remove_account(state: &mut AppState, id: AccountId) -> Vec<Outgoing> {
-    if remove_block(state, id).is_some() {
+pub fn remove_account(state: &mut AppState, machine: MachineId, id: AccountId) -> Vec<Outgoing> {
+    if remove_block(state, machine, id).is_some() {
         return Vec::new();
     }
     if let Some(Dialog::Accounts(view)) = &mut state.ui.dialog {
         view.expanded.take_if(|expanded| *expanded == id);
     }
-    vec![Outgoing::action(Request::AccountsRemove(AccountParams {
-        account: id,
-    }))]
+    vec![Outgoing {
+        request: Request::AccountsRemove(AccountParams { account: id }),
+        purpose: Purpose::Action,
+        to: machine,
+    }]
 }
 
 /// The "Add an account" dialog. Its text fields are in the drafts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddAccountForm {
+    /// The machine whose daemon adds the account.
+    pub machine: MachineId,
     pub color: AccountColor,
     pub use_environment: bool,
     /// The `accounts.add` request is on its way.
@@ -600,13 +648,15 @@ pub struct AddAccountForm {
 }
 
 pub fn open_add_account(state: &mut AppState, drafts: &mut Drafts) {
-    let from_new_agent = match state.ui.dialog.take() {
-        Some(Dialog::Accounts(view)) => view.from_new_agent,
-        Some(_) | None => None,
+    let selected = state.selected_machine();
+    let (machine, from_new_agent) = match state.ui.dialog.take() {
+        Some(Dialog::Accounts(view)) => (view.machine, view.from_new_agent),
+        Some(_) | None => (selected, None),
     };
     state.ui.popover = None;
     state.ui.dialog = Some(Dialog::AddAccount(AddAccountForm {
-        color: free_color(state),
+        machine,
+        color: free_color(state, machine),
         use_environment: false,
         adding: false,
         added: None,
@@ -617,27 +667,19 @@ pub fn open_add_account(state: &mut AppState, drafts: &mut Drafts) {
 }
 
 /// The first color no account has, else the one the next id would take.
-pub fn free_color(state: &AppState) -> AccountColor {
+pub fn free_color(state: &AppState, machine: MachineId) -> AccountColor {
     use strum::VariantArray;
 
-    let taken: Vec<AccountColor> = state
-        .machines
-        .this
-        .accounts
+    let accounts = &known(state, machine).accounts;
+    let taken: Vec<AccountColor> = accounts
         .iter()
-        .map(|account| color(state, account.id))
+        .map(|account| color(state, machine, account.id))
         .collect();
     let free = AccountColor::VARIANTS
         .iter()
         .copied()
         .find(|color| !taken.contains(color));
-    let next = state
-        .machines
-        .this
-        .accounts
-        .iter()
-        .map(|account| account.id)
-        .max();
+    let next = accounts.iter().map(|account| account.id).max();
     let next_id = next.and_then(AccountId::next).unwrap_or(AccountId::DEFAULT);
     free.unwrap_or_else(|| AccountColor::for_id(next_id))
 }
@@ -646,8 +688,8 @@ pub fn free_color(state: &AppState) -> AccountColor {
 /// folder, which the default account's `.claude` shows, with a number added when another account
 /// has it. `None` when the default account's folder is elsewhere, as with `CLAUDE_CONFIG_DIR`,
 /// or relative, as from a home folder that is: the daemon then proposes none.
-pub fn proposed_folder(state: &AppState, name: &str) -> Option<String> {
-    let default = account(state, AccountId::DEFAULT)?;
+pub fn proposed_folder(state: &AppState, machine: MachineId, name: &str) -> Option<String> {
+    let default = account(state, machine, AccountId::DEFAULT)?;
     let text = default.folder.to_string_lossy();
     let style = PathStyle::of_text(&text);
     if style.file_name(&text) != Some(CLAUDE_HOME_FOLDER) || !style.is_absolute(&text) {
@@ -656,7 +698,7 @@ pub fn proposed_folder(state: &AppState, name: &str) -> Option<String> {
     let home = style.parent(&text)?;
     let folder_name = account_folder_name(name);
     let taken = |folder: &str| {
-        let mut folders = state.machines.this.accounts.iter();
+        let mut folders = known(state, machine).accounts.iter();
         folders.any(|account| style.same_path(&account.folder.to_string_lossy(), folder))
     };
     let mut folder = style.join(home, &folder_name);
@@ -675,7 +717,11 @@ pub fn type_account_name(state: &AppState, drafts: &mut Drafts, name: String) ->
     if draft.folder_typed {
         return None;
     }
-    let folder = proposed_folder(state, &draft.name).unwrap_or_default();
+    let machine = match &state.ui.dialog {
+        Some(Dialog::AddAccount(form)) => form.machine,
+        _ => state.selected_machine(),
+    };
+    let folder = proposed_folder(state, machine, &draft.name).unwrap_or_default();
     draft.folder.clone_from(&folder);
     Some(folder)
 }
@@ -714,7 +760,7 @@ pub fn add_account(state: &mut AppState, drafts: &Drafts) -> Vec<Outgoing> {
             credentials: credentials(form.use_environment),
         }),
         purpose: Purpose::AccountAdded { color: form.color },
-        to: MachineId::THIS,
+        to: form.machine,
     }]
 }
 
@@ -729,29 +775,27 @@ pub fn close_add_account(state: &mut AppState) {
 
 /// Keeps what the daemon says of an account, and the account itself, which the
 /// `AccountsChanged` event also brings.
-fn keep_state(state: &mut AppState, account_state: AccountState) {
+fn keep_state(state: &mut AppState, machine: MachineId, account_state: AccountState) {
+    let Some(known) = state.machines.get_mut(machine) else {
+        return;
+    };
     let account = account_state.account.clone();
-    match state
-        .machines
-        .this
-        .accounts
-        .iter_mut()
-        .find(|kept| kept.id == account.id)
-    {
+    match known.accounts.iter_mut().find(|kept| kept.id == account.id) {
         Some(kept) => *kept = account,
-        None => state.machines.this.accounts.push(account),
+        None => known.accounts.push(account),
     }
-    state
-        .machines
-        .this
+    known
         .sign_ins
         .states
         .insert(account_state.account.id, account_state);
 }
 
-/// An answer to `accounts.list`.
-pub fn listed(state: &mut AppState, result: Result<ResponseBody, String>) {
-    let sign_ins = &mut state.machines.this.sign_ins;
+/// An answer to `accounts.list` from `machine`.
+pub fn listed(state: &mut AppState, machine: MachineId, result: Result<ResponseBody, String>) {
+    let Some(known) = state.machines.get_mut(machine) else {
+        return;
+    };
+    let sign_ins = &mut known.sign_ins;
     sign_ins.checking = false;
     sign_ins.checked_at = (!sign_ins.ask_again).then(SystemTime::now);
     sign_ins.ask_again = false;
@@ -777,12 +821,17 @@ pub fn listed(state: &mut AppState, result: Result<ResponseBody, String>) {
 
 /// An answer to `accounts.add`: the dialog shows how to sign in to the account, which keeps the
 /// color picked.
-pub fn added(state: &mut AppState, color: AccountColor, result: Result<ResponseBody, String>) {
+pub fn added(
+    state: &mut AppState,
+    machine: MachineId,
+    color: AccountColor,
+    result: Result<ResponseBody, String>,
+) {
     let outcome = match result {
         Ok(ResponseBody::Account(account_state)) => {
             let id = account_state.account.id;
-            set_color(state, id, color);
-            keep_state(state, account_state);
+            set_color(state, machine, id, color);
+            keep_state(state, machine, account_state);
             Ok(id)
         }
         Ok(other) => Err(format!("unexpected {other:?}")),
@@ -798,9 +847,9 @@ pub fn added(state: &mut AppState, color: AccountColor, result: Result<ResponseB
 }
 
 /// An answer to `accounts.change`.
-pub fn changed(state: &mut AppState, result: Result<ResponseBody, String>) {
+pub fn changed(state: &mut AppState, machine: MachineId, result: Result<ResponseBody, String>) {
     match result {
-        Ok(ResponseBody::Account(account_state)) => keep_state(state, account_state),
+        Ok(ResponseBody::Account(account_state)) => keep_state(state, machine, account_state),
         Ok(other) => state
             .ui
             .report(format!("The account did not change: unexpected {other:?}")),
@@ -821,7 +870,9 @@ mod tests {
     };
 
     use super::*;
+    use crate::daemon_label::DaemonLabel;
     use crate::machine::MachineId;
+    use crate::state::ConnectionState;
     use crate::state::actions;
     use crate::state::app_state::Loadable;
     use crate::state::ui_state::FormMenu;
@@ -857,6 +908,51 @@ mod tests {
         ];
     }
 
+    /// This computer with three accounts, and devbox, whose account 1 is "Build", connected.
+    fn with_devbox(state: &mut AppState) -> MachineId {
+        let devbox = MachineId::new(1);
+        three_accounts(state);
+        let mut known = MachineState::new(DaemonLabel::ssh("devbox".to_owned()));
+        known.connection = ConnectionState::Connected;
+        known.accounts = vec![
+            named(AccountId::DEFAULT, "Default", "/home/dev/.claude"),
+            named(work(), "Build", "/home/dev/.claude-build"),
+        ];
+        state.machines.others.insert(devbox, known);
+        devbox
+    }
+
+    #[test]
+    fn an_account_id_names_another_account_on_each_machine() {
+        let mut state = state_with(Vec::new());
+        let devbox = with_devbox(&mut state);
+
+        let here = label_of(&state, MachineId::THIS, work()).map(|label| label.name);
+        let there = label_of(&state, devbox, work()).map(|label| label.name);
+
+        assert_eq!(here.as_deref(), Some("Work"));
+        assert_eq!(there.as_deref(), Some("Build"));
+        assert_eq!(labels(&state, devbox).len(), 2);
+        assert!(label_of(&state, devbox, lab()).is_none());
+    }
+
+    #[test]
+    fn the_accounts_dialog_shows_the_machine_picked_and_asks_its_sign_ins() {
+        let mut state = state_with(Vec::new());
+        let devbox = with_devbox(&mut state);
+        state.machines.this.connection = ConnectionState::Connected;
+        open_accounts(&mut state, Some(work()));
+
+        pick_accounts_machine(&mut state, devbox);
+        let asked = list_request(&mut state, devbox);
+
+        assert!(matches!(
+            &state.ui.dialog,
+            Some(Dialog::Accounts(view)) if view.machine == devbox && view.expanded.is_none()
+        ));
+        assert_eq!(asked.map(|outgoing| outgoing.to), Some(devbox));
+    }
+
     fn in_folder(id: u32, folder: &str, account: AccountId) -> AgentSummary {
         let mut summary = summary(id, AgentStatus::Idle);
         summary.folder = PathBuf::from(folder);
@@ -881,7 +977,7 @@ mod tests {
     }
 
     fn signed(state: &mut AppState, id: AccountId, sign_in: SignIn) {
-        let account = account(state, id).cloned().unwrap();
+        let account = account(state, MachineId::THIS, id).cloned().unwrap();
         state.machines.this.sign_ins.states.insert(
             id,
             AccountState {
@@ -895,18 +991,19 @@ mod tests {
     #[test]
     fn labels_show_only_from_two_accounts() {
         let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
-        let none = label(&state, AccountId::DEFAULT);
+        let none = label(&state, MachineId::THIS, AccountId::DEFAULT);
         state.machines.this.accounts =
             vec![named(AccountId::DEFAULT, "Default", "/home/sam/.claude")];
-        let one = label(&state, AccountId::DEFAULT);
-        let named_alone = label_of(&state, AccountId::DEFAULT).map(|label| label.name);
+        let one = label(&state, MachineId::THIS, AccountId::DEFAULT);
+        let named_alone =
+            label_of(&state, MachineId::THIS, AccountId::DEFAULT).map(|label| label.name);
         three_accounts(&mut state);
 
         assert_eq!(none, None);
         assert_eq!(one, None);
         assert_eq!(named_alone.as_deref(), Some("Default"));
         assert_eq!(
-            label(&state, AccountId::DEFAULT),
+            label(&state, MachineId::THIS, AccountId::DEFAULT),
             Some(AccountLabel {
                 id: AccountId::DEFAULT,
                 name: "Personal".to_owned(),
@@ -914,10 +1011,10 @@ mod tests {
             })
         );
         assert_eq!(
-            label(&state, work()).map(|label| label.color),
+            label(&state, MachineId::THIS, work()).map(|label| label.color),
             Some(AccountColor::Violet)
         );
-        assert_eq!(label(&state, AccountId::new(9)), None);
+        assert_eq!(label(&state, MachineId::THIS, AccountId::new(9)), None);
     }
 
     #[test]
@@ -960,11 +1057,11 @@ mod tests {
         );
         assert_eq!(new_agent_account(&state, &removed, "/work/parser"), work());
         assert_eq!(
-            picker_title(&state, "/work/parser"),
+            picker_title(&state, MachineId::THIS, "/work/parser"),
             "Account · Work ran the last agent in this folder"
         );
         assert_eq!(
-            picker_title(&state, "/work/new"),
+            picker_title(&state, MachineId::THIS, "/work/new"),
             "Account · the default account for a new folder"
         );
     }
@@ -1021,7 +1118,7 @@ mod tests {
             .insert(work(), usage(0.81, 0.34));
         signed(&mut state, AccountId::new(3), SignIn::NotSignedIn);
 
-        let details: Vec<ChoiceDetail> = choices(&state)
+        let details: Vec<ChoiceDetail> = choices(&state, MachineId::THIS)
             .into_iter()
             .map(|choice| choice.detail)
             .collect();
@@ -1053,15 +1150,15 @@ mod tests {
             .this
             .other_plan_usage
             .insert(work(), usage(0.81, 0.34));
-        let personal = plan_chip(&state, AccountId::DEFAULT);
-        let job = plan_chip(&state, work());
-        let keyed = plan_chip(&state, lab());
+        let personal = plan_chip(&state, MachineId::THIS, AccountId::DEFAULT);
+        let job = plan_chip(&state, MachineId::THIS, work());
+        let keyed = plan_chip(&state, MachineId::THIS, lab());
         signed(&mut state, work(), SignIn::NotSignedIn);
-        let signed_out = plan_chip(&state, work());
+        let signed_out = plan_chip(&state, MachineId::THIS, work());
         signed(&mut state, work(), SignIn::Unknown);
-        let unknown = plan_chip(&state, work());
+        let unknown = plan_chip(&state, MachineId::THIS, work());
         state.machines.this.other_plan_usage.clear();
-        let unreported = plan_chip(&state, work());
+        let unreported = plan_chip(&state, MachineId::THIS, work());
 
         assert_eq!(personal, PlanChip::Percent(Some(42)));
         assert_eq!(job, PlanChip::Percent(Some(81)));
@@ -1070,11 +1167,11 @@ mod tests {
         assert_eq!(unknown, PlanChip::Percent(Some(81)));
         assert_eq!(unreported, PlanChip::Percent(None));
         assert_eq!(
-            plan_card_accounts(&state, lab()),
+            plan_card_accounts(&state, MachineId::THIS, lab()),
             [lab(), AccountId::DEFAULT, work()]
         );
         assert_eq!(
-            plan_card_accounts(&state, AccountId::DEFAULT),
+            plan_card_accounts(&state, MachineId::THIS, AccountId::DEFAULT),
             [AccountId::DEFAULT, work(), lab()]
         );
     }
@@ -1148,6 +1245,7 @@ mod tests {
         );
         added(
             &mut state,
+            MachineId::THIS,
             color,
             Ok(ResponseBody::Account(AccountState {
                 account: new.clone(),
@@ -1184,6 +1282,7 @@ mod tests {
         assert_eq!(
             state.ui.dialog,
             Some(Dialog::Accounts(AccountsView {
+                machine: MachineId::THIS,
                 expanded: Some(new.id),
                 from_new_agent: None,
             }))
@@ -1191,7 +1290,7 @@ mod tests {
     }
 
     fn color_of(state: &AppState, id: AccountId) -> AccountColor {
-        color(state, id)
+        color(state, MachineId::THIS, id)
     }
 
     #[test]
@@ -1207,6 +1306,7 @@ mod tests {
         let request = add_account(&mut state, &drafts);
         added(
             &mut state,
+            MachineId::THIS,
             AccountColor::Pink,
             Err("an account is already named Client".to_owned()),
         );
@@ -1239,9 +1339,9 @@ mod tests {
         let mut state = state_with(Vec::new());
         state.machines.this.accounts =
             vec![named(AccountId::DEFAULT, "Default", "/srv/claude-config")];
-        let elsewhere = proposed_folder(&state, "Work");
+        let elsewhere = proposed_folder(&state, MachineId::THIS, "Work");
         state.machines.this.accounts = vec![named(AccountId::DEFAULT, "Default", "home/.claude")];
-        let relative = proposed_folder(&state, "Work");
+        let relative = proposed_folder(&state, MachineId::THIS, "Work");
 
         assert_eq!(elsewhere, None);
         assert_eq!(relative, None);
@@ -1251,13 +1351,13 @@ mod tests {
     fn the_proposed_folder_takes_a_number_as_the_daemon_does_when_another_account_has_it() {
         let mut state = state_with(Vec::new());
         three_accounts(&mut state);
-        let unix = proposed_folder(&state, "Work");
+        let unix = proposed_folder(&state, MachineId::THIS, "Work");
         state.machines.this.accounts = vec![
             named(AccountId::DEFAULT, "Default", r"C:\Users\sam\.claude"),
             named(work(), "Work", r"C:\Users\sam\.Claude-Work"),
             named(lab(), "Work 2", r"c:/users/sam/.claude-work-2"),
         ];
-        let windows = proposed_folder(&state, "work");
+        let windows = proposed_folder(&state, MachineId::THIS, "work");
 
         assert_eq!(unix.as_deref(), Some("/home/sam/.claude-work-2"));
         assert_eq!(windows.as_deref(), Some(r"C:\Users\sam\.claude-work-3"));
@@ -1311,6 +1411,7 @@ mod tests {
         assert_eq!(
             held,
             Some(Dialog::Accounts(AccountsView {
+                machine: MachineId::THIS,
                 expanded: None,
                 from_new_agent: Some(form.clone()),
             }))
@@ -1321,6 +1422,7 @@ mod tests {
         assert_eq!(
             after_done,
             Some(Dialog::Accounts(AccountsView {
+                machine: MachineId::THIS,
                 expanded: None,
                 from_new_agent: Some(form),
             }))
@@ -1383,6 +1485,7 @@ mod tests {
         let form = new_agent_dialog(&mut state, &mut drafts);
         let typed = drafts.new_agent.clone();
         let held = Some(Dialog::Accounts(AccountsView {
+            machine: MachineId::THIS,
             expanded: None,
             from_new_agent: Some(form.clone()),
         }));
@@ -1410,15 +1513,16 @@ mod tests {
         toggle_account(&mut state, work());
         let closed = state.ui.dialog.clone();
 
-        let same_name = rename_account(&state, work(), " Work ");
-        let empty = rename_account(&state, work(), "  ");
-        let renamed = rename_account(&state, work(), "Job");
-        let key = set_environment_credentials(work(), true);
-        set_color(&mut state, lab(), AccountColor::Green);
+        let same_name = rename_account(&state, MachineId::THIS, work(), " Work ");
+        let empty = rename_account(&state, MachineId::THIS, work(), "  ");
+        let renamed = rename_account(&state, MachineId::THIS, work(), "Job");
+        let key = set_environment_credentials(MachineId::THIS, work(), true);
+        set_color(&mut state, MachineId::THIS, lab(), AccountColor::Green);
 
         assert_eq!(
             opened,
             Some(Dialog::Accounts(AccountsView {
+                machine: MachineId::THIS,
                 expanded: Some(work()),
                 from_new_agent: None,
             }))
@@ -1441,16 +1545,19 @@ mod tests {
                 ..
             }]
         ));
-        assert_eq!(color(&state, lab()), AccountColor::Green);
+        assert_eq!(color(&state, MachineId::THIS, lab()), AccountColor::Green);
         assert_eq!(
-            remove_block(&state, AccountId::DEFAULT),
+            remove_block(&state, MachineId::THIS, AccountId::DEFAULT),
             Some(RemoveBlock::Default)
         );
-        assert_eq!(remove_block(&state, work()), Some(RemoveBlock::InUse(1)));
-        assert_eq!(remove_block(&state, lab()), None);
-        assert_eq!(remove_account(&mut state, work()), []);
+        assert_eq!(
+            remove_block(&state, MachineId::THIS, work()),
+            Some(RemoveBlock::InUse(1))
+        );
+        assert_eq!(remove_block(&state, MachineId::THIS, lab()), None);
+        assert_eq!(remove_account(&mut state, MachineId::THIS, work()), []);
         assert!(matches!(
-            remove_account(&mut state, lab()).as_slice(),
+            remove_account(&mut state, MachineId::THIS, lab()).as_slice(),
             [Outgoing { request: Request::AccountsRemove(AccountParams { account }), .. }] if *account == lab()
         ));
     }
@@ -1458,20 +1565,21 @@ mod tests {
     #[test]
     fn the_sign_in_states_are_asked_once_then_again_on_check() {
         let mut state = state_with(Vec::new());
-        let without_accounts = list_request(&mut state);
+        let without_accounts = list_request(&mut state, MachineId::THIS);
         three_accounts(&mut state);
-        let first = list_request(&mut state);
-        let while_asked = list_request(&mut state);
+        let first = list_request(&mut state, MachineId::THIS);
+        let while_asked = list_request(&mut state, MachineId::THIS);
         listed(
             &mut state,
+            MachineId::THIS,
             Ok(ResponseBody::Accounts {
                 accounts: Vec::new(),
                 environment_credentials: EnvironmentCredentials::Set,
             }),
         );
-        let after = list_request(&mut state);
-        check_again(&mut state);
-        let again = list_request(&mut state);
+        let after = list_request(&mut state, MachineId::THIS);
+        check_again(&mut state, MachineId::THIS);
+        let again = list_request(&mut state, MachineId::THIS);
 
         assert_eq!(without_accounts, None);
         assert!(matches!(
@@ -1494,7 +1602,7 @@ mod tests {
     fn an_account_change_while_the_daemon_is_asked_asks_it_again() {
         let mut state = state_with(Vec::new());
         three_accounts(&mut state);
-        let asked = list_request(&mut state);
+        let asked = list_request(&mut state, MachineId::THIS);
         let accounts = state.machines.this.accounts.clone();
         super::super::apply::apply(
             &mut state,
@@ -1507,14 +1615,16 @@ mod tests {
         );
         listed(
             &mut state,
+            MachineId::THIS,
             Ok(ResponseBody::Accounts {
                 accounts: Vec::new(),
                 environment_credentials: EnvironmentCredentials::Unset,
             }),
         );
-        let again = list_request(&mut state);
+        let again = list_request(&mut state, MachineId::THIS);
         listed(
             &mut state,
+            MachineId::THIS,
             Ok(ResponseBody::Accounts {
                 accounts: Vec::new(),
                 environment_credentials: EnvironmentCredentials::Unset,
@@ -1523,7 +1633,7 @@ mod tests {
 
         assert!(asked.is_some());
         assert!(again.is_some());
-        assert_eq!(list_request(&mut state), None);
+        assert_eq!(list_request(&mut state, MachineId::THIS), None);
     }
 
     fn transcript_item(id: u32, body: ItemBody) -> TranscriptItem {
@@ -1718,10 +1828,10 @@ mod tests {
         three_accounts(&mut state);
 
         state.machines.this.sign_ins.environment_credentials = EnvironmentCredentials::Unset;
-        let without = credentials_refused(&state, lab());
+        let without = credentials_refused(&state, MachineId::THIS, lab());
         state.machines.this.sign_ins.environment_credentials = EnvironmentCredentials::Set;
-        let with = credentials_refused(&state, lab());
-        let signed_in_account = credentials_refused(&state, work());
+        let with = credentials_refused(&state, MachineId::THIS, lab());
+        let signed_in_account = credentials_refused(&state, MachineId::THIS, work());
 
         assert!(
             !without,

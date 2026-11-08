@@ -430,7 +430,7 @@ fn StartForm(form: NewAgentForm) -> Element {
             .recent_folders(form.machine)
             .into_iter()
             .map(|recent| {
-                let label = accounts::label(&state, recent.account);
+                let label = accounts::label(&state, form.machine, recent.account);
                 (recent.folder, recent.used, label)
             })
             .collect();
@@ -438,8 +438,7 @@ fn StartForm(form: NewAgentForm) -> Element {
         let loading = chosen.is_none_or(|known| {
             matches!(known.sessions, Loadable::NotRequested | Loadable::Loading)
         });
-        // The accounts are this computer's: a server's agent runs with its default one.
-        let account = (form.machine == MachineId::THIS && accounts::shows_labels(&state))
+        let account = accounts::shows_labels(&state, form.machine)
             .then(|| accounts::new_agent_account(&state, &form, &typed_folder));
         // The system's picker shows this computer's folders, which a daemon over SSH cannot use.
         let local = form.machine == MachineId::THIS
@@ -1028,15 +1027,18 @@ fn ResumeList(starting: bool) -> Element {
             Loadable::Loaded(_) => Loadable::Loaded(
                 actions::resumable_sessions(&state, &query, account)
                     .into_iter()
-                    .map(|session| (session.clone(), accounts::label(&state, session.account)))
+                    .map(|session| {
+                        let label = accounts::label(&state, form_machine, session.account);
+                        (session.clone(), label)
+                    })
                     .collect::<Vec<(PastSession, Option<AccountLabel>)>>(),
             ),
             Loadable::NotRequested => Loadable::NotRequested,
             Loadable::Loading => Loadable::Loading,
             Loadable::Failed(error) => Loadable::Failed(error.clone()),
         };
-        let filters = if accounts::shows_labels(&state) {
-            accounts::labels(&state)
+        let filters = if accounts::shows_labels(&state, form_machine) {
+            accounts::labels(&state, form_machine)
         } else {
             Vec::new()
         };

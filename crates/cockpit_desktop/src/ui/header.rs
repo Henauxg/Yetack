@@ -12,6 +12,7 @@ use dioxus::prelude::*;
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
 use crate::connection::{Clock, Cockpit};
+use crate::machine::MachineId;
 use crate::state::accounts::{self, Billing, PlanChip};
 use crate::state::{AgentEntry, Loadable, Popover, TitlePlace, actions, title_emoji};
 use crate::ui::accounts::{AccountDot, AccountTag, PlanAccounts};
@@ -131,8 +132,9 @@ pub fn Header() -> Element {
     let status_class = format::status_class(summary.status);
     let status_label = format::status_label(summary.status);
     let account = summary.account;
-    let account_label = accounts::label(&state, account);
-    let chip = accounts::plan_chip(&state, account);
+    let machine = MachineId::of(agent);
+    let account_label = accounts::label(&state, machine, account);
+    let chip = accounts::plan_chip(&state, machine, account);
     let plan = match chip {
         PlanChip::Percent(percent) => percent,
         PlanChip::Environment | PlanChip::NotSignedIn => None,
@@ -341,17 +343,19 @@ fn UsageCard() -> Element {
         return rsx! {};
     };
     let agent_account = entry.summary.account;
-    let several = accounts::shows_labels(&state);
-    let windows: Vec<(UsageWindow, WindowUsage)> = accounts::plan_usage(&state, agent_account)
-        .map(|usage| {
-            usage
-                .windows
-                .iter()
-                .map(|(window, usage)| (*window, *usage))
-                .collect()
-        })
-        .unwrap_or_default();
-    let billed_to_key = accounts::billing(&state, agent_account) == Billing::Environment;
+    let machine = MachineId::of(entry.id());
+    let several = accounts::shows_labels(&state, machine);
+    let windows: Vec<(UsageWindow, WindowUsage)> =
+        accounts::plan_usage(&state, machine, agent_account)
+            .map(|usage| {
+                usage
+                    .windows
+                    .iter()
+                    .map(|(window, usage)| (*window, *usage))
+                    .collect()
+            })
+            .unwrap_or_default();
+    let billed_to_key = accounts::billing(&state, machine, agent_account) == Billing::Environment;
     // Before the connection, the plan's windows are unknown, not missing.
     let plan_loading = !state.selected_machine_state().is_connected();
     let summary = &entry.summary;
@@ -378,7 +382,7 @@ fn UsageCard() -> Element {
     rsx! {
         div { class: if several { "popover usage-card accounts-card" } else { "popover usage-card" },
             if several {
-                PlanAccounts { agent_account }
+                PlanAccounts { machine, agent_account }
             } else {
                 div { class: "card-section",
                     span { class: "section-title", "Plan, all agents" }

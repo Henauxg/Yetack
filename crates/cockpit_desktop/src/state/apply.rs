@@ -299,8 +299,8 @@ fn update_agent(state: &mut AppState, summary: AgentSummary) -> Option<Alert> {
     }
     let selected = state.ui.selected == Some(agent);
     let looked_at = selected && state.ui.window_focused;
-    let account_name =
-        accounts::account(state, summary.account).map(|account| account.name.clone());
+    let account_name = accounts::account(state, MachineId::of(agent), summary.account)
+        .map(|account| account.name.clone());
     let Some(entry) = state.agents.get_mut(&agent) else {
         state.agents.insert(agent, AgentEntry::new(summary));
         return None;

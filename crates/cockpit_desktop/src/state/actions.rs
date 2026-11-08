@@ -1929,12 +1929,7 @@ pub fn start_agent(state: &mut AppState, drafts: &Drafts) -> Vec<Outgoing> {
     if folder.is_empty() || form.starting || form.tab != NewAgentTab::Start {
         return Vec::new();
     }
-    // The accounts are this computer's: a server's agent runs with its daemon's default one.
-    let account = if form.machine == MachineId::THIS {
-        accounts::new_agent_account(state, form, folder)
-    } else {
-        AccountId::DEFAULT
-    };
+    let account = accounts::new_agent_account(state, form, folder);
     let machine = form.machine;
     let prompt = drafts.new_agent.prompt.trim();
     let params = StartParams {
@@ -1993,17 +1988,17 @@ pub fn resumable_sessions<'state>(
     query: &str,
     account: Option<AccountId>,
 ) -> Vec<&'state PastSession> {
-    let account = account.filter(|&id| accounts::account(state, id).is_some());
+    let machine = match &state.ui.dialog {
+        Some(Dialog::NewAgent(form)) => form.machine,
+        _ => MachineId::THIS,
+    };
+    let account = account.filter(|&id| accounts::account(state, machine, id).is_some());
     let query = query.to_lowercase();
     let running: BTreeSet<&ClaudeSessionId> = state
         .agents
         .values()
         .filter_map(|entry| entry.summary.session.as_ref())
         .collect();
-    let machine = match &state.ui.dialog {
-        Some(Dialog::NewAgent(form)) => form.machine,
-        _ => MachineId::THIS,
-    };
     let mut sessions: Vec<&PastSession> = state
         .machines
         .get(machine)
@@ -2097,12 +2092,12 @@ mod tests {
     };
 
     use super::*;
-    use crate::state::ui_state::ClosedAgent;
     use crate::daemon_label::DaemonLabel;
     use crate::state::MachineState;
     use crate::state::app_state::ConnectionState;
     use crate::state::app_state::tests::{ids, placed, state_with, summary};
     use crate::state::requests::{apply_response, needed_requests};
+    use crate::state::ui_state::ClosedAgent;
     use crate::state::ui_state::NoteKind;
 
     const AGENT: u32 = 1;

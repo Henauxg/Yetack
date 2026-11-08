@@ -13,7 +13,9 @@ use dioxus::prelude::*;
 
 use crate::bridge;
 use crate::connection::{Clock, Cockpit};
+use crate::daemon_label::DaemonPlace;
 use crate::format;
+use crate::machine::MachineId;
 use crate::path_style::{self, PathStyle};
 use crate::prefs::AccountColor;
 use crate::state::accounts::{
@@ -108,12 +110,15 @@ fn checked_text(checked_at: Option<SystemTime>, now: SystemTime) -> String {
 
 /// Whether the account is signed in, as the daemon last saw it, with "Check again".
 #[component]
-pub fn SignInStatus(account: AccountId) -> Element {
+pub fn SignInStatus(machine: MachineId, account: AccountId) -> Element {
     let cockpit: Cockpit = use_context();
     let Clock(now) = use_context::<Clock>();
     let (sign_in, checked_at, checking) = {
         let state = cockpit.state.read();
-        let sign_ins = &state.machines.this.sign_ins;
+        let Some(known) = state.machines.get(machine) else {
+            return rsx! {};
+        };
+        let sign_ins = &known.sign_ins;
         (
             sign_ins.sign_in(account),
             sign_ins.checked_at,
@@ -140,19 +145,19 @@ pub fn SignInStatus(account: AccountId) -> Element {
             span { class: "signin-state", "{word}" }
             span { class: "signin-detail", "{detail}" }
             span { class: "spacer" }
-            CheckAgain { checking }
+            CheckAgain { machine, checking }
         }
     }
 }
 
 #[component]
-fn CheckAgain(checking: bool) -> Element {
+fn CheckAgain(machine: MachineId, checking: bool) -> Element {
     let cockpit: Cockpit = use_context();
     rsx! {
         button {
             class: "button small",
             disabled: checking,
-            onclick: move |_| cockpit.update(accounts::check_again),
+            onclick: move |_| cockpit.update(|state| accounts::check_again(state, machine)),
             if checking {
                 span { class: "spinner", aria_hidden: true }
             } else {
@@ -169,8 +174,9 @@ pub fn AccountsButton() -> Element {
     let cockpit: Cockpit = use_context();
     let dots: Vec<AccountColor> = {
         let state = cockpit.state.read();
-        if accounts::shows_labels(&state) {
-            let labels = accounts::labels(&state).into_iter();
+        let machine = state.selected_machine();
+        if accounts::shows_labels(&state, machine) {
+            let labels = accounts::labels(&state, machine).into_iter();
             labels.map(|label| label.color).collect()
         } else {
             Vec::new()
@@ -199,7 +205,10 @@ pub fn AccountsButton() -> Element {
 #[component]
 pub fn AccountPicker(account: AccountId, open: bool) -> Element {
     let cockpit: Cockpit = use_context();
-    let label = accounts::label_of(&cockpit.state.read(), account);
+    let label = {
+        let state = cockpit.state.read();
+        accounts::label_of(&state, new_agent_machine(&state), account)
+    };
     let Some(label) = label else {
         return rsx! {};
     };
@@ -233,9 +242,10 @@ fn AccountMenu(account: AccountId) -> Element {
     let folder = cockpit.drafts.read().new_agent.folder.clone();
     let (title, choices) = {
         let state = cockpit.state.read();
+        let machine = new_agent_machine(&state);
         (
-            accounts::picker_title(&state, &folder),
-            accounts::choices(&state),
+            accounts::picker_title(&state, machine, &folder),
+            accounts::choices(&state, machine),
         )
     };
     rsx! {
@@ -313,14 +323,14 @@ fn choice_detail(detail: ChoiceDetail) -> Element {
 
 /// The plan card's accounts, the selected agent's first.
 #[component]
-pub fn PlanAccounts(agent_account: AccountId) -> Element {
+pub fn PlanAccounts(machine: MachineId, agent_account: AccountId) -> Element {
     let cockpit: Cockpit = use_context();
-    let ids = accounts::plan_card_accounts(&cockpit.state.read(), agent_account);
+    let ids = accounts::plan_card_accounts(&cockpit.state.read(), machine, agent_account);
     rsx! {
         div { class: "card-section",
             span { class: "section-title", "Plans" }
             for id in ids {
-                PlanAccount { key: "{id.get()}", account: id, current: id == agent_account }
+                PlanAccount { key: "{id.get()}", machine, account: id, current: id == agent_account }
             }
             div { class: "card-links",
                 button {
@@ -334,24 +344,25 @@ pub fn PlanAccounts(agent_account: AccountId) -> Element {
 }
 
 #[component]
-fn PlanAccount(account: AccountId, current: bool) -> Element {
+fn PlanAccount(machine: MachineId, account: AccountId, current: bool) -> Element {
     let cockpit: Cockpit = use_context();
     let Clock(now) = use_context::<Clock>();
     let (label, billing, windows) = {
         let state = cockpit.state.read();
-        let Some(label) = accounts::label_of(&state, account) else {
+        let Some(label) = accounts::label_of(&state, machine, account) else {
             return rsx! {};
         };
-        let windows: Vec<(UsageWindow, WindowUsage)> = accounts::plan_usage(&state, account)
-            .map(|usage| {
-                usage
-                    .windows
-                    .iter()
-                    .map(|(window, usage)| (*window, *usage))
-                    .collect()
-            })
-            .unwrap_or_default();
-        (label, accounts::billing(&state, account), windows)
+        let windows: Vec<(UsageWindow, WindowUsage)> =
+            accounts::plan_usage(&state, machine, account)
+                .map(|usage| {
+                    usage
+                        .windows
+                        .iter()
+                        .map(|(window, usage)| (*window, *usage))
+                        .collect()
+                })
+                .unwrap_or_default();
+        (label, accounts::billing(&state, machine, account), windows)
     };
     let now = now();
     rsx! {
@@ -474,15 +485,15 @@ fn EnvironmentChoice(uses: bool, note: String, onchange: EventHandler<bool>) -> 
 #[component]
 pub fn AccountsDialog(view: AccountsView) -> Element {
     let cockpit: Cockpit = use_context();
-    let ids: Vec<AccountId> = {
+    let machine = view.machine;
+    let (ids, machines) = {
         let state = cockpit.state.read();
-        state
+        let ids: Vec<AccountId> = state
             .machines
-            .this
-            .accounts
-            .iter()
-            .map(|account| account.id)
-            .collect()
+            .get(machine)
+            .map(|known| known.accounts.iter().map(|account| account.id).collect())
+            .unwrap_or_default();
+        (ids, machine_names(&state))
     };
     let single = ids.len() < 2;
     let older_daemon = ids.is_empty();
@@ -511,12 +522,27 @@ pub fn AccountsDialog(view: AccountsView) -> Element {
                         " Add a second account to pick one for each agent."
                     }
                 }
+                if machines.len() > 1 {
+                    div { class: "machine-choice", role: "radiogroup", aria_label: "Machine",
+                        for (id, name, answers) in machines {
+                            button {
+                                key: "{name}",
+                                class: if id == machine { "machine-option checked" } else { "machine-option" },
+                                role: "radio",
+                                aria_checked: id == machine,
+                                disabled: !answers,
+                                onclick: move |_| cockpit.update(|state| accounts::pick_accounts_machine(state, id)),
+                                "{name}"
+                            }
+                        }
+                    }
+                }
                 if older_daemon {
                     span { class: "dialog-note", "This daemon is older than accounts: it runs every agent with its own login." }
                 }
                 div { class: "acct-list",
                     for id in ids {
-                        AccountCard { key: "{id.get()}", account: id, open: view.expanded == Some(id) }
+                        AccountCard { key: "{id.get()}", machine, account: id, open: view.expanded == Some(id) }
                     }
                 }
             }
@@ -550,25 +576,50 @@ struct CardData {
     machine: String,
 }
 
-fn card_data(state: &AppState, id: AccountId) -> Option<CardData> {
-    let account = accounts::account(state, id)?;
+fn card_data(state: &AppState, machine: MachineId, id: AccountId) -> Option<CardData> {
+    let known = state.machines.get(machine)?;
+    let account = accounts::account(state, machine, id)?;
     Some(CardData {
-        label: accounts::label_of(state, id)?,
+        label: accounts::label_of(state, machine, id)?,
         folder: path_style::shown(&account.folder),
         uses_environment: account.credentials == CredentialSource::Environment,
-        billing: accounts::billing(state, id),
-        sign_in: state.machines.this.sign_ins.sign_in(id),
-        command: state.machines.this.sign_ins.command(id).map(str::to_owned),
-        agents: accounts::agent_count(state, id),
-        blocked: accounts::remove_block(state, id),
-        machine: state.machines.this.daemon.machine.clone(),
+        billing: accounts::billing(state, machine, id),
+        sign_in: known.sign_ins.sign_in(id),
+        command: known.sign_ins.command(id).map(str::to_owned),
+        agents: accounts::agent_count(state, machine, id),
+        blocked: accounts::remove_block(state, machine, id),
+        machine: known.daemon.machine.clone(),
     })
 }
 
+/// The machine the new agent dialog starts its agent on, this computer without the dialog.
+fn new_agent_machine(state: &AppState) -> MachineId {
+    match &state.ui.dialog {
+        Some(Dialog::NewAgent(form)) => form.machine,
+        _ => MachineId::THIS,
+    }
+}
+
+/// Each machine's id and name, this computer first, and whether it answers.
+fn machine_names(state: &AppState) -> Vec<(MachineId, String, bool)> {
+    let this = (MachineId::THIS, &state.machines.this);
+    std::iter::once(this)
+        .chain(state.machines.others.iter().map(|(id, known)| (*id, known)))
+        .map(|(id, known)| {
+            let name = if id == MachineId::THIS && known.daemon.place != DaemonPlace::Ssh {
+                "This computer".to_owned()
+            } else {
+                known.daemon.machine.clone()
+            };
+            (id, name, known.is_connected())
+        })
+        .collect()
+}
+
 #[component]
-fn AccountCard(account: AccountId, open: bool) -> Element {
+fn AccountCard(machine: MachineId, account: AccountId, open: bool) -> Element {
     let cockpit: Cockpit = use_context();
-    let Some(data) = card_data(&cockpit.state.read(), account) else {
+    let Some(data) = card_data(&cockpit.state.read(), machine, account) else {
         return rsx! {};
     };
     let agents = format::count(data.agents, "agent", "agents");
@@ -622,7 +673,7 @@ fn AccountCard(account: AccountId, open: bool) -> Element {
                                 initial_value: "{name}",
                                 onchange: move |event: FormEvent| {
                                     let typed = event.value();
-                                    cockpit.change(|state| accounts::rename_account(state, account, &typed));
+                                    cockpit.change(|state| accounts::rename_account(state, machine, account, &typed));
                                 },
                             }
                         }
@@ -630,7 +681,7 @@ fn AccountCard(account: AccountId, open: bool) -> Element {
                             span { class: "field-label", "Color" }
                             Swatches {
                                 chosen: data.label.color,
-                                onpick: move |color| cockpit.update(|state| accounts::set_color(state, account, color)),
+                                onpick: move |color| cockpit.update(|state| accounts::set_color(state, machine, account, color)),
                             }
                         }
                     }
@@ -641,7 +692,7 @@ fn AccountCard(account: AccountId, open: bool) -> Element {
                         } else {
                             format!("Off: its agents use its sign-in, without {API_KEY_ENV} or {AUTH_TOKEN_ENV}. A change applies to the agents it starts from now on.")
                         },
-                        onchange: move |uses| cockpit.change(|_| accounts::set_environment_credentials(account, uses)),
+                        onchange: move |uses| cockpit.change(|_| accounts::set_environment_credentials(machine, account, uses)),
                     }
                     if !data.uses_environment {
                         div { class: "field-group",
@@ -649,14 +700,14 @@ fn AccountCard(account: AccountId, open: bool) -> Element {
                             if let Some(command) = data.command.clone() {
                                 CommandBox { command }
                             }
-                            SignInStatus { account }
+                            SignInStatus { machine, account }
                         }
                     }
                     div { class: "acct-card-actions",
                         button {
                             class: "button danger small",
                             disabled: data.blocked.is_some(),
-                            onclick: move |_| cockpit.change(|state| accounts::remove_account(state, account)),
+                            onclick: move |_| cockpit.change(|state| accounts::remove_account(state, machine, account)),
                             "Remove"
                         }
                         span { class: "hint",
@@ -698,13 +749,17 @@ pub fn AddAccountDialog(form: AddAccountForm) -> Element {
         let state = cockpit.state.read();
         let added = form
             .added
-            .and_then(|id| card_data(&state, id).map(|data| (id, data)));
+            .and_then(|id| card_data(&state, form.machine, id).map(|data| (id, data)));
+        let known = state
+            .machines
+            .get(form.machine)
+            .unwrap_or(&state.machines.this);
         (
-            state.machines.this.daemon.machine.clone(),
-            state.machines.this.sign_ins.environment_credentials == EnvironmentCredentials::Set,
+            known.daemon.machine.clone(),
+            known.sign_ins.environment_credentials == EnvironmentCredentials::Set,
             added,
-            state.machines.this.daemon.path_style() == PathStyle::Windows,
-            accounts::proposed_folder(&state, "").is_some(),
+            known.daemon.path_style() == PathStyle::Windows,
+            accounts::proposed_folder(&state, form.machine, "").is_some(),
         )
     };
     let folder_placeholder = if proposes {
@@ -834,7 +889,10 @@ pub fn AddAccountDialog(form: AddAccountForm) -> Element {
                             }
                         }
                         span { class: "spacer" }
-                        CheckAgain { checking: cockpit.state.read().machines.this.sign_ins.checking }
+                        CheckAgain {
+                            machine: form.machine,
+                            checking: cockpit.state.read().machines.get(form.machine).is_some_and(|known| known.sign_ins.checking),
+                        }
                     }
                     span { class: "hint",
                         "The app only checks whether the variables are set in the daemon's environment. It never reads, shows or stores the key or token."
@@ -855,7 +913,7 @@ pub fn AddAccountDialog(form: AddAccountForm) -> Element {
                             span { class: "mono", "--console" }
                             " to the command for that. The sign-in stays in the account's folder: the app never sees or stores a key."
                         }
-                        SignInStatus { account: id }
+                        SignInStatus { machine: form.machine, account: id }
                     } else {
                         span { class: "hint", "The command that signs in shows here once the account is added." }
                     }
@@ -902,11 +960,12 @@ pub fn SignInCard(agent: AgentId) -> Element {
             return rsx! {};
         };
         let id = entry.summary.account;
-        let data = card_data(&state, id);
+        let machine = MachineId::of(agent);
+        let data = card_data(&state, machine, id);
         let others = accounts::others_waiting(&state, agent, id);
         let waits = entry.summary.sign_in_wait == SignInWait::Waiting;
         let sends = accounts::sends_again(&state, agent);
-        let refused = accounts::credentials_refused(&state, id);
+        let refused = accounts::credentials_refused(&state, machine, id);
         (id, data, others, waits, sends, refused)
     };
     let (id, data, others, waits, sends, refused) = card;
@@ -963,7 +1022,7 @@ pub fn SignInCard(agent: AgentId) -> Element {
                 }
             }
             if waits {
-                SignInStatus { account: id }
+                SignInStatus { machine: MachineId::of(agent), account: id }
             } else {
                 div { class: "signin-status signed ok",
                     span { class: "status-dot", aria_hidden: true }

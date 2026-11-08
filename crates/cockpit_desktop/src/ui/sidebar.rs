@@ -52,7 +52,7 @@ impl AgentRow {
             pending: summary.pending_count,
             unread: state.is_unread(entry.id()),
             selected: state.ui.selected == Some(entry.id()),
-            account: accounts::label(state, summary.account),
+            account: accounts::label(state, MachineId::of(entry.id()), summary.account),
             tasks: summary
                 .task_progress
                 .map(|progress| format!("{}/{}", progress.done, progress.total)),

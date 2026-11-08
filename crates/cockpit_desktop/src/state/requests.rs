@@ -136,8 +136,17 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
             requests.extend(actions::move_agent(state, agent, before));
         }
     }
-    if state.machines.this.is_connected() {
-        requests.extend(accounts::list_request(state));
+    let answering: Vec<MachineId> = std::iter::once(MachineId::THIS)
+        .chain(state.machines.others.keys().copied())
+        .filter(|machine| {
+            state
+                .machines
+                .get(*machine)
+                .is_some_and(MachineState::is_connected)
+        })
+        .collect();
+    for machine in answering {
+        requests.extend(accounts::list_request(state, machine));
     }
     let form_machine = match &state.ui.dialog {
         Some(Dialog::NewAgent(form)) => Some(form.machine),
@@ -388,13 +397,18 @@ pub fn apply_response(
                     known.sign_ins.checking = false;
                 }
             }
-            other => accounts::listed(state, other.map_err(|failure| failure.message)),
+            other => accounts::listed(state, machine, other.map_err(|failure| failure.message)),
         },
         Purpose::AccountAdded { color } => {
-            accounts::added(state, color, result.map_err(|failure| failure.message));
+            accounts::added(
+                state,
+                machine,
+                color,
+                result.map_err(|failure| failure.message),
+            );
         }
         Purpose::AccountChanged => {
-            accounts::changed(state, result.map_err(|failure| failure.message));
+            accounts::changed(state, machine, result.map_err(|failure| failure.message));
         }
         Purpose::SendAgain { agent, turn_end } => {
             if let Err(failure) = result {
