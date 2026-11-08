@@ -566,6 +566,7 @@ dependencies = [
  "futures-util",
  "notify-rust",
  "pulldown-cmark",
+ "rfd",
  "serde",
  "serde_json",
  "similar",

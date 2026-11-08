@@ -4788,6 +4788,22 @@ button.map-toggle:hover {
   outline: none;
 }
 
+.folder-browse {
+  flex: none;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 7px;
+  border: 1px solid var(--line-control);
+  background: var(--raised);
+  color: var(--text);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.folder-browse:hover {
+  background: var(--hover);
+}
+
 .folder-input::placeholder {
   color: var(--dim);
   font-family: var(--sans);

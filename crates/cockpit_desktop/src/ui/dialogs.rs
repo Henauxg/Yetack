@@ -12,6 +12,7 @@ use dioxus::prelude::*;
 
 use crate::bridge::{self, FOLDER_FIELD_ID, HIGHLIGHTED_CLASS};
 use crate::connection::{Clock, Cockpit};
+use crate::daemon_label::DaemonPlace;
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::path_style::{self, PathStyle};
 use crate::state::accounts::AccountLabel;
@@ -321,6 +322,25 @@ fn NewAgentDialog(form: NewAgentForm) -> Element {
     }
 }
 
+/// Opens the system's folder picker at `from` when it is a folder, and puts the folder picked in
+/// the field, as a click on a recent folder does.
+async fn browse_folder(cockpit: Cockpit, from: String) {
+    let mut picker = rfd::AsyncFileDialog::new().set_title("Folder for the new agent");
+    let from = PathBuf::from(from.trim());
+    if from.is_absolute() && from.is_dir() {
+        picker = picker.set_directory(&from);
+    }
+    let Some(folder) = picker.pick_folder().await else {
+        return;
+    };
+    let picked = path_style::shown(folder.path());
+    bridge::set_field_text(FOLDER_FIELD_ID, picked.clone());
+    cockpit.update_with_drafts(|state, drafts| {
+        drafts.new_agent.folder = picked;
+        accounts::follow_folder_account(state);
+    });
+}
+
 fn change_form(cockpit: Cockpit, change: impl FnOnce(&mut NewAgentForm)) {
     cockpit.update(|state| actions::with_new_agent_form(state, change));
 }
@@ -368,7 +388,7 @@ fn StartForm(form: NewAgentForm) -> Element {
     let focus = use_hook(|| actions::start_focus(&cockpit.drafts.peek().new_agent));
     // The recent folder under the pointer, the one row lit. The field's folder is only marked.
     let mut pointed = use_signal(|| None::<PathBuf>);
-    let (folders, machine, sessions_loading, account) = {
+    let (folders, machine, local, sessions_loading, account) = {
         let state = cockpit.state.read();
         let mut folders: Vec<(PathBuf, Timestamp, Option<AccountLabel>)> = state
             .recent_folders()
@@ -382,7 +402,15 @@ fn StartForm(form: NewAgentForm) -> Element {
         let loading = matches!(state.sessions, Loadable::NotRequested | Loadable::Loading);
         let account = accounts::shows_labels(&state)
             .then(|| accounts::new_agent_account(&state, &form, &typed_folder));
-        (folders, state.daemon.machine.clone(), loading, account)
+        // The system's picker shows this computer's folders, which a daemon over SSH cannot use.
+        let local = state.daemon.place != DaemonPlace::Ssh;
+        (
+            folders,
+            state.daemon.machine.clone(),
+            local,
+            loading,
+            account,
+        )
     };
     let folders_unknown = cockpit.state.read().folders_unknown;
     // The past sessions bring more recent folders: rows stand for them until they arrive, so the
@@ -449,6 +477,17 @@ fn StartForm(form: NewAgentForm) -> Element {
                                 folder_key(cockpit, &event);
                             }
                         },
+                    }
+                    if local {
+                        button {
+                            class: "folder-browse",
+                            title: "Pick the folder in the system's folder dialog",
+                            onclick: move |_| {
+                                let from = cockpit.drafts.peek().new_agent.folder.clone();
+                                spawn(browse_folder(cockpit, from));
+                            },
+                            "Browse…"
+                        }
                     }
                 }
                 if folders_unknown {

@@ -22,6 +22,8 @@ futures-util = "0.3.31"
 # D-Bus on the app's tokio runtime: the default backend starts a thread per notification.
 notify-rust = { version = "4.18.2", default-features = false, features = ["z-with-tokio"] }
 pulldown-cmark = { version = "0.13.6", default-features = false }
+# The system's folder picker, with the backend Dioxus already builds it with.
+rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
 serde.workspace = true
 serde_json.workspace = true
 similar = { version = "3.2.1", features = ["inline"] }
