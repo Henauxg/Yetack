@@ -63,6 +63,17 @@ pub enum Dialog {
     /// Every Claude account, from the sidebar's foot.
     Accounts(AccountsView),
     AddAccount(AddAccountForm),
+    /// The machines the app reaches, with a form that adds a server.
+    Machines(MachinesView),
+}
+
+/// The "Machines" dialog's form for a new server, and why the last one was refused.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MachinesView {
+    pub name: String,
+    pub host: String,
+    pub remote_command: String,
+    pub error: Option<String>,
 }
 
 /// The "Open file" dialog's data: the folder its path field names, with what the daemon listed
@@ -106,7 +117,8 @@ impl Dialog {
             | Self::Switcher
             | Self::OpenFile(_)
             | Self::Accounts(_)
-            | Self::AddAccount(_) => None,
+            | Self::AddAccount(_)
+            | Self::Machines(_) => None,
         }
     }
 }

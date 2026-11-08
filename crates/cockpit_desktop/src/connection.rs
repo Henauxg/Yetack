@@ -2,7 +2,7 @@
 //! state, and runs the requests the components ask for.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_client::{
@@ -13,13 +13,14 @@ use dioxus::desktop::DesktopContext;
 use dioxus::prelude::*;
 use tokio::sync::mpsc;
 
-use crate::config::{DaemonConfig, MachineConfig};
+use crate::config::{DaemonConfig, MachineConfig, save_machines};
 use crate::daemon_label::DaemonLabel;
 use crate::in_app_host::InAppHost;
 use crate::machine::MachineId;
 use crate::notifications::Notifier;
 use crate::reach::{self, Places, Reached, Unreached};
 use crate::state::machine_load::{LOAD_POLL, LoadView};
+use crate::state::machines::{self, MachineChange};
 use crate::state::no_daemon::{self, Absence, Chosen, DaemonChoice};
 use crate::state::{
     self, AgentEntry, AppState, ConnectionState, Drafts, MachineState, Outgoing, Purpose,
@@ -56,6 +57,8 @@ pub enum ToDaemon {
     Send(Outgoing),
     /// A choice on the "No daemon answers" screen.
     Choose(Chosen),
+    /// A server added or removed in the "Machines" dialog, or tried again.
+    Machines(MachineChange),
 }
 
 /// What components hold to read and change the state and to reach the daemon. The drafts are a
@@ -84,6 +87,11 @@ impl Cockpit {
         for request in requests {
             self.daemon.send(ToDaemon::Send(request));
         }
+    }
+
+    /// Adds or removes a server, or tries one again.
+    pub fn change_machines(&self, change: MachineChange) {
+        self.daemon.send(ToDaemon::Machines(change));
     }
 
     /// A click on one of the "No daemon answers" screen's buttons.
@@ -227,7 +235,7 @@ pub fn use_cockpit(startup: Startup) -> Cockpit {
 /// Starts a connection task per machine, and hands each request to the task of the machine its
 /// agent is on, or to the one it names when it is about no agent.
 async fn route(
-    state: Signal<AppState>,
+    mut state: Signal<AppState>,
     drafts: Signal<Drafts>,
     load: Signal<LoadView>,
     live: Live,
@@ -237,21 +245,16 @@ async fn route(
     use futures_util::StreamExt;
 
     let notify = live.notify;
+    let config_file = live.places.config_file.clone();
     let (this, this_requests) = mpsc::unbounded_channel();
     spawn(run(state, drafts, load, live, this_requests));
-    let mut tasks = BTreeMap::from([(MachineId::THIS, this)]);
+    let mut servers = Servers {
+        tasks: BTreeMap::from([(MachineId::THIS, this)]),
+        configs: Vec::new(),
+        next: 1,
+    };
     for (machine, remote) in machines {
-        let (sender, machine_requests) = mpsc::unbounded_channel();
-        spawn(run_remote(
-            state,
-            drafts,
-            load,
-            machine,
-            remote,
-            notify,
-            machine_requests,
-        ));
-        tasks.insert(machine, sender);
+        servers.start(state, drafts, load, notify, machine, remote);
     }
     while let Some(mut message) = requests.next().await {
         let machine = match &mut message {
@@ -263,10 +266,82 @@ async fn route(
                     .map_or(to, |agent| MachineId::of(*agent))
             }
             ToDaemon::Choose(_) => MachineId::THIS,
+            ToDaemon::Machines(MachineChange::Retry(machine)) => *machine,
+            ToDaemon::Machines(MachineChange::Add(remote)) => {
+                let machine = MachineId::new(servers.next);
+                servers.start(state, drafts, load, notify, machine, remote.clone());
+                servers.save(state, &config_file);
+                continue;
+            }
+            ToDaemon::Machines(MachineChange::Remove(machine)) => {
+                let machine = *machine;
+                // Its task ends with its requests.
+                servers.tasks.remove(&machine);
+                servers.configs.retain(|(id, _)| *id != machine);
+                machines::forget(&mut state.write(), machine);
+                servers.save(state, &config_file);
+                continue;
+            }
         };
-        if let Some(task) = tasks.get(&machine) {
+        if let Some(task) = servers.tasks.get(&machine) {
             // A task that ended takes no more requests.
             let _ = task.send(message);
+        }
+    }
+}
+
+/// The connection tasks of the machines, and the servers the config names.
+struct Servers {
+    tasks: BTreeMap<MachineId, mpsc::UnboundedSender<ToDaemon>>,
+    configs: Vec<(MachineId, MachineConfig)>,
+    /// The number the next server takes. A removed server's number is not taken again.
+    next: u16,
+}
+
+impl Servers {
+    fn start(
+        &mut self,
+        mut state: Signal<AppState>,
+        drafts: Signal<Drafts>,
+        load: Signal<LoadView>,
+        notify: bool,
+        machine: MachineId,
+        remote: MachineConfig,
+    ) {
+        let label = DaemonLabel::ssh(remote.name.clone());
+        state
+            .write()
+            .machines
+            .others
+            .entry(machine)
+            .or_insert_with(|| MachineState::new(label));
+        let (sender, requests) = mpsc::unbounded_channel();
+        spawn(run_remote(
+            state,
+            drafts,
+            load,
+            machine,
+            remote.clone(),
+            notify,
+            requests,
+        ));
+        self.tasks.insert(machine, sender);
+        self.configs.push((machine, remote));
+        self.next = self.next.max(machine.get().saturating_add(1));
+    }
+
+    /// Writes the servers to the config. A config the app cannot write keeps them for this run.
+    fn save(&self, mut state: Signal<AppState>, file: &Path) {
+        let configs: Vec<MachineConfig> = self
+            .configs
+            .iter()
+            .map(|(_, config)| config.clone())
+            .collect();
+        if let Err(error) = save_machines(file, &configs) {
+            state.write().ui.report(format!(
+                "The servers hold for this run only: {}",
+                state::error_chain(&error)
+            ));
         }
     }
 }
@@ -330,6 +405,8 @@ async fn refuse_requests(
         tokio::select! {
             () = &mut wait => return true,
             message = requests.recv() => match message {
+                Some(ToDaemon::Machines(MachineChange::Retry(_))) => return true,
+                Some(ToDaemon::Machines(_)) => {}
                 Some(ToDaemon::Send(Outgoing { request, purpose, .. })) => {
                     let mut state = state.write();
                     state::apply_response(
@@ -379,7 +456,7 @@ async fn run_demo(
             outgoing = requests.next() => {
                 let outgoing = match outgoing {
                     Some(ToDaemon::Send(outgoing)) => outgoing,
-                    Some(ToDaemon::Choose(_)) => continue,
+                    Some(ToDaemon::Choose(_) | ToDaemon::Machines(_)) => continue,
                     None => return,
                 };
                 let mut queue = VecDeque::from([outgoing]);
@@ -515,6 +592,7 @@ async fn next_choice(
     loop {
         match requests.recv().await? {
             ToDaemon::Choose(chosen) => return Some(chosen),
+            ToDaemon::Machines(_) => {}
             ToDaemon::Send(Outgoing {
                 request, purpose, ..
             }) => {
@@ -629,7 +707,7 @@ async fn serve(
                     send(state, drafts, requester.clone(), machine, outgoing);
                 }
                 // The screen shows only before a first connection.
-                Some(ToDaemon::Choose(_)) => {}
+                Some(ToDaemon::Choose(_) | ToDaemon::Machines(_)) => {}
                 None => return Served::Closed,
             },
             Some(agent) = opened.recv() => {

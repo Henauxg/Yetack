@@ -25,6 +25,7 @@ use toml_edit::TomlError;
 const APP_FOLDER: &str = "agents-cockpit";
 const CONFIG_FILE: &str = "config.toml";
 const DAEMON_SECTION: &str = "daemon";
+const MACHINES_SECTION: &str = "machines";
 /// Where a new config file is written before it replaces the old one.
 const TEMPORARY_EXTENSION: &str = "toml.new";
 
@@ -116,6 +117,12 @@ fn is_false(value: &bool) -> bool {
 #[derive(Serialize)]
 struct DaemonSection<'config> {
     daemon: &'config DaemonConfig,
+}
+
+/// The `[[machines]]` tables alone, to write them.
+#[derive(Serialize)]
+struct MachinesSection<'config> {
+    machines: &'config [MachineConfig],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -241,12 +248,60 @@ impl Config {
     }
 }
 
-/// Makes `daemon` the daemon of the config file `file`, which keeps its other settings and its
-/// comments. A missing file is created. When `file` is a symbolic link, as home-manager or a
-/// dotfiles repository makes, its target is written and the link stays. The file keeps its mode,
-/// and a read-only one is not written.
+/// Makes `daemon` the daemon of the config file `file`, as [`edit_config`] writes it.
 pub fn save_daemon(file: &Path, daemon: &DaemonConfig) -> Result<(), ConfigError> {
     use toml_edit::{DocumentMut, Item};
+
+    edit_config(file, |document, edit_error| {
+        let section = toml::to_string(&DaemonSection { daemon }).map_err(ConfigError::Encode)?;
+        let mut section: DocumentMut = section.parse().map_err(edit_error)?;
+        if let Some(mut daemon) = section.remove(DAEMON_SECTION) {
+            // The comments above the old section's header.
+            let decor = document
+                .get(DAEMON_SECTION)
+                .and_then(Item::as_table)
+                .map(|table| table.decor().clone());
+            if let (Some(decor), Some(table)) = (decor, daemon.as_table_mut()) {
+                *table.decor_mut() = decor;
+            }
+            document.insert(DAEMON_SECTION, daemon);
+        }
+        Ok(())
+    })
+}
+
+/// Makes `machines` the `[[machines]]` tables of the config file `file`, as [`edit_config`]
+/// writes it. No machine leaves no table.
+pub fn save_machines(file: &Path, machines: &[MachineConfig]) -> Result<(), ConfigError> {
+    use toml_edit::DocumentMut;
+
+    edit_config(file, |document, edit_error| {
+        document.remove(MACHINES_SECTION);
+        if machines.is_empty() {
+            return Ok(());
+        }
+        let section =
+            toml::to_string(&MachinesSection { machines }).map_err(ConfigError::Encode)?;
+        let mut section: DocumentMut = section.parse().map_err(edit_error)?;
+        if let Some(tables) = section.remove(MACHINES_SECTION) {
+            document.insert(MACHINES_SECTION, tables);
+        }
+        Ok(())
+    })
+}
+
+/// Changes the config file `file` with `edit`, keeping its other settings and its comments. A
+/// missing file is created. When `file` is a symbolic link, as home-manager or a dotfiles
+/// repository makes, its target is written and the link stays. The file keeps its mode, and a
+/// read-only one is not written.
+fn edit_config(
+    file: &Path,
+    edit: impl FnOnce(
+        &mut toml_edit::DocumentMut,
+        &dyn Fn(toml_edit::TomlError) -> ConfigError,
+    ) -> Result<(), ConfigError>,
+) -> Result<(), ConfigError> {
+    use toml_edit::DocumentMut;
 
     let edit_error = |source| ConfigError::Edit {
         path: file.to_owned(),
@@ -263,19 +318,7 @@ pub fn save_daemon(file: &Path, daemon: &DaemonConfig) -> Result<(), ConfigError
         }
     };
     let mut document: DocumentMut = text.parse().map_err(edit_error)?;
-    let section = toml::to_string(&DaemonSection { daemon }).map_err(ConfigError::Encode)?;
-    let mut section: DocumentMut = section.parse().map_err(edit_error)?;
-    if let Some(mut daemon) = section.remove(DAEMON_SECTION) {
-        // The comments above the old section's header.
-        let decor = document
-            .get(DAEMON_SECTION)
-            .and_then(Item::as_table)
-            .map(|table| table.decor().clone());
-        if let (Some(decor), Some(table)) = (decor, daemon.as_table_mut()) {
-            *table.decor_mut() = decor;
-        }
-        document.insert(DAEMON_SECTION, daemon);
-    }
+    edit(&mut document, &edit_error)?;
     let target = link_target(file).map_err(|source| ConfigError::Read {
         path: file.to_owned(),
         source,
@@ -553,6 +596,28 @@ pub(crate) mod tests {
         let config: Config = saved.parse().unwrap();
         assert_eq!(config.daemon, DaemonConfig::InApp);
         assert!(!config.notifications.enabled);
+    }
+
+    #[test]
+    fn saving_the_servers_replaces_their_tables_and_keeps_the_rest() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join(CONFIG_FILE);
+        let text = "# This computer.\n[daemon]\ntransport = \"in_app\"\n\n[[machines]]\nname = \"old\"\nhost = \"old-host\"\nremote_command = \"/opt/agents-cockpit\"\n";
+        std::fs::write(&file, text).unwrap();
+        let devbox = MachineConfig {
+            name: "devbox".to_owned(),
+            host: "dev@devbox".to_owned(),
+            remote_command: "/home/dev/.cargo/bin/agents-cockpit".to_owned(),
+        };
+
+        save_machines(&file, std::slice::from_ref(&devbox)).unwrap();
+        let one: Config = std::fs::read_to_string(&file).unwrap().parse().unwrap();
+        save_machines(&file, &[]).unwrap();
+        let none = std::fs::read_to_string(&file).unwrap();
+
+        assert_eq!(one.daemon, DaemonConfig::InApp);
+        assert_eq!(one.machines, [devbox]);
+        assert_eq!(none, "# This computer.\n[daemon]\ntransport = \"in_app\"\n");
     }
 
     #[test]

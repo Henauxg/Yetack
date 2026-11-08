@@ -12,6 +12,7 @@ use crate::daemon_label::DaemonPlace;
 use crate::machine::MachineId;
 use crate::prefs::StatusFilter;
 use crate::state::accounts::{self, AccountLabel, SignInLine};
+use crate::state::machines::{self, MachineChange};
 use crate::state::no_daemon::Absence;
 use crate::state::{AgentEntry, AppState, ConnectionState, TitleEdit, TitlePlace, actions};
 use crate::ui::accounts::{AccountTag, AccountsButton};
@@ -340,7 +341,16 @@ fn MachineGroupView(group: MachineGroup) -> Element {
                 span { class: "machine-count", "{count}" }
             }
             if let Some(trouble) = trouble {
-                p { class: "machine-trouble", title: trouble.error.unwrap_or_default(), "{trouble.line}" }
+                p { class: "machine-trouble", title: trouble.error.clone().unwrap_or_default(),
+                    "{trouble.line} "
+                    if trouble.down {
+                        button {
+                            class: "link-button",
+                            onclick: move |_| cockpit.change_machines(MachineChange::Retry(machine)),
+                            "Retry now"
+                        }
+                    }
+                }
             }
             if !folded {
                 for row in rows {
@@ -549,7 +559,16 @@ fn ConnectionFooter() -> Element {
     let panels = !state.machines.others.is_empty();
     rsx! {
         div { class: "sidebar-foot",
-            AccountsButton {}
+            div { class: "foot-buttons",
+                AccountsButton {}
+                button {
+                    class: "foot-accounts",
+                    title: "The machines the app reaches",
+                    onclick: move |_| cockpit.update(machines::open_machines),
+                    Icon { kind: IconKind::Server, size: 13 }
+                    "Machines"
+                }
+            }
             if !panels {
                 span { class,
                     span { class: "connection-dot", aria_hidden: true }

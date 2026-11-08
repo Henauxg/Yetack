@@ -27,6 +27,7 @@ use crate::ui::accounts::{self as accounts_view, AccountMini, AccountPicker, Acc
 use crate::ui::agent_map::AgentMapDialog;
 use crate::ui::composer::mode_icon;
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::machines::MachinesDialog;
 use crate::ui::open_file::{self as open_file_view, OpenFileDialog, UP_ROW};
 use crate::ui::presence::{Presence, Shown, use_presence};
 
@@ -116,6 +117,9 @@ pub fn Dialogs() -> Element {
                         AgentMapDialog { view }
                     },
                     dialog @ (Dialog::Accounts(_) | Dialog::AddAccount(_)) => accounts_view::dialog(dialog),
+                    Dialog::Machines(view) => rsx! {
+                        MachinesDialog { view }
+                    },
                 }
             }
         }

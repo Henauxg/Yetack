@@ -25,6 +25,10 @@ impl MachineId {
         Self(raw)
     }
 
+    pub fn get(self) -> u16 {
+        self.0
+    }
+
     /// The machine whose daemon runs the agent the app calls `agent`.
     pub fn of(agent: AgentId) -> Self {
         let machine = agent.get() >> DAEMON_BITS;

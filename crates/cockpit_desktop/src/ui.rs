@@ -16,6 +16,7 @@ mod header;
 mod icons;
 mod load_card;
 mod loading;
+mod machines;
 mod markdown;
 mod mcp;
 mod no_daemon;

@@ -596,6 +596,64 @@ button:disabled {
   color: var(--dim);
 }
 
+.foot-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.dialog.machines .machine-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.machine-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+}
+
+.machine-row.down {
+  border-color: rgba(244, 112, 103, 0.35);
+}
+
+.machine-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.machine-row-name {
+  font-weight: 600;
+}
+
+.machine-row-detail {
+  font-size: 12.5px;
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
+
+.machine-add {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px dashed var(--line-control);
+}
+
+.machine-add-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .sidebar-empty {
   margin: 8px 10px;
   color: var(--dim);
