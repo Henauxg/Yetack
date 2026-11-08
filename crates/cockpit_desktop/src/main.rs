@@ -13,6 +13,7 @@ mod fonts;
 mod format;
 mod in_app_host;
 mod logging;
+mod machine;
 mod notifications;
 mod path_style;
 mod prefs;

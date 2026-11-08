@@ -5,19 +5,17 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
-use cockpit_client::{
-    Backoff, RequestError, Requester, Session, SessionError, SessionUpdate, Transport,
-};
+use cockpit_client::{Backoff, RequestError, Requester, Session, SessionError, SessionUpdate};
 use cockpit_protocol::{AgentId, Request};
 use dioxus::desktop::DesktopContext;
 use dioxus::prelude::*;
 use tokio::sync::mpsc;
 
 use crate::config::DaemonConfig;
-use crate::daemon_label::DaemonPlace;
 use crate::in_app_host::InAppHost;
+use crate::machine::MachineId;
 use crate::notifications::Notifier;
-use crate::reach::{self, Places, Unreached};
+use crate::reach::{self, Places, Reached, Unreached};
 use crate::state::machine_load::{LOAD_POLL, LoadView};
 use crate::state::no_daemon::{self, Absence, Chosen, DaemonChoice};
 use crate::state::{
@@ -285,7 +283,10 @@ enum Served {
     /// The window is gone.
     Closed,
     /// The first connection failed: the error says why.
-    NoAnswer { error: String, absence: Absence },
+    NoAnswer {
+        unreached: Unreached,
+        absence: Absence,
+    },
 }
 
 /// Reaches the config's daemon. When that fails before a first connection, shows the "No daemon
@@ -321,20 +322,14 @@ async fn run(
                     state,
                     drafts,
                     load,
-                    reached.transport,
-                    reached.label.place,
+                    reached,
+                    MachineId::THIS,
                     notify,
                     &mut requests,
                 );
                 match served.await {
                     Served::Closed => return,
-                    Served::NoAnswer { error, absence } => (
-                        Unreached {
-                            label: reached.label,
-                            error,
-                        },
-                        absence,
-                    ),
+                    Served::NoAnswer { unreached, absence } => (unreached, absence),
                 }
             }
             Err(unreached) => (unreached, Absence::Failed),
@@ -393,18 +388,21 @@ async fn next_choice(
     }
 }
 
-/// Runs a session over `transport`, which reconnects after every drop once it connected.
+/// Runs a session with the daemon reached, which reconnects after every drop once it connected.
 async fn serve(
     mut state: Signal<AppState>,
     mut drafts: Signal<Drafts>,
     load: Signal<LoadView>,
-    transport: Transport,
-    place: DaemonPlace,
+    reached: Reached,
+    machine: MachineId,
     notify: bool,
     requests: &mut UnboundedReceiver<ToDaemon>,
 ) -> Served {
     use futures_util::StreamExt;
 
+    let Reached {
+        transport, label, ..
+    } = reached;
     let mut session = Session::start(transport, Backoff::default());
     let requester = session.requester().clone();
     let (opened_sender, mut opened) = mpsc::unbounded_channel::<AgentId>();
@@ -432,20 +430,28 @@ async fn serve(
             }
             Some(answer) = load_answers.recv() => {
                 load_asked = false;
+                let answer = answer.map(|mut body| {
+                    machine.answer_to_app(&mut body);
+                    body
+                });
                 show_load(load, LoadView::from_result(answer));
             }
             update = session.next_update() => {
-                let Some(update) = update else {
+                let Some(mut update) = update else {
                     return Served::Closed;
                 };
+                machine.update_to_app(&mut update);
                 match &update {
                     SessionUpdate::Connected(_) => connected_once = true,
                     SessionUpdate::Disconnected { error: error @ SessionError::Connect(_), .. }
                         if !connected_once =>
                     {
                         return Served::NoAnswer {
-                            error: state::error_chain(error),
-                            absence: no_daemon::absence(place, error),
+                            absence: no_daemon::absence(label.place, error),
+                            unreached: Unreached {
+                                label,
+                                error: state::error_chain(error),
+                            },
                         };
                     }
                     SessionUpdate::Connecting { .. }
@@ -460,14 +466,16 @@ async fn serve(
                     (alerts, state::needed_requests(&mut state))
                 };
                 for outgoing in follow_up {
-                    send(state, drafts, requester.clone(), outgoing);
+                    send(state, drafts, requester.clone(), machine, outgoing);
                 }
                 if let Some(notifier) = &mut notifier {
                     notifier.update(alerts, &state.peek());
                 }
             }
             outgoing = requests.next() => match outgoing {
-                Some(ToDaemon::Send(outgoing)) => send(state, drafts, requester.clone(), outgoing),
+                Some(ToDaemon::Send(outgoing)) => {
+                    send(state, drafts, requester.clone(), machine, outgoing);
+                }
                 // The screen shows only before a first connection.
                 Some(ToDaemon::Choose(_)) => {}
                 None => return Served::Closed,
@@ -480,31 +488,39 @@ async fn serve(
                     state::needed_requests(&mut state)
                 };
                 for outgoing in follow_up {
-                    send(state, drafts, requester.clone(), outgoing);
+                    send(state, drafts, requester.clone(), machine, outgoing);
                 }
             }
         }
     }
 }
 
-/// Sends a request and applies its answer, without holding up the other requests.
+/// Sends a request to `machine` and applies its answer, without holding up the other requests.
 fn send(
     mut state: Signal<AppState>,
     mut drafts: Signal<Drafts>,
     requester: Requester,
+    machine: MachineId,
     outgoing: Outgoing,
 ) {
     spawn(async move {
-        let Outgoing { request, purpose } = outgoing;
+        let Outgoing {
+            mut request,
+            purpose,
+        } = outgoing;
         let method = request.method();
-        let result = requester.request(request).await;
+        MachineId::to_daemon(&mut request);
+        let result = requester.request(request).await.map(|mut body| {
+            machine.answer_to_app(&mut body);
+            body
+        });
         let follow_up = {
             let mut state = state.write();
             state::apply_response(&mut state, &mut drafts.write(), method, purpose, result);
             state::needed_requests(&mut state)
         };
         for outgoing in follow_up {
-            send(state, drafts, requester.clone(), outgoing);
+            send(state, drafts, requester.clone(), machine, outgoing);
         }
     });
 }
