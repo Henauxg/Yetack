@@ -23,7 +23,7 @@ use crate::state::machine_load::{LOAD_POLL, LoadView};
 use crate::state::machines::{self, MachineChange};
 use crate::state::no_daemon::{self, Absence, Chosen, DaemonChoice};
 use crate::state::{
-    self, AgentEntry, AppState, ConnectionState, Drafts, MachineState, Outgoing, Purpose,
+    self, AgentEntry, AppState, ConnectionState, Dialog, Drafts, MachineState, Outgoing, Purpose,
     TitlePlace, Utf16Offset, actions,
 };
 use crate::{bridge, demo};
@@ -535,6 +535,10 @@ async fn run(
                     let mut state = state.write();
                     state.machines.this.daemon = reached.label.clone();
                     state.machines.this.connection = ConnectionState::Connecting { attempt: 1 };
+                    state
+                        .ui
+                        .dialog
+                        .take_if(|dialog| matches!(dialog, Dialog::NoDaemon));
                     if let Some(note) = reached.note {
                         state.ui.inform(note.to_owned());
                     }

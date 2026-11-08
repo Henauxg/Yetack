@@ -1062,7 +1062,8 @@ pub fn dialog(dialog: Dialog) -> Element {
         | Dialog::OpenFile(_)
         | Dialog::CloseAgent(_)
         | Dialog::AgentMap(_)
-        | Dialog::Machines(_) => rsx! {},
+        | Dialog::Machines(_)
+        | Dialog::NoDaemon => rsx! {},
     }
 }
 

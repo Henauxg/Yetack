@@ -31,7 +31,9 @@ pub fn App() -> Element {
     use_splitter(cockpit);
     use_reorder(cockpit);
     let state = cockpit.state.read();
-    if let ConnectionState::NoDaemon(_) = state.machines.this.connection {
+    // With servers, the question shows from this computer's panel, and the servers stay in use.
+    let no_daemon = matches!(state.machines.this.connection, ConnectionState::NoDaemon(_));
+    if no_daemon && state.machines.others.is_empty() {
         return rsx! {
             NoDaemonScreen {}
         };
@@ -42,7 +44,7 @@ pub fn App() -> Element {
         .is_some_and(|agent| state.ui.file_view(agent).is_some());
     let closes_on_click = state.ui.popover_closes_on_click();
     let disconnected = matches!(
-        state.machines.this.connection,
+        state.selected_machine_state().connection,
         ConnectionState::Disconnected { .. }
     );
     let share = state.prefs.file_view.share();

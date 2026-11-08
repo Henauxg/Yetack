@@ -14,7 +14,7 @@ use crate::prefs::StatusFilter;
 use crate::state::accounts::{self, AccountLabel, SignInLine};
 use crate::state::machines::{self, MachineChange};
 use crate::state::no_daemon::Absence;
-use crate::state::{AgentEntry, AppState, ConnectionState, TitleEdit, TitlePlace, actions};
+use crate::state::{AgentEntry, AppState, ConnectionState, Dialog, TitleEdit, TitlePlace, actions};
 use crate::ui::accounts::{AccountTag, AccountsButton};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::reorder::{self, LIST_ID, ROW_CLASS};
@@ -245,6 +245,8 @@ struct MachineTrouble {
     error: Option<String>,
     /// A machine that answered no first connection: its panel's edge turns red.
     down: bool,
+    /// This computer has no daemon yet: the panel asks where its agents run.
+    asks: bool,
 }
 
 impl MachineGroup {
@@ -272,16 +274,19 @@ impl MachineGroup {
                 line: "Connecting…".to_owned(),
                 error: None,
                 down: false,
+                asks: false,
             }),
             ConnectionState::Disconnected { error, .. } => Some(MachineTrouble {
                 line: "Not connected. The app tries again on its own.".to_owned(),
                 error: Some(error.clone()),
                 down: true,
+                asks: false,
             }),
             ConnectionState::NoDaemon(_) => Some(MachineTrouble {
-                line: "No daemon yet".to_owned(),
+                line: "No daemon yet.".to_owned(),
                 error: None,
                 down: false,
+                asks: true,
             }),
         });
         Self {
@@ -348,6 +353,13 @@ fn MachineGroupView(group: MachineGroup) -> Element {
                             class: "link-button",
                             onclick: move |_| cockpit.change_machines(MachineChange::Retry(machine)),
                             "Retry now"
+                        }
+                    }
+                    if trouble.asks {
+                        button {
+                            class: "link-button",
+                            onclick: move |_| cockpit.update(|state| state.ui.dialog = Some(Dialog::NoDaemon)),
+                            "Choose how agents run here"
                         }
                     }
                 }

@@ -20,8 +20,19 @@ const IN_APP_DETAIL: &str =
 const SERVICE_DETAIL: &str =
     "Runs agents-cockpit serve on this machine. The agents keep running after the app closes.";
 
+/// The screen in place of the window's panes, while the app reaches this computer alone.
 #[component]
 pub fn NoDaemonScreen() -> Element {
+    rsx! {
+        div { class: "no-daemon",
+            NoDaemonCard {}
+        }
+    }
+}
+
+/// The question and its choices, on the screen or in a dialog.
+#[component]
+pub fn NoDaemonCard() -> Element {
     let cockpit: Cockpit = use_context();
     let screen = match &cockpit.state.read().machines.this.connection {
         ConnectionState::NoDaemon(screen) => screen.clone(),
@@ -129,10 +140,12 @@ pub fn NoDaemonScreen() -> Element {
         },
     };
     rsx! {
-        div { class: "no-daemon",
-            div { class: "no-daemon-card", role: "dialog", aria_labelledby: "no-daemon-title",
-                {body}
-            }
+        div {
+            class: "no-daemon-card",
+            role: "dialog",
+            aria_labelledby: "no-daemon-title",
+            onclick: move |event| event.stop_propagation(),
+            {body}
         }
     }
 }

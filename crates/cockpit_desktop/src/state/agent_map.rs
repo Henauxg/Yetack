@@ -472,7 +472,11 @@ pub fn toggle(state: &mut AppState) {
         }
         Some(Dialog::NewAgent(_) | Dialog::AddAccount(_) | Dialog::Machines(_)) => return,
         Some(
-            Dialog::Switcher | Dialog::OpenFile(_) | Dialog::CloseAgent(_) | Dialog::Accounts(_),
+            Dialog::Switcher
+            | Dialog::OpenFile(_)
+            | Dialog::CloseAgent(_)
+            | Dialog::Accounts(_)
+            | Dialog::NoDaemon,
         )
         | None => {}
     }

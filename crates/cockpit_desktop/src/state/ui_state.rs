@@ -65,6 +65,8 @@ pub enum Dialog {
     AddAccount(AddAccountForm),
     /// The machines the app reaches, with a form that adds a server.
     Machines(MachinesView),
+    /// "Where should agents run?" for this computer, while servers are in use.
+    NoDaemon,
 }
 
 /// The "Machines" dialog's form for a new server, and why the last one was refused.
@@ -118,7 +120,8 @@ impl Dialog {
             | Self::OpenFile(_)
             | Self::Accounts(_)
             | Self::AddAccount(_)
-            | Self::Machines(_) => None,
+            | Self::Machines(_)
+            | Self::NoDaemon => None,
         }
     }
 }
