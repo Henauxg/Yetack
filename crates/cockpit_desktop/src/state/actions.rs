@@ -1848,6 +1848,23 @@ pub fn open_new_agent(state: &mut AppState, drafts: &mut Drafts) {
     };
 }
 
+/// A field of the new agent dialog's "Start in a folder" tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartField {
+    Folder,
+    Message,
+}
+
+/// The field that takes the focus when the "Start in a folder" tab shows: the folder field while
+/// it is empty, else the first message.
+pub fn start_focus(draft: &NewAgentDraft) -> StartField {
+    if draft.folder.trim().is_empty() {
+        StartField::Folder
+    } else {
+        StartField::Message
+    }
+}
+
 pub fn with_new_agent_form(state: &mut AppState, change: impl FnOnce(&mut NewAgentForm)) {
     if let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog {
         change(form);
@@ -4114,6 +4131,39 @@ mod tests {
             &state.ui.dialog,
             Some(Dialog::NewAgent(form)) if form.effort == Some(Effort::Max)
         ));
+    }
+
+    #[test]
+    fn the_start_tab_focuses_the_folder_field_until_it_holds_a_folder() {
+        let mut empty = state_with(Vec::new());
+        let mut empty_drafts = Drafts::default();
+        open_new_agent(&mut empty, &mut empty_drafts);
+        let mut recent = state(AgentStatus::Idle);
+        let mut recent_drafts = Drafts::default();
+        open_new_agent(&mut recent, &mut recent_drafts);
+        let mut spaces = Drafts::default();
+        spaces.new_agent.folder = "  ".to_owned();
+
+        assert_eq!(start_focus(&empty_drafts.new_agent), StartField::Folder);
+        assert_eq!(recent_drafts.new_agent.folder, "/work/project-1");
+        assert_eq!(start_focus(&recent_drafts.new_agent), StartField::Message);
+        assert_eq!(start_focus(&spaces.new_agent), StartField::Folder);
+    }
+
+    #[test]
+    fn the_start_tab_back_from_accounts_focuses_the_field_its_folder_calls_for() {
+        let mut state = state_with(Vec::new());
+        let mut drafts = Drafts::default();
+        open_new_agent(&mut state, &mut drafts);
+        let before = start_focus(&drafts.new_agent);
+        drafts.new_agent.folder = "/work/calc".to_owned();
+
+        accounts::open_accounts(&mut state, None);
+        state.ui.close_dialog();
+
+        assert_eq!(before, StartField::Folder);
+        assert!(matches!(state.ui.dialog, Some(Dialog::NewAgent(_))));
+        assert_eq!(start_focus(&drafts.new_agent), StartField::Message);
     }
 
     /// Ctrl+K would replace the dialog, and Ctrl+N then open it empty.

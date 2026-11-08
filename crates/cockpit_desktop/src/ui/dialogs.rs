@@ -15,7 +15,7 @@ use crate::connection::{Clock, Cockpit};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::path_style::{self, PathStyle};
 use crate::state::accounts::AccountLabel;
-use crate::state::actions::Direction;
+use crate::state::actions::{Direction, StartField};
 use crate::state::folder_field::{self, FolderRow};
 use crate::state::{
     Dialog, FolderList, FormMenu, Loadable, NewAgentForm, NewAgentTab, accounts, actions,
@@ -35,6 +35,12 @@ const PLACEHOLDER_WIDTHS: [&str; RECENT_FOLDERS] = ["72%", "58%", "66%", "50%", 
 
 /// The widths of the rows that stand for the folder field's folders on their way.
 const FOLDER_LOADING_ROWS: [&str; 4] = ["34%", "22%", "46%", "28%"];
+
+/// The new agent dialog's first message.
+const PROMPT_FIELD_ID: &str = "new-agent-prompt";
+
+/// The "Resume a session" tab's search field.
+const SESSION_SEARCH_ID: &str = "new-agent-session-search";
 
 /// What the menu buttons say when the form keeps Claude Code's default.
 const DEFAULT_MODEL: &str = "Default model";
@@ -359,6 +365,7 @@ fn StartForm(form: NewAgentForm) -> Element {
     // render that lags behind typing would put an older text back.
     let folder_seed = use_hook(|| typed_folder.clone());
     let prompt_seed = use_hook(|| typed_prompt.clone());
+    let focus = use_hook(|| actions::start_focus(&cockpit.drafts.peek().new_agent));
     // The recent folder under the pointer, the one row lit. The field's folder is only marked.
     let mut pointed = use_signal(|| None::<PathBuf>);
     let (folders, machine, sessions_loading, account) = {
@@ -429,6 +436,11 @@ fn StartForm(form: NewAgentForm) -> Element {
                         spellcheck: false,
                         placeholder: "Type the folder's path, or pick a recent folder below",
                         initial_value: "{folder_seed}",
+                        onmounted: move |_| {
+                            if focus == StartField::Folder {
+                                bridge::focus_field_at_end(FOLDER_FIELD_ID);
+                            }
+                        },
                         oninput: move |event: FormEvent| type_folder(cockpit, event.value()),
                         onkeydown: move |event: KeyboardEvent| {
                             if event.modifiers().ctrl() || event.modifiers().meta() {
@@ -521,11 +533,17 @@ fn StartForm(form: NewAgentForm) -> Element {
         div { class: "dialog-footer",
             div { class: "prompt-box",
                 textarea {
+                    id: PROMPT_FIELD_ID,
                     class: "prompt-input",
                     rows: "3",
                     aria_label: "First message",
                     placeholder: "What should the agent do? Optional: it can wait for your first message.",
                     initial_value: "{prompt_seed}",
+                    onmounted: move |_| {
+                        if focus == StartField::Message {
+                            bridge::focus_field_at_end(PROMPT_FIELD_ID);
+                        }
+                    },
                     oninput: move |event: FormEvent| cockpit.with_drafts(|_, drafts| drafts.new_agent.prompt = event.value()),
                     onkeydown: start_on_command_enter,
                 }
@@ -920,16 +938,14 @@ fn ResumeList(starting: bool) -> Element {
                 div { class: "folder-field session-search",
                     Icon { kind: IconKind::Search, size: 16 }
                     input {
+                        id: SESSION_SEARCH_ID,
                         class: "folder-input",
                         r#type: "text",
                         spellcheck: false,
                         aria_label: "Find a session",
                         placeholder: "Find a session by its title or folder",
                         initial_value: "{query_seed}",
-                        onmounted: move |event| async move {
-                            // The tab may have changed already: nothing to focus then.
-                            let _ = event.data().set_focus(true).await;
-                        },
+                        onmounted: move |_| bridge::focus_field_at_end(SESSION_SEARCH_ID),
                         oninput: move |event: FormEvent| cockpit.with_drafts(|_, drafts| actions::session_query(drafts, event.value())),
                         onkeydown: move |event: KeyboardEvent| match event.key() {
                             Key::ArrowDown => {
