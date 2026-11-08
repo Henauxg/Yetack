@@ -1289,6 +1289,11 @@ pub fn open_file(state: &mut AppState, agent: AgentId, path: PathBuf, line: Opti
     view.mode = mode;
     state.ui.popover = None;
     state.ui.badge = None;
+    // A link in the agent map opens the file view, which the map would cover.
+    state
+        .ui
+        .dialog
+        .take_if(|dialog| matches!(dialog, Dialog::AgentMap(_)));
 }
 
 /// Opens `choice`, one of the files that end with `name`, in the tab of `name`.
@@ -3745,6 +3750,17 @@ mod tests {
             },
             result,
         );
+    }
+
+    #[test]
+    fn a_file_opened_from_the_agent_map_closes_the_map() {
+        let mut state = state(AgentStatus::Working);
+        crate::state::agent_map::open_on_agent(&mut state, agent());
+
+        open_file(&mut state, agent(), PathBuf::from("src/lexer.rs"), Some(12));
+
+        assert_eq!(state.ui.dialog, None);
+        assert!(state.ui.file_view(agent()).is_some());
     }
 
     #[test]
