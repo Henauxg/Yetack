@@ -13,8 +13,8 @@ use cockpit_protocol::{AgentId, Catchup, Request, ResponseBody};
 const DAEMON_BITS: u32 = 20;
 const DAEMON_MASK: u32 = (1 << DAEMON_BITS) - 1;
 
-/// A machine the app reaches.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+/// A machine the app reaches. The default is this computer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct MachineId(u16);
 
 impl MachineId {

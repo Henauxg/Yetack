@@ -165,6 +165,8 @@ pub enum FormMenu {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NewAgentForm {
     pub tab: NewAgentTab,
+    /// The machine the agent starts on, whose folders and sessions the dialog lists.
+    pub machine: MachineId,
     /// `None` keeps Claude Code's default, as do `effort` and `mode`.
     pub model: Option<String>,
     pub effort: Option<Effort>,

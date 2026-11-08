@@ -1854,7 +1854,7 @@ pub fn open_new_agent(state: &mut AppState, drafts: &mut Drafts) {
         return;
     }
     let folder = state
-        .recent_folders()
+        .recent_folders(MachineId::THIS)
         .first()
         .map(|recent| path_style::shown(&recent.folder))
         .unwrap_or_default();
@@ -1921,7 +1921,13 @@ pub fn start_agent(state: &mut AppState, drafts: &Drafts) -> Vec<Outgoing> {
     if folder.is_empty() || form.starting || form.tab != NewAgentTab::Start {
         return Vec::new();
     }
-    let account = accounts::new_agent_account(state, form, folder);
+    // The accounts are this computer's: a server's agent runs with its daemon's default one.
+    let account = if form.machine == MachineId::THIS {
+        accounts::new_agent_account(state, form, folder)
+    } else {
+        AccountId::DEFAULT
+    };
+    let machine = form.machine;
     let prompt = drafts.new_agent.prompt.trim();
     let params = StartParams {
         folder: PathBuf::from(folder),
@@ -1939,8 +1945,36 @@ pub fn start_agent(state: &mut AppState, drafts: &Drafts) -> Vec<Outgoing> {
     vec![Outgoing {
         request: Request::AgentStart(params),
         purpose: Purpose::Start,
-        to: MachineId::THIS,
+        to: machine,
     }]
+}
+
+/// Starts the new agent on `machine`, whose folders and sessions the dialog then lists. A
+/// machine that does not answer cannot be picked.
+pub fn pick_new_agent_machine(state: &mut AppState, machine: MachineId) {
+    if !state
+        .machines
+        .get(machine)
+        .is_some_and(super::app_state::MachineState::is_connected)
+    {
+        return;
+    }
+    let changed =
+        matches!(&state.ui.dialog, Some(Dialog::NewAgent(form)) if form.machine != machine);
+    if !changed {
+        return;
+    }
+    with_new_agent_form(state, |form| {
+        form.machine = machine;
+        form.folders = None;
+        form.account = None;
+    });
+    // Its sessions are asked again, as when the dialog opens.
+    if let Some(known) = state.machines.get_mut(machine)
+        && known.sessions != Loadable::Loading
+    {
+        known.sessions = Loadable::NotRequested;
+    }
 }
 
 /// The past sessions the "Resume a session" tab lists: those no agent runs, of `account` when
@@ -1958,12 +1992,15 @@ pub fn resumable_sessions<'state>(
         .values()
         .filter_map(|entry| entry.summary.session.as_ref())
         .collect();
+    let machine = match &state.ui.dialog {
+        Some(Dialog::NewAgent(form)) => form.machine,
+        _ => MachineId::THIS,
+    };
     let mut sessions: Vec<&PastSession> = state
         .machines
-        .this
-        .sessions
-        .loaded()
+        .get(machine)
         .into_iter()
+        .flat_map(|known| known.sessions.loaded())
         .flatten()
         .filter(|session| !running.contains(&session.id))
         .filter(|session| account.is_none_or(|id| session.account == id))
@@ -2027,16 +2064,18 @@ pub fn resume_session(
     session: ClaudeSessionId,
     account: AccountId,
 ) -> Vec<Outgoing> {
+    let mut machine = MachineId::THIS;
     if let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog {
         if form.starting {
             return Vec::new();
         }
         form.starting = true;
+        machine = form.machine;
     }
     vec![Outgoing {
         request: Request::SessionsResume(SessionResumeParams { session, account }),
         purpose: Purpose::Start,
-        to: MachineId::THIS,
+        to: machine,
     }]
 }
 
@@ -4090,6 +4129,54 @@ mod tests {
             Some(Some(first_on_devbox)),
             "above devbox's first row"
         );
+    }
+
+    #[test]
+    fn a_new_agent_starts_on_the_machine_picked_with_its_default_account() {
+        let (mut state, devbox) = two_machines();
+        let mut drafts = Drafts::default();
+        open_new_agent(&mut state, &mut drafts);
+        drafts.new_agent.folder = "/srv/shop".to_owned();
+
+        pick_new_agent_machine(&mut state, devbox);
+        let asked = crate::state::needed_requests(&mut state);
+        let started = start_agent(&mut state, &drafts);
+
+        assert!(
+            asked
+                .iter()
+                .any(|outgoing| outgoing.request == Request::SessionsList && outgoing.to == devbox),
+            "the dialog lists devbox's past sessions"
+        );
+        let [
+            Outgoing {
+                request: Request::AgentStart(params),
+                to,
+                ..
+            },
+        ] = started.as_slice()
+        else {
+            panic!("expected a start, got {started:?}");
+        };
+        assert_eq!(*to, devbox);
+        assert_eq!(params.account, AccountId::DEFAULT);
+    }
+
+    #[test]
+    fn a_machine_that_does_not_answer_cannot_be_picked() {
+        let (mut state, devbox) = two_machines();
+        let mut drafts = Drafts::default();
+        open_new_agent(&mut state, &mut drafts);
+        if let Some(known) = state.machines.others.get_mut(&devbox) {
+            known.connection = ConnectionState::Connecting { attempt: 2 };
+        }
+
+        pick_new_agent_machine(&mut state, devbox);
+
+        assert!(matches!(
+            &state.ui.dialog,
+            Some(Dialog::NewAgent(form)) if form.machine == MachineId::THIS
+        ));
     }
 
     #[test]

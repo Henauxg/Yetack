@@ -394,21 +394,24 @@ impl AppState {
         }
     }
 
-    /// Folders where agents ran, with their last use and the account of that use, most recent
-    /// first, for the new agent dialog. One folder written two ways, as `C:\Work` and `c:/work`,
-    /// shows once.
-    pub fn recent_folders(&self) -> Vec<RecentFolder> {
+    /// Folders where agents ran on `machine`, with their last use and the account of that use,
+    /// most recent first, for the new agent dialog. One folder written two ways, as `C:\Work` and
+    /// `c:/work`, shows once.
+    pub fn recent_folders(&self, machine: MachineId) -> Vec<RecentFolder> {
         let mut uses: Vec<RecentFolder> = Vec::new();
-        let agent_uses = self.agents.values().map(|entry| {
-            let summary = &entry.summary;
-            (&summary.folder, summary.started_at, summary.account)
-        });
+        let agent_uses = self
+            .agents
+            .values()
+            .filter(|entry| MachineId::of(entry.id()) == machine)
+            .map(|entry| {
+                let summary = &entry.summary;
+                (&summary.folder, summary.started_at, summary.account)
+            });
         let session_uses = self
             .machines
-            .this
-            .sessions
-            .loaded()
+            .get(machine)
             .into_iter()
+            .flat_map(|known| known.sessions.loaded())
             .flatten()
             .map(|session: &PastSession| (&session.folder, session.last_activity, session.account));
         for (folder, moment, account) in agent_uses.chain(session_uses) {
@@ -632,7 +635,7 @@ pub(crate) mod tests {
         let state = state_with(vec![first, second, third]);
 
         let folders: Vec<PathBuf> = state
-            .recent_folders()
+            .recent_folders(MachineId::THIS)
             .into_iter()
             .map(|recent| recent.folder)
             .collect();
@@ -651,7 +654,7 @@ pub(crate) mod tests {
         let state = state_with(vec![plain, verbatim]);
 
         let folders: Vec<PathBuf> = state
-            .recent_folders()
+            .recent_folders(MachineId::THIS)
             .into_iter()
             .map(|recent| recent.folder)
             .collect();

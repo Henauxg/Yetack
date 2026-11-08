@@ -199,7 +199,7 @@ pub fn folder_account(state: &AppState, folder: &str) -> Option<AccountId> {
     }
     let style = PathStyle::of_text(folder);
     state
-        .recent_folders()
+        .recent_folders(MachineId::THIS)
         .into_iter()
         .find(|recent| style.same_path(&recent.folder.to_string_lossy(), folder))
         .map(|recent| recent.account)

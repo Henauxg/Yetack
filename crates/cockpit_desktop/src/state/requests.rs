@@ -140,14 +140,20 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
         }
     }
     requests.extend(accounts::list_request(state));
-    if matches!(state.ui.dialog, Some(Dialog::NewAgent(_)))
-        && state.machines.this.sessions == Loadable::NotRequested
+    let form_machine = match &state.ui.dialog {
+        Some(Dialog::NewAgent(form)) => Some(form.machine),
+        _ => None,
+    };
+    if let Some(machine) = form_machine
+        && let Some(known) = state.machines.get_mut(machine)
+        && known.is_connected()
+        && known.sessions == Loadable::NotRequested
     {
-        state.machines.this.sessions = Loadable::Loading;
+        known.sessions = Loadable::Loading;
         requests.push(Outgoing {
             request: Request::SessionsList,
             purpose: Purpose::Sessions,
-            to: MachineId::THIS,
+            to: machine,
         });
     }
     if let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog
@@ -161,7 +167,7 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
                 path: folder.clone(),
             }),
             purpose: Purpose::Folders { folder },
-            to: MachineId::THIS,
+            to: form.machine,
         });
     }
     if let Some(Dialog::OpenFile(view)) = &mut state.ui.dialog {

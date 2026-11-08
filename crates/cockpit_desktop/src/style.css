@@ -4888,6 +4888,34 @@ button.map-toggle:hover {
   background: var(--hover);
 }
 
+.machine-choice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.machine-option {
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line-control);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.machine-option.checked {
+  border-color: rgba(45, 212, 191, 0.55);
+  background: rgba(45, 212, 191, 0.08);
+  color: var(--text);
+}
+
+.machine-option:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .folder-input::placeholder {
   color: var(--dim);
   font-family: var(--sans);

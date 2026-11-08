@@ -15,12 +15,13 @@ use crate::bridge::{self, FOLDER_FIELD_ID, HIGHLIGHTED_CLASS};
 use crate::connection::{Clock, Cockpit};
 use crate::daemon_label::DaemonPlace;
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
+use crate::machine::MachineId;
 use crate::path_style::{self, PathStyle};
 use crate::state::accounts::AccountLabel;
 use crate::state::actions::{Direction, StartField};
 use crate::state::folder_field::{self, FolderRow};
 use crate::state::{
-    Dialog, FolderList, FormMenu, Loadable, NewAgentForm, NewAgentTab, accounts, actions,
+    AppState, Dialog, FolderList, FormMenu, Loadable, NewAgentForm, NewAgentTab, accounts, actions,
 };
 use crate::ui::accounts::{self as accounts_view, AccountMini, AccountPicker, AccountTag};
 use crate::ui::agent_map::AgentMapDialog;
@@ -344,6 +345,37 @@ async fn browse_folder(cockpit: Cockpit, from: String) {
     }
 }
 
+/// A machine the new agent can start on.
+#[derive(Debug, Clone, PartialEq)]
+struct MachineChoice {
+    machine: MachineId,
+    name: String,
+    chosen: bool,
+    answers: bool,
+}
+
+/// The machines the new agent dialog offers, this computer first. None while the app reaches
+/// this computer alone.
+fn machine_choices(state: &AppState, chosen: MachineId) -> Vec<MachineChoice> {
+    if state.machines.others.is_empty() {
+        return Vec::new();
+    }
+    let this = (MachineId::THIS, &state.machines.this);
+    std::iter::once(this)
+        .chain(state.machines.others.iter().map(|(id, known)| (*id, known)))
+        .map(|(machine, known)| MachineChoice {
+            machine,
+            name: if machine == MachineId::THIS && known.daemon.place != DaemonPlace::Ssh {
+                "This computer".to_owned()
+            } else {
+                known.daemon.machine.clone()
+            },
+            chosen: machine == chosen,
+            answers: known.is_connected(),
+        })
+        .collect()
+}
+
 fn change_form(cockpit: Cockpit, change: impl FnOnce(&mut NewAgentForm)) {
     cockpit.update(|state| actions::with_new_agent_form(state, change));
 }
@@ -391,10 +423,11 @@ fn StartForm(form: NewAgentForm) -> Element {
     let focus = use_hook(|| actions::start_focus(&cockpit.drafts.peek().new_agent));
     // The recent folder under the pointer, the one row lit. The field's folder is only marked.
     let mut pointed = use_signal(|| None::<PathBuf>);
-    let (folders, machine, local, sessions_loading, account) = {
+    let (folders, machine, local, sessions_loading, account, machine_choices, folders_unknown) = {
         let state = cockpit.state.read();
+        let chosen = state.machines.get(form.machine);
         let mut folders: Vec<(PathBuf, Timestamp, Option<AccountLabel>)> = state
-            .recent_folders()
+            .recent_folders(form.machine)
             .into_iter()
             .map(|recent| {
                 let label = accounts::label(&state, recent.account);
@@ -402,23 +435,26 @@ fn StartForm(form: NewAgentForm) -> Element {
             })
             .collect();
         folders.truncate(RECENT_FOLDERS);
-        let loading = matches!(
-            state.machines.this.sessions,
-            Loadable::NotRequested | Loadable::Loading
-        );
-        let account = accounts::shows_labels(&state)
+        let loading = chosen.is_none_or(|known| {
+            matches!(known.sessions, Loadable::NotRequested | Loadable::Loading)
+        });
+        // The accounts are this computer's: a server's agent runs with its default one.
+        let account = (form.machine == MachineId::THIS && accounts::shows_labels(&state))
             .then(|| accounts::new_agent_account(&state, &form, &typed_folder));
         // The system's picker shows this computer's folders, which a daemon over SSH cannot use.
-        let local = state.machines.this.daemon.place != DaemonPlace::Ssh;
+        let local = form.machine == MachineId::THIS
+            && chosen.is_some_and(|known| known.daemon.place != DaemonPlace::Ssh);
+        let machine = chosen.map_or_else(String::new, |known| known.daemon.machine.clone());
         (
             folders,
-            state.machines.this.daemon.machine.clone(),
+            machine,
             local,
             loading,
             account,
+            machine_choices(&state, form.machine),
+            chosen.is_some_and(|known| known.folders_unknown),
         )
     };
-    let folders_unknown = cockpit.state.read().machines.this.folders_unknown;
     // The past sessions bring more recent folders: rows stand for them until they arrive, so the
     // list does not grow under the pointer.
     let placeholders = if sessions_loading {
@@ -457,6 +493,30 @@ fn StartForm(form: NewAgentForm) -> Element {
     let mode_open = form.menu == Some(FormMenu::Mode);
     rsx! {
         div { class: "dialog-body",
+            if !machine_choices.is_empty() {
+                div { class: "field-group",
+                    span { class: "field-label", "Machine" }
+                    div { class: "machine-choice", role: "radiogroup", aria_label: "Machine",
+                        for choice in machine_choices {
+                            {
+                                let picked = choice.machine;
+                                rsx! {
+                                    button {
+                                        key: "{choice.name}",
+                                        class: if choice.chosen { "machine-option checked" } else { "machine-option" },
+                                        role: "radio",
+                                        aria_checked: choice.chosen,
+                                        disabled: !choice.answers,
+                                        title: if choice.answers { "" } else { "This machine does not answer" },
+                                        onclick: move |_| cockpit.update(|state| actions::pick_new_agent_machine(state, picked)),
+                                        "{choice.name}"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             div { class: "field-group",
                 label { class: "field-label", r#for: FOLDER_FIELD_ID, "Folder on {machine}" }
                 // Above the recent folders, which arrive after the dialog opens: the field stays
