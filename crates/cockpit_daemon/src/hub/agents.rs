@@ -7,24 +7,22 @@ use std::path::{Path, PathBuf};
 
 use claude_protocol::{ControlRequest, InputLine, OutputLine};
 use cockpit_protocol::{
-    AccountId, AgentId, AgentStatus, AgentSummary, AnswerParams, ClaudeSessionId, CostUsd,
-    EffortSource, ErrorBody, ErrorCode, Event, MAX_TITLE_CHARS, Position, Prompt, PromptDelivery,
-    PromptId, QueuedPromptParams, RenameParams, ResponseBody, ResponseResult, SetEffortParams,
-    SignInWait, StartParams, TranscriptItem, WaitingState,
+    AccountId, AgentId, AgentStatus, AgentSummary, AnswerParams, COMMAND_PREFIX, ClaudeSessionId,
+    CostUsd, EffortSource, ErrorBody, ErrorCode, Event, MAX_TITLE_CHARS, Position, Prompt,
+    PromptDelivery, PromptId, QueuedPromptParams, RenameParams, ResponseBody, ResponseResult,
+    SetEffortParams, SignInWait, StartParams, TranscriptItem, WaitingState,
 };
 
 use crate::accounts::ClaudeEnv;
 use crate::hub::input::{ControlPurpose, HubInput, Reply};
 use crate::hub::state::{Agent, Hub, QueuedPrompt};
 use crate::hub::{errors, state};
-use crate::machine_load;
 use crate::process::{ClaudeCommand, InterruptedTurn, ProcessEvent};
-use crate::read_file;
-use crate::sessions;
 use crate::sessions::FoundSession;
 use crate::store::{AgentRecord, LogName, RawLog};
 use crate::transcript::prompts::TypedSetting;
 use crate::transcript::{AgentView, AnswerError, FollowUp, ProcessSession, prompts, words};
+use crate::{machine_load, read_file, sessions};
 
 /// A title made from a prompt keeps this many characters.
 const TITLE_MAX_CHARS: usize = 60;
@@ -668,10 +666,8 @@ fn record_typed_setting(agent: &mut Agent, text: &str) -> bool {
     }
 }
 
-/// A slash command always waits for the turn's end: Claude Code does not echo every one, so the
-/// daemon could not tell when it was read.
 fn is_slash_command(text: &str) -> bool {
-    text.starts_with('/')
+    text.starts_with(COMMAND_PREFIX)
 }
 
 /// Takes a prompt out of the agent's queue, before `claude` gets it.

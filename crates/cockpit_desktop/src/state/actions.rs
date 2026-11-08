@@ -8,12 +8,12 @@ use std::path::{Path, PathBuf};
 use cockpit_client::RequestError;
 use cockpit_protocol::{
     AccountId, AgentId, AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState,
-    ApprovalAnswer, ApprovalDecision, BackgroundTaskId, ClaudeSessionId, Effort, EffortSource,
-    Image, ItemBody, ItemId, McpRemoveParams, McpScope, McpServerParams, McpToggleAction,
-    McpToggleParams, MoveParams, PastSession, PendingId, PermissionMode, Placed, PlanAnswer,
-    PlanDecision, Prompt, PromptDelivery, PromptId, PromptParams, Question, QuestionAnswer,
-    QueuedPromptParams, RenameParams, Request, Selection, SessionResumeParams, SetEffortParams,
-    SetModeParams, SetModelParams, SlashCommand, StartParams, StopTaskParams,
+    ApprovalAnswer, ApprovalDecision, BackgroundTaskId, COMMAND_PREFIX, ClaudeSessionId, Effort,
+    EffortSource, Image, ItemBody, ItemId, McpRemoveParams, McpScope, McpServerParams,
+    McpToggleAction, McpToggleParams, MoveParams, PastSession, PendingId, PermissionMode, Placed,
+    PlanAnswer, PlanDecision, Prompt, PromptDelivery, PromptId, PromptParams, Question,
+    QuestionAnswer, QueuedPromptParams, RenameParams, Request, Selection, SessionResumeParams,
+    SetEffortParams, SetModeParams, SetModelParams, SlashCommand, StartParams, StopTaskParams,
 };
 use strum::VariantArray;
 
@@ -31,9 +31,6 @@ use super::{accounts, export, file_edits, open_file, title_emoji};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::path_style;
 use crate::prefs::{self, StatusFilter};
-
-/// What starts a slash command in the composer.
-pub const COMMAND_PREFIX: char = '/';
 
 /// The commands the palette's Clear and Compact entries send to Claude as prompts.
 const CLEAR_COMMAND: &str = "clear";

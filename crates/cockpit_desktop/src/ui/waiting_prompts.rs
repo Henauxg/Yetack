@@ -1,6 +1,6 @@
 //! The prompts Claude has not read yet, pinned above the composer so they stay in view.
 
-use cockpit_protocol::{AgentId, WaitingPrompt, WaitingState};
+use cockpit_protocol::{AgentId, COMMAND_PREFIX, WaitingPrompt, WaitingState};
 use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
@@ -50,7 +50,7 @@ fn WaitingRow(agent: AgentId, prompt: WaitingPrompt) -> Element {
                 span { class: "waiting-images", "{images}" }
             }
             // A slash command waits for the turn's end: the daemon refuses to send it sooner.
-            if prompt.state == WaitingState::Queued && !prompt.text.starts_with(actions::COMMAND_PREFIX) {
+            if prompt.state == WaitingState::Queued && !prompt.text.starts_with(COMMAND_PREFIX) {
                 button {
                     class: "icon-button tiny",
                     aria_label: "Send now",

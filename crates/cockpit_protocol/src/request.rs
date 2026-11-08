@@ -239,6 +239,11 @@ pub struct StartParams {
     pub account: AccountId,
 }
 
+/// The first character of a slash command, such as `/effort high`. Such a prompt always waits
+/// for the turn's end: Claude Code does not echo every one, so the daemon could not tell when it
+/// was read.
+pub const COMMAND_PREFIX: char = '/';
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Prompt {
     pub text: String,

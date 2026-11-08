@@ -475,7 +475,7 @@ impl AgentView {
         self.details.waiting_prompts.push(WaitingPrompt {
             id,
             text: prompt.text.clone(),
-            image_count: prompt.images.len(),
+            image_count: u32::try_from(prompt.images.len()).unwrap_or(u32::MAX),
             state,
         });
         self.details_changed = true;

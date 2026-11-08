@@ -34,7 +34,7 @@ pub struct WaitingPrompt {
     pub id: PromptId,
     pub text: String,
     /// The images travel with the prompt only, so that each details change stays small.
-    pub image_count: usize,
+    pub image_count: u32,
     pub state: WaitingState,
 }
 

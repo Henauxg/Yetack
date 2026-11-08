@@ -1298,6 +1298,48 @@ fn a_prompt_without_a_delivery_steers() {
 }
 
 #[test]
+fn waiting_prompts_and_their_requests_on_the_wire() {
+    let [sent, _] = details().waiting_prompts.try_into().unwrap();
+    let send = ClientMessage::Request {
+        id: RequestId::new(12),
+        request: Request::AgentSendQueued(QueuedPromptParams {
+            agent: agent(),
+            prompt: PromptId::new(5),
+        }),
+    };
+
+    assert_wire(
+        &sent,
+        json!({"id": 4, "text": "Also check the signup form", "image_count": 1, "state": "sent"}),
+    );
+    assert_wire(
+        &send,
+        json!({
+            "type": "request",
+            "id": 12,
+            "request": {"method": "agent.send_queued", "params": {"agent": 3, "prompt": 5}},
+        }),
+    );
+}
+
+#[test]
+fn an_image_answer_on_the_wire() {
+    let answer = ResponseBody::Image {
+        path: PathBuf::from("/srv/projects/shop/docs/cart.png"),
+        image: image(),
+    };
+
+    assert_wire(
+        &answer,
+        json!({
+            "type": "image",
+            "path": "/srv/projects/shop/docs/cart.png",
+            "image": {"media_type": "image/png", "data": "iVBORw0KGgo="},
+        }),
+    );
+}
+
+#[test]
 fn a_rename_request_on_the_wire() {
     let message = ClientMessage::Request {
         id: RequestId::new(9),
@@ -2078,7 +2120,7 @@ fn turn_ends_saved_without_their_outcome_still_load() {
 
 /// An event log of an older daemon holds `queued` and `multi_select`, and `settings.json` holds
 /// `use_environment_api_key`: `bool`s in place of enums. A user message's `queued` or
-/// `delivery` is left out: waiting prompts live in the details now.
+/// `delivery` is ignored: the waiting prompts are in the details.
 #[test]
 fn fields_saved_as_bools_still_load() {
     let message = |field: &str| {

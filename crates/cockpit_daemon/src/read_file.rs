@@ -36,7 +36,6 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use base64::Engine;
 use cockpit_protocol::{ErrorBody, ErrorCode, Image, ImageMediaType};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -234,6 +233,8 @@ pub(crate) enum Content {
 /// symlinks are resolved.
 pub(crate) fn read(access: &Access, path: &Path) -> Result<Content, ReadFileError> {
     use std::io::Read;
+
+    use base64::Engine;
 
     if path
         .components()
