@@ -39,18 +39,18 @@ pub fn apply_update(
 ) -> Vec<Alert> {
     match update {
         SessionUpdate::Connecting { attempt } => {
-            state.connection = ConnectionState::Connecting { attempt };
+            state.machines.this.connection = ConnectionState::Connecting { attempt };
             Vec::new()
         }
         SessionUpdate::Connected(catchup) => {
-            state.connection = ConnectionState::Connected;
+            state.machines.this.connection = ConnectionState::Connected;
             // The daemon may have been updated.
-            state.folders_unknown = false;
+            state.machines.this.folders_unknown = false;
             apply_catchup(state, drafts, catchup);
             Vec::new()
         }
         SessionUpdate::Disconnected { error, retry_in } => {
-            state.connection = ConnectionState::Disconnected {
+            state.machines.this.connection = ConnectionState::Disconnected {
                 error: error_chain(&error),
                 retry_at: now.checked_add(retry_in).unwrap_or(now),
             };
@@ -114,12 +114,12 @@ pub fn apply_catchup(state: &mut AppState, drafts: &mut Drafts, catchup: Catchup
         .into_iter()
         .map(|summary| (summary.id, AgentEntry::new(summary)))
         .collect();
-    state.plan_usage = plan_usage;
-    state.settings = settings;
-    state.accounts = accounts;
+    state.machines.this.plan_usage = plan_usage;
+    state.machines.this.settings = settings;
+    state.machines.this.accounts = accounts;
     // A new connection may reach another daemon: its accounts' sign-ins are asked again.
-    state.sign_ins = SignIns::default();
-    state.other_plan_usage = other_plan_usage
+    state.machines.this.sign_ins = SignIns::default();
+    state.machines.this.other_plan_usage = other_plan_usage
         .into_iter()
         .map(|account| (account.account, account.usage))
         .collect();
@@ -209,22 +209,24 @@ pub fn apply(state: &mut AppState, drafts: &mut Drafts, record: EventRecord) -> 
             None
         }
         Event::PlanUsageChanged(plan_usage) => {
-            state.plan_usage = plan_usage;
+            state.machines.this.plan_usage = plan_usage;
             None
         }
         Event::SettingsChanged(settings) => {
-            state.settings = settings;
+            state.machines.this.settings = settings;
             None
         }
         Event::AccountPlanUsageChanged(changed) => {
             state
+                .machines
+                .this
                 .other_plan_usage
                 .insert(changed.account, changed.usage);
             None
         }
         Event::AccountsChanged { accounts } => {
-            state.accounts = accounts;
-            state.sign_ins.refresh();
+            state.machines.this.accounts = accounts;
+            state.machines.this.sign_ins.refresh();
             None
         }
     }
@@ -912,7 +914,7 @@ mod tests {
         assert_eq!(entry.summary.status, AgentStatus::Working);
         assert_eq!(state.ui.selected, Some(first));
         assert!(state.ui.unread.is_empty());
-        assert_eq!(state.settings, settings);
+        assert_eq!(state.machines.this.settings, settings);
     }
 
     #[test]
@@ -1036,7 +1038,10 @@ mod tests {
             SessionUpdate::Connecting { attempt: 3 },
             now,
         );
-        assert_eq!(state.connection, ConnectionState::Connecting { attempt: 3 });
+        assert_eq!(
+            state.machines.this.connection,
+            ConnectionState::Connecting { attempt: 3 }
+        );
 
         apply_update(
             &mut state,
@@ -1050,7 +1055,7 @@ mod tests {
             now,
         );
         assert_eq!(
-            state.connection,
+            state.machines.this.connection,
             ConnectionState::Disconnected {
                 error: "ssh failed: Permission denied (publickey).".to_owned(),
                 retry_at: now + Duration::from_secs(4),

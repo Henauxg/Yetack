@@ -113,7 +113,7 @@ pub fn SignInStatus(account: AccountId) -> Element {
     let Clock(now) = use_context::<Clock>();
     let (sign_in, checked_at, checking) = {
         let state = cockpit.state.read();
-        let sign_ins = &state.sign_ins;
+        let sign_ins = &state.machines.this.sign_ins;
         (
             sign_ins.sign_in(account),
             sign_ins.checked_at,
@@ -476,7 +476,13 @@ pub fn AccountsDialog(view: AccountsView) -> Element {
     let cockpit: Cockpit = use_context();
     let ids: Vec<AccountId> = {
         let state = cockpit.state.read();
-        state.accounts.iter().map(|account| account.id).collect()
+        state
+            .machines
+            .this
+            .accounts
+            .iter()
+            .map(|account| account.id)
+            .collect()
     };
     let single = ids.len() < 2;
     let older_daemon = ids.is_empty();
@@ -551,11 +557,11 @@ fn card_data(state: &AppState, id: AccountId) -> Option<CardData> {
         folder: path_style::shown(&account.folder),
         uses_environment: account.credentials == CredentialSource::Environment,
         billing: accounts::billing(state, id),
-        sign_in: state.sign_ins.sign_in(id),
-        command: state.sign_ins.command(id).map(str::to_owned),
+        sign_in: state.machines.this.sign_ins.sign_in(id),
+        command: state.machines.this.sign_ins.command(id).map(str::to_owned),
         agents: accounts::agent_count(state, id),
         blocked: accounts::remove_block(state, id),
-        machine: state.daemon.machine.clone(),
+        machine: state.machines.this.daemon.machine.clone(),
     })
 }
 
@@ -694,10 +700,10 @@ pub fn AddAccountDialog(form: AddAccountForm) -> Element {
             .added
             .and_then(|id| card_data(&state, id).map(|data| (id, data)));
         (
-            state.daemon.machine.clone(),
-            state.sign_ins.environment_credentials == EnvironmentCredentials::Set,
+            state.machines.this.daemon.machine.clone(),
+            state.machines.this.sign_ins.environment_credentials == EnvironmentCredentials::Set,
             added,
-            state.daemon.path_style() == PathStyle::Windows,
+            state.machines.this.daemon.path_style() == PathStyle::Windows,
             accounts::proposed_folder(&state, "").is_some(),
         )
     };
@@ -828,7 +834,7 @@ pub fn AddAccountDialog(form: AddAccountForm) -> Element {
                             }
                         }
                         span { class: "spacer" }
-                        CheckAgain { checking: cockpit.state.read().sign_ins.checking }
+                        CheckAgain { checking: cockpit.state.read().machines.this.sign_ins.checking }
                     }
                     span { class: "hint",
                         "The app only checks whether the variables are set in the daemon's environment. It never reads, shows or stores the key or token."

@@ -23,7 +23,7 @@ const SERVICE_DETAIL: &str =
 #[component]
 pub fn NoDaemonScreen() -> Element {
     let cockpit: Cockpit = use_context();
-    let screen = match &cockpit.state.read().connection {
+    let screen = match &cockpit.state.read().machines.this.connection {
         ConnectionState::NoDaemon(screen) => screen.clone(),
         ConnectionState::Connecting { .. }
         | ConnectionState::Connected

@@ -74,7 +74,7 @@ pub fn show(
     absence: Absence,
     every_time: Option<bool>,
 ) {
-    state.connection = ConnectionState::NoDaemon(NoDaemon {
+    state.machines.this.connection = ConnectionState::NoDaemon(NoDaemon {
         tried: tried.name(),
         subject: tried.subject(),
         error,
@@ -101,7 +101,7 @@ pub fn absence(place: DaemonPlace, error: &SessionError) -> Absence {
 }
 
 pub fn toggle_every_time(state: &mut AppState) {
-    if let ConnectionState::NoDaemon(screen) = &mut state.connection
+    if let ConnectionState::NoDaemon(screen) = &mut state.machines.this.connection
         && screen.busy.is_none()
     {
         screen.every_time = !screen.every_time;
@@ -111,7 +111,7 @@ pub fn toggle_every_time(state: &mut AppState) {
 /// A click on one of the screen's buttons. Returns the choice to carry out, unless another one
 /// is under way.
 pub fn choose(state: &mut AppState, choice: DaemonChoice) -> Option<Chosen> {
-    let ConnectionState::NoDaemon(screen) = &mut state.connection else {
+    let ConnectionState::NoDaemon(screen) = &mut state.machines.this.connection else {
         return None;
     };
     if screen.busy.is_some() || (choice == DaemonChoice::Service && !SERVICE_OFFERED) {
@@ -157,7 +157,7 @@ mod tests {
     }
 
     fn shown(state: &AppState) -> &NoDaemon {
-        match &state.connection {
+        match &state.machines.this.connection {
             ConnectionState::NoDaemon(screen) => screen,
             other => panic!("expected the screen, got {other:?}"),
         }
@@ -273,7 +273,7 @@ mod tests {
         assert!(shown(&state).every_time, "the tick waits with the choice");
 
         // The daemon answered the choice, then its first connection failed.
-        state.connection = ConnectionState::Connecting { attempt: 1 };
+        state.machines.this.connection = ConnectionState::Connecting { attempt: 1 };
         show(
             &mut state,
             &DaemonLabel::in_app(),
@@ -344,7 +344,7 @@ mod tests {
     #[test]
     fn a_connected_app_has_no_screen_to_choose_on() {
         let mut state = AppState::new(DaemonLabel::in_app());
-        state.connection = ConnectionState::Connected;
+        state.machines.this.connection = ConnectionState::Connected;
 
         assert_eq!(choose(&mut state, DaemonChoice::InApp), None);
     }

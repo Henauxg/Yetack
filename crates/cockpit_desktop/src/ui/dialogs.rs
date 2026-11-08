@@ -402,20 +402,23 @@ fn StartForm(form: NewAgentForm) -> Element {
             })
             .collect();
         folders.truncate(RECENT_FOLDERS);
-        let loading = matches!(state.sessions, Loadable::NotRequested | Loadable::Loading);
+        let loading = matches!(
+            state.machines.this.sessions,
+            Loadable::NotRequested | Loadable::Loading
+        );
         let account = accounts::shows_labels(&state)
             .then(|| accounts::new_agent_account(&state, &form, &typed_folder));
         // The system's picker shows this computer's folders, which a daemon over SSH cannot use.
-        let local = state.daemon.place != DaemonPlace::Ssh;
+        let local = state.machines.this.daemon.place != DaemonPlace::Ssh;
         (
             folders,
-            state.daemon.machine.clone(),
+            state.machines.this.daemon.machine.clone(),
             local,
             loading,
             account,
         )
     };
-    let folders_unknown = cockpit.state.read().folders_unknown;
+    let folders_unknown = cockpit.state.read().machines.this.folders_unknown;
     // The past sessions bring more recent folders: rows stand for them until they arrive, so the
     // list does not grow under the pointer.
     let placeholders = if sessions_loading {
@@ -953,7 +956,7 @@ fn ResumeList(starting: bool) -> Element {
     let pointer = use_pointer_moves();
     let (sessions, machine, filters) = {
         let state = cockpit.state.read();
-        let sessions = match &state.sessions {
+        let sessions = match &state.machines.this.sessions {
             Loadable::Loaded(_) => Loadable::Loaded(
                 actions::resumable_sessions(&state, &query, account)
                     .into_iter()
@@ -969,7 +972,11 @@ fn ResumeList(starting: bool) -> Element {
         } else {
             Vec::new()
         };
-        (sessions, state.daemon.machine.clone(), filters)
+        (
+            sessions,
+            state.machines.this.daemon.machine.clone(),
+            filters,
+        )
     };
     let filtered = account.is_some_and(|id| filters.iter().any(|label| label.id == id));
     let now = now();

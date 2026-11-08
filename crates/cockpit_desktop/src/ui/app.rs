@@ -31,7 +31,7 @@ pub fn App() -> Element {
     use_splitter(cockpit);
     use_reorder(cockpit);
     let state = cockpit.state.read();
-    if let ConnectionState::NoDaemon(_) = state.connection {
+    if let ConnectionState::NoDaemon(_) = state.machines.this.connection {
         return rsx! {
             NoDaemonScreen {}
         };
@@ -41,7 +41,10 @@ pub fn App() -> Element {
         .selected
         .is_some_and(|agent| state.ui.file_view(agent).is_some());
     let closes_on_click = state.ui.popover_closes_on_click();
-    let disconnected = matches!(state.connection, ConnectionState::Disconnected { .. });
+    let disconnected = matches!(
+        state.machines.this.connection,
+        ConnectionState::Disconnected { .. }
+    );
     let share = state.prefs.file_view.share();
     rsx! {
         div { id: APP_ID, class: "app", style: "{SHARE_PROPERTY}: {share}",

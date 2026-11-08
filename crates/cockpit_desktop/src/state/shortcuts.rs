@@ -291,7 +291,7 @@ mod tests {
 
     fn state(status: AgentStatus, body: Option<ItemBody>) -> AppState {
         let mut state = state_with(vec![summary(1, status)]);
-        state.connection = ConnectionState::Connected;
+        state.machines.this.connection = ConnectionState::Connected;
         state.ui.selected = Some(AgentId::new(1));
         if let (Some(body), Some(entry)) = (body, state.agents.get_mut(&AgentId::new(1))) {
             entry.transcript.append(TranscriptItem {
@@ -713,7 +713,7 @@ mod tests {
             summary(1, AgentStatus::Idle),
             summary(2, AgentStatus::Idle),
         ]);
-        state.connection = ConnectionState::Connected;
+        state.machines.this.connection = ConnectionState::Connected;
         state.ui.selected = Some(AgentId::new(1));
 
         typed(&mut state, &mut drafts, AgentId::new(1), "/re");
@@ -739,7 +739,7 @@ mod tests {
             summary(1, AgentStatus::Idle),
             summary(2, AgentStatus::Idle),
         ]);
-        state.connection = ConnectionState::Connected;
+        state.machines.this.connection = ConnectionState::Connected;
         let escape = press(KEY_ESCAPE, KeyTarget::Composer);
 
         state.ui.selected = Some(first);
@@ -966,7 +966,7 @@ mod tests {
         ]);
         // Equal positions list the newer agent first: agent 1 is at the bottom.
         state.ui.selected = Some(AgentId::new(1));
-        state.connection = ConnectionState::Connected;
+        state.machines.this.connection = ConnectionState::Connected;
         let alt = |key: &str, target| KeyPress {
             alt: true,
             ..press(key, target)

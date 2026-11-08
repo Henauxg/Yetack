@@ -367,9 +367,13 @@ fn ConnectionFooter() -> Element {
     let cockpit: Cockpit = use_context();
     let Clock(now) = use_context::<Clock>();
     let state = cockpit.state.read();
-    let machine = &state.daemon.machine;
-    let (class, line, detail) = match &state.connection {
-        ConnectionState::Connected => ("connection connected", state.daemon.connected_line(), None),
+    let machine = &state.machines.this.daemon.machine;
+    let (class, line, detail) = match &state.machines.this.connection {
+        ConnectionState::Connected => (
+            "connection connected",
+            state.machines.this.daemon.connected_line(),
+            None,
+        ),
         ConnectionState::Connecting { attempt } => {
             let mut line = format!("Connecting to {machine}");
             if *attempt > 1 {

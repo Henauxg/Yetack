@@ -1484,13 +1484,13 @@ pub fn mcp_remove(agent: AgentId, server: String, scope: McpScope) -> Vec<Outgoi
 
 /// Hides a server from every agent's view, or shows it again. The daemon keeps the setting.
 pub fn set_mcp_hidden(state: &mut AppState, server: &str, hidden: bool) -> Vec<Outgoing> {
-    let mut settings = state.settings.clone();
+    let mut settings = state.machines.this.settings.clone();
     if hidden {
         settings.hidden_mcp_servers.insert(server.to_owned());
     } else {
         settings.hidden_mcp_servers.remove(server);
     }
-    state.settings = settings.clone();
+    state.machines.this.settings = settings.clone();
     vec![Outgoing::action(Request::SettingsSet(settings))]
 }
 
@@ -1848,10 +1848,10 @@ pub fn open_new_agent(state: &mut AppState, drafts: &mut Drafts) {
     let mode = last
         .map(|summary| summary.mode)
         .filter(|mode| MODE_CHOICES.contains(mode) && *mode != PermissionMode::Plan);
-    if state.sessions != Loadable::Loading {
-        state.sessions = Loadable::NotRequested;
+    if state.machines.this.sessions != Loadable::Loading {
+        state.machines.this.sessions = Loadable::NotRequested;
     }
-    state.sign_ins.refresh();
+    state.machines.this.sign_ins.refresh();
     state.ui.popover = None;
     state.ui.dialog = Some(Dialog::NewAgent(NewAgentForm {
         model,
@@ -1933,6 +1933,8 @@ pub fn resumable_sessions<'state>(
         .filter_map(|entry| entry.summary.session.as_ref())
         .collect();
     let mut sessions: Vec<&PastSession> = state
+        .machines
+        .this
         .sessions
         .loaded()
         .into_iter()
@@ -2035,7 +2037,7 @@ mod tests {
             placed(2, AgentStatus::Working, 2048),
             placed(3, AgentStatus::NeedsYou, 3072),
         ]);
-        state.connection = ConnectionState::Connected;
+        state.machines.this.connection = ConnectionState::Connected;
         state.ui.selected = Some(AgentId::new(2));
         state
     }
@@ -2057,7 +2059,7 @@ mod tests {
 
     fn state(status: AgentStatus) -> AppState {
         let mut state = state_with(vec![summary(AGENT, status)]);
-        state.connection = ConnectionState::Connected;
+        state.machines.this.connection = ConnectionState::Connected;
         state.ui.selected = Some(agent());
         state
     }
@@ -3900,7 +3902,7 @@ mod tests {
     #[test]
     fn a_move_while_disconnected_leaves_the_order_and_says_why() {
         let mut state = ordered();
-        state.connection = ConnectionState::Connecting { attempt: 2 };
+        state.machines.this.connection = ConnectionState::Connecting { attempt: 2 };
 
         let dropped = drop_agent(&mut state, AgentId::new(1), Some(AgentId::new(3)));
         let pressed = move_selected(&mut state, Direction::Up);
@@ -4071,10 +4073,17 @@ mod tests {
 
         let requests = set_mcp_hidden(&mut state, "search", true);
 
-        assert!(state.settings.hidden_mcp_servers.contains("search"));
+        assert!(
+            state
+                .machines
+                .this
+                .settings
+                .hidden_mcp_servers
+                .contains("search")
+        );
         assert_eq!(
             requests.first().map(|outgoing| &outgoing.request),
-            Some(&Request::SettingsSet(state.settings.clone()))
+            Some(&Request::SettingsSet(state.machines.this.settings.clone()))
         );
     }
 
@@ -4341,7 +4350,7 @@ mod tests {
         let mut state = state_with(vec![running]);
         let mut drafts = Drafts::default();
         open_new_agent(&mut state, &mut drafts);
-        state.sessions = Loadable::Loaded(vec![
+        state.machines.this.sessions = Loadable::Loaded(vec![
             past_session("lexer", "Speed up the lexer", "/work/parser", 30),
             past_session("running", "Fix the parser", "/work/parser", 5),
             past_session("docs", "Rewrite the error page", "/work/docs-site", 60),
@@ -4380,7 +4389,7 @@ mod tests {
         let mut state = state_with(Vec::new());
         let mut drafts = Drafts::default();
         open_new_agent(&mut state, &mut drafts);
-        state.sessions = Loadable::Loaded(vec![
+        state.machines.this.sessions = Loadable::Loaded(vec![
             past_session("lexer", "Speed up the lexer", "/work/parser", 30),
             past_session("docs", "Rewrite the error page", "/work/docs-site", 60),
             past_session("columns", "Parser columns", "/work/tools", 10),

@@ -312,8 +312,8 @@ async fn run(
             Ok(reached) => {
                 {
                     let mut state = state.write();
-                    state.daemon = reached.label.clone();
-                    state.connection = ConnectionState::Connecting { attempt: 1 };
+                    state.machines.this.daemon = reached.label.clone();
+                    state.machines.this.connection = ConnectionState::Connecting { attempt: 1 };
                     if let Some(note) = reached.note {
                         state.ui.inform(note.to_owned());
                     }
@@ -359,7 +359,7 @@ fn show_no_daemon(
     let Unreached { label, error } = unreached;
     let mut state = state.write();
     no_daemon::show(&mut state, &label, error, absence, every_time);
-    state.daemon = label;
+    state.machines.this.daemon = label;
 }
 
 /// Waits for a choice on the screen. No daemon answers the requests that come meanwhile.

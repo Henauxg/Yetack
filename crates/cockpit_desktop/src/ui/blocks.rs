@@ -38,9 +38,9 @@ pub fn FloatingBlocks() -> Element {
         FinishedRows::Recent
     };
     let alive = entry.summary.status != AgentStatus::Exited;
-    let hidden = state.settings.hidden_mcp_servers.clone();
+    let hidden = state.machines.this.settings.hidden_mcp_servers.clone();
     let mcp_view = state.ui.mcp.clone();
-    let machine = state.daemon.machine.clone();
+    let machine = state.machines.this.daemon.machine.clone();
     let tasks = details.tasks;
     let background = details.background_tasks;
     let subagent_tasks: Vec<SubagentTask> = details

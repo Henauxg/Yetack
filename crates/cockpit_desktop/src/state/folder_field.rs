@@ -36,7 +36,7 @@ pub fn listed_folder(style: PathStyle, text: &str) -> Option<PathBuf> {
 
 /// The rules of the paths the field names: the daemon's machine's.
 pub fn style(state: &AppState) -> PathStyle {
-    state.daemon.path_style()
+    state.machines.this.daemon.path_style()
 }
 
 /// The rows for `text`: ".." while the last segment is empty, then the listed folders the segment
@@ -94,7 +94,7 @@ pub fn type_folder(state: &AppState, drafts: &mut Drafts, text: String) -> bool 
 
 /// Makes the list show the folder the typed text names, and closes it when the text names none.
 pub fn follow(state: &mut AppState, drafts: &Drafts) {
-    let folders_unknown = state.folders_unknown;
+    let folders_unknown = state.machines.this.folders_unknown;
     let style = style(state);
     let Some(form) = form_mut(state) else {
         return;

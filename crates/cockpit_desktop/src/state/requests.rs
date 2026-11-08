@@ -137,9 +137,9 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
     }
     requests.extend(accounts::list_request(state));
     if matches!(state.ui.dialog, Some(Dialog::NewAgent(_)))
-        && state.sessions == Loadable::NotRequested
+        && state.machines.this.sessions == Loadable::NotRequested
     {
-        state.sessions = Loadable::Loading;
+        state.machines.this.sessions = Loadable::Loading;
         requests.push(Outgoing {
             request: Request::SessionsList,
             purpose: Purpose::Sessions,
@@ -352,7 +352,7 @@ pub fn apply_response(
             }
         }
         Purpose::Accounts => match result {
-            Err(failure) if failure.transient => state.sign_ins.checking = false,
+            Err(failure) if failure.transient => state.machines.this.sign_ins.checking = false,
             other => accounts::listed(state, other.map_err(|failure| failure.message)),
         },
         Purpose::AccountAdded { color } => {
@@ -367,7 +367,7 @@ pub fn apply_response(
             }
         }
         Purpose::Sessions => {
-            state.sessions = match result {
+            state.machines.this.sessions = match result {
                 Ok(ResponseBody::Sessions { sessions }) => Loadable::Loaded(sessions),
                 other => Failure::from_result(other).into_loadable(),
             };
@@ -400,7 +400,7 @@ pub fn apply_response(
             if let Err(failure) = &result
                 && failure.unknown_method
             {
-                state.folders_unknown = true;
+                state.machines.this.folders_unknown = true;
                 if let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog {
                     form.folders = None;
                 }
@@ -569,7 +569,7 @@ mod tests {
 
     fn connected_with_selection() -> AppState {
         let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
-        state.connection = ConnectionState::Connected;
+        state.machines.this.connection = ConnectionState::Connected;
         state.ui.selected = Some(AgentId::new(1));
         state
     }
@@ -598,7 +598,7 @@ mod tests {
     #[test]
     fn nothing_is_asked_while_disconnected() {
         let mut state = connected_with_selection();
-        state.connection = ConnectionState::Connecting { attempt: 1 };
+        state.machines.this.connection = ConnectionState::Connecting { attempt: 1 };
 
         assert!(needed_requests(&mut state).is_empty());
     }

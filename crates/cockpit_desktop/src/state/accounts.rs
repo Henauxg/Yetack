@@ -67,15 +67,23 @@ pub struct AccountLabel {
 
 /// Labels show once there is a choice: two accounts or more.
 pub fn shows_labels(state: &AppState) -> bool {
-    state.accounts.len() >= 2
+    state.machines.this.accounts.len() >= 2
 }
 
 pub fn account(state: &AppState, id: AccountId) -> Option<&Account> {
-    state.accounts.iter().find(|account| account.id == id)
+    state
+        .machines
+        .this
+        .accounts
+        .iter()
+        .find(|account| account.id == id)
 }
 
 pub fn color(state: &AppState, id: AccountId) -> AccountColor {
-    state.prefs.accounts.color(&state.daemon.machine, id)
+    state
+        .prefs
+        .accounts
+        .color(&state.machines.this.daemon.machine, id)
 }
 
 /// The account's label, whatever the number of accounts.
@@ -96,6 +104,8 @@ pub fn label(state: &AppState, id: AccountId) -> Option<AccountLabel> {
 /// Every account's label, the default one first.
 pub fn labels(state: &AppState) -> Vec<AccountLabel> {
     state
+        .machines
+        .this
         .accounts
         .iter()
         .filter_map(|account| label_of(state, account.id))
@@ -119,7 +129,7 @@ pub fn billing(state: &AppState, id: AccountId) -> Billing {
     {
         return Billing::Environment;
     }
-    match state.sign_ins.sign_in(id) {
+    match state.machines.this.sign_ins.sign_in(id) {
         Some(SignIn::NotSignedIn) => Billing::NotSignedIn,
         Some(SignIn::SignedIn | SignIn::Unknown) | None => Billing::Plan,
     }
@@ -128,9 +138,9 @@ pub fn billing(state: &AppState, id: AccountId) -> Billing {
 /// The account's plan usage: the default account's comes apart from the others'.
 pub fn plan_usage(state: &AppState, id: AccountId) -> Option<&PlanUsage> {
     if id.is_default() {
-        return Some(&state.plan_usage);
+        return Some(&state.machines.this.plan_usage);
     }
-    state.other_plan_usage.get(&id)
+    state.machines.this.other_plan_usage.get(&id)
 }
 
 pub fn window_percent(usage: Option<&PlanUsage>, window: UsageWindow) -> Option<u8> {
@@ -164,11 +174,13 @@ pub fn plan_chip(state: &AppState, id: AccountId) -> PlanChip {
 
 /// The plan card's accounts: the agent's first, then the others in the daemon's order.
 pub fn plan_card_accounts(state: &AppState, agent_account: AccountId) -> Vec<AccountId> {
-    let mut ids: Vec<AccountId> = Vec::with_capacity(state.accounts.len());
+    let mut ids: Vec<AccountId> = Vec::with_capacity(state.machines.this.accounts.len());
     if account(state, agent_account).is_some() {
         ids.push(agent_account);
     }
     let others = state
+        .machines
+        .this
         .accounts
         .iter()
         .map(|account| account.id)
@@ -321,7 +333,7 @@ pub fn sign_in_turn(entry: &AgentEntry) -> Option<SignInTurn> {
 /// Whether Claude Code refused the API key or token the account takes from the daemon's
 /// environment. With neither variable set, Claude Code used the folder's login instead.
 pub fn credentials_refused(state: &AppState, id: AccountId) -> bool {
-    state.sign_ins.environment_credentials == EnvironmentCredentials::Set
+    state.machines.this.sign_ins.environment_credentials == EnvironmentCredentials::Set
         && account(state, id)
             .is_some_and(|account| account.credentials == CredentialSource::Environment)
 }
@@ -332,7 +344,7 @@ pub fn credentials_refused(state: &AppState, id: AccountId) -> bool {
 /// credentials come from the environment.
 pub fn can_send_again(state: &AppState, entry: &AgentEntry, turn: &SignInTurn) -> bool {
     let id = entry.summary.account;
-    let cannot_tell = state.sign_ins.sign_in(id) == Some(SignIn::Unknown)
+    let cannot_tell = state.machines.this.sign_ins.sign_in(id) == Some(SignIn::Unknown)
         || account(state, id)
             .is_some_and(|account| account.credentials == CredentialSource::Environment);
     let signed_in = entry.summary.sign_in_wait == SignInWait::NotWaiting || cannot_tell;
@@ -448,8 +460,9 @@ pub fn agent_count(state: &AppState, id: AccountId) -> usize {
 
 /// `accounts.list`, when the window needs the sign-in states and they are not on their way.
 pub fn list_request(state: &mut AppState) -> Option<Outgoing> {
-    let sign_ins = &mut state.sign_ins;
-    if state.accounts.is_empty() || sign_ins.checked_at.is_some() || sign_ins.checking {
+    let sign_ins = &mut state.machines.this.sign_ins;
+    if state.machines.this.accounts.is_empty() || sign_ins.checked_at.is_some() || sign_ins.checking
+    {
         return None;
     }
     sign_ins.checking = true;
@@ -462,7 +475,7 @@ pub fn list_request(state: &mut AppState) -> Option<Outgoing> {
 /// "Check again": the daemon looks at the accounts' folders, and ends the waits of the agents
 /// whose account signed in since.
 pub fn check_again(state: &mut AppState) {
-    state.sign_ins.refresh();
+    state.machines.this.sign_ins.refresh();
 }
 
 /// The "Accounts" dialog: which card is open.
@@ -487,7 +500,7 @@ pub fn open_accounts(state: &mut AppState, expanded: Option<AccountId>) {
         expanded,
         from_new_agent,
     }));
-    state.sign_ins.refresh();
+    state.machines.this.sign_ins.refresh();
 }
 
 pub fn toggle_account(state: &mut AppState, id: AccountId) {
@@ -497,7 +510,7 @@ pub fn toggle_account(state: &mut AppState, id: AccountId) {
 }
 
 pub fn set_color(state: &mut AppState, id: AccountId, color: AccountColor) {
-    let machine = state.daemon.machine.clone();
+    let machine = state.machines.this.daemon.machine.clone();
     state.prefs.accounts.set_color(&machine, id, color);
 }
 
@@ -604,6 +617,8 @@ pub fn free_color(state: &AppState) -> AccountColor {
     use strum::VariantArray;
 
     let taken: Vec<AccountColor> = state
+        .machines
+        .this
         .accounts
         .iter()
         .map(|account| color(state, account.id))
@@ -612,7 +627,13 @@ pub fn free_color(state: &AppState) -> AccountColor {
         .iter()
         .copied()
         .find(|color| !taken.contains(color));
-    let next = state.accounts.iter().map(|account| account.id).max();
+    let next = state
+        .machines
+        .this
+        .accounts
+        .iter()
+        .map(|account| account.id)
+        .max();
     let next_id = next.and_then(AccountId::next).unwrap_or(AccountId::DEFAULT);
     free.unwrap_or_else(|| AccountColor::for_id(next_id))
 }
@@ -631,7 +652,7 @@ pub fn proposed_folder(state: &AppState, name: &str) -> Option<String> {
     let home = style.parent(&text)?;
     let folder_name = account_folder_name(name);
     let taken = |folder: &str| {
-        let mut folders = state.accounts.iter();
+        let mut folders = state.machines.this.accounts.iter();
         folders.any(|account| style.same_path(&account.folder.to_string_lossy(), folder))
     };
     let mut folder = style.join(home, &folder_name);
@@ -705,11 +726,19 @@ pub fn close_add_account(state: &mut AppState) {
 /// `AccountsChanged` event also brings.
 fn keep_state(state: &mut AppState, account_state: AccountState) {
     let account = account_state.account.clone();
-    match state.accounts.iter_mut().find(|kept| kept.id == account.id) {
+    match state
+        .machines
+        .this
+        .accounts
+        .iter_mut()
+        .find(|kept| kept.id == account.id)
+    {
         Some(kept) => *kept = account,
-        None => state.accounts.push(account),
+        None => state.machines.this.accounts.push(account),
     }
     state
+        .machines
+        .this
         .sign_ins
         .states
         .insert(account_state.account.id, account_state);
@@ -717,7 +746,7 @@ fn keep_state(state: &mut AppState, account_state: AccountState) {
 
 /// An answer to `accounts.list`.
 pub fn listed(state: &mut AppState, result: Result<ResponseBody, String>) {
-    let sign_ins = &mut state.sign_ins;
+    let sign_ins = &mut state.machines.this.sign_ins;
     sign_ins.checking = false;
     sign_ins.checked_at = (!sign_ins.ask_again).then(SystemTime::now);
     sign_ins.ask_again = false;
@@ -812,7 +841,7 @@ mod tests {
     /// Three accounts: the default "Personal", "Work", and "Lab", which uses the environment's
     /// API key or token.
     fn three_accounts(state: &mut AppState) {
-        state.accounts = vec![
+        state.machines.this.accounts = vec![
             named(AccountId::DEFAULT, "Personal", "/home/sam/.claude"),
             named(work(), "Work", "/home/sam/.claude-work"),
             Account {
@@ -847,7 +876,7 @@ mod tests {
 
     fn signed(state: &mut AppState, id: AccountId, sign_in: SignIn) {
         let account = account(state, id).cloned().unwrap();
-        state.sign_ins.states.insert(
+        state.machines.this.sign_ins.states.insert(
             id,
             AccountState {
                 account,
@@ -861,7 +890,8 @@ mod tests {
     fn labels_show_only_from_two_accounts() {
         let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
         let none = label(&state, AccountId::DEFAULT);
-        state.accounts = vec![named(AccountId::DEFAULT, "Default", "/home/sam/.claude")];
+        state.machines.this.accounts =
+            vec![named(AccountId::DEFAULT, "Default", "/home/sam/.claude")];
         let one = label(&state, AccountId::DEFAULT);
         let named_alone = label_of(&state, AccountId::DEFAULT).map(|label| label.name);
         three_accounts(&mut state);
@@ -892,7 +922,7 @@ mod tests {
         newer.started_at = Timestamp::from_unix_millis(2_000);
         let mut state = state_with(vec![older, newer]);
         three_accounts(&mut state);
-        state.sessions = Loadable::Loaded(vec![PastSession {
+        state.machines.this.sessions = Loadable::Loaded(vec![PastSession {
             id: ClaudeSessionId::new("past".to_owned()),
             title: "Old work".to_owned(),
             folder: PathBuf::from("/work/notes"),
@@ -972,13 +1002,17 @@ mod tests {
     fn the_menu_shows_each_accounts_plan_its_api_key_or_its_missing_sign_in() {
         let mut state = state_with(Vec::new());
         three_accounts(&mut state);
-        state.accounts.push(named(
+        state.machines.this.accounts.push(named(
             AccountId::new(3),
             "Client",
             "/home/sam/.claude-client",
         ));
-        state.plan_usage = usage(0.42, 0.63);
-        state.other_plan_usage.insert(work(), usage(0.81, 0.34));
+        state.machines.this.plan_usage = usage(0.42, 0.63);
+        state
+            .machines
+            .this
+            .other_plan_usage
+            .insert(work(), usage(0.81, 0.34));
         signed(&mut state, AccountId::new(3), SignIn::NotSignedIn);
 
         let details: Vec<ChoiceDetail> = choices(&state)
@@ -1007,8 +1041,12 @@ mod tests {
     fn the_plan_chip_shows_the_agents_account() {
         let mut state = state_with(Vec::new());
         three_accounts(&mut state);
-        state.plan_usage = usage(0.42, 0.63);
-        state.other_plan_usage.insert(work(), usage(0.81, 0.34));
+        state.machines.this.plan_usage = usage(0.42, 0.63);
+        state
+            .machines
+            .this
+            .other_plan_usage
+            .insert(work(), usage(0.81, 0.34));
         let personal = plan_chip(&state, AccountId::DEFAULT);
         let job = plan_chip(&state, work());
         let keyed = plan_chip(&state, lab());
@@ -1016,7 +1054,7 @@ mod tests {
         let signed_out = plan_chip(&state, work());
         signed(&mut state, work(), SignIn::Unknown);
         let unknown = plan_chip(&state, work());
-        state.other_plan_usage.clear();
+        state.machines.this.other_plan_usage.clear();
         let unreported = plan_chip(&state, work());
 
         assert_eq!(personal, PlanChip::Percent(Some(42)));
@@ -1047,7 +1085,7 @@ mod tests {
             turns: 2,
             account,
         };
-        state.sessions = Loadable::Loaded(vec![
+        state.machines.this.sessions = Loadable::Loaded(vec![
             past("mine", AccountId::DEFAULT),
             past("job", work()),
             past("bench", lab()),
@@ -1068,7 +1106,11 @@ mod tests {
         toggle_session_account(&mut drafts, work());
         let again = listed(&state, &drafts);
         toggle_session_account(&mut drafts, lab());
-        state.accounts.retain(|account| account.id != lab());
+        state
+            .machines
+            .this
+            .accounts
+            .retain(|account| account.id != lab());
         let removed = listed(&state, &drafts);
 
         assert_eq!(all.len(), 3);
@@ -1126,8 +1168,11 @@ mod tests {
         assert_eq!(twice, []);
         assert_eq!(form(&state).added, Some(new.id));
         assert_eq!(color_of(&state, new.id), AccountColor::Sand);
-        assert_eq!(state.sign_ins.sign_in(new.id), Some(SignIn::NotSignedIn));
-        assert!(state.accounts.contains(&new));
+        assert_eq!(
+            state.machines.this.sign_ins.sign_in(new.id),
+            Some(SignIn::NotSignedIn)
+        );
+        assert!(state.machines.this.accounts.contains(&new));
         close_add_account(&mut state);
         assert_eq!(
             state.ui.dialog,
@@ -1185,9 +1230,10 @@ mod tests {
     #[test]
     fn no_folder_is_proposed_when_the_default_account_is_elsewhere() {
         let mut state = state_with(Vec::new());
-        state.accounts = vec![named(AccountId::DEFAULT, "Default", "/srv/claude-config")];
+        state.machines.this.accounts =
+            vec![named(AccountId::DEFAULT, "Default", "/srv/claude-config")];
         let elsewhere = proposed_folder(&state, "Work");
-        state.accounts = vec![named(AccountId::DEFAULT, "Default", "home/.claude")];
+        state.machines.this.accounts = vec![named(AccountId::DEFAULT, "Default", "home/.claude")];
         let relative = proposed_folder(&state, "Work");
 
         assert_eq!(elsewhere, None);
@@ -1199,7 +1245,7 @@ mod tests {
         let mut state = state_with(Vec::new());
         three_accounts(&mut state);
         let unix = proposed_folder(&state, "Work");
-        state.accounts = vec![
+        state.machines.this.accounts = vec![
             named(AccountId::DEFAULT, "Default", r"C:\Users\sam\.claude"),
             named(work(), "Work", r"C:\Users\sam\.Claude-Work"),
             named(lab(), "Work 2", r"c:/users/sam/.claude-work-2"),
@@ -1430,7 +1476,7 @@ mod tests {
         ));
         assert_eq!(while_asked, None);
         assert_eq!(
-            state.sign_ins.environment_credentials,
+            state.machines.this.sign_ins.environment_credentials,
             EnvironmentCredentials::Set
         );
         assert_eq!(after, None);
@@ -1442,7 +1488,7 @@ mod tests {
         let mut state = state_with(Vec::new());
         three_accounts(&mut state);
         let asked = list_request(&mut state);
-        let accounts = state.accounts.clone();
+        let accounts = state.machines.this.accounts.clone();
         super::super::apply::apply(
             &mut state,
             &mut Drafts::default(),
@@ -1662,9 +1708,9 @@ mod tests {
         let mut state = state_with(Vec::new());
         three_accounts(&mut state);
 
-        state.sign_ins.environment_credentials = EnvironmentCredentials::Unset;
+        state.machines.this.sign_ins.environment_credentials = EnvironmentCredentials::Unset;
         let without = credentials_refused(&state, lab());
-        state.sign_ins.environment_credentials = EnvironmentCredentials::Set;
+        state.machines.this.sign_ins.environment_credentials = EnvironmentCredentials::Set;
         let with = credentials_refused(&state, lab());
         let signed_in_account = credentials_refused(&state, work());
 

@@ -368,7 +368,7 @@ pub fn is_requested(arguments: &[String]) -> bool {
 pub fn state(daemon: DaemonLabel) -> AppState {
     let now = SystemTime::now();
     let mut state = AppState::new(daemon);
-    state.connection = ConnectionState::Connected;
+    state.machines.this.connection = ConnectionState::Connected;
     let agents = [
         parser_agent(now),
         question_agent(now),
@@ -406,9 +406,10 @@ pub fn state(daemon: DaemonLabel) -> AppState {
             entry.summary.account = AccountId::new(account);
         }
     }
-    state.plan_usage = plan_usage(now);
-    state.accounts = accounts();
-    state.other_plan_usage = BTreeMap::from([(AccountId::new(WORK_ACCOUNT), work_plan_usage(now))]);
+    state.machines.this.plan_usage = plan_usage(now);
+    state.machines.this.accounts = accounts();
+    state.machines.this.other_plan_usage =
+        BTreeMap::from([(AccountId::new(WORK_ACCOUNT), work_plan_usage(now))]);
     state.ui.selected = Some(AgentId::new(1));
     state.ui.unread.insert(AgentId::new(5));
     state
@@ -503,6 +504,8 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
         )),
         Request::AccountsList => Ok(ResponseBody::Accounts {
             accounts: state
+                .machines
+                .this
                 .accounts
                 .iter()
                 .map(|account| account_state(state, account.clone()))
@@ -511,6 +514,8 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
         }),
         Request::AccountsAdd(params) => {
             let id = state
+                .machines
+                .this
                 .accounts
                 .iter()
                 .map(|account| account.id)
@@ -533,6 +538,8 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
         }
         Request::AccountsChange(params) => {
             let Some(mut account) = state
+                .machines
+                .this
                 .accounts
                 .iter()
                 .find(|account| account.id == params.account)
@@ -2626,10 +2633,10 @@ fn accounts() -> Vec<Account> {
 /// again, and an added account once it is asked a second time: the demo's stand-in for the user
 /// running the command in a terminal.
 fn account_state(state: &AppState, account: Account) -> AccountState {
-    let known = state.sign_ins.sign_in(account.id);
+    let known = state.machines.this.sign_ins.sign_in(account.id);
     let card_asks = state.ui.selected == Some(AgentId::new(SIGN_IN_AGENT))
         && state.ui.dialog.is_none()
-        && !state.sign_ins.states.is_empty();
+        && !state.machines.this.sign_ins.states.is_empty();
     let signed_in = match account.id.get() {
         CLIENT_ACCOUNT => known == Some(SignIn::SignedIn) || card_asks,
         id if id > CLIENT_ACCOUNT => known.is_some(),
@@ -2659,6 +2666,8 @@ fn apply_account_request(state: &mut AppState, request: &Request) {
     match request {
         Request::AccountsList => {
             let signed_in: Vec<AccountId> = state
+                .machines
+                .this
                 .accounts
                 .iter()
                 .filter(|account| {
@@ -2679,14 +2688,22 @@ fn apply_account_request(state: &mut AppState, request: &Request) {
         Request::AccountsAdd(_) | Request::AccountsChange(_) => {
             if let Ok(ResponseBody::Account(added)) = answer(state, request) {
                 let account = added.account;
-                match state.accounts.iter_mut().find(|kept| kept.id == account.id) {
+                match state
+                    .machines
+                    .this
+                    .accounts
+                    .iter_mut()
+                    .find(|kept| kept.id == account.id)
+                {
                     Some(kept) => *kept = account,
-                    None => state.accounts.push(account),
+                    None => state.machines.this.accounts.push(account),
                 }
             }
         }
         Request::AccountsRemove(params) => {
             state
+                .machines
+                .this
                 .accounts
                 .retain(|account| account.id != params.account);
         }

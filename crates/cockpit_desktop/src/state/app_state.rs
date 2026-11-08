@@ -17,6 +17,7 @@ use super::transcript::Transcript;
 use super::ui_state::UiState;
 use crate::daemon_label::DaemonLabel;
 use crate::format;
+use crate::machine::MachineId;
 use crate::path_style::PathStyle;
 use crate::prefs::{Prefs, StatusFilter};
 
@@ -174,11 +175,11 @@ impl AgentEntry {
     }
 }
 
+/// What the app knows of one machine's daemon.
 #[derive(Debug, Clone, PartialEq)]
-pub struct AppState {
+pub struct MachineState {
     pub daemon: DaemonLabel,
     pub connection: ConnectionState,
-    pub agents: BTreeMap<AgentId, AgentEntry>,
     /// The default account's plan usage.
     pub plan_usage: PlanUsage,
     pub settings: Settings,
@@ -194,6 +195,39 @@ pub struct AppState {
     /// The daemon is older than `folders.list`: the folder field lists nothing until the app
     /// connects again.
     pub folders_unknown: bool,
+}
+
+impl MachineState {
+    pub fn new(daemon: DaemonLabel) -> Self {
+        Self {
+            daemon,
+            connection: ConnectionState::Connecting { attempt: 1 },
+            plan_usage: PlanUsage::default(),
+            settings: Settings::default(),
+            accounts: Vec::new(),
+            other_plan_usage: BTreeMap::new(),
+            sign_ins: SignIns::default(),
+            sessions: Loadable::NotRequested,
+            folders_unknown: false,
+        }
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.connection == ConnectionState::Connected
+    }
+}
+
+/// The machines the app reaches: this computer, always, and the others it names.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Machines {
+    pub this: MachineState,
+    pub others: BTreeMap<MachineId, MachineState>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AppState {
+    pub machines: Machines,
+    pub agents: BTreeMap<AgentId, AgentEntry>,
     pub ui: UiState,
     /// The choices the app saves on this machine.
     pub prefs: Prefs,
@@ -212,23 +246,18 @@ pub fn attention_rank(status: AgentStatus) -> u8 {
 impl AppState {
     pub fn new(daemon: DaemonLabel) -> Self {
         Self {
-            daemon,
-            connection: ConnectionState::Connecting { attempt: 1 },
+            machines: Machines {
+                this: MachineState::new(daemon),
+                others: BTreeMap::new(),
+            },
             agents: BTreeMap::new(),
-            plan_usage: PlanUsage::default(),
-            settings: Settings::default(),
-            accounts: Vec::new(),
-            other_plan_usage: BTreeMap::new(),
-            sign_ins: SignIns::default(),
-            sessions: Loadable::NotRequested,
-            folders_unknown: false,
             ui: UiState::default(),
             prefs: Prefs::default(),
         }
     }
 
     pub fn is_connected(&self) -> bool {
-        self.connection == ConnectionState::Connected
+        self.machines.this.is_connected()
     }
 
     /// The sidebar's order, which the user sets and the daemon keeps.
@@ -325,6 +354,8 @@ impl AppState {
             (&summary.folder, summary.started_at, summary.account)
         });
         let session_uses = self
+            .machines
+            .this
             .sessions
             .loaded()
             .into_iter()
