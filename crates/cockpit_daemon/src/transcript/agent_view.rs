@@ -16,10 +16,10 @@ use claude_protocol::{
 use cockpit_protocol::{
     AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, Answer, AnswerState, Approval,
     BackgroundTask, BackgroundTaskId, BackgroundTaskStatus, ClaudeSessionId, ContextUsage, CostUsd,
-    Delivery, Effort, EffortSource, Event, Image, ItemBody, ItemId, McpServer, PendingId,
-    PermissionMode, Plan, Position, Prompt, Question, SignInWait, SubagentRun, SubagentStatus,
+    Effort, EffortSource, Event, Image, ItemBody, ItemId, McpServer, PendingId, PermissionMode,
+    Plan, Position, Prompt, PromptId, Question, SignInWait, SubagentRun, SubagentStatus,
     SubagentToolCall, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
-    TurnOutcome, UserMessage,
+    TurnOutcome, UserMessage, WaitingPrompt, WaitingState,
 };
 use serde_json::{Map, Value};
 use strum::{EnumString, IntoStaticStr, VariantArray};
@@ -39,13 +39,6 @@ pub(crate) enum FollowUp {
     /// Claude Code could not sign in to the agent's account: the transcript needs to say how to
     /// sign in. Once per turn.
     SignInNeeded,
-}
-
-/// Whether a client's prompt goes to `claude` now or waits for the current turn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PromptDelivery {
-    Now,
-    Queued,
 }
 
 /// Whether a process starts a new Claude session or resumes one.
@@ -106,7 +99,8 @@ const CONTEXT_TITLE: &str = "Context added by Claude Code";
 const CLEARED_NOTICE: &str = "Conversation cleared";
 /// A new conversation for a reason this daemon does not know.
 const RESET_NOTICE: &str = "New conversation";
-const QUEUED_CANCELLED_NOTICE: &str = "Queued message cancelled";
+/// A prompt Claude never read, because its process ended. The notice unfolds to its text.
+const UNREAD_PROMPT_NOTICE: &str = "Message not sent";
 /// Where a session file shows that the user stopped a turn: it holds no turn end to say it.
 const PAST_STOP_NOTICE: &str = "Stopped";
 /// Prompts sent and not yet echoed back. Older ones are forgotten: Claude Code does not echo
@@ -186,6 +180,7 @@ pub(crate) struct AgentView {
     /// The name Claude Code restated as the process started, until it answers `initialize`.
     restated_title: Option<String>,
     awaited_echoes: VecDeque<String>,
+    next_prompt: PromptId,
     /// Calls per tool name, for the MCP servers' tool counts.
     tool_counts: HashMap<String, u32>,
     skills: BTreeSet<String>,
@@ -216,6 +211,7 @@ impl AgentView {
             sign_in_failed: false,
             sign_in_failed_at: None,
             awaited_echoes: VecDeque::new(),
+            next_prompt: PromptId::new(1),
             tool_counts: HashMap::new(),
             skills: BTreeSet::new(),
             prompt_cache_ttl,
@@ -254,6 +250,7 @@ impl AgentView {
         }
         view.stop_background_tasks(None);
         view.stop_subagents(None);
+        view.drop_waiting_prompts();
         view.summary.activity = None;
         // The log does not say when a turn the previous daemon cut off last did something: the
         // later of its start and the last activity logged stands for it.
@@ -374,6 +371,15 @@ impl AgentView {
         self.working || !self.pending.is_empty()
     }
 
+    /// Whether `claude` holds a prompt that Claude has not read yet. It starts a turn with it
+    /// once the current one ends.
+    pub(crate) fn has_unread_prompts(&self) -> bool {
+        self.details
+            .waiting_prompts
+            .iter()
+            .any(|prompt| prompt.state == WaitingState::Sent)
+    }
+
     /// Records that the summary as it is went out in an `AgentAdded`.
     pub(crate) fn mark_published(&mut self) {
         self.refresh_status();
@@ -450,45 +456,60 @@ impl AgentView {
         follow_ups
     }
 
-    /// A prompt from a client. A queued one waits in the transcript until the hub sends it.
-    pub(crate) fn add_prompt(
-        &mut self,
-        prompt: &Prompt,
-        delivery: PromptDelivery,
-        now: Timestamp,
-    ) -> ItemId {
-        let message_delivery = match delivery {
-            PromptDelivery::Now => Delivery::Delivered,
-            PromptDelivery::Queued => Delivery::Queued,
-        };
+    /// A prompt the hub sent to an idle agent: it starts a turn, so it shows at once.
+    pub(crate) fn add_prompt(&mut self, prompt: &Prompt, now: Timestamp) -> ItemId {
         let item = self.push_item(
             None,
-            ItemBody::UserMessage(UserMessage {
-                text: prompt.text.clone(),
-                images: prompt.images.clone(),
-                delivery: message_delivery,
-            }),
+            user_message(prompt.text.clone(), prompt.images.clone()),
         );
-        if delivery == PromptDelivery::Now {
-            self.expect_echo(prompt.text.clone());
-            self.start_turn(now);
-        }
+        self.expect_echo(prompt.text.clone());
+        self.start_turn(now);
         item
     }
 
-    /// The hub sent a queued prompt.
-    pub(crate) fn prompt_sent(&mut self, item: ItemId, now: Timestamp) {
-        let mut sent_text = None;
-        if let Some(found) = self.item_mut(item)
-            && let ItemBody::UserMessage(message) = &mut found.body
+    /// A prompt for a working agent. It joins the transcript where Claude reads it: when `claude`
+    /// echoes a sent one, or when the hub sends a queued one at the end of a turn.
+    pub(crate) fn add_waiting_prompt(&mut self, prompt: &Prompt, state: WaitingState) -> PromptId {
+        let id = self.next_prompt;
+        self.next_prompt = id.next();
+        self.details.waiting_prompts.push(WaitingPrompt {
+            id,
+            text: prompt.text.clone(),
+            image_count: prompt.images.len(),
+            state,
+        });
+        self.details_changed = true;
+        id
+    }
+
+    /// The hub sent a queued prompt as a turn ended: it starts the next turn.
+    pub(crate) fn queued_prompt_started(&mut self, id: PromptId, prompt: &Prompt, now: Timestamp) {
+        self.remove_waiting_prompt(id);
+        self.add_prompt(prompt, now);
+    }
+
+    /// The hub sent a queued prompt during the turn, for Claude to read at its next step.
+    pub(crate) fn queued_prompt_steered(&mut self, id: PromptId) {
+        if let Some(waiting) = self
+            .details
+            .waiting_prompts
+            .iter_mut()
+            .find(|waiting| waiting.id == id)
         {
-            message.delivery = Delivery::Delivered;
-            sent_text = Some(message.text.clone());
+            waiting.state = WaitingState::Sent;
+            self.details_changed = true;
         }
-        if let Some(text) = sent_text {
-            self.expect_echo(text);
+    }
+
+    /// A queued prompt that will not be sent.
+    pub(crate) fn remove_waiting_prompt(&mut self, id: PromptId) {
+        let before = self.details.waiting_prompts.len();
+        self.details
+            .waiting_prompts
+            .retain(|waiting| waiting.id != id);
+        if self.details.waiting_prompts.len() != before {
+            self.details_changed = true;
         }
-        self.start_turn(now);
     }
 
     /// A prompt that shows no item, such as `/effort high`, whose echo must not show either.
@@ -497,16 +518,6 @@ impl AgentView {
             self.awaited_echoes.pop_front();
         }
         self.awaited_echoes.push_back(text);
-    }
-
-    /// A queued prompt that will not be sent. Its item stays, so later ids keep their order.
-    pub(crate) fn cancel_queued(&mut self, item: ItemId) {
-        if let Some(found) = self.item_mut(item) {
-            found.body = ItemBody::Notice {
-                text: QUEUED_CANCELLED_NOTICE.to_owned(),
-                detail: None,
-            };
-        }
     }
 
     /// Answers a pending approval, question or plan, and marks its item answered.
@@ -660,6 +671,26 @@ impl AgentView {
                 detail: None,
             },
         );
+        self.drop_waiting_prompts();
+    }
+
+    /// The prompts Claude will not read, since no process runs: each becomes a notice that keeps
+    /// its text.
+    fn drop_waiting_prompts(&mut self) {
+        let waiting = std::mem::take(&mut self.details.waiting_prompts);
+        if waiting.is_empty() {
+            return;
+        }
+        self.details_changed = true;
+        for prompt in waiting {
+            self.push_item(
+                None,
+                ItemBody::Notice {
+                    text: UNREAD_PROMPT_NOTICE.to_owned(),
+                    detail: Some(prompt.text),
+                },
+            );
+        }
     }
 
     /// A line from the daemon in the transcript.
@@ -1034,6 +1065,9 @@ impl AgentView {
             if self.take_echo(&text) {
                 return;
             }
+            // A sent prompt, which Claude reads now, or one typed elsewhere.
+            self.take_unread_prompt(&text);
+            self.begin_work(now);
             self.push_item(parent, user_message(text, images));
         } else if parent.is_some() {
             // A subagent's prompt, which the agent wrote.
@@ -1166,6 +1200,10 @@ impl AgentView {
         }
         self.cancel_all_pending();
         self.end_work();
+        // Claude Code starts the next turn itself with a prompt Claude has not read.
+        if self.has_unread_prompts() {
+            self.working = true;
+        }
         self.summary.activity = None;
         // A slash command Claude Code runs itself, such as `/effort`, makes no API call: it is not
         // a turn of the conversation.
@@ -1485,6 +1523,24 @@ impl AgentView {
             .find(|task| &task.id == id)
     }
 
+    /// Removes the sent prompt an echo shows: the one with its text, else the oldest, since
+    /// Claude Code echoes each prompt in the order it got them.
+    fn take_unread_prompt(&mut self, text: &str) {
+        let prompts = &mut self.details.waiting_prompts;
+        let index = prompts
+            .iter()
+            .position(|prompt| prompt.state == WaitingState::Sent && prompt.text == text)
+            .or_else(|| {
+                prompts
+                    .iter()
+                    .position(|prompt| prompt.state == WaitingState::Sent)
+            });
+        if let Some(index) = index {
+            prompts.remove(index);
+            self.details_changed = true;
+        }
+    }
+
     fn take_echo(&mut self, text: &str) -> bool {
         match self
             .awaited_echoes
@@ -1581,11 +1637,7 @@ fn find_item(items: &[TranscriptItem], id: ItemId) -> Option<&TranscriptItem> {
 }
 
 fn user_message(text: String, images: Vec<Image>) -> ItemBody {
-    ItemBody::UserMessage(UserMessage {
-        text,
-        images,
-        delivery: Delivery::Delivered,
-    })
+    ItemBody::UserMessage(UserMessage { text, images })
 }
 
 fn cockpit_image(image: &ImageBlock) -> Option<Image> {
@@ -1624,28 +1676,20 @@ fn is_unfinished(body: &ItemBody) -> bool {
             }) | ItemBody::Plan(Plan {
                 answer: AnswerState::Waiting,
                 ..
-            }) | ItemBody::UserMessage(UserMessage {
-                delivery: Delivery::Queued,
-                ..
             })
         )
 }
 
-/// What a previous process left unfinished: a waiting answer is cancelled, a running call failed
-/// and a queued prompt was never sent.
+/// What a previous process left unfinished: a waiting answer is cancelled and a running call
+/// failed.
 fn finish_leftover(body: &mut ItemBody) {
     match body {
         ItemBody::ToolCall(call) | ItemBody::Subagent(call) => {
             call.status = ToolCallStatus::Failed;
         }
-        ItemBody::UserMessage(_) => {
-            *body = ItemBody::Notice {
-                text: QUEUED_CANCELLED_NOTICE.to_owned(),
-                detail: None,
-            };
-        }
         ItemBody::Approval(_) | ItemBody::Question(_) | ItemBody::Plan(_) => cancel_answer(body),
-        ItemBody::AssistantText { .. }
+        ItemBody::UserMessage(_)
+        | ItemBody::AssistantText { .. }
         | ItemBody::Thinking { .. }
         | ItemBody::TurnEnd(_)
         | ItemBody::Notice { .. } => {}
@@ -1815,7 +1859,7 @@ mod tests {
     fn a_plain_turn_shows_the_prompt_the_answer_and_its_end() {
         let mut view = view();
 
-        view.add_prompt(&prompt("Fix the cart total"), PromptDelivery::Now, now());
+        view.add_prompt(&prompt("Fix the cart total"), now());
         assert_eq!(
             view.summary().status,
             AgentStatus::Idle,
@@ -2062,7 +2106,7 @@ mod tests {
     #[test]
     fn an_approval_waits_then_allows_with_the_input() {
         let mut view = view();
-        view.add_prompt(&prompt("Clean up"), PromptDelivery::Now, now());
+        view.add_prompt(&prompt("Clean up"), now());
         apply(
             &mut view,
             tool_use("t1", "Bash", json!({"command": "rm -r build"})),
@@ -2197,7 +2241,7 @@ mod tests {
     #[test]
     fn an_interrupt_cancels_what_waits_and_fails_what_runs() {
         let mut view = view();
-        view.add_prompt(&prompt("Deploy"), PromptDelivery::Now, now());
+        view.add_prompt(&prompt("Deploy"), now());
         apply(
             &mut view,
             tool_use("t1", "Bash", json!({"command": "make deploy"})),
@@ -2276,7 +2320,7 @@ mod tests {
     #[test]
     fn a_failed_turn_carries_its_error() {
         let mut view = view();
-        view.add_prompt(&prompt("Refactor everything"), PromptDelivery::Now, now());
+        view.add_prompt(&prompt("Refactor everything"), now());
 
         apply(
             &mut view,
@@ -2302,7 +2346,7 @@ mod tests {
     #[test]
     fn a_failed_login_asks_for_the_sign_in_notice_once_and_names_the_turns_error() {
         let mut view = view();
-        view.add_prompt(&prompt("Hello"), PromptDelivery::Now, now());
+        view.add_prompt(&prompt("Hello"), now());
         let failed_line = json!({
             "type": "assistant", "error": "authentication_failed",
             "message": {"model": "<synthetic>", "content": [
@@ -2343,7 +2387,7 @@ mod tests {
     #[test]
     fn a_failed_login_waits_for_you_until_a_message_or_a_later_login() {
         let failed_turn = |view: &mut AgentView| {
-            view.add_prompt(&prompt("Hello"), PromptDelivery::Now, now());
+            view.add_prompt(&prompt("Hello"), now());
             apply(
                 view,
                 json!({
@@ -2364,7 +2408,7 @@ mod tests {
         failed_turn(&mut view);
         let waiting = view.summary().clone();
         let ended = view.items().last().map(|item| item.body.clone());
-        view.add_prompt(&prompt("Hello again"), PromptDelivery::Now, now());
+        view.add_prompt(&prompt("Hello again"), now());
         view.take_events();
         let after_message = view.summary().clone();
         failed_turn(&mut view);
@@ -2393,7 +2437,7 @@ mod tests {
     #[test]
     fn a_login_after_the_failed_turn_ends_the_wait_after_a_stop_and_a_resume() {
         let mut view = view();
-        view.add_prompt(&prompt("Hello"), PromptDelivery::Now, now());
+        view.add_prompt(&prompt("Hello"), now());
         apply(
             &mut view,
             json!({
@@ -2545,7 +2589,7 @@ mod tests {
     #[test]
     fn a_subagent_follows_its_call_its_own_lines_and_its_task() {
         let mut view = view();
-        view.add_prompt(&prompt("Survey the tests"), PromptDelivery::Now, at(100));
+        view.add_prompt(&prompt("Survey the tests"), at(100));
 
         apply(&mut view, fixture(AGENT_CALL));
         apply(&mut view, fixture(TASK_STARTED));
@@ -2817,47 +2861,157 @@ mod tests {
         assert_eq!(ended.ended_at, Some(now()));
     }
 
-    #[test]
-    fn a_queued_prompt_waits_then_its_echo_adds_nothing() {
-        let mut view = view();
-        view.add_prompt(&prompt("First"), PromptDelivery::Now, now());
-        assert!(view.is_busy());
-
-        let queued = view.add_prompt(&prompt("Second"), PromptDelivery::Queued, now());
-        let ItemBody::UserMessage(message) = &view.items()[1].body else {
-            panic!("expected a user message");
-        };
-        assert_eq!(message.delivery, Delivery::Queued);
-        apply(&mut view, result(0.1));
-        view.prompt_sent(queued, now());
-        apply(&mut view, echo("Second"));
-        apply(&mut view, echo("Typed elsewhere"));
-
-        let ItemBody::UserMessage(message) = &view.items()[1].body else {
-            panic!("expected a user message");
-        };
-        assert_eq!(message.delivery, Delivery::Delivered);
-        let users = view
-            .items()
+    fn user_texts(view: &AgentView) -> Vec<&str> {
+        view.items()
             .iter()
-            .filter(|item| matches!(item.body, ItemBody::UserMessage(_)))
-            .count();
-        assert_eq!(users, 3);
+            .filter_map(|item| match &item.body {
+                ItemBody::UserMessage(message) => Some(message.text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn waiting(view: &AgentView) -> Vec<(&str, WaitingState)> {
+        view.details()
+            .waiting_prompts
+            .iter()
+            .map(|prompt| (prompt.text.as_str(), prompt.state))
+            .collect()
     }
 
     #[test]
-    fn a_cancelled_queued_prompt_becomes_a_notice() {
+    fn a_steered_prompt_joins_the_transcript_where_claude_reads_it() {
         let mut view = view();
-        let queued = view.add_prompt(&prompt("Later"), PromptDelivery::Queued, now());
+        view.add_prompt(&prompt("First"), now());
+        apply(
+            &mut view,
+            tool_use("t1", "Bash", json!({"command": "make"})),
+        );
 
-        view.cancel_queued(queued);
+        view.add_waiting_prompt(&prompt("Also check the docs"), WaitingState::Sent);
+        assert_eq!(
+            waiting(&view),
+            [("Also check the docs", WaitingState::Sent)]
+        );
+        assert_eq!(user_texts(&view), ["First"]);
+        apply(&mut view, tool_result("t1", "built", false));
+        apply(&mut view, echo("Also check the docs"));
+
+        assert!(waiting(&view).is_empty());
+        assert_eq!(user_texts(&view), ["First", "Also check the docs"]);
+        assert!(matches!(
+            view.items().last().map(|item| &item.body),
+            Some(ItemBody::UserMessage(_))
+        ));
+    }
+
+    #[test]
+    fn an_unread_prompt_keeps_the_agent_working_past_the_turn_end() {
+        let mut view = view();
+        view.add_prompt(&prompt("First"), now());
+        view.add_waiting_prompt(&prompt("Second"), WaitingState::Sent);
+
+        apply(&mut view, result(0.1));
+        view.take_events();
+        assert_eq!(view.summary().status, AgentStatus::Working);
+        apply(&mut view, echo("Second"));
+        apply(&mut view, result(0.2));
+        view.take_events();
+
+        assert_eq!(view.summary().status, AgentStatus::Idle);
+        assert_eq!(user_texts(&view), ["First", "Second"]);
+    }
+
+    #[test]
+    fn an_echo_with_other_text_takes_the_oldest_sent_prompt() {
+        let mut view = view();
+        view.add_prompt(&prompt("First"), now());
+        view.add_waiting_prompt(&prompt("Later"), WaitingState::Queued);
+        view.add_waiting_prompt(&prompt("Second "), WaitingState::Sent);
+        view.add_waiting_prompt(&prompt("Third"), WaitingState::Sent);
+
+        apply(&mut view, echo("Second"));
 
         assert_eq!(
-            view.items()[0].body,
-            ItemBody::Notice {
-                text: QUEUED_CANCELLED_NOTICE.to_owned(),
-                detail: None
-            }
+            waiting(&view),
+            [
+                ("Later", WaitingState::Queued),
+                ("Third", WaitingState::Sent)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_queued_prompt_starts_the_next_turn_and_its_echo_adds_nothing() {
+        let mut view = view();
+        view.add_prompt(&prompt("First"), now());
+        let queued = view.add_waiting_prompt(&prompt("Second"), WaitingState::Queued);
+
+        apply(&mut view, result(0.1));
+        assert!(!view.is_busy());
+        view.queued_prompt_started(queued, &prompt("Second"), now());
+        apply(&mut view, echo("Second"));
+
+        assert!(waiting(&view).is_empty());
+        assert_eq!(user_texts(&view), ["First", "Second"]);
+        assert!(matches!(view.items()[1].body, ItemBody::TurnEnd(_)));
+        assert!(view.is_busy());
+    }
+
+    #[test]
+    fn a_steered_queued_prompt_waits_for_its_echo() {
+        let mut view = view();
+        view.add_prompt(&prompt("First"), now());
+        let queued = view.add_waiting_prompt(&prompt("Second"), WaitingState::Queued);
+
+        view.queued_prompt_steered(queued);
+
+        assert_eq!(waiting(&view), [("Second", WaitingState::Sent)]);
+        assert!(view.has_unread_prompts());
+    }
+
+    #[test]
+    fn a_cancelled_prompt_leaves_no_trace() {
+        let mut view = view();
+        view.add_prompt(&prompt("First"), now());
+        let queued = view.add_waiting_prompt(&prompt("Later"), WaitingState::Queued);
+        view.take_events();
+
+        view.remove_waiting_prompt(queued);
+        let events = view.take_events();
+
+        assert!(waiting(&view).is_empty());
+        assert_eq!(user_texts(&view), ["First"]);
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, Event::DetailsChanged { .. }))
+        );
+    }
+
+    #[test]
+    fn the_prompts_an_ended_process_never_read_become_notices() {
+        let mut view = view();
+        view.add_prompt(&prompt("First"), now());
+        view.add_waiting_prompt(&prompt("Sent one"), WaitingState::Sent);
+        view.add_waiting_prompt(&prompt("Queued one"), WaitingState::Queued);
+
+        view.process_exited("claude exited".to_owned(), now());
+
+        assert!(waiting(&view).is_empty());
+        let notices: Vec<&ItemBody> = view.items().iter().skip(2).map(|item| &item.body).collect();
+        assert_eq!(
+            notices,
+            [
+                &ItemBody::Notice {
+                    text: UNREAD_PROMPT_NOTICE.to_owned(),
+                    detail: Some("Sent one".to_owned())
+                },
+                &ItemBody::Notice {
+                    text: UNREAD_PROMPT_NOTICE.to_owned(),
+                    detail: Some("Queued one".to_owned())
+                },
+            ]
         );
     }
 
@@ -3040,7 +3194,7 @@ mod tests {
     #[test]
     fn a_restored_agent_continues_its_ids_and_closes_what_was_open() {
         let mut live = view();
-        live.add_prompt(&prompt("Go"), PromptDelivery::Now, now());
+        live.add_prompt(&prompt("Go"), now());
         apply(
             &mut live,
             tool_use("t1", "Bash", json!({"command": "sleep 100"})),
@@ -3049,7 +3203,7 @@ mod tests {
             &mut live,
             can_use_tool("req-1", "t1", "Bash", json!({"command": "sleep 100"})),
         );
-        live.add_prompt(&prompt("Then this"), PromptDelivery::Queued, now());
+        live.add_waiting_prompt(&prompt("Then this"), WaitingState::Queued);
         live.take_events();
 
         let mut restored = AgentView::restore(
@@ -3078,29 +3232,30 @@ mod tests {
         assert_eq!(
             restored.items()[3].body,
             ItemBody::Notice {
-                text: QUEUED_CANCELLED_NOTICE.to_owned(),
-                detail: None
+                text: UNREAD_PROMPT_NOTICE.to_owned(),
+                detail: Some("Then this".to_owned())
             }
         );
+        assert!(restored.details().waiting_prompts.is_empty());
         let changed = events
             .iter()
             .filter(|event| matches!(event, Event::TranscriptChanged { .. }))
             .count();
-        assert_eq!(changed, 3);
+        assert_eq!(changed, 2);
         assert!(
             events
                 .iter()
                 .any(|event| matches!(event, Event::AgentUpdated(_)))
         );
         restored.process_started(ProcessSession::Resumed);
-        let next = restored.add_prompt(&prompt("Again"), PromptDelivery::Now, now());
+        let next = restored.add_prompt(&prompt("Again"), now());
         assert_eq!(next, ItemId::new(5));
     }
 
     #[test]
     fn a_typed_command_reads_as_typed_and_its_echo_adds_nothing() {
         let mut view = view();
-        view.add_prompt(&prompt("/greet world"), PromptDelivery::Now, now());
+        view.add_prompt(&prompt("/greet world"), now());
 
         apply(
             &mut view,
@@ -3163,7 +3318,7 @@ mod tests {
         let mut view = view();
         apply(&mut view, init());
         apply(&mut view, result(0.5));
-        view.add_prompt(&prompt("/clear"), PromptDelivery::Now, now());
+        view.add_prompt(&prompt("/clear"), now());
 
         apply(
             &mut view,
@@ -3524,7 +3679,7 @@ mod tests {
     fn a_turn_is_activity_from_its_prompt_to_its_result() {
         let mut view = view();
 
-        view.add_prompt(&prompt("Fix the cart total"), PromptDelivery::Now, at(100));
+        view.add_prompt(&prompt("Fix the cart total"), at(100));
         assert_eq!(times(&view), (Some(at(100)), Some(at(100))));
         apply_at(&mut view, init(), 101);
         apply_at(
@@ -3557,12 +3712,12 @@ mod tests {
     #[test]
     fn a_queued_prompt_sent_at_a_turns_end_starts_a_new_turn() {
         let mut view = view();
-        view.add_prompt(&prompt("First"), PromptDelivery::Now, at(100));
-        let queued = view.add_prompt(&prompt("Second"), PromptDelivery::Queued, at(120));
+        view.add_prompt(&prompt("First"), at(100));
+        let queued = view.add_waiting_prompt(&prompt("Second"), WaitingState::Queued);
         assert_eq!(times(&view), (Some(at(100)), Some(at(100))));
 
         apply_at(&mut view, result(0.5), 200);
-        view.prompt_sent(queued, at(200));
+        view.queued_prompt_started(queued, &prompt("Second"), at(200));
 
         assert_eq!(times(&view), (Some(at(200)), Some(at(200))));
     }
@@ -3570,7 +3725,7 @@ mod tests {
     #[test]
     fn waiting_for_you_counts_from_the_first_request() {
         let mut view = view();
-        view.add_prompt(&prompt("Deploy"), PromptDelivery::Now, at(100));
+        view.add_prompt(&prompt("Deploy"), at(100));
         apply_at(
             &mut view,
             tool_use("t1", "Bash", json!({"command": "ls"})),
@@ -3599,7 +3754,7 @@ mod tests {
     #[test]
     fn a_command_that_runs_no_turn_moves_no_activity() {
         let mut view = view();
-        view.add_prompt(&prompt("Fix it"), PromptDelivery::Now, at(100));
+        view.add_prompt(&prompt("Fix it"), at(100));
         apply_at(&mut view, result(0.5), 150);
 
         apply_at(&mut view, init(), 900);
@@ -3631,7 +3786,7 @@ mod tests {
     #[test]
     fn an_interrupted_turn_is_activity_when_it_ends() {
         let mut view = view();
-        view.add_prompt(&prompt("Go"), PromptDelivery::Now, at(100));
+        view.add_prompt(&prompt("Go"), at(100));
 
         apply_at(
             &mut view,
@@ -3646,7 +3801,7 @@ mod tests {
     #[test]
     fn a_new_process_starts_with_no_turn() {
         let mut view = view();
-        view.add_prompt(&prompt("Go"), PromptDelivery::Now, at(100));
+        view.add_prompt(&prompt("Go"), at(100));
 
         view.process_started(ProcessSession::Resumed);
 
@@ -3656,7 +3811,7 @@ mod tests {
     #[test]
     fn an_exit_is_activity_and_ends_the_turn() {
         let mut view = view();
-        view.add_prompt(&prompt("Go"), PromptDelivery::Now, at(100));
+        view.add_prompt(&prompt("Go"), at(100));
 
         view.process_exited("claude exited".to_owned(), at(160));
 

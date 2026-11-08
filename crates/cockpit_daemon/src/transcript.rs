@@ -19,6 +19,6 @@ mod subagents;
 mod tools;
 pub(crate) mod words;
 
-pub(crate) use agent_view::{AgentView, AnswerError, FollowUp, ProcessSession, PromptDelivery};
+pub(crate) use agent_view::{AgentView, AnswerError, FollowUp, ProcessSession};
 pub(crate) use past_transcript::PastTranscript;
 pub(crate) use tools::touched_files;

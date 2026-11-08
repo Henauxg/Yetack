@@ -11,8 +11,8 @@ use cockpit_client::{Backoff, Connection, Session, SessionUpdate, Transport};
 use cockpit_protocol::{
     AccountAddParams, AccountChangeParams, AccountParams, AccountState, AgentId, AgentParams,
     Answer, AnswerParams, ApprovalAnswer, ApprovalDecision, Catchup, CredentialSource, Effort,
-    Event, MoveParams, PermissionMode, PlanAnswer, PlanDecision, Prompt, PromptParams,
-    QuestionAnswer, RenameParams, Request, ResponseBody, StartParams,
+    Event, MoveParams, PermissionMode, PlanAnswer, PlanDecision, Prompt, PromptDelivery,
+    PromptParams, QuestionAnswer, RenameParams, Request, ResponseBody, StartParams,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -65,9 +65,14 @@ pub(crate) async fn run(target: &Target, command: Command) -> anyhow::Result<()>
                 .transpose()?,
             account: account.unwrap_or_default(),
         }),
-        Command::Prompt { agent, text } => Request::AgentPrompt(PromptParams {
+        Command::Prompt { agent, text, queue } => Request::AgentPrompt(PromptParams {
             agent,
             prompt: text_prompt(read_text(text)?),
+            delivery: if queue {
+                PromptDelivery::Queue
+            } else {
+                PromptDelivery::Steer
+            },
         }),
         Command::Answer {
             agent,

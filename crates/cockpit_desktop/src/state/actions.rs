@@ -8,12 +8,12 @@ use std::path::{Path, PathBuf};
 use cockpit_client::RequestError;
 use cockpit_protocol::{
     AccountId, AgentId, AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState,
-    ApprovalAnswer, ApprovalDecision, BackgroundTaskId, CancelQueuedParams, ClaudeSessionId,
-    Effort, EffortSource, Image, ItemBody, ItemId, McpRemoveParams, McpScope, McpServerParams,
-    McpToggleAction, McpToggleParams, MoveParams, PastSession, PendingId, PermissionMode, Placed,
-    PlanAnswer, PlanDecision, Prompt, PromptParams, Question, QuestionAnswer, RenameParams,
-    Request, Selection, SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams,
-    SlashCommand, StartParams, StopTaskParams,
+    ApprovalAnswer, ApprovalDecision, BackgroundTaskId, ClaudeSessionId, Effort, EffortSource,
+    Image, ItemBody, ItemId, McpRemoveParams, McpScope, McpServerParams, McpToggleAction,
+    McpToggleParams, MoveParams, PastSession, PendingId, PermissionMode, Placed, PlanAnswer,
+    PlanDecision, Prompt, PromptDelivery, PromptId, PromptParams, Question, QuestionAnswer,
+    QueuedPromptParams, RenameParams, Request, Selection, SessionResumeParams, SetEffortParams,
+    SetModeParams, SetModelParams, SlashCommand, StartParams, StopTaskParams,
 };
 use strum::VariantArray;
 
@@ -818,7 +818,11 @@ fn prompt_request(agent: AgentId, text: String) -> Outgoing {
         text,
         images: Vec::new(),
     };
-    Outgoing::action(Request::AgentPrompt(PromptParams { agent, prompt }))
+    Outgoing::action(Request::AgentPrompt(PromptParams {
+        agent,
+        prompt,
+        delivery: PromptDelivery::Steer,
+    }))
 }
 
 /// A choice of a setting row of the palette.
@@ -1017,12 +1021,14 @@ pub fn remove_image(drafts: &mut Drafts, agent: AgentId, index: usize) {
 }
 
 /// Sends the draft. `typed` is the composer's text as the key event saw it, which may hold a last
-/// keystroke the draft has not received yet.
+/// keystroke the draft has not received yet. A working agent reads the prompt at its next step,
+/// or after its turn with `PromptDelivery::Queue`.
 pub fn send_prompt(
     state: &mut AppState,
     drafts: &mut Drafts,
     agent: AgentId,
     typed: Option<String>,
+    delivery: PromptDelivery,
 ) -> Vec<Outgoing> {
     let exited = state
         .agents
@@ -1050,7 +1056,11 @@ pub fn send_prompt(
         images: draft.images.clone(),
     };
     vec![Outgoing {
-        request: Request::AgentPrompt(PromptParams { agent, prompt }),
+        request: Request::AgentPrompt(PromptParams {
+            agent,
+            prompt,
+            delivery,
+        }),
         purpose: Purpose::Prompt { agent, draft },
     }]
 }
@@ -1234,9 +1244,16 @@ pub fn pick_by_number(
     }
 }
 
-pub fn cancel_queued(agent: AgentId, item: ItemId) -> Vec<Outgoing> {
+pub fn cancel_queued(agent: AgentId, prompt: PromptId) -> Vec<Outgoing> {
     vec![Outgoing::action(Request::AgentCancelQueued(
-        CancelQueuedParams { agent, item },
+        QueuedPromptParams { agent, prompt },
+    ))]
+}
+
+/// Sends a queued prompt now, for the agent to read at its next step.
+pub fn send_queued(agent: AgentId, prompt: PromptId) -> Vec<Outgoing> {
+    vec![Outgoing::action(Request::AgentSendQueued(
+        QueuedPromptParams { agent, prompt },
     ))]
 }
 
@@ -1998,9 +2015,9 @@ pub fn resume_session(
 mod tests {
     use cockpit_client::RequestError;
     use cockpit_protocol::{
-        AgentDetails, AskedQuestion, ChangedFile, CommandKind, Delivery, ErrorBody, ErrorCode,
-        HistoryPage, ImageMediaType, Method, OlderItems, Position, QuestionOption, ResponseBody,
-        Timestamp, TranscriptItem, UserMessage,
+        AgentDetails, AskedQuestion, ChangedFile, CommandKind, ErrorBody, ErrorCode, HistoryPage,
+        ImageMediaType, Method, OlderItems, Position, QuestionOption, ResponseBody, Timestamp,
+        TranscriptItem, UserMessage,
     };
 
     use super::*;
@@ -2213,7 +2230,6 @@ mod tests {
             ItemBody::UserMessage(UserMessage {
                 text: "Also the docs".to_owned(),
                 images: Vec::new(),
-                delivery: Delivery::Queued,
             }),
         );
         append(
@@ -2249,7 +2265,13 @@ mod tests {
         let back_down = divider(&state);
 
         type_text(&mut state, &mut drafts, "Thanks");
-        send_prompt(&mut state, &mut drafts, agent(), None);
+        send_prompt(
+            &mut state,
+            &mut drafts,
+            agent(),
+            None,
+            PromptDelivery::Steer,
+        );
         let after_send = divider(&state);
         chat_at_bottom(&mut state, agent(), false);
         append(&mut state, 4, text("More."));
@@ -2275,7 +2297,13 @@ mod tests {
         append(&mut state, 2, text("Done."));
 
         type_text(&mut state, &mut drafts, "Thanks");
-        send_prompt(&mut state, &mut drafts, agent(), None);
+        send_prompt(
+            &mut state,
+            &mut drafts,
+            agent(),
+            None,
+            PromptDelivery::Steer,
+        );
         let jump_shown = state.ui.chat_scrolled_up.contains_key(&agent());
         chat_at_bottom(&mut state, agent(), true);
 
@@ -2289,10 +2317,22 @@ mod tests {
         let mut drafts = Drafts::default();
         chat_at_bottom(&mut state, agent(), false);
 
-        send_prompt(&mut state, &mut drafts, agent(), None);
+        send_prompt(
+            &mut state,
+            &mut drafts,
+            agent(),
+            None,
+            PromptDelivery::Steer,
+        );
         let after_empty = state.ui.chat_jumps;
         type_text(&mut state, &mut drafts, "Thanks");
-        send_prompt(&mut state, &mut drafts, agent(), None);
+        send_prompt(
+            &mut state,
+            &mut drafts,
+            agent(),
+            None,
+            PromptDelivery::Steer,
+        );
 
         assert_eq!(after_empty, 0);
         assert_eq!(state.ui.chat_jumps, 1);
@@ -3011,6 +3051,7 @@ mod tests {
                     text: text.to_owned(),
                     images: Vec::new(),
                 },
+                delivery: PromptDelivery::Steer,
             })
         };
         assert_eq!(sent(&clear), [&prompt("/clear")]);
@@ -3370,7 +3411,13 @@ mod tests {
         let after_typing = drafts.composer_writes(agent());
         let _ = palette_pick(&mut state, &mut drafts, agent(), None);
         let after_pick = drafts.composer_writes(agent());
-        send_prompt(&mut state, &mut drafts, agent(), None);
+        send_prompt(
+            &mut state,
+            &mut drafts,
+            agent(),
+            None,
+            PromptDelivery::Steer,
+        );
         let after_send = drafts.composer_writes(agent());
 
         assert_eq!((after_typing, after_pick, after_send), (0, 1, 2));
@@ -3387,6 +3434,7 @@ mod tests {
             &mut drafts,
             agent(),
             Some("Also cover the edge case ".to_owned()),
+            PromptDelivery::Queue,
         );
 
         let Some(Outgoing {
@@ -3397,6 +3445,7 @@ mod tests {
             panic!("expected a prompt, got {requests:?}");
         };
         assert_eq!(params.prompt.text, "Also cover the edge case");
+        assert_eq!(params.delivery, PromptDelivery::Queue);
         assert!(drafts.draft(agent()).is_some_and(|draft| draft.is_empty()));
     }
 
@@ -3405,11 +3454,29 @@ mod tests {
         let mut drafts = Drafts::default();
         let mut idle = state(AgentStatus::Idle);
         let typed = Some("  ".to_owned());
-        assert!(send_prompt(&mut idle, &mut drafts, agent(), typed).is_empty());
+        assert!(
+            send_prompt(
+                &mut idle,
+                &mut drafts,
+                agent(),
+                typed,
+                PromptDelivery::Steer
+            )
+            .is_empty()
+        );
 
         let mut exited = state(AgentStatus::Exited);
         let typed = Some("hello".to_owned());
-        assert!(send_prompt(&mut exited, &mut drafts, agent(), typed).is_empty());
+        assert!(
+            send_prompt(
+                &mut exited,
+                &mut drafts,
+                agent(),
+                typed,
+                PromptDelivery::Steer
+            )
+            .is_empty()
+        );
     }
 
     #[test]

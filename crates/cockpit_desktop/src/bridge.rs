@@ -194,6 +194,9 @@ document.addEventListener("keydown", (event) => {
     const mapKey = settings.map_keys.includes(key) || (mode.answer_letters && settings.answer_keys.includes(letter));
     take = where !== "field" && plain && !event.shiftKey && mapKey
       && !(key === "Enter" && target !== null && target.tagName === "BUTTON");
+  } else if (where === "composer" && event.altKey && !command && !event.shiftKey && key === "Enter") {
+    // Alt+Enter queues the message until the turn ends.
+    take = true;
   } else if (where === "composer" && plain) {
     take = (mode.palette && ["ArrowUp", "ArrowDown", "Enter", "Tab"].includes(key))
       || (text === "" && answers)

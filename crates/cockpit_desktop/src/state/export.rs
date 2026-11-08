@@ -5,8 +5,8 @@
 use std::collections::BTreeSet;
 
 use cockpit_protocol::{
-    AnswerState, Approval, ApprovalDecision, Delivery, ItemBody, ItemId, Plan, PlanDecision,
-    Question, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome,
+    AnswerState, Approval, ApprovalDecision, ItemBody, ItemId, Plan, PlanDecision, Question,
+    ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome,
 };
 
 use super::app_state::AgentEntry;
@@ -60,7 +60,7 @@ pub fn conversation_markdown(entry: &AgentEntry) -> String {
     let top_level = items.iter().filter(|item| item.parent.is_none());
     for item in top_level {
         match &item.body {
-            ItemBody::UserMessage(message) if message.delivery == Delivery::Delivered => {
+            ItemBody::UserMessage(message) => {
                 if !message.text.trim().is_empty() {
                     say(
                         &mut parts,
@@ -118,7 +118,7 @@ pub fn conversation_markdown(entry: &AgentEntry) -> String {
                 }
             }
             ItemBody::Notice { text, .. } => parts.push(notice(text)),
-            ItemBody::UserMessage(_) | ItemBody::Thinking { .. } => {}
+            ItemBody::Thinking { .. } => {}
         }
     }
     joined(&parts)
@@ -287,7 +287,7 @@ mod tests {
         }
     }
 
-    fn user(text: &str, images: usize, delivery: Delivery) -> ItemBody {
+    fn user(text: &str, images: usize) -> ItemBody {
         let image = Image {
             media_type: ImageMediaType::Png,
             data: "aGVsbG8=".to_owned(),
@@ -295,7 +295,6 @@ mod tests {
         ItemBody::UserMessage(UserMessage {
             text: text.to_owned(),
             images: vec![image; images],
-            delivery,
         })
     }
 
@@ -336,10 +335,7 @@ mod tests {
         };
         let entry = entry_with(
             vec![
-                (
-                    None,
-                    user("Fix the column numbers.", 1, Delivery::Delivered),
-                ),
+                (None, user("Fix the column numbers.", 1)),
                 (
                     None,
                     ItemBody::Thinking {
@@ -392,8 +388,7 @@ mod tests {
                         detail: None,
                     },
                 ),
-                (None, user("Thanks", 0, Delivery::Delivered)),
-                (None, user("Also the docs", 0, Delivery::Queued)),
+                (None, user("Thanks", 0)),
             ],
             OlderItems::None,
         );
@@ -534,10 +529,7 @@ Context usage
 
     #[test]
     fn an_export_with_older_messages_unloaded_is_not_complete() {
-        let entry = entry_with(
-            vec![(None, user("Run the tests", 0, Delivery::Delivered))],
-            OlderItems::Exist,
-        );
+        let entry = entry_with(vec![(None, user("Run the tests", 0))], OlderItems::Exist);
 
         assert!(!is_complete(&entry));
     }

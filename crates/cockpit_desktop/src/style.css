@@ -1615,20 +1615,6 @@ html.reordering * {
   overflow-wrap: anywhere;
 }
 
-.user-bubble.queued {
-  border: 1px dashed #444444;
-  background: transparent;
-  color: var(--text-soft);
-}
-
-.queued-note {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 12px;
-  color: var(--dim);
-}
-
 .message-image {
   max-width: 220px;
   max-height: 160px;
@@ -3095,6 +3081,56 @@ html.reordering * {
   max-width: 1600px;
   margin: 0 auto;
   padding: 10px 20px 16px;
+}
+
+/* At most four rows show; more scroll inside the list. */
+.waiting-prompts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 136px;
+  margin-bottom: 6px;
+  overflow-y: auto;
+}
+
+.waiting-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+  padding: 3px 6px 3px 10px;
+  border-radius: 10px;
+  border: 1px dashed #444444;
+  font-size: 13px;
+  color: var(--text-soft);
+}
+
+.waiting-state {
+  flex: none;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--dim);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.waiting-row.sent .waiting-state {
+  color: var(--teal);
+  background: rgba(45, 212, 191, 0.12);
+}
+
+.waiting-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.waiting-images {
+  flex: none;
+  font-size: 12px;
+  color: var(--dim);
 }
 
 .composer {

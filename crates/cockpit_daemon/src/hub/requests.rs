@@ -33,12 +33,14 @@ impl Hub {
     pub(super) fn request(&mut self, request: Request, reply: Reply) {
         match request {
             Request::AgentStart(params) => agents::respond(reply, self.start_agent(params)),
-            Request::AgentPrompt(params) => {
-                agents::respond(reply, self.prompt(params.agent, params.prompt))
-            }
+            Request::AgentPrompt(params) => agents::respond(
+                reply,
+                self.prompt(params.agent, params.prompt, params.delivery),
+            ),
             Request::AgentCancelQueued(params) => {
                 agents::respond(reply, self.cancel_queued(params))
             }
+            Request::AgentSendQueued(params) => agents::respond(reply, self.send_queued(params)),
             Request::AgentAnswer(params) => agents::respond(reply, self.answer(params)),
             Request::AgentInterrupt(params) => self.control(
                 params.agent,

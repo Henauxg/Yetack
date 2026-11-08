@@ -9,8 +9,8 @@ use std::time::SystemTime;
 use cockpit_daemon::CLAUDE_HOME_FOLDER;
 use cockpit_protocol::{
     Account, AccountAddParams, AccountChangeParams, AccountId, AccountParams, AccountState,
-    AgentId, AgentStatus, AgentSummary, CredentialSource, Delivery, EnvironmentCredentials,
-    FOLDER_SEPARATOR, ItemBody, ItemId, PlanUsage, Prompt, PromptParams, Request, ResponseBody,
+    AgentId, AgentStatus, AgentSummary, CredentialSource, EnvironmentCredentials, FOLDER_SEPARATOR,
+    ItemBody, ItemId, PlanUsage, Prompt, PromptDelivery, PromptParams, Request, ResponseBody,
     SignIn, SignInWait, TranscriptItem, TurnOutcome, UsageWindow, UserMessage, account_folder_name,
 };
 
@@ -292,11 +292,9 @@ pub fn sign_in_turn(entry: &AgentEntry) -> Option<SignInTurn> {
         .items()
         .filter(|item| item.parent.is_none())
         .collect();
-    let end = items.iter().rposition(|item| match &item.body {
-        ItemBody::TurnEnd(_) => true,
-        ItemBody::UserMessage(message) => message.delivery == Delivery::Delivered,
-        _ => false,
-    })?;
+    let end = items
+        .iter()
+        .rposition(|item| matches!(item.body, ItemBody::TurnEnd(_) | ItemBody::UserMessage(_)))?;
     let turn_end = items.get(end)?;
     let ItemBody::TurnEnd(ended) = &turn_end.body else {
         return None;
@@ -310,9 +308,7 @@ pub fn sign_in_turn(entry: &AgentEntry) -> Option<SignInTurn> {
         .filter(|item| matches!(item.body, ItemBody::Notice { .. }))
         .map(|item| item.id);
     let message = before.iter().rev().find_map(|item| match &item.body {
-        ItemBody::UserMessage(message) if message.delivery == Delivery::Delivered => {
-            Some(message.clone())
-        }
+        ItemBody::UserMessage(message) => Some(message.clone()),
         _ => None,
     });
     Some(SignInTurn {
@@ -372,7 +368,11 @@ pub fn send_again(state: &mut AppState, agent: AgentId) -> Vec<Outgoing> {
         images: message.images,
     };
     vec![Outgoing {
-        request: Request::AgentPrompt(PromptParams { agent, prompt }),
+        request: Request::AgentPrompt(PromptParams {
+            agent,
+            prompt,
+            delivery: PromptDelivery::Steer,
+        }),
         purpose: Purpose::SendAgain {
             agent,
             turn_end: turn.turn_end,
@@ -1494,7 +1494,6 @@ mod tests {
         ItemBody::UserMessage(UserMessage {
             text: text.to_owned(),
             images: Vec::new(),
-            delivery: Delivery::Delivered,
         })
     }
 
@@ -1542,7 +1541,6 @@ mod tests {
                 message: Some(UserMessage {
                     text: "Export the invoices".to_owned(),
                     images: Vec::new(),
-                    delivery: Delivery::Delivered,
                 }),
             })
         );

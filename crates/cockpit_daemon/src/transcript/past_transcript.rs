@@ -76,7 +76,7 @@ impl PastTranscript {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::{Delivery, ToolCallStatus, UserMessage};
+    use cockpit_protocol::{ToolCallStatus, UserMessage};
     use serde_json::{Value, json};
 
     use super::*;
@@ -178,7 +178,6 @@ mod tests {
             ItemBody::UserMessage(UserMessage {
                 text: text.to_owned(),
                 images: Vec::new(),
-                delivery: Delivery::Delivered,
             })
         };
         let notice = |text: &str| ItemBody::Notice {

@@ -118,7 +118,7 @@ An agent's conversation is a list of `TranscriptItem`s, each with an `ItemId` an
 The daemon numbers items in transcript order, so the app can merge a history page with live appends by id.
 The kinds of item:
 
-- `UserMessage` (text, attached images), with `delivery`: `queued` while the agent works, else `delivered`; a slash command shows as typed, such as `/review fix`, not as Claude Code's `command-name` wrapper;
+- `UserMessage` (text, attached images); a slash command shows as typed, such as `/review fix`, not as Claude Code's `command-name` wrapper;
 - `AssistantText` (markdown) and `Thinking` (folded in the app);
 - `ToolCall`: tool name, summary, input, status (running, done, failed), output, and for `Edit` and `Write` the file path with the old and new text (both left empty when either is over 1 MiB);
 - `Subagent`: a tool call whose own items carry it as `parent` (from `parent_tool_use_id`);
@@ -132,6 +132,7 @@ The kinds of item:
 An answer state is `Waiting`, `Answered`, or `Cancelled` (Claude Code withdraws a pending request when the turn is interrupted).
 
 `AgentDetails` holds what the side blocks and the agent map show: the task list (from `TodoWrite`), background tasks (`task_started`, `task_notification`), the subagents, changed files, and the last context usage.
+It also holds `waiting_prompts`: the prompts Claude has not read yet, each `queued` (the daemon holds it) or `sent` (`claude` has it), with its text and image count.
 
 ### Subagents
 
@@ -170,7 +171,7 @@ A reader refuses a line longer than a fixed maximum (16 MiB) instead of bufferin
 ### Session
 
 1. The client sends `Hello { protocol_version, last_seq }`.
-   The version is 2. An app and a daemon of different versions refuse each other.
+   The version is 3. An app and a daemon of different versions refuse each other.
 2. The daemon answers `Welcome { protocol_version, catchup }`, or `Refused { reason }` when the versions differ.
 3. `catchup` is `Replay` when `last_seq` was given and the logs still hold every event after it: the daemon then sends those events, then live events.
    Otherwise it is `Snapshot(snapshot)`: the client replaces its state with it, and live events follow.
@@ -183,7 +184,7 @@ Transcripts are not in the snapshot: the app asks for an agent's transcript with
 
 ### Requests
 
-`agent.start`, `agent.prompt`, `agent.cancel_queued`, `agent.answer` (approval, question or plan), `agent.interrupt`, `agent.stop`, `agent.resume`, `agent.remove` (an exited agent), `agent.close` (any agent), `agent.history`, `agent.details`, `agent.set_model`, `agent.set_effort`, `agent.set_mode`, `agent.rename`, `agent.move` (the agent goes just above `before`, or to the bottom when `before` is `null`), `agent.context_usage`, `agent.stop_task`, `agent.mcp_status`, `agent.mcp_reconnect`, `agent.mcp_toggle` (`action`: `enable` or `disable`), `agent.commands` (slash commands and skills), `agent.read_file` (the file view), `agent.list_dir` and `agent.find_files` (the "Open file" dialog), `agent.stop_process` (one of the agent's commands), `mcp.remove` (with the agent, whose folder decides the project and local scopes), `settings.set`, `sessions.list`, `sessions.resume`, `folders.list` (the new agent dialog's folder field), `machine.load` (see [Machine load](#machine-load)), `accounts.list`, `accounts.add`, `accounts.change`, `accounts.remove` (see [Accounts](#accounts-1)).
+`agent.start`, `agent.prompt` (with a delivery: `steer`, the default, or `queue`), `agent.cancel_queued`, `agent.send_queued` (a queued prompt goes to `claude` now), `agent.answer` (approval, question or plan), `agent.interrupt`, `agent.stop`, `agent.resume`, `agent.remove` (an exited agent), `agent.close` (any agent), `agent.history`, `agent.details`, `agent.set_model`, `agent.set_effort`, `agent.set_mode`, `agent.rename`, `agent.move` (the agent goes just above `before`, or to the bottom when `before` is `null`), `agent.context_usage`, `agent.stop_task`, `agent.mcp_status`, `agent.mcp_reconnect`, `agent.mcp_toggle` (`action`: `enable` or `disable`), `agent.commands` (slash commands and skills), `agent.read_file` (the file view), `agent.list_dir` and `agent.find_files` (the "Open file" dialog), `agent.stop_process` (one of the agent's commands), `mcp.remove` (with the agent, whose folder decides the project and local scopes), `settings.set`, `sessions.list`, `sessions.resume`, `folders.list` (the new agent dialog's folder field), `machine.load` (see [Machine load](#machine-load)), `accounts.list`, `accounts.add`, `accounts.change`, `accounts.remove` (see [Accounts](#accounts-1)).
 
 `agent.close` ends an agent whatever its process does, in one request.
 `agent.stop` then `agent.remove` would not do it: `remove` refuses an agent whose process still runs, and the process exits some time after `stop` closes its stdin.
@@ -305,6 +306,11 @@ The hub turns Claude Code messages into transcript items and status changes (mod
 - An agent given no effort runs at the one Claude Code applies by itself. The daemon asks for it with `get_settings` once `initialize` is answered, and again after a model change, and the summary shows its `applied.effort` with `effort_source` set to `claude_code_default`.
   Claude Code resolves it: the local, then the project settings file of the folder it runs in, else the model's default. The user's own `effortLevel` counts only for some models, so the daemon does not read the files itself.
 - A prompt goes to stdin as a `user` message, never as an argument: other users can read arguments with `ps`.
+- A prompt for an idle agent starts a turn and joins the transcript at once. While the agent works, `agent.prompt` delivers it one of two ways:
+  - `steer` writes it to stdin at once. Claude Code reads it at the next tool boundary, in the same turn, or, when the turn ends first, starts the next turn with it; an interrupted turn does the same. Either way it echoes the prompt (`isReplay`) where Claude reads it, and each prompt gets its own echo, in order. The prompt joins the transcript at its echo, which takes the sent prompt with the same text, else the oldest. The agent stays working until every sent prompt is read.
+  - `queue` holds it in the daemon until a turn ends with no sent prompt left unread; it then starts the next turn. It can be cancelled, or sent now with `agent.send_queued`.
+  - A slash command always queues: Claude Code does not echo every one, so the daemon could not tell when it was read.
+  - When the process ends, each prompt Claude did not read becomes a "Message not sent" notice that unfolds to its text.
 - Claude Code asks for approvals with `can_use_tool` control requests.
   `AskUserQuestion` and `ExitPlanMode` come the same way; the hub shows them as a question or a plan instead of an approval.
   The answer is a `control_response` with `behavior: allow` (and `updatedInput`) or `behavior: deny` (and a message).
@@ -340,7 +346,7 @@ On start the daemon reads `agents.json`, finds the last `Seq` in the logs, and r
 The event logs of an older daemon hold a `bool` in place of some enums, and still read:
 
 - a turn end's `stopped` and `not_signed_in` give its `outcome`. Without them, a turn end with an error reads as `failed`, and one without as `completed`;
-- a user message's `queued` gives its `delivery`, and a question's `multi_select` its `selection`;
+- a user message's `queued` or `delivery` is left out, since waiting prompts live in the details, and a question's `multi_select` gives its `selection`;
 - an account's `use_environment_api_key` gives its `credentials`;
 - a summary's `waits_for_sign_in` gives its `sign_in_wait`, and its `effort_is_default` its `effort_source`. Without them, the summary reads `not_waiting` and `chosen`.
 

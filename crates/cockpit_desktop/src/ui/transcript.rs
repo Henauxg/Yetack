@@ -6,8 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use cockpit_protocol::{
-    AgentId, AgentStatus, AnswerState, Delivery, ItemBody, ItemId, SignInWait, ToolCall,
-    ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UserMessage,
+    AgentId, AgentStatus, AnswerState, ItemBody, ItemId, SignInWait, ToolCall, ToolCallStatus,
+    TranscriptItem, TurnEnd, TurnOutcome, UserMessage,
 };
 use dioxus::prelude::*;
 use serde::Serialize;
@@ -192,13 +192,6 @@ pub fn TranscriptView() -> Element {
         .copied()
         .filter(|item| shows_at_top(item, &loaded) && Some(item.id) != sign_in_notice)
         .collect();
-    // Messages queued at the end wait for the running turn, so they show under its working line.
-    let split = top_items
-        .iter()
-        .rposition(|item| !is_queued(item))
-        .map_or(0, |last| last + 1);
-    let (top_items, queued) = top_items.split_at(split);
-    let queued: Vec<TranscriptItem> = queued.iter().map(|item| (*item).clone()).collect();
     let states: Vec<Option<StepState>> = top_items
         .iter()
         .map(|item| {
@@ -215,7 +208,7 @@ pub fn TranscriptView() -> Element {
     let is_step: Vec<bool> = states.iter().map(Option::is_some).collect();
     let links = step_links(&is_step, working);
     let working_linked = is_step.last().copied().unwrap_or(false);
-    let notes = older_step_notes(top_items, &loaded);
+    let notes = older_step_notes(&top_items, &loaded);
     let scrolled_up = state.ui.chat_scrolled_up.get(&agent).copied();
     let shown = if whole() == Some(agent) {
         ShownRows::All
@@ -271,11 +264,6 @@ pub fn TranscriptView() -> Element {
                 }
                 if working && shown != ShownRows::Skeleton {
                     WorkingLine { since: turn_start, linked: working_linked }
-                }
-                if shown != ShownRows::Skeleton {
-                    for item in queued {
-                        TranscriptRow { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), new_above: divider == Some(item.id), item, nested: Vec::new(), awaits_approval: false, step: None, older_step: false, sign_in_card: false }
-                    }
                 }
             }
         }
@@ -465,10 +453,6 @@ fn older_step_notes(top_items: &[&TranscriptItem], loaded: &BTreeSet<ItemId>) ->
     notes
 }
 
-fn is_queued(item: &TranscriptItem) -> bool {
-    matches!(&item.body, ItemBody::UserMessage(message) if message.delivery == Delivery::Queued)
-}
-
 pub(crate) fn waits_for_answer(item: &TranscriptItem) -> bool {
     match &item.body {
         ItemBody::Approval(approval) => approval.answer == AnswerState::Waiting,
@@ -569,9 +553,6 @@ pub fn ItemView(
 ) -> Element {
     let id = item.id;
     match item.body {
-        ItemBody::UserMessage(message) if message.delivery == Delivery::Queued => rsx! {
-            QueuedMessage { agent, item: id, message }
-        },
         ItemBody::UserMessage(message) => rsx! {
             UserBubble { message }
         },
@@ -623,24 +604,6 @@ fn UserBubble(message: UserMessage) -> Element {
             }
             if !message.text.is_empty() {
                 div { class: "user-bubble", "{message.text}" }
-            }
-        }
-    }
-}
-
-#[component]
-fn QueuedMessage(agent: AgentId, item: ItemId, message: UserMessage) -> Element {
-    let cockpit: Cockpit = use_context();
-    rsx! {
-        div { class: "user-message",
-            div { class: "user-bubble queued", "{message.text}" }
-            span { class: "queued-note",
-                "Queued, sent after the current step"
-                button {
-                    class: "link-button",
-                    onclick: move |_| cockpit.change(|_| actions::cancel_queued(agent, item)),
-                    "Cancel"
-                }
             }
         }
     }
@@ -1452,7 +1415,6 @@ mod tests {
         let message = ItemBody::UserMessage(UserMessage {
             text: "Run the tests".to_owned(),
             images: Vec::new(),
-            delivery: Delivery::Delivered,
         });
 
         assert_eq!(

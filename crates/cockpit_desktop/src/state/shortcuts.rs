@@ -1,7 +1,7 @@
 //! The keyboard shortcuts of R4-parts, resolved against the state. The page's script decides
 //! which key presses reach here (`bridge`), so typing in a field is never taken over.
 
-use cockpit_protocol::{AgentId, ApprovalDecision, PlanDecision};
+use cockpit_protocol::{AgentId, ApprovalDecision, PlanDecision, PromptDelivery};
 use serde::Deserialize;
 
 use super::accounts;
@@ -120,6 +120,16 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
             _ => {}
         }
     }
+    // Alt+Enter in the composer queues the message until the turn ends.
+    let queues = press.alt && !command && !press.shift && press.key == KEY_ENTER;
+    if queues
+        && press.target == KeyTarget::Composer
+        && state.ui.dialog.is_none()
+        && let Some(agent) = state.ui.selected
+    {
+        let typed = Some(press.composer_text.clone());
+        return actions::send_prompt(state, drafts, agent, typed, PromptDelivery::Queue);
+    }
     if command || press.alt {
         return Vec::new();
     }
@@ -191,7 +201,7 @@ fn composer_key(
     }
     if press.key == KEY_ENTER && !press.shift {
         let typed = Some(press.composer_text.clone());
-        return actions::send_prompt(state, drafts, agent, typed);
+        return actions::send_prompt(state, drafts, agent, typed, PromptDelivery::Steer);
     }
     Vec::new()
 }
@@ -919,6 +929,35 @@ mod tests {
     }
 
     #[test]
+    fn enter_steers_a_working_agent_and_alt_enter_queues() {
+        let mut drafts = Drafts::default();
+        let mut state = state(AgentStatus::Working, None);
+        let delivery = |state: &mut AppState, drafts: &mut Drafts, alt| {
+            let press = KeyPress {
+                alt,
+                composer_text: "Also the docs".to_owned(),
+                ..press(KEY_ENTER, KeyTarget::Composer)
+            };
+            match handle_key(state, drafts, &press).first() {
+                Some(Outgoing {
+                    request: Request::AgentPrompt(params),
+                    ..
+                }) => Some(params.delivery),
+                _ => None,
+            }
+        };
+
+        assert_eq!(
+            delivery(&mut state, &mut drafts, false),
+            Some(PromptDelivery::Steer)
+        );
+        assert_eq!(
+            delivery(&mut state, &mut drafts, true),
+            Some(PromptDelivery::Queue)
+        );
+    }
+
+    #[test]
     fn alt_up_and_alt_down_move_the_selected_agent_except_from_a_field_or_a_dialog() {
         let mut drafts = Drafts::default();
         let mut state = state_with(vec![
@@ -1018,8 +1057,7 @@ mod tests {
         use std::time::Duration;
 
         use cockpit_protocol::{
-            CostUsd, Delivery, HistoryPage, OlderItems, TokenUsage, TurnEnd, TurnOutcome,
-            UserMessage,
+            CostUsd, HistoryPage, OlderItems, TokenUsage, TurnEnd, TurnOutcome, UserMessage,
         };
 
         let mut state = state(AgentStatus::Idle, None);
@@ -1029,7 +1067,6 @@ mod tests {
             ItemBody::UserMessage(UserMessage {
                 text: "Export the invoices".to_owned(),
                 images: Vec::new(),
-                delivery: Delivery::Delivered,
             }),
             ItemBody::TurnEnd(TurnEnd {
                 duration: Duration::from_millis(900),

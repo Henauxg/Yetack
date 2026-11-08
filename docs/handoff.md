@@ -10,7 +10,7 @@ Update it when you hand over.
 - All work is on the branch `ccr-8be27d05-6ge2s2`, pushed. `main` has not moved: the branch is about 150 commits ahead of it, and no pull request exists yet. Ask the user before opening one or merging.
 - CI (`.github/workflows/ci.yml`) runs on every push, on Linux and Windows. Check its latest run on GitHub after you push: the Windows job is the only real Windows test, and it caught several failures that no Linux run showed.
 - CI is green on both platforms from `b57f7cd` on, the Windows job's tests of every crate included. Before it, the Windows job failed from the accounts commits on, on four account tests whose home folder was a Unix path.
-- The protocol version is 2. An app and a daemon of different versions refuse each other at `Hello`, so they are rebuilt together.
+- The protocol version is 3. An app and a daemon of different versions refuse each other at `Hello`, so they are rebuilt together.
 
 ## What the branch added
 
@@ -26,6 +26,7 @@ Each item is described in architecture.md and was reviewed with `/review fix` an
 - Crash safety: a panic in the app stops the agents it runs before it exits; a daemon stops a leftover `claude` of a crashed daemon (same pid, start time and, on Linux, boot) before it resumes the agent.
 - Several Claude accounts: each account is a `CLAUDE_CONFIG_DIR` folder with its own login; agents, past sessions and plan usage are per account; the daemon removes `CLAUDE_CODE_OAUTH_TOKEN` from every agent, and `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` unless the account takes its credentials from the environment. The app never reads a credential. Screens built from an approved mockup, with the Tag label style.
 - The protocol's bool fields became enums (`CredentialSource`, `TurnOutcome`, `Delivery`, ...); old files on disk still read.
+- Steering: a message sent while the agent works goes to `claude` at once, and Claude reads it at its next step (Alt+Enter queues it instead). Messages Claude has not read show pinned above the composer, from `AgentDetails.waiting_prompts`. Checked against Claude Code 2.1.319 by hand; the fake `claude` only covers the case where the message waits for the turn's end.
 
 ## How the user works
 

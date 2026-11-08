@@ -18,22 +18,23 @@ use cockpit_protocol::{
     AccountState, AgentDetails, AgentHistory, AgentId, AgentLoad, AgentParams, AgentStatus,
     AgentSummary, Answer, AnswerParams, AnswerState, Approval, ApprovalAnswer, ApprovalDecision,
     AskedQuestion, BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus,
-    CancelQueuedParams, Catchup, ChangedFile, ClaudeSessionId, ClientMessage, CommandKind,
-    CommandLoad, Completeness, ContextCategory, ContextUsage, Cores, CostUsd, CredentialSource,
-    Delivery, DirEntry, DirListing, Effort, EffortSource, EntryKind, EntryLink,
-    EnvironmentCredentials, ErrorBody, ErrorCode, Event, EventRecord, FileEdit, FindFilesParams,
-    FoldersListParams, HistoryPage, HistoryParams, Image, ImageMediaType, ItemBody, ItemId,
-    ListDirParams, LoadAverage, LoadHistory, MachineLoad, McpRemoveParams, McpScope, McpServer,
-    McpServerParams, McpServerStatus, McpToggleAction, McpToggleParams, McpTool, McpTransport,
-    Method, MoveParams, OlderItems, PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan,
-    PlanAnswer, PlanDecision, PlanUsage, Position, ProcessId, Prompt, PromptParams, Question,
-    QuestionAnswer, QuestionOption, RateLimitStatus, ReadFileParams, RenameParams, Request,
+    Catchup, ChangedFile, ClaudeSessionId, ClientMessage, CommandKind, CommandLoad, Completeness,
+    ContextCategory, ContextUsage, Cores, CostUsd, CredentialSource, DirEntry, DirListing, Effort,
+    EffortSource, EntryKind, EntryLink, EnvironmentCredentials, ErrorBody, ErrorCode, Event,
+    EventRecord, FileEdit, FindFilesParams, FoldersListParams, HistoryPage, HistoryParams, Image,
+    ImageMediaType, ItemBody, ItemId, ListDirParams, LoadAverage, LoadHistory, MachineLoad,
+    McpRemoveParams, McpScope, McpServer, McpServerParams, McpServerStatus, McpToggleAction,
+    McpToggleParams, McpTool, McpTransport, Method, MoveParams, OlderItems, PROTOCOL_VERSION,
+    PastSession, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, PlanUsage, Position,
+    ProcessId, Prompt, PromptDelivery, PromptId, PromptParams, Question, QuestionAnswer,
+    QuestionOption, QueuedPromptParams, RateLimitStatus, ReadFileParams, RenameParams, Request,
     RequestId, ResourceUse, ResponseBody, ResponseResult, Selection, Seq, ServerLoad,
     ServerMessage, ServerPoint, SessionResumeParams, SetEffortParams, SetModeParams,
     SetModelParams, Settings, SignIn, SignInWait, SlashCommand, Snapshot, StartParams,
     StopProcessParams, StopTaskParams, Subagent, SubagentRun, SubagentStatus, SubagentToolCall,
     TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus,
-    TranscriptItem, TurnEnd, TurnOutcome, UsageWindow, UserMessage, WindowUsage,
+    TranscriptItem, TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt, WaitingState,
+    WindowUsage,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -217,7 +218,6 @@ fn bodies() -> Vec<ItemBody> {
         ItemBody::UserMessage(UserMessage {
             text: prompt().text,
             images: vec![image()],
-            delivery: Delivery::Queued,
         }),
         ItemBody::AssistantText {
             markdown: "The regex rejects `+` in the local part.".to_owned(),
@@ -426,6 +426,20 @@ fn details() -> AgentDetails {
         mcp_servers: mcp_servers(),
         commands: commands(),
         subagents: subagents(),
+        waiting_prompts: vec![
+            WaitingPrompt {
+                id: PromptId::new(4),
+                text: "Also check the signup form".to_owned(),
+                image_count: 1,
+                state: WaitingState::Sent,
+            },
+            WaitingPrompt {
+                id: PromptId::new(5),
+                text: "Then run the tests".to_owned(),
+                image_count: 0,
+                state: WaitingState::Queued,
+            },
+        ],
     }
 }
 
@@ -530,10 +544,15 @@ fn requests() -> Vec<Request> {
         Request::AgentPrompt(PromptParams {
             agent,
             prompt: prompt(),
+            delivery: PromptDelivery::Queue,
         }),
-        Request::AgentCancelQueued(CancelQueuedParams {
+        Request::AgentCancelQueued(QueuedPromptParams {
             agent,
-            item: ItemId::new(12),
+            prompt: PromptId::new(5),
+        }),
+        Request::AgentSendQueued(QueuedPromptParams {
+            agent,
+            prompt: PromptId::new(5),
         }),
         Request::AgentAnswer(AnswerParams {
             agent,
@@ -973,6 +992,7 @@ fn method_names_are_pinned() {
             "agent.start",
             "agent.prompt",
             "agent.cancel_queued",
+            "agent.send_queued",
             "agent.answer",
             "agent.interrupt",
             "agent.stop",
@@ -1157,6 +1177,8 @@ fn words_are_pinned() {
         words::<SubagentStatus>(),
         ["running", "needs_you", "done", "failed", "stopped"]
     );
+    assert_eq!(words::<PromptDelivery>(), ["steer", "queue"]);
+    assert_eq!(words::<WaitingState>(), ["queued", "sent"]);
     assert_eq!(
         words::<UsageWindow>(),
         [
@@ -1191,7 +1213,6 @@ fn words_are_pinned() {
     assert_eq!(words::<EnvironmentCredentials>(), ["set", "unset"]);
     assert_eq!(words::<EffortSource>(), ["chosen", "claude_code_default"]);
     assert_eq!(words::<SignInWait>(), ["not_waiting", "waiting"]);
-    assert_eq!(words::<Delivery>(), ["queued", "delivered"]);
     assert_eq!(words::<Selection>(), ["single", "multiple"]);
     assert_eq!(
         words::<TurnOutcome>(),
@@ -1225,6 +1246,7 @@ fn a_prompt_request_on_the_wire() {
         request: Request::AgentPrompt(PromptParams {
             agent: agent(),
             prompt: prompt(),
+            delivery: PromptDelivery::Steer,
         }),
     };
 
@@ -1241,10 +1263,22 @@ fn a_prompt_request_on_the_wire() {
                         "text": "Why does the form reject valid emails?",
                         "images": [{"media_type": "image/png", "data": "iVBORw0KGgo="}],
                     },
+                    "delivery": "steer",
                 },
             },
         }),
     );
+}
+
+#[test]
+fn a_prompt_without_a_delivery_steers() {
+    let params: PromptParams = serde_json::from_value(json!({
+        "agent": 3,
+        "prompt": {"text": "Why does the form reject valid emails?", "images": []},
+    }))
+    .unwrap();
+
+    assert_eq!(params.delivery, PromptDelivery::Steer);
 }
 
 #[test]
@@ -2027,18 +2061,18 @@ fn turn_ends_saved_without_their_outcome_still_load() {
 }
 
 /// An event log of an older daemon holds `queued` and `multi_select`, and `settings.json` holds
-/// `use_environment_api_key`: `bool`s in place of enums.
+/// `use_environment_api_key`: `bool`s in place of enums. A user message's `queued` or
+/// `delivery` is left out: waiting prompts live in the details now.
 #[test]
 fn fields_saved_as_bools_still_load() {
-    let delivery = |queued: bool| {
-        let message =
-            format!(r#"{{"type":"user_message","text":"hello","images":[],"queued":{queued}}}"#);
-        let ItemBody::UserMessage(message) = serde_json::from_str::<ItemBody>(&message).unwrap()
-        else {
-            panic!("not a user message");
-        };
-        message.delivery
+    let message = |field: &str| {
+        let message = format!(r#"{{"type":"user_message","text":"hello","images":[],{field}}}"#);
+        serde_json::from_str::<ItemBody>(&message).unwrap()
     };
+    let hello = ItemBody::UserMessage(UserMessage {
+        text: "hello".to_owned(),
+        images: Vec::new(),
+    });
     let selection = |multi_select: bool| {
         let question = format!(
             r#"{{"header":"Database","text":"Which one?","options":[],"multi_select":{multi_select}}}"#
@@ -2054,8 +2088,8 @@ fn fields_saved_as_bools_still_load() {
         serde_json::from_str::<Account>(&account).unwrap()
     };
 
-    assert_eq!(delivery(true), Delivery::Queued);
-    assert_eq!(delivery(false), Delivery::Delivered);
+    assert_eq!(message(r#""queued":true"#), hello);
+    assert_eq!(message(r#""delivery":"delivered""#), hello);
     assert_eq!(selection(true), Selection::Multiple);
     assert_eq!(selection(false), Selection::Single);
     assert_eq!(credentials(true), work_account());
@@ -2096,7 +2130,6 @@ fn transcript_pages_and_mcp_toggles_on_the_wire() {
             body: ItemBody::UserMessage(UserMessage {
                 text: "Run the tests".to_owned(),
                 images: Vec::new(),
-                delivery: Delivery::Queued,
             }),
         }],
         older_items: OlderItems::None,
@@ -2118,7 +2151,6 @@ fn transcript_pages_and_mcp_toggles_on_the_wire() {
                     "type": "user_message",
                     "text": "Run the tests",
                     "images": [],
-                    "delivery": "queued",
                 },
             }],
             "older_items": "none",

@@ -75,11 +75,14 @@ pub(crate) enum Command {
         #[arg(long, value_parser = account_id)]
         account: Option<AccountId>,
     },
-    /// Send a prompt; `-` reads it from stdin
+    /// Send a prompt; `-` reads it from stdin. A working agent reads it at its next step
     Prompt {
         #[arg(value_parser = agent_id)]
         agent: AgentId,
         text: String,
+        /// Wait until the current turn ends instead
+        #[arg(long)]
+        queue: bool,
     },
     /// Answer an approval, a question or a plan
     Answer {

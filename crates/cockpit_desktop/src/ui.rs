@@ -26,5 +26,6 @@ mod reorder;
 mod sidebar;
 mod splitter;
 mod transcript;
+mod waiting_prompts;
 
 pub use app::App;

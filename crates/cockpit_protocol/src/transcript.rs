@@ -53,28 +53,6 @@ pub enum ItemBody {
 pub struct UserMessage {
     pub text: String,
     pub images: Vec<Image>,
-    /// Event logs of older daemons hold `queued`, a `bool`, in its place.
-    #[serde(alias = "queued", deserialize_with = "enum_or_stored_bool")]
-    pub delivery: Delivery,
-}
-
-/// Whether a user message reached Claude Code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, VariantArray)]
-#[serde(rename_all = "snake_case")]
-pub enum Delivery {
-    /// Sent while the agent works, and not yet passed to Claude Code.
-    Queued,
-    Delivered,
-}
-
-impl FromStoredBool for Delivery {
-    fn from_stored_bool(queued: bool) -> Self {
-        if queued {
-            Self::Queued
-        } else {
-            Self::Delivered
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
