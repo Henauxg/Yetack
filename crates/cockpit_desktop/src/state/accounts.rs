@@ -19,6 +19,7 @@ use super::drafts::Drafts;
 use super::requests::{Outgoing, Purpose};
 use super::ui_state::{Dialog, NewAgentForm};
 use crate::format;
+use crate::machine::MachineId;
 use crate::path_style::PathStyle;
 use crate::prefs::AccountColor;
 
@@ -389,6 +390,7 @@ pub fn send_again(state: &mut AppState, agent: AgentId) -> Vec<Outgoing> {
             agent,
             turn_end: turn.turn_end,
         },
+        to: MachineId::THIS,
     }]
 }
 
@@ -469,6 +471,7 @@ pub fn list_request(state: &mut AppState) -> Option<Outgoing> {
     Some(Outgoing {
         request: Request::AccountsList,
         purpose: Purpose::Accounts,
+        to: MachineId::THIS,
     })
 }
 
@@ -548,6 +551,7 @@ fn change_request(params: AccountChangeParams) -> Vec<Outgoing> {
     vec![Outgoing {
         request: Request::AccountsChange(params),
         purpose: Purpose::AccountChanged,
+        to: MachineId::THIS,
     }]
 }
 
@@ -710,6 +714,7 @@ pub fn add_account(state: &mut AppState, drafts: &Drafts) -> Vec<Outgoing> {
             credentials: credentials(form.use_environment),
         }),
         purpose: Purpose::AccountAdded { color: form.color },
+        to: MachineId::THIS,
     }]
 }
 
@@ -1158,6 +1163,7 @@ mod tests {
             Outgoing {
                 request: Request::AccountsAdd(params),
                 purpose: Purpose::AccountAdded { color: sent },
+                to: MachineId::THIS,
             },
         ] = request.as_slice()
         else {
@@ -1637,6 +1643,7 @@ mod tests {
             Method::AgentPrompt,
             purpose.clone(),
             Err(RequestError::Disconnected),
+            MachineId::THIS,
         );
         let after_failure = send_again(&mut state, agent);
 

@@ -13,6 +13,7 @@ use super::drafts::{Draft, Drafts};
 use super::transcript::HistoryState;
 use super::ui_state::{Dialog, OpenFileView};
 use super::{accounts, actions};
+use crate::machine::MachineId;
 use crate::prefs::AccountColor;
 
 /// The most transcript items one history request asks for.
@@ -22,6 +23,8 @@ pub const HISTORY_PAGE: u16 = 100;
 pub struct Outgoing {
     pub request: Request,
     pub purpose: Purpose,
+    /// The machine a request about no agent goes to. One about an agent goes to its agent's.
+    pub to: MachineId,
 }
 
 /// What to do with the answer.
@@ -111,6 +114,7 @@ impl Outgoing {
         Self {
             request,
             purpose: Purpose::Action,
+            to: MachineId::THIS,
         }
     }
 }
@@ -143,6 +147,7 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
         requests.push(Outgoing {
             request: Request::SessionsList,
             purpose: Purpose::Sessions,
+            to: MachineId::THIS,
         });
     }
     if let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog
@@ -156,6 +161,7 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
                 path: folder.clone(),
             }),
             purpose: Purpose::Folders { folder },
+            to: MachineId::THIS,
         });
     }
     if let Some(Dialog::OpenFile(view)) = &mut state.ui.dialog {
@@ -177,6 +183,7 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
         requests.push(Outgoing {
             request: Request::AgentDetails(AgentParams { agent }),
             purpose: Purpose::Details { agent },
+            to: MachineId::THIS,
         });
     }
     if let Some(path) = open_file {
@@ -189,6 +196,7 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
                     path: path.clone(),
                 }),
                 purpose: Purpose::ReadFile { agent, path },
+                to: MachineId::THIS,
             });
         }
     }
@@ -207,6 +215,7 @@ fn open_file_requests(view: &mut OpenFileView, requests: &mut Vec<Outgoing>) {
                 path: folder.clone(),
             }),
             purpose: Purpose::ListDir { agent, folder },
+            to: MachineId::THIS,
         });
     }
     if let Some(search) = &mut view.search
@@ -220,6 +229,7 @@ fn open_file_requests(view: &mut OpenFileView, requests: &mut Vec<Outgoing>) {
                 name: name.clone(),
             }),
             purpose: Purpose::FindFiles { agent, name },
+            to: MachineId::THIS,
         });
     }
 }
@@ -236,6 +246,7 @@ pub fn history_request(agent: AgentId, before: Option<ItemId>) -> Outgoing {
             agent,
             older: before.is_some(),
         },
+        to: MachineId::THIS,
     }
 }
 
@@ -245,6 +256,7 @@ pub fn apply_response(
     method: Method,
     purpose: Purpose,
     result: Result<ResponseBody, RequestError>,
+    machine: MachineId,
 ) {
     let result = match result {
         Ok(body) => Ok(body),
@@ -352,7 +364,11 @@ pub fn apply_response(
             }
         }
         Purpose::Accounts => match result {
-            Err(failure) if failure.transient => state.machines.this.sign_ins.checking = false,
+            Err(failure) if failure.transient => {
+                if let Some(known) = state.machines.get_mut(machine) {
+                    known.sign_ins.checking = false;
+                }
+            }
             other => accounts::listed(state, other.map_err(|failure| failure.message)),
         },
         Purpose::AccountAdded { color } => {
@@ -367,10 +383,12 @@ pub fn apply_response(
             }
         }
         Purpose::Sessions => {
-            state.machines.this.sessions = match result {
-                Ok(ResponseBody::Sessions { sessions }) => Loadable::Loaded(sessions),
-                other => Failure::from_result(other).into_loadable(),
-            };
+            if let Some(known) = state.machines.get_mut(machine) {
+                known.sessions = match result {
+                    Ok(ResponseBody::Sessions { sessions }) => Loadable::Loaded(sessions),
+                    other => Failure::from_result(other).into_loadable(),
+                };
+            }
         }
         // An answer for a folder or a name the dialog no longer shows is dropped.
         Purpose::ListDir { agent, folder } => {
@@ -400,7 +418,9 @@ pub fn apply_response(
             if let Err(failure) = &result
                 && failure.unknown_method
             {
-                state.machines.this.folders_unknown = true;
+                if let Some(known) = state.machines.get_mut(machine) {
+                    known.folders_unknown = true;
+                }
                 if let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog {
                     form.folders = None;
                 }
@@ -629,6 +649,7 @@ mod tests {
                     folder: PathBuf::from(folder),
                 },
                 Ok(ResponseBody::Directory(listing)),
+                MachineId::THIS,
             );
         };
         answer(&mut state, "/work/project-1/src");
@@ -669,6 +690,7 @@ mod tests {
                 purpose: Purpose::Folders {
                     folder: PathBuf::from("/home/dev"),
                 },
+                to: MachineId::THIS,
             }]
         );
         assert!(second.is_empty());
@@ -686,6 +708,7 @@ mod tests {
                     folder: PathBuf::from(folder),
                 },
                 Ok(ResponseBody::Directory(listing)),
+                MachineId::THIS,
             );
         };
         let listing = |state: &AppState| match &state.ui.dialog {
@@ -719,6 +742,7 @@ mod tests {
                     folder: PathBuf::from(folder),
                 },
                 Err(RequestError::Failed(body)),
+                MachineId::THIS,
             );
         };
         let list = |state: &AppState| folder_field::list(state).cloned();
@@ -796,6 +820,7 @@ mod tests {
                 older: false,
             },
             Ok(ResponseBody::History(page)),
+            MachineId::THIS,
         );
         apply_response(
             &mut state,
@@ -803,6 +828,7 @@ mod tests {
             Method::AgentDetails,
             Purpose::Details { agent },
             Err(RequestError::Disconnected),
+            MachineId::THIS,
         );
 
         let entry = &state.agents[&agent];
@@ -830,6 +856,7 @@ mod tests {
                 ErrorCode::AgentExited,
                 "the agent exited".to_owned(),
             ))),
+            MachineId::THIS,
         );
 
         let texts: Vec<&str> = state
@@ -860,6 +887,7 @@ mod tests {
                 draft: draft.clone(),
             },
             Err(RequestError::NotConnected),
+            MachineId::THIS,
         );
 
         assert_eq!(drafts.draft(agent), Some(&draft));
@@ -888,6 +916,7 @@ mod tests {
                 },
             },
             Err(RequestError::NotConnected),
+            MachineId::THIS,
         );
 
         assert_eq!(drafts.composer_writes(shown), 0);
@@ -910,6 +939,7 @@ mod tests {
             Ok(ResponseBody::AgentStarted {
                 agent: AgentId::new(9),
             }),
+            MachineId::THIS,
         );
 
         assert_eq!(state.ui.selected, Some(AgentId::new(9)));
@@ -932,6 +962,7 @@ mod tests {
             Method::AgentCommands,
             Purpose::Commands { agent },
             Ok(ResponseBody::Done),
+            MachineId::THIS,
         );
 
         assert_eq!(

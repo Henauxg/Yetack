@@ -293,6 +293,7 @@ fn commands_request(state: &mut AppState, agent: AgentId) -> Option<Outgoing> {
     Some(Outgoing {
         request: Request::AgentCommands(AgentParams { agent }),
         purpose: Purpose::Commands { agent },
+        to: MachineId::THIS,
     })
 }
 
@@ -1060,6 +1061,7 @@ pub fn send_prompt(
             delivery,
         }),
         purpose: Purpose::Prompt { agent, draft },
+        to: MachineId::THIS,
     }]
 }
 
@@ -1433,6 +1435,7 @@ pub fn toggle_block(state: &mut AppState, agent: AgentId, block: Block) -> Vec<O
     vec![Outgoing {
         request: Request::AgentMcpStatus(AgentParams { agent }),
         purpose: Purpose::McpStatus { agent },
+        to: MachineId::THIS,
     }]
 }
 
@@ -1451,6 +1454,7 @@ pub fn toggle_usage(state: &mut AppState, agent: AgentId) -> Vec<Outgoing> {
     vec![Outgoing {
         request: Request::AgentContextUsage(AgentParams { agent }),
         purpose: Purpose::ContextUsage { agent },
+        to: MachineId::THIS,
     }]
 }
 
@@ -1593,6 +1597,7 @@ pub fn move_agent(state: &mut AppState, agent: AgentId, before: Option<AgentId>)
     vec![Outgoing {
         request: Request::AgentMove(MoveParams { agent, before }),
         purpose: Purpose::Move { shifts },
+        to: MachineId::THIS,
     }]
 }
 
@@ -1752,6 +1757,7 @@ pub fn close_agent(state: &mut AppState, drafts: &mut Drafts, agent: AgentId) ->
         purpose: Purpose::Close {
             entry: Box::new(entry),
         },
+        to: MachineId::THIS,
     }]
 }
 
@@ -1773,6 +1779,7 @@ pub fn undo_close(state: &mut AppState) -> Vec<Outgoing> {
             account: closed.account,
         }),
         purpose: Purpose::Reopen,
+        to: MachineId::THIS,
     }]
 }
 
@@ -1932,6 +1939,7 @@ pub fn start_agent(state: &mut AppState, drafts: &Drafts) -> Vec<Outgoing> {
     vec![Outgoing {
         request: Request::AgentStart(params),
         purpose: Purpose::Start,
+        to: MachineId::THIS,
     }]
 }
 
@@ -2028,6 +2036,7 @@ pub fn resume_session(
     vec![Outgoing {
         request: Request::SessionsResume(SessionResumeParams { session, account }),
         purpose: Purpose::Start,
+        to: MachineId::THIS,
     }]
 }
 
@@ -2185,6 +2194,7 @@ mod tests {
             Ok(ResponseBody::Commands {
                 commands: vec![command("review", "")],
             }),
+            MachineId::THIS,
         );
 
         assert_eq!(
@@ -2852,7 +2862,14 @@ mod tests {
             let requests = request_close(state, &mut drafts, AgentId::new(2));
             for outgoing in requests {
                 let method = outgoing.request.method();
-                apply_response(state, &mut drafts, method, outgoing.purpose, refused(code));
+                apply_response(
+                    state,
+                    &mut drafts,
+                    method,
+                    outgoing.purpose,
+                    refused(code),
+                    MachineId::THIS,
+                );
             }
         }
 
@@ -2897,6 +2914,7 @@ mod tests {
             Ok(ResponseBody::AgentStarted {
                 agent: AgentId::new(4),
             }),
+            MachineId::THIS,
         );
         let moved = needed_requests(&mut state);
 
@@ -3748,6 +3766,7 @@ mod tests {
                     path: Some(PathBuf::from(format!("/work/project-1/{path}"))),
                     text: format!("text of {path}"),
                 }),
+                MachineId::THIS,
             );
         };
         open_file(&mut state, agent(), PathBuf::from("a.rs"), None);
@@ -3772,6 +3791,7 @@ mod tests {
                 path: PathBuf::from(path),
             },
             result,
+            MachineId::THIS,
         );
     }
 
@@ -3968,6 +3988,7 @@ mod tests {
                 Method::AgentMove,
                 outgoing.purpose,
                 refused(),
+                MachineId::THIS,
             );
         }
         let after_refusal = sidebar(&state);
@@ -3982,6 +4003,7 @@ mod tests {
                 Method::AgentMove,
                 outgoing.purpose,
                 refused(),
+                MachineId::THIS,
             );
         }
 
@@ -4418,6 +4440,7 @@ mod tests {
             Ok(ResponseBody::Sessions {
                 sessions: Vec::new(),
             }),
+            MachineId::THIS,
         );
         state.ui.dialog = None;
 
@@ -4539,6 +4562,7 @@ mod tests {
             Method::AgentContextUsage,
             purpose,
             Err(cockpit_client::RequestError::Disconnected),
+            MachineId::THIS,
         );
         assert!(!loading(&state));
     }

@@ -225,7 +225,7 @@ pub fn use_cockpit(startup: Startup) -> Cockpit {
 }
 
 /// Starts a connection task per machine, and hands each request to the task of the machine its
-/// agent is on. A request about no agent goes to this computer's.
+/// agent is on, or to the one it names when it is about no agent.
 async fn route(
     state: Signal<AppState>,
     drafts: Signal<Drafts>,
@@ -254,10 +254,13 @@ async fn route(
     }
     while let Some(mut message) = requests.next().await {
         let machine = match &mut message {
-            ToDaemon::Send(outgoing) => outgoing
-                .request
-                .agent_mut()
-                .map_or(MachineId::THIS, |agent| MachineId::of(*agent)),
+            ToDaemon::Send(outgoing) => {
+                let to = outgoing.to;
+                outgoing
+                    .request
+                    .agent_mut()
+                    .map_or(to, |agent| MachineId::of(*agent))
+            }
             ToDaemon::Choose(_) => MachineId::THIS,
         };
         if let Some(task) = tasks.get(&machine) {
@@ -301,6 +304,7 @@ async fn run_remote(
         let waited = refuse_requests(
             state,
             drafts,
+            machine,
             &mut requests,
             tokio::time::sleep(REMOTE_RETRY),
         );
@@ -315,6 +319,7 @@ async fn run_remote(
 async fn refuse_requests(
     mut state: Signal<AppState>,
     mut drafts: Signal<Drafts>,
+    machine: MachineId,
     requests: &mut Requests,
     wait: impl Future<Output = ()>,
 ) -> bool {
@@ -323,7 +328,7 @@ async fn refuse_requests(
         tokio::select! {
             () = &mut wait => return true,
             message = requests.recv() => match message {
-                Some(ToDaemon::Send(Outgoing { request, purpose })) => {
+                Some(ToDaemon::Send(Outgoing { request, purpose, .. })) => {
                     let mut state = state.write();
                     state::apply_response(
                         &mut state,
@@ -331,6 +336,7 @@ async fn refuse_requests(
                         request.method(),
                         purpose,
                         Err(RequestError::NotConnected),
+                        machine,
                     );
                 }
                 Some(ToDaemon::Choose(_)) => {}
@@ -375,7 +381,7 @@ async fn run_demo(
                     None => return,
                 };
                 let mut queue = VecDeque::from([outgoing]);
-                while let Some(Outgoing { request, purpose }) = queue.pop_front() {
+                while let Some(Outgoing { request, purpose, .. }) = queue.pop_front() {
                     tokio::time::sleep(demo::latency(&request)).await;
                     if let Purpose::Close { entry } = &purpose {
                         closed.push(entry.as_ref().clone());
@@ -387,7 +393,14 @@ async fn run_demo(
                         demo::apply(&mut state, &request);
                     }
                     let method = request.method();
-                    state::apply_response(&mut state, &mut drafts.write(), method, purpose, result);
+                    state::apply_response(
+                        &mut state,
+                        &mut drafts.write(),
+                        method,
+                        purpose,
+                        result,
+                        MachineId::THIS,
+                    );
                     queue.extend(state::needed_requests(&mut state));
                 }
             }
@@ -500,7 +513,9 @@ async fn next_choice(
     loop {
         match requests.recv().await? {
             ToDaemon::Choose(chosen) => return Some(chosen),
-            ToDaemon::Send(Outgoing { request, purpose }) => {
+            ToDaemon::Send(Outgoing {
+                request, purpose, ..
+            }) => {
                 let refused = Err(RequestError::NotConnected);
                 let mut state = state.write();
                 state::apply_response(
@@ -509,6 +524,7 @@ async fn next_choice(
                     request.method(),
                     purpose,
                     refused,
+                    MachineId::THIS,
                 );
             }
         }
@@ -636,6 +652,7 @@ fn send(
         let Outgoing {
             mut request,
             purpose,
+            ..
         } = outgoing;
         let method = request.method();
         MachineId::to_daemon(&mut request);
@@ -645,7 +662,14 @@ fn send(
         });
         let follow_up = {
             let mut state = state.write();
-            state::apply_response(&mut state, &mut drafts.write(), method, purpose, result);
+            state::apply_response(
+                &mut state,
+                &mut drafts.write(),
+                method,
+                purpose,
+                result,
+                machine,
+            );
             state::needed_requests(&mut state)
         };
         for outgoing in follow_up {
