@@ -47,7 +47,7 @@ fn WaitingRow(agent: AgentId, prompt: WaitingPrompt) -> Element {
             if let Some(images) = images {
                 span { class: "waiting-images", "{images}" }
             }
-            if prompt.state == WaitingState::Queued {
+            if prompt.state == WaitingState::Queued && !prompt.text.starts_with('/') {
                 button {
                     class: "icon-button tiny",
                     aria_label: "Send now",
@@ -55,6 +55,9 @@ fn WaitingRow(agent: AgentId, prompt: WaitingPrompt) -> Element {
                     onclick: move |_| cockpit.change(|_| actions::send_queued(agent, id)),
                     Icon { kind: IconKind::Send, size: 13 }
                 }
+            }
+            // A slash command waits for the turn's end: the daemon refuses to send it sooner.
+            if prompt.state == WaitingState::Queued {
                 button {
                     class: "icon-button tiny",
                     aria_label: "Cancel the message",

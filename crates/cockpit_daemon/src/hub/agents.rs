@@ -348,7 +348,7 @@ impl Hub {
             .ok_or_else(|| errors::internal("cannot encode the prompt".to_owned()))?;
         let mut record_changed = false;
         let busy = agent.view.is_busy() || !agent.queue.is_empty();
-        let steers = delivery == PromptDelivery::Steer && !prompt.text.starts_with('/');
+        let steers = delivery == PromptDelivery::Steer && !is_slash_command(&prompt.text);
         if !busy {
             agent.view.add_prompt(&prompt, state::now());
             process.write(line);
@@ -415,6 +415,16 @@ impl Hub {
             .ok_or(errors::agent_not_found(id))?;
         if agent.process.is_none() || !agent.record.running {
             return Err(errors::agent_exited(id));
+        }
+        let waiting = agent
+            .queue
+            .iter()
+            .find(|queued| queued.id == Some(params.prompt));
+        if waiting.is_some_and(|queued| is_slash_command(&queued.prompt.text)) {
+            return Err(errors::invalid(
+                "a slash command waits for the turn's end: Claude Code does not echo every one"
+                    .to_owned(),
+            ));
         }
         let queued = take_queued(agent, params.prompt)?;
         if let Some(process) = &agent.process {
@@ -656,6 +666,12 @@ fn record_typed_setting(agent: &mut Agent, text: &str) -> bool {
         }
         Some(TypedSetting::Model(_)) | None => false,
     }
+}
+
+/// A slash command always waits for the turn's end: Claude Code does not echo every one, so the
+/// daemon could not tell when it was read.
+fn is_slash_command(text: &str) -> bool {
+    text.starts_with('/')
 }
 
 /// Takes a prompt out of the agent's queue, before `claude` gets it.

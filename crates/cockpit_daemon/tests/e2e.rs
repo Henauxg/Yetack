@@ -22,13 +22,13 @@ use cockpit_protocol::{
     AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState, Approval,
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, Catchup, ClaudeSessionId, CommandKind,
     CostUsd, CredentialSource, Effort, EffortSource, EnvironmentCredentials, ErrorCode, Event,
-    EventRecord, HistoryParams, ItemBody, McpRemoveParams, McpScope, McpServerParams,
-    McpServerStatus, McpToggleAction, McpToggleParams, MoveParams, PROTOCOL_VERSION, PendingId,
-    PermissionMode, Plan, PlanAnswer, PlanDecision, PlanUsage, ProcessId, Prompt, PromptDelivery,
-    PromptParams, Question, QuestionAnswer, QueuedPromptParams, ReadFileParams, RenameParams,
-    Request, ResponseBody, Seq, SessionResumeParams, SetEffortParams, SetModeParams,
-    SetModelParams, Settings, SignIn, SignInWait, StartParams, StopProcessParams, StopTaskParams,
-    TranscriptItem, TurnOutcome, UsageWindow, WaitingPrompt, WaitingState,
+    EventRecord, HistoryParams, Image, ImageMediaType, ItemBody, McpRemoveParams, McpScope,
+    McpServerParams, McpServerStatus, McpToggleAction, McpToggleParams, MoveParams,
+    PROTOCOL_VERSION, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, PlanUsage,
+    ProcessId, Prompt, PromptDelivery, PromptParams, Question, QuestionAnswer, QueuedPromptParams,
+    ReadFileParams, RenameParams, Request, ResponseBody, Seq, SessionResumeParams, SetEffortParams,
+    SetModeParams, SetModelParams, Settings, SignIn, SignInWait, StartParams, StopProcessParams,
+    StopTaskParams, TranscriptItem, TurnOutcome, UsageWindow, WaitingPrompt, WaitingState,
 };
 use rustix::process::{Pid, Signal};
 use serde_json::{Value, json};
@@ -1219,6 +1219,34 @@ async fn a_queued_prompt_sent_now_waits_for_claude_to_read_it() {
 }
 
 #[tokio::test]
+async fn a_queued_slash_command_cannot_be_sent_now() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let agent = client.start(&setup.work(), "approve this").await;
+    client
+        .item_with(agent, |body| pending_of(body).is_some())
+        .await;
+    client.prompt(agent, "/effort high").await;
+    let prompts = client
+        .waiting_with(agent, |prompts| prompts.len() == 1)
+        .await;
+
+    let send = QueuedPromptParams {
+        agent,
+        prompt: prompts[0].id,
+    };
+    assert_eq!(
+        client.error_code(Request::AgentSendQueued(send)).await,
+        ErrorCode::InvalidRequest
+    );
+    assert_eq!(
+        client.ok(Request::AgentCancelQueued(send)).await,
+        ResponseBody::Done,
+        "the command still waits in the queue"
+    );
+}
+
+#[tokio::test]
 async fn a_restarted_daemon_resumes_its_agents_and_replays_or_snapshots() {
     let mut setup = Setup::new();
     let mut client = setup.connect().await;
@@ -1666,6 +1694,7 @@ async fn files_settings_sessions_and_agent_settings() {
     let setup = Setup::new();
     let mut client = setup.connect().await;
     std::fs::write(setup.work().join("notes.txt"), "remember the milk\n").unwrap();
+    std::fs::write(setup.work().join("cart.gif"), b"GIF89a").unwrap();
     let agent = client.start(&setup.work(), "garbage first").await;
     client.says(agent, "Still here.").await;
     client.idle(agent).await;
@@ -1681,6 +1710,16 @@ async fn files_settings_sessions_and_agent_settings() {
         ResponseBody::File {
             path: Some(setup.work().join("notes.txt")),
             text: "remember the milk\n".to_owned()
+        }
+    );
+    assert_eq!(
+        client.ok(read("cart.gif")).await,
+        ResponseBody::Image {
+            path: setup.work().join("cart.gif"),
+            image: Image {
+                media_type: ImageMediaType::Gif,
+                data: "R0lGODlh".to_owned(),
+            }
         }
     );
     assert_eq!(
