@@ -14,6 +14,7 @@ use super::actions;
 use super::app_state::AppState;
 use super::requests::Outgoing;
 use super::ui_state::Popover;
+use crate::machine::MachineId;
 
 /// How often the app asks for the load while connected: the daemon's sampling interval.
 pub const LOAD_POLL: Duration = Duration::from_secs(3);
@@ -38,6 +39,25 @@ pub enum LoadView {
     Known(Box<MachineLoad>),
     /// The daemon refused the request with this code, or gave another answer (`None`).
     Unknown(Option<ErrorCode>),
+}
+
+/// The latest load the app has, and the machine it measures.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ShownLoad {
+    pub machine: MachineId,
+    pub view: LoadView,
+}
+
+impl ShownLoad {
+    /// What the app knows of `machine`'s load: another machine's sample says nothing of it.
+    pub fn of(&self, machine: MachineId) -> &LoadView {
+        static WAITING: LoadView = LoadView::Waiting;
+        if self.machine == machine {
+            &self.view
+        } else {
+            &WAITING
+        }
+    }
 }
 
 impl LoadView {
@@ -356,6 +376,19 @@ pub(crate) mod tests {
         );
         assert!(unknown_note(Some(ErrorCode::InvalidRequest)).contains("Update the daemon"));
         assert!(unknown_note(Some(ErrorCode::Unsupported)).contains("/proc"));
+    }
+
+    #[test]
+    fn a_sample_of_one_machine_says_nothing_of_another() {
+        let devbox = MachineId::new(1);
+        let known = LoadView::Known(Box::new(load(Vec::new())));
+        let shown = ShownLoad {
+            machine: MachineId::THIS,
+            view: known.clone(),
+        };
+
+        assert_eq!(shown.of(MachineId::THIS), &known);
+        assert_eq!(shown.of(devbox), &LoadView::Waiting);
     }
 
     #[test]

@@ -1,7 +1,11 @@
 //! The "Machines" dialog: the servers the app reaches beside this computer, which it adds and
 //! removes in the config.
 
+use cockpit_protocol::AgentId;
+
 use super::app_state::AppState;
+use super::apply::forget_agent;
+use super::drafts::Drafts;
 use super::ui_state::{Dialog, MachinesView};
 use crate::config::MachineConfig;
 use crate::machine::MachineId;
@@ -75,15 +79,20 @@ fn check(state: &AppState, view: &MachinesView) -> Result<MachineConfig, &'stati
     })
 }
 
-/// Forgets a machine the app no longer reaches, and its agents.
-pub fn forget(state: &mut AppState, machine: MachineId) {
+/// Forgets a machine the app no longer reaches, and its agents with what the window holds of
+/// them: drafts, file views, the undo of a close.
+pub fn forget(state: &mut AppState, drafts: &mut Drafts, machine: MachineId) {
     if machine == MachineId::THIS {
         return;
     }
     state.machines.others.remove(&machine);
-    state
-        .agents
-        .retain(|agent, _| MachineId::of(*agent) != machine);
+    let on_machine = |agent: &AgentId| MachineId::of(*agent) == machine;
+    let agents: Vec<AgentId> = state.agents.keys().copied().filter(on_machine).collect();
+    for agent in agents {
+        forget_agent(state, drafts, agent);
+    }
+    state.ui.closing.retain(|agent| !on_machine(agent));
+    state.ui.closed.take_if(|closed| on_machine(&closed.agent));
     state.ui.folded_machines.remove(&machine);
     state.fix_selection();
 }
@@ -94,7 +103,7 @@ mod tests {
     use crate::daemon_label::DaemonLabel;
     use crate::state::app_state::tests::{state_with, summary};
     use crate::state::{AgentEntry, MachineState};
-    use cockpit_protocol::{AgentId, AgentStatus};
+    use cockpit_protocol::{AccountId, AgentStatus};
 
     fn typed(state: &mut AppState, name: &str, host: &str, remote_command: &str) {
         open_machines(state);
@@ -170,13 +179,29 @@ mod tests {
             .agents
             .insert(remote.id, AgentEntry::new(remote.clone()));
         state.ui.selected = Some(remote.id);
+        state.ui.unread.insert(remote.id);
+        state.ui.note_closed(
+            devbox.app_agent(AgentId::new(2)),
+            "Closed on devbox".to_owned(),
+            None,
+            AccountId::DEFAULT,
+            None,
+        );
+        let mut drafts = Drafts::default();
+        drafts.draft_mut(remote.id).text = "Half a message".to_owned();
 
-        forget(&mut state, devbox);
-        forget(&mut state, MachineId::THIS);
+        forget(&mut state, &mut drafts, devbox);
+        forget(&mut state, &mut drafts, MachineId::THIS);
 
         assert!(state.machines.others.is_empty());
         let agents: Vec<AgentId> = state.agents.keys().copied().collect();
         assert_eq!(agents, [AgentId::new(1)]);
         assert_eq!(state.ui.selected, Some(AgentId::new(1)));
+        assert!(state.ui.unread.is_empty());
+        assert_eq!(
+            state.ui.closed, None,
+            "no undo brings back an agent of a removed server"
+        );
+        assert_eq!(drafts.draft(remote.id), None);
     }
 }

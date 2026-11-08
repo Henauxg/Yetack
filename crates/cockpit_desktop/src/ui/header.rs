@@ -279,8 +279,8 @@ pub fn Header() -> Element {
                 Presence { open: usage_open, UsageCard {} }
             }
             div { class: "chip-anchor",
-                LoadChip { open: load_open }
-                Presence { open: load_open, LoadCard {} }
+                LoadChip { open: load_open, machine }
+                Presence { open: load_open, LoadCard { machine } }
             }
             div { class: "chip-anchor",
                 button {

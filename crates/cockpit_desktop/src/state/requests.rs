@@ -117,6 +117,14 @@ impl Outgoing {
             to: MachineId::THIS,
         }
     }
+
+    /// The machine the request goes to: its agent's, else `to`.
+    pub fn machine(&mut self) -> MachineId {
+        let to = self.to;
+        self.request
+            .agent_mut()
+            .map_or(to, |agent| MachineId::of(*agent))
+    }
 }
 
 /// The requests the open views need and that are not on their way yet: the selected agent's
@@ -286,6 +294,10 @@ pub fn apply_response(
     result: Result<ResponseBody, RequestError>,
     machine: MachineId,
 ) {
+    // The machine was removed while the request was on its way.
+    if state.machines.get(machine).is_none() {
+        return;
+    }
     let result = match result {
         Ok(body) => Ok(body),
         Err(error) => Err(Failure::from_request(&error, method)),
@@ -454,12 +466,15 @@ pub fn apply_response(
                 if let Some(known) = state.machines.get_mut(machine) {
                     known.folders_unknown = true;
                 }
-                if let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog {
+                if let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog
+                    && form.machine == machine
+                {
                     form.folders = None;
                 }
                 return;
             }
             if let Some(form) = state.ui.new_agent_form_mut()
+                && form.machine == machine
                 && let Some(list) = &mut form.folders
                 && list.folder == folder
             {
@@ -615,6 +630,7 @@ mod tests {
     use cockpit_protocol::{Catchup, Completeness, OlderItems};
 
     use super::*;
+    use crate::daemon_label::DaemonLabel;
     use crate::machine::MachineId;
     use crate::state::app_state::ConnectionState;
     use crate::state::app_state::tests::{state_with, summary};
@@ -753,6 +769,73 @@ mod tests {
 
         answer(&mut state, "/home/dev");
         assert!(matches!(listing(&state), Some(Loadable::Loaded(_))));
+    }
+
+    #[test]
+    fn an_answer_goes_to_the_machine_it_was_asked_for() {
+        let devbox = MachineId::new(1);
+        let gone = MachineId::new(2);
+        let mut state = connected_with_selection();
+        let mut drafts = Drafts::default();
+        let mut known = MachineState::new(DaemonLabel::ssh("devbox".to_owned()));
+        known.connection = ConnectionState::Connected;
+        state.machines.others.insert(devbox, known);
+        actions::open_new_agent(&mut state, &mut drafts);
+        drafts.new_agent.folder = "/srv/".to_owned();
+        folder_field::follow(&mut state, &drafts);
+        needed_requests(&mut state);
+        // The machine changed while this computer listed the same folder.
+        actions::pick_new_agent_machine(&mut state, devbox);
+        folder_field::follow(&mut state, &drafts);
+        let asked = needed_requests(&mut state);
+        let listing = DirListing {
+            path: PathBuf::from("/srv"),
+            entries: Vec::new(),
+            completeness: Completeness::Complete,
+        };
+        let answer = |state: &mut AppState, machine: MachineId, purpose: Purpose, body| {
+            let method = Method::FoldersList;
+            apply_response(
+                state,
+                &mut Drafts::default(),
+                method,
+                purpose,
+                Ok(body),
+                machine,
+            );
+        };
+        let folders = Purpose::Folders {
+            folder: PathBuf::from("/srv"),
+        };
+
+        answer(
+            &mut state,
+            MachineId::THIS,
+            folders.clone(),
+            ResponseBody::Directory(listing),
+        );
+        let after_this_computer = folder_field::list(&state).map(|list| list.listing.clone());
+        let started = devbox.app_agent(AgentId::new(5));
+        answer(
+            &mut state,
+            gone,
+            Purpose::Start,
+            ResponseBody::AgentStarted {
+                agent: gone.app_agent(AgentId::new(5)),
+            },
+        );
+        let after_a_removed_machine = state.ui.selected;
+        answer(
+            &mut state,
+            devbox,
+            Purpose::Start,
+            ResponseBody::AgentStarted { agent: started },
+        );
+
+        assert!(asked.iter().any(|outgoing| outgoing.to == devbox));
+        assert_eq!(after_this_computer, Some(Loadable::Loading));
+        assert_eq!(after_a_removed_machine, Some(AgentId::new(1)));
+        assert_eq!(state.ui.selected, Some(started));
     }
 
     #[test]

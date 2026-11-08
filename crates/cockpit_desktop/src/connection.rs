@@ -19,7 +19,7 @@ use crate::in_app_host::InAppHost;
 use crate::machine::MachineId;
 use crate::notifications::Notifier;
 use crate::reach::{self, Places, Reached, Unreached};
-use crate::state::machine_load::{LOAD_POLL, LoadView};
+use crate::state::machine_load::{LOAD_POLL, LoadView, ShownLoad};
 use crate::state::machines::{self, MachineChange};
 use crate::state::no_daemon::{self, Absence, Chosen, DaemonChoice};
 use crate::state::{
@@ -49,6 +49,9 @@ pub struct Startup {
 /// The requests of one machine's connection task.
 type Requests = mpsc::UnboundedReceiver<ToDaemon>;
 
+/// Takes the requests a machine's task finds for another machine, to the router.
+type Router = mpsc::UnboundedSender<Outgoing>;
+
 /// How long a machine that does not answer waits before the app tries it again.
 const REMOTE_RETRY: Duration = Duration::from_secs(10);
 
@@ -69,7 +72,7 @@ pub enum ToDaemon {
 pub struct Cockpit {
     pub state: Signal<AppState>,
     pub drafts: Signal<Drafts>,
-    pub load: Signal<LoadView>,
+    pub load: Signal<ShownLoad>,
     daemon: Coroutine<ToDaemon>,
 }
 
@@ -207,7 +210,7 @@ pub fn use_cockpit(startup: Startup) -> Cockpit {
     } = startup;
     let state = use_signal(move || initial);
     let drafts = use_signal(Drafts::default);
-    let load = use_signal(LoadView::default);
+    let load = use_signal(ShownLoad::default);
     let daemon = use_coroutine(move |requests: UnboundedReceiver<ToDaemon>| {
         let live = Live {
             configured: configured.clone(),
@@ -236,8 +239,8 @@ pub fn use_cockpit(startup: Startup) -> Cockpit {
 /// agent is on, or to the one it names when it is about no agent.
 async fn route(
     mut state: Signal<AppState>,
-    drafts: Signal<Drafts>,
-    load: Signal<LoadView>,
+    mut drafts: Signal<Drafts>,
+    load: Signal<ShownLoad>,
     live: Live,
     machines: Vec<(MachineId, MachineConfig)>,
     mut requests: UnboundedReceiver<ToDaemon>,
@@ -246,29 +249,44 @@ async fn route(
 
     let notify = live.notify;
     let config_file = live.places.config_file.clone();
+    let (router, mut rerouted) = mpsc::unbounded_channel();
     let (this, this_requests) = mpsc::unbounded_channel();
-    spawn(run(state, drafts, load, live, this_requests));
+    spawn(run(
+        state,
+        drafts,
+        load,
+        live,
+        this_requests,
+        router.clone(),
+    ));
     let mut servers = Servers {
         tasks: BTreeMap::from([(MachineId::THIS, this)]),
         configs: Vec::new(),
         next: 1,
+        router,
     };
     for (machine, remote) in machines {
         servers.start(state, drafts, load, notify, machine, remote);
     }
-    while let Some(mut message) = requests.next().await {
+    loop {
+        let mut message = tokio::select! {
+            message = requests.next() => match message {
+                Some(message) => message,
+                None => return,
+            },
+            Some(outgoing) = rerouted.recv() => ToDaemon::Send(outgoing),
+        };
         let machine = match &mut message {
-            ToDaemon::Send(outgoing) => {
-                let to = outgoing.to;
-                outgoing
-                    .request
-                    .agent_mut()
-                    .map_or(to, |agent| MachineId::of(*agent))
-            }
+            ToDaemon::Send(outgoing) => outgoing.machine(),
             ToDaemon::Choose(_) => MachineId::THIS,
             ToDaemon::Machines(MachineChange::Retry(machine)) => *machine,
             ToDaemon::Machines(MachineChange::Add(remote)) => {
-                let machine = MachineId::new(servers.next);
+                let Some(machine) = servers.next_machine() else {
+                    state.write().ui.report(
+                        "No more servers can be added until the app starts again.".to_owned(),
+                    );
+                    continue;
+                };
                 servers.start(state, drafts, load, notify, machine, remote.clone());
                 servers.save(state, &config_file);
                 continue;
@@ -278,7 +296,7 @@ async fn route(
                 // Its task ends with its requests.
                 servers.tasks.remove(&machine);
                 servers.configs.retain(|(id, _)| *id != machine);
-                machines::forget(&mut state.write(), machine);
+                machines::forget(&mut state.write(), &mut drafts.write(), machine);
                 servers.save(state, &config_file);
                 continue;
             }
@@ -296,14 +314,20 @@ struct Servers {
     configs: Vec<(MachineId, MachineConfig)>,
     /// The number the next server takes. A removed server's number is not taken again.
     next: u16,
+    router: Router,
 }
 
 impl Servers {
+    /// The number the next server takes, while app ids have room for it.
+    fn next_machine(&self) -> Option<MachineId> {
+        Some(MachineId::new(self.next)).filter(|machine| *machine <= MachineId::LAST)
+    }
+
     fn start(
         &mut self,
         mut state: Signal<AppState>,
         drafts: Signal<Drafts>,
-        load: Signal<LoadView>,
+        load: Signal<ShownLoad>,
         notify: bool,
         machine: MachineId,
         remote: MachineConfig,
@@ -320,9 +344,12 @@ impl Servers {
             state,
             drafts,
             load,
-            machine,
+            Task {
+                machine,
+                notify,
+                router: self.router.clone(),
+            },
             remote.clone(),
-            notify,
             requests,
         ));
         self.tasks.insert(machine, sender);
@@ -346,16 +373,24 @@ impl Servers {
     }
 }
 
+/// A machine's connection task: its machine, and where the requests for other machines go.
+#[derive(Clone)]
+struct Task {
+    machine: MachineId,
+    notify: bool,
+    router: Router,
+}
+
 /// Reaches a machine over SSH, and tries again after each failure, as long as the window lives.
 async fn run_remote(
     mut state: Signal<AppState>,
     drafts: Signal<Drafts>,
-    load: Signal<LoadView>,
-    machine: MachineId,
+    load: Signal<ShownLoad>,
+    task: Task,
     remote: MachineConfig,
-    notify: bool,
     mut requests: Requests,
 ) {
+    let machine = task.machine;
     let label = DaemonLabel::ssh(remote.name.clone());
     loop {
         if let Some(known) = state.write().machines.get_mut(machine) {
@@ -369,7 +404,7 @@ async fn run_remote(
             label: label.clone(),
             note: None,
         };
-        let served = serve(state, drafts, load, reached, machine, notify, &mut requests);
+        let served = serve(state, drafts, load, reached, task.clone(), &mut requests);
         let error = match served.await {
             Served::Closed => return,
             Served::NoAnswer { unreached, .. } => unreached.error,
@@ -425,10 +460,12 @@ async fn refuse_requests(
     }
 }
 
-/// Shows `view`, unless the load already shows it: setting a signal renders its readers again.
-fn show_load(mut load: Signal<LoadView>, view: LoadView) {
-    if *load.peek() != view {
-        load.set(view);
+/// Shows `machine`'s load, unless the chip already shows it: setting a signal renders its
+/// readers again.
+fn show_load(mut load: Signal<ShownLoad>, machine: MachineId, view: LoadView) {
+    let shown = ShownLoad { machine, view };
+    if *load.peek() != shown {
+        load.set(shown);
     }
 }
 
@@ -437,7 +474,7 @@ fn show_load(mut load: Signal<LoadView>, view: LoadView) {
 async fn run_demo(
     mut state: Signal<AppState>,
     mut drafts: Signal<Drafts>,
-    load: Signal<LoadView>,
+    load: Signal<ShownLoad>,
     mut requests: UnboundedReceiver<ToDaemon>,
 ) {
     use futures_util::StreamExt;
@@ -451,7 +488,7 @@ async fn run_demo(
         tokio::select! {
             _ = load_ticks.tick() => {
                 let answer = demo::answer(&state.peek(), &Request::MachineLoad);
-                show_load(load, LoadView::from_result(answer));
+                show_load(load, MachineId::THIS, LoadView::from_result(answer));
             }
             outgoing = requests.next() => {
                 let outgoing = match outgoing {
@@ -515,9 +552,10 @@ enum Served {
 async fn run(
     mut state: Signal<AppState>,
     drafts: Signal<Drafts>,
-    load: Signal<LoadView>,
+    load: Signal<ShownLoad>,
     live: Live,
     mut requests: Requests,
+    router: Router,
 ) {
     let Live {
         mut configured,
@@ -543,15 +581,12 @@ async fn run(
                         state.ui.inform(note.to_owned());
                     }
                 }
-                let served = serve(
-                    state,
-                    drafts,
-                    load,
-                    reached,
-                    MachineId::THIS,
+                let task = Task {
+                    machine: MachineId::THIS,
                     notify,
-                    &mut requests,
-                );
+                    router: router.clone(),
+                };
+                let served = serve(state, drafts, load, reached, task, &mut requests);
                 match served.await {
                     Served::Closed => return,
                     Served::NoAnswer { unreached, absence } => (unreached, absence),
@@ -619,19 +654,19 @@ async fn next_choice(
 async fn serve(
     mut state: Signal<AppState>,
     mut drafts: Signal<Drafts>,
-    load: Signal<LoadView>,
+    load: Signal<ShownLoad>,
     reached: Reached,
-    machine: MachineId,
-    notify: bool,
+    task: Task,
     requests: &mut Requests,
 ) -> Served {
     let Reached {
         transport, label, ..
     } = reached;
-    let mut session = Session::start(transport, Backoff::default());
-    let requester = session.requester().clone();
+    let machine = task.machine;
+    let mut session = Session::start(transport.clone(), Backoff::default());
+    let mut requester = session.requester().clone();
     let (opened_sender, mut opened) = mpsc::unbounded_channel::<AgentId>();
-    let mut notifier = notify.then(|| Notifier::new(opened_sender));
+    let mut notifier = task.notify.then(|| Notifier::new(opened_sender));
     let mut load_ticks = tokio::time::interval(LOAD_POLL);
     let (load_sender, mut load_answers) = mpsc::unbounded_channel();
     // One question at a time: a slow daemon does not pile them up.
@@ -648,7 +683,7 @@ async fn serve(
                 };
                 if !shown {
                 } else if !answers {
-                    show_load(load, LoadView::Waiting);
+                    show_load(load, machine, LoadView::Waiting);
                 } else if !load_asked {
                     load_asked = true;
                     let requester = requester.clone();
@@ -667,7 +702,7 @@ async fn serve(
                     body
                 });
                 if state.peek().selected_machine() == machine {
-                    show_load(load, LoadView::from_result(answer));
+                    show_load(load, machine, LoadView::from_result(answer));
                 }
             }
             update = session.next_update() => {
@@ -699,16 +734,26 @@ async fn serve(
                         state::apply_update(&mut state, &mut drafts, update, Instant::now(), machine);
                     (alerts, state::needed_requests(&mut state))
                 };
-                for outgoing in follow_up {
-                    send(state, drafts, requester.clone(), machine, outgoing);
-                }
+                send_all(state, drafts, &requester, &task, follow_up);
                 if let Some(notifier) = &mut notifier {
                     notifier.update(alerts, &state.peek());
                 }
             }
             outgoing = requests.recv() => match outgoing {
                 Some(ToDaemon::Send(outgoing)) => {
-                    send(state, drafts, requester.clone(), machine, outgoing);
+                    send(state, drafts, requester.clone(), task.clone(), outgoing);
+                }
+                // The session waits between its own attempts: "Retry now" starts a new one.
+                Some(ToDaemon::Machines(MachineChange::Retry(_))) => {
+                    let answers = state
+                        .peek()
+                        .machines
+                        .get(machine)
+                        .is_some_and(MachineState::is_connected);
+                    if !answers {
+                        session = Session::start(transport.clone(), Backoff::default());
+                        requester = session.requester().clone();
+                    }
                 }
                 // The screen shows only before a first connection.
                 Some(ToDaemon::Choose(_) | ToDaemon::Machines(_)) => {}
@@ -721,22 +766,54 @@ async fn serve(
                     actions::select_agent(&mut state, agent);
                     state::needed_requests(&mut state)
                 };
-                for outgoing in follow_up {
-                    send(state, drafts, requester.clone(), machine, outgoing);
-                }
+                send_all(state, drafts, &requester, &task, follow_up);
             }
         }
     }
 }
 
-/// Sends a request to `machine` and applies its answer, without holding up the other requests.
+/// Sends each request to its machine: the task's own at once, another's through the router.
+fn send_all(
+    state: Signal<AppState>,
+    drafts: Signal<Drafts>,
+    requester: &Requester,
+    task: &Task,
+    requests: Vec<Outgoing>,
+) {
+    let (own, others) = split_by_machine(task.machine, requests);
+    for outgoing in own {
+        send(state, drafts, requester.clone(), task.clone(), outgoing);
+    }
+    for outgoing in others {
+        // The router ends with the window.
+        let _ = task.router.send(outgoing);
+    }
+}
+
+/// The requests for `machine`, then those for the other machines.
+fn split_by_machine(machine: MachineId, requests: Vec<Outgoing>) -> (Vec<Outgoing>, Vec<Outgoing>) {
+    let mut own = Vec::new();
+    let mut others = Vec::new();
+    for mut outgoing in requests {
+        if outgoing.machine() == machine {
+            own.push(outgoing);
+        } else {
+            others.push(outgoing);
+        }
+    }
+    (own, others)
+}
+
+/// Sends a request to the task's machine and applies its answer, without holding up the other
+/// requests.
 fn send(
     mut state: Signal<AppState>,
     mut drafts: Signal<Drafts>,
     requester: Requester,
-    machine: MachineId,
+    task: Task,
     outgoing: Outgoing,
 ) {
+    let machine = task.machine;
     spawn(async move {
         let Outgoing {
             mut request,
@@ -761,9 +838,7 @@ fn send(
             );
             state::needed_requests(&mut state)
         };
-        for outgoing in follow_up {
-            send(state, drafts, requester.clone(), machine, outgoing);
-        }
+        send_all(state, drafts, &requester, &task, follow_up);
     });
 }
 
@@ -799,7 +874,7 @@ mod tests {
             state
         });
         let drafts = use_signal(Drafts::default);
-        let load = use_signal(LoadView::default);
+        let load = use_signal(ShownLoad::default);
         let daemon = use_coroutine(|_: UnboundedReceiver<ToDaemon>| async {});
         let cockpit = use_context_provider(|| Cockpit {
             state,
@@ -823,6 +898,56 @@ mod tests {
             .map(|entry| entry.transcript.items().count());
         TRANSCRIPT_RENDERS.with(|renders| renders.set(renders.get() + 1));
         rsx! {}
+    }
+
+    #[test]
+    fn a_server_past_the_last_number_an_app_id_holds_is_refused() {
+        let (router, _rerouted) = mpsc::unbounded_channel();
+        let mut servers = Servers {
+            tasks: BTreeMap::new(),
+            configs: Vec::new(),
+            next: MachineId::LAST.get(),
+            router,
+        };
+
+        let last = servers.next_machine();
+        servers.next = servers.next.saturating_add(1);
+
+        assert_eq!(last, Some(MachineId::LAST));
+        assert_eq!(servers.next_machine(), None);
+    }
+
+    #[test]
+    fn a_task_hands_the_requests_for_another_machine_to_the_router() {
+        let devbox = MachineId::new(1);
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        state.machines.this.connection = ConnectionState::Connected;
+        let mut known =
+            MachineState::new(crate::daemon_label::DaemonLabel::ssh("devbox".to_owned()));
+        known.connection = ConnectionState::Connected;
+        state.machines.others.insert(devbox, known);
+        let mut remote = summary(1, AgentStatus::Idle);
+        remote.id = devbox.app_agent(AgentId::new(1));
+        state
+            .agents
+            .insert(remote.id, AgentEntry::new(remote.clone()));
+        state.ui.selected = Some(remote.id);
+
+        // This computer's task finds them after one of its own events.
+        let found = state::needed_requests(&mut state);
+        let (own, others) = split_by_machine(MachineId::THIS, found);
+
+        let about_devbox = |outgoing: &Outgoing| {
+            outgoing.request.method() == cockpit_protocol::Method::AgentDetails
+        };
+        assert!(!own.iter().any(about_devbox), "{own:?}");
+        assert!(others.iter().any(about_devbox), "{others:?}");
+        assert!(
+            others
+                .into_iter()
+                .all(|mut outgoing| outgoing.machine() == devbox),
+            "only devbox's requests leave this computer's task"
+        );
     }
 
     #[test]

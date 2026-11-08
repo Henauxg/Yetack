@@ -21,6 +21,9 @@ impl MachineId {
     /// This computer: a daemon in the app, the background service, or a socket here.
     pub const THIS: Self = Self(0);
 
+    /// The last machine whose number fits in the high bits of an app id.
+    pub const LAST: Self = Self((1 << (u32::BITS - DAEMON_BITS)) - 1);
+
     pub fn new(raw: u16) -> Self {
         Self(raw)
     }
@@ -96,6 +99,17 @@ mod tests {
         assert_eq!(MachineId::of(on_devbox), devbox);
         assert_eq!(MachineId::of(on_gpu), gpu);
         assert_eq!(MachineId::daemon_agent(on_gpu), daemon);
+    }
+
+    #[test]
+    fn the_last_machine_keeps_its_agents_apart() {
+        let daemon = AgentId::new(DAEMON_MASK);
+
+        let app = MachineId::LAST.app_agent(daemon);
+
+        assert_eq!(MachineId::of(app), MachineId::LAST);
+        assert_eq!(MachineId::daemon_agent(app), daemon);
+        assert_eq!(app, AgentId::new(u32::MAX));
     }
 
     #[test]

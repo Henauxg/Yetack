@@ -1972,11 +1972,12 @@ pub fn pick_new_agent_machine(state: &mut AppState, machine: MachineId) {
         form.folders = None;
         form.account = None;
     });
-    // Its sessions are asked again, as when the dialog opens.
-    if let Some(known) = state.machines.get_mut(machine)
-        && known.sessions != Loadable::Loading
-    {
-        known.sessions = Loadable::NotRequested;
+    // Its sessions and sign-ins are asked again, as when the dialog opens.
+    if let Some(known) = state.machines.get_mut(machine) {
+        if known.sessions != Loadable::Loading {
+            known.sessions = Loadable::NotRequested;
+        }
+        known.sign_ins.refresh();
     }
 }
 
@@ -4164,6 +4165,32 @@ mod tests {
         };
         assert_eq!(*to, devbox);
         assert_eq!(params.account, AccountId::DEFAULT);
+    }
+
+    #[test]
+    fn a_machine_picked_for_a_new_agent_is_asked_for_its_sign_ins() {
+        let (mut state, devbox) = two_machines();
+        let mut drafts = Drafts::default();
+        if let Some(known) = state.machines.others.get_mut(&devbox) {
+            known.accounts = vec![cockpit_protocol::Account {
+                id: AccountId::DEFAULT,
+                name: "Default".to_owned(),
+                folder: PathBuf::from("/home/dev/.claude"),
+                credentials: cockpit_protocol::CredentialSource::SignIn,
+            }];
+            known.sign_ins.checked_at = Some(std::time::SystemTime::UNIX_EPOCH);
+        }
+        open_new_agent(&mut state, &mut drafts);
+
+        pick_new_agent_machine(&mut state, devbox);
+        let asked = crate::state::needed_requests(&mut state);
+
+        assert!(
+            asked
+                .iter()
+                .any(|outgoing| outgoing.request == Request::AccountsList && outgoing.to == devbox),
+            "{asked:?}"
+        );
     }
 
     #[test]

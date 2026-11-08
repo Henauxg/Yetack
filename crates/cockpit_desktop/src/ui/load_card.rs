@@ -7,6 +7,7 @@ use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
 use crate::format;
+use crate::machine::MachineId;
 use crate::state::machine_load::{self, AgentLine, LoadLevel, LoadView};
 use crate::state::{AppState, Popover};
 use crate::ui::icons::{Icon, IconKind};
@@ -15,10 +16,10 @@ use crate::ui::icons::{Icon, IconKind};
 const UNKNOWN_CLASS: &str = "load-unknown";
 
 #[component]
-pub fn LoadChip(open: bool) -> Element {
+pub fn LoadChip(open: bool, machine: MachineId) -> Element {
     let cockpit: Cockpit = use_context();
-    let view = cockpit.load.read();
-    let (value, short, class, label) = match &*view {
+    let shown = cockpit.load.read();
+    let (value, short, class, label) = match shown.of(machine) {
         LoadView::Known(load) => {
             let percent = machine_load::cpu_percent(&load.server);
             let text = format!("{percent}%");
@@ -55,11 +56,11 @@ pub fn LoadChip(open: bool) -> Element {
 }
 
 #[component]
-pub fn LoadCard() -> Element {
+pub fn LoadCard(machine: MachineId) -> Element {
     let cockpit: Cockpit = use_context();
-    let view = cockpit.load.read();
+    let shown = cockpit.load.read();
     let state = cockpit.state.read();
-    let body = match &*view {
+    let body = match shown.of(machine) {
         LoadView::Known(load) => known_load(cockpit, load, &state),
         LoadView::Waiting => rsx! {
             div { class: "card-section",

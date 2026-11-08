@@ -104,8 +104,10 @@ pub fn type_folder(state: &AppState, drafts: &mut Drafts, text: String) -> bool 
 
 /// Makes the list show the folder the typed text names, and closes it when the text names none.
 pub fn follow(state: &mut AppState, drafts: &Drafts) {
-    let folders_unknown = state.machines.this.folders_unknown;
     let style = style(state);
+    let folders_unknown = form(state)
+        .and_then(|form| state.machines.get(form.machine))
+        .is_some_and(|known| known.folders_unknown);
     let Some(form) = form_mut(state) else {
         return;
     };
@@ -216,8 +218,9 @@ mod tests {
     use cockpit_protocol::{Completeness, DirListing, EntryLink};
 
     use super::*;
-    use crate::state::Loadable;
+    use crate::daemon_label::DaemonLabel;
     use crate::state::app_state::tests::state_with;
+    use crate::state::{ConnectionState, Loadable, MachineState};
 
     fn folder(name: &str) -> DirEntry {
         DirEntry {
@@ -267,6 +270,32 @@ mod tests {
                 FolderRow::Folder(entry) => entry.name.clone(),
             })
             .collect()
+    }
+
+    #[test]
+    fn the_list_follows_whether_the_new_agents_machine_lists_folders() {
+        let devbox = MachineId::new(1);
+        let (mut state, mut drafts) = opened();
+        let mut known = MachineState::new(DaemonLabel::ssh("devbox".to_owned()));
+        known.connection = ConnectionState::Connected;
+        state.machines.others.insert(devbox, known);
+        state.machines.this.folders_unknown = true;
+        crate::state::actions::pick_new_agent_machine(&mut state, devbox);
+
+        type_text(&mut state, &mut drafts, "/srv/");
+        let on_devbox = list(&state).map(|list| list.folder.clone());
+        if let Some(known) = state.machines.others.get_mut(&devbox) {
+            known.folders_unknown = true;
+        }
+        state.machines.this.folders_unknown = false;
+        type_text(&mut state, &mut drafts, "/srv/shop/");
+        let older_devbox = list(&state).cloned();
+
+        assert_eq!(on_devbox, Some(PathBuf::from("/srv")));
+        assert_eq!(
+            older_devbox, None,
+            "a daemon without folders.list is not asked"
+        );
     }
 
     #[test]
