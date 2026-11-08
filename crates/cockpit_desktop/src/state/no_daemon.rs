@@ -1,7 +1,12 @@
 //! The "No daemon answers" screen: what it shows, and which daemon a choice on it runs.
 
+use std::io;
+
+use cockpit_client::{ConnectError, SessionError};
+
 use super::app_state::{AppState, ConnectionState};
 use crate::config::DaemonConfig;
+use crate::daemon_label::{DaemonLabel, DaemonPlace};
 
 /// A button of the screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,11 +27,24 @@ pub struct Chosen {
     pub every_time: bool,
 }
 
+/// Why no daemon answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Absence {
+    /// No daemon runs on this machine: its socket is missing, nothing listens on it, or this
+    /// system reaches no socket. The usual first start, which the screen meets with a question.
+    NothingRuns,
+    /// The daemon the app tried should have answered.
+    Failed,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NoDaemon {
-    /// The daemon the app tried, as the screen names it.
+    /// The daemon the app tried, as a sentence names it.
     pub tried: String,
+    /// The daemon the app tried, at the start of a title.
+    pub subject: String,
     pub error: String,
+    pub absence: Absence,
     /// "Use this every time" is ticked.
     pub every_time: bool,
     /// The choice being carried out, which the screen waits for.
@@ -43,15 +61,43 @@ pub struct ChoicePlan {
 /// Whether this platform can start the background service.
 pub const SERVICE_OFFERED: bool = cfg!(unix);
 
+/// Whether this platform reaches a daemon's socket, so that looking for one again can help.
+pub const SOCKET_REACHABLE: bool = cfg!(unix);
+
 /// Shows the screen: the app could not reach `tried`. `every_time` is the tick of the last choice
-/// on the screen, which it keeps.
-pub fn show(state: &mut AppState, tried: String, error: String, every_time: bool) {
+/// on the screen, which it keeps. Before any choice, the tick is on when nothing runs: the choice
+/// is then a setup, made once.
+pub fn show(
+    state: &mut AppState,
+    tried: &DaemonLabel,
+    error: String,
+    absence: Absence,
+    every_time: Option<bool>,
+) {
     state.connection = ConnectionState::NoDaemon(NoDaemon {
-        tried,
+        tried: tried.name(),
+        subject: tried.subject(),
         error,
-        every_time,
+        absence,
+        every_time: every_time.unwrap_or(absence == Absence::NothingRuns),
         busy: None,
     });
+}
+
+/// Whether `error`, from the first connection to a daemon at `place`, means that no daemon runs.
+pub fn absence(place: DaemonPlace, error: &SessionError) -> Absence {
+    let SessionError::Connect(ConnectError::Socket { source, .. }) = error else {
+        return Absence::Failed;
+    };
+    let nothing_listens = matches!(
+        source.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused | io::ErrorKind::Unsupported
+    );
+    if place == DaemonPlace::Socket && nothing_listens {
+        Absence::NothingRuns
+    } else {
+        Absence::Failed
+    }
 }
 
 pub fn toggle_every_time(state: &mut AppState) {
@@ -102,9 +148,10 @@ mod tests {
         let mut state = AppState::new(DaemonLabel::ssh("build-box".to_owned()));
         show(
             &mut state,
-            "build-box, over SSH".to_owned(),
+            &DaemonLabel::ssh("build-box".to_owned()),
             "ssh failed: Connection refused".to_owned(),
-            false,
+            Absence::Failed,
+            None,
         );
         state
     }
@@ -229,15 +276,69 @@ mod tests {
         state.connection = ConnectionState::Connecting { attempt: 1 };
         show(
             &mut state,
-            "the daemon in this app".to_owned(),
+            &DaemonLabel::in_app(),
             "cannot create the folder /state".to_owned(),
-            chosen.every_time,
+            Absence::Failed,
+            Some(chosen.every_time),
         );
 
         let screen = shown(&state);
         assert_eq!(screen.busy, None);
         assert!(screen.every_time);
         assert_eq!(screen.tried, "the daemon in this app");
+    }
+
+    fn socket_error(kind: io::ErrorKind) -> SessionError {
+        SessionError::Connect(ConnectError::Socket {
+            path: "/run/agents-cockpit.sock".into(),
+            source: io::Error::from(kind),
+        })
+    }
+
+    #[test]
+    fn a_missing_or_silent_socket_on_this_machine_means_nothing_runs() {
+        let on_socket = |kind| absence(DaemonPlace::Socket, &socket_error(kind));
+
+        assert_eq!(on_socket(io::ErrorKind::NotFound), Absence::NothingRuns);
+        assert_eq!(
+            on_socket(io::ErrorKind::ConnectionRefused),
+            Absence::NothingRuns
+        );
+        assert_eq!(on_socket(io::ErrorKind::Unsupported), Absence::NothingRuns);
+        assert_eq!(on_socket(io::ErrorKind::PermissionDenied), Absence::Failed);
+        assert_eq!(
+            absence(DaemonPlace::Service, &socket_error(io::ErrorKind::NotFound)),
+            Absence::Failed,
+            "the service the app started should answer"
+        );
+        assert_eq!(
+            absence(
+                DaemonPlace::Ssh,
+                &SessionError::Connect(ConnectError::Ssh {
+                    stderr: "Connection timed out".to_owned()
+                })
+            ),
+            Absence::Failed
+        );
+    }
+
+    #[test]
+    fn the_tick_starts_on_when_nothing_runs_and_then_keeps_the_users() {
+        let mut state = AppState::new(DaemonLabel::socket());
+        let tick = |state: &mut AppState, absence, every_time| {
+            show(
+                state,
+                &DaemonLabel::socket(),
+                String::new(),
+                absence,
+                every_time,
+            );
+            shown(state).every_time
+        };
+
+        assert!(tick(&mut state, Absence::NothingRuns, None));
+        assert!(!tick(&mut state, Absence::Failed, None));
+        assert!(!tick(&mut state, Absence::NothingRuns, Some(false)));
     }
 
     #[test]

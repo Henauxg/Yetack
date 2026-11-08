@@ -727,6 +727,10 @@ html.reordering * {
   background: var(--amber);
 }
 
+.connection.waiting .connection-dot {
+  background: var(--dim);
+}
+
 .connection.disconnected .connection-dot {
   background: var(--red);
 }
@@ -6220,19 +6224,66 @@ label.icon-button,
   margin: 0;
 }
 
-.no-daemon-tried {
+.no-daemon-lead {
   color: var(--text-soft);
+  line-height: 1.45;
   overflow-wrap: anywhere;
 }
 
-.no-daemon-error {
+.no-daemon-details {
+  font-size: 12.5px;
+  color: var(--dim);
+}
+
+.no-daemon-details summary {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.no-daemon-details summary:hover {
+  color: var(--muted);
+}
+
+.no-daemon-details pre {
+  margin: 6px 0 0;
   padding: 8px 10px;
   border-radius: 8px;
   background: var(--well);
-  color: var(--red);
+  color: var(--muted);
   font-family: var(--mono);
   font-size: 12px;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.no-daemon-footer {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 2px;
+}
+
+.no-daemon-link {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.no-daemon-link:hover {
+  color: var(--text-soft);
+}
+
+.no-daemon-link:disabled {
+  cursor: default;
+  opacity: 0.55;
 }
 
 .no-daemon-choices {

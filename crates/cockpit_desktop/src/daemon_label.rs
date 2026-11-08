@@ -68,6 +68,16 @@ impl DaemonLabel {
         }
     }
 
+    /// The daemon at the start of a title, such as "build-box does not answer".
+    pub fn subject(&self) -> String {
+        match self.place {
+            DaemonPlace::Socket => "The daemon on this machine".to_owned(),
+            DaemonPlace::Service => "The background service".to_owned(),
+            DaemonPlace::Ssh => self.machine.clone(),
+            DaemonPlace::InApp => "The daemon in this app".to_owned(),
+        }
+    }
+
     /// The daemon as the sidebar's foot names it once connected.
     pub fn connected_line(&self) -> String {
         match self.place {

@@ -14,12 +14,12 @@ use dioxus::prelude::*;
 use tokio::sync::mpsc;
 
 use crate::config::DaemonConfig;
-use crate::daemon_label::DaemonLabel;
+use crate::daemon_label::DaemonPlace;
 use crate::in_app_host::InAppHost;
 use crate::notifications::Notifier;
 use crate::reach::{self, Places, Unreached};
 use crate::state::machine_load::{LOAD_POLL, LoadView};
-use crate::state::no_daemon::{self, Chosen, DaemonChoice};
+use crate::state::no_daemon::{self, Absence, Chosen, DaemonChoice};
 use crate::state::{
     self, AgentEntry, AppState, ConnectionState, Drafts, Outgoing, Purpose, TitlePlace,
     Utf16Offset, actions,
@@ -285,7 +285,7 @@ enum Served {
     /// The window is gone.
     Closed,
     /// The first connection failed: the error says why.
-    NoAnswer(String),
+    NoAnswer { error: String, absence: Absence },
 }
 
 /// Reaches the config's daemon. When that fails before a first connection, shows the "No daemon
@@ -305,9 +305,9 @@ async fn run(
     } = live;
     let mut daemon = configured.clone();
     // The tick of the last choice on the screen.
-    let mut every_time = false;
+    let mut every_time = None;
     loop {
-        let unreached = match reach::reach(&daemon, &places, &in_app).await {
+        let (unreached, absence) = match reach::reach(&daemon, &places, &in_app).await {
             Ok(reached) => {
                 {
                     let mut state = state.write();
@@ -322,24 +322,28 @@ async fn run(
                     drafts,
                     load,
                     reached.transport,
+                    reached.label.place,
                     notify,
                     &mut requests,
                 );
                 match served.await {
                     Served::Closed => return,
-                    Served::NoAnswer(error) => Unreached {
-                        label: reached.label,
-                        error,
-                    },
+                    Served::NoAnswer { error, absence } => (
+                        Unreached {
+                            label: reached.label,
+                            error,
+                        },
+                        absence,
+                    ),
                 }
             }
-            Err(unreached) => unreached,
+            Err(unreached) => (unreached, Absence::Failed),
         };
-        show_no_daemon(state, &unreached.label, unreached.error, every_time);
+        show_no_daemon(state, &unreached, absence, every_time);
         let Some(chosen) = next_choice(state, drafts, &mut requests).await else {
             return;
         };
-        every_time = chosen.every_time;
+        every_time = Some(chosen.every_time);
         let (next, error) = reach::settle(chosen, &daemon, &mut configured, &places.config_file);
         if let Some(error) = error {
             state
@@ -353,13 +357,19 @@ async fn run(
 
 fn show_no_daemon(
     mut state: Signal<AppState>,
-    tried: &DaemonLabel,
-    error: String,
-    every_time: bool,
+    unreached: &Unreached,
+    absence: Absence,
+    every_time: Option<bool>,
 ) {
     let mut state = state.write();
-    state.daemon = tried.clone();
-    no_daemon::show(&mut state, tried.name(), error, every_time);
+    state.daemon = unreached.label.clone();
+    no_daemon::show(
+        &mut state,
+        &unreached.label,
+        unreached.error.clone(),
+        absence,
+        every_time,
+    );
 }
 
 /// Waits for a choice on the screen. No daemon answers the requests that come meanwhile.
@@ -394,6 +404,7 @@ async fn serve(
     mut drafts: Signal<Drafts>,
     load: Signal<LoadView>,
     transport: Transport,
+    place: DaemonPlace,
     notify: bool,
     requests: &mut UnboundedReceiver<ToDaemon>,
 ) -> Served {
@@ -437,7 +448,10 @@ async fn serve(
                     SessionUpdate::Disconnected { error: error @ SessionError::Connect(_), .. }
                         if !connected_once =>
                     {
-                        return Served::NoAnswer(state::error_chain(error));
+                        return Served::NoAnswer {
+                            error: state::error_chain(error),
+                            absence: no_daemon::absence(place, error),
+                        };
                     }
                     SessionUpdate::Connecting { .. }
                     | SessionUpdate::Disconnected { .. }

@@ -10,6 +10,7 @@ use crate::bridge::{self, ROW_TITLE_FIELD_ID};
 use crate::connection::{Clock, Cockpit};
 use crate::prefs::StatusFilter;
 use crate::state::accounts::{self, AccountLabel, SignInLine};
+use crate::state::no_daemon::Absence;
 use crate::state::{AgentEntry, AppState, ConnectionState, TitleEdit, TitlePlace, actions};
 use crate::ui::accounts::{AccountTag, AccountsButton};
 use crate::ui::icons::{Icon, IconKind};
@@ -387,11 +388,14 @@ fn ConnectionFooter() -> Element {
                 Some(detail),
             )
         }
-        ConnectionState::NoDaemon(screen) => (
-            "connection disconnected",
-            "No daemon answers".to_owned(),
-            Some(screen.error.clone()),
-        ),
+        ConnectionState::NoDaemon(screen) => match screen.absence {
+            Absence::NothingRuns => ("connection waiting", "No daemon yet".to_owned(), None),
+            Absence::Failed => (
+                "connection disconnected",
+                format!("{} does not answer", screen.subject),
+                Some(screen.error.clone()),
+            ),
+        },
     };
     rsx! {
         div { class: "sidebar-foot",
