@@ -545,15 +545,19 @@ fn ConnectionFooter() -> Element {
             ),
         },
     };
+    // With several machines, each panel says how its machine answers.
+    let panels = !state.machines.others.is_empty();
     rsx! {
         div { class: "sidebar-foot",
             AccountsButton {}
-            span { class,
-                span { class: "connection-dot", aria_hidden: true }
-                "{line}"
-            }
-            if let Some(detail) = detail {
-                span { class: "connection-error", "{detail}" }
+            if !panels {
+                span { class,
+                    span { class: "connection-dot", aria_hidden: true }
+                    "{line}"
+                }
+                if let Some(detail) = detail {
+                    span { class: "connection-error", "{detail}" }
+                }
             }
         }
     }
