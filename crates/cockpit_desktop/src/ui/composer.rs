@@ -270,7 +270,7 @@ fn accepted_images() -> String {
     types.join(",")
 }
 
-fn media_type_from_name(name: &str) -> Option<ImageMediaType> {
+pub(crate) fn media_type_from_name(name: &str) -> Option<ImageMediaType> {
     let extension = name.rsplit_once('.')?.1.to_lowercase();
     match extension.as_str() {
         "png" => Some(ImageMediaType::Png),

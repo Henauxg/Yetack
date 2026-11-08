@@ -20,6 +20,7 @@ use crate::ui::accounts::SignInCard;
 use crate::ui::cards::{ApprovalCard, PlanCard, QuestionCard};
 use crate::ui::chat_scroll::{self, CHAT_SCROLL_ID, ENTRY_CLASS, JumpToLatest, NewDivider};
 use crate::ui::code::{LineNumbers, diff_row};
+use crate::ui::composer;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::loading::TranscriptSkeleton;
 use crate::ui::markdown::MarkdownView;
@@ -107,6 +108,11 @@ const DESCRIPTION_FIELD: &str = "description";
 
 /// Claude Code's shell tool. Without its input, its summary is the command's first line.
 const BASH_TOOL: &str = "Bash";
+
+/// The input fields that name a file, as Claude Code's `Read`, `Write`, `Edit` and
+/// `NotebookEdit` send them, and the line `Read` starts at.
+const FILE_FIELDS: [&str; 2] = ["file_path", "notebook_path"];
+const OFFSET_FIELD: &str = "offset";
 
 /// The rows a chat draws in the frame it opens, enough to fill the window. The older rows follow
 /// in the next frame: drawing a long conversation at once delays the whole window's switch.
@@ -566,7 +572,7 @@ pub fn ItemView(
             EditView { agent, folder, stage: CallStage::new(&call, awaits_approval), call }
         },
         ItemBody::ToolCall(call) => rsx! {
-            ToolView { stage: CallStage::new(&call, awaits_approval), call }
+            ToolView { agent, stage: CallStage::new(&call, awaits_approval), call }
         },
         ItemBody::Subagent(call) => rsx! {
             SubagentView { agent, folder, id, call, nested }
@@ -704,6 +710,9 @@ enum ToolShape {
         tool: String,
         input: Option<String>,
     },
+    /// A tool that names a text file, such as `Read`: its summary opens the file view, at the
+    /// line the call starts at. An image is not one: the file view shows text alone.
+    File { path: PathBuf, line: Option<u32> },
     /// Any other tool: its name and summary (a path, a pattern, a URL) on the title line.
     Other,
 }
@@ -735,10 +744,25 @@ impl ToolShape {
         let command = field(COMMAND_FIELD).or_else(|| {
             (call.tool == BASH_TOOL && !call.summary.is_empty()).then(|| call.summary.clone())
         });
-        match command {
-            Some(command) => Self::Command {
+        if let Some(command) = command {
+            return Self::Command {
                 description: field(DESCRIPTION_FIELD),
                 command,
+            };
+        }
+        let file = FILE_FIELDS
+            .iter()
+            .find_map(|name| field(name))
+            .filter(|path| composer::media_type_from_name(path).is_none());
+        match file {
+            Some(path) => Self::File {
+                path: PathBuf::from(path),
+                line: call
+                    .input
+                    .get(OFFSET_FIELD)
+                    .and_then(Value::as_u64)
+                    .and_then(|line| u32::try_from(line).ok())
+                    .filter(|&line| line > 0),
             },
             None => Self::Other,
         }
@@ -749,7 +773,7 @@ impl ToolShape {
         match self {
             Self::Command { command, .. } => Some(command),
             Self::Mcp { input, .. } => input.as_deref(),
-            Self::Other => None,
+            Self::File { .. } | Self::Other => None,
         }
     }
 }
@@ -773,7 +797,7 @@ enum TitleLayout {
 }
 
 /// The tool's name in bold, then the description or the summary.
-fn tool_title(call: &ToolCall, shape: &ToolShape, layout: TitleLayout) -> Element {
+fn tool_title(agent: AgentId, call: &ToolCall, shape: &ToolShape, layout: TitleLayout) -> Element {
     match shape {
         ToolShape::Command {
             description: Some(description),
@@ -793,12 +817,36 @@ fn tool_title(call: &ToolCall, shape: &ToolShape, layout: TitleLayout) -> Elemen
                 code { class: "tool-summary", "[{tool}]" }
             }
         },
-        ToolShape::Command { .. } | ToolShape::Other => rsx! {
+        ToolShape::File { path, line } if !call.summary.is_empty() => {
+            let (path, line) = (path.clone(), *line);
+            rsx! {
+                span { class: "tool-name", "{call.tool}" }
+                FileLink { agent, path, line, text: call.summary.clone() }
+            }
+        }
+        ToolShape::Command { .. } | ToolShape::File { .. } | ToolShape::Other => rsx! {
             span { class: "tool-name", "{call.tool}" }
             if !call.summary.is_empty() {
                 code { class: "tool-summary", "{call.summary}" }
             }
         },
+    }
+}
+
+/// A tool call's summary that opens its file in the file view.
+#[component]
+fn FileLink(agent: AgentId, path: PathBuf, line: Option<u32>, text: String) -> Element {
+    let cockpit: Cockpit = use_context();
+    rsx! {
+        button {
+            class: "tool-summary path-link",
+            title: "Open the file",
+            onclick: move |_| {
+                let path = path.clone();
+                cockpit.update(|state| actions::open_file(state, agent, path, line));
+            },
+            "{text}"
+        }
     }
 }
 
@@ -918,7 +966,7 @@ impl EditMeta {
 }
 
 #[component]
-fn ToolView(call: ToolCall, stage: CallStage) -> Element {
+fn ToolView(agent: AgentId, call: ToolCall, stage: CallStage) -> Element {
     let shape = ToolShape::new(&call);
     let meta = tool_meta(&call, stage);
     let input = shape.input().map(str::to_owned);
@@ -927,7 +975,7 @@ fn ToolView(call: ToolCall, stage: CallStage) -> Element {
     rsx! {
         div { class: stage.class(),
             div { class: "tool-head",
-                {tool_title(&call, &shape, TitleLayout::Full)}
+                {tool_title(agent, &call, &shape, TitleLayout::Full)}
                 if !meta.is_empty() {
                     span { class: "tool-meta", "{meta}" }
                 }
@@ -1107,7 +1155,7 @@ pub(crate) fn CompactItem(
                         code { class: "tool-summary", "{path}" }
                     }
                 }
-                None => tool_title(call, &ToolShape::new(call), TitleLayout::Compact),
+                None => tool_title(agent, call, &ToolShape::new(call), TitleLayout::Compact),
             };
             rsx! {
                 div { class: "compact-tool {stage.class()}",
@@ -1245,6 +1293,36 @@ mod tests {
         assert_eq!(
             ToolShape::new(&call("Read", "src/main.rs", ToolCallStatus::Done)),
             ToolShape::Other
+        );
+    }
+
+    #[test]
+    fn a_tool_that_names_a_text_file_links_to_it_at_its_first_line() {
+        let read = |input: serde_json::Value| {
+            ToolShape::new(&ToolCall {
+                input,
+                ..call("Read", "src/main.rs", ToolCallStatus::Done)
+            })
+        };
+
+        assert_eq!(
+            read(serde_json::json!({"file_path": "/work/src/main.rs", "offset": 40})),
+            ToolShape::File {
+                path: PathBuf::from("/work/src/main.rs"),
+                line: Some(40),
+            }
+        );
+        assert_eq!(
+            read(serde_json::json!({"notebook_path": "/work/plot.ipynb"})),
+            ToolShape::File {
+                path: PathBuf::from("/work/plot.ipynb"),
+                line: None,
+            }
+        );
+        assert_eq!(
+            read(serde_json::json!({"file_path": "/work/shots/sheet05.JPG"})),
+            ToolShape::Other,
+            "the file view shows no image"
         );
     }
 
