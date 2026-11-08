@@ -322,12 +322,15 @@ pub fn sign_in_turn(entry: &AgentEntry) -> Option<SignInTurn> {
     })
 }
 
-/// Whether "Send the message again" sends: the account signed in, or the daemon cannot see its
-/// sign-in (a login in the macOS Keychain), the app holds the message, and the card has not sent
-/// it yet.
+/// Whether "Send the message again" sends: the account signed in or no check can end the wait,
+/// the app holds the message, and the card has not sent it yet. No check ends the wait when the
+/// daemon cannot see the sign-in (a login in the macOS Keychain), or when the account's
+/// credentials come from the environment.
 pub fn can_send_again(state: &AppState, entry: &AgentEntry, turn: &SignInTurn) -> bool {
-    let account = entry.summary.account;
-    let cannot_tell = state.sign_ins.sign_in(account) == Some(SignIn::Unknown);
+    let id = entry.summary.account;
+    let cannot_tell = state.sign_ins.sign_in(id) == Some(SignIn::Unknown)
+        || account(state, id)
+            .is_some_and(|account| account.credentials == CredentialSource::Environment);
     let signed_in = entry.summary.sign_in_wait == SignInWait::NotWaiting || cannot_tell;
     signed_in && turn.message.is_some() && entry.sent_again != Some(turn.turn_end)
 }
@@ -1611,6 +1614,36 @@ mod tests {
         let second = send_again(&mut state, agent);
 
         assert_eq!(not_signed_in, []);
+        assert!(matches!(
+            first.as_slice(),
+            [Outgoing { request: Request::AgentPrompt(PromptParams { prompt, .. }), .. }] if prompt.text == "Export the invoices"
+        ));
+        assert_eq!(second, [], "the card sends the message once");
+    }
+
+    #[test]
+    fn the_message_goes_again_while_waiting_when_the_credentials_come_from_the_environment() {
+        let mut waiting = in_folder(1, "/work/app", lab());
+        waiting.sign_in_wait = SignInWait::Waiting;
+        waiting.status = AgentStatus::NeedsYou;
+        let mut state = state_with(vec![waiting]);
+        three_accounts(&mut state);
+        signed(&mut state, lab(), SignIn::NotSignedIn);
+        let agent = AgentId::new(1);
+        let entry = state.agents.get_mut(&agent).unwrap();
+        entry.transcript.merge_page(HistoryPage {
+            items: vec![
+                transcript_item(1, message("Export the invoices")),
+                transcript_item(2, failed_turn(TurnOutcome::NotSignedIn)),
+            ],
+            older_items: OlderItems::None,
+        });
+
+        let shown = sends_again(&state, agent);
+        let first = send_again(&mut state, agent);
+        let second = send_again(&mut state, agent);
+
+        assert!(shown);
         assert!(matches!(
             first.as_slice(),
             [Outgoing { request: Request::AgentPrompt(PromptParams { prompt, .. }), .. }] if prompt.text == "Export the invoices"
