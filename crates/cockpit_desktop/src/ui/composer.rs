@@ -65,8 +65,7 @@ impl EndButtons {
         match self {
             Self::Send => "Send the message (Enter)",
             Self::StopAndSend => {
-                "Send now: Claude reads it at its next step (Enter). Alt+Enter queues it until the \
-                 turn ends."
+                "Send now: Claude reads it at its next step (Enter). Alt+Enter queues it until the turn ends."
             }
         }
     }

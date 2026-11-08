@@ -38,8 +38,10 @@ fn WaitingRow(agent: AgentId, prompt: WaitingPrompt) -> Element {
             "Sent when the turn ends",
         ),
     };
-    let images = (prompt.image_count > 0)
-        .then(|| format!("+{}", format::count(prompt.image_count, "image", "images")));
+    let images = (prompt.image_count > 0).then(|| {
+        let count = usize::try_from(prompt.image_count).unwrap_or(usize::MAX);
+        format!("+{}", format::count(count, "image", "images"))
+    });
     rsx! {
         div { class, role: "listitem",
             span { class: "waiting-state", title, "{label}" }
@@ -47,7 +49,8 @@ fn WaitingRow(agent: AgentId, prompt: WaitingPrompt) -> Element {
             if let Some(images) = images {
                 span { class: "waiting-images", "{images}" }
             }
-            if prompt.state == WaitingState::Queued && !prompt.text.starts_with('/') {
+            // A slash command waits for the turn's end: the daemon refuses to send it sooner.
+            if prompt.state == WaitingState::Queued && !prompt.text.starts_with(actions::COMMAND_PREFIX) {
                 button {
                     class: "icon-button tiny",
                     aria_label: "Send now",
@@ -56,7 +59,6 @@ fn WaitingRow(agent: AgentId, prompt: WaitingPrompt) -> Element {
                     Icon { kind: IconKind::Send, size: 13 }
                 }
             }
-            // A slash command waits for the turn's end: the daemon refuses to send it sooner.
             if prompt.state == WaitingState::Queued {
                 button {
                     class: "icon-button tiny",

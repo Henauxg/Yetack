@@ -1402,9 +1402,9 @@ fn parser_agent(now: SystemTime) -> Sample {
             },
             WaitingPrompt {
                 id: PromptId::new(2),
-                text: "Then add a line about the column fix to the changelog, under the next \
-                       version."
-                    .to_owned(),
+                text:
+                    "Then add a line about the column fix to the changelog, under the next version."
+                        .to_owned(),
                 image_count: 1,
                 state: WaitingState::Queued,
             },

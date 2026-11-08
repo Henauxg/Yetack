@@ -5,7 +5,7 @@ use dioxus::prelude::*;
 use crate::connection::Cockpit;
 use crate::state::ConnectionState;
 use crate::state::no_daemon::{
-    Absence, DaemonChoice, NoDaemon, SERVICE_OFFERED, SOCKET_REACHABLE, toggle_every_time,
+    self, Absence, DaemonChoice, NoDaemon, SERVICE_OFFERED, SOCKET_REACHABLE,
 };
 
 /// What the screen says when nothing runs on this machine.
@@ -44,7 +44,7 @@ pub fn NoDaemonScreen() -> Element {
                 r#type: "checkbox",
                 checked: every_time,
                 disabled: waiting,
-                onchange: move |_| cockpit.update(toggle_every_time),
+                onchange: move |_| cockpit.update(no_daemon::toggle_every_time),
             }
             span { "Use this every time" }
         }

@@ -339,7 +339,7 @@ async fn run(
             }
             Err(unreached) => (unreached, Absence::Failed),
         };
-        show_no_daemon(state, &unreached, absence, every_time);
+        show_no_daemon(state, unreached, absence, every_time);
         let Some(chosen) = next_choice(state, drafts, &mut requests).await else {
             return;
         };
@@ -357,19 +357,14 @@ async fn run(
 
 fn show_no_daemon(
     mut state: Signal<AppState>,
-    unreached: &Unreached,
+    unreached: Unreached,
     absence: Absence,
     every_time: Option<bool>,
 ) {
+    let Unreached { label, error } = unreached;
     let mut state = state.write();
-    state.daemon = unreached.label.clone();
-    no_daemon::show(
-        &mut state,
-        &unreached.label,
-        unreached.error.clone(),
-        absence,
-        every_time,
-    );
+    no_daemon::show(&mut state, &label, error, absence, every_time);
+    state.daemon = label;
 }
 
 /// Waits for a choice on the screen. No daemon answers the requests that come meanwhile.

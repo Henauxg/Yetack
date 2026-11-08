@@ -109,8 +109,9 @@ const DESCRIPTION_FIELD: &str = "description";
 const BASH_TOOL: &str = "Bash";
 
 /// The input fields that name a file, as Claude Code's `Read`, `Write`, `Edit` and
-/// `NotebookEdit` send them, and the line `Read` starts at.
+/// `NotebookEdit` send them.
 const FILE_FIELDS: [&str; 2] = ["file_path", "notebook_path"];
+/// The input field of the line `Read` starts at.
 const OFFSET_FIELD: &str = "offset";
 
 /// The rows a chat draws in the frame it opens, enough to fill the window. The older rows follow
@@ -1293,7 +1294,7 @@ mod tests {
 
     #[test]
     fn a_tool_that_names_a_file_links_to_it_at_its_first_line() {
-        let read = |input: serde_json::Value| {
+        let read = |input: Value| {
             ToolShape::new(&ToolCall {
                 input,
                 ..call("Read", "src/main.rs", ToolCallStatus::Done)

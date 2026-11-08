@@ -9,6 +9,7 @@ use cockpit_protocol::{
 use dioxus::html::geometry::ScreenPoint;
 use dioxus::html::point_interaction::InteractionLocation;
 use dioxus::prelude::*;
+use rfd::AsyncFileDialog;
 
 use crate::bridge::{self, FOLDER_FIELD_ID, HIGHLIGHTED_CLASS};
 use crate::connection::{Clock, Cockpit};
@@ -325,7 +326,7 @@ fn NewAgentDialog(form: NewAgentForm) -> Element {
 /// Opens the system's folder picker at `from` when it is a folder, and puts the folder picked in
 /// the field.
 async fn browse_folder(cockpit: Cockpit, from: String) {
-    let mut picker = rfd::AsyncFileDialog::new().set_title("Folder for the new agent");
+    let mut picker = AsyncFileDialog::new().set_title("Folder for the new agent");
     let from = PathBuf::from(from.trim());
     if from.is_absolute() && from.is_dir() {
         picker = picker.set_directory(&from);
