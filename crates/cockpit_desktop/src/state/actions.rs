@@ -29,6 +29,7 @@ use super::ui_state::{
 use super::utf16_offset::Utf16Offset;
 use super::{accounts, export, file_edits, open_file, title_emoji};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
+use crate::machine::MachineId;
 use crate::path_style;
 use crate::prefs::{self, StatusFilter};
 
@@ -1555,16 +1556,25 @@ pub fn toggle_switcher(state: &mut AppState, drafts: &mut Drafts) {
 /// order at once, with the positions the daemon then sends in its events. Without a connection
 /// nothing moves: a refused move puts the agents back only where no later move took them.
 pub fn move_agent(state: &mut AppState, agent: AgentId, before: Option<AgentId>) -> Vec<Outgoing> {
-    if !state.is_connected() {
+    if !state.reaches_agent(agent) {
         let error = RequestError::NotConnected;
         state.ui.report(format!("The agent was not moved: {error}"));
         return Vec::new();
     }
+    // Each machine keeps its own order: the list holds the agent's machine alone, and a row of
+    // another machine stands for the top or the bottom of it.
+    let machine = MachineId::of(agent);
     let list: Vec<Placed> = state
         .agents_in_order()
         .iter()
+        .filter(|entry| MachineId::of(entry.id()) == machine)
         .map(|entry| entry.summary.place())
         .collect();
+    let before = match before {
+        Some(row) if MachineId::of(row) < machine => list.first().map(|first| first.agent),
+        Some(row) if MachineId::of(row) > machine => None,
+        before => before,
+    };
     let moved = cockpit_protocol::move_agent(&list, agent, before);
     let mut shifts = Vec::with_capacity(moved.len());
     for place in moved {
@@ -1609,6 +1619,14 @@ pub fn drop_agent(
         }
     };
     move_agent(state, agent, before)
+}
+
+/// Folds a machine's rows under its header in the sidebar, or unfolds them.
+pub fn toggle_machine(state: &mut AppState, machine: MachineId) {
+    let folded = &mut state.ui.folded_machines;
+    if !folded.remove(&machine) {
+        folded.insert(machine);
+    }
 }
 
 /// Alt+Up and Alt+Down: the selected agent goes one row up or down among the rows the sidebar
@@ -2023,7 +2041,8 @@ mod tests {
     };
 
     use super::*;
-    use crate::machine::MachineId;
+    use crate::daemon_label::DaemonLabel;
+    use crate::state::MachineState;
     use crate::state::app_state::ConnectionState;
     use crate::state::app_state::tests::{ids, placed, state_with, summary};
     use crate::state::requests::{apply_response, needed_requests};
@@ -3984,6 +4003,83 @@ mod tests {
             Some(AgentId::new(2))
         );
         assert_eq!(sidebar(&state), [1, 2, 3]);
+    }
+
+    /// Agents 1 to 3 on this computer, and 1 and 2 of devbox's daemon, all connected.
+    fn two_machines() -> (AppState, MachineId) {
+        let devbox = MachineId::new(1);
+        let mut state = ordered();
+        let mut known = MachineState::new(DaemonLabel::ssh("devbox".to_owned()));
+        known.connection = ConnectionState::Connected;
+        state.machines.others.insert(devbox, known);
+        for (id, position) in [(1, 1024), (2, 2048)] {
+            let mut remote = placed(id, AgentStatus::Idle, position);
+            remote.id = devbox.app_agent(AgentId::new(id));
+            state.agents.insert(remote.id, AgentEntry::new(remote));
+        }
+        (state, devbox)
+    }
+
+    #[test]
+    fn the_sidebar_heads_each_machine_with_its_own_rows_in_order() {
+        let (state, devbox) = two_machines();
+        let ids = |rows: &Vec<&AgentEntry>| -> Vec<AgentId> {
+            rows.iter().map(|entry| entry.id()).collect()
+        };
+
+        let groups = state.sidebar_groups();
+
+        let machines: Vec<MachineId> = groups.iter().map(|(machine, _)| *machine).collect();
+        assert_eq!(machines, [MachineId::THIS, devbox]);
+        assert_eq!(
+            ids(&groups[0].1),
+            [AgentId::new(3), AgentId::new(2), AgentId::new(1)]
+        );
+        assert_eq!(
+            ids(&groups[1].1),
+            [
+                devbox.app_agent(AgentId::new(2)),
+                devbox.app_agent(AgentId::new(1))
+            ]
+        );
+        assert!(
+            ordered().sidebar_groups().is_empty(),
+            "one machine needs no header"
+        );
+    }
+
+    #[test]
+    fn an_agent_dropped_by_another_machines_row_goes_to_its_own_machines_end() {
+        let (mut state, devbox) = two_machines();
+        let first_on_devbox = devbox.app_agent(AgentId::new(2));
+        let last_on_devbox = devbox.app_agent(AgentId::new(1));
+
+        let below = drop_agent(&mut state, AgentId::new(3), Some(first_on_devbox));
+        let above = drop_agent(&mut state, last_on_devbox, Some(AgentId::new(1)));
+
+        let moved = |outgoing: &[Outgoing]| match outgoing.first().map(|outgoing| &outgoing.request)
+        {
+            Some(Request::AgentMove(params)) => Some(params.before),
+            _ => None,
+        };
+        assert_eq!(moved(&below), Some(None), "below this computer's last row");
+        assert_eq!(
+            moved(&above),
+            Some(Some(first_on_devbox)),
+            "above devbox's first row"
+        );
+    }
+
+    #[test]
+    fn a_machine_folds_and_unfolds() {
+        let (mut state, devbox) = two_machines();
+
+        toggle_machine(&mut state, devbox);
+        let folded = state.ui.folded_machines.contains(&devbox);
+        toggle_machine(&mut state, devbox);
+
+        assert!(folded);
+        assert!(state.ui.folded_machines.is_empty());
     }
 
     #[test]

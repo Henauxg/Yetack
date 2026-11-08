@@ -11,6 +11,7 @@ use cockpit_protocol::{
 use super::accounts::{AccountsView, AddAccountForm};
 use super::agent_map::MapView;
 use super::app_state::Loadable;
+use crate::machine::MachineId;
 
 /// How many error notes stay on screen; an older one goes when a new one comes.
 const MAX_ERRORS: usize = 4;
@@ -301,6 +302,8 @@ pub struct UiState {
     pub selected: Option<AgentId>,
     /// Agents that finished while another one was selected: bold title and a white dot.
     pub unread: BTreeSet<AgentId>,
+    /// The machines whose agents the sidebar folds under their header.
+    pub folded_machines: BTreeSet<MachineId>,
     pub window_focused: bool,
     /// The floating blocks shown unfolded.
     pub open_blocks: BTreeSet<Block>,
@@ -340,6 +343,7 @@ impl Default for UiState {
         Self {
             selected: None,
             unread: BTreeSet::new(),
+            folded_machines: BTreeSet::new(),
             window_focused: true,
             open_blocks: BTreeSet::from([Block::Tasks, Block::Running]),
             badge: None,

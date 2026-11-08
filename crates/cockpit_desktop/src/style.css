@@ -512,6 +512,90 @@ button:disabled {
   gap: 2px;
 }
 
+/* With several machines, each is a panel of its own: its edge, not a coloured dot, sets it
+   apart. A machine that does not answer gets a red edge. */
+.machine-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 10px;
+  border: 1px solid #242424;
+  background: #171717;
+}
+
+.machine-group + .machine-group {
+  margin-top: 8px;
+}
+
+.machine-group.down {
+  border-color: rgba(244, 112, 103, 0.35);
+}
+
+.machine-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 12.5px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.machine-head:hover {
+  background: var(--hover);
+}
+
+.machine-head > .icon,
+.machine-icon {
+  display: inline-flex;
+  color: var(--dim);
+}
+
+.machine-group.down .machine-icon {
+  color: var(--red);
+}
+
+.machine-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.machine-count {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--dim);
+}
+
+.machine-needs-you {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: rgba(245, 165, 36, 0.18);
+  color: var(--amber);
+  font-size: 10.5px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.machine-trouble {
+  margin: 0 10px 6px 31px;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
 .sidebar-empty {
   margin: 8px 10px;
   color: var(--dim);

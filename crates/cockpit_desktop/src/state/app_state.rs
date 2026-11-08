@@ -225,6 +225,14 @@ pub struct Machines {
 }
 
 impl Machines {
+    pub fn get(&self, machine: MachineId) -> Option<&MachineState> {
+        if machine == MachineId::THIS {
+            Some(&self.this)
+        } else {
+            self.others.get(&machine)
+        }
+    }
+
     pub fn get_mut(&mut self, machine: MachineId) -> Option<&mut MachineState> {
         if machine == MachineId::THIS {
             Some(&mut self.this)
@@ -273,8 +281,40 @@ impl AppState {
     /// The sidebar's order, which the user sets and the daemon keeps.
     pub fn agents_in_order(&self) -> Vec<&AgentEntry> {
         let mut agents: Vec<&AgentEntry> = self.agents.values().collect();
-        agents.sort_by(|left, right| list_order(left.summary.place(), right.summary.place()));
+        agents.sort_by(|left, right| {
+            MachineId::of(left.id())
+                .cmp(&MachineId::of(right.id()))
+                .then_with(|| list_order(left.summary.place(), right.summary.place()))
+        });
         agents
+    }
+
+    /// The machines the sidebar heads, with the rows each shows: this computer first, then the
+    /// others in the config's order. Empty while the app reaches this computer alone, which
+    /// needs no header.
+    pub fn sidebar_groups(&self) -> Vec<(MachineId, Vec<&AgentEntry>)> {
+        if self.machines.others.is_empty() {
+            return Vec::new();
+        }
+        let shown = self.sidebar_agents();
+        let machines = std::iter::once(MachineId::THIS).chain(self.machines.others.keys().copied());
+        machines
+            .map(|machine| {
+                let rows = shown
+                    .iter()
+                    .copied()
+                    .filter(|entry| MachineId::of(entry.id()) == machine)
+                    .collect();
+                (machine, rows)
+            })
+            .collect()
+    }
+
+    /// Whether the app is connected to the daemon of the machine `agent` is on.
+    pub fn reaches_agent(&self, agent: AgentId) -> bool {
+        self.machines
+            .get(MachineId::of(agent))
+            .is_some_and(MachineState::is_connected)
     }
 
     /// The agents the sidebar shows, in its order: those its status filter keeps.

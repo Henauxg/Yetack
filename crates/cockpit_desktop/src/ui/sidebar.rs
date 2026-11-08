@@ -8,6 +8,8 @@ use dioxus::prelude::*;
 
 use crate::bridge::{self, ROW_TITLE_FIELD_ID};
 use crate::connection::{Clock, Cockpit};
+use crate::daemon_label::DaemonPlace;
+use crate::machine::MachineId;
 use crate::prefs::StatusFilter;
 use crate::state::accounts::{self, AccountLabel, SignInLine};
 use crate::state::no_daemon::Absence;
@@ -149,19 +151,27 @@ pub fn Sidebar() -> Element {
         })
         .collect();
     let selected_hidden = state.selected_is_hidden();
-    let rows: Vec<AgentRow> = state
-        .sidebar_agents()
+    let row = |entry: &AgentEntry| {
+        let edit = state
+            .ui
+            .title_edit
+            .as_ref()
+            .filter(|edit| edit.agent == entry.id() && edit.place == TitlePlace::Sidebar)
+            .cloned();
+        AgentRow::new(&state, entry, edit)
+    };
+    let groups: Vec<MachineGroup> = state
+        .sidebar_groups()
         .into_iter()
-        .map(|entry| {
-            let edit = state
-                .ui
-                .title_edit
-                .as_ref()
-                .filter(|edit| edit.agent == entry.id() && edit.place == TitlePlace::Sidebar)
-                .cloned();
-            AgentRow::new(&state, entry, edit)
+        .map(|(machine, entries)| {
+            MachineGroup::new(&state, machine, entries.into_iter().map(row).collect())
         })
         .collect();
+    let rows: Vec<AgentRow> = if groups.is_empty() {
+        state.sidebar_agents().into_iter().map(row).collect()
+    } else {
+        Vec::new()
+    };
     rsx! {
         nav { class: "sidebar", aria_label: "Agents",
             div { class: "sidebar-head",
@@ -195,14 +205,148 @@ pub fn Sidebar() -> Element {
                         }
                     }
                 }
-                if rows.is_empty() {
+                if rows.is_empty() && groups.is_empty() {
                     p { class: "sidebar-empty", "{empty_list_text(filter)}" }
                 }
                 for row in rows {
                     AgentRowView { key: "{row.id.get()}", row }
                 }
+                for group in groups {
+                    MachineGroupView { key: "{group.key}", group }
+                }
             }
             ConnectionFooter {}
+        }
+    }
+}
+
+/// A machine's panel in the sidebar: its header, a note when it does not answer, and its rows.
+#[derive(Debug, Clone, PartialEq)]
+struct MachineGroup {
+    machine: MachineId,
+    key: String,
+    name: String,
+    icon: IconKind,
+    folded: bool,
+    /// The machine's agents, whatever the filter shows.
+    count: usize,
+    /// The machine's agents that wait for you, which a folded header still shows.
+    needs_you: usize,
+    /// What the panel says while the machine does not answer.
+    trouble: Option<MachineTrouble>,
+    rows: Vec<AgentRow>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct MachineTrouble {
+    line: String,
+    /// The error, as a tooltip.
+    error: Option<String>,
+    /// A machine that answered no first connection: its panel's edge turns red.
+    down: bool,
+}
+
+impl MachineGroup {
+    fn new(state: &AppState, machine: MachineId, rows: Vec<AgentRow>) -> Self {
+        let known = state.machines.get(machine);
+        let label = known.map(|known| &known.daemon);
+        let this_computer =
+            machine == MachineId::THIS && label.is_none_or(|label| label.place != DaemonPlace::Ssh);
+        let name = if this_computer {
+            "This computer".to_owned()
+        } else {
+            label.map_or_else(String::new, |label| label.machine.clone())
+        };
+        let agents = state
+            .agents
+            .values()
+            .filter(|entry| MachineId::of(entry.id()) == machine);
+        let (count, needs_you) = agents.fold((0, 0), |(count, needs_you), entry| {
+            let waits = entry.summary.status == AgentStatus::NeedsYou;
+            (count + 1, needs_you + usize::from(waits))
+        });
+        let trouble = known.and_then(|known| match &known.connection {
+            ConnectionState::Connected => None,
+            ConnectionState::Connecting { .. } => Some(MachineTrouble {
+                line: "Connecting…".to_owned(),
+                error: None,
+                down: false,
+            }),
+            ConnectionState::Disconnected { error, .. } => Some(MachineTrouble {
+                line: "Not connected. The app tries again on its own.".to_owned(),
+                error: Some(error.clone()),
+                down: true,
+            }),
+            ConnectionState::NoDaemon(_) => Some(MachineTrouble {
+                line: "No daemon yet".to_owned(),
+                error: None,
+                down: false,
+            }),
+        });
+        Self {
+            machine,
+            key: format!("{machine:?}"),
+            name,
+            icon: if this_computer {
+                IconKind::Laptop
+            } else {
+                IconKind::Server
+            },
+            folded: state.ui.folded_machines.contains(&machine),
+            count,
+            needs_you,
+            trouble,
+            rows,
+        }
+    }
+}
+
+#[component]
+fn MachineGroupView(group: MachineGroup) -> Element {
+    let cockpit: Cockpit = use_context();
+    let MachineGroup {
+        machine,
+        name,
+        icon,
+        folded,
+        count,
+        needs_you,
+        trouble,
+        rows,
+        ..
+    } = group;
+    let down = trouble.as_ref().is_some_and(|trouble| trouble.down);
+    let fold_label = if folded {
+        format!("Show the agents of {name}")
+    } else {
+        format!("Fold the agents of {name}")
+    };
+    rsx! {
+        div { class: if down { "machine-group down" } else { "machine-group" },
+            button {
+                class: "machine-head",
+                aria_expanded: !folded,
+                title: "{fold_label}",
+                onclick: move |_| cockpit.update(|state| actions::toggle_machine(state, machine)),
+                Icon {
+                    kind: if folded { IconKind::ChevronRight } else { IconKind::ChevronDown },
+                    size: 13,
+                }
+                span { class: "machine-icon", Icon { kind: icon, size: 14 } }
+                span { class: "machine-name", "{name}" }
+                if folded && needs_you > 0 {
+                    span { class: "machine-needs-you", title: "Agents that wait for you", "{needs_you}" }
+                }
+                span { class: "machine-count", "{count}" }
+            }
+            if let Some(trouble) = trouble {
+                p { class: "machine-trouble", title: trouble.error.unwrap_or_default(), "{trouble.line}" }
+            }
+            if !folded {
+                for row in rows {
+                    AgentRowView { key: "{row.id.get()}", row }
+                }
+            }
         }
     }
 }

@@ -40,6 +40,10 @@ pub enum IconKind {
     File,
     /// The agent map: an agent above the subagents it started.
     Map,
+    /// A server, in the sidebar's machine headers.
+    Server,
+    /// This computer, in the sidebar's machine headers.
+    Laptop,
 }
 
 impl IconKind {
@@ -115,6 +119,12 @@ impl IconKind {
             }
             Self::Map => {
                 r#"<rect x="9" y="3" width="6" height="5" rx="1"></rect><rect x="3" y="16" width="6" height="5" rx="1"></rect><rect x="15" y="16" width="6" height="5" rx="1"></rect><path d="M12 8v4"></path><path d="M6 16v-2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v2"></path>"#
+            }
+            Self::Server => {
+                r#"<rect x="3" y="4" width="18" height="7" rx="2"></rect><rect x="3" y="13" width="18" height="7" rx="2"></rect><path d="M7 7.5h.01M7 16.5h.01"></path>"#
+            }
+            Self::Laptop => {
+                r#"<rect x="4" y="5" width="16" height="11" rx="2"></rect><path d="M2 19h20"></path>"#
             }
             Self::Folder => {
                 r#"<path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>"#
