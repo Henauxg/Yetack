@@ -12,7 +12,9 @@
 //! the machine's processes finds: for an npm `claude.cmd`, the recorded process is `cmd.exe`, and
 //! the real `claude` is its child.
 
-use std::time::Duration;
+#[cfg(windows)]
+use std::io;
+use std::time::{Duration, Instant};
 
 use cockpit_protocol::ProcessId;
 
@@ -112,8 +114,8 @@ pub(crate) fn stop_leftovers(recorded: &[RecordedProcess]) {
         }
         stopping.push(process);
     }
-    let deadline = std::time::Instant::now() + STOP_WAIT;
-    while std::time::Instant::now() < deadline {
+    let deadline = Instant::now() + STOP_WAIT;
+    while Instant::now() < deadline {
         stopping.retain(|process| started(process.pid) == Some(process.started));
         if stopping.is_empty() {
             return;
@@ -196,7 +198,7 @@ pub(crate) fn stop_leftovers(recorded: &[RecordedProcess]) {
             processes = under.len(),
             "stopping the claude a previous daemon left running, and the processes under it"
         );
-        let deadline = std::time::Instant::now() + STOP_WAIT;
+        let deadline = Instant::now() + STOP_WAIT;
         let tree: Vec<OpenedProcess> = std::iter::once(process).chain(under).collect();
         for process in &tree {
             if let Err(error) = process.terminate()
@@ -206,7 +208,7 @@ pub(crate) fn stop_leftovers(recorded: &[RecordedProcess]) {
             }
         }
         for process in &tree {
-            process.wait(deadline.saturating_duration_since(std::time::Instant::now()));
+            process.wait(deadline.saturating_duration_since(Instant::now()));
         }
     }
 }
@@ -230,7 +232,7 @@ struct Opened<P> {
 
 /// Every process of the machine with its parent.
 #[cfg(windows)]
-fn parent_links() -> std::io::Result<Vec<ParentLink>> {
+fn parent_links() -> io::Result<Vec<ParentLink>> {
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
@@ -242,7 +244,7 @@ fn parent_links() -> std::io::Result<Vec<ParentLink>> {
     // SAFETY: the flag asks for a snapshot of the processes; the process id is ignored for them.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
-        return Err(std::io::Error::last_os_error());
+        return Err(io::Error::last_os_error());
     }
     // SAFETY: the handle is open and nothing else owns it.
     let snapshot = unsafe { OwnedHandle::from_raw_handle(snapshot) };
@@ -529,16 +531,13 @@ mod tests {
         let mut leftover = waiting_shell();
         let root = ProcessId::new(leftover.id());
         let recorded = record_process(root).unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(10);
         let ping = loop {
             let links = parent_links().unwrap();
             if let Some(link) = links.iter().find(|link| link.parent == root) {
                 break link.pid;
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the shell started no command"
-            );
+            assert!(Instant::now() < deadline, "the shell started no command");
             std::thread::sleep(Duration::from_millis(50));
         };
         let ping_started = record_process(ping).unwrap();

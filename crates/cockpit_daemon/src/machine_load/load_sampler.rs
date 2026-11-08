@@ -190,6 +190,8 @@ mod tests {
     use cockpit_protocol::{AgentId, ProcessId};
 
     use super::*;
+    #[cfg(windows)]
+    use crate::process::program::Launch;
 
     const QUICK: Timing = Timing {
         first_sample: Duration::from_millis(20),
@@ -205,7 +207,7 @@ mod tests {
             #[cfg(windows)]
             job: None,
             #[cfg(windows)]
-            launch: crate::process::program::Launch::Direct,
+            launch: Launch::Direct,
         };
         let (reply, answer) = oneshot::channel();
         sampler.query(vec![own], reply);

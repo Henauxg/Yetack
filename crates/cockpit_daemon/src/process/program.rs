@@ -11,6 +11,8 @@
 //! Every program the daemon starts on Windows starts without a console window: the desktop app
 //! that runs the daemon has no console to share, so Windows would open one for each.
 
+#[cfg(any(windows, test))]
+use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -117,9 +119,9 @@ pub(crate) fn resolve(configured: &Path) -> ClaudeProgram {
 /// The default `claude`, from the `PATH`, home folder and `PATHEXT` given.
 #[cfg(windows)]
 fn resolve_default(
-    path: &std::ffi::OsStr,
-    home: Option<&std::ffi::OsStr>,
-    extensions: Option<&std::ffi::OsStr>,
+    path: &OsStr,
+    home: Option<&OsStr>,
+    extensions: Option<&OsStr>,
     is_file: impl Fn(&Path) -> bool,
 ) -> ClaudeProgram {
     let folders: Vec<PathBuf> = std::env::split_paths(path).collect();
@@ -135,7 +137,7 @@ fn resolve_default(
         };
     };
     let extensions = extensions
-        .and_then(std::ffi::OsStr::to_str)
+        .and_then(OsStr::to_str)
         .unwrap_or(DEFAULT_PATHEXT);
     let extensions: Vec<&str> = extensions.split(';').collect();
     let name = terminal_name(&found, &folders, &extensions, &is_file);
@@ -266,7 +268,7 @@ fn batch_command_line(program: &Path, args: &[OsString]) -> io::Result<String> {
 /// `word` in double quotes. The batch file hands it on to a program that reads backslashes
 /// before a quote as escapes, so a trailing backslash is doubled.
 #[cfg(any(windows, test))]
-fn quoted(word: &std::ffi::OsStr) -> io::Result<String> {
+fn quoted(word: &OsStr) -> io::Result<String> {
     let refused = || {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -501,14 +503,14 @@ mod tests {
         }
         let path = std::env::join_paths([&npm]).unwrap();
         let installer_on_path = std::env::join_paths([&installer, &npm]).unwrap();
-        let resolve = |path: &std::ffi::OsStr, home: Option<&Path>| {
+        let resolve = |path: &OsStr, home: Option<&Path>| {
             resolve_default(path, home.map(Path::as_os_str), None, Path::is_file)
         };
 
         let off_path = resolve(&path, Some(&home));
         let on_path = resolve(&installer_on_path, Some(&home));
         let npm_alone = resolve(&path, None);
-        let none = resolve(std::ffi::OsStr::new(""), None);
+        let none = resolve(OsStr::new(""), None);
 
         let exe = installer.join(EXE_NAME);
         assert_eq!(off_path.path, exe);
