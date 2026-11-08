@@ -816,6 +816,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::machine::MachineId;
     use crate::state::actions;
     use crate::state::app_state::Loadable;
     use crate::state::ui_state::FormMenu;
@@ -1496,6 +1497,7 @@ mod tests {
                 seq: Seq::new(1),
                 event: Event::AccountsChanged { accounts },
             },
+            MachineId::THIS,
         );
         listed(
             &mut state,
@@ -1762,6 +1764,7 @@ mod tests {
                 seq: Seq::new(1),
                 event: Event::AgentUpdated(waiting),
             },
+            MachineId::THIS,
         );
 
         assert_eq!(

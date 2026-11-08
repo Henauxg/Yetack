@@ -60,8 +60,22 @@ const DEFAULT_STATE_HOME: &str = r"AppData\Local";
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    /// This computer's daemon.
     pub daemon: DaemonConfig,
+    /// The other machines, each reached over SSH, in the order the sidebar shows them.
+    pub machines: Vec<MachineConfig>,
     pub notifications: NotificationsConfig,
+}
+
+/// A machine the app reaches over SSH beside this computer's daemon, as a `[[machines]]` table.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MachineConfig {
+    /// What the sidebar calls the machine.
+    pub name: String,
+    pub host: String,
+    /// The absolute path of `agents-cockpit` on the host.
+    pub remote_command: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -419,6 +433,40 @@ pub(crate) mod tests {
                 socket: None,
                 start_service: true
             }
+        );
+    }
+
+    #[test]
+    fn each_machines_table_names_a_server_beside_this_computers_daemon() {
+        let config: Config = "[daemon]\ntransport = \"in_app\"\n\n\
+                              [[machines]]\nname = \"devbox\"\nhost = \"dev@devbox\"\n\
+                              remote_command = \"/opt/agents-cockpit\"\n\n\
+                              [[machines]]\nname = \"gpu-box\"\nhost = \"gpu\"\n\
+                              remote_command = \"/usr/local/bin/agents-cockpit\"\n"
+            .parse()
+            .unwrap();
+
+        assert_eq!(config.daemon, DaemonConfig::InApp);
+        assert_eq!(
+            config.machines,
+            [
+                MachineConfig {
+                    name: "devbox".to_owned(),
+                    host: "dev@devbox".to_owned(),
+                    remote_command: "/opt/agents-cockpit".to_owned(),
+                },
+                MachineConfig {
+                    name: "gpu-box".to_owned(),
+                    host: "gpu".to_owned(),
+                    remote_command: "/usr/local/bin/agents-cockpit".to_owned(),
+                },
+            ]
+        );
+        assert!(
+            "[[machines]]\nname = \"devbox\"\nhost = \"devbox\"\n"
+                .parse::<Config>()
+                .is_err(),
+            "a machine needs the path of agents-cockpit"
         );
     }
 

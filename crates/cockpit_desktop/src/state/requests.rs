@@ -562,6 +562,7 @@ mod tests {
     use cockpit_protocol::{Catchup, Completeness, OlderItems};
 
     use super::*;
+    use crate::machine::MachineId;
     use crate::state::app_state::ConnectionState;
     use crate::state::app_state::tests::{state_with, summary};
     use crate::state::folder_field;
@@ -741,6 +742,7 @@ mod tests {
             &mut Drafts::default(),
             SessionUpdate::Connected(Catchup::Replay),
             Instant::now(),
+            MachineId::THIS,
         );
         assert_eq!(
             methods(&type_folder(&mut state, "/srv/")),

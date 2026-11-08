@@ -2023,6 +2023,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::machine::MachineId;
     use crate::state::app_state::ConnectionState;
     use crate::state::app_state::tests::{ids, placed, state_with, summary};
     use crate::state::requests::{apply_response, needed_requests};
@@ -2796,6 +2797,7 @@ mod tests {
             &mut state,
             &mut drafts,
             event(cockpit_protocol::Event::AgentUpdated(late)),
+            MachineId::THIS,
         );
         let before_removal = sidebar(&state);
         crate::state::apply::apply(
@@ -2804,6 +2806,7 @@ mod tests {
             event(cockpit_protocol::Event::AgentRemoved {
                 agent: AgentId::new(2),
             }),
+            MachineId::THIS,
         );
 
         assert_eq!(alert, None);
@@ -2854,6 +2857,7 @@ mod tests {
             event(cockpit_protocol::Event::AgentRemoved {
                 agent: AgentId::new(2),
             }),
+            MachineId::THIS,
         );
 
         let undone = undo_close(&mut state);
@@ -2864,6 +2868,7 @@ mod tests {
             &mut state,
             &mut drafts,
             event(cockpit_protocol::Event::AgentAdded(back)),
+            MachineId::THIS,
         );
         apply_response(
             &mut state,

@@ -20,7 +20,9 @@ mod transcript;
 mod ui_state;
 mod utf16_offset;
 
-pub use app_state::{AgentEntry, AppState, ConnectionState, FileRead, Loadable, TurnStart};
+pub use app_state::{
+    AgentEntry, AppState, ConnectionState, FileRead, Loadable, MachineState, TurnStart,
+};
 pub use apply::{Alert, AlertKind, apply_update, error_chain};
 pub use drafts::Drafts;
 pub use requests::{Outgoing, Purpose, apply_response, needed_requests};

@@ -15,6 +15,7 @@ use super::actions;
 use super::app_state::{AgentEntry, AppState, ConnectionState, Loadable};
 use super::drafts::Drafts;
 use super::transcript::KEPT_ITEMS_AWAY;
+use crate::machine::MachineId;
 
 /// A desktop notification to show.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,26 +32,31 @@ pub enum AlertKind {
     Finished,
 }
 
+/// Applies an update from `machine`'s daemon, whose agent ids are already the app's.
 pub fn apply_update(
     state: &mut AppState,
     drafts: &mut Drafts,
     update: SessionUpdate,
     now: Instant,
+    machine: MachineId,
 ) -> Vec<Alert> {
+    let Some(known) = state.machines.get_mut(machine) else {
+        return Vec::new();
+    };
     match update {
         SessionUpdate::Connecting { attempt } => {
-            state.machines.this.connection = ConnectionState::Connecting { attempt };
+            known.connection = ConnectionState::Connecting { attempt };
             Vec::new()
         }
         SessionUpdate::Connected(catchup) => {
-            state.machines.this.connection = ConnectionState::Connected;
+            known.connection = ConnectionState::Connected;
             // The daemon may have been updated.
-            state.machines.this.folders_unknown = false;
-            apply_catchup(state, drafts, catchup);
+            known.folders_unknown = false;
+            apply_catchup(state, drafts, catchup, machine);
             Vec::new()
         }
         SessionUpdate::Disconnected { error, retry_in } => {
-            state.machines.this.connection = ConnectionState::Disconnected {
+            known.connection = ConnectionState::Disconnected {
                 error: error_chain(&error),
                 retry_at: now.checked_add(retry_in).unwrap_or(now),
             };
@@ -58,7 +64,7 @@ pub fn apply_update(
         }
         SessionUpdate::Event(record) => {
             note_turn_start(state, &record.event, now);
-            apply(state, drafts, record).into_iter().collect()
+            apply(state, drafts, record, machine).into_iter().collect()
         }
     }
 }
@@ -96,9 +102,15 @@ fn note_turn_start(state: &mut AppState, event: &Event, now: Instant) {
     }
 }
 
-/// With a snapshot, the agents are replaced and what came by request (transcripts, details, file
-/// texts) is forgotten, to be asked for again. With a replay, the events that follow catch up.
-pub fn apply_catchup(state: &mut AppState, drafts: &mut Drafts, catchup: Catchup) {
+/// With a snapshot, `machine`'s agents are replaced and what came by request (transcripts,
+/// details, file texts) is forgotten, to be asked for again. With a replay, the events that
+/// follow catch up.
+pub fn apply_catchup(
+    state: &mut AppState,
+    drafts: &mut Drafts,
+    catchup: Catchup,
+    machine: MachineId,
+) {
     let Catchup::Snapshot(snapshot) = catchup else {
         return;
     };
@@ -110,21 +122,30 @@ pub fn apply_catchup(state: &mut AppState, drafts: &mut Drafts, catchup: Catchup
         accounts,
         other_plan_usage,
     } = snapshot;
-    state.agents = agents
-        .into_iter()
-        .map(|summary| (summary.id, AgentEntry::new(summary)))
-        .collect();
-    state.machines.this.plan_usage = plan_usage;
-    state.machines.this.settings = settings;
-    state.machines.this.accounts = accounts;
-    // A new connection may reach another daemon: its accounts' sign-ins are asked again.
-    state.machines.this.sign_ins = SignIns::default();
-    state.machines.this.other_plan_usage = other_plan_usage
-        .into_iter()
-        .map(|account| (account.account, account.usage))
-        .collect();
+    state
+        .agents
+        .retain(|agent, _| MachineId::of(*agent) != machine);
+    state.agents.extend(
+        agents
+            .into_iter()
+            .map(|summary| (summary.id, AgentEntry::new(summary))),
+    );
+    if let Some(known) = state.machines.get_mut(machine) {
+        known.plan_usage = plan_usage;
+        known.settings = settings;
+        known.accounts = accounts;
+        // A new connection may reach another daemon: its accounts' sign-ins are asked again.
+        known.sign_ins = SignIns::default();
+        known.other_plan_usage = other_plan_usage
+            .into_iter()
+            .map(|account| (account.account, account.usage))
+            .collect();
+    }
     // The snapshot holds the agents the daemon still has, closed or not.
-    state.ui.closing.clear();
+    state
+        .ui
+        .closing
+        .retain(|agent| MachineId::of(*agent) != machine);
     let agents = &state.agents;
     state.ui.dialog.take_if(|dialog| {
         dialog
@@ -157,7 +178,12 @@ pub fn apply_catchup(state: &mut AppState, drafts: &mut Drafts, catchup: Catchup
     actions::follow_hidden_title_edit(state, drafts);
 }
 
-pub fn apply(state: &mut AppState, drafts: &mut Drafts, record: EventRecord) -> Option<Alert> {
+pub fn apply(
+    state: &mut AppState,
+    drafts: &mut Drafts,
+    record: EventRecord,
+    machine: MachineId,
+) -> Option<Alert> {
     match record.event {
         Event::AgentAdded(summary) if state.ui.closing.contains(&summary.id) => None,
         Event::AgentAdded(summary) => {
@@ -209,24 +235,30 @@ pub fn apply(state: &mut AppState, drafts: &mut Drafts, record: EventRecord) -> 
             None
         }
         Event::PlanUsageChanged(plan_usage) => {
-            state.machines.this.plan_usage = plan_usage;
+            if let Some(known) = state.machines.get_mut(machine) {
+                known.plan_usage = plan_usage;
+            }
             None
         }
         Event::SettingsChanged(settings) => {
-            state.machines.this.settings = settings;
+            if let Some(known) = state.machines.get_mut(machine) {
+                known.settings = settings;
+            }
             None
         }
         Event::AccountPlanUsageChanged(changed) => {
-            state
-                .machines
-                .this
-                .other_plan_usage
-                .insert(changed.account, changed.usage);
+            if let Some(known) = state.machines.get_mut(machine) {
+                known
+                    .other_plan_usage
+                    .insert(changed.account, changed.usage);
+            }
             None
         }
         Event::AccountsChanged { accounts } => {
-            state.machines.this.accounts = accounts;
-            state.machines.this.sign_ins.refresh();
+            if let Some(known) = state.machines.get_mut(machine) {
+                known.accounts = accounts;
+                known.sign_ins.refresh();
+            }
             None
         }
     }
@@ -339,6 +371,7 @@ pub fn error_chain(error: &dyn Error) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::time::Duration;
 
     use cockpit_client::{ConnectError, SessionError};
@@ -348,7 +381,9 @@ mod tests {
     };
 
     use super::*;
+    use crate::daemon_label::DaemonLabel;
     use crate::prefs::StatusFilter;
+    use crate::state::MachineState;
     use crate::state::agent_map;
     use crate::state::app_state::tests::{placed, state_with, summary};
     use crate::state::ui_state::{Block, Dialog, PaletteOrigin, Popover, TitleEdit, TitlePlace};
@@ -378,6 +413,57 @@ mod tests {
     }
 
     #[test]
+    fn a_machines_snapshot_and_events_leave_the_other_machines_alone() {
+        let devbox = MachineId::new(1);
+        let on_devbox = |id| devbox.app_agent(AgentId::new(id));
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        state.machines.others.insert(
+            devbox,
+            MachineState::new(DaemonLabel::ssh("devbox".to_owned())),
+        );
+        let mut remote = summary(1, AgentStatus::Working);
+        remote.id = on_devbox(1);
+
+        apply_update(
+            &mut state,
+            &mut Drafts::default(),
+            SessionUpdate::Connected(Catchup::Snapshot(Snapshot {
+                agents: vec![remote],
+                plan_usage: PlanUsage::default(),
+                settings: Settings::default(),
+                last_seq: None,
+                accounts: Vec::new(),
+                other_plan_usage: Vec::new(),
+            })),
+            Instant::now(),
+            devbox,
+        );
+        apply(
+            &mut state,
+            &mut Drafts::default(),
+            record(Event::SettingsChanged(Settings {
+                hidden_mcp_servers: BTreeSet::from(["notes".to_owned()]),
+            })),
+            devbox,
+        );
+
+        let agents: Vec<AgentId> = state.agents.keys().copied().collect();
+        assert_eq!(agents, [AgentId::new(1), on_devbox(1)]);
+        assert_eq!(
+            state.machines.this.connection,
+            ConnectionState::Connecting { attempt: 1 }
+        );
+        assert!(state.machines.others[&devbox].is_connected());
+        assert!(state.machines.this.settings.hidden_mcp_servers.is_empty());
+        assert!(
+            state.machines.others[&devbox]
+                .settings
+                .hidden_mcp_servers
+                .contains("notes")
+        );
+    }
+
+    #[test]
     fn needing_you_raises_an_alert_once() {
         let mut state = state_with(vec![summary(1, AgentStatus::Working)]);
         state.ui.selected = Some(AgentId::new(1));
@@ -386,11 +472,13 @@ mod tests {
             &mut state,
             &mut Drafts::default(),
             record(Event::AgentUpdated(with_status(1, AgentStatus::NeedsYou))),
+            MachineId::THIS,
         );
         let again = apply(
             &mut state,
             &mut Drafts::default(),
             record(Event::AgentUpdated(with_status(1, AgentStatus::NeedsYou))),
+            MachineId::THIS,
         );
 
         let alert = alert.unwrap();
@@ -413,6 +501,7 @@ mod tests {
             &mut state,
             &mut Drafts::default(),
             record(Event::AgentUpdated(with_status(2, AgentStatus::NeedsYou))),
+            MachineId::THIS,
         );
 
         assert_eq!(alert.map(|alert| alert.kind), Some(AlertKind::NeedsYou));
@@ -432,6 +521,7 @@ mod tests {
             &mut state,
             &mut Drafts::default(),
             record(Event::AgentUpdated(finished)),
+            MachineId::THIS,
         )
         .unwrap();
 
@@ -449,17 +539,20 @@ mod tests {
             &mut state,
             &mut Drafts::default(),
             record(Event::AgentUpdated(with_status(1, AgentStatus::Idle))),
+            MachineId::THIS,
         );
         apply(
             &mut state,
             &mut Drafts::default(),
             record(Event::AgentUpdated(with_status(1, AgentStatus::Working))),
+            MachineId::THIS,
         );
         state.ui.window_focused = false;
         let away = apply(
             &mut state,
             &mut Drafts::default(),
             record(Event::AgentUpdated(with_status(1, AgentStatus::Idle))),
+            MachineId::THIS,
         );
 
         assert_eq!(silent, None);
@@ -479,6 +572,7 @@ mod tests {
                 agent,
                 item: notice(1, "first"),
             }),
+            MachineId::THIS,
         );
         apply(
             &mut state,
@@ -487,6 +581,7 @@ mod tests {
                 agent,
                 item: notice(1, "changed"),
             }),
+            MachineId::THIS,
         );
 
         let transcript = &state.agents[&agent].transcript;
@@ -510,6 +605,7 @@ mod tests {
                         agent,
                         item: notice(id, "live"),
                     }),
+                    MachineId::THIS,
                 );
             }
         }
@@ -544,6 +640,7 @@ mod tests {
                     body: ItemBody::Question(question),
                 },
             }),
+            MachineId::THIS,
         );
 
         assert!(!drafts.questions.contains_key(&pending));
@@ -580,6 +677,7 @@ mod tests {
             record(Event::AgentRemoved {
                 agent: AgentId::new(1),
             }),
+            MachineId::THIS,
         );
 
         let kept: Vec<&PendingId> = drafts.questions.keys().collect();
@@ -612,6 +710,7 @@ mod tests {
             record(Event::AgentRemoved {
                 agent: AgentId::new(1),
             }),
+            MachineId::THIS,
         );
         apply_catchup(
             &mut dropped,
@@ -624,6 +723,7 @@ mod tests {
                 accounts: Vec::new(),
                 other_plan_usage: Vec::new(),
             }),
+            MachineId::THIS,
         );
 
         for state in [&removed, &dropped] {
@@ -657,6 +757,7 @@ mod tests {
             record(Event::AgentRemoved {
                 agent: AgentId::new(1),
             }),
+            MachineId::THIS,
         );
         apply_catchup(
             &mut dropped,
@@ -669,6 +770,7 @@ mod tests {
                 accounts: Vec::new(),
                 other_plan_usage: Vec::new(),
             }),
+            MachineId::THIS,
         );
         apply(
             &mut other,
@@ -676,6 +778,7 @@ mod tests {
             record(Event::AgentRemoved {
                 agent: AgentId::new(1),
             }),
+            MachineId::THIS,
         );
 
         assert_eq!(removed.ui.dialog, None);
@@ -699,6 +802,7 @@ mod tests {
             record(Event::AgentRemoved {
                 agent: AgentId::new(3),
             }),
+            MachineId::THIS,
         );
 
         assert_eq!(state.ui.selected, Some(AgentId::new(2)));
@@ -726,6 +830,7 @@ mod tests {
             record(Event::AgentRemoved {
                 agent: AgentId::new(1),
             }),
+            MachineId::THIS,
         );
         apply_catchup(
             &mut dropped,
@@ -738,6 +843,7 @@ mod tests {
                 accounts: Vec::new(),
                 other_plan_usage: Vec::new(),
             }),
+            MachineId::THIS,
         );
         apply(
             &mut other,
@@ -745,6 +851,7 @@ mod tests {
             record(Event::AgentRemoved {
                 agent: AgentId::new(2),
             }),
+            MachineId::THIS,
         );
 
         for state in [&removed, &dropped] {
@@ -792,6 +899,7 @@ mod tests {
             record(Event::AgentRemoved {
                 agent: AgentId::new(1),
             }),
+            MachineId::THIS,
         );
         apply_catchup(
             &mut dropped,
@@ -804,6 +912,7 @@ mod tests {
                 accounts: Vec::new(),
                 other_plan_usage: Vec::new(),
             }),
+            MachineId::THIS,
         );
         apply(
             &mut other,
@@ -811,6 +920,7 @@ mod tests {
             record(Event::AgentRemoved {
                 agent: AgentId::new(1),
             }),
+            MachineId::THIS,
         );
 
         assert_eq!(removed.ui.title_edit, None);
@@ -837,6 +947,7 @@ mod tests {
             &mut updated,
             &mut drafts,
             record(Event::AgentUpdated(with_status(1, AgentStatus::Idle))),
+            MachineId::THIS,
         );
         apply_catchup(
             &mut dropped,
@@ -852,6 +963,7 @@ mod tests {
                 accounts: Vec::new(),
                 other_plan_usage: Vec::new(),
             }),
+            MachineId::THIS,
         );
 
         let header = Some(TitleEdit {
@@ -874,6 +986,7 @@ mod tests {
             &mut state,
             &mut Drafts::default(),
             record(Event::AgentAdded(summary(7, AgentStatus::Working))),
+            MachineId::THIS,
         );
 
         assert_eq!(state.ui.selected, Some(AgentId::new(7)));
@@ -906,6 +1019,7 @@ mod tests {
                 accounts: Vec::new(),
                 other_plan_usage: Vec::new(),
             }),
+            MachineId::THIS,
         );
 
         let entry = &state.agents[&first];
@@ -929,6 +1043,7 @@ mod tests {
                 &mut Drafts::default(),
                 SessionUpdate::Event(record(Event::AgentUpdated(summary(1, status)))),
                 now,
+                MachineId::THIS,
             );
             state.agents[&agent].turn_started
         };
@@ -953,6 +1068,7 @@ mod tests {
                 &mut Drafts::default(),
                 SessionUpdate::Event(record(Event::AgentUpdated(summary))),
                 now,
+                MachineId::THIS,
             );
             state.agents[&agent].turn_start()
         };
@@ -977,6 +1093,7 @@ mod tests {
                 &mut Drafts::default(),
                 SessionUpdate::Event(record(event)),
                 now,
+                MachineId::THIS,
             );
             state.agents[&agent].turn_started
         };
@@ -1022,7 +1139,12 @@ mod tests {
         let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
         let before = state.clone();
 
-        apply_catchup(&mut state, &mut Drafts::default(), Catchup::Replay);
+        apply_catchup(
+            &mut state,
+            &mut Drafts::default(),
+            Catchup::Replay,
+            MachineId::THIS,
+        );
 
         assert_eq!(state, before);
     }
@@ -1037,6 +1159,7 @@ mod tests {
             &mut Drafts::default(),
             SessionUpdate::Connecting { attempt: 3 },
             now,
+            MachineId::THIS,
         );
         assert_eq!(
             state.machines.this.connection,
@@ -1053,6 +1176,7 @@ mod tests {
                 retry_in: Duration::from_secs(4),
             },
             now,
+            MachineId::THIS,
         );
         assert_eq!(
             state.machines.this.connection,
@@ -1067,6 +1191,7 @@ mod tests {
             &mut Drafts::default(),
             SessionUpdate::Connected(Catchup::Replay),
             now,
+            MachineId::THIS,
         );
         assert!(state.is_connected());
     }

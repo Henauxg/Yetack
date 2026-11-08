@@ -224,6 +224,16 @@ pub struct Machines {
     pub others: BTreeMap<MachineId, MachineState>,
 }
 
+impl Machines {
+    pub fn get_mut(&mut self, machine: MachineId) -> Option<&mut MachineState> {
+        if machine == MachineId::THIS {
+            Some(&mut self.this)
+        } else {
+            self.others.get_mut(&machine)
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppState {
     pub machines: Machines,

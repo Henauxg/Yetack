@@ -29,12 +29,14 @@ use dioxus::desktop::tao::event::Event;
 use dioxus::desktop::tao::window::Icon;
 use dioxus::desktop::{LogicalSize, WindowBuilder};
 
-use crate::config::{Config, ConfigError, Environment};
+use crate::config::{Config, ConfigError, Environment, MachineConfig};
 use crate::connection::Startup;
+use crate::daemon_label::DaemonLabel;
 use crate::in_app_host::InAppHost;
+use crate::machine::MachineId;
 use crate::prefs::Prefs;
 use crate::reach::Places;
-use crate::state::AppState;
+use crate::state::{AppState, MachineState};
 
 const STYLESHEET: &str = include_str!("style.css");
 
@@ -63,6 +65,16 @@ fn main() -> anyhow::Result<()> {
     } else {
         AppState::new(label)
     };
+    let machines: Vec<(MachineId, MachineConfig)> =
+        (1..).map(MachineId::new).zip(config.machines).collect();
+    if !demo {
+        for (machine, remote) in &machines {
+            state.machines.others.insert(
+                *machine,
+                MachineState::new(DaemonLabel::ssh(remote.name.clone())),
+            );
+        }
+    }
     let prefs_file = prefs::file(&environment);
     if let Some(file) = &prefs_file {
         state.prefs = Prefs::load(file);
@@ -73,6 +85,7 @@ fn main() -> anyhow::Result<()> {
     let startup = Startup {
         state,
         daemon: config.daemon,
+        machines,
         places,
         in_app: in_app.clone(),
         notifications: config.notifications.enabled && !demo,

@@ -538,6 +538,14 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
   - `transport = "in_app"` runs the daemon in the app.
   - A missing file means the local daemon at its default socket.
   - A `config.toml` that is a symbolic link, as home-manager or a dotfiles repository makes, stays one: the app writes the link's target.
+  - Each `[[machines]]` table names another machine the app reaches at the same time, over SSH: `name` (what the sidebar shows), `host` and `remote_command`.
+- **Several machines** (module `machine`): `[daemon]` is machine 0, this computer, and each `[[machines]]` table the next number.
+  Each daemon numbers its own agents, so the app gives each agent an id of its own: the machine in the high bits, the daemon's id in the low 20.
+  Machine 0's agents keep the daemon's ids.
+  Each machine has its own connection task, which translates the ids of what it sends and receives (`map_agents` in `cockpit_protocol`).
+  A router hands each request to the task of the machine its agent is on; a request about no agent goes to machine 0.
+  `AppState.machines` holds what the app knows of each daemon (`MachineState`: label, connection, plan usage, settings, accounts, sessions), and a snapshot from one machine replaces that machine's agents alone.
+  A machine over SSH that does not answer is tried again every 10 seconds, and its requests fail meanwhile; only machine 0 has the "No daemon answers" screen.
 - **Reaching the daemon** (module `reach`): the connection task turns the config's daemon into a transport.
   For `in_app`, it starts `InAppDaemon` with the default state folder (`InAppHost` keeps it), or connects to the socket with a note when another daemon holds the lock.
   For `start_service`, it starts the service unless its socket answers.

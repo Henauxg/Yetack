@@ -21,19 +21,11 @@ impl MachineId {
     /// This computer: a daemon in the app, the background service, or a socket here.
     pub const THIS: Self = Self(0);
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the app reaches one machine so far")
-    )]
     pub fn new(raw: u16) -> Self {
         Self(raw)
     }
 
     /// The machine whose daemon runs the agent the app calls `agent`.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the app reaches one machine so far")
-    )]
     pub fn of(agent: AgentId) -> Self {
         let machine = agent.get() >> DAEMON_BITS;
         Self(u16::try_from(machine).unwrap_or(u16::MAX))

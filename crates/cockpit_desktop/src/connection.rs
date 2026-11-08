@@ -1,17 +1,20 @@
 //! The connection task: a coroutine that owns the daemon session, applies its updates to the
 //! state, and runs the requests the components ask for.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
-use cockpit_client::{Backoff, RequestError, Requester, Session, SessionError, SessionUpdate};
+use cockpit_client::{
+    Backoff, RequestError, Requester, Session, SessionError, SessionUpdate, Transport,
+};
 use cockpit_protocol::{AgentId, Request};
 use dioxus::desktop::DesktopContext;
 use dioxus::prelude::*;
 use tokio::sync::mpsc;
 
-use crate::config::DaemonConfig;
+use crate::config::{DaemonConfig, MachineConfig};
+use crate::daemon_label::DaemonLabel;
 use crate::in_app_host::InAppHost;
 use crate::machine::MachineId;
 use crate::notifications::Notifier;
@@ -28,8 +31,10 @@ use crate::{bridge, demo};
 #[derive(Debug, Clone, PartialEq)]
 pub struct Startup {
     pub state: AppState,
-    /// The daemon the config names.
+    /// This computer's daemon, as the config names it.
     pub daemon: DaemonConfig,
+    /// The other machines the config names, reached over SSH.
+    pub machines: Vec<(MachineId, MachineConfig)>,
     pub places: Places,
     /// The daemon the app runs itself, which the window's close stops.
     pub in_app: InAppHost,
@@ -39,6 +44,12 @@ pub struct Startup {
     /// Where the preferences are saved, `None` without a home folder.
     pub prefs_file: Option<PathBuf>,
 }
+
+/// The requests of one machine's connection task.
+type Requests = mpsc::UnboundedReceiver<ToDaemon>;
+
+/// How long a machine that does not answer waits before the app tries it again.
+const REMOTE_RETRY: Duration = Duration::from_secs(10);
 
 /// What components ask of the connection task.
 pub enum ToDaemon {
@@ -179,6 +190,7 @@ pub fn use_cockpit(startup: Startup) -> Cockpit {
     let Startup {
         state: initial,
         daemon: configured,
+        machines,
         places,
         in_app,
         notifications,
@@ -195,11 +207,12 @@ pub fn use_cockpit(startup: Startup) -> Cockpit {
             in_app: in_app.clone(),
             notify: notifications,
         };
+        let machines = machines.clone();
         async move {
             if demo {
                 run_demo(state, drafts, load, requests).await;
             } else {
-                run(state, drafts, load, live, requests).await;
+                route(state, drafts, load, live, machines, requests).await;
             }
         }
     });
@@ -209,6 +222,122 @@ pub fn use_cockpit(startup: Startup) -> Cockpit {
         load,
         daemon,
     })
+}
+
+/// Starts a connection task per machine, and hands each request to the task of the machine its
+/// agent is on. A request about no agent goes to this computer's.
+async fn route(
+    state: Signal<AppState>,
+    drafts: Signal<Drafts>,
+    load: Signal<LoadView>,
+    live: Live,
+    machines: Vec<(MachineId, MachineConfig)>,
+    mut requests: UnboundedReceiver<ToDaemon>,
+) {
+    use futures_util::StreamExt;
+
+    let notify = live.notify;
+    let (this, this_requests) = mpsc::unbounded_channel();
+    spawn(run(state, drafts, load, live, this_requests));
+    let mut tasks = BTreeMap::from([(MachineId::THIS, this)]);
+    for (machine, remote) in machines {
+        let (sender, machine_requests) = mpsc::unbounded_channel();
+        spawn(run_remote(
+            state,
+            drafts,
+            machine,
+            remote,
+            notify,
+            machine_requests,
+        ));
+        tasks.insert(machine, sender);
+    }
+    while let Some(mut message) = requests.next().await {
+        let machine = match &mut message {
+            ToDaemon::Send(outgoing) => outgoing
+                .request
+                .agent_mut()
+                .map_or(MachineId::THIS, |agent| MachineId::of(*agent)),
+            ToDaemon::Choose(_) => MachineId::THIS,
+        };
+        if let Some(task) = tasks.get(&machine) {
+            // A task that ended takes no more requests.
+            let _ = task.send(message);
+        }
+    }
+}
+
+/// Reaches a machine over SSH, and tries again after each failure, as long as the window lives.
+async fn run_remote(
+    mut state: Signal<AppState>,
+    drafts: Signal<Drafts>,
+    machine: MachineId,
+    remote: MachineConfig,
+    notify: bool,
+    mut requests: Requests,
+) {
+    let label = DaemonLabel::ssh(remote.name.clone());
+    loop {
+        if let Some(known) = state.write().machines.get_mut(machine) {
+            known.connection = ConnectionState::Connecting { attempt: 1 };
+        }
+        let reached = Reached {
+            transport: Transport::Ssh {
+                host: remote.host.clone(),
+                remote_command: remote.remote_command.clone(),
+            },
+            label: label.clone(),
+            note: None,
+        };
+        let served = serve(state, drafts, None, reached, machine, notify, &mut requests);
+        let error = match served.await {
+            Served::Closed => return,
+            Served::NoAnswer { unreached, .. } => unreached.error,
+        };
+        let retry_at = Instant::now() + REMOTE_RETRY;
+        if let Some(known) = state.write().machines.get_mut(machine) {
+            known.connection = ConnectionState::Disconnected { error, retry_at };
+        }
+        let waited = refuse_requests(
+            state,
+            drafts,
+            &mut requests,
+            tokio::time::sleep(REMOTE_RETRY),
+        );
+        if !waited.await {
+            return;
+        }
+    }
+}
+
+/// Answers the requests that come until `wait` ends with a failure, since no daemon answers them.
+/// Returns false when the requests end, with the window.
+async fn refuse_requests(
+    mut state: Signal<AppState>,
+    mut drafts: Signal<Drafts>,
+    requests: &mut Requests,
+    wait: impl Future<Output = ()>,
+) -> bool {
+    tokio::pin!(wait);
+    loop {
+        tokio::select! {
+            () = &mut wait => return true,
+            message = requests.recv() => match message {
+                Some(ToDaemon::Send(Outgoing { request, purpose })) => {
+                    let mut state = state.write();
+                    state::apply_response(
+                        &mut state,
+                        &mut drafts.write(),
+                        request.method(),
+                        purpose,
+                        Err(RequestError::NotConnected),
+                    );
+                }
+                Some(ToDaemon::Choose(_)) => {}
+                None => return false,
+            },
+        }
+    }
 }
 
 /// Shows `view`, unless the load already shows it: setting a signal renders its readers again.
@@ -296,7 +425,7 @@ async fn run(
     drafts: Signal<Drafts>,
     load: Signal<LoadView>,
     live: Live,
-    mut requests: UnboundedReceiver<ToDaemon>,
+    mut requests: Requests,
 ) {
     let Live {
         mut configured,
@@ -321,7 +450,7 @@ async fn run(
                 let served = serve(
                     state,
                     drafts,
-                    load,
+                    Some(load),
                     reached,
                     MachineId::THIS,
                     notify,
@@ -366,12 +495,10 @@ fn show_no_daemon(
 async fn next_choice(
     mut state: Signal<AppState>,
     mut drafts: Signal<Drafts>,
-    requests: &mut UnboundedReceiver<ToDaemon>,
+    requests: &mut Requests,
 ) -> Option<Chosen> {
-    use futures_util::StreamExt;
-
     loop {
-        match requests.next().await? {
+        match requests.recv().await? {
             ToDaemon::Choose(chosen) => return Some(chosen),
             ToDaemon::Send(Outgoing { request, purpose }) => {
                 let refused = Err(RequestError::NotConnected);
@@ -392,14 +519,12 @@ async fn next_choice(
 async fn serve(
     mut state: Signal<AppState>,
     mut drafts: Signal<Drafts>,
-    load: Signal<LoadView>,
+    load: Option<Signal<LoadView>>,
     reached: Reached,
     machine: MachineId,
     notify: bool,
-    requests: &mut UnboundedReceiver<ToDaemon>,
+    requests: &mut Requests,
 ) -> Served {
-    use futures_util::StreamExt;
-
     let Reached {
         transport, label, ..
     } = reached;
@@ -414,9 +539,11 @@ async fn serve(
     let mut connected_once = false;
     loop {
         tokio::select! {
-            _ = load_ticks.tick() => {
+            _ = load_ticks.tick(), if load.is_some() => {
                 if !state.peek().is_connected() {
-                    show_load(load, LoadView::Waiting);
+                    if let Some(load) = load {
+                        show_load(load, LoadView::Waiting);
+                    }
                 } else if !load_asked {
                     load_asked = true;
                     let requester = requester.clone();
@@ -434,7 +561,9 @@ async fn serve(
                     machine.answer_to_app(&mut body);
                     body
                 });
-                show_load(load, LoadView::from_result(answer));
+                if let Some(load) = load {
+                    show_load(load, LoadView::from_result(answer));
+                }
             }
             update = session.next_update() => {
                 let Some(mut update) = update else {
@@ -462,7 +591,7 @@ async fn serve(
                     let mut state = state.write();
                     let mut drafts = drafts.write();
                     let alerts =
-                        state::apply_update(&mut state, &mut drafts, update, Instant::now());
+                        state::apply_update(&mut state, &mut drafts, update, Instant::now(), machine);
                     (alerts, state::needed_requests(&mut state))
                 };
                 for outgoing in follow_up {
@@ -472,7 +601,7 @@ async fn serve(
                     notifier.update(alerts, &state.peek());
                 }
             }
-            outgoing = requests.next() => match outgoing {
+            outgoing = requests.recv() => match outgoing {
                 Some(ToDaemon::Send(outgoing)) => {
                     send(state, drafts, requester.clone(), machine, outgoing);
                 }
