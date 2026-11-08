@@ -2,6 +2,7 @@
 
 agents-cockpit runs Claude Code agents on a server and lets you steer them from a desktop app.
 Read [docs/plan.md](docs/plan.md) for what it does and [docs/architecture.md](docs/architecture.md) for how the code is split, before changing anything.
+Read [docs/handoff.md](docs/handoff.md) for where the work stands and how the user works.
 
 ## Commands
 
