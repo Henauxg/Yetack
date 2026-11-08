@@ -545,11 +545,15 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
   Each machine has its own connection task, which translates the ids of what it sends and receives (`map_agents` in `cockpit_protocol`).
   A router hands each request to the task of the machine its agent is on; a request about no agent goes to machine 0.
   `AppState.machines` holds what the app knows of each daemon (`MachineState`: label, connection, plan usage, settings, accounts, sessions), and a snapshot from one machine replaces that machine's agents alone.
-  A machine over SSH that does not answer is tried again every 10 seconds, and its requests fail meanwhile; only machine 0 has the "No daemon answers" screen.
+  Account ids collide across machines, so every account function takes the machine, and the Accounts dialog picks one.
+  The header's plan usage, the hidden MCP servers, the undo of a close and the machine load follow the selected agent's machine.
+  A machine over SSH that does not answer is tried again every 10 seconds, and its requests fail meanwhile. "Retry now" on its panel ends the wait.
+  The Machines dialog (`state/machines.rs`) adds and removes servers. The connection task starts or ends their tasks and writes the list back (`save_machines`, which keeps the rest of the file as `save_daemon` does). Removing a server drops its agents from view and leaves them running there.
+  Only machine 0 has the "No daemon answers" screen. With servers configured, it shows as a dialog from this computer's panel, so the servers stay usable.
 - **Reaching the daemon** (module `reach`): the connection task turns the config's daemon into a transport.
   For `in_app`, it starts `InAppDaemon` with the default state folder (`InAppHost` keeps it), or connects to the socket with a note when another daemon holds the lock.
   For `start_service`, it starts the service unless its socket answers.
-- **"No daemon answers"**: when the first connection to the daemon fails, the session stops and the window shows this screen in place of its panes.
+- **"No daemon answers"**: when the first connection to the daemon fails, the session stops and the window shows this screen in place of its panes (or as a dialog when servers are configured).
   It names the daemon the app tried and the error, and offers Retry (the daemon it tried), "Run agents in this app", and "Start the background service here" (on Unix only).
   A choice holds for this run only, so the next start tries the config's daemon again.
   With "Use this every time" ticked, the app writes the choice into the config first (`save_daemon`, which keeps the file's other settings and comments): `in_app`, or `local` with `start_service`.

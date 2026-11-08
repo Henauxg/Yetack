@@ -48,21 +48,14 @@ These notes are about Claude Code's cloud sessions, where most of this branch wa
 - On-screen checks: the demo (`agents-cockpit-desktop --demo`) under Xvfb with openbox, wmctrl and xdotool, screenshots with `import -window root`. Close the window with wmctrl: xdotool's close aborts GTK.
 - An agent started with `isolation: "worktree"` gets a worktree of `main`: its first step must check out the working branch. Two agents in one checkout work if each owns separate crates and commits only its own files.
 
-## Several machines, in progress
+## Several machines
 
-The user approved option A of the sidebar mockup: one panel per machine, folding, with no coloured dot per machine. Done so far (docs/architecture.md, "Several machines"):
+The user approved option A of the sidebar mockup: one panel per machine, folding, with no coloured dot per machine. How it works is in docs/architecture.md, "Several machines".
 
-- `[[machines]]` in config.toml; a connection task per machine and a router; app agent ids with the machine in the high bits (`machine.rs`, `map_agents` in the protocol).
-- `MachineState` per machine; snapshots and events apply to their machine; `Outgoing.to` names the machine of a request about no agent.
-- The grouped sidebar; the new agent dialog's Machine row (this computer's accounts only).
+The user has not run it yet. Left:
 
-Left, in the order planned:
-
-1. Accounts per machine: `state/accounts.rs` reads `machines.this` everywhere. A server's agent shows this computer's account labels, and the Accounts dialog needs a machine picker (the user agreed to one).
-2. The header's plan usage chip, the MCP servers' hidden list (`settings.set`) and the undo of a close should follow the agent's machine; the machine load is polled for this computer alone.
-3. A Machines dialog that adds and removes `[[machines]]` (mocked in the same round), and "Retry now" on a panel.
-4. The "Where should agents run?" screen takes the whole window even when servers are configured: it should show inside this computer's panel then.
-5. Run `/review` and `/review-standard` on the whole machines range, and check it on Windows with a real server.
+- Check it on Windows with a real server: add one in the Machines dialog, start an agent there, stop the server, and watch "Retry now".
+- Once the user confirms, fast-forward `main` to this branch. Branch deletion returns 403 from these sessions, so the user deletes old branches.
 
 ## Open points
 
