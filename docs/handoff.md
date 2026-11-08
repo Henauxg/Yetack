@@ -52,10 +52,10 @@ These notes are about Claude Code's cloud sessions, where most of this branch wa
 
 The user approved option A of the sidebar mockup: one panel per machine, folding, with no coloured dot per machine. How it works is in docs/architecture.md, "Several machines".
 
-The user has not run it yet. Left:
+It is merged into `main`, but the user has not fully run it yet. Left:
 
-- Check it on Windows with a real server: add one in the Machines dialog, start an agent there, stop the server, and watch "Retry now".
-- Once the user confirms, fast-forward `main` to this branch. Branch deletion returns 403 from these sessions, so the user deletes old branches.
+- Check it on Windows with a real server: add one in the Machines dialog, start an agent there, stop the server, and watch "Retry now". The user tests with WSL as the server, reached over SSH on localhost. The daemon there needs Claude Code (the `claude` command) on the `PATH` of the terminal that runs `serve`: Claude Desktop does not provide it.
+- Branch deletion returns 403 from these sessions, so the user deletes old branches.
 
 ## Open points
 
