@@ -900,9 +900,10 @@ pub fn SignInCard(agent: AgentId) -> Element {
         let others = accounts::others_waiting(&state, agent, id);
         let waits = entry.summary.sign_in_wait == SignInWait::Waiting;
         let sends = accounts::sends_again(&state, agent);
-        (id, data, others, waits, sends)
+        let refused = accounts::credentials_refused(&state, id);
+        (id, data, others, waits, sends, refused)
     };
-    let (id, data, others, waits, sends) = card;
+    let (id, data, others, waits, sends, refused) = card;
     let name = data
         .as_ref()
         .map_or_else(|| "its account".to_owned(), |data| data.label.name.clone());
@@ -911,7 +912,6 @@ pub fn SignInCard(agent: AgentId) -> Element {
         || "the daemon's machine".to_owned(),
         |data| data.machine.clone(),
     );
-    let uses_environment = data.as_ref().is_some_and(|data| data.uses_environment);
     let command = data.and_then(|data| data.command);
     let others_note = match others {
         0 => None,
@@ -926,7 +926,7 @@ pub fn SignInCard(agent: AgentId) -> Element {
         div { class: if waits { "card waiting signin-card" } else { "card signin-card" },
             div { class: "card-head",
                 Icon { kind: IconKind::Warning, size: 16 }
-                if uses_environment {
+                if refused {
                     span { "Claude Code refused the API key or token of {name}" }
                 } else {
                     span { "The account {name} is not signed in" }
@@ -942,7 +942,7 @@ pub fn SignInCard(agent: AgentId) -> Element {
                 }
                 ". Claude Code did not send your message."
             }
-            if uses_environment {
+            if refused {
                 span { class: "card-note",
                     "Check the daemon's {API_KEY_ENV} and {AUTH_TOKEN_ENV}, or turn them off for this account in Accounts and sign in."
                 }

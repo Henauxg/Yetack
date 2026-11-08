@@ -322,6 +322,14 @@ pub fn sign_in_turn(entry: &AgentEntry) -> Option<SignInTurn> {
     })
 }
 
+/// Whether Claude Code refused the API key or token the account takes from the daemon's
+/// environment. With neither variable set, Claude Code used the folder's login instead.
+pub fn credentials_refused(state: &AppState, id: AccountId) -> bool {
+    state.sign_ins.environment_credentials == EnvironmentCredentials::Set
+        && account(state, id)
+            .is_some_and(|account| account.credentials == CredentialSource::Environment)
+}
+
 /// Whether "Send the message again" sends: the account signed in or no check can end the wait,
 /// the app holds the message, and the card has not sent it yet. No check ends the wait when the
 /// daemon cannot see the sign-in (a login in the macOS Keychain), or when the account's
@@ -1649,6 +1657,25 @@ mod tests {
             [Outgoing { request: Request::AgentPrompt(PromptParams { prompt, .. }), .. }] if prompt.text == "Export the invoices"
         ));
         assert_eq!(second, [], "the card sends the message once");
+    }
+
+    #[test]
+    fn only_an_environment_account_with_a_key_or_token_set_had_them_refused() {
+        let mut state = state_with(Vec::new());
+        three_accounts(&mut state);
+
+        state.sign_ins.environment_credentials = EnvironmentCredentials::Unset;
+        let without = credentials_refused(&state, lab());
+        state.sign_ins.environment_credentials = EnvironmentCredentials::Set;
+        let with = credentials_refused(&state, lab());
+        let signed_in_account = credentials_refused(&state, work());
+
+        assert!(
+            !without,
+            "with nothing set, Claude Code used the folder's login"
+        );
+        assert!(with);
+        assert!(!signed_in_account);
     }
 
     #[test]
