@@ -1341,7 +1341,7 @@ pub fn show_read_file(
     agent: AgentId,
     requested: &Path,
     found: &Path,
-    text: String,
+    read: FileRead,
 ) {
     let Some(entry) = state.agents.get_mut(&agent) else {
         return;
@@ -1368,9 +1368,7 @@ pub fn show_read_file(
         view.opened.retain(|opened| seen.insert(opened.clone()));
         view.path = found.clone();
     }
-    entry
-        .files
-        .insert(found, Loadable::Loaded(FileRead::Text(text)));
+    entry.files.insert(found, Loadable::Loaded(read));
 }
 
 pub fn close_file_view(state: &mut AppState, agent: AgentId) {
@@ -3746,6 +3744,35 @@ mod tests {
                 path: PathBuf::from(path),
             },
             result,
+        );
+    }
+
+    #[test]
+    fn an_image_the_daemon_read_shows_in_the_view() {
+        let mut state = state(AgentStatus::Idle);
+        let image = Image {
+            media_type: ImageMediaType::Jpeg,
+            data: "aGVsbG8=".to_owned(),
+        };
+        open_file(
+            &mut state,
+            agent(),
+            PathBuf::from("shots/sheet05.jpg"),
+            None,
+        );
+
+        read_answer(
+            &mut state,
+            "shots/sheet05.jpg",
+            Ok(ResponseBody::Image {
+                path: PathBuf::from("/work/project-1/shots/sheet05.jpg"),
+                image: image.clone(),
+            }),
+        );
+
+        assert_eq!(
+            state.agents[&agent()].files[Path::new("shots/sheet05.jpg")],
+            Loadable::Loaded(FileRead::Image(image))
         );
     }
 

@@ -20,7 +20,6 @@ use crate::ui::accounts::SignInCard;
 use crate::ui::cards::{ApprovalCard, PlanCard, QuestionCard};
 use crate::ui::chat_scroll::{self, CHAT_SCROLL_ID, ENTRY_CLASS, JumpToLatest, NewDivider};
 use crate::ui::code::{LineNumbers, diff_row};
-use crate::ui::composer;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::loading::TranscriptSkeleton;
 use crate::ui::markdown::MarkdownView;
@@ -710,8 +709,8 @@ enum ToolShape {
         tool: String,
         input: Option<String>,
     },
-    /// A tool that names a text file, such as `Read`: its summary opens the file view, at the
-    /// line the call starts at. An image is not one: the file view shows text alone.
+    /// A tool that names a file, such as `Read`: its summary opens the file view, at the line
+    /// the call starts at.
     File { path: PathBuf, line: Option<u32> },
     /// Any other tool: its name and summary (a path, a pattern, a URL) on the title line.
     Other,
@@ -750,11 +749,7 @@ impl ToolShape {
                 command,
             };
         }
-        let file = FILE_FIELDS
-            .iter()
-            .find_map(|name| field(name))
-            .filter(|path| composer::media_type_from_name(path).is_none());
-        match file {
+        match FILE_FIELDS.iter().find_map(|name| field(name)) {
             Some(path) => Self::File {
                 path: PathBuf::from(path),
                 line: call
@@ -1297,7 +1292,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tool_that_names_a_text_file_links_to_it_at_its_first_line() {
+    fn a_tool_that_names_a_file_links_to_it_at_its_first_line() {
         let read = |input: serde_json::Value| {
             ToolShape::new(&ToolCall {
                 input,
@@ -1321,8 +1316,10 @@ mod tests {
         );
         assert_eq!(
             read(serde_json::json!({"file_path": "/work/shots/sheet05.JPG"})),
-            ToolShape::Other,
-            "the file view shows no image"
+            ToolShape::File {
+                path: PathBuf::from("/work/shots/sheet05.JPG"),
+                line: None,
+            }
         );
     }
 

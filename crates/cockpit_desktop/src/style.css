@@ -3840,6 +3840,19 @@ html.splitting * {
   overflow-wrap: anywhere;
 }
 
+.file-image {
+  display: flex;
+  justify-content: center;
+  padding: 16px;
+}
+
+.file-image img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  border: 1px solid var(--line-strong);
+}
+
 .file-note {
   margin: 8px 12px;
   font-family: var(--sans);

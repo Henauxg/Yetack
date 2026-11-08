@@ -16,7 +16,7 @@ use crate::hub::input::{ControlPurpose, HubInput, Reply};
 use crate::hub::state::{Agent, Hub};
 use crate::hub::{agents, errors, history};
 use crate::machine_load::AgentRoot;
-use crate::read_file::Found;
+use crate::read_file::{Content, Found};
 use crate::sessions::AccountFolder;
 use crate::store::{DaemonSettings, LogName};
 use crate::transcript::{touched_files, words};
@@ -159,10 +159,17 @@ impl Hub {
             } = access;
             let found = read_file::find_and_read(folder, touched, home, params.path).await;
             let result = match found {
-                Ok(Found::File { path, text }) => Ok(ResponseBody::File {
+                Ok(Found::File {
+                    path,
+                    content: Content::Text(text),
+                }) => Ok(ResponseBody::File {
                     path: Some(path),
                     text,
                 }),
+                Ok(Found::File {
+                    path,
+                    content: Content::Image(image),
+                }) => Ok(ResponseBody::Image { path, image }),
                 Ok(Found::Several(matches)) => Ok(ResponseBody::FileMatches { matches }),
                 Err(error) => Err(error.to_error_body()),
             };

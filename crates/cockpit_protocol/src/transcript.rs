@@ -75,6 +75,21 @@ pub enum ImageMediaType {
     Webp,
 }
 
+impl ImageMediaType {
+    /// The type a file name's extension names, whatever its case, such as `shot.PNG`.
+    #[must_use]
+    pub fn from_file_name(name: &str) -> Option<Self> {
+        let extension = name.rsplit_once('.')?.1.to_lowercase();
+        match extension.as_str() {
+            "png" => Some(Self::Png),
+            "jpg" | "jpeg" => Some(Self::Jpeg),
+            "gif" => Some(Self::Gif),
+            "webp" => Some(Self::Webp),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolCall {
     /// Claude Code's tool name, such as `Bash`, `Edit` or `mcp__server__tool`.

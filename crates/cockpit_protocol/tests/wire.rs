@@ -781,6 +781,10 @@ fn response_bodies() -> Vec<ResponseBody> {
             path: Some(PathBuf::from("/srv/projects/shop/src/main.rs")),
             text: "fn main() {}\n".to_owned(),
         },
+        ResponseBody::Image {
+            path: PathBuf::from("/srv/projects/shop/docs/cart.png"),
+            image: image(),
+        },
         ResponseBody::Directory(dir_listing()),
         ResponseBody::FileMatches {
             matches: vec![
@@ -1060,6 +1064,7 @@ fn message_and_body_tags_are_pinned() {
             "mcp_servers",
             "commands",
             "file",
+            "image",
             "directory",
             "file_matches",
             "sessions",
@@ -1268,6 +1273,17 @@ fn a_prompt_request_on_the_wire() {
             },
         }),
     );
+}
+
+#[test]
+fn an_image_type_comes_from_the_file_names_extension() {
+    let of = ImageMediaType::from_file_name;
+
+    assert_eq!(of("shot.PNG"), Some(ImageMediaType::Png));
+    assert_eq!(of(r"C:\shots\sheet05.jpg"), Some(ImageMediaType::Jpeg));
+    assert_eq!(of("photo.jpeg"), Some(ImageMediaType::Jpeg));
+    assert_eq!(of("notes.txt"), None);
+    assert_eq!(of("no-extension"), None);
 }
 
 #[test]

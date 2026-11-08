@@ -327,7 +327,11 @@ pub fn apply_response(
             let read = match result {
                 Ok(ResponseBody::File { path: found, text }) => {
                     let found = found.unwrap_or_else(|| path.clone());
-                    actions::show_read_file(state, agent, &path, &found, text);
+                    actions::show_read_file(state, agent, &path, &found, FileRead::Text(text));
+                    return;
+                }
+                Ok(ResponseBody::Image { path: found, image }) => {
+                    actions::show_read_file(state, agent, &path, &found, FileRead::Image(image));
                     return;
                 }
                 Ok(ResponseBody::FileMatches { matches }) => {

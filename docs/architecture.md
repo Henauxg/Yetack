@@ -171,7 +171,7 @@ A reader refuses a line longer than a fixed maximum (16 MiB) instead of bufferin
 ### Session
 
 1. The client sends `Hello { protocol_version, last_seq }`.
-   The version is 3. An app and a daemon of different versions refuse each other.
+   The version is 4. An app and a daemon of different versions refuse each other.
 2. The daemon answers `Welcome { protocol_version, catchup }`, or `Refused { reason }` when the versions differ.
 3. `catchup` is `Replay` when `last_seq` was given and the logs still hold every event after it: the daemon then sends those events, then live events.
    Otherwise it is `Snapshot(snapshot)`: the client replaces its state with it, and live events follow.
@@ -204,7 +204,7 @@ On Windows, a folder's entries come from `GetFileInformationByHandleEx` on the o
   A link that leads to a device name is refused once resolved, before the file opens. A search leaves out a path that `git ls-files` lists outside its checkout, which an index file the agent wrote can hold.
 - `folders.list` takes a share, since the user types it.
 
-- `agent.read_file` sends a text file of at most 4 MiB. A relative path that names no file in the agent's folder is looked up: the most recent file the agent read or changed whose path ends with it, then a `git ls-files` search of the folders above, which stops at 20 matches or 3 seconds. Several matches come back as `FileMatches`, for the user to pick.
+- `agent.read_file` sends a text file of at most 4 MiB, or, for a file whose extension names an image type Claude reads (`.png`, `.jpg`, `.gif`, `.webp`), the image of at most 8 MiB as `Image`, in base64. A relative path that names no file in the agent's folder is looked up: the most recent file the agent read or changed whose path ends with it, then a `git ls-files` search of the folders above, which stops at 20 matches or 3 seconds. Several matches come back as `FileMatches`, for the user to pick.
 - `agent.list_dir` answers a folder's entries, folders first, each with its kind (folder, file or other), a file's size, and whether it is a symbolic link (`link`: `direct` or `symbolic_link`). It reads at most 20,000 entries and sends at most 2,000, and says when it cut the list (`completeness`: `complete` or `truncated`). It runs off the hub's task.
 - `agent.find_files` answers the files whose name holds a text, whatever its case, from the same bounded search.
 

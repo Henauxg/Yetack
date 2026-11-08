@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_protocol::{
-    Account, AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, ItemId, PastSession,
-    PlanUsage, Settings, Timestamp, WaitingPrompt, list_order,
+    Account, AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, Image, ItemId,
+    PastSession, PlanUsage, Settings, Timestamp, WaitingPrompt, list_order,
 };
 use strum::VariantArray;
 
@@ -50,6 +50,7 @@ impl<T> Loadable<T> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileRead {
     Text(String),
+    Image(Image),
     /// Several files end with the path, which names none in the agent's folder: the user picks
     /// one. Absolute paths.
     Choices(Vec<PathBuf>),

@@ -20,6 +20,7 @@ path = "src/bin/test_serve.rs"
 test = false
 
 [dependencies]
+base64 = "0.22.1"
 claude_protocol.workspace = true
 cockpit_protocol.workspace = true
 serde.workspace = true

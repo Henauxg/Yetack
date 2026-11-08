@@ -3,8 +3,8 @@
 //! A connection carries one JSON object per line ([`FrameReader`], [`FrameWriter`]):
 //!
 //! ```text
-//! client: {"type":"hello","protocol_version":3,"last_seq":41}
-//! daemon: {"type":"welcome","protocol_version":3,"catchup":{"type":"replay"}}
+//! client: {"type":"hello","protocol_version":4,"last_seq":41}
+//! daemon: {"type":"welcome","protocol_version":4,"catchup":{"type":"replay"}}
 //! daemon: {"type":"event","seq":42,"event":{"type":"agent_removed","agent":3}}
 //! client: {"type":"request","id":1,"request":{"method":"agent.interrupt","params":{"agent":2}}}
 //! daemon: {"type":"response","id":1,"result":{"ok":{"type":"done"}}}

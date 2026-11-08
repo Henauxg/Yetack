@@ -536,6 +536,7 @@ dependencies = [
 name = "cockpit_daemon"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "claude_protocol",
  "cockpit_client",
  "cockpit_protocol",

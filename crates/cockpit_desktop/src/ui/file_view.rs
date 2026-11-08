@@ -61,6 +61,7 @@ pub fn FileViewPanel() -> Element {
     let diff = view.mode == ViewMode::Diff;
     let shown = view.path.clone();
     let loading = matches!(text, Loadable::NotRequested | Loadable::Loading);
+    let image = matches!(text, Loadable::Loaded(FileRead::Image(_)));
     let wrap = state.prefs.file_view.wrap;
     rsx! {
         section {
@@ -109,27 +110,29 @@ pub fn FileViewPanel() -> Element {
                     }
                 }
                 span { class: "read-only-chip", "Read-only" }
-                div { class: "segmented", role: "group", aria_label: "View mode",
-                    button {
-                        class: if diff { "segment chosen" } else { "segment" },
-                        aria_pressed: diff,
-                        onclick: move |_| cockpit.update(|state| actions::set_view_mode(state, agent, ViewMode::Diff)),
-                        "Diff"
+                if !image {
+                    div { class: "segmented", role: "group", aria_label: "View mode",
+                        button {
+                            class: if diff { "segment chosen" } else { "segment" },
+                            aria_pressed: diff,
+                            onclick: move |_| cockpit.update(|state| actions::set_view_mode(state, agent, ViewMode::Diff)),
+                            "Diff"
+                        }
+                        button {
+                            class: if diff { "segment" } else { "segment chosen" },
+                            aria_pressed: !diff,
+                            onclick: move |_| cockpit.update(|state| actions::set_view_mode(state, agent, ViewMode::WholeFile)),
+                            "Whole file"
+                        }
                     }
-                    button {
-                        class: if diff { "segment" } else { "segment chosen" },
-                        aria_pressed: !diff,
-                        onclick: move |_| cockpit.update(|state| actions::set_view_mode(state, agent, ViewMode::WholeFile)),
-                        "Whole file"
-                    }
-                }
-                div { class: "segmented",
-                    button {
-                        class: if wrap { "segment chosen" } else { "segment" },
-                        aria_pressed: wrap,
-                        title: "Wrap long lines instead of scrolling sideways",
-                        onclick: move |_| cockpit.update(actions::toggle_wrap),
-                        "Wrap"
+                    div { class: "segmented",
+                        button {
+                            class: if wrap { "segment chosen" } else { "segment" },
+                            aria_pressed: wrap,
+                            title: "Wrap long lines instead of scrolling sideways",
+                            onclick: move |_| cockpit.update(actions::toggle_wrap),
+                            "Wrap"
+                        }
                     }
                 }
             }
@@ -156,6 +159,11 @@ pub fn FileViewPanel() -> Element {
                     },
                     Loadable::Loaded(FileRead::Text(text)) => rsx! {
                         FileContent { path: view.path.clone(), text, mode: view.mode, line: view.line, edits }
+                    },
+                    Loadable::Loaded(FileRead::Image(image)) => rsx! {
+                        div { class: "file-image",
+                            img { src: bridge::image_url(&image), alt: "{full}" }
+                        }
                     },
                 }
             }

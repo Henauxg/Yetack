@@ -270,17 +270,6 @@ fn accepted_images() -> String {
     types.join(",")
 }
 
-pub(crate) fn media_type_from_name(name: &str) -> Option<ImageMediaType> {
-    let extension = name.rsplit_once('.')?.1.to_lowercase();
-    match extension.as_str() {
-        "png" => Some(ImageMediaType::Png),
-        "jpg" | "jpeg" => Some(ImageMediaType::Jpeg),
-        "gif" => Some(ImageMediaType::Gif),
-        "webp" => Some(ImageMediaType::Webp),
-        _ => None,
-    }
-}
-
 async fn attach(cockpit: Cockpit, agent: AgentId, files: Vec<FileData>) {
     use base64::Engine;
 
@@ -290,7 +279,7 @@ async fn attach(cockpit: Cockpit, agent: AgentId, files: Vec<FileData>) {
             .content_type()
             .as_deref()
             .and_then(bridge::image_media_type)
-            .or_else(|| media_type_from_name(&name));
+            .or_else(|| ImageMediaType::from_file_name(&name));
         let Some(media_type) = media_type else {
             cockpit.update(|state| {
                 state.ui.report(format!(
@@ -405,17 +394,6 @@ fn ModeMenu(agent: AgentId, mode: PermissionMode) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn image_types_come_from_the_file_name_when_missing() {
-        assert_eq!(media_type_from_name("shot.PNG"), Some(ImageMediaType::Png));
-        assert_eq!(
-            media_type_from_name("photo.jpeg"),
-            Some(ImageMediaType::Jpeg)
-        );
-        assert_eq!(media_type_from_name("notes.txt"), None);
-        assert_eq!(media_type_from_name("no-extension"), None);
-    }
 
     #[test]
     fn stop_shows_beside_send_while_the_agent_works_or_waits_for_you() {

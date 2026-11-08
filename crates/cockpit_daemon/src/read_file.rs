@@ -1,4 +1,5 @@
-//! `agent.read_file`: a text file the agent can reach, for the file view.
+//! `agent.read_file`: a text file or an image the agent can reach, for the file view. An image is
+//! a file whose extension names a type Claude reads, such as `.png`.
 //!
 //! The daemon reads, once symlinks are resolved:
 //!
@@ -35,7 +36,8 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use cockpit_protocol::{ErrorBody, ErrorCode};
+use base64::Engine;
+use cockpit_protocol::{ErrorBody, ErrorCode, Image, ImageMediaType};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::task::JoinError;
@@ -46,8 +48,10 @@ use crate::process::program;
 #[cfg(windows)]
 use crate::{windows_files, windows_path};
 
-/// The largest file the view shows.
+/// The largest text file the view shows.
 pub(crate) const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
+/// The largest image the view shows. In base64 it stays well under a frame's limit.
+pub(crate) const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
 /// Links to the process's open files, each naming the file's path.
 #[cfg(unix)]
 const OPEN_FILES: &str = "/proc/self/fd";
@@ -198,8 +202,8 @@ pub(crate) enum ReadFileError {
     NotFound(#[source] io::Error),
     #[error("not a regular file")]
     NotAFile,
-    #[error("the file is larger than {MAX_FILE_BYTES} bytes")]
-    TooLarge,
+    #[error("the file is larger than {0} bytes")]
+    TooLarge(u64),
     #[error("the file is not UTF-8 text")]
     NotText,
     #[error("cannot read the file: {0}")]
@@ -211,7 +215,7 @@ impl ReadFileError {
         let code = match self {
             Self::Outside => ErrorCode::InvalidRequest,
             Self::Missing(_) | Self::Unknown(_) | Self::NotFound(_) => ErrorCode::NotFound,
-            Self::NotAFile | Self::TooLarge | Self::NotText | Self::Io(_) => {
+            Self::NotAFile | Self::TooLarge(_) | Self::NotText | Self::Io(_) => {
                 ErrorCode::FileUnreadable
             }
         };
@@ -219,9 +223,16 @@ impl ReadFileError {
     }
 }
 
+/// What the file view shows of a file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Content {
+    Text(String),
+    Image(Image),
+}
+
 /// Reads `path`, absolute or relative to the agent's folder, when `access` allows it once its
 /// symlinks are resolved.
-pub(crate) fn read(access: &Access, path: &Path) -> Result<String, ReadFileError> {
+pub(crate) fn read(access: &Access, path: &Path) -> Result<Content, ReadFileError> {
     use std::io::Read;
 
     if path
@@ -248,17 +259,31 @@ pub(crate) fn read(access: &Access, path: &Path) -> Result<String, ReadFileError
     if !metadata.is_file() {
         return Err(ReadFileError::NotAFile);
     }
-    if metadata.len() > MAX_FILE_BYTES {
-        return Err(ReadFileError::TooLarge);
+    let media_type = ImageMediaType::from_file_name(&resolved.to_string_lossy());
+    let limit = if media_type.is_some() {
+        MAX_IMAGE_BYTES
+    } else {
+        MAX_FILE_BYTES
+    };
+    if metadata.len() > limit {
+        return Err(ReadFileError::TooLarge(limit));
     }
     let mut bytes = Vec::new();
-    file.take(MAX_FILE_BYTES + 1)
+    file.take(limit + 1)
         .read_to_end(&mut bytes)
         .map_err(ReadFileError::Io)?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_FILE_BYTES {
-        return Err(ReadFileError::TooLarge);
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
+        return Err(ReadFileError::TooLarge(limit));
     }
-    String::from_utf8(bytes).map_err(|_| ReadFileError::NotText)
+    match media_type {
+        Some(media_type) => Ok(Content::Image(Image {
+            media_type,
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        })),
+        None => String::from_utf8(bytes)
+            .map(Content::Text)
+            .map_err(|_| ReadFileError::NotText),
+    }
 }
 
 /// What `agent.read_file` found for a path.
@@ -266,7 +291,7 @@ pub(crate) fn read(access: &Access, path: &Path) -> Result<String, ReadFileError
 pub(crate) enum Found {
     /// `path` is where the file was read: the path asked for, joined to the agent's folder when
     /// relative, or what the lookup found for it.
-    File { path: PathBuf, text: String },
+    File { path: PathBuf, content: Content },
     /// Several files match the path, and none was read.
     Several(Vec<PathBuf>),
 }
@@ -300,13 +325,16 @@ pub(crate) async fn find_and_read(
         [] => Err(ReadFileError::Unknown(path)),
         [only] => {
             let only = only.clone();
-            let text = tokio::task::spawn_blocking({
+            let content = tokio::task::spawn_blocking({
                 let only = only.clone();
                 move || read(&access, &only)
             })
             .await
             .map_err(join_error)??;
-            Ok(Found::File { path: only, text })
+            Ok(Found::File {
+                path: only,
+                content,
+            })
         }
         _ => Ok(Found::Several(matches)),
     }
@@ -325,9 +353,9 @@ fn read_or_match_touched(
     path: &Path,
 ) -> Result<Option<Found>, ReadFileError> {
     let tail = match read(access, path) {
-        Ok(text) => {
+        Ok(content) => {
             let path = folder.join(path);
-            return Ok(Some(Found::File { path, text }));
+            return Ok(Some(Found::File { path, content }));
         }
         Err(ReadFileError::Missing(missing)) => match name_tail(path) {
             Some(tail) => tail,
@@ -337,9 +365,9 @@ fn read_or_match_touched(
     };
     for candidate in touched.iter().filter(|file| file.ends_with(&tail)) {
         // A file the agent touched may be gone since.
-        if let Ok(text) = read(access, candidate) {
+        if let Ok(content) = read(access, candidate) {
             let path = candidate.clone();
-            return Ok(Some(Found::File { path, text }));
+            return Ok(Some(Found::File { path, content }));
         }
     }
     Ok(None)
@@ -540,7 +568,11 @@ mod tests {
         Access::new(folder, &[], None).unwrap()
     }
 
-    fn assert_outside(result: Result<String, ReadFileError>) {
+    fn text(text: &str) -> Content {
+        Content::Text(text.to_owned())
+    }
+
+    fn assert_outside(result: Result<Content, ReadFileError>) {
         assert!(matches!(result, Err(ReadFileError::Outside)), "{result:?}");
     }
 
@@ -606,7 +638,7 @@ mod tests {
         let relative = read(&access, Path::new("src/main.rs")).unwrap();
         let absolute = read(&access, &temp.path().join("src/main.rs")).unwrap();
 
-        assert_eq!(relative, "fn main() {}\n");
+        assert_eq!(relative, text("fn main() {}\n"));
         assert_eq!(absolute, relative);
     }
 
@@ -641,8 +673,8 @@ mod tests {
         let beside = read(&access, &layout.feature.join("src/app/beside.ts"));
         let todo = read(&access, &layout.loose.join("todo.txt"));
 
-        assert_eq!(beside.unwrap(), "beside\n");
-        assert_eq!(todo.unwrap(), "todo\n");
+        assert_eq!(beside.unwrap(), text("beside\n"));
+        assert_eq!(todo.unwrap(), text("todo\n"));
         // No checkout holds the loose file: its neighbours stay out.
         assert_outside(read(&access, &layout.loose.join("diary.txt")));
         assert_outside(read(&access, &layout.untouched.join("src/secret.ts")));
@@ -677,7 +709,7 @@ mod tests {
     fn file(path: PathBuf, text: &str) -> Found {
         Found::File {
             path,
-            text: text.to_owned(),
+            content: Content::Text(text.to_owned()),
         }
     }
 
@@ -821,7 +853,7 @@ mod tests {
             message.message,
             format!("{} does not exist", missing.display())
         );
-        assert_outside(dots.map(|_| String::new()));
+        assert_outside(dots.map(|_| Content::Text(String::new())));
     }
 
     #[test]
@@ -874,7 +906,7 @@ mod tests {
 
         assert_eq!(
             read(&access, &home.join("dotfile.txt")).unwrap(),
-            "dotfile\n"
+            text("dotfile\n")
         );
         assert_outside(read(&access, &layout.loose.join("todo.txt")));
         assert_outside(read(&access, &layout.feature.join("src/app/beside.ts")));
@@ -901,7 +933,7 @@ mod tests {
 
         assert_eq!(
             read(&access, &home.join("dotfile.txt")).unwrap(),
-            "dotfile\n"
+            text("dotfile\n")
         );
         assert_outside(read(&access, &layout.loose.join("todo.txt")));
     }
@@ -928,8 +960,8 @@ mod tests {
         let through_link = read(&access, &root.join("feature_link/src/app/beside.ts"));
         let from_the_folder = read(&access, Path::new("beside_link.ts"));
 
-        assert_eq!(through_link.unwrap(), "beside\n");
-        assert_eq!(from_the_folder.unwrap(), "beside\n");
+        assert_eq!(through_link.unwrap(), text("beside\n"));
+        assert_eq!(from_the_folder.unwrap(), text("beside\n"));
         assert_outside(read(&access, &layout.feature.join("src/escape.ts")));
     }
 
@@ -975,6 +1007,30 @@ mod tests {
     }
 
     #[test]
+    fn an_image_reads_as_base64_with_its_type_up_to_its_own_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("shot.PNG"), [0x89, b'P', b'N', b'G']).unwrap();
+        let large = File::create(temp.path().join("large.jpg")).unwrap();
+        large.set_len(MAX_IMAGE_BYTES + 1).unwrap();
+        let access = only_folder(temp.path());
+
+        let shot = read(&access, Path::new("shot.PNG"));
+        let too_large = read(&access, Path::new("large.jpg"));
+
+        assert_eq!(
+            shot.unwrap(),
+            Content::Image(Image {
+                media_type: ImageMediaType::Png,
+                data: "iVBORw==".to_owned(),
+            })
+        );
+        assert!(
+            matches!(too_large, Err(ReadFileError::TooLarge(MAX_IMAGE_BYTES))),
+            "{too_large:?}"
+        );
+    }
+
+    #[test]
     fn refuses_what_is_not_small_text() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("image.bin"), [0xff, 0xfe, 0x00]).unwrap();
@@ -990,7 +1046,7 @@ mod tests {
 
         assert!(matches!(binary, Err(ReadFileError::NotText)), "{binary:?}");
         assert!(
-            matches!(too_large, Err(ReadFileError::TooLarge)),
+            matches!(too_large, Err(ReadFileError::TooLarge(MAX_FILE_BYTES))),
             "{too_large:?}"
         );
         assert!(matches!(folder, Err(ReadFileError::NotAFile)), "{folder:?}");
@@ -1011,9 +1067,9 @@ mod tests {
         let shouting = read(&access, &upper.join(r"SRC\MAIN.RS"));
         let from_upper = read(&only_folder(&upper), Path::new(r"src\main.rs"));
 
-        assert_eq!(slashes.unwrap(), "fn main() {}\n");
-        assert_eq!(shouting.unwrap(), "fn main() {}\n");
-        assert_eq!(from_upper.unwrap(), "fn main() {}\n");
+        assert_eq!(slashes.unwrap(), text("fn main() {}\n"));
+        assert_eq!(shouting.unwrap(), text("fn main() {}\n"));
+        assert_eq!(from_upper.unwrap(), text("fn main() {}\n"));
     }
 
     /// Such a path must not reach the file system: a share would make Windows connect to its
@@ -1081,6 +1137,9 @@ mod tests {
 
         assert_outside(sibling);
         assert_outside(drive_root);
-        assert_eq!(read(&access, Path::new("INSIDE.TXT")).unwrap(), "inside");
+        assert_eq!(
+            read(&access, Path::new("INSIDE.TXT")).unwrap(),
+            text("inside")
+        );
     }
 }

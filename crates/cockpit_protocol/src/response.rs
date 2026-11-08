@@ -10,7 +10,7 @@ use crate::details::{AgentDetails, ContextUsage, McpServer, SlashCommand};
 use crate::ids::{AccountId, AgentId, ClaudeSessionId};
 use crate::machine_load::MachineLoad;
 use crate::time::Timestamp;
-use crate::transcript::TranscriptItem;
+use crate::transcript::{Image, TranscriptItem};
 
 /// The result of one request: a body, or an error. The connection stays open either way.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -62,6 +62,12 @@ pub enum ResponseBody {
         #[serde(default)]
         path: Option<PathBuf>,
         text: String,
+    },
+    /// For `agent.read_file`, an image file, which the daemon reads by its extension. `path` is
+    /// as for `File`.
+    Image {
+        path: PathBuf,
+        image: Image,
     },
     /// For `agent.read_file`, several files match the relative path asked for, and none was
     /// read. For `agent.find_files`, the files found. Absolute paths.

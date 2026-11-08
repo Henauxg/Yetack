@@ -16,7 +16,7 @@ use crate::settings::Settings;
 use crate::usage::{AccountPlanUsage, PlanUsage};
 
 /// Changes whenever a message changes shape. Client and daemon speak only the same version.
-pub const PROTOCOL_VERSION: u16 = 3;
+pub const PROTOCOL_VERSION: u16 = 4;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
