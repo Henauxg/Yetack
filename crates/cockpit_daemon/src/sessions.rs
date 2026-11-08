@@ -219,6 +219,15 @@ fn past_line(line: &[u8]) -> Option<OutputLine> {
 ///
 /// Claude Code writes a `cost-state` line when its process exits. A process killed before that
 /// writes none, so the next `--resume` restores the last line's cost.
+/// A session's folder as a user writes it. An agent of an older daemon ran in the verbatim form,
+/// `\\?\C:\work`, which Claude Code recorded.
+fn shown_folder(cwd: &str) -> PathBuf {
+    #[cfg(windows)]
+    return PathBuf::from(crate::windows_path::shown(cwd));
+    #[cfg(not(windows))]
+    PathBuf::from(cwd)
+}
+
 pub(crate) fn restored_cost(claude_folder: &Path, id: &ClaudeSessionId) -> Option<CostUsd> {
     let file = read_file::open_to_read(&find_file(claude_folder, id)?).ok()?;
     let mut reader = BufReader::new(file);
@@ -336,7 +345,7 @@ fn read_session(path: &Path, account: AccountId) -> Option<PastSession> {
     let folder = head_lines
         .iter()
         .find_map(|line| line.get(CWD_KEY)?.as_str())
-        .map(PathBuf::from)?;
+        .map(shown_folder)?;
     let title = title(&head_lines, &tail_lines)?;
     let last_activity = metadata
         .modified()

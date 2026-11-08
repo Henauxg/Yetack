@@ -331,8 +331,9 @@ impl AppState {
             .flatten()
             .map(|session: &PastSession| (&session.folder, session.last_activity, session.account));
         for (folder, moment, account) in agent_uses.chain(session_uses) {
-            let text = folder.to_string_lossy();
-            let style = PathStyle::of_text(&text);
+            let raw = folder.to_string_lossy();
+            let style = PathStyle::of_text(&raw);
+            let text = style.shown(&raw);
             let seen = uses
                 .iter_mut()
                 .find(|seen| style.same_path(&seen.folder.to_string_lossy(), &text));
@@ -343,7 +344,7 @@ impl AppState {
                 }
                 Some(_) => {}
                 None => uses.push(RecentFolder {
-                    folder: folder.clone(),
+                    folder: PathBuf::from(text.as_ref()),
                     used: moment,
                     account,
                 }),
@@ -558,6 +559,23 @@ pub(crate) mod tests {
             folders,
             [PathBuf::from("/work/shared"), PathBuf::from("/work/other")]
         );
+    }
+
+    #[test]
+    fn a_windows_folder_and_its_verbatim_form_are_one_recent_folder() {
+        let mut plain = summary(1, AgentStatus::Idle);
+        plain.folder = PathBuf::from(r"D:\Images\Screenshots");
+        let mut verbatim = summary(2, AgentStatus::Idle);
+        verbatim.folder = PathBuf::from(r"\\?\D:\Images\Screenshots");
+        let state = state_with(vec![plain, verbatim]);
+
+        let folders: Vec<PathBuf> = state
+            .recent_folders()
+            .into_iter()
+            .map(|recent| recent.folder)
+            .collect();
+
+        assert_eq!(folders, [PathBuf::from(r"D:\Images\Screenshots")]);
     }
 
     #[test]

@@ -11,6 +11,8 @@ const WINDOWS_SEPARATOR: char = '\\';
 
 /// What follows a drive letter, as in `C:\`.
 const DRIVE_MARK: char = ':';
+/// The prefix of a Windows verbatim path, `\\?\C:\work`, which Windows gives for a resolved path.
+const VERBATIM: &str = r"\\?\";
 
 /// The name of the folder itself, which names nothing more.
 const CURRENT: &str = ".";
@@ -258,6 +260,12 @@ impl PathStyle {
 
     /// The path as the style shows it: with `\` on Windows.
     pub fn shown(self, path: &str) -> Cow<'_, str> {
+        if self == Self::Windows
+            && let Some(rest) = path.strip_prefix(VERBATIM)
+            && has_drive(rest)
+        {
+            return Cow::Owned(rest.replace(UNIX_SEPARATOR, &WINDOWS_SEPARATOR.to_string()));
+        }
         match self {
             Self::Windows if path.contains(UNIX_SEPARATOR) => {
                 Cow::Owned(path.replace(UNIX_SEPARATOR, &WINDOWS_SEPARATOR.to_string()))
@@ -420,5 +428,12 @@ mod tests {
         assert_eq!(Unix.join("/work", "a.rs"), "/work/a.rs");
         assert_eq!(Windows.join(r"C:\", "a.rs"), r"C:\a.rs");
         assert_eq!(Windows.join(r"C:\work", "a.rs"), r"C:\work\a.rs");
+    }
+
+    #[test]
+    fn a_verbatim_drive_path_shows_as_a_user_writes_it() {
+        assert_eq!(Windows.shown(r"\\?\D:\Images"), r"D:\Images");
+        assert_eq!(Windows.shown(r"\\?\UNC\host\share"), r"\\?\UNC\host\share");
+        assert_eq!(Unix.shown(r"\\?\D:\Images"), r"\\?\D:\Images");
     }
 }

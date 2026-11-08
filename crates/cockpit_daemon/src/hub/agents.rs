@@ -19,6 +19,7 @@ use crate::hub::state::{Agent, Hub, QueuedPrompt};
 use crate::hub::{errors, state};
 use crate::machine_load;
 use crate::process::{ClaudeCommand, InterruptedTurn, ProcessEvent};
+use crate::read_file;
 use crate::sessions;
 use crate::sessions::FoundSession;
 use crate::store::{AgentRecord, LogName, RawLog};
@@ -727,7 +728,9 @@ pub(super) fn initial_summary(record: &AgentRecord) -> AgentSummary {
     }
 }
 
-/// An existing folder, absolute, with its symlinks resolved.
+/// An existing folder, absolute, with its symlinks resolved. On Windows it keeps the form a user
+/// writes, `C:\work` and not `\\?\C:\work`: Claude Code records the session under it, and the
+/// recent folders show it.
 fn agent_folder(folder: &Path) -> Result<PathBuf, ErrorBody> {
     if !folder.is_absolute() {
         return Err(errors::invalid(format!(
@@ -735,7 +738,7 @@ fn agent_folder(folder: &Path) -> Result<PathBuf, ErrorBody> {
             folder.display()
         )));
     }
-    let resolved = folder.canonicalize().map_err(|error| {
+    let resolved = read_file::canonical(folder).map_err(|error| {
         ErrorBody::new(
             ErrorCode::NotFound,
             format!("cannot open the folder {}: {error}", folder.display()),
