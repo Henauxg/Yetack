@@ -150,6 +150,18 @@ fn is_running(pid: i32) -> bool {
     }
 }
 
+/// Whether the process ends within `WAIT`: the daemon sends the kill and does not wait for it.
+fn ends(pid: i32) -> bool {
+    let deadline = Instant::now() + WAIT;
+    while is_running(pid) {
+        if Instant::now() > deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    true
+}
+
 async fn connect(transport: &Transport) -> (Connection, Catchup) {
     tokio::time::timeout(WAIT, Connection::connect(transport, None))
         .await
@@ -218,7 +230,7 @@ async fn an_app_that_closes_mid_turn_resumes_the_turn_when_it_runs_agents_again(
     .expect("the connection ends in time");
     let pids = setup.claude_pids();
     assert_eq!(pids.len(), 1);
-    assert!(!is_running(pids[0]), "the app's close stops claude");
+    assert!(ends(pids[0]), "the app's close stops claude");
 
     let (daemon, transport) = setup.start_in_app().await.unwrap();
     let (_connection, catchup) = connect(&transport).await;
