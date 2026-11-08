@@ -543,7 +543,7 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
   Each daemon numbers its own agents, so the app gives each agent an id of its own: the machine in the high bits, the daemon's id in the low 20.
   Machine 0's agents keep the daemon's ids.
   Each machine has its own connection task, which translates the ids of what it sends and receives (`map_agents` in `cockpit_protocol`).
-  A router hands each request to the task of the machine its agent is on; a request about no agent goes to machine 0.
+  A router hands each request to the task of the machine its agent is on. A request about no agent, such as the sessions list, names its machine (`Outgoing.to`).
   `AppState.machines` holds what the app knows of each daemon (`MachineState`: label, connection, plan usage, settings, accounts, sessions), and a snapshot from one machine replaces that machine's agents alone.
   Account ids collide across machines, so every account function takes the machine, and the Accounts dialog picks one.
   The header's plan usage, the hidden MCP servers, the undo of a close and the machine load follow the selected agent's machine.
