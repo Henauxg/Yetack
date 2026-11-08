@@ -302,7 +302,7 @@ fn descendants<P>(
 }
 
 #[cfg(test)]
-mod logic_tests {
+mod tests {
     use std::collections::HashMap;
 
     use super::*;
@@ -409,159 +409,157 @@ mod logic_tests {
 
         assert_eq!(tree, [11]);
     }
-}
 
-#[cfg(test)]
-#[cfg(unix)]
-mod tests {
-    use std::os::unix::process::{CommandExt, ExitStatusExt};
-    use std::process::{Child, Command, Stdio};
+    #[cfg(unix)]
+    mod unix {
+        use std::os::unix::process::{CommandExt, ExitStatusExt};
+        use std::process::{Child, Command, Stdio};
 
-    use rustix::process::Signal;
+        use rustix::process::Signal;
 
-    use super::*;
+        use super::*;
 
-    /// A `sleep` that leads its own process group, as `claude` does.
-    fn leader() -> Child {
-        Command::new("sleep")
-            .arg("30")
-            .stdin(Stdio::null())
-            .process_group(0)
-            .spawn()
-            .unwrap()
+        /// A `sleep` that leads its own process group, as `claude` does.
+        fn leader() -> Child {
+            Command::new("sleep")
+                .arg("30")
+                .stdin(Stdio::null())
+                .process_group(0)
+                .spawn()
+                .unwrap()
+        }
+
+        #[test]
+        fn a_recorded_process_that_still_runs_is_stopped() {
+            let mut child = leader();
+            let recorded = record_process(ProcessId::new(child.id())).unwrap();
+
+            stop_leftovers(std::slice::from_ref(&recorded));
+
+            let status = child.wait().unwrap();
+            assert!(recorded.boot.is_some(), "Linux records the boot");
+            assert_eq!(status.signal(), Some(Signal::TERM.as_raw()));
+            assert_eq!(record_process(recorded.pid), None);
+        }
+
+        #[test]
+        fn a_process_recorded_in_another_boot_is_left_alone() {
+            let mut child = leader();
+            let mut recorded = record_process(ProcessId::new(child.id())).unwrap();
+            recorded.boot = Some(BootId::new("another boot".to_owned()));
+
+            stop_leftovers(&[recorded]);
+
+            let running = child.try_wait().unwrap().is_none();
+            let _ = child.kill();
+            let _ = child.wait();
+            assert!(running, "a process of this boot runs on");
+        }
+
+        #[test]
+        fn a_record_without_a_boot_is_stopped_by_its_start_time() {
+            let mut child = leader();
+            let mut recorded = record_process(ProcessId::new(child.id())).unwrap();
+            recorded.boot = None;
+
+            stop_leftovers(&[recorded]);
+
+            let status = child.wait().unwrap();
+            assert_eq!(status.signal(), Some(Signal::TERM.as_raw()));
+        }
+
+        #[test]
+        fn a_process_that_got_the_id_since_is_left_alone() {
+            let mut child = leader();
+            let mut recorded = record_process(ProcessId::new(child.id())).unwrap();
+            recorded.started -= 1;
+
+            stop_leftovers(&[recorded]);
+
+            let running = child.try_wait().unwrap().is_none();
+            let _ = child.kill();
+            let _ = child.wait();
+            assert!(running, "a process with another start time runs on");
+        }
     }
 
-    #[test]
-    fn a_recorded_process_that_still_runs_is_stopped() {
-        let mut child = leader();
-        let recorded = record_process(ProcessId::new(child.id())).unwrap();
+    #[cfg(windows)]
+    mod windows {
+        use std::os::windows::process::CommandExt;
+        use std::process::{Child, Command, Stdio};
+        use std::time::Duration;
 
-        stop_leftovers(std::slice::from_ref(&recorded));
+        use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
-        let status = child.wait().unwrap();
-        assert!(recorded.boot.is_some(), "Linux records the boot");
-        assert_eq!(status.signal(), Some(Signal::TERM.as_raw()));
-        assert_eq!(record_process(recorded.pid), None);
-    }
+        use super::*;
 
-    #[test]
-    fn a_process_recorded_in_another_boot_is_left_alone() {
-        let mut child = leader();
-        let mut recorded = record_process(ProcessId::new(child.id())).unwrap();
-        recorded.boot = Some(BootId::new("another boot".to_owned()));
+        fn waiting_shell() -> Child {
+            Command::new("cmd.exe")
+                .raw_arg("/d /c \"ping -n 30 127.0.0.1 >nul\"")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()
+                .unwrap()
+        }
 
-        stop_leftovers(&[recorded]);
+        #[test]
+        fn a_recorded_process_that_still_runs_is_stopped_and_another_left_alone() {
+            let mut leftover = waiting_shell();
+            let mut other = waiting_shell();
+            let recorded = record_process(ProcessId::new(leftover.id())).unwrap();
+            let mut reused = record_process(ProcessId::new(other.id())).unwrap();
+            reused.started -= 1;
 
-        let running = child.try_wait().unwrap().is_none();
-        let _ = child.kill();
-        let _ = child.wait();
-        assert!(running, "a process of this boot runs on");
-    }
+            stop_leftovers(&[recorded, reused]);
 
-    #[test]
-    fn a_record_without_a_boot_is_stopped_by_its_start_time() {
-        let mut child = leader();
-        let mut recorded = record_process(ProcessId::new(child.id())).unwrap();
-        recorded.boot = None;
+            let other_runs = other.try_wait().unwrap().is_none();
+            let _ = other.kill();
+            let _ = other.wait();
+            let stopped = leftover.try_wait().unwrap().is_some();
+            let _ = leftover.kill();
+            let _ = leftover.wait();
+            assert!(stopped, "the leftover ends");
+            assert!(other_runs, "a process with another start time runs on");
+        }
 
-        stop_leftovers(&[recorded]);
+        #[test]
+        fn a_leftover_without_a_job_is_stopped_with_the_processes_under_it() {
+            let mut leftover = waiting_shell();
+            let root = ProcessId::new(leftover.id());
+            let recorded = record_process(root).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let ping = loop {
+                let links = parent_links().unwrap();
+                if let Some(link) = links.iter().find(|link| link.parent == root) {
+                    break link.pid;
+                }
+                assert!(Instant::now() < deadline, "the shell started no command");
+                std::thread::sleep(Duration::from_millis(50));
+            };
+            let ping_started = record_process(ping).unwrap();
 
-        let status = child.wait().unwrap();
-        assert_eq!(status.signal(), Some(Signal::TERM.as_raw()));
-    }
+            stop_leftovers(&[recorded]);
 
-    #[test]
-    fn a_process_that_got_the_id_since_is_left_alone() {
-        let mut child = leader();
-        let mut recorded = record_process(ProcessId::new(child.id())).unwrap();
-        recorded.started -= 1;
+            let stopped = leftover.try_wait().unwrap().is_some();
+            let _ = leftover.kill();
+            let _ = leftover.wait();
+            assert!(stopped, "the leftover ends");
+            assert_ne!(
+                record_process(ping),
+                Some(ping_started),
+                "the command under it ends too"
+            );
+        }
 
-        stop_leftovers(&[recorded]);
+        /// The child's handle keeps the ended process's id from going to another process.
+        #[test]
+        fn an_ended_process_is_not_recorded() {
+            let mut ended = waiting_shell();
+            ended.kill().unwrap();
+            ended.wait().unwrap();
 
-        let running = child.try_wait().unwrap().is_none();
-        let _ = child.kill();
-        let _ = child.wait();
-        assert!(running, "a process with another start time runs on");
-    }
-}
-
-#[cfg(test)]
-#[cfg(windows)]
-mod tests {
-    use std::os::windows::process::CommandExt;
-    use std::process::{Child, Command, Stdio};
-    use std::time::Duration;
-
-    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
-
-    use super::*;
-
-    fn waiting_shell() -> Child {
-        Command::new("cmd.exe")
-            .raw_arg("/d /c \"ping -n 30 127.0.0.1 >nul\"")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-            .unwrap()
-    }
-
-    #[test]
-    fn a_recorded_process_that_still_runs_is_stopped_and_another_left_alone() {
-        let mut leftover = waiting_shell();
-        let mut other = waiting_shell();
-        let recorded = record_process(ProcessId::new(leftover.id())).unwrap();
-        let mut reused = record_process(ProcessId::new(other.id())).unwrap();
-        reused.started -= 1;
-
-        stop_leftovers(&[recorded, reused]);
-
-        let other_runs = other.try_wait().unwrap().is_none();
-        let _ = other.kill();
-        let _ = other.wait();
-        let stopped = leftover.try_wait().unwrap().is_some();
-        let _ = leftover.kill();
-        let _ = leftover.wait();
-        assert!(stopped, "the leftover ends");
-        assert!(other_runs, "a process with another start time runs on");
-    }
-
-    #[test]
-    fn a_leftover_without_a_job_is_stopped_with_the_processes_under_it() {
-        let mut leftover = waiting_shell();
-        let root = ProcessId::new(leftover.id());
-        let recorded = record_process(root).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let ping = loop {
-            let links = parent_links().unwrap();
-            if let Some(link) = links.iter().find(|link| link.parent == root) {
-                break link.pid;
-            }
-            assert!(Instant::now() < deadline, "the shell started no command");
-            std::thread::sleep(Duration::from_millis(50));
-        };
-        let ping_started = record_process(ping).unwrap();
-
-        stop_leftovers(&[recorded]);
-
-        let stopped = leftover.try_wait().unwrap().is_some();
-        let _ = leftover.kill();
-        let _ = leftover.wait();
-        assert!(stopped, "the leftover ends");
-        assert_ne!(
-            record_process(ping),
-            Some(ping_started),
-            "the command under it ends too"
-        );
-    }
-
-    /// The child's handle keeps the ended process's id from going to another process.
-    #[test]
-    fn an_ended_process_is_not_recorded() {
-        let mut ended = waiting_shell();
-        ended.kill().unwrap();
-        ended.wait().unwrap();
-
-        assert_eq!(record_process(ProcessId::new(ended.id())), None);
+            assert_eq!(record_process(ProcessId::new(ended.id())), None);
+        }
     }
 }
