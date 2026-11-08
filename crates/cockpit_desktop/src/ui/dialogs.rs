@@ -21,13 +21,13 @@ use crate::state::accounts::AccountLabel;
 use crate::state::actions::{Direction, StartField};
 use crate::state::folder_field::{self, FolderRow};
 use crate::state::{
-    AppState, Dialog, FolderList, FormMenu, Loadable, NewAgentForm, NewAgentTab, accounts, actions,
+    Dialog, FolderList, FormMenu, Loadable, NewAgentForm, NewAgentTab, accounts, actions,
 };
 use crate::ui::accounts::{self as accounts_view, AccountMini, AccountPicker, AccountTag};
 use crate::ui::agent_map::AgentMapDialog;
 use crate::ui::composer::mode_icon;
 use crate::ui::icons::{Icon, IconKind};
-use crate::ui::machines::MachinesDialog;
+use crate::ui::machines::{MachinesDialog, machine_choices};
 use crate::ui::no_daemon::NoDaemonCard;
 use crate::ui::open_file::{self as open_file_view, OpenFileDialog, UP_ROW};
 use crate::ui::presence::{Presence, Shown, use_presence};
@@ -351,37 +351,6 @@ async fn browse_folder(cockpit: Cockpit, from: String) {
     if taken {
         bridge::set_field_text(FOLDER_FIELD_ID, picked);
     }
-}
-
-/// A machine the new agent can start on.
-#[derive(Debug, Clone, PartialEq)]
-struct MachineChoice {
-    machine: MachineId,
-    name: String,
-    chosen: bool,
-    answers: bool,
-}
-
-/// The machines the new agent dialog offers, this computer first. None while the app reaches
-/// this computer alone.
-fn machine_choices(state: &AppState, chosen: MachineId) -> Vec<MachineChoice> {
-    if state.machines.others.is_empty() {
-        return Vec::new();
-    }
-    let this = (MachineId::THIS, &state.machines.this);
-    std::iter::once(this)
-        .chain(state.machines.others.iter().map(|(id, known)| (*id, known)))
-        .map(|(machine, known)| MachineChoice {
-            machine,
-            name: if machine == MachineId::THIS && known.daemon.place != DaemonPlace::Ssh {
-                "This computer".to_owned()
-            } else {
-                known.daemon.machine.clone()
-            },
-            chosen: machine == chosen,
-            answers: known.is_connected(),
-        })
-        .collect()
 }
 
 fn change_form(cockpit: Cockpit, change: impl FnOnce(&mut NewAgentForm)) {

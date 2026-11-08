@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
-use toml_edit::TomlError;
+use toml_edit::{DocumentMut, TomlError};
 
 const APP_FOLDER: &str = "agents-cockpit";
 const CONFIG_FILE: &str = "config.toml";
@@ -250,7 +250,7 @@ impl Config {
 
 /// Makes `daemon` the daemon of the config file `file`, as [`edit_config`] writes it.
 pub fn save_daemon(file: &Path, daemon: &DaemonConfig) -> Result<(), ConfigError> {
-    use toml_edit::{DocumentMut, Item};
+    use toml_edit::Item;
 
     edit_config(file, |document, edit_error| {
         let section = toml::to_string(&DaemonSection { daemon }).map_err(ConfigError::Encode)?;
@@ -271,10 +271,8 @@ pub fn save_daemon(file: &Path, daemon: &DaemonConfig) -> Result<(), ConfigError
 }
 
 /// Makes `machines` the `[[machines]]` tables of the config file `file`, as [`edit_config`]
-/// writes it. No machine leaves no table.
+/// writes it. An empty list removes the tables.
 pub fn save_machines(file: &Path, machines: &[MachineConfig]) -> Result<(), ConfigError> {
-    use toml_edit::DocumentMut;
-
     edit_config(file, |document, edit_error| {
         document.remove(MACHINES_SECTION);
         if machines.is_empty() {
@@ -294,15 +292,10 @@ pub fn save_machines(file: &Path, machines: &[MachineConfig]) -> Result<(), Conf
 /// missing file is created. When `file` is a symbolic link, as home-manager or a dotfiles
 /// repository makes, its target is written and the link stays. The file keeps its mode, and a
 /// read-only one is not written.
-fn edit_config(
-    file: &Path,
-    edit: impl FnOnce(
-        &mut toml_edit::DocumentMut,
-        &dyn Fn(toml_edit::TomlError) -> ConfigError,
-    ) -> Result<(), ConfigError>,
-) -> Result<(), ConfigError> {
-    use toml_edit::DocumentMut;
-
+fn edit_config<Edit>(file: &Path, edit: Edit) -> Result<(), ConfigError>
+where
+    Edit: FnOnce(&mut DocumentMut, &dyn Fn(TomlError) -> ConfigError) -> Result<(), ConfigError>,
+{
     let edit_error = |source| ConfigError::Edit {
         path: file.to_owned(),
         source,
@@ -481,13 +474,8 @@ pub(crate) mod tests {
 
     #[test]
     fn each_machines_table_names_a_server_beside_this_computers_daemon() {
-        let config: Config = "[daemon]\ntransport = \"in_app\"\n\n\
-                              [[machines]]\nname = \"devbox\"\nhost = \"dev@devbox\"\n\
-                              remote_command = \"/opt/agents-cockpit\"\n\n\
-                              [[machines]]\nname = \"gpu-box\"\nhost = \"gpu\"\n\
-                              remote_command = \"/usr/local/bin/agents-cockpit\"\n"
-            .parse()
-            .unwrap();
+        let text = "[daemon]\ntransport = \"in_app\"\n\n[[machines]]\nname = \"devbox\"\nhost = \"dev@devbox\"\nremote_command = \"/opt/agents-cockpit\"\n\n[[machines]]\nname = \"gpu-box\"\nhost = \"gpu\"\nremote_command = \"/usr/local/bin/agents-cockpit\"\n";
+        let config: Config = text.parse().unwrap();
 
         assert_eq!(config.daemon, DaemonConfig::InApp);
         assert_eq!(

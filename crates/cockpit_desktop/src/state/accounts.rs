@@ -872,11 +872,9 @@ mod tests {
     use super::*;
     use crate::daemon_label::DaemonLabel;
     use crate::machine::MachineId;
-    use crate::state::ConnectionState;
-    use crate::state::actions;
     use crate::state::app_state::Loadable;
     use crate::state::ui_state::FormMenu;
-    use crate::state::{state_with, summary};
+    use crate::state::{ConnectionState, actions, state_with, summary};
 
     fn work() -> AccountId {
         AccountId::new(1)

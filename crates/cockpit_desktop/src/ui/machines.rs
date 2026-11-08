@@ -11,6 +11,40 @@ use crate::state::machines::{self, MachineChange};
 use crate::state::{AppState, ConnectionState, MachinesView};
 use crate::ui::icons::{Icon, IconKind};
 
+/// What the sidebar and the dialogs call this computer, unless its daemon runs over SSH.
+pub const THIS_COMPUTER: &str = "This computer";
+
+/// A machine a dialog offers to pick.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MachineChoice {
+    pub machine: MachineId,
+    pub name: String,
+    pub chosen: bool,
+    pub answers: bool,
+}
+
+/// The machines a dialog offers, this computer first. None while the app reaches this computer
+/// alone.
+pub fn machine_choices(state: &AppState, chosen: MachineId) -> Vec<MachineChoice> {
+    if state.machines.others.is_empty() {
+        return Vec::new();
+    }
+    let this = (MachineId::THIS, &state.machines.this);
+    std::iter::once(this)
+        .chain(state.machines.others.iter().map(|(id, known)| (*id, known)))
+        .map(|(machine, known)| MachineChoice {
+            machine,
+            name: if machine == MachineId::THIS && known.daemon.place != DaemonPlace::Ssh {
+                THIS_COMPUTER.to_owned()
+            } else {
+                known.daemon.machine.clone()
+            },
+            chosen: machine == chosen,
+            answers: known.is_connected(),
+        })
+        .collect()
+}
+
 /// A machine's row: what the dialog says of it.
 #[derive(Debug, Clone, PartialEq)]
 struct MachineRow {
@@ -29,7 +63,7 @@ fn rows(state: &AppState) -> Vec<MachineRow> {
         .map(|(machine, known)| {
             let this_computer = machine == MachineId::THIS;
             let name = if this_computer && known.daemon.place != DaemonPlace::Ssh {
-                "This computer".to_owned()
+                THIS_COMPUTER.to_owned()
             } else {
                 known.daemon.machine.clone()
             };

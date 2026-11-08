@@ -383,10 +383,9 @@ mod tests {
     use super::*;
     use crate::daemon_label::DaemonLabel;
     use crate::prefs::StatusFilter;
-    use crate::state::MachineState;
-    use crate::state::agent_map;
     use crate::state::app_state::tests::{placed, state_with, summary};
     use crate::state::ui_state::{Block, Dialog, PaletteOrigin, Popover, TitleEdit, TitlePlace};
+    use crate::state::{MachineState, agent_map};
 
     fn record(event: Event) -> EventRecord {
         EventRecord {

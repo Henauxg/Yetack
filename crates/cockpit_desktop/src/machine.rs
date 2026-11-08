@@ -49,7 +49,7 @@ impl MachineId {
     }
 
     /// A request from the app, as this machine's daemon reads it.
-    pub fn to_daemon(request: &mut Request) {
+    pub fn request_to_daemon(request: &mut Request) {
         request.map_agents(Self::daemon_agent);
     }
 
@@ -124,7 +124,7 @@ mod tests {
             },
         });
 
-        MachineId::to_daemon(&mut request);
+        MachineId::request_to_daemon(&mut request);
         devbox.update_to_app(&mut update);
 
         assert_eq!(

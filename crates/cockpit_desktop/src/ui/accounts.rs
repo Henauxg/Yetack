@@ -13,7 +13,6 @@ use dioxus::prelude::*;
 
 use crate::bridge;
 use crate::connection::{Clock, Cockpit};
-use crate::daemon_label::DaemonPlace;
 use crate::format;
 use crate::machine::MachineId;
 use crate::path_style::{self, PathStyle};
@@ -24,6 +23,7 @@ use crate::state::accounts::{
 };
 use crate::state::{AppState, Dialog, FormMenu, actions};
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::machines::machine_choices;
 use crate::ui::presence::Presence;
 
 /// How long a copy button says "Copied".
@@ -493,7 +493,7 @@ pub fn AccountsDialog(view: AccountsView) -> Element {
             .get(machine)
             .map(|known| known.accounts.iter().map(|account| account.id).collect())
             .unwrap_or_default();
-        (ids, machine_names(&state))
+        (ids, machine_choices(&state, machine))
     };
     let single = ids.len() < 2;
     let older_daemon = ids.is_empty();
@@ -522,17 +522,22 @@ pub fn AccountsDialog(view: AccountsView) -> Element {
                         " Add a second account to pick one for each agent."
                     }
                 }
-                if machines.len() > 1 {
+                if !machines.is_empty() {
                     div { class: "machine-choice", role: "radiogroup", aria_label: "Machine",
-                        for (id, name, answers) in machines {
-                            button {
-                                key: "{name}",
-                                class: if id == machine { "machine-option checked" } else { "machine-option" },
-                                role: "radio",
-                                aria_checked: id == machine,
-                                disabled: !answers,
-                                onclick: move |_| cockpit.update(|state| accounts::pick_accounts_machine(state, id)),
-                                "{name}"
+                        for choice in machines {
+                            {
+                                let picked = choice.machine;
+                                rsx! {
+                                    button {
+                                        key: "{choice.name}",
+                                        class: if choice.chosen { "machine-option checked" } else { "machine-option" },
+                                        role: "radio",
+                                        aria_checked: choice.chosen,
+                                        disabled: !choice.answers,
+                                        onclick: move |_| cockpit.update(|state| accounts::pick_accounts_machine(state, picked)),
+                                        "{choice.name}"
+                                    }
+                                }
                             }
                         }
                     }
@@ -598,22 +603,6 @@ fn new_agent_machine(state: &AppState) -> MachineId {
         Some(Dialog::NewAgent(form)) => form.machine,
         _ => MachineId::THIS,
     }
-}
-
-/// Each machine's id and name, this computer first, and whether it answers.
-fn machine_names(state: &AppState) -> Vec<(MachineId, String, bool)> {
-    let this = (MachineId::THIS, &state.machines.this);
-    std::iter::once(this)
-        .chain(state.machines.others.iter().map(|(id, known)| (*id, known)))
-        .map(|(id, known)| {
-            let name = if id == MachineId::THIS && known.daemon.place != DaemonPlace::Ssh {
-                "This computer".to_owned()
-            } else {
-                known.daemon.machine.clone()
-            };
-            (id, name, known.is_connected())
-        })
-        .collect()
 }
 
 #[component]

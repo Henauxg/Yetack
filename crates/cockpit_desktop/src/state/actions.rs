@@ -17,7 +17,7 @@ use cockpit_protocol::{
 };
 use strum::VariantArray;
 
-use super::app_state::{AgentEntry, AppState, FileRead, Loadable};
+use super::app_state::{AgentEntry, AppState, FileRead, Loadable, MachineState};
 use super::apply::forget_agent;
 use super::drafts::{Drafts, NewAgentDraft, Palette, QuestionDraft, SlashWord, SwitcherDraft};
 use super::requests::{Outgoing, Purpose, Shift, history_request};
@@ -1958,7 +1958,7 @@ pub fn pick_new_agent_machine(state: &mut AppState, machine: MachineId) {
     if !state
         .machines
         .get(machine)
-        .is_some_and(super::app_state::MachineState::is_connected)
+        .is_some_and(MachineState::is_connected)
     {
         return;
     }
@@ -2085,21 +2085,21 @@ pub fn resume_session(
 
 #[cfg(test)]
 mod tests {
+    use std::time::SystemTime;
+
     use cockpit_client::RequestError;
     use cockpit_protocol::{
-        AgentDetails, AskedQuestion, ChangedFile, CommandKind, ErrorBody, ErrorCode, HistoryPage,
-        ImageMediaType, Method, OlderItems, Position, QuestionOption, ResponseBody, Timestamp,
-        TranscriptItem, UserMessage,
+        Account, AgentDetails, AskedQuestion, ChangedFile, CommandKind, CredentialSource,
+        ErrorBody, ErrorCode, HistoryPage, ImageMediaType, Method, OlderItems, Position,
+        QuestionOption, ResponseBody, Timestamp, TranscriptItem, UserMessage,
     };
 
     use super::*;
     use crate::daemon_label::DaemonLabel;
-    use crate::state::MachineState;
     use crate::state::app_state::ConnectionState;
     use crate::state::app_state::tests::{ids, placed, state_with, summary};
     use crate::state::requests::{apply_response, needed_requests};
-    use crate::state::ui_state::ClosedAgent;
-    use crate::state::ui_state::NoteKind;
+    use crate::state::ui_state::{ClosedAgent, NoteKind};
 
     const AGENT: u32 = 1;
 
@@ -4089,20 +4089,20 @@ mod tests {
     #[test]
     fn the_sidebar_heads_each_machine_with_its_own_rows_in_order() {
         let (state, devbox) = two_machines();
-        let ids = |rows: &Vec<&AgentEntry>| -> Vec<AgentId> {
+        let ids = |rows: &[&AgentEntry]| -> Vec<AgentId> {
             rows.iter().map(|entry| entry.id()).collect()
         };
 
         let groups = state.sidebar_groups();
 
-        let machines: Vec<MachineId> = groups.iter().map(|(machine, _)| *machine).collect();
+        let machines: Vec<MachineId> = groups.iter().map(|group| group.machine).collect();
         assert_eq!(machines, [MachineId::THIS, devbox]);
         assert_eq!(
-            ids(&groups[0].1),
+            ids(&groups[0].rows),
             [AgentId::new(3), AgentId::new(2), AgentId::new(1)]
         );
         assert_eq!(
-            ids(&groups[1].1),
+            ids(&groups[1].rows),
             [
                 devbox.app_agent(AgentId::new(2)),
                 devbox.app_agent(AgentId::new(1))
@@ -4172,13 +4172,13 @@ mod tests {
         let (mut state, devbox) = two_machines();
         let mut drafts = Drafts::default();
         if let Some(known) = state.machines.others.get_mut(&devbox) {
-            known.accounts = vec![cockpit_protocol::Account {
+            known.accounts = vec![Account {
                 id: AccountId::DEFAULT,
                 name: "Default".to_owned(),
                 folder: PathBuf::from("/home/dev/.claude"),
-                credentials: cockpit_protocol::CredentialSource::SignIn,
+                credentials: CredentialSource::SignIn,
             }];
-            known.sign_ins.checked_at = Some(std::time::SystemTime::UNIX_EPOCH);
+            known.sign_ins.checked_at = Some(SystemTime::UNIX_EPOCH);
         }
         open_new_agent(&mut state, &mut drafts);
 

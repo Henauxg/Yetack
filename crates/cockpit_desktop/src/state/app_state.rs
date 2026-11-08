@@ -242,6 +242,13 @@ impl Machines {
     }
 }
 
+/// A machine's header in the sidebar, and the rows under it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SidebarGroup<'state> {
+    pub machine: MachineId,
+    pub rows: Vec<&'state AgentEntry>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppState {
     pub machines: Machines,
@@ -288,7 +295,7 @@ impl AppState {
     /// The machines the sidebar heads, with the rows each shows: this computer first, then the
     /// others in the config's order. Empty while the app reaches this computer alone, which
     /// needs no header.
-    pub fn sidebar_groups(&self) -> Vec<(MachineId, Vec<&AgentEntry>)> {
+    pub fn sidebar_groups(&self) -> Vec<SidebarGroup<'_>> {
         if self.machines.others.is_empty() {
             return Vec::new();
         }
@@ -301,7 +308,7 @@ impl AppState {
                     .copied()
                     .filter(|entry| MachineId::of(entry.id()) == machine)
                     .collect();
-                (machine, rows)
+                SidebarGroup { machine, rows }
             })
             .collect()
     }

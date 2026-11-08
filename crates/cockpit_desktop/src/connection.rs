@@ -821,7 +821,7 @@ fn send(
             ..
         } = outgoing;
         let method = request.method();
-        MachineId::to_daemon(&mut request);
+        MachineId::request_to_daemon(&mut request);
         let result = requester.request(request).await.map(|mut body| {
             machine.answer_to_app(&mut body);
             body
@@ -853,7 +853,7 @@ fn focus_window() {
 mod tests {
     use std::cell::{Cell, RefCell};
 
-    use cockpit_protocol::AgentStatus;
+    use cockpit_protocol::{AgentStatus, Method};
     use dioxus::dioxus_core::NoOpMutations;
 
     use super::*;
@@ -922,8 +922,7 @@ mod tests {
         let devbox = MachineId::new(1);
         let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
         state.machines.this.connection = ConnectionState::Connected;
-        let mut known =
-            MachineState::new(crate::daemon_label::DaemonLabel::ssh("devbox".to_owned()));
+        let mut known = MachineState::new(DaemonLabel::ssh("devbox".to_owned()));
         known.connection = ConnectionState::Connected;
         state.machines.others.insert(devbox, known);
         let mut remote = summary(1, AgentStatus::Idle);
@@ -937,9 +936,7 @@ mod tests {
         let found = state::needed_requests(&mut state);
         let (own, others) = split_by_machine(MachineId::THIS, found);
 
-        let about_devbox = |outgoing: &Outgoing| {
-            outgoing.request.method() == cockpit_protocol::Method::AgentDetails
-        };
+        let about_devbox = |outgoing: &Outgoing| outgoing.request.method() == Method::AgentDetails;
         assert!(!own.iter().any(about_devbox), "{own:?}");
         assert!(others.iter().any(about_devbox), "{others:?}");
         assert!(

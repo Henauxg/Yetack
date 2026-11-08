@@ -17,6 +17,7 @@ use crate::state::no_daemon::Absence;
 use crate::state::{AgentEntry, AppState, ConnectionState, Dialog, TitleEdit, TitlePlace, actions};
 use crate::ui::accounts::{AccountTag, AccountsButton};
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::machines::THIS_COMPUTER;
 use crate::ui::reorder::{self, LIST_ID, ROW_CLASS};
 use crate::{APP_NAME, format};
 
@@ -164,8 +165,12 @@ pub fn Sidebar() -> Element {
     let groups: Vec<MachineGroup> = state
         .sidebar_groups()
         .into_iter()
-        .map(|(machine, entries)| {
-            MachineGroup::new(&state, machine, entries.into_iter().map(row).collect())
+        .map(|group| {
+            MachineGroup::new(
+                &state,
+                group.machine,
+                group.rows.into_iter().map(row).collect(),
+            )
         })
         .collect();
     let rows: Vec<AgentRow> = if groups.is_empty() {
@@ -256,7 +261,7 @@ impl MachineGroup {
         let this_computer =
             machine == MachineId::THIS && label.is_none_or(|label| label.place != DaemonPlace::Ssh);
         let name = if this_computer {
-            "This computer".to_owned()
+            THIS_COMPUTER.to_owned()
         } else {
             label.map_or_else(String::new, |label| label.machine.clone())
         };
