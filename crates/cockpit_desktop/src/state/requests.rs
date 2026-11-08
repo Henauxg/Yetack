@@ -8,7 +8,7 @@ use cockpit_protocol::{
     HistoryParams, ItemId, ListDirParams, Method, Position, ReadFileParams, Request, ResponseBody,
 };
 
-use super::app_state::{AgentEntry, AppState, FileRead, Loadable};
+use super::app_state::{AgentEntry, AppState, FileRead, Loadable, MachineState};
 use super::drafts::{Draft, Drafts};
 use super::transcript::HistoryState;
 use super::ui_state::{Dialog, OpenFileView};
@@ -124,9 +124,6 @@ impl Outgoing {
 /// agent dialog is open.
 pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
     let mut requests = Vec::new();
-    if !state.is_connected() {
-        return requests;
-    }
     if let Some(reopening) = &state.ui.reopening {
         let back = state
             .agents
@@ -139,7 +136,9 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
             requests.extend(actions::move_agent(state, agent, before));
         }
     }
-    requests.extend(accounts::list_request(state));
+    if state.machines.this.is_connected() {
+        requests.extend(accounts::list_request(state));
+    }
     let form_machine = match &state.ui.dialog {
         Some(Dialog::NewAgent(form)) => Some(form.machine),
         _ => None,
@@ -156,7 +155,11 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
             to: machine,
         });
     }
-    if let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog
+    let form_answers = form_machine
+        .and_then(|machine| state.machines.get(machine))
+        .is_some_and(MachineState::is_connected);
+    if form_answers
+        && let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog
         && let Some(list) = &mut form.folders
         && list.listing == Loadable::NotRequested
     {
@@ -170,10 +173,20 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
             to: form.machine,
         });
     }
-    if let Some(Dialog::OpenFile(view)) = &mut state.ui.dialog {
+    let open_file_agent = match &state.ui.dialog {
+        Some(Dialog::OpenFile(view)) => Some(view.agent),
+        _ => None,
+    };
+    if open_file_agent.is_some_and(|agent| state.reaches_agent(agent))
+        && let Some(Dialog::OpenFile(view)) = &mut state.ui.dialog
+    {
         open_file_requests(view, &mut requests);
     }
-    let Some(agent) = state.ui.selected else {
+    let Some(agent) = state
+        .ui
+        .selected
+        .filter(|agent| state.reaches_agent(*agent))
+    else {
         return requests;
     };
     let open_file = state.ui.file_view(agent).map(|view| view.path.clone());

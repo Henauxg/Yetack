@@ -13,6 +13,7 @@ use dioxus::prelude::*;
 
 use crate::connection::{Clock, Cockpit};
 use crate::format;
+use crate::machine::MachineId;
 use crate::state::{Block, actions, agent_map};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::mcp::{McpPanel, mcp_summary};
@@ -38,9 +39,13 @@ pub fn FloatingBlocks() -> Element {
         FinishedRows::Recent
     };
     let alive = entry.summary.status != AgentStatus::Exited;
-    let hidden = state.machines.this.settings.hidden_mcp_servers.clone();
+    let known = state
+        .machines
+        .get(MachineId::of(agent))
+        .unwrap_or(&state.machines.this);
+    let hidden = known.settings.hidden_mcp_servers.clone();
     let mcp_view = state.ui.mcp.clone();
-    let machine = state.machines.this.daemon.machine.clone();
+    let machine = known.daemon.machine.clone();
     let tasks = details.tasks;
     let background = details.background_tasks;
     let subagent_tasks: Vec<SubagentTask> = details

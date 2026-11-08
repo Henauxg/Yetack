@@ -84,7 +84,7 @@ pub fn style(view: &OpenFileView) -> PathStyle {
 }
 
 fn state_style(state: &AppState) -> PathStyle {
-    view(state).map_or_else(|| state.machines.this.daemon.path_style(), style)
+    view(state).map_or_else(|| state.selected_machine_state().daemon.path_style(), style)
 }
 
 /// The rows for `text`: ".." while the last segment is empty, the listed entries the segment

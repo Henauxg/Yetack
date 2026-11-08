@@ -15,6 +15,7 @@ use super::app_state::AppState;
 use super::drafts::Drafts;
 use super::open_file;
 use super::ui_state::{Dialog, FolderList, NewAgentForm};
+use crate::machine::MachineId;
 use crate::path_style::PathStyle;
 
 /// A row under the folder field, in the order it shows.
@@ -34,9 +35,18 @@ pub fn listed_folder(style: PathStyle, text: &str) -> Option<PathBuf> {
         .then(|| PathBuf::from(folder_part))
 }
 
-/// The rules of the paths the field names: the daemon's machine's.
+/// The rules of the paths the field names: those of the machine the agent starts on.
 pub fn style(state: &AppState) -> PathStyle {
-    state.machines.this.daemon.path_style()
+    let machine = match &state.ui.dialog {
+        Some(Dialog::NewAgent(form)) => form.machine,
+        _ => MachineId::THIS,
+    };
+    state
+        .machines
+        .get(machine)
+        .unwrap_or(&state.machines.this)
+        .daemon
+        .path_style()
 }
 
 /// The rows for `text`: ".." while the last segment is empty, then the listed folders the segment

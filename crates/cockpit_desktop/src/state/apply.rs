@@ -1193,6 +1193,6 @@ mod tests {
             now,
             MachineId::THIS,
         );
-        assert!(state.is_connected());
+        assert!(state.machines.this.is_connected());
     }
 }

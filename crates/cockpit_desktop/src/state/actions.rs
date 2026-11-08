@@ -1488,15 +1488,23 @@ pub fn mcp_remove(agent: AgentId, server: String, scope: McpScope) -> Vec<Outgoi
 }
 
 /// Hides a server from every agent's view, or shows it again. The daemon keeps the setting.
+/// The setting is the selected agent's machine's.
 pub fn set_mcp_hidden(state: &mut AppState, server: &str, hidden: bool) -> Vec<Outgoing> {
-    let mut settings = state.machines.this.settings.clone();
+    let machine = state.selected_machine();
+    let Some(known) = state.machines.get_mut(machine) else {
+        return Vec::new();
+    };
+    let settings = &mut known.settings;
     if hidden {
         settings.hidden_mcp_servers.insert(server.to_owned());
     } else {
         settings.hidden_mcp_servers.remove(server);
     }
-    state.machines.this.settings = settings.clone();
-    vec![Outgoing::action(Request::SettingsSet(settings))]
+    vec![Outgoing {
+        request: Request::SettingsSet(settings.clone()),
+        purpose: Purpose::Action,
+        to: machine,
+    }]
 }
 
 pub fn set_model(agent: AgentId, model: String) -> Vec<Outgoing> {
@@ -1779,7 +1787,7 @@ pub fn undo_close(state: &mut AppState) -> Vec<Outgoing> {
             account: closed.account,
         }),
         purpose: Purpose::Reopen,
-        to: MachineId::THIS,
+        to: MachineId::of(closed.agent),
     }]
 }
 
@@ -2089,6 +2097,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::state::ui_state::ClosedAgent;
     use crate::daemon_label::DaemonLabel;
     use crate::state::MachineState;
     use crate::state::app_state::ConnectionState;
@@ -4177,6 +4186,48 @@ mod tests {
             &state.ui.dialog,
             Some(Dialog::NewAgent(form)) if form.machine == MachineId::THIS
         ));
+    }
+
+    #[test]
+    fn a_servers_agent_is_followed_while_this_computer_does_not_answer() {
+        let (mut state, devbox) = two_machines();
+        let remote = devbox.app_agent(AgentId::new(2));
+        state.machines.this.connection = ConnectionState::Connecting { attempt: 3 };
+        state.ui.selected = Some(remote);
+
+        let asked = crate::state::needed_requests(&mut state);
+        let hidden = set_mcp_hidden(&mut state, "notes", true);
+
+        assert!(asked.iter().any(|outgoing| matches!(
+            &outgoing.request,
+            Request::AgentHistory(params) if params.agent == remote
+        )));
+        assert_eq!(hidden.first().map(|outgoing| outgoing.to), Some(devbox));
+        assert!(
+            state.machines.others[&devbox]
+                .settings
+                .hidden_mcp_servers
+                .contains("notes")
+        );
+        assert!(state.machines.this.settings.hidden_mcp_servers.is_empty());
+    }
+
+    #[test]
+    fn a_closed_servers_agent_comes_back_on_its_machine() {
+        let (mut state, devbox) = two_machines();
+        let remote = devbox.app_agent(AgentId::new(2));
+        state.ui.closed = Some(ClosedAgent {
+            serial: 1,
+            agent: remote,
+            title: "Release notes".to_owned(),
+            session: Some(ClaudeSessionId::new("session-9".to_owned())),
+            account: AccountId::DEFAULT,
+            before: None,
+        });
+
+        let reopened = undo_close(&mut state);
+
+        assert_eq!(reopened.first().map(|outgoing| outgoing.to), Some(devbox));
     }
 
     #[test]

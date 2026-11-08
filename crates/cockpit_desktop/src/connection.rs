@@ -22,8 +22,8 @@ use crate::reach::{self, Places, Reached, Unreached};
 use crate::state::machine_load::{LOAD_POLL, LoadView};
 use crate::state::no_daemon::{self, Absence, Chosen, DaemonChoice};
 use crate::state::{
-    self, AgentEntry, AppState, ConnectionState, Drafts, Outgoing, Purpose, TitlePlace,
-    Utf16Offset, actions,
+    self, AgentEntry, AppState, ConnectionState, Drafts, MachineState, Outgoing, Purpose,
+    TitlePlace, Utf16Offset, actions,
 };
 use crate::{bridge, demo};
 
@@ -245,6 +245,7 @@ async fn route(
         spawn(run_remote(
             state,
             drafts,
+            load,
             machine,
             remote,
             notify,
@@ -274,6 +275,7 @@ async fn route(
 async fn run_remote(
     mut state: Signal<AppState>,
     drafts: Signal<Drafts>,
+    load: Signal<LoadView>,
     machine: MachineId,
     remote: MachineConfig,
     notify: bool,
@@ -292,7 +294,7 @@ async fn run_remote(
             label: label.clone(),
             note: None,
         };
-        let served = serve(state, drafts, None, reached, machine, notify, &mut requests);
+        let served = serve(state, drafts, load, reached, machine, notify, &mut requests);
         let error = match served.await {
             Served::Closed => return,
             Served::NoAnswer { unreached, .. } => unreached.error,
@@ -463,7 +465,7 @@ async fn run(
                 let served = serve(
                     state,
                     drafts,
-                    Some(load),
+                    load,
                     reached,
                     MachineId::THIS,
                     notify,
@@ -535,7 +537,7 @@ async fn next_choice(
 async fn serve(
     mut state: Signal<AppState>,
     mut drafts: Signal<Drafts>,
-    load: Option<Signal<LoadView>>,
+    load: Signal<LoadView>,
     reached: Reached,
     machine: MachineId,
     notify: bool,
@@ -555,11 +557,16 @@ async fn serve(
     let mut connected_once = false;
     loop {
         tokio::select! {
-            _ = load_ticks.tick(), if load.is_some() => {
-                if !state.peek().is_connected() {
-                    if let Some(load) = load {
-                        show_load(load, LoadView::Waiting);
-                    }
+            // The load shows the selected agent's machine.
+            _ = load_ticks.tick() => {
+                let (shown, answers) = {
+                    let state = state.peek();
+                    let answers = state.machines.get(machine).is_some_and(MachineState::is_connected);
+                    (state.selected_machine() == machine, answers)
+                };
+                if !shown {
+                } else if !answers {
+                    show_load(load, LoadView::Waiting);
                 } else if !load_asked {
                     load_asked = true;
                     let requester = requester.clone();
@@ -577,7 +584,7 @@ async fn serve(
                     machine.answer_to_app(&mut body);
                     body
                 });
-                if let Some(load) = load {
+                if state.peek().selected_machine() == machine {
                     show_load(load, LoadView::from_result(answer));
                 }
             }

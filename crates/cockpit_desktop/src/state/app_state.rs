@@ -274,10 +274,6 @@ impl AppState {
         }
     }
 
-    pub fn is_connected(&self) -> bool {
-        self.machines.this.is_connected()
-    }
-
     /// The sidebar's order, which the user sets and the daemon keeps.
     pub fn agents_in_order(&self) -> Vec<&AgentEntry> {
         let mut agents: Vec<&AgentEntry> = self.agents.values().collect();
@@ -308,6 +304,18 @@ impl AppState {
                 (machine, rows)
             })
             .collect()
+    }
+
+    /// The machine of the selected agent, else this computer.
+    pub fn selected_machine(&self) -> MachineId {
+        self.ui.selected.map_or(MachineId::THIS, MachineId::of)
+    }
+
+    /// What the app knows of the selected agent's machine.
+    pub fn selected_machine_state(&self) -> &MachineState {
+        self.machines
+            .get(self.selected_machine())
+            .unwrap_or(&self.machines.this)
     }
 
     /// Whether the app is connected to the daemon of the machine `agent` is on.

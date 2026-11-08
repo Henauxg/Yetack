@@ -353,7 +353,7 @@ fn UsageCard() -> Element {
         .unwrap_or_default();
     let billed_to_key = accounts::billing(&state, agent_account) == Billing::Environment;
     // Before the connection, the plan's windows are unknown, not missing.
-    let plan_loading = !state.is_connected();
+    let plan_loading = !state.selected_machine_state().is_connected();
     let summary = &entry.summary;
     let context_loading = entry.context_loading
         || matches!(entry.details, Loadable::NotRequested | Loadable::Loading);

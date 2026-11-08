@@ -1016,7 +1016,15 @@ fn ResumeList(starting: bool) -> Element {
     let pointer = use_pointer_moves();
     let (sessions, machine, filters) = {
         let state = cockpit.state.read();
-        let sessions = match &state.machines.this.sessions {
+        let form_machine = match &state.ui.dialog {
+            Some(Dialog::NewAgent(form)) => form.machine,
+            _ => MachineId::THIS,
+        };
+        let known = state
+            .machines
+            .get(form_machine)
+            .unwrap_or(&state.machines.this);
+        let sessions = match &known.sessions {
             Loadable::Loaded(_) => Loadable::Loaded(
                 actions::resumable_sessions(&state, &query, account)
                     .into_iter()
@@ -1032,11 +1040,7 @@ fn ResumeList(starting: bool) -> Element {
         } else {
             Vec::new()
         };
-        (
-            sessions,
-            state.machines.this.daemon.machine.clone(),
-            filters,
-        )
+        (sessions, known.daemon.machine.clone(), filters)
     };
     let filtered = account.is_some_and(|id| filters.iter().any(|label| label.id == id));
     let now = now();
