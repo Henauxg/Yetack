@@ -2468,3 +2468,70 @@ fn messages_without_accounts_read_as_the_default_account() {
     assert!(snapshot.accounts.is_empty());
     assert!(snapshot.other_plan_usage.is_empty());
 }
+
+/// Adds `shift` to every agent id in a message's JSON: `agent` anywhere, `agent.move`'s `before`,
+/// and the `id` of an agent's summary, the object that also has a `folder` and a `status`.
+/// `agent.history`'s `before` is an item: its params also have a `limit`.
+fn shift_agent_ids(value: &mut Value, shift: u64) {
+    match value {
+        Value::Object(fields) => {
+            let summary = fields.contains_key("folder") && fields.contains_key("status");
+            let moves = fields.contains_key("agent") && !fields.contains_key("limit");
+            for (key, field) in fields.iter_mut() {
+                let is_agent =
+                    key == "agent" || (moves && key == "before") || (summary && key == "id");
+                match field {
+                    Value::Number(number) if is_agent => {
+                        *field = json!(number.as_u64().unwrap() + shift);
+                    }
+                    _ => shift_agent_ids(field, shift),
+                }
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                shift_agent_ids(item, shift);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Checks that `map_agents` changes exactly the agent ids the JSON holds.
+fn assert_maps_every_agent<T: Serialize + Clone>(message: &T, map: impl Fn(&mut T)) {
+    let mut expected = serde_json::to_value(message).unwrap();
+    shift_agent_ids(&mut expected, 1000);
+    let mut mapped = message.clone();
+    map(&mut mapped);
+    assert_eq!(serde_json::to_value(&mapped).unwrap(), expected);
+}
+
+#[test]
+fn every_agent_id_of_every_message_can_be_mapped() {
+    let shift = |agent: AgentId| AgentId::new(agent.get() + 1000);
+    for request in requests() {
+        assert_maps_every_agent(&request, |request| request.map_agents(shift));
+    }
+    for body in response_bodies() {
+        assert_maps_every_agent(&body, |body| body.map_agents(shift));
+    }
+    for event in events() {
+        assert_maps_every_agent(&event, |event| event.map_agents(shift));
+    }
+    assert_maps_every_agent(&snapshot(), |snapshot| snapshot.map_agents(shift));
+}
+
+#[test]
+fn a_request_names_the_agent_it_is_about() {
+    let mut requests = requests();
+    let agents: Vec<Option<Method>> = requests
+        .iter_mut()
+        .map(|request| {
+            let method = request.method();
+            request.agent_mut().map(|_| method)
+        })
+        .collect();
+
+    assert!(agents.contains(&Some(Method::AgentMove)));
+    assert!(agents.contains(&None), "sessions.list is about no agent");
+}
