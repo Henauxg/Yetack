@@ -24,6 +24,9 @@ const CONFIG_FILE: &str = "config.toml";
 const SOCKET_FILE: &str = "agents-cockpit.sock";
 
 const HOME_VAR: &str = "HOME";
+/// Windows names the home folder here, and leaves `HOME` unset outside Unix-like shells.
+#[cfg(windows)]
+const PROFILE_VAR: &str = "USERPROFILE";
 const CONFIG_HOME_VAR: &str = "XDG_CONFIG_HOME";
 const STATE_HOME_VAR: &str = "XDG_STATE_HOME";
 
@@ -114,8 +117,11 @@ impl Environment {
             let path = PathBuf::from(std::env::var_os(var)?);
             path.is_absolute().then_some(path)
         };
+        let home = absolute(HOME_VAR);
+        #[cfg(windows)]
+        let home = home.or_else(|| absolute(PROFILE_VAR));
         Self {
-            home: absolute(HOME_VAR),
+            home,
             config_home: absolute(CONFIG_HOME_VAR),
             state_home: absolute(STATE_HOME_VAR),
         }

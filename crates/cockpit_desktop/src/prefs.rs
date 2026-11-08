@@ -18,7 +18,9 @@
 //! does not know is ignored.
 
 use std::ffi::OsString;
-use std::fs::{DirBuilder, File, OpenOptions, Permissions};
+#[cfg(unix)]
+use std::fs::Permissions;
+use std::fs::{DirBuilder, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -35,7 +37,9 @@ const PREFS_FILE: &str = "prefs.json";
 const TEMPORARY_SUFFIX: &str = ".tmp";
 
 /// The same modes as the daemon's files: only their owner reads them.
+#[cfg(unix)]
 const FOLDER_MODE: u32 = 0o700;
+#[cfg(unix)]
 const FILE_MODE: u32 = 0o600;
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -171,27 +175,14 @@ impl Prefs {
     /// temporary file beside it, synced, then renamed over it.
     pub fn save(&self, file: &Path) -> io::Result<()> {
         use std::io::Write;
-        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 
         let mut bytes = serde_json::to_vec_pretty(self)?;
         bytes.push(b'\n');
         if let Some(folder) = file.parent() {
-            DirBuilder::new()
-                .recursive(true)
-                .mode(FOLDER_MODE)
-                .create(folder)?;
-            // An existing folder keeps its mode otherwise.
-            std::fs::set_permissions(folder, Permissions::from_mode(FOLDER_MODE))?;
+            create_private_folder(folder)?;
         }
         let temporary = temporary_path(file);
-        let mut out = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .mode(FILE_MODE)
-            .open(&temporary)?;
-        // The mode above applies only to a file the open creates.
-        out.set_permissions(Permissions::from_mode(FILE_MODE))?;
+        let mut out = create_private_file(&temporary)?;
         out.write_all(&bytes)?;
         out.sync_all()?;
         std::fs::rename(&temporary, file)?;
@@ -201,6 +192,48 @@ impl Prefs {
         }
         Ok(())
     }
+}
+
+#[cfg(unix)]
+fn create_private_folder(folder: &Path) -> io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+    DirBuilder::new()
+        .recursive(true)
+        .mode(FOLDER_MODE)
+        .create(folder)?;
+    // An existing folder keeps its mode otherwise.
+    std::fs::set_permissions(folder, Permissions::from_mode(FOLDER_MODE))
+}
+
+#[cfg(unix)]
+fn create_private_file(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .mode(FILE_MODE)
+        .open(path)?;
+    // The mode above applies only to a file the open creates.
+    file.set_permissions(Permissions::from_mode(FILE_MODE))?;
+    Ok(file)
+}
+
+/// The user's profile folder is private on Windows already.
+#[cfg(not(unix))]
+fn create_private_folder(folder: &Path) -> io::Result<()> {
+    DirBuilder::new().recursive(true).create(folder)
+}
+
+#[cfg(not(unix))]
+fn create_private_file(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(path)
 }
 
 fn temporary_path(file: &Path) -> PathBuf {

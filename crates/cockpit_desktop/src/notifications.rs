@@ -4,13 +4,16 @@
 use std::collections::BTreeMap;
 
 use cockpit_protocol::{AgentId, AgentStatus};
-use notify_rust::{Notification, NotificationResponse, Urgency};
+use notify_rust::Notification;
+#[cfg(all(unix, not(target_os = "macos")))]
+use notify_rust::{NotificationResponse, Urgency};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::APP_NAME;
 use crate::state::{Alert, AlertKind, AppState};
 
 /// The action a click on the notification's body triggers.
+#[cfg(all(unix, not(target_os = "macos")))]
 const OPEN_ACTION: &str = "default";
 
 /// The notifications on screen. Each runs as a task that waits on D-Bus, with no thread of its
@@ -101,6 +104,7 @@ impl Ledger {
 
 /// Shows the alert, and sends its agent to `opened` when the user clicks it. Waits until the
 /// notification goes away, or until `close` fires or is dropped, and then closes it.
+#[cfg(all(unix, not(target_os = "macos")))]
 async fn present(
     alert: Alert,
     close: oneshot::Receiver<()>,
@@ -138,8 +142,30 @@ async fn present(
     }
 }
 
+/// Without the freedesktop service, notify-rust can neither close a notification nor report a
+/// click on it: the notification shows, and stays until the system removes it.
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+async fn present(
+    alert: Alert,
+    _close: oneshot::Receiver<()>,
+    _opened: mpsc::UnboundedSender<AgentId>,
+) {
+    let mut notification = Notification::new();
+    notification
+        .appname(APP_NAME)
+        .summary(&alert.title)
+        .body(&alert.body);
+    let shown = tokio::task::spawn_blocking(move || notification.show().map(drop)).await;
+    match shown {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::warn!("cannot show a notification: {error}"),
+        Err(error) => tracing::warn!("cannot show a notification: {error}"),
+    }
+}
+
 /// The body as text in the notification markup, which most services read: the agent's own words
 /// cannot add a link, an image or formatting.
+#[cfg(all(unix, not(target_os = "macos")))]
 fn escaped_body(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     for character in text.chars() {

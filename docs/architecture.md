@@ -305,6 +305,7 @@ When the process ends and its pid goes to another one during the check, the sign
 
 - **Config**: `~/.config/agents-cockpit/config.toml` lists the daemons to reach, each local or over SSH.
   v1 connects to one.
+- **Windows**: the app builds there (`cargo build -p cockpit_desktop`) and reaches its daemon over SSH alone, since Tokio opens no Unix socket on Windows. The home folder is `%USERPROFILE%` when `HOME` is unset. A notification shows, but a click does not open its agent, and the app cannot close it: notify-rust does both through the freedesktop service only. The daemon and the CLI stay Linux only.
 - **Preferences**: `$XDG_STATE_HOME/agents-cockpit-desktop/prefs.json` (default `~/.local/state/agents-cockpit-desktop/`), on the machine the app runs on, keeps one viewer's choices: the file view's width and its wrap toggle, and the sidebar's status filter.
   A missing or broken file means the defaults.
 - **State**: `AppState` holds the summaries, the open transcripts, the plan usage and the UI state (selected agent, unread agents, open blocks).
