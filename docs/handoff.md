@@ -9,6 +9,7 @@ Update it when you hand over.
 
 - All work is on the branch `ccr-8be27d05-6ge2s2`, pushed. `main` has not moved: the branch is about 150 commits ahead of it, and no pull request exists yet. Ask the user before opening one or merging.
 - CI (`.github/workflows/ci.yml`) runs on every push, on Linux and Windows. Check its latest run on GitHub after you push: the Windows job is the only real Windows test, and it caught several failures that no Linux run showed.
+- The Windows CI job failed from the accounts commits until `1e075c8`, on four account tests whose home folder was a Unix path. While it failed, cargo stopped before the desktop's tests, so check that the first green run after it also ran them.
 - The protocol version is 2. An app and a daemon of different versions refuse each other at `Hello`, so they are rebuilt together.
 
 ## What the branch added
