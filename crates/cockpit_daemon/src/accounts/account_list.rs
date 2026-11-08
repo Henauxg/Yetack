@@ -297,8 +297,17 @@ fn not_found(id: AccountId) -> ErrorBody {
 mod tests {
     use super::*;
 
+    /// A made-up home folder, absolute on the platform the tests run on.
+    fn home() -> PathBuf {
+        if cfg!(windows) {
+            PathBuf::from(r"C:\Users\Sam")
+        } else {
+            PathBuf::from("/home/sam")
+        }
+    }
+
     fn default_folder() -> PathBuf {
-        PathBuf::from("/home/sam/.claude")
+        home().join(".claude")
     }
 
     fn add(list: &mut AccountList, name: &str, folder: Option<&str>) -> Result<Account, ErrorBody> {
@@ -307,7 +316,7 @@ mod tests {
             folder: folder.map(PathBuf::from),
             credentials: CredentialSource::SignIn,
         };
-        list.add(params, Some(Path::new("/home/sam")), &default_folder())
+        list.add(params, Some(&home()), &default_folder())
     }
 
     #[test]
@@ -319,9 +328,9 @@ mod tests {
 
         assert_eq!(work.id, AccountId::new(1));
         assert_eq!(work.name, "Client Work");
-        assert_eq!(work.folder, Path::new("/home/sam/.claude-client-work"));
+        assert_eq!(work.folder, home().join(".claude-client-work"));
         assert_eq!(again.id, AccountId::new(2));
-        assert_eq!(again.folder, Path::new("/home/sam/.claude-client-work-2"));
+        assert_eq!(again.folder, home().join(".claude-client-work-2"));
         let ids: Vec<AccountId> = list
             .accounts(&default_folder())
             .iter()
