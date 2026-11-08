@@ -4788,7 +4788,7 @@ button.map-toggle:hover {
   outline: none;
 }
 
-.folder-browse {
+.folder-browse-button {
   flex: none;
   height: 28px;
   padding: 0 10px;
@@ -4800,7 +4800,7 @@ button.map-toggle:hover {
   cursor: pointer;
 }
 
-.folder-browse:hover {
+.folder-browse-button:hover {
   background: var(--hover);
 }
 

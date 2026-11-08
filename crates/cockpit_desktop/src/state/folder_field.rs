@@ -180,6 +180,20 @@ fn up(style: PathStyle, text: &str) -> Option<String> {
     Some(style.folder_text(style.parent(&folder)?))
 }
 
+/// Puts a folder picked in the system's folder dialog in the field's draft, as a click on a recent
+/// folder does. The list under the field, of the folder typed before, closes. Returns whether the
+/// dialog was still open to take it.
+pub fn pick(state: &mut AppState, drafts: &mut Drafts, folder: String) -> bool {
+    let Some(form) = form_mut(state) else {
+        return false;
+    };
+    form.folders = None;
+    drafts.new_agent.folder = folder;
+    drafts.new_agent.folder_highlighted = None;
+    super::accounts::follow_folder_account(state);
+    true
+}
+
 /// Puts `text` in the field's draft, and makes the list follow it.
 pub fn set_text(state: &mut AppState, drafts: &mut Drafts, text: String) {
     drafts.new_agent.folder = text;
@@ -320,6 +334,32 @@ mod tests {
         // A text that names no absolute folder closes it.
         type_text(&mut state, &mut drafts, "~/projects/");
         assert_eq!(list(&state), None);
+    }
+
+    #[test]
+    fn a_folder_picked_in_the_system_dialog_closes_the_list_of_another_folder() {
+        let (mut state, mut drafts) = opened();
+        type_text(&mut state, &mut drafts, "/home/dev/pro");
+        answer(&mut state, &["notes", "projects"]);
+
+        assert!(pick(
+            &mut state,
+            &mut drafts,
+            "/srv/data/reports".to_owned()
+        ));
+
+        assert_eq!(drafts.new_agent.folder, "/srv/data/reports");
+        assert_eq!(list(&state), None);
+        assert_eq!(
+            take(&mut state, &mut drafts, None),
+            None,
+            "Enter keeps the folder picked"
+        );
+        assert_eq!(drafts.new_agent.folder, "/srv/data/reports");
+
+        state.ui.close_dialog();
+        assert!(!pick(&mut state, &mut drafts, "/srv/other".to_owned()));
+        assert_eq!(drafts.new_agent.folder, "/srv/data/reports");
     }
 
     #[test]

@@ -323,7 +323,7 @@ fn NewAgentDialog(form: NewAgentForm) -> Element {
 }
 
 /// Opens the system's folder picker at `from` when it is a folder, and puts the folder picked in
-/// the field, as a click on a recent folder does.
+/// the field.
 async fn browse_folder(cockpit: Cockpit, from: String) {
     let mut picker = rfd::AsyncFileDialog::new().set_title("Folder for the new agent");
     let from = PathBuf::from(from.trim());
@@ -334,11 +334,13 @@ async fn browse_folder(cockpit: Cockpit, from: String) {
         return;
     };
     let picked = path_style::shown(folder.path());
-    bridge::set_field_text(FOLDER_FIELD_ID, picked.clone());
+    let mut taken = false;
     cockpit.update_with_drafts(|state, drafts| {
-        drafts.new_agent.folder = picked;
-        accounts::follow_folder_account(state);
+        taken = folder_field::pick(state, drafts, picked.clone());
     });
+    if taken {
+        bridge::set_field_text(FOLDER_FIELD_ID, picked);
+    }
 }
 
 fn change_form(cockpit: Cockpit, change: impl FnOnce(&mut NewAgentForm)) {
@@ -480,7 +482,7 @@ fn StartForm(form: NewAgentForm) -> Element {
                     }
                     if local {
                         button {
-                            class: "folder-browse",
+                            class: "folder-browse-button",
                             title: "Pick the folder in the system's folder dialog",
                             onclick: move |_| {
                                 let from = cockpit.drafts.peek().new_agent.folder.clone();

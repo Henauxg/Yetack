@@ -1308,6 +1308,13 @@ mod tests {
             }
         );
         assert_eq!(
+            read(serde_json::json!({"file_path": "/work/src/main.rs", "offset": 0})),
+            ToolShape::File {
+                path: PathBuf::from("/work/src/main.rs"),
+                line: None,
+            }
+        );
+        assert_eq!(
             read(serde_json::json!({"notebook_path": "/work/plot.ipynb"})),
             ToolShape::File {
                 path: PathBuf::from("/work/plot.ipynb"),
