@@ -2,10 +2,9 @@
 //! process, so what the daemon checks through it stays true of the process it acts on.
 
 use std::ffi::OsString;
-use std::io;
 use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
-use std::ptr;
+use std::{io, ptr};
 
 use cockpit_protocol::ProcessId;
 use windows_sys::Wdk::System::Threading::{

@@ -4,16 +4,14 @@
 use cockpit_protocol::{AgentId, ApprovalDecision, PlanDecision, PromptDelivery};
 use serde::Deserialize;
 
-use super::accounts;
 use super::actions::{self, Direction};
-use super::agent_map;
 use super::app_state::{AgentEntry, AppState};
 use super::drafts::Drafts;
-use super::open_file;
 use super::requests::Outgoing;
 use super::transcript::WaitingKind;
 use super::ui_state::{Dialog, PaletteOrigin, Popover};
 use super::utf16_offset::Utf16Offset;
+use super::{accounts, agent_map, open_file};
 
 /// `KeyboardEvent.key` values.
 const KEY_ESCAPE: &str = "Escape";

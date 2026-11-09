@@ -1,12 +1,11 @@
 //! The daemon this app runs in its own process, once it runs one.
 
-use std::fmt;
-use std::io;
 use std::panic::PanicHookInfo;
 use std::pin::pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, TryLockError};
 use std::time::{Duration, Instant};
+use std::{fmt, io};
 
 use cockpit_client::InAppLink;
 use cockpit_daemon::{DaemonConfig, InAppDaemon, START_TASK, ServeError};
