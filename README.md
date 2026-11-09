@@ -28,5 +28,7 @@ The server needs a way to restart the daemon: the `agents-cockpit` systemd user 
 
 ```sh
 nix develop
-cargo test -q --workspace
+just          # lists the recipes
+just run      # builds the daemon program and the app, then runs the app
+just check    # what CI runs
 ```

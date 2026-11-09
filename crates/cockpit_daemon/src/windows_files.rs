@@ -4,13 +4,12 @@
 
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
-use std::io;
-use std::mem;
 use std::ops::ControlFlow;
 use std::os::windows::ffi::OsStringExt;
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
+use std::{io, mem};
 
 use windows_sys::Win32::Foundation::ERROR_NO_MORE_FILES;
 use windows_sys::Win32::Storage::FileSystem::{

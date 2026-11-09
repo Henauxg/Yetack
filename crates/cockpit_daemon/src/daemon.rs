@@ -8,11 +8,10 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::daemon_config::DaemonConfig;
-use crate::hub;
 use crate::hub::{Hub, HubInput, Restored};
-use crate::machine_load;
 use crate::serve::ServeError;
 use crate::store::{RecordedProcess, ServeLock, StateDir};
+use crate::{hub, machine_load};
 
 /// Inputs waiting for the hub. A full queue makes the process and connection tasks wait.
 const HUB_INPUTS: usize = 1024;

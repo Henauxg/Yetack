@@ -93,7 +93,7 @@
         in
         {
           default = pkgs.mkShell {
-            nativeBuildInputs = [ nightlyRustfmt stable pkgs.pkg-config ];
+            nativeBuildInputs = [ nightlyRustfmt stable pkgs.pkg-config pkgs.just pkgs.shellcheck ];
             buildInputs = desktopLibraries pkgs;
             # Settings another project's environment may export would send builds to its
             # target folder or replace this repository's clippy config.
