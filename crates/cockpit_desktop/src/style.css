@@ -3289,9 +3289,11 @@ html.reordering * {
   background: var(--panel);
 }
 
+/* Grows with its text up to ten lines, then scrolls. Without field-sizing it keeps its two rows. */
 .composer-input {
+  field-sizing: content;
   min-height: 44px;
-  max-height: 240px;
+  max-height: calc(10lh + 8px);
   padding: 4px 6px;
   border: 0;
   background: transparent;
