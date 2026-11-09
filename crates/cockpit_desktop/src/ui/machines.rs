@@ -245,3 +245,40 @@ fn MachineRowView(row: MachineRow) -> Element {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::daemon_label::DaemonLabel;
+    use crate::state::MachineState;
+
+    #[test]
+    fn a_machine_button_shows_a_laptop_for_this_computer_and_a_server_otherwise() {
+        let choices = |this: DaemonLabel| -> Vec<(String, IconKind)> {
+            let mut state = AppState::new(this);
+            state.machines.others.insert(
+                MachineId::new(1),
+                MachineState::new(DaemonLabel::ssh("devbox".to_owned())),
+            );
+            machine_choices(&state, MachineId::THIS)
+                .into_iter()
+                .map(|choice| (choice.name, choice.icon))
+                .collect()
+        };
+
+        assert_eq!(
+            choices(DaemonLabel::in_app()),
+            [
+                (THIS_COMPUTER.to_owned(), IconKind::Laptop),
+                ("devbox".to_owned(), IconKind::Server),
+            ]
+        );
+        assert_eq!(
+            choices(DaemonLabel::ssh("build-box".to_owned())),
+            [
+                ("build-box".to_owned(), IconKind::Server),
+                ("devbox".to_owned(), IconKind::Server),
+            ]
+        );
+    }
+}

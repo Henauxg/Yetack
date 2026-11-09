@@ -1125,6 +1125,18 @@ mod tests {
     }
 
     #[test]
+    fn blocks_plain_text_puts_each_block_on_its_lines() {
+        let blocks = parse(
+            "## Plan\n\n> - one\n>   - **two**\n\n---\n\n```sh\ncargo test\ncargo fmt\n```\n\n| a | b |\n| - | - |\n| `1` | 2 |",
+        );
+
+        assert_eq!(
+            blocks_plain_text(&blocks),
+            "Plan\none\ntwo\ncargo test\ncargo fmt\na b\n1 2"
+        );
+    }
+
+    #[test]
     fn deep_nesting_is_flattened_without_failing() {
         let markdown = format!("{}deep", "> ".repeat(200));
 

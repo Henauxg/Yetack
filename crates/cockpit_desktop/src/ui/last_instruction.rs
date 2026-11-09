@@ -58,13 +58,17 @@ pub fn LastInstruction(top_entry: Signal<Option<TopEntry>>) -> Element {
 }
 
 /// The message's text without its Markdown, on one line and cut to what two lines can show, or
-/// its images' count when it has no text. `folder` is the agent's, as the bubble reads it.
+/// its images' count when it has no text. Markdown that shows no text, such as `---`, shows as
+/// written. `folder` is the agent's, as the bubble reads it.
 fn shown_text(message: &UserMessage, folder: &Path) -> Option<String> {
     let markdown: String = message.text.chars().take(READ_CHARS).collect();
     let plain = blocks_plain_text(&parse_markdown(&markdown, folder));
-    let words: Vec<&str> = plain.split_whitespace().collect();
-    if !words.is_empty() {
-        return Some(words.join(" ").chars().take(SHOWN_CHARS).collect());
+    let line = [plain.as_str(), markdown.as_str()]
+        .into_iter()
+        .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
+        .find(|line| !line.is_empty());
+    if let Some(line) = line {
+        return Some(line.chars().take(SHOWN_CHARS).collect());
     }
     (!message.images.is_empty()).then(|| format::count(message.images.len(), "image", "images"))
 }
@@ -98,5 +102,10 @@ mod tests {
         assert_eq!(shown(&long, 0), Some("é".repeat(SHOWN_CHARS)));
         assert_eq!(shown(" ", 2), Some("2 images".to_owned()));
         assert_eq!(shown("", 0), None);
+        assert_eq!(shown("---", 0), Some("---".to_owned()));
+        assert_eq!(
+            shown("[1]: https://example.org", 1),
+            Some("[1]: https://example.org".to_owned())
+        );
     }
 }
