@@ -329,7 +329,7 @@ pub struct UiState {
     pub open_blocks: BTreeSet<Block>,
     /// The block shown as a popover from its badge, while the file view is open.
     pub badge: Option<Block>,
-    /// The agents whose background block lists every finished task, not only the latest.
+    /// The agents whose background block lists the finished tasks, not only the running ones.
     pub finished_tasks_unfolded: BTreeSet<AgentId>,
     pub popover: Option<Popover>,
     pub dialog: Option<Dialog>,
