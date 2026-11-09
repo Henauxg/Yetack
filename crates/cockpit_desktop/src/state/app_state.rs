@@ -11,6 +11,7 @@ use cockpit_protocol::{
 use strum::VariantArray;
 
 use super::accounts::SignIns;
+use super::daemon_update::{DaemonUpdate, VersionGap};
 use super::file_edits;
 use super::no_daemon::NoDaemon;
 use super::transcript::Transcript;
@@ -195,6 +196,10 @@ pub struct MachineState {
     /// The daemon is older than `folders.list`: the folder field lists nothing until the app
     /// connects again.
     pub folders_unknown: bool,
+    /// The daemon refused the last attempt to connect for its protocol.
+    pub version_gap: Option<VersionGap>,
+    /// The update of this machine's daemon, under way or failed.
+    pub update: Option<DaemonUpdate>,
 }
 
 impl MachineState {
@@ -209,6 +214,8 @@ impl MachineState {
             sign_ins: SignIns::default(),
             sessions: Loadable::NotRequested,
             folders_unknown: false,
+            version_gap: None,
+            update: None,
         }
     }
 

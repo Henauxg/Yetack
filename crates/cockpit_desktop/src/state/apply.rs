@@ -11,10 +11,10 @@ use cockpit_protocol::{
 };
 
 use super::accounts::{self, SignIns};
-use super::actions;
 use super::app_state::{AgentEntry, AppState, ConnectionState, Loadable};
 use super::drafts::Drafts;
 use super::transcript::KEPT_ITEMS_AWAY;
+use super::{actions, daemon_update};
 use crate::machine::MachineId;
 
 /// A desktop notification to show.
@@ -52,6 +52,7 @@ pub fn apply_update(
             known.connection = ConnectionState::Connected;
             // The daemon may have been updated.
             known.folders_unknown = false;
+            daemon_update::connected(state, machine);
             apply_catchup(state, drafts, catchup, machine);
             Vec::new()
         }

@@ -7,6 +7,7 @@ use crate::connection::Cockpit;
 use crate::daemon_label::DaemonPlace;
 use crate::format;
 use crate::machine::MachineId;
+use crate::state::daemon_update::{self, UpdateLine};
 use crate::state::machines::{self, MachineChange};
 use crate::state::{AppState, ConnectionState, MachinesView};
 use crate::ui::icons::{Icon, IconKind};
@@ -53,6 +54,8 @@ struct MachineRow {
     detail: String,
     /// Why it does not answer.
     trouble: Option<String>,
+    /// What it says of a daemon of another version, which replaces `trouble`.
+    update: Option<UpdateLine>,
     agents: usize,
 }
 
@@ -89,6 +92,7 @@ fn rows(state: &AppState) -> Vec<MachineRow> {
                 name,
                 detail: detail.to_owned(),
                 trouble,
+                update: daemon_update::update_line(known),
                 agents,
             }
         })
@@ -192,23 +196,33 @@ fn MachineRowView(row: MachineRow) -> Element {
         name,
         detail,
         trouble,
+        update,
         agents,
     } = row;
     let removable = machine != MachineId::THIS;
     let agents_text = format::count(agents, "agent", "agents");
     rsx! {
-        div { class: if trouble.is_some() { "machine-row down" } else { "machine-row" },
+        div { class: if trouble.is_some() || update.is_some() { "machine-row down" } else { "machine-row" },
             div { class: "machine-row-main",
                 span { class: "machine-row-name", "{name}" }
                 span { class: "machine-row-detail", "{detail} · {agents_text}" }
-                if let Some(trouble) = &trouble {
+                if let Some(update) = update {
+                    span { class: "machine-row-detail", "{update.text}" }
+                } else if let Some(trouble) = &trouble {
                     span { class: "machine-row-detail", "Not connected: {trouble}" }
                 }
             }
-            if trouble.is_some() {
+            if let Some(update) = update {
                 button {
                     class: "button small",
-                    onclick: move |_| cockpit.change_machines(MachineChange::Retry(machine)),
+                    onclick: move |_| cockpit.update(|state| daemon_update::open(state, machine)),
+                    "{update.link}"
+                }
+            }
+            if update.is_some_and(|update| update.down) || (update.is_none() && trouble.is_some()) {
+                button {
+                    class: "button small",
+                    onclick: move |_| cockpit.retry_machine(machine),
                     "Retry now"
                 }
             }

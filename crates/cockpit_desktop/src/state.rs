@@ -6,6 +6,7 @@ pub mod actions;
 pub mod agent_map;
 mod app_state;
 mod apply;
+pub mod daemon_update;
 mod drafts;
 mod export;
 pub mod file_edits;

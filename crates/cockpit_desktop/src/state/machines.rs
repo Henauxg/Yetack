@@ -95,6 +95,10 @@ pub fn forget(state: &mut AppState, drafts: &mut Drafts, machine: MachineId) {
     state.ui.closing.retain(|agent| !on_machine(agent));
     state.ui.closed.take_if(|closed| on_machine(&closed.agent));
     state.ui.folded_machines.remove(&machine);
+    state
+        .ui
+        .dialog
+        .take_if(|dialog| matches!(dialog, Dialog::DaemonUpdate(shown) if *shown == machine));
     state.fix_selection();
 }
 

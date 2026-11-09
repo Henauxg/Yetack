@@ -26,6 +26,7 @@ use crate::state::{
 use crate::ui::accounts::{self as accounts_view, AccountMini, AccountPicker, AccountTag};
 use crate::ui::agent_map::AgentMapDialog;
 use crate::ui::composer::mode_icon;
+use crate::ui::daemon_update::DaemonUpdateScreens;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::machines::{MachinesDialog, machine_choices};
 use crate::ui::no_daemon::NoDaemonCard;
@@ -123,6 +124,9 @@ pub fn Dialogs() -> Element {
                     },
                     Dialog::NoDaemon => rsx! {
                         NoDaemonCard {}
+                    },
+                    Dialog::DaemonUpdate(machine) => rsx! {
+                        DaemonUpdateScreens { machine }
                     },
                 }
             }

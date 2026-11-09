@@ -6536,3 +6536,80 @@ label.icon-button,
   color: var(--dim);
   font-size: 12.5px;
 }
+
+/* The update of a server's daemon, on the "No daemon answers" card. */
+
+.no-daemon-hint code {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.update-steps {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.update-steps li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--faint);
+}
+
+.update-steps li.done {
+  color: var(--muted);
+}
+
+.update-steps li.now {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.update-mark {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.update-steps li.done .update-mark {
+  color: var(--teal);
+}
+
+/* A reversed flex column starts at its end, so the block stays at the last line as it grows. */
+.update-output {
+  display: flex;
+  flex-direction: column-reverse;
+  max-height: 220px;
+  overflow-y: auto;
+  border-radius: 8px;
+  background: var(--well);
+}
+
+.update-output pre {
+  margin: 0;
+  padding: 8px 10px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.machine-trouble .link-button:not(:last-child) {
+  margin-right: 8px;
+}

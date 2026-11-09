@@ -23,6 +23,7 @@ mod render;
 mod service;
 mod state;
 mod ui;
+mod update_script;
 
 use dioxus::LaunchBuilder;
 use dioxus::desktop::tao::event::Event;
@@ -65,6 +66,9 @@ fn main() -> anyhow::Result<()> {
     } else {
         AppState::new(label)
     };
+    if let (true, Some(screen)) = (demo, demo::update_screen(&arguments)) {
+        demo::show_update_screen(&mut state, screen);
+    }
     let machines: Vec<(MachineId, MachineConfig)> =
         (1..).map(MachineId::new).zip(config.machines).collect();
     if !demo {

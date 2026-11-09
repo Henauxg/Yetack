@@ -11,9 +11,7 @@ use cockpit_protocol::{
 };
 use dioxus::prelude::*;
 
-use crate::bridge;
 use crate::connection::{Clock, Cockpit};
-use crate::format;
 use crate::machine::MachineId;
 use crate::path_style::{self, PathStyle};
 use crate::prefs::AccountColor;
@@ -25,6 +23,7 @@ use crate::state::{AppState, Dialog, FormMenu, actions};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::machines::machine_choices;
 use crate::ui::presence::Presence;
+use crate::{bridge, format};
 
 /// How long a copy button says "Copied".
 const COPIED_FOR: Duration = Duration::from_secs(2);
@@ -1052,7 +1051,8 @@ pub fn dialog(dialog: Dialog) -> Element {
         | Dialog::CloseAgent(_)
         | Dialog::AgentMap(_)
         | Dialog::Machines(_)
-        | Dialog::NoDaemon => rsx! {},
+        | Dialog::NoDaemon
+        | Dialog::DaemonUpdate(_) => rsx! {},
     }
 }
 

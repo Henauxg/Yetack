@@ -32,7 +32,9 @@ pub fn App() -> Element {
     use_reorder(cockpit);
     let state = cockpit.state.read();
     // With servers, the question shows from this computer's panel, and the servers stay in use.
-    let no_daemon = matches!(state.machines.this.connection, ConnectionState::NoDaemon(_));
+    // An update of this computer's daemon keeps the screen until the new daemon answers.
+    let no_daemon = matches!(state.machines.this.connection, ConnectionState::NoDaemon(_))
+        || state.machines.this.update.is_some();
     if no_daemon && state.machines.others.is_empty() {
         return rsx! {
             NoDaemonScreen {}

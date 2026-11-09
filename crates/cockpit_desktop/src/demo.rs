@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_client::RequestError;
 use cockpit_protocol::{
@@ -24,11 +24,38 @@ use cockpit_protocol::{
 use serde_json::Value;
 
 use crate::daemon_label::DaemonLabel;
+use crate::machine::MachineId;
 use crate::path_style::PathStyle;
-use crate::state::{AgentEntry, AppState, ConnectionState, Loadable};
+use crate::state::daemon_update::{
+    self, OutputLine, OutputStream, ProtocolGap, UpdateFailure, UpdatePlan, VersionGap,
+};
+use crate::state::no_daemon::{self, Absence};
+use crate::state::{AgentEntry, AppState, ConnectionState, Dialog, Loadable, MachineState};
 
 /// The command-line flag that starts the demo.
 pub const DEMO_FLAG: &str = "--demo";
+
+/// With the demo, opens one of the screens of a daemon's update: `--demo-update older`.
+const UPDATE_SCREEN_FLAG: &str = "--demo-update";
+
+const UPDATE_MACHINE: &str = "build-box";
+/// A made-up commit.
+const UPDATE_COMMIT: &str = "3f9c2e17ab54c90d1e2f3a4b5c6d7e8f90a1b2c3";
+const REFUSED_FOR_OLDER: &str = "the daemon speaks protocol 1, the client 4";
+
+/// How long the demo's update waits before each line of its output.
+pub const UPDATE_LINE_PAUSE: Duration = Duration::from_millis(700);
+
+/// The script's lines on the demo's successful update.
+pub const UPDATE_OUTPUT: &[&str] = &[
+    "update-daemon: building 3f9c2e17ab54c90d1e2f3a4b5c6d7e8f90a1b2c3",
+    "   Compiling cockpit_protocol v0.1.0",
+    "   Compiling cockpit_client v0.1.0",
+    "   Compiling cockpit_daemon v0.1.0",
+    "    Finished `release` profile [optimized] target(s) in 3m 12s",
+    "update-daemon: restarting the daemon",
+    "update-daemon: the daemon runs 3f9c2e17ab54c90d1e2f3a4b5c6d7e8f90a1b2c3",
+];
 
 const PARSER_FOLDER: &str = "/home/dev/projects/calc-parser";
 const SERVICE_FOLDER: &str = "/home/dev/projects/calc-service";
@@ -359,6 +386,146 @@ const SIDEBAR_ORDER: [u32; 9] = [1, SIGN_IN_AGENT, MAP_AGENT, LIVE_AGENT, 4, 2, 
 
 /// The room between two agents' positions, as the daemon leaves it.
 const POSITION_STEP: u32 = 1024;
+
+/// The screen named by `--demo-update`, if any.
+pub fn update_screen(arguments: &[String]) -> Option<&str> {
+    let flag = arguments
+        .iter()
+        .position(|argument| argument == UPDATE_SCREEN_FLAG)?;
+    arguments.get(flag + 1).map(String::as_str)
+}
+
+/// The update of a daemon, in the state of one of the screens: the rest of the demo stays. A name
+/// the demo does not know opens nothing.
+pub fn show_update_screen(state: &mut AppState, screen: &str) {
+    match screen {
+        "older" => this_computer_refused(state, older_gap(Some(update_plan()))),
+        "no-commit" => this_computer_refused(state, older_gap(None)),
+        "newer" => this_computer_refused(state, newer_gap()),
+        "running" => {
+            this_computer_refused(state, older_gap(Some(update_plan())));
+            start_demo_update(state, MachineId::THIS);
+        }
+        "refused" => failed_update(state, UpdateFailure::Refused, Some(3)),
+        "failed" => failed_update(state, UpdateFailure::Failed, Some(1)),
+        "install-failed" => failed_update(state, UpdateFailure::InstallFailed, Some(4)),
+        "lost" => failed_update(state, UpdateFailure::Unknown, Some(255)),
+        "sidebar" => {
+            server_refused(state);
+        }
+        "dialog" => {
+            let machine = server_refused(state);
+            state.ui.dialog = Some(Dialog::DaemonUpdate(machine));
+        }
+        _ => {}
+    }
+}
+
+fn update_plan() -> UpdatePlan {
+    UpdatePlan {
+        host: UPDATE_MACHINE.to_owned(),
+        remote_command: "/opt/agents-cockpit/bin/agents-cockpit".to_owned(),
+        source_dir: None,
+        commit: UPDATE_COMMIT.to_owned(),
+    }
+}
+
+fn older_gap(plan: Option<UpdatePlan>) -> VersionGap {
+    VersionGap {
+        kind: ProtocolGap::Older,
+        details: REFUSED_FOR_OLDER.to_owned(),
+        plan,
+    }
+}
+
+fn newer_gap() -> VersionGap {
+    VersionGap {
+        kind: ProtocolGap::Newer,
+        details: "the daemon speaks protocol 5, the client 4".to_owned(),
+        plan: None,
+    }
+}
+
+/// This computer's daemon, over SSH, refuses the app: the window shows the update screens alone.
+fn this_computer_refused(state: &mut AppState, gap: VersionGap) {
+    let label = DaemonLabel::ssh(UPDATE_MACHINE.to_owned());
+    no_daemon::show(
+        state,
+        &label,
+        format!("the daemon refused the connection: {}", gap.details),
+        Absence::Failed,
+        None,
+    );
+    state.machines.this.daemon = label;
+    state.machines.this.version_gap = Some(gap);
+}
+
+/// A server beside this computer that refuses the app, the demo's agents staying in use.
+fn server_refused(state: &mut AppState) -> MachineId {
+    let machine = MachineId::new(1);
+    let mut server = MachineState::new(DaemonLabel::ssh(UPDATE_MACHINE.to_owned()));
+    server.connection = ConnectionState::Disconnected {
+        error: format!("the daemon refused the connection: {REFUSED_FOR_OLDER}"),
+        retry_at: Instant::now() + Duration::from_secs(10),
+    };
+    server.version_gap = Some(older_gap(Some(update_plan())));
+    state.machines.others.insert(machine, server);
+    machine
+}
+
+/// Starts the update and takes it partway through the build.
+fn start_demo_update(state: &mut AppState, machine: MachineId) {
+    if daemon_update::start(state, machine).is_none() {
+        return;
+    }
+    let lines = UPDATE_OUTPUT
+        .iter()
+        .take(4)
+        .map(|text| OutputLine {
+            stream: OutputStream::Stdout,
+            text: (*text).to_owned(),
+        })
+        .collect();
+    daemon_update::output(state, machine, lines);
+}
+
+/// The update ended on `code`, with what the script said on such a failure.
+fn failed_update(state: &mut AppState, failure: UpdateFailure, code: Option<i32>) {
+    this_computer_refused(state, older_gap(Some(update_plan())));
+    let machine = MachineId::THIS;
+    if daemon_update::start(state, machine).is_none() {
+        return;
+    }
+    let stderr = |text: &str| OutputLine {
+        stream: OutputStream::Stderr,
+        text: text.to_owned(),
+    };
+    let lines = match failure {
+        UpdateFailure::Refused => vec![
+            stderr("update-daemon: not restarting the daemon, these agents are busy:"),
+            stderr("3    working   0    12    Fix the parser"),
+            stderr("5    needs_you 1    4     Release notes"),
+        ],
+        UpdateFailure::Failed => vec![
+            stderr("error[E0432]: unresolved import `crate::sampler`"),
+            stderr("update-daemon: the build of 3f9c2e1 failed; the daemon was not touched"),
+        ],
+        UpdateFailure::InstallFailed => vec![stderr(
+            "update-daemon: the new daemon did not answer within 30 seconds; the previous binary is /opt/agents-cockpit/bin/agents-cockpit.previous",
+        )],
+        UpdateFailure::Unknown => vec![stderr("Connection to build-box closed by remote host.")],
+    };
+    daemon_update::output(state, machine, lines);
+    daemon_update::finished(state, machine, code);
+}
+
+/// Ends the demo's update as its first connection does.
+pub fn finish_update(state: &mut AppState, machine: MachineId) {
+    if let Some(known) = state.machines.get_mut(machine) {
+        known.connection = ConnectionState::Connected;
+    }
+    daemon_update::connected(state, machine);
+}
 
 pub fn is_requested(arguments: &[String]) -> bool {
     arguments.iter().any(|argument| argument == DEMO_FLAG)
@@ -2796,8 +2963,7 @@ fn sessions(now: SystemTime) -> Vec<PastSession> {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::FoldersListParams;
-    use cockpit_protocol::{HistoryParams, ReadFileParams, RenameParams};
+    use cockpit_protocol::{FoldersListParams, HistoryParams, ReadFileParams, RenameParams};
 
     use super::*;
     use crate::state::{HistoryState, WaitingKind, file_edits};
