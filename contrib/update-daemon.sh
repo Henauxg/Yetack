@@ -20,7 +20,9 @@
 #   0  the daemon runs the new version
 #   1  failed before anything changed
 #   3  refused: agents are busy or may hold a scheduled job
-#   4  failed during the install or the restart
+#   4  failed during the install or the restart: the daemon may be down
+#   5  the new daemon did not start, and the previous version runs again
+#   6  refused: another update is running
 # With --cancel: 0 when the update will stop before it installs, 1 when none runs or it is too late.
 
 say() {
@@ -71,12 +73,35 @@ parse_arguments() {
     esac
 }
 
-# Two updates at once would build in the same folder and restart the daemon twice.
+# The start time of a process that runs, empty for a dead one. A zombie counts as dead.
+start_time() {
+    sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | awk '$1 != "Z" { print $20 }'
+}
+
+# The start time tells the lock's owner from a later process that got its pid.
+lock_owner_runs() {
+    read -r owner_pid owner_start 2>/dev/null <"$lock" || return 1
+    [ -n "$owner_start" ] && [ "$(start_time "$owner_pid")" = "$owner_start" ]
+}
+
+# Two updates at once would build in the same folder and restart the daemon twice. A killed update
+# leaves its lock, so a dead owner's lock counts as free. flock makes looking at the lock and
+# replacing it one step, so that only one update takes a dead owner's lock.
 take_lock() {
     mkdir -p "$work_dir" || die "cannot create $work_dir"
-    mkdir "$work_dir/lock" 2>/dev/null ||
-        die "another update is running; if none is, remove $work_dir/lock"
-    trap 'rmdir "$work_dir/lock" 2>/dev/null' EXIT
+    # Written first and moved in, so that nobody sees a lock without its owner.
+    claim=$lock.$$
+    printf '%s %s\n' "$$" "$(start_time "$$")" >"$claim" || die "cannot write $claim"
+    (
+        flock -n 9 || exit 6
+        ! lock_owner_runs || exit 6
+        mv -f "$claim" "$lock"
+    ) 9>"$lock.guard"
+    taken=$?
+    rm -f "$claim"
+    [ "$taken" != 6 ] || fail 6 "another update is running"
+    [ "$taken" = 0 ] || die "cannot take $lock"
+    trap 'rm -f "$lock"' EXIT
     trap 'exit 1' INT TERM
     rm -rf "$work_dir/cancel"
 }
@@ -84,7 +109,7 @@ take_lock() {
 # A cancel creates the name `cancel` as a file and the install as a folder. Creating a name is
 # atomic, so one of them wins and a cancel cannot slip in after the update's last look.
 request_cancel() {
-    [ -d "$work_dir/lock" ] || die "no update is running"
+    lock_owner_runs || die "no update is running"
     if (set -C && : >"$work_dir/cancel") 2>/dev/null || [ -f "$work_dir/cancel" ]; then
         say "the update stops before it installs, once its build ends"
     elif [ -d "$work_dir/cancel" ]; then
@@ -112,6 +137,7 @@ check_tools() {
         [ -z "$(ps -o etimes= -p "$$" 2>/dev/null)" ]; then
         die "cannot tell whether a daemon runs: this needs a find with -lname and a ps with -o etimes"
     fi
+    command -v flock >/dev/null 2>&1 || die "cannot take the update lock: this needs flock"
 }
 
 # The daemon of this state folder is the process holding its lock file, whatever binary it runs.
@@ -133,7 +159,13 @@ count_calls() {
 check_agents() {
     daemon=$(daemon_pid)
     [ -n "$daemon" ] || return 0
-    listing=$("$binary" list 2>&1) || die "cannot read the agents from the daemon: $listing"
+    if ! listing=$("$binary" list 2>&1); then
+        # After a failed restart the old daemon runs on, and only the previous binary can read it.
+        listing_error=$listing
+        if [ ! -f "$binary.previous" ] || ! listing=$("$binary.previous" list 2>&1); then
+            die "cannot read the agents from the daemon: $listing_error"
+        fi
+    fi
     busy=$(printf '%s\n' "$listing" | awk 'NR > 1 && $2 != "idle" && $2 != "exited"')
     [ -z "$busy" ] || refuse "not restarting the daemon, these agents are busy:
 $busy"
@@ -199,28 +231,36 @@ stop_daemon() {
     done
 }
 
+# On failure `why` says what went wrong.
 restart_daemon() {
     case $restart in
         systemd)
-            systemctl --user restart agents-cockpit </dev/null ||
-                die_installing "systemctl could not restart the daemon"
+            systemctl --user restart agents-cockpit </dev/null || {
+                why="systemctl could not restart the daemon"
+                return 1
+            }
             ;;
         start_file)
             stop_daemon
             # A background process left holding this output would keep the SSH session open. The
             # daemon and its agents would keep the signals ignored here.
-            (trap - HUP INT TERM PIPE && exec sh "$start_file") </dev/null >"$work_dir/start-daemon.log" 2>&1 ||
-                die_installing "$start_file failed, see $work_dir/start-daemon.log"
+            (trap - HUP INT TERM PIPE && exec sh "$start_file") </dev/null >>"$work_dir/start-daemon.log" 2>&1 || {
+                why="$start_file failed, see $work_dir/start-daemon.log"
+                return 1
+            }
             ;;
     esac
 }
 
+# On failure `why` says what went wrong.
 wait_for_daemon() {
     tries=0
     until "$binary" list >/dev/null 2>&1; do
         tries=$((tries + 1))
-        [ "$tries" -le 30 ] ||
-            die_installing "the new daemon did not answer within 30 seconds; the previous binary is $binary.previous"
+        if [ "$tries" -gt 30 ]; then
+            why="the daemon did not answer within 30 seconds"
+            return 1
+        fi
         sleep 1
     done
 }
@@ -230,6 +270,24 @@ check_new_binary_runs() {
     running=$(readlink "/proc/$(daemon_pid)/exe" 2>/dev/null)
     [ "$running" = "$(readlink -f "$binary")" ] ||
         die_installing "the daemon that answers runs ${running:-an unknown binary}, not $binary"
+}
+
+# The new daemon never answered: the binary before it goes back in place and runs again.
+roll_back() {
+    failure="the new version did not start: $why"
+    if [ ! -f "$binary.previous" ] || cmp -s "$binary.previous" "$built"; then
+        die_installing "$failure"
+    fi
+    say "going back to the previous version"
+    { install -m 755 "$binary.previous" "$binary.new" && mv -f "$binary.new" "$binary"; } ||
+        die_installing "$failure; cannot put $binary.previous back"
+    if ! restart_daemon || ! wait_for_daemon; then
+        die_installing "$failure; the previous version did not come back either: $why"
+    fi
+    # By content: a daemon the restart left running has a binary that was replaced since.
+    cmp -s "/proc/$(daemon_pid)/exe" "$binary" ||
+        die_installing "$failure; the daemon that answers does not run the previous version"
+    fail 5 "$failure; the previous version runs again"
 }
 
 install_and_restart() {
@@ -243,10 +301,13 @@ install_and_restart() {
     install -m 755 "$built" "$binary.new" || die_installing "cannot write $binary.new"
     mv -f "$binary.new" "$binary" || die_installing "cannot replace $binary"
     say "restarting the daemon"
-    restart_daemon
-    wait_for_daemon
-    check_new_binary_runs
-    say "the daemon runs $sha"
+    rm -f "$work_dir/start-daemon.log"
+    if restart_daemon && wait_for_daemon; then
+        check_new_binary_runs
+        say "the daemon runs $sha"
+    else
+        roll_back
+    fi
 }
 
 main() {
@@ -254,6 +315,7 @@ main() {
     # and may send SIGHUP.
     trap '' HUP PIPE
     work_dir=${XDG_CACHE_HOME:-$HOME/.cache}/agents-cockpit/update
+    lock=$work_dir/lock.pid
     if [ "$*" = --cancel ]; then
         request_cancel
         return

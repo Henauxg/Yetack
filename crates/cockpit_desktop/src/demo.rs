@@ -413,6 +413,8 @@ pub fn show_update_screen(state: &mut AppState, screen: &str) {
         "failed" => failed_update(state, UpdateFailure::Failed, Some(1)),
         "cancelled" => failed_update(state, UpdateFailure::Cancelled, Some(1)),
         "install-failed" => failed_update(state, UpdateFailure::InstallFailed, Some(4)),
+        "rolled-back" => failed_update(state, UpdateFailure::RolledBack, Some(5)),
+        "already-running" => failed_update(state, UpdateFailure::AlreadyRunning, Some(6)),
         "lost" => failed_update(state, UpdateFailure::Unknown, Some(255)),
         "sidebar" => {
             server_refused(state);
@@ -521,8 +523,12 @@ fn failed_update(state: &mut AppState, failure: UpdateFailure, code: Option<i32>
             "update-daemon: the update was cancelled; the daemon was not touched",
         )],
         UpdateFailure::InstallFailed => vec![stderr(
-            "update-daemon: the new daemon did not answer within 30 seconds; the previous binary is /opt/agents-cockpit/bin/agents-cockpit.previous",
+            "update-daemon: the new version did not start: the daemon did not answer within 30 seconds; the previous version did not come back either: the daemon did not answer within 30 seconds",
         )],
+        UpdateFailure::RolledBack => vec![stderr(
+            "update-daemon: the new version did not start: the daemon did not answer within 30 seconds; the previous version runs again",
+        )],
+        UpdateFailure::AlreadyRunning => vec![stderr("update-daemon: another update is running")],
         UpdateFailure::Unknown => vec![stderr("Connection to build-box closed by remote host.")],
     };
     daemon_update::output(state, machine, lines);
