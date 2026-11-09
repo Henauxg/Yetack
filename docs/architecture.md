@@ -511,7 +511,8 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
 ## Client (`cockpit_client`)
 
 - `Transport::Local { socket }` connects to the socket.
-- `Transport::Ssh { host, remote_command }` runs `ssh -T -x -o BatchMode=yes -o ForwardAgent=no -o ClearAllForwardings=yes -- <host> '<remote_command>' bridge`.
+- `Transport::Ssh { host, remote_command }` runs `ssh -T -x -o BatchMode=yes -o ForwardAgent=no -o ClearAllForwardings=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -- <host> '<remote_command>' bridge`.
+  The keepalives end ssh after a minute of silence, so a dead link shows as a lost connection.
   `BatchMode` makes a missing key fail at once instead of waiting for a password the app cannot show.
   `ForwardAgent=no`, `-x` and `ClearAllForwardings=yes` open no agent, X11 or port forwarding to the laptop, even when the user's ssh config asks for one.
   `--` keeps ssh from reading the host or the remote command as an option, and the quotes keep the host's shell from reading anything in the remote command.

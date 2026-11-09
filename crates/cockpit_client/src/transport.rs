@@ -184,7 +184,9 @@ fn ssh_command(host: &str, remote_command: &str) -> Command {
 /// `BatchMode` makes a missing key fail at once, instead of waiting for a password the app cannot
 /// show. `ForwardAgent=no` keeps the host from using this machine's keys. `-x` and
 /// `ClearAllForwardings` open no X11 or port forwarding to this machine, even when the user's ssh
-/// config asks for one. `--` ends the options, since ssh reads options after the host too.
+/// config asks for one. `ServerAliveInterval` and `ServerAliveCountMax` end ssh after a minute of
+/// silence, where a dead link would otherwise look alive for many minutes. `--` ends the options,
+/// since ssh reads options after the host too.
 fn ssh_to(host: &str) -> Command {
     let mut command = Command::new(SSH_PROGRAM);
     command
@@ -197,6 +199,10 @@ fn ssh_to(host: &str) -> Command {
             "ForwardAgent=no",
             "-o",
             "ClearAllForwardings=yes",
+            "-o",
+            "ServerAliveInterval=15",
+            "-o",
+            "ServerAliveCountMax=4",
             "--",
         ])
         .arg(host)
@@ -267,12 +273,37 @@ mod tests {
                 "ForwardAgent=no",
                 "-o",
                 "ClearAllForwardings=yes",
+                "-o",
+                "ServerAliveInterval=15",
+                "-o",
+                "ServerAliveCountMax=4",
                 "--",
                 "build-box",
                 "'/opt/agents-cockpit/bin/agents-cockpit'",
                 "bridge",
             ]
         );
+    }
+
+    #[test]
+    fn the_bridge_and_a_script_both_send_keepalives() {
+        let bridge = ssh_command("build-box", "/opt/agents-cockpit");
+        let script = ssh_script_command("build-box", &["--cancel"]).unwrap();
+
+        for command in [bridge, script] {
+            let args: Vec<&str> = command
+                .as_std()
+                .get_args()
+                .map(|arg| arg.to_str().unwrap())
+                .collect();
+            let options = args.split(|&arg| arg == "--").next().unwrap();
+            for keepalive in ["ServerAliveInterval=15", "ServerAliveCountMax=4"] {
+                assert!(
+                    options.windows(2).any(|pair| pair == ["-o", keepalive]),
+                    "{keepalive}: {args:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -329,7 +360,7 @@ mod tests {
             .map(|arg| arg.to_str().unwrap())
             .collect();
         assert_eq!(
-            args.get(8..).unwrap(),
+            args.get(12..).unwrap(),
             [
                 "--",
                 "build-box",
