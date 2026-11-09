@@ -171,6 +171,10 @@ pub enum UpdateFailure {
     Cancelled,
     /// The install or the restart failed: the daemon may be down.
     InstallFailed,
+    /// The new daemon did not start, and the previous version runs again.
+    RolledBack,
+    /// Another update holds the server's lock, such as one the user left running.
+    AlreadyRunning,
     /// ssh lost the connection, or the exit status means nothing to the script: the app cannot
     /// tell how the update went.
     Unknown,
@@ -184,6 +188,8 @@ impl UpdateFailure {
             Some(3) => Some(Self::Refused),
             Some(1) => Some(Self::Failed),
             Some(4) => Some(Self::InstallFailed),
+            Some(5) => Some(Self::RolledBack),
+            Some(6) => Some(Self::AlreadyRunning),
             Some(_) | None => Some(Self::Unknown),
         }
     }
@@ -322,14 +328,16 @@ pub fn finished(state: &mut AppState, machine: MachineId, code: Option<i32>) -> 
     }
 }
 
-/// A refusal is what the script said. A failure also shows the end of the build's output.
+/// A refusal or a rollback is what the script said. A failure also shows the end of the build's
+/// output. Another update running needs no text beyond its card's.
 fn failure_of(progress: UpdateProgress, failure: UpdateFailure) -> FailedUpdate {
     let failure = match failure {
         UpdateFailure::Failed if progress.cancel_asked => UpdateFailure::Cancelled,
         other => other,
     };
     let message = match failure {
-        UpdateFailure::Refused => progress.errors.join("\n"),
+        UpdateFailure::Refused | UpdateFailure::RolledBack => progress.errors.join("\n"),
+        UpdateFailure::AlreadyRunning => String::new(),
         UpdateFailure::Failed
         | UpdateFailure::Cancelled
         | UpdateFailure::InstallFailed
@@ -650,6 +658,14 @@ mod tests {
             Some(UpdateFailure::InstallFailed)
         );
         assert_eq!(
+            UpdateFailure::from_exit_code(Some(5)),
+            Some(UpdateFailure::RolledBack)
+        );
+        assert_eq!(
+            UpdateFailure::from_exit_code(Some(6)),
+            Some(UpdateFailure::AlreadyRunning)
+        );
+        assert_eq!(
             UpdateFailure::from_exit_code(Some(255)),
             Some(UpdateFailure::Unknown)
         );
@@ -802,6 +818,28 @@ mod tests {
         };
         assert_eq!(failed.failure, UpdateFailure::Failed);
         assert!(failed.message.starts_with("   Compiling cockpit_daemon"));
+    }
+
+    #[test]
+    fn a_rollback_shows_what_the_script_said_and_another_update_nothing() {
+        let ended = |code| {
+            let mut state = with_older_server();
+            start(&mut state, build_box()).unwrap();
+            stdout(&mut state, "   Compiling cockpit_daemon v0.1.0");
+            output(
+                &mut state,
+                build_box(),
+                vec![line(OutputStream::Stderr, "update-daemon: made-up message")],
+            );
+            finished(&mut state, build_box(), Some(code));
+            match update(&state) {
+                Some(DaemonUpdate::Failed(failed)) => failed.message.clone(),
+                other => panic!("expected a failure, got {other:?}"),
+            }
+        };
+
+        assert_eq!(ended(5), "update-daemon: made-up message");
+        assert_eq!(ended(6), "");
     }
 
     #[test]
@@ -1050,6 +1088,8 @@ mod tests {
         for (code, ending) in [
             (Some(3), UpdateFailure::Refused),
             (Some(4), UpdateFailure::InstallFailed),
+            (Some(5), UpdateFailure::RolledBack),
+            (Some(6), UpdateFailure::AlreadyRunning),
             (None, UpdateFailure::Unknown),
         ] {
             let mut state = with_older_server();

@@ -284,6 +284,14 @@ fn failure_text(failure: UpdateFailure, name: &str) -> (String, String) {
             not_updated,
             format!("The update failed during the install or the restart, so the daemon on {name} may not have come back. Check the server."),
         ),
+        UpdateFailure::RolledBack => (
+            not_updated,
+            format!("The new version did not start, so {name} runs its old version again."),
+        ),
+        UpdateFailure::AlreadyRunning => (
+            format!("An update is already running on {name}"),
+            "Try again in a few minutes.".to_owned(),
+        ),
         UpdateFailure::Unknown => (
             "The app lost track of the update".to_owned(),
             format!("The app cannot tell how the update of {name} went. If it started, it goes on on the server: try again in a few minutes."),
@@ -300,7 +308,9 @@ fn FailedCard(machine: MachineId, name: String, failed: FailedUpdate) -> Element
     rsx! {
         h1 { id: TITLE_ID, "{title}" }
         p { class: "no-daemon-lead", "{lead}" }
-        ScrolledOutput { text: failed.message.clone() }
+        if !failed.message.is_empty() {
+            ScrolledOutput { text: failed.message.clone() }
+        }
         if let Some(agent) = stop_hint {
             p { class: "no-daemon-hint",
                 "To stop one now, run "
@@ -338,6 +348,27 @@ mod tests {
         assert_eq!(
             lead(UpdateFailure::Failed),
             "The update failed, so build-box still runs its old version."
+        );
+    }
+
+    #[test]
+    fn a_rollback_and_another_update_have_their_own_words() {
+        let text = |failure| failure_text(failure, "build-box");
+
+        assert_eq!(
+            text(UpdateFailure::RolledBack),
+            (
+                "build-box was not updated".to_owned(),
+                "The new version did not start, so build-box runs its old version again."
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            text(UpdateFailure::AlreadyRunning),
+            (
+                "An update is already running on build-box".to_owned(),
+                "Try again in a few minutes.".to_owned()
+            )
         );
     }
 }
