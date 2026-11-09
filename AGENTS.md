@@ -18,6 +18,7 @@ The review skills write `cargo +nightly fmt`; in this repository, `cargo fmt` in
 
 ## Rules
 
+- The desktop app's interface follows [crates/cockpit_desktop/AGENTS.md](crates/cockpit_desktop/AGENTS.md): feedback on every control, and animated changes of size, place and presence.
 - Rust code follows [docs/standards/rust/](docs/standards/rust/README.md).
   Every crate is application code.
 - Review skills: `/review` (correctness), `/review-standard` (the coding standard), `/review-architecture`.
