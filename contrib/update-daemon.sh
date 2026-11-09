@@ -225,6 +225,13 @@ wait_for_daemon() {
     done
 }
 
+# `list` answers for any daemon of this state folder, such as one the restart did not replace.
+check_new_binary_runs() {
+    running=$(readlink "/proc/$(daemon_pid)/exe" 2>/dev/null)
+    [ "$running" = "$(readlink -f "$binary")" ] ||
+        die_installing "the daemon that answers runs ${running:-an unknown binary}, not $binary"
+}
+
 install_and_restart() {
     # A connection lost from here on must not leave the machine without a daemon.
     trap '' HUP INT TERM PIPE
@@ -235,6 +242,7 @@ install_and_restart() {
     say "restarting the daemon"
     restart_daemon
     wait_for_daemon
+    check_new_binary_runs
     say "the daemon runs $sha"
 }
 

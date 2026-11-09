@@ -79,9 +79,10 @@ printf '%s' '{mark}' >>"$2/release/agents-cockpit"
         machine.write_program(
             "bin/systemctl",
             &format!(
-                "#!/bin/sh\n[ \"$#\" -gt 0 ] || exit 0\necho \"$*\" >>'{log}'\n[ -f '{active}' ]\n",
+                "#!/bin/sh\n[ \"$#\" -gt 0 ] || exit 0\necho \"$*\" >>'{log}'\nif [ \"$2\" = restart ] && [ -f '{restart}' ]; then sh '{restart}'; fi\n[ -f '{active}' ]\n",
                 log = machine.path("systemctl.log").display(),
                 active = machine.path("service-active").display(),
+                restart = machine.path("service-restart").display(),
             ),
         );
         fs::copy(BINARY, machine.installed()).unwrap();
@@ -670,8 +671,17 @@ fn without_a_start_file_it_restarts_the_systemd_service() {
     let machine = Machine::new();
     machine.start_daemon();
     let before = machine.daemon_pid();
+    let start = fs::read_to_string(machine.start_file()).unwrap();
     fs::remove_file(machine.start_file()).unwrap();
     File::create(machine.path("service-active")).unwrap();
+    fs::write(
+        machine.path("service-restart"),
+        format!(
+            "old=$(cat '{pid}')\nkill \"$old\"\nwhile [ -d \"/proc/$old\" ]; do sleep 0.02; done\n{start}",
+            pid = machine.path("daemon.pid").display(),
+        ),
+    )
+    .unwrap();
 
     let output = machine.update("origin/main");
 
@@ -679,11 +689,36 @@ fn without_a_start_file_it_restarts_the_systemd_service() {
     assert!(machine.installed_is_the_new_build());
     let calls = fs::read_to_string(machine.path("systemctl.log")).unwrap();
     assert!(calls.contains("--user restart agents-cockpit"), "{calls}");
-    assert_eq!(
-        machine.daemon_pid(),
-        before,
-        "systemd stops the daemon, not the script"
-    );
+    assert_ne!(machine.daemon_pid(), before);
+}
+
+#[test]
+fn a_service_restart_that_leaves_the_old_daemon_exits_with_four() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let before = machine.daemon_pid();
+    fs::remove_file(machine.start_file()).unwrap();
+    File::create(machine.path("service-active")).unwrap();
+
+    let output = machine.update("origin/main");
+
+    assert_eq!(output.status.code(), Some(4), "{}", stderr(&output));
+    assert_eq!(machine.daemon_pid(), before);
+    assert!(machine.update_lock_is_free());
+}
+
+#[test]
+fn a_start_file_that_starts_another_binary_exits_with_four() {
+    let machine = Machine::new();
+    let other = machine.path("install/other-copy");
+    fs::copy(BINARY, &other).unwrap();
+    wait_until_it_runs(&other);
+    machine.start_daemon();
+    fs::write(machine.start_file(), machine.start_text(&other)).unwrap();
+
+    let output = machine.update("origin/main");
+
+    assert_eq!(output.status.code(), Some(4), "{}", stderr(&output));
 }
 
 #[test]
