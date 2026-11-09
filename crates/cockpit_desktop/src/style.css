@@ -5020,6 +5020,28 @@ button.map-toggle:hover {
   background: var(--hover);
 }
 
+/* The machine and the account, above the tabs, which both use them. */
+.new-agent-target {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 28px;
+  padding: 4px 20px 14px;
+}
+
+.new-agent-target .acct-button {
+  border: 1px solid var(--line-control);
+}
+
+.new-agent-target .form-menu {
+  top: calc(100% + 6px);
+  bottom: auto;
+}
+
+.new-agent-target .menu {
+  --enter-y: -4px;
+  transform-origin: top left;
+}
+
 .machine-choice {
   display: flex;
   flex-wrap: wrap;
@@ -5882,14 +5904,6 @@ button.map-toggle:hover {
 .resume-tools .session-search {
   flex: 1 1 auto;
   min-width: 0;
-}
-
-.resume-tools .segmented {
-  flex: none;
-}
-
-.resume-tools .segment {
-  padding: 0 8px;
 }
 
 .session-title-line {

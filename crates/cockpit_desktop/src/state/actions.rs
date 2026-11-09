@@ -2035,10 +2035,19 @@ pub fn session_query(drafts: &mut Drafts, query: String) {
     drafts.new_agent.session_highlighted = 0;
 }
 
+/// The sessions the "Resume a session" tab lists: those of the dialog's account that its search
+/// finds.
+pub fn listed_sessions<'state>(
+    state: &'state AppState,
+    drafts: &Drafts,
+) -> Vec<&'state PastSession> {
+    let account = accounts::resume_account(state, drafts);
+    resumable_sessions(state, &drafts.new_agent.session_query, account)
+}
+
 pub fn session_move(state: &AppState, drafts: &mut Drafts, direction: Direction) {
+    let count = listed_sessions(state, drafts).len();
     let new_agent = &mut drafts.new_agent;
-    let count =
-        resumable_sessions(state, &new_agent.session_query, new_agent.session_account).len();
     new_agent.session_highlighted = moved(new_agent.session_highlighted, count, direction);
 }
 
@@ -2046,10 +2055,8 @@ pub fn session_move(state: &AppState, drafts: &mut Drafts, direction: Direction)
 /// that one row only shows its Resume button. A row of a list the query has since narrowed
 /// changes nothing.
 pub fn session_point(state: &AppState, drafts: &mut Drafts, index: usize) {
-    let new_agent = &mut drafts.new_agent;
-    if index < resumable_sessions(state, &new_agent.session_query, new_agent.session_account).len()
-    {
-        new_agent.session_highlighted = index;
+    if index < listed_sessions(state, drafts).len() {
+        drafts.new_agent.session_highlighted = index;
     }
 }
 
@@ -2058,12 +2065,10 @@ pub fn session_pick(state: &mut AppState, drafts: &Drafts, index: Option<usize>)
     if !matches!(state.ui.dialog, Some(Dialog::NewAgent(_))) {
         return Vec::new();
     }
-    let new_agent = &drafts.new_agent;
-    let index = index.unwrap_or(new_agent.session_highlighted);
-    let Some((session, account)) =
-        resumable_sessions(state, &new_agent.session_query, new_agent.session_account)
-            .get(index)
-            .map(|session| (session.id.clone(), session.account))
+    let index = index.unwrap_or(drafts.new_agent.session_highlighted);
+    let Some((session, account)) = listed_sessions(state, drafts)
+        .get(index)
+        .map(|session| (session.id.clone(), session.account))
     else {
         return Vec::new();
     };

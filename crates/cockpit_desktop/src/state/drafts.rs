@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use cockpit_protocol::{AccountId, AgentId, Image, PendingId};
+use cockpit_protocol::{AgentId, Image, PendingId};
 
 use super::utf16_offset::Utf16Offset;
 
@@ -61,8 +61,6 @@ pub struct NewAgentDraft {
     pub session_query: String,
     /// An index into the sessions the query leaves.
     pub session_highlighted: usize,
-    /// The account whose sessions the list shows; `None` for every account's.
-    pub session_account: Option<AccountId>,
 }
 
 /// The "Add an account" dialog's fields, while it is open.

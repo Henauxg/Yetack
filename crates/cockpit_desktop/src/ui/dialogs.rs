@@ -23,7 +23,7 @@ use crate::state::folder_field::{self, FolderRow};
 use crate::state::{
     Dialog, FolderList, FormMenu, Loadable, NewAgentForm, NewAgentTab, accounts, actions,
 };
-use crate::ui::accounts::{self as accounts_view, AccountMini, AccountPicker, AccountTag};
+use crate::ui::accounts::{self as accounts_view, AccountMini, AccountPicker};
 use crate::ui::agent_map::AgentMapDialog;
 use crate::ui::composer::mode_icon;
 use crate::ui::daemon_update::DaemonUpdateScreens;
@@ -309,6 +309,7 @@ fn NewAgentDialog(form: NewAgentForm) -> Element {
                     Icon { kind: IconKind::Close, size: 14 }
                 }
             }
+            NewAgentTarget { form: form.clone() }
             div { class: "dialog-tabs", role: "tablist", aria_label: "How to start",
                 button {
                     class: if start { "dialog-tab selected" } else { "dialog-tab" },
@@ -331,6 +332,58 @@ fn NewAgentDialog(form: NewAgentForm) -> Element {
                 StartForm { form }
             } else {
                 ResumeList { starting: form.starting }
+            }
+        }
+    }
+}
+
+/// The machine and the account, which both tabs use. Each shows once there is a choice.
+#[component]
+fn NewAgentTarget(form: NewAgentForm) -> Element {
+    let cockpit: Cockpit = use_context();
+    let folder = cockpit.drafts.read().new_agent.folder.clone();
+    let (machine_choices, account) = {
+        let state = cockpit.state.read();
+        let account = accounts::shows_labels(&state, form.machine)
+            .then(|| accounts::new_agent_account(&state, &form, &folder));
+        (machine_choices(&state, form.machine), account)
+    };
+    if machine_choices.is_empty() && account.is_none() {
+        return rsx! {};
+    }
+    let account_open = form.menu == Some(FormMenu::Account);
+    rsx! {
+        div { class: "new-agent-target",
+            if !machine_choices.is_empty() {
+                div { class: "field-group",
+                    span { class: "field-label", "Machine" }
+                    div { class: "machine-choice", role: "radiogroup", aria_label: "Machine",
+                        for choice in machine_choices {
+                            {
+                                let picked = choice.machine;
+                                rsx! {
+                                    button {
+                                        key: "{choice.name}",
+                                        class: if choice.chosen { "machine-option checked" } else { "machine-option" },
+                                        role: "radio",
+                                        aria_checked: choice.chosen,
+                                        disabled: !choice.answers,
+                                        title: if choice.answers { "" } else { "This machine does not answer" },
+                                        onclick: move |_| cockpit.update(|state| actions::pick_new_agent_machine(state, picked)),
+                                        Icon { kind: choice.icon, size: 13 }
+                                        "{choice.name}"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(account) = account {
+                div { class: "field-group",
+                    span { class: "field-label", "Account" }
+                    AccountPicker { account, open: account_open }
+                }
             }
         }
     }
@@ -404,7 +457,7 @@ fn StartForm(form: NewAgentForm) -> Element {
     let focus = use_hook(|| actions::start_focus(&cockpit.drafts.peek().new_agent));
     // The recent folder under the pointer, the one row lit. The field's folder is only marked.
     let mut pointed = use_signal(|| None::<PathBuf>);
-    let (folders, machine, local, sessions_loading, account, machine_choices, folders_unknown) = {
+    let (folders, machine, local, sessions_loading, folders_unknown) = {
         let state = cockpit.state.read();
         let chosen = state.machines.get(form.machine);
         let mut folders: Vec<(PathBuf, Timestamp, Option<AccountLabel>)> = state
@@ -419,8 +472,6 @@ fn StartForm(form: NewAgentForm) -> Element {
         let loading = chosen.is_none_or(|known| {
             matches!(known.sessions, Loadable::NotRequested | Loadable::Loading)
         });
-        let account = accounts::shows_labels(&state, form.machine)
-            .then(|| accounts::new_agent_account(&state, &form, &typed_folder));
         // The system's picker shows this computer's folders, which a daemon over SSH cannot use.
         let local = form.machine == MachineId::THIS
             && chosen.is_some_and(|known| known.daemon.place != DaemonPlace::Ssh);
@@ -430,8 +481,6 @@ fn StartForm(form: NewAgentForm) -> Element {
             machine,
             local,
             loading,
-            account,
-            machine_choices(&state, form.machine),
             chosen.is_some_and(|known| known.folders_unknown),
         )
     };
@@ -468,36 +517,10 @@ fn StartForm(form: NewAgentForm) -> Element {
     let effort_label = form.effort.map(format::effort_label);
     let mode_label = form.mode.map_or(DEFAULT_MODE, format::mode_label);
     let mode_icon = mode_icon(form.mode.unwrap_or_default());
-    let account_open = form.menu == Some(FormMenu::Account);
     let model_open = form.menu == Some(FormMenu::Model);
     let mode_open = form.menu == Some(FormMenu::Mode);
     rsx! {
         div { class: "dialog-body",
-            if !machine_choices.is_empty() {
-                div { class: "field-group",
-                    span { class: "field-label", "Machine" }
-                    div { class: "machine-choice", role: "radiogroup", aria_label: "Machine",
-                        for choice in machine_choices {
-                            {
-                                let picked = choice.machine;
-                                rsx! {
-                                    button {
-                                        key: "{choice.name}",
-                                        class: if choice.chosen { "machine-option checked" } else { "machine-option" },
-                                        role: "radio",
-                                        aria_checked: choice.chosen,
-                                        disabled: !choice.answers,
-                                        title: if choice.answers { "" } else { "This machine does not answer" },
-                                        onclick: move |_| cockpit.update(|state| actions::pick_new_agent_machine(state, picked)),
-                                        Icon { kind: choice.icon, size: 13 }
-                                        "{choice.name}"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
             div { class: "field-group",
                 label { class: "field-label", r#for: FOLDER_FIELD_ID, "Folder on {machine}" }
                 // Above the recent folders, which arrive after the dialog opens: the field stays
@@ -634,9 +657,6 @@ fn StartForm(form: NewAgentForm) -> Element {
                     onkeydown: start_on_command_enter,
                 }
                 div { class: "prompt-tools",
-                    if let Some(account) = account {
-                        AccountPicker { account, open: account_open }
-                    }
                     div { class: "menu-anchor",
                         button {
                             class: if model_open { "menu-button raised open" } else { "menu-button raised" },
@@ -983,19 +1003,18 @@ fn FormModeMenu(mode: Option<PermissionMode>) -> Element {
 fn ResumeList(starting: bool) -> Element {
     let cockpit: Cockpit = use_context();
     let Clock(now) = use_context::<Clock>();
-    let (query, highlighted, account) = {
+    let (query, highlighted) = {
         let drafts = cockpit.drafts.read();
-        let new_agent = &drafts.new_agent;
         (
-            new_agent.session_query.clone(),
-            new_agent.session_highlighted,
-            new_agent.session_account,
+            drafts.new_agent.session_query.clone(),
+            drafts.new_agent.session_highlighted,
         )
     };
     // Follows the keyboard alone, as the other fields.
     let query_seed = use_hook(|| query.clone());
     let pointer = use_pointer_moves();
-    let (sessions, machine, filters) = {
+    let (sessions, machine, of_one_account) = {
+        let drafts = cockpit.drafts.read();
         let state = cockpit.state.read();
         let form_machine = match &state.ui.dialog {
             Some(Dialog::NewAgent(form)) => form.machine,
@@ -1007,26 +1026,18 @@ fn ResumeList(starting: bool) -> Element {
             .unwrap_or(&state.machines.this);
         let sessions = match &known.sessions {
             Loadable::Loaded(_) => Loadable::Loaded(
-                actions::resumable_sessions(&state, &query, account)
+                actions::listed_sessions(&state, &drafts)
                     .into_iter()
-                    .map(|session| {
-                        let label = accounts::label(&state, form_machine, session.account);
-                        (session.clone(), label)
-                    })
-                    .collect::<Vec<(PastSession, Option<AccountLabel>)>>(),
+                    .cloned()
+                    .collect::<Vec<PastSession>>(),
             ),
             Loadable::NotRequested => Loadable::NotRequested,
             Loadable::Loading => Loadable::Loading,
             Loadable::Failed(error) => Loadable::Failed(error.clone()),
         };
-        let filters = if accounts::shows_labels(&state, form_machine) {
-            accounts::labels(&state, form_machine)
-        } else {
-            Vec::new()
-        };
-        (sessions, known.daemon.machine.clone(), filters)
+        let of_one_account = accounts::resume_account(&state, &drafts).is_some();
+        (sessions, known.daemon.machine.clone(), of_one_account)
     };
-    let filtered = account.is_some_and(|id| filters.iter().any(|label| label.id == id));
     let now = now();
     let searching = !query.trim().is_empty();
     rsx! {
@@ -1059,37 +1070,11 @@ fn ResumeList(starting: bool) -> Element {
                     }
                     span { class: "key-hint", "Enter" }
                 }
-                if !filters.is_empty() {
-                    div { class: "segmented", role: "group", aria_label: "Sessions of",
-                        button {
-                            class: if filtered { "segment" } else { "segment chosen" },
-                            aria_pressed: !filtered,
-                            onclick: move |_| cockpit.with_drafts(|_, drafts| accounts::set_session_account(drafts, None)),
-                            "All"
-                        }
-                        for label in &filters {
-                            {
-                                let id = label.id;
-                                let chosen = account == Some(id);
-                                rsx! {
-                                    button {
-                                        key: "{id.get()}",
-                                        class: if chosen { "segment chosen" } else { "segment" },
-                                        aria_pressed: chosen,
-                                        onclick: move |_| cockpit.with_drafts(|_, drafts| accounts::toggle_session_account(drafts, id)),
-                                        accounts_view::AccountDot { color: label.color }
-                                        "{label.name}"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
             }
-            if filters.is_empty() {
-                span { class: "dialog-note", "Claude sessions on {machine} that no agent runs now, newest first." }
+            if of_one_account {
+                span { class: "dialog-note", "This account's Claude sessions on {machine} that no agent runs now, newest first." }
             } else {
-                span { class: "dialog-note", "Claude sessions on {machine} that no agent runs now, newest first, from every account. A session resumes with the account it ran with." }
+                span { class: "dialog-note", "Claude sessions on {machine} that no agent runs now, newest first." }
             }
             match sessions {
                 Loadable::NotRequested | Loadable::Loading => rsx! {
@@ -1113,7 +1098,7 @@ fn ResumeList(starting: bool) -> Element {
                         span { class: "dialog-note",
                             if searching {
                                 "No session matches."
-                            } else if filtered {
+                            } else if of_one_account {
                                 "No past session of this account."
                             } else {
                                 "No past session."
@@ -1123,7 +1108,7 @@ fn ResumeList(starting: bool) -> Element {
                     div { class: "session-list", role: "listbox", aria_label: "Sessions",
                         // Keyed by position: the daemon's list does not promise one entry per
                         // session.
-                        for (index, (session, label)) in sessions.into_iter().enumerate() {
+                        for (index, session) in sessions.into_iter().enumerate() {
                             {
                                 let turns = format::count(usize::try_from(session.turns).unwrap_or(usize::MAX), "turn", "turns");
                                 let chosen = index == highlighted;
@@ -1144,9 +1129,6 @@ fn ResumeList(starting: bool) -> Element {
                                         span { class: "session-text",
                                             span { class: "session-title-line",
                                                 span { class: "session-title", "{session.title}" }
-                                                if let Some(label) = label {
-                                                    AccountTag { label }
-                                                }
                                             }
                                             FolderPath { folder: session.folder.clone() }
                                         }

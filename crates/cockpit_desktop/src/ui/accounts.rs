@@ -200,7 +200,7 @@ pub fn AccountsButton() -> Element {
     }
 }
 
-/// The new agent dialog's account button, first in the prompt's row, and its menu.
+/// The new agent dialog's account button, next to its machine, and its menu.
 #[component]
 pub fn AccountPicker(account: AccountId, open: bool) -> Element {
     let cockpit: Cockpit = use_context();
@@ -274,7 +274,7 @@ fn AccountItem(choice: AccountChoice, chosen: bool) -> Element {
         button {
             class: if chosen { "acct-item chosen" } else { "acct-item" },
             aria_pressed: chosen,
-            onclick: move |_| cockpit.update(|state| accounts::pick_new_agent_account(state, id)),
+            onclick: move |_| cockpit.update_with_drafts(|state, drafts| accounts::pick_new_agent_account(state, drafts, id)),
             AccountDot { color: choice.label.color }
             span { class: "acct-item-text",
                 span { class: "acct-item-name",
