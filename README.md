@@ -20,7 +20,7 @@ ssh <host> sh -s -- --commit <commit> --binary <path> < contrib/update-daemon.sh
 
 `<path>` is the absolute path of `agents-cockpit` on the server. `--source-dir` names the server's checkout, by its absolute path, when it is not `~/agents-cockpit`; in the app's config, `source_dir` per machine does the same. The script builds outside the checkout, and refuses while an agent works, waits for an answer or may hold a scheduled job. Once started it finishes even when the connection is lost. Running it with `--cancel` makes the update stop before it installs, once its build ends. Once the install has started, `--cancel` says it is too late and exits with 1.
 
-Its exit status is 0 when the daemon runs the new version, 1 when it failed before anything changed, 3 when it refused because of agents, and 4 when the install or the restart failed.
+Its exit status is 0 when the daemon runs the new version, 1 when it failed before anything changed, 3 when it refused because of agents, 4 when the install or the restart failed, 5 when the new daemon did not start and the previous version runs again, and 6 when another update is running.
 
 The server needs a way to restart the daemon: the `agents-cockpit` systemd user service, or a shell script at `~/.config/agents-cockpit/start-daemon` that starts the daemon in the background and returns.
 
