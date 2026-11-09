@@ -264,11 +264,10 @@ fn StepRow(shown: UpdateStep, current: UpdateStep, short_commit: String) -> Elem
     }
 }
 
-#[component]
-fn FailedCard(machine: MachineId, name: String, failed: FailedUpdate) -> Element {
-    let cockpit: Cockpit = use_context();
+/// The title and the lead of a failure's screen.
+fn failure_text(failure: UpdateFailure, name: &str) -> (String, String) {
     let not_updated = format!("{name} was not updated");
-    let (title, lead) = match failed.failure {
+    match failure {
         UpdateFailure::Refused => (
             not_updated,
             "These agents are busy, and a restart would interrupt them. Let them finish, then update again.".to_owned(),
@@ -276,6 +275,10 @@ fn FailedCard(machine: MachineId, name: String, failed: FailedUpdate) -> Element
         UpdateFailure::Failed => (
             not_updated,
             format!("The update failed, so {name} still runs its old version."),
+        ),
+        UpdateFailure::Cancelled => (
+            not_updated,
+            format!("The update was cancelled, so {name} still runs its old version."),
         ),
         UpdateFailure::InstallFailed => (
             not_updated,
@@ -285,7 +288,13 @@ fn FailedCard(machine: MachineId, name: String, failed: FailedUpdate) -> Element
             "The app lost track of the update".to_owned(),
             format!("The app cannot tell how the update of {name} went. If it started, it goes on on the server: try again in a few minutes."),
         ),
-    };
+    }
+}
+
+#[component]
+fn FailedCard(machine: MachineId, name: String, failed: FailedUpdate) -> Element {
+    let cockpit: Cockpit = use_context();
+    let (title, lead) = failure_text(failed.failure, &name);
     let stop_hint = (failed.failure == UpdateFailure::Refused)
         .then(|| failed.first_agent().unwrap_or("<id>").to_owned());
     rsx! {
@@ -311,5 +320,24 @@ fn FailedCard(machine: MachineId, name: String, failed: FailedUpdate) -> Element
                 "Back"
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_cancel_the_user_asked_for_reads_as_one() {
+        let lead = |failure| failure_text(failure, "build-box").1;
+
+        assert_eq!(
+            lead(UpdateFailure::Cancelled),
+            "The update was cancelled, so build-box still runs its old version."
+        );
+        assert_eq!(
+            lead(UpdateFailure::Failed),
+            "The update failed, so build-box still runs its old version."
+        );
     }
 }

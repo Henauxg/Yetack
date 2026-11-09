@@ -408,6 +408,7 @@ pub fn show_update_screen(state: &mut AppState, screen: &str) {
         }
         "refused" => failed_update(state, UpdateFailure::Refused, Some(3)),
         "failed" => failed_update(state, UpdateFailure::Failed, Some(1)),
+        "cancelled" => failed_update(state, UpdateFailure::Cancelled, Some(1)),
         "install-failed" => failed_update(state, UpdateFailure::InstallFailed, Some(4)),
         "lost" => failed_update(state, UpdateFailure::Unknown, Some(255)),
         "sidebar" => {
@@ -496,6 +497,9 @@ fn failed_update(state: &mut AppState, failure: UpdateFailure, code: Option<i32>
     if daemon_update::start(state, machine).is_none() {
         return;
     }
+    if failure == UpdateFailure::Cancelled {
+        daemon_update::ask_cancel(state, machine);
+    }
     let stderr = |text: &str| OutputLine {
         stream: OutputStream::Stderr,
         text: text.to_owned(),
@@ -510,6 +514,9 @@ fn failed_update(state: &mut AppState, failure: UpdateFailure, code: Option<i32>
             stderr("error[E0432]: unresolved import `crate::sampler`"),
             stderr("update-daemon: the build of 3f9c2e1 failed; the daemon was not touched"),
         ],
+        UpdateFailure::Cancelled => vec![stderr(
+            "update-daemon: the update was cancelled; the daemon was not touched",
+        )],
         UpdateFailure::InstallFailed => vec![stderr(
             "update-daemon: the new daemon did not answer within 30 seconds; the previous binary is /opt/agents-cockpit/bin/agents-cockpit.previous",
         )],

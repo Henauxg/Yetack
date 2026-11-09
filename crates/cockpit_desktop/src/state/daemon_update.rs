@@ -167,6 +167,8 @@ pub enum UpdateFailure {
     Refused,
     /// The update failed before it changed anything.
     Failed,
+    /// The user cancelled it, and it stopped before it changed anything.
+    Cancelled,
     /// The install or the restart failed: the daemon may be down.
     InstallFailed,
     /// ssh lost the connection, or the exit status means nothing to the script: the app cannot
@@ -310,9 +312,16 @@ pub fn finished(state: &mut AppState, machine: MachineId, code: Option<i32>) -> 
 
 /// A refusal is what the script said. A failure also shows the end of the build's output.
 fn failure_of(progress: UpdateProgress, failure: UpdateFailure) -> FailedUpdate {
+    let failure = match failure {
+        UpdateFailure::Failed if progress.cancel_asked => UpdateFailure::Cancelled,
+        other => other,
+    };
     let message = match failure {
         UpdateFailure::Refused => progress.errors.join("\n"),
-        UpdateFailure::Failed | UpdateFailure::InstallFailed | UpdateFailure::Unknown => {
+        UpdateFailure::Failed
+        | UpdateFailure::Cancelled
+        | UpdateFailure::InstallFailed
+        | UpdateFailure::Unknown => {
             let tail = progress.output.len().saturating_sub(FAILURE_LINES);
             let last: Vec<&str> = progress
                 .output
@@ -832,6 +841,54 @@ mod tests {
         stdout(&mut state, "update-daemon: restarting the daemon");
         assert!(!progress(&state).offers_cancel());
         assert_eq!(ask_cancel(&mut state, build_box()), None);
+    }
+
+    fn failure(state: &AppState) -> UpdateFailure {
+        match update(state) {
+            Some(DaemonUpdate::Failed(failed)) => failed.failure,
+            other => panic!("expected a failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_cancel_the_user_asked_for_ends_as_cancelled() {
+        let mut state = with_older_server();
+        start(&mut state, build_box()).unwrap();
+        stdout(&mut state, "update-daemon: building 3f9c2e1");
+        ask_cancel(&mut state, build_box()).unwrap();
+
+        assert!(!finished(&mut state, build_box(), Some(1)));
+
+        assert_eq!(failure(&state), UpdateFailure::Cancelled);
+    }
+
+    #[test]
+    fn a_cancel_that_never_reached_the_server_ends_as_a_failure() {
+        let mut state = with_older_server();
+        start(&mut state, build_box()).unwrap();
+        ask_cancel(&mut state, build_box()).unwrap();
+        cancel_failed(&mut state, build_box(), "ssh: connect failed".to_owned());
+
+        finished(&mut state, build_box(), Some(1));
+
+        assert_eq!(failure(&state), UpdateFailure::Failed);
+    }
+
+    #[test]
+    fn a_cancel_does_not_hide_any_other_ending() {
+        for (code, ending) in [
+            (Some(3), UpdateFailure::Refused),
+            (Some(4), UpdateFailure::InstallFailed),
+            (None, UpdateFailure::Unknown),
+        ] {
+            let mut state = with_older_server();
+            start(&mut state, build_box()).unwrap();
+            ask_cancel(&mut state, build_box()).unwrap();
+
+            finished(&mut state, build_box(), code);
+
+            assert_eq!(failure(&state), ending, "{code:?}");
+        }
     }
 
     #[test]
