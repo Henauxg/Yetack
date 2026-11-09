@@ -238,12 +238,11 @@ pub fn AccountPicker(account: AccountId, open: bool) -> Element {
 #[component]
 fn AccountMenu(account: AccountId) -> Element {
     let cockpit: Cockpit = use_context();
-    let folder = cockpit.drafts.read().new_agent.folder.clone();
     let (title, choices) = {
         let state = cockpit.state.read();
         let machine = new_agent_machine(&state);
         (
-            accounts::picker_title(&state, machine, &folder),
+            accounts::picker_title(&state, machine),
             accounts::choices(&state, machine),
         )
     };
