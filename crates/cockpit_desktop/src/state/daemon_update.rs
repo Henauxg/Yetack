@@ -437,9 +437,10 @@ pub fn update_line(known: &MachineState) -> Option<UpdateLine> {
             Some(line("Updating…", "Show", false))
         }
         (Some(DaemonUpdate::Failed(_)), _) => Some(line("Was not updated.", "Show", true)),
-        (None, Some(gap)) => Some(match gap.kind {
-            ProtocolGap::Older => line("Runs an older version.", "Update", true),
-            ProtocolGap::Newer => line("Runs a newer version.", "Details", true),
+        (None, Some(gap)) => Some(match (gap.kind, &gap.plan) {
+            (ProtocolGap::Older, Some(_)) => line("Runs an older version.", "Update", true),
+            (ProtocolGap::Older, None) => line("Runs an older version.", "Details", true),
+            (ProtocolGap::Newer, _) => line("Runs a newer version.", "Details", true),
         }),
         (None, None) => None,
     }
@@ -817,6 +818,25 @@ mod tests {
 
         assert_eq!(start(&mut state, build_box()), None);
         assert_eq!(update(&state), None);
+    }
+
+    #[test]
+    fn with_no_commit_known_the_sidebar_offers_no_update() {
+        let mut state = with_server();
+        attempt_failed(
+            &mut state,
+            build_box(),
+            gap_over_ssh("the daemon speaks protocol 1, the client 4"),
+            None,
+        );
+
+        let shown = update_line(known(&state)).unwrap();
+
+        assert_eq!(
+            (shown.text, shown.link),
+            ("Runs an older version.", "Details")
+        );
+        assert!(shown.down);
     }
 
     #[test]
