@@ -169,19 +169,19 @@ build() {
             die "cannot check out $sha in $tree"
     fi
     say "building $sha"
-    cd "$tree" || die "cannot enter $tree"
     # The dev shell unsets CARGO_TARGET_DIR, so the folder goes on the command line.
     target_dir=$work_dir/target
     set -- cargo build --release --locked -p agents_cockpit \
         --target-dir "$target_dir" --jobs "${CARGO_BUILD_JOBS:-4}"
-    if [ -f flake.nix ] && command -v nix >/dev/null 2>&1; then
+    if [ -f "$tree/flake.nix" ] && command -v nix >/dev/null 2>&1; then
         set -- nix --extra-experimental-features 'nix-command flakes' develop --command "$@"
     fi
     # cargo stops when it cannot write its output. It writes to tee, which outlives the connection:
     # with SIGPIPE ignored, a failed write only makes it stop copying to its standard output.
+    # Only this subshell enters the checkout, so that a daemon started later does not run in it.
     status_file=$work_dir/build.status
     rm -f "$status_file"
-    { nice -n 19 "$@" </dev/null 2>&1; echo "$?" >"$status_file"; } | tee "$work_dir/build.log"
+    { cd "$tree" && nice -n 19 "$@" </dev/null 2>&1; echo "$?" >"$status_file"; } | tee "$work_dir/build.log"
     [ "$(cat "$status_file" 2>/dev/null)" = 0 ] ||
         die "the build of $sha failed; the daemon was not touched"
     built=$target_dir/release/agents-cockpit
@@ -208,8 +208,9 @@ restart_daemon() {
             ;;
         start_file)
             stop_daemon
-            # A background process left holding this output would keep the SSH session open.
-            sh "$start_file" </dev/null >"$work_dir/start-daemon.log" 2>&1 ||
+            # A background process left holding this output would keep the SSH session open. The
+            # daemon and its agents would keep the signals ignored here.
+            (trap - HUP INT TERM PIPE && exec sh "$start_file") </dev/null >"$work_dir/start-daemon.log" 2>&1 ||
                 die_installing "$start_file failed, see $work_dir/start-daemon.log"
             ;;
     esac

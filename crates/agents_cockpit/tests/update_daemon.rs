@@ -403,6 +403,17 @@ fn now_ms() -> u128 {
         .as_millis()
 }
 
+/// The signals a process ignores, as `/proc` shows them.
+fn ignored_signals(pid: &str) -> String {
+    let status = fs::read_to_string(Path::new("/proc").join(pid).join("status")).unwrap();
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("SigIgn:"))
+        .unwrap()
+        .trim()
+        .to_owned()
+}
+
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
@@ -719,6 +730,40 @@ fn a_start_file_that_starts_another_binary_exits_with_four() {
     let output = machine.update("origin/main");
 
     assert_eq!(output.status.code(), Some(4), "{}", stderr(&output));
+}
+
+#[test]
+fn the_restarted_daemon_ignores_no_signal_the_script_ignores() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let ignored_before = ignored_signals(&machine.daemon_pid());
+
+    assert_succeeded(&machine.update("origin/main"));
+
+    assert_eq!(ignored_signals(&machine.daemon_pid()), ignored_before);
+}
+
+#[test]
+fn the_start_file_does_not_run_in_the_update_checkout() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let start = fs::read_to_string(machine.start_file()).unwrap();
+    fs::write(
+        machine.start_file(),
+        format!(
+            "pwd >'{folder}'\n{start}",
+            folder = machine.path("start-folder").display()
+        ),
+    )
+    .unwrap();
+
+    assert_succeeded(&machine.update("origin/main"));
+
+    let folder = fs::read_to_string(machine.path("start-folder")).unwrap();
+    assert!(
+        !Path::new(folder.trim()).starts_with(machine.update_folder()),
+        "{folder}"
+    );
 }
 
 #[test]
