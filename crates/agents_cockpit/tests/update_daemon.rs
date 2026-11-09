@@ -38,8 +38,12 @@ struct Machine {
 
 impl Machine {
     fn new() -> Self {
+        Self::in_a_folder_named(".tmp")
+    }
+
+    fn in_a_folder_named(prefix: &str) -> Self {
         let machine = Self {
-            temp: tempfile::tempdir().unwrap(),
+            temp: tempfile::Builder::new().prefix(prefix).tempdir().unwrap(),
         };
         for folder in ["bin", "install", "work", "home/config/agents-cockpit"] {
             fs::create_dir_all(machine.path(folder)).unwrap();
@@ -84,12 +88,7 @@ printf '%s' '{mark}' >>"$2/release/agents-cockpit"
         wait_until_it_runs(&machine.installed());
         fs::write(
             machine.start_file(),
-            format!(
-                "'{installed}' serve >>'{log}' 2>&1 </dev/null &\necho $! >'{pid}'\n",
-                installed = machine.installed().display(),
-                log = machine.path("serve.log").display(),
-                pid = machine.path("daemon.pid").display(),
-            ),
+            machine.start_text(&machine.installed()),
         )
         .unwrap();
         machine.git(
@@ -118,6 +117,16 @@ printf '%s' '{mark}' >>"$2/release/agents-cockpit"
 
     fn start_file(&self) -> PathBuf {
         self.path("home/config/agents-cockpit/start-daemon")
+    }
+
+    /// A start file that runs `binary` as the daemon, in the background.
+    fn start_text(&self, binary: &Path) -> String {
+        format!(
+            "'{binary}' serve >>'{log}' 2>&1 </dev/null &\necho $! >'{pid}'\n",
+            binary = binary.display(),
+            log = self.path("serve.log").display(),
+            pid = self.path("daemon.pid").display(),
+        )
     }
 
     fn state(&self) -> PathBuf {
@@ -222,6 +231,17 @@ printf '%s' '{mark}' >>"$2/release/agents-cockpit"
             .trim()
             .to_owned();
         self.wait_for_status(&id, "idle");
+        id
+    }
+
+    /// Starts an agent with a first prompt, and waits for it to work.
+    fn working_agent(&self) -> String {
+        let work = self.path("work");
+        let id = self
+            .ok(&["start", work.to_str().unwrap(), "Fix the parser"])
+            .trim()
+            .to_owned();
+        self.wait_for_status(&id, "working");
         id
     }
 
@@ -510,17 +530,66 @@ fn with_no_daemon_running_it_installs_and_starts_one() {
 fn refuses_while_an_agent_works() {
     let machine = Machine::new();
     machine.start_daemon();
-    let work = machine.path("work");
-    let id = machine
-        .ok(&["start", work.to_str().unwrap(), "Fix the parser"])
-        .trim()
-        .to_owned();
-    machine.wait_for_status(&id, "working");
+    machine.working_agent();
     let before = machine.daemon_pid();
 
     let output = machine.update("origin/main");
 
     assert_refused(&machine, &output, 3, "Fix the parser", &before);
+    assert!(!machine.built(), "it refuses before the build");
+}
+
+#[test]
+fn refuses_while_an_agent_works_under_a_daemon_of_another_name() {
+    let machine = Machine::new();
+    let renamed = machine.path("install/cockpit-renamed");
+    fs::copy(BINARY, &renamed).unwrap();
+    wait_until_it_runs(&renamed);
+    fs::write(machine.start_file(), machine.start_text(&renamed)).unwrap();
+    machine.start_daemon();
+    machine.working_agent();
+    let before = machine.daemon_pid();
+
+    let output = machine.update("origin/main");
+
+    assert_refused(&machine, &output, 3, "Fix the parser", &before);
+}
+
+#[test]
+fn refuses_while_an_agent_works_in_a_state_folder_with_glob_characters() {
+    let machine = Machine::in_a_folder_named("sta[t]e");
+    machine.start_daemon();
+    machine.working_agent();
+    let before = machine.daemon_pid();
+
+    let output = machine.update("origin/main");
+
+    assert_refused(&machine, &output, 3, "Fix the parser", &before);
+}
+
+#[test]
+fn refuses_when_it_cannot_look_for_the_daemon() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let before = machine.daemon_pid();
+    machine.write_program("bin/find", "#!/bin/sh\nexit 1\n");
+
+    let output = machine.update("origin/main");
+
+    assert_refused(&machine, &output, 1, "cannot tell", &before);
+    assert!(!machine.built(), "it refuses before the build");
+}
+
+#[test]
+fn refuses_when_it_cannot_tell_when_the_daemon_started() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let before = machine.daemon_pid();
+    machine.write_program("bin/ps", "#!/bin/sh\nexit 0\n");
+
+    let output = machine.update("origin/main");
+
+    assert_refused(&machine, &output, 1, "cannot tell", &before);
     assert!(!machine.built(), "it refuses before the build");
 }
 

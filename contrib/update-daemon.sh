@@ -98,14 +98,20 @@ choose_restart() {
     fi
 }
 
+# Without these tools no daemon and no scheduled job would show, and a busy daemon would restart.
+check_tools() {
+    if ! find "/proc/$$/fd" -maxdepth 1 -lname '*' >/dev/null 2>&1 ||
+        [ -z "$(ps -o etimes= -p "$$" 2>/dev/null)" ]; then
+        die "cannot tell whether a daemon runs: this needs a find with -lname and a ps with -o etimes"
+    fi
+}
+
 # The daemon of this state folder is the process holding its lock file, whatever binary it runs.
 daemon_pid() {
-    for pid in $(pgrep -u "$(id -u)" -x agents-cockpit); do
-        if [ -n "$(find "/proc/$pid/fd" -maxdepth 1 -lname "$lock_file" 2>/dev/null)" ]; then
-            printf '%s\n' "$pid"
-            return
-        fi
-    done
+    # `find -lname` takes a shell pattern, and this path must match as it is written.
+    lock_pattern=$(readlink -f "$state_dir/serve.lock" | sed 's/[][*?\\]/\\&/g')
+    find /proc/[0-9]*/fd -maxdepth 1 -lname "$lock_pattern" 2>/dev/null |
+        sed -n '1s|^/proc/\([0-9]*\)/.*|\1|p'
 }
 
 # Prints how many times Claude called a tool in a raw log since a time in milliseconds. A raw line
@@ -238,8 +244,8 @@ main() {
     PATH=$PATH:$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin
     PATH=$PATH:/etc/profiles/per-user/$(id -un)/bin
     state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/agents-cockpit
-    lock_file=$(readlink -f "$state_dir/serve.lock")
     start_file=${XDG_CONFIG_HOME:-$HOME/.config}/agents-cockpit/start-daemon
+    check_tools
     take_lock
     choose_restart
     check_agents
