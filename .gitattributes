@@ -1,0 +1,2 @@
+# The script runs on a Linux server, and a checkout on Windows must not turn its line ends to CRLF.
+contrib/*.sh text eol=lf

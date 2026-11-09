@@ -10,7 +10,7 @@
   };
 
   outputs =
-    { nixpkgs, rust-overlay, ... }:
+    { self, nixpkgs, rust-overlay, ... }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forEachSystem = f: nixpkgs.lib.genAttrs systems (system: f (import nixpkgs {
@@ -52,6 +52,9 @@
           desktop = rustPlatform.buildRustPackage (common // {
             pname = "agents-cockpit-desktop";
             cargoBuildFlags = [ "-p" "cockpit_desktop" ];
+            # The commit this app is built from, which the daemon's update builds on a server.
+            # Empty for a tree with uncommitted changes: the app then offers no update.
+            AGENTS_COCKPIT_COMMIT = self.rev or "";
             nativeBuildInputs = [ pkgs.pkg-config pkgs.wrapGAppsHook3 pkgs.copyDesktopItems ];
             buildInputs = desktopLibraries pkgs;
             # GTK names the window after the binary, so a Wayland desktop finds this entry, and
