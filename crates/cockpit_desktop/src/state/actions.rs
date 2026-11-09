@@ -1848,11 +1848,17 @@ pub fn switcher_pick(state: &mut AppState, drafts: &Drafts, index: Option<usize>
     select_agent(state, agent);
 }
 
+/// The model a new agent starts with when no agent started gives one.
+const NEW_AGENT_MODEL: &str = "opus";
+
+/// The permission mode a new agent starts with when no agent started gives one.
+const NEW_AGENT_MODE: PermissionMode = PermissionMode::Auto;
+
 /// Opens the new agent dialog on the last used folder, with the model, effort and permission
-/// mode of the last agent started. A mode the mode menu does not offer, or Plan, which is
-/// usually for a while, is not carried over. The past sessions are listed again, since sessions
-/// end and start while the app runs. An open dialog stays as it is, with what its fields hold,
-/// and an "Accounts" dialog that goes back to it does so.
+/// mode of the last agent started, else Opus and Auto. A mode the mode menu does not offer, or
+/// Plan, which is usually for a while, is not carried over. The past sessions are listed again,
+/// since sessions end and start while the app runs. An open dialog stays as it is, with what its
+/// fields hold, and an "Accounts" dialog that goes back to it does so.
 pub fn open_new_agent(state: &mut AppState, drafts: &mut Drafts) {
     if matches!(state.ui.dialog, Some(Dialog::NewAgent(_))) {
         return;
@@ -1874,22 +1880,24 @@ pub fn open_new_agent(state: &mut AppState, drafts: &mut Drafts) {
     let model = last
         .and_then(|summary| summary.model.as_deref())
         .and_then(format::model_alias)
-        .map(str::to_owned);
+        .unwrap_or(NEW_AGENT_MODEL)
+        .to_owned();
     let effort = last
         .filter(|summary| summary.effort_source == EffortSource::Chosen)
         .and_then(|summary| summary.effort);
     let mode = last
         .map(|summary| summary.mode)
-        .filter(|mode| MODE_CHOICES.contains(mode) && *mode != PermissionMode::Plan);
+        .filter(|mode| MODE_CHOICES.contains(mode) && *mode != PermissionMode::Plan)
+        .unwrap_or(NEW_AGENT_MODE);
     if state.machines.this.sessions != Loadable::Loading {
         state.machines.this.sessions = Loadable::NotRequested;
     }
     state.machines.this.sign_ins.refresh();
     state.ui.popover = None;
     state.ui.dialog = Some(Dialog::NewAgent(NewAgentForm {
-        model,
+        model: Some(model),
         effort,
-        mode,
+        mode: Some(mode),
         ..NewAgentForm::default()
     }));
     drafts.new_agent = NewAgentDraft {
@@ -4472,7 +4480,7 @@ mod tests {
     }
 
     #[test]
-    fn the_new_agent_form_keeps_the_defaults_without_an_agent_or_a_known_model() {
+    fn the_new_agent_form_starts_on_opus_and_auto_without_an_agent_or_a_known_model() {
         let mut state = state_with(Vec::new());
         open_new_agent(&mut state, &mut Drafts::default());
         let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
@@ -4480,7 +4488,7 @@ mod tests {
         };
         assert_eq!(
             (form.model.as_deref(), form.effort, form.mode),
-            (None, None, None)
+            (Some("opus"), None, Some(PermissionMode::Auto))
         );
 
         let mut unknown = summary(1, AgentStatus::Idle);
@@ -4490,7 +4498,7 @@ mod tests {
         let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
             panic!("expected the new agent dialog, got {:?}", state.ui.dialog);
         };
-        assert_eq!(form.model, None);
+        assert_eq!(form.model.as_deref(), Some("opus"));
         assert_eq!(form.mode, Some(PermissionMode::Default));
     }
 
@@ -4509,9 +4517,12 @@ mod tests {
             }
         };
 
-        assert_eq!(carried(PermissionMode::BypassPermissions), None);
-        assert_eq!(carried(PermissionMode::DontAsk), None);
-        assert_eq!(carried(PermissionMode::Plan), None);
+        assert_eq!(
+            carried(PermissionMode::BypassPermissions),
+            Some(PermissionMode::Auto)
+        );
+        assert_eq!(carried(PermissionMode::DontAsk), Some(PermissionMode::Auto));
+        assert_eq!(carried(PermissionMode::Plan), Some(PermissionMode::Auto));
         assert_eq!(carried(PermissionMode::Auto), Some(PermissionMode::Auto));
     }
 
