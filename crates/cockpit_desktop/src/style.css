@@ -929,6 +929,7 @@ html.reordering * {
   min-width: 0;
 }
 
+/* A click on the title renames the agent. */
 .header-title h1 {
   margin: 0;
   min-width: 0;
@@ -937,6 +938,7 @@ html.reordering * {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: text;
 }
 
 /* The pencil shows on the title line under the pointer, and on keyboard focus. */

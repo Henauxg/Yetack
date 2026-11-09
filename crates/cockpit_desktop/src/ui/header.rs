@@ -209,12 +209,16 @@ pub fn Header() -> Element {
                         }
                     } else {
                         h1 {
-                            ondoubleclick: move |_| start_rename(),
+                            title: "Rename",
+                            onclick: move |_| start_rename(),
                             if let Some(emoji) = &title_emoji {
                                 span {
                                     class: "title-emoji",
                                     title: "Change the emoji",
-                                    onclick: move |_| toggle_emoji(),
+                                    onclick: move |event: MouseEvent| {
+                                        event.stop_propagation();
+                                        toggle_emoji();
+                                    },
                                     "{emoji}"
                                 }
                             }
