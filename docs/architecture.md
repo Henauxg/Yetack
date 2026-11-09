@@ -656,6 +656,9 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
   When the chat goes back to a place scrolled up, it shows the skeleton in that frame instead, as the latest rows may not hold that place.
   The chat's scroll script keeps each agent's place, and only a chat that draws all its agent's rows names that agent (`data-agent`), so the script goes back to the place once every row is there.
   On the first click on an agent, the chat shows the skeleton until the daemon sends the first page, then draws it in the same two frames.
+- **Last instruction** (`ui/last_instruction.rs`): once the user's message has scrolled out above the chat, a bar over the chat's top shows it, so the user knows which instruction the output in view answers. A click scrolls the chat back to the message.
+  The chat's scroll script tells the app which entry is at the top of the view, each time another one comes there (`TopEntry`, a signal of its own, so scrolling renders only the bar). The bar shows the latest top-level user message before that entry (`Transcript::message_before`), and nothing when the entry is a user message itself.
+  It shows nothing when that message sits in older messages the app has not loaded.
 - **Renaming in the sidebar**: F2, or a double-click on a row's title, turns the selected agent's row title into a field, as the header's pencil does for the header's title.
   Enter or leaving the field saves with `agent.rename`, and Esc cancels.
   One title field shows at a time: F2 in the header's field moves the edit to the row with the text typed so far, and F2 in the row's field moves it back.

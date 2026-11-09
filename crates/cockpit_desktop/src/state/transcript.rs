@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use cockpit_protocol::{
     AnswerState, HistoryPage, ItemBody, ItemId, OlderItems, PendingId, ToolCallStatus,
-    TranscriptItem,
+    TranscriptItem, UserMessage,
 };
 
 /// The most items the app keeps of an agent you are not looking at.
@@ -168,6 +168,27 @@ impl Transcript {
             .rev()
             .filter(|item| item.parent == Some(parent))
             .find_map(Waiting::new)
+    }
+
+    /// The message the user sent that the items from `top` on answer: the latest top-level user
+    /// message before `top`. `None` when `top` is a user message itself or is not held.
+    pub fn message_before(&self, top: ItemId) -> Option<(ItemId, &UserMessage)> {
+        let top_message = user_message(self.items.get(&top)?);
+        if top_message.is_some() {
+            return None;
+        }
+        self.items
+            .range(..top)
+            .rev()
+            .find_map(|(_, item)| user_message(item).map(|message| (item.id, message)))
+    }
+}
+
+/// A message the user sent to the agent, not one of a subagent's.
+fn user_message(item: &TranscriptItem) -> Option<&UserMessage> {
+    match &item.body {
+        ItemBody::UserMessage(message) if item.parent.is_none() => Some(message),
+        _ => None,
     }
 }
 
@@ -465,6 +486,38 @@ mod tests {
         let ids: Vec<u32> = awaiting_approval(&refs).iter().map(|id| id.get()).collect();
 
         assert_eq!(ids, [1]);
+    }
+
+    #[test]
+    fn the_message_before_an_item_is_the_latest_one_the_user_sent() {
+        let sent = |id: u32, parent: Option<u32>, text: &str| {
+            item(
+                id,
+                parent,
+                ItemBody::UserMessage(UserMessage {
+                    text: text.to_owned(),
+                    images: Vec::new(),
+                }),
+            )
+        };
+        let mut transcript = Transcript::default();
+        transcript.append(text(1, "an answer to an older message"));
+        transcript.append(sent(2, None, "Run the tests"));
+        transcript.append(text(3, "Running them"));
+        transcript.append(sent(4, Some(3), "A subagent's prompt"));
+        transcript.append(text(5, "All pass"));
+        transcript.append(sent(6, None, "Now the lints"));
+        let before = |top: u32| {
+            transcript
+                .message_before(ItemId::new(top))
+                .map(|(id, message)| (id.get(), message.text.clone()))
+        };
+
+        assert_eq!(before(5), Some((2, "Run the tests".to_owned())));
+        assert_eq!(before(3), Some((2, "Run the tests".to_owned())));
+        assert_eq!(before(1), None);
+        assert_eq!(before(6), None);
+        assert_eq!(before(9), None);
     }
 
     #[test]

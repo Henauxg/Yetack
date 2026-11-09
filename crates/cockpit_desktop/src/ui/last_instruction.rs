@@ -1,0 +1,94 @@
+//! The last instruction: over the top of the chat, the message the user sent that the entries in
+//! view answer, once that message has scrolled out above.
+
+use cockpit_protocol::{AgentId, ItemId, UserMessage};
+use dioxus::prelude::*;
+
+use crate::connection::Cockpit;
+use crate::format;
+use crate::ui::chat_scroll::TopEntry;
+
+/// The characters of the message the bar holds. It shows two lines of them.
+const SHOWN_CHARS: usize = 400;
+
+/// What the bar shows: the message's agent and item, which a click scrolls to, and its text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Instruction {
+    agent: AgentId,
+    item: ItemId,
+    text: String,
+}
+
+#[component]
+pub fn LastInstruction(top_entry: Signal<Option<TopEntry>>) -> Element {
+    let cockpit: Cockpit = use_context();
+    let instruction = use_memo(move || {
+        let top = top_entry()?;
+        let state = cockpit.state.read();
+        let entry = state.selected().filter(|entry| entry.id() == top.agent)?;
+        let (item, message) = entry.transcript.message_before(top.item)?;
+        Some(Instruction {
+            agent: top.agent,
+            item,
+            text: shown_text(message)?,
+        })
+    });
+    let Some(Instruction { agent, item, text }) = instruction() else {
+        return rsx! {};
+    };
+    rsx! {
+        div { class: "last-instruction",
+            div { class: "last-instruction-column",
+                button {
+                    class: "last-instruction-message",
+                    title: "Show this message in the chat",
+                    onclick: move |_| cockpit.update(|state| state.ui.reveal_in_chat(agent, item)),
+                    span { class: "last-instruction-text", "{text}" }
+                }
+            }
+        }
+    }
+}
+
+/// The message's text, cut to what two lines can show, or its images' count when it has no text.
+fn shown_text(message: &UserMessage) -> Option<String> {
+    let text = message.text.trim();
+    if !text.is_empty() {
+        return Some(text.chars().take(SHOWN_CHARS).collect());
+    }
+    (!message.images.is_empty()).then(|| format::count(message.images.len(), "image", "images"))
+}
+
+#[cfg(test)]
+mod tests {
+    use cockpit_protocol::{Image, ImageMediaType};
+
+    use super::*;
+
+    fn message(text: &str, images: usize) -> UserMessage {
+        let image = Image {
+            media_type: ImageMediaType::Png,
+            data: String::new(),
+        };
+        UserMessage {
+            text: text.to_owned(),
+            images: vec![image; images],
+        }
+    }
+
+    #[test]
+    fn the_bar_shows_the_text_cut_or_the_images_count() {
+        let long = "é".repeat(SHOWN_CHARS + 10);
+
+        assert_eq!(
+            shown_text(&message("  Run the tests\n", 1)),
+            Some("Run the tests".to_owned())
+        );
+        assert_eq!(
+            shown_text(&message(&long, 0)),
+            Some("é".repeat(SHOWN_CHARS))
+        );
+        assert_eq!(shown_text(&message(" ", 2)), Some("2 images".to_owned()));
+        assert_eq!(shown_text(&message("", 0)), None);
+    }
+}

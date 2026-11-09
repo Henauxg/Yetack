@@ -15,6 +15,7 @@ mod emoji_picker;
 mod file_view;
 mod header;
 mod icons;
+mod last_instruction;
 mod load_card;
 mod loading;
 mod machines;

@@ -21,6 +21,7 @@ use crate::ui::cards::{ApprovalCard, PlanCard, QuestionCard};
 use crate::ui::chat_scroll::{self, CHAT_SCROLL_ID, ENTRY_CLASS, JumpToLatest, NewDivider};
 use crate::ui::code::{LineNumbers, diff_row};
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::last_instruction::LastInstruction;
 use crate::ui::loading::TranscriptSkeleton;
 use crate::ui::markdown::MarkdownView;
 use crate::{bridge, format};
@@ -155,7 +156,7 @@ impl ShownRows {
 pub fn TranscriptView() -> Element {
     use_hook(start_fold_script);
     let cockpit: Cockpit = use_context();
-    chat_scroll::use_chat_scroll(cockpit);
+    let top_entry = chat_scroll::use_chat_scroll(cockpit);
     // The agent whose conversation the chat opened, once its first page came or failed. A
     // failure shows above all the rows.
     let opened = use_memo(move || {
@@ -273,6 +274,7 @@ pub fn TranscriptView() -> Element {
                 }
             }
         }
+        LastInstruction { top_entry }
         JumpToLatest { shown: scrolled_up.is_some(), count: waiting }
     }
 }

@@ -1667,6 +1667,60 @@ html.reordering * {
   right: calc(404px + 24px);
 }
 
+/* The last instruction, over the top of the chat. It spans the chat's box without the floating
+   blocks' room, and its column lines up with the chat's, so it sits where user bubbles sit. */
+.last-instruction {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 296px;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.center.narrow-chat .last-instruction {
+  right: 52px;
+}
+
+.center:not(.narrow-chat):has(.block-card.wide) .last-instruction {
+  right: 404px;
+}
+
+.last-instruction-column {
+  display: flex;
+  justify-content: flex-end;
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 10px 20px 0;
+}
+
+.last-instruction-message {
+  max-width: min(80%, 720px);
+  padding: 7px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--hover);
+  color: var(--text-soft);
+  font-size: 13px;
+  text-align: left;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+  animation: fade-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.last-instruction-message:hover {
+  background: var(--selected);
+  color: var(--text-bright);
+}
+
+.last-instruction-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
 .jump-badge {
   position: absolute;
   top: -6px;
