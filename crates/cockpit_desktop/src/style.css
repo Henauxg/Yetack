@@ -6534,6 +6534,11 @@ label.icon-button,
   accent-color: var(--teal);
 }
 
+.no-daemon-failed {
+  color: var(--red);
+  font-size: 12.5px;
+}
+
 .no-daemon-hint {
   color: var(--dim);
   font-size: 12.5px;
