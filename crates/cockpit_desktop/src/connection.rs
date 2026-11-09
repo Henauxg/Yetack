@@ -126,13 +126,12 @@ impl Cockpit {
         }
     }
 
-    /// Tries a machine that does not answer again now. This computer goes through its choice on
-    /// the screen, a server through its connection task.
+    /// Tries a machine that does not answer again now.
     pub fn retry_machine(&self, machine: MachineId) {
-        if machine == MachineId::THIS {
-            self.choose_daemon(DaemonChoice::Retry);
-        } else {
-            self.change_machines(MachineChange::Retry(machine));
+        let mut signal = self.state;
+        let retry = retry_message(&mut signal.write(), machine);
+        if let Some(retry) = retry {
+            self.daemon.send(retry);
         }
     }
 
@@ -215,6 +214,18 @@ impl Cockpit {
         if kept_open {
             self.update(|state| actions::set_title_kept_open(state, false));
         }
+    }
+}
+
+/// What tries `machine` again now. This computer, while it shows its screen, goes through the
+/// choice its connection task waits for. Otherwise the connection task starts a new attempt.
+fn retry_message(state: &mut AppState, machine: MachineId) -> Option<ToDaemon> {
+    let on_its_screen = machine == MachineId::THIS
+        && matches!(state.machines.this.connection, ConnectionState::NoDaemon(_));
+    if on_its_screen {
+        no_daemon::choose(state, DaemonChoice::Retry).map(ToDaemon::Choose)
+    } else {
+        Some(ToDaemon::Machines(MachineChange::Retry(machine)))
     }
 }
 
@@ -455,12 +466,7 @@ async fn run_update(
     if !daemon_update::finished(&mut state.write(), machine, code) {
         return;
     }
-    let retry = if machine == MachineId::THIS {
-        no_daemon::choose(&mut state.write(), DaemonChoice::Retry).map(ToDaemon::Choose)
-    } else {
-        Some(ToDaemon::Machines(MachineChange::Retry(machine)))
-    };
-    if let Some(retry) = retry {
+    if let Some(retry) = retry_message(&mut state.write(), machine) {
         // A task that ended takes no more requests.
         let _ = task.send(retry);
     }
@@ -1063,6 +1069,59 @@ mod tests {
             .map(|entry| entry.transcript.items().count());
         TRANSCRIPT_RENDERS.with(|renders| renders.set(renders.get() + 1));
         rsx! {}
+    }
+
+    #[test]
+    fn retry_now_restarts_this_computers_connection_after_a_drop() {
+        let mut state = state_with(Vec::new());
+        state.machines.this.connection = ConnectionState::Disconnected {
+            error: "connection reset".to_owned(),
+            retry_at: Instant::now(),
+        };
+
+        let retry = retry_message(&mut state, MachineId::THIS);
+
+        assert!(matches!(
+            retry,
+            Some(ToDaemon::Machines(MachineChange::Retry(machine))) if machine == MachineId::THIS
+        ));
+    }
+
+    #[test]
+    fn retry_on_this_computers_screen_goes_through_its_choice_once() {
+        let mut state = state_with(Vec::new());
+        no_daemon::show(
+            &mut state,
+            &DaemonLabel::ssh("build-box".to_owned()),
+            "refused".to_owned(),
+            Absence::Failed,
+            None,
+        );
+
+        let first = retry_message(&mut state, MachineId::THIS);
+        let second = retry_message(&mut state, MachineId::THIS);
+
+        assert!(matches!(
+            first,
+            Some(ToDaemon::Choose(Chosen {
+                choice: DaemonChoice::Retry,
+                ..
+            }))
+        ));
+        assert!(second.is_none(), "the first retry is under way");
+    }
+
+    #[test]
+    fn a_server_is_tried_again_by_its_connection_task() {
+        let devbox = MachineId::new(1);
+        let mut state = state_with(Vec::new());
+
+        let retry = retry_message(&mut state, devbox);
+
+        assert!(matches!(
+            retry,
+            Some(ToDaemon::Machines(MachineChange::Retry(machine))) if machine == devbox
+        ));
     }
 
     #[test]
