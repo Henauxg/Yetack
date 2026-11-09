@@ -25,6 +25,8 @@ mod state;
 mod ui;
 mod update_script;
 
+use std::process::ExitCode;
+
 use dioxus::LaunchBuilder;
 use dioxus::desktop::tao::event::Event;
 use dioxus::desktop::tao::window::Icon;
@@ -51,7 +53,11 @@ const ICON_PNG: &[u8] = include_bytes!("../assets/agents-cockpit-256.png");
 /// The theme's background, so the window does not flash white before the page draws.
 const BACKGROUND: (u8, u8, u8, u8) = (24, 24, 24, 255);
 
-fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<ExitCode> {
+    #[cfg(unix)]
+    if let Some(state_dir) = service::requested(&std::env::args_os().skip(1).collect::<Vec<_>>()) {
+        return Ok(service::run(state_dir));
+    }
     let environment = Environment::from_process();
     logging::init(&environment);
     let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -122,7 +128,7 @@ fn main() -> anyhow::Result<()> {
         .with_cfg(desktop)
         .with_context(startup)
         .launch(ui::App);
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 #[cfg(test)]

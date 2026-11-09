@@ -19,8 +19,7 @@ const NOTHING_RUNS_LEAD: &str = if SOCKET_REACHABLE {
 
 pub(super) const IN_APP_DETAIL: &str =
     "The agents stop when the app closes, and come back the next time the app runs them.";
-const SERVICE_DETAIL: &str =
-    "Runs agents-cockpit serve on this machine. The agents keep running after the app closes.";
+const SERVICE_DETAIL: &str = "Runs the daemon in the background on this machine. The agents keep running after the app closes.";
 
 /// The screen in place of the window's panes, while the app reaches this computer alone.
 #[component]
@@ -57,8 +56,15 @@ pub fn NoDaemonCard() -> Element {
         error,
         absence,
         every_time,
+        failed_tries,
         busy,
     } = screen;
+    let failure = no_daemon::failure_note(failed_tries);
+    let failure_line = rsx! {
+        if let Some(failure) = failure {
+            p { class: "no-daemon-failed", role: "alert", "{failure}" }
+        }
+    };
     let waiting = busy.is_some();
     let every_time_label = rsx! {
         EveryTimeTick { every_time, waiting }
@@ -88,8 +94,9 @@ pub fn NoDaemonCard() -> Element {
                 }
             }
             {every_time_label}
+            {failure_line}
             div { class: "no-daemon-footer",
-                Details { error, open: false }
+                Details { error, open: failed_tries > 0 }
                 if SOCKET_REACHABLE {
                     button {
                         class: "no-daemon-link",
@@ -103,6 +110,7 @@ pub fn NoDaemonCard() -> Element {
         Absence::Failed => rsx! {
             h1 { id: "no-daemon-title", "{subject} does not answer" }
             p { class: "no-daemon-lead", "The app could not reach {tried}." }
+            {failure_line}
             Details { error, open: true }
             div { class: "no-daemon-choices",
                 Choice {

@@ -535,7 +535,7 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
   remote_command = "/opt/agents-cockpit/bin/agents-cockpit"
   ```
 
-  - `transport = "local"` takes an optional `socket` (default: the daemon's default socket), and `start_service = true` to start `agents-cockpit serve` when the socket does not answer.
+  - `transport = "local"` takes an optional `socket` (default: the daemon's default socket), and `start_service = true` to start the service when the socket does not answer. The service is the app's own program, run again with `--state-dir <folder> serve`, so any build of the app can start it.
   - `transport = "in_app"` runs the daemon in the app.
   - A missing file means the local daemon at its default socket.
   - A `config.toml` that is a symbolic link, as home-manager or a dotfiles repository makes, stays one: the app writes the link's target.

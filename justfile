@@ -5,9 +5,8 @@ set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
 default:
     @just --list
 
-# Builds the daemon program and the app from the same commit, then runs the app.
+# Runs the app, which also starts the local background service when the config asks for it.
 run:
-    cargo build --release -p agents_cockpit
     cargo run --release -p cockpit_desktop
 
 # Builds the daemon program and the app in release mode.

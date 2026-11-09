@@ -47,6 +47,9 @@ pub struct NoDaemon {
     pub absence: Absence,
     /// "Use this every time" is ticked.
     pub every_time: bool,
+    /// How many choices failed in a row on this screen, so that a click that fails like the last
+    /// one still changes what it shows.
+    pub failed_tries: u32,
     /// The choice being carried out, which the screen waits for.
     pub busy: Option<DaemonChoice>,
 }
@@ -74,14 +77,35 @@ pub fn show(
     absence: Absence,
     every_time: Option<bool>,
 ) {
+    let failed_tries = match &state.machines.this.connection {
+        ConnectionState::NoDaemon(screen) if screen.busy.is_some() => {
+            screen.failed_tries.saturating_add(1)
+        }
+        ConnectionState::NoDaemon(_)
+        | ConnectionState::Connecting { .. }
+        | ConnectionState::Connected
+        | ConnectionState::Disconnected { .. } => 0,
+    };
     state.machines.this.connection = ConnectionState::NoDaemon(NoDaemon {
         tried: tried.name(),
         subject: tried.subject(),
         error,
         absence,
         every_time: every_time.unwrap_or(absence == Absence::NothingRuns),
+        failed_tries,
         busy: None,
     });
+}
+
+/// What the screen says after `failed_tries` failed choices, if any.
+pub fn failure_note(failed_tries: u32) -> Option<String> {
+    match failed_tries {
+        0 => None,
+        1 => Some("That did not work. The details are below.".to_owned()),
+        tries => Some(format!(
+            "That did not work, {tries} tries so far. The details are below."
+        )),
+    }
 }
 
 /// Whether `error`, from the first connection to a daemon at `place`, means that no daemon runs.
@@ -161,6 +185,29 @@ mod tests {
             ConnectionState::NoDaemon(screen) => screen,
             other => panic!("expected the screen, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn each_failed_choice_changes_what_the_screen_says() {
+        let label = DaemonLabel::ssh("build-box".to_owned());
+        let again = |state: &mut AppState| {
+            show(state, &label, "refused".to_owned(), Absence::Failed, None);
+        };
+        let mut state = screen();
+        assert_eq!(failure_note(shown(&state).failed_tries), None);
+
+        choose(&mut state, DaemonChoice::Retry);
+        again(&mut state);
+        let first = failure_note(shown(&state).failed_tries);
+        choose(&mut state, DaemonChoice::Retry);
+        again(&mut state);
+        let second = failure_note(shown(&state).failed_tries);
+
+        assert!(first.is_some());
+        assert!(second.is_some());
+        assert_ne!(first, second);
+        again(&mut state);
+        assert_eq!(shown(&state).failed_tries, 0, "no choice was under way");
     }
 
     fn ssh() -> DaemonConfig {

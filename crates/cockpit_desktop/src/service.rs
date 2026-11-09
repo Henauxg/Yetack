@@ -1,19 +1,22 @@
-//! Starts the background service, `agents-cockpit serve`, as a process that outlives the app.
+//! The background service: this program, run again as a daemon that outlives the app.
 
-use std::ffi::OsStr;
+use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{ExitStatus, Stdio};
+use std::process::{ExitCode, ExitStatus, Stdio};
 use std::time::Duration;
 
+use anyhow::Context;
+use cockpit_daemon::{DaemonConfig, SERVE_SUBCOMMAND, STATE_DIR_FLAG};
 use tokio::net::UnixStream;
 use tokio::process::{Child, Command};
+use tokio::runtime::Runtime;
 use tokio::time::Instant;
+use tracing_subscriber::EnvFilter;
 
-/// The program that runs the service, found beside the app's own program or on `PATH`.
-const PROGRAM: &str = "agents-cockpit";
-const PATH_VAR: &str = "PATH";
+/// The service's log level, unless `RUST_LOG` says otherwise.
+const LOG_LEVEL: &str = "info";
 /// What the service writes to stderr, in the app's state folder.
 const LOG_FILE: &str = "serve.log";
 const LOG_MODE: u32 = 0o600;
@@ -25,8 +28,8 @@ const LOG_TAIL_BYTES: usize = 4 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServiceError {
-    #[error("cannot find {PROGRAM} in the app's folder, {}, or on {PATH_VAR}", folder.display())]
-    NotFound { folder: PathBuf },
+    #[error("cannot tell where this program is")]
+    NoProgram(#[source] io::Error),
     #[error("cannot open the service's log {}", path.display())]
     Log {
         path: PathBuf,
@@ -45,6 +48,52 @@ pub enum ServiceError {
     NoSocket { socket: PathBuf, log: PathBuf },
 }
 
+/// The state folder when this run of the program is to be the service, from the arguments `spawn`
+/// gives it.
+pub fn requested(arguments: &[OsString]) -> Option<PathBuf> {
+    let [flag, state_dir, subcommand] = arguments else {
+        return None;
+    };
+    let is_service = flag.to_str() == Some(format!("--{STATE_DIR_FLAG}").as_str())
+        && subcommand.to_str() == Some(SERVE_SUBCOMMAND);
+    is_service.then(|| PathBuf::from(state_dir))
+}
+
+/// Runs the service until SIGTERM or Ctrl+C. Its last line says why it stopped.
+pub fn run(state_dir: PathBuf) -> ExitCode {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(LOG_LEVEL));
+    tracing_subscriber::fmt()
+        .with_writer(io::stderr)
+        .with_env_filter(filter)
+        .init();
+    match serve(state_dir) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("agents-cockpit: {error:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn serve(state_dir: PathBuf) -> anyhow::Result<()> {
+    let config = DaemonConfig::from_env(Some(state_dir)).context("HOME is not set")?;
+    let runtime = Runtime::new().context("cannot start the runtime")?;
+    runtime.block_on(async {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let mut terminate = signal(SignalKind::terminate())?;
+        let mut interrupt = signal(SignalKind::interrupt())?;
+        let shutdown = async move {
+            tokio::select! {
+                _ = terminate.recv() => {}
+                _ = interrupt.recv() => {}
+            }
+        };
+        cockpit_daemon::serve(config, shutdown).await?;
+        Ok(())
+    })
+}
+
 /// Starts the service for `state_dir`, unless a daemon already answers on its socket, and waits
 /// until the socket answers. The service's stderr goes to a log in `log_folder`.
 pub async fn ensure(state_dir: &Path, log_folder: &Path) -> Result<PathBuf, ServiceError> {
@@ -52,9 +101,7 @@ pub async fn ensure(state_dir: &Path, log_folder: &Path) -> Result<PathBuf, Serv
     if answers(&socket).await {
         return Ok(socket);
     }
-    let own_program = std::env::current_exe().ok();
-    let path = std::env::var_os(PATH_VAR);
-    let program = find_program(own_program.as_deref(), path.as_deref())?;
+    let program = std::env::current_exe().map_err(ServiceError::NoProgram)?;
     let log = log_folder.join(LOG_FILE);
     let logged_before = std::fs::metadata(&log).map_or(0, |metadata| metadata.len());
     let mut child = spawn(&program, state_dir, &log)?;
@@ -78,34 +125,6 @@ pub async fn ensure(state_dir: &Path, log_folder: &Path) -> Result<PathBuf, Serv
     }
 }
 
-/// `agents-cockpit` beside `own_program`, else in a folder of `path`. A relative folder of `path`
-/// is skipped: it names a folder under the app's working folder, which the service does not run
-/// in.
-fn find_program(own_program: Option<&Path>, path: Option<&OsStr>) -> Result<PathBuf, ServiceError> {
-    let beside = own_program.and_then(Path::parent);
-    let folders = beside.map(Path::to_owned).into_iter().chain(
-        path.into_iter()
-            .flat_map(std::env::split_paths)
-            .filter(|folder| folder.is_absolute()),
-    );
-    for folder in folders {
-        let program = folder.join(PROGRAM);
-        if is_executable(&program) {
-            return Ok(program);
-        }
-    }
-    Err(ServiceError::NotFound {
-        folder: beside.map(Path::to_owned).unwrap_or_default(),
-    })
-}
-
-fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-
-    std::fs::metadata(path)
-        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-}
-
 /// The service leads a process group of its own, so the terminal's Ctrl+C that stops the app
 /// does not reach it.
 fn spawn(program: &Path, state_dir: &Path, log: &Path) -> Result<Child, ServiceError> {
@@ -125,9 +144,9 @@ fn spawn(program: &Path, state_dir: &Path, log: &Path) -> Result<Child, ServiceE
         .open(log)
         .map_err(log_error)?;
     Command::new(program)
-        .arg(format!("--{}", cockpit_daemon::STATE_DIR_FLAG))
+        .arg(format!("--{STATE_DIR_FLAG}"))
         .arg(state_dir)
-        .arg(cockpit_daemon::SERVE_SUBCOMMAND)
+        .arg(SERVE_SUBCOMMAND)
         .current_dir("/")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -158,7 +177,6 @@ fn last_line(log: &Path, from: u64) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsString;
     use std::fs::Permissions;
     use std::os::unix::fs::PermissionsExt;
 
@@ -166,69 +184,27 @@ mod tests {
 
     fn program_in(folder: &Path, mode: u32) -> PathBuf {
         std::fs::create_dir_all(folder).unwrap();
-        let program = folder.join(PROGRAM);
+        let program = folder.join("agents-cockpit");
         std::fs::write(&program, "#!/bin/sh\n").unwrap();
         std::fs::set_permissions(&program, Permissions::from_mode(mode)).unwrap();
         program
     }
 
     #[test]
-    fn the_program_beside_the_app_comes_before_path() {
-        let temp = tempfile::tempdir().unwrap();
-        let app_folder = temp.path().join("app");
-        let beside = program_in(&app_folder, 0o755);
-        let on_path = program_in(&temp.path().join("bin"), 0o755);
-        let path = OsString::from(temp.path().join("bin"));
-
-        let own = app_folder.join("agents-cockpit-desktop");
-        let other = temp.path().join("elsewhere/agents-cockpit-desktop");
-
-        assert_eq!(find_program(Some(&own), Some(&path)).unwrap(), beside);
-        assert_eq!(find_program(Some(&other), Some(&path)).unwrap(), on_path);
-    }
-
-    #[test]
-    fn a_missing_program_names_where_it_was_looked_for() {
-        let temp = tempfile::tempdir().unwrap();
-        let app_folder = temp.path().join("app");
-        // A file that cannot run does not count.
-        program_in(&temp.path().join("bin"), 0o644);
-        let path =
-            std::env::join_paths([temp.path().join("bin"), temp.path().join("none")]).unwrap();
-
-        let error = find_program(
-            Some(&app_folder.join("agents-cockpit-desktop")),
-            Some(&path),
-        )
-        .unwrap_err();
+    fn only_the_arguments_the_app_gives_make_this_run_the_service() {
+        let arguments = |list: &[&str]| list.iter().map(OsString::from).collect::<Vec<_>>();
 
         assert_eq!(
-            error.to_string(),
-            format!(
-                "cannot find agents-cockpit in the app's folder, {}, or on PATH",
-                app_folder.display()
-            )
+            requested(&arguments(&["--state-dir", "/state", "serve"])),
+            Some(PathBuf::from("/state"))
         );
-    }
-
-    #[test]
-    fn a_relative_folder_on_path_does_not_count() {
-        let temp = tempfile::tempdir().unwrap();
-        let bin = temp.path().join("bin");
-        program_in(&bin, 0o755);
-        // The same folder, named from the working folder.
-        let working = std::env::current_dir().unwrap();
-        let up = "../".repeat(working.components().count().saturating_sub(1));
-        let relative = PathBuf::from(up).join(bin.strip_prefix("/").unwrap());
-        assert!(relative.join(PROGRAM).exists());
-        let path = std::env::join_paths([OsString::new(), relative.into_os_string()]).unwrap();
-
-        let found = find_program(None, Some(&path));
-
-        assert!(
-            matches!(found, Err(ServiceError::NotFound { .. })),
-            "{found:?}"
+        assert_eq!(requested(&arguments(&[])), None);
+        assert_eq!(requested(&arguments(&["--demo"])), None);
+        assert_eq!(
+            requested(&arguments(&["--state-dir", "/state", "list"])),
+            None
         );
+        assert_eq!(requested(&arguments(&["--other", "/state", "serve"])), None);
     }
 
     #[tokio::test]
