@@ -37,6 +37,36 @@ pub enum ConnectError {
     Frame(#[from] FrameError),
 }
 
+/// How a daemon's refusal starts when the versions differ.
+const REFUSED_PROTOCOL_PREFIX: &str = "the daemon speaks protocol ";
+
+impl ConnectError {
+    /// The protocol of a daemon that does not speak this client's. A daemon that refuses says so
+    /// only in the text of its reason.
+    #[must_use]
+    pub fn daemon_protocol(&self) -> Option<u16> {
+        match self {
+            Self::VersionMismatch { daemon } => Some(*daemon),
+            Self::Refused { reason } => {
+                let rest = reason.strip_prefix(REFUSED_PROTOCOL_PREFIX)?;
+                rest.split(|character: char| !character.is_ascii_digit())
+                    .next()?
+                    .parse()
+                    .ok()
+            }
+            Self::Socket { .. }
+            | Self::InAppStopped
+            | Self::InvalidHost { .. }
+            | Self::Spawn(_)
+            | Self::Ssh { .. }
+            | Self::Closed
+            | Self::Unexpected
+            | Self::Timeout
+            | Self::Frame(_) => None,
+        }
+    }
+}
+
 /// Why an established connection ended, or lost events.
 #[derive(Debug, thiserror::Error)]
 pub enum CloseError {
@@ -69,4 +99,44 @@ pub enum RequestError {
     Encode(#[source] FrameError),
     #[error("the daemon's answer does not decode")]
     InvalidResponse(#[source] serde_json::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn refused(reason: &str) -> ConnectError {
+        ConnectError::Refused {
+            reason: reason.to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_refusal_or_a_mismatch_names_the_daemons_protocol() {
+        assert_eq!(
+            refused("the daemon speaks protocol 1, the client 4").daemon_protocol(),
+            Some(1)
+        );
+        assert_eq!(
+            refused("the daemon speaks protocol 12").daemon_protocol(),
+            Some(12)
+        );
+        assert_eq!(
+            ConnectError::VersionMismatch { daemon: 5 }.daemon_protocol(),
+            Some(5)
+        );
+    }
+
+    #[test]
+    fn any_other_error_names_no_protocol() {
+        assert_eq!(
+            refused("the first message must be a hello").daemon_protocol(),
+            None
+        );
+        assert_eq!(
+            refused("the daemon speaks protocol two").daemon_protocol(),
+            None
+        );
+        assert_eq!(ConnectError::Closed.daemon_protocol(), None);
+    }
 }
