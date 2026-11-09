@@ -6,10 +6,8 @@
 //! The process starts suspended and joins the job before it runs any code, so a process it
 //! starts is always in the job too.
 
-use std::io;
-use std::mem;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
-use std::ptr;
+use std::{io, mem, ptr};
 
 use cockpit_protocol::ProcessId;
 use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, HANDLE, INVALID_HANDLE_VALUE};

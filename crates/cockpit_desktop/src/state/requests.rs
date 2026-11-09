@@ -625,9 +625,9 @@ mod tests {
 
     use cockpit_client::SessionUpdate;
     use cockpit_protocol::{
-        AgentStatus, DirListing, ErrorBody, ErrorCode, HistoryPage, ItemBody, TranscriptItem,
+        AgentStatus, Catchup, Completeness, DirListing, ErrorBody, ErrorCode, HistoryPage,
+        ItemBody, OlderItems, TranscriptItem,
     };
-    use cockpit_protocol::{Catchup, Completeness, OlderItems};
 
     use super::*;
     use crate::daemon_label::DaemonLabel;
