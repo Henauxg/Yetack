@@ -19,7 +19,7 @@ use crate::in_app_host::InAppHost;
 use crate::machine::MachineId;
 use crate::notifications::Notifier;
 use crate::reach::{self, Places, Reached, Unreached};
-use crate::state::daemon_update::{self, UpdatePlan, VersionGap};
+use crate::state::daemon_update::{self, OutputLine, OutputStream, UpdatePlan, VersionGap};
 use crate::state::machine_load::{LOAD_POLL, LoadView, ShownLoad};
 use crate::state::machines::{self, MachineChange};
 use crate::state::no_daemon::{self, Absence, Chosen, DaemonChoice};
@@ -651,8 +651,8 @@ async fn run_demo(
 async fn play_demo_update(mut state: Signal<AppState>, machine: MachineId) {
     for line in demo::UPDATE_OUTPUT {
         tokio::time::sleep(demo::UPDATE_LINE_PAUSE).await;
-        let line = daemon_update::OutputLine {
-            stream: daemon_update::OutputStream::Stdout,
+        let line = OutputLine {
+            stream: OutputStream::Stdout,
             text: (*line).to_owned(),
         };
         daemon_update::output(&mut state.write(), machine, vec![line]);

@@ -482,7 +482,7 @@ fn start_demo_update(state: &mut AppState, machine: MachineId) {
     if daemon_update::start(state, machine).is_none() {
         return;
     }
-    let lines = UPDATE_OUTPUT
+    let lines: Vec<OutputLine> = UPDATE_OUTPUT
         .iter()
         .take(4)
         .map(|text| OutputLine {
