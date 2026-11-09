@@ -20,7 +20,8 @@
 #   0  the daemon runs the new version
 #   1  failed before anything changed
 #   3  refused: agents are busy or may hold a scheduled job
-#   4  failed during the install or the restart
+#   4  failed during the install or the restart: the daemon may be down
+#   5  the new daemon did not start, and the previous version runs again
 #   6  refused: another update is running
 # With --cancel: 0 when the update will stop before it installs, 1 when none runs or it is too late.
 
@@ -224,28 +225,36 @@ stop_daemon() {
     done
 }
 
+# On failure `why` says what went wrong.
 restart_daemon() {
     case $restart in
         systemd)
-            systemctl --user restart agents-cockpit </dev/null ||
-                die_installing "systemctl could not restart the daemon"
+            systemctl --user restart agents-cockpit </dev/null || {
+                why="systemctl could not restart the daemon"
+                return 1
+            }
             ;;
         start_file)
             stop_daemon
             # A background process left holding this output would keep the SSH session open. The
             # daemon and its agents would keep the signals ignored here.
-            (trap - HUP INT TERM PIPE && exec sh "$start_file") </dev/null >"$work_dir/start-daemon.log" 2>&1 ||
-                die_installing "$start_file failed, see $work_dir/start-daemon.log"
+            (trap - HUP INT TERM PIPE && exec sh "$start_file") </dev/null >>"$work_dir/start-daemon.log" 2>&1 || {
+                why="$start_file failed, see $work_dir/start-daemon.log"
+                return 1
+            }
             ;;
     esac
 }
 
+# On failure `why` says what went wrong.
 wait_for_daemon() {
     tries=0
     until "$binary" list >/dev/null 2>&1; do
         tries=$((tries + 1))
-        [ "$tries" -le 30 ] ||
-            die_installing "the new daemon did not answer within 30 seconds; the previous binary is $binary.previous"
+        if [ "$tries" -gt 30 ]; then
+            why="the daemon did not answer within 30 seconds"
+            return 1
+        fi
         sleep 1
     done
 }
@@ -255,6 +264,24 @@ check_new_binary_runs() {
     running=$(readlink "/proc/$(daemon_pid)/exe" 2>/dev/null)
     [ "$running" = "$(readlink -f "$binary")" ] ||
         die_installing "the daemon that answers runs ${running:-an unknown binary}, not $binary"
+}
+
+# The new daemon never answered: the binary before it goes back in place and runs again.
+roll_back() {
+    failure="the new version did not start: $why"
+    if [ ! -f "$binary.previous" ] || cmp -s "$binary.previous" "$built"; then
+        die_installing "$failure"
+    fi
+    say "going back to the previous version"
+    { install -m 755 "$binary.previous" "$binary.new" && mv -f "$binary.new" "$binary"; } ||
+        die_installing "$failure; cannot put $binary.previous back"
+    if ! restart_daemon || ! wait_for_daemon; then
+        die_installing "$failure; the previous version did not come back either: $why"
+    fi
+    # By content: a daemon the restart left running has a binary that was replaced since.
+    cmp -s "/proc/$(daemon_pid)/exe" "$binary" ||
+        die_installing "$failure; the daemon that answers does not run the previous version"
+    fail 5 "$failure; the previous version runs again"
 }
 
 install_and_restart() {
@@ -268,10 +295,13 @@ install_and_restart() {
     install -m 755 "$built" "$binary.new" || die_installing "cannot write $binary.new"
     mv -f "$binary.new" "$binary" || die_installing "cannot replace $binary"
     say "restarting the daemon"
-    restart_daemon
-    wait_for_daemon
-    check_new_binary_runs
-    say "the daemon runs $sha"
+    rm -f "$work_dir/start-daemon.log"
+    if restart_daemon && wait_for_daemon; then
+        check_new_binary_runs
+        say "the daemon runs $sha"
+    else
+        roll_back
+    fi
 }
 
 main() {

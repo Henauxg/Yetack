@@ -66,7 +66,12 @@ echo 'warning: on stderr' >&2 || exit 101
 while [ "$#" -gt 0 ] && [ "$1" != --target-dir ]; do shift; done
 [ "$#" -ge 2 ] || exit 1
 mkdir -p "$2/release"
-cp '{BINARY}' "$2/release/agents-cockpit"
+if [ -f '{broken}' ]; then
+    printf '#!/bin/sh\nexit 1\n' >"$2/release/agents-cockpit"
+    chmod 755 "$2/release/agents-cockpit"
+else
+    cp '{BINARY}' "$2/release/agents-cockpit"
+fi
 printf '%s' '{mark}' >>"$2/release/agents-cockpit"
 "#,
                 log = machine.path("cargo.log").display(),
@@ -74,6 +79,7 @@ printf '%s' '{mark}' >>"$2/release/agents-cockpit"
                 waits = machine.path("cargo-waits").display(),
                 started = machine.path("cargo-started").display(),
                 go = machine.path("cargo-go").display(),
+                broken = machine.path("cargo-builds-broken").display(),
                 mark = String::from_utf8_lossy(BUILT_MARK),
             ),
         );
@@ -381,6 +387,28 @@ printf '%s' '{mark}' >>"$2/release/agents-cockpit"
     fn previous_is_the_new_build(&self) -> bool {
         fs::read(self.previous()).unwrap().ends_with(BUILT_MARK)
     }
+
+    /// The new build's daemon exits at once. Waiting for such a daemon takes no time here, as
+    /// long as the build is what is installed.
+    fn build_a_daemon_that_never_starts(&self) {
+        File::create(self.path("cargo-builds-broken")).unwrap();
+        self.write_program(
+            "bin/sleep",
+            &format!(
+                "#!/bin/sh\n[ \"$(head -c 2 '{installed}')\" != '#!' ] || exit 0\nPATH=${{PATH#*:}} exec sleep \"$@\"\n",
+                installed = self.installed().display(),
+            ),
+        );
+    }
+
+    /// A start file line that is true while the daemon that never starts is installed.
+    fn the_broken_build_is_installed(&self) -> String {
+        format!(
+            "[ \"$(head -c 2 '{installed}')\" = '#!' ]",
+            installed = self.installed().display()
+        )
+    }
+
 }
 
 impl Drop for Machine {
@@ -1006,8 +1034,199 @@ fn a_failed_restart_exits_with_four() {
     let output = machine.update("origin/main");
 
     assert_eq!(output.status.code(), Some(4), "{}", stderr(&output));
+    assert!(!machine.installed_is_the_new_build(), "the rollback stays");
+    assert!(machine.update_lock_is_free());
+}
+
+#[test]
+fn a_new_daemon_that_never_starts_is_rolled_back() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let id = machine.idle_agent();
+    let before = machine.daemon_pid();
+    machine.build_a_daemon_that_never_starts();
+
+    let output = machine.update("origin/main");
+
+    assert_eq!(output.status.code(), Some(5), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("did not answer within 30 seconds"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(
+        stderr(&output).contains("the previous version runs again"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!machine.installed_is_the_new_build());
+    assert!(!machine.previous_is_the_new_build());
+    assert_ne!(machine.daemon_pid(), before);
+    assert!(
+        machine
+            .ok(&["list"])
+            .lines()
+            .any(|row| row.starts_with(&id))
+    );
+    assert!(machine.update_lock_is_free());
+}
+
+#[test]
+fn a_service_whose_new_daemon_never_starts_is_rolled_back() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let start = fs::read_to_string(machine.start_file()).unwrap();
+    fs::remove_file(machine.start_file()).unwrap();
+    File::create(machine.path("service-active")).unwrap();
+    fs::write(
+        machine.path("service-restart"),
+        format!(
+            "old=$(cat '{pid}')\nkill \"$old\" 2>/dev/null\nwhile [ -d \"/proc/$old\" ]; do sleep 0.02; done\n{start}",
+            pid = machine.path("daemon.pid").display(),
+        ),
+    )
+    .unwrap();
+    machine.build_a_daemon_that_never_starts();
+
+    let output = machine.update("origin/main");
+
+    assert_eq!(output.status.code(), Some(5), "{}", stderr(&output));
+    assert!(!machine.installed_is_the_new_build());
+    machine.ok(&["list"]);
+    let calls = fs::read_to_string(machine.path("systemctl.log")).unwrap();
+    assert_eq!(
+        calls.matches("--user restart agents-cockpit").count(),
+        2,
+        "{calls}"
+    );
+}
+
+#[test]
+fn a_start_file_that_fails_with_the_new_binary_is_rolled_back() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let start = fs::read_to_string(machine.start_file()).unwrap();
+    fs::write(
+        machine.start_file(),
+        format!(
+            "if {broken}; then exit 7; fi\n{start}",
+            broken = machine.the_broken_build_is_installed()
+        ),
+    )
+    .unwrap();
+    machine.build_a_daemon_that_never_starts();
+
+    let output = machine.update("origin/main");
+
+    assert_eq!(output.status.code(), Some(5), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("start-daemon failed"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!machine.installed_is_the_new_build());
+    machine.ok(&["list"]);
+}
+
+#[test]
+fn a_rollback_that_fails_too_exits_with_four() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let start = fs::read_to_string(machine.start_file()).unwrap();
+    fs::write(
+        machine.start_file(),
+        format!(
+            "if ! {broken}; then exit 7; fi\n{start}",
+            broken = machine.the_broken_build_is_installed()
+        ),
+    )
+    .unwrap();
+    machine.build_a_daemon_that_never_starts();
+
+    let output = machine.update("origin/main");
+
+    assert_eq!(output.status.code(), Some(4), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("did not come back"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!machine.installed_is_the_new_build());
+    assert!(machine.previous().exists());
+    assert!(machine.update_lock_is_free());
+}
+
+#[test]
+fn a_new_daemon_with_no_previous_binary_exits_with_four() {
+    let machine = Machine::new();
+    fs::remove_file(machine.installed()).unwrap();
+    machine.build_a_daemon_that_never_starts();
+
+    let output = machine.update("origin/main");
+
+    assert_eq!(output.status.code(), Some(4), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("did not answer within 30 seconds"),
+        "{}",
+        stderr(&output)
+    );
     assert!(machine.installed_is_the_new_build());
     assert!(machine.update_lock_is_free());
+}
+
+#[test]
+fn a_previous_binary_that_is_the_new_build_is_no_rollback() {
+    let machine = Machine::new();
+    fs::remove_file(machine.installed()).unwrap();
+    machine.build_a_daemon_that_never_starts();
+    assert_eq!(machine.update("origin/main").status.code(), Some(4));
+    fs::copy(machine.installed(), machine.previous()).unwrap();
+
+    let output = machine.update("origin/main");
+
+    assert_eq!(output.status.code(), Some(4), "{}", stderr(&output));
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("going back"),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
+fn a_connection_lost_during_the_rollback_does_not_stop_it() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let start = fs::read_to_string(machine.start_file()).unwrap();
+    fs::write(
+        machine.start_file(),
+        format!(
+            "if ! {broken}; then touch '{rolling}'; sleep 0.5; fi\n{start}",
+            broken = machine.the_broken_build_is_installed(),
+            rolling = machine.path("rolling-back").display(),
+        ),
+    )
+    .unwrap();
+    machine.build_a_daemon_that_never_starts();
+    let mut update = machine
+        .update_command("origin/main")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + WAIT;
+    while !machine.path("rolling-back").exists() {
+        assert!(Instant::now() < deadline, "the script never rolled back");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let hung_up = Command::new("kill")
+        .args(["-HUP", &update.id().to_string()])
+        .status()
+        .unwrap();
+
+    assert!(hung_up.success());
+    assert_eq!(update.wait().unwrap().code(), Some(5));
+    machine.ok(&["list"]);
 }
 
 #[test]
