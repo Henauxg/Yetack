@@ -67,6 +67,8 @@ pub enum Dialog {
     Machines(MachinesView),
     /// "Where should agents run?" for this computer, while servers are in use.
     NoDaemon,
+    /// The update screens of a server whose daemon refuses the app.
+    DaemonUpdate(MachineId),
 }
 
 /// The "Machines" dialog's form for a new server, and why the last one was refused.
@@ -121,7 +123,8 @@ impl Dialog {
             | Self::Accounts(_)
             | Self::AddAccount(_)
             | Self::Machines(_)
-            | Self::NoDaemon => None,
+            | Self::NoDaemon
+            | Self::DaemonUpdate(_) => None,
         }
     }
 }

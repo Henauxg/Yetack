@@ -9,6 +9,7 @@ mod changes_list;
 mod chat_scroll;
 mod code;
 mod composer;
+mod daemon_update;
 mod dialogs;
 mod emoji_picker;
 mod file_view;

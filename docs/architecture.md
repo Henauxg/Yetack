@@ -539,6 +539,7 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
   - A missing file means the local daemon at its default socket.
   - A `config.toml` that is a symbolic link, as home-manager or a dotfiles repository makes, stays one: the app writes the link's target.
   - Each `[[machines]]` table names another machine the app reaches at the same time, over SSH: `name` (what the sidebar shows), `host` and `remote_command`.
+  - An SSH machine, `[daemon]` or `[[machines]]`, takes an optional `source_dir`: the git checkout the daemon's update builds from, `~/agents-cockpit` when unset (see below).
 - **Several machines** (module `machine`): `[daemon]` is machine 0, this computer, and each `[[machines]]` table the next number.
   Each daemon numbers its own agents, so the app gives each agent an id of its own: the machine in the high bits, the daemon's id in the low 20.
   Machine 0's agents keep the daemon's ids.
@@ -561,6 +562,15 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
   A read-only config, such as a link into the Nix store, is not written: the screen shows why, and the choice still holds for this run.
   The screen's state is pure (`state/no_daemon.rs`): which choice is under way, the tick, and which daemon a choice runs and saves.
   A connection that drops after it connected reconnects as before, with no screen.
+- **Updating a server's daemon** (`state/daemon_update.rs`, `update_script.rs`, `ui/daemon_update.rs`): when a first connection is refused for its protocol, `ConnectError::daemon_protocol` gives the daemon's version, from `VersionMismatch` or from the text of an older daemon's `Refused`.
+  An older daemon reached over SSH gets the "runs an older version" card in place of the "No daemon answers" screen, with "Update <machine>" first. Any other daemon of an older protocol keeps that screen. A newer daemon gets the "runs a newer version" card, with no update.
+  A `[[machines]]` server shows "Runs an older version." on its sidebar line, with `Update` and `Retry now` links: `Update` (`Details` when the app knows no commit) opens the same screens as a dialog (`Dialog::DaemonUpdate`), and the other machines keep working.
+  - `build.rs` writes the commit the app was built from into `AGENTS_COCKPIT_COMMIT`, from the environment when it is set (the Nix build sets it to the flake's revision, empty for a tree with uncommitted changes) and else from `git rev-parse HEAD`. It tells cargo to rerun when `HEAD` or the ref it points to moves, in a linked worktree too. Without a commit the older-version card offers no update and says so.
+  - The update runs beside the connection, in a task of its own: the embedded `contrib/update-daemon.sh` goes on the stdin of `ssh <host> sh -s -- --commit <sha> --binary <remote_command> [--source-dir <dir>]`, with the same ssh options as the bridge. It uses plain SSH because an old daemon refuses the app's protocol. Its output streams into the screen's "Build output", and the steps follow its lines (`update-daemon: building`, `restarting the daemon`, `the daemon runs`).
+  - The update's state (`MachineState.update`) lives per machine and outlives the connection's attempts, which an old daemon keeps refusing while the build runs: the screen shows it until the first connection after success, which the app tries at once.
+  - The script's exit status picks the failure screen: 3 is the agents' refusal, with their list and how to stop one; 1 says the machine still runs its old version, and that the update was cancelled when "Cancel the update" reached the server; 4 says the daemon may not have come back. Any other status, such as ssh losing the connection, says the app cannot tell how it went. "Update again" reruns, and "Back" returns to the older-version card. A daemon that is now newer than the app ends the failure's screen: "Update again" would move it backwards.
+  - "Cancel the update" runs the same script with `--cancel` over a second ssh, until the restart step starts. The running script stops before it installs. Its build runs on.
+  - Over SSH with no terminal, a client that goes away sends the remote processes no signal: it only closes their pipes. So the script ignores SIGHUP and SIGPIPE from its start, and cargo writes through `tee` to `build.log`, so a lost connection cannot end the build or the install.
 - **The background service**: the app runs `agents-cockpit --state-dir <folder> serve`, found in the app's own folder, then on `PATH`.
   It runs in a process group of its own, so Ctrl+C in the terminal that started the app does not reach it, and it outlives the app.
   Its stderr goes to `serve.log` in the app's state folder.
@@ -677,8 +687,8 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
   Fixtures are written by hand from the shapes Claude Code sends, with made-up paths, ids and text.
 - `cockpit_protocol`: round trips of every message, and the method names pinned.
 - `cockpit_daemon`: the transcript conversion on fixture sequences; the accounts (names, the default one's name, folders, the sign-in commands of both shells with the program plain or by its path, how a terminal names the program, the environment of a `claude`, the wait for a sign-in); the store in a temporary folder; the server end to end with a fake `claude` (a small test binary that replays a script of lines, selected with `AGENTS_COCKPIT_CLAUDE`); the daemon in the app over in-memory streams, closed mid-turn and started again, and the lock it shares with the service (`tests/in_app.rs`).
-- `cockpit_client`: against an in-process fake daemon over a socket pair.
-- `cockpit_desktop`: `apply` on event sequences; the accounts' state (the new agent's account, the labels, the plan chip, the resume filter, the two dialogs and the way back to the new agent dialog, the sign-in card); rendering helpers (markdown, diffs) on sample input; the "No daemon answers" choices and the config they write, through a symbolic link too; the path rules of both platforms.
+- `cockpit_client`: against an in-process fake daemon over a socket pair; the daemon's protocol read from a refusal; the ssh command of a script.
+- `cockpit_desktop`: `apply` on event sequences; the daemon's update (the protocol read and compared, the steps from the script's lines, the exit statuses, the state over refused attempts and per machine, a cancel the user asked for, the embedded script's lines and line ends); the accounts' state (the new agent's account, the labels, the plan chip, the resume filter, the two dialogs and the way back to the new agent dialog, the sign-in card); rendering helpers (markdown, diffs) on sample input; the "No daemon answers" choices and the config they write, through a symbolic link too; the path rules of both platforms.
 
 ## Platforms
 

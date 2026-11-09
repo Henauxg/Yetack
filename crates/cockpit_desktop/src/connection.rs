@@ -19,6 +19,7 @@ use crate::in_app_host::InAppHost;
 use crate::machine::MachineId;
 use crate::notifications::Notifier;
 use crate::reach::{self, Places, Reached, Unreached};
+use crate::state::daemon_update::{self, OutputLine, OutputStream, UpdatePlan, VersionGap};
 use crate::state::machine_load::{LOAD_POLL, LoadView, ShownLoad};
 use crate::state::machines::{self, MachineChange};
 use crate::state::no_daemon::{self, Absence, Chosen, DaemonChoice};
@@ -26,7 +27,7 @@ use crate::state::{
     self, AgentEntry, AppState, ConnectionState, Dialog, Drafts, MachineState, Outgoing, Purpose,
     TitlePlace, Utf16Offset, actions,
 };
-use crate::{bridge, demo};
+use crate::{bridge, demo, update_script};
 
 /// What the window was started with.
 #[derive(Debug, Clone, PartialEq)]
@@ -62,6 +63,15 @@ pub enum ToDaemon {
     Choose(Chosen),
     /// A server added or removed in the "Machines" dialog, or tried again.
     Machines(MachineChange),
+    /// Runs or cancels the update of a daemon that refuses the app. Plain SSH, beside the
+    /// connection, which keeps being refused meanwhile.
+    Update(UpdateCommand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateCommand {
+    Start(MachineId, UpdatePlan),
+    Cancel(MachineId, UpdatePlan),
 }
 
 /// What components hold to read and change the state and to reach the daemon. The drafts are a
@@ -95,6 +105,34 @@ impl Cockpit {
     /// Adds or removes a server, or tries one again.
     pub fn change_machines(&self, change: MachineChange) {
         self.daemon.send(ToDaemon::Machines(change));
+    }
+
+    /// Starts the update of `machine`'s daemon, from the older-version card or "Update again".
+    pub fn update_daemon(&self, machine: MachineId) {
+        let mut signal = self.state;
+        let plan = daemon_update::start(&mut signal.write(), machine);
+        if let Some(plan) = plan {
+            self.daemon
+                .send(ToDaemon::Update(UpdateCommand::Start(machine, plan)));
+        }
+    }
+
+    pub fn cancel_daemon_update(&self, machine: MachineId) {
+        let mut signal = self.state;
+        let plan = daemon_update::ask_cancel(&mut signal.write(), machine);
+        if let Some(plan) = plan {
+            self.daemon
+                .send(ToDaemon::Update(UpdateCommand::Cancel(machine, plan)));
+        }
+    }
+
+    /// Tries a machine that does not answer again now.
+    pub fn retry_machine(&self, machine: MachineId) {
+        let mut signal = self.state;
+        let retry = retry_message(&mut signal.write(), machine);
+        if let Some(retry) = retry {
+            self.daemon.send(retry);
+        }
     }
 
     /// A click on one of the "No daemon answers" screen's buttons.
@@ -176,6 +214,18 @@ impl Cockpit {
         if kept_open {
             self.update(|state| actions::set_title_kept_open(state, false));
         }
+    }
+}
+
+/// What tries `machine` again now. This computer, while it shows its screen, goes through the
+/// choice its connection task waits for. Otherwise the connection task starts a new attempt.
+fn retry_message(state: &mut AppState, machine: MachineId) -> Option<ToDaemon> {
+    let on_its_screen = machine == MachineId::THIS
+        && matches!(state.machines.this.connection, ConnectionState::NoDaemon(_));
+    if on_its_screen {
+        no_daemon::choose(state, DaemonChoice::Retry).map(ToDaemon::Choose)
+    } else {
+        Some(ToDaemon::Machines(MachineChange::Retry(machine)))
     }
 }
 
@@ -300,6 +350,10 @@ async fn route(
                 servers.save(state, &config_file);
                 continue;
             }
+            ToDaemon::Update(command) => {
+                servers.start_update_command(state, command.clone());
+                continue;
+            }
         };
         if let Some(task) = servers.tasks.get(&machine) {
             // A task that ended takes no more requests.
@@ -357,6 +411,29 @@ impl Servers {
         self.next = self.next.max(machine.get().saturating_add(1));
     }
 
+    /// Runs an update or a cancel next to the machine's connection task.
+    fn start_update_command(&self, state: Signal<AppState>, command: UpdateCommand) {
+        match command {
+            UpdateCommand::Start(machine, plan) => {
+                let Some(task) = self.update_task(machine) else {
+                    return;
+                };
+                spawn(run_update(state, machine, plan, task));
+            }
+            UpdateCommand::Cancel(machine, plan) => {
+                spawn(cancel_update(state, machine, plan));
+            }
+        }
+    }
+
+    /// The machine's connection task, for an update to ask for a retry when it ends. The update
+    /// does not keep the task alive: removing the server ends the task at once.
+    fn update_task(&self, machine: MachineId) -> Option<mpsc::WeakUnboundedSender<ToDaemon>> {
+        self.tasks
+            .get(&machine)
+            .map(mpsc::UnboundedSender::downgrade)
+    }
+
     /// Writes the servers to the config. A config the app cannot write keeps them for this run.
     fn save(&self, mut state: Signal<AppState>, file: &Path) {
         let configs: Vec<MachineConfig> = self
@@ -379,6 +456,36 @@ struct Task {
     machine: MachineId,
     notify: bool,
     router: Router,
+}
+
+/// Runs the update and reports it to the machine's state, which outlives the connection's
+/// attempts. Once it succeeds, the machine's connection task tries again at once. The window's
+/// closing kills ssh, and the update goes on on the server.
+async fn run_update(
+    mut state: Signal<AppState>,
+    machine: MachineId,
+    plan: UpdatePlan,
+    task: mpsc::WeakUnboundedSender<ToDaemon>,
+) {
+    let code = update_script::update(&plan, |lines| {
+        daemon_update::output(&mut state.write(), machine, lines);
+    })
+    .await;
+    if !daemon_update::finished(&mut state.write(), machine, code) {
+        return;
+    }
+    let retry = retry_message(&mut state.write(), machine);
+    if let (Some(retry), Some(task)) = (retry, task.upgrade()) {
+        // A task that ended takes no more requests.
+        let _ = task.send(retry);
+    }
+}
+
+async fn cancel_update(mut state: Signal<AppState>, machine: MachineId, plan: UpdatePlan) {
+    if let Err(error) = update_script::cancel(&plan).await {
+        let said = format!("Could not cancel the update: {error}");
+        daemon_update::cancel_failed(&mut state.write(), machine, said);
+    }
 }
 
 /// Reaches a machine over SSH, and tries again after each failure, as long as the window lives.
@@ -405,13 +512,17 @@ async fn run_remote(
             note: None,
         };
         let served = serve(state, drafts, load, reached, task.clone(), &mut requests);
-        let error = match served.await {
+        let (error, gap) = match served.await {
             Served::Closed => return,
-            Served::NoAnswer { unreached, .. } => unreached.error,
+            Served::NoAnswer { unreached, gap, .. } => (unreached.error, gap),
         };
         let retry_at = Instant::now() + REMOTE_RETRY;
-        if let Some(known) = state.write().machines.get_mut(machine) {
-            known.connection = ConnectionState::Disconnected { error, retry_at };
+        {
+            let mut state = state.write();
+            if let Some(known) = state.machines.get_mut(machine) {
+                known.connection = ConnectionState::Disconnected { error, retry_at };
+            }
+            daemon_update::attempt_failed(&mut state, machine, gap, plan_for_machine(&remote));
         }
         let waited = refuse_requests(
             state,
@@ -441,7 +552,7 @@ async fn refuse_requests(
             () = &mut wait => return true,
             message = requests.recv() => match message {
                 Some(ToDaemon::Machines(MachineChange::Retry(_))) => return true,
-                Some(ToDaemon::Machines(_)) => {}
+                Some(ToDaemon::Machines(_) | ToDaemon::Update(_)) => {}
                 Some(ToDaemon::Send(Outgoing { request, purpose, .. })) => {
                     let mut state = state.write();
                     state::apply_response(
@@ -493,7 +604,15 @@ async fn run_demo(
             outgoing = requests.next() => {
                 let outgoing = match outgoing {
                     Some(ToDaemon::Send(outgoing)) => outgoing,
-                    Some(ToDaemon::Choose(_) | ToDaemon::Machines(_)) => continue,
+                    Some(ToDaemon::Update(UpdateCommand::Start(machine, _))) => {
+                        spawn(play_demo_update(state, machine));
+                        continue;
+                    }
+                    Some(
+                        ToDaemon::Choose(_)
+                        | ToDaemon::Machines(_)
+                        | ToDaemon::Update(UpdateCommand::Cancel(..)),
+                    ) => continue,
                     None => return,
                 };
                 let mut queue = VecDeque::from([outgoing]);
@@ -528,6 +647,22 @@ async fn run_demo(
     }
 }
 
+/// Plays a successful update on the demo's screens: the script's lines, then the first connection.
+async fn play_demo_update(mut state: Signal<AppState>, machine: MachineId) {
+    for line in demo::UPDATE_OUTPUT {
+        tokio::time::sleep(demo::UPDATE_LINE_PAUSE).await;
+        let line = OutputLine {
+            stream: OutputStream::Stdout,
+            text: (*line).to_owned(),
+        };
+        daemon_update::output(&mut state.write(), machine, vec![line]);
+    }
+    if daemon_update::finished(&mut state.write(), machine, Some(0)) {
+        tokio::time::sleep(demo::UPDATE_LINE_PAUSE).await;
+        demo::finish_update(&mut state.write(), machine);
+    }
+}
+
 /// What the connection task needs to reach a daemon.
 struct Live {
     configured: DaemonConfig,
@@ -544,6 +679,8 @@ enum Served {
     NoAnswer {
         unreached: Unreached,
         absence: Absence,
+        /// The daemon refused the app for its protocol.
+        gap: Option<VersionGap>,
     },
 }
 
@@ -567,16 +704,19 @@ async fn run(
     // The tick of the last choice on the screen.
     let mut every_time = None;
     loop {
-        let (unreached, absence) = match reach::reach(&daemon, &places, &in_app).await {
+        let (unreached, absence, gap) = match reach::reach(&daemon, &places, &in_app).await {
             Ok(reached) => {
                 {
                     let mut state = state.write();
                     state.machines.this.daemon = reached.label.clone();
                     state.machines.this.connection = ConnectionState::Connecting { attempt: 1 };
-                    state
-                        .ui
-                        .dialog
-                        .take_if(|dialog| matches!(dialog, Dialog::NoDaemon));
+                    // An update under way keeps its screen until the new daemon answers.
+                    if state.machines.this.update.is_none() {
+                        state
+                            .ui
+                            .dialog
+                            .take_if(|dialog| matches!(dialog, Dialog::NoDaemon));
+                    }
                     if let Some(note) = reached.note {
                         state.ui.inform(note.to_owned());
                     }
@@ -589,12 +729,22 @@ async fn run(
                 let served = serve(state, drafts, load, reached, task, &mut requests);
                 match served.await {
                     Served::Closed => return,
-                    Served::NoAnswer { unreached, absence } => (unreached, absence),
+                    Served::NoAnswer {
+                        unreached,
+                        absence,
+                        gap,
+                    } => (unreached, absence, gap),
                 }
             }
-            Err(unreached) => (unreached, Absence::Failed),
+            Err(unreached) => (unreached, Absence::Failed, None),
         };
         show_no_daemon(state, unreached, absence, every_time);
+        daemon_update::attempt_failed(
+            &mut state.write(),
+            MachineId::THIS,
+            gap,
+            plan_for_daemon(&daemon),
+        );
         let Some(chosen) = next_choice(state, drafts, &mut requests).await else {
             return;
         };
@@ -608,6 +758,35 @@ async fn run(
         }
         daemon = next;
     }
+}
+
+/// What an update of `daemon` would run: over SSH only, and when the app knows its commit.
+fn plan_for_daemon(daemon: &DaemonConfig) -> Option<UpdatePlan> {
+    match daemon {
+        DaemonConfig::Ssh {
+            host,
+            remote_command,
+            source_dir,
+        } => update_plan(host, remote_command, source_dir.clone()),
+        DaemonConfig::Local { .. } | DaemonConfig::InApp => None,
+    }
+}
+
+fn plan_for_machine(remote: &MachineConfig) -> Option<UpdatePlan> {
+    update_plan(
+        &remote.host,
+        &remote.remote_command,
+        remote.source_dir.clone(),
+    )
+}
+
+fn update_plan(host: &str, remote_command: &str, source_dir: Option<String>) -> Option<UpdatePlan> {
+    Some(UpdatePlan {
+        host: host.to_owned(),
+        remote_command: remote_command.to_owned(),
+        source_dir,
+        commit: update_script::app_commit()?.to_owned(),
+    })
 }
 
 fn show_no_daemon(
@@ -631,7 +810,7 @@ async fn next_choice(
     loop {
         match requests.recv().await? {
             ToDaemon::Choose(chosen) => return Some(chosen),
-            ToDaemon::Machines(_) => {}
+            ToDaemon::Machines(_) | ToDaemon::Update(_) => {}
             ToDaemon::Send(Outgoing {
                 request, purpose, ..
             }) => {
@@ -717,6 +896,7 @@ async fn serve(
                     {
                         return Served::NoAnswer {
                             absence: no_daemon::absence(label.place, error),
+                            gap: daemon_update::protocol_gap(label.place, error),
                             unreached: Unreached {
                                 label,
                                 error: state::error_chain(error),
@@ -756,7 +936,7 @@ async fn serve(
                     }
                 }
                 // The screen shows only before a first connection.
-                Some(ToDaemon::Choose(_) | ToDaemon::Machines(_)) => {}
+                Some(ToDaemon::Choose(_) | ToDaemon::Machines(_) | ToDaemon::Update(_)) => {}
                 None => return Served::Closed,
             },
             Some(agent) = opened.recv() => {
@@ -898,6 +1078,91 @@ mod tests {
             .map(|entry| entry.transcript.items().count());
         TRANSCRIPT_RENDERS.with(|renders| renders.set(renders.get() + 1));
         rsx! {}
+    }
+
+    #[test]
+    fn retry_now_restarts_this_computers_connection_after_a_drop() {
+        let mut state = state_with(Vec::new());
+        state.machines.this.connection = ConnectionState::Disconnected {
+            error: "connection reset".to_owned(),
+            retry_at: Instant::now(),
+        };
+
+        let retry = retry_message(&mut state, MachineId::THIS);
+
+        assert!(matches!(
+            retry,
+            Some(ToDaemon::Machines(MachineChange::Retry(machine))) if machine == MachineId::THIS
+        ));
+    }
+
+    #[test]
+    fn retry_on_this_computers_screen_goes_through_its_choice_once() {
+        let mut state = state_with(Vec::new());
+        no_daemon::show(
+            &mut state,
+            &DaemonLabel::ssh("build-box".to_owned()),
+            "refused".to_owned(),
+            Absence::Failed,
+            None,
+        );
+
+        let first = retry_message(&mut state, MachineId::THIS);
+        let second = retry_message(&mut state, MachineId::THIS);
+
+        assert!(matches!(
+            first,
+            Some(ToDaemon::Choose(Chosen {
+                choice: DaemonChoice::Retry,
+                ..
+            }))
+        ));
+        assert!(second.is_none(), "the first retry is under way");
+    }
+
+    #[test]
+    fn a_server_is_tried_again_by_its_connection_task() {
+        let devbox = MachineId::new(1);
+        let mut state = state_with(Vec::new());
+
+        let retry = retry_message(&mut state, devbox);
+
+        assert!(matches!(
+            retry,
+            Some(ToDaemon::Machines(MachineChange::Retry(machine))) if machine == devbox
+        ));
+    }
+
+    #[test]
+    fn only_a_daemon_over_ssh_gets_a_plan() {
+        let local = DaemonConfig::Local {
+            socket: None,
+            start_service: true,
+        };
+
+        assert_eq!(plan_for_daemon(&local), None);
+        assert_eq!(plan_for_daemon(&DaemonConfig::InApp), None);
+    }
+
+    #[test]
+    fn an_update_under_way_lets_a_removed_servers_connection_task_end() {
+        let devbox = MachineId::new(1);
+        let (router, _rerouted) = mpsc::unbounded_channel();
+        let (task, mut requests) = mpsc::unbounded_channel();
+        let mut servers = Servers {
+            tasks: BTreeMap::from([(devbox, task)]),
+            configs: Vec::new(),
+            next: 2,
+            router,
+        };
+
+        let _held_by_the_update = servers.update_task(devbox).unwrap();
+        servers.tasks.remove(&devbox);
+
+        assert_eq!(
+            requests.try_recv().err(),
+            Some(mpsc::error::TryRecvError::Disconnected)
+        );
     }
 
     #[test]

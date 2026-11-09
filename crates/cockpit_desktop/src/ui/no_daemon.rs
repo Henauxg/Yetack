@@ -3,10 +3,12 @@
 use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
+use crate::machine::MachineId;
 use crate::state::ConnectionState;
 use crate::state::no_daemon::{
     self, Absence, DaemonChoice, NoDaemon, SERVICE_OFFERED, SOCKET_REACHABLE,
 };
+use crate::ui::daemon_update::DaemonUpdateScreens;
 
 /// What the screen says when nothing runs on this machine.
 const NOTHING_RUNS_LEAD: &str = if SOCKET_REACHABLE {
@@ -15,7 +17,7 @@ const NOTHING_RUNS_LEAD: &str = if SOCKET_REACHABLE {
     "On Windows, agents run inside this app. To use a server instead, name it in the config file."
 };
 
-const IN_APP_DETAIL: &str =
+pub(super) const IN_APP_DETAIL: &str =
     "The agents stop when the app closes, and come back the next time the app runs them.";
 const SERVICE_DETAIL: &str =
     "Runs agents-cockpit serve on this machine. The agents keep running after the app closes.";
@@ -34,6 +36,15 @@ pub fn NoDaemonScreen() -> Element {
 #[component]
 pub fn NoDaemonCard() -> Element {
     let cockpit: Cockpit = use_context();
+    let update_screens = {
+        let state = cockpit.state.read();
+        state.machines.this.update.is_some() || state.machines.this.version_gap.is_some()
+    };
+    if update_screens {
+        return rsx! {
+            DaemonUpdateScreens { machine: MachineId::THIS }
+        };
+    }
     let screen = match &cockpit.state.read().machines.this.connection {
         ConnectionState::NoDaemon(screen) => screen.clone(),
         ConnectionState::Connecting { .. }
@@ -50,15 +61,7 @@ pub fn NoDaemonCard() -> Element {
     } = screen;
     let waiting = busy.is_some();
     let every_time_label = rsx! {
-        label { class: if waiting { "no-daemon-every-time disabled" } else { "no-daemon-every-time" },
-            input {
-                r#type: "checkbox",
-                checked: every_time,
-                disabled: waiting,
-                onchange: move |_| cockpit.update(no_daemon::toggle_every_time),
-            }
-            span { "Use this every time" }
-        }
+        EveryTimeTick { every_time, waiting }
     };
     let body = match absence {
         Absence::NothingRuns => rsx! {
@@ -150,9 +153,26 @@ pub fn NoDaemonCard() -> Element {
     }
 }
 
+/// "Use this every time", for a choice about this computer's daemon.
+#[component]
+pub(super) fn EveryTimeTick(every_time: bool, waiting: bool) -> Element {
+    let cockpit: Cockpit = use_context();
+    rsx! {
+        label { class: if waiting { "no-daemon-every-time disabled" } else { "no-daemon-every-time" },
+            input {
+                r#type: "checkbox",
+                checked: every_time,
+                disabled: waiting,
+                onchange: move |_| cockpit.update(no_daemon::toggle_every_time),
+            }
+            span { "Use this every time" }
+        }
+    }
+}
+
 /// The error as the daemon's code wrote it, folded unless something failed.
 #[component]
-fn Details(error: String, open: bool) -> Element {
+pub(super) fn Details(error: String, open: bool) -> Element {
     rsx! {
         details { class: "no-daemon-details", open,
             summary { "Details" }

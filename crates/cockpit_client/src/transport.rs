@@ -128,14 +128,19 @@ pub(crate) fn connect_in_app(link: &InAppLink) -> Result<DuplexStream, ConnectEr
     Ok(client)
 }
 
-/// Starts ssh. Its stdin and stdout carry the protocol.
-pub(crate) fn spawn_ssh(host: &str, remote_command: &str) -> Result<SshLink, ConnectError> {
-    // ssh would read such a host as an option, such as `-oProxyCommand=...`.
+/// ssh would read such a host as an option, such as `-oProxyCommand=...`.
+fn check_host(host: &str) -> Result<(), ConnectError> {
     if host.is_empty() || host.starts_with('-') {
         return Err(ConnectError::InvalidHost {
             host: host.to_owned(),
         });
     }
+    Ok(())
+}
+
+/// Starts ssh. Its stdin and stdout carry the protocol.
+pub(crate) fn spawn_ssh(host: &str, remote_command: &str) -> Result<SshLink, ConnectError> {
+    check_host(host)?;
     let mut child = ssh_command(host, remote_command)
         .spawn()
         .map_err(ConnectError::Spawn)?;
@@ -158,11 +163,29 @@ pub(crate) fn spawn_ssh(host: &str, remote_command: &str) -> Result<SshLink, Con
     })
 }
 
+/// ssh to `host` running a script that is written to its stdin, as `sh -s -- <arguments>`. It
+/// needs no daemon, so it reaches a server whose daemon refuses this app.
+pub fn ssh_script_command(host: &str, arguments: &[&str]) -> Result<Command, ConnectError> {
+    check_host(host)?;
+    let mut command = ssh_to(host);
+    command.args(["sh", "-s", "--"]);
+    command.args(arguments.iter().map(|argument| shell_quoted(argument)));
+    Ok(command)
+}
+
+fn ssh_command(host: &str, remote_command: &str) -> Command {
+    let mut command = ssh_to(host);
+    command
+        .arg(shell_quoted(remote_command))
+        .arg(BRIDGE_SUBCOMMAND);
+    command
+}
+
 /// `BatchMode` makes a missing key fail at once, instead of waiting for a password the app cannot
 /// show. `ForwardAgent=no` keeps the host from using this machine's keys. `-x` and
 /// `ClearAllForwardings` open no X11 or port forwarding to this machine, even when the user's ssh
 /// config asks for one. `--` ends the options, since ssh reads options after the host too.
-fn ssh_command(host: &str, remote_command: &str) -> Command {
+fn ssh_to(host: &str) -> Command {
     let mut command = Command::new(SSH_PROGRAM);
     command
         .args([
@@ -177,8 +200,6 @@ fn ssh_command(host: &str, remote_command: &str) -> Command {
             "--",
         ])
         .arg(host)
-        .arg(shell_quoted(remote_command))
-        .arg(BRIDGE_SUBCOMMAND)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -296,6 +317,37 @@ mod tests {
                 format!("{path}\nbridge\n")
             );
         }
+    }
+
+    #[test]
+    fn a_script_runs_in_the_hosts_shell_with_its_arguments_quoted() {
+        let command = ssh_script_command("build-box", &["--binary", "/opt/my tools/x"]).unwrap();
+
+        let args: Vec<&str> = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_str().unwrap())
+            .collect();
+        assert_eq!(
+            args.get(8..).unwrap(),
+            [
+                "--",
+                "build-box",
+                "sh",
+                "-s",
+                "--",
+                "'--binary'",
+                "'/opt/my tools/x'",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_script_refuses_a_host_that_reads_as_an_option() {
+        assert!(matches!(
+            ssh_script_command("-oProxyCommand=sh", &[]),
+            Err(ConnectError::InvalidHost { .. })
+        ));
     }
 
     #[tokio::test]

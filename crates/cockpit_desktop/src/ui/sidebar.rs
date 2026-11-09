@@ -12,9 +12,11 @@ use crate::daemon_label::DaemonPlace;
 use crate::machine::MachineId;
 use crate::prefs::StatusFilter;
 use crate::state::accounts::{self, AccountLabel, SignInLine};
-use crate::state::machines::{self, MachineChange};
 use crate::state::no_daemon::Absence;
-use crate::state::{AgentEntry, AppState, ConnectionState, Dialog, TitleEdit, TitlePlace, actions};
+use crate::state::{
+    AgentEntry, AppState, ConnectionState, Dialog, TitleEdit, TitlePlace, actions, daemon_update,
+    machines,
+};
 use crate::ui::accounts::{AccountTag, AccountsButton};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::machines::THIS_COMPUTER;
@@ -252,6 +254,8 @@ struct MachineTrouble {
     down: bool,
     /// This computer has no daemon yet: the panel asks where its agents run.
     asks: bool,
+    /// The link that opens the update's screens, for a daemon of another version.
+    update_link: Option<&'static str>,
 }
 
 impl MachineGroup {
@@ -273,26 +277,40 @@ impl MachineGroup {
             let waits = entry.summary.status == AgentStatus::NeedsYou;
             (count + 1, needs_you + usize::from(waits))
         });
-        let trouble = known.and_then(|known| match &known.connection {
-            ConnectionState::Connected => None,
-            ConnectionState::Connecting { .. } => Some(MachineTrouble {
-                line: "Connecting…".to_owned(),
-                error: None,
-                down: false,
-                asks: false,
-            }),
-            ConnectionState::Disconnected { error, .. } => Some(MachineTrouble {
-                line: "Not connected. The app tries again on its own.".to_owned(),
-                error: Some(error.clone()),
-                down: true,
-                asks: false,
-            }),
-            ConnectionState::NoDaemon(_) => Some(MachineTrouble {
-                line: "No daemon yet.".to_owned(),
-                error: None,
-                down: false,
-                asks: true,
-            }),
+        let trouble = known.and_then(|known| {
+            if let Some(line) = daemon_update::update_line(known) {
+                return Some(MachineTrouble {
+                    line: line.text.to_owned(),
+                    error: None,
+                    down: line.down,
+                    asks: false,
+                    update_link: Some(line.link),
+                });
+            }
+            match &known.connection {
+                ConnectionState::Connected => None,
+                ConnectionState::Connecting { .. } => Some(MachineTrouble {
+                    line: "Connecting…".to_owned(),
+                    error: None,
+                    down: false,
+                    asks: false,
+                    update_link: None,
+                }),
+                ConnectionState::Disconnected { error, .. } => Some(MachineTrouble {
+                    line: "Not connected. The app tries again on its own.".to_owned(),
+                    error: Some(error.clone()),
+                    down: true,
+                    asks: false,
+                    update_link: None,
+                }),
+                ConnectionState::NoDaemon(_) => Some(MachineTrouble {
+                    line: "No daemon yet.".to_owned(),
+                    error: None,
+                    down: false,
+                    asks: true,
+                    update_link: None,
+                }),
+            }
         });
         Self {
             machine,
@@ -353,10 +371,17 @@ fn MachineGroupView(group: MachineGroup) -> Element {
             if let Some(trouble) = trouble {
                 p { class: "machine-trouble", title: trouble.error.clone().unwrap_or_default(),
                     "{trouble.line} "
+                    if let Some(link) = trouble.update_link {
+                        button {
+                            class: "link-button",
+                            onclick: move |_| cockpit.update(|state| daemon_update::open(state, machine)),
+                            "{link}"
+                        }
+                    }
                     if trouble.down {
                         button {
                             class: "link-button",
-                            onclick: move |_| cockpit.change_machines(MachineChange::Retry(machine)),
+                            onclick: move |_| cockpit.retry_machine(machine),
                             "Retry now"
                         }
                     }

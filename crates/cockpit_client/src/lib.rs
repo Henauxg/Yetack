@@ -18,4 +18,4 @@ pub use connection::Connection;
 pub use error::{CloseError, ConnectError, RequestError};
 pub use requester::Requester;
 pub use session::{Backoff, Session, SessionError, SessionUpdate};
-pub use transport::{BRIDGE_SUBCOMMAND, InAppLink, Transport};
+pub use transport::{BRIDGE_SUBCOMMAND, InAppLink, Transport, ssh_script_command};

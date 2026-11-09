@@ -76,6 +76,7 @@ fn check(state: &AppState, view: &MachinesView) -> Result<MachineConfig, &'stati
         name: name.to_owned(),
         host: host.to_owned(),
         remote_command: remote_command.to_owned(),
+        source_dir: None,
     })
 }
 
@@ -94,6 +95,10 @@ pub fn forget(state: &mut AppState, drafts: &mut Drafts, machine: MachineId) {
     state.ui.closing.retain(|agent| !on_machine(agent));
     state.ui.closed.take_if(|closed| on_machine(&closed.agent));
     state.ui.folded_machines.remove(&machine);
+    state
+        .ui
+        .dialog
+        .take_if(|dialog| matches!(dialog, Dialog::DaemonUpdate(shown) if *shown == machine));
     state.fix_selection();
 }
 
@@ -142,6 +147,7 @@ mod tests {
                 name: "dev@devbox".to_owned(),
                 host: "dev@devbox".to_owned(),
                 remote_command: "/opt/agents-cockpit".to_owned(),
+                source_dir: None,
             }))
         );
         assert_eq!(
