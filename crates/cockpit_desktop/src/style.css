@@ -1611,8 +1611,8 @@ html.reordering * {
   padding-right: 52px;
 }
 
-/* The wrapper the chat's scroll script anchors on: its entry lays out as the column's own child. */
-/* WebKit skips the layout and paint of the entries out of view: a long chat opens in a third of
+/* The wrapper the chat's scroll script anchors on: its entry lays out as the column's own child.
+   WebKit skips the layout and paint of the entries out of view: a long chat opens in a third of
    the time. That containment clips at the padding box, so the padding holds what a row draws past
    its edges (the line to the next step, a step's marker, focus rings), and the negative margins
    keep the column's spacing. */
@@ -1669,7 +1669,8 @@ html.reordering * {
   transition:
     opacity var(--motion-out) var(--ease-in),
     transform var(--motion-out) var(--ease-in),
-    visibility 0s linear var(--motion-out);
+    visibility 0s linear var(--motion-out),
+    right var(--motion-in) var(--ease-out);
 }
 
 .jump-latest.shown {
@@ -1679,7 +1680,8 @@ html.reordering * {
   pointer-events: auto;
   transition:
     opacity var(--motion-in) var(--ease-out),
-    transform var(--motion-in) var(--ease-out);
+    transform var(--motion-in) var(--ease-out),
+    right var(--motion-in) var(--ease-out);
 }
 
 .center.narrow-chat .jump-latest {
@@ -6241,6 +6243,70 @@ label.icon-button,
 
 .chevron {
   transition: transform var(--motion-in) var(--ease-out), color var(--motion-hover) var(--ease);
+}
+
+/* Layout: what a panel or a wider card pushes aside slides to its new place, with the same timing
+   as the panel or the card, so the chat's text width changes in one direction. Going into the
+   file view or the wide card takes the enter timing, coming back the leave timing. */
+
+.chat-scroll,
+.composer-wrap {
+  transition: padding-right var(--motion-out) var(--ease-in);
+}
+
+.last-instruction {
+  transition: right var(--motion-out) var(--ease-in);
+}
+
+.center.narrow-chat :is(.chat-scroll, .composer-wrap),
+.center:not(.narrow-chat):has(.block-card.wide) :is(.chat-scroll, .composer-wrap) {
+  transition: padding-right var(--motion-in) var(--ease-out);
+}
+
+.center.narrow-chat .last-instruction,
+.center:not(.narrow-chat):has(.block-card.wide) .last-instruction {
+  transition: right var(--motion-in) var(--ease-out);
+}
+
+.block-card {
+  transition: width var(--motion-out) var(--ease-in);
+}
+
+.block-card.wide {
+  transition: width var(--motion-in) var(--ease-out);
+}
+
+.file-view {
+  animation: file-view-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.file-view.leaving {
+  pointer-events: none;
+  animation: file-view-out var(--motion-out) var(--ease-in) forwards;
+}
+
+@keyframes file-view-in {
+  from {
+    flex-basis: 0;
+    min-width: 0;
+  }
+}
+
+@keyframes file-view-out {
+  to {
+    flex-basis: 0;
+    min-width: 0;
+  }
+}
+
+/* A switch to another agent draws its layout at once. `!important` beats the rules above, some of
+   which are more specific. */
+.app.switching :is(.chat-scroll, .composer-wrap, .last-instruction, .block-card, .jump-latest) {
+  transition-duration: 0s !important;
+}
+
+.app.file-view-instant .file-view {
+  animation: none;
 }
 
 /* Appear. */

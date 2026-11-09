@@ -652,6 +652,10 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
   WebKitGTK also sends a mousemove when a list scrolls under a still pointer, so only a pointer that moved takes the highlight (`PointerMoves` in `ui/dialogs.rs`).
   In the Ctrl+O list, the pointer picks its row as a key does, so a cut listing highlights it too.
   The keys scroll the list to the row they highlight. The pointer's row is in view already, so the palette does not scroll to it, and the list never moves under the mouse.
+- **Motion** (the style sheet's Motion and Layout sections, `ui/presence.rs`): tokens set every duration and easing. What appears or grows takes `--motion-in` with ease-out, what leaves or shrinks `--motion-out` with ease-in, and a reduced-motion setting sets them to 0.
+  An element that closes stays on screen for its exit, marked `leaving` and inert, so input already goes past it.
+  The file view opens and closes by its width, and the MCP card widens for a server's detail. The chat's text, the composer, the last instruction bar and the jump button slide aside with them, with the same timing.
+  A switch to another agent draws its layout at once: in the frame that shows the other agent, the root has the `switching` class, which turns those transitions off. A file view that comes or goes with its agent does not slide.
 - **Rendering**: markdown with `pulldown-cmark`, syntax colors with `syntect` (Rust, SQL, Markdown, JSON, Bash, Nix), diffs with `similar` (line diff, then word highlights inside changed lines).
 - **Switching agents**: a click on a sidebar row, or an agent picked in the Ctrl+K switcher, moves the selection, the header and the composer in the next frame.
   In that frame the chat draws only the agent's latest 25 rows, and it draws all of them in the frame after (`ShownRows` in `ui/transcript.rs`).
