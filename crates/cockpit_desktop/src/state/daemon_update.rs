@@ -221,7 +221,8 @@ pub enum DaemonUpdate {
 }
 
 /// A failed attempt to connect. The gap, if any, replaces the last one. An attempt that fails once
-/// the update is done ends its screen, so the machine's own one says why.
+/// the update is done ends its screen, so the machine's own one says why. A daemon that is now
+/// newer ends a failure's screen, whose "Update again" would move the server backwards.
 pub fn attempt_failed(
     state: &mut AppState,
     machine: MachineId,
@@ -237,9 +238,15 @@ pub fn attempt_failed(
         }
         gap
     });
-    known
-        .update
-        .take_if(|update| matches!(update, DaemonUpdate::Reconnecting(_)));
+    let newer = known
+        .version_gap
+        .as_ref()
+        .is_some_and(|gap| gap.kind == ProtocolGap::Newer);
+    known.update.take_if(|update| match update {
+        DaemonUpdate::Running(_) => false,
+        DaemonUpdate::Reconnecting(_) => true,
+        DaemonUpdate::Failed(_) => newer,
+    });
     close_empty_dialog(state, machine);
 }
 
@@ -710,6 +717,26 @@ mod tests {
 
         assert_eq!(update(&state), None);
         assert_eq!(known(&state).version_gap, Some(older()));
+    }
+
+    #[test]
+    fn a_failed_update_gives_way_to_a_daemon_that_is_now_newer() {
+        let mut state = with_older_server();
+        start(&mut state, build_box()).unwrap();
+        finished(&mut state, build_box(), Some(1));
+        let newer = gap_over_ssh(&format!(
+            "the daemon speaks protocol {}, the client {PROTOCOL_VERSION}",
+            PROTOCOL_VERSION + 1
+        ));
+
+        attempt_failed(&mut state, build_box(), newer, Some(plan()));
+
+        assert_eq!(update(&state), None);
+        assert_eq!(
+            start(&mut state, build_box()),
+            None,
+            "it would move the server backwards"
+        );
     }
 
     #[test]
