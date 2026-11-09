@@ -1,6 +1,7 @@
 //! Runs `contrib/update-daemon.sh` on a server, over plain SSH: a daemon of an older protocol
 //! refuses the app's own connection.
 
+use std::error::Error;
 use std::io;
 use std::process::ExitStatus;
 use std::time::Duration;
@@ -68,7 +69,7 @@ pub async fn cancel(plan: &UpdatePlan) -> Result<(), String> {
     Err(said.join(" "))
 }
 
-fn error_line(error: &dyn std::error::Error) -> OutputLine {
+fn error_line(error: &dyn Error) -> OutputLine {
     OutputLine {
         stream: OutputStream::Stderr,
         text: error_chain(error),
@@ -199,13 +200,15 @@ mod tests {
 
     #[cfg(unix)]
     fn script_runner(script: &str) -> Command {
+        use std::process::Stdio;
+
         let mut command = Command::new("sh");
         command
             .arg("-c")
             .arg(format!("cat >/dev/null; {script}"))
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .kill_on_drop(true);
         command
     }

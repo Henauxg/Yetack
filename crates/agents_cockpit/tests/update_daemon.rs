@@ -10,6 +10,7 @@
     reason = "test code: a failure is a failed test"
 )]
 
+use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions, Permissions};
 use std::io;
 use std::io::Write;
@@ -141,7 +142,7 @@ printf '%s' '{mark}' >>"$2/release/agents-cockpit"
         wait_until_it_runs(&path);
     }
 
-    fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
+    fn command(&self, program: impl AsRef<OsStr>) -> Command {
         let path = format!(
             "{}:{}",
             self.path("bin").display(),
