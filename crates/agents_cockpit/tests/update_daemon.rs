@@ -409,6 +409,12 @@ printf '%s' '{mark}' >>"$2/release/agents-cockpit"
         )
     }
 
+    /// What a failed restart leaves: the old daemon runs on, and only the previous binary can
+    /// talk to it.
+    fn leave_the_old_daemon_behind_a_new_binary(&self) {
+        fs::rename(self.installed(), self.previous()).unwrap();
+        self.write_program("install/agents-cockpit", "#!/bin/sh\nexit 1\n");
+    }
 }
 
 impl Drop for Machine {
@@ -705,6 +711,71 @@ fn a_job_from_before_the_daemon_started_is_gone() {
     machine.log_tool_call(&id, "CronCreate", 1_000);
 
     assert_succeeded(&machine.update("origin/main"));
+}
+
+#[test]
+fn after_a_failed_restart_the_previous_binary_reads_the_busy_agents() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    machine.working_agent();
+    let before = machine.daemon_pid();
+    machine.leave_the_old_daemon_behind_a_new_binary();
+
+    let output = machine.update("origin/main");
+
+    assert_eq!(output.status.code(), Some(3), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("Fix the parser"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!machine.built(), "it refuses before the build");
+    assert_eq!(machine.daemon_pid(), before);
+}
+
+#[test]
+fn after_a_failed_restart_an_update_with_idle_agents_goes_on() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let id = machine.idle_agent();
+    let before = machine.daemon_pid();
+    machine.leave_the_old_daemon_behind_a_new_binary();
+
+    let output = machine.update("origin/main");
+
+    assert_succeeded(&output);
+    assert!(machine.installed_is_the_new_build());
+    assert_ne!(machine.daemon_pid(), before);
+    assert!(
+        machine
+            .ok(&["list"])
+            .lines()
+            .any(|row| row.starts_with(&id))
+    );
+}
+
+#[test]
+fn refuses_when_neither_binary_reads_the_agents() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let before = machine.daemon_pid();
+    machine.leave_the_old_daemon_behind_a_new_binary();
+    fs::remove_file(machine.previous()).unwrap();
+    machine.write_program(
+        "install/agents-cockpit.previous",
+        "#!/bin/sh\necho 'made-up failure' >&2\nexit 1\n",
+    );
+
+    let output = machine.update("origin/main");
+
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("cannot read the agents from the daemon"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!machine.built(), "it refuses before the build");
+    assert_eq!(machine.daemon_pid(), before);
 }
 
 #[test]

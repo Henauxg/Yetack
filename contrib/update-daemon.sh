@@ -159,7 +159,13 @@ count_calls() {
 check_agents() {
     daemon=$(daemon_pid)
     [ -n "$daemon" ] || return 0
-    listing=$("$binary" list 2>&1) || die "cannot read the agents from the daemon: $listing"
+    if ! listing=$("$binary" list 2>&1); then
+        # After a failed restart the old daemon runs on, and only the previous binary can read it.
+        listing_error=$listing
+        if [ ! -f "$binary.previous" ] || ! listing=$("$binary.previous" list 2>&1); then
+            die "cannot read the agents from the daemon: $listing_error"
+        fi
+    fi
     busy=$(printf '%s\n' "$listing" | awk 'NR > 1 && $2 != "idle" && $2 != "exited"')
     [ -z "$busy" ] || refuse "not restarting the daemon, these agents are busy:
 $busy"
