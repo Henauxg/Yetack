@@ -236,7 +236,10 @@ install_and_restart() {
     # A connection lost from here on must not leave the machine without a daemon.
     trap '' HUP INT TERM PIPE
     mkdir -p "$(dirname "$binary")" || die_installing "cannot create the folder of $binary"
-    [ ! -f "$binary" ] || cp -f "$binary" "$binary.previous" || die_installing "cannot save $binary"
+    # A retry after a failed restart must keep the last binary that worked.
+    if [ -f "$binary" ] && ! cmp -s "$binary" "$built"; then
+        cp -f "$binary" "$binary.previous" || die_installing "cannot save $binary"
+    fi
     install -m 755 "$built" "$binary.new" || die_installing "cannot write $binary.new"
     mv -f "$binary.new" "$binary" || die_installing "cannot replace $binary"
     say "restarting the daemon"

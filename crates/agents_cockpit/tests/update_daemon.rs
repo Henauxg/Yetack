@@ -362,6 +362,12 @@ printf '%s' '{mark}' >>"$2/release/agents-cockpit"
     fn update_lock_is_free(&self) -> bool {
         !self.update_folder().join("lock").exists()
     }
+
+    fn previous_is_the_new_build(&self) -> bool {
+        fs::read(format!("{}.previous", self.installed().display()))
+            .unwrap()
+            .ends_with(BUILT_MARK)
+    }
 }
 
 impl Drop for Machine {
@@ -837,6 +843,18 @@ fn a_failed_restart_exits_with_four() {
     assert_eq!(output.status.code(), Some(4), "{}", stderr(&output));
     assert!(machine.installed_is_the_new_build());
     assert!(machine.update_lock_is_free());
+}
+
+#[test]
+fn a_retry_keeps_the_last_binary_that_worked() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    fs::write(machine.start_file(), "exit 7\n").unwrap();
+
+    assert_eq!(machine.update("origin/main").status.code(), Some(4));
+    assert_eq!(machine.update("origin/main").status.code(), Some(4));
+
+    assert!(!machine.previous_is_the_new_build());
 }
 
 #[test]
