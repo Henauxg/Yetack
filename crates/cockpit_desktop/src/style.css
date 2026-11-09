@@ -70,6 +70,12 @@ button {
   cursor: pointer;
 }
 
+/* The webview's own selection color barely shows on the dark greys, in text fields too. */
+::selection {
+  background: rgba(45, 212, 191, 0.4);
+  color: var(--text-bright);
+}
+
 button:disabled {
   cursor: default;
 }
