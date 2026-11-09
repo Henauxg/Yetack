@@ -307,6 +307,7 @@ fn update_agent(state: &mut AppState, summary: AgentSummary) -> Option<Alert> {
         return None;
     };
     let before = entry.summary.status;
+    let background_before = entry.summary.background_running;
     entry.summary = summary;
     let summary = &entry.summary;
     let after = summary.status;
@@ -328,8 +329,10 @@ fn update_agent(state: &mut AppState, summary: AgentSummary) -> Option<Alert> {
             body,
         });
     }
-    let finished = after == AgentStatus::Idle
-        && matches!(before, AgentStatus::Working | AgentStatus::NeedsYou);
+    // An agent finishes once its turn and its background tasks have both ended.
+    let was_busy = matches!(before, AgentStatus::Working | AgentStatus::NeedsYou)
+        || (before == AgentStatus::Idle && background_before > 0);
+    let finished = after == AgentStatus::Idle && summary.background_running == 0 && was_busy;
     if !finished {
         return None;
     }
@@ -527,6 +530,32 @@ mod tests {
 
         assert_eq!(alert.kind, AlertKind::Finished);
         assert_eq!(alert.body, "Running the tests. 4 of 4 tasks done.");
+        assert!(state.is_unread(AgentId::new(1)));
+    }
+
+    #[test]
+    fn an_agent_finishes_once_its_background_tasks_end_too() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Working)]);
+        let mut update = |status, background_running| {
+            let mut summary = with_status(1, status);
+            summary.background_running = background_running;
+            apply(
+                &mut state,
+                &mut Drafts::default(),
+                record(Event::AgentUpdated(summary)),
+                MachineId::THIS,
+            )
+        };
+
+        let turn_ended = update(AgentStatus::Idle, 2);
+        let one_left = update(AgentStatus::Idle, 1);
+        let all_ended = update(AgentStatus::Idle, 0);
+        let again = update(AgentStatus::Idle, 0);
+
+        assert_eq!(turn_ended, None);
+        assert_eq!(one_left, None);
+        assert_eq!(all_ended.map(|alert| alert.kind), Some(AlertKind::Finished));
+        assert_eq!(again, None);
         assert!(state.is_unread(AgentId::new(1)));
     }
 

@@ -27,7 +27,7 @@ use crate::{APP_NAME, format};
 struct AgentRow {
     id: AgentId,
     title: String,
-    status: AgentStatus,
+    status_class: String,
     activity: String,
     pending: u16,
     unread: bool,
@@ -50,7 +50,7 @@ impl AgentRow {
         Self {
             id: summary.id,
             title: summary.title.clone(),
-            status: summary.status,
+            status_class: format::agent_status_class(summary),
             warns: matches!(sign_in, Some(SignInLine::NotSignedIn(_))),
             activity: sign_in.map_or_else(|| activity_line(entry), |line| line.text().to_owned()),
             pending: summary.pending_count,
@@ -113,7 +113,7 @@ pub fn activity_line(entry: &AgentEntry) -> String {
     }
     match entry.summary.status {
         AgentStatus::Exited => "Process ended".to_owned(),
-        status => format::status_label(status).to_owned(),
+        _ => format::agent_status_label(&entry.summary),
     }
 }
 
@@ -438,7 +438,7 @@ fn StatusFilters(chips: Vec<FilterChip>) -> Element {
 fn AgentRowView(row: AgentRow) -> Element {
     let cockpit: Cockpit = use_context();
     let agent = row.id;
-    let mut classes = vec![ROW_CLASS, format::status_class(row.status)];
+    let mut classes = vec![ROW_CLASS, row.status_class.as_str()];
     if row.selected {
         classes.push("selected");
     }
@@ -633,6 +633,29 @@ mod tests {
 
     fn at(seconds: u64) -> Timestamp {
         Timestamp::from_unix_millis(seconds * 1000)
+    }
+
+    #[test]
+    fn an_idle_agent_with_background_tasks_says_so_in_the_working_color() {
+        let mut idle = summary(1, AgentStatus::Idle);
+        idle.background_running = 2;
+        let mut working = summary(2, AgentStatus::Working);
+        working.background_running = 2;
+
+        assert_eq!(
+            activity_line(&AgentEntry::new(idle.clone())),
+            "Idle, 2 running in the background"
+        );
+        assert_eq!(
+            format::agent_status_class(&idle),
+            "status-idle background-work"
+        );
+        assert_eq!(format::agent_status_label(&working), "Working");
+        assert_eq!(format::agent_status_class(&working), "status-working");
+        assert_eq!(
+            activity_line(&AgentEntry::new(summary(3, AgentStatus::Idle))),
+            "Idle"
+        );
     }
 
     fn timed(status: AgentStatus) -> AgentSummary {

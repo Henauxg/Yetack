@@ -5,8 +5,8 @@ use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, Local, NaiveDateTime};
 use cockpit_protocol::{
-    AgentStatus, Cores, CostUsd, Effort, McpScope, McpServerStatus, PermissionMode, SubagentStatus,
-    Timestamp, UsageWindow,
+    AgentStatus, AgentSummary, Cores, CostUsd, Effort, McpScope, McpServerStatus, PermissionMode,
+    SubagentStatus, Timestamp, UsageWindow,
 };
 
 /// A model Claude Code accepts by its alias, for the model menu.
@@ -54,6 +54,9 @@ const DATE_PART_LENGTH: usize = 8;
 /// chrono's format for a month's short name, as in "8 Nov".
 const SHORT_MONTH: &str = "%b";
 
+/// The class of an idle agent whose background tasks still run.
+const BACKGROUND_WORK_CLASS: &str = "background-work";
+
 pub fn status_label(status: AgentStatus) -> &'static str {
     match status {
         AgentStatus::NeedsYou => "Needs you",
@@ -70,6 +73,29 @@ pub fn status_class(status: AgentStatus) -> &'static str {
         AgentStatus::Working => "status-working",
         AgentStatus::Idle => "status-idle",
         AgentStatus::Exited => "status-exited",
+    }
+}
+
+/// The background tasks that still run for an idle agent, which its status alone does not show.
+fn background_work(summary: &AgentSummary) -> Option<u16> {
+    (summary.status == AgentStatus::Idle && summary.background_running > 0)
+        .then_some(summary.background_running)
+}
+
+/// An agent's status as the sidebar and the header say it.
+pub fn agent_status_label(summary: &AgentSummary) -> String {
+    match background_work(summary) {
+        Some(count) => format!("Idle, {count} running in the background"),
+        None => status_label(summary.status).to_owned(),
+    }
+}
+
+/// An agent's status classes: an idle agent with background work rings in the working color.
+pub fn agent_status_class(summary: &AgentSummary) -> String {
+    let class = status_class(summary.status);
+    match background_work(summary) {
+        Some(_) => format!("{class} {BACKGROUND_WORK_CLASS}"),
+        None => class.to_owned(),
     }
 }
 

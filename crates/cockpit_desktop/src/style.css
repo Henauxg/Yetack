@@ -219,6 +219,11 @@ button:disabled {
   --status-bg: rgba(255, 255, 255, 0.06);
 }
 
+/* Idle, with background tasks still running: the working color's ring, unfilled. */
+.status-idle.background-work {
+  --status: var(--teal);
+}
+
 .status-exited {
   --status: var(--dim);
   --status-fill: transparent;
