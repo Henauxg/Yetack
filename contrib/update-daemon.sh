@@ -160,11 +160,10 @@ build() {
     sha=$(git -C "$source_dir" rev-parse --verify --quiet "$commit^{commit}") ||
         die "commit $commit is not on origin: push it first"
     tree=$work_dir/source
-    git -C "$source_dir" worktree prune
-    if [ -d "$tree" ]; then
-        git -C "$tree" checkout --quiet --detach --force "$sha" </dev/null ||
-            die "cannot check out $sha in $tree"
-    else
+    # A folder left by another checkout, moved or cloned again since, cannot check this commit out.
+    if [ ! -d "$tree" ] || ! git -C "$tree" checkout --quiet --detach --force "$sha" </dev/null 2>/dev/null; then
+        rm -rf "$tree"
+        git -C "$source_dir" worktree prune
         git -C "$source_dir" worktree add --quiet --detach "$tree" "$sha" </dev/null ||
             die "cannot check out $sha in $tree"
     fi

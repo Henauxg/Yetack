@@ -840,6 +840,30 @@ fn a_failed_restart_exits_with_four() {
 }
 
 #[test]
+fn a_checkout_cloned_again_does_not_stop_the_next_update() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    assert_succeeded(&machine.update("origin/main"));
+    fs::remove_dir_all(machine.path("source")).unwrap();
+    machine.git(
+        Path::new("."),
+        &["clone", "--quiet", "origin.git", "source"],
+    );
+    let commit = machine.commit_on_origin("Second");
+
+    let output = machine.update(&commit);
+
+    assert_succeeded(&output);
+    assert_eq!(
+        machine.git(
+            Path::new("home/cache/agents-cockpit/update/source"),
+            &["rev-parse", "HEAD"]
+        ),
+        commit
+    );
+}
+
+#[test]
 fn a_binary_it_cannot_replace_exits_with_four() {
     let machine = Machine::new();
     fs::write(machine.path("install/blocker"), "a file, not a folder").unwrap();
