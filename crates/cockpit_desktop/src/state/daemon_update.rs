@@ -296,7 +296,10 @@ pub fn finished(state: &mut AppState, machine: MachineId, code: Option<i32>) -> 
     let Some(known) = state.machines.get_mut(machine) else {
         return false;
     };
-    let Some(DaemonUpdate::Running(mut progress)) = known.update.take() else {
+    let Some(DaemonUpdate::Running(mut progress)) = known
+        .update
+        .take_if(|update| matches!(update, DaemonUpdate::Running(_)))
+    else {
         return false;
     };
     match UpdateFailure::from_exit_code(code) {
@@ -891,6 +894,18 @@ mod tests {
 
             assert_eq!(failure(&state), ending, "{code:?}");
         }
+    }
+
+    #[test]
+    fn a_late_finish_leaves_what_the_screen_shows() {
+        let mut state = with_older_server();
+        start(&mut state, build_box()).unwrap();
+        finished(&mut state, build_box(), Some(4));
+        let shown = update(&state).cloned();
+
+        assert!(!finished(&mut state, build_box(), Some(0)));
+
+        assert_eq!(update(&state).cloned(), shown);
     }
 
     #[test]
