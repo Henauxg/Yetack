@@ -21,6 +21,7 @@ use crate::ui::cards::{ApprovalCard, PlanCard, QuestionCard};
 use crate::ui::chat_scroll::{self, CHAT_SCROLL_ID, ENTRY_CLASS, JumpToLatest, NewDivider};
 use crate::ui::code::{LineNumbers, diff_row};
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::last_instruction::LastInstruction;
 use crate::ui::loading::TranscriptSkeleton;
 use crate::ui::markdown::MarkdownView;
 use crate::{bridge, format};
@@ -155,7 +156,7 @@ impl ShownRows {
 pub fn TranscriptView() -> Element {
     use_hook(start_fold_script);
     let cockpit: Cockpit = use_context();
-    chat_scroll::use_chat_scroll(cockpit);
+    let top_entry = chat_scroll::use_chat_scroll(cockpit);
     // The agent whose conversation the chat opened, once its first page came or failed. A
     // failure shows above all the rows.
     let opened = use_memo(move || {
@@ -273,6 +274,7 @@ pub fn TranscriptView() -> Element {
                 }
             }
         }
+        LastInstruction { top_entry }
         JumpToLatest { shown: scrolled_up.is_some(), count: waiting }
     }
 }
@@ -560,7 +562,7 @@ pub fn ItemView(
     let id = item.id;
     match item.body {
         ItemBody::UserMessage(message) => rsx! {
-            UserBubble { message }
+            UserBubble { agent, folder, message }
         },
         ItemBody::AssistantText { markdown } => rsx! {
             MarkdownView { agent, folder, markdown }
@@ -601,15 +603,18 @@ pub fn ItemView(
     }
 }
 
+/// The user's message. Its text renders as Markdown, as the agent's text does.
 #[component]
-fn UserBubble(message: UserMessage) -> Element {
+fn UserBubble(agent: AgentId, folder: PathBuf, message: UserMessage) -> Element {
     rsx! {
         div { class: "user-message",
             for (index, image) in message.images.iter().enumerate() {
                 img { key: "{index}", class: "message-image", src: bridge::image_url(image), alt: "Attached image" }
             }
             if !message.text.is_empty() {
-                div { class: "user-bubble", "{message.text}" }
+                div { class: "user-bubble",
+                    MarkdownView { agent, folder, markdown: message.text }
+                }
             }
         }
     }

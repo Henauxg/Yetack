@@ -18,9 +18,6 @@ use crate::state::{Block, actions, agent_map};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::mcp::{McpPanel, mcp_summary};
 
-/// Finished background tasks the block lists until "Show more".
-const RECENT_FINISHED: usize = 3;
-
 #[component]
 pub fn FloatingBlocks() -> Element {
     let cockpit: Cockpit = use_context();
@@ -36,7 +33,7 @@ pub fn FloatingBlocks() -> Element {
     let finished_rows = if state.ui.finished_tasks_unfolded.contains(&agent) {
         FinishedRows::All
     } else {
-        FinishedRows::Recent
+        FinishedRows::Hidden
     };
     let alive = entry.summary.status != AgentStatus::Exited;
     let known = state
@@ -323,8 +320,8 @@ fn TasksBody(tasks: Vec<TaskListItem>) -> Element {
 /// Which finished background tasks the block lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FinishedRows {
-    /// The `RECENT_FINISHED` latest, where a failed one keeps its place.
-    Recent,
+    /// None: the block lists the running tasks alone, until "Show finished".
+    Hidden,
     All,
 }
 
@@ -335,7 +332,7 @@ struct BackgroundRows {
     tasks: Vec<BackgroundTask>,
     /// The finished tasks left out.
     hidden: usize,
-    /// More finished tasks exist than `RECENT_FINISHED`: the block offers to fold or unfold them.
+    /// Finished tasks exist: the block offers to fold or unfold them.
     foldable: bool,
 }
 
@@ -346,43 +343,20 @@ impl BackgroundRows {
             .partition(|task| task.status == BackgroundTaskStatus::Running);
         running.sort_by_key(|task| task.started_at);
         finished.sort_by_key(|task| Reverse(task.ended_at.unwrap_or(task.started_at)));
-        let foldable = finished.len() > RECENT_FINISHED;
-        let finished_count = finished.len();
-        if finished_rows == FinishedRows::Recent {
-            finished = recent_finished(finished);
-        }
-        let hidden = finished_count - finished.len();
-        running.extend(finished);
+        let foldable = !finished.is_empty();
+        let hidden = match finished_rows {
+            FinishedRows::Hidden => finished.len(),
+            FinishedRows::All => {
+                running.extend(finished);
+                0
+            }
+        };
         Self {
             tasks: running,
             hidden,
             foldable,
         }
     }
-}
-
-/// The `RECENT_FINISHED` latest of `finished`, which comes newest first, in the same order. A
-/// failed task takes a place before the others, so tasks that end after it do not push it out.
-fn recent_finished(finished: Vec<BackgroundTask>) -> Vec<BackgroundTask> {
-    let failed = finished
-        .iter()
-        .filter(|task| task.status == BackgroundTaskStatus::Failed)
-        .count();
-    let mut failed_places = failed.min(RECENT_FINISHED);
-    let mut other_places = RECENT_FINISHED - failed_places;
-    let mut kept = Vec::with_capacity(RECENT_FINISHED);
-    for task in finished {
-        let places = if task.status == BackgroundTaskStatus::Failed {
-            &mut failed_places
-        } else {
-            &mut other_places
-        };
-        if *places > 0 {
-            *places -= 1;
-            kept.push(task);
-        }
-    }
-    kept
 }
 
 fn elapsed(task: &BackgroundTask, now: SystemTime) -> Option<Duration> {
@@ -439,7 +413,7 @@ fn RunningBody(
         foldable,
     } = BackgroundRows::new(tasks, finished_rows);
     let fold_text = if hidden > 0 {
-        format!("Show {hidden} more finished")
+        format!("Show {hidden} finished")
     } else {
         "Show less".to_owned()
     };
@@ -607,11 +581,15 @@ mod tests {
                 "late-done"
             ]
         );
-        assert_eq!((rows.hidden, rows.foldable), (0, false));
+        assert_eq!((rows.hidden, rows.foldable), (0, true));
+
+        let running_only =
+            BackgroundRows::new(vec![timed("only", Running, 0, None)], FinishedRows::All);
+        assert_eq!((running_only.hidden, running_only.foldable), (0, false));
     }
 
     #[test]
-    fn the_fold_keeps_the_three_latest_finished_and_a_failed_one_among_them() {
+    fn the_fold_lists_the_running_tasks_alone() {
         use BackgroundTaskStatus::{Done, Failed, Running};
         let tasks = vec![
             timed("running", Running, 0, None),
@@ -622,9 +600,9 @@ mod tests {
             timed("done-14", Done, 5, Some(14)),
         ];
 
-        let folded = BackgroundRows::new(tasks.clone(), FinishedRows::Recent);
-        assert_eq!(ids(&folded), ["running", "done-14", "done-13", "failed"]);
-        assert_eq!((folded.hidden, folded.foldable), (2, true));
+        let folded = BackgroundRows::new(tasks.clone(), FinishedRows::Hidden);
+        assert_eq!(ids(&folded), ["running"]);
+        assert_eq!((folded.hidden, folded.foldable), (5, true));
 
         let unfolded = BackgroundRows::new(tasks.clone(), FinishedRows::All);
         assert_eq!(unfolded.tasks.len(), 6);

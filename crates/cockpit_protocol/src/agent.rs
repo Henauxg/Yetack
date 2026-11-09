@@ -119,6 +119,10 @@ pub struct AgentSummary {
         deserialize_with = "enum_or_stored_bool"
     )]
     pub sign_in_wait: SignInWait,
+    /// The background tasks that still run, subagents and commands, which can outlive the turn
+    /// that started them. 0 when missing, as from a daemon that predates it.
+    #[serde(default)]
+    pub background_running: u16,
 }
 
 /// Where an agent's effort comes from.

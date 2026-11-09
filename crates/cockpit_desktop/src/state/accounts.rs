@@ -269,11 +269,12 @@ pub fn choices(state: &AppState, machine: MachineId) -> Vec<AccountChoice> {
 }
 
 /// The new agent dialog's account menu picks an account for good, until a recent folder is
-/// picked.
-pub fn pick_new_agent_account(state: &mut AppState, id: AccountId) {
+/// picked. The resume list then shows that account's sessions, with the first one highlighted.
+pub fn pick_new_agent_account(state: &mut AppState, drafts: &mut Drafts, id: AccountId) {
     if let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog {
         form.account = Some(id);
         form.menu = None;
+        drafts.new_agent.session_highlighted = 0;
     }
 }
 
@@ -284,16 +285,14 @@ pub fn follow_folder_account(state: &mut AppState) {
     }
 }
 
-/// The resume list's filter: every account's sessions, or one account's.
-pub fn set_session_account(drafts: &mut Drafts, account: Option<AccountId>) {
-    drafts.new_agent.session_account = account;
-    drafts.new_agent.session_highlighted = 0;
-}
-
-/// Shows one account's sessions; a click on the chosen account shows them all again.
-pub fn toggle_session_account(drafts: &mut Drafts, id: AccountId) {
-    let shown = (drafts.new_agent.session_account != Some(id)).then_some(id);
-    set_session_account(drafts, shown);
+/// The account whose sessions the "Resume a session" tab lists: the dialog's account. `None` when
+/// the machine has one account, and the tab then lists every session.
+pub fn resume_account(state: &AppState, drafts: &Drafts) -> Option<AccountId> {
+    let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
+        return None;
+    };
+    shows_labels(state, form.machine)
+        .then(|| new_agent_account(state, form, &drafts.new_agent.folder))
 }
 
 /// The turn of an agent that found no login, while no message went after it: the chat shows it
@@ -1076,11 +1075,11 @@ mod tests {
         };
 
         let opened = new_agent_account(&state, &form(&state), &drafts.new_agent.folder);
-        pick_new_agent_account(&mut state, lab());
+        pick_new_agent_account(&mut state, &mut drafts, lab());
         let picked = new_agent_account(&state, &form(&state), &drafts.new_agent.folder);
         follow_folder_account(&mut state);
         let followed = new_agent_account(&state, &form(&state), &drafts.new_agent.folder);
-        pick_new_agent_account(&mut state, lab());
+        pick_new_agent_account(&mut state, &mut drafts, lab());
         let start = actions::start_agent(&mut state, &drafts);
 
         assert_eq!(drafts.new_agent.folder, "/work/parser");
@@ -1175,9 +1174,11 @@ mod tests {
     }
 
     #[test]
-    fn the_resume_list_shows_every_account_or_the_one_picked() {
+    fn the_resume_list_shows_the_dialogs_account_or_every_session_with_one_account() {
         let mut state = state_with(Vec::new());
         three_accounts(&mut state);
+        let mut drafts = Drafts::default();
+        actions::open_new_agent(&mut state, &mut drafts);
         let past = |id: &str, account: AccountId| PastSession {
             id: ClaudeSessionId::new(id.to_owned()),
             title: id.to_owned(),
@@ -1191,34 +1192,29 @@ mod tests {
             past("job", work()),
             past("bench", lab()),
         ]);
-        let mut drafts = Drafts::default();
         let listed = |state: &AppState, drafts: &Drafts| -> Vec<String> {
-            actions::resumable_sessions(state, "", drafts.new_agent.session_account)
+            actions::listed_sessions(state, drafts)
                 .iter()
                 .map(|session| session.id.as_str().to_owned())
                 .collect()
         };
 
-        let all = listed(&state, &drafts);
+        let default = listed(&state, &drafts);
         drafts.new_agent.session_highlighted = 2;
-        toggle_session_account(&mut drafts, work());
-        let only_work = listed(&state, &drafts);
+        pick_new_agent_account(&mut state, &mut drafts, work());
+        let work_only = listed(&state, &drafts);
         let highlight = drafts.new_agent.session_highlighted;
-        toggle_session_account(&mut drafts, work());
-        let again = listed(&state, &drafts);
-        toggle_session_account(&mut drafts, lab());
         state
             .machines
             .this
             .accounts
-            .retain(|account| account.id != lab());
-        let removed = listed(&state, &drafts);
+            .retain(|account| account.id.is_default());
+        let one_account = listed(&state, &drafts);
 
-        assert_eq!(all.len(), 3);
-        assert_eq!(only_work, ["job"]);
+        assert_eq!(default, ["mine"]);
+        assert_eq!(work_only, ["job"]);
         assert_eq!(highlight, 0);
-        assert_eq!(again.len(), 3);
-        assert_eq!(removed.len(), 3);
+        assert_eq!(one_account.len(), 3);
     }
 
     #[test]
@@ -1368,7 +1364,7 @@ mod tests {
         actions::open_new_agent(state, drafts);
         drafts.new_agent.folder = "/work/app".to_owned();
         drafts.new_agent.prompt = "Fix the parser".to_owned();
-        pick_new_agent_account(state, lab());
+        pick_new_agent_account(state, drafts, lab());
         actions::with_new_agent_form(state, |form| {
             form.model = Some("opus".to_owned());
             form.mode = Some(PermissionMode::AcceptEdits);

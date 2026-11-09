@@ -83,6 +83,7 @@ fn summary() -> AgentSummary {
         position: Position::new(2048),
         account: work_account().id,
         sign_in_wait: SignInWait::Waiting,
+        background_running: 2,
     }
 }
 
@@ -110,6 +111,7 @@ fn idle_summary() -> AgentSummary {
         position: Position::new(1024),
         account: AccountId::DEFAULT,
         sign_in_wait: SignInWait::NotWaiting,
+        background_running: 0,
     }
 }
 
@@ -1785,9 +1787,21 @@ fn an_agent_update_on_the_wire() {
                 "position": 2048,
                 "account": 2,
                 "sign_in_wait": "waiting",
+                "background_running": 2,
             },
         }),
     );
+}
+
+/// A summary from a daemon that predates the count has nothing running in the background.
+#[test]
+fn a_summary_without_its_background_count_reads_none_running() {
+    let mut older = serde_json::to_value(summary()).unwrap();
+    older.as_object_mut().unwrap().remove("background_running");
+
+    let read: AgentSummary = serde_json::from_value(older).unwrap();
+
+    assert_eq!(read.background_running, 0);
 }
 
 #[test]

@@ -70,6 +70,12 @@ button {
   cursor: pointer;
 }
 
+/* The webview's own selection color barely shows on the dark greys, in text fields too. */
+::selection {
+  background: rgba(45, 212, 191, 0.4);
+  color: var(--text-bright);
+}
+
 button:disabled {
   cursor: default;
 }
@@ -211,6 +217,11 @@ button:disabled {
   --status: #c8c8c8;
   --status-fill: transparent;
   --status-bg: rgba(255, 255, 255, 0.06);
+}
+
+/* Idle, with background tasks still running: the working color's ring, unfilled. */
+.status-idle.background-work {
+  --status: var(--teal);
 }
 
 .status-exited {
@@ -923,6 +934,7 @@ html.reordering * {
   min-width: 0;
 }
 
+/* A click on the title renames the agent. */
 .header-title h1 {
   margin: 0;
   min-width: 0;
@@ -931,6 +943,7 @@ html.reordering * {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: text;
 }
 
 /* The pencil shows on the title line under the pointer, and on keyboard focus. */
@@ -1598,9 +1611,19 @@ html.reordering * {
   padding-right: 52px;
 }
 
-/* The wrapper the chat's scroll script anchors on: its entry lays out as the column's own child. */
+/* The wrapper the chat's scroll script anchors on: its entry lays out as the column's own child.
+   WebKit skips the layout and paint of the entries out of view: a long chat opens in a third of
+   the time. That containment clips at the padding box, so the padding holds what a row draws past
+   its edges (the line to the next step, a step's marker, focus rings), and the negative margins
+   keep the column's spacing. */
 .transcript-entry {
-  display: contents;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 6px 6px 14px;
+  margin: -6px -6px -14px;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 60px;
 }
 
 /* An entry the chat scrolled to, from the agent map, for a moment. */
@@ -1646,7 +1669,8 @@ html.reordering * {
   transition:
     opacity var(--motion-out) var(--ease-in),
     transform var(--motion-out) var(--ease-in),
-    visibility 0s linear var(--motion-out);
+    visibility 0s linear var(--motion-out),
+    right var(--motion-in) var(--ease-out);
 }
 
 .jump-latest.shown {
@@ -1656,7 +1680,8 @@ html.reordering * {
   pointer-events: auto;
   transition:
     opacity var(--motion-in) var(--ease-out),
-    transform var(--motion-in) var(--ease-out);
+    transform var(--motion-in) var(--ease-out),
+    right var(--motion-in) var(--ease-out);
 }
 
 .center.narrow-chat .jump-latest {
@@ -1665,6 +1690,60 @@ html.reordering * {
 
 .center:not(.narrow-chat):has(.block-card.wide) .jump-latest {
   right: calc(404px + 24px);
+}
+
+/* The last instruction, over the top of the chat. It spans the chat's box without the floating
+   blocks' room, and its column lines up with the chat's, so it sits where user bubbles sit. */
+.last-instruction {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 296px;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.center.narrow-chat .last-instruction {
+  right: 52px;
+}
+
+.center:not(.narrow-chat):has(.block-card.wide) .last-instruction {
+  right: 404px;
+}
+
+.last-instruction-column {
+  display: flex;
+  justify-content: flex-end;
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 10px 20px 0;
+}
+
+.last-instruction-message {
+  max-width: min(80%, 720px);
+  padding: 7px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--hover);
+  color: var(--text-soft);
+  font-size: 13px;
+  text-align: left;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+  animation: fade-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.last-instruction-message:hover {
+  background: var(--selected);
+  color: var(--text-bright);
+}
+
+.last-instruction-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
 }
 
 .jump-badge {
@@ -1753,12 +1832,22 @@ html.reordering * {
 }
 
 .user-bubble {
+  min-width: 0;
+  max-width: 100%;
   padding: 9px 13px;
   border-radius: 12px;
   background: var(--hover);
   color: #ffffff;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.user-bubble .markdown {
+  gap: 8px;
+}
+
+/* The bubble's own color is the inline code's elsewhere. */
+.user-bubble .inline-code {
+  background: var(--code-bg);
 }
 
 .message-image {
@@ -4948,6 +5037,28 @@ button.map-toggle:hover {
   background: var(--hover);
 }
 
+/* The machine and the account, above the tabs, which both use them. */
+.new-agent-target {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 28px;
+  padding: 4px 20px 14px;
+}
+
+.new-agent-target .acct-button {
+  border: 1px solid var(--line-control);
+}
+
+.new-agent-target .form-menu {
+  top: calc(100% + 6px);
+  bottom: auto;
+}
+
+.new-agent-target .menu {
+  --enter-y: -4px;
+  transform-origin: top left;
+}
+
 .machine-choice {
   display: flex;
   flex-wrap: wrap;
@@ -4955,6 +5066,9 @@ button.map-toggle:hover {
 }
 
 .machine-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   height: 30px;
   padding: 0 12px;
   border-radius: 8px;
@@ -5809,14 +5923,6 @@ button.map-toggle:hover {
   min-width: 0;
 }
 
-.resume-tools .segmented {
-  flex: none;
-}
-
-.resume-tools .segment {
-  padding: 0 8px;
-}
-
 .session-title-line {
   display: flex;
   align-items: center;
@@ -6137,6 +6243,70 @@ label.icon-button,
 
 .chevron {
   transition: transform var(--motion-in) var(--ease-out), color var(--motion-hover) var(--ease);
+}
+
+/* Layout: what a panel or a wider card pushes aside slides to its new place, with the same timing
+   as the panel or the card, so the chat's text width changes in one direction. Going into the
+   file view or the wide card takes the enter timing, coming back the leave timing. */
+
+.chat-scroll,
+.composer-wrap {
+  transition: padding-right var(--motion-out) var(--ease-in);
+}
+
+.last-instruction {
+  transition: right var(--motion-out) var(--ease-in);
+}
+
+.center.narrow-chat :is(.chat-scroll, .composer-wrap),
+.center:not(.narrow-chat):has(.block-card.wide) :is(.chat-scroll, .composer-wrap) {
+  transition: padding-right var(--motion-in) var(--ease-out);
+}
+
+.center.narrow-chat .last-instruction,
+.center:not(.narrow-chat):has(.block-card.wide) .last-instruction {
+  transition: right var(--motion-in) var(--ease-out);
+}
+
+.block-card {
+  transition: width var(--motion-out) var(--ease-in);
+}
+
+.block-card.wide {
+  transition: width var(--motion-in) var(--ease-out);
+}
+
+.file-view {
+  animation: file-view-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.file-view.leaving {
+  pointer-events: none;
+  animation: file-view-out var(--motion-out) var(--ease-in) forwards;
+}
+
+@keyframes file-view-in {
+  from {
+    flex-basis: 0;
+    min-width: 0;
+  }
+}
+
+@keyframes file-view-out {
+  to {
+    flex-basis: 0;
+    min-width: 0;
+  }
+}
+
+/* A switch to another agent draws its layout at once. `!important` beats the rules above, some of
+   which are more specific. */
+.app.switching :is(.chat-scroll, .composer-wrap, .last-instruction, .block-card, .jump-latest) {
+  transition-duration: 0s !important;
+}
+
+.app.file-view-instant .file-view {
+  animation: none;
 }
 
 /* Appear. */

@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use cockpit_protocol::AgentId;
 use dioxus::prelude::*;
 
 use crate::bridge::use_bridge;
@@ -15,6 +16,7 @@ use crate::ui::file_view::FileViewPanel;
 use crate::ui::header::Header;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::no_daemon::NoDaemonScreen;
+use crate::ui::presence::use_presence;
 use crate::ui::reorder::use_reorder;
 use crate::ui::sidebar::Sidebar;
 use crate::ui::splitter::{APP_ID, SHARE_PROPERTY, Splitter, use_splitter};
@@ -31,6 +33,34 @@ pub fn App() -> Element {
     use_splitter(cockpit);
     use_reorder(cockpit);
     let state = cockpit.state.read();
+    let selected = state.ui.selected;
+    let switching = use_switching(cockpit, selected);
+    let file_view_agent = selected.filter(|agent| state.ui.file_view(*agent).is_some());
+    let file_view_open = file_view_agent.is_some();
+    let file_view = use_presence(file_view_agent);
+    // A switch shows the next agent's layout at once: only the agent that closed its file view
+    // sees it leave, and a file view that opens with its agent does not slide in.
+    let file_view_leaving = file_view
+        .as_ref()
+        .is_some_and(|shown| shown.leaving && Some(shown.value) == selected);
+    let mut last_opening = use_hook(|| CopyValue::new(FileViewOpening::default()));
+    if let Some(shown) = &file_view
+        && !shown.leaving
+        && last_opening().opening != shown.opening
+    {
+        last_opening.set(FileViewOpening {
+            opening: shown.opening,
+            by_switch: switching,
+        });
+    }
+    let mut app_classes = vec!["app"];
+    if switching {
+        app_classes.push("switching");
+    }
+    if file_view_open && last_opening().by_switch {
+        app_classes.push("file-view-instant");
+    }
+    let app_class = app_classes.join(" ");
     // With servers, the question shows from this computer's panel, and the servers stay in use.
     // An update of this computer's daemon keeps the screen until the new daemon answers.
     let no_daemon = matches!(state.machines.this.connection, ConnectionState::NoDaemon(_))
@@ -40,10 +70,6 @@ pub fn App() -> Element {
             NoDaemonScreen {}
         };
     }
-    let file_view_open = state
-        .ui
-        .selected
-        .is_some_and(|agent| state.ui.file_view(agent).is_some());
     let closes_on_click = state.ui.popover_closes_on_click();
     let disconnected = matches!(
         state.selected_machine_state().connection,
@@ -51,7 +77,7 @@ pub fn App() -> Element {
     );
     let share = state.prefs.file_view.share();
     rsx! {
-        div { id: APP_ID, class: "app", style: "{SHARE_PROPERTY}: {share}",
+        div { id: APP_ID, class: app_class, style: "{SHARE_PROPERTY}: {share}",
             Sidebar {}
             main { class: if file_view_open { "center narrow-chat" } else { "center" },
                 Header {}
@@ -70,6 +96,9 @@ pub fn App() -> Element {
             if file_view_open {
                 Splitter { share }
                 FileViewPanel {}
+            } else if file_view_leaving {
+                // Its content went with its state: the empty panel closes in its place.
+                div { class: "file-view leaving", aria_hidden: true }
             }
             if closes_on_click {
                 div {
@@ -80,6 +109,22 @@ pub fn App() -> Element {
             Dialogs {}
         }
     }
+}
+
+/// The file view's last opening, and whether an agent switch opened it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct FileViewOpening {
+    opening: u32,
+    by_switch: bool,
+}
+
+/// True in the frame that draws another agent than the frame before. Effects run once the
+/// frame's changes are on the page, so the next frame clears it.
+fn use_switching(cockpit: Cockpit, selected: Option<AgentId>) -> bool {
+    let shown = use_memo(move || cockpit.state.read().ui.selected);
+    let mut drawn = use_signal(|| selected);
+    use_effect(move || drawn.set(shown()));
+    drawn() != selected
 }
 
 /// How long the note of a closed agent offers it back.

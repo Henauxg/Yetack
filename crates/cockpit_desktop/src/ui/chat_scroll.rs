@@ -4,7 +4,8 @@
 //! The chat's box lays its column out from the bottom (`column-reverse`), so it keeps its
 //! distance from the bottom: an entry added below would push the view up by its height.
 //! Browsers that implement CSS scroll anchoring (`overflow-anchor`) correct that; WebKitGTK does
-//! not, so the script does it. It tells the app only when the chat reaches or leaves its bottom.
+//! not, so the script does it. It tells the app only when the chat reaches or leaves its bottom,
+//! and when another entry comes to the top of the view.
 
 use cockpit_protocol::{AgentId, ItemId};
 use dioxus::prelude::*;
@@ -21,7 +22,7 @@ pub const CHAT_SCROLL_ID: &str = "chat-scroll";
 /// The button that jumps to the latest entry. The script handles its clicks.
 pub const JUMP_BUTTON_ID: &str = "jump-to-latest";
 
-/// The wrapper of each entry, which the script anchors on. It lays nothing out of its own.
+/// The wrapper of each entry, which the script anchors on. Its padding reaches past the entry.
 pub const ENTRY_CLASS: &str = "transcript-entry";
 
 /// The class that highlights an entry the chat scrolled to, for as long as its animation runs.
@@ -45,6 +46,7 @@ let agent = null;
 let following = true;
 let anchor = null;
 let reported = "";
+let reportedTop = "";
 // The scroll position the script set last. Its own scroll leaves the anchor as it was: measured
 // again, the anchor would drift by the rounding of each correction.
 let corrected = null;
@@ -52,8 +54,8 @@ let corrected = null;
 const places = new Map();
 const boxTop = () => box.getBoundingClientRect().top;
 const gapBelow = () => column.getBoundingClientRect().bottom - box.getBoundingClientRect().bottom;
-// An entry's wrapper has no box of its own: its last element shows the entry, after the "New"
-// divider when it has one.
+// An entry's wrapper has padding past the entry: its last element shows the entry, after the
+// "New" divider when it has one.
 const shown = (entry) => entry.lastElementChild;
 const firstInView = () => {
   const entries = column.getElementsByClassName(settings.entry_class);
@@ -74,12 +76,22 @@ const firstInView = () => {
   return element === null ? null : { id: entry.id, top: element.getBoundingClientRect().top - top };
 };
 const report = () => {
-  const now = `${agent} ${following}`;
-  if (agent === null || now === reported) {
+  if (agent === null) {
     return;
   }
-  reported = now;
-  dioxus.send({ type: "at_bottom", agent: Number(agent), at_bottom: following });
+  const now = `${agent} ${following}`;
+  if (now !== reported) {
+    reported = now;
+    dioxus.send({ type: "at_bottom", agent: Number(agent), at_bottom: following });
+  }
+  const first = firstInView();
+  // An entry's id ends with its item's: see `entry_id`.
+  const item = first === null ? null : Number(first.id.slice(first.id.lastIndexOf("-") + 1));
+  const top = `${agent} ${item}`;
+  if (top !== reportedTop) {
+    reportedTop = top;
+    dioxus.send({ type: "top_entry", agent: Number(agent), item });
+  }
 };
 // After a scroll by the user: where the view now is.
 const record = () => {
@@ -246,10 +258,25 @@ enum ScrollCommand {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ScrollMessage {
-    AtBottom { agent: u32, at_bottom: bool },
+    AtBottom {
+        agent: u32,
+        at_bottom: bool,
+    },
+    /// `item` is `None` when no entry is in view.
+    TopEntry {
+        agent: u32,
+        item: Option<u32>,
+    },
 }
 
-/// The id of an entry's wrapper.
+/// The entry at the top of the chat's view, as the script last said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TopEntry {
+    pub agent: AgentId,
+    pub item: ItemId,
+}
+
+/// The id of an entry's wrapper. The script reads the item back from its end.
 pub fn entry_id(agent: AgentId, item: ItemId) -> String {
     format!("entry-{}-{}", agent.get(), item.get())
 }
@@ -292,8 +319,10 @@ pub fn NewDivider() -> Element {
     }
 }
 
-/// Runs the script for the window's life.
-pub fn use_chat_scroll(cockpit: Cockpit) {
+/// Runs the script for the window's life. The entry at the top of the view is a signal of its
+/// own: it changes while the user scrolls, and only the view that reads it renders again.
+pub fn use_chat_scroll(cockpit: Cockpit) -> Signal<Option<TopEntry>> {
+    let mut top = use_signal(|| None);
     let script = use_hook(|| {
         let mut script = document::eval(SCRIPT);
         let settings = Settings {
@@ -313,6 +342,12 @@ pub fn use_chat_scroll(cockpit: Cockpit) {
                     Ok(ScrollMessage::AtBottom { agent, at_bottom }) => {
                         let agent = AgentId::new(agent);
                         cockpit.update(|state| actions::chat_at_bottom(state, agent, at_bottom));
+                    }
+                    Ok(ScrollMessage::TopEntry { agent, item }) => {
+                        top.set(item.map(|item| TopEntry {
+                            agent: AgentId::new(agent),
+                            item: ItemId::new(item),
+                        }));
                     }
                     Err(error) => {
                         tracing::warn!("the chat's scroll script stopped: {error}");
@@ -354,11 +389,12 @@ pub fn use_chat_scroll(cockpit: Cockpit) {
             tracing::warn!("cannot scroll the chat to an entry: {error}");
         }
     });
+    top
 }
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use super::*;
 
@@ -394,6 +430,25 @@ mod tests {
             ScrollMessage::AtBottom {
                 agent: 7,
                 at_bottom: false
+            }
+        ));
+        assert_eq!(entry_id(AgentId::new(3), ItemId::new(12)), "entry-3-12");
+        let top = |item: Value| -> ScrollMessage {
+            serde_json::from_value(json!({ "type": "top_entry", "agent": 7, "item": item }))
+                .unwrap()
+        };
+        assert!(matches!(
+            top(json!(12)),
+            ScrollMessage::TopEntry {
+                agent: 7,
+                item: Some(12)
+            }
+        ));
+        assert!(matches!(
+            top(Value::Null),
+            ScrollMessage::TopEntry {
+                agent: 7,
+                item: None
             }
         ));
         assert_eq!(

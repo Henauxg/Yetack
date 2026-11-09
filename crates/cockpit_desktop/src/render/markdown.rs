@@ -1,6 +1,6 @@
 //! Agent text as a tree of blocks and inlines, with `path:line` references found in the text.
 
-use std::iter::Peekable;
+use std::iter::{self, Peekable};
 use std::path::Path;
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
@@ -91,6 +91,39 @@ pub fn plain_text(inlines: &[Inline]) -> String {
     let mut text = String::new();
     push_plain_text(&mut text, inlines);
     text
+}
+
+/// The text of blocks without formatting: a line for each heading, paragraph, list item and table
+/// row, and a code block's own lines.
+pub fn blocks_plain_text(blocks: &[Block]) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    push_blocks_text(&mut lines, blocks);
+    lines.join("\n")
+}
+
+fn push_blocks_text(lines: &mut Vec<String>, blocks: &[Block]) {
+    for block in blocks {
+        match block {
+            Block::Heading { content, .. } | Block::Paragraph(content) => {
+                lines.push(plain_text(content));
+            }
+            Block::List { items, .. } => {
+                for item in items {
+                    push_blocks_text(lines, item);
+                }
+            }
+            Block::Code { code, .. } => lines.push(code.clone()),
+            Block::Table { head, rows } => {
+                let table_rows = iter::once(head).chain(rows);
+                for row in table_rows {
+                    let cells: Vec<String> = row.iter().map(|cell| plain_text(cell)).collect();
+                    lines.push(cells.join(" "));
+                }
+            }
+            Block::Quote(content) => push_blocks_text(lines, content),
+            Block::Rule => {}
+        }
+    }
 }
 
 fn push_plain_text(text: &mut String, inlines: &[Inline]) {
@@ -1091,6 +1124,18 @@ mod tests {
         let inlines = paragraph("**Done**: see `x` in [docs](https://example.org) and src/a.rs:2");
 
         assert_eq!(plain_text(&inlines), "Done: see x in docs and src/a.rs:2");
+    }
+
+    #[test]
+    fn blocks_plain_text_puts_each_block_on_its_lines() {
+        let blocks = parse(
+            "## Plan\n\n> - one\n>   - **two**\n\n---\n\n```sh\ncargo test\ncargo fmt\n```\n\n| a | b |\n| - | - |\n| `1` | 2 |",
+        );
+
+        assert_eq!(
+            blocks_plain_text(&blocks),
+            "Plan\none\ntwo\ncargo test\ncargo fmt\na b\n1 2"
+        );
     }
 
     #[test]

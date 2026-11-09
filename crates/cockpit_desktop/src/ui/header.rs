@@ -129,8 +129,8 @@ pub fn Header() -> Element {
     };
     let agent = entry.id();
     let summary = &entry.summary;
-    let status_class = format::status_class(summary.status);
-    let status_label = format::status_label(summary.status);
+    let status_class = format::agent_status_class(summary);
+    let status_label = format::agent_status_label(summary);
     let account = summary.account;
     let machine = MachineId::of(agent);
     let account_label = accounts::label(&state, machine, account);
@@ -209,12 +209,16 @@ pub fn Header() -> Element {
                         }
                     } else {
                         h1 {
-                            ondoubleclick: move |_| start_rename(),
+                            title: "Rename",
+                            onclick: move |_| start_rename(),
                             if let Some(emoji) = &title_emoji {
                                 span {
                                     class: "title-emoji",
                                     title: "Change the emoji",
-                                    onclick: move |_| toggle_emoji(),
+                                    onclick: move |event: MouseEvent| {
+                                        event.stop_propagation();
+                                        toggle_emoji();
+                                    },
                                     "{emoji}"
                                 }
                             }
@@ -236,7 +240,7 @@ pub fn Header() -> Element {
                             Icon { kind: IconKind::Smile, size: 13 }
                         }
                     }
-                    span { class: "status-pill {status_class}", title: status_label,
+                    span { class: "status-pill {status_class}", title: "{status_label}",
                         span { class: "status-dot", aria_hidden: true }
                         span { class: "pill-label", "{status_label}" }
                     }

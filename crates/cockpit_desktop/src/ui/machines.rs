@@ -20,6 +20,8 @@ pub const THIS_COMPUTER: &str = "This computer";
 pub struct MachineChoice {
     pub machine: MachineId,
     pub name: String,
+    /// A laptop for this computer, a server otherwise, as in the sidebar's machine headers.
+    pub icon: IconKind,
     pub chosen: bool,
     pub answers: bool,
 }
@@ -33,15 +35,21 @@ pub fn machine_choices(state: &AppState, chosen: MachineId) -> Vec<MachineChoice
     let this = (MachineId::THIS, &state.machines.this);
     std::iter::once(this)
         .chain(state.machines.others.iter().map(|(id, known)| (*id, known)))
-        .map(|(machine, known)| MachineChoice {
-            machine,
-            name: if machine == MachineId::THIS && known.daemon.place != DaemonPlace::Ssh {
-                THIS_COMPUTER.to_owned()
+        .map(|(machine, known)| {
+            let this_computer =
+                machine == MachineId::THIS && known.daemon.place != DaemonPlace::Ssh;
+            let (name, icon) = if this_computer {
+                (THIS_COMPUTER.to_owned(), IconKind::Laptop)
             } else {
-                known.daemon.machine.clone()
-            },
-            chosen: machine == chosen,
-            answers: known.is_connected(),
+                (known.daemon.machine.clone(), IconKind::Server)
+            };
+            MachineChoice {
+                machine,
+                name,
+                icon,
+                chosen: machine == chosen,
+                answers: known.is_connected(),
+            }
         })
         .collect()
 }
@@ -235,5 +243,42 @@ fn MachineRowView(row: MachineRow) -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::daemon_label::DaemonLabel;
+    use crate::state::MachineState;
+
+    #[test]
+    fn a_machine_button_shows_a_laptop_for_this_computer_and_a_server_otherwise() {
+        let choices = |this: DaemonLabel| -> Vec<(String, IconKind)> {
+            let mut state = AppState::new(this);
+            state.machines.others.insert(
+                MachineId::new(1),
+                MachineState::new(DaemonLabel::ssh("devbox".to_owned())),
+            );
+            machine_choices(&state, MachineId::THIS)
+                .into_iter()
+                .map(|choice| (choice.name, choice.icon))
+                .collect()
+        };
+
+        assert_eq!(
+            choices(DaemonLabel::in_app()),
+            [
+                (THIS_COMPUTER.to_owned(), IconKind::Laptop),
+                ("devbox".to_owned(), IconKind::Server),
+            ]
+        );
+        assert_eq!(
+            choices(DaemonLabel::ssh("build-box".to_owned())),
+            [
+                ("build-box".to_owned(), IconKind::Server),
+                ("devbox".to_owned(), IconKind::Server),
+            ]
+        );
     }
 }

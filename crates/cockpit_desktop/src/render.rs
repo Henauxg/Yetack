@@ -5,5 +5,5 @@ mod syntax;
 
 pub use capped::MAX_RENDERED_LINES;
 pub use diff::{Diff, DiffLine, DiffRow, LineKind, diff_lines, plain_lines};
-pub use markdown::{Block, FileRef, Inline, parse_markdown, plain_text};
+pub use markdown::{Block, FileRef, Inline, blocks_plain_text, parse_markdown, plain_text};
 pub use syntax::{Language, highlight_capped};

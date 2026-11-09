@@ -1173,6 +1173,7 @@ fn summary(parts: SummaryParts<'_>, now: SystemTime) -> AgentSummary {
         position: Position::default(),
         account: AccountId::DEFAULT,
         sign_in_wait: SignInWait::NotWaiting,
+        background_running: 0,
     }
 }
 
@@ -1471,7 +1472,7 @@ fn parser_agent(now: SystemTime) -> Sample {
             1,
             None,
             user(
-                "Make the parser report the column of an unexpected token, and add a test for it.",
+                "Make the parser report the column of an unexpected token:\n\n- count columns from 1, as editors do\n- add a test for it in `tests/columns.rs`",
             ),
         ),
         item(
@@ -1830,12 +1831,13 @@ fn benchmark_agent(now: SystemTime) -> Sample {
             title: "⏱\u{fe0f} Benchmark in CI",
             folder: SERVICE_FOLDER,
             status: AgentStatus::Idle,
-            activity: Some("Done: the benchmark runs in CI"),
+            activity: None,
             pending: 0,
             since: Duration::from_secs(25 * 60),
         },
         now,
     );
+    summary.background_running = 1;
     summary.task_progress = Some(TaskProgress { done: 4, total: 4 });
     summary.model = Some("claude-sonnet-5-5".to_owned());
     summary.mode = PermissionMode::AcceptEdits;
@@ -1904,9 +1906,9 @@ fn benchmark_agent(now: SystemTime) -> Sample {
             id: BackgroundTaskId::new("demo-task-3".to_owned()),
             kind: BackgroundTaskKind::Command,
             description: "cargo bench --bench eval -- --save-baseline before".to_owned(),
-            status: BackgroundTaskStatus::Stopped,
+            status: BackgroundTaskStatus::Running,
             started_at: at(now, 900),
-            ended_at: Some(at(now, 840)),
+            ended_at: None,
             tool_calls: 0,
         }],
         ..details()

@@ -737,6 +737,7 @@ pub(super) fn initial_summary(record: &AgentRecord) -> AgentSummary {
         position: record.position,
         account: record.account,
         sign_in_wait: SignInWait::NotWaiting,
+        background_running: 0,
     }
 }
 
