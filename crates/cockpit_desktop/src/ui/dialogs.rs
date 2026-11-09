@@ -489,6 +489,7 @@ fn StartForm(form: NewAgentForm) -> Element {
                                         disabled: !choice.answers,
                                         title: if choice.answers { "" } else { "This machine does not answer" },
                                         onclick: move |_| cockpit.update(|state| actions::pick_new_agent_machine(state, picked)),
+                                        Icon { kind: choice.icon, size: 13 }
                                         "{choice.name}"
                                     }
                                 }

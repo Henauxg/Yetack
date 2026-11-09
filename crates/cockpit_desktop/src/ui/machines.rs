@@ -20,6 +20,8 @@ pub const THIS_COMPUTER: &str = "This computer";
 pub struct MachineChoice {
     pub machine: MachineId,
     pub name: String,
+    /// A laptop for this computer, a server otherwise, as in the sidebar's machine headers.
+    pub icon: IconKind,
     pub chosen: bool,
     pub answers: bool,
 }
@@ -33,15 +35,21 @@ pub fn machine_choices(state: &AppState, chosen: MachineId) -> Vec<MachineChoice
     let this = (MachineId::THIS, &state.machines.this);
     std::iter::once(this)
         .chain(state.machines.others.iter().map(|(id, known)| (*id, known)))
-        .map(|(machine, known)| MachineChoice {
-            machine,
-            name: if machine == MachineId::THIS && known.daemon.place != DaemonPlace::Ssh {
-                THIS_COMPUTER.to_owned()
+        .map(|(machine, known)| {
+            let this_computer =
+                machine == MachineId::THIS && known.daemon.place != DaemonPlace::Ssh;
+            let (name, icon) = if this_computer {
+                (THIS_COMPUTER.to_owned(), IconKind::Laptop)
             } else {
-                known.daemon.machine.clone()
-            },
-            chosen: machine == chosen,
-            answers: known.is_connected(),
+                (known.daemon.machine.clone(), IconKind::Server)
+            };
+            MachineChoice {
+                machine,
+                name,
+                icon,
+                chosen: machine == chosen,
+                answers: known.is_connected(),
+            }
         })
         .collect()
 }

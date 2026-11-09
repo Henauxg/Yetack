@@ -534,6 +534,7 @@ pub fn AccountsDialog(view: AccountsView) -> Element {
                                         aria_checked: choice.chosen,
                                         disabled: !choice.answers,
                                         onclick: move |_| cockpit.update(|state| accounts::pick_accounts_machine(state, picked)),
+                                        Icon { kind: choice.icon, size: 13 }
                                         "{choice.name}"
                                     }
                                 }
