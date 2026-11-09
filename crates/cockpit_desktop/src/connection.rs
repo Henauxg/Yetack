@@ -1134,6 +1134,17 @@ mod tests {
     }
 
     #[test]
+    fn only_a_daemon_over_ssh_gets_a_plan() {
+        let local = DaemonConfig::Local {
+            socket: None,
+            start_service: true,
+        };
+
+        assert_eq!(plan_for_daemon(&local), None);
+        assert_eq!(plan_for_daemon(&DaemonConfig::InApp), None);
+    }
+
+    #[test]
     fn an_update_under_way_lets_a_removed_servers_connection_task_end() {
         let devbox = MachineId::new(1);
         let (router, _rerouted) = mpsc::unbounded_channel();

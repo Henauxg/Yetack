@@ -966,6 +966,20 @@ mod tests {
     }
 
     #[test]
+    fn a_run_keeps_its_screen_when_the_daemon_is_newer() {
+        let mut state = with_older_server();
+        start(&mut state, build_box()).unwrap();
+        let newer = gap_over_ssh(&format!(
+            "the daemon speaks protocol {}, the client {PROTOCOL_VERSION}",
+            PROTOCOL_VERSION + 1
+        ));
+
+        attempt_failed(&mut state, build_box(), newer, Some(plan()));
+
+        assert!(matches!(update(&state), Some(DaemonUpdate::Running(_))));
+    }
+
+    #[test]
     fn a_newer_daemon_never_holds_a_plan() {
         let mut state = with_server();
         let newer = gap_over_ssh(&format!(
