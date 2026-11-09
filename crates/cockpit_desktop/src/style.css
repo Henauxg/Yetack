@@ -1607,8 +1607,18 @@ html.reordering * {
 }
 
 /* The wrapper the chat's scroll script anchors on: its entry lays out as the column's own child. */
+/* WebKit skips the layout and paint of the entries out of view: a long chat opens in a third of
+   the time. That containment clips at the padding box, so the padding holds what a row draws past
+   its edges (the line to the next step, a step's marker, focus rings), and the negative margins
+   keep the column's spacing. */
 .transcript-entry {
-  display: contents;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 6px 6px 14px;
+  margin: -6px -6px -14px;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 60px;
 }
 
 /* An entry the chat scrolled to, from the agent map, for a moment. */

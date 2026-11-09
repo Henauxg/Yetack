@@ -22,7 +22,7 @@ pub const CHAT_SCROLL_ID: &str = "chat-scroll";
 /// The button that jumps to the latest entry. The script handles its clicks.
 pub const JUMP_BUTTON_ID: &str = "jump-to-latest";
 
-/// The wrapper of each entry, which the script anchors on. It lays nothing out of its own.
+/// The wrapper of each entry, which the script anchors on. Its padding reaches past the entry.
 pub const ENTRY_CLASS: &str = "transcript-entry";
 
 /// The class that highlights an entry the chat scrolled to, for as long as its animation runs.
@@ -54,8 +54,8 @@ let corrected = null;
 const places = new Map();
 const boxTop = () => box.getBoundingClientRect().top;
 const gapBelow = () => column.getBoundingClientRect().bottom - box.getBoundingClientRect().bottom;
-// An entry's wrapper has no box of its own: its last element shows the entry, after the "New"
-// divider when it has one.
+// An entry's wrapper has padding past the entry: its last element shows the entry, after the
+// "New" divider when it has one.
 const shown = (entry) => entry.lastElementChild;
 const firstInView = () => {
   const entries = column.getElementsByClassName(settings.entry_class);

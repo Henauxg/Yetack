@@ -656,6 +656,7 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
   Dioxus runs effects once the webview has applied a frame's changes, so an effect starts the second frame.
   Drawing a whole conversation is what made the switch slow: for 150 entries, the syntax colors, the page's new elements and their layout put the switch on screen about 180 ms after the click, against about 90 ms for 25 rows or a short chat (release build, the demo under Xvfb).
   When the chat goes back to a place scrolled up, it shows the skeleton in that frame instead, as the latest rows may not hold that place.
+  Each entry has `content-visibility: auto`, so the webview lays out and paints only the entries in view. On a long real chat, this cut the webview's work per switch from about 790 ms to about 240 ms (release build, under Xvfb). The scroll script keeps the view in place while an entry that comes into view grows from its estimated height to its real one.
   The chat's scroll script keeps each agent's place, and only a chat that draws all its agent's rows names that agent (`data-agent`), so the script goes back to the place once every row is there.
   On the first click on an agent, the chat shows the skeleton until the daemon sends the first page, then draws it in the same two frames.
 - **Last instruction** (`ui/last_instruction.rs`): once the user's message has scrolled out above the chat, a bar over the chat's top shows it, so the user knows which instruction the output in view answers. A click scrolls the chat back to the message.
