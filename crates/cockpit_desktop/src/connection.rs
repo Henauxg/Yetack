@@ -415,15 +415,23 @@ impl Servers {
     fn start_update_command(&self, state: Signal<AppState>, command: UpdateCommand) {
         match command {
             UpdateCommand::Start(machine, plan) => {
-                let Some(task) = self.tasks.get(&machine) else {
+                let Some(task) = self.update_task(machine) else {
                     return;
                 };
-                spawn(run_update(state, machine, plan, task.clone()));
+                spawn(run_update(state, machine, plan, task));
             }
             UpdateCommand::Cancel(machine, plan) => {
                 spawn(cancel_update(state, machine, plan));
             }
         }
+    }
+
+    /// The machine's connection task, for an update to ask for a retry when it ends. The update
+    /// does not keep the task alive: removing the server ends the task at once.
+    fn update_task(&self, machine: MachineId) -> Option<mpsc::WeakUnboundedSender<ToDaemon>> {
+        self.tasks
+            .get(&machine)
+            .map(mpsc::UnboundedSender::downgrade)
     }
 
     /// Writes the servers to the config. A config the app cannot write keeps them for this run.
@@ -457,7 +465,7 @@ async fn run_update(
     mut state: Signal<AppState>,
     machine: MachineId,
     plan: UpdatePlan,
-    task: mpsc::UnboundedSender<ToDaemon>,
+    task: mpsc::WeakUnboundedSender<ToDaemon>,
 ) {
     let code = update_script::update(&plan, |lines| {
         daemon_update::output(&mut state.write(), machine, lines);
@@ -466,7 +474,8 @@ async fn run_update(
     if !daemon_update::finished(&mut state.write(), machine, code) {
         return;
     }
-    if let Some(retry) = retry_message(&mut state.write(), machine) {
+    let retry = retry_message(&mut state.write(), machine);
+    if let (Some(retry), Some(task)) = (retry, task.upgrade()) {
         // A task that ended takes no more requests.
         let _ = task.send(retry);
     }
@@ -1122,6 +1131,27 @@ mod tests {
             retry,
             Some(ToDaemon::Machines(MachineChange::Retry(machine))) if machine == devbox
         ));
+    }
+
+    #[test]
+    fn an_update_under_way_lets_a_removed_servers_connection_task_end() {
+        let devbox = MachineId::new(1);
+        let (router, _rerouted) = mpsc::unbounded_channel();
+        let (task, mut requests) = mpsc::unbounded_channel();
+        let mut servers = Servers {
+            tasks: BTreeMap::from([(devbox, task)]),
+            configs: Vec::new(),
+            next: 2,
+            router,
+        };
+
+        let _held_by_the_update = servers.update_task(devbox).unwrap();
+        servers.tasks.remove(&devbox);
+
+        assert_eq!(
+            requests.try_recv().err(),
+            Some(mpsc::error::TryRecvError::Disconnected)
+        );
     }
 
     #[test]
