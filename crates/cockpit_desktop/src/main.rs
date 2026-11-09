@@ -66,7 +66,7 @@ fn main() -> anyhow::Result<()> {
     } else {
         AppState::new(label)
     };
-    if let (true, Some(screen)) = (demo, demo::update_screen(&arguments)) {
+    if let Some(screen) = demo::update_screen(&arguments) {
         demo::show_update_screen(&mut state, screen);
     }
     let machines: Vec<(MachineId, MachineConfig)> =

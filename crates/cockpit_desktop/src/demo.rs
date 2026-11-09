@@ -387,8 +387,11 @@ const SIDEBAR_ORDER: [u32; 9] = [1, SIGN_IN_AGENT, MAP_AGENT, LIVE_AGENT, 4, 2, 
 /// The room between two agents' positions, as the daemon leaves it.
 const POSITION_STEP: u32 = 1024;
 
-/// The screen named by `--demo-update`, if any.
+/// The screen named by `--demo-update`, which only the demo opens.
 pub fn update_screen(arguments: &[String]) -> Option<&str> {
+    if !is_requested(arguments) {
+        return None;
+    }
     let flag = arguments
         .iter()
         .position(|argument| argument == UPDATE_SCREEN_FLAG)?;
@@ -2974,6 +2977,23 @@ mod tests {
 
     use super::*;
     use crate::state::{HistoryState, WaitingKind, file_edits};
+
+    #[test]
+    fn an_update_screen_needs_the_demo() {
+        let arguments = |words: &[&str]| -> Vec<String> {
+            words.iter().map(|word| (*word).to_owned()).collect()
+        };
+
+        assert_eq!(update_screen(&arguments(&["--demo-update", "older"])), None);
+        assert_eq!(
+            update_screen(&arguments(&["--demo", "--demo-update"])),
+            None
+        );
+        assert_eq!(
+            update_screen(&arguments(&["--demo", "--demo-update", "older"])),
+            Some("older")
+        );
+    }
 
     #[test]
     fn the_demo_load_moves_with_the_clock_and_adds_up() {
