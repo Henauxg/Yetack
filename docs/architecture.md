@@ -77,7 +77,8 @@ Each id is a newtype ([standards/rust/api_design.md](standards/rust/api_design.m
 ### Agents
 
 `AgentSummary` is what the sidebar and the header need:
-id, title, folder, status, activity line, pending count, model, effort, permission mode, task progress, context percentage, prompt cache expiry, turns, API-equivalent cost, start time, last activity time, running turn's start time, position in the list, account, and whether it waits for its account's sign-in (`sign_in_wait`).
+id, title, folder, status, activity line, pending count, model, effort, permission mode, task progress, context percentage, prompt cache expiry, turns, API-equivalent cost, start time, last activity time, running turn's start time, position in the list, account, whether it waits for its account's sign-in (`sign_in_wait`), and how many of its background tasks still run (`background_running`).
+A background task (a subagent or a command started in the background) can outlive the turn that started it, so an `Idle` agent can still have work running: the daemon sends a new summary when that count changes. A summary without the count reads 0.
 
 The two times let the app count the time on a sidebar row by itself, so the daemon sends no event to move a clock:
 

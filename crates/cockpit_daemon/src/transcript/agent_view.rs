@@ -286,6 +286,7 @@ impl AgentView {
             position: Position::default(),
             account: AccountId::DEFAULT,
             sign_in_wait: SignInWait::NotWaiting,
+            background_running: 0,
         };
         Self::new(summary, Duration::ZERO)
     }
@@ -1600,6 +1601,13 @@ impl AgentView {
     fn refresh_status(&mut self) {
         let pending = self.pending.len();
         self.summary.pending_count = u16::try_from(pending).unwrap_or(u16::MAX);
+        let background = self
+            .details
+            .background_tasks
+            .iter()
+            .filter(|task| task.status == BackgroundTaskStatus::Running)
+            .count();
+        self.summary.background_running = u16::try_from(background).unwrap_or(u16::MAX);
         self.summary.status = if self.exited {
             AgentStatus::Exited
         } else if pending > 0 || self.summary.sign_in_wait == SignInWait::Waiting {
@@ -1780,6 +1788,7 @@ mod tests {
             position: Position::default(),
             account: AccountId::DEFAULT,
             sign_in_wait: SignInWait::NotWaiting,
+            background_running: 0,
         };
         let mut view = AgentView::new(summary, Duration::from_secs(3600));
         view.mark_published();
@@ -2847,11 +2856,21 @@ mod tests {
                    "description": "", "usage": {"total_tokens": 5, "tool_uses": 3}}),
         );
         let running = view.details().background_tasks[0].clone();
+        let counted = |view: &mut AgentView| {
+            view.take_events()
+                .into_iter()
+                .find_map(|event| match event {
+                    Event::AgentUpdated(summary) => Some(summary.background_running),
+                    _ => None,
+                })
+        };
+        assert_eq!(counted(&mut view), Some(1));
         apply(
             &mut view,
             json!({"type": "system", "subtype": "task_notification", "task_id": "bg-1",
                    "status": "failed", "summary": "The build broke"}),
         );
+        assert_eq!(counted(&mut view), Some(0));
 
         assert_eq!(running.status, BackgroundTaskStatus::Running);
         assert_eq!(running.kind, BackgroundTaskKind::Command);

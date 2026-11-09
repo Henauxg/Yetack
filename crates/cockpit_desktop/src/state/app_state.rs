@@ -496,6 +496,7 @@ pub(crate) mod tests {
             position: Position::default(),
             account: AccountId::DEFAULT,
             sign_in_wait: SignInWait::NotWaiting,
+            background_running: 0,
         }
     }
 
