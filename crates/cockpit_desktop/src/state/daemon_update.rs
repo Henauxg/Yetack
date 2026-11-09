@@ -460,7 +460,7 @@ mod tests {
     use super::*;
     use crate::daemon_label::DaemonLabel;
     use crate::state::app_state::tests::state_with;
-    use crate::state::{ConnectionState, MachineState};
+    use crate::state::{ConnectionState, Drafts, MachineState, machines};
 
     fn build_box() -> MachineId {
         MachineId::new(1)
@@ -867,10 +867,115 @@ mod tests {
     }
 
     #[test]
-    fn a_second_start_while_one_runs_is_refused() {
+    fn a_second_start_while_one_runs_or_reconnects_is_refused() {
         let mut state = with_older_server();
         start(&mut state, build_box()).unwrap();
 
+        assert_eq!(start(&mut state, build_box()), None);
+
+        finished(&mut state, build_box(), Some(0));
+        assert_eq!(start(&mut state, build_box()), None);
+    }
+
+    #[test]
+    fn what_happens_to_one_machines_update_leaves_the_others_alone() {
+        let gpu_box = MachineId::new(2);
+        let mut state = with_older_server();
+        let mut second = MachineState::new(DaemonLabel::ssh("gpu-box".to_owned()));
+        second.version_gap = Some(older());
+        state.machines.others.insert(gpu_box, second);
+        state.ui.dialog = Some(Dialog::DaemonUpdate(gpu_box));
+        start(&mut state, build_box()).unwrap();
+        start(&mut state, gpu_box).unwrap();
+        let untouched = state.machines.get(gpu_box).unwrap().clone();
+
+        stdout(&mut state, "update-daemon: building 3f9c2e1");
+        ask_cancel(&mut state, build_box()).unwrap();
+        cancel_failed(&mut state, build_box(), "ssh: connect failed".to_owned());
+        attempt_failed(&mut state, build_box(), None, Some(plan()));
+        finished(&mut state, build_box(), Some(1));
+        back(&mut state, build_box());
+        connected(&mut state, build_box());
+
+        assert_eq!(state.machines.get(gpu_box), Some(&untouched));
+        assert_eq!(state.ui.dialog, Some(Dialog::DaemonUpdate(gpu_box)));
+    }
+
+    #[test]
+    fn a_machine_removed_during_its_update_leaves_nothing_behind() {
+        let mut state = with_older_server();
+        state.ui.dialog = Some(Dialog::DaemonUpdate(build_box()));
+        start(&mut state, build_box()).unwrap();
+
+        machines::forget(&mut state, &mut Drafts::default(), build_box());
+        stdout(&mut state, "update-daemon: building 3f9c2e1");
+        cancel_failed(&mut state, build_box(), "ssh: connect failed".to_owned());
+
+        assert_eq!(state.ui.dialog, None);
+        assert_eq!(ask_cancel(&mut state, build_box()), None);
+        assert!(
+            !finished(&mut state, build_box(), Some(0)),
+            "nothing to try again"
+        );
+        assert!(state.machines.get(build_box()).is_none());
+    }
+
+    #[test]
+    fn a_connection_during_a_run_ends_it_and_its_last_lines_change_nothing() {
+        let mut state = with_older_server();
+        state.ui.dialog = Some(Dialog::DaemonUpdate(build_box()));
+        start(&mut state, build_box()).unwrap();
+        stdout(&mut state, "update-daemon: restarting the daemon");
+
+        connected(&mut state, build_box());
+        stdout(&mut state, "update-daemon: the daemon runs 3f9c2e1");
+
+        assert_eq!(update(&state), None);
+        assert_eq!(state.ui.dialog, None);
+        assert!(
+            !finished(&mut state, build_box(), Some(0)),
+            "the app is connected already"
+        );
+        assert_eq!(update(&state), None);
+    }
+
+    #[test]
+    fn back_during_a_run_changes_nothing() {
+        let mut state = with_older_server();
+        state.ui.dialog = Some(Dialog::DaemonUpdate(build_box()));
+        start(&mut state, build_box()).unwrap();
+
+        back(&mut state, build_box());
+
+        assert!(matches!(update(&state), Some(DaemonUpdate::Running(_))));
+        assert_eq!(state.ui.dialog, Some(Dialog::DaemonUpdate(build_box())));
+    }
+
+    #[test]
+    fn closing_the_dialog_during_a_run_keeps_the_update() {
+        let mut state = with_older_server();
+        state.ui.dialog = Some(Dialog::DaemonUpdate(build_box()));
+        start(&mut state, build_box()).unwrap();
+
+        state.ui.close_dialog();
+        stdout(&mut state, "update-daemon: building 3f9c2e1");
+
+        assert_eq!(progress(&state).step, UpdateStep::Build);
+        let shown = update_line(known(&state)).unwrap();
+        assert_eq!((shown.text, shown.link), ("Updating…", "Show"));
+    }
+
+    #[test]
+    fn a_newer_daemon_never_holds_a_plan() {
+        let mut state = with_server();
+        let newer = gap_over_ssh(&format!(
+            "the daemon speaks protocol {}, the client {PROTOCOL_VERSION}",
+            PROTOCOL_VERSION + 1
+        ));
+
+        attempt_failed(&mut state, build_box(), newer, Some(plan()));
+
+        assert_eq!(known(&state).version_gap.as_ref().unwrap().plan, None);
         assert_eq!(start(&mut state, build_box()), None);
     }
 
