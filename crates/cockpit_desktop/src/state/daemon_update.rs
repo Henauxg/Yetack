@@ -137,7 +137,7 @@ pub struct UpdateProgress {
     pub step: UpdateStep,
     /// The script's output, the oldest lines dropped.
     pub output: VecDeque<String>,
-    /// What the script wrote to stderr, which says why it stopped.
+    /// What the script wrote to stderr, which says why it stopped, the oldest lines dropped.
     errors: Vec<String>,
     /// "Cancel the update" was pressed.
     pub cancel_asked: bool,
@@ -287,6 +287,8 @@ pub fn output(state: &mut AppState, machine: MachineId, lines: Vec<OutputLine>) 
     while progress.output.len() > OUTPUT_LINES {
         progress.output.pop_front();
     }
+    let dropped = progress.errors.len().saturating_sub(OUTPUT_LINES);
+    progress.errors.drain(..dropped);
 }
 
 /// The script ended. Returns whether the app should try the machine again at once.
@@ -889,6 +891,32 @@ mod tests {
 
             assert_eq!(failure(&state), ending, "{code:?}");
         }
+    }
+
+    #[test]
+    fn a_long_stderr_keeps_its_last_lines() {
+        let mut state = with_older_server();
+        start(&mut state, build_box()).unwrap();
+        let warnings: Vec<OutputLine> = (0..=OUTPUT_LINES)
+            .map(|number| line(OutputStream::Stderr, &format!("warning {number}")))
+            .collect();
+        output(&mut state, build_box(), warnings);
+        output(
+            &mut state,
+            build_box(),
+            vec![line(
+                OutputStream::Stderr,
+                "3    working   0    12    Fix it",
+            )],
+        );
+
+        finished(&mut state, build_box(), Some(3));
+
+        let Some(DaemonUpdate::Failed(refused)) = update(&state) else {
+            panic!("expected a failure");
+        };
+        assert_eq!(refused.message.lines().count(), OUTPUT_LINES);
+        assert_eq!(refused.first_agent(), Some("3"));
     }
 
     #[test]
