@@ -16,7 +16,7 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tempfile::TempDir;
@@ -51,6 +51,12 @@ impl Machine {
                 r#"#!/bin/sh
 [ "$#" -gt 0 ] || exit 0
 echo "$*" >>'{log}'
+if [ -f '{waits}' ]; then
+    : >'{started}'
+    until [ -f '{go}' ]; do sleep 0.02; done
+fi
+echo '   Compiling the daemon' || exit 101
+echo 'warning: on stderr' >&2 || exit 101
 [ ! -f '{fails}' ] || exit 1
 while [ "$#" -gt 0 ] && [ "$1" != --target-dir ]; do shift; done
 [ "$#" -ge 2 ] || exit 1
@@ -60,6 +66,9 @@ printf '%s' '{mark}' >>"$2/release/agents-cockpit"
 "#,
                 log = machine.path("cargo.log").display(),
                 fails = machine.path("cargo-fails").display(),
+                waits = machine.path("cargo-waits").display(),
+                started = machine.path("cargo-started").display(),
+                go = machine.path("cargo-go").display(),
                 mark = String::from_utf8_lossy(BUILT_MARK),
             ),
         );
@@ -270,16 +279,51 @@ printf '%s' '{mark}' >>"$2/release/agents-cockpit"
             .unwrap();
     }
 
-    /// Runs the script as the app does: read from stdin by the remote shell.
-    fn update(&self, commit: &str) -> Output {
-        self.command("sh")
+    /// The script as the app runs it: read from stdin by the remote shell.
+    fn update_command(&self, commit: &str) -> Command {
+        let mut command = self.command("sh");
+        command
             .args(["-s", "--", "--commit", commit, "--binary"])
             .arg(self.installed())
             .arg("--source-dir")
             .arg(self.path("source"))
+            .stdin(Stdio::from(File::open(SCRIPT).unwrap()));
+        command
+    }
+
+    fn update(&self, commit: &str) -> Output {
+        self.update_command(commit).output().unwrap()
+    }
+
+    /// Asks the update that runs to stop, as the app does over a second connection.
+    fn cancel(&self) -> Output {
+        self.command("sh")
+            .args(["-s", "--", "--cancel"])
             .stdin(Stdio::from(File::open(SCRIPT).unwrap()))
             .output()
             .unwrap()
+    }
+
+    /// Starts an update whose fake `cargo` waits for `release_the_build`, and returns once the
+    /// build has started.
+    fn update_stopped_in_its_build(&self) -> Child {
+        File::create(self.path("cargo-waits")).unwrap();
+        let update = self
+            .update_command("origin/main")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + WAIT;
+        while !self.path("cargo-started").exists() {
+            assert!(Instant::now() < deadline, "the build never started");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        update
+    }
+
+    fn release_the_build(&self) {
+        File::create(self.path("cargo-go")).unwrap();
     }
 
     fn installed_is_the_new_build(&self) -> bool {
@@ -290,8 +334,12 @@ printf '%s' '{mark}' >>"$2/release/agents-cockpit"
         self.path("cargo.log").exists()
     }
 
+    fn update_folder(&self) -> PathBuf {
+        self.path("home/cache/agents-cockpit/update")
+    }
+
     fn update_lock_is_free(&self) -> bool {
-        !self.path("home/cache/agents-cockpit/update/lock").exists()
+        !self.update_folder().join("lock").exists()
     }
 }
 
@@ -301,7 +349,7 @@ impl Drop for Machine {
             return;
         };
         let pid = pid.trim();
-        let _ = Command::new("kill").arg(pid).status();
+        let _ = Command::new("kill").arg(pid).stderr(Stdio::null()).status();
         let deadline = Instant::now() + WAIT;
         while Path::new("/proc").join(pid).exists() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
@@ -347,9 +395,15 @@ fn assert_succeeded(output: &Output) {
     );
 }
 
-/// Asserts that a refused update changed nothing and said `expected`.
-fn assert_refused(machine: &Machine, output: &Output, expected: &str, daemon_before: &str) {
-    assert!(!output.status.success(), "the update was not refused");
+/// Asserts that a refused update exited with `status`, changed nothing and said `expected`.
+fn assert_refused(
+    machine: &Machine,
+    output: &Output,
+    status: i32,
+    expected: &str,
+    daemon_before: &str,
+) {
+    assert_eq!(output.status.code(), Some(status), "{}", stderr(output));
     assert!(stderr(output).contains(expected), "{}", stderr(output));
     assert!(!machine.installed_is_the_new_build());
     assert_eq!(machine.daemon_pid(), daemon_before);
@@ -466,7 +520,7 @@ fn refuses_while_an_agent_works() {
 
     let output = machine.update("origin/main");
 
-    assert_refused(&machine, &output, "Fix the parser", &before);
+    assert_refused(&machine, &output, 3, "Fix the parser", &before);
     assert!(!machine.built(), "it refuses before the build");
 }
 
@@ -480,7 +534,7 @@ fn refuses_a_scheduled_job_until_it_is_deleted() {
 
     let refused = machine.update("origin/main");
 
-    assert_refused(&machine, &refused, "scheduled jobs", &before);
+    assert_refused(&machine, &refused, 3, "scheduled jobs", &before);
     machine.log_tool_call(&id, "CronDelete", now_ms());
     assert_succeeded(&machine.update("origin/main"));
     assert!(machine.installed_is_the_new_build());
@@ -514,7 +568,7 @@ fn refuses_a_commit_origin_does_not_have() {
 
     let output = machine.update("0123456789abcdef0123456789abcdef01234567");
 
-    assert_refused(&machine, &output, "push it first", &before);
+    assert_refused(&machine, &output, 1, "push it first", &before);
 }
 
 #[test]
@@ -526,7 +580,7 @@ fn a_failed_build_leaves_the_daemon_running() {
 
     let output = machine.update("origin/main");
 
-    assert_refused(&machine, &output, "the daemon was not touched", &before);
+    assert_refused(&machine, &output, 1, "the daemon was not touched", &before);
 }
 
 #[test]
@@ -538,7 +592,7 @@ fn refuses_when_nothing_can_restart_the_daemon() {
 
     let output = machine.update("origin/main");
 
-    assert_refused(&machine, &output, "cannot restart the daemon", &before);
+    assert_refused(&machine, &output, 1, "cannot restart the daemon", &before);
     assert!(!machine.built(), "it refuses before the build");
 }
 
@@ -617,8 +671,100 @@ fn refuses_a_second_update_while_one_runs() {
 
     let output = machine.update("origin/main");
 
-    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(1));
     assert!(stderr(&output).contains("another update is running"));
     assert!(!machine.built());
     assert_eq!(machine.daemon_pid(), before);
+}
+
+#[test]
+fn a_failed_restart_exits_with_four() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    fs::write(machine.start_file(), "exit 7\n").unwrap();
+
+    let output = machine.update("origin/main");
+
+    assert_eq!(output.status.code(), Some(4), "{}", stderr(&output));
+    assert!(machine.installed_is_the_new_build());
+    assert!(machine.update_lock_is_free());
+}
+
+#[test]
+fn a_binary_it_cannot_replace_exits_with_four() {
+    let machine = Machine::new();
+    fs::write(machine.path("install/blocker"), "a file, not a folder").unwrap();
+    let binary = machine.path("install/blocker/agents-cockpit");
+
+    let output = machine
+        .command("sh")
+        .args(["-s", "--", "--commit", "origin/main", "--binary"])
+        .arg(&binary)
+        .arg("--source-dir")
+        .arg(machine.path("source"))
+        .stdin(Stdio::from(File::open(SCRIPT).unwrap()))
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(4), "{}", stderr(&output));
+}
+
+#[test]
+fn a_connection_lost_during_the_build_does_not_stop_it() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let before = machine.daemon_pid();
+    let mut update = machine.update_stopped_in_its_build();
+
+    drop(update.stdout.take());
+    drop(update.stderr.take());
+    machine.release_the_build();
+
+    assert!(update.wait().unwrap().success());
+    assert!(machine.installed_is_the_new_build());
+    assert_ne!(machine.daemon_pid(), before);
+    machine.ok(&["list"]);
+    let log = fs::read_to_string(machine.update_folder().join("build.log")).unwrap();
+    assert!(log.contains("Compiling the daemon"), "{log}");
+    assert!(log.contains("warning: on stderr"), "{log}");
+}
+
+#[test]
+fn a_cancel_stops_the_update_before_it_installs() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let before = machine.daemon_pid();
+    let update = machine.update_stopped_in_its_build();
+
+    let cancel = machine.cancel();
+    machine.release_the_build();
+    let output = update.wait_with_output().unwrap();
+
+    assert_succeeded(&cancel);
+    assert_refused(&machine, &output, 1, "the update was cancelled", &before);
+    assert!(stderr(&output).contains("the daemon was not touched"));
+}
+
+#[test]
+fn a_cancel_with_no_update_running_says_so() {
+    let machine = Machine::new();
+
+    let output = machine.cancel();
+
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(stderr(&output).contains("no update is running"));
+    assert!(!machine.update_folder().join("cancel").exists());
+}
+
+#[test]
+fn a_stale_cancel_does_not_stop_the_next_update() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    fs::create_dir_all(machine.update_folder()).unwrap();
+    File::create(machine.update_folder().join("cancel")).unwrap();
+
+    let output = machine.update("origin/main");
+
+    assert_succeeded(&output);
+    assert!(machine.installed_is_the_new_build());
 }

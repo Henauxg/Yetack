@@ -2,23 +2,48 @@
 # Updates this machine's agents-cockpit daemon to one commit and restarts it. Linux only.
 #
 #   ssh HOST sh -s -- --commit HASH --binary PATH [--source-dir DIR] < contrib/update-daemon.sh
+#   ssh HOST sh -s -- --cancel < contrib/update-daemon.sh
 #
 #   --commit      a commit or ref that the source checkout can fetch from origin
 #   --binary      the absolute path of the agents-cockpit binary to replace
 #   --source-dir  a git checkout of the repository, by default ~/agents-cockpit
+#   --cancel      makes the running update stop before it installs: its build runs on
 #
 # It builds outside the checkout, which stays as it is. It restarts the daemon with
 # $XDG_CONFIG_HOME/agents-cockpit/start-daemon when that file exists (a script that starts the
 # daemon in the background and returns), and otherwise with the agents-cockpit systemd user
 # service. It refuses while an agent works, waits for an answer or may hold a scheduled job.
+# Once started it finishes even when the connection is lost: build.log, in its folder under
+# $XDG_CACHE_HOME/agents-cockpit/update, keeps the build's output.
+#
+# Exit status:
+#   0  the daemon runs the new version
+#   1  failed before anything changed
+#   3  refused: agents are busy or may hold a scheduled job
+#   4  failed during the install or the restart
 
 say() {
     printf 'update-daemon: %s\n' "$*" 2>/dev/null || true
 }
 
-die() {
+# Prints a message and ends the script with the status given first.
+fail() {
+    status=$1
+    shift
     printf 'update-daemon: %s\n' "$*" >&2
-    exit 1
+    exit "$status"
+}
+
+die() {
+    fail 1 "$@"
+}
+
+refuse() {
+    fail 3 "$@"
+}
+
+die_installing() {
+    fail 4 "$@"
 }
 
 parse_arguments() {
@@ -51,7 +76,14 @@ take_lock() {
     mkdir "$work_dir/lock" 2>/dev/null ||
         die "another update is running; if none is, remove $work_dir/lock"
     trap 'rmdir "$work_dir/lock" 2>/dev/null' EXIT
-    trap 'exit 1' HUP INT TERM
+    trap 'exit 1' INT TERM
+    rm -f "$work_dir/cancel"
+}
+
+request_cancel() {
+    [ -d "$work_dir/lock" ] || die "no update is running"
+    : >"$work_dir/cancel" || die "cannot write $work_dir/cancel"
+    say "the update stops before it installs, once its build ends"
 }
 
 choose_restart() {
@@ -89,7 +121,7 @@ check_agents() {
     [ -n "$daemon" ] || return 0
     listing=$("$binary" list 2>&1) || die "cannot read the agents from the daemon: $listing"
     busy=$(printf '%s\n' "$listing" | awk 'NR > 1 && $2 != "idle" && $2 != "exited"')
-    [ -z "$busy" ] || die "not restarting the daemon, these agents are busy:
+    [ -z "$busy" ] || refuse "not restarting the daemon, these agents are busy:
 $busy"
     # A scheduled job lives in its claude process, so none outlasts the daemon's last start. `ps`
     # counts whole seconds, so the start is taken a little early.
@@ -105,7 +137,7 @@ $busy"
 $(printf '%s\n' "$listing" | awk -v id="$id" '$1 == id')"
         fi
     done
-    [ -z "$holding" ] || die "not restarting the daemon, a restart would lose the scheduled jobs these agents may hold. Delete the jobs or stop the agents:$holding"
+    [ -z "$holding" ] || refuse "not restarting the daemon, a restart would lose the scheduled jobs these agents may hold. Delete the jobs or stop the agents:$holding"
 }
 
 build() {
@@ -131,7 +163,13 @@ build() {
     if [ -f flake.nix ] && command -v nix >/dev/null 2>&1; then
         set -- nix --extra-experimental-features 'nix-command flakes' develop --command "$@"
     fi
-    nice -n 19 "$@" </dev/null || die "the build of $sha failed; the daemon was not touched"
+    # cargo stops when it cannot write its output. It writes to tee, which outlives the connection:
+    # with SIGPIPE ignored, a failed write only makes it stop copying to its standard output.
+    status_file=$work_dir/build.status
+    rm -f "$status_file"
+    { nice -n 19 "$@" </dev/null 2>&1; echo "$?" >"$status_file"; } | tee "$work_dir/build.log"
+    [ "$(cat "$status_file" 2>/dev/null)" = 0 ] ||
+        die "the build of $sha failed; the daemon was not touched"
     built=$target_dir/release/agents-cockpit
     [ -x "$built" ] || die "the build of $sha made no $built"
 }
@@ -139,11 +177,11 @@ build() {
 stop_daemon() {
     daemon=$(daemon_pid)
     [ -n "$daemon" ] || return 0
-    kill -TERM "$daemon" || die "cannot stop the daemon, pid $daemon"
+    kill -TERM "$daemon" || die_installing "cannot stop the daemon, pid $daemon"
     tries=0
     while [ -n "$(daemon_pid)" ]; do
         tries=$((tries + 1))
-        [ "$tries" -le 30 ] || die "the daemon, pid $daemon, did not stop within 30 seconds"
+        [ "$tries" -le 30 ] || die_installing "the daemon, pid $daemon, did not stop within 30 seconds"
         sleep 1
     done
 }
@@ -151,13 +189,14 @@ stop_daemon() {
 restart_daemon() {
     case $restart in
         systemd)
-            systemctl --user restart agents-cockpit </dev/null || die "systemctl could not restart the daemon"
+            systemctl --user restart agents-cockpit </dev/null ||
+                die_installing "systemctl could not restart the daemon"
             ;;
         start_file)
             stop_daemon
             # A background process left holding this output would keep the SSH session open.
             sh "$start_file" </dev/null >"$work_dir/start-daemon.log" 2>&1 ||
-                die "$start_file failed, see $work_dir/start-daemon.log"
+                die_installing "$start_file failed, see $work_dir/start-daemon.log"
             ;;
     esac
 }
@@ -167,7 +206,7 @@ wait_for_daemon() {
     until "$binary" list >/dev/null 2>&1; do
         tries=$((tries + 1))
         [ "$tries" -le 30 ] ||
-            die "the new daemon did not answer within 30 seconds; the previous binary is $binary.previous"
+            die_installing "the new daemon did not answer within 30 seconds; the previous binary is $binary.previous"
         sleep 1
     done
 }
@@ -175,10 +214,10 @@ wait_for_daemon() {
 install_and_restart() {
     # A connection lost from here on must not leave the machine without a daemon.
     trap '' HUP INT TERM PIPE
-    mkdir -p "$(dirname "$binary")" || die "cannot create the folder of $binary"
-    [ ! -f "$binary" ] || cp -f "$binary" "$binary.previous" || die "cannot save $binary"
-    install -m 755 "$built" "$binary.new" || die "cannot write $binary.new"
-    mv -f "$binary.new" "$binary" || die "cannot replace $binary"
+    mkdir -p "$(dirname "$binary")" || die_installing "cannot create the folder of $binary"
+    [ ! -f "$binary" ] || cp -f "$binary" "$binary.previous" || die_installing "cannot save $binary"
+    install -m 755 "$built" "$binary.new" || die_installing "cannot write $binary.new"
+    mv -f "$binary.new" "$binary" || die_installing "cannot replace $binary"
     say "restarting the daemon"
     restart_daemon
     wait_for_daemon
@@ -186,6 +225,14 @@ install_and_restart() {
 }
 
 main() {
+    # A lost connection must not stop the update: a client that goes away closes the output pipes,
+    # and may send SIGHUP.
+    trap '' HUP PIPE
+    work_dir=${XDG_CACHE_HOME:-$HOME/.cache}/agents-cockpit/update
+    if [ "$*" = --cancel ]; then
+        request_cancel
+        return
+    fi
     parse_arguments "$@"
     # A command run over SSH loads no shell profile.
     PATH=$PATH:$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin
@@ -193,13 +240,13 @@ main() {
     state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/agents-cockpit
     lock_file=$(readlink -f "$state_dir/serve.lock")
     start_file=${XDG_CONFIG_HOME:-$HOME/.config}/agents-cockpit/start-daemon
-    work_dir=${XDG_CACHE_HOME:-$HOME/.cache}/agents-cockpit/update
     take_lock
     choose_restart
     check_agents
     build
     # The build takes minutes: an agent may have started working meanwhile.
     check_agents
+    [ ! -e "$work_dir/cancel" ] || die "the update was cancelled; the daemon was not touched"
     install_and_restart
 }
 
