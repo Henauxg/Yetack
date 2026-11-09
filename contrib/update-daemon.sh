@@ -21,6 +21,7 @@
 #   1  failed before anything changed
 #   3  refused: agents are busy or may hold a scheduled job
 #   4  failed during the install or the restart
+#   6  refused: another update is running
 # With --cancel: 0 when the update will stop before it installs, 1 when none runs or it is too late.
 
 say() {
@@ -71,12 +72,35 @@ parse_arguments() {
     esac
 }
 
-# Two updates at once would build in the same folder and restart the daemon twice.
+# The start time of a process that runs, empty for a dead one. A zombie counts as dead.
+start_time() {
+    sed 's/.*) //' "/proc/$1/stat" 2>/dev/null | awk '$1 != "Z" { print $20 }'
+}
+
+# The start time tells the lock's owner from a later process that got its pid.
+lock_owner_runs() {
+    read -r owner_pid owner_start 2>/dev/null <"$lock" || return 1
+    [ -n "$owner_start" ] && [ "$(start_time "$owner_pid")" = "$owner_start" ]
+}
+
+# Two updates at once would build in the same folder and restart the daemon twice. A killed update
+# leaves its lock, so a dead owner's lock counts as free. flock makes looking at the lock and
+# replacing it one step, so that only one update takes a dead owner's lock.
 take_lock() {
     mkdir -p "$work_dir" || die "cannot create $work_dir"
-    mkdir "$work_dir/lock" 2>/dev/null ||
-        die "another update is running; if none is, remove $work_dir/lock"
-    trap 'rmdir "$work_dir/lock" 2>/dev/null' EXIT
+    # Written first and moved in, so that nobody sees a lock without its owner.
+    claim=$lock.$$
+    printf '%s %s\n' "$$" "$(start_time "$$")" >"$claim" || die "cannot write $claim"
+    (
+        flock -n 9 || exit 6
+        ! lock_owner_runs || exit 6
+        mv -f "$claim" "$lock"
+    ) 9>"$lock.guard"
+    taken=$?
+    rm -f "$claim"
+    [ "$taken" != 6 ] || fail 6 "another update is running"
+    [ "$taken" = 0 ] || die "cannot take $lock"
+    trap 'rm -f "$lock"' EXIT
     trap 'exit 1' INT TERM
     rm -rf "$work_dir/cancel"
 }
@@ -84,7 +108,7 @@ take_lock() {
 # A cancel creates the name `cancel` as a file and the install as a folder. Creating a name is
 # atomic, so one of them wins and a cancel cannot slip in after the update's last look.
 request_cancel() {
-    [ -d "$work_dir/lock" ] || die "no update is running"
+    lock_owner_runs || die "no update is running"
     if (set -C && : >"$work_dir/cancel") 2>/dev/null || [ -f "$work_dir/cancel" ]; then
         say "the update stops before it installs, once its build ends"
     elif [ -d "$work_dir/cancel" ]; then
@@ -112,6 +136,7 @@ check_tools() {
         [ -z "$(ps -o etimes= -p "$$" 2>/dev/null)" ]; then
         die "cannot tell whether a daemon runs: this needs a find with -lname and a ps with -o etimes"
     fi
+    command -v flock >/dev/null 2>&1 || die "cannot take the update lock: this needs flock"
 }
 
 # The daemon of this state folder is the process holding its lock file, whatever binary it runs.
@@ -254,6 +279,7 @@ main() {
     # and may send SIGHUP.
     trap '' HUP PIPE
     work_dir=${XDG_CACHE_HOME:-$HOME/.cache}/agents-cockpit/update
+    lock=$work_dir/lock.pid
     if [ "$*" = --cancel ]; then
         request_cancel
         return
