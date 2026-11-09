@@ -193,6 +193,16 @@ impl UpdateFailure {
             Some(_) | None => Some(Self::Unknown),
         }
     }
+
+    /// What the sidebar says of a machine whose update ended this way.
+    fn sidebar_text(self) -> &'static str {
+        match self {
+            Self::Refused | Self::Failed | Self::Cancelled | Self::RolledBack => "Was not updated.",
+            Self::InstallFailed => "Update failed during the restart.",
+            Self::AlreadyRunning => "An update is already running.",
+            Self::Unknown => "Update status unknown.",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -451,7 +461,9 @@ pub fn update_line(known: &MachineState) -> Option<UpdateLine> {
         (Some(DaemonUpdate::Running(_) | DaemonUpdate::Reconnecting(_)), _) => {
             Some(line("Updating…", "Show", false))
         }
-        (Some(DaemonUpdate::Failed(_)), _) => Some(line("Was not updated.", "Show", true)),
+        (Some(DaemonUpdate::Failed(failed)), _) => {
+            Some(line(failed.failure.sidebar_text(), "Show", true))
+        }
         (None, Some(gap)) => Some(match (gap.kind, &gap.plan) {
             (ProtocolGap::Older, Some(_)) => line("Runs an older version.", "Update", true),
             (ProtocolGap::Older, None) => line("Runs an older version.", "Details", true),
@@ -1185,6 +1197,29 @@ mod tests {
             .unwrap()
             .version_gap = None;
         assert_eq!(text(&state), None);
+    }
+
+    #[test]
+    fn the_sidebar_says_how_the_update_ended() {
+        for (code, expected) in [
+            (Some(1), "Was not updated."),
+            (Some(3), "Was not updated."),
+            (Some(4), "Update failed during the restart."),
+            (Some(5), "Was not updated."),
+            (Some(6), "An update is already running."),
+            (Some(255), "Update status unknown."),
+            (Some(42), "Update status unknown."),
+            (None, "Update status unknown."),
+        ] {
+            let mut state = with_older_server();
+            start(&mut state, build_box()).unwrap();
+
+            finished(&mut state, build_box(), code);
+
+            let shown = update_line(known(&state)).unwrap();
+            assert_eq!((shown.text, shown.link), (expected, "Show"), "{code:?}");
+            assert!(shown.down, "{code:?}");
+        }
     }
 
     #[test]
