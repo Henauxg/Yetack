@@ -815,6 +815,45 @@ fn a_cancel_stops_the_update_before_it_installs() {
 }
 
 #[test]
+fn a_cancel_during_the_install_says_it_is_too_late() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let start = fs::read_to_string(machine.start_file()).unwrap();
+    fs::write(
+        machine.start_file(),
+        format!(
+            "sh -s -- --cancel <'{SCRIPT}' >'{said}' 2>&1\necho $? >'{status}'\n{start}",
+            said = machine.path("cancel-said").display(),
+            status = machine.path("cancel-status").display(),
+        ),
+    )
+    .unwrap();
+
+    assert_succeeded(&machine.update("origin/main"));
+
+    let said = fs::read_to_string(machine.path("cancel-said")).unwrap();
+    assert!(said.contains("too late"), "{said}");
+    let status = fs::read_to_string(machine.path("cancel-status")).unwrap();
+    assert_eq!(status.trim(), "1", "{said}");
+}
+
+#[test]
+fn a_second_cancel_is_no_failure() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let update = machine.update_stopped_in_its_build();
+
+    let first = machine.cancel();
+    let second = machine.cancel();
+    machine.release_the_build();
+    let output = update.wait_with_output().unwrap();
+
+    assert_succeeded(&first);
+    assert_succeeded(&second);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+}
+
+#[test]
 fn a_cancel_with_no_update_running_says_so() {
     let machine = Machine::new();
 

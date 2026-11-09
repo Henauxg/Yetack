@@ -21,6 +21,7 @@
 #   1  failed before anything changed
 #   3  refused: agents are busy or may hold a scheduled job
 #   4  failed during the install or the restart
+# With --cancel: 0 when the update will stop before it installs, 1 when none runs or it is too late.
 
 say() {
     printf 'update-daemon: %s\n' "$*" 2>/dev/null || true
@@ -77,13 +78,20 @@ take_lock() {
         die "another update is running; if none is, remove $work_dir/lock"
     trap 'rmdir "$work_dir/lock" 2>/dev/null' EXIT
     trap 'exit 1' INT TERM
-    rm -f "$work_dir/cancel"
+    rm -rf "$work_dir/cancel"
 }
 
+# A cancel creates the name `cancel` as a file and the install as a folder. Creating a name is
+# atomic, so one of them wins and a cancel cannot slip in after the update's last look.
 request_cancel() {
     [ -d "$work_dir/lock" ] || die "no update is running"
-    : >"$work_dir/cancel" || die "cannot write $work_dir/cancel"
-    say "the update stops before it installs, once its build ends"
+    if (set -C && : >"$work_dir/cancel") 2>/dev/null || [ -f "$work_dir/cancel" ]; then
+        say "the update stops before it installs, once its build ends"
+    elif [ -d "$work_dir/cancel" ]; then
+        die "too late to cancel: the update is installing"
+    else
+        die "cannot write $work_dir/cancel"
+    fi
 }
 
 choose_restart() {
@@ -252,7 +260,7 @@ main() {
     build
     # The build takes minutes: an agent may have started working meanwhile.
     check_agents
-    [ ! -e "$work_dir/cancel" ] || die "the update was cancelled; the daemon was not touched"
+    mkdir "$work_dir/cancel" 2>/dev/null || die "the update was cancelled; the daemon was not touched"
     install_and_restart
 }
 
