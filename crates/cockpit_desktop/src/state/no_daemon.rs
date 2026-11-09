@@ -167,6 +167,7 @@ mod tests {
         DaemonConfig::Ssh {
             host: "build-box".to_owned(),
             remote_command: "/opt/agents-cockpit".to_owned(),
+            source_dir: None,
         }
     }
 

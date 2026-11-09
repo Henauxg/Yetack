@@ -6,6 +6,8 @@
 //! transport = "ssh"
 //! host = "build-box"
 //! remote_command = "/home/me/.cargo/bin/agents-cockpit"
+//! # Where the daemon's update builds from, by default ~/agents-cockpit:
+//! # source_dir = "/home/me/src/agents-cockpit"
 //!
 //! [notifications]
 //! enabled = true
@@ -77,6 +79,9 @@ pub struct MachineConfig {
     pub host: String,
     /// The absolute path of `agents-cockpit` on the host.
     pub remote_command: String,
+    /// The git checkout the daemon's update builds from. Unset, the update script's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -90,10 +95,13 @@ pub enum DaemonConfig {
         #[serde(default, skip_serializing_if = "is_false")]
         start_service: bool,
     },
-    /// `remote_command` is the absolute path of `agents-cockpit` on the host.
+    /// `remote_command` is the absolute path of `agents-cockpit` on the host, and `source_dir`
+    /// the git checkout the daemon's update builds from (unset, the update script's default).
     Ssh {
         host: String,
         remote_command: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_dir: Option<String>,
     },
     /// The daemon runs in the app: its agents stop when the app closes, and resume the next
     /// time the app runs them.
@@ -435,6 +443,7 @@ pub(crate) mod tests {
             DaemonConfig::Ssh {
                 host: "build-box".to_owned(),
                 remote_command: "/opt/agents-cockpit/bin/agents-cockpit".to_owned(),
+                source_dir: None,
             }
         );
         assert!(!config.notifications.enabled);
@@ -485,11 +494,13 @@ pub(crate) mod tests {
                     name: "devbox".to_owned(),
                     host: "dev@devbox".to_owned(),
                     remote_command: "/opt/agents-cockpit".to_owned(),
+                    source_dir: None,
                 },
                 MachineConfig {
                     name: "gpu-box".to_owned(),
                     host: "gpu".to_owned(),
                     remote_command: "/usr/local/bin/agents-cockpit".to_owned(),
+                    source_dir: None,
                 },
             ]
         );
@@ -499,6 +510,43 @@ pub(crate) mod tests {
                 .is_err(),
             "a machine needs the path of agents-cockpit"
         );
+    }
+
+    #[test]
+    fn a_source_dir_is_optional_per_machine_and_on_an_ssh_daemon() {
+        let text = "[daemon]\ntransport = \"ssh\"\nhost = \"build-box\"\nremote_command = \"/opt/agents-cockpit\"\nsource_dir = \"/srv/cockpit\"\n\n[[machines]]\nname = \"devbox\"\nhost = \"devbox\"\nremote_command = \"/opt/agents-cockpit\"\nsource_dir = \"/home/dev/src/cockpit\"\n";
+
+        let config: Config = text.parse().unwrap();
+
+        assert_eq!(
+            config.daemon,
+            DaemonConfig::Ssh {
+                host: "build-box".to_owned(),
+                remote_command: "/opt/agents-cockpit".to_owned(),
+                source_dir: Some("/srv/cockpit".to_owned()),
+            }
+        );
+        assert_eq!(
+            config.machines.first().unwrap().source_dir.as_deref(),
+            Some("/home/dev/src/cockpit")
+        );
+    }
+
+    #[test]
+    fn a_saved_server_keeps_its_source_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join(CONFIG_FILE);
+        let devbox = MachineConfig {
+            name: "devbox".to_owned(),
+            host: "devbox".to_owned(),
+            remote_command: "/opt/agents-cockpit".to_owned(),
+            source_dir: Some("/srv/cockpit".to_owned()),
+        };
+
+        save_machines(&file, std::slice::from_ref(&devbox)).unwrap();
+
+        let config: Config = std::fs::read_to_string(&file).unwrap().parse().unwrap();
+        assert_eq!(config.machines, [devbox]);
     }
 
     #[test]
@@ -596,6 +644,7 @@ pub(crate) mod tests {
             name: "devbox".to_owned(),
             host: "dev@devbox".to_owned(),
             remote_command: "/home/dev/.cargo/bin/agents-cockpit".to_owned(),
+            source_dir: None,
         };
 
         save_machines(&file, std::slice::from_ref(&devbox)).unwrap();

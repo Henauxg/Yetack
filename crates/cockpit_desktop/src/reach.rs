@@ -102,6 +102,7 @@ pub async fn reach(
         DaemonConfig::Ssh {
             host,
             remote_command,
+            ..
         } => Ok(Reached {
             transport: Transport::Ssh {
                 host: host.clone(),
@@ -260,6 +261,7 @@ mod tests {
         DaemonConfig::Ssh {
             host: "build-box".to_owned(),
             remote_command: "/opt/agents-cockpit".to_owned(),
+            source_dir: None,
         }
     }
 

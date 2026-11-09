@@ -76,6 +76,7 @@ fn check(state: &AppState, view: &MachinesView) -> Result<MachineConfig, &'stati
         name: name.to_owned(),
         host: host.to_owned(),
         remote_command: remote_command.to_owned(),
+        source_dir: None,
     })
 }
 
@@ -142,6 +143,7 @@ mod tests {
                 name: "dev@devbox".to_owned(),
                 host: "dev@devbox".to_owned(),
                 remote_command: "/opt/agents-cockpit".to_owned(),
+                source_dir: None,
             }))
         );
         assert_eq!(
