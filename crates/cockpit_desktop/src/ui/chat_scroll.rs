@@ -150,6 +150,7 @@ const attach = () => {
   box.addEventListener("scroll", record, { passive: true });
   mutations.observe(box, { childList: true, subtree: true, characterData: true });
   resizes.observe(column);
+  resizes.observe(box);
   changed();
 };
 new MutationObserver(attach).observe(document.body, { childList: true, subtree: true });
