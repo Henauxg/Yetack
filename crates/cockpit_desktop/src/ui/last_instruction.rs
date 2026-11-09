@@ -1,15 +1,22 @@
 //! The last instruction: over the top of the chat, the message the user sent that the entries in
 //! view answer, once that message has scrolled out above.
 
+use std::path::Path;
+
 use cockpit_protocol::{AgentId, ItemId, UserMessage};
 use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
 use crate::format;
+use crate::render::{blocks_plain_text, parse_markdown};
 use crate::ui::chat_scroll::TopEntry;
 
 /// The characters of the message the bar holds. It shows two lines of them.
 const SHOWN_CHARS: usize = 400;
+
+/// The characters of the message's Markdown read for them. The bar renders again at each change
+/// of the state, and a pasted log can be megabytes long.
+const READ_CHARS: usize = 4 * SHOWN_CHARS;
 
 /// What the bar shows: the message's agent and item, which a click scrolls to, and its text.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,7 +37,7 @@ pub fn LastInstruction(top_entry: Signal<Option<TopEntry>>) -> Element {
         Some(Instruction {
             agent: top.agent,
             item,
-            text: shown_text(message)?,
+            text: shown_text(message, &entry.summary.folder)?,
         })
     });
     let Some(Instruction { agent, item, text }) = instruction() else {
@@ -50,11 +57,14 @@ pub fn LastInstruction(top_entry: Signal<Option<TopEntry>>) -> Element {
     }
 }
 
-/// The message's text, cut to what two lines can show, or its images' count when it has no text.
-fn shown_text(message: &UserMessage) -> Option<String> {
-    let text = message.text.trim();
-    if !text.is_empty() {
-        return Some(text.chars().take(SHOWN_CHARS).collect());
+/// The message's text without its Markdown, on one line and cut to what two lines can show, or
+/// its images' count when it has no text. `folder` is the agent's, as the bubble reads it.
+fn shown_text(message: &UserMessage, folder: &Path) -> Option<String> {
+    let markdown: String = message.text.chars().take(READ_CHARS).collect();
+    let plain = blocks_plain_text(&parse_markdown(&markdown, folder));
+    let words: Vec<&str> = plain.split_whitespace().collect();
+    if !words.is_empty() {
+        return Some(words.join(" ").chars().take(SHOWN_CHARS).collect());
     }
     (!message.images.is_empty()).then(|| format::count(message.images.len(), "image", "images"))
 }
@@ -77,18 +87,16 @@ mod tests {
     }
 
     #[test]
-    fn the_bar_shows_the_text_cut_or_the_images_count() {
-        let long = "é".repeat(SHOWN_CHARS + 10);
+    fn the_bar_shows_the_text_without_markdown_cut_or_the_images_count() {
+        let shown = |text: &str, images| shown_text(&message(text, images), Path::new("/work"));
+        let long = "é".repeat(READ_CHARS);
 
         assert_eq!(
-            shown_text(&message("  Run the tests\n", 1)),
-            Some("Run the tests".to_owned())
+            shown("Fix it:\n\n- count from **1**\n- test `parse`\n", 1),
+            Some("Fix it: count from 1 test parse".to_owned())
         );
-        assert_eq!(
-            shown_text(&message(&long, 0)),
-            Some("é".repeat(SHOWN_CHARS))
-        );
-        assert_eq!(shown_text(&message(" ", 2)), Some("2 images".to_owned()));
-        assert_eq!(shown_text(&message("", 0)), None);
+        assert_eq!(shown(&long, 0), Some("é".repeat(SHOWN_CHARS)));
+        assert_eq!(shown(" ", 2), Some("2 images".to_owned()));
+        assert_eq!(shown("", 0), None);
     }
 }

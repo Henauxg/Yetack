@@ -1807,12 +1807,22 @@ html.reordering * {
 }
 
 .user-bubble {
+  min-width: 0;
+  max-width: 100%;
   padding: 9px 13px;
   border-radius: 12px;
   background: var(--hover);
   color: #ffffff;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.user-bubble .markdown {
+  gap: 8px;
+}
+
+/* The bubble's own color is the inline code's elsewhere. */
+.user-bubble .inline-code {
+  background: var(--code-bg);
 }
 
 .message-image {

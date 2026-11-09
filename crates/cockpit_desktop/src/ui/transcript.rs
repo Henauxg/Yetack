@@ -562,7 +562,7 @@ pub fn ItemView(
     let id = item.id;
     match item.body {
         ItemBody::UserMessage(message) => rsx! {
-            UserBubble { message }
+            UserBubble { agent, folder, message }
         },
         ItemBody::AssistantText { markdown } => rsx! {
             MarkdownView { agent, folder, markdown }
@@ -603,15 +603,18 @@ pub fn ItemView(
     }
 }
 
+/// The user's message, its text as Markdown as the agent's is.
 #[component]
-fn UserBubble(message: UserMessage) -> Element {
+fn UserBubble(agent: AgentId, folder: PathBuf, message: UserMessage) -> Element {
     rsx! {
         div { class: "user-message",
             for (index, image) in message.images.iter().enumerate() {
                 img { key: "{index}", class: "message-image", src: bridge::image_url(image), alt: "Attached image" }
             }
             if !message.text.is_empty() {
-                div { class: "user-bubble", "{message.text}" }
+                div { class: "user-bubble",
+                    MarkdownView { agent, folder, markdown: message.text }
+                }
             }
         }
     }

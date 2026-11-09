@@ -1471,7 +1471,7 @@ fn parser_agent(now: SystemTime) -> Sample {
             1,
             None,
             user(
-                "Make the parser report the column of an unexpected token, and add a test for it.",
+                "Make the parser report the column of an unexpected token:\n\n- count columns from 1, as editors do\n- add a test for it in `tests/columns.rs`",
             ),
         ),
         item(

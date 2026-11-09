@@ -93,6 +93,37 @@ pub fn plain_text(inlines: &[Inline]) -> String {
     text
 }
 
+/// The text of blocks without formatting, each block on a line of its own.
+pub fn blocks_plain_text(blocks: &[Block]) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    push_blocks_text(&mut lines, blocks);
+    lines.join("\n")
+}
+
+fn push_blocks_text(lines: &mut Vec<String>, blocks: &[Block]) {
+    for block in blocks {
+        match block {
+            Block::Heading { content, .. } | Block::Paragraph(content) => {
+                lines.push(plain_text(content));
+            }
+            Block::List { items, .. } => {
+                for item in items {
+                    push_blocks_text(lines, item);
+                }
+            }
+            Block::Code { code, .. } => lines.push(code.clone()),
+            Block::Table { head, rows } => {
+                for row in std::iter::once(head).chain(rows) {
+                    let cells: Vec<String> = row.iter().map(|cell| plain_text(cell)).collect();
+                    lines.push(cells.join(" "));
+                }
+            }
+            Block::Quote(content) => push_blocks_text(lines, content),
+            Block::Rule => {}
+        }
+    }
+}
+
 fn push_plain_text(text: &mut String, inlines: &[Inline]) {
     for inline in inlines {
         match inline {
