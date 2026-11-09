@@ -341,11 +341,11 @@ fn NewAgentDialog(form: NewAgentForm) -> Element {
 #[component]
 fn NewAgentTarget(form: NewAgentForm) -> Element {
     let cockpit: Cockpit = use_context();
-    let folder = cockpit.drafts.read().new_agent.folder.clone();
     let (machine_choices, account) = {
+        let drafts = cockpit.drafts.read();
         let state = cockpit.state.read();
         let account = accounts::shows_labels(&state, form.machine)
-            .then(|| accounts::new_agent_account(&state, &form, &folder));
+            .then(|| accounts::new_agent_account(&state, &form, &drafts.new_agent.folder));
         (machine_choices(&state, form.machine), account)
     };
     if machine_choices.is_empty() && account.is_none() {

@@ -170,7 +170,7 @@ impl Transcript {
             .find_map(Waiting::new)
     }
 
-    /// The message the user sent that the items from `top` on answer: the latest top-level user
+    /// The user message that the items from `top` onward answer: the latest top-level user
     /// message before `top`. `None` when `top` is a user message itself or is not held.
     pub fn message_before(&self, top: ItemId) -> Option<(ItemId, &UserMessage)> {
         let top_message = user_message(self.items.get(&top)?);

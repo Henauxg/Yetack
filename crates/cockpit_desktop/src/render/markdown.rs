@@ -1,6 +1,6 @@
 //! Agent text as a tree of blocks and inlines, with `path:line` references found in the text.
 
-use std::iter::Peekable;
+use std::iter::{self, Peekable};
 use std::path::Path;
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
@@ -93,7 +93,8 @@ pub fn plain_text(inlines: &[Inline]) -> String {
     text
 }
 
-/// The text of blocks without formatting, each block on a line of its own.
+/// The text of blocks without formatting: a line for each heading, paragraph, list item and table
+/// row, and a code block's own lines.
 pub fn blocks_plain_text(blocks: &[Block]) -> String {
     let mut lines: Vec<String> = Vec::new();
     push_blocks_text(&mut lines, blocks);
@@ -113,7 +114,8 @@ fn push_blocks_text(lines: &mut Vec<String>, blocks: &[Block]) {
             }
             Block::Code { code, .. } => lines.push(code.clone()),
             Block::Table { head, rows } => {
-                for row in std::iter::once(head).chain(rows) {
+                let table_rows = iter::once(head).chain(rows);
+                for row in table_rows {
                     let cells: Vec<String> = row.iter().map(|cell| plain_text(cell)).collect();
                     lines.push(cells.join(" "));
                 }

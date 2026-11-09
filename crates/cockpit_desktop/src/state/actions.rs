@@ -1848,10 +1848,12 @@ pub fn switcher_pick(state: &mut AppState, drafts: &Drafts, index: Option<usize>
     select_agent(state, agent);
 }
 
-/// The model a new agent starts with when no agent started gives one.
-const NEW_AGENT_MODEL: &str = "opus";
+/// The model a new agent starts with when no agent was started or the last one started has no
+/// model the menu offers.
+const NEW_AGENT_MODEL: &str = format::OPUS.alias;
 
-/// The permission mode a new agent starts with when no agent started gives one.
+/// The permission mode a new agent starts with when no agent was started or the last one started
+/// has no mode the dialog carries over.
 const NEW_AGENT_MODE: PermissionMode = PermissionMode::Auto;
 
 /// Opens the new agent dialog on the last used folder, with the model, effort and permission

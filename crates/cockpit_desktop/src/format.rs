@@ -16,11 +16,13 @@ pub struct ModelChoice {
     pub label: &'static str,
 }
 
+pub const OPUS: ModelChoice = ModelChoice {
+    alias: "opus",
+    label: "Opus",
+};
+
 pub const MODEL_CHOICES: [ModelChoice; 3] = [
-    ModelChoice {
-        alias: "opus",
-        label: "Opus",
-    },
+    OPUS,
     ModelChoice {
         alias: "sonnet",
         label: "Sonnet",
@@ -90,7 +92,7 @@ pub fn agent_status_label(summary: &AgentSummary) -> String {
     }
 }
 
-/// An agent's status classes: an idle agent with background work rings in the working color.
+/// An agent's status classes. An idle agent with background work shows the working color's ring.
 pub fn agent_status_class(summary: &AgentSummary) -> String {
     let class = status_class(summary.status);
     match background_work(summary) {

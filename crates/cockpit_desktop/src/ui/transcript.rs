@@ -603,7 +603,7 @@ pub fn ItemView(
     }
 }
 
-/// The user's message, its text as Markdown as the agent's is.
+/// The user's message. Its text renders as Markdown, as the agent's text does.
 #[component]
 fn UserBubble(agent: AgentId, folder: PathBuf, message: UserMessage) -> Element {
     rsx! {

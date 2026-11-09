@@ -43,19 +43,24 @@ pub fn App() -> Element {
     let file_view_leaving = file_view
         .as_ref()
         .is_some_and(|shown| shown.leaving && Some(shown.value) == selected);
-    let mut opened_by_switch = use_hook(|| CopyValue::new((0_u32, false)));
+    let mut last_opening = use_hook(|| CopyValue::new(FileViewOpening::default()));
     if let Some(shown) = &file_view
         && !shown.leaving
-        && opened_by_switch().0 != shown.opening
+        && last_opening().opening != shown.opening
     {
-        opened_by_switch.set((shown.opening, switching));
+        last_opening.set(FileViewOpening {
+            opening: shown.opening,
+            by_switch: switching,
+        });
     }
-    let app_class = match (switching, file_view_open && opened_by_switch().1) {
-        (false, false) => "app",
-        (true, false) => "app switching",
-        (false, true) => "app file-view-instant",
-        (true, true) => "app switching file-view-instant",
-    };
+    let mut app_classes = vec!["app"];
+    if switching {
+        app_classes.push("switching");
+    }
+    if file_view_open && last_opening().by_switch {
+        app_classes.push("file-view-instant");
+    }
+    let app_class = app_classes.join(" ");
     // With servers, the question shows from this computer's panel, and the servers stay in use.
     // An update of this computer's daemon keeps the screen until the new daemon answers.
     let no_daemon = matches!(state.machines.this.connection, ConnectionState::NoDaemon(_))
@@ -104,6 +109,13 @@ pub fn App() -> Element {
             Dialogs {}
         }
     }
+}
+
+/// The file view's last opening, and whether an agent switch opened it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct FileViewOpening {
+    opening: u32,
+    by_switch: bool,
 }
 
 /// True in the frame that draws another agent than the frame before. Effects run once the

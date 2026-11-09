@@ -269,7 +269,7 @@ pub fn choices(state: &AppState, machine: MachineId) -> Vec<AccountChoice> {
 }
 
 /// The new agent dialog's account menu picks an account for good, until a recent folder is
-/// picked. The resume list then shows that account's sessions, from its first.
+/// picked. The resume list then shows that account's sessions, with the first one highlighted.
 pub fn pick_new_agent_account(state: &mut AppState, drafts: &mut Drafts, id: AccountId) {
     if let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog {
         form.account = Some(id);
@@ -285,8 +285,8 @@ pub fn follow_folder_account(state: &mut AppState) {
     }
 }
 
-/// The account whose sessions the "Resume a session" tab lists: the dialog's account. `None`,
-/// every session, when the machine has one account.
+/// The account whose sessions the "Resume a session" tab lists: the dialog's account. `None` when
+/// the machine has one account, and the tab then lists every session.
 pub fn resume_account(state: &AppState, drafts: &Drafts) -> Option<AccountId> {
     let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
         return None;
