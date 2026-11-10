@@ -12,12 +12,10 @@ use crate::prefs::{CommentPlacement, NotificationLevel};
 use crate::state::{RefusedChord, SettingsTab, SettingsView, notification_levels, settings};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::notification_levels::choice_label;
+use crate::ui::presence::{Presence, Shown, use_presence};
 
 const NOTIFICATIONS_LABEL_ID: &str = "setting-notifications";
 const COMMENTS_LABEL_ID: &str = "setting-comments";
-
-/// What the key Esc reads as, which cancels a recording.
-const ESCAPE_KEY: &str = "Escape";
 
 fn placement_label(placement: CommentPlacement) -> &'static str {
     match placement {
@@ -243,13 +241,15 @@ fn CommandRow(
 ) -> Element {
     let cockpit: Cockpit = use_context();
     let default = command.default_chord().shown();
+    // The refusal stays on screen while it folds away, so the rows under it move up with it.
+    let refused_shown = use_presence(refused);
     let record = move |event: KeyboardEvent| {
         event.prevent_default();
         let modifiers = event.modifiers();
         let key = event.key().to_string();
         let ctrl = modifiers.ctrl() || modifiers.meta();
         let (alt, shift) = (modifiers.alt(), modifiers.shift());
-        if key == ESCAPE_KEY && !ctrl && !alt && !shift {
+        if key == keymap::ESCAPE && !ctrl && !alt && !shift {
             cockpit.update(settings::stop_recording);
             return;
         }
@@ -276,6 +276,7 @@ fn CommandRow(
                             let _ = event.data().set_focus(true).await;
                         },
                         onkeydown: record,
+                        onblur: move |_| cockpit.update(settings::recording_left),
                         onclick: move |_| cockpit.update(settings::stop_recording),
                         "Press the new keys · Esc cancels"
                     }
@@ -289,7 +290,7 @@ fn CommandRow(
                     }
                 }
                 span { class: "shortcut-end",
-                    if changed {
+                    Presence { open: changed,
                         button {
                             class: "icon-button tiny binding-reset",
                             title: "Back to {default}",
@@ -301,14 +302,22 @@ fn CommandRow(
                 }
             }
         }
-        if let Some(RefusedChord { chord, refusal, .. }) = refused {
-            div { class: "shortcut-refused", role: "alert",
-                "{refusal.message(&chord)}"
-                if matches!(refusal, Refusal::Taken(_)) {
-                    button {
-                        class: "link-button",
-                        onclick: move |_| cockpit.update(settings::swap_refused),
-                        "Swap them"
+        if let Some(Shown { value: RefusedChord { chord, refusal, .. }, leaving, .. }) = refused_shown {
+            div {
+                class: if leaving { "presence leaving" } else { "presence" },
+                inert: leaving.then_some(true),
+                div { class: "shortcut-refused", role: "alert",
+                    div { class: "refused-clip",
+                        div { class: "refused-text",
+                            "{refusal.message(&chord)}"
+                            if matches!(refusal, Refusal::Taken(_)) {
+                                button {
+                                    class: "link-button",
+                                    onclick: move |_| cockpit.update(settings::swap_refused),
+                                    "Swap them"
+                                }
+                            }
+                        }
                     }
                 }
             }

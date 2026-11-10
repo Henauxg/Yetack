@@ -9,6 +9,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::Value;
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
 /// How the modifiers and the key of a chord are written, as in "Ctrl+Shift+H".
@@ -18,7 +19,7 @@ const SHIFT: &str = "Shift";
 const JOIN: char = '+';
 
 /// Keys that keep their meaning whatever the modifiers.
-const ESCAPE: &str = "Escape";
+pub const ESCAPE: &str = "Escape";
 const TAB: &str = "Tab";
 
 /// The key names a chord shows with a symbol.
@@ -31,8 +32,38 @@ const ARROWS: [(&str, &str); 4] = [
 const SPACE: &str = " ";
 const SPACE_NAME: &str = "Space";
 
-/// The keys pressed alone that are no chord: a chord waits for the key that goes with them.
-const MODIFIER_KEYS: [&str; 6] = ["Control", "Shift", "Alt", "Meta", "AltGraph", "OS"];
+/// The keys that are no chord: a modifier pressed alone waits for the key that goes with it, and a
+/// dead key or an input method's key names no key of its own.
+const NO_CHORD_KEYS: [&str; 9] = [
+    "Control",
+    "Shift",
+    "Alt",
+    "Meta",
+    "AltGraph",
+    "OS",
+    "Dead",
+    "Unidentified",
+    "Process",
+];
+
+/// The keys that move the caret or delete in a text field, with Ctrl a word or a line at a time.
+const EDITING_KEYS: [&str; 10] = [
+    "Backspace",
+    "Delete",
+    "ArrowLeft",
+    "ArrowRight",
+    "ArrowUp",
+    "ArrowDown",
+    "Home",
+    "End",
+    "PageUp",
+    "PageDown",
+];
+
+/// The keys that zoom with Ctrl, Shift or not: Ctrl+0 is Ctrl+Shift+0 on an AZERTY keyboard.
+const ZOOM_KEYS: [&str; 4] = ["0", "-", "=", "+"];
+
+const ENTER: &str = "Enter";
 
 /// A command a shortcut runs. The serde names are the preferences file's.
 #[derive(
@@ -242,7 +273,7 @@ pub struct Chord {
 impl Chord {
     /// The chord of a key press, as the page reports it. `None` for a modifier pressed alone.
     pub fn of(key: &str, ctrl: bool, alt: bool, shift: bool) -> Option<Self> {
-        if key.is_empty() || MODIFIER_KEYS.contains(&key) {
+        if key.is_empty() || NO_CHORD_KEYS.contains(&key) {
             return None;
         }
         Some(Self {
@@ -406,24 +437,37 @@ impl Refusal {
     }
 }
 
-/// The chords with a meaning the app or the system keeps, with that meaning.
+/// The chords with a meaning the app, a text field or the system keeps, with that meaning.
 fn reserved(chord: &Chord) -> Option<&'static str> {
     let key = chord.key.as_str();
+    let character = key.chars().count() == 1;
     if key == ESCAPE || key == TAB {
         return Some("moves the focus or closes what is open");
     }
-    let only_ctrl = chord.ctrl && !chord.alt;
-    let only_alt = chord.alt && !chord.ctrl && !chord.shift;
+    // AltGr is Ctrl+Alt on Windows, and Option types characters on macOS.
+    if character && chord.alt && (chord.ctrl || cfg!(target_os = "macos")) {
+        return Some("types a character on some keyboards");
+    }
+    if key == ENTER && (chord.ctrl || chord.alt) {
+        return Some("starts or sends what the open dialog or the message holds");
+    }
+    if chord.ctrl && EDITING_KEYS.contains(&key) {
+        return Some("moves or deletes in a text field");
+    }
+    if chord.alt && matches!(key, "ArrowLeft" | "ArrowRight") {
+        return Some("goes back or forward a page");
+    }
+    if chord.ctrl && ZOOM_KEYS.contains(&key) {
+        return Some("zooms");
+    }
     match key {
-        "z" | "y" if only_ctrl => Some("undoes or redoes typing"),
-        "c" | "v" | "x" | "a" if only_ctrl && !chord.shift => {
+        "z" | "y" if chord.ctrl => Some("undoes or redoes typing"),
+        "c" | "v" | "x" | "a" if chord.ctrl && !chord.shift => {
             Some("copies, pastes or selects text")
         }
-        "w" if only_ctrl && !chord.shift => Some("closes the shown file"),
-        "r" if only_ctrl && !chord.shift => Some("replies to the selected text"),
-        "0" if only_ctrl && !chord.shift => Some("fits a zoomed image"),
-        "Enter" if only_alt => Some("sends the message when the turn ends"),
-        "F4" if only_alt => Some("closes the window"),
+        "w" if chord.ctrl && !chord.shift => Some("closes the shown file"),
+        "r" if chord.ctrl && !chord.shift => Some("replies to the selected text"),
+        "F4" if chord.alt => Some("closes the window"),
         _ => None,
     }
 }
@@ -466,12 +510,7 @@ impl Keymap {
 
     /// Whether `chord` can run `command`.
     pub fn check(&self, command: Command, chord: &Chord) -> Result<(), Refusal> {
-        if !chord.ctrl && !chord.alt && !chord.is_function_key() {
-            return Err(Refusal::TypesText);
-        }
-        if let Some(meaning) = reserved(chord) {
-            return Err(Refusal::Reserved(meaning));
-        }
+        allowed(chord)?;
         match self.command(chord) {
             Some(other) if other != command => Err(Refusal::Taken(other)),
             Some(_) | None => Ok(()),
@@ -514,15 +553,50 @@ impl Keymap {
         }
     }
 
-    /// The map with only the changes that hold: a chord no command can take, or that two commands
-    /// share, goes back to the default.
+    /// The map with only the changes that hold: a chord no command can take goes back to the
+    /// default, and so do the changed commands that share a chord with another command, until
+    /// none does. A swap holds: both its commands take their chords at once.
     fn checked(changes: BTreeMap<Command, Chord>) -> Self {
-        let mut keymap = Self::default();
-        for (command, chord) in changes {
-            // A refused change keeps the default.
-            let _ = keymap.set(command, chord);
+        let mut keymap = Self {
+            changed: changes
+                .into_iter()
+                .filter(|(command, chord)| {
+                    *chord != command.default_chord() && allowed(chord).is_ok()
+                })
+                .collect(),
+        };
+        loop {
+            let shared: Vec<Command> = keymap
+                .changed
+                .keys()
+                .copied()
+                .filter(|&command| keymap.shares_chord(command))
+                .collect();
+            if shared.is_empty() {
+                return keymap;
+            }
+            for command in shared {
+                keymap.changed.remove(&command);
+            }
         }
-        keymap
+    }
+
+    fn shares_chord(&self, command: Command) -> bool {
+        let chord = self.chord(command);
+        Command::VARIANTS
+            .iter()
+            .any(|&other| other != command && self.chord(other) == chord)
+    }
+}
+
+/// Whether a chord can run a command at all: it takes no typed text and has no meaning of its own.
+fn allowed(chord: &Chord) -> Result<(), Refusal> {
+    if !chord.ctrl && !chord.alt && !chord.is_function_key() {
+        return Err(Refusal::TypesText);
+    }
+    match reserved(chord) {
+        Some(meaning) => Err(Refusal::Reserved(meaning)),
+        None => Ok(()),
     }
 }
 
@@ -539,13 +613,16 @@ impl Serialize for Keymap {
 }
 
 /// A command or a chord this version does not read, from another version of the app or a hand
-/// edit, is left out: its command keeps its default.
+/// edit, is left out: its command keeps its default, and the other preferences still read.
 impl<'de> Deserialize<'de> for Keymap {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let words = BTreeMap::<String, String>::deserialize(deserializer)?;
+        let words =
+            Option::<BTreeMap<String, Value>>::deserialize(deserializer)?.unwrap_or_default();
         let changes = words
             .iter()
-            .filter_map(|(command, chord)| Some((command.parse().ok()?, chord.parse().ok()?)))
+            .filter_map(|(command, chord)| {
+                Some((command.parse().ok()?, chord.as_str()?.parse().ok()?))
+            })
             .collect();
         Ok(Self::checked(changes))
     }
@@ -557,6 +634,68 @@ mod tests {
 
     fn chord(text: &str) -> Chord {
         text.parse().unwrap()
+    }
+
+    #[test]
+    fn a_swap_reads_back_from_the_preferences() {
+        let mut keymap = Keymap::default();
+        keymap.swap(Command::CloseAgent, chord("Ctrl+k")).unwrap();
+        keymap.set(Command::NewAgent, chord("Ctrl+j")).unwrap();
+        keymap.set(Command::OpenFile, chord("Ctrl+n")).unwrap();
+
+        let written = serde_json::to_string(&keymap).unwrap();
+        let read: Keymap = serde_json::from_str(&written).unwrap();
+
+        assert_eq!(read, keymap);
+    }
+
+    #[test]
+    fn a_value_that_is_no_chord_keeps_the_default_and_the_others_hold() {
+        let read: Keymap = serde_json::from_value(serde_json::json!({
+            "switcher": 5,
+            "new_agent": "Ctrl+j",
+        }))
+        .unwrap();
+        let null: Keymap = serde_json::from_value(serde_json::Value::Null).unwrap();
+
+        assert_eq!(read.shown(Command::Switcher), "Ctrl+K");
+        assert_eq!(read.shown(Command::NewAgent), "Ctrl+J");
+        assert_eq!(null, Keymap::default());
+    }
+
+    #[test]
+    fn editing_zoom_and_composed_keys_are_refused() {
+        let keymap = Keymap::default();
+        let refused = |text: &str| keymap.check(Command::Switcher, &chord(text)).is_err();
+        let held = [
+            "Ctrl+Enter",
+            "Ctrl+Backspace",
+            "Ctrl+Delete",
+            "Ctrl+ArrowLeft",
+            "Ctrl+Shift+ArrowRight",
+            "Ctrl+Home",
+            "Ctrl+Shift+End",
+            "Ctrl+PageDown",
+            "Alt+ArrowLeft",
+            "Ctrl+-",
+            "Ctrl+=",
+            "Ctrl+Shift++",
+            "Ctrl+Shift+0",
+            "Ctrl+Alt+w",
+            "Ctrl+Alt+@",
+            "Ctrl+Alt+e",
+        ];
+
+        for text in held {
+            assert!(refused(text), "{text} is taken");
+        }
+        assert_eq!(Chord::of("Dead", true, false, false), None);
+        assert_eq!(Chord::of("Unidentified", true, false, false), None);
+        assert_eq!(
+            keymap.check(Command::Switcher, &chord("Ctrl+Alt+F3")),
+            Ok(())
+        );
+        assert_eq!(keymap.check(Command::Switcher, &chord("Alt+j")), Ok(()));
     }
 
     #[test]
@@ -693,7 +832,8 @@ mod tests {
         let written = serde_json::to_value(&keymap).unwrap();
         let read: Keymap = serde_json::from_value(serde_json::json!({
             "switcher": "Ctrl+j",
-            "new_agent": "Ctrl+j",
+            "new_agent": "Ctrl+l",
+            "files_pane": "Ctrl+l",
             "open_file": "x",
             "teleport": "Ctrl+t",
             "agent_map": "Ctrl+",
@@ -701,6 +841,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(written, serde_json::json!({ "switcher": "Ctrl+j" }));
-        assert_eq!(read, keymap);
+        assert_eq!(
+            read, keymap,
+            "the two commands that share Ctrl+L keep their defaults"
+        );
     }
 }

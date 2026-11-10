@@ -34,6 +34,14 @@ pub fn toggle_recording(state: &mut AppState, command: Command) {
     }
 }
 
+/// The focus left the recording button: the dialog stops waiting for keys, and keeps saying why
+/// the last chord was refused, so that its swap still works.
+pub fn recording_left(state: &mut AppState) {
+    if let Some(view) = view_mut(state) {
+        view.recording = None;
+    }
+}
+
 pub fn stop_recording(state: &mut AppState) {
     if let Some(view) = view_mut(state) {
         view.recording = None;
@@ -204,6 +212,21 @@ mod tests {
             })
         );
         assert_eq!(state.prefs.keys.changed_count(), 0);
+    }
+
+    #[test]
+    fn leaving_the_recording_keeps_the_refusal_and_its_swap() {
+        let mut state = keyboard();
+        toggle_recording(&mut state, Command::CloseAgent);
+        press_chord(&mut state, chord("Ctrl+k"));
+
+        recording_left(&mut state);
+        let left = view(&state);
+        swap_refused(&mut state);
+
+        assert_eq!(left.recording, None);
+        assert!(left.refused.is_some());
+        assert_eq!(state.prefs.keys.shown(Command::CloseAgent), "Ctrl+K");
     }
 
     #[test]

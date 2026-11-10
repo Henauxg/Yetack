@@ -11,6 +11,7 @@ use cockpit_protocol::{AgentId, ItemId};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::bridge::RECORDS_KEYS_ATTRIBUTE;
 use crate::connection::Cockpit;
 use crate::state::{RevealPlace, actions};
 use crate::ui::icons::{Icon, IconKind};
@@ -270,7 +271,8 @@ document.addEventListener("keydown", (event) => {
   const typing = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
     || target instanceof HTMLSelectElement || (target instanceof HTMLElement && target.isContentEditable);
   const inFileView = target instanceof Element && target.closest(`#${settings.file_view_id}`) !== null;
-  if (event.key !== "End" || typing || inFileView || keysBlocked || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
+  const recording = target instanceof Element && target.closest(`[${settings.records_keys_attribute}]`) !== null;
+  if (event.key !== "End" || typing || inFileView || recording || keysBlocked || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) {
     return;
   }
   event.preventDefault();
@@ -287,6 +289,8 @@ struct Settings {
     jump_button_id: &'static str,
     /// End there is the file view's.
     file_view_id: &'static str,
+    /// Marks the element that records a shortcut, whose keys the script leaves alone.
+    records_keys_attribute: &'static str,
     revealed_class: &'static str,
     bottom_threshold_px: u16,
     /// The room an entry the chat scrolls to keeps above it.
@@ -385,6 +389,7 @@ pub fn use_chat_scroll(cockpit: Cockpit) -> Signal<Option<TopEntry>> {
             fold_button_class: FOLD_BUTTON_CLASS,
             jump_button_id: JUMP_BUTTON_ID,
             file_view_id: FILE_VIEW_ID,
+            records_keys_attribute: RECORDS_KEYS_ATTRIBUTE,
             revealed_class: REVEALED_CLASS,
             bottom_threshold_px: BOTTOM_THRESHOLD_PX,
             reveal_top_px: REVEAL_TOP_PX,
@@ -465,6 +470,7 @@ mod tests {
             fold_button_class: FOLD_BUTTON_CLASS,
             jump_button_id: JUMP_BUTTON_ID,
             file_view_id: FILE_VIEW_ID,
+            records_keys_attribute: RECORDS_KEYS_ATTRIBUTE,
             revealed_class: REVEALED_CLASS,
             bottom_threshold_px: BOTTOM_THRESHOLD_PX,
             reveal_top_px: REVEAL_TOP_PX,
@@ -481,6 +487,7 @@ mod tests {
                 "fold_button_class": "fold-lines",
                 "jump_button_id": "jump-to-latest",
                 "file_view_id": "file-view",
+                "records_keys_attribute": "data-records-keys",
                 "revealed_class": "chat-revealed",
                 "bottom_threshold_px": 40,
                 "reveal_top_px": 12,

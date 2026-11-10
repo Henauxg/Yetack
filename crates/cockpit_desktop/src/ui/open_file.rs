@@ -10,6 +10,7 @@ use dioxus::prelude::*;
 use crate::bridge::{self, HIGHLIGHTED_CLASS, OPEN_FILE_FIELD_ID};
 use crate::connection::Cockpit;
 use crate::format;
+use crate::keymap::Command;
 use crate::path_style::PathStyle;
 use crate::state::actions::Direction;
 use crate::state::open_file::{self, NameSearch, Row, Take};
@@ -57,6 +58,14 @@ pub fn OpenFileDialog(view: OpenFileView) -> Element {
         .listing
         .loaded()
         .map_or(0, |listing| listing.entries.len());
+    let open_keys = cockpit
+        .state
+        .read()
+        .prefs
+        .keys
+        .chord(Command::OpenFile)
+        .caps()
+        .join(" ");
     rsx! {
         div {
             class: "dialog open-file",
@@ -65,7 +74,7 @@ pub fn OpenFileDialog(view: OpenFileView) -> Element {
             onclick: move |event| event.stop_propagation(),
             div { class: "dialog-head",
                 h2 { "Open file" }
-                span { class: "key-hint", "Ctrl O" }
+                span { class: "key-hint", "{open_keys}" }
                 button {
                     class: "icon-button small",
                     aria_label: "Close",

@@ -281,7 +281,7 @@ fn SwitcherDialog() -> Element {
                         _ => {}
                     },
                 }
-                span { class: "key-hint", "Ctrl K" }
+                span { class: "key-hint", "{cockpit.state.read().prefs.keys.chord(Command::Switcher).caps().join(\" \")}" }
                 button {
                     class: "icon-button",
                     aria_label: "Close",
@@ -335,7 +335,7 @@ fn NewAgentDialog(form: NewAgentForm) -> Element {
             },
             div { class: "dialog-head",
                 h2 { "New agent" }
-                span { class: "key-hint", "Ctrl N" }
+                span { class: "key-hint", "{cockpit.state.read().prefs.keys.chord(Command::NewAgent).caps().join(\" \")}" }
                 button {
                     class: "icon-button small",
                     aria_label: "Close",

@@ -211,6 +211,11 @@ document.addEventListener("keydown", (event) => {
     take = bound.reach === "everywhere"
       || (bound.reach === "page_or_title" && !mode.dialog && (where === "page" || titleField))
       || (bound.reach === "outside_fields" && where !== "field" && !mode.dialog);
+    // Where its command does not reach, F5 runs nothing, and still never reloads the page.
+    if (!take && key === settings.page_reload_key) {
+      event.preventDefault();
+      return;
+    }
   } else if (key === "Escape") {
     take = true;
   } else if (key === settings.page_reload_key) {

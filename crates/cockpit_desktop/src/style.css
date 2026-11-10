@@ -4581,6 +4581,7 @@ html.reordering * {
 
 .binding-reset {
   color: var(--dim);
+  animation: fade-in var(--motion-in) var(--ease-out) backwards;
 }
 
 /* The column after the keys: a changed shortcut's reset, or a fixed one's lock. */
@@ -4594,17 +4595,54 @@ html.reordering * {
   color: var(--dim);
 }
 
+/* Folds open and shut by its row's height, so the rows under it move with it. */
 .shortcut-refused {
+  display: grid;
+  grid-template-rows: 1fr;
+  margin: 0 0 4px;
+  animation: refused-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.presence.leaving > .shortcut-refused {
+  animation: refused-out var(--motion-out) var(--ease-in) forwards;
+}
+
+.refused-clip {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.refused-text {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   gap: 8px;
-  margin: 0 0 4px;
   padding: 6px 8px;
   border-radius: 6px;
   background: rgba(244, 112, 103, 0.08);
   color: var(--red);
   font-size: 12px;
+}
+
+@keyframes refused-in {
+  from {
+    grid-template-rows: 0fr;
+    margin-bottom: 0;
+    opacity: 0;
+  }
+}
+
+@keyframes refused-out {
+  to {
+    grid-template-rows: 0fr;
+    margin-bottom: 0;
+    opacity: 0;
+  }
+}
+
+
+.presence.leaving > .binding-reset {
+  animation: fade-out var(--motion-out) var(--ease-in) forwards;
 }
 
 .shortcut-refused .link-button {
@@ -8097,7 +8135,6 @@ html.splitting .sidebar {
 
 .block-body,
 .subagent-body,
-.shortcut-refused,
 .compact-search > .tool-io,
 .thinking-text,
 .notice-detail,

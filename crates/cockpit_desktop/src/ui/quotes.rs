@@ -671,6 +671,9 @@ document.addEventListener("keydown", (event) => {
   }
   const command = event.ctrlKey || event.metaKey;
   const target = event.target;
+  if (target instanceof Element && target.closest(`[${settings.records_keys_attribute}]`) !== null) {
+    return;
+  }
   if (command && !event.altKey && !event.shiftKey && event.key.toLowerCase() === settings.reply_key) {
     // Ctrl+R would reload the page.
     event.preventDefault();
@@ -715,6 +718,8 @@ struct Settings {
     comment_field_id: &'static str,
     revealed_class: &'static str,
     reply_key: &'static str,
+    /// Marks the element that records a shortcut, whose keys the script leaves alone.
+    records_keys_attribute: &'static str,
     /// How long a passage the chat scrolled to stays lit.
     flash_ms: u32,
     /// How long "You replied" waits for the pointer to come back before it goes.
@@ -807,6 +812,7 @@ pub fn use_quotes(cockpit: Cockpit) {
             comment_field_id: COMMENT_FIELD_ID,
             revealed_class: REVEALED_CLASS,
             reply_key: REPLY_KEY,
+            records_keys_attribute: bridge::RECORDS_KEYS_ATTRIBUTE,
             flash_ms: 1200,
             hide_ms: 250,
             you_replied: "You replied",
