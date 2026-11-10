@@ -9,7 +9,7 @@ use crate::connection::Cockpit;
 use crate::prefs::{CommentPlacement, NotificationLevel, PaneState};
 use crate::state::{notification_levels, settings};
 use crate::ui::icons::{Icon, IconKind};
-use crate::ui::notification_levels::choice_label;
+use crate::ui::notification_levels as levels_ui;
 
 const NOTIFICATIONS_LABEL_ID: &str = "setting-notifications";
 const COMMENTS_LABEL_ID: &str = "setting-comments";
@@ -65,11 +65,11 @@ pub fn SettingsDialog() -> Element {
                     div { class: "segmented", role: "group", aria_labelledby: NOTIFICATIONS_LABEL_ID,
                         for &level in NotificationLevel::VARIANTS {
                             button {
-                                key: "{choice_label(level)}",
+                                key: "{levels_ui::choice_label(level)}",
                                 class: if level == notifications { "segment chosen" } else { "segment" },
                                 aria_pressed: level == notifications,
                                 onclick: move |_| cockpit.set_notifications(None, level),
-                                "{choice_label(level)}"
+                                "{levels_ui::choice_label(level)}"
                             }
                         }
                     }
