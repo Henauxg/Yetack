@@ -18,6 +18,7 @@ use crate::daemon_label::DaemonLabel;
 use crate::in_app_host::InAppHost;
 use crate::machine::MachineId;
 use crate::notifications::Notifier;
+use crate::prefs::NotificationLevel;
 use crate::reach::{self, Places, Reached, Unreached};
 use crate::state::daemon_update::{self, OutputLine, OutputStream, UpdatePlan, VersionGap};
 use crate::state::machine_load::{LOAD_POLL, LoadView, ShownLoad};
@@ -25,7 +26,7 @@ use crate::state::machines::{self, MachineChange};
 use crate::state::no_daemon::{self, Absence, Chosen, DaemonChoice};
 use crate::state::{
     self, AgentEntry, AppState, ConnectionState, Dialog, Drafts, MachineState, Outgoing, Purpose,
-    TitlePlace, Utf16Offset, actions,
+    TitlePlace, Utf16Offset, actions, notification_levels,
 };
 use crate::{bridge, demo, update_script};
 
@@ -40,6 +41,8 @@ pub struct Startup {
     pub places: Places,
     /// The daemon the app runs itself, which the window's close stops.
     pub in_app: InAppHost,
+    /// Whether the app can raise notifications at all: the demo never does. The levels in the
+    /// preferences decide which ones it raises.
     pub notifications: bool,
     /// Answers requests from the sample state instead of a daemon.
     pub demo: bool,
@@ -66,6 +69,9 @@ pub enum ToDaemon {
     /// Runs or cancels the update of a daemon that refuses the app. Plain SSH, beside the
     /// connection, which keeps being refused meanwhile.
     Update(UpdateCommand),
+    /// The notification levels changed: each machine's notifier closes what they no longer let
+    /// through.
+    NotificationLevels,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,6 +148,16 @@ impl Cockpit {
         if let Some(chosen) = chosen {
             self.daemon.send(ToDaemon::Choose(chosen));
         }
+    }
+
+    /// Sets the notification level of `agent`, or the app's for `None`.
+    pub fn set_notifications(&self, agent: Option<AgentId>, level: NotificationLevel) {
+        let mut signal = self.state;
+        match agent {
+            Some(agent) => notification_levels::set_agent(&mut signal.write(), agent, level),
+            None => notification_levels::set_app(&mut signal.write(), level),
+        }
+        self.daemon.send(ToDaemon::NotificationLevels);
     }
 
     pub fn update(&self, change: impl FnOnce(&mut AppState)) {
@@ -354,6 +370,13 @@ async fn route(
                 servers.start_update_command(state, command.clone());
                 continue;
             }
+            ToDaemon::NotificationLevels => {
+                for task in servers.tasks.values() {
+                    // A task that ended has no notifier.
+                    let _ = task.send(ToDaemon::NotificationLevels);
+                }
+                continue;
+            }
         };
         if let Some(task) = servers.tasks.get(&machine) {
             // A task that ended takes no more requests.
@@ -552,7 +575,7 @@ async fn refuse_requests(
             () = &mut wait => return true,
             message = requests.recv() => match message {
                 Some(ToDaemon::Machines(MachineChange::Retry(_))) => return true,
-                Some(ToDaemon::Machines(_) | ToDaemon::Update(_)) => {}
+                Some(ToDaemon::Machines(_) | ToDaemon::Update(_) | ToDaemon::NotificationLevels) => {}
                 Some(ToDaemon::Send(Outgoing { request, purpose, .. })) => {
                     let mut state = state.write();
                     state::apply_response(
@@ -611,7 +634,8 @@ async fn run_demo(
                     Some(
                         ToDaemon::Choose(_)
                         | ToDaemon::Machines(_)
-                        | ToDaemon::Update(UpdateCommand::Cancel(..)),
+                        | ToDaemon::Update(UpdateCommand::Cancel(..))
+                        | ToDaemon::NotificationLevels,
                     ) => continue,
                     None => return,
                 };
@@ -810,7 +834,7 @@ async fn next_choice(
     loop {
         match requests.recv().await? {
             ToDaemon::Choose(chosen) => return Some(chosen),
-            ToDaemon::Machines(_) | ToDaemon::Update(_) => {}
+            ToDaemon::Machines(_) | ToDaemon::Update(_) | ToDaemon::NotificationLevels => {}
             ToDaemon::Send(Outgoing {
                 request, purpose, ..
             }) => {
@@ -940,6 +964,11 @@ async fn serve(
                     if !answers {
                         session = Session::start(transport.clone(), Backoff::default());
                         requester = session.requester().clone();
+                    }
+                }
+                Some(ToDaemon::NotificationLevels) => {
+                    if let Some(notifier) = &mut notifier {
+                        notifier.update(Vec::new(), &state.peek());
                     }
                 }
                 // The screen shows only before a first connection.

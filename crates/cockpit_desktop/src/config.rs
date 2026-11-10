@@ -13,6 +13,9 @@
 //! enabled = true
 //! ```
 //!
+//! `[notifications] enabled = false` turns the app's notifications off until a choice in the
+//! window. The window's bell sets them from then on, and its choice is saved with the preferences.
+//!
 //! The daemon may also be `transport = "local"`, with an optional `socket` and `start_service`,
 //! or `transport = "in_app"`, the daemon in the app's own process. A missing file means the local
 //! daemon, at its default socket.
@@ -136,6 +139,8 @@ struct MachinesSection<'config> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct NotificationsConfig {
+    /// The app's starting notification level: `false` is "Off". Read only until the window
+    /// saves a level of its own.
     pub enabled: bool,
 }
 

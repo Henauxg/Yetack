@@ -14,7 +14,7 @@ use super::accounts::{self, SignIns};
 use super::app_state::{AgentEntry, AppState, ConnectionState, Loadable};
 use super::drafts::Drafts;
 use super::transcript::KEPT_ITEMS_AWAY;
-use super::{actions, daemon_update, file_reread};
+use super::{actions, daemon_update, file_reread, notification_levels};
 use crate::machine::MachineId;
 
 /// How long the app waits to announce that an idle agent's last background task ended. Claude
@@ -206,6 +206,7 @@ pub fn apply(
         }
         Event::AgentRemoved { agent } => {
             forget_agent(state, drafts, agent);
+            notification_levels::forget_agent(state, agent);
             state.ui.closing.remove(&agent);
             if state.ui.selected == Some(agent) {
                 state.ui.selected = None;

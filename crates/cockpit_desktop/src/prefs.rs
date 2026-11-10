@@ -15,12 +15,19 @@
 //!     "colors": {
 //!       "build-box": { "1": "violet" }
 //!     }
+//!   },
+//!   "notifications": {
+//!     "app": "all",
+//!     "agents": {
+//!       "build-box": { "4": "off", "7": "needs_you" }
+//!     }
 //!   }
 //! }
 //! ```
 //!
 //! The daemon keeps no color for an account, so each viewer chooses them here, per daemon machine
-//! and account id.
+//! and account id. Notifications are this desktop's too: per daemon machine and the daemon's
+//! agent id.
 //!
 //! The file is on the machine the app runs on, in a folder apart from the daemon's, which holds a
 //! local daemon's socket. A missing or unreadable file means the defaults, and a field the app
@@ -32,7 +39,7 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use cockpit_protocol::{AccountId, AgentStatus, AgentSummary, Mark};
+use cockpit_protocol::{AccountId, AgentId, AgentStatus, AgentSummary, Mark};
 use dioxus::prelude::*;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use strum::{EnumString, IntoStaticStr, VariantArray};
@@ -56,6 +63,73 @@ pub struct Prefs {
     pub file_view: FileViewPrefs,
     pub sidebar: SidebarPrefs,
     pub accounts: AccountPrefs,
+    pub notifications: NotificationPrefs,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NotificationPrefs {
+    /// The app's level. `None` until a choice in the window: the config file's
+    /// `[notifications]` gives it until then.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<NotificationLevel>,
+    /// The agents whose level is not `All`, by daemon machine, then by the daemon's agent id.
+    pub agents: BTreeMap<String, BTreeMap<AgentId, NotificationLevel>>,
+}
+
+impl NotificationPrefs {
+    pub fn agent(&self, machine: &str, agent: AgentId) -> NotificationLevel {
+        self.agents
+            .get(machine)
+            .and_then(|levels| levels.get(&agent))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Sets the agent's level. `All` removes its entry, and the machine's once it is empty.
+    pub fn set_agent(&mut self, machine: &str, agent: AgentId, level: NotificationLevel) {
+        if level != NotificationLevel::All {
+            self.agents
+                .entry(machine.to_owned())
+                .or_default()
+                .insert(agent, level);
+            return;
+        }
+        if let Some(levels) = self.agents.get_mut(machine) {
+            levels.remove(&agent);
+            if levels.is_empty() {
+                self.agents.remove(machine);
+            }
+        }
+    }
+}
+
+/// Which notifications an agent, or the whole app, raises.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumString, IntoStaticStr, VariantArray,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum NotificationLevel {
+    #[default]
+    All,
+    /// Only when the agent needs you, not when it finishes.
+    NeedsYou,
+    Off,
+}
+
+impl Serialize for NotificationLevel {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.into())
+    }
+}
+
+/// A word this version does not know reads as `All`: a lost preference is better than a lost
+/// file.
+impl<'de> Deserialize<'de> for NotificationLevel {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let word = String::deserialize(deserializer)?;
+        Ok(word.parse().unwrap_or_default())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -438,6 +512,14 @@ mod tests {
         "1": "violet"
       }
     }
+  },
+  "notifications": {
+    "app": "needs_you",
+    "agents": {
+      "build-box": {
+        "4": "off"
+      }
+    }
   }
 }
 "#;
@@ -462,6 +544,13 @@ mod tests {
                             (AccountId::DEFAULT, AccountColor::Sand),
                             (AccountId::new(1), AccountColor::Violet),
                         ]),
+                    )]),
+                },
+                notifications: NotificationPrefs {
+                    app: Some(NotificationLevel::NeedsYou),
+                    agents: BTreeMap::from([(
+                        "build-box".to_owned(),
+                        BTreeMap::from([(AgentId::new(4), NotificationLevel::Off)]),
                     )]),
                 },
             }
@@ -535,6 +624,40 @@ mod tests {
     }
 
     #[test]
+    fn the_notification_words_are_pinned_and_an_unknown_one_reads_as_all() {
+        let words: Vec<&str> = NotificationLevel::VARIANTS
+            .iter()
+            .map(|&level| level.into())
+            .collect();
+        let prefs: Prefs = serde_json::from_str(
+            r#"{"notifications": {"app": "off", "agents": {"build-box": {"4": "needs_you", "7": "muted"}}}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(words, ["all", "needs_you", "off"]);
+        assert_eq!(prefs.notifications.app, Some(NotificationLevel::Off));
+        assert_eq!(
+            prefs.notifications.agent("build-box", AgentId::new(4)),
+            NotificationLevel::NeedsYou
+        );
+        assert_eq!(
+            prefs.notifications.agent("build-box", AgentId::new(7)),
+            NotificationLevel::All
+        );
+    }
+
+    #[test]
+    fn an_agent_back_to_all_leaves_no_entry() {
+        let mut notifications = NotificationPrefs::default();
+        notifications.set_agent("build-box", AgentId::new(4), NotificationLevel::Off);
+        notifications.set_agent("build-box", AgentId::new(4), NotificationLevel::All);
+
+        assert_eq!(notifications, NotificationPrefs::default());
+        let text = serde_json::to_string(&notifications).unwrap();
+        assert_eq!(text, r#"{"agents":{}}"#);
+    }
+
+    #[test]
     fn a_missing_or_broken_file_gives_the_defaults() {
         let temp = tempfile::tempdir().unwrap();
         let broken = temp.path().join(PREFS_FILE);
@@ -580,6 +703,7 @@ mod tests {
                 width: Some(220),
             },
             accounts: AccountPrefs::default(),
+            notifications: NotificationPrefs::default(),
         };
 
         prefs.save(&file).unwrap();
@@ -613,6 +737,7 @@ mod tests {
                 width: Some(220),
             },
             accounts: AccountPrefs::default(),
+            notifications: NotificationPrefs::default(),
         };
 
         Prefs::default().save(&file).unwrap();

@@ -23,6 +23,7 @@ mod machines;
 mod markdown;
 mod mcp;
 mod no_daemon;
+mod notification_levels;
 mod open_file;
 mod palette;
 mod presence;

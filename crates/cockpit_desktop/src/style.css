@@ -763,6 +763,90 @@ button:disabled {
     opacity var(--motion-in) var(--ease-out);
 }
 
+/* An agent's notification level beside its row's time, when it is not "All". It grows in and
+   shrinks out as the flag does. */
+.row-bell {
+  flex: none;
+  display: inline-flex;
+  width: 0;
+  overflow: hidden;
+  opacity: 0;
+  color: var(--dim);
+  transition:
+    width var(--motion-out) var(--ease-in),
+    opacity var(--motion-out) var(--ease-in);
+}
+
+.row-bell.on {
+  width: 13px;
+  opacity: 1;
+  transition:
+    width var(--motion-in) var(--ease-out),
+    opacity var(--motion-in) var(--ease-out);
+}
+
+/* A bell with an amber dot: notifications only when an agent needs you. */
+.level-bell {
+  position: relative;
+  display: inline-flex;
+}
+
+.bell-dot {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--amber);
+}
+
+/* Narrower than elsewhere, so that the name and three buttons fit the default sidebar. */
+.sidebar-head .icon-button {
+  width: 30px;
+}
+
+.sidebar-head .app-name {
+  white-space: nowrap;
+}
+
+.bell-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.app-bell.off {
+  background: color-mix(in srgb, var(--amber) 14%, transparent);
+  color: var(--amber);
+}
+
+.app-bell.off:hover {
+  background: color-mix(in srgb, var(--amber) 22%, transparent);
+  color: var(--amber);
+}
+
+/* Under the control that opens it. `.popover.menu` would put it above. */
+.popover.menu.notification-menu {
+  --enter-y: -4px;
+  left: 0;
+  top: calc(100% + 6px);
+  bottom: auto;
+  width: 250px;
+  transform-origin: top left;
+}
+
+.notification-menu .menu-item {
+  gap: 16px;
+  white-space: nowrap;
+}
+
+.menu-note {
+  margin: 0;
+  padding: 2px 10px 8px;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
 .agent-row.to-handle {
   box-shadow: inset 3px 0 0 var(--violet);
 }
@@ -786,10 +870,18 @@ button:disabled {
   --enter-y: -4px;
   position: fixed;
   left: min(var(--menu-x), calc(100vw - 262px));
-  top: min(var(--menu-y), calc(100vh - 280px));
+  /* The menu is about 430 px high. */
+  top: max(8px, min(var(--menu-y), calc(100vh - 440px)));
   bottom: auto;
   width: 250px;
   transform-origin: top left;
+}
+
+/* A group of a menu's items under its title, as wide as the menu. */
+.menu-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .row-menu .menu-item {
@@ -1063,6 +1155,37 @@ html.reordering * {
 
 .header-title {
   position: relative;
+}
+
+/* The selected agent's notification level, when it is not "All". A click opens its choices. */
+.tag-anchor {
+  position: relative;
+  display: inline-flex;
+  animation: fade-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.presence.leaving > .tag-anchor {
+  animation: fade-out var(--motion-out) var(--ease-in) forwards;
+}
+
+.notification-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 6px;
+  border: 1px solid var(--line-control);
+  background: transparent;
+  color: var(--muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.notification-tag:hover,
+.notification-tag.open {
+  background: var(--hover);
+  color: var(--text);
 }
 
 /* Under the title: the grid of emoji, then "No emoji". Rust sets the grid's columns. */
@@ -6756,6 +6879,7 @@ label.icon-button,
 .filter-chip:active,
 .file-list-button:active,
 .file-list-close:active,
+.notification-tag:active,
 .file-reload:not(:disabled):active,
 .zoom-frame.opens:active {
   transform: scale(var(--press-scale));
