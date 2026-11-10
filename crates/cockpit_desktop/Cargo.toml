@@ -45,6 +45,10 @@ url = "2.5.8"
 # The browser opener Dioxus uses, where the app does not run `xdg-open` itself.
 webbrowser = "1.2.6"
 
+# The web view's settings, from the binding and the version wry brings.
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = "2.0.1"
+
 [dev-dependencies]
 tempfile.workspace = true
 

@@ -25,6 +25,8 @@ mod service;
 mod state;
 mod ui;
 mod update_script;
+#[cfg(target_os = "linux")]
+mod webview_settings;
 
 use std::process::ExitCode;
 

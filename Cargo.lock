@@ -582,6 +582,7 @@ dependencies = [
  "two-face",
  "url",
  "webbrowser",
+ "webkit2gtk",
 ]
 
 [[package]]
