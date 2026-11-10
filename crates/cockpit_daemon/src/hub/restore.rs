@@ -223,6 +223,50 @@ mod tests {
         assert!(second.items().is_empty());
     }
 
+    /// The saved mark wins over the one the agent's last logged summary carries.
+    #[test]
+    fn the_mark_comes_back_from_the_agents_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = StateDir::create(temp.path()).unwrap();
+        let marked = AgentRecord {
+            to_handle: true,
+            ..record(1)
+        };
+        AgentsFile {
+            next_agent: AgentId::new(3),
+            replay_floor: None,
+            agents: vec![marked.clone(), record(2)],
+        }
+        .save(&state.agents_file())
+        .unwrap();
+        let mut logs = EventLogs::new(state.events());
+        let mut cleared = initial_summary(&marked);
+        cleared.to_handle = false;
+        log(
+            &mut logs,
+            LogName::Agent(AgentId::new(1)),
+            1,
+            Event::AgentAdded(cleared),
+        );
+        let mut stale = initial_summary(&record(2));
+        stale.to_handle = true;
+        log(
+            &mut logs,
+            LogName::Agent(AgentId::new(2)),
+            2,
+            Event::AgentAdded(stale),
+        );
+
+        let restored = restore(&state, &temp.path().join("claude")).unwrap();
+
+        let marks: Vec<bool> = restored
+            .agents
+            .iter()
+            .map(|(_, view)| view.summary().to_handle)
+            .collect();
+        assert_eq!(marks, [true, false]);
+    }
+
     /// Each log applies in its own order, wherever the other logs put their numbers, and a line
     /// that does not decode costs only itself.
     #[test]

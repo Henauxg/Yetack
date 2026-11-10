@@ -1,7 +1,9 @@
 //! Agent text rendered from the markdown tree, with `path:line` references and links to files
 //! as links into the file view, and Markdown images of files shown in place.
 
-use std::path::PathBuf;
+use std::cell::RefCell;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use cockpit_protocol::AgentId;
 use dioxus::prelude::*;
@@ -194,16 +196,39 @@ fn FileLink(agent: AgentId, file: FileRef) -> Element {
 #[component]
 fn ChatImage(agent: AgentId, path: String, alt: String) -> Element {
     let cockpit: Cockpit = use_context();
-    let file = PathBuf::from(&path);
-    let wanted = file.clone();
-    use_effect(move || cockpit.update(|state| chat_images::want(state, agent, &wanted)));
-    let shown = chat_images::image(&cockpit.state.read(), agent, &file).cloned();
+    // The image this place shows, given back when it shows another or leaves the screen.
+    let held = use_hook(|| Rc::new(RefCell::new(None::<(AgentId, PathBuf)>)));
+    let showing = Rc::clone(&held);
+    use_effect(use_reactive((&agent, &path), move |(agent, path)| {
+        let file = PathBuf::from(path);
+        let before = showing.replace(Some((agent, file.clone())));
+        cockpit.update(|state| {
+            if let Some((agent, path)) = &before {
+                chat_images::hide(state, *agent, path);
+            }
+            chat_images::show(state, agent, &file);
+        });
+    }));
+    use_drop(move || {
+        let Some((agent, path)) = held.take() else {
+            return;
+        };
+        let mut signal = cockpit.state;
+        // The state is gone when the window closes.
+        if let Ok(mut state) = signal.try_write() {
+            chat_images::hide(&mut state, agent, &path);
+        }
+    });
+    // Rendered again only when the image changes, not on every change of the state.
+    let shown = use_memo(use_reactive((&agent, &path), move |(agent, path)| {
+        chat_images::image(&cockpit.state.read(), agent, Path::new(&path))
+    }));
     let label = if alt.is_empty() {
         path.clone()
     } else {
         alt.clone()
     };
-    let body = match shown {
+    let body = match shown() {
         Some(Loadable::Loaded(image)) => rsx! {
             img { src: bridge::image_url(&image), alt: "{label}" }
         },
@@ -219,7 +244,7 @@ fn ChatImage(agent: AgentId, path: String, alt: String) -> Element {
             class: "chat-image",
             title: "{path}",
             onclick: move |_| {
-                let path = file.clone();
+                let path = PathBuf::from(&path);
                 cockpit.update(|state| actions::open_file(state, agent, path, None));
             },
             {body}

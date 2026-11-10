@@ -28,6 +28,8 @@ const WEB_SCHEMES: [&str; 2] = ["http", "https"];
 
 /// The starts of the bare web addresses that a text turns into links.
 const WEB_URL_STARTS: [&str; 2] = ["http://", "https://"];
+/// What both of [`WEB_URL_STARTS`] start with.
+const WEB_URL_PREFIX: &str = "http";
 
 /// The extensions of the images a message shows, those the daemon sends as images.
 const IMAGE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
@@ -469,7 +471,7 @@ fn link(url: &str, content: Vec<Inline>, style: PathStyle) -> Vec<Inline> {
     if is_web_url(url) {
         return vec![Inline::Link {
             url: url.to_owned(),
-            content,
+            content: unlinked(content),
         }];
     }
     let Some((path, line)) = local_file_target(url, style) else {
@@ -485,6 +487,24 @@ fn link(url: &str, content: Vec<Inline>, style: PathStyle) -> Vec<Inline> {
         path: path.to_owned(),
         line,
     })]
+}
+
+/// A web link's content, whose links, files and images become their text: a click anywhere in
+/// the link opens the link's own address.
+fn unlinked(content: Vec<Inline>) -> Vec<Inline> {
+    let mut flat = Vec::with_capacity(content.len());
+    for inline in content {
+        match inline {
+            Inline::Link { content, .. } => flat.extend(unlinked(content)),
+            Inline::File(file) => flat.push(Inline::Text(file.text)),
+            Inline::Image { alt, .. } => flat.push(Inline::Text(alt)),
+            Inline::Strong(content) => flat.push(Inline::Strong(unlinked(content))),
+            Inline::Emphasis(content) => flat.push(Inline::Emphasis(unlinked(content))),
+            Inline::Strikethrough(content) => flat.push(Inline::Strikethrough(unlinked(content))),
+            Inline::Text(_) | Inline::Code(_) | Inline::LineBreak => flat.push(inline),
+        }
+    }
+    merge_texts(flat)
 }
 
 fn is_web_url(url: &str) -> bool {
@@ -558,8 +578,7 @@ fn is_file_target(path: &str, style: PathStyle) -> bool {
         && !style.goes_up(path)
 }
 
-/// Merges adjacent texts, then splits them around `path:line` references.
-fn finish_inlines(inlines: Vec<Inline>, style: PathStyle) -> Vec<Inline> {
+fn merge_texts(inlines: Vec<Inline>) -> Vec<Inline> {
     let mut merged: Vec<Inline> = Vec::with_capacity(inlines.len());
     for inline in inlines {
         if let Inline::Text(text) = &inline
@@ -570,6 +589,12 @@ fn finish_inlines(inlines: Vec<Inline>, style: PathStyle) -> Vec<Inline> {
         }
         merged.push(inline);
     }
+    merged
+}
+
+/// Merges adjacent texts, then splits them around `path:line` references.
+fn finish_inlines(inlines: Vec<Inline>, style: PathStyle) -> Vec<Inline> {
+    let merged = merge_texts(inlines);
     let mut finished = Vec::with_capacity(merged.len());
     for inline in merged {
         let Inline::Text(text) = inline else {
@@ -607,33 +632,31 @@ fn split_web_urls(text: &str) -> Vec<(&str, Option<&str>)> {
     let lower = text.to_ascii_lowercase();
     let mut pieces = Vec::new();
     let mut plain_start = 0;
-    let mut search_from = 0;
-    while let Some(start) = WEB_URL_STARTS
-        .iter()
-        .filter_map(|scheme| Some(search_from + lower.get(search_from..)?.find(scheme)?))
-        .min()
-    {
-        search_from = start + 1;
+    for (start, _) in lower.match_indices(WEB_URL_PREFIX) {
+        let rest = lower.get(start..).unwrap_or_default();
+        let Some(scheme) = WEB_URL_STARTS
+            .iter()
+            .find(|scheme| rest.starts_with(*scheme))
+        else {
+            continue;
+        };
         let word_start = text
             .get(..start)
             .and_then(|before| before.chars().next_back())
             .is_none_or(|before| before.is_whitespace() || "([<\"'".contains(before));
+        if start < plain_start || !word_start {
+            continue;
+        }
         let rest = text.get(start..).unwrap_or_default();
         let length = rest
             .find(|character: char| character.is_whitespace() || "<>\"`".contains(character))
             .unwrap_or(rest.len());
-        let Some(url) = rest.get(..length).map(trim_url_end) else {
-            continue;
-        };
-        let has_host = WEB_URL_STARTS
-            .iter()
-            .any(|scheme| url.len() > scheme.len() && url.to_ascii_lowercase().starts_with(scheme));
-        if !word_start || !has_host {
+        let url = trim_url_end(rest.get(..length).unwrap_or_default());
+        if url.len() <= scheme.len() {
             continue;
         }
         pieces.push((text.get(plain_start..start).unwrap_or_default(), Some(url)));
         plain_start = start + url.len();
-        search_from = plain_start;
     }
     pieces.push((text.get(plain_start..).unwrap_or_default(), None));
     pieces
@@ -642,21 +665,18 @@ fn split_web_urls(text: &str) -> Vec<(&str, Option<&str>)> {
 /// The address without what ends the sentence around it: a final `.`, `,`, `:`, `;`, `!`, `?`,
 /// `'`, or a `)` that no `(` in the address opens.
 fn trim_url_end(url: &str) -> &str {
-    let mut url = url;
-    loop {
-        let trimmed = url.trim_end_matches(['.', ',', ':', ';', '!', '?', '\'']);
-        let unmatched_close =
-            trimmed.ends_with(')') && trimmed.matches(')').count() > trimmed.matches('(').count();
-        let trimmed = if unmatched_close {
-            trimmed.get(..trimmed.len() - 1).unwrap_or(trimmed)
-        } else {
-            trimmed
-        };
-        if trimmed.len() == url.len() {
-            return url;
+    let opened = url.matches('(').count();
+    let mut closed = url.matches(')').count();
+    let mut kept = url;
+    while let Some(last) = kept.chars().next_back() {
+        if last == ')' && closed > opened {
+            closed -= 1;
+        } else if !".,:;!?'".contains(last) {
+            break;
         }
-        url = trimmed;
+        kept = kept.get(..kept.len() - last.len_utf8()).unwrap_or_default();
     }
+    kept
 }
 
 fn is_path_byte(byte: u8, style: PathStyle) -> bool {
@@ -1054,6 +1074,40 @@ mod tests {
             paragraph("xhttps://example.org and https:// alone"),
             vec![text("xhttps://example.org and https:// alone")]
         );
+    }
+
+    /// A click anywhere in a web link opens its own address, so nothing inside it is a link.
+    #[test]
+    fn a_web_link_holds_no_other_link_file_or_image() {
+        assert_eq!(
+            paragraph(
+                "[see **https://a.example.org** or ![shot](/tmp/a.png)](https://b.example.org)"
+            ),
+            vec![Inline::Link {
+                url: "https://b.example.org".to_owned(),
+                content: vec![
+                    text("see "),
+                    Inline::Strong(vec![text("https://a.example.org")]),
+                    text(" or shot"),
+                ]
+            }]
+        );
+    }
+
+    /// Text with many addresses not at a word's start, as in a pasted log, is read once.
+    #[test]
+    fn a_long_text_of_addresses_splits_in_linear_time() {
+        let mut long = "url=http://a.example.org ".repeat(16_000);
+        long.push_str("https://b.example.org");
+        let closed = format!("https://c.example.org{}", ")".repeat(64_000));
+        let started = std::time::Instant::now();
+
+        let pieces = split_web_urls(&long);
+        let trimmed = trim_url_end(&closed);
+
+        assert_eq!(pieces.len(), 2);
+        assert_eq!(trimmed, "https://c.example.org");
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 
     #[test]

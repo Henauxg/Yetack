@@ -11,6 +11,7 @@ use cockpit_protocol::{
 use strum::VariantArray;
 
 use super::accounts::SignIns;
+use super::chat_images::KeptImage;
 use super::daemon_update::{DaemonUpdate, VersionGap};
 use super::file_edits;
 use super::no_daemon::NoDaemon;
@@ -104,8 +105,8 @@ pub struct AgentEntry {
     /// When the app announces the agent's finish, unless a turn starts before. Set when the last
     /// background task of an idle agent ends.
     pub finish_due: Option<Instant>,
-    /// The images its messages show, the oldest first (`chat_images`).
-    pub images: VecDeque<(PathBuf, Loadable<Image>)>,
+    /// The images its messages show, the least recently shown first.
+    pub images: VecDeque<KeptImage>,
 }
 
 /// When the agent's running turn started.

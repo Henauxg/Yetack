@@ -104,6 +104,12 @@ pub fn App() -> Element {
                 div {
                     class: "popover-backdrop",
                     onclick: move |_| cockpit.update(|state| state.ui.popover = None),
+                    // A right-click on another row closes the open row menu, so the next one
+                    // opens that row's.
+                    oncontextmenu: move |event: MouseEvent| {
+                        event.prevent_default();
+                        cockpit.update(|state| state.ui.popover = None);
+                    },
                 }
             }
             RowMenu {}
