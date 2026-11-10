@@ -65,6 +65,9 @@ const STREAM_FOLDER: &str = "/home/dev/projects/calc-stream";
 /// The agent whose conversation grows while the demo runs, to try the chat's scrolling. Its
 /// conversation is long, and it loads when the agent first opens, as a daemon's would.
 const LIVE_AGENT: u32 = 7;
+
+/// How long the demo's running tool calls have run when the window opens.
+const RUNNING_CALLS_FOR: Duration = Duration::from_secs(48);
 /// A second Claude account, which the service's agents and the platform's past sessions use.
 const WORK_ACCOUNT: u32 = 1;
 /// The agents of the work account.
@@ -583,6 +586,13 @@ pub fn state(daemon: DaemonLabel) -> AppState {
     for sample in agents {
         let mut entry = AgentEntry::new(sample.summary);
         if entry.id() != AgentId::new(LIVE_AGENT) {
+            // The running calls started a little before the window opened, so their timers show.
+            let started = Instant::now()
+                .checked_sub(RUNNING_CALLS_FOR)
+                .unwrap_or_else(Instant::now);
+            for item in &sample.items {
+                entry.note_call(item, started);
+            }
             entry.transcript.merge_page(HistoryPage {
                 items: sample.items,
                 older_items: OlderItems::None,

@@ -217,6 +217,11 @@ pub fn apply(
             let looked_at = state.ui.selected == Some(agent);
             file_reread::item_finished(state, agent, &item);
             if let Some(entry) = state.agents.get_mut(&agent) {
+                entry.note_call(&item, Instant::now());
+                // A call the turn left running, as after a stop, has no end of its own.
+                if matches!(item.body, ItemBody::TurnEnd(_)) {
+                    entry.calls_running_since.clear();
+                }
                 entry.transcript.append(item);
                 if !looked_at {
                     entry.transcript.trim(KEPT_ITEMS_AWAY);
@@ -232,6 +237,7 @@ pub fn apply(
                 drafts.questions.remove(&question.pending);
             }
             if let Some(entry) = state.agents.get_mut(&agent) {
+                entry.note_call(&item, Instant::now());
                 entry.transcript.change(item);
             }
             None

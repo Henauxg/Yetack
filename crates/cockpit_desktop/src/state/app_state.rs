@@ -5,8 +5,9 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_protocol::{
-    Account, AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, Image, ItemId,
-    PastSession, PlanUsage, Settings, Timestamp, WaitingPrompt, list_order,
+    Account, AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, AnswerState, Image,
+    ItemBody, ItemId, PastSession, PlanUsage, Settings, Timestamp, ToolCallStatus, TranscriptItem,
+    WaitingPrompt, list_order,
 };
 use strum::VariantArray;
 
@@ -129,6 +130,9 @@ pub struct AgentEntry {
     pub files: BTreeMap<PathBuf, Loadable<FileRead>>,
     /// When the file view read its shown file, and what reading it again changed.
     pub file_freshness: FileFreshness,
+    /// When the app saw each running tool call start, for the timer on its card. A call already
+    /// running when the app connected has none.
+    pub calls_running_since: BTreeMap<ItemId, Instant>,
     /// An `agent.commands` request is on its way.
     pub commands_requested: bool,
     /// When the app saw the agent's current turn start, for a daemon that does not send
@@ -164,6 +168,33 @@ impl TurnStart {
 }
 
 impl AgentEntry {
+    /// Keeps when a tool call started running, as the app saw it at `now`, and forgets it once the
+    /// call ends. A call that waits for approval has not started: it starts at the answer.
+    pub fn note_call(&mut self, item: &TranscriptItem, now: Instant) {
+        match &item.body {
+            ItemBody::ToolCall(call) if call.status == ToolCallStatus::Running => {
+                self.calls_running_since.entry(item.id).or_insert(now);
+            }
+            ItemBody::ToolCall(_) => {
+                self.calls_running_since.remove(&item.id);
+            }
+            ItemBody::Approval(approval) => {
+                let Some(call) = approval.tool_call else {
+                    return;
+                };
+                let running = self.transcript.get(call).is_some_and(|item| {
+                    matches!(&item.body, ItemBody::ToolCall(call) if call.status == ToolCallStatus::Running)
+                });
+                if approval.answer == AnswerState::Waiting || !running {
+                    self.calls_running_since.remove(&call);
+                } else {
+                    self.calls_running_since.insert(call, now);
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn new(summary: AgentSummary) -> Self {
         Self {
             summary,
@@ -172,6 +203,7 @@ impl AgentEntry {
             context_loading: false,
             files: BTreeMap::new(),
             file_freshness: FileFreshness::default(),
+            calls_running_since: BTreeMap::new(),
             commands_requested: false,
             turn_started: None,
             sent_again: None,
@@ -512,7 +544,10 @@ impl AppState {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use cockpit_protocol::{CostUsd, EffortSource, Mark, PermissionMode, Position, SignInWait};
+    use cockpit_protocol::{
+        AnswerState, Approval, ApprovalAnswer, ApprovalDecision, CostUsd, EffortSource, Mark,
+        PendingId, PermissionMode, Position, SignInWait,
+    };
 
     use super::*;
 
@@ -563,6 +598,82 @@ pub(crate) mod tests {
             position: Position::new(position),
             ..summary(id, status)
         }
+    }
+
+    const CALL: u32 = 4;
+
+    fn bash_call(status: ToolCallStatus) -> TranscriptItem {
+        TranscriptItem {
+            id: ItemId::new(CALL),
+            parent: None,
+            body: ItemBody::ToolCall(cockpit_protocol::ToolCall {
+                tool: "Bash".to_owned(),
+                summary: "cargo build".to_owned(),
+                input: serde_json::Value::Null,
+                status,
+                output: None,
+                exit_code: None,
+                edit: None,
+            }),
+        }
+    }
+
+    fn approval_of_the_call(answer: AnswerState<ApprovalAnswer>) -> TranscriptItem {
+        TranscriptItem {
+            id: ItemId::new(CALL + 1),
+            parent: None,
+            body: ItemBody::Approval(Approval {
+                pending: PendingId::new("approval-1".to_owned()),
+                tool: "Bash".to_owned(),
+                summary: "cargo build".to_owned(),
+                input: serde_json::Value::Null,
+                edit: None,
+                reason: None,
+                answer,
+                tool_call: Some(ItemId::new(CALL)),
+            }),
+        }
+    }
+
+    #[test]
+    fn a_running_call_keeps_when_it_started_until_it_ends() {
+        let mut entry = AgentEntry::new(summary(1, AgentStatus::Working));
+        let start = Instant::now();
+        let later = start + Duration::from_secs(5);
+
+        entry.note_call(&bash_call(ToolCallStatus::Running), start);
+        entry.note_call(&bash_call(ToolCallStatus::Running), later);
+        assert_eq!(
+            entry.calls_running_since.get(&ItemId::new(CALL)),
+            Some(&start)
+        );
+
+        entry.note_call(&bash_call(ToolCallStatus::Done), later);
+        assert!(entry.calls_running_since.is_empty());
+    }
+
+    #[test]
+    fn a_call_that_waits_for_approval_counts_from_the_answer() {
+        let mut entry = AgentEntry::new(summary(1, AgentStatus::Working));
+        let start = Instant::now();
+        let answered = start + Duration::from_secs(90);
+        let running = bash_call(ToolCallStatus::Running);
+        entry.note_call(&running, start);
+        entry.transcript.append(running);
+
+        entry.note_call(&approval_of_the_call(AnswerState::Waiting), start);
+        assert!(entry.calls_running_since.is_empty());
+
+        let allow = ApprovalAnswer {
+            decision: ApprovalDecision::Allow,
+            message: None,
+        };
+        let answer = approval_of_the_call(AnswerState::Answered(allow));
+        entry.note_call(&answer, answered);
+        assert_eq!(
+            entry.calls_running_since.get(&ItemId::new(CALL)),
+            Some(&answered)
+        );
     }
 
     #[test]

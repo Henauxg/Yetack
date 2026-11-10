@@ -4,6 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use cockpit_protocol::{
     AgentId, AgentStatus, AnswerState, ItemBody, ItemId, SignInWait, ToolCall, ToolCallStatus,
@@ -25,6 +26,9 @@ use crate::ui::last_instruction::LastInstruction;
 use crate::ui::loading::TranscriptSkeleton;
 use crate::ui::markdown::MarkdownView;
 use crate::{bridge, format};
+
+/// What a call's line says while it runs, before its time or its count of calls.
+const RUNNING_WORD: &str = "running";
 
 /// Screen lines a folded IN or OUT row keeps, wrapped lines counted.
 const IN_FOLD_LINES: u8 = 3;
@@ -574,7 +578,7 @@ pub fn ItemView(
             EditView { agent, folder, stage: CallStage::new(&call, awaits_approval), call }
         },
         ItemBody::ToolCall(call) => rsx! {
-            ToolView { agent, stage: CallStage::new(&call, awaits_approval), call }
+            ToolView { agent, id, stage: CallStage::new(&call, awaits_approval), call }
         },
         ItemBody::Subagent(call) => rsx! {
             SubagentView { agent, folder, id, call, nested }
@@ -930,10 +934,37 @@ fn IoRow(kind: IoKind, text: String) -> Element {
     }
 }
 
+/// "running, 1 min 4 s" while a call runs, counted from when the app saw it start, or "running"
+/// for a call already running when the app connected. It draws again each second, apart from its
+/// card.
+#[component]
+fn RunningMeta(agent: AgentId, item: ItemId) -> Element {
+    let cockpit: Cockpit = use_context();
+    let Clock(now) = use_context();
+    // Read for its tick alone: the time counts from an `Instant`.
+    let _ = now();
+    let since = cockpit
+        .state
+        .peek()
+        .agents
+        .get(&agent)
+        .and_then(|entry| entry.calls_running_since.get(&item).copied());
+    let text = match since {
+        Some(since) => format!(
+            "{RUNNING_WORD}, {}",
+            format::duration(Duration::from_secs(since.elapsed().as_secs()))
+        ),
+        None => RUNNING_WORD.to_owned(),
+    };
+    rsx! {
+        span { class: "tool-meta", "{text}" }
+    }
+}
+
 fn tool_meta(call: &ToolCall, stage: CallStage) -> String {
     match (stage, call.exit_code) {
         (CallStage::AwaitsApproval, _) => "waiting for approval".to_owned(),
-        (CallStage::Running, _) => "running".to_owned(),
+        (CallStage::Running, _) => RUNNING_WORD.to_owned(),
         (_, Some(code)) => format!("exit {code}"),
         (CallStage::Failed, None) => "failed".to_owned(),
         (CallStage::Done, None) => String::new(),
@@ -967,7 +998,7 @@ impl EditMeta {
 }
 
 #[component]
-fn ToolView(agent: AgentId, call: ToolCall, stage: CallStage) -> Element {
+fn ToolView(agent: AgentId, id: ItemId, call: ToolCall, stage: CallStage) -> Element {
     let shape = ToolShape::new(&call);
     let meta = tool_meta(&call, stage);
     let input = shape.input().map(str::to_owned);
@@ -977,7 +1008,9 @@ fn ToolView(agent: AgentId, call: ToolCall, stage: CallStage) -> Element {
         div { class: stage.class(),
             div { class: "tool-head",
                 {tool_title(agent, &call, &shape, TitleLayout::Full)}
-                if !meta.is_empty() {
+                if stage == CallStage::Running {
+                    RunningMeta { agent, item: id }
+                } else if !meta.is_empty() {
                     span { class: "tool-meta", "{meta}" }
                 }
             }
@@ -1095,7 +1128,7 @@ fn SubagentView(
         .count();
     let calls_text = format::count(calls, "tool call", "tool calls");
     let meta = match call.status {
-        ToolCallStatus::Running => format!("running, {calls_text}"),
+        ToolCallStatus::Running => format!("{RUNNING_WORD}, {calls_text}"),
         ToolCallStatus::Done => calls_text,
         ToolCallStatus::Failed => format!("failed, {calls_text}"),
     };
@@ -1162,7 +1195,9 @@ pub(crate) fn CompactItem(
                 div { class: "compact-tool {stage.class()}",
                     span { class: "tool-dot", aria_hidden: true }
                     {title}
-                    if !meta.is_empty() {
+                    if stage == CallStage::Running {
+                        RunningMeta { agent, item: item.id }
+                    } else if !meta.is_empty() {
                         span { class: "tool-meta", "{meta}" }
                     }
                 }
