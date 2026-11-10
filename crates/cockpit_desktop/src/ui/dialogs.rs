@@ -7,6 +7,7 @@ use cockpit_protocol::{
     AgentId, AgentStatus, Completeness, Effort, PastSession, PermissionMode, Timestamp,
 };
 use dioxus::html::geometry::ScreenPoint;
+use dioxus::html::input_data::MouseButton;
 use dioxus::html::point_interaction::InteractionLocation;
 use dioxus::prelude::*;
 use rfd::AsyncFileDialog;
@@ -77,6 +78,9 @@ impl PointerMoves {
 #[component]
 pub fn Dialogs() -> Element {
     let cockpit: Cockpit = use_context();
+    // A click beside the dialog closes it only when its press reached the overlay. The full view
+    // of an image stops its presses, since a drag of the image may end beside it.
+    let mut pressed_beside = use_signal(|| false);
     let dialog = cockpit.state.read().ui.dialog.clone();
     let Some(Shown {
         value: dialog,
@@ -102,7 +106,14 @@ pub fn Dialogs() -> Element {
                 key: "{opening}",
                 class: "{overlay_class}",
                 inert: leaving.then_some(true),
-                onclick: move |_| cockpit.update(|state| state.ui.close_dialog()),
+                onmousedown: move |event| {
+                    pressed_beside.set(event.trigger_button() == Some(MouseButton::Primary));
+                },
+                onclick: move |_| {
+                    if pressed_beside.take() {
+                        cockpit.update(|state| state.ui.close_dialog());
+                    }
+                },
                 match dialog.clone() {
                     Dialog::Switcher => rsx! {
                         SwitcherDialog {}
@@ -1223,6 +1234,7 @@ fn ImageViewDialog(view: ImageView) -> Element {
             role: "dialog",
             aria_label: "{name}",
             onclick: move |event| event.stop_propagation(),
+            onmousedown: move |event| event.stop_propagation(),
             onmounted: move |_| bridge::focus_field(IMAGE_VIEW_FRAME_ID),
             div { class: "dialog-head",
                 h2 { class: "image-view-name", title: "{full}", "{name}" }
@@ -1247,7 +1259,7 @@ fn ImageViewDialog(view: ImageView) -> Element {
                 }
             }
             ZoomImage {
-                src: bridge::image_url(&image),
+                image,
                 alt: name.clone(),
                 id: IMAGE_VIEW_FRAME_ID.to_owned(),
             }

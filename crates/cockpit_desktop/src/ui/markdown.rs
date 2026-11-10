@@ -276,7 +276,9 @@ fn ChatImage(agent: AgentId, path: String, alt: String) -> Element {
             title: "{path}",
             onclick: move |_| {
                 let path = PathBuf::from(&path);
-                cockpit.update(|state| match shown() {
+                // Read before the update: a memo that must compute again reads the state.
+                let shown = shown();
+                cockpit.update(|state| match shown {
                     Some(Loadable::Loaded(image)) => {
                         chat_images::open_full_view(state, agent, path, image);
                     }

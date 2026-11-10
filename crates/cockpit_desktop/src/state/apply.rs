@@ -431,12 +431,14 @@ pub fn error_chain(error: &dyn Error) -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::path::PathBuf;
+    use std::sync::Arc;
     use std::time::Duration;
 
     use cockpit_client::{ConnectError, SessionError};
     use cockpit_protocol::{
-        AgentDetails, CostUsd, ItemId, PendingId, PlanUsage, Question, Seq, Settings, TaskProgress,
-        TokenUsage, TranscriptItem, TurnEnd, TurnOutcome,
+        AgentDetails, CostUsd, Image, ImageMediaType, ItemId, PendingId, PlanUsage, Question, Seq,
+        Settings, TaskProgress, TokenUsage, TranscriptItem, TurnEnd, TurnOutcome,
     };
 
     use super::*;
@@ -444,7 +446,7 @@ mod tests {
     use crate::prefs::StatusFilter;
     use crate::state::app_state::tests::{placed, state_with, summary};
     use crate::state::ui_state::{Block, Dialog, PaletteOrigin, Popover, TitleEdit, TitlePlace};
-    use crate::state::{MachineState, agent_map};
+    use crate::state::{MachineState, agent_map, chat_images};
 
     fn record(event: Event) -> EventRecord {
         EventRecord {
@@ -957,6 +959,28 @@ mod tests {
         assert_eq!(dropped.ui.dialog, None);
         let shown = other.ui.dialog.as_ref().and_then(Dialog::agent);
         assert_eq!(shown, Some(AgentId::new(2)));
+    }
+
+    #[test]
+    fn a_removed_agent_closes_the_full_view_of_its_image() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        let image = Image {
+            media_type: ImageMediaType::Png,
+            data: "iVBORw0KGgo=".to_owned(),
+        };
+        let path = PathBuf::from("/tmp/shots/mockup.png");
+        chat_images::open_full_view(&mut state, AgentId::new(1), path, Arc::new(image));
+
+        apply(
+            &mut state,
+            &mut Drafts::default(),
+            record(Event::AgentRemoved {
+                agent: AgentId::new(1),
+            }),
+            MachineId::THIS,
+        );
+
+        assert_eq!(state.ui.dialog, None);
     }
 
     #[test]

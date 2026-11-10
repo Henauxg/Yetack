@@ -1,10 +1,16 @@
 //! An image you zoom with Ctrl+wheel, around the pointer, and drag once zoomed. A double-click or
-//! Ctrl+0 fits it again. A click that does not drag runs `on_click`, which the file view uses to
+//! Ctrl+0 fits it again. A click on the fitted image runs `on_click`, which the file view uses to
 //! open the full view.
 
+use std::rc::Rc;
+use std::sync::Arc;
+
+use cockpit_protocol::Image;
 use dioxus::html::geometry::WheelDelta;
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
+
+use crate::bridge;
 
 /// The image fills its frame at 1, and goes no further than 8 times that.
 const MIN_SCALE: f64 = 1.0;
@@ -107,10 +113,18 @@ struct Press {
     dragged: bool,
 }
 
-/// The image `src`, fitted to its frame, which the style sheet sizes.
+impl Press {
+    /// Whether its release is a click: a press that did not drag, on an image that fits. On a
+    /// zoomed image, a click would leave no double-click to fit it again.
+    fn is_click(self) -> bool {
+        !self.dragged && !self.zoom.is_zoomed()
+    }
+}
+
+/// The image, fitted to its frame, which the style sheet sizes.
 #[component]
 pub fn ZoomImage(
-    src: String,
+    image: Arc<Image>,
     alt: String,
     id: Option<String>,
     on_click: Option<EventHandler<()>>,
@@ -118,8 +132,9 @@ pub fn ZoomImage(
     let mut zoom = use_signal(Zoom::default);
     let mut size = use_signal(|| (0.0, 0.0));
     let mut press = use_signal(|| None::<Press>);
+    let mut frame = use_signal(|| None::<Rc<MountedData>>);
     // A new image starts fitted.
-    use_effect(use_reactive(&src, move |_| zoom.set(Zoom::default())));
+    use_effect(use_reactive(&image, move |_| zoom.set(Zoom::default())));
     let current = zoom();
     let mut class = vec!["zoom-frame"];
     if current.is_zoomed() {
@@ -139,6 +154,7 @@ pub fn ZoomImage(
             tabindex: 0,
             role: "img",
             aria_label: "{alt}. Ctrl+wheel zooms, a double-click fits it again.",
+            onmounted: move |event| frame.set(Some(event.data())),
             onresize: move |event: Event<ResizeData>| {
                 if let Ok(box_size) = event.get_content_box_size() {
                     size.set((box_size.width, box_size.height));
@@ -158,8 +174,14 @@ pub fn ZoomImage(
                 if event.trigger_button() != Some(MouseButton::Primary) {
                     return;
                 }
-                // A press starts a drag, not a text selection.
+                // A press starts a drag, not a text selection. That also keeps the focus off the
+                // frame, so the frame takes it here, for Ctrl+0 and Ctrl+=.
                 event.prevent_default();
+                if let Some(frame) = frame() {
+                    spawn(async move {
+                        let _ = frame.set_focus(true).await;
+                    });
+                }
                 let point = event.client_coordinates();
                 press.set(Some(Press { start: (point.x, point.y), zoom: zoom(), dragged: false }));
             },
@@ -178,7 +200,7 @@ pub fn ZoomImage(
             },
             onmouseup: move |_| {
                 let released = press.take();
-                if released.is_some_and(|released| !released.dragged)
+                if released.is_some_and(Press::is_click)
                     && let Some(on_click) = on_click
                 {
                     on_click.call(());
@@ -204,8 +226,19 @@ pub fn ZoomImage(
                 event.prevent_default();
                 zoom.set(next);
             },
-            img { src, alt: "{alt}", style: "transform: {current.transform()}", draggable: false }
+            div { class: "zoom-layer", style: "transform: {current.transform()}",
+                Picture { image, alt: alt.clone() }
+            }
         }
+    }
+}
+
+/// The image itself, rendered again only for another image: its address holds the whole file,
+/// up to 11 MB of text, which a drag would otherwise copy at each move.
+#[component]
+fn Picture(image: Arc<Image>, alt: String) -> Element {
+    rsx! {
+        img { src: bridge::image_url(&image), alt: "{alt}", draggable: false }
     }
 }
 
@@ -251,6 +284,19 @@ mod tests {
         assert!((too_far_left.x + 400.0).abs() < f64::EPSILON);
         assert!((too_far_left.y + 300.0).abs() < f64::EPSILON);
         assert_eq!(fitted, Zoom::default());
+    }
+
+    #[test]
+    fn a_press_that_does_not_drag_is_a_click_only_on_an_image_that_fits() {
+        let zoomed = Zoom::default().zoomed_at((0.0, 0.0), 2.0, FRAME);
+        let press = |zoom| Press {
+            start: (10.0, 10.0),
+            zoom,
+            dragged: false,
+        };
+
+        assert!(press(Zoom::default()).is_click());
+        assert!(!press(zoomed).is_click());
     }
 
     #[test]

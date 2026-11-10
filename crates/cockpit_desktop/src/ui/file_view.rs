@@ -203,16 +203,27 @@ pub fn FileViewPanel() -> Element {
                         FileContent { path: view.path.clone(), text, mode, line: view.line, edits, update }
                     },
                     Loadable::Loaded(FileRead::Image(image)) => {
-                        let src = bridge::image_url(&image);
                         let image = Arc::new(image);
                         let path = view.path.clone();
-                        let open_full_view = move |()| {
-                            let (path, image) = (path.clone(), Arc::clone(&image));
-                            cockpit.update(|state| chat_images::open_full_view(state, agent, path, image));
+                        let open_full_view = {
+                            let image = Arc::clone(&image);
+                            move |()| {
+                                let (path, image) = (path.clone(), Arc::clone(&image));
+                                cockpit.update(|state| chat_images::open_full_view(state, agent, path, image));
+                            }
                         };
                         rsx! {
                             div { class: "file-image",
-                                ZoomImage { src, alt: full.clone(), on_click: open_full_view }
+                                // Keyed by the path, so that another file does not show for a
+                                // frame at the last one's zoom.
+                                for shown in [view.path.clone()] {
+                                    ZoomImage {
+                                        key: "{shown.display()}",
+                                        image: Arc::clone(&image),
+                                        alt: full.clone(),
+                                        on_click: open_full_view.clone(),
+                                    }
+                                }
                             }
                         }
                     }

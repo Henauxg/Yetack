@@ -1989,15 +1989,20 @@ html.reordering * {
   user-select: none;
 }
 
-.zoom-frame > img {
+.zoom-layer {
+  width: 100%;
+  height: 100%;
+  transform-origin: 0 0;
+  pointer-events: none;
+  transition: transform var(--motion-hover) var(--ease);
+}
+
+.zoom-layer > img {
   display: block;
   width: 100%;
   height: 100%;
   object-fit: contain;
-  transform-origin: 0 0;
-  pointer-events: none;
   user-select: none;
-  transition: transform var(--motion-hover) var(--ease);
 }
 
 .zoom-frame.opens {
@@ -2013,7 +2018,7 @@ html.reordering * {
 }
 
 /* The image follows the pointer at once while it is dragged. */
-.zoom-frame.dragging > img {
+.zoom-frame.dragging > .zoom-layer {
   transition: none;
 }
 
@@ -4509,6 +4514,11 @@ html.splitting * {
   display: flex;
   height: 100%;
   padding: 16px;
+}
+
+/* A small image keeps its own size in the file view. */
+.file-image .zoom-layer > img {
+  object-fit: scale-down;
 }
 
 .file-note {
