@@ -1931,6 +1931,49 @@ html.reordering * {
   border: 1px solid var(--line-strong);
 }
 
+/* An image file a message shows. Its fixed height keeps the text below in place while it loads. */
+.chat-image {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  height: 200px;
+  max-width: 100%;
+  margin: 6px 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+}
+
+.chat-image > img {
+  height: 100%;
+  max-width: 100%;
+  object-fit: contain;
+  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+  animation: fade-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.chat-image:hover > img {
+  border-color: var(--line-control);
+}
+
+.chat-image:active {
+  transform: scale(var(--press-scale));
+}
+
+.chat-image-wait {
+  width: 280px;
+  height: 100%;
+  border-radius: 8px;
+}
+
+.chat-image-error {
+  color: var(--muted);
+  font-size: 12.5px;
+  cursor: default;
+}
+
 .notice,
 .turn-end {
   align-self: center;

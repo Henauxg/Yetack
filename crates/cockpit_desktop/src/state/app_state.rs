@@ -1,6 +1,6 @@
 //! Everything the window shows, in one value that the event and response handlers update.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -104,6 +104,8 @@ pub struct AgentEntry {
     /// When the app announces the agent's finish, unless a turn starts before. Set when the last
     /// background task of an idle agent ends.
     pub finish_due: Option<Instant>,
+    /// The images its messages show, the oldest first (`chat_images`).
+    pub images: VecDeque<(PathBuf, Loadable<Image>)>,
 }
 
 /// When the agent's running turn started.
@@ -137,6 +139,7 @@ impl AgentEntry {
             turn_started: None,
             sent_again: None,
             finish_due: None,
+            images: VecDeque::new(),
         }
     }
 

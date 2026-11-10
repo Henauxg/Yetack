@@ -26,6 +26,12 @@ const SCHEME_SEPARATOR: &str = "://";
 /// The schemes of the links that open in the browser.
 const WEB_SCHEMES: [&str; 2] = ["http", "https"];
 
+/// The starts of the bare web addresses that a text turns into links.
+const WEB_URL_STARTS: [&str; 2] = ["http://", "https://"];
+
+/// The extensions of the images a message shows, those the daemon sends as images.
+const IMAGE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Block {
     Heading {
@@ -59,8 +65,16 @@ pub enum Inline {
     Strong(Vec<Inline>),
     Emphasis(Vec<Inline>),
     Strikethrough(Vec<Inline>),
-    Link { url: String, content: Vec<Inline> },
+    Link {
+        url: String,
+        content: Vec<Inline>,
+    },
     File(FileRef),
+    /// An image file the message shows, which the daemon sends.
+    Image {
+        path: String,
+        alt: String,
+    },
     LineBreak,
 }
 
@@ -74,13 +88,12 @@ pub struct FileRef {
     pub line: Option<u32>,
 }
 
-/// `folder` is the agent's: a link to a file opens the file view only when the file is in it.
+/// `folder` is the agent's, whose path rules (Unix or Windows) the paths in the text follow.
 pub fn parse_markdown(markdown: &str, folder: &Path) -> Vec<Block> {
     let options =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     let mut builder = Builder {
         events: Parser::new_ext(markdown, options).peekable(),
-        folder,
         style: PathStyle::of(folder),
     };
     builder.blocks(None, 0)
@@ -135,6 +148,7 @@ fn push_plain_text(text: &mut String, inlines: &[Inline]) {
             | Inline::Strikethrough(content)
             | Inline::Link { content, .. } => push_plain_text(text, content),
             Inline::File(file) => text.push_str(&file.text),
+            Inline::Image { alt, .. } => text.push_str(alt),
             Inline::LineBreak => text.push('\n'),
         }
     }
@@ -143,7 +157,6 @@ fn push_plain_text(text: &mut String, inlines: &[Inline]) {
 /// Builds the tree from pulldown-cmark's events, which always come balanced.
 struct Builder<'input> {
     events: Peekable<Parser<'input>>,
-    folder: &'input Path,
     /// The rules of the agent's folder, which the paths in the text follow.
     style: PathStyle,
 }
@@ -355,9 +368,12 @@ impl<'input> Builder<'input> {
                     Tag::Strong => inlines.push(Inline::Strong(content)),
                     Tag::Strikethrough => inlines.push(Inline::Strikethrough(content)),
                     Tag::Link { dest_url, .. } => {
-                        inlines.extend(link(&dest_url, content, self.folder, self.style));
+                        inlines.extend(link(&dest_url, content, self.style));
                     }
-                    // An image shows as its alt text; other tags keep their content.
+                    Tag::Image { dest_url, .. } => {
+                        inlines.push(image(&dest_url, content, self.style));
+                    }
+                    // Other tags keep their content.
                     _ => inlines.extend(content),
                 }
             }
@@ -413,17 +429,50 @@ fn code_span(code: &str, style: PathStyle) -> Inline {
     }
 }
 
-/// A link to a file in the agent's folder opens the file view instead of a browser. Any other
-/// link than a web one keeps only its text: the system would open it with whatever program
-/// handles its scheme or file.
-fn link(url: &str, content: Vec<Inline>, folder: &Path, style: PathStyle) -> Vec<Inline> {
+/// An image file the message shows, by the same rule as a link to a file. A web image is not
+/// fetched: it shows as a link with its alt text, and anything else as that text.
+fn image(url: &str, content: Vec<Inline>, style: PathStyle) -> Inline {
+    let alt = plain_text(&content);
+    if is_web_url(url) {
+        return Inline::Link {
+            url: url.to_owned(),
+            content: vec![Inline::Text(if alt.is_empty() {
+                url.to_owned()
+            } else {
+                alt
+            })],
+        };
+    }
+    let is_image = |path: &str| {
+        style
+            .file_name(path)
+            .and_then(|name| name.rsplit_once('.'))
+            .is_some_and(|(_, extension)| {
+                IMAGE_EXTENSIONS
+                    .iter()
+                    .any(|known| extension.eq_ignore_ascii_case(known))
+            })
+    };
+    match local_file_target(url, style) {
+        Some((path, None)) if is_image(path) => Inline::Image {
+            path: path.to_owned(),
+            alt,
+        },
+        _ => Inline::Text(alt),
+    }
+}
+
+/// A link to a file opens the file view instead of a browser: an absolute path, which the daemon
+/// checks, or a path in the agent's folder. Any other link than a web one keeps only its text:
+/// the system would open it with whatever program handles its scheme or file.
+fn link(url: &str, content: Vec<Inline>, style: PathStyle) -> Vec<Inline> {
     if is_web_url(url) {
         return vec![Inline::Link {
             url: url.to_owned(),
             content,
         }];
     }
-    let Some((path, line)) = local_file_target(url, folder, style) else {
+    let Some((path, line)) = local_file_target(url, style) else {
         return content;
     };
     let text = plain_text(&content);
@@ -446,16 +495,12 @@ fn is_web_url(url: &str) -> bool {
     })
 }
 
-/// The path and line of a link to a file in `folder`: a relative path, or an absolute one under
-/// `folder`, then an optional `:line` (with `:column` or `-end`) or `#L12` (with `-L20`). Another
+/// The path and line of a link to a file: an absolute path, or one relative to the agent's
+/// folder, then an optional `:line` (with `:column` or `-end`) or `#L12` (with `-L20`). Another
 /// fragment, such as a heading's, opens the file at its top. A colon followed by anything but a
 /// line, as in `javascript:` or `mailto:`, makes it no file. A Windows drive's colon, as in
 /// `C:\`, is the path's.
-fn local_file_target<'target>(
-    target: &'target str,
-    folder: &Path,
-    style: PathStyle,
-) -> Option<(&'target str, Option<u32>)> {
+fn local_file_target(target: &str, style: PathStyle) -> Option<(&str, Option<u32>)> {
     let (location, fragment) = match target.split_once(FRAGMENT) {
         Some((location, fragment)) => (location, Some(fragment)),
         None => (target, None),
@@ -472,7 +517,7 @@ fn local_file_target<'target>(
     let fragment_line = fragment
         .and_then(|fragment| fragment.strip_prefix(LINE_FRAGMENT))
         .and_then(|anchor| line_number(anchor.split('-').next().unwrap_or_default()));
-    is_in_folder(path, folder, style).then_some((path, suffix_line.or(fragment_line)))
+    is_file_target(path, style).then_some((path, suffix_line.or(fragment_line)))
 }
 
 /// The line of what follows a path's colon: `12`, `12:5`, `40-52` or `12:5-7`.
@@ -492,21 +537,25 @@ fn line_suffix(suffix: &str) -> Option<u32> {
     rest.is_empty().then_some(line)
 }
 
-/// Whether `path` names a file in `folder`: relative, or absolute and under `folder`, and without
-/// `..`, which the daemon refuses as well. A `?` or a leading `~` belongs to a URL or a shell.
-fn is_in_folder(path: &str, folder: &Path, style: PathStyle) -> bool {
+/// Whether `path` names a file the file view can ask the daemon for: absolute, or relative to the
+/// agent's folder, and without `..`, which the daemon refuses as well. The daemon decides which
+/// files it reads. A `?`, a leading `~` or a leading `//` belongs to a URL, a shell or a network
+/// share.
+fn is_file_target(path: &str, style: PathStyle) -> bool {
     if path.contains('?') || path.starts_with('~') || path.chars().any(char::is_control) {
         return false;
     }
-    let inside = if style.is_absolute(path) {
-        style.strip_prefix(path, &folder.to_string_lossy())
-    } else if path.starts_with(|character| style.is_separator(character)) {
-        // `\folder` on Windows: a drive's root, not a file in the folder.
-        None
-    } else {
-        Some(path)
-    };
-    inside.is_some_and(|inside| style.first_name(inside).is_some() && !style.goes_up(inside))
+    let leading_separators = path
+        .chars()
+        .take(2)
+        .take_while(|&character| style.is_separator(character))
+        .count();
+    // `\folder` on Windows: a drive's root, not a file.
+    let drive_root = !style.is_absolute(path) && leading_separators == 1;
+    leading_separators < 2
+        && !drive_root
+        && style.first_name(path).is_some()
+        && !style.goes_up(path)
 }
 
 /// Merges adjacent texts, then splits them around `path:line` references.
@@ -527,10 +576,18 @@ fn finish_inlines(inlines: Vec<Inline>, style: PathStyle) -> Vec<Inline> {
             finished.push(inline);
             continue;
         };
-        for piece in find_file_refs(&text, style) {
-            match piece {
-                TextPiece::Text(part) => finished.push(Inline::Text(part.to_owned())),
-                TextPiece::File(file) => finished.push(Inline::File(file)),
+        for (between, url) in split_web_urls(&text) {
+            for piece in find_file_refs(between, style) {
+                match piece {
+                    TextPiece::Text(part) => finished.push(Inline::Text(part.to_owned())),
+                    TextPiece::File(file) => finished.push(Inline::File(file)),
+                }
+            }
+            if let Some(url) = url {
+                finished.push(Inline::Link {
+                    url: url.to_owned(),
+                    content: vec![Inline::Text(url.to_owned())],
+                });
             }
         }
     }
@@ -541,6 +598,65 @@ fn finish_inlines(inlines: Vec<Inline>, style: PathStyle) -> Vec<Inline> {
 enum TextPiece<'text> {
     Text(&'text str),
     File(FileRef),
+}
+
+/// The bare web addresses in `text`, each with the text before it, then the text after the last.
+/// An address starts at a word's start with "http://" or "https://" and runs to a space. A
+/// sentence's last punctuation and a closing parenthesis it does not open stay out of it.
+fn split_web_urls(text: &str) -> Vec<(&str, Option<&str>)> {
+    let lower = text.to_ascii_lowercase();
+    let mut pieces = Vec::new();
+    let mut plain_start = 0;
+    let mut search_from = 0;
+    while let Some(start) = WEB_URL_STARTS
+        .iter()
+        .filter_map(|scheme| Some(search_from + lower.get(search_from..)?.find(scheme)?))
+        .min()
+    {
+        search_from = start + 1;
+        let word_start = text
+            .get(..start)
+            .and_then(|before| before.chars().next_back())
+            .is_none_or(|before| before.is_whitespace() || "([<\"'".contains(before));
+        let rest = text.get(start..).unwrap_or_default();
+        let length = rest
+            .find(|character: char| character.is_whitespace() || "<>\"`".contains(character))
+            .unwrap_or(rest.len());
+        let Some(url) = rest.get(..length).map(trim_url_end) else {
+            continue;
+        };
+        let has_host = WEB_URL_STARTS
+            .iter()
+            .any(|scheme| url.len() > scheme.len() && url.to_ascii_lowercase().starts_with(scheme));
+        if !word_start || !has_host {
+            continue;
+        }
+        pieces.push((text.get(plain_start..start).unwrap_or_default(), Some(url)));
+        plain_start = start + url.len();
+        search_from = plain_start;
+    }
+    pieces.push((text.get(plain_start..).unwrap_or_default(), None));
+    pieces
+}
+
+/// The address without what ends the sentence around it: a final `.`, `,`, `:`, `;`, `!`, `?`,
+/// `'`, or a `)` that no `(` in the address opens.
+fn trim_url_end(url: &str) -> &str {
+    let mut url = url;
+    loop {
+        let trimmed = url.trim_end_matches(['.', ',', ':', ';', '!', '?', '\'']);
+        let unmatched_close =
+            trimmed.ends_with(')') && trimmed.matches(')').count() > trimmed.matches('(').count();
+        let trimmed = if unmatched_close {
+            trimmed.get(..trimmed.len() - 1).unwrap_or(trimmed)
+        } else {
+            trimmed
+        };
+        if trimmed.len() == url.len() {
+            return url;
+        }
+        url = trimmed;
+    }
 }
 
 fn is_path_byte(byte: u8, style: PathStyle) -> bool {
@@ -869,8 +985,74 @@ mod tests {
                     url: "https://example.org/docs".to_owned(),
                     content: vec![text("the docs")]
                 },
-                text(", a chart and <b>this</b>."),
+                text(", "),
+                Inline::Image {
+                    path: "chart.png".to_owned(),
+                    alt: "a chart".to_owned()
+                },
+                text(" and <b>this</b>."),
             ]
+        );
+    }
+
+    #[test]
+    fn only_an_image_file_shows_and_a_web_image_stays_a_link() {
+        assert_eq!(
+            paragraph("![mockup](/tmp/shots/to-handle.PNG)"),
+            vec![Inline::Image {
+                path: "/tmp/shots/to-handle.PNG".to_owned(),
+                alt: "mockup".to_owned()
+            }]
+        );
+        assert_eq!(
+            paragraph("![logo](https://example.org/logo.png)"),
+            vec![Inline::Link {
+                url: "https://example.org/logo.png".to_owned(),
+                content: vec![text("logo")]
+            }]
+        );
+        for target in [
+            "notes.md",
+            "chart.png:12",
+            "../chart.png",
+            "//host/chart.png",
+        ] {
+            assert_eq!(
+                paragraph(&format!("![a chart]({target})")),
+                vec![text("a chart")],
+                "{target}"
+            );
+        }
+    }
+
+    #[test]
+    fn bare_web_addresses_become_links_without_the_sentence_around_them() {
+        let link = |url: &str| Inline::Link {
+            url: url.to_owned(),
+            content: vec![text(url)],
+        };
+
+        assert_eq!(
+            paragraph("See https://app.example.org/p/21f0c6 for the ticket."),
+            vec![
+                text("See "),
+                link("https://app.example.org/p/21f0c6"),
+                text(" for the ticket."),
+            ]
+        );
+        assert_eq!(
+            paragraph("(the docs: https://example.org/wiki/A_(b)), then HTTP://example.org!"),
+            vec![
+                text("(the docs: "),
+                link("https://example.org/wiki/A_(b)"),
+                text("), then "),
+                link("HTTP://example.org"),
+                text("!"),
+            ]
+        );
+        assert_eq!(
+            paragraph("xhttps://example.org and https:// alone"),
+            vec![text("xhttps://example.org and https:// alone")]
         );
     }
 
@@ -1030,16 +1212,16 @@ mod tests {
             ),
             ("c:/WORK/calc/src/a.rs#L3", "c:/WORK/calc/src/a.rs", Some(3)),
             (r"C:\work\calc\README.md", r"C:\work\calc\README.md", None),
+            (r"C:\work\other\a.rs", r"C:\work\other\a.rs", None),
+            (r"D:\a.rs", r"D:\a.rs", None),
         ];
         for (target, path, line) in cases {
             assert_eq!(opened(target), Some((path.to_owned(), line)), "{target}");
         }
         let refused = [
-            r"C:\work\other\a.rs",
-            r"D:\a.rs",
             r"\work\calc\a.rs",
             r"..\secrets.txt",
-            r"C:\work\calc",
+            r"\\server\share\a.rs",
         ];
         for target in refused {
             assert_eq!(opened(target), None, "{target}");
@@ -1066,7 +1248,7 @@ mod tests {
     }
 
     #[test]
-    fn links_that_would_leave_the_app_or_the_folder_keep_only_their_text() {
+    fn links_that_would_leave_the_app_keep_only_their_text() {
         let targets = [
             "javascript:alert(1)",
             "JavaScript:void(0)",
@@ -1075,9 +1257,6 @@ mod tests {
             "data:text/html,hello",
             "ftp://example.org/a.txt",
             "//example.org/a.rs",
-            "/etc/hosts",
-            "/work/calculator/src/a.rs",
-            "/work/calc",
             "../secrets.txt",
             "/work/calc/../other/a.rs",
             "~/notes.md",
@@ -1101,6 +1280,26 @@ mod tests {
                 content: vec![text("d")]
             }]
         );
+    }
+
+    /// The daemon decides which files it reads: a link to one outside the agent's folder asks it.
+    #[test]
+    fn links_to_absolute_paths_open_the_file_view_wherever_the_file_is() {
+        for target in [
+            "/etc/hosts",
+            "/work/calculator/src/a.rs",
+            "/tmp/shots/a.png",
+        ] {
+            assert_eq!(
+                paragraph(&format!("[label]({target})")),
+                vec![Inline::File(FileRef {
+                    text: "label".to_owned(),
+                    path: target.to_owned(),
+                    line: None,
+                })],
+                "{target}"
+            );
+        }
     }
 
     #[test]

@@ -12,14 +12,14 @@ use cockpit_protocol::{
     BackgroundTaskKind, BackgroundTaskStatus, ChangedFile, ClaudeSessionId, CommandKind,
     CommandLoad, Completeness, ContextCategory, ContextUsage, Cores, CostUsd, CredentialSource,
     DirEntry, DirListing, Effort, EffortSource, EntryKind, EntryLink, EnvironmentCredentials,
-    ErrorBody, ErrorCode, FileEdit, HistoryPage, ItemBody, ItemId, LoadAverage, LoadHistory,
-    MachineLoad, McpScope, McpServer, McpServerStatus, McpTool, McpTransport, OlderItems,
-    PastSession, PendingId, PermissionMode, Plan, PlanUsage, Position, ProcessId, PromptId,
-    Question, QuestionOption, RateLimitStatus, Request, ResourceUse, ResponseBody, Selection,
-    ServerLoad, ServerPoint, SignIn, SignInWait, SlashCommand, Subagent, SubagentRun,
-    SubagentStatus, SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, Timestamp,
-    TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UsageWindow,
-    UserMessage, WaitingPrompt, WaitingState, WindowUsage,
+    ErrorBody, ErrorCode, FileEdit, HistoryPage, Image, ImageMediaType, ItemBody, ItemId,
+    LoadAverage, LoadHistory, MachineLoad, McpScope, McpServer, McpServerStatus, McpTool,
+    McpTransport, OlderItems, PastSession, PendingId, PermissionMode, Plan, PlanUsage, Position,
+    ProcessId, PromptId, Question, QuestionOption, RateLimitStatus, Request, ResourceUse,
+    ResponseBody, Selection, ServerLoad, ServerPoint, SignIn, SignInWait, SlashCommand, Subagent,
+    SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem, TaskProgress, TaskStatus,
+    Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome,
+    UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
 };
 use serde_json::Value;
 
@@ -369,7 +369,11 @@ git switch cache-layer
 cargo bench --bench eval -- --baseline before
 ```
 
-The CI job fails when a case gets **10%** slower than on `main`.";
+The CI job fails when a case gets **10%** slower than on `main`.
+
+![The last run's chart](/home/dev/projects/calc-parser/target/criterion/report.png)
+
+The CI run is at https://ci.example.org/calc-parser/runs/812.";
 
 const TICKETS_OUTPUT: &str = "#41 Errors point at the wrong column (open, label: errors)
 #57 Column is off by one after a tab (open, label: errors)";
@@ -1104,8 +1108,20 @@ fn find_files(name: &str) -> ResponseBody {
 }
 
 /// As the daemon answers for the parser agent: the path itself, else the sample's files whose
-/// path ends with it, one read or several listed.
+/// path ends with it, one read or several listed. Any PNG is the app's icon.
 fn read_file(path: &Path) -> Result<ResponseBody, RequestError> {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD as BASE64;
+
+    if path.extension().is_some_and(|extension| extension == "png") {
+        return Ok(ResponseBody::Image {
+            path: path.to_owned(),
+            image: Image {
+                media_type: ImageMediaType::Png,
+                data: BASE64.encode(crate::ICON_PNG),
+            },
+        });
+    }
     let files = files();
     let wanted = in_folder(PARSER_FOLDER, path);
     let matches: Vec<&(PathBuf, &str)> = match files.iter().find(|(file, _)| *file == wanted) {

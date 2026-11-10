@@ -202,7 +202,7 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   - When the file view is closed, a right panel shows three blocks: the task list (`TodoWrite`), what runs in the background (subagents and commands, each with Stop) and the MCP servers (a failed one has Retry).
   - The sidebar row shows the task progress ("3/5").
   - Subagent tool calls fold under the call that started them.
-  - `file:line` references in agent text open the file view at that line; agent text renders as markdown (headings, lists, tables).
+  - `file:line` references and links to files in agent text open the file view at that line; agent text renders as markdown (headings, lists, tables); bare web addresses are links, and an image of a file shows in the message.
   - "/" opens a palette of commands and skills, filtered as you type.
   - Pasted screenshots show as thumbnails in the composer and in the sent message.
   - Messages Claude has not read yet show in a list pinned above the composer: "Next step" for a sent one, "After this turn" for a queued one, which has Send now and Cancel.

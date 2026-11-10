@@ -1,21 +1,22 @@
-//! Agent text rendered from the markdown tree, with `path:line` references and links to the
-//! agent's files as links into the file view.
+//! Agent text rendered from the markdown tree, with `path:line` references and links to files
+//! as links into the file view, and Markdown images of files shown in place.
 
 use std::path::PathBuf;
 
 use cockpit_protocol::AgentId;
 use dioxus::prelude::*;
 
+use crate::bridge;
 use crate::connection::Cockpit;
 use crate::render::{self, Block, FileRef, Inline, parse_markdown};
-use crate::state::actions;
+use crate::state::{Loadable, actions, chat_images};
 use crate::ui::code::CodeBlock;
 
 /// A table cell this short keeps to one line: a name, a number or a status reads badly wrapped,
 /// and a table too wide for the column scrolls instead.
 const SHORT_CELL_CHARS: usize = 30;
 
-/// `folder` is the agent's, where the files its links open must be.
+/// `folder` is the agent's, against which relative paths in the text resolve.
 #[component]
 pub fn MarkdownView(agent: AgentId, folder: PathBuf, markdown: String) -> Element {
     let blocks = parse_markdown(&markdown, &folder);
@@ -162,6 +163,9 @@ fn inline_view(agent: AgentId, inline: &Inline) -> Element {
         Inline::File(file) => rsx! {
             FileLink { agent, file: file.clone() }
         },
+        Inline::Image { path, alt } => rsx! {
+            ChatImage { agent, path: path.clone(), alt: alt.clone() }
+        },
         Inline::LineBreak => rsx! {
             br {}
         },
@@ -181,6 +185,44 @@ fn FileLink(agent: AgentId, file: FileRef) -> Element {
                 cockpit.update(|state| actions::open_file(state, agent, path, line));
             },
             "{text}"
+        }
+    }
+}
+
+/// An image file the message shows, at a fixed height so that the text below does not move when
+/// it arrives. A click opens it in the file view.
+#[component]
+fn ChatImage(agent: AgentId, path: String, alt: String) -> Element {
+    let cockpit: Cockpit = use_context();
+    let file = PathBuf::from(&path);
+    let wanted = file.clone();
+    use_effect(move || cockpit.update(|state| chat_images::want(state, agent, &wanted)));
+    let shown = chat_images::image(&cockpit.state.read(), agent, &file).cloned();
+    let label = if alt.is_empty() {
+        path.clone()
+    } else {
+        alt.clone()
+    };
+    let body = match shown {
+        Some(Loadable::Loaded(image)) => rsx! {
+            img { src: bridge::image_url(&image), alt: "{label}" }
+        },
+        Some(Loadable::Failed(message)) => rsx! {
+            span { class: "chat-image-error", "{label}: {message}" }
+        },
+        Some(Loadable::NotRequested | Loadable::Loading) | None => rsx! {
+            span { class: "skeleton chat-image-wait", role: "status", aria_label: "Loading {label}" }
+        },
+    };
+    rsx! {
+        button {
+            class: "chat-image",
+            title: "{path}",
+            onclick: move |_| {
+                let path = file.clone();
+                cockpit.update(|state| actions::open_file(state, agent, path, None));
+            },
+            {body}
         }
     }
 }
