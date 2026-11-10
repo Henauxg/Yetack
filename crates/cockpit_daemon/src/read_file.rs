@@ -55,13 +55,13 @@ pub(crate) const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
 #[cfg(unix)]
 const OPEN_FILES: &str = "/proc/self/fd";
 /// The entry that marks a git checkout's top folder: a folder, or a file in a worktree.
-const GIT_ENTRY: &str = ".git";
+pub(crate) const GIT_ENTRY: &str = ".git";
 
 /// The most files a search lists.
 pub(crate) const MAX_MATCHES: usize = 20;
 /// How long a search may run, all checkouts together.
 pub(crate) const SEARCH_TIME: Duration = Duration::from_secs(3);
-const GIT_PROGRAM: &str = "git";
+pub(crate) const GIT_PROGRAM: &str = "git";
 /// Lists the files of the checkout under the current folder, tracked or not, without the ignored
 /// ones, each ended by a NUL byte.
 const LIST_FILES: [&str; 5] = [
@@ -71,10 +71,10 @@ const LIST_FILES: [&str; 5] = [
     "--others",
     "--exclude-standard",
 ];
-const GIT_FOLDER_OPTION: &str = "-C";
+pub(crate) const GIT_FOLDER_OPTION: &str = "-C";
 /// Keeps git from running the file system monitor, a command the agent can set in its checkout's
 /// git config.
-const NO_MONITOR: [&str; 2] = ["-c", "core.fsmonitor=false"];
+pub(crate) const NO_MONITOR: [&str; 2] = ["-c", "core.fsmonitor=false"];
 
 /// The folders and files `read` may open, all with their symlinks resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]

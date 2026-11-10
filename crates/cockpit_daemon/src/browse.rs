@@ -6,6 +6,10 @@
 //! doc. The files it allows alone allow no folder. The listing shows at most [`MAX_ENTRIES`]
 //! entries, and reads at most [`MAX_READ`] of a folder's, so that a huge folder answers quickly.
 //!
+//! The listing marks the entries the folder's git checkout ignores, and its `.git` entry, as
+//! `git check-ignore` says within [`IGNORE_TIME`]. Without git, or past that time, every other
+//! entry shows as kept.
+//!
 //! `folders.list` lists the folders alone, of any folder the daemon's user can read, for the new
 //! agent dialog, within the same bounds.
 //!
@@ -15,6 +19,7 @@
 //!
 //! [`read_file`]: crate::read_file
 
+use std::collections::HashSet;
 #[cfg(unix)]
 use std::ffi::{CStr, OsStr};
 use std::fs::File;
@@ -24,17 +29,25 @@ use std::ops::ControlFlow;
 #[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
+use std::process::Stdio;
+use std::time::Duration;
 
 use cockpit_protocol::{
-    Completeness, DirEntry, DirListing, EntryKind, EntryLink, ErrorBody, ErrorCode,
+    Completeness, DirEntry, DirListing, EntryKind, EntryLink, ErrorBody, ErrorCode, GitIgnore,
 };
 #[cfg(unix)]
 use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags};
 #[cfg(unix)]
 use rustix::io::Errno;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::process::Command;
 use tokio::time::Instant;
 
-use crate::read_file::{self, Access, ReadFileError, SEARCH_TIME};
+#[cfg(windows)]
+use crate::process::program;
+use crate::read_file::{
+    self, Access, GIT_ENTRY, GIT_FOLDER_OPTION, GIT_PROGRAM, NO_MONITOR, ReadFileError, SEARCH_TIME,
+};
 #[cfg(windows)]
 use crate::windows_files::{self, FolderEntry};
 #[cfg(windows)]
@@ -44,6 +57,14 @@ use crate::windows_path;
 pub(crate) const MAX_ENTRIES: usize = 2_000;
 /// The most entries read from a folder. Past it, the listing is cut.
 pub(crate) const MAX_READ: usize = 20_000;
+/// How long git may take to say which entries a listing's checkout ignores. The app waits for the
+/// listing to open the folder, so past it the listing goes without the marks.
+const IGNORE_TIME: Duration = Duration::from_secs(1);
+/// Reads paths, each ended by a NUL byte, and writes back those the checkout ignores, each ended
+/// by a NUL byte. A tracked file is not ignored.
+const CHECK_IGNORE: [&str; 3] = ["check-ignore", "-z", "--stdin"];
+/// Starts every path given to git, so that a name such as `:!notes` is not read as pathspec magic.
+const HERE: &[u8] = b"./";
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ListDirError {
@@ -73,14 +94,36 @@ impl ListDirError {
     }
 }
 
-/// Lists `path`, absolute or relative to `folder`, the agent's folder. `touched` holds the files
-/// the agent read or changed, and `home` the home folder, as for `agent.read_file`.
-pub(crate) fn list(
+/// Lists `path`, absolute or relative to `folder`, the agent's folder, and marks the entries its
+/// git checkout ignores. `touched` holds the files the agent read or changed, and `home` the home
+/// folder, as for `agent.read_file`.
+pub(crate) async fn list(
+    folder: PathBuf,
+    touched: Vec<PathBuf>,
+    home: Option<PathBuf>,
+    path: PathBuf,
+) -> Result<DirListing, ListDirError> {
+    let (mut listing, resolved) = tokio::task::spawn_blocking(move || {
+        read_listing(&folder, &touched, home.as_deref(), &path)
+    })
+    .await
+    .map_err(read_file::join_error)??;
+    mark_ignored(
+        &resolved,
+        &mut listing.entries,
+        Instant::now() + IGNORE_TIME,
+    )
+    .await;
+    Ok(listing)
+}
+
+/// [`list`] without the marks, with the listed folder's path once its symlinks are resolved.
+fn read_listing(
     folder: &Path,
     touched: &[PathBuf],
     home: Option<&Path>,
     path: &Path,
-) -> Result<DirListing, ListDirError> {
+) -> Result<(DirListing, PathBuf), ListDirError> {
     if path
         .components()
         .any(|component| component == Component::ParentDir)
@@ -118,11 +161,74 @@ pub(crate) fn list(
     let (entries, truncated) = read_entries(&opened)?;
     #[cfg(windows)]
     let (entries, truncated) = read_entries(&opened, &resolved)?;
-    Ok(DirListing {
+    let listing = DirListing {
         path: asked,
         entries,
         completeness: completeness(truncated),
+    };
+    Ok((listing, resolved))
+}
+
+/// Marks the `.git` entry of the folder `path`, and the entries its git checkout ignores. When git
+/// is missing, fails or misses `deadline`, the other entries stay kept.
+async fn mark_ignored(path: &Path, entries: &mut [DirEntry], deadline: Instant) {
+    let ignored = ignored_names(path, entries, deadline).await;
+    for entry in entries {
+        if entry.name == GIT_ENTRY || ignored.contains(entry.name.as_bytes()) {
+            entry.ignore = GitIgnore::Ignored;
+        }
+    }
+}
+
+/// The names among `entries` that the git checkout holding the folder `path` ignores, as `git
+/// check-ignore` lists them by `deadline`. Empty when git fails, as outside a checkout.
+async fn ignored_names(path: &Path, entries: &[DirEntry], deadline: Instant) -> HashSet<Vec<u8>> {
+    let mut names: Vec<u8> = Vec::new();
+    for entry in entries.iter().filter(|entry| entry.name != GIT_ENTRY) {
+        names.extend_from_slice(HERE);
+        names.extend_from_slice(entry.name.as_bytes());
+        names.push(0);
+    }
+    if names.is_empty() {
+        return HashSet::new();
+    }
+    let mut git = Command::new(GIT_PROGRAM);
+    git.args(NO_MONITOR)
+        .arg(GIT_FOLDER_OPTION)
+        .arg(path)
+        .args(CHECK_IGNORE)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    program::hide_console(&mut git);
+    let Ok(mut child) = git.spawn() else {
+        return HashSet::new();
+    };
+    let (Some(mut stdin), Some(mut stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        return HashSet::new();
+    };
+    // Git answers while it reads: writing every name before reading could fill both pipes.
+    let feed = async move { stdin.write_all(&names).await };
+    let mut answer: Vec<u8> = Vec::new();
+    let read = stdout.read_to_end(&mut answer);
+    let ran = tokio::time::timeout_at(deadline, async {
+        let (fed, read) = tokio::join!(feed, read);
+        (fed, read, child.wait().await)
     })
+    .await;
+    let Ok((Ok(()), Ok(_), Ok(status))) = ran else {
+        return HashSet::new();
+    };
+    if !status.success() {
+        return HashSet::new();
+    }
+    answer
+        .split(|byte| *byte == 0)
+        .filter_map(|ignored| ignored.strip_prefix(HERE))
+        .map(<[u8]>::to_vec)
+        .collect()
 }
 
 /// Opens the folder `path`.
@@ -286,6 +392,7 @@ fn describe(folder: &File, name: &CStr, listed: FileType) -> DirEntry {
             kind: EntryKind::Folder,
             size: None,
             link,
+            ignore: GitIgnore::Kept,
         };
     }
     // Follows a link, to say what it points to.
@@ -310,6 +417,7 @@ fn describe(folder: &File, name: &CStr, listed: FileType) -> DirEntry {
         kind,
         size,
         link,
+        ignore: GitIgnore::Kept,
     }
 }
 
@@ -405,6 +513,7 @@ fn describe(folder: &Path, entry: &FolderEntry) -> DirEntry {
             kind,
             size: (kind == EntryKind::File).then_some(entry.size),
             link: EntryLink::Direct,
+            ignore: GitIgnore::Kept,
         };
     }
     // Follows the link, to say what it points to.
@@ -422,6 +531,7 @@ fn describe(folder: &Path, entry: &FolderEntry) -> DirEntry {
         kind,
         size,
         link: EntryLink::SymbolicLink,
+        ignore: GitIgnore::Kept,
     }
 }
 
@@ -479,14 +589,56 @@ mod tests {
             layout
         }
 
-        fn list(&self, path: &Path) -> Result<DirListing, ListDirError> {
-            let touched = [
+        fn touched(&self) -> Vec<PathBuf> {
+            vec![
                 self.feature.join("src/app/touched.ts"),
                 self.loose.join("todo.txt"),
-            ];
-            let home = canonical(self.temp.path()).unwrap();
-            list(&self.agent, &touched, Some(&home), path)
+            ]
         }
+
+        fn home(&self) -> PathBuf {
+            canonical(self.temp.path()).unwrap()
+        }
+
+        /// The listing without the marks git gives.
+        fn list(&self, path: &Path) -> Result<DirListing, ListDirError> {
+            read_listing(&self.agent, &self.touched(), Some(&self.home()), path)
+                .map(|(listing, _)| listing)
+        }
+
+        async fn list_marked(&self, path: &str) -> DirListing {
+            list(
+                self.agent.clone(),
+                self.touched(),
+                Some(self.home()),
+                PathBuf::from(path),
+            )
+            .await
+            .unwrap()
+        }
+
+        /// Makes the agent's folder a git checkout.
+        fn init_git(&self) {
+            self.git(&["init", "-q"]);
+        }
+
+        fn git(&self, args: &[&str]) {
+            let status = Command::new("git")
+                .args(args)
+                .current_dir(&self.agent)
+                .status()
+                .expect("the git tests need git");
+            assert!(status.success(), "git {args:?}");
+        }
+    }
+
+    fn ignored(listing: &DirListing) -> Vec<&str> {
+        listing
+            .entries
+            .iter()
+            .filter(|entry| entry.ignore == GitIgnore::Ignored)
+            .map(|entry| entry.name.as_str())
+            .collect()
     }
 
     fn assert_outside(result: Result<DirListing, ListDirError>) {
@@ -699,14 +851,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn marks_the_entries_the_checkout_ignores_and_its_git_folder() {
+        let layout = Layout::new();
+        layout.init_git();
+        write(&layout.agent.join(".gitignore"), "target/\n*.log\n");
+        write(&layout.agent.join("target/debug/app"), "");
+        write(&layout.agent.join("debug.log"), "");
+        write(&layout.agent.join("tracked.log"), "");
+        write(&layout.agent.join("src/notes.log"), "");
+        layout.git(&["add", "-f", "tracked.log"]);
+
+        let top = layout.list_marked("").await;
+        let src = layout.list_marked("src").await;
+        let target = layout.list_marked("target").await;
+
+        assert_eq!(ignored(&top), [".git", "target", "debug.log"]);
+        assert_eq!(ignored(&src), ["notes.log"]);
+        assert_eq!(ignored(&target), ["debug"]);
+        // Git refuses to work inside the `.git` folder: the listing still answers.
+        let git_folder = layout.list_marked(".git").await;
+        assert!(!git_folder.entries.is_empty());
+        assert!(ignored(&git_folder).is_empty(), "{git_folder:?}");
+    }
+
+    #[tokio::test]
+    async fn outside_a_checkout_every_entry_is_kept() {
+        let layout = Layout::new();
+        write(&layout.agent.join("debug.log"), "");
+
+        let listing = layout.list_marked("").await;
+
+        assert_eq!(listing.entries.len(), 2, "{listing:?}");
+        assert!(ignored(&listing).is_empty(), "{listing:?}");
+    }
+
+    /// A name git would read as pathspec magic, or as a folder-only pattern through a link, is
+    /// checked as the plain name it is, and the other names are still marked.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_name_like_a_pathspec_or_a_link_is_checked_as_a_name() {
+        let layout = Layout::new();
+        layout.init_git();
+        write(&layout.agent.join(".gitignore"), "build/\n*.log\n");
+        write(&layout.agent.join(":!notes.txt"), "");
+        write(&layout.agent.join(":(top)debug.log"), "");
+        write(&layout.agent.join("debug.log"), "");
+        symlink(layout.agent.join("src"), layout.agent.join("build")).unwrap();
+
+        let listing = layout.list_marked("").await;
+
+        assert_eq!(ignored(&listing), [".git", ":(top)debug.log", "debug.log"]);
+    }
+
+    #[tokio::test]
     async fn finds_files_by_a_part_of_their_name_whatever_its_case() {
         let layout = Layout::new();
-        let status = Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(&layout.agent)
-            .status()
-            .expect("the search tests need git");
-        assert!(status.success());
+        layout.init_git();
         write(&layout.agent.join("src/lexer.rs"), "");
         write(&layout.agent.join("tests/Lexer_cases.rs"), "");
         write(&layout.agent.join("docs/notes.md"), "");

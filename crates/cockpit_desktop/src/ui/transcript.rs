@@ -154,12 +154,6 @@ const MCP_TOOL_SEPARATOR: &str = "__";
 const COMMAND_FIELD: &str = "command";
 const DESCRIPTION_FIELD: &str = "description";
 
-/// Claude Code's shell tool. Without its input, its summary is the command's first line.
-const BASH_TOOL: &str = "Bash";
-
-/// The input fields that name a file, as Claude Code's `Read`, `Write`, `Edit` and
-/// `NotebookEdit` send them.
-const FILE_FIELDS: [&str; 2] = ["file_path", "notebook_path"];
 /// The input field of the line `Read` starts at.
 const OFFSET_FIELD: &str = "offset";
 
@@ -810,7 +804,8 @@ impl ToolShape {
                 .map(str::to_owned)
         };
         let command = field(COMMAND_FIELD).or_else(|| {
-            (call.tool == BASH_TOOL && !call.summary.is_empty()).then(|| call.summary.clone())
+            (call.tool == file_edits::BASH_TOOL && !call.summary.is_empty())
+                .then(|| call.summary.clone())
         });
         if let Some(command) = command {
             return Self::Command {
@@ -818,7 +813,7 @@ impl ToolShape {
                 command,
             };
         }
-        match FILE_FIELDS.iter().find_map(|name| field(name)) {
+        match file_edits::FILE_FIELDS.iter().find_map(|name| field(name)) {
             Some(path) => Self::File {
                 path: PathBuf::from(path),
                 line: call

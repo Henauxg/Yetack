@@ -7,6 +7,16 @@ use cockpit_protocol::{FileEdit, ItemBody, ToolCallStatus};
 use super::transcript::Transcript;
 use crate::path_style::PathStyle;
 
+/// Claude Code's shell tool. Without its input, its summary is the command's first line.
+pub const BASH_TOOL: &str = "Bash";
+
+/// Claude Code's tool that reads a file.
+pub const READ_TOOL: &str = "Read";
+
+/// The input fields that name a file, as Claude Code's `Read`, `Write`, `Edit` and
+/// `NotebookEdit` send them.
+pub const FILE_FIELDS: [&str; 2] = ["file_path", "notebook_path"];
+
 /// `path` relative to `folder` when it is inside it, so that a link, a changed file and an edit
 /// name the same file the same way. On Windows, the path has `\` between its names.
 pub fn relative_path(folder: &Path, path: &Path) -> PathBuf {

@@ -4564,6 +4564,220 @@ html.splitting * {
   padding: 12px 0 0;
 }
 
+
+/* Files pane: the selected agent's folder as a tree, at the window's right edge. */
+
+.files-pane {
+  flex: none;
+  width: var(--files-width);
+  /* The splitter's bounds, which a drag past them would otherwise leave on screen. */
+  min-width: 180px;
+  max-width: min(520px, 40%);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--sidebar);
+}
+
+.files-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 10px 8px 8px 12px;
+}
+
+.files-root {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.files-head .icon-button:disabled {
+  opacity: 0.4;
+}
+
+.files-search {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  margin: 0 8px 6px;
+  padding: 0 8px;
+  border-radius: 7px;
+  border: 1px solid var(--line-control);
+  background: var(--well);
+  color: var(--faint);
+}
+
+.files-search:focus-within {
+  border-color: var(--focus-ring);
+}
+
+.files-search-field {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  font-size: 12.5px;
+  color: var(--text);
+}
+
+.files-filters {
+  flex: none;
+  display: flex;
+  gap: 4px;
+  margin: 0 8px 6px;
+}
+
+.files-filters .filter-chip {
+  white-space: nowrap;
+}
+
+.files-tree {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 2px 4px 8px;
+  font-size: 13px;
+}
+
+.files-tree:focus {
+  outline: none;
+}
+
+.files-tree:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+/* No hover of its own: the pointer moves the one highlight. */
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 25px;
+  padding: 0 8px 0 calc(var(--indent) + 4px);
+  border-radius: 5px;
+  color: var(--text-soft);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color var(--motion-hover) var(--ease);
+}
+
+.tree-row.highlighted {
+  background: var(--hover);
+}
+
+.tree-row.shown {
+  background: var(--selected);
+  box-shadow: inset 2px 0 0 var(--text);
+}
+
+.tree-row:active {
+  background: var(--pressed);
+}
+
+.tree-row.changed .tree-name {
+  color: #f6c177;
+}
+
+.tree-row.ignored,
+.tree-row.ignored .tree-name {
+  color: var(--faint);
+}
+
+.tree-chevron {
+  flex: none;
+  width: 12px;
+  display: inline-flex;
+  color: var(--dim);
+  transition: transform var(--motion-in) var(--ease-out);
+}
+
+.tree-chevron.open {
+  transform: rotate(90deg);
+}
+
+.tree-icon {
+  flex: none;
+  display: inline-flex;
+  color: var(--dim);
+}
+
+.tree-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tree-change {
+  flex: none;
+  display: inline-flex;
+  gap: 4px;
+  font-size: 11px;
+}
+
+.tree-read,
+.tree-holds {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.tree-read {
+  background: #5d7f86;
+}
+
+.tree-holds {
+  background: #f6c177;
+  opacity: 0.8;
+}
+
+.tree-section {
+  margin: 8px 8px 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.tree-note {
+  padding: 3px 8px 3px calc(var(--indent) + 21px);
+  font-size: 12px;
+  font-style: italic;
+  color: var(--dim);
+}
+
+.tree-loading {
+  padding: 6px 8px 6px calc(var(--indent) + 21px);
+}
+
+.tree-loading .skeleton-line {
+  width: 60%;
+}
+
+.files-foot {
+  flex: none;
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 12px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 11.5px;
+  color: var(--dim);
+}
 .file-image {
   display: flex;
   height: 100%;
@@ -6887,6 +7101,30 @@ html.splitting .sidebar {
 
 .app.file-view-instant .file-view {
   animation: none;
+}
+
+/* The files pane opens and closes by its width. A switch to another agent keeps it open. */
+.files-pane {
+  animation: files-pane-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.files-pane.leaving {
+  pointer-events: none;
+  animation: files-pane-out var(--motion-out) var(--ease-in) forwards;
+}
+
+@keyframes files-pane-in {
+  from {
+    width: 0;
+    min-width: 0;
+  }
+}
+
+@keyframes files-pane-out {
+  to {
+    width: 0;
+    min-width: 0;
+  }
 }
 
 /* Appear. */

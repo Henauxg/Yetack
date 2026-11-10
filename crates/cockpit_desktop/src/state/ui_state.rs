@@ -33,7 +33,6 @@ pub enum Popover {
     Usage,
     /// The machine's load, from the header's Load chip.
     Load,
-    Changes,
     Model,
     Mode,
     Palette(PaletteOrigin),
@@ -47,6 +46,13 @@ pub enum Popover {
     },
     /// The file view's list of its open files.
     FileList,
+    /// A row's menu in the files pane, opened by a right-click at `x`, `y` in the window's pixels.
+    /// The tree holds the row.
+    TreeMenu {
+        agent: AgentId,
+        x: i32,
+        y: i32,
+    },
 }
 
 /// How the command palette opened, which decides when it closes.
@@ -742,10 +748,10 @@ mod tests {
         let mut ui = UiState::default();
 
         ui.toggle_popover(Popover::Usage);
-        ui.toggle_popover(Popover::Changes);
-        assert_eq!(ui.popover, Some(Popover::Changes));
+        ui.toggle_popover(Popover::Load);
+        assert_eq!(ui.popover, Some(Popover::Load));
 
-        ui.toggle_popover(Popover::Changes);
+        ui.toggle_popover(Popover::Load);
         assert_eq!(ui.popover, None);
     }
 

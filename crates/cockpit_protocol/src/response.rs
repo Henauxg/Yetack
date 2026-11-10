@@ -119,6 +119,17 @@ pub struct DirEntry {
     /// In bytes, for a file.
     pub size: Option<u64>,
     pub link: EntryLink,
+    pub ignore: GitIgnore,
+}
+
+/// Whether the git checkout that holds a folder entry ignores it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, VariantArray)]
+#[serde(rename_all = "snake_case")]
+pub enum GitIgnore {
+    /// Not ignored, or in no checkout.
+    Kept,
+    /// Left out by the checkout's ignore rules, as `target/` often is, or the `.git` folder itself.
+    Ignored,
 }
 
 /// Whether a folder entry is a symbolic link.

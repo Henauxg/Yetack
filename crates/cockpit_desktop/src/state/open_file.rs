@@ -395,7 +395,7 @@ pub fn set_text(state: &mut AppState, drafts: &mut Drafts, text: String) {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::{AgentId, AgentStatus, DirListing, EntryLink};
+    use cockpit_protocol::{AgentId, AgentStatus, DirListing, EntryLink, GitIgnore};
 
     use super::*;
     use crate::state::app_state::tests::{state_with, summary};
@@ -411,6 +411,7 @@ mod tests {
             kind,
             size: (kind == EntryKind::File).then_some(10),
             link: EntryLink::Direct,
+            ignore: GitIgnore::Kept,
         }
     }
 

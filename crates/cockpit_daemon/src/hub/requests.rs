@@ -220,19 +220,15 @@ impl Hub {
             Err(error) => return agents::respond(reply, Err(error)),
         };
         tokio::spawn(async move {
-            let listed = tokio::task::spawn_blocking(move || {
-                let FileAccess {
-                    folder,
-                    touched,
-                    home,
-                } = access;
-                browse::list(&folder, &touched, home.as_deref(), &params.path)
-            })
-            .await;
+            let FileAccess {
+                folder,
+                touched,
+                home,
+            } = access;
+            let listed = browse::list(folder, touched, home, params.path).await;
             let result = match listed {
-                Ok(Ok(listing)) => Ok(ResponseBody::Directory(listing)),
-                Ok(Err(error)) => Err(error.to_error_body()),
-                Err(error) => Err(errors::internal(error.to_string())),
+                Ok(listing) => Ok(ResponseBody::Directory(listing)),
+                Err(error) => Err(error.to_error_body()),
             };
             agents::respond(reply, result);
         });

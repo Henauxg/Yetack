@@ -229,6 +229,8 @@ document.addEventListener("keydown", (event) => {
       || (text === "" && answers)
       || (key === "Enter" && !event.shiftKey);
   } else if (where === "page" && plain && !mode.dialog
+    // A tree takes its own keys: Enter there opens a row, and answers nothing.
+    && !(target !== null && target.closest("[data-own-keys]") !== null)
     && (answers || (mode.send_again && key === "Enter" && !event.shiftKey))) {
     take = !(key === "Enter" && target !== null && target.tagName === "BUTTON");
   }
@@ -384,7 +386,7 @@ struct Settings {
     /// The letters that answer an approval or a plan.
     answer_keys: [&'static str; 2],
     /// The letters that take Ctrl alone.
-    command_keys: [&'static str; 4],
+    command_keys: [&'static str; 5],
     /// The letter that closes the selected agent with Ctrl+Shift.
     close_agent_key: &'static str,
     /// The letter that marks the selected agent as one to handle, with Ctrl+Shift.
@@ -766,7 +768,7 @@ mod tests {
                 "map_keys": ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter"],
                 "sidebar_keys": ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"],
                 "answer_keys": ["y", "n"],
-                "command_keys": ["k", "n", "o", "m"],
+                "command_keys": ["k", "n", "o", "m", "b"],
                 "close_agent_key": "w",
                 "mark_key": "h",
                 "reload_key": "F5",

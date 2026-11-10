@@ -28,7 +28,7 @@ use super::ui_state::{
     TitleEdit, TitlePlace, ViewMode, is_markdown,
 };
 use super::utf16_offset::Utf16Offset;
-use super::{accounts, export, file_edits, file_reread, open_file, title_emoji};
+use super::{accounts, export, file_edits, file_reread, file_tree, open_file, title_emoji};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::machine::MachineId;
 use crate::path_style;
@@ -112,6 +112,9 @@ pub fn select_agent(state: &mut AppState, agent: AgentId) {
     state.ui.leave_agent();
     if back {
         file_reread::reread(state, agent);
+        if let Some(entry) = state.agents.get_mut(&agent) {
+            file_tree::refresh(&mut entry.tree);
+        }
     }
 }
 

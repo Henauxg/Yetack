@@ -22,7 +22,7 @@ use cockpit_protocol::{
     Completeness, ContextCategory, ContextUsage, Cores, CostUsd, CredentialSource, DirEntry,
     DirListing, Effort, EffortSource, EntryKind, EntryLink, EnvironmentCredentials, ErrorBody,
     ErrorCode, Event, EventRecord, FileEdit, FindFilesParams, FolderParams, FoldersListParams,
-    HistoryPage, HistoryParams, Image, ImageMediaType, ItemBody, ItemId, ListDirParams,
+    GitIgnore, HistoryPage, HistoryParams, Image, ImageMediaType, ItemBody, ItemId, ListDirParams,
     LoadAverage, LoadHistory, MachineLoad, Mark, MarkParams, McpRemoveParams, McpScope, McpServer,
     McpServerParams, McpServerStatus, McpToggleAction, McpToggleParams, McpTool, McpTransport,
     Method, MoveParams, OlderItems, PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan,
@@ -680,18 +680,21 @@ fn dir_listing() -> DirListing {
                 kind: EntryKind::Folder,
                 size: None,
                 link: EntryLink::Direct,
+                ignore: GitIgnore::Ignored,
             },
             DirEntry {
                 name: "login.rs".to_owned(),
                 kind: EntryKind::File,
                 size: Some(2_048),
                 link: EntryLink::Direct,
+                ignore: GitIgnore::Kept,
             },
             DirEntry {
                 name: "shared".to_owned(),
                 kind: EntryKind::Other,
                 size: None,
                 link: EntryLink::SymbolicLink,
+                ignore: GitIgnore::Kept,
             },
         ],
         completeness: Completeness::Complete,
@@ -1251,6 +1254,7 @@ fn words_are_pinned() {
     );
     assert_eq!(words::<Completeness>(), ["complete", "truncated"]);
     assert_eq!(words::<EntryLink>(), ["direct", "symbolic_link"]);
+    assert_eq!(words::<GitIgnore>(), ["kept", "ignored"]);
     assert_eq!(words::<OlderItems>(), ["exist", "none"]);
     assert_eq!(words::<McpToggleAction>(), ["enable", "disable"]);
 }
@@ -1480,9 +1484,9 @@ fn a_folder_listing_on_the_wire() {
                 "type": "directory",
                 "path": "/srv/projects/shop/src",
                 "entries": [
-                    {"name": "forms", "kind": "folder", "size": null, "link": "direct"},
-                    {"name": "login.rs", "kind": "file", "size": 2048, "link": "direct"},
-                    {"name": "shared", "kind": "other", "size": null, "link": "symbolic_link"},
+                    {"name": "forms", "kind": "folder", "size": null, "link": "direct", "ignore": "ignored"},
+                    {"name": "login.rs", "kind": "file", "size": 2048, "link": "direct", "ignore": "kept"},
+                    {"name": "shared", "kind": "other", "size": null, "link": "symbolic_link", "ignore": "kept"},
                 ],
                 "completeness": "complete",
             }},
@@ -1508,12 +1512,14 @@ fn a_folders_listing_on_the_wire() {
                     kind: EntryKind::Folder,
                     size: None,
                     link: EntryLink::Direct,
+                    ignore: GitIgnore::Kept,
                 },
                 DirEntry {
                     name: "shop".to_owned(),
                     kind: EntryKind::Folder,
                     size: None,
                     link: EntryLink::SymbolicLink,
+                    ignore: GitIgnore::Kept,
                 },
             ],
             completeness: Completeness::Truncated,
@@ -1537,8 +1543,8 @@ fn a_folders_listing_on_the_wire() {
                 "type": "directory",
                 "path": "/srv/projects",
                 "entries": [
-                    {"name": ".archive", "kind": "folder", "size": null, "link": "direct"},
-                    {"name": "shop", "kind": "folder", "size": null, "link": "symbolic_link"},
+                    {"name": ".archive", "kind": "folder", "size": null, "link": "direct", "ignore": "kept"},
+                    {"name": "shop", "kind": "folder", "size": null, "link": "symbolic_link", "ignore": "kept"},
                 ],
                 "completeness": "truncated",
             }},

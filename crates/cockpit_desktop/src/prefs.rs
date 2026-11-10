@@ -11,6 +11,10 @@
 //!     "filter": "needs_you",
 //!     "width": 300
 //!   },
+//!   "files_pane": {
+//!     "open": true,
+//!     "width": 280
+//!   },
 //!   "accounts": {
 //!     "colors": {
 //!       "build-box": { "1": "violet" }
@@ -55,6 +59,7 @@ const FILE_MODE: u32 = 0o600;
 pub struct Prefs {
     pub file_view: FileViewPrefs,
     pub sidebar: SidebarPrefs,
+    pub files_pane: FilesPanePrefs,
     pub accounts: AccountPrefs,
 }
 
@@ -176,6 +181,35 @@ impl SidebarPrefs {
     pub fn width(&self) -> u16 {
         self.width.unwrap_or(DEFAULT_SIDEBAR_WIDTH)
     }
+}
+
+/// The files pane: the tree of the selected agent's folder, at the window's right edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FilesPanePrefs {
+    pub open: bool,
+    /// The pane's width in pixels, between `MIN_FILES_WIDTH` and `MAX_FILES_WIDTH`. `None` keeps
+    /// the default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u16>,
+}
+
+/// The files pane's width, in pixels, until it is moved.
+pub const DEFAULT_FILES_WIDTH: u16 = 260;
+/// The narrowest pane that still shows a name beside its marks.
+pub const MIN_FILES_WIDTH: u16 = 180;
+pub const MAX_FILES_WIDTH: u16 = 520;
+
+impl FilesPanePrefs {
+    /// The pane's width in pixels.
+    pub fn width(&self) -> u16 {
+        self.width.unwrap_or(DEFAULT_FILES_WIDTH)
+    }
+}
+
+/// Whether `width` can size the files pane.
+pub fn is_files_width(width: u16) -> bool {
+    (MIN_FILES_WIDTH..=MAX_FILES_WIDTH).contains(&width)
 }
 
 /// Whether `width` can size the sidebar.
@@ -301,6 +335,7 @@ impl Prefs {
     fn checked(mut self) -> Self {
         self.file_view.width_share = self.file_view.width_share.filter(|&share| is_share(share));
         self.sidebar.width = self.sidebar.width.filter(|&width| is_sidebar_width(width));
+        self.files_pane.width = self.files_pane.width.filter(|&width| is_files_width(width));
         self
     }
 
@@ -431,6 +466,10 @@ mod tests {
     "filter": "needs_you",
     "width": 300
   },
+  "files_pane": {
+    "open": true,
+    "width": 280
+  },
   "accounts": {
     "colors": {
       "build-box": {
@@ -454,6 +493,10 @@ mod tests {
                 sidebar: SidebarPrefs {
                     filter: StatusFilter::NeedsYou,
                     width: Some(300),
+                },
+                files_pane: FilesPanePrefs {
+                    open: true,
+                    width: Some(280),
                 },
                 accounts: AccountPrefs {
                     colors: BTreeMap::from([(
@@ -578,6 +621,10 @@ mod tests {
             sidebar: SidebarPrefs {
                 filter: StatusFilter::Exited,
                 width: Some(220),
+            },
+            files_pane: FilesPanePrefs {
+                open: true,
+                width: Some(300),
             },
             accounts: AccountPrefs::default(),
         };

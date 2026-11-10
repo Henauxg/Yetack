@@ -1,4 +1,4 @@
-//! The window: sidebar, center pane, file view and dialogs.
+//! The window: sidebar, center pane, file view, files pane and dialogs.
 
 use std::time::Duration;
 
@@ -13,6 +13,7 @@ use crate::ui::blocks::FloatingBlocks;
 use crate::ui::composer::Composer;
 use crate::ui::dialogs::Dialogs;
 use crate::ui::file_view::FileViewPanel;
+use crate::ui::files_pane::{FilesPane, TreeMenu};
 use crate::ui::header::Header;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::no_daemon::NoDaemonScreen;
@@ -20,7 +21,8 @@ use crate::ui::presence::use_presence;
 use crate::ui::reorder::use_reorder;
 use crate::ui::sidebar::{RowMenu, Sidebar};
 use crate::ui::splitter::{
-    APP_ID, SHARE_PROPERTY, SIDEBAR_WIDTH_PROPERTY, SidebarSplitter, Splitter, use_splitter,
+    APP_ID, FILES_WIDTH_PROPERTY, FilesSplitter, SHARE_PROPERTY, SIDEBAR_WIDTH_PROPERTY,
+    SidebarSplitter, Splitter, use_splitter,
 };
 use crate::ui::transcript::TranscriptView;
 
@@ -40,6 +42,10 @@ pub fn App() -> Element {
     let file_view_agent = selected.filter(|agent| state.ui.file_view(*agent).is_some());
     let file_view_open = file_view_agent.is_some();
     let file_view = use_presence(file_view_agent);
+    // The pane shows whichever agent is selected: a switch keeps it open.
+    let files_open = selected.is_some() && state.prefs.files_pane.open;
+    let files_pane = use_presence(files_open.then_some(()));
+    let files_leaving = files_pane.as_ref().is_some_and(|shown| shown.leaving);
     // A switch shows the next agent's layout at once: only the agent that closed its file view
     // sees it leave, and a file view that opens with its agent does not slide in.
     let file_view_leaving = file_view
@@ -79,8 +85,9 @@ pub fn App() -> Element {
     );
     let share = state.prefs.file_view.share();
     let sidebar_width = state.prefs.sidebar.width();
+    let files_width = state.prefs.files_pane.width();
     rsx! {
-        div { id: APP_ID, class: app_class, style: "{SHARE_PROPERTY}: {share}; {SIDEBAR_WIDTH_PROPERTY}: {sidebar_width}px",
+        div { id: APP_ID, class: app_class, style: "{SHARE_PROPERTY}: {share}; {SIDEBAR_WIDTH_PROPERTY}: {sidebar_width}px; {FILES_WIDTH_PROPERTY}: {files_width}px",
             Sidebar {}
             SidebarSplitter { width: sidebar_width }
             main { class: if file_view_open { "center narrow-chat" } else { "center" },
@@ -104,6 +111,12 @@ pub fn App() -> Element {
                 // Its content went with its state: the empty panel closes in its place.
                 div { class: "file-view leaving", aria_hidden: true }
             }
+            if files_open {
+                FilesSplitter { width: files_width }
+                FilesPane {}
+            } else if files_leaving {
+                div { class: "files-pane leaving", aria_hidden: true }
+            }
             if closes_on_click {
                 div {
                     class: "popover-backdrop",
@@ -117,6 +130,7 @@ pub fn App() -> Element {
                 }
             }
             RowMenu {}
+            TreeMenu {}
             Dialogs {}
         }
     }

@@ -1,5 +1,5 @@
 //! The center header: the agent's title, status and folder, the usage chip, the load chip and the
-//! changes chip. It stays on one line; when narrow, the title shortens, then the chips shrink to
+//! files chip, which opens the files pane on the agent's changes. It stays on one line; when narrow, the title shortens, then the chips shrink to
 //! icons.
 
 use std::time::SystemTime;
@@ -14,9 +14,8 @@ use strum::{EnumString, IntoStaticStr, VariantArray};
 use crate::connection::{Clock, Cockpit};
 use crate::machine::MachineId;
 use crate::state::accounts::{self, Billing, PlanChip};
-use crate::state::{AgentEntry, Loadable, Popover, TitlePlace, actions, title_emoji};
+use crate::state::{AgentEntry, Loadable, Popover, TitlePlace, actions, file_tree, title_emoji};
 use crate::ui::accounts::{AccountDot, AccountTag, PlanAccounts};
-use crate::ui::changes_list::{self, ChangesList};
 use crate::ui::emoji_picker::EmojiPicker;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::load_card::{LoadCard, LoadChip};
@@ -141,7 +140,7 @@ pub fn Header() -> Element {
     };
     let context = context_percent(entry);
     let files = changed_files(entry);
-    let (added, removed) = changes_list::line_totals(&files);
+    let (added, removed) = file_tree::line_totals(&files);
     let usage_open = state.ui.popover == Some(Popover::Usage);
     let load_open = state.ui.popover == Some(Popover::Load);
     let emoji_open = state.ui.popover == Some(Popover::TitleEmoji);
@@ -149,7 +148,7 @@ pub fn Header() -> Element {
         Some((emoji, rest)) => (Some(emoji.to_owned()), rest.to_owned()),
         None => (None, summary.title.clone()),
     };
-    let changes_open = state.ui.popover == Some(Popover::Changes);
+    let files_open = state.prefs.files_pane.open;
     let plan_text = plan.map_or_else(|| "?".to_owned(), |percent| format!("{percent}%"));
     let context_text = context.map_or_else(|| "?".to_owned(), |percent| format!("{percent}%"));
     let plan_words = match chip {
@@ -163,10 +162,14 @@ pub fn Header() -> Element {
         .map(|label| format!(" of {}", label.name))
         .unwrap_or_default();
     let usage_label = format!("Usage: {plan_words}{account_words}, context {context_text}");
-    let changes_label = format!(
-        "Changes: {}, {added} lines added, {removed} removed",
-        format::count(files.len(), "file", "files")
-    );
+    let changes_label = if files.is_empty() {
+        "Files".to_owned()
+    } else {
+        format!(
+            "Files. Changes: {}, {added} lines added, {removed} removed",
+            format::count(files.len(), "file", "files")
+        )
+    };
     let file_count = files.len();
     let folder = path_style::shown(&summary.folder);
     let title_edit = state
@@ -292,23 +295,20 @@ pub fn Header() -> Element {
             }
             div { class: "chip-anchor",
                 button {
-                    class: if changes_open { "chip open" } else { "chip" },
-                    aria_expanded: changes_open,
+                    class: if files_open { "chip files-chip open" } else { "chip files-chip" },
+                    aria_pressed: files_open,
                     aria_label: "{changes_label}",
-                    onclick: move |_| cockpit.update(|state| state.ui.toggle_popover(Popover::Changes)),
-                    Icon { kind: IconKind::FileChanges, size: 14 }
-                    span { class: "chip-full mono",
-                        span { class: "added", "+{added}" }
-                        " "
-                        span { class: "removed", "-{removed}" }
-                        Icon { kind: IconKind::ChevronDown, size: 12 }
-                    }
+                    title: "Files (Ctrl+B)",
+                    onclick: move |_| cockpit.update(|state| file_tree::toggle_from_changes(state, agent)),
+                    Icon { kind: IconKind::FileTree, size: 15 }
                     if file_count > 0 {
+                        span { class: "chip-full mono",
+                            span { class: "added", "+{added}" }
+                            " "
+                            span { class: "removed", "-{removed}" }
+                        }
                         span { class: "chip-compact chip-count", aria_hidden: true, "{file_count}" }
                     }
-                }
-                Presence { open: changes_open,
-                    ChangesList { agent, files: files.clone(), folder: summary.folder.clone() }
                 }
             }
         }

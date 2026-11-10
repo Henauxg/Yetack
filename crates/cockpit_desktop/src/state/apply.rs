@@ -14,7 +14,7 @@ use super::accounts::{self, SignIns};
 use super::app_state::{AgentEntry, AppState, ConnectionState, Loadable};
 use super::drafts::Drafts;
 use super::transcript::KEPT_ITEMS_AWAY;
-use super::{actions, daemon_update, file_reread};
+use super::{actions, daemon_update, file_reread, file_tree};
 use crate::machine::MachineId;
 
 /// How long the app waits to announce that an idle agent's last background task ended. Claude
@@ -216,6 +216,7 @@ pub fn apply(
         Event::TranscriptAppended { agent, item } => {
             let looked_at = state.ui.selected == Some(agent);
             file_reread::item_finished(state, agent, &item);
+            file_tree::item_finished(state, agent, &item);
             if let Some(entry) = state.agents.get_mut(&agent) {
                 entry.note_call(&item, Instant::now());
                 // A call the turn left running, as after a stop, has no end of its own.
@@ -231,6 +232,7 @@ pub fn apply(
         }
         Event::TranscriptChanged { agent, item } => {
             file_reread::item_finished(state, agent, &item);
+            file_tree::item_finished(state, agent, &item);
             if let ItemBody::Question(question) = &item.body
                 && question.answer != AnswerState::Waiting
             {

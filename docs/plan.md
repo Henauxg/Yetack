@@ -194,7 +194,7 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   - Usage is one chip in the header (plan and context percentages) that opens a detail card: plan windows, context by category, prompt cache, turns, cost at API prices.
   - Code blocks, inline diffs and the file view get syntax colors, picked from the block's language tag or the file's extension.
   - Scrollbars are thin and dark.
-  - The center header stays on one line: the title shortens first, then the usage and changes chips shrink to icons.
+  - The center header stays on one line: the title shortens first, then the usage and files chips shrink to icons.
 - Decided after round 3 (mocked in round 4):
   - An agent that finished while you looked elsewhere stays unread: bold title and a white dot until you open it.
   - Desktop notifications when an agent starts waiting for you, and when it finishes while you look elsewhere.

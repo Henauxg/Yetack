@@ -15,6 +15,7 @@ use super::accounts::SignIns;
 use super::chat_images::KeptImage;
 use super::daemon_update::{DaemonUpdate, VersionGap};
 use super::file_edits;
+use super::file_tree::FileTree;
 use super::no_daemon::NoDaemon;
 use super::transcript::Transcript;
 use super::ui_state::UiState;
@@ -146,6 +147,8 @@ pub struct AgentEntry {
     pub finish_due: Option<Instant>,
     /// The images its messages show, the least recently shown first.
     pub images: VecDeque<KeptImage>,
+    /// The files pane's tree of its folder.
+    pub tree: FileTree,
 }
 
 /// When the agent's running turn started.
@@ -209,6 +212,7 @@ impl AgentEntry {
             sent_again: None,
             finish_due: None,
             images: VecDeque::new(),
+            tree: FileTree::default(),
         }
     }
 

@@ -210,7 +210,7 @@ pub fn set_text(state: &mut AppState, drafts: &mut Drafts, text: String) {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::{Completeness, DirListing, EntryLink};
+    use cockpit_protocol::{Completeness, DirListing, EntryLink, GitIgnore};
 
     use super::*;
     use crate::daemon_label::DaemonLabel;
@@ -223,6 +223,7 @@ mod tests {
             kind: EntryKind::Folder,
             size: None,
             link: EntryLink::Direct,
+            ignore: GitIgnore::Kept,
         }
     }
 

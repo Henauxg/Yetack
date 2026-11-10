@@ -12,14 +12,15 @@ use cockpit_protocol::{
     BackgroundTaskKind, BackgroundTaskStatus, ChangedFile, ClaudeRoute, ClaudeSessionId,
     CommandKind, CommandLoad, Completeness, ContextCategory, ContextUsage, Cores, CostUsd,
     CredentialSource, DirEntry, DirListing, Effort, EffortSource, EntryKind, EntryLink,
-    EnvironmentCredentials, ErrorBody, ErrorCode, FileEdit, HistoryPage, Image, ImageMediaType,
-    ItemBody, ItemId, LoadAverage, LoadHistory, MachineLoad, Mark, McpScope, McpServer,
-    McpServerStatus, McpTool, McpTransport, OlderItems, PastSession, PendingId, PermissionMode,
-    Plan, PlanUsage, Position, ProcessId, PromptId, Question, QuestionOption, RateLimitStatus,
-    Request, ResourceUse, ResponseBody, Selection, ServerLoad, ServerPoint, SignIn, SignInWait,
-    SlashCommand, Subagent, SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem,
-    TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem,
-    TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
+    EnvironmentCredentials, ErrorBody, ErrorCode, FileEdit, GitIgnore, HistoryPage, Image,
+    ImageMediaType, ItemBody, ItemId, LoadAverage, LoadHistory, MachineLoad, Mark, McpScope,
+    McpServer, McpServerStatus, McpTool, McpTransport, OlderItems, PastSession, PendingId,
+    PermissionMode, Plan, PlanUsage, Position, ProcessId, PromptId, Question, QuestionOption,
+    RateLimitStatus, Request, ResourceUse, ResponseBody, Selection, ServerLoad, ServerPoint,
+    SignIn, SignInWait, SlashCommand, Subagent, SubagentRun, SubagentStatus, SubagentToolCall,
+    TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus,
+    TranscriptItem, TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt, WaitingState,
+    WindowUsage,
 };
 use serde_json::Value;
 
@@ -993,11 +994,15 @@ fn in_folder(folder: &str, path: impl AsRef<Path>) -> PathBuf {
 }
 
 /// The sample's files, absolute, with their text.
-fn files() -> [(PathBuf, &'static str); 16] {
+fn files() -> [(PathBuf, &'static str); 17] {
     [
         (in_folder(PARSER_FOLDER, "Cargo.toml"), CARGO_TEXT),
         (in_folder(PARSER_FOLDER, "README.md"), README_TEXT),
         (in_folder(PARSER_FOLDER, ".gitignore"), "/target\n"),
+        (
+            in_folder(PARSER_FOLDER, IGNORED_FILE),
+            "A build output, which the .gitignore leaves out.\n",
+        ),
         (in_folder(PARSER_FOLDER, "src/main.rs"), MAIN_TEXT),
         (in_folder(PARSER_FOLDER, "src/parser.rs"), PARSER_TEXT),
         (in_folder(PARSER_FOLDER, "src/token.rs"), TOKEN_KIND_TEXT),
@@ -1048,6 +1053,7 @@ fn list_dir(path: &Path) -> Result<ResponseBody, RequestError> {
             continue;
         };
         let inside = names.next().is_some();
+        let name_is_ignored = name == IGNORED_FOLDER;
         if entries.iter().any(|entry| entry.name == name) {
             continue;
         }
@@ -1060,6 +1066,11 @@ fn list_dir(path: &Path) -> Result<ResponseBody, RequestError> {
             },
             size: (!inside).then(|| u64::try_from(text.len()).unwrap_or(0)),
             link: EntryLink::Direct,
+            ignore: if name_is_ignored {
+                GitIgnore::Ignored
+            } else {
+                GitIgnore::Kept
+            },
         });
     }
     if entries.is_empty() && !REACHABLE.iter().any(|root| folder == Path::new(root)) {
@@ -1075,6 +1086,10 @@ fn list_dir(path: &Path) -> Result<ResponseBody, RequestError> {
         completeness: Completeness::Complete,
     }))
 }
+
+/// The folder the demo project's .gitignore leaves out, and a file in it.
+const IGNORED_FOLDER: &str = "target";
+const IGNORED_FILE: &str = "target/debug/calc-parser.d";
 
 /// Folders of the demo server that hold no agent, past session or sample file.
 const OTHER_FOLDERS: [&str; 5] = [
@@ -1130,6 +1145,7 @@ fn list_folders(state: &AppState, path: &Path) -> Result<ResponseBody, RequestEr
             kind: EntryKind::Folder,
             size: None,
             link: EntryLink::Direct,
+            ignore: GitIgnore::Kept,
         })
         .collect();
     entries.sort_by_key(|entry| entry.name.to_lowercase());
@@ -3281,6 +3297,7 @@ pub struct ParseError {
             [
                 "benches",
                 "src",
+                "target",
                 "tests",
                 ".gitignore",
                 "AGENTS.md",

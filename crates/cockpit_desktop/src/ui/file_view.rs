@@ -14,9 +14,8 @@ use crate::path_style::PathStyle;
 use crate::render::{self, Diff, Language, MAX_RENDERED_LINES, diff_lines};
 use crate::state::{
     FileFreshness, FileRead, FileUpdate, Loadable, Popover, Reread, ViewMode, actions, chat_images,
-    file_edits, file_reread, is_markdown,
+    file_edits, file_reread, file_tree, is_markdown,
 };
-use crate::ui::changes_list;
 use crate::ui::code::{
     CopyButton, CopyLook, LineMarks, LineNumbers, diff_line, diff_row, lines_not_shown,
 };
@@ -343,13 +342,13 @@ impl ShortPath {
                 rest: style.shown(&path).into_owned(),
             };
         }
-        let root = changes_list::outside_root(folder, Path::new(path.as_ref()));
+        let root = file_tree::outside_root(folder, Path::new(path.as_ref()));
         let rest = style
             .strip_prefix(&path, &root.to_string_lossy())
             .unwrap_or(&path)
             .to_owned();
         Self {
-            root: Some(changes_list::root_label(&root)),
+            root: Some(file_tree::root_label(&root)),
             rest: style.shown(&rest).into_owned(),
         }
     }

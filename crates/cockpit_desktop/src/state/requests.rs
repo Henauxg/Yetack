@@ -14,7 +14,7 @@ use super::app_state::{AgentEntry, AppState, FileRead, Loadable, MachineState, R
 use super::drafts::{Draft, Drafts};
 use super::transcript::HistoryState;
 use super::ui_state::{Dialog, FolderAction, OpenFileView};
-use super::{accounts, actions, chat_images, working_folder};
+use super::{accounts, actions, chat_images, file_tree, working_folder};
 use crate::machine::MachineId;
 use crate::path_style;
 use crate::prefs::AccountColor;
@@ -68,6 +68,16 @@ pub enum Purpose {
     },
     /// The project's files for the "Open file" dialog's bare name.
     FindFiles {
+        agent: AgentId,
+        name: String,
+    },
+    /// A folder of the files pane's tree.
+    TreeListing {
+        agent: AgentId,
+        folder: PathBuf,
+    },
+    /// The project's files for the files pane's search.
+    TreeSearch {
         agent: AgentId,
         name: String,
     },
@@ -223,6 +233,7 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
     else {
         return requests;
     };
+    let files_pane_open = state.prefs.files_pane.open;
     let open_file = state.ui.file_view(agent).map(|view| view.path.clone());
     let Some(entry) = state.agents.get_mut(&agent) else {
         return requests;
@@ -262,8 +273,51 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
             });
         }
     }
+    if files_pane_open {
+        tree_requests(entry, agent, &mut requests);
+    }
     chat_images::requests(entry, agent, &mut requests);
     requests
+}
+
+/// The files pane's listings and search, when not asked for yet or when a listing is stale.
+fn tree_requests(entry: &mut AgentEntry, agent: AgentId, requests: &mut Vec<Outgoing>) {
+    let footprint = file_tree::footprint(entry);
+    let folders = file_tree::shown_folders(&entry.tree, &entry.summary.folder, &footprint);
+    for folder in folders {
+        let listing = entry.tree.listings.entry(folder.clone()).or_default();
+        let first = listing.entries == Loadable::NotRequested;
+        if listing.reading || !(first || listing.stale) {
+            continue;
+        }
+        listing.stale = false;
+        listing.reading = true;
+        if first {
+            listing.entries = Loadable::Loading;
+        }
+        requests.push(Outgoing {
+            request: Request::AgentListDir(ListDirParams {
+                agent,
+                path: folder.clone(),
+            }),
+            purpose: Purpose::TreeListing { agent, folder },
+            to: MachineId::THIS,
+        });
+    }
+    if let Some(search) = &mut entry.tree.search
+        && search.found == Loadable::NotRequested
+    {
+        search.found = Loadable::Loading;
+        let name = search.name.clone();
+        requests.push(Outgoing {
+            request: Request::AgentFindFiles(FindFilesParams {
+                agent,
+                name: name.clone(),
+            }),
+            purpose: Purpose::TreeSearch { agent, name },
+            to: MachineId::THIS,
+        });
+    }
 }
 
 /// The "Open file" dialog's folder and search, when not asked for yet.
@@ -496,6 +550,32 @@ pub fn apply_response(
             {
                 view.listing = match result {
                     Ok(ResponseBody::Directory(listing)) => Loadable::Loaded(listing),
+                    other => Failure::from_result(other).into_loadable(),
+                };
+            }
+        }
+        // A listing replaces the old one, which showed meanwhile. A failure keeps the old one.
+        Purpose::TreeListing { agent, folder } => {
+            if let Some(entry) = state.agents.get_mut(&agent)
+                && let Some(listing) = entry.tree.listings.get_mut(&folder)
+            {
+                listing.reading = false;
+                match result {
+                    Ok(ResponseBody::Directory(found)) => listing.entries = Loadable::Loaded(found),
+                    other if !matches!(listing.entries, Loadable::Loaded(_)) => {
+                        listing.entries = Failure::from_result(other).into_loadable();
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Purpose::TreeSearch { agent, name } => {
+            if let Some(entry) = state.agents.get_mut(&agent)
+                && let Some(search) = &mut entry.tree.search
+                && search.name == name
+            {
+                search.found = match result {
+                    Ok(ResponseBody::FileMatches { matches }) => Loadable::Loaded(matches),
                     other => Failure::from_result(other).into_loadable(),
                 };
             }

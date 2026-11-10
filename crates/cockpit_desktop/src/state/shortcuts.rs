@@ -11,7 +11,7 @@ use super::requests::Outgoing;
 use super::transcript::WaitingKind;
 use super::ui_state::{Dialog, PaletteOrigin, Popover};
 use super::utf16_offset::Utf16Offset;
-use super::{accounts, agent_map, file_reread, open_file, to_handle};
+use super::{accounts, agent_map, file_reread, file_tree, open_file, to_handle};
 
 /// `KeyboardEvent.key` values.
 const KEY_ESCAPE: &str = "Escape";
@@ -36,7 +36,14 @@ const KEY_SWITCHER: &str = "k";
 const KEY_NEW_AGENT: &str = "n";
 const KEY_OPEN_FILE: &str = "o";
 const KEY_AGENT_MAP: &str = "m";
-pub const COMMAND_KEYS: [&str; 4] = [KEY_SWITCHER, KEY_NEW_AGENT, KEY_OPEN_FILE, KEY_AGENT_MAP];
+const KEY_FILES: &str = "b";
+pub const COMMAND_KEYS: [&str; 5] = [
+    KEY_SWITCHER,
+    KEY_NEW_AGENT,
+    KEY_OPEN_FILE,
+    KEY_AGENT_MAP,
+    KEY_FILES,
+];
 
 /// The letter that closes the selected agent, with Ctrl+Shift.
 pub const CLOSE_AGENT_KEY: &str = "w";
@@ -80,6 +87,7 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
             KEY_NEW_AGENT => actions::open_new_agent(state, drafts),
             KEY_OPEN_FILE => open_file::toggle(state, drafts),
             KEY_AGENT_MAP => agent_map::toggle(state),
+            KEY_FILES => file_tree::toggle_pane(state),
             _ => {}
         }
         return Vec::new();
@@ -123,6 +131,9 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
     if press.key == RELOAD_KEY {
         if plain && let Some(agent) = state.ui.selected {
             file_reread::reread(state, agent);
+            if let Some(entry) = state.agents.get_mut(&agent) {
+                file_tree::refresh(&mut entry.tree);
+            }
         }
         return Vec::new();
     }

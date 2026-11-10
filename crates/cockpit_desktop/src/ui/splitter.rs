@@ -1,5 +1,5 @@
-//! The lines that size the panes beside the chat: the sidebar's on its right edge and the file
-//! view's on its left edge. A drag or the arrow keys move them.
+//! The lines that size the panes beside the chat: the sidebar's on its right edge, and the file
+//! view's and the files pane's on their left edges. A drag or the arrow keys move them.
 //!
 //! While the pointer moves, the page's script sets the pane's size in a CSS custom property on the
 //! window's root, and Rust hears of it once, when the button is released: a render of the window
@@ -9,8 +9,8 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::connection::Cockpit;
-use crate::prefs::{MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH};
-use crate::state::actions;
+use crate::prefs::{MAX_FILES_WIDTH, MAX_SIDEBAR_WIDTH, MIN_FILES_WIDTH, MIN_SIDEBAR_WIDTH};
+use crate::state::{actions, file_tree};
 
 /// The window's root element, which holds each pane's property.
 pub const APP_ID: &str = "app";
@@ -19,17 +19,22 @@ pub const FILE_VIEW_ID: &str = "file-view";
 
 pub const SIDEBAR_ID: &str = "sidebar";
 
+pub const FILES_PANE_ID: &str = "files-pane";
+
 /// The CSS custom property that holds the file view's share of the window's width.
 pub const SHARE_PROPERTY: &str = "--file-view-share";
 
 /// The CSS custom property that holds the sidebar's width.
 pub const SIDEBAR_WIDTH_PROPERTY: &str = "--sidebar-width";
 
+/// The CSS custom property that holds the files pane's width.
+pub const FILES_WIDTH_PROPERTY: &str = "--files-width";
+
 /// How far an arrow key moves the file view's splitter, as a share of the window's width.
 const SHARE_KEY_STEP: f64 = 0.02;
 
-/// How far an arrow key moves the sidebar's splitter, in pixels.
-const SIDEBAR_KEY_STEP: f64 = 16.0;
+/// How far an arrow key moves the sidebar's and the files pane's splitters, in pixels.
+const PIXELS_KEY_STEP: f64 = 16.0;
 
 /// Waits for its settings, then moves the splitters and sends a pane's size as the layout gave it,
 /// which the style sheet's bounds may have changed. Field names are serde's names for `Settings`,
@@ -153,6 +158,7 @@ await new Promise(() => {});
 pub enum Pane {
     Sidebar,
     FileView,
+    Files,
 }
 
 /// What a pane's size counts.
@@ -187,7 +193,7 @@ struct SplitterSettings {
 #[derive(Debug, Serialize)]
 struct Settings {
     app_id: &'static str,
-    splitters: [SplitterSettings; 2],
+    splitters: [SplitterSettings; 3],
 }
 
 /// A splitter moved: its pane's size in the pane's unit.
@@ -202,6 +208,7 @@ impl Pane {
         match self {
             Self::Sidebar => "sidebar-splitter",
             Self::FileView => "splitter",
+            Self::Files => "files-splitter",
         }
     }
 
@@ -212,7 +219,7 @@ impl Pane {
                 SIDEBAR_WIDTH_PROPERTY,
                 Unit::Pixels,
                 Side::Left,
-                SIDEBAR_KEY_STEP,
+                PIXELS_KEY_STEP,
             ),
             Self::FileView => (
                 FILE_VIEW_ID,
@@ -220,6 +227,13 @@ impl Pane {
                 Unit::Share,
                 Side::Right,
                 SHARE_KEY_STEP,
+            ),
+            Self::Files => (
+                FILES_PANE_ID,
+                FILES_WIDTH_PROPERTY,
+                Unit::Pixels,
+                Side::Right,
+                PIXELS_KEY_STEP,
             ),
         };
         SplitterSettings {
@@ -237,7 +251,11 @@ impl Pane {
 fn settings() -> Settings {
     Settings {
         app_id: APP_ID,
-        splitters: [Pane::Sidebar.settings(), Pane::FileView.settings()],
+        splitters: [
+            Pane::Sidebar.settings(),
+            Pane::FileView.settings(),
+            Pane::Files.settings(),
+        ],
     }
 }
 
@@ -255,6 +273,7 @@ pub fn use_splitter(cockpit: Cockpit) {
                     Ok(Moved { pane, value }) => cockpit.update(|state| match pane {
                         Pane::Sidebar => actions::set_sidebar_width(state, value),
                         Pane::FileView => actions::set_file_view_share(state, value),
+                        Pane::Files => file_tree::set_width(state, value),
                     }),
                     Err(error) => {
                         tracing::warn!("the splitters' script stopped: {error}");
@@ -284,6 +303,27 @@ pub fn Splitter(share: f64) -> Element {
             aria_valuenow: percent,
             title: "Drag to resize the file view, double-click for its default width",
             ondoubleclick: move |_| cockpit.update(actions::reset_file_view_share),
+        }
+    }
+}
+
+/// The files pane's splitter, on its left edge. `width` is the pane's width in pixels.
+#[component]
+pub fn FilesSplitter(width: u16) -> Element {
+    let cockpit: Cockpit = use_context();
+    rsx! {
+        div {
+            id: Pane::Files.splitter_id(),
+            class: "splitter",
+            role: "separator",
+            tabindex: 0,
+            aria_orientation: "vertical",
+            aria_label: "Files pane width",
+            aria_valuemin: MIN_FILES_WIDTH,
+            aria_valuemax: MAX_FILES_WIDTH,
+            aria_valuenow: width,
+            title: "Drag to resize the files pane, double-click for its default width",
+            ondoubleclick: move |_| cockpit.update(file_tree::reset_width),
         }
     }
 }
@@ -341,6 +381,15 @@ mod tests {
                         "unit": "share",
                         "pane_side": "right",
                         "key_step": 0.02,
+                    },
+                    {
+                        "pane": "files",
+                        "splitter_id": "files-splitter",
+                        "pane_id": "files-pane",
+                        "property": "--files-width",
+                        "unit": "pixels",
+                        "pane_side": "right",
+                        "key_step": 16.0,
                     },
                 ],
             })

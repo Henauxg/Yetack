@@ -64,8 +64,8 @@ pub use request::{
     SetModelParams, StartParams, StopProcessParams, StopTaskParams,
 };
 pub use response::{
-    Completeness, DirEntry, DirListing, EntryKind, EntryLink, ErrorBody, ErrorCode, HistoryPage,
-    OlderItems, PastSession, ResponseBody, ResponseResult,
+    Completeness, DirEntry, DirListing, EntryKind, EntryLink, ErrorBody, ErrorCode, GitIgnore,
+    HistoryPage, OlderItems, PastSession, ResponseBody, ResponseResult,
 };
 pub use session::{Catchup, ClientMessage, PROTOCOL_VERSION, ServerMessage, Snapshot};
 pub use settings::Settings;
