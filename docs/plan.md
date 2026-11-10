@@ -206,7 +206,7 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   - "/" opens a palette of commands and skills, filtered as you type.
   - Pasted screenshots show as thumbnails in the composer and in the sent message.
   - Messages Claude has not read yet show in a list pinned above the composer: "Next step" for a sent one, "After this turn" for a queued one, which has Send now and Cancel.
-  - Command output collapses after 5 lines; a failed command has a red dot and its exit code.
+  - Command output collapses after 5 lines, and a message you sent after 8; a failed command has a red dot and its exit code.
   - Ctrl+N opens the new agent dialog (recent folders, or resume a past session); Ctrl+K opens the agent switcher; Ctrl+Shift+H, or a right-click on a sidebar row, marks an agent to handle until you send it a message; Esc closes what is open (a menu, a dialog, an edit) and never stops the agent, which only the Stop button does; Y and N answer an approval or a plan.
   - No rewind of file changes in v1.
 - Decided after round 4 (mocked in round 5), replacing the right panel above:

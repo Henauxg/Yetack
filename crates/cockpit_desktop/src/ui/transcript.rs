@@ -34,14 +34,21 @@ const RUNNING_WORD: &str = "running";
 const IN_FOLD_LINES: u8 = 3;
 const OUT_FOLD_LINES: u8 = 5;
 
+/// Screen lines a long message you sent keeps while folded.
+const MESSAGE_FOLD_LINES: u8 = 8;
+
 /// The classes the fold script looks for: an IN or OUT row, the box that cuts its text, and the
 /// label it writes on the row's button.
 const IO_ROW_CLASS: &str = "io-row";
 const IO_CLIP_CLASS: &str = "io-clip";
 const FOLD_LABEL_CLASS: &str = "fold-more";
 
-/// Folds IN and OUT rows by their height on screen, which only the page knows: wrapping depends
-/// on the width. It marks `data-tall` each row whose text is taller than the `--fold-lines` the
+/// The same for a message you sent: the bubble, and the box that cuts its text.
+const MESSAGE_ROW_CLASS: &str = "message-fold";
+const MESSAGE_CLIP_CLASS: &str = "message-clip";
+
+/// Folds IN and OUT rows, and long messages you sent, by their height on screen, which only the
+/// page knows: wrapping depends on the width. It marks `data-tall` each row whose text is taller than the `--fold-lines` the
 /// row sets, and writes on its button how many screen lines the fold hides. A ResizeObserver
 /// measures each row's text when it appears and when its width or its text changes, so a resize
 /// of the window renders nothing. Message fields are serde's names for `FoldClasses`.
@@ -49,9 +56,9 @@ const FOLD_SCRIPT: &str = r#"
 const classes = await dioxus.recv();
 if (!window.agentsCockpitFolds) {
   window.agentsCockpitFolds = true;
-  const textSelector = `.${classes.clip} > pre`;
+  const textSelector = `.${classes.clip} > pre, .${classes.message_clip} > .markdown`;
   const measure = (text, height) => {
-    const row = text.closest(`.${classes.row}`);
+    const row = text.closest(`.${classes.row}, .${classes.message_row}`);
     if (row === null) {
       return;
     }
@@ -607,17 +614,32 @@ pub fn ItemView(
     }
 }
 
-/// The user's message. Its text renders as Markdown, as the agent's text does.
+/// The user's message. Its text renders as Markdown, as the agent's text does. A long one keeps
+/// its first screen lines until "Show more", as a command's output does.
 #[component]
 fn UserBubble(agent: AgentId, folder: PathBuf, message: UserMessage) -> Element {
+    let mut unfolded = use_signal(|| false);
+    let open = unfolded();
+    let state = if open { " unfolded" } else { "" };
     rsx! {
         div { class: "user-message",
             for (index, image) in message.images.iter().enumerate() {
                 img { key: "{index}", class: "message-image", src: bridge::image_url(image), alt: "Attached image" }
             }
             if !message.text.is_empty() {
-                div { class: "user-bubble",
-                    MarkdownView { agent, folder, markdown: message.text }
+                div {
+                    class: "user-bubble {MESSAGE_ROW_CLASS}{state}",
+                    style: "--fold-lines: {MESSAGE_FOLD_LINES}",
+                    div { class: MESSAGE_CLIP_CLASS,
+                        MarkdownView { agent, folder, markdown: message.text }
+                    }
+                    button {
+                        class: "fold-lines",
+                        aria_expanded: open,
+                        onclick: move |_| unfolded.toggle(),
+                        span { class: FOLD_LABEL_CLASS }
+                        span { class: "fold-less", "Show less" }
+                    }
                 }
             }
         }
@@ -892,6 +914,8 @@ struct FoldClasses {
     row: &'static str,
     clip: &'static str,
     label: &'static str,
+    message_row: &'static str,
+    message_clip: &'static str,
 }
 
 fn start_fold_script() {
@@ -900,9 +924,11 @@ fn start_fold_script() {
         row: IO_ROW_CLASS,
         clip: IO_CLIP_CLASS,
         label: FOLD_LABEL_CLASS,
+        message_row: MESSAGE_ROW_CLASS,
+        message_clip: MESSAGE_CLIP_CLASS,
     };
     if let Err(error) = script.send(classes) {
-        tracing::warn!("cannot start the script that folds tool output: {error}");
+        tracing::warn!("cannot start the script that folds tool output and messages: {error}");
     }
 }
 

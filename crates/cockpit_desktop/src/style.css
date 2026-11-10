@@ -2573,6 +2573,35 @@ html.reordering * {
   display: none;
 }
 
+/* A long message you sent folds as an IN or OUT row does, at its own line height. */
+.message-clip {
+  position: relative;
+}
+
+.message-fold[data-tall]:not(.unfolded) .message-clip {
+  max-height: calc(var(--fold-lines) * 1lh);
+  overflow: hidden;
+}
+
+.message-fold[data-tall]:not(.unfolded) .message-clip::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  height: 1.2em;
+  background: linear-gradient(to bottom, transparent, var(--hover));
+  pointer-events: none;
+}
+
+.message-fold[data-tall] .fold-lines {
+  display: block;
+  margin-left: auto;
+}
+
+.message-fold.unfolded .fold-more,
+.message-fold:not(.unfolded) .fold-less {
+  display: none;
+}
+
 .path-link {
   padding: 0;
   border: 0;

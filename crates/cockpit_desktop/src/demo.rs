@@ -391,6 +391,21 @@ The CI job fails when a case gets **10%** slower than on `main`.
 
 The CI run is at https://ci.example.org/calc-parser/runs/812.";
 
+/// A long request, which the chat folds to its first lines.
+const MIGRATION_REQUEST: &str = "Write the migration that adds the archive table.
+
+The table keeps the orders closed for more than a year:
+
+- `id`, the order's id, as the primary key.
+- `closed_at`, a timestamp, indexed.
+- `payload`, the order as JSON.
+
+Move the rows in batches of 1000, so that the lock on `orders` stays short. Keep the old rows until the copy is checked, then delete them in a second migration.
+
+The migration must run on the staging copy first. Write down how long it takes there, and the size of both tables before and after.
+
+Add a down migration that moves the rows back, and a test that runs both ways on a small sample.";
+
 const TICKETS_OUTPUT: &str = "#41 Errors point at the wrong column (open, label: errors)
 #57 Column is off by one after a tab (open, label: errors)";
 
@@ -1990,11 +2005,7 @@ fn exited_agent(now: SystemTime) -> Sample {
     summary.cache_expires_at = Some(at(now, 600));
     summary.mark = Mark::ToHandle;
     let items = vec![
-        item(
-            1,
-            None,
-            user("Write the migration that adds the archive table."),
-        ),
+        item(1, None, user(MIGRATION_REQUEST)),
         item(
             2,
             None,
