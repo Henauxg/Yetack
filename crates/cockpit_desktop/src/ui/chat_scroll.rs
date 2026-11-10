@@ -25,6 +25,10 @@ pub const JUMP_BUTTON_ID: &str = "jump-to-latest";
 /// The wrapper of each entry, which the script anchors on. Its padding reaches past the entry.
 pub const ENTRY_CLASS: &str = "transcript-entry";
 
+/// A row's fold button. The script keeps one the user clicks to fold its row where it is, so the
+/// row stays in view.
+pub const FOLD_BUTTON_CLASS: &str = "fold-lines";
+
 /// The class that highlights an entry the chat scrolled to, for as long as its animation runs.
 const REVEALED_CLASS: &str = "chat-revealed";
 
@@ -53,6 +57,10 @@ let reportedTop = "";
 // The scroll position the script set last. Its own scroll leaves the anchor as it was: measured
 // again, the anchor would drift by the rounding of each correction.
 let corrected = null;
+// The fold button the user clicked to fold its row, and its height in the view, kept until the
+// user scrolls. The anchor alone keeps the entry's top in place, so a row that folds far below
+// it would leave the view.
+let pinned = null;
 // Each agent's place, kept while another agent shows.
 const places = new Map();
 const boxTop = () => box.getBoundingClientRect().top;
@@ -103,14 +111,21 @@ const record = () => {
     return;
   }
   corrected = null;
+  pinned = null;
   following = gapBelow() <= settings.bottom_threshold_px;
   anchor = following ? null : firstInView();
   report();
 };
-// After the content changed: back to the bottom, or the anchor back at its height.
+// After the content changed: back to the bottom, or the pinned button or the anchor back at its
+// height.
 const settle = () => {
   let delta = gapBelow();
-  if (!following) {
+  if (pinned !== null && !pinned.element.isConnected) {
+    pinned = null;
+  }
+  if (!following && pinned !== null) {
+    delta = pinned.element.getBoundingClientRect().top - boxTop() - pinned.top;
+  } else if (!following) {
     const entry = anchor === null ? null : document.getElementById(anchor.id);
     const element = entry === null ? null : shown(entry);
     if (element === null) {
@@ -122,6 +137,9 @@ const settle = () => {
   if (Math.abs(delta) >= 1) {
     box.scrollTop += delta;
     corrected = box.scrollTop;
+  }
+  if (!following && pinned !== null) {
+    anchor = firstInView();
   }
 };
 // Another agent's entries replace the chat's: keep the place of the one that leaves, and go back
@@ -137,6 +155,7 @@ const changed = () => {
       places.set(agent, { following, anchor });
     }
     agent = shownAgent;
+    pinned = null;
     const place = places.get(agent);
     const kept = place !== undefined && !place.following && place.anchor !== null
       && document.getElementById(place.anchor.id) !== null;
@@ -175,6 +194,7 @@ const jump = () => {
     return;
   }
   following = true;
+  pinned = null;
   anchor = null;
   settle();
   report();
@@ -194,6 +214,7 @@ const reveal = (entryId, place) => {
     : Math.max(settings.reveal_top_px, (box.clientHeight - height) / 2);
   box.scrollTop += element.getBoundingClientRect().top - boxTop() - above;
   corrected = box.scrollTop;
+  pinned = null;
   following = gapBelow() <= settings.bottom_threshold_px;
   anchor = following ? null : { id: entry.id, top: element.getBoundingClientRect().top - boxTop() };
   report();
@@ -204,8 +225,19 @@ const reveal = (entryId, place) => {
   element.addEventListener("animationend", () => element.classList.remove(settings.revealed_class), { once: true });
 };
 document.addEventListener("click", (event) => {
-  if (event.target instanceof Element && event.target.closest(`#${settings.jump_button_id}`) !== null) {
+  if (!(event.target instanceof Element)) {
+    return;
+  }
+  if (event.target.closest(`#${settings.jump_button_id}`) !== null) {
     jump();
+    return;
+  }
+  // A row that unfolds grows below its anchor, where the user reads on.
+  const fold = event.target.closest(`#${settings.chat_scroll_id} .${settings.fold_button_class}`);
+  if (fold !== null && box !== null && !following) {
+    pinned = fold.getAttribute("aria-expanded") === "true"
+      ? { element: fold, top: fold.getBoundingClientRect().top - boxTop() }
+      : null;
   }
 });
 // While a dialog or a menu is open, End is theirs.
@@ -241,6 +273,7 @@ await new Promise(() => {});
 struct Settings {
     chat_scroll_id: &'static str,
     entry_class: &'static str,
+    fold_button_class: &'static str,
     jump_button_id: &'static str,
     /// End there is the file view's.
     file_view_id: &'static str,
@@ -339,6 +372,7 @@ pub fn use_chat_scroll(cockpit: Cockpit) -> Signal<Option<TopEntry>> {
         let settings = Settings {
             chat_scroll_id: CHAT_SCROLL_ID,
             entry_class: ENTRY_CLASS,
+            fold_button_class: FOLD_BUTTON_CLASS,
             jump_button_id: JUMP_BUTTON_ID,
             file_view_id: FILE_VIEW_ID,
             revealed_class: REVEALED_CLASS,
@@ -418,6 +452,7 @@ mod tests {
         let settings = Settings {
             chat_scroll_id: CHAT_SCROLL_ID,
             entry_class: ENTRY_CLASS,
+            fold_button_class: FOLD_BUTTON_CLASS,
             jump_button_id: JUMP_BUTTON_ID,
             file_view_id: FILE_VIEW_ID,
             revealed_class: REVEALED_CLASS,
@@ -433,6 +468,7 @@ mod tests {
             json!({
                 "chat_scroll_id": "chat-scroll",
                 "entry_class": "transcript-entry",
+                "fold_button_class": "fold-lines",
                 "jump_button_id": "jump-to-latest",
                 "file_view_id": "file-view",
                 "revealed_class": "chat-revealed",

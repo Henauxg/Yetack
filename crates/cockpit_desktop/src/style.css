@@ -2562,6 +2562,9 @@ html.reordering * {
   color: var(--text-soft);
   font-family: var(--sans);
   font-size: 12.5px;
+  /* WebKitGTK reads only the prefixed property. */
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .io-row[data-tall] .fold-lines {
@@ -2573,13 +2576,14 @@ html.reordering * {
   display: none;
 }
 
-/* A long message you sent folds as an IN or OUT row does, at its own line height. */
+/* A long message you sent folds as an IN or OUT row does. The fold script sets `--fold-height`
+   where the message's last kept line ends. */
 .message-clip {
   position: relative;
 }
 
 .message-fold[data-tall]:not(.unfolded) .message-clip {
-  max-height: calc(var(--fold-lines) * 1lh);
+  max-height: var(--fold-height);
   overflow: hidden;
 }
 

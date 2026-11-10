@@ -19,7 +19,9 @@ use crate::render::{Diff, Language, diff_lines};
 use crate::state::{self, AgentEntry, HistoryState, TurnStart, accounts, actions, file_edits};
 use crate::ui::accounts::SignInCard;
 use crate::ui::cards::{ApprovalCard, PlanCard, QuestionCard};
-use crate::ui::chat_scroll::{self, CHAT_SCROLL_ID, ENTRY_CLASS, JumpToLatest, NewDivider};
+use crate::ui::chat_scroll::{
+    self, CHAT_SCROLL_ID, ENTRY_CLASS, FOLD_BUTTON_CLASS, JumpToLatest, NewDivider,
+};
 use crate::ui::code::{LineMarks, LineNumbers, diff_row};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::last_instruction::LastInstruction;
@@ -47,9 +49,11 @@ const FOLD_LABEL_CLASS: &str = "fold-more";
 const MESSAGE_ROW_CLASS: &str = "message-fold";
 const MESSAGE_CLIP_CLASS: &str = "message-clip";
 
-/// Folds IN and OUT rows, and long messages you sent, by their height on screen, which only the
-/// page knows: wrapping depends on the width. It marks `data-tall` each row whose text is taller than the `--fold-lines` the
-/// row sets, and writes on its button how many screen lines the fold hides. A ResizeObserver
+/// Folds IN and OUT rows, and long messages you sent, by their lines on screen, which only the
+/// page knows: wrapping depends on the width. It marks `data-tall` each row whose text takes more
+/// screen lines than the `--fold-lines` the row sets, and writes on its button how many lines the
+/// fold hides. A message's Markdown has gaps between its blocks, so the script counts its lines
+/// of text and sets `--fold-height` on its clip, where its last kept line ends. A ResizeObserver
 /// measures each row's text when it appears and when its width or its text changes, so a resize
 /// of the window renders nothing. Message fields are serde's names for `FoldClasses`.
 const FOLD_SCRIPT: &str = r#"
@@ -57,14 +61,44 @@ const classes = await dioxus.recv();
 if (!window.agentsCockpitFolds) {
   window.agentsCockpitFolds = true;
   const textSelector = `.${classes.clip} > pre, .${classes.message_clip} > .markdown`;
+  // Where each screen line of the text ends, from the text's top. A table row's cells overlap
+  // and count as one line.
+  const lineBottoms = (text) => {
+    const top = text.getBoundingClientRect().top;
+    const bottoms = [];
+    const range = document.createRange();
+    const walker = document.createTreeWalker(text, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode() !== null) {
+      range.selectNodeContents(walker.currentNode);
+      for (const rect of range.getClientRects()) {
+        const last = bottoms.length - 1;
+        if (rect.width === 0) {
+          continue;
+        } else if (last >= 0 && rect.top - top < bottoms[last]) {
+          bottoms[last] = Math.max(bottoms[last], rect.bottom - top);
+        } else {
+          bottoms.push(rect.bottom - top);
+        }
+      }
+    }
+    return bottoms;
+  };
   const measure = (text, height) => {
     const row = text.closest(`.${classes.row}, .${classes.message_row}`);
     if (row === null) {
       return;
     }
     const kept = parseInt(getComputedStyle(row).getPropertyValue("--fold-lines"), 10);
-    const lineHeight = parseFloat(getComputedStyle(text).lineHeight);
-    const hidden = Math.round(height / lineHeight) - kept;
+    let hidden;
+    if (row.matches(`.${classes.message_row}`)) {
+      const bottoms = lineBottoms(text);
+      hidden = bottoms.length - kept;
+      if (hidden > 0) {
+        text.parentElement.style.setProperty("--fold-height", `${Math.ceil(bottoms[kept - 1])}px`);
+      }
+    } else {
+      hidden = Math.round(height / parseFloat(getComputedStyle(text).lineHeight)) - kept;
+    }
     if (!(hidden > 0)) {
       delete row.dataset.tall;
       return;
@@ -634,7 +668,7 @@ fn UserBubble(agent: AgentId, folder: PathBuf, message: UserMessage) -> Element 
                         MarkdownView { agent, folder, markdown: message.text }
                     }
                     button {
-                        class: "fold-lines",
+                        class: FOLD_BUTTON_CLASS,
                         aria_expanded: open,
                         onclick: move |_| unfolded.toggle(),
                         span { class: FOLD_LABEL_CLASS }
@@ -918,16 +952,17 @@ struct FoldClasses {
     message_clip: &'static str,
 }
 
+const FOLD_CLASSES: FoldClasses = FoldClasses {
+    row: IO_ROW_CLASS,
+    clip: IO_CLIP_CLASS,
+    label: FOLD_LABEL_CLASS,
+    message_row: MESSAGE_ROW_CLASS,
+    message_clip: MESSAGE_CLIP_CLASS,
+};
+
 fn start_fold_script() {
     let script = document::eval(FOLD_SCRIPT);
-    let classes = FoldClasses {
-        row: IO_ROW_CLASS,
-        clip: IO_CLIP_CLASS,
-        label: FOLD_LABEL_CLASS,
-        message_row: MESSAGE_ROW_CLASS,
-        message_clip: MESSAGE_CLIP_CLASS,
-    };
-    if let Err(error) = script.send(classes) {
+    if let Err(error) = script.send(FOLD_CLASSES) {
         tracing::warn!("cannot start the script that folds tool output and messages: {error}");
     }
 }
@@ -949,7 +984,7 @@ fn IoRow(kind: IoKind, text: String) -> Element {
                     pre { "{text}" }
                 }
                 button {
-                    class: "fold-lines",
+                    class: FOLD_BUTTON_CLASS,
                     aria_expanded: open,
                     onclick: move |_| unfolded.toggle(),
                     span { class: FOLD_LABEL_CLASS }
@@ -1620,5 +1655,21 @@ mod tests {
         assert_eq!(ShownRows::All.first(140), 0);
         assert_eq!(long.first(140), 140 - FIRST_ROWS);
         assert_eq!(scrolled_up.first(140), 140);
+    }
+
+    /// The fold script reads these fields by name: a rename in Rust would make it read
+    /// `undefined`, with no error.
+    #[test]
+    fn the_fields_the_fold_script_reads_are_pinned() {
+        assert_eq!(
+            serde_json::to_value(FOLD_CLASSES).unwrap(),
+            serde_json::json!({
+                "row": "io-row",
+                "clip": "io-clip",
+                "label": "fold-more",
+                "message_row": "message-fold",
+                "message_clip": "message-clip",
+            })
+        );
     }
 }
