@@ -9,6 +9,7 @@ use tokio::process::Command;
 
 use crate::accounts::ClaudeEnv;
 use crate::process::program::{self, ClaudeProgram};
+use crate::store::ResumeAs;
 
 const STREAM_JSON: &str = "stream-json";
 /// JSON in and out, approvals over stdio, and prompts echoed back.
@@ -26,6 +27,7 @@ const MODEL_FLAG: &str = "--model";
 const PERMISSION_MODE_FLAG: &str = "--permission-mode";
 const EFFORT_FLAG: &str = "--effort";
 const RESUME_FLAG: &str = "--resume";
+const FORK_SESSION_FLAG: &str = "--fork-session";
 
 /// Set by a Claude Code session for the commands it runs: a `claude` that sees it thinks it runs
 /// inside another session.
@@ -56,6 +58,8 @@ pub(crate) struct ClaudeCommand {
     pub(crate) effort: Option<String>,
     /// The Claude session to resume.
     pub(crate) resume: Option<ClaudeSessionId>,
+    /// With `Fork`, the resumed conversation goes on under a new session.
+    pub(crate) resume_as: ResumeAs,
     pub(crate) interrupted_turn: InterruptedTurn,
     /// What the agent's account sets in the environment.
     pub(crate) env: ClaudeEnv,
@@ -76,6 +80,9 @@ impl ClaudeCommand {
         }
         if let Some(session) = &self.resume {
             args.push(flag(RESUME_FLAG, session.as_str()));
+            if self.resume_as == ResumeAs::Fork {
+                args.push(OsString::from(FORK_SESSION_FLAG));
+            }
         }
         args
     }
@@ -121,6 +128,7 @@ mod tests {
             mode: None,
             effort: None,
             resume: None,
+            resume_as: ResumeAs::Same,
             interrupted_turn: InterruptedTurn::Leave,
             env: ClaudeEnv::for_tests(),
         }
@@ -154,6 +162,22 @@ mod tests {
                 "--resume=session-1"
             ]
             .map(OsString::from)
+        );
+    }
+
+    #[test]
+    fn a_fork_resumes_under_a_new_session() {
+        let command = ClaudeCommand {
+            resume: Some(ClaudeSessionId::new("session-1".to_owned())),
+            resume_as: ResumeAs::Fork,
+            ..command()
+        };
+
+        let args = command.args();
+
+        assert_eq!(
+            args.get(FIXED_ARGS.len()..).unwrap(),
+            ["--resume=session-1", "--fork-session"].map(OsString::from)
         );
     }
 

@@ -22,7 +22,8 @@ use crate::state::accounts::AccountLabel;
 use crate::state::actions::{Direction, StartField};
 use crate::state::folder_field::{self, FolderRow};
 use crate::state::{
-    Dialog, FolderList, FormMenu, ImageView, Loadable, NewAgentForm, NewAgentTab, accounts, actions,
+    Dialog, FolderAction, FolderList, FormMenu, ImageView, Loadable, NewAgentForm, NewAgentTab,
+    WorkingFolderForm, accounts, actions, working_folder,
 };
 use crate::ui::accounts::{self as accounts_view, AccountMini, AccountPicker};
 use crate::ui::agent_map::AgentMapDialog;
@@ -142,6 +143,9 @@ pub fn Dialogs() -> Element {
                     },
                     Dialog::ImageView(view) => rsx! {
                         ImageViewDialog { view }
+                    },
+                    Dialog::WorkingFolder(form) => rsx! {
+                        WorkingFolderDialog { form }
                     },
                 }
             }
@@ -590,7 +594,7 @@ fn StartForm(form: NewAgentForm) -> Element {
                 }
             }
             if let Some(list) = form.folders.clone() {
-                FolderRows { list }
+                FolderRows { list, escape: "Esc for the recent folders" }
             } else if !folders.is_empty() || placeholders > 0 {
                 div { class: "field-group",
                     span { class: "field-label loading-note",
@@ -737,9 +741,101 @@ fn StartForm(form: NewAgentForm) -> Element {
     }
 }
 
-/// The folders of the folder the field names, in the recent folders' place.
+/// Forks or moves an agent's conversation to another working folder: the folder `claude` runs in,
+/// and Claude Code's copy of the session there.
 #[component]
-fn FolderRows(list: FolderList) -> Element {
+fn WorkingFolderDialog(form: WorkingFolderForm) -> Element {
+    let cockpit: Cockpit = use_context();
+    let (title, folder) = {
+        let state = cockpit.state.read();
+        let Some(entry) = state.agents.get(&form.agent) else {
+            return rsx! {};
+        };
+        (
+            entry.summary.title.clone(),
+            path_style::shown(&entry.summary.folder),
+        )
+    };
+    // The field starts from the draft, then follows the keyboard alone.
+    let seed = use_hook(|| cockpit.drafts.peek().new_agent.folder.clone());
+    let (heading, text, confirm) = match form.action {
+        FolderAction::Fork => (
+            "Fork into another working folder",
+            format!(
+                "A new agent carries on this conversation in the folder you pick, under a new Claude session. {title} goes on in {folder}."
+            ),
+            "Fork",
+        ),
+        FolderAction::Move => (
+            "Move to another working folder",
+            format!(
+                "{title} stops, then runs again in the folder you pick, on the same conversation. Claude Code's copy of the session in {folder} stays."
+            ),
+            "Move",
+        ),
+    };
+    let submit = move || {
+        cockpit.change_with_drafts(|state, drafts| working_folder::submit(state, drafts));
+    };
+    rsx! {
+        div {
+            class: "dialog working-folder",
+            role: "dialog",
+            aria_label: heading,
+            onclick: move |event| event.stop_propagation(),
+            div { class: "dialog-head",
+                h2 { "{heading}" }
+            }
+            p { class: "dialog-text", "{text}" }
+            div { class: "dialog-body",
+                div { class: "field-group",
+                    label { class: "field-label", r#for: FOLDER_FIELD_ID, "Working folder" }
+                    div { class: "folder-field",
+                        Icon { kind: IconKind::Folder, size: 16 }
+                        input {
+                            id: FOLDER_FIELD_ID,
+                            class: "folder-input mono",
+                            r#type: "text",
+                            spellcheck: false,
+                            initial_value: "{seed}",
+                            onmounted: move |_| bridge::focus_field_at_end(FOLDER_FIELD_ID),
+                            oninput: move |event: FormEvent| type_folder(cockpit, event.value()),
+                            onkeydown: move |event: KeyboardEvent| folder_key(cockpit, &event),
+                        }
+                    }
+                    if let Some(error) = &form.error {
+                        span { class: "form-error", role: "alert", "{error}" }
+                    }
+                }
+                if let Some(list) = form.folders.clone() {
+                    FolderRows { list, escape: "Esc to cancel" }
+                }
+            }
+            div { class: "dialog-actions",
+                button {
+                    class: "button",
+                    onclick: move |_| cockpit.update(|state| state.ui.dialog = None),
+                    "Cancel"
+                }
+                button {
+                    class: if form.sending { "button primary disabled" } else { "button primary" },
+                    disabled: form.sending,
+                    onclick: move |_| submit(),
+                    if form.sending {
+                        span { class: "spinner", aria_hidden: true }
+                    }
+                    "{confirm}"
+                    span { class: "key-hint", "Enter" }
+                }
+            }
+        }
+    }
+}
+
+/// The folders of the folder the field names, in the recent folders' place. `escape` says what Esc
+/// does in the dialog.
+#[component]
+fn FolderRows(list: FolderList, escape: &'static str) -> Element {
     let cockpit: Cockpit = use_context();
     let pointer = use_pointer_moves();
     let (text, highlighted) = {
@@ -795,7 +891,7 @@ fn FolderRows(list: FolderList) -> Element {
                 }
             }
             span { class: "dialog-note",
-                "Tab to complete, Backspace to go up, Esc for the recent folders"
+                "Tab to complete, Backspace to go up, {escape}"
             }
         }
     }
@@ -849,7 +945,8 @@ fn type_folder(cockpit: Cockpit, text: String) {
 }
 
 /// The folder field's keys, as the "Open file" dialog's path field has them. Enter takes the
-/// highlighted folder, or with none highlighted, starts the agent.
+/// highlighted folder, or with none highlighted, starts the agent, or forks or moves it in the
+/// working folder dialog.
 fn folder_key(cockpit: Cockpit, event: &KeyboardEvent) {
     if event.modifiers().alt() || event.is_composing() {
         return;
@@ -867,7 +964,10 @@ fn folder_key(cockpit: Cockpit, event: &KeyboardEvent) {
         Key::Enter => {
             event.prevent_default();
             if !take_folder(cockpit, None) {
-                cockpit.change_with_drafts(|state, drafts| actions::start_agent(state, drafts));
+                cockpit.change_with_drafts(|state, drafts| match state.ui.dialog {
+                    Some(Dialog::WorkingFolder(_)) => working_folder::submit(state, drafts),
+                    _ => actions::start_agent(state, drafts),
+                });
             }
             return;
         }

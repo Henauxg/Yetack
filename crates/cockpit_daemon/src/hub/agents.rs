@@ -19,7 +19,7 @@ use crate::hub::state::{Agent, Hub, QueuedPrompt};
 use crate::hub::{errors, state};
 use crate::process::{ClaudeCommand, InterruptedTurn, ProcessEvent};
 use crate::sessions::FoundSession;
-use crate::store::{AgentRecord, LogName, RawLog};
+use crate::store::{AgentRecord, LogName, RawLog, ResumeAs};
 use crate::transcript::prompts::TypedSetting;
 use crate::transcript::{AgentView, AnswerError, FollowUp, ProcessSession, prompts, words};
 use crate::{machine_load, read_file, sessions};
@@ -68,6 +68,7 @@ impl Hub {
             process: None,
             account: account.id,
             mark: Mark::Unmarked,
+            resume_as: ResumeAs::Same,
         };
         let agent = self.add_agent(record, params.prompt, None)?;
         Ok(ResponseBody::AgentStarted { agent })
@@ -102,6 +103,7 @@ impl Hub {
                 process: None,
                 generation: 0,
                 queue: VecDeque::new(),
+                moving: None,
             },
         );
         if let Err(error) = self.start_process(id, InterruptedTurn::Leave) {
@@ -154,6 +156,7 @@ impl Hub {
             mode: record.mode.map(words::mode_to_claude),
             effort: record.effort.and_then(words::effort_word),
             resume: record.session.clone(),
+            resume_as: record.resume_as,
             interrupted_turn,
             env: ClaudeEnv::new(&account),
         };
@@ -277,6 +280,8 @@ impl Hub {
         let session_changed = session.is_some() && session != agent.record.session;
         if session_changed {
             agent.record.session = session;
+            // A fork has its own session from now on.
+            agent.record.resume_as = ResumeAs::Same;
         }
         // Claude Code names the session itself after a `/rename` typed in the composer.
         let title_changed = agent.view.summary().title != agent.record.title;
@@ -327,6 +332,7 @@ impl Hub {
         if recorded {
             self.save_agents();
         }
+        self.continue_move(id);
     }
 
     /// Sends a prompt now, or queues it while the agent works, as `delivery` asks.
@@ -503,6 +509,10 @@ impl Hub {
         if agent.process.is_some() {
             return Err(errors::agent_running(id));
         }
+        // A move starts it again in its new folder once the session is there.
+        if agent.moving.is_some() {
+            return Err(errors::agent_working(id));
+        }
         self.start_process(id, InterruptedTurn::Leave)
             .map_err(|error| ErrorBody::new(ErrorCode::ClaudeFailed, error))?;
         if let Some(agent) = self.agents.get_mut(&id) {
@@ -645,6 +655,7 @@ impl Hub {
             process: None,
             account: account.id,
             mark: Mark::Unmarked,
+            resume_as: ResumeAs::Same,
         };
         let agent = self.add_agent(record, None, Some(past.items))?;
         Ok(ResponseBody::AgentStarted { agent })
@@ -763,7 +774,7 @@ pub(super) fn initial_summary(record: &AgentRecord) -> AgentSummary {
 /// An existing folder, absolute, with its symlinks resolved. On Windows it keeps the form a user
 /// writes, `C:\work` and not `\\?\C:\work`: Claude Code records the session under it, and the
 /// recent folders show it.
-fn agent_folder(folder: &Path) -> Result<PathBuf, ErrorBody> {
+pub(super) fn agent_folder(folder: &Path) -> Result<PathBuf, ErrorBody> {
     if !folder.is_absolute() {
         return Err(errors::invalid(format!(
             "the folder {} is not absolute",

@@ -112,7 +112,7 @@ mod tests {
     use rustix::process::Signal;
 
     use super::*;
-    use crate::store::{AgentRecord, AgentsFile};
+    use crate::store::{AgentRecord, AgentsFile, ResumeAs};
 
     /// The daemon died while an agent's `claude` ran: the next daemon stops that `claude` before
     /// it resumes the agent's session.
@@ -151,6 +151,7 @@ mod tests {
                 process,
                 account: AccountId::DEFAULT,
                 mark: Mark::Unmarked,
+                resume_as: ResumeAs::Same,
             }],
         }
         .save(&state.agents_file())

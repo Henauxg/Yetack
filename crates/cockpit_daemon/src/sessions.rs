@@ -9,6 +9,7 @@
 //! requests): they read as lines of an unknown type, which show nothing.
 
 use std::cmp::Reverse;
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::io;
 use std::io::{BufRead, BufReader, Read, SeekFrom};
@@ -30,6 +31,13 @@ use crate::transcript::PastTranscript;
 
 const PROJECTS_FOLDER: &str = "projects";
 const SESSION_EXTENSION: &str = "jsonl";
+/// What Claude Code writes in a project's name for each character of its path that is not an
+/// ASCII letter or digit.
+const PROJECT_NAME_FILL: char = '-';
+/// The longest project folder name Claude Code writes as it is.
+const MAX_PROJECT_NAME_CHARS: usize = 200;
+/// Added to a session file's name while it is copied.
+const PARTIAL_SUFFIX: &str = ".partial";
 /// The bytes read from each end of a file for its title and folder.
 const CHUNK_BYTES: u64 = 64 * 1024;
 /// The newest sessions listed.
@@ -84,6 +92,10 @@ pub(crate) fn list(accounts: &[AccountFolder]) -> Vec<PastSession> {
         add_session_files(account, &mut files);
     }
     files.sort_by_key(|file| Reverse(file.modified));
+    // A session copied to another folder's project, by a fork or a move, lists once: its newest
+    // file.
+    let mut seen: BTreeSet<(AccountId, String)> = BTreeSet::new();
+    files.retain(|file| session_id(&file.path).is_some_and(|id| seen.insert((file.account, id))));
     let newest = files.into_iter().take(MAX_SESSIONS);
     newest
         .filter_map(|file| read_session(&file.path, file.account))
@@ -299,16 +311,108 @@ fn next_line(
     }
 }
 
+/// The session's file in any project, the newest when a fork or a move copied it to several.
 fn find_file(claude_folder: &Path, id: &ClaudeSessionId) -> Option<PathBuf> {
     if !is_session_id(id.as_str()) {
         return None;
     }
-    let file_name = format!("{}.{SESSION_EXTENSION}", id.as_str());
+    let file_name = session_file_name(id);
     let projects = std::fs::read_dir(claude_folder.join(PROJECTS_FOLDER)).ok()?;
     projects
         .flatten()
         .map(|project| project.path().join(&file_name))
-        .find(|path| path.is_file())
+        .filter_map(|path| {
+            let modified = std::fs::metadata(&path).ok()?.modified().ok()?;
+            path.is_file().then_some((modified, path))
+        })
+        .max_by_key(|(modified, _)| *modified)
+        .map(|(_, path)| path)
+}
+
+fn session_file_name(id: &ClaudeSessionId) -> String {
+    format!("{}.{SESSION_EXTENSION}", id.as_str())
+}
+
+/// The name of the project folder Claude Code keeps a working folder's sessions in: the working
+/// folder's path, each character other than an ASCII letter or digit written `-`. `None` past
+/// `MAX_PROJECT_NAME_CHARS`, where Claude Code shortens the name in a way the daemon does not
+/// follow.
+pub(crate) fn project_name(folder: &Path) -> Option<String> {
+    let name: String = folder
+        .to_string_lossy()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                PROJECT_NAME_FILL
+            }
+        })
+        .collect();
+    (name.chars().count() <= MAX_PROJECT_NAME_CHARS).then_some(name)
+}
+
+/// Copies a session from the project of `from` to the project of `to`, where a `claude` started
+/// in `to` finds it: its file, and the folder of its side files (subagents, saved tool outputs,
+/// its title). The originals stay: the conversation names some side files by their path. A file
+/// already in `to`'s project, an older copy, is replaced.
+pub(crate) fn copy_to_project(
+    claude_folder: &Path,
+    id: &ClaudeSessionId,
+    from: &Path,
+    to: &Path,
+) -> Result<(), String> {
+    if !is_session_id(id.as_str()) {
+        return Err(format!("{} is not a Claude session id", id.as_str()));
+    }
+    let projects = claude_folder.join(PROJECTS_FOLDER);
+    let target_name = project_name(to).ok_or_else(|| {
+        format!(
+            "{} is too long a path for Claude Code's project folder",
+            to.display()
+        )
+    })?;
+    let source = project_name(from)
+        .map(|name| projects.join(name).join(session_file_name(id)))
+        .filter(|path| path.is_file())
+        .or_else(|| find_file(claude_folder, id))
+        .ok_or_else(|| format!("Claude Code has no file for the session {}", id.as_str()))?;
+    let target_project = projects.join(target_name);
+    let target = target_project.join(session_file_name(id));
+    if target == source {
+        return Ok(());
+    }
+    let fail = |what: &str, error: io::Error| format!("cannot {what}: {error}");
+    std::fs::create_dir_all(&target_project)
+        .map_err(|error| fail("create Claude Code's project folder", error))?;
+    // Through a temporary name, so that a `claude` never reads half a file.
+    let partial = target_project.join(format!("{}{PARTIAL_SUFFIX}", session_file_name(id)));
+    std::fs::copy(&source, &partial).map_err(|error| fail("copy the session file", error))?;
+    std::fs::rename(&partial, &target).map_err(|error| fail("copy the session file", error))?;
+    if let Some(side_folder) = source.parent().map(|project| project.join(id.as_str()))
+        && side_folder.is_dir()
+    {
+        copy_folder(&side_folder, &target_project.join(id.as_str()))
+            .map_err(|error| fail("copy the session's side files", error))?;
+    }
+    Ok(())
+}
+
+/// Copies a folder's files and folders into `to`, replacing the files already there. Symbolic
+/// links are skipped: Claude Code writes none there, and one could lead out of the folder.
+fn copy_folder(from: &Path, to: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let target = to.join(entry.file_name());
+        if kind.is_dir() {
+            copy_folder(&entry.path(), &target)?;
+        } else if kind.is_file() {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
 }
 
 fn read_session(path: &Path, account: AccountId) -> Option<PastSession> {
@@ -998,5 +1102,93 @@ mod tests {
             .expect("a list without a writer on the FIFO");
         let ids: Vec<&str> = sessions.iter().map(|session| session.id.as_str()).collect();
         assert_eq!(ids, [FIRST]);
+    }
+
+    #[test]
+    fn a_project_is_named_after_its_path_with_dashes() {
+        assert_eq!(
+            project_name(Path::new("/home/dev/calc-parser_GH42Q.v2")).as_deref(),
+            Some("-home-dev-calc-parser-GH42Q-v2")
+        );
+        assert_eq!(
+            project_name(Path::new(r"C:\work\app")).as_deref(),
+            Some("C--work-app")
+        );
+        let deep = format!("/{}", "a".repeat(MAX_PROJECT_NAME_CHARS));
+        assert_eq!(project_name(Path::new(&deep)), None);
+    }
+
+    #[test]
+    fn a_session_copies_to_another_folder_with_its_side_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let claude = temp.path();
+        let id = ClaudeSessionId::new(FIRST.to_owned());
+        write_session(
+            claude,
+            "-srv-work-shop",
+            FIRST,
+            &[prompt("Fix the cart total")],
+        );
+        let side = claude
+            .join(PROJECTS_FOLDER)
+            .join("-srv-work-shop")
+            .join(FIRST);
+        std::fs::create_dir_all(side.join("tool-results")).unwrap();
+        std::fs::write(side.join("tool-results/b1.txt"), "long output").unwrap();
+        // An older copy in the target project is replaced.
+        write_session(claude, "-srv-work-shop-fix", FIRST, &[]);
+
+        copy_to_project(
+            claude,
+            &id,
+            Path::new("/srv/work/shop"),
+            Path::new("/srv/work/shop_fix"),
+        )
+        .unwrap();
+
+        let target = claude.join(PROJECTS_FOLDER).join("-srv-work-shop-fix");
+        let copied = std::fs::read_to_string(target.join(format!("{FIRST}.jsonl"))).unwrap();
+        assert!(copied.contains("Fix the cart total"));
+        assert_eq!(
+            std::fs::read_to_string(target.join(FIRST).join("tool-results/b1.txt")).unwrap(),
+            "long output"
+        );
+        assert!(
+            side.join("tool-results/b1.txt").exists(),
+            "the original stays"
+        );
+        let names: Vec<String> = std::fs::read_dir(&target)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !names.iter().any(|name| name.ends_with(PARTIAL_SUFFIX)),
+            "{names:?}"
+        );
+    }
+
+    #[test]
+    fn a_copied_session_lists_once_and_resumes_from_its_newest_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let claude = temp.path();
+        write_session(claude, "-srv-work-shop", FIRST, &[prompt("Old copy")]);
+        let old = claude
+            .join(PROJECTS_FOLDER)
+            .join("-srv-work-shop")
+            .join(format!("{FIRST}.jsonl"));
+        let earlier = SystemTime::now() - Duration::from_secs(60);
+        OpenOptions::new()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(earlier)
+            .unwrap();
+        write_session(claude, "-srv-work-shop-fix", FIRST, &[prompt("New copy")]);
+
+        let listed = list(&[default_account(claude)]);
+        let found = find_file(claude, &ClaudeSessionId::new(FIRST.to_owned())).unwrap();
+
+        assert_eq!(listed.len(), 1);
+        assert!(found.starts_with(claude.join(PROJECTS_FOLDER).join("-srv-work-shop-fix")));
     }
 }

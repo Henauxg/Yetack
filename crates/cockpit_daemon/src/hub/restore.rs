@@ -120,7 +120,7 @@ mod tests {
         Settings, Timestamp,
     };
 
-    use crate::store::PastFile;
+    use crate::store::{PastFile, ResumeAs};
 
     use super::*;
 
@@ -140,6 +140,7 @@ mod tests {
             process: None,
             account: AccountId::DEFAULT,
             mark: Mark::Unmarked,
+            resume_as: ResumeAs::Same,
         }
     }
 

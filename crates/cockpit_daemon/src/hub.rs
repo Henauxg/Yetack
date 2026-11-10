@@ -5,6 +5,7 @@ mod accounts;
 mod agents;
 mod control;
 mod errors;
+mod folders;
 mod history;
 mod input;
 mod order;

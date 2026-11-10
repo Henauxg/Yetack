@@ -653,6 +653,11 @@ pub fn apply(state: &mut AppState, request: &Request) {
                 entry.summary.mark = params.mark;
             }
         }
+        Request::AgentChangeFolder(params) => {
+            if let Some(entry) = state.agents.get_mut(&params.agent) {
+                entry.summary.folder.clone_from(&params.folder);
+            }
+        }
         Request::AgentPrompt(params) => {
             if let Some(entry) = state.agents.get_mut(&params.agent) {
                 entry.summary.mark = Mark::Unmarked;
@@ -691,6 +696,10 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
         Request::AgentListDir(params) => list_dir(&params.path),
         Request::AgentFindFiles(params) => Ok(find_files(&params.name)),
         Request::FoldersList(params) => list_folders(state, &params.path),
+        Request::AgentFork(_) => Err(refused(
+            ErrorCode::InvalidRequest,
+            "The demo runs no Claude session to fork.",
+        )),
         Request::AgentHistory(params) if params.agent == AgentId::new(LIVE_AGENT) => {
             let page = match params.before {
                 None => HistoryPage {

@@ -30,6 +30,7 @@ impl Request {
             Self::AgentSetMode(params) => &mut params.agent,
             Self::AgentRename(params) => &mut params.agent,
             Self::AgentMark(params) => &mut params.agent,
+            Self::AgentFork(params) | Self::AgentChangeFolder(params) => &mut params.agent,
             Self::AgentMove(params) => &mut params.agent,
             Self::AgentStopTask(params) => &mut params.agent,
             Self::AgentStopProcess(params) => &mut params.agent,

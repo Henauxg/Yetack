@@ -1032,7 +1032,8 @@ pub fn dialog(dialog: Dialog) -> Element {
         | Dialog::Machines(_)
         | Dialog::NoDaemon
         | Dialog::DaemonUpdate(_)
-        | Dialog::ImageView(_) => rsx! {},
+        | Dialog::ImageView(_)
+        | Dialog::WorkingFolder(_) => rsx! {},
     }
 }
 

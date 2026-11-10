@@ -57,7 +57,7 @@ pub use machine_load::{
 pub use position::{Placed, Position, list_order, move_agent, place_on_top};
 pub use request::{
     AccountAddParams, AccountChangeParams, AccountParams, AgentParams, Answer, AnswerParams,
-    COMMAND_PREFIX, FindFilesParams, FoldersListParams, HistoryParams, ListDirParams,
+    COMMAND_PREFIX, FindFilesParams, FolderParams, FoldersListParams, HistoryParams, ListDirParams,
     MAX_TITLE_CHARS, MarkParams, McpRemoveParams, McpServerParams, McpToggleAction,
     McpToggleParams, Method, MoveParams, Prompt, PromptDelivery, PromptParams, QueuedPromptParams,
     ReadFileParams, RenameParams, Request, SessionResumeParams, SetEffortParams, SetModeParams,

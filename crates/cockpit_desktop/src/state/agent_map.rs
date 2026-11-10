@@ -466,7 +466,12 @@ pub fn toggle(state: &mut AppState) {
             state.ui.dialog = None;
             return;
         }
-        Some(Dialog::NewAgent(_) | Dialog::AddAccount(_) | Dialog::Machines(_)) => return,
+        Some(
+            Dialog::NewAgent(_)
+            | Dialog::AddAccount(_)
+            | Dialog::Machines(_)
+            | Dialog::WorkingFolder(_),
+        ) => return,
         Some(
             Dialog::Switcher
             | Dialog::OpenFile(_)

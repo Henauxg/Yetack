@@ -63,6 +63,8 @@ impl Hub {
             Request::AgentSetMode(params) => self.set_mode(params, reply),
             Request::AgentRename(params) => agents::respond(reply, self.rename(params)),
             Request::AgentMark(params) => agents::respond(reply, self.mark(params)),
+            Request::AgentFork(params) => self.fork(params, reply),
+            Request::AgentChangeFolder(params) => self.change_folder(params, reply),
             Request::AgentMove(params) => agents::respond(reply, self.move_agent(params)),
             Request::AgentContextUsage(params) => self.control(
                 params.agent,
@@ -126,7 +128,7 @@ impl Hub {
         }
     }
 
-    fn agent(&self, id: AgentId) -> Result<&Agent, ErrorBody> {
+    pub(super) fn agent(&self, id: AgentId) -> Result<&Agent, ErrorBody> {
         self.agents.get(&id).ok_or(errors::agent_not_found(id))
     }
 

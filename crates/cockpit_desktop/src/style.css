@@ -786,7 +786,7 @@ button:disabled {
   --enter-y: -4px;
   position: fixed;
   left: min(var(--menu-x), calc(100vw - 262px));
-  top: min(var(--menu-y), calc(100vh - 150px));
+  top: min(var(--menu-y), calc(100vh - 280px));
   bottom: auto;
   width: 250px;
   transform-origin: top left;
@@ -795,6 +795,27 @@ button:disabled {
 .row-menu .menu-item {
   gap: 16px;
   white-space: nowrap;
+}
+
+.row-menu .menu-item:disabled,
+.row-menu .menu-item:disabled:hover,
+.row-menu .menu-item:disabled:active {
+  background: transparent;
+  color: var(--dim);
+}
+
+/* The working folder the section's actions act on: cut at its start, as file paths are, since its
+   end names it. */
+.menu-folder {
+  display: block;
+  padding: 0 10px 6px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+  font-size: 11.5px;
+  color: var(--muted);
 }
 
 .menu-label {
@@ -4739,6 +4760,18 @@ html.splitting * {
 
 .dialog.close-agent {
   width: 440px;
+}
+
+.dialog.working-folder {
+  width: 560px;
+}
+
+.dialog.working-folder .dialog-text {
+  padding-bottom: 0;
+}
+
+.dialog.working-folder .dialog-actions {
+  padding: 0 16px 16px;
 }
 
 .dialog-text {

@@ -752,6 +752,10 @@ impl AgentView {
         self.summary.title = title;
     }
 
+    pub(crate) fn set_folder(&mut self, folder: PathBuf) {
+        self.summary.folder = folder;
+    }
+
     pub(crate) fn set_position(&mut self, position: Position) {
         self.summary.position = position;
     }

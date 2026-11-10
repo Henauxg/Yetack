@@ -81,6 +81,8 @@ pub enum Dialog {
     DaemonUpdate(MachineId),
     /// An image over the whole window, from a message or the file view.
     ImageView(ImageView),
+    /// Forks or moves an agent's conversation to another working folder, from its row's menu.
+    WorkingFolder(WorkingFolderForm),
 }
 
 /// The image the full view shows, with the file it comes from.
@@ -89,6 +91,37 @@ pub struct ImageView {
     pub agent: AgentId,
     pub path: PathBuf,
     pub image: Arc<Image>,
+}
+
+/// What the working folder dialog does with the agent's conversation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FolderAction {
+    /// A new agent carries it on in the folder, under a new Claude session.
+    Fork,
+    /// The agent itself runs in the folder, on the same session.
+    Move,
+}
+
+/// The working folder dialog. Its field's text is the new agent dialog's draft: one dialog shows
+/// at a time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkingFolderForm {
+    pub agent: AgentId,
+    pub action: FolderAction,
+    /// The agent's machine, whose folders the field lists.
+    pub machine: MachineId,
+    /// The folders under the field, while it lists some.
+    pub folders: Option<FolderList>,
+    /// The request is on its way.
+    pub sending: bool,
+    /// Why the last try failed, shown in the dialog.
+    pub error: Option<String>,
+}
+
+/// The folder field of the open dialog: the machine whose folders it lists, and its list.
+pub struct FolderField<'dialog> {
+    pub machine: MachineId,
+    pub folders: &'dialog mut Option<FolderList>,
 }
 
 /// The "Machines" dialog's form for a new server, and why the last one was refused.
@@ -132,13 +165,14 @@ impl OpenFileView {
 }
 
 impl Dialog {
-    /// The agent whose leaving closes the dialog: the one it asks to close, the one it maps, or
-    /// the one whose image it shows.
+    /// The agent whose leaving closes the dialog: the one it asks to close, maps, forks or moves,
+    /// or whose image it shows.
     pub fn agent(&self) -> Option<AgentId> {
         match self {
             Self::CloseAgent(agent) => Some(*agent),
             Self::AgentMap(view) => Some(view.agent),
             Self::ImageView(view) => Some(view.agent),
+            Self::WorkingFolder(form) => Some(form.agent),
             Self::NewAgent(_)
             | Self::Switcher
             | Self::OpenFile(_)
@@ -546,6 +580,21 @@ impl UiState {
                 from_new_agent.is_some()
             }
             Some(_) | None => false,
+        }
+    }
+
+    /// The open dialog's folder field: the new agent dialog's, or the working folder dialog's.
+    pub fn folder_field(&mut self) -> Option<FolderField<'_>> {
+        match &mut self.dialog {
+            Some(Dialog::NewAgent(form)) => Some(FolderField {
+                machine: form.machine,
+                folders: &mut form.folders,
+            }),
+            Some(Dialog::WorkingFolder(form)) => Some(FolderField {
+                machine: form.machine,
+                folders: &mut form.folders,
+            }),
+            Some(_) | None => None,
         }
     }
 

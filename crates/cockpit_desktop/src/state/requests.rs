@@ -13,8 +13,8 @@ use cockpit_protocol::{
 use super::app_state::{AgentEntry, AppState, FileRead, Loadable, MachineState, Reread};
 use super::drafts::{Draft, Drafts};
 use super::transcript::HistoryState;
-use super::ui_state::{Dialog, OpenFileView};
-use super::{accounts, actions, chat_images};
+use super::ui_state::{Dialog, FolderAction, OpenFileView};
+use super::{accounts, actions, chat_images, working_folder};
 use crate::machine::MachineId;
 use crate::path_style;
 use crate::prefs::AccountColor;
@@ -77,6 +77,10 @@ pub enum Purpose {
     },
     /// `agent.start` or `sessions.resume`: the new agent opens.
     Start,
+    /// `agent.fork` or `agent.change_folder` from the working folder dialog.
+    WorkingFolder {
+        action: FolderAction,
+    },
     /// The draft comes back to the composer when the prompt fails.
     Prompt {
         agent: AgentId,
@@ -180,12 +184,17 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
             to: machine,
         });
     }
-    let form_answers = form_machine
-        .and_then(|machine| state.machines.get(machine))
-        .is_some_and(MachineState::is_connected);
-    if form_answers
-        && let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog
-        && let Some(list) = &mut form.folders
+    let connected = |state: &AppState, machine| {
+        state
+            .machines
+            .get(machine)
+            .is_some_and(MachineState::is_connected)
+    };
+    let field_machine = state.ui.folder_field().map(|field| field.machine);
+    let field_answers = field_machine.is_some_and(|machine| connected(state, machine));
+    if field_answers
+        && let Some(field) = state.ui.folder_field()
+        && let Some(list) = field.folders
         && list.listing == Loadable::NotRequested
     {
         list.listing = Loadable::Loading;
@@ -195,7 +204,7 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
                 path: folder.clone(),
             }),
             purpose: Purpose::Folders { folder },
-            to: form.machine,
+            to: field.machine,
         });
     }
     let open_file_agent = match &state.ui.dialog {
@@ -510,16 +519,28 @@ pub fn apply_response(
                 if let Some(known) = state.machines.get_mut(machine) {
                     known.folders_unknown = true;
                 }
-                if let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog
-                    && form.machine == machine
+                if let Some(field) = state.ui.folder_field()
+                    && field.machine == machine
                 {
-                    form.folders = None;
+                    *field.folders = None;
                 }
                 return;
             }
-            if let Some(form) = state.ui.new_agent_form_mut()
-                && form.machine == machine
-                && let Some(list) = &mut form.folders
+            // The new agent dialog's list may wait behind the "Accounts" dialog.
+            let folders = if state.ui.folder_field().is_some() {
+                state
+                    .ui
+                    .folder_field()
+                    .filter(|field| field.machine == machine)
+                    .map(|field| field.folders)
+            } else {
+                state
+                    .ui
+                    .new_agent_form_mut()
+                    .filter(|form| form.machine == machine)
+                    .map(|form| &mut form.folders)
+            };
+            if let Some(Some(list)) = folders
                 && list.folder == folder
             {
                 list.listing = match result {
@@ -527,6 +548,9 @@ pub fn apply_response(
                     other => Failure::from_result(other).into_loadable(),
                 };
             }
+        }
+        Purpose::WorkingFolder { action } => {
+            working_folder::answered(state, action, result.map_err(|failure| failure.message));
         }
         Purpose::Start => match result {
             Ok(ResponseBody::AgentStarted { agent }) => {

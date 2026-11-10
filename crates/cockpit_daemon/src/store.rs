@@ -8,7 +8,9 @@ mod raw_log;
 mod state_dir;
 mod store_error;
 
-pub(crate) use agents_file::{AgentRecord, AgentsFile, BootId, PastFile, RecordedProcess};
+pub(crate) use agents_file::{
+    AgentRecord, AgentsFile, BootId, PastFile, RecordedProcess, ResumeAs,
+};
 pub(crate) use daemon_settings::DaemonSettings;
 pub(crate) use event_log::{EventLogs, LogName, ReplayRead, for_each_event, read_replay};
 pub(crate) use raw_log::{Direction, RawLog};

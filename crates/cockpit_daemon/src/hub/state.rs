@@ -12,6 +12,7 @@ use cockpit_protocol::{
 use tokio::sync::mpsc;
 
 use crate::daemon_config::DaemonConfig;
+use crate::hub::folders::PendingMove;
 use crate::hub::input::{ControlPurpose, HubInput, Joined, Registration};
 use crate::hub::restore::Restored;
 use crate::machine_load::LoadSampler;
@@ -52,6 +53,8 @@ pub(super) struct Agent {
     pub(super) generation: u32,
     /// Prompts held while the agent works, sent one per turn.
     pub(super) queue: VecDeque<QueuedPrompt>,
+    /// The folder `agent.change_folder` moves the agent to once its process exits.
+    pub(super) moving: Option<PendingMove>,
 }
 
 pub(super) struct QueuedPrompt {
@@ -79,6 +82,7 @@ impl Hub {
                     process: None,
                     generation: 0,
                     queue: VecDeque::new(),
+                    moving: None,
                 };
                 (agent.record.id, agent)
             })
@@ -107,7 +111,7 @@ impl Hub {
         }
     }
 
-    fn handle(&mut self, input: HubInput) {
+    pub(super) fn handle(&mut self, input: HubInput) {
         match input {
             HubInput::Connect { last_seq, reply } => {
                 let registration = self.register(last_seq);
@@ -121,6 +125,14 @@ impl Hub {
                 event,
             } => self.process_event(agent, generation, event),
             HubInput::SessionFound { found, reply } => self.resume_session(*found, reply),
+            HubInput::ForkCopied { fork, found, reply } => self.fork_copied(*fork, found, reply),
+            HubInput::MoveCopied {
+                agent,
+                folder,
+                restart,
+                copied,
+                reply,
+            } => self.move_copied(agent, folder, restart, copied, reply),
             HubInput::AccountsChecked {
                 accounts,
                 logins,
@@ -253,6 +265,14 @@ impl Hub {
     /// A hub on the state folder `folder`, whose `claude` cannot start, and with no task.
     #[cfg(test)]
     pub(super) fn for_tests(folder: &std::path::Path) -> Self {
+        Self::for_tests_with_inputs(folder).0
+    }
+
+    /// A hub for tests, and the inputs its tasks send it, for the test to hand back.
+    #[cfg(test)]
+    pub(super) fn for_tests_with_inputs(
+        folder: &std::path::Path,
+    ) -> (Self, mpsc::Receiver<HubInput>) {
         let state = StateDir::create(folder).unwrap();
         let restored = crate::hub::restore(&state, &folder.join("claude")).unwrap();
         let config = DaemonConfig {
@@ -260,8 +280,8 @@ impl Hub {
             claude_program: folder.join("no-claude"),
             claude_config_dir: folder.join("claude"),
         };
-        let (inputs, _) = mpsc::channel(1);
-        Self::new(state, config, restored, inputs)
+        let (inputs, received) = mpsc::channel(16);
+        (Self::new(state, config, restored, inputs), received)
     }
 }
 

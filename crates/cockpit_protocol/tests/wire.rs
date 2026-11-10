@@ -21,20 +21,20 @@ use cockpit_protocol::{
     Catchup, ChangedFile, ClaudeSessionId, ClientMessage, CommandKind, CommandLoad, Completeness,
     ContextCategory, ContextUsage, Cores, CostUsd, CredentialSource, DirEntry, DirListing, Effort,
     EffortSource, EntryKind, EntryLink, EnvironmentCredentials, ErrorBody, ErrorCode, Event,
-    EventRecord, FileEdit, FindFilesParams, FoldersListParams, HistoryPage, HistoryParams, Image,
-    ImageMediaType, ItemBody, ItemId, ListDirParams, LoadAverage, LoadHistory, MachineLoad, Mark,
-    MarkParams, McpRemoveParams, McpScope, McpServer, McpServerParams, McpServerStatus,
-    McpToggleAction, McpToggleParams, McpTool, McpTransport, Method, MoveParams, OlderItems,
-    PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision,
-    PlanUsage, Position, ProcessId, Prompt, PromptDelivery, PromptId, PromptParams, Question,
-    QuestionAnswer, QuestionOption, QueuedPromptParams, RateLimitStatus, ReadFileParams,
-    RenameParams, Request, RequestId, ResourceUse, ResponseBody, ResponseResult, Selection, Seq,
-    ServerLoad, ServerMessage, ServerPoint, SessionResumeParams, SetEffortParams, SetModeParams,
-    SetModelParams, Settings, SignIn, SignInWait, SlashCommand, Snapshot, StartParams,
-    StopProcessParams, StopTaskParams, Subagent, SubagentRun, SubagentStatus, SubagentToolCall,
-    TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus,
-    TranscriptItem, TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt, WaitingState,
-    WindowUsage,
+    EventRecord, FileEdit, FindFilesParams, FolderParams, FoldersListParams, HistoryPage,
+    HistoryParams, Image, ImageMediaType, ItemBody, ItemId, ListDirParams, LoadAverage,
+    LoadHistory, MachineLoad, Mark, MarkParams, McpRemoveParams, McpScope, McpServer,
+    McpServerParams, McpServerStatus, McpToggleAction, McpToggleParams, McpTool, McpTransport,
+    Method, MoveParams, OlderItems, PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan,
+    PlanAnswer, PlanDecision, PlanUsage, Position, ProcessId, Prompt, PromptDelivery, PromptId,
+    PromptParams, Question, QuestionAnswer, QuestionOption, QueuedPromptParams, RateLimitStatus,
+    ReadFileParams, RenameParams, Request, RequestId, ResourceUse, ResponseBody, ResponseResult,
+    Selection, Seq, ServerLoad, ServerMessage, ServerPoint, SessionResumeParams, SetEffortParams,
+    SetModeParams, SetModelParams, Settings, SignIn, SignInWait, SlashCommand, Snapshot,
+    StartParams, StopProcessParams, StopTaskParams, Subagent, SubagentRun, SubagentStatus,
+    SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall,
+    ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt,
+    WaitingState, WindowUsage,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -594,6 +594,14 @@ fn requests() -> Vec<Request> {
             agent,
             mark: Mark::ToHandle,
         }),
+        Request::AgentFork(FolderParams {
+            agent,
+            folder: PathBuf::from("/work/app_fork"),
+        }),
+        Request::AgentChangeFolder(FolderParams {
+            agent,
+            folder: PathBuf::from("/work/app_moved"),
+        }),
         Request::AgentMove(MoveParams {
             agent,
             before: Some(AgentId::new(4)),
@@ -1018,6 +1026,8 @@ fn method_names_are_pinned() {
             "agent.set_mode",
             "agent.rename",
             "agent.mark",
+            "agent.fork",
+            "agent.change_folder",
             "agent.move",
             "agent.context_usage",
             "agent.stop_task",
@@ -1390,6 +1400,29 @@ fn a_mark_request_on_the_wire() {
             "request": {
                 "method": "agent.mark",
                 "params": {"agent": 3, "mark": "to_handle"},
+            },
+        }),
+    );
+}
+
+#[test]
+fn a_change_of_working_folder_on_the_wire() {
+    let message = ClientMessage::Request {
+        id: RequestId::new(11),
+        request: Request::AgentChangeFolder(FolderParams {
+            agent: agent(),
+            folder: PathBuf::from("/work/app_moved"),
+        }),
+    };
+
+    assert_wire(
+        &message,
+        json!({
+            "type": "request",
+            "id": 11,
+            "request": {
+                "method": "agent.change_folder",
+                "params": {"agent": 3, "folder": "/work/app_moved"},
             },
         }),
     );

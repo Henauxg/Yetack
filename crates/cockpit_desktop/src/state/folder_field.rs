@@ -14,7 +14,7 @@ use super::actions::Direction;
 use super::app_state::AppState;
 use super::drafts::Drafts;
 use super::open_file;
-use super::ui_state::{Dialog, FolderList, NewAgentForm};
+use super::ui_state::{Dialog, FolderList};
 use crate::machine::MachineId;
 use crate::path_style::PathStyle;
 
@@ -37,10 +37,7 @@ pub fn listed_folder(style: PathStyle, text: &str) -> Option<PathBuf> {
 
 /// The rules of the paths the field names: those of the machine the agent starts on.
 pub fn style(state: &AppState) -> PathStyle {
-    let machine = match &state.ui.dialog {
-        Some(Dialog::NewAgent(form)) => form.machine,
-        _ => MachineId::THIS,
-    };
+    let machine = machine(state).unwrap_or(MachineId::THIS);
     state
         .machines
         .get(machine)
@@ -64,23 +61,22 @@ pub fn rows<'list>(style: PathStyle, list: &'list FolderList, text: &str) -> Vec
     rows
 }
 
-fn form(state: &AppState) -> Option<&NewAgentForm> {
+/// The machine whose folders the open dialog's field lists.
+fn machine(state: &AppState) -> Option<MachineId> {
     match &state.ui.dialog {
-        Some(Dialog::NewAgent(form)) => Some(form),
-        _ => None,
-    }
-}
-
-fn form_mut(state: &mut AppState) -> Option<&mut NewAgentForm> {
-    match &mut state.ui.dialog {
-        Some(Dialog::NewAgent(form)) => Some(form),
+        Some(Dialog::NewAgent(form)) => Some(form.machine),
+        Some(Dialog::WorkingFolder(form)) => Some(form.machine),
         _ => None,
     }
 }
 
 /// The list under the field, while it is open.
 pub fn list(state: &AppState) -> Option<&FolderList> {
-    form(state)?.folders.as_ref()
+    match &state.ui.dialog {
+        Some(Dialog::NewAgent(form)) => form.folders.as_ref(),
+        Some(Dialog::WorkingFolder(form)) => form.folders.as_ref(),
+        _ => None,
+    }
 }
 
 /// Keeps the typed text. The first row is highlighted while a segment filters the list. Returns
@@ -105,22 +101,22 @@ pub fn type_folder(state: &AppState, drafts: &mut Drafts, text: String) -> bool 
 /// Makes the list show the folder the typed text names, and closes it when the text names none.
 pub fn follow(state: &mut AppState, drafts: &Drafts) {
     let style = style(state);
-    let folders_unknown = form(state)
-        .and_then(|form| state.machines.get(form.machine))
+    let folders_unknown = machine(state)
+        .and_then(|machine| state.machines.get(machine))
         .is_some_and(|known| known.folders_unknown);
-    let Some(form) = form_mut(state) else {
+    let Some(field) = state.ui.folder_field() else {
         return;
     };
     let listed = listed_folder(style, &drafts.new_agent.folder).filter(|_| !folders_unknown);
     let Some(folder) = listed else {
-        form.folders = None;
+        *field.folders = None;
         return;
     };
     let shown = |list: &FolderList| {
         style.same_path(&list.folder.to_string_lossy(), &folder.to_string_lossy())
     };
-    if !form.folders.as_ref().is_some_and(shown) {
-        form.folders = Some(FolderList::new(folder));
+    if !field.folders.as_ref().is_some_and(shown) {
+        *field.folders = Some(FolderList::new(folder));
     }
 }
 
@@ -196,10 +192,10 @@ fn up(style: PathStyle, text: &str) -> Option<String> {
 /// folder does. The list under the field, of the folder typed before, closes. Returns whether the
 /// dialog was still open to take it.
 pub fn pick(state: &mut AppState, drafts: &mut Drafts, folder: String) -> bool {
-    let Some(form) = form_mut(state) else {
+    let Some(field) = state.ui.folder_field() else {
         return false;
     };
-    form.folders = None;
+    *field.folders = None;
     drafts.new_agent.folder = folder;
     drafts.new_agent.folder_highlighted = None;
     true
@@ -255,8 +251,10 @@ mod tests {
 
     /// Answers the list's folder with `names`.
     fn answer(state: &mut AppState, names: &[&str]) {
-        let list = form_mut(state)
-            .and_then(|form| form.folders.as_mut())
+        let list = state
+            .ui
+            .folder_field()
+            .and_then(|field| field.folders.as_mut())
             .unwrap();
         list.listing = listing(&list.folder.display().to_string(), names);
     }

@@ -53,6 +53,21 @@ pub(crate) struct AgentRecord {
     /// `Unmarked` in a file saved before marks existed.
     #[serde(default)]
     pub(crate) mark: Mark,
+    /// `Fork` for an agent forked from another one's session, until its first start gives it a
+    /// session of its own. `Same` in a file saved before forks existed.
+    #[serde(default)]
+    pub(crate) resume_as: ResumeAs,
+}
+
+/// What the next start of an agent with a session does with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ResumeAs {
+    /// Carries on with the session.
+    #[default]
+    Same,
+    /// Starts a new session from a copy of the conversation (`--fork-session`).
+    Fork,
 }
 
 /// A process, told apart from a later one that reuses its id by when it started.
@@ -144,7 +159,8 @@ mod tests {
         "boot": "6e1f0c2a-3b4d-4e5f-8a9b-0c1d2e3f4a5b"
       },
       "account": 5,
-      "mark": "to_handle"
+      "mark": "to_handle",
+      "resume_as": "fork"
     }
   ]
 }
@@ -178,6 +194,7 @@ mod tests {
                 }),
                 account: AccountId::new(5),
                 mark: Mark::ToHandle,
+                resume_as: ResumeAs::Fork,
             }],
         }
     }

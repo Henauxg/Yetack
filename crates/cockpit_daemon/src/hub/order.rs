@@ -67,7 +67,7 @@ mod tests {
 
     use super::*;
     use crate::sessions::{FoundSession, SessionPast};
-    use crate::store::{AgentRecord, AgentsFile, PastFile, StateDir};
+    use crate::store::{AgentRecord, AgentsFile, PastFile, ResumeAs, StateDir};
     use crate::test_script;
 
     /// A hub whose `claude` reads its stdin and says nothing.
@@ -219,6 +219,7 @@ mod tests {
             process: None,
             account: AccountId::DEFAULT,
             mark: Mark::Unmarked,
+            resume_as: ResumeAs::Same,
         };
         AgentsFile {
             next_agent: AgentId::new(4),

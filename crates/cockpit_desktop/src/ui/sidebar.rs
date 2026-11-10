@@ -15,8 +15,8 @@ use crate::state::accounts::{self, AccountLabel, SignInLine};
 use crate::state::no_daemon::Absence;
 use crate::state::sidebar_keys::SidebarItem;
 use crate::state::{
-    AgentEntry, AppState, ConnectionState, Dialog, Popover, TitleEdit, TitlePlace, actions,
-    daemon_update, machines, to_handle,
+    AgentEntry, AppState, ConnectionState, Dialog, FolderAction, Popover, TitleEdit, TitlePlace,
+    actions, daemon_update, machines, to_handle, working_folder,
 };
 use crate::ui::accounts::{AccountTag, AccountsButton};
 use crate::ui::icons::{Icon, IconKind};
@@ -24,7 +24,7 @@ use crate::ui::machines::THIS_COMPUTER;
 use crate::ui::presence::use_presence;
 use crate::ui::reorder::{self, LIST_ID, ROW_CLASS};
 use crate::ui::splitter::SIDEBAR_ID;
-use crate::{APP_NAME, format};
+use crate::{APP_NAME, format, path_style};
 
 #[derive(Debug, Clone, PartialEq)]
 struct AgentRow {
@@ -721,6 +721,20 @@ fn ConnectionFooter() -> Element {
     }
 }
 
+/// What the row menu shows, read as it opens.
+#[derive(Debug, Clone, PartialEq)]
+struct RowMenuShown {
+    agent: AgentId,
+    x: i32,
+    y: i32,
+    mark: Mark,
+    /// The agent's working folder, as paths show.
+    folder: String,
+    /// Why the fork or the move cannot run now.
+    fork_blocked: Option<&'static str>,
+    move_blocked: Option<&'static str>,
+}
+
 /// The menu a right-click on a row opens, at the pointer. It acts on that row's agent, selected
 /// or not. The style sheet keeps it inside the window.
 #[component]
@@ -729,17 +743,39 @@ pub fn RowMenu() -> Element {
     let open = {
         let state = cockpit.state.read();
         match state.ui.popover {
-            Some(Popover::RowMenu { agent, x, y }) => state
-                .agents
-                .get(&agent)
-                .map(|entry| (agent, x, y, entry.summary.mark)),
+            Some(Popover::RowMenu { agent, x, y }) => {
+                state.agents.get(&agent).map(|entry| RowMenuShown {
+                    agent,
+                    x,
+                    y,
+                    mark: entry.summary.mark,
+                    folder: path_style::shown(&entry.summary.folder),
+                    fork_blocked: working_folder::blocked(&state, agent, FolderAction::Fork),
+                    move_blocked: working_folder::blocked(&state, agent, FolderAction::Move),
+                })
+            }
             _ => None,
         }
     };
     let Some(shown) = use_presence(open) else {
         return rsx! {};
     };
-    let (agent, x, y, mark) = shown.value;
+    let RowMenuShown {
+        agent,
+        x,
+        y,
+        mark,
+        folder,
+        fork_blocked,
+        move_blocked,
+    } = shown.value;
+    let folder_action = move |action: FolderAction| {
+        move |_| {
+            cockpit.update_with_drafts(|state, drafts| {
+                working_folder::open(state, drafts, agent, action);
+            });
+        }
+    };
     let close_menu = |state: &mut AppState| state.ui.popover = None;
     rsx! {
         div {
@@ -769,6 +805,30 @@ pub fn RowMenu() -> Element {
                     }),
                     span { class: "menu-label", "Rename" }
                     span { class: "menu-hint", "F2" }
+                }
+                div { class: "menu-divider" }
+                // These act on the folder `claude` runs in, not on the sidebar.
+                div { class: "menu-section", role: "group", aria_label: "Working folder",
+                    span { class: "menu-title", "Working folder" }
+                    span { class: "menu-folder mono", title: "{folder}",
+                        span { class: "file-path-text", "{folder}" }
+                    }
+                    button {
+                        class: "menu-item",
+                        role: "menuitem",
+                        disabled: fork_blocked.is_some(),
+                        title: fork_blocked.unwrap_or("A new agent carries on this conversation in another folder"),
+                        onclick: folder_action(FolderAction::Fork),
+                        span { class: "menu-label", "Fork into another folder…" }
+                    }
+                    button {
+                        class: "menu-item",
+                        role: "menuitem",
+                        disabled: move_blocked.is_some(),
+                        title: move_blocked.unwrap_or("This agent runs in another folder, on the same conversation"),
+                        onclick: folder_action(FolderAction::Move),
+                        span { class: "menu-label", "Move to another folder…" }
+                    }
                 }
                 div { class: "menu-divider" }
                 button {

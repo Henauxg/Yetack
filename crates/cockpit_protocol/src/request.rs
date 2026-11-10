@@ -61,6 +61,14 @@ pub enum Request {
     /// Marks the agent as one you have to handle, or clears the mark. Sending the agent a prompt
     /// clears it too. Answered by `Done`, and an `AgentUpdated` event to every client.
     AgentMark(MarkParams),
+    /// Starts a new agent in another working folder, on the agent's conversation under a new
+    /// Claude session. The daemon copies the session file to the folder's project in Claude
+    /// Code's folder. Answered by `AgentStarted`.
+    AgentFork(FolderParams),
+    /// Runs the agent in another working folder, on the same Claude session: the daemon stops
+    /// its process, copies the session file to the folder's project, and starts it again there.
+    /// Refused while the agent works. Answered by `Done` once it runs there.
+    AgentChangeFolder(FolderParams),
     /// Places the agent in the list. Answered by `Done`, and an `AgentUpdated` event for each
     /// agent whose position changed: the moved one alone, unless its new neighbours leave no room.
     AgentMove(MoveParams),
@@ -154,6 +162,10 @@ pub enum Method {
     AgentRename,
     #[strum(serialize = "agent.mark")]
     AgentMark,
+    #[strum(serialize = "agent.fork")]
+    AgentFork,
+    #[strum(serialize = "agent.change_folder")]
+    AgentChangeFolder,
     #[strum(serialize = "agent.move")]
     AgentMove,
     #[strum(serialize = "agent.context_usage")]
@@ -352,6 +364,14 @@ pub struct MarkParams {
     pub mark: Mark,
 }
 
+/// An agent and another working folder for it. `folder` is absolute: the daemon refuses a
+/// relative path, and one that starts with `~`, as `agent.start` does.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FolderParams {
+    pub agent: AgentId,
+    pub folder: PathBuf,
+}
+
 /// The agent goes just above `before`, or to the bottom of the list when `before` is `None`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MoveParams {
@@ -493,6 +513,8 @@ impl Request {
             Self::AgentSetMode(_) => Method::AgentSetMode,
             Self::AgentRename(_) => Method::AgentRename,
             Self::AgentMark(_) => Method::AgentMark,
+            Self::AgentFork(_) => Method::AgentFork,
+            Self::AgentChangeFolder(_) => Method::AgentChangeFolder,
             Self::AgentMove(_) => Method::AgentMove,
             Self::AgentContextUsage(_) => Method::AgentContextUsage,
             Self::AgentStopTask(_) => Method::AgentStopTask,
@@ -551,6 +573,9 @@ impl Serialize for Request {
             Self::AgentSetMode(params) => tagged(method, params, serializer),
             Self::AgentRename(params) => tagged(method, params, serializer),
             Self::AgentMark(params) => tagged(method, params, serializer),
+            Self::AgentFork(params) | Self::AgentChangeFolder(params) => {
+                tagged(method, params, serializer)
+            }
             Self::AgentMove(params) => tagged(method, params, serializer),
             Self::AgentContextUsage(params) => tagged(method, params, serializer),
             Self::AgentStopTask(params) => tagged(method, params, serializer),
@@ -608,6 +633,8 @@ impl<'de> Deserialize<'de> for Request {
             Method::AgentSetMode => Self::AgentSetMode(params(raw)?),
             Method::AgentRename => Self::AgentRename(params(raw)?),
             Method::AgentMark => Self::AgentMark(params(raw)?),
+            Method::AgentFork => Self::AgentFork(params(raw)?),
+            Method::AgentChangeFolder => Self::AgentChangeFolder(params(raw)?),
             Method::AgentMove => Self::AgentMove(params(raw)?),
             Method::AgentContextUsage => Self::AgentContextUsage(params(raw)?),
             Method::AgentStopTask => Self::AgentStopTask(params(raw)?),

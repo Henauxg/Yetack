@@ -22,6 +22,22 @@ pub(super) fn agent_running(agent: AgentId) -> ErrorBody {
     )
 }
 
+/// The agent works, which a change of working folder would cut short.
+pub(super) fn agent_working(agent: AgentId) -> ErrorBody {
+    ErrorBody::new(
+        ErrorCode::AgentRunning,
+        format!(
+            "agent {} is working: wait for the turn to end, or stop it",
+            agent.get()
+        ),
+    )
+}
+
+/// The agent has no Claude session yet, before its process reported one.
+pub(super) fn no_session(agent: AgentId) -> ErrorBody {
+    invalid(format!("agent {} has no Claude session yet", agent.get()))
+}
+
 pub(super) fn invalid(message: String) -> ErrorBody {
     ErrorBody::new(ErrorCode::InvalidRequest, message)
 }

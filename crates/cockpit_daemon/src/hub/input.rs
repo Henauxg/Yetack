@@ -6,6 +6,7 @@ use cockpit_protocol::{
 };
 use tokio::sync::{mpsc, oneshot};
 
+use crate::hub::folders::ForkOf;
 use crate::process::ProcessEvent;
 use crate::sessions::FoundSession;
 
@@ -39,6 +40,21 @@ pub(crate) enum HubInput {
     AccountsChecked {
         accounts: Vec<AccountState>,
         logins: Vec<AccountLogin>,
+        reply: Reply,
+    },
+    /// `agent.fork` copied the session to the fork's folder, and read its transcript there.
+    ForkCopied {
+        fork: Box<ForkOf>,
+        found: Result<Box<FoundSession>, String>,
+        reply: Reply,
+    },
+    /// `agent.change_folder` copied the agent's session to its new folder, or failed to.
+    MoveCopied {
+        agent: AgentId,
+        folder: PathBuf,
+        /// The agent ran before the move, and runs again after it.
+        restart: bool,
+        copied: Result<(), String>,
         reply: Reply,
     },
     /// The cost Claude Code restored as one of the agent's processes resumed its session.

@@ -26,6 +26,7 @@ pub mod to_handle;
 mod transcript;
 mod ui_state;
 mod utf16_offset;
+pub mod working_folder;
 
 pub use app_state::{
     AgentEntry, AppState, ConnectionState, FileFreshness, FileRead, FileUpdate, Loadable,
@@ -39,9 +40,9 @@ pub use shortcuts::{
 };
 pub use transcript::{HistoryState, WaitingKind, awaiting_approval};
 pub use ui_state::{
-    Block, Dialog, FileSearch, FolderList, FormMenu, ImageView, MachinesView, McpView,
-    NewAgentForm, NewAgentTab, NoteKind, OpenFileView, PaletteOrigin, Popover, RevealPlace,
-    TitleEdit, TitlePlace, ToolFilter, ViewMode, is_markdown,
+    Block, Dialog, FileSearch, FolderAction, FolderList, FormMenu, ImageView, MachinesView,
+    McpView, NewAgentForm, NewAgentTab, NoteKind, OpenFileView, PaletteOrigin, Popover,
+    RevealPlace, TitleEdit, TitlePlace, ToolFilter, ViewMode, WorkingFolderForm, is_markdown,
 };
 pub use utf16_offset::Utf16Offset;
 
