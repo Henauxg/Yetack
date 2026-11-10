@@ -2678,14 +2678,25 @@ html.reordering * {
 }
 
 /* The fold script marks a row `data-tall` when its text takes more screen lines than the row's
-   `--fold-lines`. Only such a row folds, fades at the cut and shows its button. */
-.io-clip {
+   `--fold-lines`. Only such a row folds, fades at the cut and shows its button. The script sets
+   `--fold-height` and `--full-height` on the clip, and the clip's height moves between them: the
+   state a clip enters sets the timing of the way there. */
+.io-clip,
+.message-clip {
   position: relative;
 }
 
-.io-row[data-tall]:not(.unfolded) .io-clip {
-  max-height: calc(var(--fold-lines) * var(--io-line-height) * 1em);
+.io-row[data-tall] .io-clip,
+.message-fold[data-tall] .message-clip {
+  max-height: var(--full-height);
   overflow: hidden;
+  transition: max-height var(--motion-in) var(--ease-out);
+}
+
+.io-row[data-tall]:not(.unfolded) .io-clip,
+.message-fold[data-tall]:not(.unfolded) .message-clip {
+  max-height: var(--fold-height);
+  transition: max-height var(--motion-out) var(--ease-in);
 }
 
 .io-row[data-tall]:not(.unfolded) .io-clip::after {
@@ -2720,17 +2731,8 @@ html.reordering * {
   display: none;
 }
 
-/* A long message you sent folds as an IN or OUT row does. The fold script sets `--fold-height`
-   where the message's last kept line ends. */
-.message-clip {
-  position: relative;
-}
-
-.message-fold[data-tall]:not(.unfolded) .message-clip {
-  max-height: var(--fold-height);
-  overflow: hidden;
-}
-
+/* A long message you sent folds as an IN or OUT row does, its `--fold-height` where its last kept
+   line ends. */
 .message-fold[data-tall]:not(.unfolded) .message-clip::after {
   content: "";
   position: absolute;

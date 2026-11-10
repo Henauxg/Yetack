@@ -92,15 +92,20 @@ if (!window.agentsCockpitFolds) {
       return;
     }
     const kept = parseInt(getComputedStyle(row).getPropertyValue(classes.lines_property), 10);
+    // The clip animates its height between the two.
+    const clip = text.parentElement;
+    clip.style.setProperty("--full-height", `${Math.ceil(height)}px`);
     let hidden;
     if (row.matches(`.${classes.message_row}`)) {
       const bottoms = lineBottoms(text);
       hidden = bottoms.length - kept;
       if (hidden > 0) {
-        text.parentElement.style.setProperty("--fold-height", `${Math.ceil(bottoms[kept - 1])}px`);
+        clip.style.setProperty("--fold-height", `${Math.ceil(bottoms[kept - 1])}px`);
       }
     } else {
-      hidden = Math.round(height / parseFloat(getComputedStyle(text).lineHeight)) - kept;
+      const lineHeight = parseFloat(getComputedStyle(text).lineHeight);
+      hidden = Math.round(height / lineHeight) - kept;
+      clip.style.setProperty("--fold-height", `${Math.ceil(kept * lineHeight)}px`);
     }
     if (!(hidden > 0)) {
       delete row.dataset.tall;
