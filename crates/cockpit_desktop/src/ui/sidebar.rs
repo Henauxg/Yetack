@@ -15,17 +15,17 @@ use crate::state::accounts::{self, AccountLabel, SignInLine};
 use crate::state::no_daemon::Absence;
 use crate::state::sidebar_keys::SidebarItem;
 use crate::state::{
-    AgentEntry, AppState, ConnectionState, Dialog, FolderAction, Popover, TitleEdit, TitlePlace,
-    actions, daemon_update, machines, notification_levels, to_handle, working_folder,
+    AgentEntry, AppState, ConnectionState, Dialog, TitleEdit, TitlePlace, actions, daemon_update,
+    machines, notification_levels, to_handle,
 };
 use crate::ui::accounts::{AccountTag, AccountsButton};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::machines::THIS_COMPUTER;
-use crate::ui::notification_levels::{self as levels_ui, AppBell, LevelChoices, LevelIcon};
+use crate::ui::notification_levels::{self as levels_ui, AppBell, LevelIcon};
 use crate::ui::presence::use_presence;
 use crate::ui::reorder::{self, LIST_ID, ROW_CLASS};
 use crate::ui::splitter::SIDEBAR_ID;
-use crate::{APP_NAME, format, path_style};
+use crate::{APP_NAME, format};
 
 #[derive(Debug, Clone, PartialEq)]
 struct AgentRow {
@@ -740,139 +740,6 @@ fn ConnectionFooter() -> Element {
                 }
                 if let Some(detail) = detail {
                     span { class: "connection-error", "{detail}" }
-                }
-            }
-        }
-    }
-}
-
-/// What the row menu shows, read as it opens.
-#[derive(Debug, Clone, PartialEq)]
-struct RowMenuShown {
-    agent: AgentId,
-    x: i32,
-    y: i32,
-    mark: Mark,
-    notifications: NotificationLevel,
-    /// The agent's working folder, as paths show.
-    folder: String,
-    /// Why the fork or the move cannot run now.
-    fork_blocked: Option<&'static str>,
-    move_blocked: Option<&'static str>,
-}
-
-/// The menu a right-click on a row opens, at the pointer. It acts on that row's agent, selected
-/// or not. The style sheet keeps it inside the window.
-#[component]
-pub fn RowMenu() -> Element {
-    let cockpit: Cockpit = use_context();
-    let open = {
-        let state = cockpit.state.read();
-        match state.ui.popover {
-            Some(Popover::RowMenu { agent, x, y }) => {
-                state.agents.get(&agent).map(|entry| RowMenuShown {
-                    agent,
-                    x,
-                    y,
-                    mark: entry.summary.mark,
-                    notifications: notification_levels::agent_level(&state, agent),
-                    folder: path_style::shown(&entry.summary.folder),
-                    fork_blocked: working_folder::blocked(&state, agent, FolderAction::Fork),
-                    move_blocked: working_folder::blocked(&state, agent, FolderAction::Move),
-                })
-            }
-            _ => None,
-        }
-    };
-    let Some(shown) = use_presence(open) else {
-        return rsx! {};
-    };
-    let RowMenuShown {
-        agent,
-        x,
-        y,
-        mark,
-        notifications,
-        folder,
-        fork_blocked,
-        move_blocked,
-    } = shown.value;
-    let folder_action = move |action: FolderAction| {
-        move |_| {
-            cockpit.update_with_drafts(|state, drafts| {
-                working_folder::open(state, drafts, agent, action);
-            });
-        }
-    };
-    let close_menu = |state: &mut AppState| state.ui.popover = None;
-    rsx! {
-        div {
-            class: if shown.leaving { "presence leaving" } else { "presence" },
-            inert: shown.leaving.then_some(true),
-            div {
-                class: "popover menu row-menu",
-                role: "menu",
-                style: "--menu-x: {x}px; --menu-y: {y}px",
-                button {
-                    class: "menu-item",
-                    role: "menuitem",
-                    onclick: move |_| cockpit.change(|state| to_handle::set(state, agent, to_handle::toggled(mark))),
-                    span { class: "menu-label",
-                        Icon { kind: IconKind::Flag, size: 14 }
-                        if mark == Mark::ToHandle { "Done handling" } else { "Mark to handle" }
-                    }
-                    span { class: "menu-hint", "Ctrl+Shift+H" }
-                }
-                button {
-                    class: "menu-item",
-                    role: "menuitem",
-                    onclick: move |_| cockpit.change_with_drafts(|state, drafts| {
-                        close_menu(state);
-                        actions::start_rename_in_sidebar(state, drafts, agent);
-                        Vec::new()
-                    }),
-                    span { class: "menu-label", "Rename" }
-                    span { class: "menu-hint", "F2" }
-                }
-                div { class: "menu-divider" }
-                div { class: "menu-section", role: "group", aria_label: "Notifications",
-                    span { class: "menu-title", "Notifications" }
-                    LevelChoices { agent: Some(agent), level: notifications }
-                }
-                div { class: "menu-divider" }
-                // These act on the folder `claude` runs in, not on the sidebar.
-                div { class: "menu-section", role: "group", aria_label: "Working folder",
-                    span { class: "menu-title", "Working folder" }
-                    span { class: "menu-folder mono", title: "{folder}",
-                        span { class: "file-path-text", "{folder}" }
-                    }
-                    button {
-                        class: "menu-item",
-                        role: "menuitem",
-                        disabled: fork_blocked.is_some(),
-                        title: fork_blocked.unwrap_or("A new agent carries on this conversation in another folder"),
-                        onclick: folder_action(FolderAction::Fork),
-                        span { class: "menu-label", "Fork into another folder…" }
-                    }
-                    button {
-                        class: "menu-item",
-                        role: "menuitem",
-                        disabled: move_blocked.is_some(),
-                        title: move_blocked.unwrap_or("This agent runs in another folder, on the same conversation"),
-                        onclick: folder_action(FolderAction::Move),
-                        span { class: "menu-label", "Move to another folder…" }
-                    }
-                }
-                div { class: "menu-divider" }
-                button {
-                    class: "menu-item",
-                    role: "menuitem",
-                    onclick: move |_| cockpit.change_with_drafts(|state, drafts| {
-                        close_menu(state);
-                        actions::request_close(state, drafts, agent)
-                    }),
-                    span { class: "menu-label", "Close" }
-                    span { class: "menu-hint", "Ctrl+Shift+W" }
                 }
             }
         }

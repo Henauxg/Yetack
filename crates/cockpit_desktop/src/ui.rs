@@ -28,6 +28,7 @@ mod open_file;
 mod palette;
 mod presence;
 mod reorder;
+mod row_menu;
 mod sidebar;
 mod splitter;
 mod transcript;
