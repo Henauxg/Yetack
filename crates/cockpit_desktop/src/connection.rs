@@ -852,7 +852,14 @@ async fn serve(
     let mut load_asked = false;
     let mut connected_once = false;
     loop {
+        let finish_due = state::next_finish_due(&state.peek(), machine);
         tokio::select! {
+            () = sleep_until(finish_due) => {
+                let alerts = state::release_finishes(&mut state.write(), machine, Instant::now());
+                if let Some(notifier) = &mut notifier {
+                    notifier.update(alerts, &state.peek());
+                }
+            }
             // The load shows the selected agent's machine.
             _ = load_ticks.tick() => {
                 let (shown, answers) = {
@@ -953,6 +960,14 @@ async fn serve(
 }
 
 /// Sends each request to its machine: the task's own at once, another's through the router.
+/// Waits until `due`, or forever without one.
+async fn sleep_until(due: Option<Instant>) {
+    match due {
+        Some(due) => tokio::time::sleep_until(due.into()).await,
+        None => std::future::pending().await,
+    }
+}
+
 fn send_all(
     state: Signal<AppState>,
     drafts: Signal<Drafts>,

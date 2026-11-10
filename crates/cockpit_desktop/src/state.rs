@@ -25,7 +25,7 @@ mod utf16_offset;
 pub use app_state::{
     AgentEntry, AppState, ConnectionState, FileRead, Loadable, MachineState, TurnStart,
 };
-pub use apply::{Alert, AlertKind, apply_update, error_chain};
+pub use apply::{Alert, AlertKind, apply_update, error_chain, next_finish_due, release_finishes};
 pub use drafts::Drafts;
 pub use requests::{Outgoing, Purpose, apply_response, needed_requests};
 pub use shortcuts::{ANSWER_KEYS, CLOSE_AGENT_KEY, COMMAND_KEYS, KeyPress, handle_key};
