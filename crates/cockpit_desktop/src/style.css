@@ -4485,6 +4485,154 @@ html.reordering * {
   white-space: nowrap;
 }
 
+/* The Keyboard tab: every shortcut, by group. A command's keys are a button that records new
+   ones; a fixed shortcut shows its keys with a lock. */
+.keyboard-tab {
+  gap: 10px;
+}
+
+.shortcut-filter {
+  flex: none;
+}
+
+.shortcut-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.shortcut-group + .shortcut-group {
+  margin-top: 6px;
+}
+
+.shortcut-group > .settings-title {
+  margin-bottom: 4px;
+}
+
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 32px;
+}
+
+.shortcut-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13.5px;
+}
+
+.shortcut-context {
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.shortcut-keys {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.shortcut-keys .chord {
+  display: inline-flex;
+  gap: 4px;
+}
+
+/* As far from the end as a command's keys, which sit in a button. */
+.shortcut-row.fixed .shortcut-keys .chord:last-of-type {
+  padding-right: 5px;
+}
+
+.key-cap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 5px;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  background: #222222;
+  color: var(--text-soft);
+  font: 500 11.5px var(--sans);
+}
+
+.binding {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 30px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-soft);
+}
+
+.binding.recording {
+  padding: 0 10px;
+  border-color: var(--teal);
+  background: rgba(45, 212, 191, 0.08);
+  color: var(--teal);
+  font-size: 12px;
+}
+
+.binding-reset {
+  color: var(--dim);
+}
+
+/* The column after the keys: a changed shortcut's reset, or a fixed one's lock. */
+.shortcut-end {
+  display: inline-flex;
+  width: 24px;
+  justify-content: center;
+}
+
+.shortcut-lock {
+  color: var(--dim);
+}
+
+.shortcut-refused {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 4px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(244, 112, 103, 0.08);
+  color: var(--red);
+  font-size: 12px;
+}
+
+.shortcut-refused .link-button {
+  color: var(--red);
+}
+
+.shortcut-note {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.settings-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 20px;
+  border-top: 1px solid var(--line-divider);
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.settings-foot .link-button:disabled {
+  color: var(--dim);
+  text-decoration: none;
+}
+
 .foot-settings {
   width: 26px;
   padding: 0;
@@ -7635,6 +7783,11 @@ label.icon-button,
   color: var(--text-soft);
 }
 
+.binding:not(.recording):hover {
+  border-color: var(--line-strong);
+  background: var(--hover);
+}
+
 .agent-row.selected:hover,
 .row-wrap.selected:hover > .agent-row {
   background: #2c2c2c;
@@ -7701,6 +7854,7 @@ label.icon-button,
 
 .button:not(:disabled):active,
 .icon-button:active,
+.binding:not(.recording):active,
 .quote-reply:active,
 .quote-pin:active,
 .quote-row-main:active,
@@ -7943,6 +8097,7 @@ html.splitting .sidebar {
 
 .block-body,
 .subagent-body,
+.shortcut-refused,
 .compact-search > .tool-io,
 .thinking-text,
 .notice-detail,

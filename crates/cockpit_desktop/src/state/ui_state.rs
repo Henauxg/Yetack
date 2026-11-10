@@ -13,6 +13,7 @@ use serde::Serialize;
 use super::accounts::{AccountsView, AddAccountForm};
 use super::agent_map::MapView;
 use super::app_state::Loadable;
+use crate::keymap::{Chord, Command, Refusal};
 use crate::machine::MachineId;
 
 /// How many error notes stay on screen; an older one goes when a new one comes.
@@ -94,7 +95,32 @@ pub enum Dialog {
     /// Forks or moves an agent's conversation to another working folder, from its row's menu.
     WorkingFolder(WorkingFolderForm),
     /// The app's settings, from the gear in the sidebar's foot.
-    Settings,
+    Settings(SettingsView),
+}
+
+/// The Settings dialog: its tab, and the shortcut it records.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SettingsView {
+    pub tab: SettingsTab,
+    /// The command whose new shortcut the dialog waits for.
+    pub recording: Option<Command>,
+    /// The last chord that could not run its command, and why.
+    pub refused: Option<RefusedChord>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SettingsTab {
+    #[default]
+    General,
+    Keyboard,
+}
+
+/// A chord a command could not take: pressed while recording, or the default a reset asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusedChord {
+    pub command: Command,
+    pub chord: Chord,
+    pub refusal: Refusal,
 }
 
 /// The image the full view shows, with the file it comes from.
@@ -193,7 +219,7 @@ impl Dialog {
             | Self::Machines(_)
             | Self::NoDaemon
             | Self::DaemonUpdate(_)
-            | Self::Settings => None,
+            | Self::Settings(_) => None,
         }
     }
 }

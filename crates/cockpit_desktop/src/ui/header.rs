@@ -12,6 +12,7 @@ use dioxus::prelude::*;
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
 use crate::connection::{Clock, Cockpit};
+use crate::keymap::Command;
 use crate::machine::MachineId;
 use crate::state::accounts::{self, Billing, PlanChip};
 use crate::state::{AgentEntry, Loadable, Popover, TitlePlace, actions, file_tree, title_emoji};
@@ -122,7 +123,7 @@ pub fn Header() -> Element {
             header { class: "center-header",
                 div { class: "header-title",
                     h1 { "No agent" }
-                    span { class: "header-folder", "Ctrl+N starts one." }
+                    span { class: "header-folder", "{state.prefs.keys.shown(Command::NewAgent)} starts one." }
                 }
             }
         };
@@ -300,7 +301,7 @@ pub fn Header() -> Element {
                     class: if files_open { "chip files-chip open" } else { "chip files-chip" },
                     aria_pressed: files_open,
                     aria_label: "{changes_label}",
-                    title: "Files (Ctrl+B)",
+                    title: "Files ({state.prefs.keys.shown(Command::FilesPane)})",
                     onclick: move |_| cockpit.update(|state| file_tree::toggle_from_changes(state, agent)),
                     Icon { kind: IconKind::FileTree, size: 15 }
                     if file_count > 0 {

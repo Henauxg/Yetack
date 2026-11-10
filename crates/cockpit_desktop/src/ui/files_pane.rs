@@ -9,6 +9,7 @@ use dioxus::prelude::*;
 
 use crate::bridge::{self, COMPOSER_ID, HIGHLIGHTED_CLASS};
 use crate::connection::Cockpit;
+use crate::keymap::Command;
 use crate::path_style::{self, PathStyle};
 use crate::state::actions::Direction;
 use crate::state::file_tree::{self, RowKind, Sideways, TreeFilter, TreeRow};
@@ -62,6 +63,7 @@ pub fn FilesPane() -> Element {
         .map_or_else(|| full_folder.clone(), str::to_owned);
     let any_open = file_tree::can_collapse(&entry.tree, &folder, &footprint);
     let key_rows = rows.clone();
+    let pane_keys = state.prefs.keys.shown(Command::FilesPane);
     rsx! {
         aside { id: FILES_PANE_ID, class: "files-pane", aria_label: "Files",
             div { class: "files-head",
@@ -99,7 +101,7 @@ pub fn FilesPane() -> Element {
                 button {
                     class: "icon-button tiny",
                     aria_label: "Close the files pane",
-                    title: "Close (Ctrl+B)",
+                    title: "Close ({pane_keys})",
                     onclick: move |_| cockpit.update(file_tree::toggle_pane),
                     Icon { kind: IconKind::Close, size: 14 }
                 }
@@ -129,7 +131,7 @@ pub fn FilesPane() -> Element {
             }
             div { class: "files-foot",
                 span { "{changed} changed, {read} read" }
-                span { "Ctrl+B" }
+                span { "{pane_keys}" }
             }
         }
     }

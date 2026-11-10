@@ -12,6 +12,7 @@ use super::transcript::WaitingKind;
 use super::ui_state::{Dialog, PaletteOrigin, Popover};
 use super::utf16_offset::Utf16Offset;
 use super::{accounts, agent_map, file_reread, file_tree, open_file, quotes, to_handle};
+use crate::keymap::{Chord, Command};
 
 /// `KeyboardEvent.key` values.
 const KEY_ESCAPE: &str = "Escape";
@@ -21,36 +22,13 @@ pub(super) const KEY_UP: &str = "ArrowUp";
 pub(super) const KEY_DOWN: &str = "ArrowDown";
 pub(super) const KEY_LEFT: &str = "ArrowLeft";
 pub(super) const KEY_RIGHT: &str = "ArrowRight";
-const KEY_F2: &str = "F2";
-/// Reads the shown file again. The page script takes it everywhere, so that the webview never
-/// reloads the page.
-pub const RELOAD_KEY: &str = "F5";
+/// Reloads the page in the webview: the page script takes it everywhere, whatever runs it.
+pub const PAGE_RELOAD_KEY: &str = "F5";
 
 /// The letters that answer an approval or a plan.
 pub(super) const KEY_YES: &str = "y";
 pub(super) const KEY_NO: &str = "n";
 pub const ANSWER_KEYS: [&str; 2] = [KEY_YES, KEY_NO];
-
-/// The letters that take Ctrl alone.
-const KEY_SWITCHER: &str = "k";
-const KEY_NEW_AGENT: &str = "n";
-const KEY_OPEN_FILE: &str = "o";
-const KEY_AGENT_MAP: &str = "m";
-const KEY_FILES: &str = "b";
-pub const COMMAND_KEYS: [&str; 5] = [
-    KEY_SWITCHER,
-    KEY_NEW_AGENT,
-    KEY_OPEN_FILE,
-    KEY_AGENT_MAP,
-    KEY_FILES,
-];
-
-/// The letter that closes the selected agent, with Ctrl+Shift.
-pub const CLOSE_AGENT_KEY: &str = "w";
-
-/// The letter that marks the selected agent as one to handle, or clears its mark, with
-/// Ctrl+Shift.
-pub const MARK_KEY: &str = "h";
 
 /// A key press the page's script passes on.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -67,6 +45,51 @@ pub struct KeyPress {
     pub composer_text: String,
 }
 
+/// Runs the command a shortcut is bound to. The page script passes a shortcut on only where its
+/// command reaches (`Command::reach`).
+fn run(
+    state: &mut AppState,
+    drafts: &mut Drafts,
+    command: Command,
+    target: KeyTarget,
+) -> Vec<Outgoing> {
+    let no_dialog = state.ui.dialog.is_none();
+    match command {
+        Command::Switcher => actions::toggle_switcher(state, drafts),
+        Command::NewAgent => actions::open_new_agent(state, drafts),
+        Command::OpenFile => open_file::toggle(state, drafts),
+        Command::FilesPane => file_tree::toggle_pane(state),
+        Command::AgentMap => agent_map::toggle(state),
+        // Asks to close the selected agent, and confirms when asked.
+        Command::CloseAgent => {
+            return match (&state.ui.dialog, state.ui.selected) {
+                (Some(Dialog::CloseAgent(agent)), _) => actions::close_agent(state, drafts, *agent),
+                (None, Some(agent)) => actions::request_close(state, drafts, agent),
+                (Some(_), _) | (None, None) => Vec::new(),
+            };
+        }
+        Command::MarkToHandle if no_dialog => return to_handle::toggle_selected(state),
+        Command::Rename if no_dialog => actions::rename_key(state, drafts),
+        Command::ReloadFile => {
+            if let Some(agent) = state.ui.selected {
+                file_reread::reread(state, agent);
+                if let Some(entry) = state.agents.get_mut(&agent) {
+                    file_tree::refresh(&mut entry.tree);
+                }
+            }
+        }
+        // From anywhere but a text field other than the composer.
+        Command::MoveUp if no_dialog && target != KeyTarget::Field => {
+            return actions::move_selected(state, Direction::Up);
+        }
+        Command::MoveDown if no_dialog && target != KeyTarget::Field => {
+            return actions::move_selected(state, Direction::Down);
+        }
+        Command::MarkToHandle | Command::Rename | Command::MoveUp | Command::MoveDown => {}
+    }
+    Vec::new()
+}
+
 /// Where the key went.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -80,28 +103,10 @@ pub enum KeyTarget {
 
 pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -> Vec<Outgoing> {
     let command = press.ctrl || press.meta;
-    let letter = press.key.to_lowercase();
-    if command && !press.alt && !press.shift {
-        match letter.as_str() {
-            KEY_SWITCHER => actions::toggle_switcher(state, drafts),
-            KEY_NEW_AGENT => actions::open_new_agent(state, drafts),
-            KEY_OPEN_FILE => open_file::toggle(state, drafts),
-            KEY_AGENT_MAP => agent_map::toggle(state),
-            KEY_FILES => file_tree::toggle_pane(state),
-            _ => {}
-        }
-        return Vec::new();
-    }
-    // Ctrl+Shift+W asks to close the selected agent, and confirms when asked.
-    if command && !press.alt && press.shift && letter == CLOSE_AGENT_KEY {
-        return match (&state.ui.dialog, state.ui.selected) {
-            (Some(Dialog::CloseAgent(agent)), _) => actions::close_agent(state, drafts, *agent),
-            (None, Some(agent)) => actions::request_close(state, drafts, agent),
-            (Some(_), _) | (None, None) => Vec::new(),
-        };
-    }
-    if command && !press.alt && press.shift && letter == MARK_KEY && state.ui.dialog.is_none() {
-        return to_handle::toggle_selected(state);
+    let bound = Chord::of(&press.key, command, press.alt, press.shift)
+        .and_then(|chord| state.prefs.keys.command(&chord));
+    if let Some(bound) = bound {
+        return run(state, drafts, bound, press.target);
     }
     // Esc only closes what is open: the Stop button alone stops an agent, so a stray Esc never
     // cuts a turn short.
@@ -125,31 +130,6 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
             return Vec::new();
         }
         return agent_map::press(state, &press.key);
-    }
-    // The script passes F2 on from outside text fields, and from the title fields.
-    let plain = !command && !press.alt && !press.shift;
-    if press.key == KEY_F2 && plain && state.ui.dialog.is_none() {
-        actions::rename_key(state, drafts);
-        return Vec::new();
-    }
-    if press.key == RELOAD_KEY {
-        if plain && let Some(agent) = state.ui.selected {
-            file_reread::reread(state, agent);
-            if let Some(entry) = state.agents.get_mut(&agent) {
-                file_tree::refresh(&mut entry.tree);
-            }
-        }
-        return Vec::new();
-    }
-    // Alt+Up and Alt+Down move the selected agent in the sidebar, from anywhere but a text field
-    // other than the composer.
-    let moves = press.alt && !command && !press.shift;
-    if moves && state.ui.dialog.is_none() && press.target != KeyTarget::Field {
-        match press.key.as_str() {
-            KEY_UP => return actions::move_selected(state, Direction::Up),
-            KEY_DOWN => return actions::move_selected(state, Direction::Down),
-            _ => {}
-        }
     }
     // Alt+Enter in the composer queues the message until the turn ends.
     let queues = press.alt && !command && !press.shift && press.key == KEY_ENTER;
@@ -1068,15 +1048,15 @@ mod tests {
         let mut state = state(AgentStatus::Idle, None);
         let place = |state: &AppState| state.ui.title_edit.as_ref().map(|edit| edit.place);
 
-        handle_key(&mut state, &mut drafts, &press(KEY_F2, KeyTarget::Page));
+        handle_key(&mut state, &mut drafts, &press("F2", KeyTarget::Page));
         let from_page = place(&state);
         state.ui.title_edit = None;
         actions::start_rename(&mut state, &mut drafts, AgentId::new(1));
-        handle_key(&mut state, &mut drafts, &press(KEY_F2, KeyTarget::Field));
+        handle_key(&mut state, &mut drafts, &press("F2", KeyTarget::Field));
         let from_header = place(&state);
         state.ui.title_edit = None;
         actions::toggle_switcher(&mut state, &mut drafts);
-        handle_key(&mut state, &mut drafts, &press(KEY_F2, KeyTarget::Page));
+        handle_key(&mut state, &mut drafts, &press("F2", KeyTarget::Page));
 
         assert_eq!(from_page, Some(TitlePlace::Sidebar));
         assert_eq!(from_header, Some(TitlePlace::Sidebar));
@@ -1097,13 +1077,27 @@ mod tests {
         let text = FileRead::unedited("one\n");
         actions::show_read_file(&mut state, agent, path, path, text, None);
 
-        handle_key(
-            &mut state,
-            &mut drafts,
-            &press(RELOAD_KEY, KeyTarget::Field),
-        );
+        handle_key(&mut state, &mut drafts, &press("F5", KeyTarget::Field));
 
         assert_eq!(state.agents[&agent].file_freshness.reread, Reread::Wanted);
+    }
+
+    #[test]
+    fn a_changed_shortcut_runs_its_command_and_the_old_one_nothing() {
+        let mut drafts = Drafts::default();
+        let mut state = state(AgentStatus::Idle, None);
+        state
+            .prefs
+            .keys
+            .set(Command::Switcher, "Ctrl+j".parse().unwrap())
+            .unwrap();
+
+        handle_key(&mut state, &mut drafts, &ctrl("k"));
+        let old = state.ui.dialog.clone();
+        handle_key(&mut state, &mut drafts, &ctrl("J"));
+
+        assert_eq!(old, None);
+        assert!(matches!(state.ui.dialog, Some(Dialog::Switcher)));
     }
 
     #[test]

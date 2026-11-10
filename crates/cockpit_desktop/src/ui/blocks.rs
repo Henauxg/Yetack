@@ -13,6 +13,7 @@ use dioxus::prelude::*;
 
 use crate::connection::{Clock, Cockpit};
 use crate::format;
+use crate::keymap::Command;
 use crate::machine::MachineId;
 use crate::state::{Block, actions, agent_map};
 use crate::ui::icons::{Icon, IconKind};
@@ -426,6 +427,7 @@ fn RunningBody(
     } else {
         "Show less".to_owned()
     };
+    let map_keys = cockpit.state.read().prefs.keys.shown(Command::AgentMap);
     rsx! {
         div { class: "running-list scroll",
             for task in tasks {
@@ -499,7 +501,7 @@ fn RunningBody(
             span { class: "spacer" }
             button {
                 class: "running-fold map-link",
-                title: "Open the agent map (Ctrl+M)",
+                title: "Open the agent map ({map_keys})",
                 onclick: move |_| cockpit.update(|state| agent_map::open_on_agent(state, agent)),
                 Icon { kind: IconKind::Map, size: 13 }
                 "Agent map"

@@ -15,6 +15,7 @@ use serde_json::Value;
 use crate::bridge::{self, HIGHLIGHTED_CLASS};
 use crate::connection::{Clock, Cockpit};
 use crate::format;
+use crate::keymap::Command;
 use crate::state::agent_map::{self, MapRow, MapTab, MapView, OutlineRow, RowKind, StopKind};
 use crate::state::{self, HistoryState, actions};
 use crate::ui::cards::{ApprovalCard, PlanCard, QuestionCard};
@@ -353,6 +354,7 @@ pub fn AgentMapDialog(view: MapView) -> Element {
         started: in_turn.len(),
         earlier,
     };
+    let map_keys = cockpit.state.read().prefs.keys.shown(Command::AgentMap);
     rsx! {
         div {
             class: "dialog agent-map",
@@ -427,7 +429,7 @@ pub fn AgentMapDialog(view: MapView) -> Element {
                 span { "Left and Right to fold" }
                 span { "Esc to close" }
                 span { class: "spacer" }
-                span { "Ctrl+M opens the map" }
+                span { "{map_keys} opens the map" }
             }
         }
     }

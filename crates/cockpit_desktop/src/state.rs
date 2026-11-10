@@ -39,14 +39,13 @@ pub use app_state::{
 pub use apply::{Alert, AlertKind, apply_update, error_chain, next_finish_due, release_finishes};
 pub use drafts::Drafts;
 pub use requests::{Outgoing, Purpose, apply_response, needed_requests};
-pub use shortcuts::{
-    ANSWER_KEYS, CLOSE_AGENT_KEY, COMMAND_KEYS, KeyPress, MARK_KEY, RELOAD_KEY, handle_key,
-};
+pub use shortcuts::{ANSWER_KEYS, KeyPress, PAGE_RELOAD_KEY, handle_key};
 pub use transcript::{HistoryState, WaitingKind, awaiting_approval};
 pub use ui_state::{
     Block, Dialog, FileSearch, FolderAction, FolderList, FormMenu, ImageView, MachinesView,
     McpView, NewAgentForm, NewAgentTab, NoteKind, OpenFileView, PaletteOrigin, Popover,
-    RevealPlace, TitleEdit, TitlePlace, ToolFilter, ViewMode, WorkingFolderForm, is_markdown,
+    RefusedChord, RevealPlace, SettingsTab, SettingsView, TitleEdit, TitlePlace, ToolFilter,
+    ViewMode, WorkingFolderForm, is_markdown,
 };
 pub use utf16_offset::Utf16Offset;
 

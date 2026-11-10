@@ -61,6 +61,12 @@ pub enum IconKind {
     Gear,
     /// Reply to a passage of the chat.
     Reply,
+    /// The keyboard shortcuts.
+    Keyboard,
+    /// Back to the default.
+    Undo,
+    /// A setting that does not change.
+    Lock,
 }
 
 impl IconKind {
@@ -167,6 +173,15 @@ impl IconKind {
             }
             Self::Reply => {
                 r#"<path d="M10 7l-5 5 5 5"></path><path d="M5 12h10a4 4 0 0 1 4 4v2"></path>"#
+            }
+            Self::Keyboard => {
+                r#"<rect x="2" y="6" width="20" height="12" rx="2"></rect><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"></path>"#
+            }
+            Self::Undo => {
+                r#"<path d="M3 12a9 9 0 1 0 3-6.7L3 8"></path><path d="M3 3v5h5"></path>"#
+            }
+            Self::Lock => {
+                r#"<rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path>"#
             }
         }
     }

@@ -10,6 +10,7 @@ use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use crate::connection::{Clock, Cockpit};
+use crate::keymap::Command;
 use crate::path_style::PathStyle;
 use crate::render::{self, Diff, Language, MAX_RENDERED_LINES, diff_lines};
 use crate::state::{
@@ -576,6 +577,7 @@ fn FileFoot(agent: AgentId, note: String, freshness: FileFreshness) -> Element {
             format!("Read at {time}, {ago}")
         })
     });
+    let reload_keys = cockpit.state.read().prefs.keys.shown(Command::ReloadFile);
     rsx! {
         div { class: "file-foot",
             span { class: "file-foot-note", "{note} To change it, ask the agent." }
@@ -591,7 +593,7 @@ fn FileFoot(agent: AgentId, note: String, freshness: FileFreshness) -> Element {
             }
             button {
                 class: "file-reload",
-                title: "Read the file again (F5)",
+                title: "Read the file again ({reload_keys})",
                 disabled: reading,
                 onclick: move |_| cockpit.update(|state| file_reread::reread(state, agent)),
                 Icon { kind: IconKind::Reconnect, size: 13 }

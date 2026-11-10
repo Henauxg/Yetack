@@ -13,6 +13,7 @@ mod demo;
 mod fonts;
 mod format;
 mod in_app_host;
+mod keymap;
 mod logging;
 mod machine;
 mod notifications;

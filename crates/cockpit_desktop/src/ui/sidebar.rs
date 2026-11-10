@@ -9,6 +9,7 @@ use dioxus::prelude::*;
 use crate::bridge::{self, ROW_TITLE_FIELD_ID};
 use crate::connection::{Clock, Cockpit};
 use crate::daemon_label::DaemonPlace;
+use crate::keymap::{Command, Keymap};
 use crate::machine::MachineId;
 use crate::prefs::{NotificationLevel, StatusFilter};
 use crate::state::accounts::{self, AccountLabel, SignInLine};
@@ -48,6 +49,8 @@ struct AgentRow {
     /// You marked the agent as one to handle.
     to_handle: bool,
     notifications: NotificationLevel,
+    /// The shortcut that closes the selected agent, for the close button's tooltip.
+    close_keys: String,
 }
 
 impl AgentRow {
@@ -70,6 +73,7 @@ impl AgentRow {
             time: row_time(summary),
             to_handle: summary.mark == Mark::ToHandle,
             notifications: notification_levels::agent_level(state, entry.id()),
+            close_keys: state.prefs.keys.shown(Command::CloseAgent),
             edit,
         }
     }
@@ -203,16 +207,20 @@ fn RowBell(level: NotificationLevel) -> Element {
 }
 
 /// What the list says when the filter leaves no row.
-fn empty_list_text(filter: StatusFilter) -> &'static str {
+fn empty_list_text(filter: StatusFilter, keys: &Keymap) -> String {
     match filter {
-        StatusFilter::All => "No agent yet. Ctrl+N starts one.",
-        StatusFilter::NeedsYou => "No agent needs you.",
-        StatusFilter::Working => "No agent is working.",
-        StatusFilter::Idle => "No agent is idle.",
-        StatusFilter::Exited => "No agent has exited.",
-        StatusFilter::ToHandle => {
-            "No agent is marked to handle. Ctrl+Shift+H marks the selected one."
-        }
+        StatusFilter::All => format!(
+            "No agent yet. {} starts one.",
+            keys.shown(Command::NewAgent)
+        ),
+        StatusFilter::NeedsYou => "No agent needs you.".to_owned(),
+        StatusFilter::Working => "No agent is working.".to_owned(),
+        StatusFilter::Idle => "No agent is idle.".to_owned(),
+        StatusFilter::Exited => "No agent has exited.".to_owned(),
+        StatusFilter::ToHandle => format!(
+            "No agent is marked to handle. {} marks the selected one.",
+            keys.shown(Command::MarkToHandle)
+        ),
     }
 }
 
@@ -231,6 +239,11 @@ pub fn Sidebar() -> Element {
         })
         .collect();
     let selected_hidden = state.selected_is_hidden();
+    let find_title = format!(
+        "Find an agent ({})",
+        state.prefs.keys.shown(Command::Switcher)
+    );
+    let new_title = format!("New agent ({})", state.prefs.keys.shown(Command::NewAgent));
     let row = |entry: &AgentEntry| {
         let edit = state
             .ui
@@ -263,15 +276,15 @@ pub fn Sidebar() -> Element {
                 AppBell {}
                 button {
                     class: "icon-button",
-                    title: "Find an agent (Ctrl+K)",
-                    aria_label: "Find an agent (Ctrl+K)",
+                    title: "{find_title}",
+                    aria_label: "{find_title}",
                     onclick: move |_| cockpit.update_with_drafts(actions::toggle_switcher),
                     Icon { kind: IconKind::Search, size: 16 }
                 }
                 button {
                     class: "icon-button raised",
-                    title: "New agent (Ctrl+N)",
-                    aria_label: "New agent (Ctrl+N)",
+                    title: "{new_title}",
+                    aria_label: "{new_title}",
                     onclick: move |_| cockpit.update_with_drafts(actions::open_new_agent),
                     Icon { kind: IconKind::Plus, size: 16 }
                 }
@@ -291,7 +304,7 @@ pub fn Sidebar() -> Element {
                     }
                 }
                 if rows.is_empty() && groups.is_empty() {
-                    p { class: "sidebar-empty", "{empty_list_text(filter)}" }
+                    p { class: "sidebar-empty", "{empty_list_text(filter, &state.prefs.keys)}" }
                 }
                 for row in rows {
                     AgentRowView { key: "{row.id.get()}", row }
@@ -584,7 +597,7 @@ fn AgentRowView(row: AgentRow) -> Element {
             button {
                 class: "row-close",
                 aria_label: "Close {row.title}",
-                title: "Close the agent (Ctrl+Shift+W)",
+                title: "Close the agent ({row.close_keys} when selected)",
                 onclick: move |_| cockpit.change_with_drafts(|state, drafts| actions::request_close(state, drafts, agent)),
                 Icon { kind: IconKind::Close, size: 12 }
             }
@@ -734,7 +747,7 @@ fn ConnectionFooter() -> Element {
     // With several machines, each panel says how its machine answers.
     let panels = !state.machines.others.is_empty();
     let trouble = use_presence(trouble.filter(|_| !panels));
-    let settings_open = state.ui.dialog == Some(Dialog::Settings);
+    let settings_open = matches!(state.ui.dialog, Some(Dialog::Settings(_)));
     rsx! {
         div { class: "sidebar-foot",
             div { class: "foot-buttons",

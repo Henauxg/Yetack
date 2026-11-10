@@ -12,6 +12,7 @@ use dioxus::prelude::*;
 use crate::bridge::{self, ATTACH_INPUT_ID, COMPOSER_ID};
 use crate::connection::{Clock, Cockpit};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
+use crate::keymap::Command;
 use crate::state::actions::ImageTooLarge;
 use crate::state::{PaletteOrigin, Popover, accounts, actions, agent_map};
 use crate::ui::header::cache_left;
@@ -127,10 +128,13 @@ pub fn Composer() -> Element {
     let accept = accepted_images();
     let title = summary.title.clone();
     let map_status = entry.details.loaded().and_then(agent_map::live_status);
+    let map_keys = state.prefs.keys.shown(Command::AgentMap);
     let map_label = match map_status {
-        Some(SubagentStatus::NeedsYou) => "Agent map: a subagent waits for you (Ctrl+M)",
-        Some(_) => "Agent map: subagents running (Ctrl+M)",
-        None => "Agent map (Ctrl+M)",
+        Some(SubagentStatus::NeedsYou) => {
+            format!("Agent map: a subagent waits for you ({map_keys})")
+        }
+        Some(_) => format!("Agent map: subagents running ({map_keys})"),
+        None => format!("Agent map ({map_keys})"),
     };
     let waiting = entry.waiting_prompts().to_vec();
     rsx! {

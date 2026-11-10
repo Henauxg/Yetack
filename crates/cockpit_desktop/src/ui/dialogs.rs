@@ -16,6 +16,7 @@ use crate::bridge::{self, FOLDER_FIELD_ID, HIGHLIGHTED_CLASS};
 use crate::connection::{Clock, Cockpit};
 use crate::daemon_label::DaemonPlace;
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
+use crate::keymap::Command;
 use crate::machine::MachineId;
 use crate::path_style::{self, PathStyle};
 use crate::state::accounts::AccountLabel;
@@ -148,8 +149,8 @@ pub fn Dialogs() -> Element {
                     Dialog::WorkingFolder(form) => rsx! {
                         WorkingFolderDialog { form }
                     },
-                    Dialog::Settings => rsx! {
-                        SettingsDialog {}
+                    Dialog::Settings(view) => rsx! {
+                        SettingsDialog { view }
                     },
                 }
             }
@@ -172,6 +173,15 @@ fn CloseAgentDialog(agent: AgentId) -> Element {
             None => format!("Close {}?", entry.summary.title),
         }
     };
+    // The shortcut that asked confirms too.
+    let close_keys = cockpit
+        .state
+        .read()
+        .prefs
+        .keys
+        .chord(Command::CloseAgent)
+        .caps()
+        .join(" ");
     rsx! {
         div {
             class: "dialog close-agent",
@@ -180,7 +190,7 @@ fn CloseAgentDialog(agent: AgentId) -> Element {
             onclick: move |event| event.stop_propagation(),
             div { class: "dialog-head",
                 h2 { "Close the agent" }
-                span { class: "key-hint", "Ctrl Shift W" }
+                span { class: "key-hint", "{close_keys}" }
             }
             p { class: "dialog-text",
                 "{question} "
@@ -238,6 +248,7 @@ fn SwitcherDialog() -> Element {
             })
             .collect()
     };
+    let new_keys = cockpit.state.read().prefs.keys.shown(Command::NewAgent);
     rsx! {
         div {
             class: "dialog switcher",
@@ -280,7 +291,7 @@ fn SwitcherDialog() -> Element {
             }
             div { class: "dialog-list scroll",
                 if rows.is_empty() {
-                    span { class: "dialog-empty", "No agent matches. Ctrl+N starts a new one." }
+                    span { class: "dialog-empty", "No agent matches. {new_keys} starts a new one." }
                 }
                 for (index, row) in rows.into_iter().enumerate() {
                     button {

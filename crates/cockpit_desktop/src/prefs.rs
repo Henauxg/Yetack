@@ -53,6 +53,7 @@ use strum::{EnumString, IntoStaticStr, VariantArray};
 
 use crate::config::Environment;
 use crate::connection::Cockpit;
+use crate::keymap::Keymap;
 
 pub const PREFS_FOLDER: &str = "agents-cockpit-desktop";
 const PREFS_FILE: &str = "prefs.json";
@@ -73,6 +74,8 @@ pub struct Prefs {
     pub accounts: AccountPrefs,
     pub notifications: NotificationPrefs,
     pub chat: ChatPrefs,
+    /// The shortcuts changed in the Settings dialog.
+    pub keys: Keymap,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -565,6 +568,7 @@ mod tests {
     use std::os::unix::fs::MetadataExt;
 
     use super::*;
+    use crate::keymap::Command;
 
     /// Other programs and other versions of the app read this file: its field names are pinned.
     #[test]
@@ -600,11 +604,18 @@ mod tests {
   },
   "chat": {
     "comments": "hidden"
+  },
+  "keys": {
+    "switcher": "Ctrl+j"
   }
 }
 "#;
 
         let prefs: Prefs = serde_json::from_str(text).unwrap();
+        let mut switched = Keymap::default();
+        switched
+            .set(Command::Switcher, "Ctrl+j".parse().unwrap())
+            .unwrap();
 
         assert_eq!(
             prefs,
@@ -640,6 +651,7 @@ mod tests {
                 chat: ChatPrefs {
                     comments: CommentPlacement::Hidden,
                 },
+                keys: switched,
             }
         );
         assert_eq!(serde_json::to_string_pretty(&prefs).unwrap() + "\n", text);
@@ -851,6 +863,7 @@ mod tests {
             accounts: AccountPrefs::default(),
             notifications: NotificationPrefs::default(),
             chat: ChatPrefs::default(),
+            keys: Keymap::default(),
         };
 
         Prefs::default().save(&file).unwrap();

@@ -12,6 +12,7 @@ use strum::VariantArray;
 
 use crate::bridge::HIGHLIGHTED_CLASS;
 use crate::connection::Cockpit;
+use crate::keymap::{Command, Keymap};
 use crate::path_style;
 use crate::prefs::NotificationLevel;
 use crate::state::actions::Direction;
@@ -356,13 +357,14 @@ fn next(enabled: &[bool], from: Option<usize>, direction: Direction) -> Option<u
 }
 
 /// The tooltip of a row whose action also has a shortcut outside the menu.
-fn shortcut_title(item: Item) -> &'static str {
-    match item {
-        Item::Mark => "Ctrl+Shift+H does this for the selected agent",
-        Item::Rename => "F2 does this for the selected agent",
-        Item::Close => "Ctrl+Shift+W does this for the selected agent",
-        Item::Notifications | Item::Folder => "",
-    }
+fn shortcut_title(item: Item, keys: &Keymap) -> String {
+    let command = match item {
+        Item::Mark => Command::MarkToHandle,
+        Item::Rename => Command::Rename,
+        Item::Close => Command::CloseAgent,
+        Item::Notifications | Item::Folder => return String::new(),
+    };
+    format!("{} does this for the selected agent", keys.shown(command))
 }
 
 /// The row menu, at the pointer that opened it. It acts on that row's agent, selected or not.
@@ -429,6 +431,7 @@ fn MenuBody(shown: RowMenuShown) -> Element {
     } = shown;
     let folder = folder.clone();
     let act = move |pick: Pick| run(cockpit, agent, mark, pick);
+    let keys = cockpit.state.read().prefs.keys.clone();
     let mut cancel_delay = move || {
         let next = moves.peek().wrapping_add(1);
         moves.set(next);
@@ -486,7 +489,7 @@ fn MenuBody(shown: RowMenuShown) -> Element {
                 class: row_class(index, extra),
                 role: "menuitem",
                 tabindex: -1,
-                title: shortcut_title(item),
+                title: shortcut_title(item, &keys),
                 onmouseenter: move |_| point(index),
                 onclick: move |_| {
                     if let Some(pick) = item.pick() {

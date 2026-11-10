@@ -15,6 +15,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::connection::{Clock, Cockpit};
+use crate::keymap::Command;
 use crate::render::{self, Diff, Found, Language, OutputPart, SearchTool, diff_lines};
 use crate::state::{self, AgentEntry, HistoryState, TurnStart, accounts, actions, file_edits};
 use crate::ui::accounts::SignInCard;
@@ -358,7 +359,7 @@ pub fn TranscriptView() -> Element {
         return rsx! {
             div { class: "chat-scroll scroll",
                 div { class: "chat-column",
-                    p { class: "chat-empty", "Pick an agent on the left, or start one with Ctrl+N." }
+                    p { class: "chat-empty", "Pick an agent on the left, or start one with {state.prefs.keys.shown(Command::NewAgent)}." }
                 }
             }
         };

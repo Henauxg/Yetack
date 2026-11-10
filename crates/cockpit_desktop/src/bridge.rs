@@ -8,11 +8,11 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::connection::Cockpit;
+use crate::keymap::{Command, Reach};
 use crate::state::sidebar_keys::SidebarItem;
 use crate::state::{
-    ANSWER_KEYS, AppState, CLOSE_AGENT_KEY, COMMAND_KEYS, Dialog, KeyPress, MARK_KEY,
-    PaletteOrigin, Popover, RELOAD_KEY, Utf16Offset, WaitingKind, accounts, actions, agent_map,
-    file_reread, handle_key, sidebar_keys,
+    ANSWER_KEYS, AppState, Dialog, KeyPress, PAGE_RELOAD_KEY, PaletteOrigin, Popover, Utf16Offset,
+    WaitingKind, accounts, actions, agent_map, file_reread, handle_key, sidebar_keys,
 };
 use crate::ui::sidebar_item_id;
 
@@ -24,6 +24,9 @@ pub const FOLDER_FIELD_ID: &str = "new-agent-folder";
 
 /// The "Open file" dialog's path field.
 pub const OPEN_FILE_FIELD_ID: &str = "open-file-path";
+
+/// Marks the element that records a new shortcut: the script leaves its keys to it.
+pub const RECORDS_KEYS_ATTRIBUTE: &str = "data-records-keys";
 
 /// The hidden file input the composer's attach button opens.
 pub const ATTACH_INPUT_ID: &str = "attach-input";
@@ -56,7 +59,7 @@ const PASTED_IMAGE: &str = "The pasted image";
 /// `BridgeMessage`, `KeyPress`, `KeyTarget` and `KeyMode`.
 const SCRIPT: &str = r#"
 const settings = await dioxus.recv();
-let mode = { answer_letters: false, answer_numbers: false, palette: false, dialog: false };
+let mode = { answer_letters: false, answer_numbers: false, palette: false, dialog: false, bindings: [] };
 const send = (message) => dioxus.send(message);
 // The sidebar row or machine header that has the focus, as the app names it.
 const sidebarItem = (element) => {
@@ -164,6 +167,9 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   const target = event.target;
+  if (target !== null && target.closest(`[${settings.records_keys_attribute}]`) !== null) {
+    return;
+  }
   // Backspace in a path field goes up a folder only from the end of its text, with nothing
   // selected. Anywhere else it deletes, and the app's handler does not see it.
   if (event.key === "Backspace" && target !== null && settings.path_field_ids.includes(target.id)
@@ -194,27 +200,22 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   const text = composer ? target.value : "";
+  // A command's shortcut, as the Settings dialog sets it. A key reads as one character in lower
+  // case, as the app reads it.
+  const pressed = key.length === 1 ? key.toLowerCase() : key;
+  const bound = mode.bindings.find((binding) => binding.key === pressed && binding.ctrl === command
+    && binding.alt === event.altKey && binding.shift === event.shiftKey);
+  const titleField = target !== null && settings.title_field_ids.includes(target.id);
   let take = false;
-  if (command && !event.altKey && !event.shiftKey && settings.command_keys.includes(letter)) {
-    take = true;
-  } else if (command && !event.altKey && event.shiftKey && letter === settings.close_agent_key) {
-    // Ctrl+Shift+W closes the selected agent. The file view takes Ctrl+W alone.
-    take = true;
-  } else if (command && !event.altKey && event.shiftKey && letter === settings.mark_key) {
-    // Ctrl+Shift+H marks the selected agent as one to handle.
-    take = true;
+  if (bound !== undefined) {
+    take = bound.reach === "everywhere"
+      || (bound.reach === "page_or_title" && !mode.dialog && (where === "page" || titleField))
+      || (bound.reach === "outside_fields" && where !== "field" && !mode.dialog);
   } else if (key === "Escape") {
     take = true;
-  } else if (key === settings.reload_key && plain && !event.shiftKey) {
-    // F5 reads the shown file again. Taken everywhere, it never reloads the page.
+  } else if (key === settings.page_reload_key) {
+    // Taken everywhere, whatever its shortcut runs: it never reloads the page.
     take = true;
-  } else if (key === "F2" && plain && !event.shiftKey) {
-    // F2 renames the selected agent, and moves an open title field between the header and the
-    // agent's row.
-    take = !mode.dialog && (where === "page" || (target !== null && settings.title_field_ids.includes(target.id)));
-  } else if (event.altKey && !command && !event.shiftKey && (key === "ArrowUp" || key === "ArrowDown")) {
-    // Alt+Up and Alt+Down move the selected agent in the sidebar.
-    take = where !== "field" && !mode.dialog;
   } else if (mode.map) {
     // The map moves and folds with its keys wherever the focus is, but in a text field. Enter on
     // one of its buttons still presses the button.
@@ -385,19 +386,24 @@ struct Settings {
     sidebar_keys: [&'static str; 4],
     /// The letters that answer an approval or a plan.
     answer_keys: [&'static str; 2],
-    /// The letters that take Ctrl alone.
-    command_keys: [&'static str; 5],
-    /// The letter that closes the selected agent with Ctrl+Shift.
-    close_agent_key: &'static str,
-    /// The letter that marks the selected agent as one to handle, with Ctrl+Shift.
-    mark_key: &'static str,
-    /// The key that reads the shown file again.
-    reload_key: &'static str,
+    /// The key that would reload the page.
+    page_reload_key: &'static str,
+    records_keys_attribute: &'static str,
 }
 
-/// Which plain keys the script takes, beyond Ctrl+K, Ctrl+N, Ctrl+O, Ctrl+M, Ctrl+Shift+W,
-/// Ctrl+Shift+H, Esc, F2, Alt+Up, Alt+Down and the composer's Enter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// A command's shortcut, and where the script takes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct Binding {
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    key: String,
+    reach: Reach,
+}
+
+/// Which keys the script takes, beyond Esc and the composer's Enter: the commands' shortcuts, and
+/// the plain keys of the open card, palette or map.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct KeyMode {
     /// Y and N answer an approval or a plan: in the agent map, the selected subagent's.
     answer_letters: bool,
@@ -411,6 +417,7 @@ struct KeyMode {
     map: bool,
     /// Enter, outside text fields, presses the sign-in card's "Send the message again".
     send_again: bool,
+    bindings: Vec<Binding>,
 }
 
 impl KeyMode {
@@ -435,8 +442,26 @@ impl KeyMode {
                 .ui
                 .selected
                 .is_some_and(|agent| accounts::sends_again(state, agent)),
+            bindings: bindings(state),
         }
     }
+}
+
+fn bindings(state: &AppState) -> Vec<Binding> {
+    use strum::VariantArray;
+
+    let mut bindings = Vec::new();
+    for &command in Command::VARIANTS {
+        let chord = state.prefs.keys.chord(command);
+        bindings.push(Binding {
+            ctrl: chord.ctrl,
+            alt: chord.alt,
+            shift: chord.shift,
+            key: chord.key,
+            reach: command.reach(),
+        });
+    }
+    bindings
 }
 
 #[derive(Debug, Deserialize)]
@@ -476,10 +501,8 @@ pub fn use_bridge(cockpit: Cockpit) {
             map_keys: agent_map::MAP_KEYS,
             sidebar_keys: sidebar_keys::SIDEBAR_KEYS,
             answer_keys: ANSWER_KEYS,
-            command_keys: COMMAND_KEYS,
-            close_agent_key: CLOSE_AGENT_KEY,
-            mark_key: MARK_KEY,
-            reload_key: RELOAD_KEY,
+            page_reload_key: PAGE_RELOAD_KEY,
+            records_keys_attribute: RECORDS_KEYS_ATTRIBUTE,
         }) {
             tracing::warn!("cannot start the page's script: {error}");
         }
@@ -737,10 +760,8 @@ mod tests {
             map_keys: agent_map::MAP_KEYS,
             sidebar_keys: sidebar_keys::SIDEBAR_KEYS,
             answer_keys: ANSWER_KEYS,
-            command_keys: COMMAND_KEYS,
-            close_agent_key: CLOSE_AGENT_KEY,
-            mark_key: MARK_KEY,
-            reload_key: RELOAD_KEY,
+            page_reload_key: PAGE_RELOAD_KEY,
+            records_keys_attribute: RECORDS_KEYS_ATTRIBUTE,
         };
         let mode = KeyMode {
             answer_letters: true,
@@ -749,6 +770,13 @@ mod tests {
             dialog: false,
             map: false,
             send_again: true,
+            bindings: vec![Binding {
+                ctrl: false,
+                alt: true,
+                shift: false,
+                key: "ArrowUp".to_owned(),
+                reach: Reach::OutsideFields,
+            }],
         };
         let field_text = FieldText {
             field_id: COMPOSER_ID,
@@ -768,10 +796,8 @@ mod tests {
                 "map_keys": ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter"],
                 "sidebar_keys": ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"],
                 "answer_keys": ["y", "n"],
-                "command_keys": ["k", "n", "o", "m", "b"],
-                "close_agent_key": "w",
-                "mark_key": "h",
-                "reload_key": "F5",
+                "page_reload_key": "F5",
+                "records_keys_attribute": "data-records-keys",
             })
         );
         assert_eq!(
@@ -783,6 +809,13 @@ mod tests {
                 "dialog": false,
                 "map": false,
                 "send_again": true,
+                "bindings": [{
+                    "ctrl": false,
+                    "alt": true,
+                    "shift": false,
+                    "key": "ArrowUp",
+                    "reach": "outside_fields",
+                }],
             })
         );
         assert_eq!(
