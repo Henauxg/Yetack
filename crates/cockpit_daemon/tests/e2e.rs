@@ -2306,6 +2306,9 @@ async fn an_agent_without_a_login_needs_you_until_its_account_signs_in() {
     std::fs::create_dir_all(&folder).unwrap();
     std::fs::write(folder.join(".credentials.json"), "{}").unwrap();
     client.ok(Request::AccountsList).await;
+    let Catchup::Snapshot(listed) = setup.connect_after(None).await.1 else {
+        panic!("expected a snapshot");
+    };
     let signed_in = client
         .wait_for(|event| {
             waits(event).filter(|summary| summary.sign_in_wait == SignInWait::NotWaiting)
@@ -2314,18 +2317,27 @@ async fn an_agent_without_a_login_needs_you_until_its_account_signs_in() {
 
     assert_eq!(waiting.status, AgentStatus::NeedsYou);
     assert_eq!(waiting.pending_count, 0);
+    assert_eq!(
+        listed.agents[0].sign_in_wait,
+        SignInWait::NotWaiting,
+        "the wait ended before accounts.list answered"
+    );
     assert_eq!(signed_in.status, AgentStatus::Idle);
 }
 
 /// The daemon checks the accounts' folders on its own: no client has to ask `accounts.list`.
 #[tokio::test]
 async fn a_sign_in_ends_the_wait_and_tells_the_clients_without_a_check() {
-    let setup = Setup::new();
-    let mut client = setup.connect().await;
+    let mut setup = Setup::new();
     let folder = setup.temp.path().join("claude-work");
-    let work = client
+    let work = setup
+        .connect()
+        .await
         .add_account("Work", Some(&folder), CredentialSource::SignIn)
         .await;
+    // The new daemon's first check sees the account, so only its sign-in tells the clients.
+    setup.restart();
+    let mut client = setup.connect().await;
     let agent = client
         .start_with(&setup.work(), "nologin", work.account.id)
         .await;

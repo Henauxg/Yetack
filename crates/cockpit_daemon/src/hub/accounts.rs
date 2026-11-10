@@ -357,4 +357,30 @@ mod tests {
             Some(&SignIn::SignedIn)
         );
     }
+
+    #[test]
+    fn an_account_added_since_the_last_check_tells_the_clients_and_a_removed_one_does_not() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut hub = Hub::for_tests(&temp.path().join("state"));
+        let (client, mut frames) = mpsc::channel(16);
+        hub.clients.push(client);
+        let work = (AccountId::new(1), SignIn::NotSignedIn);
+        let default = (AccountId::DEFAULT, SignIn::NotSignedIn);
+        let checked = |sign_ins: Vec<(AccountId, SignIn)>| SignInCheck {
+            sign_ins,
+            logins: Vec::new(),
+        };
+
+        hub.sign_ins_checked(Some(checked(vec![default])));
+        hub.sign_ins_checked(Some(checked(vec![default, work])));
+        let added = sent(&mut frames);
+        hub.sign_ins_checked(Some(checked(vec![default])));
+        let removed = sent(&mut frames);
+
+        assert!(
+            matches!(added.as_slice(), [frame] if frame.contains(r#""type":"accounts_changed""#)),
+            "{added:?}"
+        );
+        assert!(removed.is_empty(), "{removed:?}");
+    }
 }
