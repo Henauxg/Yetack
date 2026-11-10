@@ -4,7 +4,7 @@
 use super::app_state::AppState;
 use super::ui_state::{Dialog, RefusedChord, SettingsTab, SettingsView};
 use crate::keymap::{Chord, Command, Refusal};
-use crate::prefs::CommentPlacement;
+use crate::prefs::{CommentPlacement, PaneState};
 
 /// Opens the dialog, from the gear in the sidebar's foot.
 pub fn open(state: &mut AppState) {
@@ -15,6 +15,11 @@ pub fn open(state: &mut AppState) {
 /// Where new comments on quotes show. The comments already written keep their place.
 pub fn set_comment_placement(state: &mut AppState, placement: CommentPlacement) {
     state.prefs.chat.comments = placement;
+}
+
+/// The files pane of an agent never opened or closed. The others keep theirs.
+pub fn set_new_agents_pane(state: &mut AppState, pane: PaneState) {
+    state.prefs.files_pane.new_agents = pane;
 }
 
 pub fn show_tab(state: &mut AppState, tab: SettingsTab) {
@@ -137,10 +142,12 @@ mod tests {
 
         open(&mut state);
         set_comment_placement(&mut state, CommentPlacement::Hidden);
+        set_new_agents_pane(&mut state, PaneState::Open);
 
         assert_eq!(state.ui.popover, None);
         assert_eq!(view(&state), SettingsView::default());
         assert_eq!(state.prefs.chat.comments, CommentPlacement::Hidden);
+        assert_eq!(state.prefs.files_pane.new_agents, PaneState::Open);
     }
 
     #[test]

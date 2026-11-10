@@ -6,6 +6,7 @@ use cockpit_protocol::AgentId;
 use super::app_state::AppState;
 use super::apply::forget_agent;
 use super::drafts::Drafts;
+use super::file_tree;
 use super::ui_state::{Dialog, MachinesView};
 use crate::config::MachineConfig;
 use crate::machine::MachineId;
@@ -86,6 +87,7 @@ pub fn forget(state: &mut AppState, drafts: &mut Drafts, machine: MachineId) {
     if machine == MachineId::THIS {
         return;
     }
+    file_tree::forget_machine_panes(state, machine);
     state.machines.others.remove(&machine);
     let on_machine = |agent: &AgentId| MachineId::of(*agent) == machine;
     let agents: Vec<AgentId> = state.agents.keys().copied().filter(on_machine).collect();
@@ -169,6 +171,38 @@ mod tests {
 
         assert_eq!(add(&mut state), None);
         assert!(error(&state).is_some());
+    }
+
+    #[test]
+    fn a_forgotten_machine_takes_its_agents_panes_and_only_them() {
+        let devbox = MachineId::new(1);
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        state.machines.others.insert(
+            devbox,
+            MachineState::new(DaemonLabel::ssh("devbox".to_owned())),
+        );
+        let mut remote = summary(1, AgentStatus::Idle);
+        remote.id = devbox.app_agent(AgentId::new(1));
+        state
+            .agents
+            .insert(remote.id, AgentEntry::new(remote.clone()));
+        for agent in [AgentId::new(1), remote.id] {
+            state.ui.selected = Some(agent);
+            crate::state::file_tree::toggle_pane(&mut state);
+        }
+        let local_machine = state.daemon_machine(AgentId::new(1)).map(str::to_owned);
+
+        forget(&mut state, &mut Drafts::default(), devbox);
+
+        let machines: Vec<Option<String>> = state
+            .prefs
+            .files_pane
+            .agents
+            .keys()
+            .cloned()
+            .map(Some)
+            .collect();
+        assert_eq!(machines, [local_machine]);
     }
 
     #[test]

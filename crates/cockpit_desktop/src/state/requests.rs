@@ -233,7 +233,7 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
     else {
         return requests;
     };
-    let files_pane_open = state.prefs.files_pane.open;
+    let files_pane_open = file_tree::pane_open(state, agent);
     let open_file = state.ui.file_view(agent).map(|view| view.path.clone());
     let Some(entry) = state.agents.get_mut(&agent) else {
         return requests;

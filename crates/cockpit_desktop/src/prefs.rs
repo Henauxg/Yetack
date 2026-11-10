@@ -12,7 +12,10 @@
 //!     "width": 300
 //!   },
 //!   "files_pane": {
-//!     "open": true,
+//!     "new_agents": "closed",
+//!     "agents": {
+//!       "build-box": { "4": "open" }
+//!     },
 //!     "width": 280
 //!   },
 //!   "accounts": {
@@ -298,15 +301,53 @@ impl SidebarPrefs {
     }
 }
 
-/// The files pane: the tree of the selected agent's folder, at the window's right edge.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+/// The files pane: the tree of the selected agent's folder, at the window's right edge. Each
+/// agent keeps the pane open or closed; one width serves them all.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FilesPanePrefs {
-    pub open: bool,
+    /// The pane of an agent that has none in `agents`, from the Settings dialog.
+    pub new_agents: PaneState,
+    /// Each agent's pane once opened or closed, by daemon machine, then by the daemon's agent id.
+    pub agents: BTreeMap<String, BTreeMap<AgentId, PaneState>>,
     /// The pane's width in pixels, between `MIN_FILES_WIDTH` and `MAX_FILES_WIDTH`. `None` keeps
     /// the default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub width: Option<u16>,
+}
+
+/// Whether an agent's files pane shows.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumString, IntoStaticStr, VariantArray,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum PaneState {
+    Open,
+    #[default]
+    Closed,
+}
+
+impl PaneState {
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Open => Self::Closed,
+            Self::Closed => Self::Open,
+        }
+    }
+}
+
+impl Serialize for PaneState {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.into())
+    }
+}
+
+/// A word this version does not know, from another version of the app, reads as the default.
+impl<'de> Deserialize<'de> for PaneState {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let word = String::deserialize(deserializer)?;
+        Ok(word.parse().unwrap_or_default())
+    }
 }
 
 /// The files pane's width, in pixels, until it is moved.
@@ -319,6 +360,39 @@ impl FilesPanePrefs {
     /// The pane's width in pixels.
     pub fn width(&self) -> u16 {
         self.width.unwrap_or(DEFAULT_FILES_WIDTH)
+    }
+
+    pub fn agent(&self, machine: &str, agent: AgentId) -> PaneState {
+        self.agents
+            .get(machine)
+            .and_then(|panes| panes.get(&agent))
+            .copied()
+            .unwrap_or(self.new_agents)
+    }
+
+    pub fn set_agent(&mut self, machine: &str, agent: AgentId, pane: PaneState) {
+        self.agents
+            .entry(machine.to_owned())
+            .or_default()
+            .insert(agent, pane);
+    }
+
+    pub fn forget_agent(&mut self, machine: &str, agent: AgentId) {
+        self.keep_agents(machine, |kept| kept != agent);
+    }
+
+    /// Keeps the panes of the machine's agents that `keep` names.
+    pub fn keep_agents(&mut self, machine: &str, keep: impl Fn(AgentId) -> bool) {
+        if let Some(panes) = self.agents.get_mut(machine) {
+            panes.retain(|&agent, _| keep(agent));
+            if panes.is_empty() {
+                self.agents.remove(machine);
+            }
+        }
+    }
+
+    pub fn forget_machine(&mut self, machine: &str) {
+        self.agents.remove(machine);
     }
 }
 
@@ -583,7 +657,12 @@ mod tests {
     "width": 300
   },
   "files_pane": {
-    "open": true,
+    "new_agents": "open",
+    "agents": {
+      "build-box": {
+        "4": "closed"
+      }
+    },
     "width": 280
   },
   "accounts": {
@@ -629,7 +708,11 @@ mod tests {
                     width: Some(300),
                 },
                 files_pane: FilesPanePrefs {
-                    open: true,
+                    new_agents: PaneState::Open,
+                    agents: BTreeMap::from([(
+                        "build-box".to_owned(),
+                        BTreeMap::from([(AgentId::new(4), PaneState::Closed)]),
+                    )]),
                     width: Some(280),
                 },
                 accounts: AccountPrefs {
@@ -655,6 +738,22 @@ mod tests {
             }
         );
         assert_eq!(serde_json::to_string_pretty(&prefs).unwrap() + "\n", text);
+    }
+
+    #[test]
+    fn an_agent_keeps_its_pane_and_the_others_take_the_new_agents_one() {
+        let mut prefs = FilesPanePrefs::default();
+        prefs.set_agent("build-box", AgentId::new(4), PaneState::Open);
+        let set = prefs.agent("build-box", AgentId::new(4));
+        let other = prefs.agent("build-box", AgentId::new(5));
+        prefs.forget_agent("build-box", AgentId::new(4));
+        let old_switch: FilesPanePrefs =
+            serde_json::from_str(r#"{"open": true, "width": 300}"#).unwrap();
+
+        assert_eq!((set, other), (PaneState::Open, PaneState::Closed));
+        assert!(prefs.agents.is_empty());
+        assert_eq!(old_switch.new_agents, PaneState::Closed);
+        assert_eq!(old_switch.width, Some(300));
     }
 
     #[test]
@@ -819,11 +918,13 @@ mod tests {
                 width: Some(220),
             },
             files_pane: FilesPanePrefs {
-                open: true,
+                new_agents: PaneState::Open,
+                agents: BTreeMap::new(),
                 width: Some(300),
             },
             accounts: AccountPrefs::default(),
             notifications: NotificationPrefs::default(),
+            chat: ChatPrefs::default(),
         };
 
         prefs.save(&file).unwrap();
@@ -857,7 +958,8 @@ mod tests {
                 width: Some(220),
             },
             files_pane: FilesPanePrefs {
-                open: true,
+                new_agents: PaneState::Open,
+                agents: BTreeMap::new(),
                 width: Some(300),
             },
             accounts: AccountPrefs::default(),

@@ -19,12 +19,14 @@ pub fn app_level(state: &AppState) -> NotificationLevel {
 }
 
 pub fn agent_level(state: &AppState, agent: AgentId) -> NotificationLevel {
-    machine_name(state, agent).map_or(NotificationLevel::All, |machine| {
-        state
-            .prefs
-            .notifications
-            .agent(machine, MachineId::daemon_agent(agent))
-    })
+    state
+        .daemon_machine(agent)
+        .map_or(NotificationLevel::All, |machine| {
+            state
+                .prefs
+                .notifications
+                .agent(machine, MachineId::daemon_agent(agent))
+        })
 }
 
 /// Whether an alert of `kind` about `agent` shows.
@@ -60,7 +62,7 @@ pub fn start_from_config(state: &mut AppState, enabled: bool) {
 }
 
 fn save_agent(state: &mut AppState, agent: AgentId, level: NotificationLevel) {
-    let Some(machine) = machine_name(state, agent).map(str::to_owned) else {
+    let Some(machine) = state.daemon_machine(agent).map(str::to_owned) else {
         return;
     };
     state
@@ -75,13 +77,6 @@ fn lets_through(level: NotificationLevel, kind: AlertKind) -> bool {
         NotificationLevel::NeedsYou => kind == AlertKind::NeedsYou,
         NotificationLevel::Off => false,
     }
-}
-
-/// The daemon machine's name, which keys the agent's level in the preferences. `None` for a
-/// machine the app no longer knows.
-fn machine_name(state: &AppState, agent: AgentId) -> Option<&str> {
-    let machine = state.machines.get(MachineId::of(agent))?;
-    Some(&machine.daemon.machine)
 }
 
 fn close_menus(state: &mut AppState) {

@@ -521,7 +521,7 @@ button:disabled {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
 /* With several machines, each is a panel of its own: its edge, not a coloured dot, sets it
@@ -672,13 +672,13 @@ button:disabled {
   font-size: 12.5px;
 }
 
+/* One line: the status dot, the account's letter, the title, what the agent does, its time. */
 .agent-row {
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: 2px;
   width: 100%;
-  padding: 8px 10px;
+  padding: 5px 8px;
   border-radius: 8px;
   border: 1px solid transparent;
   background: transparent;
@@ -707,8 +707,10 @@ button:disabled {
 }
 
 .row-title {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
+  font-size: 13.5px;
+  line-height: 19px;
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
@@ -1002,16 +1004,15 @@ button:disabled {
   font-size: 12px;
 }
 
-.row-second {
-  padding-left: 17px;
+/* Beside an activity, a long title leaves it room. */
+.row-line:has(> .row-activity:not(.empty)) > .row-title {
+  max-width: 60%;
 }
 
 .row-activity {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
-  /* An idle row has no text, and its line keeps its height. */
-  min-height: 1lh;
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
@@ -1031,7 +1032,7 @@ button:disabled {
 
 .row-close {
   position: absolute;
-  top: 9px;
+  top: calc(50% - 10px);
   right: 6px;
   width: 20px;
   height: 20px;
@@ -4671,10 +4672,10 @@ html.reordering * {
   text-decoration: none;
 }
 
+/* As wide as the sidebar head's buttons. */
 .foot-settings {
-  width: 26px;
-  padding: 0;
-  justify-content: center;
+  width: 30px;
+  height: 30px;
 }
 
 .foot-settings.pressed {
@@ -7006,12 +7007,25 @@ button.map-toggle:hover {
   border-radius: 6px;
 }
 
-.row-second {
-  gap: 6px;
-}
-
 .row-activity.warning {
   color: var(--amber);
+}
+
+/* The account's first letter, where its name has no room. */
+.acct-letter {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: -2px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--acct) 18%, transparent);
+  color: color-mix(in srgb, var(--acct) 85%, #ffffff);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .acct-dot {
@@ -7577,13 +7591,13 @@ button.map-toggle:hover {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 26px;
+  height: 30px;
   padding: 0 8px;
   border-radius: 7px;
-  border: 1px solid var(--line);
+  border: 0;
   background: transparent;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
 .foot-accounts:hover {
@@ -7893,6 +7907,7 @@ label.icon-button,
 .button:not(:disabled):active,
 .icon-button:active,
 .binding:not(.recording):active,
+.foot-accounts:active,
 .quote-reply:active,
 .quote-pin:active,
 .quote-row-main:active,
@@ -8012,9 +8027,14 @@ html.splitting .sidebar {
   animation: none;
 }
 
-/* The files pane opens and closes by its width. A switch to another agent keeps it open. */
+/* The files pane opens and closes by its width. Each agent keeps its own: a switch shows the next
+   agent's at once. */
 .files-pane {
   animation: files-pane-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.app.files-pane-instant .files-pane {
+  animation: none;
 }
 
 .files-pane.leaving {
