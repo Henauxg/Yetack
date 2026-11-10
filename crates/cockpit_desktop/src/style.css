@@ -1058,10 +1058,6 @@ html.reordering * {
   border-radius: 50%;
 }
 
-.connection.connected .connection-dot {
-  background: var(--teal);
-}
-
 .connection.connecting .connection-dot {
   background: var(--amber);
 }
@@ -1077,6 +1073,13 @@ html.reordering * {
 .connection-error {
   color: #f6a49c;
   overflow-wrap: anywhere;
+}
+
+/* Shows only while this computer's daemon does not answer. */
+.connection-trouble {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 /* Center pane. */
@@ -7839,6 +7842,14 @@ html.splitting .sidebar {
 
 .quote-editor.leaving {
   animation: popover-out var(--motion-out) var(--ease-in) forwards;
+}
+
+.connection-trouble {
+  animation: rise-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.connection-trouble.leaving {
+  animation: fade-out var(--motion-out) var(--ease-in) forwards;
 }
 
 @media (prefers-reduced-motion: reduce) {

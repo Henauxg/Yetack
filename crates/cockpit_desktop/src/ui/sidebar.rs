@@ -22,7 +22,7 @@ use crate::ui::accounts::{AccountTag, AccountsButton};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::machines::THIS_COMPUTER;
 use crate::ui::notification_levels::{self as levels_ui, AppBell, LevelChoices, LevelIcon};
-use crate::ui::presence::use_presence;
+use crate::ui::presence::{Shown, use_presence};
 use crate::ui::reorder::{self, LIST_ID, ROW_CLASS};
 use crate::ui::splitter::SIDEBAR_ID;
 use crate::{APP_NAME, format, path_style};
@@ -680,47 +680,60 @@ fn RowTimeView(time: RowTime) -> Element {
     }
 }
 
+/// The foot's line while this computer's daemon does not answer. Connected, it shows nothing: the
+/// Machines dialog says where the agents run.
+#[derive(Debug, Clone, PartialEq)]
+struct ConnectionLine {
+    class: &'static str,
+    line: String,
+    detail: Option<String>,
+}
+
 #[component]
 fn ConnectionFooter() -> Element {
     let cockpit: Cockpit = use_context();
     let Clock(now) = use_context::<Clock>();
     let state = cockpit.state.read();
     let machine = &state.machines.this.daemon.machine;
-    let (class, line, detail) = match &state.machines.this.connection {
-        ConnectionState::Connected => (
-            "connection connected",
-            state.machines.this.daemon.connected_line(),
-            None,
-        ),
+    let trouble = match &state.machines.this.connection {
+        ConnectionState::Connected => None,
         ConnectionState::Connecting { attempt } => {
             let mut line = format!("Connecting to {machine}");
             if *attempt > 1 {
                 line.push_str(&format!(", attempt {attempt}"));
             }
-            ("connection connecting", line, None)
+            Some(ConnectionLine {
+                class: "connection connecting",
+                line,
+                detail: None,
+            })
         }
         ConnectionState::Disconnected { error, retry_at } => {
             // Reading the clock refreshes the countdown every second.
             let _tick = now();
             let wait = retry_at.saturating_duration_since(Instant::now());
-            let detail = format!("{error}. Retrying in {}.", format::duration(wait));
-            (
-                "connection disconnected",
-                format!("Not connected to {machine}"),
-                Some(detail),
-            )
+            Some(ConnectionLine {
+                class: "connection disconnected",
+                line: format!("Not connected to {machine}"),
+                detail: Some(format!("{error}. Retrying in {}.", format::duration(wait))),
+            })
         }
-        ConnectionState::NoDaemon(screen) => match screen.absence {
-            Absence::NothingRuns => ("connection waiting", "No daemon yet".to_owned(), None),
-            Absence::Failed => (
-                "connection disconnected",
-                format!("{} does not answer", screen.subject),
-                Some(screen.error.clone()),
-            ),
-        },
+        ConnectionState::NoDaemon(screen) => Some(match screen.absence {
+            Absence::NothingRuns => ConnectionLine {
+                class: "connection waiting",
+                line: "No daemon yet".to_owned(),
+                detail: None,
+            },
+            Absence::Failed => ConnectionLine {
+                class: "connection disconnected",
+                line: format!("{} does not answer", screen.subject),
+                detail: Some(screen.error.clone()),
+            },
+        }),
     };
     // With several machines, each panel says how its machine answers.
     let panels = !state.machines.others.is_empty();
+    let trouble = use_presence(trouble.filter(|_| !panels));
     let settings_open = state.ui.dialog == Some(Dialog::Settings);
     rsx! {
         div { class: "sidebar-foot",
@@ -742,13 +755,17 @@ fn ConnectionFooter() -> Element {
                     Icon { kind: IconKind::Gear, size: 15 }
                 }
             }
-            if !panels {
-                span { class,
-                    span { class: "connection-dot", aria_hidden: true }
-                    "{line}"
-                }
-                if let Some(detail) = detail {
-                    span { class: "connection-error", "{detail}" }
+            if let Some(Shown { value: ConnectionLine { class, line, detail }, leaving, .. }) = trouble {
+                div {
+                    class: if leaving { "connection-trouble leaving" } else { "connection-trouble" },
+                    inert: leaving.then_some(true),
+                    span { class,
+                        span { class: "connection-dot", aria_hidden: true }
+                        "{line}"
+                    }
+                    if let Some(detail) = detail {
+                        span { class: "connection-error", "{detail}" }
+                    }
                 }
             }
         }
