@@ -11,7 +11,7 @@ use super::requests::Outgoing;
 use super::transcript::WaitingKind;
 use super::ui_state::{Dialog, PaletteOrigin, Popover};
 use super::utf16_offset::Utf16Offset;
-use super::{accounts, agent_map, open_file, to_handle};
+use super::{accounts, agent_map, file_reread, open_file, to_handle};
 
 /// `KeyboardEvent.key` values.
 const KEY_ESCAPE: &str = "Escape";
@@ -22,6 +22,9 @@ pub(super) const KEY_DOWN: &str = "ArrowDown";
 pub(super) const KEY_LEFT: &str = "ArrowLeft";
 pub(super) const KEY_RIGHT: &str = "ArrowRight";
 const KEY_F2: &str = "F2";
+/// Reads the shown file again. The page script takes it everywhere, so that the webview never
+/// reloads the page.
+pub const RELOAD_KEY: &str = "F5";
 
 /// The letters that answer an approval or a plan.
 pub(super) const KEY_YES: &str = "y";
@@ -115,6 +118,12 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
     let plain = !command && !press.alt && !press.shift;
     if press.key == KEY_F2 && plain && state.ui.dialog.is_none() {
         actions::rename_key(state, drafts);
+        return Vec::new();
+    }
+    if press.key == RELOAD_KEY {
+        if plain && let Some(agent) = state.ui.selected {
+            file_reread::reread(state, agent);
+        }
         return Vec::new();
     }
     // Alt+Up and Alt+Down move the selected agent in the sidebar, from anywhere but a text field
@@ -1014,6 +1023,29 @@ mod tests {
         assert_eq!(from_page, Some(TitlePlace::Sidebar));
         assert_eq!(from_header, Some(TitlePlace::Sidebar));
         assert_eq!(place(&state), None, "nothing behind a dialog");
+    }
+
+    #[test]
+    fn f5_reads_the_shown_file_again_from_anywhere() {
+        use std::path::{Path, PathBuf};
+
+        use crate::state::app_state::{FileRead, Reread};
+
+        let mut drafts = Drafts::default();
+        let mut state = state(AgentStatus::Idle, None);
+        let agent = AgentId::new(1);
+        actions::open_file(&mut state, agent, PathBuf::from("notes.md"), None);
+        let path = Path::new("notes.md");
+        let text = FileRead::Text("one\n".to_owned());
+        actions::show_read_file(&mut state, agent, path, path, text, None);
+
+        handle_key(
+            &mut state,
+            &mut drafts,
+            &press(RELOAD_KEY, KeyTarget::Field),
+        );
+
+        assert_eq!(state.agents[&agent].file_freshness.reread, Reread::Wanted);
     }
 
     #[test]

@@ -11,7 +11,7 @@ use dioxus::prelude::*;
 use crate::connection::Cockpit;
 use crate::render::{Diff, Language, MAX_RENDERED_LINES, diff_lines};
 use crate::state::{actions, file_edits};
-use crate::ui::code::{LineNumbers, diff_row, lines_not_shown};
+use crate::ui::code::{LineMarks, LineNumbers, diff_row, lines_not_shown};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::markdown::MarkdownView;
 
@@ -98,7 +98,7 @@ pub fn ApprovalCard(agent: AgentId, folder: PathBuf, approval: Approval) -> Elem
                     div { class: "approval-diff-lines scroll-x",
                         div { class: "diff-rows",
                             for row in diff.rows.iter() {
-                                {diff_row(row, numbers, None)}
+                                {diff_row(row, numbers, LineMarks::marked(None))}
                             }
                         }
                     }

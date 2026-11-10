@@ -1,19 +1,22 @@
 //! The requests the app sends, and how each answer updates the state.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use cockpit_client::RequestError;
 use cockpit_protocol::{
     AgentDetails, AgentId, AgentParams, ErrorCode, FindFilesParams, FoldersListParams,
     HistoryParams, ItemId, ListDirParams, Method, Position, ReadFileParams, Request, ResponseBody,
+    Timestamp,
 };
 
-use super::app_state::{AgentEntry, AppState, FileRead, Loadable, MachineState};
+use super::app_state::{AgentEntry, AppState, FileRead, Loadable, MachineState, Reread};
 use super::drafts::{Draft, Drafts};
 use super::transcript::HistoryState;
 use super::ui_state::{Dialog, OpenFileView};
 use super::{accounts, actions, chat_images};
 use crate::machine::MachineId;
+use crate::path_style;
 use crate::prefs::AccountColor;
 
 /// The most transcript items one history request asks for.
@@ -229,8 +232,17 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
     }
     if let Some(path) = open_file {
         let text = entry.files.entry(path.clone()).or_default();
-        if *text == Loadable::NotRequested {
+        let first = *text == Loadable::NotRequested;
+        // A read again keeps the text on screen until the new one arrives.
+        let again =
+            matches!(text, Loadable::Loaded(_)) && entry.file_freshness.reread == Reread::Wanted;
+        if first {
             *text = Loadable::Loading;
+        }
+        if again {
+            entry.file_freshness.reread = Reread::Reading { again: false };
+        }
+        if first || again {
             requests.push(Outgoing {
                 request: Request::AgentReadFile(ReadFileParams {
                     agent,
@@ -394,14 +406,22 @@ pub fn apply_response(
             chat_images::answered(state, agent, &path, answer);
         }
         Purpose::ReadFile { agent, path } => {
+            let now = Timestamp::from_system_time(SystemTime::now());
             let read = match result {
                 Ok(ResponseBody::File { path: found, text }) => {
                     let found = found.unwrap_or_else(|| path.clone());
-                    actions::show_read_file(state, agent, &path, &found, FileRead::Text(text));
+                    actions::show_read_file(state, agent, &path, &found, FileRead::Text(text), now);
                     return;
                 }
                 Ok(ResponseBody::Image { path: found, image }) => {
-                    actions::show_read_file(state, agent, &path, &found, FileRead::Image(image));
+                    actions::show_read_file(
+                        state,
+                        agent,
+                        &path,
+                        &found,
+                        FileRead::Image(image),
+                        now,
+                    );
                     return;
                 }
                 Ok(ResponseBody::FileMatches { matches }) => {
@@ -410,15 +430,21 @@ pub fn apply_response(
                 Err(failure) if failure.not_found => {
                     Loadable::Loaded(FileRead::Missing(failure.message))
                 }
-                other => Failure::from_result(other).into_loadable(),
+                other => {
+                    let failure = Failure::from_result(other);
+                    if reread_failed(state, agent, &path, &failure) {
+                        return;
+                    }
+                    failure.into_loadable()
+                }
             };
             // A file the view no longer shows is not kept.
-            let held = state
-                .agents
-                .get_mut(&agent)
-                .and_then(|entry| entry.files.get_mut(&path));
-            if let Some(held) = held {
+            let Some(entry) = state.agents.get_mut(&agent) else {
+                return;
+            };
+            if let Some(held) = entry.files.get_mut(&path) {
                 *held = read;
+                entry.file_freshness.reread = Reread::Idle;
             }
         }
         Purpose::Accounts => match result {
@@ -572,6 +598,25 @@ pub fn apply_response(
 
 fn loaded_details(state: &mut AppState, agent: AgentId) -> Option<&mut AgentDetails> {
     state.agents.get_mut(&agent)?.details.loaded_mut()
+}
+
+/// A read again of the shown file failed, but for a missing file: the text read before stays, and
+/// a note says why it did not update.
+fn reread_failed(state: &mut AppState, agent: AgentId, path: &Path, failure: &Failure) -> bool {
+    let Some(entry) = state.agents.get_mut(&agent) else {
+        return false;
+    };
+    let shown = matches!(entry.files.get(path), Some(Loadable::Loaded(_)));
+    if !shown || !matches!(entry.file_freshness.reread, Reread::Reading { .. }) {
+        return false;
+    }
+    entry.file_freshness.reread = Reread::Idle;
+    state.ui.report(format!(
+        "Cannot read {} again: {}",
+        path_style::shown(path),
+        failure.message
+    ));
+    true
 }
 
 fn report(state: &mut AppState, method: Method, result: Result<ResponseBody, Failure>) {
@@ -906,6 +951,38 @@ mod tests {
             methods(&type_folder(&mut state, "/srv/")),
             [Method::FoldersList]
         );
+    }
+
+    #[test]
+    fn a_read_again_that_finds_no_file_shows_it_missing_and_ends() {
+        let mut state = connected_with_selection();
+        let agent = AgentId::new(1);
+        let path = PathBuf::from("notes.md");
+        actions::open_file(&mut state, agent, path.clone(), None);
+        let text = FileRead::Text("one\n".to_owned());
+        actions::show_read_file(&mut state, agent, &path, &path, text, None);
+        crate::state::file_reread::reread(&mut state, agent);
+        needed_requests(&mut state);
+        let gone = ErrorBody::new(ErrorCode::NotFound, "notes.md does not exist".to_owned());
+
+        apply_response(
+            &mut state,
+            &mut Drafts::default(),
+            Method::AgentReadFile,
+            Purpose::ReadFile {
+                agent,
+                path: path.clone(),
+            },
+            Err(RequestError::Failed(gone)),
+            MachineId::THIS,
+        );
+
+        let entry = &state.agents[&agent];
+        assert_eq!(
+            entry.files[&path],
+            Loadable::Loaded(FileRead::Missing("notes.md does not exist".to_owned()))
+        );
+        assert_eq!(entry.file_freshness.reread, Reread::Idle);
     }
 
     #[test]

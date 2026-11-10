@@ -14,20 +14,21 @@ use cockpit_protocol::{
     PlanAnswer, PlanDecision, Prompt, PromptDelivery, PromptId, PromptParams, Question,
     QuestionAnswer, QueuedPromptParams, RenameParams, Request, Selection, SessionResumeParams,
     SetEffortParams, SetModeParams, SetModelParams, SlashCommand, StartParams, StopTaskParams,
+    Timestamp,
 };
 use strum::VariantArray;
 
-use super::app_state::{AgentEntry, AppState, FileRead, Loadable, MachineState};
+use super::app_state::{AgentEntry, AppState, FileFreshness, FileRead, Loadable, MachineState};
 use super::apply::forget_agent;
 use super::drafts::{Drafts, NewAgentDraft, Palette, QuestionDraft, SlashWord, SwitcherDraft};
 use super::requests::{Outgoing, Purpose, Shift, history_request};
 use super::transcript::HistoryState;
 use super::ui_state::{
     Block, Dialog, FileView, NewAgentForm, NewAgentTab, PaletteOrigin, Popover, Reopening,
-    TitleEdit, TitlePlace, ViewMode,
+    TitleEdit, TitlePlace, ViewMode, is_markdown,
 };
 use super::utf16_offset::Utf16Offset;
-use super::{accounts, export, file_edits, open_file, title_emoji};
+use super::{accounts, export, file_edits, file_reread, open_file, title_emoji};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::machine::MachineId;
 use crate::path_style;
@@ -104,10 +105,14 @@ pub fn select_agent(state: &mut AppState, agent: AgentId) {
         .ui
         .dialog
         .take_if(|dialog| matches!(dialog, Dialog::AgentMap(view) if view.agent != agent));
+    let back = state.ui.selected != Some(agent);
     state.ui.selected = Some(agent);
     state.ui.chat_new_from.clear();
     state.ui.unread.remove(&agent);
     state.ui.leave_agent();
+    if back {
+        file_reread::reread(state, agent);
+    }
 }
 
 /// The chat's script says the agent's chat reached its bottom, or left it. Leaving it marks the
@@ -991,7 +996,7 @@ fn with_command(text: &str, name: &str) -> String {
 }
 
 /// An index moved by one, staying within `count` items.
-fn moved(index: usize, count: usize, direction: Direction) -> usize {
+pub(super) fn moved(index: usize, count: usize, direction: Direction) -> usize {
     let last = count.saturating_sub(1);
     match direction {
         Direction::Down => index.saturating_add(1).min(last),
@@ -1257,9 +1262,9 @@ pub fn send_queued(agent: AgentId, prompt: PromptId) -> Vec<Outgoing> {
     ))]
 }
 
-/// Opens the file view on `path`, at `line` when a link names one, in its tab. A file the agent
-/// changed opens on its diff, unless a line is asked for. The text is read again, since it may
-/// have changed, and the text of the file shown before is dropped: files can be large.
+/// Opens the file view on `path`, at `line` when a link names one, in its tab, in the mode
+/// `opening_mode` picks. The text is read again, since it may have changed, and the text of the
+/// file shown before is dropped: files can be large.
 pub fn open_file(state: &mut AppState, agent: AgentId, path: PathBuf, line: Option<u32>) {
     let Some(entry) = state.agents.get_mut(&agent) else {
         return;
@@ -1267,14 +1272,12 @@ pub fn open_file(state: &mut AppState, agent: AgentId, path: PathBuf, line: Opti
     let path = file_edits::relative_path(&entry.summary.folder, &path);
     let changed =
         !file_edits::edits_for(&entry.transcript, &entry.summary.folder, &path).is_empty();
-    let mode = if line.is_none() && changed {
-        ViewMode::Diff
-    } else {
-        ViewMode::WholeFile
-    };
+    let shown_mode = state.ui.file_views.get(&agent).map(|view| view.mode);
+    let mode = opening_mode(&path, line, changed, shown_mode);
     let changed_paths = entry.changed_paths();
     entry.files.clear();
     entry.files.insert(path.clone(), Loadable::NotRequested);
+    entry.file_freshness = FileFreshness::default();
     let view = state
         .ui
         .file_views
@@ -1294,6 +1297,29 @@ pub fn open_file(state: &mut AppState, agent: AgentId, path: PathBuf, line: Opti
         .ui
         .dialog
         .take_if(|dialog| matches!(dialog, Dialog::AgentMap(_)));
+}
+
+/// The mode a file opens in, given the mode of the file shown before it, if any:
+/// - with a `line` to mark, the whole file;
+/// - a markdown file, rendered, unless the agent changed it: then rendered only when the file
+///   shown before was;
+/// - a file the agent changed, its diff;
+/// - any other file, the whole file.
+fn opening_mode(
+    path: &Path,
+    line: Option<u32>,
+    changed: bool,
+    shown_mode: Option<ViewMode>,
+) -> ViewMode {
+    if line.is_some() {
+        ViewMode::WholeFile
+    } else if is_markdown(path) && (!changed || shown_mode == Some(ViewMode::Preview)) {
+        ViewMode::Preview
+    } else if changed {
+        ViewMode::Diff
+    } else {
+        ViewMode::WholeFile
+    }
 }
 
 /// Opens `choice`, one of the files that end with `name`, in the tab of `name`.
@@ -1347,21 +1373,25 @@ pub fn show_read_file(
     requested: &Path,
     found: &Path,
     read: FileRead,
+    now: Option<Timestamp>,
 ) {
     let Some(entry) = state.agents.get_mut(&agent) else {
         return;
     };
-    if entry.files.remove(requested).is_none() {
+    let Some(old) = entry.files.remove(requested) else {
         return;
-    }
+    };
+    file_reread::arrived(&mut entry.file_freshness, old.loaded(), &read, now);
     let folder = &entry.summary.folder;
     let found = file_edits::relative_path(folder, found);
     if let Some(view) = state.ui.file_views.get_mut(&agent)
         && view.path == requested
     {
+        // A read again keeps the mode the user may have chosen since the first.
+        let first = old.loaded().is_none();
         let changed = !file_edits::edits_for(&entry.transcript, folder, &found).is_empty();
-        if view.line.is_none() && changed {
-            view.mode = ViewMode::Diff;
+        if first && view.line.is_none() && changed {
+            view.mode = opening_mode(&found, None, changed, Some(view.mode));
         }
         // The found file takes the tab of the name asked for.
         for opened in &mut view.opened {
@@ -1379,8 +1409,13 @@ pub fn show_read_file(
 pub fn close_file_view(state: &mut AppState, agent: AgentId) {
     state.ui.file_views.remove(&agent);
     state.ui.badge = None;
+    state
+        .ui
+        .popover
+        .take_if(|popover| *popover == Popover::FileList);
     if let Some(entry) = state.agents.get_mut(&agent) {
         entry.files.clear();
+        entry.file_freshness = FileFreshness::default();
     }
 }
 
@@ -1410,6 +1445,23 @@ pub fn set_file_view_share(state: &mut AppState, share: f64) {
 
 pub fn reset_file_view_share(state: &mut AppState) {
     state.prefs.file_view.width_share = None;
+}
+
+/// Keeps the sidebar's width, in pixels, where its splitter left it. The page sends it: a width
+/// the style sheet's bounds would not give is ignored.
+pub fn set_sidebar_width(state: &mut AppState, width: f64) {
+    let rounded = width.round();
+    let bounds = f64::from(prefs::MIN_SIDEBAR_WIDTH)..=f64::from(prefs::MAX_SIDEBAR_WIDTH);
+    if !bounds.contains(&rounded) {
+        tracing::warn!("ignored a sidebar width of {width} pixels");
+        return;
+    }
+    // Within the bounds, the cast keeps the value.
+    state.prefs.sidebar.width = Some(rounded as u16);
+}
+
+pub fn reset_sidebar_width(state: &mut AppState) {
+    state.prefs.sidebar.width = None;
 }
 
 /// Folds or unfolds a floating block, or opens its badge's popover while the file view is open.
@@ -3751,6 +3803,45 @@ mod tests {
     }
 
     #[test]
+    fn a_markdown_file_opens_rendered() {
+        let mut state = state(AgentStatus::Idle);
+
+        open_file(&mut state, agent(), PathBuf::from("docs/notes.md"), None);
+
+        let view = state.ui.file_view(agent()).unwrap();
+        assert_eq!(view.mode, ViewMode::Preview);
+    }
+
+    #[test]
+    fn the_opening_mode_follows_the_line_the_edits_and_the_shown_mode() {
+        let readme = Path::new("README.md");
+        let lib = Path::new("src/lib.rs");
+        let preview = Some(ViewMode::Preview);
+        let diff = Some(ViewMode::Diff);
+        let (changed, unchanged) = (true, false);
+
+        assert_eq!(
+            opening_mode(readme, Some(4), unchanged, preview),
+            ViewMode::WholeFile
+        );
+        assert_eq!(
+            opening_mode(readme, None, unchanged, diff),
+            ViewMode::Preview
+        );
+        assert_eq!(opening_mode(readme, None, changed, diff), ViewMode::Diff);
+        assert_eq!(opening_mode(readme, None, changed, None), ViewMode::Diff);
+        assert_eq!(
+            opening_mode(readme, None, changed, preview),
+            ViewMode::Preview
+        );
+        assert_eq!(opening_mode(lib, None, changed, preview), ViewMode::Diff);
+        assert_eq!(
+            opening_mode(lib, None, unchanged, preview),
+            ViewMode::WholeFile
+        );
+    }
+
+    #[test]
     fn tabs_close_one_by_one_and_the_last_closes_the_view() {
         let mut state = state(AgentStatus::Idle);
         let changed = |path: &str| ChangedFile {
@@ -4446,6 +4537,23 @@ mod tests {
         reset_file_view_share(&mut state);
         assert_eq!(state.prefs.file_view.width_share, None);
         assert_eq!(state.prefs.file_view.share(), default);
+    }
+
+    #[test]
+    fn the_sidebar_splitter_keeps_a_width_and_double_click_resets_it() {
+        let mut state = state(AgentStatus::Idle);
+
+        set_sidebar_width(&mut state, 311.6);
+        assert_eq!(state.prefs.sidebar.width, Some(312));
+
+        for refused in [199.4, 480.6, -5.0, 1e9, f64::NAN, f64::INFINITY] {
+            set_sidebar_width(&mut state, refused);
+            assert_eq!(state.prefs.sidebar.width, Some(312), "{refused}");
+        }
+
+        reset_sidebar_width(&mut state);
+        assert_eq!(state.prefs.sidebar.width, None);
+        assert_eq!(state.prefs.sidebar.width(), prefs::DEFAULT_SIDEBAR_WIDTH);
     }
 
     #[test]

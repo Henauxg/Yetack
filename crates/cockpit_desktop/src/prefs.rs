@@ -8,7 +8,8 @@
 //!     "wrap": true
 //!   },
 //!   "sidebar": {
-//!     "filter": "needs_you"
+//!     "filter": "needs_you",
+//!     "width": 300
 //!   },
 //!   "accounts": {
 //!     "colors": {
@@ -158,6 +159,28 @@ impl<'de> Deserialize<'de> for AccountColor {
 pub struct SidebarPrefs {
     /// The agents the sidebar shows, by status. It hides rows and never changes their order.
     pub filter: StatusFilter,
+    /// The sidebar's width in pixels, between `MIN_SIDEBAR_WIDTH` and `MAX_SIDEBAR_WIDTH`.
+    /// `None` keeps the default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u16>,
+}
+
+/// The sidebar's width, in pixels, until it is moved.
+pub const DEFAULT_SIDEBAR_WIDTH: u16 = 248;
+/// The narrowest sidebar that still shows a row's title, time and status.
+pub const MIN_SIDEBAR_WIDTH: u16 = 200;
+pub const MAX_SIDEBAR_WIDTH: u16 = 480;
+
+impl SidebarPrefs {
+    /// The sidebar's width in pixels.
+    pub fn width(&self) -> u16 {
+        self.width.unwrap_or(DEFAULT_SIDEBAR_WIDTH)
+    }
+}
+
+/// Whether `width` can size the sidebar.
+pub fn is_sidebar_width(width: u16) -> bool {
+    (MIN_SIDEBAR_WIDTH..=MAX_SIDEBAR_WIDTH).contains(&width)
 }
 
 /// The sidebar's filter, in the order of its chips.
@@ -277,6 +300,7 @@ impl Prefs {
     /// Drops the values the window cannot use.
     fn checked(mut self) -> Self {
         self.file_view.width_share = self.file_view.width_share.filter(|&share| is_share(share));
+        self.sidebar.width = self.sidebar.width.filter(|&width| is_sidebar_width(width));
         self
     }
 
@@ -404,7 +428,8 @@ mod tests {
     "wrap": true
   },
   "sidebar": {
-    "filter": "needs_you"
+    "filter": "needs_you",
+    "width": 300
   },
   "accounts": {
     "colors": {
@@ -428,6 +453,7 @@ mod tests {
                 },
                 sidebar: SidebarPrefs {
                     filter: StatusFilter::NeedsYou,
+                    width: Some(300),
                 },
                 accounts: AccountPrefs {
                     colors: BTreeMap::from([(
@@ -522,12 +548,12 @@ mod tests {
     }
 
     #[test]
-    fn a_share_out_of_range_is_dropped() {
+    fn a_width_out_of_range_is_dropped() {
         let temp = tempfile::tempdir().unwrap();
         let file = temp.path().join(PREFS_FILE);
         std::fs::write(
             &file,
-            r#"{"file_view": {"width_share": 1.5, "wrap": true}}"#,
+            r#"{"file_view": {"width_share": 1.5, "wrap": true}, "sidebar": {"width": 2000}}"#,
         )
         .unwrap();
 
@@ -535,6 +561,7 @@ mod tests {
 
         assert_eq!(prefs.file_view.width_share, None);
         assert!(prefs.file_view.wrap);
+        assert_eq!(prefs.sidebar.width, None);
     }
 
     #[cfg(unix)]
@@ -550,6 +577,7 @@ mod tests {
             },
             sidebar: SidebarPrefs {
                 filter: StatusFilter::Exited,
+                width: Some(220),
             },
             accounts: AccountPrefs::default(),
         };
@@ -582,6 +610,7 @@ mod tests {
             },
             sidebar: SidebarPrefs {
                 filter: StatusFilter::Exited,
+                width: Some(220),
             },
             accounts: AccountPrefs::default(),
         };

@@ -10,18 +10,28 @@ use dioxus::prelude::*;
 
 use crate::bridge;
 use crate::connection::Cockpit;
-use crate::render::{self, Block, FileRef, Inline, parse_markdown};
+use crate::render::{self, Block, FileRef, Inline, parse_markdown, parse_markdown_file};
 use crate::state::{Loadable, actions, chat_images};
 use crate::ui::code::CodeBlock;
+use crate::ui::icons::{Icon, IconKind};
 
 /// A table cell this short keeps to one line: a name, a number or a status reads badly wrapped,
 /// and a table too wide for the column scrolls instead.
 const SHORT_CELL_CHARS: usize = 30;
 
-/// `folder` is the agent's, against which relative paths in the text resolve.
+/// `folder` is the agent's, against which relative paths in the text resolve. `file_folder`,
+/// absolute, holds the markdown file the text comes from, where its relative links start.
 #[component]
-pub fn MarkdownView(agent: AgentId, folder: PathBuf, markdown: String) -> Element {
-    let blocks = parse_markdown(&markdown, &folder);
+pub fn MarkdownView(
+    agent: AgentId,
+    folder: PathBuf,
+    markdown: String,
+    file_folder: Option<PathBuf>,
+) -> Element {
+    let blocks = match &file_folder {
+        Some(file_folder) => parse_markdown_file(&markdown, &folder, file_folder),
+        None => parse_markdown(&markdown, &folder),
+    };
     rsx! {
         div { class: "markdown", {blocks_view(agent, &blocks)} }
     }
@@ -68,7 +78,10 @@ fn block_view(agent: AgentId, block: &Block) -> Element {
                 div { class: "md-list", role: "list",
                     for (marker, item) in markers.iter().zip(items.iter()) {
                         div { class: "md-list-item", role: "listitem",
-                            span { class: marker_class, aria_hidden: true, "{marker}" }
+                            // A task's checkbox stands for its bullet.
+                            if start.is_some() || !is_task(item) {
+                                span { class: marker_class, aria_hidden: true, "{marker}" }
+                            }
                             div { class: "md-list-body", {blocks_view(agent, item)} }
                         }
                     }
@@ -128,6 +141,14 @@ fn block_view(agent: AgentId, block: &Block) -> Element {
     }
 }
 
+/// Whether a list item starts with a task's checkbox.
+fn is_task(item: &[Block]) -> bool {
+    matches!(
+        item.first(),
+        Some(Block::Paragraph(content)) if matches!(content.first(), Some(Inline::Task { .. }))
+    )
+}
+
 fn cell_class(cell: Option<&[Inline]>) -> &'static str {
     match cell {
         Some(cell) if render::plain_text(cell).chars().count() <= SHORT_CELL_CHARS => "short",
@@ -170,6 +191,16 @@ fn inline_view(agent: AgentId, inline: &Inline) -> Element {
         },
         Inline::LineBreak => rsx! {
             br {}
+        },
+        Inline::Task { done } => rsx! {
+            span {
+                class: if *done { "md-task done" } else { "md-task" },
+                role: "img",
+                aria_label: if *done { "Done" } else { "To do" },
+                if *done {
+                    Icon { kind: IconKind::Check, size: 11 }
+                }
+            }
         },
     }
 }

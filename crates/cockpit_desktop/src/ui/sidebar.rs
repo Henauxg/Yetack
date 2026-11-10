@@ -23,6 +23,7 @@ use crate::ui::icons::{Icon, IconKind};
 use crate::ui::machines::THIS_COMPUTER;
 use crate::ui::presence::use_presence;
 use crate::ui::reorder::{self, LIST_ID, ROW_CLASS};
+use crate::ui::splitter::SIDEBAR_ID;
 use crate::{APP_NAME, format};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -233,7 +234,7 @@ pub fn Sidebar() -> Element {
         Vec::new()
     };
     rsx! {
-        nav { class: "sidebar", aria_label: "Agents",
+        nav { id: SIDEBAR_ID, class: "sidebar", aria_label: "Agents",
             div { class: "sidebar-head",
                 span { class: "app-name", "{APP_NAME}" }
                 button {

@@ -1,6 +1,7 @@
 //! Line diffs with word highlights inside changed lines and syntax colors, for inline edits and
 //! the file view.
 
+use std::collections::BTreeSet;
 use std::ops::Range;
 use std::time::{Duration, Instant};
 
@@ -332,9 +333,39 @@ fn push_segment(segments: &mut Vec<Segment>, text: &str, class: TokenClass, emph
     });
 }
 
+/// The lines of `new`, from 1, that differ from `old`: changed or added. A diff past its time
+/// limit marks more lines than changed.
+pub fn changed_lines(old: &str, new: &str) -> BTreeSet<u32> {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    let diff = TextDiff::configure()
+        .timeout(DIFF_TIMEOUT)
+        .diff_slices(&old_lines, &new_lines);
+    let mut changed = BTreeSet::new();
+    for operation in diff.ops() {
+        if matches!(operation, DiffOp::Equal { .. }) {
+            continue;
+        }
+        for index in operation.new_range() {
+            changed.insert(u32::try_from(index).unwrap_or(u32::MAX).saturating_add(1));
+        }
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changed_lines_are_the_new_text_lines_that_differ() {
+        let old = "one\ntwo\nthree\nfour\n";
+        let new = "one\nTWO\nthree\nadded\nfour\nlast\n";
+
+        assert_eq!(changed_lines(old, new), BTreeSet::from([2, 4, 6]));
+        assert_eq!(changed_lines(old, old), BTreeSet::new());
+        assert_eq!(changed_lines(old, "one\nfour\n"), BTreeSet::new());
+    }
     use crate::render::MAX_RENDERED_LINES;
 
     /// Five thousand and three numbered lines.

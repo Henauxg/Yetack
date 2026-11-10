@@ -13,7 +13,7 @@ pub struct Capped<T> {
 
 /// Splits `text` after its first `max_lines` lines, as `str::lines` counts them: the text of
 /// those lines, and how many lines follow.
-pub(super) fn split_lines(text: &str, max_lines: usize) -> (&str, usize) {
+pub fn split_lines(text: &str, max_lines: usize) -> (&str, usize) {
     let mut end = 0;
     let mut pieces = text.split_inclusive('\n');
     for piece in pieces.by_ref().take(max_lines) {

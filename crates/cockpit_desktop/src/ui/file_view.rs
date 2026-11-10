@@ -1,30 +1,41 @@
-//! The read-only file view on the right: tabs of the changed files, the diff or the whole file,
-//! and the line a `path:line` link marks.
+//! The read-only file view on the right: tabs of the changed files, the diff, the whole file or a
+//! markdown file rendered, and the line a `path:line` link marks.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use cockpit_protocol::{AgentId, FileEdit};
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
-use crate::connection::Cockpit;
+use crate::connection::{Clock, Cockpit};
 use crate::path_style::PathStyle;
 use crate::render::{self, Diff, Language, MAX_RENDERED_LINES, diff_lines};
-use crate::state::{FileRead, Loadable, ViewMode, actions, file_edits};
+use crate::state::{
+    FileFreshness, FileRead, FileUpdate, Loadable, Popover, Reread, ViewMode, actions, file_edits,
+    file_reread, is_markdown,
+};
 use crate::ui::changes_list;
-use crate::ui::code::{CopyButton, LineNumbers, diff_line, diff_row, lines_not_shown};
+use crate::ui::code::{
+    CopyButton, CopyLook, LineMarks, LineNumbers, diff_line, diff_row, lines_not_shown,
+};
+use crate::ui::file_list::FileListButton;
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::markdown::MarkdownView;
 use crate::ui::splitter::FILE_VIEW_ID;
 use crate::{bridge, format};
 
 /// The shown tab's id, which keeps it in view in a long row of tabs.
 const SHOWN_TAB_ID: &str = "file-tab-shown";
 
-/// With Ctrl, closes the shown tab.
-const CLOSE_TAB_KEY: &str = "w";
+/// With Ctrl, closes the shown tab, or the highlighted file in the list of open files.
+pub const CLOSE_TAB_KEY: &str = "w";
 
 /// Unchanged lines kept around each change of the file view's diff.
 const FILE_DIFF_CONTEXT: usize = 3;
+
+/// How long "Updated just now" and the changed lines' highlight last after a read again.
+const UPDATE_SHOWN_FOR: Duration = Duration::from_secs(10);
 
 /// The widths of the placeholder lines shown while the file loads, in percent of the text's width.
 const LOADING_LINE_WIDTHS: [u8; 8] = [46, 72, 64, 30, 81, 58, 69, 38];
@@ -42,7 +53,11 @@ pub fn FileViewPanel() -> Element {
     };
     let folder = &entry.summary.folder;
     let tabs = view.tabs(&entry.changed_paths());
+    let tab_count = tabs.len();
+    let list_open = state.ui.popover == Some(Popover::FileList);
     let text = entry.files.get(&view.path).cloned().unwrap_or_default();
+    let freshness = entry.file_freshness.clone();
+    let update = freshness.update.clone();
     let edits: Vec<FileEdit> = file_edits::edits_for(&entry.transcript, folder, &view.path)
         .into_iter()
         .cloned()
@@ -58,7 +73,21 @@ pub fn FileViewPanel() -> Element {
             format::count(edits.len(), "edit", "edits")
         )
     };
-    let diff = view.mode == ViewMode::Diff;
+    let markdown = is_markdown(&view.path);
+    // A view left in Preview on another kind of file shows the whole file.
+    let mode = if view.mode == ViewMode::Preview && !markdown {
+        ViewMode::WholeFile
+    } else {
+        view.mode
+    };
+    let preview = mode == ViewMode::Preview;
+    let mut modes = vec![
+        (ViewMode::Diff, "Diff"),
+        (ViewMode::WholeFile, "Whole file"),
+    ];
+    if markdown {
+        modes.push((ViewMode::Preview, "Preview"));
+    }
     let shown = view.path.clone();
     let loading = matches!(text, Loadable::NotRequested | Loadable::Loading);
     let image = matches!(text, Loadable::Loaded(FileRead::Image(_)));
@@ -95,6 +124,7 @@ pub fn FileViewPanel() -> Element {
                         }
                     }
                 }
+                FileListButton { agent, count: tab_count, open: list_open }
                 button {
                     class: "icon-button",
                     aria_label: "Close the file view",
@@ -116,35 +146,35 @@ pub fn FileViewPanel() -> Element {
                 span { class: "read-only-chip", "Read-only" }
                 if !image {
                     div { class: "segmented", role: "group", aria_label: "View mode",
-                        button {
-                            class: if diff { "segment chosen" } else { "segment" },
-                            aria_pressed: diff,
-                            onclick: move |_| cockpit.update(|state| actions::set_view_mode(state, agent, ViewMode::Diff)),
-                            "Diff"
-                        }
-                        button {
-                            class: if diff { "segment" } else { "segment chosen" },
-                            aria_pressed: !diff,
-                            onclick: move |_| cockpit.update(|state| actions::set_view_mode(state, agent, ViewMode::WholeFile)),
-                            "Whole file"
+                        for (choice, name) in modes {
+                            button {
+                                key: "{name}",
+                                class: if choice == mode { "segment chosen" } else { "segment" },
+                                aria_pressed: choice == mode,
+                                onclick: move |_| cockpit.update(|state| actions::set_view_mode(state, agent, choice)),
+                                "{name}"
+                            }
                         }
                     }
-                    div { class: "segmented",
-                        button {
-                            class: if wrap { "segment chosen" } else { "segment" },
-                            aria_pressed: wrap,
-                            title: "Wrap long lines instead of scrolling sideways",
-                            onclick: move |_| cockpit.update(actions::toggle_wrap),
-                            "Wrap"
-                        }
+                    button {
+                        class: if wrap && !preview { "icon-button framed toggled" } else { "icon-button framed" },
+                        aria_label: "Wrap long lines",
+                        aria_pressed: wrap && !preview,
+                        disabled: preview,
+                        title: if preview { "The preview always wraps" } else { "Wrap long lines instead of scrolling sideways" },
+                        onclick: move |_| cockpit.update(actions::toggle_wrap),
+                        Icon { kind: IconKind::Wrap, size: 15 }
                     }
-                    // The file's whole text, in the diff too. Last, so that "Copied", wider than
-                    // "Copy", pushes nothing aside.
-                    CopyButton { text: copied_text, label: "Copy the file's text", worded: true }
+                    // The file's whole text, in the diff and the preview too.
+                    CopyButton { text: copied_text, label: "Copy the file's text", look: CopyLook::IconOnly }
                 }
             }
             div {
-                class: if wrap { "file-body scroll mono wrap" } else { "file-body scroll mono" },
+                class: match (preview, wrap) {
+                    (true, _) => "file-body scroll file-preview",
+                    (false, true) => "file-body scroll mono wrap",
+                    (false, false) => "file-body scroll mono",
+                },
                 // Focusable, so that after a click in the text End and Home scroll it.
                 tabindex: -1,
                 match text {
@@ -164,8 +194,11 @@ pub fn FileViewPanel() -> Element {
                     Loadable::Loaded(FileRead::Choices(matches)) => rsx! {
                         FileChoices { agent, folder: folder.clone(), name: view.path.clone(), matches, line: view.line }
                     },
+                    Loadable::Loaded(FileRead::Text(text)) if preview => rsx! {
+                        FilePreview { agent, folder: folder.clone(), path: view.path.clone(), text }
+                    },
                     Loadable::Loaded(FileRead::Text(text)) => rsx! {
-                        FileContent { path: view.path.clone(), text, mode: view.mode, line: view.line, edits }
+                        FileContent { path: view.path.clone(), text, mode, line: view.line, edits, update }
                     },
                     Loadable::Loaded(FileRead::Image(image)) => rsx! {
                         div { class: "file-image",
@@ -174,7 +207,7 @@ pub fn FileViewPanel() -> Element {
                     },
                 }
             }
-            div { class: "file-foot", "{note} To change it, ask the agent." }
+            FileFoot { agent, note, freshness }
         }
     }
 }
@@ -298,10 +331,22 @@ impl ShortPath {
             rest: style.shown(&rest).into_owned(),
         }
     }
+
+    /// The file's name, and the folders before it, the outside folder first, without the last
+    /// separator.
+    pub fn name_and_folders(&self) -> (&str, String) {
+        let cut = self
+            .rest
+            .rfind(['/', '\\'])
+            .map_or(0, |separator| separator + 1);
+        let (folders, name) = self.rest.split_at(cut);
+        let folders = format!("{}{folders}", self.root.as_deref().unwrap_or_default());
+        (name, folders.trim_end_matches(['/', '\\']).to_owned())
+    }
 }
 
 /// A tab's path in full, as its tooltip shows it.
-fn full_path(folder: &Path, tab: &Path) -> String {
+pub fn full_path(folder: &Path, tab: &Path) -> String {
     let style = PathStyle::of(folder);
     let tab = tab.to_string_lossy();
     let full = if style.is_absolute(&tab) {
@@ -359,7 +404,21 @@ fn tab_labels(style: PathStyle, tabs: &[PathBuf]) -> Vec<String> {
     labels
 }
 
-/// The rows are rebuilt only when the text, the mode, the line or the edits change.
+/// The markdown file at `path` rendered, up to the cap on rendered lines. `folder` is the agent's,
+/// where the files its links open must be.
+#[component]
+fn FilePreview(agent: AgentId, folder: PathBuf, path: PathBuf, text: String) -> Element {
+    let (shown, more) = render::split_lines(&text, MAX_RENDERED_LINES);
+    let style = PathStyle::of(&folder);
+    let full = style.resolve(&folder.to_string_lossy(), &path.to_string_lossy());
+    let file_folder = style.parent(&full).map(PathBuf::from);
+    rsx! {
+        MarkdownView { agent, folder, markdown: shown.to_owned(), file_folder }
+        {lines_not_shown(more)}
+    }
+}
+
+/// The rows are rebuilt only when the text, the mode, the line, the edits or the update change.
 #[component]
 fn FileContent(
     path: PathBuf,
@@ -367,8 +426,10 @@ fn FileContent(
     mode: ViewMode,
     line: Option<u32>,
     edits: Vec<FileEdit>,
+    update: Option<FileUpdate>,
 ) -> Element {
     let language = Language::from_path(&path);
+    let marks = line_marks(line, update.as_ref());
     if mode == ViewMode::WholeFile || edits.is_empty() {
         let lines = render::plain_lines(&text, language, 1, MAX_RENDERED_LINES);
         return rsx! {
@@ -377,7 +438,7 @@ fn FileContent(
             }
             div { class: "diff-rows",
                 for row in lines.rows.iter() {
-                    {diff_line(row, LineNumbers::Shown, line)}
+                    {diff_line(row, LineNumbers::Shown, marks)}
                 }
             }
             {lines_not_shown(lines.more)}
@@ -401,7 +462,7 @@ fn FileContent(
         return rsx! {
             div { class: "diff-rows",
                 for row in diff.rows.iter() {
-                    {diff_row(row, LineNumbers::Shown, line)}
+                    {diff_row(row, LineNumbers::Shown, marks)}
                 }
             }
             {lines_not_shown(diff.more)}
@@ -432,10 +493,81 @@ fn FileContent(
             p { class: "edit-title", "Edit {index + 1} of {count}" }
             div { class: "diff-rows",
                 for row in diff.rows.iter() {
-                    {diff_row(row, LineNumbers::Hidden, None)}
+                    {diff_row(row, LineNumbers::Hidden, LineMarks::marked(None))}
                 }
             }
             {lines_not_shown(diff.more)}
+        }
+    }
+}
+
+/// The line a link marks, and the lines a recent read again changed. An older update marks
+/// none: a view drawn again later, as after a switch back to the agent, does not play it again.
+fn line_marks(line: Option<u32>, update: Option<&FileUpdate>) -> LineMarks<'_> {
+    match update.filter(|update| is_recent(update, SystemTime::now())) {
+        Some(update) => LineMarks {
+            marked: line,
+            updated: &update.lines,
+            updated_class: if update.serial % 2 == 0 {
+                "updated-even"
+            } else {
+                "updated-odd"
+            },
+        },
+        None => LineMarks::marked(line),
+    }
+}
+
+/// Whether `update` came less than `UPDATE_SHOWN_FOR` before `now`.
+fn is_recent(update: &FileUpdate, now: SystemTime) -> bool {
+    update
+        .at
+        .to_system_time()
+        .and_then(|at| now.duration_since(at).ok())
+        .is_some_and(|age| age < UPDATE_SHOWN_FOR)
+}
+
+/// The foot: what the agent did to the file, when the shown text was read, and Reload.
+#[component]
+fn FileFoot(agent: AgentId, note: String, freshness: FileFreshness) -> Element {
+    let cockpit: Cockpit = use_context();
+    let Clock(now) = use_context();
+    let now = now();
+    let reading = freshness.reread != Reread::Idle;
+    let updated = freshness
+        .update
+        .as_ref()
+        .is_some_and(|update| is_recent(update, now));
+    let read = freshness.read_at.and_then(|read_at| {
+        let time = format::time_of_day(read_at)?;
+        let ago = format::ago(read_at, now);
+        Some(if ago == format::NOW {
+            format!("Read at {time}")
+        } else {
+            format!("Read at {time}, {ago}")
+        })
+    });
+    rsx! {
+        div { class: "file-foot",
+            span { class: "file-foot-note", "{note} To change it, ask the agent." }
+            if reading {
+                span { class: "file-freshness",
+                    span { class: "spinner", aria_hidden: true }
+                    "Reading…"
+                }
+            } else if updated {
+                span { class: "file-freshness updated", role: "status", "Updated just now" }
+            } else if let Some(read) = read {
+                span { class: "file-freshness", "{read}" }
+            }
+            button {
+                class: "file-reload",
+                title: "Read the file again (F5)",
+                disabled: reading,
+                onclick: move |_| cockpit.update(|state| file_reread::reread(state, agent)),
+                Icon { kind: IconKind::Reconnect, size: 13 }
+                "Reload"
+            }
         }
     }
 }

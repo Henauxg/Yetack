@@ -20,7 +20,7 @@ use crate::state::accounts::{
     RemoveBlock,
 };
 use crate::state::{AppState, Dialog, FormMenu, actions};
-use crate::ui::code::CopyButton;
+use crate::ui::code::{CopyButton, CopyLook};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::machines::machine_choices;
 use crate::ui::presence::Presence;
@@ -72,7 +72,7 @@ pub fn CommandBox(command: String) -> Element {
     rsx! {
         div { class: "command-box",
             span { class: "command-text", "{command}" }
-            CopyButton { text: command, label: "Copy the command", worded: true }
+            CopyButton { text: command, label: "Copy the command", look: CopyLook::Worded }
         }
     }
 }
