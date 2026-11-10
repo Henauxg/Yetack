@@ -19,6 +19,7 @@ mod requests;
 mod shortcuts;
 pub mod sidebar_keys;
 pub mod title_emoji;
+pub mod to_handle;
 mod transcript;
 mod ui_state;
 mod utf16_offset;
@@ -29,7 +30,7 @@ pub use app_state::{
 pub use apply::{Alert, AlertKind, apply_update, error_chain, next_finish_due, release_finishes};
 pub use drafts::Drafts;
 pub use requests::{Outgoing, Purpose, apply_response, needed_requests};
-pub use shortcuts::{ANSWER_KEYS, CLOSE_AGENT_KEY, COMMAND_KEYS, KeyPress, handle_key};
+pub use shortcuts::{ANSWER_KEYS, CLOSE_AGENT_KEY, COMMAND_KEYS, KeyPress, MARK_KEY, handle_key};
 pub use transcript::{HistoryState, WaitingKind, awaiting_approval};
 pub use ui_state::{
     Block, Dialog, FileSearch, FolderList, FormMenu, MachinesView, McpView, NewAgentForm,

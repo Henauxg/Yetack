@@ -18,7 +18,7 @@ use crate::ui::icons::{Icon, IconKind};
 use crate::ui::no_daemon::NoDaemonScreen;
 use crate::ui::presence::use_presence;
 use crate::ui::reorder::use_reorder;
-use crate::ui::sidebar::Sidebar;
+use crate::ui::sidebar::{RowMenu, Sidebar};
 use crate::ui::splitter::{APP_ID, SHARE_PROPERTY, Splitter, use_splitter};
 use crate::ui::transcript::TranscriptView;
 
@@ -106,6 +106,7 @@ pub fn App() -> Element {
                     onclick: move |_| cockpit.update(|state| state.ui.popover = None),
                 }
             }
+            RowMenu {}
             Dialogs {}
         }
     }

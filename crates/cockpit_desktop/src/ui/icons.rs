@@ -44,6 +44,8 @@ pub enum IconKind {
     Server,
     /// This computer, in the sidebar's machine headers.
     Laptop,
+    /// An agent marked to handle.
+    Flag,
 }
 
 impl IconKind {
@@ -125,6 +127,9 @@ impl IconKind {
             }
             Self::Laptop => {
                 r#"<rect x="4" y="5" width="16" height="11" rx="2"></rect><path d="M2 19h20"></path>"#
+            }
+            Self::Flag => {
+                r#"<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"></path><path d="M4 22v-7"></path>"#
             }
             Self::Folder => {
                 r#"<path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>"#

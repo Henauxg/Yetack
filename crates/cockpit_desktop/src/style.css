@@ -26,6 +26,8 @@
   --amber: #f5a524;
   --green: #4ac26b;
   --red: #f47067;
+  /* Agents marked to handle. */
+  --violet: #b392f0;
   /* The UI font of VS Code and Cursor on Linux. */
   --sans: system-ui, "Ubuntu", "Droid Sans", sans-serif;
   --mono: "JetBrains Mono", ui-monospace, monospace;
@@ -735,6 +737,76 @@ button:disabled {
   height: 8px;
   border-radius: 50%;
   background: var(--text-bright);
+}
+
+/* An agent marked to handle: a violet flag beside the time, and a bar on the row's left edge.
+   The flag is always there, so that it grows in and shrinks out. */
+.row-flag {
+  flex: none;
+  display: inline-flex;
+  width: 0;
+  overflow: hidden;
+  opacity: 0;
+  color: var(--violet);
+  transition:
+    width var(--motion-out) var(--ease-in),
+    opacity var(--motion-out) var(--ease-in);
+}
+
+.agent-row.to-handle .row-flag {
+  width: 12px;
+  opacity: 1;
+  transition:
+    width var(--motion-in) var(--ease-out),
+    opacity var(--motion-in) var(--ease-out);
+}
+
+.agent-row.to-handle {
+  box-shadow: inset 3px 0 0 var(--violet);
+}
+
+.machine-to-handle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--violet);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.filter-chip.to-handle {
+  color: var(--violet);
+}
+
+/* A row's menu, at the pointer that opened it, kept inside the window. */
+.popover.row-menu {
+  --enter-y: -4px;
+  position: fixed;
+  left: min(var(--menu-x), calc(100vw - 262px));
+  top: min(var(--menu-y), calc(100vh - 150px));
+  bottom: auto;
+  width: 250px;
+  transform-origin: top left;
+}
+
+.row-menu .menu-item {
+  gap: 16px;
+  white-space: nowrap;
+}
+
+.menu-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.menu-label > .icon {
+  color: var(--violet);
+}
+
+.menu-hint {
+  color: var(--dim);
+  font-size: 12px;
 }
 
 .row-second {

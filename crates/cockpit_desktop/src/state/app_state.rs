@@ -347,7 +347,7 @@ impl AppState {
     pub fn sidebar_agents(&self) -> Vec<&AgentEntry> {
         let filter = self.prefs.sidebar.filter;
         let mut agents = self.agents_in_order();
-        agents.retain(|entry| filter.admits(entry.summary.status));
+        agents.retain(|entry| filter.admits(&entry.summary));
         agents
     }
 
@@ -355,7 +355,7 @@ impl AppState {
     pub fn filter_count(&self, filter: StatusFilter) -> usize {
         self.agents
             .values()
-            .filter(|entry| filter.admits(entry.summary.status))
+            .filter(|entry| filter.admits(&entry.summary))
             .count()
     }
 
@@ -376,7 +376,7 @@ impl AppState {
     pub fn selected_is_hidden(&self) -> bool {
         let filter = self.prefs.sidebar.filter;
         self.selected()
-            .is_some_and(|entry| !filter.admits(entry.summary.status))
+            .is_some_and(|entry| !filter.admits(&entry.summary))
     }
 
     /// The agent switcher's order: by attention, unread first within a status, then by id.

@@ -610,14 +610,28 @@ pub fn latency(request: &Request) -> Duration {
 }
 
 /// What the daemon's events would change after a request it accepts: a rename shows in the
-/// title, an answered approval and a stopped task show in the agent map, and the accounts change.
+/// title, a mark on the row, which a prompt clears, an answered approval and a stopped task show
+/// in the agent map, and the accounts change.
 pub fn apply(state: &mut AppState, request: &Request) {
     apply_map_request(state, request);
     apply_account_request(state, request);
-    if let Request::AgentRename(params) = request
-        && let Some(entry) = state.agents.get_mut(&params.agent)
-    {
-        entry.summary.title.clone_from(&params.title);
+    match request {
+        Request::AgentRename(params) => {
+            if let Some(entry) = state.agents.get_mut(&params.agent) {
+                entry.summary.title.clone_from(&params.title);
+            }
+        }
+        Request::AgentMark(params) => {
+            if let Some(entry) = state.agents.get_mut(&params.agent) {
+                entry.summary.to_handle = params.to_handle;
+            }
+        }
+        Request::AgentPrompt(params) => {
+            if let Some(entry) = state.agents.get_mut(&params.agent) {
+                entry.summary.to_handle = false;
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1935,6 +1949,7 @@ fn exited_agent(now: SystemTime) -> Sample {
         now,
     );
     summary.cache_expires_at = Some(at(now, 600));
+    summary.to_handle = true;
     let items = vec![
         item(
             1,
