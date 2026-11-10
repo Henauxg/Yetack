@@ -21,7 +21,7 @@ use crate::state::accounts::AccountLabel;
 use crate::state::actions::{Direction, StartField};
 use crate::state::folder_field::{self, FolderRow};
 use crate::state::{
-    Dialog, FolderList, FormMenu, Loadable, NewAgentForm, NewAgentTab, accounts, actions,
+    Dialog, FolderList, FormMenu, ImageView, Loadable, NewAgentForm, NewAgentTab, accounts, actions,
 };
 use crate::ui::accounts::{self as accounts_view, AccountMini, AccountPicker};
 use crate::ui::agent_map::AgentMapDialog;
@@ -32,6 +32,7 @@ use crate::ui::machines::{MachinesDialog, machine_choices};
 use crate::ui::no_daemon::NoDaemonCard;
 use crate::ui::open_file::{self as open_file_view, OpenFileDialog, UP_ROW};
 use crate::ui::presence::{Presence, Shown, use_presence};
+use crate::ui::zoom::ZoomImage;
 
 /// Recent folders the new agent dialog offers.
 const RECENT_FOLDERS: usize = 6;
@@ -127,6 +128,9 @@ pub fn Dialogs() -> Element {
                     },
                     Dialog::DaemonUpdate(machine) => rsx! {
                         DaemonUpdateScreens { machine }
+                    },
+                    Dialog::ImageView(view) => rsx! {
+                        ImageViewDialog { view }
                     },
                 }
             }
@@ -1199,5 +1203,54 @@ mod tests {
             folder_parts(Path::new("C:/")),
             (String::new(), r"C:\".to_owned())
         );
+    }
+}
+
+/// The full view's frame, which takes the focus so that Ctrl+0 and Ctrl+= reach it.
+const IMAGE_VIEW_FRAME_ID: &str = "image-view-frame";
+
+/// An image over the whole window. Esc, the close button or a click beside it closes it.
+#[component]
+fn ImageViewDialog(view: ImageView) -> Element {
+    let cockpit: Cockpit = use_context();
+    let ImageView { agent, path, image } = view;
+    let style = PathStyle::of(&path);
+    let full = path.to_string_lossy().into_owned();
+    let name = style.file_name(&full).unwrap_or(&full).to_owned();
+    rsx! {
+        div {
+            class: "dialog image-view",
+            role: "dialog",
+            aria_label: "{name}",
+            onclick: move |event| event.stop_propagation(),
+            onmounted: move |_| bridge::focus_field(IMAGE_VIEW_FRAME_ID),
+            div { class: "dialog-head",
+                h2 { class: "image-view-name", title: "{full}", "{name}" }
+                span { class: "key-hint", "Ctrl+wheel zooms" }
+                button {
+                    class: "button",
+                    onclick: move |_| {
+                        let path = path.clone();
+                        cockpit.update(|state| {
+                            state.ui.close_dialog();
+                            actions::open_file(state, agent, path, None);
+                        });
+                    },
+                    "Open in the file view"
+                }
+                button {
+                    class: "icon-button",
+                    aria_label: "Close",
+                    title: "Close (Esc)",
+                    onclick: move |_| cockpit.update(|state| state.ui.close_dialog()),
+                    Icon { kind: IconKind::Close, size: 16 }
+                }
+            }
+            ZoomImage {
+                src: bridge::image_url(&image),
+                alt: name.clone(),
+                id: IMAGE_VIEW_FRAME_ID.to_owned(),
+            }
+        }
     }
 }

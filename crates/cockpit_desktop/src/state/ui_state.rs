@@ -3,9 +3,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use cockpit_protocol::{
-    AccountId, AgentId, ClaudeSessionId, DirListing, Effort, ItemId, PermissionMode,
+    AccountId, AgentId, ClaudeSessionId, DirListing, Effort, Image, ItemId, PermissionMode,
 };
 use serde::Serialize;
 
@@ -78,6 +79,16 @@ pub enum Dialog {
     NoDaemon,
     /// The update screens of a server whose daemon refuses the app.
     DaemonUpdate(MachineId),
+    /// An image over the whole window, from a message or the file view.
+    ImageView(ImageView),
+}
+
+/// The image the full view shows, with the file it comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageView {
+    pub agent: AgentId,
+    pub path: PathBuf,
+    pub image: Arc<Image>,
 }
 
 /// The "Machines" dialog's form for a new server, and why the last one was refused.
@@ -121,11 +132,13 @@ impl OpenFileView {
 }
 
 impl Dialog {
-    /// The agent whose leaving closes the dialog: the one it asks to close, or the one it maps.
+    /// The agent whose leaving closes the dialog: the one it asks to close, maps, or shows an image
+    /// of.
     pub fn agent(&self) -> Option<AgentId> {
         match self {
             Self::CloseAgent(agent) => Some(*agent),
             Self::AgentMap(view) => Some(view.agent),
+            Self::ImageView(view) => Some(view.agent),
             Self::NewAgent(_)
             | Self::Switcher
             | Self::OpenFile(_)

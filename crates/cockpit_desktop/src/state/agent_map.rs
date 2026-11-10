@@ -473,7 +473,8 @@ pub fn toggle(state: &mut AppState) {
             | Dialog::CloseAgent(_)
             | Dialog::Accounts(_)
             | Dialog::NoDaemon
-            | Dialog::DaemonUpdate(_),
+            | Dialog::DaemonUpdate(_)
+            | Dialog::ImageView(_),
         )
         | None => {}
     }

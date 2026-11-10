@@ -1031,7 +1031,8 @@ pub fn dialog(dialog: Dialog) -> Element {
         | Dialog::AgentMap(_)
         | Dialog::Machines(_)
         | Dialog::NoDaemon
-        | Dialog::DaemonUpdate(_) => rsx! {},
+        | Dialog::DaemonUpdate(_)
+        | Dialog::ImageView(_) => rsx! {},
     }
 }
 

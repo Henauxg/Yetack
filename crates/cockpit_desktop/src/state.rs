@@ -39,9 +39,9 @@ pub use shortcuts::{
 };
 pub use transcript::{HistoryState, WaitingKind, awaiting_approval};
 pub use ui_state::{
-    Block, Dialog, FileSearch, FolderList, FormMenu, MachinesView, McpView, NewAgentForm,
-    NewAgentTab, NoteKind, OpenFileView, PaletteOrigin, Popover, RevealPlace, TitleEdit,
-    TitlePlace, ToolFilter, ViewMode, is_markdown,
+    Block, Dialog, FileSearch, FolderList, FormMenu, ImageView, MachinesView, McpView,
+    NewAgentForm, NewAgentTab, NoteKind, OpenFileView, PaletteOrigin, Popover, RevealPlace,
+    TitleEdit, TitlePlace, ToolFilter, ViewMode, is_markdown,
 };
 pub use utf16_offset::Utf16Offset;
 

@@ -10,6 +10,7 @@ use cockpit_protocol::{AgentId, Image, ReadFileParams, Request};
 
 use super::app_state::{AgentEntry, AppState, Loadable};
 use super::requests::{Outgoing, Purpose};
+use super::ui_state::{Dialog, ImageView};
 use crate::machine::MachineId;
 
 /// An image is up to 8 MiB: a few dozen would hold hundreds of megabytes.
@@ -120,12 +121,40 @@ pub(super) fn answered(
     }
 }
 
+/// Shows the image over the whole window, from a message or the file view.
+pub fn open_full_view(state: &mut AppState, agent: AgentId, path: PathBuf, image: Arc<Image>) {
+    state.ui.popover = None;
+    state.ui.dialog = Some(Dialog::ImageView(ImageView { agent, path, image }));
+}
+
 #[cfg(test)]
 mod tests {
     use cockpit_protocol::{AgentStatus, ImageMediaType};
 
     use super::*;
     use crate::state::app_state::tests::{state_with, summary};
+
+    #[test]
+    fn the_full_view_opens_over_a_popover_and_esc_closes_it() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        state.ui.popover = Some(crate::state::Popover::Load);
+        let path = PathBuf::from("/tmp/shots/mockup.png");
+
+        open_full_view(&mut state, agent(), path.clone(), Arc::new(png()));
+        let opened = state.ui.dialog.clone();
+        state.ui.close_overlays();
+
+        assert_eq!(state.ui.popover, None);
+        assert_eq!(
+            opened,
+            Some(Dialog::ImageView(ImageView {
+                agent: agent(),
+                path,
+                image: Arc::new(png()),
+            }))
+        );
+        assert_eq!(state.ui.dialog, None);
+    }
 
     fn agent() -> AgentId {
         AgentId::new(1)
