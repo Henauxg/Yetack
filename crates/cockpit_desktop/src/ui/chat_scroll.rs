@@ -63,6 +63,9 @@ let corrected = null;
 let pinned = null;
 // Each agent's place, kept while another agent shows.
 const places = new Map();
+// The user scrolled while the chat drew its rows, naming no agent yet: once it names its agent,
+// that scroll holds, in place of the agent's place from before.
+let scrolledWhileDrawing = false;
 const boxTop = () => box.getBoundingClientRect().top;
 const gapBelow = () => column.getBoundingClientRect().bottom - box.getBoundingClientRect().bottom;
 // An entry's wrapper has padding past the entry: its last element shows the entry, after the
@@ -114,6 +117,9 @@ const record = () => {
   pinned = null;
   following = gapBelow() <= settings.bottom_threshold_px;
   anchor = following ? null : firstInView();
+  if (agent === null) {
+    scrolledWhileDrawing = true;
+  }
   report();
 };
 // After the content changed: back to the bottom, or the pinned button or the anchor back at its
@@ -151,16 +157,20 @@ const changed = () => {
   }
   const shownAgent = box.dataset.agent ?? null;
   if (shownAgent !== agent) {
+    const scrolledMeanwhile = agent === null && scrolledWhileDrawing;
+    scrolledWhileDrawing = false;
     if (agent !== null) {
       places.set(agent, { following, anchor });
     }
     agent = shownAgent;
-    pinned = null;
-    const place = places.get(agent);
-    const kept = place !== undefined && !place.following && place.anchor !== null
-      && document.getElementById(place.anchor.id) !== null;
-    following = !kept;
-    anchor = kept ? place.anchor : null;
+    if (!scrolledMeanwhile) {
+      pinned = null;
+      const place = places.get(agent);
+      const kept = place !== undefined && !place.following && place.anchor !== null
+        && document.getElementById(place.anchor.id) !== null;
+      following = !kept;
+      anchor = kept ? place.anchor : null;
+    }
   }
   settle();
   report();
