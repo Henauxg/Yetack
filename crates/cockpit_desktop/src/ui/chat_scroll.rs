@@ -12,7 +12,7 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::connection::Cockpit;
-use crate::state::actions;
+use crate::state::{RevealPlace, actions};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::splitter::FILE_VIEW_ID;
 
@@ -30,6 +30,9 @@ const REVEALED_CLASS: &str = "chat-revealed";
 
 /// How close to the bottom, in pixels, the chat still follows new entries.
 const BOTTOM_THRESHOLD_PX: u16 = 40;
+
+/// The room, in pixels, above an entry the chat scrolls to.
+const REVEAL_TOP_PX: u16 = 12;
 
 /// The most new entries the jump button's badge counts; past it, it shows "99+".
 const MAX_BADGE_COUNT: usize = 99;
@@ -176,19 +179,24 @@ const jump = () => {
   settle();
   report();
 };
-// Scrolls an entry to the middle of the chat, or its top to the chat's top when it is taller, and
-// highlights it for a moment. The view then keeps it, as after a scroll by the user.
-const reveal = (entryId) => {
+// Scrolls an entry to `place` (see `RevealPlace`) and highlights it for a moment. The entry is the
+// anchor: the entries that come into view take their real height after the scroll, and the
+// first one in view would move the entry by as much.
+const reveal = (entryId, place) => {
   const entry = document.getElementById(entryId);
   const element = entry === null ? null : shown(entry);
   if (box === null || element === null) {
     return;
   }
   const height = element.getBoundingClientRect().height;
-  const above = Math.max(0, (box.clientHeight - height) / 2);
-  corrected = null;
+  const above = place === "top"
+    ? settings.reveal_top_px
+    : Math.max(settings.reveal_top_px, (box.clientHeight - height) / 2);
   box.scrollTop += element.getBoundingClientRect().top - boxTop() - above;
-  record();
+  corrected = box.scrollTop;
+  following = gapBelow() <= settings.bottom_threshold_px;
+  anchor = following ? null : { id: entry.id, top: element.getBoundingClientRect().top - boxTop() };
+  report();
   element.classList.remove(settings.revealed_class);
   // Restarts the animation when the same entry is revealed again.
   void element.offsetWidth;
@@ -208,7 +216,7 @@ let keysBlocked = false;
     if (command.type === "jump") {
       jump();
     } else if (command.type === "reveal") {
-      reveal(command.entry_id);
+      reveal(command.entry_id, command.place);
     } else if (command.type === "keys_blocked") {
       keysBlocked = command.blocked;
     }
@@ -238,6 +246,8 @@ struct Settings {
     file_view_id: &'static str,
     revealed_class: &'static str,
     bottom_threshold_px: u16,
+    /// The room an entry the chat scrolls to keeps above it.
+    reveal_top_px: u16,
 }
 
 /// What the app tells the script once it runs.
@@ -249,6 +259,7 @@ enum ScrollCommand {
     /// Scroll to an entry and highlight it.
     Reveal {
         entry_id: String,
+        place: RevealPlace,
     },
     KeysBlocked {
         blocked: bool,
@@ -332,6 +343,7 @@ pub fn use_chat_scroll(cockpit: Cockpit) -> Signal<Option<TopEntry>> {
             file_view_id: FILE_VIEW_ID,
             revealed_class: REVEALED_CLASS,
             bottom_threshold_px: BOTTOM_THRESHOLD_PX,
+            reveal_top_px: REVEAL_TOP_PX,
         };
         if let Err(error) = script.send(settings) {
             tracing::warn!("cannot start the chat's scroll script: {error}");
@@ -384,6 +396,7 @@ pub fn use_chat_scroll(cockpit: Cockpit) -> Signal<Option<TopEntry>> {
         };
         let command = ScrollCommand::Reveal {
             entry_id: entry_id(reveal.agent, reveal.item),
+            place: reveal.place,
         };
         if let Err(error) = script.send(command) {
             tracing::warn!("cannot scroll the chat to an entry: {error}");
@@ -409,6 +422,7 @@ mod tests {
             file_view_id: FILE_VIEW_ID,
             revealed_class: REVEALED_CLASS,
             bottom_threshold_px: BOTTOM_THRESHOLD_PX,
+            reveal_top_px: REVEAL_TOP_PX,
         };
         let message: ScrollMessage =
             serde_json::from_value(json!({ "type": "at_bottom", "agent": 7, "at_bottom": false }))
@@ -423,6 +437,7 @@ mod tests {
                 "file_view_id": "file-view",
                 "revealed_class": "chat-revealed",
                 "bottom_threshold_px": 40,
+                "reveal_top_px": 12,
             })
         );
         assert!(matches!(
@@ -457,10 +472,11 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_value(ScrollCommand::Reveal {
-                entry_id: "entry-1-2".to_owned()
+                entry_id: "entry-1-2".to_owned(),
+                place: RevealPlace::Top,
             })
             .unwrap(),
-            json!({ "type": "reveal", "entry_id": "entry-1-2" })
+            json!({ "type": "reveal", "entry_id": "entry-1-2", "place": "top" })
         );
         assert_eq!(
             serde_json::to_value(ScrollCommand::KeysBlocked { blocked: true }).unwrap(),

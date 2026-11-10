@@ -9,6 +9,7 @@ use dioxus::prelude::*;
 use crate::connection::Cockpit;
 use crate::format;
 use crate::render::{blocks_plain_text, parse_markdown};
+use crate::state::RevealPlace;
 use crate::ui::chat_scroll::TopEntry;
 
 /// The characters of the message the bar holds. It shows two lines of them.
@@ -49,7 +50,9 @@ pub fn LastInstruction(top_entry: Signal<Option<TopEntry>>) -> Element {
                 button {
                     class: "last-instruction-message",
                     title: "Show this message in the chat",
-                    onclick: move |_| cockpit.update(|state| state.ui.reveal_in_chat(agent, item)),
+                    onclick: move |_| cockpit.update(|state| {
+                        state.ui.reveal_in_chat(agent, item, RevealPlace::Top);
+                    }),
                     span { class: "last-instruction-text", "{text}" }
                 }
             }

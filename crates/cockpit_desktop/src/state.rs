@@ -33,8 +33,8 @@ pub use shortcuts::{ANSWER_KEYS, CLOSE_AGENT_KEY, COMMAND_KEYS, KeyPress, handle
 pub use transcript::{HistoryState, WaitingKind, awaiting_approval};
 pub use ui_state::{
     Block, Dialog, FileSearch, FolderList, FormMenu, MachinesView, McpView, NewAgentForm,
-    NewAgentTab, NoteKind, OpenFileView, PaletteOrigin, Popover, TitleEdit, TitlePlace, ToolFilter,
-    ViewMode,
+    NewAgentTab, NoteKind, OpenFileView, PaletteOrigin, Popover, RevealPlace, TitleEdit,
+    TitlePlace, ToolFilter, ViewMode,
 };
 pub use utf16_offset::Utf16Offset;
 

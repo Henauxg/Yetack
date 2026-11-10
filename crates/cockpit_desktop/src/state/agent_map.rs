@@ -19,7 +19,7 @@ use super::app_state::AppState;
 use super::requests::Outgoing;
 use super::shortcuts::{KEY_DOWN, KEY_ENTER, KEY_NO, KEY_UP, KEY_YES};
 use super::transcript::{Transcript, Waiting, WaitingKind};
-use super::ui_state::Dialog;
+use super::ui_state::{Dialog, RevealPlace};
 
 /// Siblings a level shows before its ended ones fold into one row.
 pub const SIBLING_CAP: usize = 8;
@@ -793,7 +793,7 @@ pub fn show_call(state: &mut AppState, item: ItemId) {
     if state.ui.selected != Some(agent) {
         actions::select_agent(state, agent);
     }
-    state.ui.reveal_in_chat(agent, entry);
+    state.ui.reveal_in_chat(agent, entry, RevealPlace::Middle);
 }
 
 /// The top-level item the chat shows `item` in: `item` itself, or the loaded item it nests under,

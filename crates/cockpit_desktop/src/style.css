@@ -1626,7 +1626,7 @@ html.reordering * {
   contain-intrinsic-size: auto 60px;
 }
 
-/* An entry the chat scrolled to, from the agent map, for a moment. */
+/* An entry the chat scrolled to, from the agent map or the last instruction, for a moment. */
 .chat-revealed {
   border-radius: 8px;
   animation: revealed 2s var(--ease) both;

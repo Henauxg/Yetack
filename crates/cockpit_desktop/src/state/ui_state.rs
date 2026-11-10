@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use cockpit_protocol::{
     AccountId, AgentId, ClaudeSessionId, DirListing, Effort, ItemId, PermissionMode,
 };
+use serde::Serialize;
 
 use super::accounts::{AccountsView, AddAccountForm};
 use super::agent_map::MapView;
@@ -129,6 +130,16 @@ impl Dialog {
     }
 }
 
+/// Where the chat puts an entry it scrolls to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RevealPlace {
+    /// At the top of the view, or as high as the chat can scroll it.
+    Top,
+    /// In the middle of the view, or its top at the view's top when it is taller.
+    Middle,
+}
+
 /// A chat entry the chat's scroll script scrolls to and highlights for a moment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChatReveal {
@@ -137,6 +148,7 @@ pub struct ChatReveal {
     pub agent: AgentId,
     /// A top-level item, which has an entry of its own in the chat.
     pub item: ItemId,
+    pub place: RevealPlace,
 }
 
 /// The agent closed last, which the undo note brings back for a few seconds.
@@ -388,8 +400,9 @@ impl Default for UiState {
 }
 
 impl UiState {
-    /// Scrolls `agent`'s chat to the entry of the top-level `item` and highlights it.
-    pub fn reveal_in_chat(&mut self, agent: AgentId, item: ItemId) {
+    /// Scrolls `agent`'s chat to the entry of the top-level `item`, puts it at `place`, and
+    /// highlights it.
+    pub fn reveal_in_chat(&mut self, agent: AgentId, item: ItemId, place: RevealPlace) {
         let serial = self
             .chat_reveal
             .map_or(0, |last| last.serial.wrapping_add(1));
@@ -397,6 +410,7 @@ impl UiState {
             serial,
             agent,
             item,
+            place,
         });
     }
 
