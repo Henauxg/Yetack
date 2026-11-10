@@ -1,4 +1,5 @@
-//! Syntax colors: syntect's default syntaxes, mapped onto the few classes of the mockup palette.
+//! Syntax colors: syntect's default syntaxes and bat's extra ones, mapped onto the few classes of
+//! the mockup palette.
 
 use std::path::Path;
 use std::sync::LazyLock;
@@ -8,8 +9,8 @@ use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxReference, SyntaxSet
 
 use super::capped::{self, Capped};
 
-/// The default syntaxes, loaded once: loading them takes a few milliseconds.
-static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
+/// The syntaxes, loaded once: loading them takes a few milliseconds.
+static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_newlines);
 
 /// Scopes that decide the class wherever they sit in the stack, before the innermost scope is
 /// looked at: a JSON key is a string inside a key, and the key wins.
@@ -109,7 +110,7 @@ pub struct Span {
     pub class: TokenClass,
 }
 
-/// A syntax of syntect's default set.
+/// A syntax of [`SYNTAXES`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Language(usize);
 
@@ -406,12 +407,16 @@ mod tests {
         assert_eq!(names(""), None);
         assert_eq!(names("txt"), None);
         assert_eq!(names("no-such-language"), None);
-        assert_eq!(names("nix"), None);
+        assert_eq!(names("toml"), Some("TOML"));
 
         let path_name = |path: &str| Language::from_path(Path::new(path)).map(name);
         assert_eq!(path_name("src/main.rs"), Some("Rust"));
         assert_eq!(path_name("queries/report.sql"), Some("SQL"));
         assert_eq!(path_name("Makefile"), Some("Makefile"));
+        assert_eq!(path_name("src/grpc/orders.proto"), Some("Protocol Buffer"));
+        assert_eq!(path_name("src/app/cart.component.ts"), Some("TypeScript"));
+        assert_eq!(path_name("Cargo.toml"), Some("TOML"));
+        assert_eq!(path_name("Dockerfile"), Some("Dockerfile"));
         assert_eq!(path_name("notes"), None);
     }
 
@@ -458,6 +463,19 @@ mod tests {
         assert_eq!(class_of(&lines, "\"value\""), TokenClass::String);
         assert_eq!(class_of(&lines, "3"), TokenClass::Number);
         assert_eq!(class_of(&lines, "true"), TokenClass::Keyword);
+    }
+
+    #[test]
+    fn protobuf_colors_keywords_strings_numbers_and_comments() {
+        let code =
+            "syntax = \"proto3\";\n\n// An order line.\nmessage Line {\n  string sku = 1;\n}\n";
+
+        let lines = highlight(code, Language::from_path(Path::new("orders.proto")));
+
+        assert_eq!(class_of(&lines, "message"), TokenClass::Keyword);
+        assert_eq!(class_of(&lines, "\"proto3\""), TokenClass::String);
+        assert_eq!(class_of(&lines, "1"), TokenClass::Number);
+        assert_eq!(class_of(&lines, "// An order line."), TokenClass::Comment);
     }
 
     #[test]
