@@ -19,11 +19,22 @@ pub enum LineNumbers {
     Hidden,
 }
 
-/// A button that copies `text`, then says "Copied" for a moment. `label` names what it copies, for
-/// its tooltip and screen readers. `worded` writes "Copy" beside the icon. Without `text`, it is
-/// disabled: the file view keeps it in place while the file loads.
+/// What the copy button shows beside its icon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyLook {
+    /// "Copy", then "Copied".
+    Worded,
+    /// Nothing, then "Copied".
+    Icon,
+    /// Nothing, then a check alone, for a row of controls that a wider button would push aside.
+    IconOnly,
+}
+
+/// A button that copies `text`, then shows a check for a moment. `label` names what it copies, for
+/// its tooltip and screen readers. Without `text`, it is disabled: the file view keeps it in place
+/// while the file loads.
 #[component]
-pub fn CopyButton(text: Option<String>, label: String, worded: bool) -> Element {
+pub fn CopyButton(text: Option<String>, label: String, look: CopyLook) -> Element {
     let mut copied = use_signal(|| false);
     rsx! {
         button {
@@ -44,10 +55,12 @@ pub fn CopyButton(text: Option<String>, label: String, worded: bool) -> Element 
             },
             if copied() {
                 span { class: "copied-check", Icon { kind: IconKind::Check, size: 14 } }
-                "Copied"
+                if look != CopyLook::IconOnly {
+                    "Copied"
+                }
             } else {
                 Icon { kind: IconKind::Copy, size: 14 }
-                if worded {
+                if look == CopyLook::Worded {
                     "Copy"
                 }
             }
@@ -73,7 +86,7 @@ pub fn CodeBlock(language: Option<String>, code: String) -> Element {
             if !label.is_empty() {
                 span { class: "code-language mono", "{label}" }
             }
-            CopyButton { text: code, label: copy_label, worded: false }
+            CopyButton { text: code, label: copy_label, look: CopyLook::Icon }
             div { class: "code-lines mono scroll-x",
                 for (index, spans) in lines.rows.into_iter().enumerate() {
                     div { key: "{index}", class: "code-line",

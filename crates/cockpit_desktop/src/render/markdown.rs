@@ -1,5 +1,6 @@
 //! Agent text as a tree of blocks and inlines, with `path:line` references found in the text.
 
+use std::borrow::Cow;
 use std::iter::{self, Peekable};
 use std::path::Path;
 
@@ -11,6 +12,7 @@ use crate::path_style::PathStyle;
 /// cannot exhaust the stack.
 const MAX_DEPTH: usize = 32;
 
+/// A task list item's checkbox, in plain text.
 const TASK_DONE: &str = "[x] ";
 const TASK_OPEN: &str = "[ ] ";
 
@@ -59,9 +61,16 @@ pub enum Inline {
     Strong(Vec<Inline>),
     Emphasis(Vec<Inline>),
     Strikethrough(Vec<Inline>),
-    Link { url: String, content: Vec<Inline> },
+    Link {
+        url: String,
+        content: Vec<Inline>,
+    },
     File(FileRef),
     LineBreak,
+    /// A task list item's checkbox.
+    Task {
+        done: bool,
+    },
 }
 
 /// A reference to a file, which opens the file view: a `path:line` in the text, or a link to a
@@ -76,11 +85,22 @@ pub struct FileRef {
 
 /// `folder` is the agent's: a link to a file opens the file view only when the file is in it.
 pub fn parse_markdown(markdown: &str, folder: &Path) -> Vec<Block> {
+    build_blocks(markdown, folder, None)
+}
+
+/// The text of a markdown file in `file_folder`, absolute, where its relative links start, as
+/// in an editor. The links still open the file view only on a file in the agent's `folder`.
+pub fn parse_markdown_file(markdown: &str, folder: &Path, file_folder: &Path) -> Vec<Block> {
+    build_blocks(markdown, folder, Some(file_folder))
+}
+
+fn build_blocks(markdown: &str, folder: &Path, file_folder: Option<&Path>) -> Vec<Block> {
     let options =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     let mut builder = Builder {
         events: Parser::new_ext(markdown, options).peekable(),
         folder,
+        file_folder,
         style: PathStyle::of(folder),
     };
     builder.blocks(None, 0)
@@ -136,6 +156,7 @@ fn push_plain_text(text: &mut String, inlines: &[Inline]) {
             | Inline::Link { content, .. } => push_plain_text(text, content),
             Inline::File(file) => text.push_str(&file.text),
             Inline::LineBreak => text.push('\n'),
+            Inline::Task { done } => text.push_str(if *done { TASK_DONE } else { TASK_OPEN }),
         }
     }
 }
@@ -144,6 +165,8 @@ fn push_plain_text(text: &mut String, inlines: &[Inline]) {
 struct Builder<'input> {
     events: Peekable<Parser<'input>>,
     folder: &'input Path,
+    /// The folder of the file the text is in, where its relative links start.
+    file_folder: Option<&'input Path>,
     /// The rules of the agent's folder, which the paths in the text follow.
     style: PathStyle,
 }
@@ -338,10 +361,7 @@ impl<'input> Builder<'input> {
             // A single newline breaks the line, as GitHub comments and claude.ai show it: Claude
             // often writes one item per line without list markers.
             Event::SoftBreak | Event::HardBreak => inlines.push(Inline::LineBreak),
-            Event::TaskListMarker(done) => {
-                let marker = if done { TASK_DONE } else { TASK_OPEN };
-                inlines.push(Inline::Text(marker.to_owned()));
-            }
+            Event::TaskListMarker(done) => inlines.push(Inline::Task { done }),
             Event::FootnoteReference(label) => inlines.push(Inline::Text(format!("[{label}]"))),
             Event::Start(tag) => {
                 let tag_end = tag.to_end();
@@ -355,7 +375,13 @@ impl<'input> Builder<'input> {
                     Tag::Strong => inlines.push(Inline::Strong(content)),
                     Tag::Strikethrough => inlines.push(Inline::Strikethrough(content)),
                     Tag::Link { dest_url, .. } => {
-                        inlines.extend(link(&dest_url, content, self.folder, self.style));
+                        inlines.extend(link(
+                            &dest_url,
+                            content,
+                            self.folder,
+                            self.file_folder,
+                            self.style,
+                        ));
                     }
                     // An image shows as its alt text; other tags keep their content.
                     _ => inlines.extend(content),
@@ -416,14 +442,20 @@ fn code_span(code: &str, style: PathStyle) -> Inline {
 /// A link to a file in the agent's folder opens the file view instead of a browser. Any other
 /// link than a web one keeps only its text: the system would open it with whatever program
 /// handles its scheme or file.
-fn link(url: &str, content: Vec<Inline>, folder: &Path, style: PathStyle) -> Vec<Inline> {
+fn link(
+    url: &str,
+    content: Vec<Inline>,
+    folder: &Path,
+    file_folder: Option<&Path>,
+    style: PathStyle,
+) -> Vec<Inline> {
     if is_web_url(url) {
         return vec![Inline::Link {
             url: url.to_owned(),
             content,
         }];
     }
-    let Some((path, line)) = local_file_target(url, folder, style) else {
+    let Some((path, line)) = local_file_target(url, folder, file_folder, style) else {
         return content;
     };
     let text = plain_text(&content);
@@ -433,7 +465,7 @@ fn link(url: &str, content: Vec<Inline>, folder: &Path, style: PathStyle) -> Vec
         } else {
             text
         },
-        path: path.to_owned(),
+        path: path.into_owned(),
         line,
     })]
 }
@@ -450,12 +482,14 @@ fn is_web_url(url: &str) -> bool {
 /// `folder`, then an optional `:line` (with `:column` or `-end`) or `#L12` (with `-L20`). Another
 /// fragment, such as a heading's, opens the file at its top. A colon followed by anything but a
 /// line, as in `javascript:` or `mailto:`, makes it no file. A Windows drive's colon, as in
-/// `C:\`, is the path's.
+/// `C:\`, is the path's. With a `file_folder`, a relative path starts there, and comes out
+/// absolute.
 fn local_file_target<'target>(
     target: &'target str,
     folder: &Path,
+    file_folder: Option<&Path>,
     style: PathStyle,
-) -> Option<(&'target str, Option<u32>)> {
+) -> Option<(Cow<'target, str>, Option<u32>)> {
     let (location, fragment) = match target.split_once(FRAGMENT) {
         Some((location, fragment)) => (location, Some(fragment)),
         None => (target, None),
@@ -472,7 +506,17 @@ fn local_file_target<'target>(
     let fragment_line = fragment
         .and_then(|fragment| fragment.strip_prefix(LINE_FRAGMENT))
         .and_then(|anchor| line_number(anchor.split('-').next().unwrap_or_default()));
-    is_in_folder(path, folder, style).then_some((path, suffix_line.or(fragment_line)))
+    let line = suffix_line.or(fragment_line);
+    let relative = !style.is_absolute(path)
+        && !path.starts_with(|character| style.is_separator(character) || character == '~')
+        && style.first_name(path).is_some();
+    let path = match file_folder {
+        Some(file_folder) if relative => {
+            Cow::Owned(style.resolve(&file_folder.to_string_lossy(), path))
+        }
+        Some(_) | None => Cow::Borrowed(path),
+    };
+    is_in_folder(&path, folder, style).then_some((path, line))
 }
 
 /// The line of what follows a path's colon: `12`, `12:5`, `40-52` or `12:5-7`.
@@ -805,7 +849,42 @@ mod tests {
     }
 
     #[test]
-    fn task_list_markers_become_text() {
+    fn a_files_relative_links_start_from_its_own_folder() {
+        let docs = Path::new("/work/calc/docs");
+        let links = |markdown: &str| match parse_markdown_file(markdown, Path::new(FOLDER), docs)
+            .as_slice()
+        {
+            [Block::Paragraph(inlines)] => inlines.clone(),
+            blocks => panic!("expected one paragraph, got {blocks:?}"),
+        };
+        let link = |text: &str, path: &str, line: Option<u32>| {
+            Inline::File(FileRef {
+                text: text.to_owned(),
+                path: path.to_owned(),
+                line,
+            })
+        };
+
+        assert_eq!(
+            links("[plan](plan.md)"),
+            [link("plan", "/work/calc/docs/plan.md", None)]
+        );
+        assert_eq!(
+            links("[root](../AGENTS.md#L3)"),
+            [link("root", "/work/calc/AGENTS.md", Some(3))]
+        );
+        assert_eq!(
+            links("[abs](/work/calc/src/main.rs)"),
+            [link("abs", "/work/calc/src/main.rs", None)]
+        );
+        // Out of the agent's folder, or no file at all: the link's text alone.
+        assert_eq!(links("[out](../../etc/passwd)"), [text("out")]);
+        assert_eq!(links("[here](./)"), [text("here")]);
+        assert_eq!(links("[top](#steps)"), [text("top")]);
+    }
+
+    #[test]
+    fn task_list_markers_become_checkboxes() {
         let blocks = parse("- [x] done\n- [ ] open");
 
         let Some(Block::List { items, .. }) = blocks.first() else {
@@ -814,10 +893,17 @@ mod tests {
         assert_eq!(
             items,
             &vec![
-                vec![Block::Paragraph(vec![text("[x] done")])],
-                vec![Block::Paragraph(vec![text("[ ] open")])],
+                vec![Block::Paragraph(vec![
+                    Inline::Task { done: true },
+                    text("done")
+                ])],
+                vec![Block::Paragraph(vec![
+                    Inline::Task { done: false },
+                    text("open")
+                ])],
             ]
         );
+        assert_eq!(blocks_plain_text(&blocks), "[x] done\n[ ] open");
     }
 
     #[test]

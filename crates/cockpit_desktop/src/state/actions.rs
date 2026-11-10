@@ -24,7 +24,7 @@ use super::requests::{Outgoing, Purpose, Shift, history_request};
 use super::transcript::HistoryState;
 use super::ui_state::{
     Block, Dialog, FileView, NewAgentForm, NewAgentTab, PaletteOrigin, Popover, Reopening,
-    TitleEdit, TitlePlace, ViewMode,
+    TitleEdit, TitlePlace, ViewMode, is_markdown,
 };
 use super::utf16_offset::Utf16Offset;
 use super::{accounts, export, file_edits, open_file, title_emoji};
@@ -1257,9 +1257,9 @@ pub fn send_queued(agent: AgentId, prompt: PromptId) -> Vec<Outgoing> {
     ))]
 }
 
-/// Opens the file view on `path`, at `line` when a link names one, in its tab. A file the agent
-/// changed opens on its diff, unless a line is asked for. The text is read again, since it may
-/// have changed, and the text of the file shown before is dropped: files can be large.
+/// Opens the file view on `path`, at `line` when a link names one, in its tab, in the mode
+/// `opening_mode` picks. The text is read again, since it may have changed, and the text of the
+/// file shown before is dropped: files can be large.
 pub fn open_file(state: &mut AppState, agent: AgentId, path: PathBuf, line: Option<u32>) {
     let Some(entry) = state.agents.get_mut(&agent) else {
         return;
@@ -1267,11 +1267,8 @@ pub fn open_file(state: &mut AppState, agent: AgentId, path: PathBuf, line: Opti
     let path = file_edits::relative_path(&entry.summary.folder, &path);
     let changed =
         !file_edits::edits_for(&entry.transcript, &entry.summary.folder, &path).is_empty();
-    let mode = if line.is_none() && changed {
-        ViewMode::Diff
-    } else {
-        ViewMode::WholeFile
-    };
+    let shown_mode = state.ui.file_views.get(&agent).map(|view| view.mode);
+    let mode = opening_mode(&path, line, changed, shown_mode);
     let changed_paths = entry.changed_paths();
     entry.files.clear();
     entry.files.insert(path.clone(), Loadable::NotRequested);
@@ -1294,6 +1291,29 @@ pub fn open_file(state: &mut AppState, agent: AgentId, path: PathBuf, line: Opti
         .ui
         .dialog
         .take_if(|dialog| matches!(dialog, Dialog::AgentMap(_)));
+}
+
+/// The mode a file opens in, given the mode of the file shown before it, if any:
+/// - with a `line` to mark, the whole file;
+/// - a markdown file, rendered, unless the agent changed it: then rendered only when the file
+///   shown before was;
+/// - a file the agent changed, its diff;
+/// - any other file, the whole file.
+fn opening_mode(
+    path: &Path,
+    line: Option<u32>,
+    changed: bool,
+    shown_mode: Option<ViewMode>,
+) -> ViewMode {
+    if line.is_some() {
+        ViewMode::WholeFile
+    } else if is_markdown(path) && (!changed || shown_mode == Some(ViewMode::Preview)) {
+        ViewMode::Preview
+    } else if changed {
+        ViewMode::Diff
+    } else {
+        ViewMode::WholeFile
+    }
 }
 
 /// Opens `choice`, one of the files that end with `name`, in the tab of `name`.
@@ -1361,7 +1381,7 @@ pub fn show_read_file(
     {
         let changed = !file_edits::edits_for(&entry.transcript, folder, &found).is_empty();
         if view.line.is_none() && changed {
-            view.mode = ViewMode::Diff;
+            view.mode = opening_mode(&found, None, changed, Some(view.mode));
         }
         // The found file takes the tab of the name asked for.
         for opened in &mut view.opened {
@@ -3768,6 +3788,45 @@ mod tests {
                 opened: vec![PathBuf::from("src/lib.rs")],
                 ..FileView::new(PathBuf::from("src/lib.rs"), Some(12), ViewMode::WholeFile)
             })
+        );
+    }
+
+    #[test]
+    fn a_markdown_file_opens_rendered() {
+        let mut state = state(AgentStatus::Idle);
+
+        open_file(&mut state, agent(), PathBuf::from("docs/notes.md"), None);
+
+        let view = state.ui.file_view(agent()).unwrap();
+        assert_eq!(view.mode, ViewMode::Preview);
+    }
+
+    #[test]
+    fn the_opening_mode_follows_the_line_the_edits_and_the_shown_mode() {
+        let readme = Path::new("README.md");
+        let lib = Path::new("src/lib.rs");
+        let preview = Some(ViewMode::Preview);
+        let diff = Some(ViewMode::Diff);
+        let (changed, unchanged) = (true, false);
+
+        assert_eq!(
+            opening_mode(readme, Some(4), unchanged, preview),
+            ViewMode::WholeFile
+        );
+        assert_eq!(
+            opening_mode(readme, None, unchanged, diff),
+            ViewMode::Preview
+        );
+        assert_eq!(opening_mode(readme, None, changed, diff), ViewMode::Diff);
+        assert_eq!(opening_mode(readme, None, changed, None), ViewMode::Diff);
+        assert_eq!(
+            opening_mode(readme, None, changed, preview),
+            ViewMode::Preview
+        );
+        assert_eq!(opening_mode(lib, None, changed, preview), ViewMode::Diff);
+        assert_eq!(
+            opening_mode(lib, None, unchanged, preview),
+            ViewMode::WholeFile
         );
     }
 

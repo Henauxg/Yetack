@@ -271,6 +271,19 @@ Notes for agents working in this repository.
 - Lines and columns count from 1, as editors show them.
 - Every error carries the line and the column of the token it is about.
 - Run `cargo test` before saying a change is done.
+
+## Error positions
+
+| Input | Error | Line | Column |
+| --- | --- | --- | --- |
+| `1 +` | unexpected end | 1 | 4 |
+| `2 * (3` | missing `)` | 1 | 7 |
+
+## Before a release
+
+- [x] Count columns from 1
+- [ ] Report the line of an error in a multi-line input
+- [ ] Add a benchmark for deep nesting, in `benches/`
 ";
 
 /// Markdown links to files of the agent's folder: relative, at a line, and absolute.

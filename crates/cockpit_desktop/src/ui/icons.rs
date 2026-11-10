@@ -44,6 +44,8 @@ pub enum IconKind {
     Server,
     /// This computer, in the sidebar's machine headers.
     Laptop,
+    /// Long lines wrapped, for the file view's wrap toggle.
+    Wrap,
 }
 
 impl IconKind {
@@ -128,6 +130,9 @@ impl IconKind {
             }
             Self::Folder => {
                 r#"<path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>"#
+            }
+            Self::Wrap => {
+                r#"<path d="M3 6h18"></path><path d="M3 12h15a3 3 0 0 1 0 6h-4"></path><path d="M16 16l-2 2 2 2"></path><path d="M3 18h7"></path>"#
             }
         }
     }

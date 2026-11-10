@@ -2,7 +2,7 @@
 //! Drafts are apart, in `drafts`.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use cockpit_protocol::{
     AccountId, AgentId, ClaudeSessionId, DirListing, Effort, ItemId, PermissionMode,
@@ -236,6 +236,22 @@ pub enum ViewMode {
     #[default]
     Diff,
     WholeFile,
+    /// A markdown file rendered as the chat renders the agent's text.
+    Preview,
+}
+
+/// The extensions of the files the file view renders, lowercase.
+const MARKDOWN_EXTENSIONS: [&str; 2] = ["md", "markdown"];
+
+/// Whether the file view can render `path` as markdown, from its extension.
+pub fn is_markdown(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            MARKDOWN_EXTENSIONS
+                .iter()
+                .any(|markdown| extension.eq_ignore_ascii_case(markdown))
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -582,6 +598,16 @@ impl UiState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn markdown_files_are_known_by_their_extension() {
+        assert!(is_markdown(Path::new("docs/plan.md")));
+        assert!(is_markdown(Path::new("NOTES.MD")));
+        assert!(is_markdown(Path::new("guide.markdown")));
+        assert!(!is_markdown(Path::new("src/md.rs")));
+        assert!(!is_markdown(Path::new("md")));
+        assert!(!is_markdown(Path::new("archive.md.gz")));
+    }
 
     #[test]
     fn error_notes_keep_the_newest_and_can_be_dismissed() {

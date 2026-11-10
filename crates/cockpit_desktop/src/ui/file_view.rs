@@ -1,5 +1,5 @@
-//! The read-only file view on the right: tabs of the changed files, the diff or the whole file,
-//! and the line a `path:line` link marks.
+//! The read-only file view on the right: tabs of the changed files, the diff, the whole file or a
+//! markdown file rendered, and the line a `path:line` link marks.
 
 use std::path::{Path, PathBuf};
 
@@ -10,11 +10,12 @@ use dioxus::prelude::*;
 use crate::connection::Cockpit;
 use crate::path_style::PathStyle;
 use crate::render::{self, Diff, Language, MAX_RENDERED_LINES, diff_lines};
-use crate::state::{FileRead, Loadable, Popover, ViewMode, actions, file_edits};
+use crate::state::{FileRead, Loadable, Popover, ViewMode, actions, file_edits, is_markdown};
 use crate::ui::changes_list;
-use crate::ui::code::{CopyButton, LineNumbers, diff_line, diff_row, lines_not_shown};
+use crate::ui::code::{CopyButton, CopyLook, LineNumbers, diff_line, diff_row, lines_not_shown};
 use crate::ui::file_list::FileListButton;
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::markdown::MarkdownView;
 use crate::ui::splitter::FILE_VIEW_ID;
 use crate::{bridge, format};
 
@@ -61,7 +62,21 @@ pub fn FileViewPanel() -> Element {
             format::count(edits.len(), "edit", "edits")
         )
     };
-    let diff = view.mode == ViewMode::Diff;
+    let markdown = is_markdown(&view.path);
+    // A view left in Preview on another kind of file shows the whole file.
+    let mode = if view.mode == ViewMode::Preview && !markdown {
+        ViewMode::WholeFile
+    } else {
+        view.mode
+    };
+    let preview = mode == ViewMode::Preview;
+    let mut modes = vec![
+        (ViewMode::Diff, "Diff"),
+        (ViewMode::WholeFile, "Whole file"),
+    ];
+    if markdown {
+        modes.push((ViewMode::Preview, "Preview"));
+    }
     let shown = view.path.clone();
     let loading = matches!(text, Loadable::NotRequested | Loadable::Loading);
     let image = matches!(text, Loadable::Loaded(FileRead::Image(_)));
@@ -120,35 +135,35 @@ pub fn FileViewPanel() -> Element {
                 span { class: "read-only-chip", "Read-only" }
                 if !image {
                     div { class: "segmented", role: "group", aria_label: "View mode",
-                        button {
-                            class: if diff { "segment chosen" } else { "segment" },
-                            aria_pressed: diff,
-                            onclick: move |_| cockpit.update(|state| actions::set_view_mode(state, agent, ViewMode::Diff)),
-                            "Diff"
-                        }
-                        button {
-                            class: if diff { "segment" } else { "segment chosen" },
-                            aria_pressed: !diff,
-                            onclick: move |_| cockpit.update(|state| actions::set_view_mode(state, agent, ViewMode::WholeFile)),
-                            "Whole file"
+                        for (choice, name) in modes {
+                            button {
+                                key: "{name}",
+                                class: if choice == mode { "segment chosen" } else { "segment" },
+                                aria_pressed: choice == mode,
+                                onclick: move |_| cockpit.update(|state| actions::set_view_mode(state, agent, choice)),
+                                "{name}"
+                            }
                         }
                     }
-                    div { class: "segmented",
-                        button {
-                            class: if wrap { "segment chosen" } else { "segment" },
-                            aria_pressed: wrap,
-                            title: "Wrap long lines instead of scrolling sideways",
-                            onclick: move |_| cockpit.update(actions::toggle_wrap),
-                            "Wrap"
-                        }
+                    button {
+                        class: if wrap && !preview { "icon-button framed toggled" } else { "icon-button framed" },
+                        aria_label: "Wrap long lines",
+                        aria_pressed: wrap && !preview,
+                        disabled: preview,
+                        title: if preview { "The preview always wraps" } else { "Wrap long lines instead of scrolling sideways" },
+                        onclick: move |_| cockpit.update(actions::toggle_wrap),
+                        Icon { kind: IconKind::Wrap, size: 15 }
                     }
-                    // The file's whole text, in the diff too. Last, so that "Copied", wider than
-                    // "Copy", pushes nothing aside.
-                    CopyButton { text: copied_text, label: "Copy the file's text", worded: true }
+                    // The file's whole text, in the diff and the preview too.
+                    CopyButton { text: copied_text, label: "Copy the file's text", look: CopyLook::IconOnly }
                 }
             }
             div {
-                class: if wrap { "file-body scroll mono wrap" } else { "file-body scroll mono" },
+                class: match (preview, wrap) {
+                    (true, _) => "file-body scroll file-preview",
+                    (false, true) => "file-body scroll mono wrap",
+                    (false, false) => "file-body scroll mono",
+                },
                 // Focusable, so that after a click in the text End and Home scroll it.
                 tabindex: -1,
                 match text {
@@ -168,8 +183,11 @@ pub fn FileViewPanel() -> Element {
                     Loadable::Loaded(FileRead::Choices(matches)) => rsx! {
                         FileChoices { agent, folder: folder.clone(), name: view.path.clone(), matches, line: view.line }
                     },
+                    Loadable::Loaded(FileRead::Text(text)) if preview => rsx! {
+                        FilePreview { agent, folder: folder.clone(), path: view.path.clone(), text }
+                    },
                     Loadable::Loaded(FileRead::Text(text)) => rsx! {
-                        FileContent { path: view.path.clone(), text, mode: view.mode, line: view.line, edits }
+                        FileContent { path: view.path.clone(), text, mode, line: view.line, edits }
                     },
                     Loadable::Loaded(FileRead::Image(image)) => rsx! {
                         div { class: "file-image",
@@ -373,6 +391,20 @@ fn tab_labels(style: PathStyle, tabs: &[PathBuf]) -> Vec<String> {
         labels.push(label.join(&style.separator().to_string()));
     }
     labels
+}
+
+/// The markdown file at `path` rendered, up to the cap on rendered lines. `folder` is the agent's,
+/// where the files its links open must be.
+#[component]
+fn FilePreview(agent: AgentId, folder: PathBuf, path: PathBuf, text: String) -> Element {
+    let (shown, more) = render::split_lines(&text, MAX_RENDERED_LINES);
+    let style = PathStyle::of(&folder);
+    let full = style.resolve(&folder.to_string_lossy(), &path.to_string_lossy());
+    let file_folder = style.parent(&full).map(PathBuf::from);
+    rsx! {
+        MarkdownView { agent, folder, markdown: shown.to_owned(), file_folder }
+        {lines_not_shown(more)}
+    }
 }
 
 /// The rows are rebuilt only when the text, the mode, the line or the edits change.
