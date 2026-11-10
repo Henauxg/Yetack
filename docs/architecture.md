@@ -592,6 +592,7 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
 - **Notifications** (module `notifications`): at most one per agent, for an agent that needs you or finished, and a click on one brings the window up and opens its agent.
   An agent finishes once its turn has ended and none of its background tasks still runs (`background_running`).
   Until then, its sidebar row and the header say "Idle, N running in the background", with the status dot's ring in the working color.
+  When the last background task of an idle agent ends, the app waits 10 s (`FINISH_HOLD` in `state/apply.rs`) before it announces the finish, and drops it if the agent works again meanwhile: Claude Code usually starts a turn to read the task's result, and that turn's end is the finish.
   On Linux they go through the freedesktop notification service, and a "needs you" one closes once the agent no longer needs you.
   On Windows they are toasts, from notify-rust's Windows backend.
   Windows shows toasts only for an app the Start menu registers, which the app is not, so the toasts carry PowerShell's name and icon.

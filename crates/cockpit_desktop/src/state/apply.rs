@@ -661,6 +661,46 @@ mod tests {
     }
 
     #[test]
+    fn a_background_task_that_starts_during_the_hold_drops_it() {
+        let start = Instant::now();
+        let mut state = state_with(vec![summary(1, AgentStatus::Working)]);
+        update_at(&mut state, AgentStatus::Idle, 1, start);
+        update_at(&mut state, AgentStatus::Idle, 0, start);
+
+        update_at(
+            &mut state,
+            AgentStatus::Idle,
+            1,
+            start + Duration::from_secs(1),
+        );
+        let held = release_finishes(&mut state, MachineId::THIS, start + FINISH_HOLD);
+
+        assert_eq!(next_finish_due(&state, MachineId::THIS), None);
+        assert!(held.is_empty());
+        assert!(!state.is_unread(AgentId::new(1)));
+    }
+
+    #[test]
+    fn another_machines_timer_leaves_a_held_finish_alone() {
+        let start = Instant::now();
+        let devbox = MachineId::new(1);
+        let mut state = state_with(vec![summary(1, AgentStatus::Working)]);
+        update_at(&mut state, AgentStatus::Idle, 1, start);
+        update_at(&mut state, AgentStatus::Idle, 0, start);
+
+        let other_due = next_finish_due(&state, devbox);
+        let other = release_finishes(&mut state, devbox, start + FINISH_HOLD);
+        let own = release_finishes(&mut state, MachineId::THIS, start + FINISH_HOLD);
+
+        assert_eq!(other_due, None);
+        assert!(other.is_empty());
+        assert_eq!(
+            own.iter().map(|alert| alert.kind).collect::<Vec<_>>(),
+            [AlertKind::Finished]
+        );
+    }
+
+    #[test]
     fn finishing_under_your_eyes_is_silent_but_not_when_the_window_is_away() {
         let mut state = state_with(vec![summary(1, AgentStatus::Working)]);
         state.ui.selected = Some(AgentId::new(1));
