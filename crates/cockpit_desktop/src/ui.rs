@@ -32,3 +32,4 @@ mod transcript;
 mod waiting_prompts;
 
 pub use app::App;
+pub use sidebar::item_id as sidebar_item_id;

@@ -13,6 +13,7 @@ use crate::machine::MachineId;
 use crate::prefs::StatusFilter;
 use crate::state::accounts::{self, AccountLabel, SignInLine};
 use crate::state::no_daemon::Absence;
+use crate::state::sidebar_keys::SidebarItem;
 use crate::state::{
     AgentEntry, AppState, ConnectionState, Dialog, TitleEdit, TitlePlace, actions, daemon_update,
     machines,
@@ -85,6 +86,19 @@ fn row_time(summary: &AgentSummary) -> Option<RowTime> {
         AgentStatus::Idle | AgentStatus::Exited => {
             summary.last_activity_at.map(RowTime::LastActive)
         }
+    }
+}
+
+/// The id of a machine header, which the arrow keys give the focus to.
+fn head_id(machine: MachineId) -> String {
+    format!("machine-head-{}", machine.get())
+}
+
+/// The id of the sidebar element the arrow keys give the focus to.
+pub fn item_id(item: SidebarItem) -> String {
+    match item {
+        SidebarItem::Agent(agent) => reorder::row_id(agent),
+        SidebarItem::Machine(machine) => head_id(machine),
     }
 }
 
@@ -365,7 +379,9 @@ fn MachineGroupView(group: MachineGroup) -> Element {
     rsx! {
         div { class: if down { "machine-group down" } else { "machine-group" },
             button {
+                id: head_id(machine),
                 class: "machine-head",
+                "data-head-machine": "{machine.get()}",
                 aria_expanded: !folded,
                 title: "{fold_label}",
                 onclick: move |_| cockpit.update(|state| actions::toggle_machine(state, machine)),
@@ -517,6 +533,7 @@ fn AgentRowButton(row: AgentRow, class: String) -> Element {
             id: reorder::row_id(agent),
             class,
             aria_current: row.selected,
+            "data-row-agent": "{agent.get()}",
             onclick: move |_| cockpit.update(|state| actions::select_agent(state, agent)),
             span { class: "row-line",
                 span { class: "status-dot", aria_hidden: true }
