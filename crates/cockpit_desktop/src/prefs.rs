@@ -32,7 +32,7 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use cockpit_protocol::{AccountId, AgentStatus};
+use cockpit_protocol::{AccountId, AgentStatus, AgentSummary, Mark};
 use dioxus::prelude::*;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use strum::{EnumString, IntoStaticStr, VariantArray};
@@ -195,13 +195,15 @@ pub enum StatusFilter {
     Working,
     Idle,
     Exited,
+    /// The agents marked to handle, whatever their status.
+    ToHandle,
 }
 
 impl StatusFilter {
-    /// The status the filter keeps, or `None` for all of them.
+    /// The status the filter keeps, or `None` for all of them and for the marked ones.
     pub fn status(self) -> Option<AgentStatus> {
         match self {
-            Self::All => None,
+            Self::All | Self::ToHandle => None,
             Self::NeedsYou => Some(AgentStatus::NeedsYou),
             Self::Working => Some(AgentStatus::Working),
             Self::Idle => Some(AgentStatus::Idle),
@@ -209,8 +211,11 @@ impl StatusFilter {
         }
     }
 
-    pub fn admits(self, status: AgentStatus) -> bool {
-        self.status().is_none_or(|kept| kept == status)
+    pub fn admits(self, summary: &AgentSummary) -> bool {
+        match self {
+            Self::ToHandle => summary.mark == Mark::ToHandle,
+            _ => self.status().is_none_or(|kept| kept == summary.status),
+        }
     }
 }
 
@@ -521,7 +526,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(words, ["all", "needs_you", "working", "idle", "exited"]);
+        assert_eq!(
+            words,
+            ["all", "needs_you", "working", "idle", "exited", "to_handle"]
+        );
         assert_eq!(unknown.sidebar.filter, StatusFilter::All);
         assert_eq!(unknown.file_view.width_share, Some(0.3));
     }

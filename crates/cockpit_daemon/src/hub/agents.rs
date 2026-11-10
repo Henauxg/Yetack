@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 use claude_protocol::{ControlRequest, InputLine, OutputLine};
 use cockpit_protocol::{
     AccountId, AgentId, AgentStatus, AgentSummary, AnswerParams, COMMAND_PREFIX, ClaudeSessionId,
-    CostUsd, EffortSource, ErrorBody, ErrorCode, Event, MAX_TITLE_CHARS, Position, Prompt,
-    PromptDelivery, PromptId, QueuedPromptParams, RenameParams, ResponseBody, ResponseResult,
-    SetEffortParams, SignInWait, StartParams, TranscriptItem, WaitingState,
+    CostUsd, EffortSource, ErrorBody, ErrorCode, Event, MAX_TITLE_CHARS, Mark, MarkParams,
+    Position, Prompt, PromptDelivery, PromptId, QueuedPromptParams, RenameParams, ResponseBody,
+    ResponseResult, SetEffortParams, SignInWait, StartParams, TranscriptItem, WaitingState,
 };
 
 use crate::accounts::ClaudeEnv;
@@ -67,6 +67,7 @@ impl Hub {
             position: Position::default(),
             process: None,
             account: account.id,
+            mark: Mark::Unmarked,
         };
         let agent = self.add_agent(record, params.prompt, None)?;
         Ok(ResponseBody::AgentStarted { agent })
@@ -344,13 +345,15 @@ impl Hub {
         };
         let line = prompts::prompt_line(&prompt)
             .ok_or_else(|| errors::internal("cannot encode the prompt".to_owned()))?;
-        let mut record_changed = false;
+        // The prompt is the input the mark was waiting for.
+        let mut record_changed = std::mem::take(&mut agent.record.mark) == Mark::ToHandle;
+        agent.view.set_mark(Mark::Unmarked);
         let busy = agent.view.is_busy() || !agent.queue.is_empty();
         let steers = delivery == PromptDelivery::Steer && !is_slash_command(&prompt.text);
         if !busy {
             agent.view.add_prompt(&prompt, state::now());
             process.write(line);
-            record_changed = record_typed_setting(agent, &prompt.text);
+            record_changed |= record_typed_setting(agent, &prompt.text);
         } else if steers {
             agent.view.add_waiting_prompt(&prompt, WaitingState::Sent);
             process.write(line);
@@ -587,6 +590,20 @@ impl Hub {
         Ok(ResponseBody::Done)
     }
 
+    /// Marks the agent as one to handle, or clears the mark.
+    pub(super) fn mark(&mut self, params: MarkParams) -> Result<ResponseBody, ErrorBody> {
+        let id = params.agent;
+        let agent = self
+            .agents
+            .get_mut(&id)
+            .ok_or(errors::agent_not_found(id))?;
+        agent.record.mark = params.mark;
+        agent.view.set_mark(params.mark);
+        self.save_agents();
+        self.publish(id);
+        Ok(ResponseBody::Done)
+    }
+
     /// Gives the agent's name to its Claude session, whose saved name is another.
     pub(super) fn rename_session(&mut self, id: AgentId) {
         if let Some(agent) = self.agents.get_mut(&id) {
@@ -627,6 +644,7 @@ impl Hub {
             position: Position::default(),
             process: None,
             account: account.id,
+            mark: Mark::Unmarked,
         };
         let agent = self.add_agent(record, None, Some(past.items))?;
         Ok(ResponseBody::AgentStarted { agent })
@@ -738,6 +756,7 @@ pub(super) fn initial_summary(record: &AgentRecord) -> AgentSummary {
         account: record.account,
         sign_in_wait: SignInWait::NotWaiting,
         background_running: 0,
+        mark: record.mark,
     }
 }
 
@@ -1019,5 +1038,57 @@ mod tests {
 
         assert_eq!(refused.code, ErrorCode::AgentExited);
         assert_eq!(hub.agents[&agent].view.items().len(), items_before);
+    }
+
+    /// The mark is saved with the agent, and a prompt clears it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_mark_is_saved_and_a_prompt_clears_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut hub = Hub::for_tests(&temp.path().join("state"));
+        let claude = temp.path().join("claude");
+        test_script::write_script(&claude, "#!/bin/sh\nexec cat >/dev/null\n");
+        hub.config.claude_program = claude;
+        let start = StartParams {
+            folder: temp.path().to_owned(),
+            title: None,
+            model: None,
+            effort: None,
+            mode: None,
+            prompt: None,
+            account: AccountId::DEFAULT,
+        };
+        let Ok(ResponseBody::AgentStarted { agent }) = hub.start_agent(start) else {
+            panic!("the agent did not start");
+        };
+        let saved = |hub: &Hub| {
+            let file = crate::store::AgentsFile::load(&hub.state.agents_file()).unwrap();
+            file.agents
+                .iter()
+                .any(|record| record.mark == Mark::ToHandle)
+        };
+
+        hub.mark(MarkParams {
+            agent,
+            mark: Mark::ToHandle,
+        })
+        .unwrap();
+        let marked = (hub.agents[&agent].view.summary().mark, saved(&hub));
+        let prompt = Prompt {
+            text: "go on".to_owned(),
+            images: Vec::new(),
+        };
+        hub.prompt(agent, prompt, PromptDelivery::Steer).unwrap();
+        let unknown = hub
+            .mark(MarkParams {
+                agent: AgentId::new(9),
+                mark: Mark::ToHandle,
+            })
+            .unwrap_err();
+
+        assert_eq!(marked, (Mark::ToHandle, true));
+        assert_eq!(hub.agents[&agent].view.summary().mark, Mark::Unmarked);
+        assert!(!saved(&hub));
+        assert_eq!(unknown.code, ErrorCode::NotFound);
     }
 }

@@ -11,7 +11,7 @@ use super::requests::Outgoing;
 use super::transcript::WaitingKind;
 use super::ui_state::{Dialog, PaletteOrigin, Popover};
 use super::utf16_offset::Utf16Offset;
-use super::{accounts, agent_map, file_reread, open_file};
+use super::{accounts, agent_map, file_reread, open_file, to_handle};
 
 /// `KeyboardEvent.key` values.
 const KEY_ESCAPE: &str = "Escape";
@@ -40,6 +40,10 @@ pub const COMMAND_KEYS: [&str; 4] = [KEY_SWITCHER, KEY_NEW_AGENT, KEY_OPEN_FILE,
 
 /// The letter that closes the selected agent, with Ctrl+Shift.
 pub const CLOSE_AGENT_KEY: &str = "w";
+
+/// The letter that marks the selected agent as one to handle, or clears its mark, with
+/// Ctrl+Shift.
+pub const MARK_KEY: &str = "h";
 
 /// A key press the page's script passes on.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -87,6 +91,9 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
             (None, Some(agent)) => actions::request_close(state, drafts, agent),
             (Some(_), _) | (None, None) => Vec::new(),
         };
+    }
+    if command && !press.alt && press.shift && letter == MARK_KEY && state.ui.dialog.is_none() {
+        return to_handle::toggle_selected(state);
     }
     // Esc only closes what is open: the Stop button alone stops an agent, so a stray Esc never
     // cuts a turn short.

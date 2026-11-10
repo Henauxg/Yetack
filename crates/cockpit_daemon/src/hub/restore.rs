@@ -71,6 +71,7 @@ pub(crate) fn restore(state: &StateDir, default_folder: &Path) -> Result<Restore
             summary.folder = record.folder.clone();
             summary.position = record.position;
             summary.account = record.account;
+            summary.mark = record.mark;
             let items: Vec<TranscriptItem> = logged.items.into_values().collect();
             let mut view = AgentView::restore(summary, logged.details, items, ttl);
             let account = settings.accounts.get(record.account, default_folder);
@@ -115,7 +116,7 @@ mod tests {
     use std::path::PathBuf;
 
     use cockpit_protocol::{
-        AgentStatus, ClaudeSessionId, EventRecord, Frame, ItemBody, Position, ServerMessage,
+        AgentStatus, ClaudeSessionId, EventRecord, Frame, ItemBody, Mark, Position, ServerMessage,
         Settings, Timestamp,
     };
 
@@ -138,6 +139,7 @@ mod tests {
             position: Position::default(),
             process: None,
             account: AccountId::DEFAULT,
+            mark: Mark::Unmarked,
         }
     }
 
@@ -219,6 +221,50 @@ mod tests {
         let (_, second) = &restored.agents[1];
         assert_eq!(second.summary().title, "Agent 2");
         assert!(second.items().is_empty());
+    }
+
+    /// The saved mark wins over the one the agent's last logged summary carries.
+    #[test]
+    fn the_mark_comes_back_from_the_agents_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = StateDir::create(temp.path()).unwrap();
+        let marked = AgentRecord {
+            mark: Mark::ToHandle,
+            ..record(1)
+        };
+        AgentsFile {
+            next_agent: AgentId::new(3),
+            replay_floor: None,
+            agents: vec![marked.clone(), record(2)],
+        }
+        .save(&state.agents_file())
+        .unwrap();
+        let mut logs = EventLogs::new(state.events());
+        let mut cleared = initial_summary(&marked);
+        cleared.mark = Mark::Unmarked;
+        log(
+            &mut logs,
+            LogName::Agent(AgentId::new(1)),
+            1,
+            Event::AgentAdded(cleared),
+        );
+        let mut stale = initial_summary(&record(2));
+        stale.mark = Mark::ToHandle;
+        log(
+            &mut logs,
+            LogName::Agent(AgentId::new(2)),
+            2,
+            Event::AgentAdded(stale),
+        );
+
+        let restored = restore(&state, &temp.path().join("claude")).unwrap();
+
+        let marks: Vec<Mark> = restored
+            .agents
+            .iter()
+            .map(|(_, view)| view.summary().mark)
+            .collect();
+        assert_eq!(marks, [Mark::ToHandle, Mark::Unmarked]);
     }
 
     /// Each log applies in its own order, wherever the other logs put their numbers, and a line

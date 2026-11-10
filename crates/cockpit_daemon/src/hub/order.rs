@@ -60,8 +60,8 @@ mod tests {
     use std::path::Path;
 
     use cockpit_protocol::{
-        AccountId, ClaudeSessionId, ErrorCode, PastSession, Position, RenameParams, ResponseResult,
-        StartParams, Timestamp,
+        AccountId, ClaudeSessionId, ErrorCode, Mark, PastSession, Position, RenameParams,
+        ResponseResult, StartParams, Timestamp,
     };
     use tokio::sync::{mpsc, oneshot};
 
@@ -218,6 +218,7 @@ mod tests {
             position: Position::default(),
             process: None,
             account: AccountId::DEFAULT,
+            mark: Mark::Unmarked,
         };
         AgentsFile {
             next_agent: AgentId::new(4),

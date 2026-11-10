@@ -1,6 +1,6 @@
 //! Everything the window shows, in one value that the event and response handlers update.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -11,6 +11,7 @@ use cockpit_protocol::{
 use strum::VariantArray;
 
 use super::accounts::SignIns;
+use super::chat_images::KeptImage;
 use super::daemon_update::{DaemonUpdate, VersionGap};
 use super::file_edits;
 use super::no_daemon::NoDaemon;
@@ -139,6 +140,8 @@ pub struct AgentEntry {
     /// When the app announces the agent's finish, unless a turn starts before. Set when the last
     /// background task of an idle agent ends.
     pub finish_due: Option<Instant>,
+    /// The images its messages show, the least recently shown first.
+    pub images: VecDeque<KeptImage>,
 }
 
 /// When the agent's running turn started.
@@ -173,6 +176,7 @@ impl AgentEntry {
             turn_started: None,
             sent_again: None,
             finish_due: None,
+            images: VecDeque::new(),
         }
     }
 
@@ -383,7 +387,7 @@ impl AppState {
     pub fn sidebar_agents(&self) -> Vec<&AgentEntry> {
         let filter = self.prefs.sidebar.filter;
         let mut agents = self.agents_in_order();
-        agents.retain(|entry| filter.admits(entry.summary.status));
+        agents.retain(|entry| filter.admits(&entry.summary));
         agents
     }
 
@@ -391,7 +395,7 @@ impl AppState {
     pub fn filter_count(&self, filter: StatusFilter) -> usize {
         self.agents
             .values()
-            .filter(|entry| filter.admits(entry.summary.status))
+            .filter(|entry| filter.admits(&entry.summary))
             .count()
     }
 
@@ -412,7 +416,7 @@ impl AppState {
     pub fn selected_is_hidden(&self) -> bool {
         let filter = self.prefs.sidebar.filter;
         self.selected()
-            .is_some_and(|entry| !filter.admits(entry.summary.status))
+            .is_some_and(|entry| !filter.admits(&entry.summary))
     }
 
     /// The agent switcher's order: by attention, unread first within a status, then by id.
@@ -508,7 +512,7 @@ impl AppState {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use cockpit_protocol::{CostUsd, EffortSource, PermissionMode, Position, SignInWait};
+    use cockpit_protocol::{CostUsd, EffortSource, Mark, PermissionMode, Position, SignInWait};
 
     use super::*;
 
@@ -537,6 +541,7 @@ pub(crate) mod tests {
             account: AccountId::DEFAULT,
             sign_in_wait: SignInWait::NotWaiting,
             background_running: 0,
+            mark: Mark::Unmarked,
         }
     }
 

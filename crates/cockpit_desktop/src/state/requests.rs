@@ -14,7 +14,7 @@ use super::app_state::{AgentEntry, AppState, FileRead, Loadable, MachineState, R
 use super::drafts::{Draft, Drafts};
 use super::transcript::HistoryState;
 use super::ui_state::{Dialog, OpenFileView};
-use super::{accounts, actions};
+use super::{accounts, actions, chat_images};
 use crate::machine::MachineId;
 use crate::path_style;
 use crate::prefs::AccountColor;
@@ -52,6 +52,11 @@ pub enum Purpose {
         agent: AgentId,
     },
     ReadFile {
+        agent: AgentId,
+        path: PathBuf,
+    },
+    /// An image a message shows.
+    ChatImage {
         agent: AgentId,
         path: PathBuf,
     },
@@ -248,6 +253,7 @@ pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
             });
         }
     }
+    chat_images::requests(entry, agent, &mut requests);
     requests
 }
 
@@ -386,6 +392,18 @@ pub fn apply_response(
                 }
                 other => report(state, method, other),
             }
+        }
+        Purpose::ChatImage { agent, path } => {
+            let answer = match result {
+                Ok(ResponseBody::Image { image, .. }) => Ok(image),
+                Ok(ResponseBody::File { .. }) => Err("This file is not an image.".to_owned()),
+                Ok(ResponseBody::FileMatches { .. }) => {
+                    Err("Several files have this name: give its full path.".to_owned())
+                }
+                Ok(_) => Err(format!("{method} gave an unexpected answer.")),
+                Err(failure) => Err(failure.message),
+            };
+            chat_images::answered(state, agent, &path, answer);
         }
         Purpose::ReadFile { agent, path } => {
             let now = Timestamp::from_system_time(SystemTime::now());

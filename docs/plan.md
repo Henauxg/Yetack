@@ -202,12 +202,12 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   - When the file view is closed, a right panel shows three blocks: the task list (`TodoWrite`), what runs in the background (subagents and commands, each with Stop) and the MCP servers (a failed one has Retry).
   - The sidebar row shows the task progress ("3/5").
   - Subagent tool calls fold under the call that started them.
-  - `file:line` references in agent text open the file view at that line; agent text renders as markdown (headings, lists, tables).
+  - `file:line` references and links to files in agent text open the file view at that line; agent text renders as markdown (headings, lists, tables); bare web addresses are links, and an image of a file shows in the message.
   - "/" opens a palette of commands and skills, filtered as you type.
   - Pasted screenshots show as thumbnails in the composer and in the sent message.
   - Messages Claude has not read yet show in a list pinned above the composer: "Next step" for a sent one, "After this turn" for a queued one, which has Send now and Cancel.
   - Command output collapses after 5 lines; a failed command has a red dot and its exit code.
-  - Ctrl+N opens the new agent dialog (recent folders, or resume a past session); Ctrl+K opens the agent switcher; Esc closes what is open (a menu, a dialog, an edit) and never stops the agent, which only the Stop button does; Y and N answer an approval or a plan.
+  - Ctrl+N opens the new agent dialog (recent folders, or resume a past session); Ctrl+K opens the agent switcher; Ctrl+Shift+H, or a right-click on a sidebar row, marks an agent to handle until you send it a message; Esc closes what is open (a menu, a dialog, an edit) and never stops the agent, which only the Stop button does; Y and N answer an approval or a plan.
   - No rewind of file changes in v1.
 - Decided after round 4 (mocked in round 5), replacing the right panel above:
   - Tasks, background work and MCP servers are floating blocks at the top right of the chat, each folding to one line. They show only when they have content, except MCP servers.

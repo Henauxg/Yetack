@@ -123,6 +123,9 @@ pub struct AgentSummary {
     /// that started them. 0 when missing, as from a daemon that predates it.
     #[serde(default)]
     pub background_running: u16,
+    /// `Unmarked` when missing, as from a daemon that predates marks.
+    #[serde(default)]
+    pub mark: Mark,
 }
 
 /// Where an agent's effort comes from.
@@ -171,4 +174,15 @@ impl FromStoredBool for SignInWait {
             Self::NotWaiting
         }
     }
+}
+
+/// A reminder you put on an agent. It stays until you clear it or send the agent a prompt.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, VariantArray,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Mark {
+    #[default]
+    Unmarked,
+    ToHandle,
 }

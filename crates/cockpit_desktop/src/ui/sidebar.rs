@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant, SystemTime};
 
-use cockpit_protocol::{AgentId, AgentStatus, AgentSummary, MAX_TITLE_CHARS, Timestamp};
+use cockpit_protocol::{AgentId, AgentStatus, AgentSummary, MAX_TITLE_CHARS, Mark, Timestamp};
 use dioxus::prelude::*;
 
 use crate::bridge::{self, ROW_TITLE_FIELD_ID};
@@ -15,12 +15,13 @@ use crate::state::accounts::{self, AccountLabel, SignInLine};
 use crate::state::no_daemon::Absence;
 use crate::state::sidebar_keys::SidebarItem;
 use crate::state::{
-    AgentEntry, AppState, ConnectionState, Dialog, TitleEdit, TitlePlace, actions, daemon_update,
-    machines,
+    AgentEntry, AppState, ConnectionState, Dialog, Popover, TitleEdit, TitlePlace, actions,
+    daemon_update, machines, to_handle,
 };
 use crate::ui::accounts::{AccountTag, AccountsButton};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::machines::THIS_COMPUTER;
+use crate::ui::presence::use_presence;
 use crate::ui::reorder::{self, LIST_ID, ROW_CLASS};
 use crate::ui::splitter::SIDEBAR_ID;
 use crate::{APP_NAME, format};
@@ -43,6 +44,8 @@ struct AgentRow {
     account: Option<AccountLabel>,
     /// The activity says the account is not signed in.
     warns: bool,
+    /// You marked the agent as one to handle.
+    to_handle: bool,
 }
 
 impl AgentRow {
@@ -63,6 +66,7 @@ impl AgentRow {
                 .task_progress
                 .map(|progress| format!("{}/{}", progress.done, progress.total)),
             time: row_time(summary),
+            to_handle: summary.mark == Mark::ToHandle,
             edit,
         }
     }
@@ -156,8 +160,24 @@ struct FilterChip {
 }
 
 fn filter_label(filter: StatusFilter) -> &'static str {
-    filter.status().map_or("All", format::status_label)
+    match filter {
+        StatusFilter::ToHandle => TO_HANDLE,
+        _ => filter.status().map_or("All", format::status_label),
+    }
 }
+
+/// The class that gives a chip its color.
+fn chip_class(filter: StatusFilter) -> &'static str {
+    match filter {
+        StatusFilter::ToHandle => TO_HANDLE_CLASS,
+        _ => filter.status().map_or("", format::status_class),
+    }
+}
+
+/// The mark's name, in the filter and the row's tooltip.
+const TO_HANDLE: &str = "To handle";
+
+const TO_HANDLE_CLASS: &str = "to-handle";
 
 /// What the list says when the filter leaves no row.
 fn empty_list_text(filter: StatusFilter) -> &'static str {
@@ -167,6 +187,9 @@ fn empty_list_text(filter: StatusFilter) -> &'static str {
         StatusFilter::Working => "No agent is working.",
         StatusFilter::Idle => "No agent is idle.",
         StatusFilter::Exited => "No agent has exited.",
+        StatusFilter::ToHandle => {
+            "No agent is marked to handle. Ctrl+Shift+H marks the selected one."
+        }
     }
 }
 
@@ -270,6 +293,8 @@ struct MachineGroup {
     count: usize,
     /// The machine's agents that wait for you, which a folded header still shows.
     needs_you: usize,
+    /// The machine's agents marked to handle, which a folded header still shows.
+    to_handle: usize,
     /// What the panel says while the machine does not answer.
     trouble: Option<MachineTrouble>,
     rows: Vec<AgentRow>,
@@ -303,10 +328,12 @@ impl MachineGroup {
             .agents
             .values()
             .filter(|entry| MachineId::of(entry.id()) == machine);
-        let (count, needs_you) = agents.fold((0, 0), |(count, needs_you), entry| {
-            let waits = entry.summary.status == AgentStatus::NeedsYou;
-            (count + 1, needs_you + usize::from(waits))
-        });
+        let (mut count, mut needs_you, mut to_handle) = (0, 0, 0);
+        for entry in agents {
+            count += 1;
+            needs_you += usize::from(entry.summary.status == AgentStatus::NeedsYou);
+            to_handle += usize::from(entry.summary.mark == Mark::ToHandle);
+        }
         let trouble = known.and_then(|known| {
             if let Some(line) = daemon_update::update_line(known) {
                 return Some(MachineTrouble {
@@ -354,6 +381,7 @@ impl MachineGroup {
             folded: state.ui.folded_machines.contains(&machine),
             count,
             needs_you,
+            to_handle,
             trouble,
             rows,
         }
@@ -370,6 +398,7 @@ fn MachineGroupView(group: MachineGroup) -> Element {
         folded,
         count,
         needs_you,
+        to_handle,
         trouble,
         rows,
         ..
@@ -397,6 +426,12 @@ fn MachineGroupView(group: MachineGroup) -> Element {
                 span { class: "machine-name", "{name}" }
                 if folded && needs_you > 0 {
                     span { class: "machine-needs-you", title: "Agents that wait for you", "{needs_you}" }
+                }
+                if folded && to_handle > 0 {
+                    span { class: "machine-to-handle", title: "Agents marked to handle",
+                        Icon { kind: IconKind::Flag, size: 11 }
+                        "{to_handle}"
+                    }
                 }
                 span { class: "machine-count", "{count}" }
             }
@@ -448,13 +483,15 @@ fn StatusFilters(chips: Vec<FilterChip>) -> Element {
                     class: format!(
                         "filter-chip {} {}",
                         if chip.chosen { "chosen" } else { "" },
-                        chip.filter.status().map_or("", format::status_class),
+                        chip_class(chip.filter),
                     ),
                     aria_pressed: chip.chosen,
                     title: "{filter_label(chip.filter)}: {chip.count}",
                     aria_label: "{filter_label(chip.filter)}: {chip.count}",
                     onclick: move |_| cockpit.update(|state| actions::set_status_filter(state, chip.filter)),
-                    if chip.filter.status().is_some() {
+                    if chip.filter == StatusFilter::ToHandle {
+                        Icon { kind: IconKind::Flag, size: 12 }
+                    } else if chip.filter.status().is_some() {
                         span { class: "status-dot", aria_hidden: true }
                     } else {
                         span { class: "filter-word", "{filter_label(chip.filter)}" }
@@ -476,6 +513,9 @@ fn AgentRowView(row: AgentRow) -> Element {
     }
     if row.unread {
         classes.push("unread");
+    }
+    if row.to_handle {
+        classes.push(TO_HANDLE_CLASS);
     }
     if let Some(TitleEdit {
         title, select_all, ..
@@ -539,6 +579,14 @@ fn AgentRowButton(row: AgentRow, class: String) -> Element {
             aria_current: row.selected,
             "data-row-agent": "{agent.get()}",
             onclick: move |_| cockpit.update(|state| actions::select_agent(state, agent)),
+            oncontextmenu: move |event: MouseEvent| {
+                event.prevent_default();
+                let point = event.client_coordinates();
+                // Whole pixels are enough to place a menu.
+                #[expect(clippy::cast_possible_truncation, reason = "a window's pixels fit in i32")]
+                let (x, y) = (point.x.round() as i32, point.y.round() as i32);
+                cockpit.update(|state| to_handle::open_menu(state, agent, x, y));
+            },
             span { class: "row-line",
                 span { class: "status-dot", aria_hidden: true }
                 span {
@@ -548,6 +596,16 @@ fn AgentRowButton(row: AgentRow, class: String) -> Element {
                         Vec::new()
                     }),
                     "{row.title}"
+                }
+                // Always there, so that the style sheet can grow it in and shrink it out.
+                span {
+                    class: "row-flag",
+                    title: if row.to_handle { TO_HANDLE } else { "" },
+                    aria_hidden: !row.to_handle,
+                    Icon { kind: IconKind::Flag, size: 12 }
+                    if row.to_handle {
+                        span { class: "visually-hidden", "{TO_HANDLE}" }
+                    }
                 }
                 if let Some(tasks) = &row.tasks {
                     span { class: "row-tasks", title: "Tasks done", "{tasks}" }
@@ -657,6 +715,71 @@ fn ConnectionFooter() -> Element {
                 }
                 if let Some(detail) = detail {
                     span { class: "connection-error", "{detail}" }
+                }
+            }
+        }
+    }
+}
+
+/// The menu a right-click on a row opens, at the pointer. It acts on that row's agent, selected
+/// or not. The style sheet keeps it inside the window.
+#[component]
+pub fn RowMenu() -> Element {
+    let cockpit: Cockpit = use_context();
+    let open = {
+        let state = cockpit.state.read();
+        match state.ui.popover {
+            Some(Popover::RowMenu { agent, x, y }) => state
+                .agents
+                .get(&agent)
+                .map(|entry| (agent, x, y, entry.summary.mark)),
+            _ => None,
+        }
+    };
+    let Some(shown) = use_presence(open) else {
+        return rsx! {};
+    };
+    let (agent, x, y, mark) = shown.value;
+    let close_menu = |state: &mut AppState| state.ui.popover = None;
+    rsx! {
+        div {
+            class: if shown.leaving { "presence leaving" } else { "presence" },
+            inert: shown.leaving.then_some(true),
+            div {
+                class: "popover menu row-menu",
+                role: "menu",
+                style: "--menu-x: {x}px; --menu-y: {y}px",
+                button {
+                    class: "menu-item",
+                    role: "menuitem",
+                    onclick: move |_| cockpit.change(|state| to_handle::set(state, agent, to_handle::toggled(mark))),
+                    span { class: "menu-label",
+                        Icon { kind: IconKind::Flag, size: 14 }
+                        if mark == Mark::ToHandle { "Done handling" } else { "Mark to handle" }
+                    }
+                    span { class: "menu-hint", "Ctrl+Shift+H" }
+                }
+                button {
+                    class: "menu-item",
+                    role: "menuitem",
+                    onclick: move |_| cockpit.change_with_drafts(|state, drafts| {
+                        close_menu(state);
+                        actions::start_rename_in_sidebar(state, drafts, agent);
+                        Vec::new()
+                    }),
+                    span { class: "menu-label", "Rename" }
+                    span { class: "menu-hint", "F2" }
+                }
+                div { class: "menu-divider" }
+                button {
+                    class: "menu-item",
+                    role: "menuitem",
+                    onclick: move |_| cockpit.change_with_drafts(|state, drafts| {
+                        close_menu(state);
+                        actions::request_close(state, drafts, agent)
+                    }),
+                    span { class: "menu-label", "Close" }
+                    span { class: "menu-hint", "Ctrl+Shift+W" }
                 }
             }
         }

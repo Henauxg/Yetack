@@ -22,14 +22,14 @@ use cockpit_protocol::{
     ContextCategory, ContextUsage, Cores, CostUsd, CredentialSource, DirEntry, DirListing, Effort,
     EffortSource, EntryKind, EntryLink, EnvironmentCredentials, ErrorBody, ErrorCode, Event,
     EventRecord, FileEdit, FindFilesParams, FoldersListParams, HistoryPage, HistoryParams, Image,
-    ImageMediaType, ItemBody, ItemId, ListDirParams, LoadAverage, LoadHistory, MachineLoad,
-    McpRemoveParams, McpScope, McpServer, McpServerParams, McpServerStatus, McpToggleAction,
-    McpToggleParams, McpTool, McpTransport, Method, MoveParams, OlderItems, PROTOCOL_VERSION,
-    PastSession, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, PlanUsage, Position,
-    ProcessId, Prompt, PromptDelivery, PromptId, PromptParams, Question, QuestionAnswer,
-    QuestionOption, QueuedPromptParams, RateLimitStatus, ReadFileParams, RenameParams, Request,
-    RequestId, ResourceUse, ResponseBody, ResponseResult, Selection, Seq, ServerLoad,
-    ServerMessage, ServerPoint, SessionResumeParams, SetEffortParams, SetModeParams,
+    ImageMediaType, ItemBody, ItemId, ListDirParams, LoadAverage, LoadHistory, MachineLoad, Mark,
+    MarkParams, McpRemoveParams, McpScope, McpServer, McpServerParams, McpServerStatus,
+    McpToggleAction, McpToggleParams, McpTool, McpTransport, Method, MoveParams, OlderItems,
+    PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision,
+    PlanUsage, Position, ProcessId, Prompt, PromptDelivery, PromptId, PromptParams, Question,
+    QuestionAnswer, QuestionOption, QueuedPromptParams, RateLimitStatus, ReadFileParams,
+    RenameParams, Request, RequestId, ResourceUse, ResponseBody, ResponseResult, Selection, Seq,
+    ServerLoad, ServerMessage, ServerPoint, SessionResumeParams, SetEffortParams, SetModeParams,
     SetModelParams, Settings, SignIn, SignInWait, SlashCommand, Snapshot, StartParams,
     StopProcessParams, StopTaskParams, Subagent, SubagentRun, SubagentStatus, SubagentToolCall,
     TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus,
@@ -84,6 +84,7 @@ fn summary() -> AgentSummary {
         account: work_account().id,
         sign_in_wait: SignInWait::Waiting,
         background_running: 2,
+        mark: Mark::ToHandle,
     }
 }
 
@@ -112,6 +113,7 @@ fn idle_summary() -> AgentSummary {
         account: AccountId::DEFAULT,
         sign_in_wait: SignInWait::NotWaiting,
         background_running: 0,
+        mark: Mark::Unmarked,
     }
 }
 
@@ -588,6 +590,10 @@ fn requests() -> Vec<Request> {
             agent,
             title: "Login form".to_owned(),
         }),
+        Request::AgentMark(MarkParams {
+            agent,
+            mark: Mark::ToHandle,
+        }),
         Request::AgentMove(MoveParams {
             agent,
             before: Some(AgentId::new(4)),
@@ -1011,6 +1017,7 @@ fn method_names_are_pinned() {
             "agent.set_effort",
             "agent.set_mode",
             "agent.rename",
+            "agent.mark",
             "agent.move",
             "agent.context_usage",
             "agent.stop_task",
@@ -1220,6 +1227,7 @@ fn words_are_pinned() {
     assert_eq!(words::<EnvironmentCredentials>(), ["set", "unset"]);
     assert_eq!(words::<EffortSource>(), ["chosen", "claude_code_default"]);
     assert_eq!(words::<SignInWait>(), ["not_waiting", "waiting"]);
+    assert_eq!(words::<Mark>(), ["unmarked", "to_handle"]);
     assert_eq!(words::<Selection>(), ["single", "multiple"]);
     assert_eq!(
         words::<TurnOutcome>(),
@@ -1359,6 +1367,29 @@ fn a_rename_request_on_the_wire() {
             "request": {
                 "method": "agent.rename",
                 "params": {"agent": 3, "title": "Login form"},
+            },
+        }),
+    );
+}
+
+#[test]
+fn a_mark_request_on_the_wire() {
+    let message = ClientMessage::Request {
+        id: RequestId::new(10),
+        request: Request::AgentMark(MarkParams {
+            agent: agent(),
+            mark: Mark::ToHandle,
+        }),
+    };
+
+    assert_wire(
+        &message,
+        json!({
+            "type": "request",
+            "id": 10,
+            "request": {
+                "method": "agent.mark",
+                "params": {"agent": 3, "mark": "to_handle"},
             },
         }),
     );
@@ -1788,20 +1819,24 @@ fn an_agent_update_on_the_wire() {
                 "account": 2,
                 "sign_in_wait": "waiting",
                 "background_running": 2,
+                "mark": "to_handle",
             },
         }),
     );
 }
 
-/// A summary from a daemon that predates the count has nothing running in the background.
+/// A summary from a daemon that predates the count has nothing running in the background, and
+/// one that predates the mark is not to handle.
 #[test]
 fn a_summary_without_its_background_count_reads_none_running() {
     let mut older = serde_json::to_value(summary()).unwrap();
     older.as_object_mut().unwrap().remove("background_running");
+    older.as_object_mut().unwrap().remove("mark");
 
     let read: AgentSummary = serde_json::from_value(older).unwrap();
 
     assert_eq!(read.background_running, 0);
+    assert_eq!(read.mark, Mark::Unmarked);
 }
 
 #[test]

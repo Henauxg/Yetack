@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 use crate::connection::Cockpit;
 use crate::state::sidebar_keys::SidebarItem;
 use crate::state::{
-    ANSWER_KEYS, AppState, CLOSE_AGENT_KEY, COMMAND_KEYS, Dialog, KeyPress, PaletteOrigin, Popover,
-    RELOAD_KEY, Utf16Offset, WaitingKind, accounts, actions, agent_map, file_reread, handle_key,
-    sidebar_keys,
+    ANSWER_KEYS, AppState, CLOSE_AGENT_KEY, COMMAND_KEYS, Dialog, KeyPress, MARK_KEY,
+    PaletteOrigin, Popover, RELOAD_KEY, Utf16Offset, WaitingKind, accounts, actions, agent_map,
+    file_reread, handle_key, sidebar_keys,
 };
 use crate::ui::sidebar_item_id;
 
@@ -200,6 +200,9 @@ document.addEventListener("keydown", (event) => {
   } else if (command && !event.altKey && event.shiftKey && letter === settings.close_agent_key) {
     // Ctrl+Shift+W closes the selected agent. The file view takes Ctrl+W alone.
     take = true;
+  } else if (command && !event.altKey && event.shiftKey && letter === settings.mark_key) {
+    // Ctrl+Shift+H marks the selected agent as one to handle.
+    take = true;
   } else if (key === "Escape") {
     take = true;
   } else if (key === settings.reload_key && plain && !event.shiftKey) {
@@ -384,12 +387,14 @@ struct Settings {
     command_keys: [&'static str; 4],
     /// The letter that closes the selected agent with Ctrl+Shift.
     close_agent_key: &'static str,
+    /// The letter that marks the selected agent as one to handle, with Ctrl+Shift.
+    mark_key: &'static str,
     /// The key that reads the shown file again.
     reload_key: &'static str,
 }
 
-/// Which plain keys the script takes, beyond Ctrl+K, Ctrl+N, Ctrl+O, Ctrl+M, Ctrl+Shift+W, Esc,
-/// F2, Alt+Up, Alt+Down and the composer's Enter.
+/// Which plain keys the script takes, beyond Ctrl+K, Ctrl+N, Ctrl+O, Ctrl+M, Ctrl+Shift+W,
+/// Ctrl+Shift+H, Esc, F2, Alt+Up, Alt+Down and the composer's Enter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 struct KeyMode {
     /// Y and N answer an approval or a plan: in the agent map, the selected subagent's.
@@ -471,6 +476,7 @@ pub fn use_bridge(cockpit: Cockpit) {
             answer_keys: ANSWER_KEYS,
             command_keys: COMMAND_KEYS,
             close_agent_key: CLOSE_AGENT_KEY,
+            mark_key: MARK_KEY,
             reload_key: RELOAD_KEY,
         }) {
             tracing::warn!("cannot start the page's script: {error}");
@@ -731,6 +737,7 @@ mod tests {
             answer_keys: ANSWER_KEYS,
             command_keys: COMMAND_KEYS,
             close_agent_key: CLOSE_AGENT_KEY,
+            mark_key: MARK_KEY,
             reload_key: RELOAD_KEY,
         };
         let mode = KeyMode {
@@ -761,6 +768,7 @@ mod tests {
                 "answer_keys": ["y", "n"],
                 "command_keys": ["k", "n", "o", "m"],
                 "close_agent_key": "w",
+                "mark_key": "h",
                 "reload_key": "F5",
             })
         );

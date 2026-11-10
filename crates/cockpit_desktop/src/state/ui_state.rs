@@ -38,6 +38,12 @@ pub enum Popover {
     Palette(PaletteOrigin),
     /// The grid of emoji that can start the selected agent's title.
     TitleEmoji,
+    /// A sidebar row's menu, opened by a right-click at `x`, `y` in the window's pixels.
+    RowMenu {
+        agent: AgentId,
+        x: i32,
+        y: i32,
+    },
     /// The file view's list of its open files.
     FileList,
 }

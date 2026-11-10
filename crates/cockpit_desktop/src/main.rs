@@ -48,7 +48,7 @@ const APP_NAME: &str = "Agents Cockpit";
 
 /// The window's icon, for window managers that read it from the window. A Wayland desktop takes
 /// the icon from the desktop entry instead, which `flake.nix` installs with the same artwork.
-const ICON_PNG: &[u8] = include_bytes!("../assets/agents-cockpit-256.png");
+pub(crate) const ICON_PNG: &[u8] = include_bytes!("../assets/agents-cockpit-256.png");
 
 /// The theme's background, so the window does not flash white before the page draws.
 const BACKGROUND: (u8, u8, u8, u8) = (24, 24, 24, 255);

@@ -1,14 +1,17 @@
-//! Agent text rendered from the markdown tree, with `path:line` references and links to the
-//! agent's files as links into the file view.
+//! Agent text rendered from the markdown tree, with `path:line` references and links to files
+//! as links into the file view, and Markdown images of files shown in place.
 
-use std::path::PathBuf;
+use std::cell::RefCell;
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use cockpit_protocol::AgentId;
 use dioxus::prelude::*;
 
+use crate::bridge;
 use crate::connection::Cockpit;
 use crate::render::{self, Block, FileRef, Inline, parse_markdown, parse_markdown_file};
-use crate::state::actions;
+use crate::state::{Loadable, actions, chat_images};
 use crate::ui::code::CodeBlock;
 use crate::ui::icons::{Icon, IconKind};
 
@@ -16,8 +19,8 @@ use crate::ui::icons::{Icon, IconKind};
 /// and a table too wide for the column scrolls instead.
 const SHORT_CELL_CHARS: usize = 30;
 
-/// `folder` is the agent's, where the files its links open must be. `file_folder`, absolute, holds
-/// the markdown file the text comes from, where its relative links start.
+/// `folder` is the agent's, against which relative paths in the text resolve. `file_folder`,
+/// absolute, holds the markdown file the text comes from, where its relative links start.
 #[component]
 pub fn MarkdownView(
     agent: AgentId,
@@ -183,6 +186,9 @@ fn inline_view(agent: AgentId, inline: &Inline) -> Element {
         Inline::File(file) => rsx! {
             FileLink { agent, file: file.clone() }
         },
+        Inline::Image { path, alt } => rsx! {
+            ChatImage { agent, path: path.clone(), alt: alt.clone() }
+        },
         Inline::LineBreak => rsx! {
             br {}
         },
@@ -212,6 +218,67 @@ fn FileLink(agent: AgentId, file: FileRef) -> Element {
                 cockpit.update(|state| actions::open_file(state, agent, path, line));
             },
             "{text}"
+        }
+    }
+}
+
+/// An image file the message shows, at a fixed height so that the text below does not move when
+/// it arrives. A click opens it in the file view.
+#[component]
+fn ChatImage(agent: AgentId, path: String, alt: String) -> Element {
+    let cockpit: Cockpit = use_context();
+    // The image this place shows, given back when it shows another or leaves the screen.
+    let held = use_hook(|| Rc::new(RefCell::new(None::<(AgentId, PathBuf)>)));
+    let showing = Rc::clone(&held);
+    use_effect(use_reactive((&agent, &path), move |(agent, path)| {
+        let file = PathBuf::from(path);
+        let before = showing.replace(Some((agent, file.clone())));
+        cockpit.update(|state| {
+            if let Some((agent, path)) = &before {
+                chat_images::hide(state, *agent, path);
+            }
+            chat_images::show(state, agent, &file);
+        });
+    }));
+    use_drop(move || {
+        let Some((agent, path)) = held.take() else {
+            return;
+        };
+        let mut signal = cockpit.state;
+        // The state is gone when the window closes.
+        if let Ok(mut state) = signal.try_write() {
+            chat_images::hide(&mut state, agent, &path);
+        }
+    });
+    // Rendered again only when the image changes, not on every change of the state.
+    let shown = use_memo(use_reactive((&agent, &path), move |(agent, path)| {
+        chat_images::image(&cockpit.state.read(), agent, Path::new(&path))
+    }));
+    let label = if alt.is_empty() {
+        path.clone()
+    } else {
+        alt.clone()
+    };
+    let body = match shown() {
+        Some(Loadable::Loaded(image)) => rsx! {
+            img { src: bridge::image_url(&image), alt: "{label}" }
+        },
+        Some(Loadable::Failed(message)) => rsx! {
+            span { class: "chat-image-error", "{label}: {message}" }
+        },
+        Some(Loadable::NotRequested | Loadable::Loading) | None => rsx! {
+            span { class: "skeleton chat-image-wait", role: "status", aria_label: "Loading {label}" }
+        },
+    };
+    rsx! {
+        button {
+            class: "chat-image",
+            title: "{path}",
+            onclick: move |_| {
+                let path = PathBuf::from(&path);
+                cockpit.update(|state| actions::open_file(state, agent, path, None));
+            },
+            {body}
         }
     }
 }

@@ -18,7 +18,7 @@ use crate::ui::icons::{Icon, IconKind};
 use crate::ui::no_daemon::NoDaemonScreen;
 use crate::ui::presence::use_presence;
 use crate::ui::reorder::use_reorder;
-use crate::ui::sidebar::Sidebar;
+use crate::ui::sidebar::{RowMenu, Sidebar};
 use crate::ui::splitter::{
     APP_ID, SHARE_PROPERTY, SIDEBAR_WIDTH_PROPERTY, SidebarSplitter, Splitter, use_splitter,
 };
@@ -108,8 +108,15 @@ pub fn App() -> Element {
                 div {
                     class: "popover-backdrop",
                     onclick: move |_| cockpit.update(|state| state.ui.popover = None),
+                    // A right-click on another row closes the open row menu, so the next one
+                    // opens that row's.
+                    oncontextmenu: move |event: MouseEvent| {
+                        event.prevent_default();
+                        cockpit.update(|state| state.ui.popover = None);
+                    },
                 }
             }
+            RowMenu {}
             Dialogs {}
         }
     }
