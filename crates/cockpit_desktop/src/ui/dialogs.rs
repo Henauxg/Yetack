@@ -834,7 +834,7 @@ fn type_folder(cockpit: Cockpit, text: String) {
 /// The folder field's keys, as the "Open file" dialog's path field has them. Enter takes the
 /// highlighted folder, or with none highlighted, starts the agent.
 fn folder_key(cockpit: Cockpit, event: &KeyboardEvent) {
-    if event.modifiers().alt() {
+    if event.modifiers().alt() || event.is_composing() {
         return;
     }
     let direction = match event.key() {
