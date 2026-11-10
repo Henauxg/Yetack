@@ -18,9 +18,9 @@ tmux=$(command -v tmux) || {
 }
 
 # The old daemon's session can outlive its lock for a moment, and tmux refuses a second session of
-# that name.
+# that name. The "=" matches the name exactly: without it, a session "cockpit-dev" matches too.
 tries=0
-while env -i HOME="$HOME" "$tmux" has-session -t cockpit 2>/dev/null; do
+while env -i HOME="$HOME" "$tmux" has-session -t =cockpit 2>/dev/null; do
     tries=$((tries + 1))
     if [ "$tries" -gt 50 ]; then
         echo "the tmux session \"cockpit\" still runs after 10 seconds" >&2

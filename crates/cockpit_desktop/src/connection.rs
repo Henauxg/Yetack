@@ -959,7 +959,6 @@ async fn serve(
     }
 }
 
-/// Sends each request to its machine: the task's own at once, another's through the router.
 /// Waits until `due`, or forever without one.
 async fn sleep_until(due: Option<Instant>) {
     match due {
@@ -968,6 +967,7 @@ async fn sleep_until(due: Option<Instant>) {
     }
 }
 
+/// Sends each request to its machine: the task's own at once, another's through the router.
 fn send_all(
     state: Signal<AppState>,
     drafts: Signal<Drafts>,
