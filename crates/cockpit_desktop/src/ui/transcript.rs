@@ -26,7 +26,7 @@ use crate::ui::code::{LineMarks, LineNumbers, diff_row};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::last_instruction::LastInstruction;
 use crate::ui::loading::TranscriptSkeleton;
-use crate::ui::markdown::MarkdownView;
+use crate::ui::markdown::{MARKDOWN_CLASS, MarkdownView};
 use crate::{bridge, format};
 
 /// What a call's line says while it runs, before its time or its count of calls.
@@ -49,6 +49,9 @@ const FOLD_LABEL_CLASS: &str = "fold-more";
 const MESSAGE_ROW_CLASS: &str = "message-fold";
 const MESSAGE_CLIP_CLASS: &str = "message-clip";
 
+/// The CSS property in which a row tells the fold script how many screen lines it keeps.
+const FOLD_LINES_PROPERTY: &str = "--fold-lines";
+
 /// Folds IN and OUT rows, and long messages you sent, by their lines on screen, which only the
 /// page knows: wrapping depends on the width. It marks `data-tall` each row whose text takes more
 /// screen lines than the `--fold-lines` the row sets, and writes on its button how many lines the
@@ -60,7 +63,7 @@ const FOLD_SCRIPT: &str = r#"
 const classes = await dioxus.recv();
 if (!window.agentsCockpitFolds) {
   window.agentsCockpitFolds = true;
-  const textSelector = `.${classes.clip} > pre, .${classes.message_clip} > .markdown`;
+  const textSelector = `.${classes.clip} > pre, .${classes.message_clip} > .${classes.markdown}`;
   // Where each screen line of the text ends, from the text's top. A table row's cells overlap
   // and count as one line.
   const lineBottoms = (text) => {
@@ -88,7 +91,7 @@ if (!window.agentsCockpitFolds) {
     if (row === null) {
       return;
     }
-    const kept = parseInt(getComputedStyle(row).getPropertyValue("--fold-lines"), 10);
+    const kept = parseInt(getComputedStyle(row).getPropertyValue(classes.lines_property), 10);
     let hidden;
     if (row.matches(`.${classes.message_row}`)) {
       const bottoms = lineBottoms(text);
@@ -663,7 +666,7 @@ fn UserBubble(agent: AgentId, folder: PathBuf, message: UserMessage) -> Element 
             if !message.text.is_empty() {
                 div {
                     class: "user-bubble {MESSAGE_ROW_CLASS}{state}",
-                    style: "--fold-lines: {MESSAGE_FOLD_LINES}",
+                    style: "{FOLD_LINES_PROPERTY}: {MESSAGE_FOLD_LINES}",
                     div { class: MESSAGE_CLIP_CLASS,
                         MarkdownView { agent, folder, markdown: message.text }
                     }
@@ -950,6 +953,8 @@ struct FoldClasses {
     label: &'static str,
     message_row: &'static str,
     message_clip: &'static str,
+    markdown: &'static str,
+    lines_property: &'static str,
 }
 
 const FOLD_CLASSES: FoldClasses = FoldClasses {
@@ -958,6 +963,8 @@ const FOLD_CLASSES: FoldClasses = FoldClasses {
     label: FOLD_LABEL_CLASS,
     message_row: MESSAGE_ROW_CLASS,
     message_clip: MESSAGE_CLIP_CLASS,
+    markdown: MARKDOWN_CLASS,
+    lines_property: FOLD_LINES_PROPERTY,
 };
 
 fn start_fold_script() {
@@ -977,7 +984,7 @@ fn IoRow(kind: IoKind, text: String) -> Element {
     rsx! {
         div {
             class: "{IO_ROW_CLASS} {kind.class()}{state}",
-            style: "--fold-lines: {kind.fold_lines()}",
+            style: "{FOLD_LINES_PROPERTY}: {kind.fold_lines()}",
             span { class: "io-label", "{kind.label()}" }
             div { class: "io-text",
                 div { class: IO_CLIP_CLASS,
@@ -1669,6 +1676,8 @@ mod tests {
                 "label": "fold-more",
                 "message_row": "message-fold",
                 "message_clip": "message-clip",
+                "markdown": "markdown",
+                "lines_property": "--fold-lines",
             })
         );
     }
