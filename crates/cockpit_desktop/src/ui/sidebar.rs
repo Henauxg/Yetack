@@ -743,16 +743,16 @@ fn ConnectionFooter() -> Element {
                     class: "foot-accounts",
                     title: "The machines the app reaches",
                     onclick: move |_| cockpit.update(machines::open_machines),
-                    Icon { kind: IconKind::Server, size: 13 }
+                    Icon { kind: IconKind::Server, size: 14 }
                     "Machines"
                 }
                 span { class: "spacer" }
                 button {
-                    class: if settings_open { "foot-accounts foot-settings pressed" } else { "foot-accounts foot-settings" },
+                    class: if settings_open { "icon-button foot-settings pressed" } else { "icon-button foot-settings" },
                     title: "Settings",
                     aria_label: "Settings",
                     onclick: move |_| cockpit.update(settings::open),
-                    Icon { kind: IconKind::Gear, size: 15 }
+                    Icon { kind: IconKind::Gear, size: 16 }
                 }
             }
             if let Some(Shown { value: ConnectionLine { class, line, detail }, leaving, .. }) = trouble {
