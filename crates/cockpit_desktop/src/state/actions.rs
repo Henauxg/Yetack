@@ -991,7 +991,7 @@ fn with_command(text: &str, name: &str) -> String {
 }
 
 /// An index moved by one, staying within `count` items.
-fn moved(index: usize, count: usize, direction: Direction) -> usize {
+pub(super) fn moved(index: usize, count: usize, direction: Direction) -> usize {
     let last = count.saturating_sub(1);
     match direction {
         Direction::Down => index.saturating_add(1).min(last),
@@ -1379,6 +1379,10 @@ pub fn show_read_file(
 pub fn close_file_view(state: &mut AppState, agent: AgentId) {
     state.ui.file_views.remove(&agent);
     state.ui.badge = None;
+    state
+        .ui
+        .popover
+        .take_if(|popover| *popover == Popover::FileList);
     if let Some(entry) = state.agents.get_mut(&agent) {
         entry.files.clear();
     }

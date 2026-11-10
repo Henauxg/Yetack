@@ -80,6 +80,14 @@ pub struct SwitcherDraft {
     pub highlighted: usize,
 }
 
+/// The file view's list of open files, while it is open.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FileListDraft {
+    pub query: String,
+    /// An index into the files the query leaves.
+    pub highlighted: usize,
+}
+
 /// The "Open file" dialog's path field, while it is open.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct OpenFileDraft {
@@ -110,6 +118,7 @@ pub struct Drafts {
     pub add_account: AddAccountDraft,
     pub switcher: SwitcherDraft,
     pub open_file: OpenFileDraft,
+    pub file_list: FileListDraft,
 }
 
 impl Drafts {

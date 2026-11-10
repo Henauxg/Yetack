@@ -12,6 +12,7 @@ mod composer;
 mod daemon_update;
 mod dialogs;
 mod emoji_picker;
+mod file_list;
 mod file_view;
 mod header;
 mod icons;

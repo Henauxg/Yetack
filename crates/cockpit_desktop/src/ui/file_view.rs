@@ -10,9 +10,10 @@ use dioxus::prelude::*;
 use crate::connection::Cockpit;
 use crate::path_style::PathStyle;
 use crate::render::{self, Diff, Language, MAX_RENDERED_LINES, diff_lines};
-use crate::state::{FileRead, Loadable, ViewMode, actions, file_edits};
+use crate::state::{FileRead, Loadable, Popover, ViewMode, actions, file_edits};
 use crate::ui::changes_list;
 use crate::ui::code::{CopyButton, LineNumbers, diff_line, diff_row, lines_not_shown};
+use crate::ui::file_list::FileListButton;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::splitter::FILE_VIEW_ID;
 use crate::{bridge, format};
@@ -20,8 +21,8 @@ use crate::{bridge, format};
 /// The shown tab's id, which keeps it in view in a long row of tabs.
 const SHOWN_TAB_ID: &str = "file-tab-shown";
 
-/// With Ctrl, closes the shown tab.
-const CLOSE_TAB_KEY: &str = "w";
+/// With Ctrl, closes the shown tab, or the highlighted file in the list of open files.
+pub const CLOSE_TAB_KEY: &str = "w";
 
 /// Unchanged lines kept around each change of the file view's diff.
 const FILE_DIFF_CONTEXT: usize = 3;
@@ -42,6 +43,8 @@ pub fn FileViewPanel() -> Element {
     };
     let folder = &entry.summary.folder;
     let tabs = view.tabs(&entry.changed_paths());
+    let tab_count = tabs.len();
+    let list_open = state.ui.popover == Some(Popover::FileList);
     let text = entry.files.get(&view.path).cloned().unwrap_or_default();
     let edits: Vec<FileEdit> = file_edits::edits_for(&entry.transcript, folder, &view.path)
         .into_iter()
@@ -95,6 +98,7 @@ pub fn FileViewPanel() -> Element {
                         }
                     }
                 }
+                FileListButton { agent, count: tab_count, open: list_open }
                 button {
                     class: "icon-button",
                     aria_label: "Close the file view",
@@ -298,10 +302,22 @@ impl ShortPath {
             rest: style.shown(&rest).into_owned(),
         }
     }
+
+    /// The file's name, and the folders before it, the outside folder first, without the last
+    /// separator.
+    pub fn name_and_folders(&self) -> (&str, String) {
+        let cut = self
+            .rest
+            .rfind(['/', '\\'])
+            .map_or(0, |separator| separator + 1);
+        let (folders, name) = self.rest.split_at(cut);
+        let folders = format!("{}{folders}", self.root.as_deref().unwrap_or_default());
+        (name, folders.trim_end_matches(['/', '\\']).to_owned())
+    }
 }
 
 /// A tab's path in full, as its tooltip shows it.
-fn full_path(folder: &Path, tab: &Path) -> String {
+pub fn full_path(folder: &Path, tab: &Path) -> String {
     let style = PathStyle::of(folder);
     let tab = tab.to_string_lossy();
     let full = if style.is_absolute(&tab) {

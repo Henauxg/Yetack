@@ -10,6 +10,7 @@ pub mod daemon_update;
 mod drafts;
 mod export;
 pub mod file_edits;
+pub mod file_list;
 pub mod folder_field;
 pub mod machine_load;
 pub mod machines;
