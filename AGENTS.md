@@ -31,6 +31,7 @@ Several agent sessions work on this repository at once.
   Every crate is application code.
 - Review skills: `/review` (correctness), `/review-standard` (the coding standard), `/review-architecture`.
   They were written for another project: where they name its specs or its trust model, use this repository's instead (docs/plan.md, "Security").
+- After a feature or a fix, before it is merged: run `/review fix`, then `/review-standard fix`, and commit their fixes on the branch.
 - Nothing private goes in this repository: no host names, user names, home paths, emails, tokens, or captured agent output.
   Test fixtures are written by hand with made-up paths, ids and text.
 - A prompt never goes to `claude` as a command-line argument: other users of the machine can read arguments.
