@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use cockpit_protocol::{
     AccountId, AccountState, AgentId, CostUsd, Frame, PermissionMode, Request, ResponseResult, Seq,
-    Snapshot, Timestamp,
+    SignIn, Snapshot, Timestamp,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -57,12 +57,20 @@ pub(crate) enum HubInput {
         copied: Result<(), String>,
         reply: Reply,
     },
+    /// The periodic check read the accounts' folders. `None` when it could not run.
+    SignInsChecked(Option<SignInCheck>),
     /// The cost Claude Code restored as one of the agent's processes resumed its session.
     RestoredCost {
         agent: AgentId,
         generation: u32,
         cost: CostUsd,
     },
+}
+
+/// Whether each account is signed in, and when its login was written.
+pub(crate) struct SignInCheck {
+    pub(crate) sign_ins: Vec<(AccountId, SignIn)>,
+    pub(crate) logins: Vec<AccountLogin>,
 }
 
 /// When an account's login was last written.

@@ -2316,3 +2316,50 @@ async fn an_agent_without_a_login_needs_you_until_its_account_signs_in() {
     assert_eq!(waiting.pending_count, 0);
     assert_eq!(signed_in.status, AgentStatus::Idle);
 }
+
+/// The daemon checks the accounts' folders on its own: no client has to ask `accounts.list`.
+#[tokio::test]
+async fn a_sign_in_ends_the_wait_and_tells_the_clients_without_a_check() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let folder = setup.temp.path().join("claude-work");
+    let work = client
+        .add_account("Work", Some(&folder), CredentialSource::SignIn)
+        .await;
+    let agent = client
+        .start_with(&setup.work(), "nologin", work.account.id)
+        .await;
+    client
+        .wait_for(|event| match event {
+            Event::AgentUpdated(summary)
+                if summary.id == agent && summary.sign_in_wait == SignInWait::Waiting =>
+            {
+                Some(())
+            }
+            _ => None,
+        })
+        .await;
+
+    // The login must be written after the failed turn, on a clock that counts milliseconds.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join(".credentials.json"), "{}").unwrap();
+    let mut accounts_changed = false;
+    let mut signed_in = None;
+    while !accounts_changed || signed_in.is_none() {
+        match client.next_event().await.event {
+            Event::AccountsChanged { .. } => accounts_changed = true,
+            Event::AgentUpdated(summary)
+                if summary.id == agent && summary.sign_in_wait == SignInWait::NotWaiting =>
+            {
+                signed_in = Some(summary);
+            }
+            _ => {}
+        }
+    }
+
+    assert_eq!(
+        signed_in.map(|summary| summary.status),
+        Some(AgentStatus::Idle)
+    );
+}
