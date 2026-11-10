@@ -19,7 +19,9 @@ use crate::ui::no_daemon::NoDaemonScreen;
 use crate::ui::presence::use_presence;
 use crate::ui::reorder::use_reorder;
 use crate::ui::sidebar::Sidebar;
-use crate::ui::splitter::{APP_ID, SHARE_PROPERTY, Splitter, use_splitter};
+use crate::ui::splitter::{
+    APP_ID, SHARE_PROPERTY, SIDEBAR_WIDTH_PROPERTY, SidebarSplitter, Splitter, use_splitter,
+};
 use crate::ui::transcript::TranscriptView;
 
 #[component]
@@ -76,9 +78,11 @@ pub fn App() -> Element {
         ConnectionState::Disconnected { .. }
     );
     let share = state.prefs.file_view.share();
+    let sidebar_width = state.prefs.sidebar.width();
     rsx! {
-        div { id: APP_ID, class: app_class, style: "{SHARE_PROPERTY}: {share}",
+        div { id: APP_ID, class: app_class, style: "{SHARE_PROPERTY}: {share}; {SIDEBAR_WIDTH_PROPERTY}: {sidebar_width}px",
             Sidebar {}
+            SidebarSplitter { width: sidebar_width }
             main { class: if file_view_open { "center narrow-chat" } else { "center" },
                 Header {}
                 if disconnected {

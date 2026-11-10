@@ -605,7 +605,8 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
   A path tells its machine by its root: an agent's folder starts with a drive or `\\` on Windows, and with `/` on Unix.
   The new agent dialog's folder field has no agent: it takes the daemon's machine, Unix over SSH (only Unix runs `agents-cockpit bridge`) and the app's own platform otherwise.
   Ctrl+O, the folder field, the changes list, the file view's tabs and short paths, markdown file links and `path:line` references, the header, the switcher and the recent folders follow these rules.
-- **Preferences**: `$XDG_STATE_HOME/agents-cockpit-desktop/prefs.json` (default `~/.local/state/agents-cockpit-desktop/`), on the machine the app runs on, keeps one viewer's choices: the file view's width and its wrap toggle, the sidebar's status filter, and the accounts' colors.
+- **Preferences**: `$XDG_STATE_HOME/agents-cockpit-desktop/prefs.json` (default `~/.local/state/agents-cockpit-desktop/`), on the machine the app runs on, keeps one viewer's choices: the file view's width and its wrap toggle, the sidebar's status filter and width, and the accounts' colors.
+- **Splitters** (`ui/splitter.rs`): a line on the sidebar's right edge and one on the file view's left edge resize them, by a drag or the Left and Right keys, and a double-click gives back the default width. The sidebar keeps a width in pixels, from 200 to 480 and at most 40% of the window. The file view keeps a share of the window. One page script follows the drag, and Rust hears of the new size once, on release.
   A missing or broken file means the defaults.
 - **State**: `AppState` holds the summaries, the open transcripts, the plan usage and the UI state (selected agent, unread agents, open blocks).
   A pure function `apply(&mut AppState, Event)` updates it, so the state logic is tested without a window.

@@ -1,64 +1,81 @@
-//! The line between the chat and the file view, which a drag or the arrow keys move.
+//! The lines that size the panes beside the chat: the sidebar's on its right edge and the file
+//! view's on its left edge. A drag or the arrow keys move them.
 //!
-//! While the pointer moves, the page's script sets the file view's share of the window in a CSS
-//! custom property, and Rust hears of it once, when the button is released: a render of the
-//! window per mouse move would make it lag.
+//! While the pointer moves, the page's script sets the pane's size in a CSS custom property on the
+//! window's root, and Rust hears of it once, when the button is released: a render of the window
+//! per mouse move would make it lag.
 
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::connection::Cockpit;
+use crate::prefs::{MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH};
 use crate::state::actions;
 
-/// The window's root element, which holds `SHARE_PROPERTY`.
+/// The window's root element, which holds each pane's property.
 pub const APP_ID: &str = "app";
 
 pub const FILE_VIEW_ID: &str = "file-view";
 
-const SPLITTER_ID: &str = "splitter";
+pub const SIDEBAR_ID: &str = "sidebar";
 
 /// The CSS custom property that holds the file view's share of the window's width.
 pub const SHARE_PROPERTY: &str = "--file-view-share";
 
-/// How far an arrow key moves the splitter, as a share of the window's width.
-const KEY_STEP: f64 = 0.02;
+/// The CSS custom property that holds the sidebar's width.
+pub const SIDEBAR_WIDTH_PROPERTY: &str = "--sidebar-width";
 
-/// Waits for its settings, then moves the splitter and sends the file view's share as the layout
-/// gave it, which the stylesheet's minimum widths may have changed. Field names are serde's names
-/// for `Settings` and `Moved`.
+/// How far an arrow key moves the file view's splitter, as a share of the window's width.
+const SHARE_KEY_STEP: f64 = 0.02;
+
+/// How far an arrow key moves the sidebar's splitter, in pixels.
+const SIDEBAR_KEY_STEP: f64 = 16.0;
+
+/// Waits for its settings, then moves the splitters and sends a pane's size as the layout gave it,
+/// which the style sheet's bounds may have changed. Field names are serde's names for `Settings`,
+/// `SplitterSettings` and `Moved`.
 const SCRIPT: &str = r#"
 const settings = await dioxus.recv();
 const byId = (id) => document.getElementById(id);
 const width = (element) => element.getBoundingClientRect().width;
-const place = (share) => {
+// The pane's size in the splitter's unit, from its width in pixels.
+const size = (splitter, paneWidth) => {
+  const app = byId(settings.app_id);
+  return splitter.unit === "share" ? paneWidth / width(app) : paneWidth;
+};
+const place = (splitter, value) => {
   const app = byId(settings.app_id);
   if (app !== null) {
-    app.style.setProperty(settings.property, String(share));
+    app.style.setProperty(splitter.property, splitter.unit === "share" ? String(value) : `${value}px`);
   }
 };
-const commit = () => {
-  const app = byId(settings.app_id);
-  const pane = byId(settings.file_view_id);
-  if (app === null || pane === null) {
+const commit = (splitter) => {
+  const pane = byId(splitter.pane_id);
+  if (byId(settings.app_id) === null || pane === null) {
     return;
   }
-  const share = width(pane) / width(app);
-  place(share);
-  dioxus.send({ share });
+  const value = size(splitter, width(pane));
+  place(splitter, value);
+  dioxus.send({ pane: splitter.pane, value });
 };
-const isSplitter = (target) => target instanceof Element && target.id === settings.splitter_id;
+const splitterOf = (target) => target instanceof Element
+  ? settings.splitters.find((splitter) => splitter.splitter_id === target.id)
+  : undefined;
+// +1 when a move of the pointer to the right widens the pane.
+const growth = (splitter) => splitter.pane_side === "left" ? 1 : -1;
 let drag = null;
 let frame = 0;
 const follow = () => {
   frame = 0;
   if (drag !== null) {
-    place((drag.startWidth + drag.startX - drag.x) / drag.appWidth);
+    const paneWidth = drag.startWidth + growth(drag.splitter) * (drag.x - drag.startX);
+    place(drag.splitter, size(drag.splitter, paneWidth));
   }
 };
 document.addEventListener("pointerdown", (event) => {
-  const app = byId(settings.app_id);
-  const pane = byId(settings.file_view_id);
-  if (!isSplitter(event.target) || event.button !== 0 || app === null || pane === null) {
+  const splitter = splitterOf(event.target);
+  const pane = splitter === undefined ? null : byId(splitter.pane_id);
+  if (splitter === undefined || event.button !== 0 || byId(settings.app_id) === null || pane === null) {
     return;
   }
   // Without this, the drag selects the chat's text. The focus it would give is given here, so
@@ -68,14 +85,14 @@ document.addEventListener("pointerdown", (event) => {
   event.target.setPointerCapture(event.pointerId);
   drag = {
     pointer: event.pointerId,
-    splitter: event.target,
+    element: event.target,
+    splitter,
     startX: event.clientX,
     startWidth: width(pane),
-    appWidth: width(app),
     x: event.clientX,
     moved: false,
   };
-  drag.splitter.classList.add("dragging");
+  drag.element.classList.add("dragging");
   document.documentElement.classList.add("splitting");
 });
 document.addEventListener("pointermove", (event) => {
@@ -94,69 +111,153 @@ const end = (event) => {
   }
   cancelAnimationFrame(frame);
   follow();
-  const { splitter, moved } = drag;
+  const { element, splitter, moved } = drag;
   drag = null;
-  splitter.classList.remove("dragging");
-  document.documentElement.classList.remove("splitting");
+  // Measured while `splitting` still turns the transitions off: with them on, the last move would
+  // start one and the pane would measure its width before the move.
   if (moved) {
-    commit();
+    commit(splitter);
   }
+  element.classList.remove("dragging");
+  document.documentElement.classList.remove("splitting");
 };
 document.addEventListener("pointerup", end);
 document.addEventListener("pointercancel", end);
 document.addEventListener("keydown", (event) => {
-  const direction = { ArrowLeft: 1, ArrowRight: -1 }[event.key];
-  const app = byId(settings.app_id);
-  const pane = byId(settings.file_view_id);
+  const splitter = splitterOf(event.target);
+  const direction = { ArrowLeft: -1, ArrowRight: 1 }[event.key];
+  const pane = splitter === undefined ? null : byId(splitter.pane_id);
   const plain = !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey;
-  if (!isSplitter(event.target) || direction === undefined || !plain || app === null || pane === null) {
+  if (splitter === undefined || direction === undefined || !plain || byId(settings.app_id) === null || pane === null) {
     return;
   }
   event.preventDefault();
-  place(width(pane) / width(app) + direction * settings.key_step);
-  commit();
+  // A step is immediate, as a drag is: the commit measures the pane, and a transition would give
+  // its width before the step.
+  const root = document.documentElement;
+  root.classList.add("splitting");
+  place(splitter, size(splitter, width(pane)) + growth(splitter) * direction * splitter.key_step);
+  commit(splitter);
+  requestAnimationFrame(() => {
+    if (drag === null) {
+      root.classList.remove("splitting");
+    }
+  });
 });
 await new Promise(() => {});
 "#;
 
+/// A pane a splitter sizes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Pane {
+    Sidebar,
+    FileView,
+}
+
+/// What a pane's size counts.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum Unit {
+    /// A share of the window's width, between 0 and 1.
+    Share,
+    Pixels,
+}
+
+/// Which side of its splitter a pane is on.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum Side {
+    Left,
+    Right,
+}
+
 #[derive(Debug, Serialize)]
-struct Settings {
+struct SplitterSettings {
+    pane: Pane,
     splitter_id: &'static str,
-    app_id: &'static str,
-    file_view_id: &'static str,
+    pane_id: &'static str,
     property: &'static str,
+    unit: Unit,
+    pane_side: Side,
+    /// In the pane's unit.
     key_step: f64,
 }
 
-/// The splitter moved: the file view's share of the window's width.
-#[derive(Debug, Deserialize)]
-struct Moved {
-    share: f64,
+#[derive(Debug, Serialize)]
+struct Settings {
+    app_id: &'static str,
+    splitters: [SplitterSettings; 2],
 }
 
-/// Runs the splitter's script for the window's life. It finds the splitter by its id, so it keeps
+/// A splitter moved: its pane's size in the pane's unit.
+#[derive(Debug, Deserialize)]
+struct Moved {
+    pane: Pane,
+    value: f64,
+}
+
+impl Pane {
+    fn splitter_id(self) -> &'static str {
+        match self {
+            Self::Sidebar => "sidebar-splitter",
+            Self::FileView => "splitter",
+        }
+    }
+
+    fn settings(self) -> SplitterSettings {
+        let (pane_id, property, unit, pane_side, key_step) = match self {
+            Self::Sidebar => (
+                SIDEBAR_ID,
+                SIDEBAR_WIDTH_PROPERTY,
+                Unit::Pixels,
+                Side::Left,
+                SIDEBAR_KEY_STEP,
+            ),
+            Self::FileView => (
+                FILE_VIEW_ID,
+                SHARE_PROPERTY,
+                Unit::Share,
+                Side::Right,
+                SHARE_KEY_STEP,
+            ),
+        };
+        SplitterSettings {
+            pane: self,
+            splitter_id: self.splitter_id(),
+            pane_id,
+            property,
+            unit,
+            pane_side,
+            key_step,
+        }
+    }
+}
+
+fn settings() -> Settings {
+    Settings {
+        app_id: APP_ID,
+        splitters: [Pane::Sidebar.settings(), Pane::FileView.settings()],
+    }
+}
+
+/// Runs the splitters' script for the window's life. It finds a splitter by its id, so it keeps
 /// working as the file view opens and closes.
 pub fn use_splitter(cockpit: Cockpit) {
     use_hook(|| {
         let mut script = document::eval(SCRIPT);
-        let settings = Settings {
-            splitter_id: SPLITTER_ID,
-            app_id: APP_ID,
-            file_view_id: FILE_VIEW_ID,
-            property: SHARE_PROPERTY,
-            key_step: KEY_STEP,
-        };
-        if let Err(error) = script.send(settings) {
-            tracing::warn!("cannot start the splitter's script: {error}");
+        if let Err(error) = script.send(settings()) {
+            tracing::warn!("cannot start the splitters' script: {error}");
         }
         spawn(async move {
             loop {
                 match script.recv::<Moved>().await {
-                    Ok(Moved { share }) => {
-                        cockpit.update(|state| actions::set_file_view_share(state, share));
-                    }
+                    Ok(Moved { pane, value }) => cockpit.update(|state| match pane {
+                        Pane::Sidebar => actions::set_sidebar_width(state, value),
+                        Pane::FileView => actions::set_file_view_share(state, value),
+                    }),
                     Err(error) => {
-                        tracing::warn!("the splitter's script stopped: {error}");
+                        tracing::warn!("the splitters' script stopped: {error}");
                         return;
                     }
                 }
@@ -165,14 +266,14 @@ pub fn use_splitter(cockpit: Cockpit) {
     });
 }
 
-/// `share` is the file view's share of the window's width.
+/// The file view's splitter. `share` is the file view's share of the window's width.
 #[component]
 pub fn Splitter(share: f64) -> Element {
     let cockpit: Cockpit = use_context();
     let percent = (share * 100.0).round();
     rsx! {
         div {
-            id: SPLITTER_ID,
+            id: Pane::FileView.splitter_id(),
             class: "splitter",
             role: "separator",
             tabindex: 0,
@@ -187,6 +288,27 @@ pub fn Splitter(share: f64) -> Element {
     }
 }
 
+/// The sidebar's splitter, on its right edge. `width` is the sidebar's width in pixels.
+#[component]
+pub fn SidebarSplitter(width: u16) -> Element {
+    let cockpit: Cockpit = use_context();
+    rsx! {
+        div {
+            id: Pane::Sidebar.splitter_id(),
+            class: "splitter",
+            role: "separator",
+            tabindex: 0,
+            aria_orientation: "vertical",
+            aria_label: "Sidebar width",
+            aria_valuemin: MIN_SIDEBAR_WIDTH,
+            aria_valuemax: MAX_SIDEBAR_WIDTH,
+            aria_valuenow: width,
+            title: "Drag to resize the sidebar, double-click for its default width",
+            ondoubleclick: move |_| cockpit.update(actions::reset_sidebar_width),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -197,25 +319,34 @@ mod tests {
     /// with no error.
     #[test]
     fn the_fields_the_script_reads_and_writes_are_pinned() {
-        let settings = Settings {
-            splitter_id: SPLITTER_ID,
-            app_id: APP_ID,
-            file_view_id: FILE_VIEW_ID,
-            property: SHARE_PROPERTY,
-            key_step: KEY_STEP,
-        };
-
         assert_eq!(
-            serde_json::to_value(settings).unwrap(),
+            serde_json::to_value(settings()).unwrap(),
             json!({
-                "splitter_id": "splitter",
                 "app_id": "app",
-                "file_view_id": "file-view",
-                "property": "--file-view-share",
-                "key_step": 0.02,
+                "splitters": [
+                    {
+                        "pane": "sidebar",
+                        "splitter_id": "sidebar-splitter",
+                        "pane_id": "sidebar",
+                        "property": "--sidebar-width",
+                        "unit": "pixels",
+                        "pane_side": "left",
+                        "key_step": 16.0,
+                    },
+                    {
+                        "pane": "file_view",
+                        "splitter_id": "splitter",
+                        "pane_id": "file-view",
+                        "property": "--file-view-share",
+                        "unit": "share",
+                        "pane_side": "right",
+                        "key_step": 0.02,
+                    },
+                ],
             })
         );
-        let moved: Moved = serde_json::from_str(r#"{"share":0.4375}"#).unwrap();
-        assert_eq!(moved.share, 0.4375);
+        let moved: Moved = serde_json::from_str(r#"{"pane":"file_view","value":0.4375}"#).unwrap();
+        assert_eq!(moved.pane, Pane::FileView);
+        assert_eq!(moved.value, 0.4375);
     }
 }

@@ -431,16 +431,18 @@ button:disabled {
 
 /* Sidebar. */
 
+/* Its width is `--sidebar-width` on the app, which its splitter sets. The splitter draws its right
+   edge. */
 .sidebar {
-  flex: 0 0 248px;
-  min-width: 0;
+  flex: 0 0 var(--sidebar-width);
+  min-width: 200px;
+  max-width: min(480px, 40%);
   min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
   padding: 12px 8px;
   background: var(--sidebar);
-  border-right: 1px solid var(--line);
 }
 
 .sidebar-head {
@@ -6284,6 +6286,16 @@ label.icon-button,
 .center.narrow-chat .last-instruction,
 .center:not(.narrow-chat):has(.block-card.wide) .last-instruction {
   transition: right var(--motion-in) var(--ease-out);
+}
+
+/* A double-click on its splitter gives the sidebar its default width. A drag or an arrow key moves
+   it at once. */
+.sidebar {
+  transition: flex-basis var(--motion-in) var(--ease-out);
+}
+
+html.splitting .sidebar {
+  transition: none;
 }
 
 .block-card {

@@ -1412,6 +1412,23 @@ pub fn reset_file_view_share(state: &mut AppState) {
     state.prefs.file_view.width_share = None;
 }
 
+/// Keeps the sidebar's width, in pixels, where its splitter left it. The page sends it: a width
+/// the style sheet's bounds would not give is ignored.
+pub fn set_sidebar_width(state: &mut AppState, width: f64) {
+    let rounded = width.round();
+    let bounds = f64::from(prefs::MIN_SIDEBAR_WIDTH)..=f64::from(prefs::MAX_SIDEBAR_WIDTH);
+    if !bounds.contains(&rounded) {
+        tracing::warn!("ignored a sidebar width of {width} pixels");
+        return;
+    }
+    // Within the bounds, the cast keeps the value.
+    state.prefs.sidebar.width = Some(rounded as u16);
+}
+
+pub fn reset_sidebar_width(state: &mut AppState) {
+    state.prefs.sidebar.width = None;
+}
+
 /// Folds or unfolds a floating block, or opens its badge's popover while the file view is open.
 /// Opening the MCP servers asks Claude Code for their status.
 pub fn toggle_block(state: &mut AppState, agent: AgentId, block: Block) -> Vec<Outgoing> {
@@ -4446,6 +4463,23 @@ mod tests {
         reset_file_view_share(&mut state);
         assert_eq!(state.prefs.file_view.width_share, None);
         assert_eq!(state.prefs.file_view.share(), default);
+    }
+
+    #[test]
+    fn the_sidebar_splitter_keeps_a_width_and_double_click_resets_it() {
+        let mut state = state(AgentStatus::Idle);
+
+        set_sidebar_width(&mut state, 311.6);
+        assert_eq!(state.prefs.sidebar.width, Some(312));
+
+        for refused in [199.4, 480.6, -5.0, 1e9, f64::NAN, f64::INFINITY] {
+            set_sidebar_width(&mut state, refused);
+            assert_eq!(state.prefs.sidebar.width, Some(312), "{refused}");
+        }
+
+        reset_sidebar_width(&mut state);
+        assert_eq!(state.prefs.sidebar.width, None);
+        assert_eq!(state.prefs.sidebar.width(), prefs::DEFAULT_SIDEBAR_WIDTH);
     }
 
     #[test]
