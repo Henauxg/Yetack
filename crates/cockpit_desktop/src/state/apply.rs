@@ -2,7 +2,7 @@
 //! the returned alerts.
 
 use std::error::Error;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use cockpit_client::SessionUpdate;
 use cockpit_protocol::{
@@ -16,6 +16,10 @@ use super::drafts::Drafts;
 use super::transcript::KEPT_ITEMS_AWAY;
 use super::{actions, daemon_update};
 use crate::machine::MachineId;
+
+/// How long the app waits to announce that an idle agent's last background task ended. Claude
+/// Code usually starts a turn to read the task's result, and that turn's end is the finish.
+const FINISH_HOLD: Duration = Duration::from_secs(10);
 
 /// A desktop notification to show.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +69,7 @@ pub fn apply_update(
         }
         SessionUpdate::Event(record) => {
             note_turn_start(state, &record.event, now);
+            hold_finish(state, &record.event, now);
             apply(state, drafts, record, machine).into_iter().collect()
         }
     }
@@ -298,8 +303,6 @@ fn update_agent(state: &mut AppState, summary: AgentSummary) -> Option<Alert> {
     if state.ui.closing.contains(&agent) {
         return None;
     }
-    let selected = state.ui.selected == Some(agent);
-    let looked_at = selected && state.ui.window_focused;
     let account_name = accounts::account(state, MachineId::of(agent), summary.account)
         .map(|account| account.name.clone());
     let Some(entry) = state.agents.get_mut(&agent) else {
@@ -307,7 +310,6 @@ fn update_agent(state: &mut AppState, summary: AgentSummary) -> Option<Alert> {
         return None;
     };
     let before = entry.summary.status;
-    let background_before = entry.summary.background_running;
     entry.summary = summary;
     let summary = &entry.summary;
     let after = summary.status;
@@ -329,13 +331,64 @@ fn update_agent(state: &mut AppState, summary: AgentSummary) -> Option<Alert> {
             body,
         });
     }
-    // An agent finishes once its turn and its background tasks have both ended.
-    let was_busy = matches!(before, AgentStatus::Working | AgentStatus::NeedsYou)
-        || (before == AgentStatus::Idle && background_before > 0);
-    let finished = after == AgentStatus::Idle && summary.background_running == 0 && was_busy;
-    if !finished {
-        return None;
+    // A turn that ends while background tasks run finishes later, through `hold_finish`.
+    let was_busy = matches!(before, AgentStatus::Working | AgentStatus::NeedsYou);
+    if after == AgentStatus::Idle && summary.background_running == 0 && was_busy {
+        finished(state, agent)
+    } else {
+        None
     }
+}
+
+/// Holds the finish of an idle agent whose last background task ends, until [`FINISH_HOLD`] has
+/// passed: [`release_finishes`] announces it then. Any other status drops the hold.
+fn hold_finish(state: &mut AppState, event: &Event, now: Instant) {
+    let Event::AgentUpdated(summary) = event else {
+        return;
+    };
+    let Some(entry) = state.agents.get_mut(&summary.id) else {
+        return;
+    };
+    let idle = |summary: &AgentSummary| summary.status == AgentStatus::Idle;
+    if !idle(summary) || summary.background_running > 0 {
+        entry.finish_due = None;
+    } else if idle(&entry.summary) && entry.summary.background_running > 0 {
+        entry.finish_due = Some(now.checked_add(FINISH_HOLD).unwrap_or(now));
+    }
+}
+
+/// When the next held finish of `machine`'s agents is due.
+pub fn next_finish_due(state: &AppState, machine: MachineId) -> Option<Instant> {
+    state
+        .agents
+        .iter()
+        .filter(|(agent, _)| MachineId::of(**agent) == machine)
+        .filter_map(|(_, entry)| entry.finish_due)
+        .min()
+}
+
+/// Announces the held finishes of `machine`'s agents that are due at `now`.
+pub fn release_finishes(state: &mut AppState, machine: MachineId, now: Instant) -> Vec<Alert> {
+    let due: Vec<AgentId> = state
+        .agents
+        .iter_mut()
+        .filter(|(agent, _)| MachineId::of(**agent) == machine)
+        .filter_map(|(agent, entry)| entry.finish_due.take_if(|due| *due <= now).map(|_| *agent))
+        .collect();
+    let mut alerts = Vec::new();
+    for agent in due {
+        if !state.ui.closing.contains(&agent) {
+            alerts.extend(finished(state, agent));
+        }
+    }
+    alerts
+}
+
+/// Marks the finished agent unread unless it is selected, and announces it unless you look at it.
+fn finished(state: &mut AppState, agent: AgentId) -> Option<Alert> {
+    let selected = state.ui.selected == Some(agent);
+    let looked_at = selected && state.ui.window_focused;
+    let summary = &state.agents.get(&agent)?.summary;
     let mut body = summary.activity.clone().unwrap_or_default();
     if let Some(progress) = summary.task_progress {
         if !body.is_empty() {
@@ -533,30 +586,78 @@ mod tests {
         assert!(state.is_unread(AgentId::new(1)));
     }
 
+    /// Applies an update of agent 1 at `now`, with `background_running` tasks.
+    fn update_at(
+        state: &mut AppState,
+        status: AgentStatus,
+        background_running: u16,
+        now: Instant,
+    ) -> Vec<Alert> {
+        let mut summary = with_status(1, status);
+        summary.background_running = background_running;
+        apply_update(
+            state,
+            &mut Drafts::default(),
+            SessionUpdate::Event(record(Event::AgentUpdated(summary))),
+            now,
+            MachineId::THIS,
+        )
+    }
+
     #[test]
-    fn an_agent_finishes_once_its_background_tasks_end_too() {
+    fn an_agent_finishes_a_while_after_its_last_background_task_ends() {
+        let start = Instant::now();
         let mut state = state_with(vec![summary(1, AgentStatus::Working)]);
-        let mut update = |status, background_running| {
-            let mut summary = with_status(1, status);
-            summary.background_running = background_running;
-            apply(
-                &mut state,
-                &mut Drafts::default(),
-                record(Event::AgentUpdated(summary)),
-                MachineId::THIS,
-            )
-        };
 
-        let turn_ended = update(AgentStatus::Idle, 2);
-        let one_left = update(AgentStatus::Idle, 1);
-        let all_ended = update(AgentStatus::Idle, 0);
-        let again = update(AgentStatus::Idle, 0);
+        let turn_ended = update_at(&mut state, AgentStatus::Idle, 2, start);
+        let one_left = update_at(&mut state, AgentStatus::Idle, 1, start);
+        let all_ended = update_at(&mut state, AgentStatus::Idle, 0, start);
+        let due = next_finish_due(&state, MachineId::THIS);
+        let early = release_finishes(&mut state, MachineId::THIS, start);
+        let unread_early = state.is_unread(AgentId::new(1));
+        let late = release_finishes(&mut state, MachineId::THIS, start + FINISH_HOLD);
+        let again = release_finishes(&mut state, MachineId::THIS, start + FINISH_HOLD * 2);
 
-        assert_eq!(turn_ended, None);
-        assert_eq!(one_left, None);
-        assert_eq!(all_ended.map(|alert| alert.kind), Some(AlertKind::Finished));
-        assert_eq!(again, None);
+        assert!(turn_ended.is_empty());
+        assert!(one_left.is_empty());
+        assert!(all_ended.is_empty());
+        assert_eq!(due, Some(start + FINISH_HOLD));
+        assert!(early.is_empty());
+        assert!(!unread_early);
+        assert_eq!(
+            late.iter().map(|alert| alert.kind).collect::<Vec<_>>(),
+            [AlertKind::Finished]
+        );
+        assert!(again.is_empty());
         assert!(state.is_unread(AgentId::new(1)));
+    }
+
+    #[test]
+    fn a_turn_that_reads_the_background_result_takes_the_finish_over() {
+        let start = Instant::now();
+        let mut state = state_with(vec![summary(1, AgentStatus::Working)]);
+        update_at(&mut state, AgentStatus::Idle, 1, start);
+        update_at(&mut state, AgentStatus::Idle, 0, start);
+
+        // Claude Code starts a turn to read the task's result.
+        update_at(
+            &mut state,
+            AgentStatus::Working,
+            0,
+            start + Duration::from_secs(1),
+        );
+        let held = release_finishes(&mut state, MachineId::THIS, start + FINISH_HOLD);
+        let turn_ended = update_at(&mut state, AgentStatus::Idle, 0, start + FINISH_HOLD);
+
+        assert_eq!(next_finish_due(&state, MachineId::THIS), None);
+        assert!(held.is_empty());
+        assert_eq!(
+            turn_ended
+                .iter()
+                .map(|alert| alert.kind)
+                .collect::<Vec<_>>(),
+            [AlertKind::Finished]
+        );
     }
 
     #[test]

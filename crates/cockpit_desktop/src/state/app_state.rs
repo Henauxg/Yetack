@@ -101,6 +101,9 @@ pub struct AgentEntry {
     pub turn_started: Option<Instant>,
     /// The end of the turn whose message the sign-in card sent again: the card sends it once.
     pub sent_again: Option<ItemId>,
+    /// When the app announces the agent's finish, unless a turn starts before. Set when the last
+    /// background task of an idle agent ends.
+    pub finish_due: Option<Instant>,
 }
 
 /// When the agent's running turn started.
@@ -133,6 +136,7 @@ impl AgentEntry {
             commands_requested: false,
             turn_started: None,
             sent_again: None,
+            finish_due: None,
         }
     }
 
