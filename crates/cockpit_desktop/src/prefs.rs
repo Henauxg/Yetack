@@ -659,6 +659,10 @@ mod tests {
                 filter: StatusFilter::Exited,
                 width: Some(220),
             },
+            files_pane: FilesPanePrefs {
+                open: true,
+                width: Some(300),
+            },
             accounts: AccountPrefs::default(),
         };
 
