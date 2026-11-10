@@ -6,14 +6,15 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use cockpit_protocol::AgentId;
+use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 
-use crate::bridge;
 use crate::connection::Cockpit;
 use crate::render::{self, Block, FileRef, Inline, parse_markdown, parse_markdown_file};
 use crate::state::{Loadable, actions, chat_images};
 use crate::ui::code::CodeBlock;
 use crate::ui::icons::{Icon, IconKind};
+use crate::{bridge, browser};
 
 /// A table cell this short keeps to one line: a name, a number or a status reads badly wrapped,
 /// and a table too wide for the column scrolls instead.
@@ -179,9 +180,8 @@ fn inline_view(agent: AgentId, inline: &Inline) -> Element {
         Inline::Strikethrough(content) => rsx! {
             del { {inlines_view(agent, content)} }
         },
-        // The webview opens web links in the system browser.
         Inline::Link { url, content } => rsx! {
-            a { class: "md-link", href: "{url}", {inlines_view(agent, content)} }
+            WebLink { agent, url: url.clone(), content: content.clone() }
         },
         Inline::File(file) => rsx! {
             FileLink { agent, file: file.clone() }
@@ -202,6 +202,31 @@ fn inline_view(agent: AgentId, inline: &Inline) -> Element {
                 }
             }
         },
+    }
+}
+
+/// A link to a web address. The app opens it itself: Dioxus would start the browser with the
+/// app's environment and hide a failure.
+#[component]
+fn WebLink(agent: AgentId, url: String, content: Vec<Inline>) -> Element {
+    let cockpit: Cockpit = use_context();
+    rsx! {
+        a {
+            class: "md-link",
+            href: "{url}",
+            onclick: move |event: MouseEvent| {
+                event.prevent_default();
+                let url = url.clone();
+                // Not tied to the link, which may leave the screen before the opener is done.
+                spawn_forever(async move {
+                    if let Err(error) = browser::open(&url).await {
+                        tracing::warn!("cannot open {url}: {error}");
+                        cockpit.update(|state| state.ui.report(format!("Cannot open {url}: {error}")));
+                    }
+                });
+            },
+            {inlines_view(agent, &content)}
+        }
     }
 }
 

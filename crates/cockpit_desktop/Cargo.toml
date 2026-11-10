@@ -39,6 +39,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 # The parser Dioxus opens links with: an address it cannot parse would open as a local file.
 url = "2.5.8"
+# The browser opener Dioxus uses, where the app does not run `xdg-open` itself.
+webbrowser = "1.2.6"
 
 [dev-dependencies]
 tempfile.workspace = true
