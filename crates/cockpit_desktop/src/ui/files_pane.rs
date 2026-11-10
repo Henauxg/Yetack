@@ -26,6 +26,11 @@ const SEARCH_PAUSE: Duration = Duration::from_millis(300);
 /// How far each level of the tree is indented, in pixels.
 const INDENT: usize = 14;
 
+/// How many characters end a name whatever the pane's width: enough for "component.ts".
+const TAIL_CHARS: usize = 12;
+
+const ZERO_WIDTH_JOINER: char = '\u{200D}';
+
 #[component]
 pub fn FilesPane() -> Element {
     let cockpit: Cockpit = use_context();
@@ -291,6 +296,7 @@ fn TreeRowView(agent: AgentId, row: TreeRow, highlighted: bool, shown: bool) -> 
     let open = matches!(row.kind, RowKind::Folder { open: true, .. });
     let is_folder = matches!(row.kind, RowKind::Folder { .. });
     let full = path_style::shown(&row.path);
+    let (head, tail) = split_tail(&row.name);
     let clicked = row.clone();
     let pointed = row.path.clone();
     let menu_path = row.path.clone();
@@ -332,7 +338,10 @@ fn TreeRowView(agent: AgentId, row: TreeRow, highlighted: bool, shown: bool) -> 
             span { class: "tree-icon", aria_hidden: true,
                 Icon { kind: if is_folder { IconKind::Folder } else { IconKind::File }, size: 14 }
             }
-            span { class: "tree-name", "{row.name}" }
+            span { class: "tree-name",
+                span { class: "tree-name-head", "{head}" }
+                span { class: "tree-name-tail", "{tail}" }
+            }
             if let Some(change) = row.marks.change {
                 span { class: "tree-change mono",
                     span { class: "added", "+{change.added}" }
@@ -473,4 +482,81 @@ fn menu_target(state: &AppState, agent: AgentId, x: i32, y: i32) -> Option<MenuT
         row,
         relative: inside.then_some(relative),
     })
+}
+
+/// `name` cut before its last `TAIL_CHARS` characters, so that a narrow row hides its middle.
+/// The cut moves left past a character that attaches to the one before it: "e" and its accent
+/// stay in the same part.
+fn split_tail(name: &str) -> (&str, &str) {
+    let mut at = name
+        .char_indices()
+        .rev()
+        .nth(TAIL_CHARS - 1)
+        .map_or(0, |(at, _)| at);
+    while let Some((head, tail)) = name.split_at_checked(at)
+        && let (Some(before), Some(after)) = (head.chars().next_back(), tail.chars().next())
+        && (attaches(after) || before == ZERO_WIDTH_JOINER)
+    {
+        at = at.saturating_sub(before.len_utf8());
+    }
+    name.split_at_checked(at).unwrap_or(("", name))
+}
+
+/// Whether `character` shows on the character before it rather than on its own: a combining
+/// accent, a variation selector, a skin tone, or the joiner of an emoji sequence.
+fn attaches(character: char) -> bool {
+    matches!(
+        character,
+        '\u{0300}'..='\u{036F}'
+            | '\u{1AB0}'..='\u{1AFF}'
+            | '\u{1DC0}'..='\u{1DFF}'
+            | '\u{20D0}'..='\u{20FF}'
+            | '\u{FE20}'..='\u{FE2F}'
+            | '\u{FE00}'..='\u{FE0F}'
+            | '\u{1F3FB}'..='\u{1F3FF}'
+            | ZERO_WIDTH_JOINER
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_long_name_keeps_its_end_apart() {
+        assert_eq!(
+            split_tail("settings-panel.component.ts"),
+            ("settings-panel.", "component.ts")
+        );
+    }
+
+    #[test]
+    fn a_short_name_is_all_tail() {
+        assert_eq!(split_tail("lib.rs"), ("", "lib.rs"));
+        assert_eq!(split_tail("component.ts"), ("", "component.ts"));
+    }
+
+    #[test]
+    fn the_cut_keeps_an_accent_on_its_letter() {
+        assert_eq!(
+            split_tail("abe\u{301}0123456789a"),
+            ("ab", "e\u{301}0123456789a")
+        );
+    }
+
+    #[test]
+    fn the_cut_keeps_an_emoji_sequence_whole() {
+        assert_eq!(
+            split_tail("ab\u{1F469}\u{200D}\u{1F4BB}01234567890"),
+            ("ab", "\u{1F469}\u{200D}\u{1F4BB}01234567890")
+        );
+    }
+
+    #[test]
+    fn the_cut_falls_between_characters() {
+        assert_eq!(
+            split_tail("été/ünïcödé_fïlé.rs"),
+            ("été/ünï", "cödé_fïlé.rs")
+        );
+    }
 }

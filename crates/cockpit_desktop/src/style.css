@@ -4836,11 +4836,23 @@ html.splitting * {
   color: var(--dim);
 }
 
+/* A long name loses its middle: the head shrinks, the tail stays whole. */
 .tree-name {
   flex: 1 1 auto;
   min-width: 0;
+  display: flex;
+}
+
+.tree-name-head {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: pre;
+}
+
+.tree-name-tail {
+  flex: none;
+  white-space: pre;
 }
 
 .tree-change {
