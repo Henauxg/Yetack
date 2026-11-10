@@ -18,12 +18,12 @@ use cockpit_protocol::{
     AccountState, AgentDetails, AgentHistory, AgentId, AgentLoad, AgentParams, AgentStatus,
     AgentSummary, Answer, AnswerParams, AnswerState, Approval, ApprovalAnswer, ApprovalDecision,
     AskedQuestion, BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus,
-    Catchup, ChangedFile, ClaudeSessionId, ClientMessage, CommandKind, CommandLoad, Completeness,
-    ContextCategory, ContextUsage, Cores, CostUsd, CredentialSource, DirEntry, DirListing, Effort,
-    EffortSource, EntryKind, EntryLink, EnvironmentCredentials, ErrorBody, ErrorCode, Event,
-    EventRecord, FileEdit, FindFilesParams, FolderParams, FoldersListParams, HistoryPage,
-    HistoryParams, Image, ImageMediaType, ItemBody, ItemId, ListDirParams, LoadAverage,
-    LoadHistory, MachineLoad, Mark, MarkParams, McpRemoveParams, McpScope, McpServer,
+    Catchup, ChangedFile, ClaudeRoute, ClaudeSessionId, ClientMessage, CommandKind, CommandLoad,
+    Completeness, ContextCategory, ContextUsage, Cores, CostUsd, CredentialSource, DirEntry,
+    DirListing, Effort, EffortSource, EntryKind, EntryLink, EnvironmentCredentials, ErrorBody,
+    ErrorCode, Event, EventRecord, FileEdit, FindFilesParams, FolderParams, FoldersListParams,
+    HistoryPage, HistoryParams, Image, ImageMediaType, ItemBody, ItemId, ListDirParams,
+    LoadAverage, LoadHistory, MachineLoad, Mark, MarkParams, McpRemoveParams, McpScope, McpServer,
     McpServerParams, McpServerStatus, McpToggleAction, McpToggleParams, McpTool, McpTransport,
     Method, MoveParams, OlderItems, PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan,
     PlanAnswer, PlanDecision, PlanUsage, Position, ProcessId, Prompt, PromptDelivery, PromptId,
@@ -140,6 +140,7 @@ fn work_account_state() -> AccountState {
         account: work_account(),
         sign_in: SignIn::NotSignedIn,
         sign_in_command: "CLAUDE_CONFIG_DIR='/home/sam/.claude-work' claude".to_owned(),
+        route: ClaudeRoute::Bedrock,
     }
 }
 
@@ -825,6 +826,7 @@ fn response_bodies() -> Vec<ResponseBody> {
                     account: default_account(),
                     sign_in: SignIn::SignedIn,
                     sign_in_command: "claude".to_owned(),
+                    route: ClaudeRoute::Anthropic,
                 },
                 work_account_state(),
             ],
@@ -1233,6 +1235,10 @@ fn words_are_pinned() {
         ]
     );
     assert_eq!(words::<SignIn>(), ["signed_in", "not_signed_in", "unknown"]);
+    assert_eq!(
+        words::<ClaudeRoute>(),
+        ["anthropic", "bedrock", "vertex", "foundry", "custom_server"]
+    );
     assert_eq!(words::<CredentialSource>(), ["sign_in", "environment"]);
     assert_eq!(words::<EnvironmentCredentials>(), ["set", "unset"]);
     assert_eq!(words::<EffortSource>(), ["chosen", "claude_code_default"]);
@@ -2468,10 +2474,24 @@ fn the_accounts_answer_on_the_wire() {
                 },
                 "sign_in": "not_signed_in",
                 "sign_in_command": "CLAUDE_CONFIG_DIR='/home/sam/.claude-work' claude",
+                "route": "bedrock",
             }],
             "environment_credentials": "unset",
         }),
     );
+}
+
+/// An older daemon sends no route: its accounts read as on Anthropic's service.
+#[test]
+fn an_account_without_a_route_reads_as_anthropic() {
+    let state: AccountState = serde_json::from_value(json!({
+        "account": {"id": 0, "name": "Personal", "folder": "/home/sam/.claude", "credentials": "sign_in"},
+        "sign_in": "signed_in",
+        "sign_in_command": "claude",
+    }))
+    .unwrap();
+
+    assert_eq!(state.route, ClaudeRoute::Anthropic);
 }
 
 #[test]

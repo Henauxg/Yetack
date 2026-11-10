@@ -6,8 +6,8 @@ use std::time::{Duration, SystemTime};
 
 use cockpit_daemon::{API_KEY_ENV, AUTH_TOKEN_ENV, CLAUDE_CONFIG_DIR_ENV};
 use cockpit_protocol::{
-    AccountId, AgentId, CredentialSource, EnvironmentCredentials, SignIn, SignInWait, UsageWindow,
-    WindowUsage,
+    AccountId, AgentId, ClaudeRoute, CredentialSource, EnvironmentCredentials, SignIn, SignInWait,
+    UsageWindow, WindowUsage,
 };
 use dioxus::prelude::*;
 
@@ -86,12 +86,13 @@ fn checked_text(checked_at: Option<SystemTime>, now: SystemTime) -> String {
     }
 }
 
-/// Whether the account is signed in, as the daemon last saw it, with "Check again".
+/// Whether the account is signed in, as the daemon last saw it, with "Check again". An account
+/// on another provider needs no Claude login: the row names the provider instead.
 #[component]
 pub fn SignInStatus(machine: MachineId, account: AccountId) -> Element {
     let cockpit: Cockpit = use_context();
     let Clock(now) = use_context::<Clock>();
-    let (sign_in, checked_at, checking) = {
+    let (sign_in, route, checked_at, checking) = {
         let state = cockpit.state.read();
         let Some(known) = state.machines.get(machine) else {
             return rsx! {};
@@ -99,23 +100,32 @@ pub fn SignInStatus(machine: MachineId, account: AccountId) -> Element {
         let sign_ins = &known.sign_ins;
         (
             sign_ins.sign_in(account),
+            sign_ins.route(account),
             sign_ins.checked_at,
             sign_ins.checking,
         )
     };
-    let (class, word, detail) = match sign_in {
-        Some(SignIn::SignedIn) => ("signin-status signed ok", "Signed in", String::new()),
-        Some(SignIn::NotSignedIn) => (
-            "signin-status missing",
-            "Not signed in",
-            checked_text(checked_at, now()),
+    let provider = route.filter(|route| *route != ClaudeRoute::Anthropic);
+    let (class, word, detail) = match (provider, sign_in) {
+        (Some(route), _) => (
+            "signin-status signed ok",
+            format::route_short_label(route),
+            "Its settings.json chooses it: no Claude login needed".to_owned(),
         ),
-        Some(SignIn::Unknown) => (
-            "signin-status",
-            "Cannot tell",
-            "The login may be in the macOS Keychain".to_owned(),
-        ),
-        None => ("signin-status", "Checking", String::new()),
+        (None, sign_in) => match sign_in {
+            Some(SignIn::SignedIn) => ("signin-status signed ok", "Signed in", String::new()),
+            Some(SignIn::NotSignedIn) => (
+                "signin-status missing",
+                "Not signed in",
+                checked_text(checked_at, now()),
+            ),
+            Some(SignIn::Unknown) => (
+                "signin-status",
+                "Cannot tell",
+                "The login may be in the macOS Keychain".to_owned(),
+            ),
+            None => ("signin-status", "Checking", String::new()),
+        },
     };
     rsx! {
         div { class,
@@ -282,6 +292,9 @@ fn choice_detail(detail: ChoiceDetail) -> Element {
         ChoiceDetail::NotSignedIn => rsx! {
             span { class: "warn", "Not signed in" }
         },
+        ChoiceDetail::Provider(route) => rsx! {
+            "{format::route_label(route)}, no Claude login needed"
+        },
         ChoiceDetail::Plan {
             five_hour,
             seven_day,
@@ -356,12 +369,16 @@ fn PlanAccount(machine: MachineId, account: AccountId, current: bool) -> Element
                         Billing::Environment => rsx! { "API key or token from the environment" },
                         Billing::NotSignedIn => rsx! { span { class: "warning", "Not signed in" } },
                         Billing::Plan => rsx! { "Claude subscription" },
+                        Billing::Provider(route) => rsx! { "{format::route_label(route)}" },
                     }
                 }
             }
             match billing {
                 Billing::Environment => rsx! {
                     span { class: "muted small", "No plan limits: Claude bills the API key or token per token." }
+                },
+                Billing::Provider(_) => rsx! {
+                    span { class: "muted small", "No plan limits: the provider bills its use. The account's settings.json chooses it." }
                 },
                 Billing::NotSignedIn => rsx! {
                     span { class: "muted small",
@@ -592,6 +609,7 @@ fn AccountCard(machine: MachineId, account: AccountId, open: bool) -> Element {
     let agents = format::count(data.agents, "agent", "agents");
     let (state_class, state_text) = match (data.billing, data.sign_in) {
         (Billing::Environment, _) => ("acct-card-state key", "API key"),
+        (Billing::Provider(route), _) => ("acct-card-state key", format::route_short_label(route)),
         (_, Some(SignIn::NotSignedIn)) => ("acct-card-state missing", "Not signed in"),
         (_, Some(SignIn::SignedIn)) => ("acct-card-state ok", "Signed in"),
         (_, Some(SignIn::Unknown)) => ("acct-card-state", "Cannot tell"),

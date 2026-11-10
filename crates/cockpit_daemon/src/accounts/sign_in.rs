@@ -2,6 +2,7 @@ use std::path::Path;
 
 use cockpit_protocol::{Account, AccountState, SignIn, Timestamp};
 
+use crate::accounts::route;
 use crate::daemon_config::{CLAUDE_CONFIG_DIR_ENV, DEFAULT_CLAUDE_PROGRAM};
 use crate::process::program::TerminalName;
 
@@ -131,8 +132,9 @@ pub(crate) fn login_written(account: &Account) -> Option<Timestamp> {
     Timestamp::from_system_time(metadata.modified().ok()?)
 }
 
-/// The account, whether its folder holds a login, and how to sign in to it with `program`. Looks
-/// at the credentials file's metadata, never at its content: it blocks.
+/// The account, whether its folder holds a login, how to sign in to it with `program`, and its
+/// route. Looks at the credentials file's metadata, never at its content, and reads the switches
+/// of the account's `settings.json`: it blocks.
 pub(crate) fn account_state(
     account: Account,
     shell: SignInShell,
@@ -143,6 +145,7 @@ pub(crate) fn account_state(
     AccountState {
         sign_in: LoginStore::CURRENT.sign_in(has_credentials_file),
         sign_in_command,
+        route: route(&account),
         account,
     }
 }

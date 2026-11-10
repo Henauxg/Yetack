@@ -9,17 +9,17 @@ use cockpit_client::RequestError;
 use cockpit_protocol::{
     Account, AccountId, AccountState, AgentDetails, AgentHistory, AgentId, AgentLoad, AgentStatus,
     AgentSummary, Answer, AnswerState, Approval, AskedQuestion, BackgroundTask, BackgroundTaskId,
-    BackgroundTaskKind, BackgroundTaskStatus, ChangedFile, ClaudeSessionId, CommandKind,
-    CommandLoad, Completeness, ContextCategory, ContextUsage, Cores, CostUsd, CredentialSource,
-    DirEntry, DirListing, Effort, EffortSource, EntryKind, EntryLink, EnvironmentCredentials,
-    ErrorBody, ErrorCode, FileEdit, HistoryPage, Image, ImageMediaType, ItemBody, ItemId,
-    LoadAverage, LoadHistory, MachineLoad, Mark, McpScope, McpServer, McpServerStatus, McpTool,
-    McpTransport, OlderItems, PastSession, PendingId, PermissionMode, Plan, PlanUsage, Position,
-    ProcessId, PromptId, Question, QuestionOption, RateLimitStatus, Request, ResourceUse,
-    ResponseBody, Selection, ServerLoad, ServerPoint, SignIn, SignInWait, SlashCommand, Subagent,
-    SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem, TaskProgress, TaskStatus,
-    Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome,
-    UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
+    BackgroundTaskKind, BackgroundTaskStatus, ChangedFile, ClaudeRoute, ClaudeSessionId,
+    CommandKind, CommandLoad, Completeness, ContextCategory, ContextUsage, Cores, CostUsd,
+    CredentialSource, DirEntry, DirListing, Effort, EffortSource, EntryKind, EntryLink,
+    EnvironmentCredentials, ErrorBody, ErrorCode, FileEdit, HistoryPage, Image, ImageMediaType,
+    ItemBody, ItemId, LoadAverage, LoadHistory, MachineLoad, Mark, McpScope, McpServer,
+    McpServerStatus, McpTool, McpTransport, OlderItems, PastSession, PendingId, PermissionMode,
+    Plan, PlanUsage, Position, ProcessId, PromptId, Question, QuestionOption, RateLimitStatus,
+    Request, ResourceUse, ResponseBody, Selection, ServerLoad, ServerPoint, SignIn, SignInWait,
+    SlashCommand, Subagent, SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem,
+    TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem,
+    TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
 };
 use serde_json::Value;
 
@@ -2902,10 +2902,17 @@ fn account_state(state: &AppState, account: Account) -> AccountState {
     } else {
         format!("CLAUDE_CONFIG_DIR='{folder}' claude auth login")
     };
+    // The work account runs through Amazon Bedrock, which its settings choose.
+    let route = if account.id.get() == WORK_ACCOUNT {
+        ClaudeRoute::Bedrock
+    } else {
+        ClaudeRoute::Anthropic
+    };
     AccountState {
         account,
         sign_in,
         sign_in_command,
+        route,
     }
 }
 

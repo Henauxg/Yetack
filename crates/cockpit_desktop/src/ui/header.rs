@@ -137,7 +137,7 @@ pub fn Header() -> Element {
     let chip = accounts::plan_chip(&state, machine, account);
     let plan = match chip {
         PlanChip::Percent(percent) => percent,
-        PlanChip::Environment | PlanChip::NotSignedIn => None,
+        PlanChip::Environment | PlanChip::NotSignedIn | PlanChip::Provider(_) => None,
     };
     let context = context_percent(entry);
     let files = changed_files(entry);
@@ -156,6 +156,7 @@ pub fn Header() -> Element {
         PlanChip::Percent(_) => format!("plan {plan_text}"),
         PlanChip::Environment => "API key".to_owned(),
         PlanChip::NotSignedIn => "not signed in".to_owned(),
+        PlanChip::Provider(route) => format::route_label(route).to_owned(),
     };
     let account_words = account_label
         .as_ref()
@@ -272,6 +273,9 @@ pub fn Header() -> Element {
                             },
                             PlanChip::NotSignedIn => rsx! {
                                 span { span { class: "chip-key", "Plan" } " " span { class: "warning", "?" } }
+                            },
+                            PlanChip::Provider(route) => rsx! {
+                                span { class: "chip-key", "{format::route_short_label(route)}" }
                             },
                         }
                         span { class: "chip-separator", aria_hidden: true }

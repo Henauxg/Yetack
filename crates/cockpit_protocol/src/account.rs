@@ -105,6 +105,29 @@ pub enum SignIn {
     Unknown,
 }
 
+/// Where an account's agents send their requests, as the switches of the account's
+/// `settings.json` choose, and the daemon's environment for an account that takes its
+/// credentials from it.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, VariantArray,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaudeRoute {
+    /// Anthropic's own service, with the folder's login or an API key. Older daemons send no
+    /// route: it reads as this one.
+    #[default]
+    Anthropic,
+    /// Amazon Bedrock (`CLAUDE_CODE_USE_BEDROCK`).
+    Bedrock,
+    /// Google Vertex AI (`CLAUDE_CODE_USE_VERTEX`).
+    Vertex,
+    /// Microsoft Foundry (`CLAUDE_CODE_USE_FOUNDRY`).
+    Foundry,
+    /// Another server (`ANTHROPIC_BASE_URL`), such as a company gateway. Its address stays on
+    /// the daemon's machine.
+    CustomServer,
+}
+
 /// An account as `accounts.list`, `accounts.add` and `accounts.change` answer it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountState {
@@ -113,6 +136,8 @@ pub struct AccountState {
     /// The command that signs in to the account, typed in a terminal on the daemon's machine:
     /// for a POSIX shell, or for PowerShell on Windows.
     pub sign_in_command: String,
+    #[serde(default)]
+    pub route: ClaudeRoute,
 }
 
 #[cfg(test)]

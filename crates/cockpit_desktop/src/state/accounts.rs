@@ -9,9 +9,10 @@ use std::time::SystemTime;
 use cockpit_daemon::CLAUDE_HOME_FOLDER;
 use cockpit_protocol::{
     Account, AccountAddParams, AccountChangeParams, AccountId, AccountParams, AccountState,
-    AgentId, AgentStatus, AgentSummary, CredentialSource, EnvironmentCredentials, FOLDER_SEPARATOR,
-    ItemBody, ItemId, PlanUsage, Prompt, PromptDelivery, PromptParams, Request, ResponseBody,
-    SignIn, SignInWait, TranscriptItem, TurnOutcome, UsageWindow, UserMessage, account_folder_name,
+    AgentId, AgentStatus, AgentSummary, ClaudeRoute, CredentialSource, EnvironmentCredentials,
+    FOLDER_SEPARATOR, ItemBody, ItemId, PlanUsage, Prompt, PromptDelivery, PromptParams, Request,
+    ResponseBody, SignIn, SignInWait, TranscriptItem, TurnOutcome, UsageWindow, UserMessage,
+    account_folder_name,
 };
 
 use super::app_state::{AgentEntry, AppState, MachineState};
@@ -40,6 +41,11 @@ pub struct SignIns {
 impl SignIns {
     pub fn sign_in(&self, account: AccountId) -> Option<SignIn> {
         self.states.get(&account).map(|state| state.sign_in)
+    }
+
+    /// Where the account's agents send their requests, as the daemon last answered.
+    pub fn route(&self, account: AccountId) -> Option<ClaudeRoute> {
+        self.states.get(&account).map(|state| state.route)
     }
 
     pub fn command(&self, account: AccountId) -> Option<&str> {
@@ -126,15 +132,25 @@ pub enum Billing {
     /// The daemon's `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`: no plan limits.
     Environment,
     NotSignedIn,
+    /// Another provider, such as Amazon Bedrock, which the account's settings choose: it needs no
+    /// Claude login, and has no plan limits.
+    Provider(ClaudeRoute),
 }
 
 pub fn billing(state: &AppState, machine: MachineId, id: AccountId) -> Billing {
+    let sign_ins = &known(state, machine).sign_ins;
+    if let Some(route) = sign_ins
+        .route(id)
+        .filter(|route| *route != ClaudeRoute::Anthropic)
+    {
+        return Billing::Provider(route);
+    }
     if account(state, machine, id)
         .is_some_and(|account| account.credentials == CredentialSource::Environment)
     {
         return Billing::Environment;
     }
-    match known(state, machine).sign_ins.sign_in(id) {
+    match sign_ins.sign_in(id) {
         Some(SignIn::NotSignedIn) => Billing::NotSignedIn,
         Some(SignIn::SignedIn | SignIn::Unknown) | None => Billing::Plan,
     }
@@ -168,12 +184,14 @@ pub enum PlanChip {
     Percent(Option<u8>),
     Environment,
     NotSignedIn,
+    Provider(ClaudeRoute),
 }
 
 pub fn plan_chip(state: &AppState, machine: MachineId, id: AccountId) -> PlanChip {
     match billing(state, machine, id) {
         Billing::Environment => PlanChip::Environment,
         Billing::NotSignedIn => PlanChip::NotSignedIn,
+        Billing::Provider(route) => PlanChip::Provider(route),
         Billing::Plan => PlanChip::Percent(plan_usage(state, machine, id).and_then(plan_percent)),
     }
 }
@@ -236,6 +254,7 @@ pub enum ChoiceDetail {
     },
     Environment,
     NotSignedIn,
+    Provider(ClaudeRoute),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -250,6 +269,7 @@ pub fn choices(state: &AppState, machine: MachineId) -> Vec<AccountChoice> {
         let detail = match billing(state, machine, label.id) {
             Billing::Environment => ChoiceDetail::Environment,
             Billing::NotSignedIn => ChoiceDetail::NotSignedIn,
+            Billing::Provider(route) => ChoiceDetail::Provider(route),
             Billing::Plan => {
                 let usage = plan_usage(state, machine, label.id);
                 ChoiceDetail::Plan {
@@ -968,6 +988,7 @@ mod tests {
                 account,
                 sign_in,
                 sign_in_command: "claude auth login".to_owned(),
+                route: ClaudeRoute::Anthropic,
             },
         );
     }
@@ -1117,6 +1138,29 @@ mod tests {
     }
 
     #[test]
+    fn an_account_on_another_provider_needs_no_login_and_has_no_plan() {
+        let mut state = state_with(Vec::new());
+        three_accounts(&mut state);
+        signed(&mut state, work(), SignIn::NotSignedIn);
+        if let Some(account) = state.machines.this.sign_ins.states.get_mut(&work()) {
+            account.route = ClaudeRoute::Bedrock;
+        }
+
+        assert_eq!(
+            billing(&state, MachineId::THIS, work()),
+            Billing::Provider(ClaudeRoute::Bedrock)
+        );
+        assert_eq!(
+            plan_chip(&state, MachineId::THIS, work()),
+            PlanChip::Provider(ClaudeRoute::Bedrock)
+        );
+        assert!(choices(&state, MachineId::THIS).iter().any(|choice| {
+            choice.label.id == work()
+                && choice.detail == ChoiceDetail::Provider(ClaudeRoute::Bedrock)
+        }));
+    }
+
+    #[test]
     fn the_plan_chip_shows_the_agents_account() {
         let mut state = state_with(Vec::new());
         three_accounts(&mut state);
@@ -1225,6 +1269,7 @@ mod tests {
                 sign_in: SignIn::NotSignedIn,
                 sign_in_command:
                     "CLAUDE_CONFIG_DIR='/home/sam/.claude-client-work' claude auth login".to_owned(),
+                route: ClaudeRoute::Anthropic,
             })),
         );
 

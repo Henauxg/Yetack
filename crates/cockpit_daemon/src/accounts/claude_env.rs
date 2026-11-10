@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use cockpit_protocol::{Account, CredentialSource, EnvironmentCredentials};
 use tokio::process::Command;
 
+use crate::accounts::ROUTE_ENV;
 use crate::daemon_config::CLAUDE_CONFIG_DIR_ENV;
 
 /// A login token that would take the place of any folder's login.
@@ -15,8 +16,8 @@ pub const AUTH_TOKEN_ENV: &str = "ANTHROPIC_AUTH_TOKEN";
 /// The variables an account that takes its credentials from the environment passes on.
 pub const ENVIRONMENT_CREDENTIALS_ENV: [&str; 2] = [API_KEY_ENV, AUTH_TOKEN_ENV];
 
-/// Whether the daemon's `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` reach an account's
-/// `claude`.
+/// Whether the daemon's `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`, and the switches of
+/// [`ROUTE_ENV`], reach an account's `claude`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FromEnvironment {
     /// The variables pass as the daemon's environment has them, set or not.
@@ -58,7 +59,7 @@ impl ClaudeEnv {
     pub(crate) fn apply(&self, command: &mut Command) {
         command.env_remove(OAUTH_TOKEN_ENV);
         if self.credentials == FromEnvironment::Remove {
-            for name in ENVIRONMENT_CREDENTIALS_ENV {
+            for name in ENVIRONMENT_CREDENTIALS_ENV.into_iter().chain(ROUTE_ENV) {
                 command.env_remove(name);
             }
         }
@@ -114,22 +115,29 @@ mod tests {
         changes
     }
 
-    #[test]
-    fn an_added_account_names_its_folder_and_leaves_out_the_daemons_logins() {
-        let env = ClaudeEnv::new(&account(2, CredentialSource::SignIn));
+    /// What a signed-in account's `claude` loses: the daemon's logins and route switches.
+    fn removed() -> Vec<(String, Option<String>)> {
+        let mut removed: Vec<(String, Option<String>)> = ENVIRONMENT_CREDENTIALS_ENV
+            .into_iter()
+            .chain(ROUTE_ENV)
+            .chain([OAUTH_TOKEN_ENV])
+            .map(|name| (name.to_owned(), None))
+            .collect();
+        removed.sort();
+        removed
+    }
 
-        assert_eq!(
-            changes(&env),
-            [
-                (API_KEY_ENV.to_owned(), None),
-                (AUTH_TOKEN_ENV.to_owned(), None),
-                (OAUTH_TOKEN_ENV.to_owned(), None),
-                (
-                    CLAUDE_CONFIG_DIR_ENV.to_owned(),
-                    Some("/home/sam/.claude-work".to_owned())
-                ),
-            ]
-        );
+    #[test]
+    fn an_added_account_names_its_folder_and_leaves_out_the_daemons_logins_and_routes() {
+        let env = ClaudeEnv::new(&account(2, CredentialSource::SignIn));
+        let mut expected = removed();
+        expected.push((
+            CLAUDE_CONFIG_DIR_ENV.to_owned(),
+            Some("/home/sam/.claude-work".to_owned()),
+        ));
+        expected.sort();
+
+        assert_eq!(changes(&env), expected);
     }
 
     #[test]
@@ -137,23 +145,17 @@ mod tests {
         let env = ClaudeEnv::new(&account(0, CredentialSource::SignIn));
 
         assert_eq!(env.config_dir, None);
-        assert_eq!(
-            changes(&env),
-            [
-                (API_KEY_ENV.to_owned(), None),
-                (AUTH_TOKEN_ENV.to_owned(), None),
-                (OAUTH_TOKEN_ENV.to_owned(), None)
-            ]
-        );
+        assert_eq!(changes(&env), removed());
     }
 
     #[test]
-    fn an_account_that_uses_the_environment_keeps_its_key_and_token_and_loses_the_oauth_one() {
+    fn an_account_that_uses_the_environment_keeps_its_key_token_and_routes_and_loses_the_oauth_one()
+    {
         let env = ClaudeEnv::new(&account(2, CredentialSource::Environment));
 
         let changes = changes(&env);
 
-        for name in ENVIRONMENT_CREDENTIALS_ENV {
+        for name in ENVIRONMENT_CREDENTIALS_ENV.into_iter().chain(ROUTE_ENV) {
             assert!(
                 !changes.iter().any(|(changed, _)| changed == name),
                 "{name}"

@@ -18,6 +18,5 @@ Ideas and fixes noted for later. None of them is planned yet.
   - A background subagent's tool call may set an activity line on an idle agent's sidebar row.
   - The Ctrl+O dialog may stay open after its agent is removed.
   - On Windows, an agent without a Job Object (if Windows refused to make one) that runs an npm `claude.cmd` loses only `cmd.exe` when stopped; the real `claude` runs on to the end of its turn.
-  - Credential variables other than the three the daemon handles (Bedrock, Vertex, a custom base URL) pass to every account's agents.
   - The daemon sends no event when an account signs in: the app asks again with "Check again".
 - **Machine load sparklines.** On each sidebar row, a 52 by 18 pixel line of the agent's CPU over the last five minutes: teal while it works, amber past a quarter of the server's cores, grey when idle. The row's second line shows its cores now, and a tooltip its cores over five minutes, its memory and its heaviest command. `machine.load` already answers each agent's five-minute history.

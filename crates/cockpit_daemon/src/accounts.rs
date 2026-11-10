@@ -4,9 +4,12 @@
 
 mod account_list;
 mod claude_env;
+mod route;
 mod sign_in;
 
 pub(crate) use account_list::AccountList;
 pub use claude_env::{API_KEY_ENV, AUTH_TOKEN_ENV, ENVIRONMENT_CREDENTIALS_ENV};
 pub(crate) use claude_env::{ClaudeEnv, environment_credentials};
+pub use route::ROUTE_ENV;
+pub(crate) use route::route;
 pub(crate) use sign_in::{SignInShell, account_state, login_written, sign_in_command};

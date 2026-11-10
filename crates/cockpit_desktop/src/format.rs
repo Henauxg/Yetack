@@ -5,8 +5,8 @@ use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, Local, NaiveDateTime};
 use cockpit_protocol::{
-    AgentStatus, AgentSummary, Cores, CostUsd, Effort, McpScope, McpServerStatus, PermissionMode,
-    SubagentStatus, Timestamp, UsageWindow,
+    AgentStatus, AgentSummary, ClaudeRoute, Cores, CostUsd, Effort, McpScope, McpServerStatus,
+    PermissionMode, SubagentStatus, Timestamp, UsageWindow,
 };
 
 /// A model Claude Code accepts by its alias, for the model menu.
@@ -244,6 +244,28 @@ pub fn scope_word(scope: McpScope) -> &'static str {
 /// Whether `claude mcp remove` can remove a server of this scope.
 pub fn removable_scope(scope: McpScope) -> bool {
     matches!(scope, McpScope::User | McpScope::Project | McpScope::Local)
+}
+
+/// The route's name where room is short, as on the header's chip.
+pub fn route_short_label(route: ClaudeRoute) -> &'static str {
+    match route {
+        ClaudeRoute::Anthropic => "Anthropic",
+        ClaudeRoute::Bedrock => "Bedrock",
+        ClaudeRoute::Vertex => "Vertex AI",
+        ClaudeRoute::Foundry => "Foundry",
+        ClaudeRoute::CustomServer => "Custom server",
+    }
+}
+
+/// The service an account's agents send their requests to.
+pub fn route_label(route: ClaudeRoute) -> &'static str {
+    match route {
+        ClaudeRoute::Anthropic => "Anthropic",
+        ClaudeRoute::Bedrock => "Amazon Bedrock",
+        ClaudeRoute::Vertex => "Google Vertex AI",
+        ClaudeRoute::Foundry => "Microsoft Foundry",
+        ClaudeRoute::CustomServer => "A custom server",
+    }
 }
 
 pub fn mcp_status_label(status: McpServerStatus) -> &'static str {
