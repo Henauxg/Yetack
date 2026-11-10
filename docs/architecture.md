@@ -642,11 +642,12 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
   Its card shows the server's CPU, memory and load average, each agent's cores and memory with their share of the server's cores as a bar (amber past a quarter), the idle agents folded into one line, what the other processes use, and the selected agent's heaviest commands, each with a stop button.
   A click on an agent opens it and keeps the card open.
   A daemon that cannot measure its load, or does not know the request, shows "Load unknown".
-- **New agent dialog**: it opens with the model, effort and permission mode of the last agent started, else Opus and Auto (`open_new_agent`).
+- **New agent dialog**: it opens on the machine of the last agent started (this computer when that machine does not answer) and on that machine's last used folder, with the model, effort and permission mode of the last agent started, else Opus and Auto (`open_new_agent`). So Ctrl+N then Enter starts an agent where the last one started.
   When the "Start in a folder" tab shows (on Ctrl+N, the + button, going back from Accounts, or a click on the tab), the folder field takes the focus while it is empty, and the first message takes it once the folder is filled (`start_focus`). The "Resume a session" tab gives the focus to its search field. The caret goes to the end of the text the field already holds.
   The folder field works as the "Open file" dialog's path field.
   Once it is typed in, the folders of the folder its text names (`folders.list`) take the recent folders' place, filtered by the last segment.
-  Tab or Enter completes the highlighted folder, Backspace on an empty segment goes up, and Esc brings the recent folders back.
+  Tab or Enter completes the highlighted folder, Backspace on an empty segment goes up, and Esc brings the recent folders back. With no folder highlighted, Enter starts the agent.
+  In the first message, Enter starts the agent and Shift+Enter adds a line, as in the composer. Ctrl+Enter starts it from both fields.
   A text that names no absolute folder, by the rules of the daemon's machine (see Paths), lists nothing.
 - **One highlight in a list**: in the Ctrl+K switcher, the Ctrl+O list, the folder completion, the resume list and the "/" palette, the pointer moves the keyboard's highlight, so one row is lit, with no CSS hover and no fade.
   WebKitGTK also sends a mousemove when a list scrolls under a still pointer, so only a pointer that moved takes the highlight (`PointerMoves` in `ui/dialogs.rs`).

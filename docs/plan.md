@@ -231,7 +231,7 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   - Stop: a subagent with a background task stops with `agent.stop_task`, and so do the running subagents under it. The control protocol has no stop for one foreground subagent without a task: its button stops the agent's turn, and says so.
 - Decided with the accounts mockup, and built: several Claude accounts in the app.
   - From two accounts, every agent shows its account as a tag in the account's color, the default account's too: on its sidebar row and after its status in the header.
-  - The new agent dialog picks the machine, then the account, at its top, above its two tabs; the account is the last started agent's by default, and the folder never changes it. Recent folders show their account, and the resume list shows the chosen account's sessions.
+  - The new agent dialog picks the machine, then the account, at its top, above its two tabs; the machine and the account are the last started agent's by default, and the folder never changes the account. Recent folders show their account, and the resume list shows the chosen account's sessions.
   - "Accounts" in the sidebar's foot lists the accounts, adds one in two steps (its name, color, folder and whether it uses the API key or token from the environment, then its sign-in command), renames, recolors and removes them.
   - The Plan chip and card show the selected agent's account and every account's plan.
   - An agent whose account is not signed in needs you, with a card in the chat that says how to sign in.
