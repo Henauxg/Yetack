@@ -624,21 +624,24 @@ pub fn shown_folders(tree: &FileTree, folder: &Path, footprint: &Footprint) -> V
 /// Whether the agent's files pane shows: as the agent last left it, else as Settings has it for
 /// new agents.
 pub fn pane_open(state: &AppState, agent: AgentId) -> bool {
-    let pane = state
+    pane(state, agent) == PaneState::Open
+}
+
+fn pane(state: &AppState, agent: AgentId) -> PaneState {
+    state
         .daemon_machine(agent)
         .map_or(state.prefs.files_pane.new_agents, |machine| {
             state
                 .prefs
                 .files_pane
                 .agent(machine, MachineId::daemon_agent(agent))
-        });
-    pane == PaneState::Open
+        })
 }
 
 /// Opens the selected agent's pane, or closes it. Each agent keeps its own.
 pub fn toggle_pane(state: &mut AppState) {
     if let Some(agent) = state.ui.selected {
-        let toggled = pane_state(state, agent).toggled();
+        let toggled = pane(state, agent).toggled();
         set_pane(state, agent, toggled);
     }
 }
@@ -983,14 +986,6 @@ pub fn reset_width(state: &mut AppState) {
     state.prefs.files_pane.width = None;
 }
 
-fn pane_state(state: &AppState, agent: AgentId) -> PaneState {
-    if pane_open(state, agent) {
-        PaneState::Open
-    } else {
-        PaneState::Closed
-    }
-}
-
 fn set_pane(state: &mut AppState, agent: AgentId, pane: PaneState) {
     let Some(machine) = state.daemon_machine(agent).map(str::to_owned) else {
         return;
@@ -999,6 +994,36 @@ fn set_pane(state: &mut AppState, agent: AgentId, pane: PaneState) {
         .prefs
         .files_pane
         .set_agent(&machine, MachineId::daemon_agent(agent), pane);
+}
+
+/// Keeps the panes of the agents a snapshot of `machine` holds: the others closed while the app
+/// was away.
+pub fn keep_listed_panes(state: &mut AppState, machine: MachineId) {
+    let Some(name) = state
+        .machines
+        .get(machine)
+        .map(|known| known.daemon.machine.clone())
+    else {
+        return;
+    };
+    let listed: BTreeSet<AgentId> = state
+        .agents
+        .keys()
+        .filter(|&&agent| MachineId::of(agent) == machine)
+        .map(|&agent| MachineId::daemon_agent(agent))
+        .collect();
+    state
+        .prefs
+        .files_pane
+        .keep_agents(&name, |agent| listed.contains(&agent));
+}
+
+/// Drops the panes of a machine's agents before the app forgets the machine.
+pub fn forget_machine_panes(state: &mut AppState, machine: MachineId) {
+    if let Some(known) = state.machines.get(machine) {
+        let name = known.daemon.machine.clone();
+        state.prefs.files_pane.forget_machine(&name);
+    }
 }
 
 /// Drops the pane of an agent the daemon removed.
@@ -1747,6 +1772,56 @@ mod tests {
         assert_eq!(with_open_default, (true, true));
         assert_eq!(set_both, (true, false));
         assert!(!pane_open(&state, first));
+    }
+
+    #[test]
+    fn an_agent_on_another_machine_keeps_its_own_pane() {
+        let devbox = MachineId::new(1);
+        let mut state = crate::state::state_with(vec![crate::state::summary(1, AgentStatus::Idle)]);
+        state.machines.others.insert(
+            devbox,
+            crate::state::MachineState::new(crate::daemon_label::DaemonLabel::ssh(
+                "devbox".to_owned(),
+            )),
+        );
+        let mut remote = crate::state::summary(1, AgentStatus::Idle);
+        remote.id = devbox.app_agent(AgentId::new(1));
+        state
+            .agents
+            .insert(remote.id, AgentEntry::new(remote.clone()));
+        state.ui.selected = Some(remote.id);
+
+        toggle_pane(&mut state);
+
+        assert!(pane_open(&state, remote.id));
+        assert!(!pane_open(&state, AgentId::new(1)));
+        assert_eq!(
+            state.prefs.files_pane.agent("devbox", AgentId::new(1)),
+            PaneState::Open
+        );
+    }
+
+    #[test]
+    fn a_switch_to_an_agent_whose_pane_is_closed_lists_nothing_for_it() {
+        let (mut state, agent) = listed_agent();
+        let other = AgentId::new(2);
+        state.agents.insert(
+            other,
+            AgentEntry::new(crate::state::summary(2, AgentStatus::Idle)),
+        );
+        toggle_pane(&mut state);
+        state.ui.selected = Some(other);
+
+        let listings: Vec<AgentId> = crate::state::needed_requests(&mut state)
+            .into_iter()
+            .filter_map(|outgoing| match outgoing.purpose {
+                crate::state::Purpose::TreeListing { agent, .. } => Some(agent),
+                _ => None,
+            })
+            .collect();
+
+        assert!(pane_open(&state, agent));
+        assert!(listings.is_empty());
     }
 
     #[test]

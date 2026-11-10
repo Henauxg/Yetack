@@ -12,7 +12,10 @@
 //!     "width": 300
 //!   },
 //!   "files_pane": {
-//!     "open": true,
+//!     "new_agents": "closed",
+//!     "agents": {
+//!       "build-box": { "4": "open" }
+//!     },
 //!     "width": 280
 //!   },
 //!   "accounts": {
@@ -372,12 +375,21 @@ impl FilesPanePrefs {
     }
 
     pub fn forget_agent(&mut self, machine: &str, agent: AgentId) {
+        self.keep_agents(machine, |kept| kept != agent);
+    }
+
+    /// Keeps the panes of the machine's agents that `keep` names.
+    pub fn keep_agents(&mut self, machine: &str, keep: impl Fn(AgentId) -> bool) {
         if let Some(panes) = self.agents.get_mut(machine) {
-            panes.remove(&agent);
+            panes.retain(|&agent, _| keep(agent));
             if panes.is_empty() {
                 self.agents.remove(machine);
             }
         }
+    }
+
+    pub fn forget_machine(&mut self, machine: &str) {
+        self.agents.remove(machine);
     }
 }
 

@@ -180,6 +180,7 @@ pub fn apply_catchup(
         .chat_new_from
         .retain(|agent, _| agents.contains_key(agent));
     drafts.retain_agents(|agent| agents.contains_key(&agent));
+    file_tree::keep_listed_panes(state, machine);
     state.fix_selection();
     actions::follow_hidden_title_edit(state, drafts);
 }
@@ -457,6 +458,41 @@ mod tests {
     use crate::state::app_state::tests::{placed, state_with, summary};
     use crate::state::ui_state::{Block, Dialog, PaletteOrigin, Popover, TitleEdit, TitlePlace};
     use crate::state::{MachineState, agent_map, chat_images};
+
+    #[test]
+    fn a_snapshot_drops_the_panes_of_agents_the_daemon_no_longer_has() {
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::Idle),
+            summary(2, AgentStatus::Idle),
+        ]);
+        for agent in [AgentId::new(1), AgentId::new(2)] {
+            state.ui.selected = Some(agent);
+            file_tree::toggle_pane(&mut state);
+        }
+
+        apply_catchup(
+            &mut state,
+            &mut Drafts::default(),
+            Catchup::Snapshot(Snapshot {
+                agents: vec![summary(2, AgentStatus::Idle)],
+                plan_usage: PlanUsage::default(),
+                settings: Settings::default(),
+                last_seq: None,
+                accounts: Vec::new(),
+                other_plan_usage: Vec::new(),
+            }),
+            MachineId::THIS,
+        );
+
+        let kept: Vec<AgentId> = state
+            .prefs
+            .files_pane
+            .agents
+            .values()
+            .flat_map(|panes| panes.keys().copied())
+            .collect();
+        assert_eq!(kept, [AgentId::new(2)]);
+    }
 
     fn record(event: Event) -> EventRecord {
         EventRecord {
