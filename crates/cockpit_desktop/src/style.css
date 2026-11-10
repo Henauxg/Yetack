@@ -273,7 +273,6 @@ button:disabled {
 }
 
 .icon-button.raised {
-  border: 1px solid var(--line-strong);
   background: var(--raised);
   color: var(--text);
 }
@@ -462,7 +461,6 @@ button:disabled {
 /* A row's title while it is renamed there, as the header's title field. */
 .agent-row.editing {
   background: var(--hover);
-  border-color: var(--line-control);
 }
 
 .row-title-field {
@@ -495,8 +493,8 @@ button:disabled {
   height: 26px;
   padding: 0 6px;
   border-radius: 7px;
-  border: 1px solid var(--line);
-  background: transparent;
+  border: 0;
+  background: rgba(255, 255, 255, 0.05);
   color: var(--muted);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
@@ -508,8 +506,7 @@ button:disabled {
 }
 
 .filter-chip.chosen {
-  border-color: rgba(45, 212, 191, 0.55);
-  background: rgba(45, 212, 191, 0.12);
+  background: rgba(45, 212, 191, 0.16);
   color: var(--text-bright);
 }
 
@@ -695,7 +692,6 @@ button:disabled {
 
 .agent-row.selected {
   background: var(--hover);
-  border-color: var(--line-control);
 }
 
 .agent-row.status-exited .row-title {
@@ -1294,16 +1290,15 @@ html.reordering * {
   min-height: 32px;
   padding: 0 10px;
   border-radius: 8px;
-  border: 1px solid var(--line-strong);
-  background: var(--panel);
+  border: 0;
+  background: #232323;
   color: var(--text);
   font-size: 12.5px;
   white-space: nowrap;
 }
 
 .chip.open {
-  border-color: #444444;
-  background: var(--hover);
+  background: var(--line-divider);
 }
 
 .chip-full {
@@ -3167,7 +3162,6 @@ html.reordering * {
   flex-direction: column;
   width: 272px;
   border-radius: 12px;
-  border: 1px solid var(--line-divider);
   background: var(--panel);
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
 }
@@ -3412,13 +3406,12 @@ html.reordering * {
   justify-content: center;
   gap: 2px;
   border-radius: 10px;
-  border: 1px solid var(--line-strong);
+  border: 0;
   background: var(--panel);
   color: var(--text-soft);
 }
 
 .badge.pressed {
-  border-color: #525252;
   background: var(--line-divider);
 }
 
@@ -6961,7 +6954,6 @@ label.icon-button,
 }
 
 .icon-button.raised:hover {
-  border-color: #444444;
   background: var(--raised-hover);
 }
 
@@ -6975,8 +6967,11 @@ label.icon-button,
 }
 
 .chip:hover {
-  border-color: #444444;
-  background: var(--hover);
+  background: #2c2c2c;
+}
+
+.chip.open:hover {
+  background: #373737;
 }
 
 .menu-button:hover {
@@ -7004,7 +6999,6 @@ label.icon-button,
 }
 
 .badge:hover {
-  border-color: #444444;
   background: var(--hover);
   color: var(--text);
 }
@@ -7014,11 +7008,11 @@ label.icon-button,
 }
 
 .block-head {
-  border-radius: 11px;
+  border-radius: 12px;
 }
 
 .block-head[aria-expanded="true"] {
-  border-radius: 11px 11px 0 0;
+  border-radius: 12px 12px 0 0;
 }
 
 .block-head:hover {
@@ -7084,7 +7078,6 @@ label.icon-button,
 }
 
 .filter-chip:not(.chosen):hover {
-  border-color: #444444;
   background: var(--hover);
   color: var(--text);
 }
