@@ -502,12 +502,15 @@ fn unlinked(content: Vec<Inline>) -> Vec<Inline> {
     merge_texts(flat)
 }
 
+/// An http or https address the browser opener reads as one. It opens an address that `url` cannot
+/// parse, such as `https://x:99999`, as a local file.
 fn is_web_url(url: &str) -> bool {
-    url.split_once(SCHEME_SEPARATOR).is_some_and(|(scheme, _)| {
+    let web_scheme = url.split_once(SCHEME_SEPARATOR).is_some_and(|(scheme, _)| {
         WEB_SCHEMES
             .iter()
             .any(|web| scheme.eq_ignore_ascii_case(web))
-    })
+    });
+    web_scheme && url::Url::parse(url).is_ok()
 }
 
 /// The path and line of a link to a file: an absolute path, or one relative to the agent's
@@ -647,7 +650,7 @@ fn split_web_urls(text: &str) -> Vec<(&str, Option<&str>)> {
             .find(|character: char| character.is_whitespace() || "<>\"`".contains(character))
             .unwrap_or(rest.len());
         let url = trim_url_end(rest.get(..length).unwrap_or_default());
-        if url.len() <= scheme.len() {
+        if url.len() <= scheme.len() || !is_web_url(url) {
             continue;
         }
         pieces.push((text.get(plain_start..start).unwrap_or_default(), Some(url)));
@@ -1036,6 +1039,19 @@ mod tests {
                 paragraph(&format!("![a chart]({target})")),
                 vec![text("a chart")],
                 "{target}"
+            );
+        }
+    }
+
+    /// The browser opener would open these as files of the app's folder.
+    #[test]
+    fn an_address_that_does_not_parse_stays_text() {
+        for address in ["https://x:99999/a", "https://[bad/a"] {
+            assert_eq!(paragraph(address), vec![text(address)], "{address}");
+            assert_eq!(
+                paragraph(&format!("[label]({address})")),
+                vec![text("label")],
+                "{address}"
             );
         }
     }

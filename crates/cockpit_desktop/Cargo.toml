@@ -37,6 +37,8 @@ toml = "1.2.0"
 toml_edit = "0.25.18"
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# The parser Dioxus opens links with: an address it cannot parse would open as a local file.
+url = "2.5.8"
 
 [dev-dependencies]
 tempfile.workspace = true
