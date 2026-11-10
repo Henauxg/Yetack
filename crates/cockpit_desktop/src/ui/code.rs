@@ -1,5 +1,6 @@
 //! The copy button, code blocks, and diff rows with syntax colors and word highlights.
 
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use dioxus::html::ScrollBehavior;
@@ -11,6 +12,30 @@ use crate::{bridge, format};
 
 /// How long the copy button says "Copied".
 const COPIED_FOR: Duration = Duration::from_secs(1);
+
+/// No line updated.
+static NO_LINES: BTreeSet<u32> = BTreeSet::new();
+
+/// The rows of a file that stand out: the line a link marks, which scrolls into view, and the
+/// lines a read again of the file changed, highlighted for a moment.
+#[derive(Debug, Clone, Copy)]
+pub struct LineMarks<'lines> {
+    pub marked: Option<u32>,
+    pub updated: &'lines BTreeSet<u32>,
+    /// The class that plays the highlight. Two classes alternate, so that a new update plays it
+    /// again on a row that already had one.
+    pub updated_class: &'static str,
+}
+
+impl LineMarks<'static> {
+    pub fn marked(line: Option<u32>) -> Self {
+        Self {
+            marked: line,
+            updated: &NO_LINES,
+            updated_class: "",
+        }
+    }
+}
 
 /// Whether a diff row shows its line numbers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,7 +141,7 @@ pub fn lines_not_shown(more: usize) -> Element {
 }
 
 /// One row of a diff. `marked` highlights the row of that new-side line and scrolls it into view.
-pub fn diff_row(row: &DiffRow, numbers: LineNumbers, marked: Option<u32>) -> Element {
+pub fn diff_row(row: &DiffRow, numbers: LineNumbers, marks: LineMarks<'_>) -> Element {
     let line = match row {
         DiffRow::Folded { lines } => {
             let text = if *lines == 1 {
@@ -136,10 +161,10 @@ pub fn diff_row(row: &DiffRow, numbers: LineNumbers, marked: Option<u32>) -> Ele
         }
         DiffRow::Line(line) => line,
     };
-    diff_line(line, numbers, marked)
+    diff_line(line, numbers, marks)
 }
 
-pub fn diff_line(line: &DiffLine, numbers: LineNumbers, marked: Option<u32>) -> Element {
+pub fn diff_line(line: &DiffLine, numbers: LineNumbers, marks: LineMarks<'_>) -> Element {
     let (kind_class, sign, word_class) = match line.kind {
         LineKind::Context => ("context", "", ""),
         LineKind::Added => ("added", "+", "word-added"),
@@ -149,12 +174,17 @@ pub fn diff_line(line: &DiffLine, numbers: LineNumbers, marked: Option<u32>) -> 
         LineKind::Removed => line.old_number,
         LineKind::Added | LineKind::Context => line.new_number,
     };
-    let is_marked = marked.is_some() && line.kind != LineKind::Removed && number == marked;
-    let class = if is_marked {
-        format!("diff-row {kind_class} marked")
-    } else {
-        format!("diff-row {kind_class}")
-    };
+    let in_new_text = line.kind != LineKind::Removed;
+    let is_marked = marks.marked.is_some() && in_new_text && number == marks.marked;
+    let updated = in_new_text && number.is_some_and(|number| marks.updated.contains(&number));
+    let mut class = format!("diff-row {kind_class}");
+    if is_marked {
+        class.push_str(" marked");
+    }
+    if updated {
+        class.push(' ');
+        class.push_str(marks.updated_class);
+    }
     let number = match numbers {
         LineNumbers::Shown => number.map(|number| number.to_string()).unwrap_or_default(),
         LineNumbers::Hidden => String::new(),

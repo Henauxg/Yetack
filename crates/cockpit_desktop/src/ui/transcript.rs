@@ -19,7 +19,7 @@ use crate::state::{self, AgentEntry, HistoryState, TurnStart, accounts, actions,
 use crate::ui::accounts::SignInCard;
 use crate::ui::cards::{ApprovalCard, PlanCard, QuestionCard};
 use crate::ui::chat_scroll::{self, CHAT_SCROLL_ID, ENTRY_CLASS, JumpToLatest, NewDivider};
-use crate::ui::code::{LineNumbers, diff_row};
+use crate::ui::code::{LineMarks, LineNumbers, diff_row};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::last_instruction::LastInstruction;
 use crate::ui::loading::TranscriptSkeleton;
@@ -1060,7 +1060,7 @@ fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall, stage: CallStage) -
                 div { class: "diff-box inline-diff scroll-x",
                     div { class: "diff-rows",
                         for row in preview.iter() {
-                            {diff_row(row, numbers, None)}
+                            {diff_row(row, numbers, LineMarks::marked(None))}
                         }
                     }
                     if more > 0 {

@@ -11,6 +11,7 @@ mod drafts;
 mod export;
 pub mod file_edits;
 pub mod file_list;
+pub mod file_reread;
 pub mod folder_field;
 pub mod machine_load;
 pub mod machines;
@@ -25,12 +26,13 @@ mod ui_state;
 mod utf16_offset;
 
 pub use app_state::{
-    AgentEntry, AppState, ConnectionState, FileRead, Loadable, MachineState, TurnStart,
+    AgentEntry, AppState, ConnectionState, FileFreshness, FileRead, FileUpdate, Loadable,
+    MachineState, Reread, TurnStart,
 };
 pub use apply::{Alert, AlertKind, apply_update, error_chain, next_finish_due, release_finishes};
 pub use drafts::Drafts;
 pub use requests::{Outgoing, Purpose, apply_response, needed_requests};
-pub use shortcuts::{ANSWER_KEYS, CLOSE_AGENT_KEY, COMMAND_KEYS, KeyPress, handle_key};
+pub use shortcuts::{ANSWER_KEYS, CLOSE_AGENT_KEY, COMMAND_KEYS, KeyPress, RELOAD_KEY, handle_key};
 pub use transcript::{HistoryState, WaitingKind, awaiting_approval};
 pub use ui_state::{
     Block, Dialog, FileSearch, FolderList, FormMenu, MachinesView, McpView, NewAgentForm,

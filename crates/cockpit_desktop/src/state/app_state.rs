@@ -1,6 +1,6 @@
 //! Everything the window shows, in one value that the event and response handlers update.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -84,6 +84,39 @@ pub struct RecentFolder {
     pub account: AccountId,
 }
 
+/// When the file view read its shown file, and what reading it again changed. Reading it again
+/// keeps the old text on screen until the new one arrives.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FileFreshness {
+    /// When the shown text arrived.
+    pub read_at: Option<Timestamp>,
+    pub reread: Reread,
+    /// The last read again that changed the text.
+    pub update: Option<FileUpdate>,
+}
+
+/// Whether the shown file is to be read again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Reread {
+    #[default]
+    Idle,
+    Wanted,
+    /// A read is on its way. With `again`, the file changed since it left: another read follows.
+    Reading {
+        again: bool,
+    },
+}
+
+/// A read again that changed the shown text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileUpdate {
+    pub at: Timestamp,
+    /// Counts the updates, so that the view plays the highlight again for a new one.
+    pub serial: u64,
+    /// The new text's lines, from 1, that the read changed or added.
+    pub lines: BTreeSet<u32>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentEntry {
     pub summary: AgentSummary,
@@ -93,6 +126,8 @@ pub struct AgentEntry {
     pub context_loading: bool,
     /// The file view's texts, by the path the view uses.
     pub files: BTreeMap<PathBuf, Loadable<FileRead>>,
+    /// When the file view read its shown file, and what reading it again changed.
+    pub file_freshness: FileFreshness,
     /// An `agent.commands` request is on its way.
     pub commands_requested: bool,
     /// When the app saw the agent's current turn start, for a daemon that does not send
@@ -133,6 +168,7 @@ impl AgentEntry {
             details: Loadable::NotRequested,
             context_loading: false,
             files: BTreeMap::new(),
+            file_freshness: FileFreshness::default(),
             commands_requested: false,
             turn_started: None,
             sent_again: None,

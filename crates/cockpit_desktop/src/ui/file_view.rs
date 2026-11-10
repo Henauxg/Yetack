@@ -2,17 +2,23 @@
 //! markdown file rendered, and the line a `path:line` link marks.
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use cockpit_protocol::{AgentId, FileEdit};
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
-use crate::connection::Cockpit;
+use crate::connection::{Clock, Cockpit};
 use crate::path_style::PathStyle;
 use crate::render::{self, Diff, Language, MAX_RENDERED_LINES, diff_lines};
-use crate::state::{FileRead, Loadable, Popover, ViewMode, actions, file_edits, is_markdown};
+use crate::state::{
+    FileFreshness, FileRead, FileUpdate, Loadable, Popover, Reread, ViewMode, actions, file_edits,
+    file_reread, is_markdown,
+};
 use crate::ui::changes_list;
-use crate::ui::code::{CopyButton, CopyLook, LineNumbers, diff_line, diff_row, lines_not_shown};
+use crate::ui::code::{
+    CopyButton, CopyLook, LineMarks, LineNumbers, diff_line, diff_row, lines_not_shown,
+};
 use crate::ui::file_list::FileListButton;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::markdown::MarkdownView;
@@ -27,6 +33,9 @@ pub const CLOSE_TAB_KEY: &str = "w";
 
 /// Unchanged lines kept around each change of the file view's diff.
 const FILE_DIFF_CONTEXT: usize = 3;
+
+/// How long "Updated just now" and the changed lines' highlight last after a read again.
+const UPDATE_SHOWN_FOR: Duration = Duration::from_secs(10);
 
 /// The widths of the placeholder lines shown while the file loads, in percent of the text's width.
 const LOADING_LINE_WIDTHS: [u8; 8] = [46, 72, 64, 30, 81, 58, 69, 38];
@@ -47,6 +56,8 @@ pub fn FileViewPanel() -> Element {
     let tab_count = tabs.len();
     let list_open = state.ui.popover == Some(Popover::FileList);
     let text = entry.files.get(&view.path).cloned().unwrap_or_default();
+    let freshness = entry.file_freshness.clone();
+    let update = freshness.update.clone();
     let edits: Vec<FileEdit> = file_edits::edits_for(&entry.transcript, folder, &view.path)
         .into_iter()
         .cloned()
@@ -187,7 +198,7 @@ pub fn FileViewPanel() -> Element {
                         FilePreview { agent, folder: folder.clone(), path: view.path.clone(), text }
                     },
                     Loadable::Loaded(FileRead::Text(text)) => rsx! {
-                        FileContent { path: view.path.clone(), text, mode, line: view.line, edits }
+                        FileContent { path: view.path.clone(), text, mode, line: view.line, edits, update }
                     },
                     Loadable::Loaded(FileRead::Image(image)) => rsx! {
                         div { class: "file-image",
@@ -196,7 +207,7 @@ pub fn FileViewPanel() -> Element {
                     },
                 }
             }
-            div { class: "file-foot", "{note} To change it, ask the agent." }
+            FileFoot { agent, note, freshness }
         }
     }
 }
@@ -407,7 +418,7 @@ fn FilePreview(agent: AgentId, folder: PathBuf, path: PathBuf, text: String) -> 
     }
 }
 
-/// The rows are rebuilt only when the text, the mode, the line or the edits change.
+/// The rows are rebuilt only when the text, the mode, the line, the edits or the update change.
 #[component]
 fn FileContent(
     path: PathBuf,
@@ -415,8 +426,10 @@ fn FileContent(
     mode: ViewMode,
     line: Option<u32>,
     edits: Vec<FileEdit>,
+    update: Option<FileUpdate>,
 ) -> Element {
     let language = Language::from_path(&path);
+    let marks = line_marks(line, update.as_ref());
     if mode == ViewMode::WholeFile || edits.is_empty() {
         let lines = render::plain_lines(&text, language, 1, MAX_RENDERED_LINES);
         return rsx! {
@@ -425,7 +438,7 @@ fn FileContent(
             }
             div { class: "diff-rows",
                 for row in lines.rows.iter() {
-                    {diff_line(row, LineNumbers::Shown, line)}
+                    {diff_line(row, LineNumbers::Shown, marks)}
                 }
             }
             {lines_not_shown(lines.more)}
@@ -449,7 +462,7 @@ fn FileContent(
         return rsx! {
             div { class: "diff-rows",
                 for row in diff.rows.iter() {
-                    {diff_row(row, LineNumbers::Shown, line)}
+                    {diff_row(row, LineNumbers::Shown, marks)}
                 }
             }
             {lines_not_shown(diff.more)}
@@ -480,10 +493,81 @@ fn FileContent(
             p { class: "edit-title", "Edit {index + 1} of {count}" }
             div { class: "diff-rows",
                 for row in diff.rows.iter() {
-                    {diff_row(row, LineNumbers::Hidden, None)}
+                    {diff_row(row, LineNumbers::Hidden, LineMarks::marked(None))}
                 }
             }
             {lines_not_shown(diff.more)}
+        }
+    }
+}
+
+/// The line a link marks, and the lines a recent read again changed. An older update marks
+/// none: a view drawn again later, as after a switch back to the agent, does not play it again.
+fn line_marks(line: Option<u32>, update: Option<&FileUpdate>) -> LineMarks<'_> {
+    match update.filter(|update| is_recent(update, SystemTime::now())) {
+        Some(update) => LineMarks {
+            marked: line,
+            updated: &update.lines,
+            updated_class: if update.serial % 2 == 0 {
+                "updated-even"
+            } else {
+                "updated-odd"
+            },
+        },
+        None => LineMarks::marked(line),
+    }
+}
+
+/// Whether `update` came less than `UPDATE_SHOWN_FOR` before `now`.
+fn is_recent(update: &FileUpdate, now: SystemTime) -> bool {
+    update
+        .at
+        .to_system_time()
+        .and_then(|at| now.duration_since(at).ok())
+        .is_some_and(|age| age < UPDATE_SHOWN_FOR)
+}
+
+/// The foot: what the agent did to the file, when the shown text was read, and Reload.
+#[component]
+fn FileFoot(agent: AgentId, note: String, freshness: FileFreshness) -> Element {
+    let cockpit: Cockpit = use_context();
+    let Clock(now) = use_context();
+    let now = now();
+    let reading = freshness.reread != Reread::Idle;
+    let updated = freshness
+        .update
+        .as_ref()
+        .is_some_and(|update| is_recent(update, now));
+    let read = freshness.read_at.and_then(|read_at| {
+        let time = format::time_of_day(read_at)?;
+        let ago = format::ago(read_at, now);
+        Some(if ago == format::NOW {
+            format!("Read at {time}")
+        } else {
+            format!("Read at {time}, {ago}")
+        })
+    });
+    rsx! {
+        div { class: "file-foot",
+            span { class: "file-foot-note", "{note} To change it, ask the agent." }
+            if reading {
+                span { class: "file-freshness",
+                    span { class: "spinner", aria_hidden: true }
+                    "Reading…"
+                }
+            } else if updated {
+                span { class: "file-freshness updated", role: "status", "Updated just now" }
+            } else if let Some(read) = read {
+                span { class: "file-freshness", "{read}" }
+            }
+            button {
+                class: "file-reload",
+                title: "Read the file again (F5)",
+                disabled: reading,
+                onclick: move |_| cockpit.update(|state| file_reread::reread(state, agent)),
+                Icon { kind: IconKind::Reconnect, size: 13 }
+                "Reload"
+            }
         }
     }
 }

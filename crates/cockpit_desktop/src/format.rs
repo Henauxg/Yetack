@@ -452,6 +452,9 @@ fn clock_time(moment: NaiveDateTime, now: NaiveDateTime) -> String {
     }
 }
 
+/// What `ago` says for less than a minute.
+pub const NOW: &str = "now";
+
 /// "now", "5 min ago", "2 h ago", "yesterday", "3 days ago", "8 Nov".
 pub fn ago(moment: Timestamp, now: SystemTime) -> String {
     let (Some(then), Some(elapsed)) = (
@@ -460,7 +463,7 @@ pub fn ago(moment: Timestamp, now: SystemTime) -> String {
             .to_system_time()
             .and_then(|time| now.duration_since(time).ok()),
     ) else {
-        return "now".to_owned();
+        return NOW.to_owned();
     };
     ago_between(then, local_now(now), elapsed)
 }
@@ -471,7 +474,7 @@ fn ago_between(then: NaiveDateTime, now: NaiveDateTime, elapsed: Duration) -> St
     let minutes = elapsed.as_secs() / 60;
     let days = (now.date() - then.date()).num_days();
     match (minutes, days) {
-        (0, _) => "now".to_owned(),
+        (0, _) => NOW.to_owned(),
         (1..=59, _) => format!("{minutes} min ago"),
         (_, 0) => format!("{} h ago", minutes / 60),
         (_, 1) => "yesterday".to_owned(),

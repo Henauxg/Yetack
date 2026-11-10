@@ -11,7 +11,8 @@ use crate::connection::Cockpit;
 use crate::state::sidebar_keys::SidebarItem;
 use crate::state::{
     ANSWER_KEYS, AppState, CLOSE_AGENT_KEY, COMMAND_KEYS, Dialog, KeyPress, PaletteOrigin, Popover,
-    Utf16Offset, WaitingKind, accounts, actions, agent_map, handle_key, sidebar_keys,
+    RELOAD_KEY, Utf16Offset, WaitingKind, accounts, actions, agent_map, file_reread, handle_key,
+    sidebar_keys,
 };
 use crate::ui::sidebar_item_id;
 
@@ -201,6 +202,9 @@ document.addEventListener("keydown", (event) => {
     take = true;
   } else if (key === "Escape") {
     take = true;
+  } else if (key === settings.reload_key && plain && !event.shiftKey) {
+    // F5 reads the shown file again. Taken everywhere, it never reloads the page.
+    take = true;
   } else if (key === "F2" && plain && !event.shiftKey) {
     // F2 renames the selected agent, and moves an open title field between the header and the
     // agent's row.
@@ -380,6 +384,8 @@ struct Settings {
     command_keys: [&'static str; 4],
     /// The letter that closes the selected agent with Ctrl+Shift.
     close_agent_key: &'static str,
+    /// The key that reads the shown file again.
+    reload_key: &'static str,
 }
 
 /// Which plain keys the script takes, beyond Ctrl+K, Ctrl+N, Ctrl+O, Ctrl+M, Ctrl+Shift+W, Esc,
@@ -465,6 +471,7 @@ pub fn use_bridge(cockpit: Cockpit) {
             answer_keys: ANSWER_KEYS,
             command_keys: COMMAND_KEYS,
             close_agent_key: CLOSE_AGENT_KEY,
+            reload_key: RELOAD_KEY,
         }) {
             tracing::warn!("cannot start the page's script: {error}");
         }
@@ -505,7 +512,7 @@ fn receive(cockpit: Cockpit, message: BridgeMessage) {
             cockpit.type_in_composer(agent, text, caret);
         }
         BridgeMessage::Focus { focused } => {
-            cockpit.update(|state| state.ui.window_focused = focused);
+            cockpit.update(|state| file_reread::window_focused(state, focused));
         }
         BridgeMessage::Image { media_type, data } => {
             let Some(media_type) = image_media_type(&media_type) else {
@@ -724,6 +731,7 @@ mod tests {
             answer_keys: ANSWER_KEYS,
             command_keys: COMMAND_KEYS,
             close_agent_key: CLOSE_AGENT_KEY,
+            reload_key: RELOAD_KEY,
         };
         let mode = KeyMode {
             answer_letters: true,
@@ -753,6 +761,7 @@ mod tests {
                 "answer_keys": ["y", "n"],
                 "command_keys": ["k", "n", "o", "m"],
                 "close_agent_key": "w",
+                "reload_key": "F5",
             })
         );
         assert_eq!(

@@ -14,10 +14,11 @@ use cockpit_protocol::{
     PlanAnswer, PlanDecision, Prompt, PromptDelivery, PromptId, PromptParams, Question,
     QuestionAnswer, QueuedPromptParams, RenameParams, Request, Selection, SessionResumeParams,
     SetEffortParams, SetModeParams, SetModelParams, SlashCommand, StartParams, StopTaskParams,
+    Timestamp,
 };
 use strum::VariantArray;
 
-use super::app_state::{AgentEntry, AppState, FileRead, Loadable, MachineState};
+use super::app_state::{AgentEntry, AppState, FileFreshness, FileRead, Loadable, MachineState};
 use super::apply::forget_agent;
 use super::drafts::{Drafts, NewAgentDraft, Palette, QuestionDraft, SlashWord, SwitcherDraft};
 use super::requests::{Outgoing, Purpose, Shift, history_request};
@@ -27,7 +28,7 @@ use super::ui_state::{
     TitleEdit, TitlePlace, ViewMode, is_markdown,
 };
 use super::utf16_offset::Utf16Offset;
-use super::{accounts, export, file_edits, open_file, title_emoji};
+use super::{accounts, export, file_edits, file_reread, open_file, title_emoji};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::machine::MachineId;
 use crate::path_style;
@@ -104,10 +105,14 @@ pub fn select_agent(state: &mut AppState, agent: AgentId) {
         .ui
         .dialog
         .take_if(|dialog| matches!(dialog, Dialog::AgentMap(view) if view.agent != agent));
+    let back = state.ui.selected != Some(agent);
     state.ui.selected = Some(agent);
     state.ui.chat_new_from.clear();
     state.ui.unread.remove(&agent);
     state.ui.leave_agent();
+    if back {
+        file_reread::reread(state, agent);
+    }
 }
 
 /// The chat's script says the agent's chat reached its bottom, or left it. Leaving it marks the
@@ -1272,6 +1277,7 @@ pub fn open_file(state: &mut AppState, agent: AgentId, path: PathBuf, line: Opti
     let changed_paths = entry.changed_paths();
     entry.files.clear();
     entry.files.insert(path.clone(), Loadable::NotRequested);
+    entry.file_freshness = FileFreshness::default();
     let view = state
         .ui
         .file_views
@@ -1367,20 +1373,24 @@ pub fn show_read_file(
     requested: &Path,
     found: &Path,
     read: FileRead,
+    now: Option<Timestamp>,
 ) {
     let Some(entry) = state.agents.get_mut(&agent) else {
         return;
     };
-    if entry.files.remove(requested).is_none() {
+    let Some(old) = entry.files.remove(requested) else {
         return;
-    }
+    };
+    file_reread::arrived(&mut entry.file_freshness, old.loaded(), &read, now);
     let folder = &entry.summary.folder;
     let found = file_edits::relative_path(folder, found);
     if let Some(view) = state.ui.file_views.get_mut(&agent)
         && view.path == requested
     {
+        // A read again keeps the mode the user may have chosen since the first.
+        let first = old.loaded().is_none();
         let changed = !file_edits::edits_for(&entry.transcript, folder, &found).is_empty();
-        if view.line.is_none() && changed {
+        if first && view.line.is_none() && changed {
             view.mode = opening_mode(&found, None, changed, Some(view.mode));
         }
         // The found file takes the tab of the name asked for.
@@ -1405,6 +1415,7 @@ pub fn close_file_view(state: &mut AppState, agent: AgentId) {
         .take_if(|popover| *popover == Popover::FileList);
     if let Some(entry) = state.agents.get_mut(&agent) {
         entry.files.clear();
+        entry.file_freshness = FileFreshness::default();
     }
 }
 
