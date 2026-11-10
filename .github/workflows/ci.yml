@@ -1,11 +1,10 @@
 # Builds, lints and tests the workspace on Linux and Windows, and keeps the Windows desktop app.
 # The dev shell is Nix; CI installs the same libraries with apt and runs plain cargo.
+# It runs only when started: `gh workflow run ci.yml --ref <branch>`, or from the Actions tab.
 
 name: CI
 
 on:
-  push:
-  pull_request:
   workflow_dispatch:
 
 env:

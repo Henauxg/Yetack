@@ -8,7 +8,7 @@ Update it when you hand over.
 ## Where the work is
 
 - All work is on the branch `ccr-8be27d05-6ge2s2`, pushed. `main` has not moved: the branch is about 150 commits ahead of it, and no pull request exists yet. Ask the user before opening one or merging.
-- CI (`.github/workflows/ci.yml`) runs on every push, on Linux and Windows. Check its latest run on GitHub after you push: the Windows job is the only real Windows test, and it caught several failures that no Linux run showed.
+- CI (`.github/workflows/ci.yml`) runs on Linux and Windows, only when started: `gh workflow run ci.yml --ref <branch>`, or from the Actions tab. Ask the user before you start it. The Windows job is the only real Windows test, and it caught several failures that no Linux run showed.
 - CI is green on both platforms from `b57f7cd` on, the Windows job's tests of every crate included. Before it, the Windows job failed from the accounts commits on, on four account tests whose home folder was a Unix path.
 - The protocol version is 5. An app and a daemon of different versions refuse each other at `Hello`, so they are rebuilt together.
 
@@ -32,7 +32,7 @@ Each item is described in architecture.md and was reviewed with `/review fix` an
 
 - The user decides; agents propose. Ask before a design change, a protocol change, or anything outside the request, with a recommendation first. The user often answers "ok" to a numbered list: map the answers by number.
 - For a new screen or a large UI change, make an HTML mockup first (self-contained, reusing the app's `style.css`, in the scratchpad, with Playwright screenshots), send it, and build only once the user picked.
-- After a feature: `/review fix` (one agent for the daemon side and one for the desktop crate work well in parallel), then `/review-standard fix`, then push, then check CI. Each bug fix comes with a test that failed first.
+- After a feature: `/review fix` (one agent for the daemon side and one for the desktop crate work well in parallel), then `/review-standard fix`, then push. CI runs only when started (see "Where the work is"). Each bug fix comes with a test that failed first.
 - Commits: plain English subject in the imperative, short body, no `Co-Authored-By` or other trailer. No em-dashes anywhere. Comments only for what code cannot show.
 - The user tests on a Windows laptop: they clone the repository, `git pull`, then `cargo run -p cockpit_desktop`. Claude Code is installed there with the native installer (`claude.exe` in `%USERPROFILE%\.local\bin`, not on PATH).
 
