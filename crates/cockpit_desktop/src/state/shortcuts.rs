@@ -19,6 +19,8 @@ pub(super) const KEY_ENTER: &str = "Enter";
 const KEY_TAB: &str = "Tab";
 pub(super) const KEY_UP: &str = "ArrowUp";
 pub(super) const KEY_DOWN: &str = "ArrowDown";
+pub(super) const KEY_LEFT: &str = "ArrowLeft";
+pub(super) const KEY_RIGHT: &str = "ArrowRight";
 const KEY_F2: &str = "F2";
 
 /// The letters that answer an approval or a plan.

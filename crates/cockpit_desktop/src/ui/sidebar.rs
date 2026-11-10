@@ -132,14 +132,17 @@ fn row_time_text(time: RowTime, now: SystemTime) -> RowTimeText {
     RowTimeText { text, tooltip }
 }
 
-/// What the agent does now, or what its status says when it reports nothing.
+/// What the agent does now, or what its status says when it reports nothing. An idle agent with
+/// nothing running says nothing: its hollow dot shows it is idle.
 pub fn activity_line(entry: &AgentEntry) -> String {
-    if let Some(activity) = &entry.summary.activity {
+    let summary = &entry.summary;
+    if let Some(activity) = &summary.activity {
         return activity.clone();
     }
-    match entry.summary.status {
+    match summary.status {
         AgentStatus::Exited => "Process ended".to_owned(),
-        _ => format::agent_status_label(&entry.summary),
+        AgentStatus::Idle if summary.background_running == 0 => String::new(),
+        _ => format::agent_status_label(summary),
     }
 }
 
@@ -572,7 +575,13 @@ fn RowSecondLine(row: AgentRow) -> Element {
             if let Some(label) = row.account {
                 AccountTag { label }
             }
-            span { class: if row.warns { "row-activity warning" } else { "row-activity" }, "{row.activity}" }
+            span { class: if row.warns { "row-activity warning" } else { "row-activity" },
+                if row.activity.is_empty() {
+                    span { class: "visually-hidden", {format::status_label(AgentStatus::Idle)} }
+                } else {
+                    "{row.activity}"
+                }
+            }
         }
     }
 }
@@ -683,7 +692,7 @@ mod tests {
         assert_eq!(format::agent_status_class(&working), "status-working");
         assert_eq!(
             activity_line(&AgentEntry::new(summary(3, AgentStatus::Idle))),
-            "Idle"
+            ""
         );
     }
 

@@ -785,7 +785,7 @@ mod tests {
         folder_field::follow(&mut state, &drafts);
         needed_requests(&mut state);
         // The machine changed while this computer listed the same folder.
-        actions::pick_new_agent_machine(&mut state, devbox);
+        actions::pick_new_agent_machine(&mut state, &mut drafts, devbox);
         folder_field::follow(&mut state, &drafts);
         let asked = needed_requests(&mut state);
         let listing = DirListing {

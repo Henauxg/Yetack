@@ -592,6 +592,7 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
 - **Notifications** (module `notifications`): at most one per agent, for an agent that needs you or finished, and a click on one brings the window up and opens its agent.
   An agent finishes once its turn has ended and none of its background tasks still runs (`background_running`).
   Until then, its sidebar row and the header say "Idle, N running in the background", with the status dot's ring in the working color.
+  When the last background task of an idle agent ends, the app waits 10 s (`FINISH_HOLD` in `state/apply.rs`) before it announces the finish, and drops it if the agent works again meanwhile: Claude Code usually starts a turn to read the task's result, and that turn's end is the finish.
   On Linux they go through the freedesktop notification service, and a "needs you" one closes once the agent no longer needs you.
   On Windows they are toasts, from notify-rust's Windows backend.
   Windows shows toasts only for an app the Start menu registers, which the app is not, so the toasts carry PowerShell's name and icon.
@@ -626,7 +627,7 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
   The sidebar shows the new order at once, with the positions the daemon then sends, and puts the agents back when the daemon refuses the move.
   A page script follows the drag (`ui/reorder.rs`), as the splitter's does: a lifted copy of the row follows the pointer, a line shows where the row will land, and Rust hears of it once, on release.
   A press that moves less than 4 pixels stays a click.
-- **Sidebar rows**: the first line holds the status dot, the title, the task progress ("3/5"), a time, the pending count and the unread dot. The second line holds the activity.
+- **Sidebar rows**: the first line holds the status dot, the title, the task progress ("3/5"), a time, the pending count and the unread dot. The second line holds the activity. An idle agent with nothing running in the background leaves it empty: its hollow dot already says it is idle.
   The time is how long the turn has run for a working agent, how long it has waited for an agent that needs you, and how long ago it last did something for an idle or exited one, in one unit: "12 s", "4 min", "2 h", "3 d". An idle or exited row counts no seconds: it says "now" for the first minute, so its time changes at most once a minute.
   The app's one-second clock (`Clock`) ticks it. Only a small component per row reads the clock, so a tick renders those texts and nothing else.
   The times come from the daemon's clock: when it runs ahead of the laptop's, a time reads 0 s rather than below.
@@ -642,7 +643,7 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
   Its card shows the server's CPU, memory and load average, each agent's cores and memory with their share of the server's cores as a bar (amber past a quarter), the idle agents folded into one line, what the other processes use, and the selected agent's heaviest commands, each with a stop button.
   A click on an agent opens it and keeps the card open.
   A daemon that cannot measure its load, or does not know the request, shows "Load unknown".
-- **New agent dialog**: it opens on the machine of the last agent started (this computer when that machine does not answer) and on that machine's last used folder, with the model, effort and permission mode of the last agent started, else Opus and Auto (`open_new_agent`). So Ctrl+N then Enter starts an agent where the last one started.
+- **New agent dialog**: it opens on the machine of the last agent started (this computer when that machine does not answer) and on that machine's last used folder, with the model, effort and permission mode of the last agent started, else Opus and Auto (`open_new_agent`). So Ctrl+N then Enter starts an agent where the last one started. Picking another machine puts that machine's last folder in the folder field, unless you typed a folder there.
   When the "Start in a folder" tab shows (on Ctrl+N, the + button, going back from Accounts, or a click on the tab), the folder field takes the focus while it is empty, and the first message takes it once the folder is filled (`start_focus`). The "Resume a session" tab gives the focus to its search field. The caret goes to the end of the text the field already holds.
   The folder field works as the "Open file" dialog's path field.
   Once it is typed in, the folders of the folder its text names (`folders.list`) take the recent folders' place, filtered by the last segment.

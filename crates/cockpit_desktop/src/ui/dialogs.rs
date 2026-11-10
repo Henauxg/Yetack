@@ -368,7 +368,7 @@ fn NewAgentTarget(form: NewAgentForm) -> Element {
                                         aria_checked: choice.chosen,
                                         disabled: !choice.answers,
                                         title: if choice.answers { "" } else { "This machine does not answer" },
-                                        onclick: move |_| cockpit.update(|state| actions::pick_new_agent_machine(state, picked)),
+                                        onclick: move |_| pick_machine(cockpit, picked),
                                         Icon { kind: choice.icon, size: 13 }
                                         "{choice.name}"
                                     }
@@ -620,7 +620,9 @@ fn StartForm(form: NewAgentForm) -> Element {
                                         onclick: move |_| {
                                             let picked = picked.clone();
                                             bridge::set_field_text(FOLDER_FIELD_ID, picked.clone());
-                                            cockpit.update_with_drafts(|_, drafts| drafts.new_agent.folder = picked);
+                                            cockpit.update_with_drafts(|_, drafts| {
+                                                drafts.new_agent.folder = picked;
+                                            });
                                         },
                                         span { class: "folder-icon", Icon { kind: IconKind::Folder, size: 14 } }
                                         FolderPath { folder }
@@ -834,7 +836,7 @@ fn type_folder(cockpit: Cockpit, text: String) {
 /// The folder field's keys, as the "Open file" dialog's path field has them. Enter takes the
 /// highlighted folder, or with none highlighted, starts the agent.
 fn folder_key(cockpit: Cockpit, event: &KeyboardEvent) {
-    if event.modifiers().alt() {
+    if event.modifiers().alt() || event.is_composing() {
         return;
     }
     let direction = match event.key() {
@@ -877,6 +879,17 @@ fn folder_key(cockpit: Cockpit, event: &KeyboardEvent) {
     } else {
         cockpit.with_drafts(|state, drafts| folder_field::move_highlight(state, drafts, direction));
         bridge::scroll_to_highlighted();
+    }
+}
+
+/// Picks the machine, and shows the folder the dialog then holds.
+fn pick_machine(cockpit: Cockpit, machine: MachineId) {
+    let mut new_text = None;
+    cockpit.update_with_drafts(|state, drafts| {
+        new_text = actions::pick_new_agent_machine(state, drafts, machine);
+    });
+    if let Some(text) = new_text {
+        bridge::set_field_text(FOLDER_FIELD_ID, text);
     }
 }
 

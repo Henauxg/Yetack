@@ -10,7 +10,7 @@ use crate::ui::icons::{Icon, IconKind};
 use crate::{bridge, format};
 
 /// How long the copy button says "Copied".
-const COPIED_FOR: Duration = Duration::from_secs(2);
+const COPIED_FOR: Duration = Duration::from_secs(1);
 
 /// Whether a diff row shows its line numbers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,7 +20,7 @@ pub enum LineNumbers {
 }
 
 /// A button that copies `text`, then says "Copied" for a moment. `label` names what it copies, for
-/// its tooltip and screen readers; `worded` writes "Copy" beside the icon. Without `text`, it is
+/// its tooltip and screen readers. `worded` writes "Copy" beside the icon. Without `text`, it is
 /// disabled: the file view keeps it in place while the file loads.
 #[component]
 pub fn CopyButton(text: Option<String>, label: String, worded: bool) -> Element {

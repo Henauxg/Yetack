@@ -17,16 +17,12 @@ use cockpit_protocol::{
 use super::actions;
 use super::app_state::AppState;
 use super::requests::Outgoing;
-use super::shortcuts::{KEY_DOWN, KEY_ENTER, KEY_NO, KEY_UP, KEY_YES};
+use super::shortcuts::{KEY_DOWN, KEY_ENTER, KEY_LEFT, KEY_NO, KEY_RIGHT, KEY_UP, KEY_YES};
 use super::transcript::{Transcript, Waiting, WaitingKind};
 use super::ui_state::{Dialog, RevealPlace};
 
 /// Siblings a level shows before its ended ones fold into one row.
 pub const SIBLING_CAP: usize = 8;
-
-/// `KeyboardEvent.key` values the map takes, beyond the ones it shares with other shortcuts.
-const KEY_LEFT: &str = "ArrowLeft";
-const KEY_RIGHT: &str = "ArrowRight";
 
 /// The keys the page's script passes on while the map is open.
 pub const MAP_KEYS: [&str; 5] = [KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_ENTER];

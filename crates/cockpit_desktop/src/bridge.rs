@@ -68,7 +68,6 @@ const sidebarItem = (element) => {
   }
   return null;
 };
-const arrowKeys = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"];
 (async () => {
   for (;;) {
     mode = await dioxus.recv();
@@ -188,7 +187,7 @@ document.addEventListener("keydown", (event) => {
     || (mode.answer_numbers && (/^[1-9]$/.test(key) || key === "Enter"));
   // The arrows on a sidebar row or machine header move the selection and fold the machines.
   const focused = sidebarItem(target);
-  if (focused !== null && plain && !event.shiftKey && !mode.dialog && arrowKeys.includes(key)) {
+  if (focused !== null && plain && !event.shiftKey && !mode.dialog && settings.sidebar_keys.includes(key)) {
     event.preventDefault();
     send({ type: "sidebar_key", key, focused });
     return;
@@ -373,6 +372,8 @@ struct Settings {
     undo_steps: u16,
     /// The keys the agent map takes.
     map_keys: [&'static str; 5],
+    /// The keys a sidebar row or machine header takes.
+    sidebar_keys: [&'static str; 4],
     /// The letters that answer an approval or a plan.
     answer_keys: [&'static str; 2],
     /// The letters that take Ctrl alone.
@@ -460,6 +461,7 @@ pub fn use_bridge(cockpit: Cockpit) {
             undo_pause_ms: UNDO_PAUSE_MS,
             undo_steps: UNDO_STEPS,
             map_keys: agent_map::MAP_KEYS,
+            sidebar_keys: sidebar_keys::SIDEBAR_KEYS,
             answer_keys: ANSWER_KEYS,
             command_keys: COMMAND_KEYS,
             close_agent_key: CLOSE_AGENT_KEY,
@@ -651,6 +653,7 @@ pub fn scroll_to_highlighted() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::machine::MachineId;
 
     #[test]
     fn media_types_follow_the_protocol() {
@@ -679,12 +682,13 @@ mod tests {
 
         assert!(matches!(
             row,
-            BridgeMessage::SidebarKey { focused: SidebarItem::Agent(agent), .. } if agent == AgentId::new(3)
+            BridgeMessage::SidebarKey { focused: SidebarItem::Agent(agent), .. }
+                if agent == AgentId::new(3)
         ));
         assert!(matches!(
             head,
             BridgeMessage::SidebarKey { focused: SidebarItem::Machine(machine), .. }
-                if machine == crate::machine::MachineId::new(1)
+                if machine == MachineId::new(1)
         ));
     }
 
@@ -716,6 +720,7 @@ mod tests {
             undo_pause_ms: 500,
             undo_steps: 200,
             map_keys: agent_map::MAP_KEYS,
+            sidebar_keys: sidebar_keys::SIDEBAR_KEYS,
             answer_keys: ANSWER_KEYS,
             command_keys: COMMAND_KEYS,
             close_agent_key: CLOSE_AGENT_KEY,
@@ -744,6 +749,7 @@ mod tests {
                 "undo_pause_ms": 500,
                 "undo_steps": 200,
                 "map_keys": ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter"],
+                "sidebar_keys": ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"],
                 "answer_keys": ["y", "n"],
                 "command_keys": ["k", "n", "o", "m"],
                 "close_agent_key": "w",
