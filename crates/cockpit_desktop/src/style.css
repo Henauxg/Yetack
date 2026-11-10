@@ -4905,7 +4905,8 @@ html.splitting * {
   --tool: var(--faint);
 }
 
-.overlay.map-overlay {
+/* The agent map and an image's full view take most of the window's height. */
+.overlay.tall-overlay {
   padding-top: 40px;
 }
 

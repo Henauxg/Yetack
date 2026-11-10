@@ -91,8 +91,8 @@ pub fn Dialogs() -> Element {
         return rsx! {};
     };
     let mut overlay_class = vec!["overlay"];
-    if matches!(dialog, Dialog::AgentMap(_)) {
-        overlay_class.push("map-overlay");
+    if matches!(dialog, Dialog::AgentMap(_) | Dialog::ImageView(_)) {
+        overlay_class.push("tall-overlay");
     }
     if leaving {
         overlay_class.push("leaving");
