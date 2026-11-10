@@ -627,7 +627,7 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
   The sidebar shows the new order at once, with the positions the daemon then sends, and puts the agents back when the daemon refuses the move.
   A page script follows the drag (`ui/reorder.rs`), as the splitter's does: a lifted copy of the row follows the pointer, a line shows where the row will land, and Rust hears of it once, on release.
   A press that moves less than 4 pixels stays a click.
-- **Sidebar rows**: the first line holds the status dot, the title, the task progress ("3/5"), a time, the pending count and the unread dot. The second line holds the activity.
+- **Sidebar rows**: the first line holds the status dot, the title, the task progress ("3/5"), a time, the pending count and the unread dot. The second line holds the activity. An idle agent with nothing running in the background leaves it empty: its hollow dot already says it is idle.
   The time is how long the turn has run for a working agent, how long it has waited for an agent that needs you, and how long ago it last did something for an idle or exited one, in one unit: "12 s", "4 min", "2 h", "3 d". An idle or exited row counts no seconds: it says "now" for the first minute, so its time changes at most once a minute.
   The app's one-second clock (`Clock`) ticks it. Only a small component per row reads the clock, so a tick renders those texts and nothing else.
   The times come from the daemon's clock: when it runs ahead of the laptop's, a time reads 0 s rather than below.

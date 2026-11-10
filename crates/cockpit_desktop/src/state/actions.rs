@@ -1858,10 +1858,11 @@ const NEW_AGENT_MODE: PermissionMode = PermissionMode::Auto;
 
 /// Opens the new agent dialog on the machine of the last agent started, else this computer, and
 /// on that machine's last used folder. A machine that does not answer gives way to this computer.
-/// The model, effort and permission mode are the last agent's too, else Opus and Auto. A mode the mode menu does not offer, or
-/// Plan, which is usually for a while, is not carried over. The past sessions are listed again,
-/// since sessions end and start while the app runs. An open dialog stays as it is, with what its
-/// fields hold, and an "Accounts" dialog that goes back to it does so.
+/// The model, effort and permission mode are the last agent's too, else Opus and Auto. A mode
+/// the mode menu does not offer, or Plan, which is usually for a while, is not carried over. The
+/// past sessions are listed again, since sessions end and start while the app runs. An open
+/// dialog stays as it is, with what its fields hold, and an "Accounts" dialog that goes back to
+/// it does so.
 pub fn open_new_agent(state: &mut AppState, drafts: &mut Drafts) {
     if matches!(state.ui.dialog, Some(Dialog::NewAgent(_))) {
         return;

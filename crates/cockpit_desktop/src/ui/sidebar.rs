@@ -577,7 +577,7 @@ fn RowSecondLine(row: AgentRow) -> Element {
             }
             span { class: if row.warns { "row-activity warning" } else { "row-activity" },
                 if row.activity.is_empty() {
-                    span { class: "visually-hidden", "Idle" }
+                    span { class: "visually-hidden", {format::status_label(AgentStatus::Idle)} }
                 } else {
                     "{row.activity}"
                 }

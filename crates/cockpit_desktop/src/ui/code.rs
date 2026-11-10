@@ -20,7 +20,7 @@ pub enum LineNumbers {
 }
 
 /// A button that copies `text`, then says "Copied" for a moment. `label` names what it copies, for
-/// its tooltip and screen readers; `worded` writes "Copy" beside the icon. Without `text`, it is
+/// its tooltip and screen readers. `worded` writes "Copy" beside the icon. Without `text`, it is
 /// disabled: the file view keeps it in place while the file loads.
 #[component]
 pub fn CopyButton(text: Option<String>, label: String, worded: bool) -> Element {

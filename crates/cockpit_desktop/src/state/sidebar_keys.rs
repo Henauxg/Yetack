@@ -7,13 +7,11 @@ use serde::Deserialize;
 
 use super::actions;
 use super::app_state::AppState;
+use super::shortcuts::{KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_UP};
 use crate::machine::MachineId;
 
-/// `KeyboardEvent.key` values.
-const KEY_UP: &str = "ArrowUp";
-const KEY_DOWN: &str = "ArrowDown";
-const KEY_LEFT: &str = "ArrowLeft";
-const KEY_RIGHT: &str = "ArrowRight";
+/// The keys the page's script passes on from a sidebar row or machine header.
+pub const SIDEBAR_KEYS: [&str; 4] = [KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT];
 
 /// The sidebar element that has the focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

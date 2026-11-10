@@ -620,7 +620,9 @@ fn StartForm(form: NewAgentForm) -> Element {
                                         onclick: move |_| {
                                             let picked = picked.clone();
                                             bridge::set_field_text(FOLDER_FIELD_ID, picked.clone());
-                                            cockpit.update_with_drafts(|_, drafts| drafts.new_agent.folder = picked);
+                                            cockpit.update_with_drafts(|_, drafts| {
+                                                drafts.new_agent.folder = picked;
+                                            });
                                         },
                                         span { class: "folder-icon", Icon { kind: IconKind::Folder, size: 14 } }
                                         FolderPath { folder }
