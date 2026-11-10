@@ -132,6 +132,12 @@ pub(crate) fn login_written(account: &Account) -> Option<Timestamp> {
     Timestamp::from_system_time(metadata.modified().ok()?)
 }
 
+/// Whether the account's folder holds a login. Looks at the credentials file's metadata, never at
+/// its content: it blocks.
+pub(crate) fn sign_in_of(account: &Account) -> SignIn {
+    LoginStore::CURRENT.sign_in(account.folder.join(CREDENTIALS_FILE).is_file())
+}
+
 /// The account, whether its folder holds a login, how to sign in to it with `program`, and its
 /// route. Looks at the credentials file's metadata, never at its content, and reads the switches
 /// of the account's `settings.json`: it blocks.
@@ -140,10 +146,9 @@ pub(crate) fn account_state(
     shell: SignInShell,
     program: &TerminalName,
 ) -> AccountState {
-    let has_credentials_file = account.folder.join(CREDENTIALS_FILE).is_file();
     let sign_in_command = sign_in_command(&account, shell, program);
     AccountState {
-        sign_in: LoginStore::CURRENT.sign_in(has_credentials_file),
+        sign_in: sign_in_of(&account),
         sign_in_command,
         route: route(&account),
         account,

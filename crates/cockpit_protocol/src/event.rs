@@ -39,7 +39,8 @@ pub enum Event {
     SettingsChanged(Settings),
     /// The plan usage of an account other than the default one changed.
     AccountPlanUsageChanged(AccountPlanUsage),
-    /// Replaces the accounts.
+    /// Replaces the accounts. The daemon also sends it when an account signs in or out, so that
+    /// clients ask `accounts.list` again.
     AccountsChanged {
         accounts: Vec<Account>,
     },

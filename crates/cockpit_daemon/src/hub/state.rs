@@ -2,14 +2,15 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use claude_protocol::InputLine;
 use cockpit_protocol::{
     AccountId, AccountPlanUsage, AgentId, Event, EventRecord, Frame, PlanUsage, Prompt, PromptId,
-    Seq, ServerMessage, Snapshot, Timestamp,
+    Seq, ServerMessage, SignIn, Snapshot, Timestamp,
 };
 use tokio::sync::mpsc;
+use tokio::time::MissedTickBehavior;
 
 use crate::daemon_config::DaemonConfig;
 use crate::hub::folders::PendingMove;
@@ -23,6 +24,10 @@ use crate::transcript::AgentView;
 /// Live events a client's queue holds. A client this far behind is dropped, and catches up when
 /// it reconnects.
 const CLIENT_QUEUE: usize = 4096;
+
+/// How often the hub checks whether each account signed in or out: a file's metadata per
+/// account.
+const SIGN_IN_CHECK: Duration = Duration::from_secs(3);
 
 /// Owns every agent and the daemon's state. Only its task touches them.
 pub(crate) struct Hub {
@@ -41,6 +46,10 @@ pub(crate) struct Hub {
     pub(super) inputs: mpsc::Sender<HubInput>,
     /// Samples the machine's load while clients ask for it.
     pub(super) load: LoadSampler,
+    /// Whether each account was signed in at the last periodic check.
+    pub(super) sign_ins: BTreeMap<AccountId, SignIn>,
+    /// A periodic check of the accounts' folders runs.
+    pub(super) checking_sign_ins: bool,
 }
 
 pub(super) struct Agent {
@@ -100,14 +109,25 @@ impl Hub {
             clients: Vec::new(),
             inputs,
             load: LoadSampler::default(),
+            sign_ins: BTreeMap::new(),
+            checking_sign_ins: false,
         }
     }
 
-    /// Resumes the agents that were running, then serves inputs until the daemon stops.
+    /// Resumes the agents that were running, then serves inputs until the daemon stops. Every
+    /// [`SIGN_IN_CHECK`], it checks whether each account signed in or out.
     pub(crate) async fn run(mut self, mut inputs: mpsc::Receiver<HubInput>) {
         self.start_restored_agents();
-        while let Some(input) = inputs.recv().await {
-            self.handle(input);
+        let mut checks = tokio::time::interval(SIGN_IN_CHECK);
+        checks.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                input = inputs.recv() => match input {
+                    Some(input) => self.handle(input),
+                    None => return,
+                },
+                _ = checks.tick() => self.check_sign_ins(),
+            }
         }
     }
 
@@ -138,6 +158,7 @@ impl Hub {
                 logins,
                 reply,
             } => self.accounts_checked(accounts, &logins, reply),
+            HubInput::SignInsChecked(check) => self.sign_ins_checked(check),
             HubInput::RestoredCost {
                 agent,
                 generation,
