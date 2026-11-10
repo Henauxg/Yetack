@@ -4450,6 +4450,11 @@ html.reordering * {
   color: var(--dim);
 }
 
+/* A section after the first stands apart from the row above it. */
+.settings-title:not(:first-child) {
+  margin-top: 8px;
+}
+
 .setting-row {
   display: flex;
   align-items: center;
