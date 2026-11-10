@@ -8,14 +8,17 @@ const READ_NUMBER_ENDS: [char; 2] = ['\t', '→'];
 
 /// How Claude Code's `Grep` and `Glob` start their output.
 const FOUND_PREFIX: &str = "Found ";
-const FILE_WORD: &str = " file";
+const FILE_WORD: &str = "file";
+/// How `Grep` ends the counts of its matches per file.
+const OCCURRENCES_WORDS: &str = "total occurrences";
 const NO_FILES: &str = "No files found";
 const NO_MATCHES: &str = "No matches found";
-/// How `Glob` ends a list it cut.
-const NOTE_START: char = '(';
+/// How `Glob` and `Grep` start the note under a list they cut.
+const NOTE_STARTS: [char; 2] = ['(', '['];
 
 /// The characters that open and close a quoted part of a line.
-const QUOTES: [char; 3] = ['\'', '"', '`'];
+const QUOTES: [char; 3] = [APOSTROPHE, '"', '`'];
+const APOSTROPHE: char = '\'';
 /// Stands for the quoted text that changes along a run of lines.
 const VARYING: char = '…';
 
@@ -53,6 +56,8 @@ pub enum Found {
     Files(usize),
     /// Matching lines, from a search that shows them.
     Lines(usize),
+    /// Matches, from a search that counts them.
+    Matches(usize),
     Nothing,
 }
 
@@ -66,11 +71,14 @@ pub fn found(tool: SearchTool, output: &str) -> Found {
     if let Some(files) = found_files(first_line) {
         return Found::Files(files);
     }
+    if let Some(matches) = output.lines().find_map(found_occurrences) {
+        return Found::Matches(matches);
+    }
     let listed = output
         .lines()
         .filter(|line| {
             let line = line.trim();
-            !line.is_empty() && !line.starts_with(NOTE_START) && !line.starts_with(FOUND_PREFIX)
+            !line.is_empty() && !line.starts_with(NOTE_STARTS) && !line.starts_with(FOUND_PREFIX)
         })
         .count();
     match tool {
@@ -81,12 +89,20 @@ pub fn found(tool: SearchTool, output: &str) -> Found {
 
 /// "Found 4 files" reads 4.
 fn found_files(line: &str) -> Option<usize> {
-    let rest = line.strip_prefix(FOUND_PREFIX)?;
-    let (count, noun) = rest.split_once(' ')?;
-    format!(" {noun}")
-        .starts_with(FILE_WORD)
-        .then(|| count.parse().ok())
-        .flatten()
+    let (count, noun) = line.strip_prefix(FOUND_PREFIX)?.split_once(' ')?;
+    if !noun.starts_with(FILE_WORD) {
+        return None;
+    }
+    count.parse().ok()
+}
+
+/// "Found 12 total occurrences across 2 files." reads 12.
+fn found_occurrences(line: &str) -> Option<usize> {
+    let (count, rest) = line.strip_prefix(FOUND_PREFIX)?.split_once(' ')?;
+    if !rest.starts_with(OCCURRENCES_WORDS) {
+        return None;
+    }
+    count.parse().ok()
 }
 
 /// A part of a tool's output, as the chat shows it.
@@ -206,15 +222,40 @@ impl<'line> Split<'line> {
 }
 
 /// The text before the first quoted part of `text`, the part with its quotes, and the text after
-/// it. `None` when no quote closes.
+/// it. `None` when no quote closes. An apostrophe inside a word, as in "it's", opens and closes
+/// nothing.
 fn next_quoted(text: &str) -> Option<(&str, &str, &str)> {
-    let open = text.find(QUOTES)?;
-    let (frame, from_quote) = text.split_at(open);
-    let quote = from_quote.chars().next()?;
-    let inside = from_quote.get(quote.len_utf8()..)?;
-    let close = inside.find(quote)?;
-    let (part, after) = from_quote.split_at(quote.len_utf8() * 2 + close);
-    Some((frame, part, after))
+    let mut before: Option<char> = None;
+    for (open, quote) in text.char_indices() {
+        let opens = QUOTES.contains(&quote)
+            && !(quote == APOSTROPHE && before.is_some_and(char::is_alphanumeric));
+        before = Some(quote);
+        if !opens {
+            continue;
+        }
+        let (frame, from_quote) = text.split_at(open);
+        let Some(close) = from_quote
+            .get(quote.len_utf8()..)
+            .and_then(|inside| closing(inside, quote))
+        else {
+            continue;
+        };
+        let (part, after) = from_quote.split_at(quote.len_utf8() * 2 + close);
+        return Some((frame, part, after));
+    }
+    None
+}
+
+/// Where `quote` closes in the text after it opened.
+fn closing(inside: &str, quote: char) -> Option<usize> {
+    let mut chars = inside.char_indices().peekable();
+    while let Some((at, current)) = chars.next() {
+        let next = chars.peek().map(|&(_, next)| next);
+        if current == quote && !(quote == APOSTROPHE && next.is_some_and(char::is_alphanumeric)) {
+            return Some(at);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -290,6 +331,24 @@ mod tests {
                 OutputPart::Lines("[main 3f2a91c] Count columns from 1".to_owned()),
             ]
         );
+    }
+
+    #[test]
+    fn an_apostrophe_inside_a_word_quotes_nothing() {
+        let output = "it's 3 o'clock\nit's 5 o'clock";
+
+        assert_eq!(output_parts(output), [OutputPart::Lines(output.to_owned())]);
+    }
+
+    #[test]
+    fn a_count_search_says_its_matches_and_a_page_note_is_no_line() {
+        let counted =
+            "src/lexer.rs:9\nsrc/error.rs:3\n\nFound 12 total occurrences across 2 files.";
+        let paged = "src/lexer.rs:12:let column = 0;\nsrc/lexer.rs:30:column += 1;\n\n\
+                     [Showing results with pagination = limit: 250, offset: 0]";
+
+        assert_eq!(found(SearchTool::Grep, counted), Found::Matches(12));
+        assert_eq!(found(SearchTool::Grep, paged), Found::Lines(2));
     }
 
     #[test]

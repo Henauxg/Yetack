@@ -380,7 +380,8 @@ pub fn TranscriptView() -> Element {
         .copied()
         .filter(|item| shows_at_top(item, &loaded) && Some(item.id) != sign_in_notice)
         .collect();
-    let top_rows = tool_rows::rows(&top_items, &awaiting);
+    let divider = actions::new_divider(&state, agent);
+    let top_rows = tool_rows::rows(&top_items, &awaiting, divider);
     let states: Vec<Option<StepState>> = top_rows
         .iter()
         .map(|row| {
@@ -410,7 +411,6 @@ pub fn TranscriptView() -> Element {
     let shown = ShownRows::of(agent, drawn(), &row_ids, scrolled_up.is_some());
     rows.set((Some(agent), row_ids));
     let first = shown.first(top_rows.len());
-    let divider = actions::new_divider(&state, agent);
     let top: Vec<TopRow> = top_rows
         .iter()
         .zip(states)
@@ -525,6 +525,7 @@ enum RowView {
         item: TranscriptItem,
         /// The Markdown of the notice that follows the call.
         instructions: Option<String>,
+        awaits_approval: bool,
     },
     Explored(Vec<TranscriptItem>),
 }
@@ -545,6 +546,7 @@ impl RowView {
             },
             Row::Skill { call, instructions } => Self::Skill {
                 item: (*call).clone(),
+                awaits_approval: awaiting.contains(&call.id),
                 instructions: instructions.and_then(|notice| match &notice.body {
                     ItemBody::Notice { detail, .. } => detail.clone(),
                     _ => None,
@@ -786,8 +788,9 @@ fn TranscriptRow(
                     ..
                 },
             instructions,
+            awaits_approval,
         } => rsx! {
-            SkillView { agent, folder, id: item_id, stage: CallStage::new(&call, false), call, instructions }
+            SkillView { agent, folder, id: item_id, stage: CallStage::new(&call, awaits_approval), call, instructions }
         },
         RowView::Skill { item, .. } => rsx! {
             ItemView { agent, folder, item, nested: Vec::new(), awaits_approval: false }
@@ -1321,11 +1324,14 @@ pub(crate) fn tool_meta(call: &ToolCall, stage: CallStage) -> String {
         (CallStage::AwaitsApproval, _) => "waiting for approval".to_owned(),
         (CallStage::Running, _) => RUNNING_WORD.to_owned(),
         (_, Some(code)) => format!("exit {code}"),
-        (CallStage::Failed, None) if call.tool == file_edits::READ_TOOL => call
-            .output
-            .as_deref()
-            .and_then(error_line)
-            .unwrap_or_else(|| "failed".to_owned()),
+        (CallStage::Failed, None)
+            if call.tool == file_edits::READ_TOOL || tool_rows::is_skill(call) =>
+        {
+            call.output
+                .as_deref()
+                .and_then(error_line)
+                .unwrap_or_else(|| "failed".to_owned())
+        }
         (CallStage::Failed, None) => "failed".to_owned(),
         (CallStage::Done, None) => done_meta(call).unwrap_or_default(),
     }
@@ -1346,6 +1352,7 @@ fn done_meta(call: &ToolCall) -> Option<String> {
     Some(match render::found(search, output) {
         Found::Files(files) => format::count(files, "file", "files"),
         Found::Lines(lines) => format::count(lines, "line", "lines"),
+        Found::Matches(matches) => format::count(matches, "match", "matches"),
         Found::Nothing => "no matches".to_owned(),
     })
 }
@@ -1973,6 +1980,43 @@ mod tests {
             "no matches"
         );
         assert_eq!(meta("Bash", ToolCallStatus::Done, "ok"), "");
+    }
+
+    #[test]
+    fn a_failed_skill_says_why_on_its_line() {
+        let failed = ToolCall {
+            output: Some("<tool_use_error>Unknown skill: frobnicate</tool_use_error>".to_owned()),
+            ..call("Skill", "frobnicate", ToolCallStatus::Failed)
+        };
+
+        assert_eq!(
+            tool_meta(&failed, CallStage::Failed),
+            "Unknown skill: frobnicate"
+        );
+    }
+
+    #[test]
+    fn a_skill_row_keeps_its_wait_for_approval() {
+        let skill = item(
+            1,
+            None,
+            ItemBody::ToolCall(call("Skill", "review", ToolCallStatus::Running)),
+        );
+        let awaiting = BTreeSet::from([ItemId::new(1)]);
+        let row = Row::Skill {
+            call: &skill,
+            instructions: None,
+        };
+
+        let view = RowView::of(&row, &Children::new(), &awaiting, None);
+
+        assert!(matches!(
+            view,
+            RowView::Skill {
+                awaits_approval: true,
+                ..
+            }
+        ));
     }
 
     #[test]

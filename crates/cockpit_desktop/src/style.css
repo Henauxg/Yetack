@@ -2785,6 +2785,7 @@ html.reordering * {
 }
 
 /* The clip cuts what goes past its edge, a focus ring drawn outside included. */
+.io-clip :focus-visible,
 .message-clip :focus-visible {
   outline-offset: -2px;
 }
@@ -7415,6 +7416,7 @@ html.splitting .sidebar {
 
 .block-body,
 .subagent-body,
+.compact-search > .tool-io,
 .thinking-text,
 .notice-detail,
 .mcp-detail-view {

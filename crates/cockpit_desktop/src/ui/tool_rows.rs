@@ -69,10 +69,12 @@ impl<'item> Row<'item> {
 
 /// The rows of the main conversation's items, in order. A skill's call takes the notice of its
 /// instructions right after it. Two reads or searches in a row or more, under the same parent,
-/// take one row. A call that waits for approval stays on its own row, beside its card.
+/// take one row. A call that waits for approval stays on its own row, beside its card. A run ends
+/// before `divider`, the first new item, so that the "New" divider stays above new items only.
 pub fn rows<'item>(
     items: &[&'item TranscriptItem],
     awaiting: &BTreeSet<ItemId>,
+    divider: Option<ItemId>,
 ) -> Vec<Row<'item>> {
     let mut rows = Vec::new();
     let mut rest = items;
@@ -94,7 +96,13 @@ pub fn rows<'item>(
         let run: Vec<&TranscriptItem> = rest
             .iter()
             .copied()
-            .take_while(|next| explores(next, awaiting) && next.parent == item.parent)
+            .enumerate()
+            .take_while(|&(at, next)| {
+                explores(next, awaiting)
+                    && next.parent == item.parent
+                    && (at == 0 || Some(next.id) != divider)
+            })
+            .map(|(_, next)| next)
             .collect();
         if run.len() >= MIN_EXPLORED {
             rest = rest.get(run.len()..).unwrap_or_default();
@@ -112,9 +120,13 @@ pub fn rows<'item>(
 
 fn skill_call(item: &TranscriptItem) -> Option<&ToolCall> {
     match &item.body {
-        ItemBody::ToolCall(call) if call.tool == SKILL_TOOL => Some(call),
+        ItemBody::ToolCall(call) if is_skill(call) => Some(call),
         _ => None,
     }
+}
+
+pub fn is_skill(call: &ToolCall) -> bool {
+    call.tool == SKILL_TOOL
 }
 
 /// The notice Claude Code adds after a skill's call, which holds the skill's instructions.
@@ -247,7 +259,7 @@ pub fn ExploredView(agent: AgentId, folder: PathBuf, calls: Vec<TranscriptItem>)
 /// What a run of reads and searches did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ExploredSummary {
-    /// The files it read, each once.
+    /// The files it read, each once: a read that failed read nothing.
     files: usize,
     searches: usize,
     failed: usize,
@@ -268,12 +280,13 @@ impl ExploredSummary {
             let ItemBody::ToolCall(call) = &item.body else {
                 continue;
             };
-            if call.tool == file_edits::READ_TOOL {
-                files.insert(call.summary.as_str());
-            } else {
+            let stage = CallStage::new(call, false);
+            if call.tool != file_edits::READ_TOOL {
                 summary.searches += 1;
+            } else if stage == CallStage::Done {
+                files.insert(call.summary.as_str());
             }
-            match CallStage::new(call, false) {
+            match stage {
                 CallStage::Running | CallStage::AwaitsApproval => {
                     summary.running = summary.running.or(Some(item.id));
                 }
@@ -381,12 +394,30 @@ mod tests {
         ];
         let refs: Vec<&TranscriptItem> = items.iter().collect();
 
-        let rows = rows(&refs, &BTreeSet::new());
+        let rows = rows(&refs, &BTreeSet::new(), None);
 
         let shapes: Vec<Vec<u32>> = rows.iter().map(ids).collect();
         assert_eq!(shapes, [vec![1, 2, 3], vec![4], vec![5], vec![6]]);
         assert!(matches!(rows.first(), Some(Row::Explored { .. })));
         assert!(matches!(rows.get(2), Some(Row::Item(_))));
+    }
+
+    #[test]
+    fn a_run_ends_where_the_new_items_start() {
+        let items = [
+            read(1, "src/a.rs"),
+            read(2, "src/b.rs"),
+            read(3, "src/c.rs"),
+            read(4, "src/d.rs"),
+        ];
+        let refs: Vec<&TranscriptItem> = items.iter().collect();
+
+        let shapes: Vec<Vec<u32>> = rows(&refs, &BTreeSet::new(), Some(ItemId::new(3)))
+            .iter()
+            .map(ids)
+            .collect();
+
+        assert_eq!(shapes, [vec![1, 2], vec![3, 4]]);
     }
 
     #[test]
@@ -403,7 +434,7 @@ mod tests {
         let refs: Vec<&TranscriptItem> = items.iter().collect();
         let awaiting = BTreeSet::from([ItemId::new(4)]);
 
-        let shapes: Vec<Vec<u32>> = rows(&refs, &awaiting).iter().map(ids).collect();
+        let shapes: Vec<Vec<u32>> = rows(&refs, &awaiting, None).iter().map(ids).collect();
 
         assert_eq!(shapes, [vec![1, 2], vec![3], vec![4], vec![5]]);
     }
@@ -419,7 +450,7 @@ mod tests {
         ];
         let refs: Vec<&TranscriptItem> = items.iter().collect();
 
-        let rows = rows(&refs, &BTreeSet::new());
+        let rows = rows(&refs, &BTreeSet::new(), None);
 
         let shapes: Vec<Vec<u32>> = rows.iter().map(ids).collect();
         assert_eq!(shapes, [vec![1, 2], vec![3], vec![4], vec![5]]);
@@ -437,7 +468,7 @@ mod tests {
         let summary = ExploredSummary::of(&calls);
         let running = ExploredSummary::of(&[call(5, "Grep", "x", ToolCallStatus::Running)]);
 
-        assert_eq!(summary.description(), "2 files read, 1 search");
+        assert_eq!(summary.description(), "1 file read, 1 search");
         assert_eq!(summary.failed, 1);
         assert_eq!(summary.stage(), CallStage::Failed);
         assert_eq!(running.running, Some(ItemId::new(5)));
