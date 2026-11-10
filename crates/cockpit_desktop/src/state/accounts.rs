@@ -197,38 +197,33 @@ pub fn plan_card_accounts(
     ids
 }
 
-/// The account of the last agent or past session in `folder`, by the daemon machine's path
-/// rules.
-pub fn folder_account(state: &AppState, machine: MachineId, folder: &str) -> Option<AccountId> {
-    let folder = folder.trim();
-    if folder.is_empty() {
-        return None;
-    }
-    let style = PathStyle::of_text(folder);
+/// The account of the agent started last on `machine`.
+fn last_started_account(state: &AppState, machine: MachineId) -> Option<AccountId> {
     state
-        .recent_folders(machine)
-        .into_iter()
-        .find(|recent| style.same_path(&recent.folder.to_string_lossy(), folder))
-        .map(|recent| recent.account)
+        .agents
+        .values()
+        .filter(|entry| MachineId::of(entry.id()) == machine)
+        .max_by_key(|entry| entry.summary.started_at)
+        .map(|entry| entry.summary.account)
 }
 
-/// The account a new agent in `folder` runs with: the one picked, else the folder's last one,
-/// else the default one. An account the daemon no longer has counts as none.
-pub fn new_agent_account(state: &AppState, form: &NewAgentForm, folder: &str) -> AccountId {
+/// The account a new agent runs with: the one picked, else the last started agent's, else the
+/// default one. An account the daemon no longer has counts as none. The folder plays no part.
+pub fn new_agent_account(state: &AppState, form: &NewAgentForm) -> AccountId {
     let machine = form.machine;
     let has = |id: &AccountId| account(state, machine, *id).is_some();
     form.account
         .filter(has)
-        .or_else(|| folder_account(state, machine, folder).filter(has))
+        .or_else(|| last_started_account(state, machine).filter(has))
         .unwrap_or(AccountId::DEFAULT)
 }
 
 /// The account menu's title: why the button shows the account it shows.
-pub fn picker_title(state: &AppState, machine: MachineId, folder: &str) -> String {
-    let last = folder_account(state, machine, folder).and_then(|id| account(state, machine, id));
+pub fn picker_title(state: &AppState, machine: MachineId) -> String {
+    let last = last_started_account(state, machine).and_then(|id| account(state, machine, id));
     match last {
-        Some(last) => format!("Account · {} ran the last agent in this folder", last.name),
-        None => "Account · the default account for a new folder".to_owned(),
+        Some(last) => format!("Account · {} ran the last agent started", last.name),
+        None => "Account · the default account".to_owned(),
     }
 }
 
@@ -268,8 +263,8 @@ pub fn choices(state: &AppState, machine: MachineId) -> Vec<AccountChoice> {
     choices.collect()
 }
 
-/// The new agent dialog's account menu picks an account for good, until a recent folder is
-/// picked. The resume list then shows that account's sessions, with the first one highlighted.
+/// The new agent dialog's account menu picks an account for as long as the dialog stays on its
+/// machine. The resume list then shows that account's sessions, with the first one highlighted.
 pub fn pick_new_agent_account(state: &mut AppState, drafts: &mut Drafts, id: AccountId) {
     if let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog {
         form.account = Some(id);
@@ -278,21 +273,13 @@ pub fn pick_new_agent_account(state: &mut AppState, drafts: &mut Drafts, id: Acc
     }
 }
 
-/// A recent folder picked: the account follows the folder again.
-pub fn follow_folder_account(state: &mut AppState) {
-    if let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog {
-        form.account = None;
-    }
-}
-
 /// The account whose sessions the "Resume a session" tab lists: the dialog's account. `None` when
 /// the machine has one account, and the tab then lists every session.
-pub fn resume_account(state: &AppState, drafts: &Drafts) -> Option<AccountId> {
+pub fn resume_account(state: &AppState) -> Option<AccountId> {
     let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
         return None;
     };
-    shows_labels(state, form.machine)
-        .then(|| new_agent_account(state, form, &drafts.new_agent.folder))
+    shows_labels(state, form.machine).then(|| new_agent_account(state, form))
 }
 
 /// The turn of an agent that found no login, while no message went after it: the chat shows it
@@ -873,7 +860,7 @@ mod tests {
     use crate::machine::MachineId;
     use crate::state::app_state::Loadable;
     use crate::state::ui_state::FormMenu;
-    use crate::state::{ConnectionState, actions, state_with, summary};
+    use crate::state::{ConnectionState, actions, folder_field, state_with, summary};
 
     fn work() -> AccountId {
         AccountId::new(1)
@@ -1015,21 +1002,15 @@ mod tests {
     }
 
     #[test]
-    fn a_new_agent_takes_the_picked_account_else_the_folders_last_else_the_default() {
-        let mut older = in_folder(1, "/work/parser", lab());
+    fn a_new_agent_takes_the_picked_account_else_the_last_started_agents_else_the_default() {
+        let mut older = in_folder(1, "/work/parser", work());
         older.started_at = Timestamp::from_unix_millis(1_000);
-        let mut newer = in_folder(2, "/work/parser", work());
+        let mut newer = in_folder(2, "/work/notes", lab());
         newer.started_at = Timestamp::from_unix_millis(2_000);
         let mut state = state_with(vec![older, newer]);
         three_accounts(&mut state);
-        state.machines.this.sessions = Loadable::Loaded(vec![PastSession {
-            id: ClaudeSessionId::new("past".to_owned()),
-            title: "Old work".to_owned(),
-            folder: PathBuf::from("/work/notes"),
-            last_activity: Timestamp::from_unix_millis(500),
-            turns: 3,
-            account: lab(),
-        }]);
+        let mut no_agent = state_with(Vec::new());
+        three_accounts(&mut no_agent);
         let auto = NewAgentForm::default();
         let picked = NewAgentForm {
             account: Some(AccountId::DEFAULT),
@@ -1040,33 +1021,32 @@ mod tests {
             ..NewAgentForm::default()
         };
 
-        assert_eq!(new_agent_account(&state, &auto, "/work/parser"), work());
-        assert_eq!(new_agent_account(&state, &auto, "/work/parser/"), work());
-        assert_eq!(new_agent_account(&state, &auto, "/work/notes"), lab());
+        assert_eq!(new_agent_account(&state, &auto), lab());
+        assert_eq!(new_agent_account(&state, &picked), AccountId::DEFAULT);
+        assert_eq!(new_agent_account(&state, &removed), lab());
+        assert_eq!(new_agent_account(&no_agent, &auto), AccountId::DEFAULT);
         assert_eq!(
-            new_agent_account(&state, &auto, "/work/new"),
-            AccountId::DEFAULT
-        );
-        assert_eq!(new_agent_account(&state, &auto, ""), AccountId::DEFAULT);
-        assert_eq!(
-            new_agent_account(&state, &picked, "/work/parser"),
-            AccountId::DEFAULT
-        );
-        assert_eq!(new_agent_account(&state, &removed, "/work/parser"), work());
-        assert_eq!(
-            picker_title(&state, MachineId::THIS, "/work/parser"),
-            "Account · Work ran the last agent in this folder"
+            picker_title(&state, MachineId::THIS),
+            "Account · Lab ran the last agent started"
         );
         assert_eq!(
-            picker_title(&state, MachineId::THIS, "/work/new"),
-            "Account · the default account for a new folder"
+            picker_title(&no_agent, MachineId::THIS),
+            "Account · the default account"
         );
     }
 
     #[test]
-    fn the_picker_follows_the_folder_until_an_account_is_picked_and_again_after_a_folder() {
+    fn the_folder_never_changes_the_dialogs_account() {
         let mut state = state_with(vec![in_folder(1, "/work/parser", work())]);
         three_accounts(&mut state);
+        state.machines.this.sessions = Loadable::Loaded(vec![PastSession {
+            id: ClaudeSessionId::new("past".to_owned()),
+            title: "Old work".to_owned(),
+            folder: PathBuf::from("/work/notes"),
+            last_activity: Timestamp::from_unix_millis(500),
+            turns: 3,
+            account: lab(),
+        }]);
         let mut drafts = Drafts::default();
         actions::open_new_agent(&mut state, &mut drafts);
         let form = |state: &AppState| match &state.ui.dialog {
@@ -1074,18 +1054,17 @@ mod tests {
             other => panic!("the new agent dialog, not {other:?}"),
         };
 
-        let opened = new_agent_account(&state, &form(&state), &drafts.new_agent.folder);
-        pick_new_agent_account(&mut state, &mut drafts, lab());
-        let picked = new_agent_account(&state, &form(&state), &drafts.new_agent.folder);
-        follow_folder_account(&mut state);
-        let followed = new_agent_account(&state, &form(&state), &drafts.new_agent.folder);
-        pick_new_agent_account(&mut state, &mut drafts, lab());
+        let opened = new_agent_account(&state, &form(&state));
+        folder_field::set_text(&mut state, &mut drafts, "/work/notes".to_owned());
+        let typed = new_agent_account(&state, &form(&state));
+        pick_new_agent_account(&mut state, &mut drafts, AccountId::DEFAULT);
+        folder_field::pick(&mut state, &mut drafts, "/work/parser".to_owned());
+        let picked = new_agent_account(&state, &form(&state));
         let start = actions::start_agent(&mut state, &drafts);
 
-        assert_eq!(drafts.new_agent.folder, "/work/parser");
         assert_eq!(opened, work());
-        assert_eq!(picked, lab());
-        assert_eq!(followed, work());
+        assert_eq!(typed, work());
+        assert_eq!(picked, AccountId::DEFAULT);
         let [
             Outgoing {
                 request: Request::AgentStart(params),
@@ -1095,7 +1074,7 @@ mod tests {
         else {
             panic!("one start request, not {start:?}");
         };
-        assert_eq!(params.account, lab());
+        assert_eq!(params.account, AccountId::DEFAULT);
     }
 
     #[test]

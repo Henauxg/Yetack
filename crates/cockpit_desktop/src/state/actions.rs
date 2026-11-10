@@ -1939,7 +1939,7 @@ pub fn start_agent(state: &mut AppState, drafts: &Drafts) -> Vec<Outgoing> {
     if folder.is_empty() || form.starting || form.tab != NewAgentTab::Start {
         return Vec::new();
     }
-    let account = accounts::new_agent_account(state, form, folder);
+    let account = accounts::new_agent_account(state, form);
     let machine = form.machine;
     let prompt = drafts.new_agent.prompt.trim();
     let params = StartParams {
@@ -2043,7 +2043,7 @@ pub fn listed_sessions<'state>(
     state: &'state AppState,
     drafts: &Drafts,
 ) -> Vec<&'state PastSession> {
-    let account = accounts::resume_account(state, drafts);
+    let account = accounts::resume_account(state);
     resumable_sessions(state, &drafts.new_agent.session_query, account)
 }
 

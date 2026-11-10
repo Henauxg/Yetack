@@ -1,7 +1,7 @@
 //! The agent list: a status filter, compact two-line rows in the order the user sets, and the
 //! connection's state.
 
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_protocol::{AgentId, AgentStatus, AgentSummary, MAX_TITLE_CHARS, Timestamp};
 use dioxus::prelude::*;
@@ -88,6 +88,9 @@ fn row_time(summary: &AgentSummary) -> Option<RowTime> {
     }
 }
 
+/// An idle row says "now" for this long after the agent's last activity.
+const JUST_NOW: Duration = Duration::from_secs(60);
+
 /// The short text next to the title, and its tooltip.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RowTimeText {
@@ -95,7 +98,16 @@ struct RowTimeText {
     tooltip: String,
 }
 
+/// An idle row counts in minutes: a count of seconds ticking beside a quiet agent distracts.
 fn row_time_text(time: RowTime, now: SystemTime) -> RowTimeText {
+    if let RowTime::LastActive(moment) = time
+        && format::since(moment, now) < JUST_NOW
+    {
+        return RowTimeText {
+            text: "now".to_owned(),
+            tooltip: "Last active less than a minute ago".to_owned(),
+        };
+    }
     let (moment, describe): (Timestamp, fn(&str) -> String) = match time {
         RowTime::Turn(moment) => (moment, |text| format!("Turn running: {text}")),
         RowTime::Waiting(moment) => (moment, |text| format!("Waiting for you: {text}")),
@@ -709,8 +721,24 @@ mod tests {
             shown("12 s", "Waiting for you: 12 s")
         );
         assert_eq!(
-            row_time_text(RowTime::LastActive(at(1_300)), now),
-            shown("0 s", "Last active 0 s ago")
+            row_time_text(RowTime::LastActive(at(1_000)), now),
+            shown("4 min", "Last active 4 min ago")
+        );
+    }
+
+    #[test]
+    fn an_idle_row_counts_no_seconds() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_252);
+        let just_now = RowTimeText {
+            text: "now".to_owned(),
+            tooltip: "Last active less than a minute ago".to_owned(),
+        };
+
+        assert_eq!(row_time_text(RowTime::LastActive(at(1_240)), now), just_now);
+        assert_eq!(row_time_text(RowTime::LastActive(at(1_300)), now), just_now);
+        assert_eq!(
+            row_time_text(RowTime::LastActive(at(1_192)), now).text,
+            "1 min"
         );
     }
 }

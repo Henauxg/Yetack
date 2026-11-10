@@ -342,10 +342,9 @@ fn NewAgentDialog(form: NewAgentForm) -> Element {
 fn NewAgentTarget(form: NewAgentForm) -> Element {
     let cockpit: Cockpit = use_context();
     let (machine_choices, account) = {
-        let drafts = cockpit.drafts.read();
         let state = cockpit.state.read();
         let account = accounts::shows_labels(&state, form.machine)
-            .then(|| accounts::new_agent_account(&state, &form, &drafts.new_agent.folder));
+            .then(|| accounts::new_agent_account(&state, &form));
         (machine_choices(&state, form.machine), account)
     };
     if machine_choices.is_empty() && account.is_none() {
@@ -612,10 +611,7 @@ fn StartForm(form: NewAgentForm) -> Element {
                                         onclick: move |_| {
                                             let picked = picked.clone();
                                             bridge::set_field_text(FOLDER_FIELD_ID, picked.clone());
-                                            cockpit.update_with_drafts(|state, drafts| {
-                                                drafts.new_agent.folder = picked;
-                                                accounts::follow_folder_account(state);
-                                            });
+                                            cockpit.update_with_drafts(|_, drafts| drafts.new_agent.folder = picked);
                                         },
                                         span { class: "folder-icon", Icon { kind: IconKind::Folder, size: 14 } }
                                         FolderPath { folder }
@@ -1035,7 +1031,7 @@ fn ResumeList(starting: bool) -> Element {
             Loadable::Loading => Loadable::Loading,
             Loadable::Failed(error) => Loadable::Failed(error.clone()),
         };
-        let of_one_account = accounts::resume_account(&state, &drafts).is_some();
+        let of_one_account = accounts::resume_account(&state).is_some();
         (sessions, known.daemon.machine.clone(), of_one_account)
     };
     let now = now();

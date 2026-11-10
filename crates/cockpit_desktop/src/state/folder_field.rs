@@ -202,7 +202,6 @@ pub fn pick(state: &mut AppState, drafts: &mut Drafts, folder: String) -> bool {
     form.folders = None;
     drafts.new_agent.folder = folder;
     drafts.new_agent.folder_highlighted = None;
-    super::accounts::follow_folder_account(state);
     true
 }
 
