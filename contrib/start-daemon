@@ -1,0 +1,36 @@
+# Starts the agents-cockpit daemon in a tmux session named "cockpit", from a clean login shell, so
+# that no CLAUDE variable of the session running it reaches the agents. The daemon's update runs
+# it to start the daemon again, when no systemd user service does.
+#
+# Install:
+#   mkdir -p ~/.config/agents-cockpit
+#   cp contrib/start-daemon ~/.config/agents-cockpit/
+#
+# Edit binary if agents-cockpit is not in ~/.local/bin. The login shell must find `claude`: add
+# -i to its flags when the PATH that finds it is set in an interactive shell's file, such as
+# .zshrc. `tmux attach -t cockpit` shows the daemon's output.
+
+binary=$HOME/.local/bin/agents-cockpit
+shell=${SHELL:-/bin/sh}
+tmux=$(command -v tmux) || {
+    echo "tmux is not installed" >&2
+    exit 1
+}
+
+# The old daemon's session can outlive its lock for a moment, and tmux refuses a second session of
+# that name.
+tries=0
+while env -i HOME="$HOME" "$tmux" has-session -t cockpit 2>/dev/null; do
+    tries=$((tries + 1))
+    if [ "$tries" -gt 50 ]; then
+        echo "the tmux session \"cockpit\" still runs after 10 seconds" >&2
+        exit 1
+    fi
+    sleep 0.2
+done
+
+# The login shell expands `$0`, the binary's path, so that no quoting of the path is needed.
+# shellcheck disable=SC2016
+env -i HOME="$HOME" USER="$(id -un)" LOGNAME="$(id -un)" SHELL="$shell" TERM=xterm-256color \
+    LANG="${LANG:-C.UTF-8}" \
+    "$tmux" new-session -d -s cockpit "$shell" -lc 'exec "$0" serve' "$binary"

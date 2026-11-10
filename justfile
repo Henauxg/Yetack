@@ -24,12 +24,12 @@ test:
 clippy:
     cargo clippy -q --workspace --all-targets -- -D warnings
 
-# Checks the update script.
+# Checks the update script and the example start script.
 [unix]
 shellcheck:
-    shellcheck -s sh contrib/update-daemon.sh
+    shellcheck -s sh contrib/update-daemon.sh contrib/start-daemon
 
-# Checks the update script, on Linux only.
+# Checks the shell scripts, on Linux only.
 [windows]
 shellcheck:
     @echo "shellcheck runs on Linux only"
