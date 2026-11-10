@@ -1697,31 +1697,46 @@ async fn a_file_comes_with_its_edits() {
     std::fs::create_dir(work.join("old")).unwrap();
     std::fs::write(work.join("notes.txt"), "remember the bread\n").unwrap();
     std::fs::write(work.join("old/notes.txt"), "remember the tea\n").unwrap();
+    std::fs::write(work.join("old/todo.txt"), "call the bank\n").unwrap();
     let agent = client.start(&work, "edit notes.txt milk bread").await;
+    for prompt in [
+        "edit old/notes.txt coffee tea",
+        "edit old/todo.txt shop bank",
+    ] {
+        client.says(agent, "Edited.").await;
+        client.idle(agent).await;
+        client.prompt(agent, prompt).await;
+    }
     client.says(agent, "Edited.").await;
     client.idle(agent).await;
-    client.prompt(agent, "edit old/notes.txt coffee tea").await;
-    client.says(agent, "Edited.").await;
-    client.idle(agent).await;
-
-    let answer = client
-        .ok(Request::AgentReadFile(ReadFileParams {
+    let read = |path: &str| {
+        Request::AgentReadFile(ReadFileParams {
             agent,
-            path: PathBuf::from("notes.txt"),
-        }))
-        .await;
+            path: PathBuf::from(path),
+        })
+    };
+    let edit = |path: &str, old_text: &str, new_text: &str| FileEdit {
+        path: work.join(path),
+        old_text: old_text.to_owned(),
+        new_text: new_text.to_owned(),
+    };
 
     // The other file of the same name keeps its own edit.
     assert_eq!(
-        answer,
+        client.ok(read("notes.txt")).await,
         ResponseBody::File {
             path: Some(work.join("notes.txt")),
             text: "remember the bread\n".to_owned(),
-            edits: vec![FileEdit {
-                path: work.join("notes.txt"),
-                old_text: "milk".to_owned(),
-                new_text: "bread".to_owned(),
-            }],
+            edits: Some(vec![edit("notes.txt", "milk", "bread")]),
+        }
+    );
+    // A name that is not in the folder finds the file the agent changed.
+    assert_eq!(
+        client.ok(read("todo.txt")).await,
+        ResponseBody::File {
+            path: Some(work.join("old/todo.txt")),
+            text: "call the bank\n".to_owned(),
+            edits: Some(vec![edit("old/todo.txt", "shop", "bank")]),
         }
     );
 }
@@ -1747,7 +1762,7 @@ async fn files_settings_sessions_and_agent_settings() {
         ResponseBody::File {
             path: Some(setup.work().join("notes.txt")),
             text: "remember the milk\n".to_owned(),
-            edits: Vec::new(),
+            edits: Some(Vec::new()),
         }
     );
     assert_eq!(

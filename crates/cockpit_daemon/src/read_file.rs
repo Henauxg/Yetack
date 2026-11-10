@@ -30,6 +30,7 @@
 //! agent's text cannot open an unrelated file of the user's.
 
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::fs::File;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -511,6 +512,59 @@ fn is_inside(path: &Path, folder: &Path) -> bool {
 
 fn is_same(left: &Path, right: &Path) -> bool {
     is_inside(left, right) && is_inside(right, left)
+}
+
+/// Whether two file names are the same name, by the rule of [`is_same`].
+#[cfg(unix)]
+fn same_name(left: &OsStr, right: &OsStr) -> bool {
+    left == right
+}
+
+/// Whether two file names are the same name, by the rule of [`is_same`].
+#[cfg(windows)]
+fn same_name(left: &OsStr, right: &OsStr) -> bool {
+    windows_path::same_name(&left.to_string_lossy(), &right.to_string_lossy())
+}
+
+/// Copies of `edits` (oldest first) that change a file named `name`, oldest first. Each file
+/// keeps only its newest edits, up to the first one whose texts pass `max_bytes`: an answer
+/// holds no more, and the copies are made on the hub. A relative edit path is in `folder`.
+pub(crate) fn edits_named<'edit>(
+    edits: impl DoubleEndedIterator<Item = &'edit FileEdit>,
+    folder: &Path,
+    name: &OsStr,
+    max_bytes: usize,
+) -> Vec<FileEdit> {
+    // Each file named `name`, with the bytes of the texts of its edits kept so far.
+    let mut files: Vec<(PathBuf, usize)> = Vec::new();
+    let mut kept = Vec::new();
+    for edit in edits.rev() {
+        let named = edit
+            .path
+            .file_name()
+            .is_some_and(|edited| same_name(edited, name));
+        if !named {
+            continue;
+        }
+        let path = folder.join(&edit.path);
+        let index = match files.iter().position(|(file, _)| is_same(file, &path)) {
+            Some(index) => index,
+            None => {
+                files.push((path, 0));
+                files.len() - 1
+            }
+        };
+        let Some((_, bytes)) = files.get_mut(index) else {
+            continue;
+        };
+        if *bytes > max_bytes {
+            continue;
+        }
+        *bytes = bytes.saturating_add(edit.old_text.len().saturating_add(edit.new_text.len()));
+        kept.push(edit.clone());
+    }
+    kept.reverse();
+    kept
 }
 
 /// The edits of `file`, out of `edits` oldest first: the newest whose JSON fits in `max_bytes`.
@@ -1175,6 +1229,60 @@ mod tests {
             old_text: old_text.to_owned(),
             new_text: new_text.to_owned(),
         }
+    }
+
+    fn new_texts(edits: &[FileEdit]) -> Vec<&str> {
+        edits.iter().map(|edit| edit.new_text.as_str()).collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn edits_named_copies_the_edits_of_each_file_of_that_name() {
+        let edits = [
+            edit("/work/app/notes.txt", "a", "1"),
+            edit("/work/app/notes.md", "a", "2"),
+            edit("/work/app/NOTES.txt", "a", "3"),
+            edit("old/notes.txt", "a", "4"),
+            edit("/work/app/old/notes.txt", "a", "5"),
+        ];
+        let name = OsStr::new("notes.txt");
+
+        let named = edits_named(edits.iter(), Path::new("/work/app"), name, usize::MAX);
+
+        assert_eq!(new_texts(&named), ["1", "4", "5"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn edits_named_stops_copying_a_file_past_the_limit_but_not_the_others() {
+        let large = "x".repeat(100);
+        let edits = [
+            edit("/work/app/old/notes.txt", "a", "1"),
+            edit("/work/app/notes.txt", &large, "2"),
+            edit("/work/app/notes.txt", &large, "3"),
+            edit("/work/app/notes.txt", &large, "4"),
+            edit("/work/app/old/notes.txt", "a", "5"),
+        ];
+        let name = OsStr::new("notes.txt");
+
+        // The two newest edits of notes.txt pass 150 bytes, so no older one could fit an answer.
+        let named = edits_named(edits.iter(), Path::new("/work/app"), name, 150);
+
+        assert_eq!(new_texts(&named), ["1", "3", "4", "5"]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_file_name_matches_whatever_its_case() {
+        let edits = [
+            edit(r"C:\work\app\NOTES.TXT", "a", "1"),
+            edit(r"C:\work\app\notes.md", "a", "2"),
+        ];
+        let name = OsStr::new("notes.txt");
+
+        let named = edits_named(edits.iter(), Path::new(r"C:\work\app"), name, usize::MAX);
+
+        assert_eq!(new_texts(&named), ["1"]);
     }
 
     #[cfg(unix)]

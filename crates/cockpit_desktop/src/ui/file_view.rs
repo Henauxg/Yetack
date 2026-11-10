@@ -63,6 +63,7 @@ pub fn FileViewPanel() -> Element {
     let short = ShortPath::new(folder, &view.path);
     let full = full_path(folder, &view.path);
     let labels = tab_labels(PathStyle::of(folder), &tabs);
+    let changed = entry.has_changed(&view.path);
     let edit_count = match &text {
         Loadable::Loaded(FileRead::Text { edits, .. }) => edits.len(),
         _ => 0,
@@ -72,7 +73,7 @@ pub fn FileViewPanel() -> Element {
             "Changed by {} of this agent.",
             format::count(edit_count, "edit", "edits")
         )
-    } else if changed_paths.contains(&view.path) {
+    } else if changed {
         "Changed by this agent.".to_owned()
     } else {
         "This agent did not change the file.".to_owned()
@@ -202,7 +203,7 @@ pub fn FileViewPanel() -> Element {
                         FilePreview { agent, folder: folder.clone(), path: view.path.clone(), text }
                     },
                     Loadable::Loaded(FileRead::Text { text, edits }) => rsx! {
-                        FileContent { path: view.path.clone(), text, mode, line: view.line, edits, update }
+                        FileContent { path: view.path.clone(), text, mode, line: view.line, edits, changed, update }
                     },
                     Loadable::Loaded(FileRead::Image(image)) => {
                         let image = Arc::new(image);
@@ -442,7 +443,8 @@ fn FilePreview(agent: AgentId, folder: PathBuf, path: PathBuf, text: String) -> 
     }
 }
 
-/// The rows are rebuilt only when the text, the mode, the line, the edits or the update change.
+/// The rows are rebuilt only when a prop changes.
+/// `changed` says whether the agent changed the file, even with no edits to show.
 #[component]
 fn FileContent(
     path: PathBuf,
@@ -450,6 +452,7 @@ fn FileContent(
     mode: ViewMode,
     line: Option<u32>,
     edits: Vec<FileEdit>,
+    changed: bool,
     update: Option<FileUpdate>,
 ) -> Element {
     let language = Language::from_path(&path);
@@ -457,7 +460,9 @@ fn FileContent(
     if mode == ViewMode::WholeFile || edits.is_empty() {
         let lines = render::plain_lines(&text, language, 1, MAX_RENDERED_LINES);
         return rsx! {
-            if mode == ViewMode::Diff {
+            if mode == ViewMode::Diff && changed {
+                p { class: "file-note", "This agent changed the file, but its edits are not available. Here is its text." }
+            } else if mode == ViewMode::Diff {
                 p { class: "file-note", "This agent did not change the file. Here is its text." }
             }
             div { class: "diff-rows",

@@ -60,6 +60,9 @@ static INNER_RULES: LazyLock<Vec<(Scope, TokenClass)>> = LazyLock::new(|| {
         ("punctuation.definition.link", TokenClass::Type),
         ("markup.underline.link", TokenClass::Comment),
         ("punctuation.definition.metadata", TokenClass::Comment),
+        // Code embedded in another grammar, such as a fenced block in Markdown, stops here: the
+        // rest of the stack would color its plain words as the block.
+        ("source", TokenClass::Plain),
     ])
 });
 
@@ -509,6 +512,18 @@ mod tests {
         assert_eq!(class_of(&lines, "[the guide]"), TokenClass::Type);
         assert_eq!(class_of(&lines, "(docs/guide.md)"), TokenClass::Comment);
         assert_eq!(class_of(&lines, "`make`"), TokenClass::String);
+    }
+
+    #[test]
+    fn code_fenced_in_markdown_takes_the_colors_of_its_language() {
+        let code = "```rust\nfn total(count: u32) -> u32 {\n    count // the sum\n}\n```\n";
+
+        let lines = highlight(code, language("md"));
+
+        assert_eq!(class_of(&lines, "fn"), TokenClass::Keyword);
+        assert_eq!(class_of(&lines, "u32"), TokenClass::Keyword);
+        assert_eq!(class_of(&lines, "// the sum"), TokenClass::Comment);
+        assert_eq!(class_of(&lines, "total(count:"), TokenClass::Plain);
     }
 
     #[test]

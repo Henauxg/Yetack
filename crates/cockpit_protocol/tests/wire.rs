@@ -800,7 +800,7 @@ fn response_bodies() -> Vec<ResponseBody> {
         ResponseBody::File {
             path: Some(PathBuf::from("/srv/projects/shop/src/main.rs")),
             text: "fn main() {}\n".to_owned(),
-            edits: vec![edit()],
+            edits: Some(vec![edit()]),
         },
         ResponseBody::Image {
             path: PathBuf::from("/srv/projects/shop/docs/cart.png"),
@@ -2007,7 +2007,7 @@ fn a_file_answer_with_or_without_the_path_it_read_and_its_edits() {
     let with_path = ResponseBody::File {
         path: Some(PathBuf::from("/srv/projects/shop/src/main.rs")),
         text: "fn main() {}\n".to_owned(),
-        edits: vec![edit()],
+        edits: Some(vec![edit()]),
     };
 
     assert_wire(
@@ -2031,7 +2031,7 @@ fn a_file_answer_with_or_without_the_path_it_read_and_its_edits() {
         ResponseBody::File {
             path: None,
             text: "fn main() {}\n".to_owned(),
-            edits: Vec::new(),
+            edits: None,
         }
     );
 }

@@ -61,12 +61,13 @@ pub enum ResponseBody {
     ///
     /// `edits` are the agent's finished edits of the file, its subagents' included, oldest first,
     /// over the whole session. When they would not fit in the answer, the oldest are left out.
+    /// `None` from a daemon that predates them.
     File {
         #[serde(default)]
         path: Option<PathBuf>,
         text: String,
         #[serde(default)]
-        edits: Vec<FileEdit>,
+        edits: Option<Vec<FileEdit>>,
     },
     /// For `agent.read_file`, an image file, which the daemon reads by its extension. `path` is
     /// as for `File`.

@@ -21,4 +21,4 @@ pub(crate) mod words;
 
 pub(crate) use agent_view::{AgentView, AnswerError, FollowUp, ProcessSession};
 pub(crate) use past_transcript::PastTranscript;
-pub(crate) use tools::{edits_named, touched_files};
+pub(crate) use tools::{finished_edits, touched_files};

@@ -1194,7 +1194,7 @@ fn with_edits(state: &AppState, agent: AgentId, body: ResponseBody) -> ResponseB
     ResponseBody::File {
         path: Some(found.clone()),
         text: text.clone(),
-        edits: edits.into_iter().cloned().collect(),
+        edits: Some(edits.into_iter().cloned().collect()),
     }
 }
 
@@ -1233,7 +1233,7 @@ fn read_file(path: &Path) -> Result<ResponseBody, RequestError> {
         [(path, text)] => Ok(ResponseBody::File {
             path: Some(path.clone()),
             text: (*text).to_owned(),
-            edits: Vec::new(),
+            edits: Some(Vec::new()),
         }),
         several => Ok(ResponseBody::FileMatches {
             matches: several.iter().map(|(path, _)| path.clone()).collect(),
@@ -3420,7 +3420,7 @@ pub struct ParseError {
         let Ok(ResponseBody::File { text, edits, .. }) = answer(&state, &request) else {
             panic!("the demo answers with the file");
         };
-        let edits: Vec<&FileEdit> = edits.iter().collect();
+        let edits: Vec<&FileEdit> = edits.iter().flatten().collect();
 
         assert_eq!(
             file_edits::original_text(&text, &edits).as_deref(),

@@ -97,7 +97,7 @@ fn share_root(path: &str) -> Option<(Root<'_>, &str)> {
 }
 
 /// Whether two names are the same name for Windows, whatever their case.
-fn same_name(left: &str, right: &str) -> bool {
+pub(crate) fn same_name(left: &str, right: &str) -> bool {
     left.chars().map(upper).eq(right.chars().map(upper))
 }
 
