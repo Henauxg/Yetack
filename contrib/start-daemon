@@ -29,8 +29,17 @@ while env -i HOME="$HOME" "$tmux" has-session -t =cockpit 2>/dev/null; do
     sleep 0.2
 done
 
-# The login shell expands `$0`, the binary's path, so that no quoting of the path is needed.
+# csh and tcsh take -l only alone, and read .cshrc without it.
+case $shell in
+    *csh) flags=-c ;;
+    *) flags=-lc ;;
+esac
+
+# The binary's path goes through COCKPIT_BINARY, which sh, bash, zsh, fish and csh all expand the
+# same way: tmux sets it in the session even when its server already runs. `env -u` keeps it
+# from the daemon.
 # shellcheck disable=SC2016
 env -i HOME="$HOME" USER="$(id -un)" LOGNAME="$(id -un)" SHELL="$shell" TERM=xterm-256color \
     LANG="${LANG:-C.UTF-8}" \
-    "$tmux" new-session -d -s cockpit "$shell" -lc 'exec "$0" serve' "$binary"
+    "$tmux" new-session -d -s cockpit -e COCKPIT_BINARY="$binary" \
+    "$shell" "$flags" 'exec env -u COCKPIT_BINARY "$COCKPIT_BINARY" serve'

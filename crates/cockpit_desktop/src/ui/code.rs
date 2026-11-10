@@ -10,7 +10,7 @@ use crate::ui::icons::{Icon, IconKind};
 use crate::{bridge, format};
 
 /// How long the copy button says "Copied".
-const COPIED_FOR: Duration = Duration::from_secs(2);
+const COPIED_FOR: Duration = Duration::from_secs(1);
 
 /// Whether a diff row shows its line numbers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

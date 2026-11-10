@@ -368,7 +368,7 @@ fn NewAgentTarget(form: NewAgentForm) -> Element {
                                         aria_checked: choice.chosen,
                                         disabled: !choice.answers,
                                         title: if choice.answers { "" } else { "This machine does not answer" },
-                                        onclick: move |_| cockpit.update(|state| actions::pick_new_agent_machine(state, picked)),
+                                        onclick: move |_| pick_machine(cockpit, picked),
                                         Icon { kind: choice.icon, size: 13 }
                                         "{choice.name}"
                                     }
@@ -879,6 +879,17 @@ fn folder_key(cockpit: Cockpit, event: &KeyboardEvent) {
     } else {
         cockpit.with_drafts(|state, drafts| folder_field::move_highlight(state, drafts, direction));
         bridge::scroll_to_highlighted();
+    }
+}
+
+/// Picks the machine, and shows the folder the dialog then holds.
+fn pick_machine(cockpit: Cockpit, machine: MachineId) {
+    let mut new_text = None;
+    cockpit.update_with_drafts(|state, drafts| {
+        new_text = actions::pick_new_agent_machine(state, drafts, machine);
+    });
+    if let Some(text) = new_text {
+        bridge::set_field_text(FOLDER_FIELD_ID, text);
     }
 }
 

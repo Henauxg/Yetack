@@ -279,7 +279,7 @@ mod tests {
         known.connection = ConnectionState::Connected;
         state.machines.others.insert(devbox, known);
         state.machines.this.folders_unknown = true;
-        crate::state::actions::pick_new_agent_machine(&mut state, devbox);
+        crate::state::actions::pick_new_agent_machine(&mut state, &mut drafts, devbox);
 
         type_text(&mut state, &mut drafts, "/srv/");
         let on_devbox = list(&state).map(|list| list.folder.clone());

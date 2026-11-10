@@ -1885,11 +1885,7 @@ pub fn open_new_agent(state: &mut AppState, drafts: &mut Drafts) {
                 .is_some_and(MachineState::is_connected)
         })
         .unwrap_or(MachineId::THIS);
-    let folder = state
-        .recent_folders(machine)
-        .first()
-        .map(|recent| path_style::shown(&recent.folder))
-        .unwrap_or_default();
+    let folder = last_folder(state, machine);
     let model = last
         .and_then(|summary| summary.model.as_deref())
         .and_then(format::model_alias)
@@ -1976,20 +1972,45 @@ pub fn start_agent(state: &mut AppState, drafts: &Drafts) -> Vec<Outgoing> {
     }]
 }
 
+/// The folder `machine` last used, as the folder field shows it, else nothing.
+fn last_folder(state: &AppState, machine: MachineId) -> String {
+    state
+        .recent_folders(machine)
+        .first()
+        .map(|recent| path_style::shown(&recent.folder))
+        .unwrap_or_default()
+}
+
 /// Starts the new agent on `machine`, whose folders and sessions the dialog then lists. A
 /// machine that does not answer cannot be picked.
-pub fn pick_new_agent_machine(state: &mut AppState, machine: MachineId) {
+///
+/// The folder field takes `machine`'s last folder while it holds the previous machine's, or
+/// nothing: a folder you typed stays. Returns the field's new text.
+pub fn pick_new_agent_machine(
+    state: &mut AppState,
+    drafts: &mut Drafts,
+    machine: MachineId,
+) -> Option<String> {
     if !state
         .machines
         .get(machine)
         .is_some_and(MachineState::is_connected)
     {
-        return;
+        return None;
     }
-    let changed =
-        matches!(&state.ui.dialog, Some(Dialog::NewAgent(form)) if form.machine != machine);
-    if !changed {
-        return;
+    let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
+        return None;
+    };
+    let previous = form.machine;
+    if previous == machine {
+        return None;
+    }
+    let folder = &drafts.new_agent.folder;
+    let follows = folder.trim().is_empty() || *folder == last_folder(state, previous);
+    let new_folder = follows.then(|| last_folder(state, machine));
+    if let Some(text) = &new_folder {
+        drafts.new_agent.folder.clone_from(text);
+        drafts.new_agent.folder_highlighted = None;
     }
     with_new_agent_form(state, |form| {
         form.machine = machine;
@@ -2003,6 +2024,7 @@ pub fn pick_new_agent_machine(state: &mut AppState, machine: MachineId) {
         }
         known.sign_ins.refresh();
     }
+    new_folder
 }
 
 /// The past sessions the "Resume a session" tab lists: those no agent runs, of `account` when
@@ -4196,6 +4218,26 @@ mod tests {
     }
 
     #[test]
+    fn the_folder_follows_the_machine_picked_unless_it_was_typed() {
+        let (mut state, devbox) = two_machines();
+        devbox_started_last(&mut state, devbox);
+        let mut drafts = Drafts::default();
+        open_new_agent(&mut state, &mut drafts);
+
+        let to_this = pick_new_agent_machine(&mut state, &mut drafts, MachineId::THIS);
+        let this_folder = drafts.new_agent.folder.clone();
+        let back = pick_new_agent_machine(&mut state, &mut drafts, devbox);
+        drafts.new_agent.folder = "/srv/typed".to_owned();
+        let typed = pick_new_agent_machine(&mut state, &mut drafts, MachineId::THIS);
+
+        assert!(this_folder.starts_with("/work/project-"), "{this_folder}");
+        assert_eq!(to_this, Some(this_folder));
+        assert_eq!(back.as_deref(), Some("/srv/shop"));
+        assert_eq!(typed, None);
+        assert_eq!(drafts.new_agent.folder, "/srv/typed");
+    }
+
+    #[test]
     fn the_new_agent_dialog_opens_on_this_computer_when_the_last_machine_does_not_answer() {
         let (mut state, devbox) = two_machines();
         devbox_started_last(&mut state, devbox);
@@ -4220,7 +4262,7 @@ mod tests {
         open_new_agent(&mut state, &mut drafts);
         drafts.new_agent.folder = "/srv/shop".to_owned();
 
-        pick_new_agent_machine(&mut state, devbox);
+        pick_new_agent_machine(&mut state, &mut drafts, devbox);
         let asked = crate::state::needed_requests(&mut state);
         let started = start_agent(&mut state, &drafts);
 
@@ -4259,7 +4301,7 @@ mod tests {
         }
         open_new_agent(&mut state, &mut drafts);
 
-        pick_new_agent_machine(&mut state, devbox);
+        pick_new_agent_machine(&mut state, &mut drafts, devbox);
         let asked = crate::state::needed_requests(&mut state);
 
         assert!(
@@ -4279,7 +4321,7 @@ mod tests {
             known.connection = ConnectionState::Connecting { attempt: 2 };
         }
 
-        pick_new_agent_machine(&mut state, devbox);
+        pick_new_agent_machine(&mut state, &mut drafts, devbox);
 
         assert!(matches!(
             &state.ui.dialog,
