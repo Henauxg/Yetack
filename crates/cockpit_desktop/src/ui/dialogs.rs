@@ -1,5 +1,5 @@
 //! The agent switcher (Ctrl+K), the new agent dialog (Ctrl+N), the question before closing an
-//! agent, and the frame of the "Open file" dialog (Ctrl+O).
+//! agent, the frame of the "Open file" dialog (Ctrl+O), and the full view of an image.
 
 use std::path::{Path, PathBuf};
 
@@ -1184,39 +1184,6 @@ fn ResumeList(starting: bool) -> Element {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_folder_splits_into_its_parent_and_its_name() {
-        assert_eq!(
-            folder_parts(Path::new("/work/tools/parser")),
-            ("/work/tools/".to_owned(), "parser".to_owned())
-        );
-        assert_eq!(
-            folder_parts(Path::new("/work")),
-            ("/".to_owned(), "work".to_owned())
-        );
-        assert_eq!(
-            folder_parts(Path::new("/")),
-            (String::new(), "/".to_owned())
-        );
-        assert_eq!(
-            folder_parts(Path::new("C:/work/parser")),
-            (r"C:\work\".to_owned(), "parser".to_owned())
-        );
-        assert_eq!(
-            folder_parts(Path::new(r"C:\work")),
-            (r"C:\".to_owned(), "work".to_owned())
-        );
-        assert_eq!(
-            folder_parts(Path::new("C:/")),
-            (String::new(), r"C:\".to_owned())
-        );
-    }
-}
-
 /// The full view's frame, which takes the focus so that Ctrl+0 and Ctrl+= reach it.
 const IMAGE_VIEW_FRAME_ID: &str = "image-view-frame";
 
@@ -1264,5 +1231,38 @@ fn ImageViewDialog(view: ImageView) -> Element {
                 id: IMAGE_VIEW_FRAME_ID.to_owned(),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_folder_splits_into_its_parent_and_its_name() {
+        assert_eq!(
+            folder_parts(Path::new("/work/tools/parser")),
+            ("/work/tools/".to_owned(), "parser".to_owned())
+        );
+        assert_eq!(
+            folder_parts(Path::new("/work")),
+            ("/".to_owned(), "work".to_owned())
+        );
+        assert_eq!(
+            folder_parts(Path::new("/")),
+            (String::new(), "/".to_owned())
+        );
+        assert_eq!(
+            folder_parts(Path::new("C:/work/parser")),
+            (r"C:\work\".to_owned(), "parser".to_owned())
+        );
+        assert_eq!(
+            folder_parts(Path::new(r"C:\work")),
+            (r"C:\".to_owned(), "work".to_owned())
+        );
+        assert_eq!(
+            folder_parts(Path::new("C:/")),
+            (String::new(), r"C:\".to_owned())
+        );
     }
 }

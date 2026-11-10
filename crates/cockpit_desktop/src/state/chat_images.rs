@@ -132,12 +132,13 @@ mod tests {
     use cockpit_protocol::{AgentStatus, ImageMediaType};
 
     use super::*;
+    use crate::state::Popover;
     use crate::state::app_state::tests::{state_with, summary};
 
     #[test]
     fn the_full_view_opens_over_a_popover_and_esc_closes_it() {
         let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
-        state.ui.popover = Some(crate::state::Popover::Load);
+        state.ui.popover = Some(Popover::Load);
         let path = PathBuf::from("/tmp/shots/mockup.png");
 
         open_full_view(&mut state, agent(), path.clone(), Arc::new(png()));

@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use cockpit_protocol::Image;
-use dioxus::html::geometry::WheelDelta;
+use dioxus::html::geometry::{ClientPoint, ElementPoint, PixelsSize, PixelsVector2D, WheelDelta};
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
@@ -30,57 +30,56 @@ const KEY_ZOOM: f64 = 1.25;
 const DRAG_THRESHOLD: f64 = 4.0;
 
 /// Where the image is in its frame: scaled by `scale` from the frame's top left corner, then
-/// moved by `x` and `y` pixels. It always covers the frame it fills at 1.
+/// moved by `offset`. It always covers the frame it fills at 1.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Zoom {
     scale: f64,
-    x: f64,
-    y: f64,
+    offset: PixelsVector2D,
 }
 
 impl Default for Zoom {
     fn default() -> Self {
         Self {
             scale: MIN_SCALE,
-            x: 0.0,
-            y: 0.0,
+            offset: PixelsVector2D::zero(),
         }
     }
 }
 
 impl Zoom {
-    /// Zooms by `factor` and keeps the image's point under `point` there. `size` is the frame's.
-    pub fn zoomed_at(self, point: (f64, f64), factor: f64, size: (f64, f64)) -> Self {
+    /// Zooms by `factor` and keeps the image's point under `point` there.
+    pub fn zoomed_at(self, point: ElementPoint, factor: f64, frame: PixelsSize) -> Self {
         let scale = (self.scale * factor).clamp(MIN_SCALE, MAX_SCALE);
         let ratio = scale / self.scale;
+        let point: PixelsVector2D = point.to_vector().cast_unit();
         Self {
             scale,
-            x: point.0 - (point.0 - self.x) * ratio,
-            y: point.1 - (point.1 - self.y) * ratio,
+            offset: point - (point - self.offset) * ratio,
         }
-        .kept_in(size)
+        .kept_in(frame)
     }
 
-    /// Moves the image by `dx` and `dy`, as far as it still covers the frame.
-    pub fn panned(self, dx: f64, dy: f64, size: (f64, f64)) -> Self {
+    /// Moves the image by `by`, as far as it still covers the frame.
+    pub fn panned(self, by: PixelsVector2D, frame: PixelsSize) -> Self {
         Self {
-            x: self.x + dx,
-            y: self.y + dy,
+            offset: self.offset + by,
             ..self
         }
-        .kept_in(size)
+        .kept_in(frame)
     }
 
     pub fn is_zoomed(self) -> bool {
         self.scale > MIN_SCALE
     }
 
-    fn kept_in(self, (width, height): (f64, f64)) -> Self {
+    fn kept_in(self, frame: PixelsSize) -> Self {
         let room =
             |offset: f64, length: f64| offset.clamp((length * (1.0 - self.scale)).min(0.0), 0.0);
         Self {
-            x: room(self.x, width),
-            y: room(self.y, height),
+            offset: PixelsVector2D::new(
+                room(self.offset.x, frame.width),
+                room(self.offset.y, frame.height),
+            ),
             ..self
         }
     }
@@ -88,7 +87,7 @@ impl Zoom {
     fn transform(self) -> String {
         format!(
             "translate({:.1}px, {:.1}px) scale({:.4})",
-            self.x, self.y, self.scale
+            self.offset.x, self.offset.y, self.scale
         )
     }
 }
@@ -106,8 +105,7 @@ fn wheel_factor(delta: WheelDelta) -> f64 {
 /// A press on the image, until it is released.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Press {
-    /// Where it started, in the window's pixels.
-    start: (f64, f64),
+    start: ClientPoint,
     /// The zoom when it started.
     zoom: Zoom,
     dragged: bool,
@@ -115,7 +113,7 @@ struct Press {
 
 impl Press {
     /// Whether its release is a click: a press that did not drag, on an image that fits. On a
-    /// zoomed image, a click would leave no double-click to fit it again.
+    /// zoomed image, the first click of a double-click would run `on_click`.
     fn is_click(self) -> bool {
         !self.dragged && !self.zoom.is_zoomed()
     }
@@ -130,7 +128,7 @@ pub fn ZoomImage(
     on_click: Option<EventHandler<()>>,
 ) -> Element {
     let mut zoom = use_signal(Zoom::default);
-    let mut size = use_signal(|| (0.0, 0.0));
+    let mut size = use_signal(PixelsSize::zero);
     let mut press = use_signal(|| None::<Press>);
     let mut frame = use_signal(|| None::<Rc<MountedData>>);
     // A new image starts fitted.
@@ -157,7 +155,7 @@ pub fn ZoomImage(
             onmounted: move |event| frame.set(Some(event.data())),
             onresize: move |event: Event<ResizeData>| {
                 if let Ok(box_size) = event.get_content_box_size() {
-                    size.set((box_size.width, box_size.height));
+                    size.set(box_size);
                     zoom.set(zoom().kept_in(size()));
                 }
             },
@@ -166,9 +164,8 @@ pub fn ZoomImage(
                     return;
                 }
                 event.prevent_default();
-                let point = event.element_coordinates();
                 let factor = wheel_factor(event.delta());
-                zoom.set(zoom().zoomed_at((point.x, point.y), factor, size()));
+                zoom.set(zoom().zoomed_at(event.element_coordinates(), factor, size()));
             },
             onmousedown: move |event: Event<MouseData>| {
                 if event.trigger_button() != Some(MouseButton::Primary) {
@@ -182,21 +179,20 @@ pub fn ZoomImage(
                         let _ = frame.set_focus(true).await;
                     });
                 }
-                let point = event.client_coordinates();
-                press.set(Some(Press { start: (point.x, point.y), zoom: zoom(), dragged: false }));
+                let start = event.client_coordinates();
+                press.set(Some(Press { start, zoom: zoom(), dragged: false }));
             },
             onmousemove: move |event: Event<MouseData>| {
                 let Some(mut held) = press() else {
                     return;
                 };
-                let point = event.client_coordinates();
-                let (dx, dy) = (point.x - held.start.0, point.y - held.start.1);
-                if !held.dragged && dx.hypot(dy) < DRAG_THRESHOLD {
+                let moved: PixelsVector2D = (event.client_coordinates() - held.start).cast_unit();
+                if !held.dragged && moved.length() < DRAG_THRESHOLD {
                     return;
                 }
                 held.dragged = true;
                 press.set(Some(held));
-                zoom.set(held.zoom.panned(dx, dy, size()));
+                zoom.set(held.zoom.panned(moved, size()));
             },
             onmouseup: move |_| {
                 let released = press.take();
@@ -212,7 +208,7 @@ pub fn ZoomImage(
                 if !event.modifiers().ctrl() {
                     return;
                 }
-                let center = (size().0 / 2.0, size().1 / 2.0);
+                let center = ElementPoint::new(size().width / 2.0, size().height / 2.0);
                 let next = match event.key() {
                     Key::Character(key) if key == "0" => Zoom::default(),
                     Key::Character(key) if key == "=" || key == "+" => {
@@ -233,8 +229,8 @@ pub fn ZoomImage(
     }
 }
 
-/// The image itself, rendered again only for another image: its address holds the whole file,
-/// up to 11 MB of text, which a drag would otherwise copy at each move.
+/// The image itself, apart so that a zoom or a drag does not render it again: its address holds
+/// the whole file in base64, up to 11 MB.
 #[component]
 fn Picture(image: Arc<Image>, alt: String) -> Element {
     rsx! {
@@ -244,29 +240,34 @@ fn Picture(image: Arc<Image>, alt: String) -> Element {
 
 #[cfg(test)]
 mod tests {
+    use dioxus::html::geometry::{LinesVector, PixelsVector3D};
+
     use super::*;
 
-    const FRAME: (f64, f64) = (400.0, 300.0);
+    fn frame() -> PixelsSize {
+        PixelsSize::new(400.0, 300.0)
+    }
 
     #[test]
     fn zooming_keeps_the_point_under_the_pointer() {
-        let zoomed = Zoom::default().zoomed_at((100.0, 50.0), 2.0, FRAME);
+        let zoomed = Zoom::default().zoomed_at(ElementPoint::new(100.0, 50.0), 2.0, frame());
 
         // The image's point (100, 50) at scale 2 lands at 2 * 100 + x = 100.
         assert_eq!(
             zoomed,
             Zoom {
                 scale: 2.0,
-                x: -100.0,
-                y: -50.0
+                offset: PixelsVector2D::new(-100.0, -50.0),
             }
         );
     }
 
     #[test]
     fn the_scale_stays_between_the_fit_and_eight_times() {
-        let out = Zoom::default().zoomed_at((10.0, 10.0), 0.5, FRAME);
-        let far = Zoom::default().zoomed_at((10.0, 10.0), 100.0, FRAME);
+        let point = ElementPoint::new(10.0, 10.0);
+
+        let out = Zoom::default().zoomed_at(point, 0.5, frame());
+        let far = Zoom::default().zoomed_at(point, 100.0, frame());
 
         assert_eq!(out, Zoom::default());
         assert!((far.scale - MAX_SCALE).abs() < f64::EPSILON);
@@ -274,23 +275,23 @@ mod tests {
 
     #[test]
     fn the_image_always_covers_its_frame() {
-        let zoomed = Zoom::default().zoomed_at((0.0, 0.0), 2.0, FRAME);
+        let zoomed = Zoom::default().zoomed_at(ElementPoint::origin(), 2.0, frame());
 
-        let too_far_right = zoomed.panned(50.0, 0.0, FRAME);
-        let too_far_left = zoomed.panned(-1000.0, -1000.0, FRAME);
-        let fitted = Zoom::default().panned(30.0, 30.0, FRAME);
+        let too_far_right = zoomed.panned(PixelsVector2D::new(50.0, 0.0), frame());
+        let too_far_left = zoomed.panned(PixelsVector2D::new(-1000.0, -1000.0), frame());
+        let fitted = Zoom::default().panned(PixelsVector2D::new(30.0, 30.0), frame());
 
-        assert!((too_far_right.x).abs() < f64::EPSILON);
-        assert!((too_far_left.x + 400.0).abs() < f64::EPSILON);
-        assert!((too_far_left.y + 300.0).abs() < f64::EPSILON);
+        assert!(too_far_right.offset.x.abs() < f64::EPSILON);
+        assert!((too_far_left.offset.x + 400.0).abs() < f64::EPSILON);
+        assert!((too_far_left.offset.y + 300.0).abs() < f64::EPSILON);
         assert_eq!(fitted, Zoom::default());
     }
 
     #[test]
     fn a_press_that_does_not_drag_is_a_click_only_on_an_image_that_fits() {
-        let zoomed = Zoom::default().zoomed_at((0.0, 0.0), 2.0, FRAME);
+        let zoomed = Zoom::default().zoomed_at(ElementPoint::origin(), 2.0, frame());
         let press = |zoom| Press {
-            start: (10.0, 10.0),
+            start: ClientPoint::new(10.0, 10.0),
             zoom,
             dragged: false,
         };
@@ -301,8 +302,6 @@ mod tests {
 
     #[test]
     fn a_wheel_turned_up_zooms_in_and_down_zooms_out() {
-        use dioxus::html::geometry::{LinesVector, PixelsVector3D};
-
         let up = wheel_factor(WheelDelta::Pixels(PixelsVector3D::new(0.0, -100.0, 0.0)));
         let down = wheel_factor(WheelDelta::Lines(LinesVector::new(0.0, 3.0, 0.0)));
 

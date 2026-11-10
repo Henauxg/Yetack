@@ -276,7 +276,8 @@ fn ChatImage(agent: AgentId, path: String, alt: String) -> Element {
             title: "{path}",
             onclick: move |_| {
                 let path = PathBuf::from(&path);
-                // Read before the update: a memo that must compute again reads the state.
+                // Read before the update: a memo that computes again reads the state, which the
+                // update holds.
                 let shown = shown();
                 cockpit.update(|state| match shown {
                     Some(Loadable::Loaded(image)) => {

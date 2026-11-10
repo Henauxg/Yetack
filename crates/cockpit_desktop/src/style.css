@@ -4516,6 +4516,15 @@ html.splitting * {
   padding: 16px;
 }
 
+.file-image .zoom-frame {
+  border: 1px solid var(--line-strong);
+  transition: border-color var(--motion-hover) var(--ease);
+}
+
+.file-image .zoom-frame.opens:hover {
+  border-color: var(--line-control);
+}
+
 /* A small image keeps its own size in the file view. */
 .file-image .zoom-layer > img {
   object-fit: scale-down;
@@ -6713,7 +6722,8 @@ label.icon-button,
 .filter-chip:active,
 .file-list-button:active,
 .file-list-close:active,
-.file-reload:not(:disabled):active {
+.file-reload:not(:disabled):active,
+.zoom-frame.opens:active {
   transform: scale(var(--press-scale));
 }
 

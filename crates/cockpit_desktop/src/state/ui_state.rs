@@ -132,8 +132,8 @@ impl OpenFileView {
 }
 
 impl Dialog {
-    /// The agent whose leaving closes the dialog: the one it asks to close, maps, or shows an image
-    /// of.
+    /// The agent whose leaving closes the dialog: the one it asks to close, the one it maps, or
+    /// the one whose image it shows.
     pub fn agent(&self) -> Option<AgentId> {
         match self {
             Self::CloseAgent(agent) => Some(*agent),
