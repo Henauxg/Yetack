@@ -11,6 +11,15 @@ use crate::ids::{ItemId, PendingId};
 use crate::stored_bool::{FromStoredBool, enum_or_stored_bool};
 use crate::usage::{CostUsd, TokenUsage};
 
+/// Titles a skill's instructions, followed by the skill's command.
+const SKILL_INSTRUCTIONS_TITLE: &str = "Skill instructions";
+
+/// The title of the notice that holds a skill's instructions, such as
+/// `Skill instructions: /review`. The app finds a skill's instructions by it.
+pub fn skill_instructions_title(skill: &str) -> String {
+    format!("{SKILL_INSTRUCTIONS_TITLE}: /{skill}")
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TranscriptItem {
     pub id: ItemId,

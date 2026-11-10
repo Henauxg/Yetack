@@ -15,7 +15,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::connection::{Clock, Cockpit};
-use crate::render::{Diff, Language, diff_lines};
+use crate::render::{self, Diff, Found, Language, OutputPart, SearchTool, diff_lines};
 use crate::state::{self, AgentEntry, HistoryState, TurnStart, accounts, actions, file_edits};
 use crate::ui::accounts::SignInCard;
 use crate::ui::cards::{ApprovalCard, PlanCard, QuestionCard};
@@ -27,6 +27,7 @@ use crate::ui::icons::{Icon, IconKind};
 use crate::ui::last_instruction::LastInstruction;
 use crate::ui::loading::TranscriptSkeleton;
 use crate::ui::markdown::{MARKDOWN_CLASS, MarkdownView};
+use crate::ui::tool_rows::{self, ExploredView, Row, SkillView};
 use crate::{bridge, format};
 
 /// What a call's line says while it runs, before its time or its count of calls.
@@ -44,6 +45,8 @@ const MESSAGE_FOLD_LINES: u8 = 8;
 const IO_ROW_CLASS: &str = "io-row";
 const IO_CLIP_CLASS: &str = "io-clip";
 const FOLD_LABEL_CLASS: &str = "fold-more";
+/// Marks a row that keeps its last screen lines when folded.
+const FOLD_LAST_CLASS: &str = "fold-last";
 
 /// The same for a message you sent: the bubble, and the box that cuts its text.
 const MESSAGE_ROW_CLASS: &str = "message-fold";
@@ -56,7 +59,9 @@ const FOLD_LINES_PROPERTY: &str = "--fold-lines";
 /// page knows: wrapping depends on the width. It marks `data-tall` each row whose text takes more
 /// screen lines than the `--fold-lines` the row sets, and writes on its button how many lines the
 /// fold hides. A message's Markdown has gaps between its blocks, so the script counts its lines
-/// of text and cuts it where its last kept line ends. The script sets on each clip the height of
+/// of text and cuts it where its last kept line ends. A row that keeps its last lines starts them
+/// where a line of its text starts, unless that line alone takes more than the kept screen lines.
+/// The script sets on each clip the height of
 /// its kept lines (`--fold-height`) and of its whole text (`--full-height`), and a fold or an
 /// unfold animates the clip between the two. A ResizeObserver measures each row's text when it
 /// appears and when its width or its text changes, so a resize of the window renders nothing.
@@ -88,12 +93,49 @@ if (!window.agentsCockpitFolds) {
     }
     return bottoms;
   };
+  // Where the kept last lines start, from the text's top: at the start of the earliest line from
+  // which the rest of the text fits in `keptHeight`. Lines are walked from the end.
+  const lastLinesTop = (text, height, keptHeight) => {
+    const top = text.getBoundingClientRect().top;
+    const range = document.createRange();
+    const walker = document.createTreeWalker(text, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode() !== null) {
+      nodes.push(walker.currentNode);
+    }
+    let start = null;
+    for (let index = nodes.length - 1; index >= 0; index--) {
+      const node = nodes[index];
+      // `lastIndexOf` reads a start of -1 as 0 and would find the same break again: the walk ends
+      // after 0.
+      for (let at = node.data.lastIndexOf("\n"); at >= 0; at = at > 0 ? node.data.lastIndexOf("\n", at - 1) : -1) {
+        // A break that ends its node starts its line in the next node.
+        const [lineNode, lineAt] = at + 1 < node.data.length ? [node, at + 1] : [nodes[index + 1], 0];
+        if (lineNode === undefined || lineNode.data.length === 0) {
+          continue;
+        }
+        range.setStart(lineNode, lineAt);
+        range.setEnd(lineNode, lineAt + 1);
+        const rect = range.getClientRects()[0];
+        if (rect === undefined) {
+          continue;
+        }
+        const lineTop = rect.top - top;
+        if (height - lineTop > keptHeight + 1) {
+          return start ?? height - keptHeight;
+        }
+        start = lineTop;
+      }
+    }
+    return start ?? height - keptHeight;
+  };
   const measure = (text, height) => {
     const row = text.closest(`.${classes.row}, .${classes.message_row}`);
     if (row === null) {
       return;
     }
     const kept = parseInt(getComputedStyle(row).getPropertyValue(classes.lines_property), 10);
+    const last = row.classList.contains(classes.last);
     let hidden;
     let foldHeight;
     if (row.matches(`.${classes.message_row}`)) {
@@ -104,6 +146,11 @@ if (!window.agentsCockpitFolds) {
       const lineHeight = parseFloat(getComputedStyle(text).lineHeight);
       hidden = Math.round(height / lineHeight) - kept;
       foldHeight = kept * lineHeight;
+      if (last && hidden > 0) {
+        const start = lastLinesTop(text, height, foldHeight);
+        hidden = Math.round(start / lineHeight);
+        foldHeight = height - start;
+      }
     }
     if (!(hidden > 0)) {
       delete row.dataset.tall;
@@ -115,7 +162,8 @@ if (!window.agentsCockpitFolds) {
     row.dataset.tall = "";
     const label = row.querySelector(`.${classes.label}`);
     if (label !== null) {
-      label.textContent = `Show ${hidden} ${hidden === 1 ? "line" : "lines"} more`;
+      const lines = hidden === 1 ? "line" : "lines";
+      label.textContent = last ? `Show ${hidden} earlier ${lines}` : `Show ${hidden} ${lines} more`;
     }
   };
   // A height measured again applies at once, before the transition comes back: an unfolded clip
@@ -168,6 +216,10 @@ const DESCRIPTION_FIELD: &str = "description";
 
 /// The input field of the line `Read` starts at.
 const OFFSET_FIELD: &str = "offset";
+
+/// The tags Claude Code puts around a tool's error.
+const TOOL_ERROR_OPEN: &str = "<tool_use_error>";
+const TOOL_ERROR_CLOSE: &str = "</tool_use_error>";
 
 /// The rows a chat draws in the frame it opens, enough to fill the window. The older rows follow
 /// in chunks, one per frame: drawing a long conversation at once keeps the window from answering
@@ -328,9 +380,11 @@ pub fn TranscriptView() -> Element {
         .copied()
         .filter(|item| shows_at_top(item, &loaded) && Some(item.id) != sign_in_notice)
         .collect();
-    let states: Vec<Option<StepState>> = top_items
+    let top_rows = tool_rows::rows(&top_items, &awaiting);
+    let states: Vec<Option<StepState>> = top_rows
         .iter()
-        .map(|item| {
+        .map(|row| {
+            let item = row.first();
             if Some(item.id) == sign_in_end {
                 return Some(if waits_for_sign_in {
                     StepState::Waiting
@@ -338,36 +392,42 @@ pub fn TranscriptView() -> Element {
                     StepState::Plain
                 });
             }
-            StepState::new(item, awaiting.contains(&item.id))
+            match row {
+                Row::Explored { .. } => Some(StepState::of_run(&row.items())),
+                Row::Item(_) | Row::Skill { .. } => {
+                    StepState::new(item, awaiting.contains(&item.id))
+                }
+            }
         })
         .collect();
     let is_step: Vec<bool> = states.iter().map(Option::is_some).collect();
     let links = step_links(&is_step, working);
     let working_linked = is_step.last().copied().unwrap_or(false);
-    let notes = older_step_notes(&top_items, &loaded);
+    let firsts: Vec<&TranscriptItem> = top_rows.iter().map(Row::first).collect();
+    let notes = older_step_notes(&firsts, &loaded);
     let scrolled_up = state.ui.chat_scrolled_up.get(&agent).copied();
-    let row_ids: Vec<ItemId> = top_items.iter().map(|item| item.id).collect();
+    let row_ids: Vec<ItemId> = firsts.iter().map(|item| item.id).collect();
     let shown = ShownRows::of(agent, drawn(), &row_ids, scrolled_up.is_some());
     rows.set((Some(agent), row_ids));
-    let first = shown.first(top_items.len());
-    let top: Vec<TopRow> = top_items
+    let first = shown.first(top_rows.len());
+    let divider = actions::new_divider(&state, agent);
+    let top: Vec<TopRow> = top_rows
         .iter()
         .zip(states)
         .zip(links)
         .zip(notes)
         .skip(first)
-        .map(|(((item, state), links), older_step)| TopRow {
-            sign_in_card: Some(item.id) == sign_in_end,
-            item: (*item).clone(),
-            nested: subtree(&children, item.id),
-            awaits_approval: awaiting.contains(&item.id),
+        .map(|(((row, state), links), older_step)| TopRow {
+            id: row.first().id,
+            new_above: divider
+                .is_some_and(|divider| row.items().iter().any(|item| item.id == divider)),
+            view: RowView::of(row, &children, &awaiting, sign_in_end),
             step: state.map(|state| Step { state, links }),
             older_step,
         })
         .collect();
     let history = entry.transcript.history().clone();
     let waiting = scrolled_up.map_or(0, |last_seen| actions::new_entries(entry, last_seen).count);
-    let divider = actions::new_divider(&state, agent);
     rsx! {
         div {
             id: CHAT_SCROLL_ID,
@@ -393,8 +453,8 @@ pub fn TranscriptView() -> Element {
                 }
                 // Item ids repeat across agents: with the agent in the key, another agent's item
                 // never takes over the state of this one's (a fold, a typed answer).
-                for TopRow { item, nested, awaits_approval, step, older_step, sign_in_card } in top {
-                    TranscriptRow { key: "{agent.get()}-{item.id.get()}", agent, folder: folder.clone(), new_above: divider == Some(item.id), item, nested, awaits_approval, step, older_step, sign_in_card }
+                for TopRow { id, new_above, view, step, older_step } in top {
+                    TranscriptRow { key: "{agent.get()}-{id.get()}", agent, folder: folder.clone(), new_above, id, view, step, older_step }
                 }
                 if working && shown != ShownRows::Skeleton {
                     WorkingLine { since: turn_start, linked: working_linked }
@@ -442,12 +502,57 @@ fn history_note(history: HistoryState, cockpit: Cockpit, agent: AgentId) -> Elem
 
 /// What a row of the main conversation needs, as `TranscriptRow` takes it.
 struct TopRow {
-    item: TranscriptItem,
-    nested: Vec<TranscriptItem>,
-    awaits_approval: bool,
+    /// The row's first item, which names its entry.
+    id: ItemId,
+    /// The "New" divider goes above the row: it holds the first new item.
+    new_above: bool,
+    view: RowView,
     step: Option<Step>,
     older_step: bool,
-    sign_in_card: bool,
+}
+
+/// What a row of the main conversation shows.
+#[derive(Debug, Clone, PartialEq)]
+enum RowView {
+    Item {
+        item: TranscriptItem,
+        nested: Vec<TranscriptItem>,
+        awaits_approval: bool,
+        /// The item is the end of a turn that found no login: it shows as the sign-in card.
+        sign_in_card: bool,
+    },
+    Skill {
+        item: TranscriptItem,
+        /// The Markdown of the notice that follows the call.
+        instructions: Option<String>,
+    },
+    Explored(Vec<TranscriptItem>),
+}
+
+impl RowView {
+    fn of(
+        row: &Row<'_>,
+        children: &Children<'_>,
+        awaiting: &BTreeSet<ItemId>,
+        sign_in_end: Option<ItemId>,
+    ) -> Self {
+        match row {
+            Row::Item(item) => Self::Item {
+                item: (*item).clone(),
+                nested: subtree(children, item.id),
+                awaits_approval: awaiting.contains(&item.id),
+                sign_in_card: Some(item.id) == sign_in_end,
+            },
+            Row::Skill { call, instructions } => Self::Skill {
+                item: (*call).clone(),
+                instructions: instructions.and_then(|notice| match &notice.body {
+                    ItemBody::Notice { detail, .. } => detail.clone(),
+                    _ => None,
+                }),
+            },
+            Row::Explored { .. } => Self::Explored(row.items().into_iter().cloned().collect()),
+        }
+    }
 }
 
 /// Where a step of a turn stands, as its dot's color says it.
@@ -481,6 +586,21 @@ impl StepState {
             }
         };
         Some(state)
+    }
+
+    /// A run of reads and searches: running while one runs, failed when one failed.
+    fn of_run(calls: &[&TranscriptItem]) -> Self {
+        let stages: Vec<Self> = calls
+            .iter()
+            .filter_map(|item| Self::new(item, false))
+            .collect();
+        if stages.contains(&Self::Running) {
+            Self::Running
+        } else if stages.contains(&Self::Failed) {
+            Self::Failed
+        } else {
+            Self::Done
+        }
     }
 
     fn from_stage(stage: CallStage) -> Self {
@@ -629,31 +749,52 @@ pub(crate) fn subtree(children: &Children<'_>, root: ItemId) -> Vec<TranscriptIt
     found
 }
 
-/// An item of the main conversation, on the steps' line when it is a step of a turn.
+/// A row of the main conversation, on the steps' line when it is a step of a turn.
 #[component]
 fn TranscriptRow(
     agent: AgentId,
     folder: PathBuf,
     /// The "New" divider goes above the entry.
     new_above: bool,
-    item: TranscriptItem,
-    nested: Vec<TranscriptItem>,
-    awaits_approval: bool,
+    /// The row's first item, which names its entry.
+    id: ItemId,
+    view: RowView,
     step: Option<Step>,
     /// The item starts a run whose step sits in older messages the window has not loaded.
     older_step: bool,
-    /// The item is the end of a turn that found no login: it shows as the sign-in card.
-    sign_in_card: bool,
 ) -> Element {
-    let id = chat_scroll::entry_id(agent, item.id);
-    let view = if sign_in_card {
-        rsx! {
+    let item_id = id;
+    let id = chat_scroll::entry_id(agent, item_id);
+    let view = match view {
+        RowView::Item {
+            sign_in_card: true, ..
+        } => rsx! {
             SignInCard { agent }
-        }
-    } else {
-        rsx! {
+        },
+        RowView::Item {
+            item,
+            nested,
+            awaits_approval,
+            ..
+        } => rsx! {
             ItemView { agent, folder, item, nested, awaits_approval }
-        }
+        },
+        RowView::Skill {
+            item:
+                TranscriptItem {
+                    body: ItemBody::ToolCall(call),
+                    ..
+                },
+            instructions,
+        } => rsx! {
+            SkillView { agent, folder, id: item_id, stage: CallStage::new(&call, false), call, instructions }
+        },
+        RowView::Skill { item, .. } => rsx! {
+            ItemView { agent, folder, item, nested: Vec::new(), awaits_approval: false }
+        },
+        RowView::Explored(calls) => rsx! {
+            ExploredView { agent, folder, calls }
+        },
     };
     let row = match step {
         Some(step) => rsx! {
@@ -1031,6 +1172,7 @@ struct FoldClasses {
     row: &'static str,
     clip: &'static str,
     label: &'static str,
+    last: &'static str,
     message_row: &'static str,
     message_clip: &'static str,
     markdown: &'static str,
@@ -1041,6 +1183,7 @@ const FOLD_CLASSES: FoldClasses = FoldClasses {
     row: IO_ROW_CLASS,
     clip: IO_CLIP_CLASS,
     label: FOLD_LABEL_CLASS,
+    last: FOLD_LAST_CLASS,
     message_row: MESSAGE_ROW_CLASS,
     message_clip: MESSAGE_CLIP_CLASS,
     markdown: MARKDOWN_CLASS,
@@ -1054,28 +1197,92 @@ fn start_fold_script() {
     }
 }
 
-/// Folded, a row taller than its fold keeps its first screen lines; the page script decides which
-/// rows are taller. The fold stays as the user set it when the call's output arrives.
+/// Which screen lines a folded IN or OUT row keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FoldEnd {
+    First,
+    /// The last ones, under the button that shows the earlier ones.
+    Last,
+}
+
+/// Folded, a row taller than its fold keeps its first or its last screen lines; the page script
+/// decides which rows are taller. The fold stays as the user set it when the call's output
+/// arrives. An OUT row shows a run of lines that say the same thing once, with its count.
 #[component]
-fn IoRow(kind: IoKind, text: String) -> Element {
+fn IoRow(kind: IoKind, text: String, fold: FoldEnd) -> Element {
     let mut unfolded = use_signal(|| false);
     let open = unfolded();
     let state = if open { " unfolded" } else { "" };
+    let end = match fold {
+        FoldEnd::First => "",
+        FoldEnd::Last => FOLD_LAST_CLASS,
+    };
+    let button = rsx! {
+        button {
+            class: FOLD_BUTTON_CLASS,
+            aria_expanded: open,
+            onclick: move |_| unfolded.toggle(),
+            span { class: FOLD_LABEL_CLASS }
+            span { class: "fold-less", "Show less" }
+        }
+    };
+    let parts = match kind {
+        IoKind::In => vec![OutputPart::Lines(text)],
+        IoKind::Out => render::output_parts(&text),
+    };
     rsx! {
         div {
-            class: "{IO_ROW_CLASS} {kind.class()}{state}",
+            class: "{IO_ROW_CLASS} {kind.class()} {end}{state}",
             style: "{FOLD_LINES_PROPERTY}: {kind.fold_lines()}",
             span { class: "io-label", "{kind.label()}" }
             div { class: "io-text",
-                div { class: IO_CLIP_CLASS,
-                    pre { "{text}" }
+                if fold == FoldEnd::Last {
+                    {button.clone()}
                 }
-                button {
-                    class: FOLD_BUTTON_CLASS,
-                    aria_expanded: open,
-                    onclick: move |_| unfolded.toggle(),
-                    span { class: FOLD_LABEL_CLASS }
-                    span { class: "fold-less", "Show less" }
+                div { class: IO_CLIP_CLASS,
+                    OutputText { parts }
+                }
+                if fold == FoldEnd::First {
+                    {button}
+                }
+            }
+        }
+    }
+}
+
+/// The text of an IN or OUT row. A run of repeated lines shows once, with a button that shows
+/// each of its lines.
+#[component]
+fn OutputText(parts: Vec<OutputPart>) -> Element {
+    let mut shown_runs = use_signal(BTreeSet::<usize>::new);
+    let open_runs = shown_runs();
+    rsx! {
+        pre {
+            for (index, part) in parts.into_iter().enumerate() {
+                if index > 0 {
+                    "\n"
+                }
+                match part {
+                    OutputPart::Lines(text) => rsx! { "{text}" },
+                    OutputPart::Repeated { shown, count, lines } => {
+                        let open = open_runs.contains(&index);
+                        rsx! {
+                            if open { "{lines}" } else { "{shown}" }
+                            button {
+                                class: if open { "repeat-count open" } else { "repeat-count" },
+                                aria_pressed: open,
+                                title: if open { "Show these lines once" } else { "Show each of these lines" },
+                                onclick: move |_| {
+                                    shown_runs.with_mut(|runs| {
+                                        if !runs.remove(&index) {
+                                            runs.insert(index);
+                                        }
+                                    });
+                                },
+                                "× {count}"
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1086,7 +1293,7 @@ fn IoRow(kind: IoKind, text: String) -> Element {
 /// for a call already running when the app connected. It draws again each second, apart from its
 /// card.
 #[component]
-fn RunningMeta(agent: AgentId, item: ItemId) -> Element {
+pub(crate) fn RunningMeta(agent: AgentId, item: ItemId) -> Element {
     let cockpit: Cockpit = use_context();
     let Clock(now) = use_context();
     // Read for its tick alone: the time counts from an `Instant`.
@@ -1109,14 +1316,54 @@ fn RunningMeta(agent: AgentId, item: ItemId) -> Element {
     }
 }
 
-fn tool_meta(call: &ToolCall, stage: CallStage) -> String {
+pub(crate) fn tool_meta(call: &ToolCall, stage: CallStage) -> String {
     match (stage, call.exit_code) {
         (CallStage::AwaitsApproval, _) => "waiting for approval".to_owned(),
         (CallStage::Running, _) => RUNNING_WORD.to_owned(),
         (_, Some(code)) => format!("exit {code}"),
+        (CallStage::Failed, None) if call.tool == file_edits::READ_TOOL => call
+            .output
+            .as_deref()
+            .and_then(error_line)
+            .unwrap_or_else(|| "failed".to_owned()),
         (CallStage::Failed, None) => "failed".to_owned(),
-        (CallStage::Done, None) => String::new(),
+        (CallStage::Done, None) => done_meta(call).unwrap_or_default(),
     }
+}
+
+/// What a finished `Read`, `Grep` or `Glob` returned, in a few words.
+fn done_meta(call: &ToolCall) -> Option<String> {
+    let output = call.output.as_deref()?;
+    if call.tool == file_edits::READ_TOOL {
+        let lines = render::read_lines(output)?;
+        return Some(if lines.first == lines.last {
+            format!("line {}", lines.first)
+        } else {
+            format!("lines {}–{}", lines.first, lines.last)
+        });
+    }
+    let search: SearchTool = call.tool.parse().ok()?;
+    Some(match render::found(search, output) {
+        Found::Files(files) => format::count(files, "file", "files"),
+        Found::Lines(lines) => format::count(lines, "line", "lines"),
+        Found::Nothing => "no matches".to_owned(),
+    })
+}
+
+/// The first line of a tool's error, without the tags Claude Code puts around it.
+fn error_line(output: &str) -> Option<String> {
+    let line = output
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?;
+    let line = line.strip_prefix(TOOL_ERROR_OPEN).unwrap_or(line);
+    let line = line.strip_suffix(TOOL_ERROR_CLOSE).unwrap_or(line);
+    Some(line.to_owned())
+}
+
+/// A tool whose output the chat leaves out once it ran: the file view shows what a `Read` read.
+fn hides_output(call: &ToolCall, stage: CallStage) -> bool {
+    call.tool == file_edits::READ_TOOL && matches!(stage, CallStage::Done | CallStage::Failed)
 }
 
 /// The end of an edit's line: what the edit did once it ran, where it stands before that.
@@ -1150,7 +1397,15 @@ fn ToolView(agent: AgentId, id: ItemId, call: ToolCall, stage: CallStage) -> Ele
     let shape = ToolShape::new(&call);
     let meta = tool_meta(&call, stage);
     let input = shape.input().map(str::to_owned);
-    let output = call.output.clone().filter(|output| !output.is_empty());
+    let output = call
+        .output
+        .clone()
+        .filter(|output| !output.is_empty() && !hides_output(&call, stage));
+    // A command's last lines say how it ended.
+    let out_fold = match shape {
+        ToolShape::Command { .. } => FoldEnd::Last,
+        ToolShape::Mcp { .. } | ToolShape::File { .. } | ToolShape::Other => FoldEnd::First,
+    };
     let framed = input.is_some() || output.is_some();
     rsx! {
         div { class: stage.class(),
@@ -1165,10 +1420,10 @@ fn ToolView(agent: AgentId, id: ItemId, call: ToolCall, stage: CallStage) -> Ele
             if framed {
                 div { class: "tool-io",
                     if let Some(input) = input {
-                        IoRow { kind: IoKind::In, text: input }
+                        IoRow { kind: IoKind::In, text: input, fold: FoldEnd::First }
                     }
                     if let Some(output) = output {
-                        IoRow { kind: IoKind::Out, text: output }
+                        IoRow { kind: IoKind::Out, text: output, fold: out_fold }
                     }
                 }
             }
@@ -1252,7 +1507,7 @@ fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall, stage: CallStage) -
             if call.status == ToolCallStatus::Failed {
                 if let Some(output) = call.output.clone() {
                     div { class: "tool-io",
-                        IoRow { kind: IoKind::Out, text: output }
+                        IoRow { kind: IoKind::Out, text: output, fold: FoldEnd::First }
                     }
                 }
             }
@@ -1316,7 +1571,8 @@ fn SubagentView(
     }
 }
 
-/// A subagent's item: tool calls on one line, the rest as in the main conversation.
+/// A subagent's item: tool calls on one line, the rest as in the main conversation. A search's
+/// line opens the list of what it found.
 #[component]
 pub(crate) fn CompactItem(
     agent: AgentId,
@@ -1325,10 +1581,39 @@ pub(crate) fn CompactItem(
     nested: Vec<TranscriptItem>,
     awaits_approval: bool,
 ) -> Element {
+    let mut expanded = use_signal(|| false);
     match &item.body {
         ItemBody::ToolCall(call) => {
             let stage = CallStage::new(call, awaits_approval);
             let meta = tool_meta(call, stage);
+            let found = call
+                .output
+                .clone()
+                .filter(|output| !output.is_empty() && call.tool.parse::<SearchTool>().is_ok());
+            if let Some(output) = found {
+                let open = expanded();
+                let title = tool_title(agent, call, &ToolShape::new(call), TitleLayout::Compact);
+                return rsx! {
+                    div { class: "compact-search",
+                        button {
+                            class: "fold-button compact-tool {stage.class()}",
+                            aria_expanded: open,
+                            onclick: move |_| expanded.toggle(),
+                            span { class: "tool-dot", aria_hidden: true }
+                            {title}
+                            if !meta.is_empty() {
+                                span { class: "tool-meta", "{meta}" }
+                            }
+                            span { class: if open { "chevron open" } else { "chevron" }, Icon { kind: IconKind::ChevronRight, size: 12 } }
+                        }
+                        if open {
+                            div { class: "tool-io",
+                                IoRow { kind: IoKind::Out, text: output, fold: FoldEnd::First }
+                            }
+                        }
+                    }
+                };
+            }
             let title = match &call.edit {
                 Some(edit) => {
                     let path = file_edits::shown_path(&folder, &edit.path);
@@ -1662,6 +1947,46 @@ mod tests {
     }
 
     #[test]
+    fn a_read_or_a_search_says_what_it_returned_on_its_line() {
+        let meta = |tool: &str, status, output: &str| {
+            let call = ToolCall {
+                output: Some(output.to_owned()),
+                ..call(tool, "src/lexer.rs", status)
+            };
+            tool_meta(&call, CallStage::new(&call, false))
+        };
+        let lines = "    40\tpub fn next_token() {\n   121\t}\n";
+        let missing = "<tool_use_error>File does not exist.</tool_use_error>";
+
+        assert_eq!(meta("Read", ToolCallStatus::Done, lines), "lines 40–121");
+        assert_eq!(meta("Read", ToolCallStatus::Done, "     7→}"), "line 7");
+        assert_eq!(
+            meta("Read", ToolCallStatus::Failed, missing),
+            "File does not exist."
+        );
+        assert_eq!(
+            meta("Grep", ToolCallStatus::Done, "Found 4 files\na\nb\nc\nd"),
+            "4 files"
+        );
+        assert_eq!(
+            meta("Glob", ToolCallStatus::Done, "No files found"),
+            "no matches"
+        );
+        assert_eq!(meta("Bash", ToolCallStatus::Done, "ok"), "");
+    }
+
+    #[test]
+    fn only_a_read_that_ran_leaves_its_output_out() {
+        let read = call("Read", "src/lexer.rs", ToolCallStatus::Done);
+        let bash = call("Bash", "cargo test", ToolCallStatus::Done);
+
+        assert!(hides_output(&read, CallStage::Done));
+        assert!(hides_output(&read, CallStage::Failed));
+        assert!(!hides_output(&read, CallStage::Running));
+        assert!(!hides_output(&bash, CallStage::Done));
+    }
+
+    #[test]
     fn an_edit_shows_its_result_only_once_it_ran() {
         let meta = |status, awaits_approval| {
             let call = write_call(status);
@@ -1808,6 +2133,7 @@ mod tests {
                 "row": "io-row",
                 "clip": "io-clip",
                 "label": "fold-more",
+                "last": "fold-last",
                 "message_row": "message-fold",
                 "message_clip": "message-clip",
                 "markdown": "markdown",

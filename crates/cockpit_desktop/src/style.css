@@ -2735,6 +2735,49 @@ html.reordering * {
   display: none;
 }
 
+/* A row that keeps its last lines: the clip shows the end of its text, fades at its top, and its
+   button stands above it. */
+.io-row.fold-last[data-tall] .io-clip {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.io-row.fold-last[data-tall] .io-clip::after {
+  inset: 0 0 auto;
+  background: linear-gradient(to top, transparent, var(--well));
+}
+
+.io-row.fold-last .fold-lines {
+  margin: 0 0 4px;
+}
+
+/* A run of output lines that say the same thing, shown once: its count shows each line. */
+.repeat-count {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--line-strong);
+  color: var(--text-soft);
+  font-family: var(--sans);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.repeat-count.open {
+  background: var(--selected);
+  color: var(--muted);
+}
+
+/* A search in a list of calls, over what it found once opened. */
+.compact-search {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 /* A long message you sent folds as an IN or OUT row does. Its `--fold-height` is where its last
    kept line ends. */
 .message-fold[data-tall] .message-clip::after {
@@ -6970,6 +7013,11 @@ label.icon-button,
   background: #2c2c2c;
 }
 
+.repeat-count:hover {
+  background: #404040;
+  color: var(--text);
+}
+
 .chip.open:hover {
   background: #373737;
 }
@@ -7139,6 +7187,7 @@ label.icon-button,
 .copy-button:not(:disabled):active,
 .back-button:active,
 .fold-lines:active,
+.repeat-count:active,
 .option:active,
 .filter-chip:active,
 .file-list-button:active,

@@ -1351,9 +1351,33 @@ fn read_call(path: &Path) -> ToolCall {
     let shown = path.display().to_string();
     ToolCall {
         input: serde_json::json!({ "file_path": shown }),
-        ..call("Read", &shown, ToolCallStatus::Done, None)
+        ..call(
+            "Read",
+            &shown,
+            ToolCallStatus::Done,
+            Some(&read_output(1, 28)),
+        )
     }
 }
+
+/// What Claude Code's `Read` returns for `count` lines from `first`: each line after its number.
+fn read_output(first: u32, count: u32) -> String {
+    (first..first + count)
+        .map(|line| format!("{line:>6}\u{2192}    let line_{line} = {line};\n"))
+        .collect()
+}
+
+/// A benchmark's output, whose warnings differ only in the field they name.
+const BENCH_OUTPUT: &str = "   Compiling calc-service v0.3.0 (/home/dev/projects/calc-service)
+warning: field `retries` is never read
+warning: field `timeout` is never read
+warning: field `backoff` is never read
+warning: field `jitter` is never read
+    Finished `bench` profile [optimized] target(s) in 41.20s
+     Running benches/eval.rs
+eval/shallow        time: [412.1 \u{b5}s 415.3 \u{b5}s 418.9 \u{b5}s]
+eval/wide_sum       time: [1.02 ms 1.04 ms 1.05 ms]
+eval/deep_nesting   time: [2.38 ms 2.41 ms 2.44 ms]";
 
 fn edit_call(tool: &str, path: &str, old_text: &str, new_text: &str) -> ItemBody {
     ItemBody::ToolCall(ToolCall {
@@ -1974,7 +1998,7 @@ fn benchmark_agent(now: SystemTime) -> Sample {
             2,
             None,
             ItemBody::ToolCall(ToolCall {
-                input: serde_json::json!({"skill": "bench-compare"}),
+                input: serde_json::json!({"skill": "bench-compare", "args": "main against the branch"}),
                 ..call(
                     "Skill",
                     "bench-compare",
@@ -1998,7 +2022,7 @@ fn benchmark_agent(now: SystemTime) -> Sample {
                 "Run the benchmark",
                 "cargo bench --bench eval",
                 ToolCallStatus::Done,
-                Some("eval/deep_nesting  time: [2.38 ms 2.41 ms 2.44 ms]"),
+                Some(BENCH_OUTPUT),
             )),
         ),
         item(
@@ -2192,7 +2216,7 @@ fn live_entry_of(kind: u32, id: u32) -> ItemBody {
             "Read",
             &format!("src/stream/case_{id}.rs"),
             ToolCallStatus::Done,
-            None,
+            Some(&read_output(1, 24)),
         )),
         4 => text(&format!(
             "Case {id} needed one change: the reader kept a partial token across two chunks.\n\n- The chunk boundary falls inside a number.\n- The column comes from the token's start, not the chunk's.\n\n```rust\nfn case_{id}() {{\n    let mut stream = Stream::new(Chunks::of(\"12 + 3\", 2));\n    assert_eq!(stream.next(), Some(Token::number(12, 1)));\n    assert_eq!(stream.next(), Some(Token::plus(4)));\n}}\n```"
@@ -2449,7 +2473,9 @@ fn map_agent(now: SystemTime) -> Sample {
     summary.turns = 2;
     summary.task_progress = Some(TaskProgress { done: 2, total: 5 });
     let done = ToolCallStatus::Done;
-    let read = |path: &str| ItemBody::ToolCall(call("Read", path, ToolCallStatus::Done, None));
+    let read_text = read_output(40, 64);
+    let read =
+        |path: &str| ItemBody::ToolCall(call("Read", path, ToolCallStatus::Done, Some(&read_text)));
     let grep = |pattern: &str, output: &str| {
         ItemBody::ToolCall(call("Grep", pattern, ToolCallStatus::Done, Some(output)))
     };

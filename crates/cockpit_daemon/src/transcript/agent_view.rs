@@ -91,8 +91,6 @@ const AUTHENTICATION_FAILED: &str = "authentication_failed";
 /// `/login`, which a cockpit agent cannot.
 const NOT_SIGNED_IN_ERROR: &str = "The account is not signed in";
 const COMPACTED_NOTICE: &str = "Conversation compacted";
-/// Titles a skill's instructions, followed by the skill's command.
-const SKILL_INSTRUCTIONS_TITLE: &str = "Skill instructions";
 const SUMMARY_TITLE: &str = "Conversation summary";
 /// Titles context Claude Code adds that no line before it explains.
 const CONTEXT_TITLE: &str = "Context added by Claude Code";
@@ -1632,7 +1630,7 @@ impl AgentView {
 /// The title of context Claude Code adds, such as `Skill instructions: /review`.
 fn context_title(expected: Option<ExpectedContext>) -> String {
     match expected {
-        Some(ExpectedContext::Skill(skill)) => format!("{SKILL_INSTRUCTIONS_TITLE}: /{skill}"),
+        Some(ExpectedContext::Skill(skill)) => cockpit_protocol::skill_instructions_title(&skill),
         Some(ExpectedContext::Summary) => SUMMARY_TITLE.to_owned(),
         None => CONTEXT_TITLE.to_owned(),
     }

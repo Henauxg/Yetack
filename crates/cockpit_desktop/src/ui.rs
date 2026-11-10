@@ -30,6 +30,7 @@ mod presence;
 mod reorder;
 mod sidebar;
 mod splitter;
+mod tool_rows;
 mod transcript;
 mod waiting_prompts;
 mod zoom;
