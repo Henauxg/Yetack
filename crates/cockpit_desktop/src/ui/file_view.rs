@@ -53,26 +53,30 @@ pub fn FileViewPanel() -> Element {
         return rsx! {};
     };
     let folder = &entry.summary.folder;
-    let tabs = view.tabs(&entry.changed_paths());
+    let changed_paths = entry.changed_paths();
+    let tabs = view.tabs(&changed_paths);
     let tab_count = tabs.len();
     let list_open = state.ui.popover == Some(Popover::FileList);
     let text = entry.files.get(&view.path).cloned().unwrap_or_default();
     let freshness = entry.file_freshness.clone();
     let update = freshness.update.clone();
-    let edits: Vec<FileEdit> = file_edits::edits_for(&entry.transcript, folder, &view.path)
-        .into_iter()
-        .cloned()
-        .collect();
     let short = ShortPath::new(folder, &view.path);
     let full = full_path(folder, &view.path);
     let labels = tab_labels(PathStyle::of(folder), &tabs);
-    let note = if edits.is_empty() {
-        "This agent did not change the file.".to_owned()
-    } else {
+    let changed = entry.has_changed(&view.path);
+    let edit_count = match &text {
+        Loadable::Loaded(FileRead::Text { edits, .. }) => edits.len(),
+        _ => 0,
+    };
+    let note = if edit_count > 0 {
         format!(
             "Changed by {} of this agent.",
-            format::count(edits.len(), "edit", "edits")
+            format::count(edit_count, "edit", "edits")
         )
+    } else if changed {
+        "Changed by this agent.".to_owned()
+    } else {
+        "This agent did not change the file.".to_owned()
     };
     let markdown = is_markdown(&view.path);
     // A view left in Preview on another kind of file shows the whole file.
@@ -93,7 +97,7 @@ pub fn FileViewPanel() -> Element {
     let loading = matches!(text, Loadable::NotRequested | Loadable::Loading);
     let image = matches!(text, Loadable::Loaded(FileRead::Image(_)));
     let copied_text = match &text {
-        Loadable::Loaded(FileRead::Text(text)) => Some(text.clone()),
+        Loadable::Loaded(FileRead::Text { text, .. }) => Some(text.clone()),
         _ => None,
     };
     let wrap = state.prefs.file_view.wrap;
@@ -195,11 +199,11 @@ pub fn FileViewPanel() -> Element {
                     Loadable::Loaded(FileRead::Choices(matches)) => rsx! {
                         FileChoices { agent, folder: folder.clone(), name: view.path.clone(), matches, line: view.line }
                     },
-                    Loadable::Loaded(FileRead::Text(text)) if preview => rsx! {
+                    Loadable::Loaded(FileRead::Text { text, .. }) if preview => rsx! {
                         FilePreview { agent, folder: folder.clone(), path: view.path.clone(), text }
                     },
-                    Loadable::Loaded(FileRead::Text(text)) => rsx! {
-                        FileContent { path: view.path.clone(), text, mode, line: view.line, edits, update }
+                    Loadable::Loaded(FileRead::Text { text, edits }) => rsx! {
+                        FileContent { path: view.path.clone(), text, mode, line: view.line, edits, changed, update }
                     },
                     Loadable::Loaded(FileRead::Image(image)) => {
                         let image = Arc::new(image);
@@ -439,7 +443,8 @@ fn FilePreview(agent: AgentId, folder: PathBuf, path: PathBuf, text: String) -> 
     }
 }
 
-/// The rows are rebuilt only when the text, the mode, the line, the edits or the update change.
+/// The rows are rebuilt only when a prop changes.
+/// `changed` says whether the agent changed the file, even with no edits to show.
 #[component]
 fn FileContent(
     path: PathBuf,
@@ -447,6 +452,7 @@ fn FileContent(
     mode: ViewMode,
     line: Option<u32>,
     edits: Vec<FileEdit>,
+    changed: bool,
     update: Option<FileUpdate>,
 ) -> Element {
     let language = Language::from_path(&path);
@@ -454,7 +460,9 @@ fn FileContent(
     if mode == ViewMode::WholeFile || edits.is_empty() {
         let lines = render::plain_lines(&text, language, 1, MAX_RENDERED_LINES);
         return rsx! {
-            if mode == ViewMode::Diff {
+            if mode == ViewMode::Diff && changed {
+                p { class: "file-note", "This agent changed the file, but its edits are not available. Here is its text." }
+            } else if mode == ViewMode::Diff {
                 p { class: "file-note", "This agent did not change the file. Here is its text." }
             }
             div { class: "diff-rows",

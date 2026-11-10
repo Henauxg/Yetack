@@ -1047,7 +1047,7 @@ mod tests {
         let agent = AgentId::new(1);
         actions::open_file(&mut state, agent, PathBuf::from("notes.md"), None);
         let path = Path::new("notes.md");
-        let text = FileRead::Text("one\n".to_owned());
+        let text = FileRead::unedited("one\n");
         actions::show_read_file(&mut state, agent, path, path, text, None);
 
         handle_key(

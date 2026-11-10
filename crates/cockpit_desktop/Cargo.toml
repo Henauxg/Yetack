@@ -29,7 +29,7 @@ serde_json.workspace = true
 similar = { version = "3.2.1", features = ["inline"] }
 strum.workspace = true
 # The pure Rust regex engine: no C library to build.
-syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "regex-fancy"] }
+syntect = { version = "5.3.0", default-features = false, features = ["regex-fancy"] }
 thiserror.workspace = true
 tokio.workspace = true
 toml = "1.2.0"
@@ -37,6 +37,9 @@ toml = "1.2.0"
 toml_edit = "0.25.18"
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# Syntect's syntaxes with the ones it lacks (Protobuf, TypeScript, TOML, ...), for the same
+# regex engine.
+two-face = { version = "0.5.2", default-features = false, features = ["syntect-fancy"] }
 # The parser Dioxus opens links with: an address it cannot parse would open as a local file.
 url = "2.5.8"
 # The browser opener Dioxus uses, where the app does not run `xdg-open` itself.

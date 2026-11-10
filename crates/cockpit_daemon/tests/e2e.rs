@@ -22,8 +22,8 @@ use cockpit_protocol::{
     AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState, Approval,
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, Catchup, ClaudeSessionId, CommandKind,
     CostUsd, CredentialSource, Effort, EffortSource, EnvironmentCredentials, ErrorCode, Event,
-    EventRecord, HistoryParams, Image, ImageMediaType, ItemBody, McpRemoveParams, McpScope,
-    McpServerParams, McpServerStatus, McpToggleAction, McpToggleParams, MoveParams,
+    EventRecord, FileEdit, HistoryParams, Image, ImageMediaType, ItemBody, McpRemoveParams,
+    McpScope, McpServerParams, McpServerStatus, McpToggleAction, McpToggleParams, MoveParams,
     PROTOCOL_VERSION, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, PlanUsage,
     ProcessId, Prompt, PromptDelivery, PromptParams, Question, QuestionAnswer, QueuedPromptParams,
     ReadFileParams, RenameParams, Request, ResponseBody, Seq, SessionResumeParams, SetEffortParams,
@@ -1690,6 +1690,58 @@ async fn malformed_requests_get_an_error_and_the_connection_stays() {
 }
 
 #[tokio::test]
+async fn a_file_comes_with_its_edits() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let work = setup.work();
+    std::fs::create_dir(work.join("old")).unwrap();
+    std::fs::write(work.join("notes.txt"), "remember the bread\n").unwrap();
+    std::fs::write(work.join("old/notes.txt"), "remember the tea\n").unwrap();
+    std::fs::write(work.join("old/todo.txt"), "call the bank\n").unwrap();
+    let agent = client.start(&work, "edit notes.txt milk bread").await;
+    for prompt in [
+        "edit old/notes.txt coffee tea",
+        "edit old/todo.txt shop bank",
+    ] {
+        client.says(agent, "Edited.").await;
+        client.idle(agent).await;
+        client.prompt(agent, prompt).await;
+    }
+    client.says(agent, "Edited.").await;
+    client.idle(agent).await;
+    let read = |path: &str| {
+        Request::AgentReadFile(ReadFileParams {
+            agent,
+            path: PathBuf::from(path),
+        })
+    };
+    let edit = |path: &str, old_text: &str, new_text: &str| FileEdit {
+        path: work.join(path),
+        old_text: old_text.to_owned(),
+        new_text: new_text.to_owned(),
+    };
+
+    // The other file of the same name keeps its own edit.
+    assert_eq!(
+        client.ok(read("notes.txt")).await,
+        ResponseBody::File {
+            path: Some(work.join("notes.txt")),
+            text: "remember the bread\n".to_owned(),
+            edits: Some(vec![edit("notes.txt", "milk", "bread")]),
+        }
+    );
+    // A name that is not in the folder finds the file the agent changed.
+    assert_eq!(
+        client.ok(read("todo.txt")).await,
+        ResponseBody::File {
+            path: Some(work.join("old/todo.txt")),
+            text: "call the bank\n".to_owned(),
+            edits: Some(vec![edit("old/todo.txt", "shop", "bank")]),
+        }
+    );
+}
+
+#[tokio::test]
 async fn files_settings_sessions_and_agent_settings() {
     let setup = Setup::new();
     let mut client = setup.connect().await;
@@ -1709,7 +1761,8 @@ async fn files_settings_sessions_and_agent_settings() {
         client.ok(read("notes.txt")).await,
         ResponseBody::File {
             path: Some(setup.work().join("notes.txt")),
-            text: "remember the milk\n".to_owned()
+            text: "remember the milk\n".to_owned(),
+            edits: Some(Vec::new()),
         }
     );
     assert_eq!(

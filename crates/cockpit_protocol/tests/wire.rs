@@ -800,6 +800,7 @@ fn response_bodies() -> Vec<ResponseBody> {
         ResponseBody::File {
             path: Some(PathBuf::from("/srv/projects/shop/src/main.rs")),
             text: "fn main() {}\n".to_owned(),
+            edits: Some(vec![edit()]),
         },
         ResponseBody::Image {
             path: PathBuf::from("/srv/projects/shop/docs/cart.png"),
@@ -2002,17 +2003,27 @@ fn an_idle_agent_sends_no_turn_start() {
 }
 
 #[test]
-fn a_file_answer_with_or_without_the_path_it_read() {
+fn a_file_answer_with_or_without_the_path_it_read_and_its_edits() {
     let with_path = ResponseBody::File {
         path: Some(PathBuf::from("/srv/projects/shop/src/main.rs")),
         text: "fn main() {}\n".to_owned(),
+        edits: Some(vec![edit()]),
     };
 
     assert_wire(
         &with_path,
-        json!({"type": "file", "path": "/srv/projects/shop/src/main.rs", "text": "fn main() {}\n"}),
+        json!({
+            "type": "file",
+            "path": "/srv/projects/shop/src/main.rs",
+            "text": "fn main() {}\n",
+            "edits": [{
+                "path": "src/login.rs",
+                "old_text": "let valid = false;",
+                "new_text": "let valid = check(email);",
+            }],
+        }),
     );
-    // A daemon that predates the path.
+    // A daemon that predates the path and the edits.
     let without_path: ResponseBody =
         serde_json::from_value(json!({"type": "file", "text": "fn main() {}\n"})).unwrap();
     assert_eq!(
@@ -2020,6 +2031,7 @@ fn a_file_answer_with_or_without_the_path_it_read() {
         ResponseBody::File {
             path: None,
             text: "fn main() {}\n".to_owned(),
+            edits: None,
         }
     );
 }

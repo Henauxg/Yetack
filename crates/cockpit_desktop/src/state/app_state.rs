@@ -1,13 +1,13 @@
 //! Everything the window shows, in one value that the event and response handlers update.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_protocol::{
-    Account, AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, AnswerState, Image,
-    ItemBody, ItemId, PastSession, PlanUsage, Settings, Timestamp, ToolCallStatus, TranscriptItem,
-    WaitingPrompt, list_order,
+    Account, AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, AnswerState, FileEdit,
+    Image, ItemBody, ItemId, PastSession, PlanUsage, Settings, Timestamp, ToolCallStatus,
+    TranscriptItem, WaitingPrompt, list_order,
 };
 use strum::VariantArray;
 
@@ -54,13 +54,28 @@ impl<T> Loadable<T> {
 /// What the daemon answered for the file view's path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileRead {
-    Text(String),
+    /// `edits` are the agent's edits of the file, oldest first, read with the text.
+    Text {
+        text: String,
+        edits: Vec<FileEdit>,
+    },
     Image(Image),
     /// Several files end with the path, which names none in the agent's folder: the user picks
     /// one. Absolute paths.
     Choices(Vec<PathBuf>),
     /// No file matches: the daemon's sentence that says so.
     Missing(String),
+}
+
+#[cfg(test)]
+impl FileRead {
+    /// A text the agent did not edit.
+    pub fn unedited(text: &str) -> Self {
+        Self::Text {
+            text: text.to_owned(),
+            edits: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -225,6 +240,15 @@ impl AgentEntry {
             .flat_map(|details| details.changed_files.iter())
             .map(|file| file_edits::relative_path(folder, &file.path))
             .collect()
+    }
+
+    /// Whether the agent changed the file at `path`, a path the file view uses.
+    pub fn has_changed(&self, path: &Path) -> bool {
+        let style = PathStyle::of(&self.summary.folder);
+        let path = path.to_string_lossy();
+        self.changed_paths()
+            .iter()
+            .any(|changed| style.same_path(&changed.to_string_lossy(), &path))
     }
 
     /// The prompts the agent has not read yet, oldest first.

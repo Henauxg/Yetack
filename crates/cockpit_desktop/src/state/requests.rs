@@ -5,7 +5,7 @@ use std::time::SystemTime;
 
 use cockpit_client::RequestError;
 use cockpit_protocol::{
-    AgentDetails, AgentId, AgentParams, ErrorCode, FindFilesParams, FoldersListParams,
+    AgentDetails, AgentId, AgentParams, ErrorCode, FileEdit, FindFilesParams, FoldersListParams,
     HistoryParams, ItemId, ListDirParams, Method, Position, ReadFileParams, Request, ResponseBody,
     Timestamp,
 };
@@ -14,7 +14,7 @@ use super::app_state::{AgentEntry, AppState, FileRead, Loadable, MachineState, R
 use super::drafts::{Draft, Drafts};
 use super::transcript::HistoryState;
 use super::ui_state::{Dialog, FolderAction, OpenFileView};
-use super::{accounts, actions, chat_images, file_tree, working_folder};
+use super::{accounts, actions, chat_images, file_edits, file_tree, working_folder};
 use crate::machine::MachineId;
 use crate::path_style;
 use crate::prefs::AccountColor;
@@ -471,9 +471,16 @@ pub fn apply_response(
         Purpose::ReadFile { agent, path } => {
             let now = Timestamp::from_system_time(SystemTime::now());
             let read = match result {
-                Ok(ResponseBody::File { path: found, text }) => {
+                Ok(ResponseBody::File {
+                    path: found,
+                    text,
+                    edits,
+                }) => {
                     let found = found.unwrap_or_else(|| path.clone());
-                    actions::show_read_file(state, agent, &path, &found, FileRead::Text(text), now);
+                    // A daemon that predates the edits leaves the ones of the loaded messages.
+                    let edits = edits.unwrap_or_else(|| loaded_edits(state, agent, &found));
+                    let read = FileRead::Text { text, edits };
+                    actions::show_read_file(state, agent, &path, &found, read, now);
                     return;
                 }
                 Ok(ResponseBody::Image { path: found, image }) => {
@@ -702,6 +709,19 @@ pub fn apply_response(
 
 fn loaded_details(state: &mut AppState, agent: AgentId) -> Option<&mut AgentDetails> {
     state.agents.get_mut(&agent)?.details.loaded_mut()
+}
+
+/// The edits of the file at `path` in `agent`'s loaded messages.
+fn loaded_edits(state: &AppState, agent: AgentId, path: &Path) -> Vec<FileEdit> {
+    let Some(entry) = state.agents.get(&agent) else {
+        return Vec::new();
+    };
+    let folder = &entry.summary.folder;
+    let path = file_edits::relative_path(folder, path);
+    file_edits::edits_for(&entry.transcript, folder, &path)
+        .into_iter()
+        .cloned()
+        .collect()
 }
 
 /// A read again of the shown file failed, but for a missing file: the text read before stays, and
@@ -1063,7 +1083,7 @@ mod tests {
         let agent = AgentId::new(1);
         let path = PathBuf::from("notes.md");
         actions::open_file(&mut state, agent, path.clone(), None);
-        let text = FileRead::Text("one\n".to_owned());
+        let text = FileRead::unedited("one\n");
         actions::show_read_file(&mut state, agent, &path, &path, text, None);
         crate::state::file_reread::reread(&mut state, agent);
         needed_requests(&mut state);

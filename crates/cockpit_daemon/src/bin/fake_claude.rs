@@ -12,6 +12,8 @@
 //!   set to a folder, it keeps the name there, and a resumed fake restates it before it answers
 //!   `initialize`.
 //! - `/model <model>`: uses that model from the next turn on, as Claude Code does.
+//! - `edit <file> <old> <new>`: an `Edit` call on `<file>` in its working folder, which it does
+//!   not run, then answers "Edited.".
 //! - `usage <utilization>`: reports that utilization of the five-hour window, then answers.
 //! - `nologin`: fails as Claude Code does when its folder holds no login.
 //! - anything else: answers "Echo: <prompt>".
@@ -350,6 +352,25 @@ impl<W: Write> Fake<W> {
                         "content": "<local-command-stdout>Effort set</local-command-stdout>"
                     }}),
                 )?;
+                self.end_turn()
+            }
+            "edit" => {
+                let mut words = prompt.split_whitespace().skip(1);
+                let (Some(name), Some(old), Some(new)) = (words.next(), words.next(), words.next())
+                else {
+                    self.say("Usage: edit <file> <old> <new>")?;
+                    return self.end_turn();
+                };
+                let file_path = std::env::current_dir()?.join(name);
+                let tool_use_id = format!("toolu-{}", self.next_id);
+                self.next_id += 1;
+                let input = json!({"file_path": file_path, "old_string": old, "new_string": new});
+                self.emit(&json!({"type": "assistant", "session_id": self.session, "message": {
+                    "model": self.model,
+                    "content": [{"type": "tool_use", "id": tool_use_id, "name": "Edit", "input": input}]
+                }}))?;
+                self.tool_result(&tool_use_id, "The file has been updated.", false)?;
+                self.say("Edited.")?;
                 self.end_turn()
             }
             "usage" => {

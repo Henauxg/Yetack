@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use claude_protocol::{ControlRequest, TaskId};
 use cockpit_protocol::{
     AgentId, ErrorBody, ErrorCode, Event, FindFilesParams, FoldersListParams, HistoryParams,
-    ListDirParams, McpRemoveParams, McpToggleAction, ReadFileParams, Request, ResponseBody,
-    SessionResumeParams, Settings, StopProcessParams,
+    ListDirParams, MAX_LINE_BYTES, McpRemoveParams, McpToggleAction, ReadFileParams, Request,
+    ResponseBody, SessionResumeParams, Settings, StopProcessParams,
 };
 
 use crate::accounts::ClaudeEnv;
@@ -19,8 +19,13 @@ use crate::machine_load::AgentRoot;
 use crate::read_file::{Content, Found};
 use crate::sessions::AccountFolder;
 use crate::store::{DaemonSettings, LogName};
-use crate::transcript::{touched_files, words};
+use crate::transcript::{finished_edits, touched_files, words};
 use crate::{browse, machine_load, mcp_remove, read_file, sessions};
+
+/// The most JSON bytes of edits a file's answer holds.
+const MAX_EDITS_BYTES: usize = MAX_LINE_BYTES / 4;
+/// What a file's answer adds around its text and edits, its path included, with room to spare.
+const FILE_ANSWER_ENVELOPE_BYTES: usize = 64 * 1024;
 
 /// What the requests that read the agent's files need, taken from the hub before they leave it.
 struct FileAccess {
@@ -154,21 +159,34 @@ impl Hub {
             Ok(access) => access,
             Err(error) => return agents::respond(reply, Err(error)),
         };
+        // The file found has the name asked for, wherever it is.
+        let named = match (self.agent(params.agent), params.path.file_name()) {
+            (Ok(agent), Some(name)) => {
+                let edits = finished_edits(agent.view.items());
+                read_file::edits_named(edits, &access.folder, name, MAX_EDITS_BYTES)
+            }
+            _ => Vec::new(),
+        };
         tokio::spawn(async move {
             let FileAccess {
                 folder,
                 touched,
                 home,
             } = access;
-            let found = read_file::find_and_read(folder, touched, home, params.path).await;
+            let found = read_file::find_and_read(folder.clone(), touched, home, params.path).await;
             let result = match found {
                 Ok(Found::File {
                     path,
                     content: Content::Text(text),
-                }) => Ok(ResponseBody::File {
-                    path: Some(path),
-                    text,
-                }),
+                }) => {
+                    let max_bytes = max_edits_bytes(&text);
+                    let edits = read_file::edits_of(named, &folder, &path, max_bytes);
+                    Ok(ResponseBody::File {
+                        path: Some(path),
+                        text,
+                        edits: Some(edits),
+                    })
+                }
                 Ok(Found::File {
                     path,
                     content: Content::Image(image),
@@ -355,6 +373,16 @@ impl Hub {
     }
 }
 
+/// The most JSON bytes of edits that fit in a file's answer with `text`. A control character
+/// takes six bytes in JSON, so a text can fill most of a frame on its own.
+fn max_edits_bytes(text: &str) -> usize {
+    let text_bytes = serde_json::to_vec(text).map_or(usize::MAX, |json| json.len());
+    let room = MAX_LINE_BYTES
+        .saturating_sub(FILE_ANSWER_ENVELOPE_BYTES)
+        .saturating_sub(text_bytes);
+    MAX_EDITS_BYTES.min(room)
+}
+
 fn list_folders(params: FoldersListParams, reply: Reply) {
     tokio::spawn(async move {
         let listed = tokio::task::spawn_blocking(move || browse::list_folders(&params.path)).await;
@@ -372,6 +400,19 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+
+    #[test]
+    fn the_edits_leave_room_for_a_text_that_json_makes_larger() {
+        // 2.5 MiB of control characters take 15 MiB in JSON.
+        let escaped = "\u{1}".repeat(5 * 512 * 1024);
+
+        let room = max_edits_bytes(&escaped);
+
+        assert_eq!(max_edits_bytes("fn main() {}\n"), MAX_EDITS_BYTES);
+        assert!(room < 1024 * 1024, "{room}");
+        let text_bytes = serde_json::to_vec(&escaped).unwrap().len();
+        assert!(text_bytes + room + FILE_ANSWER_ENVELOPE_BYTES <= MAX_LINE_BYTES);
+    }
 
     #[cfg(unix)]
     #[tokio::test]

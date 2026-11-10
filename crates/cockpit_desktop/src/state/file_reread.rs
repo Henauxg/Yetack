@@ -29,7 +29,7 @@ pub fn reread(state: &mut AppState, agent: AgentId) {
         return;
     };
     match held {
-        Loadable::Loaded(FileRead::Text(_) | FileRead::Image(_)) => {
+        Loadable::Loaded(FileRead::Text { .. } | FileRead::Image(_)) => {
             let freshness = &mut entry.file_freshness;
             freshness.reread = match freshness.reread {
                 Reread::Idle | Reread::Wanted => Reread::Wanted,
@@ -39,7 +39,9 @@ pub fn reread(state: &mut AppState, agent: AgentId) {
         Loadable::Loaded(FileRead::Missing(_)) | Loadable::Failed(_) => {
             *held = Loadable::NotRequested;
         }
-        Loadable::Loaded(FileRead::Choices(_)) | Loadable::NotRequested | Loadable::Loading => {}
+        // The answer on its way may predate the change: one more read follows it.
+        Loadable::Loading => entry.file_freshness.reread = Reread::Reading { again: true },
+        Loadable::Loaded(FileRead::Choices(_)) | Loadable::NotRequested => {}
     }
 }
 
@@ -90,13 +92,15 @@ pub fn arrived(
         Reread::Reading { again } => Some(again),
         Reread::Idle | Reread::Wanted => None,
     };
-    if let (Some(_), Some(old), Some(at)) = (again, old, now)
-        && old != new
-    {
-        let lines = match (old, new) {
-            (FileRead::Text(old), FileRead::Text(new)) => render::changed_lines(old, new),
-            _ => BTreeSet::new(),
-        };
+    // New edits alone leave the text as it was: nothing to show as updated.
+    let lines: Option<BTreeSet<u32>> = match (again.and(old), new) {
+        (Some(FileRead::Text { text: old, .. }), FileRead::Text { text: new, .. }) => {
+            (old != new).then(|| render::changed_lines(old, new))
+        }
+        (Some(old), new) => (old != new).then(BTreeSet::new),
+        (None, _) => None,
+    };
+    if let (Some(lines), Some(at)) = (lines, now) {
         let serial = freshness
             .update
             .as_ref()
@@ -143,7 +147,7 @@ mod tests {
             agent(),
             path,
             path,
-            FileRead::Text(text.to_owned()),
+            FileRead::unedited(text),
             at(1_000),
         );
         state
@@ -188,11 +192,11 @@ mod tests {
         assert_eq!(freshness(&state).reread, Reread::Reading { again: false });
         assert_eq!(
             state.agents[&agent()].files[Path::new("notes.md")],
-            Loadable::Loaded(FileRead::Text("one\ntwo\n".to_owned()))
+            Loadable::Loaded(FileRead::unedited("one\ntwo\n"))
         );
 
         let path = Path::new("notes.md");
-        let new = FileRead::Text("one\nTWO\nthree\n".to_owned());
+        let new = FileRead::unedited("one\nTWO\nthree\n");
         actions::show_read_file(&mut state, agent(), path, path, new, at(2_000));
 
         let fresh = freshness(&state);
@@ -219,7 +223,7 @@ mod tests {
         let _ = crate::state::needed_requests(&mut state);
 
         let path = Path::new("notes.md");
-        let new = FileRead::Text("two\n".to_owned());
+        let new = FileRead::unedited("two\n");
         actions::show_read_file(&mut state, agent(), path, path, new, at(2_000));
 
         assert_eq!(
@@ -235,7 +239,7 @@ mod tests {
         let _ = crate::state::needed_requests(&mut state);
 
         let path = Path::new("notes.md");
-        let same = FileRead::Text("one\n".to_owned());
+        let same = FileRead::unedited("one\n");
         actions::show_read_file(&mut state, agent(), path, path, same, at(2_000));
 
         assert_eq!(freshness(&state).update, None);
@@ -251,10 +255,51 @@ mod tests {
         reread(&mut state, agent());
         assert_eq!(freshness(&state).reread, Reread::Reading { again: true });
         let path = Path::new("notes.md");
-        let new = FileRead::Text("two\n".to_owned());
+        let new = FileRead::unedited("two\n");
         actions::show_read_file(&mut state, agent(), path, path, new, at(2_000));
 
         assert_eq!(freshness(&state).reread, Reread::Wanted);
+    }
+
+    #[test]
+    fn an_edit_that_finishes_during_the_first_read_reads_once_more() {
+        let mut state = state_with(vec![summary(AGENT_ID, AgentStatus::Working)]);
+        state.machines.this.connection = ConnectionState::Connected;
+        state.ui.selected = Some(agent());
+        actions::open_file(&mut state, agent(), PathBuf::from("notes.md"), None);
+        let _ = crate::state::needed_requests(&mut state);
+
+        item_finished(
+            &mut state,
+            agent(),
+            &edit_of("notes.md", ToolCallStatus::Done),
+        );
+        let path = Path::new("notes.md");
+        let first = FileRead::unedited("new\n");
+        actions::show_read_file(&mut state, agent(), path, path, first, at(1_000));
+
+        assert_eq!(freshness(&state).reread, Reread::Wanted);
+        assert_eq!(freshness(&state).update, None);
+    }
+
+    #[test]
+    fn a_read_again_that_brings_only_new_edits_records_no_update() {
+        let mut state = showing("notes.md", "one\n");
+        reread(&mut state, agent());
+        let _ = crate::state::needed_requests(&mut state);
+
+        let path = Path::new("notes.md");
+        let edited = FileRead::Text {
+            text: "one\n".to_owned(),
+            edits: vec![FileEdit {
+                path: PathBuf::from("notes.md"),
+                old_text: "zero".to_owned(),
+                new_text: "one".to_owned(),
+            }],
+        };
+        actions::show_read_file(&mut state, agent(), path, path, edited, at(2_000));
+
+        assert_eq!(freshness(&state).update, None);
     }
 
     #[test]

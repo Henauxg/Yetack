@@ -1,4 +1,5 @@
-//! Syntax colors: syntect's default syntaxes, mapped onto the few classes of the mockup palette.
+//! Syntax colors: syntect's default syntaxes and bat's extra ones, mapped onto the few classes of
+//! the mockup palette.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -11,8 +12,8 @@ use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxReference, SyntaxSet
 
 use super::capped::{self, Capped};
 
-/// The default syntaxes, loaded once: loading them takes a few milliseconds.
-static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
+/// The syntaxes, loaded once: loading them takes a few milliseconds.
+static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_newlines);
 
 /// Scopes that decide the class wherever they sit in the stack, before the innermost scope is
 /// looked at: a JSON key is a string inside a key, and the key wins.
@@ -62,6 +63,9 @@ static INNER_RULES: LazyLock<Vec<(Scope, TokenClass)>> = LazyLock::new(|| {
         ("punctuation.definition.link", TokenClass::Type),
         ("markup.underline.link", TokenClass::Comment),
         ("punctuation.definition.metadata", TokenClass::Comment),
+        // Code embedded in another grammar, such as a fenced block in Markdown, stops here: the
+        // rest of the stack would color its plain words as the block.
+        ("source", TokenClass::Plain),
     ])
 });
 
@@ -112,7 +116,7 @@ pub struct Span {
     pub class: TokenClass,
 }
 
-/// A syntax of syntect's default set.
+/// A syntax of [`SYNTAXES`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Language(usize);
 
@@ -525,12 +529,16 @@ mod tests {
         assert_eq!(names(""), None);
         assert_eq!(names("txt"), None);
         assert_eq!(names("no-such-language"), None);
-        assert_eq!(names("nix"), None);
+        assert_eq!(names("toml"), Some("TOML"));
 
         let path_name = |path: &str| Language::from_path(Path::new(path)).map(name);
         assert_eq!(path_name("src/main.rs"), Some("Rust"));
         assert_eq!(path_name("queries/report.sql"), Some("SQL"));
         assert_eq!(path_name("Makefile"), Some("Makefile"));
+        assert_eq!(path_name("src/grpc/orders.proto"), Some("Protocol Buffer"));
+        assert_eq!(path_name("src/app/cart.component.ts"), Some("TypeScript"));
+        assert_eq!(path_name("Cargo.toml"), Some("TOML"));
+        assert_eq!(path_name("Dockerfile"), Some("Dockerfile"));
         assert_eq!(path_name("notes"), None);
     }
 
@@ -580,6 +588,19 @@ mod tests {
     }
 
     #[test]
+    fn protobuf_colors_keywords_strings_numbers_and_comments() {
+        let code =
+            "syntax = \"proto3\";\n\n// An order line.\nmessage Line {\n  string sku = 1;\n}\n";
+
+        let lines = highlight(code, Language::from_path(Path::new("orders.proto")));
+
+        assert_eq!(class_of(&lines, "message"), TokenClass::Keyword);
+        assert_eq!(class_of(&lines, "\"proto3\""), TokenClass::String);
+        assert_eq!(class_of(&lines, "1"), TokenClass::Number);
+        assert_eq!(class_of(&lines, "// An order line."), TokenClass::Comment);
+    }
+
+    #[test]
     fn bash_colors_variables_flags_strings_and_comments() {
         let code = "# Build it\nset -eu\ntarget=\"$1\"\nmake --jobs 4 \"$target\" ${OUT}";
 
@@ -610,6 +631,18 @@ mod tests {
         assert_eq!(class_of(&lines, "[the guide]"), TokenClass::Type);
         assert_eq!(class_of(&lines, "(docs/guide.md)"), TokenClass::Comment);
         assert_eq!(class_of(&lines, "`make`"), TokenClass::String);
+    }
+
+    #[test]
+    fn code_fenced_in_markdown_takes_the_colors_of_its_language() {
+        let code = "```rust\nfn total(count: u32) -> u32 {\n    count // the sum\n}\n```\n";
+
+        let lines = highlight(code, language("md"));
+
+        assert_eq!(class_of(&lines, "fn"), TokenClass::Keyword);
+        assert_eq!(class_of(&lines, "u32"), TokenClass::Keyword);
+        assert_eq!(class_of(&lines, "// the sum"), TokenClass::Comment);
+        assert_eq!(class_of(&lines, "total(count:"), TokenClass::Plain);
     }
 
     #[test]

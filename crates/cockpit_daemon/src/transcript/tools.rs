@@ -111,6 +111,20 @@ pub(crate) fn touched_files(items: &[TranscriptItem], changed: &[ChangedFile]) -
     files
 }
 
+/// The edits of the finished calls, oldest first, subagents' included.
+pub(crate) fn finished_edits(
+    items: &[TranscriptItem],
+) -> impl DoubleEndedIterator<Item = &FileEdit> {
+    items.iter().filter_map(|item| match &item.body {
+        ItemBody::ToolCall(call) | ItemBody::Subagent(call)
+            if call.status == ToolCallStatus::Done =>
+        {
+            call.edit.as_ref()
+        }
+        _ => None,
+    })
+}
+
 fn touched_file(call: &ToolCall) -> Option<PathBuf> {
     call.tool.parse::<FileTool>().ok()?;
     if let Some(edit) = &call.edit {
@@ -467,5 +481,38 @@ mod tests {
 
         assert_eq!(original_file(Some(&record)).as_deref(), Some("old text"));
         assert_eq!(original_file(Some(&json!("Done"))), None);
+    }
+
+    #[test]
+    fn finished_edits_leave_out_failed_and_running_calls() {
+        let call = |id: u32, status: ToolCallStatus| TranscriptItem {
+            id: cockpit_protocol::ItemId::new(id),
+            parent: None,
+            body: ItemBody::ToolCall(ToolCall {
+                tool: "Edit".to_owned(),
+                summary: String::new(),
+                input: Value::Null,
+                status,
+                output: None,
+                exit_code: None,
+                edit: Some(FileEdit {
+                    path: PathBuf::from("/work/app/notes.txt"),
+                    old_text: "old".to_owned(),
+                    new_text: id.to_string(),
+                }),
+            }),
+        };
+        let items = [
+            call(1, ToolCallStatus::Done),
+            call(2, ToolCallStatus::Failed),
+            call(3, ToolCallStatus::Running),
+            call(4, ToolCallStatus::Done),
+        ];
+
+        let new_texts: Vec<&str> = finished_edits(&items)
+            .map(|edit| edit.new_text.as_str())
+            .collect();
+
+        assert_eq!(new_texts, ["1", "4"]);
     }
 }

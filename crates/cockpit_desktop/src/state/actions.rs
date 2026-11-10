@@ -1273,11 +1273,13 @@ pub fn open_file(state: &mut AppState, agent: AgentId, path: PathBuf, line: Opti
         return;
     };
     let path = file_edits::relative_path(&entry.summary.folder, &path);
-    let changed =
-        !file_edits::edits_for(&entry.transcript, &entry.summary.folder, &path).is_empty();
+    let changed_paths = entry.changed_paths();
+    // The changed files cover the whole session, and the loaded messages an edit that just
+    // finished.
+    let changed = entry.has_changed(&path)
+        || !file_edits::edits_for(&entry.transcript, &entry.summary.folder, &path).is_empty();
     let shown_mode = state.ui.file_views.get(&agent).map(|view| view.mode);
     let mode = opening_mode(&path, line, changed, shown_mode);
-    let changed_paths = entry.changed_paths();
     entry.files.clear();
     entry.files.insert(path.clone(), Loadable::NotRequested);
     entry.file_freshness = FileFreshness::default();
@@ -1392,7 +1394,7 @@ pub fn show_read_file(
     {
         // A read again keeps the mode the user may have chosen since the first.
         let first = old.loaded().is_none();
-        let changed = !file_edits::edits_for(&entry.transcript, folder, &found).is_empty();
+        let changed = matches!(&read, FileRead::Text { edits, .. } if !edits.is_empty());
         if first && view.line.is_none() && changed {
             view.mode = opening_mode(&found, None, changed, Some(view.mode));
         }
@@ -2196,8 +2198,9 @@ mod tests {
     use cockpit_client::RequestError;
     use cockpit_protocol::{
         Account, AgentDetails, AskedQuestion, ChangedFile, CommandKind, CredentialSource,
-        ErrorBody, ErrorCode, HistoryPage, ImageMediaType, Method, OlderItems, Position,
-        QuestionOption, ResponseBody, Timestamp, TranscriptItem, UserMessage,
+        ErrorBody, ErrorCode, FileEdit, HistoryPage, ImageMediaType, Method, OlderItems, Position,
+        QuestionOption, ResponseBody, Timestamp, ToolCall, ToolCallStatus, TranscriptItem,
+        UserMessage,
     };
 
     use super::*;
@@ -3899,6 +3902,134 @@ mod tests {
         assert!(state.agents[&agent()].files.is_empty());
     }
 
+    /// The loaded messages may not reach back to the edits: the daemon's answer brings them.
+    #[test]
+    fn a_file_changed_before_the_loaded_messages_shows_its_diff() {
+        let mut state = state(AgentStatus::Idle);
+        let full = PathBuf::from("/work/project-1/src/cart.rs");
+        state.agents.get_mut(&agent()).unwrap().details = Loadable::Loaded(AgentDetails {
+            changed_files: vec![ChangedFile {
+                path: full.clone(),
+                lines_added: 1,
+                lines_removed: 1,
+            }],
+            ..AgentDetails::default()
+        });
+        let edit = FileEdit {
+            path: full.clone(),
+            old_text: "let total = 1;".to_owned(),
+            new_text: "let total = 2;".to_owned(),
+        };
+
+        open_file(&mut state, agent(), full.clone(), None);
+        read_answer(
+            &mut state,
+            "src/cart.rs",
+            Ok(ResponseBody::File {
+                path: Some(full),
+                text: "let total = 2;\n".to_owned(),
+                edits: Some(vec![edit.clone()]),
+            }),
+        );
+
+        assert_eq!(state.ui.file_view(agent()).unwrap().mode, ViewMode::Diff);
+        let shown = state.agents[&agent()].files.get(Path::new("src/cart.rs"));
+        let read = FileRead::Text {
+            text: "let total = 2;\n".to_owned(),
+            edits: vec![edit],
+        };
+        assert_eq!(shown, Some(&Loadable::Loaded(read)));
+    }
+
+    #[test]
+    fn edits_in_the_first_answer_turn_the_view_to_the_diff() {
+        let mut state = state(AgentStatus::Idle);
+        let full = PathBuf::from("/work/project-1/src/cart.rs");
+
+        open_file(&mut state, agent(), full.clone(), None);
+        assert_eq!(
+            state.ui.file_view(agent()).unwrap().mode,
+            ViewMode::WholeFile
+        );
+        read_answer(
+            &mut state,
+            "src/cart.rs",
+            Ok(ResponseBody::File {
+                path: Some(full.clone()),
+                text: "let total = 2;\n".to_owned(),
+                edits: Some(vec![FileEdit {
+                    path: full,
+                    old_text: "let total = 1;".to_owned(),
+                    new_text: "let total = 2;".to_owned(),
+                }]),
+            }),
+        );
+
+        assert_eq!(state.ui.file_view(agent()).unwrap().mode, ViewMode::Diff);
+    }
+
+    #[test]
+    fn on_windows_a_file_is_changed_whatever_the_case_of_its_path() {
+        let mut state = state(AgentStatus::Idle);
+        let entry = state.agents.get_mut(&agent()).unwrap();
+        entry.summary.folder = PathBuf::from(r"C:\work\project-1");
+        entry.details = Loadable::Loaded(AgentDetails {
+            changed_files: vec![ChangedFile {
+                path: PathBuf::from(r"C:\work\project-1\src\cart.rs"),
+                lines_added: 1,
+                lines_removed: 0,
+            }],
+            ..AgentDetails::default()
+        });
+
+        let entry = &state.agents[&agent()];
+        assert!(entry.has_changed(Path::new(r"src\Cart.rs")));
+        assert!(!entry.has_changed(Path::new(r"src\carts.rs")));
+    }
+
+    #[test]
+    fn a_daemon_that_predates_the_edits_leaves_those_of_the_loaded_messages() {
+        let mut state = state(AgentStatus::Idle);
+        let full = PathBuf::from("/work/project-1/src/cart.rs");
+        let edit = FileEdit {
+            path: full.clone(),
+            old_text: "let total = 1;".to_owned(),
+            new_text: "let total = 2;".to_owned(),
+        };
+        let entry = state.agents.get_mut(&agent()).unwrap();
+        entry.transcript.append(TranscriptItem {
+            id: ItemId::new(1),
+            parent: None,
+            body: ItemBody::ToolCall(ToolCall {
+                tool: "Edit".to_owned(),
+                summary: "src/cart.rs".to_owned(),
+                input: serde_json::Value::Null,
+                status: ToolCallStatus::Done,
+                output: None,
+                exit_code: None,
+                edit: Some(edit.clone()),
+            }),
+        });
+
+        open_file(&mut state, agent(), full.clone(), None);
+        read_answer(
+            &mut state,
+            "src/cart.rs",
+            Ok(ResponseBody::File {
+                path: Some(full),
+                text: "let total = 2;\n".to_owned(),
+                edits: None,
+            }),
+        );
+
+        let shown = state.agents[&agent()].files.get(Path::new("src/cart.rs"));
+        let read = FileRead::Text {
+            text: "let total = 2;\n".to_owned(),
+            edits: vec![edit],
+        };
+        assert_eq!(shown, Some(&Loadable::Loaded(read)));
+    }
+
     #[test]
     fn on_windows_a_link_with_slashes_opens_the_changed_files_tab() {
         let mut state = state(AgentStatus::Idle);
@@ -3954,6 +4085,7 @@ mod tests {
                 Ok(ResponseBody::File {
                     path: Some(PathBuf::from(format!("/work/project-1/{path}"))),
                     text: format!("text of {path}"),
+                    edits: Some(Vec::new()),
                 }),
                 MachineId::THIS,
             );
@@ -4037,6 +4169,7 @@ mod tests {
             Ok(ResponseBody::File {
                 path: Some(PathBuf::from(found)),
                 text: "export class RegisterParcel {}\n".to_owned(),
+                edits: Some(Vec::new()),
             }),
         );
 
@@ -4061,14 +4194,15 @@ mod tests {
             Ok(ResponseBody::File {
                 path: None,
                 text: "fn main() {}\n".to_owned(),
+                edits: None,
             }),
         );
 
         let view = state.ui.file_view(agent()).unwrap();
         assert_eq!(view.path, Path::new("src/main.rs"));
         let shown = state.agents[&agent()].files.get(Path::new("src/main.rs"));
-        let text = "fn main() {}\n".to_owned();
-        assert_eq!(shown, Some(&Loadable::Loaded(FileRead::Text(text))));
+        let text = "fn main() {}\n";
+        assert_eq!(shown, Some(&Loadable::Loaded(FileRead::unedited(text))));
     }
 
     #[test]
