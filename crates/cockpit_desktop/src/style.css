@@ -935,7 +935,7 @@ button:disabled {
   color: var(--dim);
 }
 
-.agent-menu .menu-value + .icon {
+.agent-menu .menu-item > .menu-value + .icon {
   margin-left: 0;
 }
 

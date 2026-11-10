@@ -10,14 +10,16 @@ use cockpit_protocol::{AgentId, Mark};
 use dioxus::prelude::*;
 use strum::VariantArray;
 
+use crate::bridge::HIGHLIGHTED_CLASS;
 use crate::connection::Cockpit;
 use crate::path_style;
 use crate::prefs::NotificationLevel;
+use crate::state::actions::Direction;
 use crate::state::{
     AppState, FolderAction, Popover, actions, notification_levels, to_handle, working_folder,
 };
 use crate::ui::icons::{Icon, IconKind};
-use crate::ui::notification_levels::{choice_label, short_label};
+use crate::ui::notification_levels as levels_ui;
 use crate::ui::presence::{Presence, use_presence};
 
 /// How long the pointer may cross other rows on its way into the open submenu before the submenu
@@ -175,7 +177,17 @@ enum MenuKey {
 }
 
 impl MenuKey {
-    fn from_key(key: &Key) -> Option<Self> {
+    /// Digits come from the key's place, since some layouts (AZERTY) need Shift to type them.
+    fn from_event(key: &Key, code: Code) -> Option<Self> {
+        let digit = match code {
+            Code::Digit1 | Code::Numpad1 => Some('1'),
+            Code::Digit2 | Code::Numpad2 => Some('2'),
+            Code::Digit3 | Code::Numpad3 => Some('3'),
+            _ => None,
+        };
+        if let Some(digit) = digit {
+            return Some(Self::Char(digit));
+        }
         match key {
             Key::ArrowUp => Some(Self::Up),
             Key::ArrowDown => Some(Self::Down),
@@ -207,18 +219,22 @@ struct Cursor {
 
 impl Cursor {
     /// After a key: the cursor, and what the key picks.
-    fn key(self, key: &MenuKey, shown: &RowMenuShown) -> (Self, Option<Pick>) {
+    fn after_key(self, key: &MenuKey, shown: &RowMenuShown) -> (Self, Option<Pick>) {
         let in_submenu = self.open.zip(self.sub);
         match key {
             MenuKey::Down | MenuKey::Up => {
-                let down = *key == MenuKey::Down;
+                let direction = if *key == MenuKey::Down {
+                    Direction::Down
+                } else {
+                    Direction::Up
+                };
                 let moved = match in_submenu {
                     Some((submenu, at)) => Self {
-                        sub: next(&enabled(&shown.rows(submenu)), Some(at), down),
+                        sub: next(&enabled(&shown.rows(submenu)), Some(at), direction),
                         ..self
                     },
                     None => Self {
-                        item: next(&[true; ITEMS.len()], self.item, down),
+                        item: next(&[true; ITEMS.len()], self.item, direction),
                         open: None,
                         sub: None,
                     },
@@ -274,7 +290,7 @@ impl Cursor {
         match submenu {
             Some(submenu) => Self {
                 open: Some(submenu),
-                sub: next(&enabled(&shown.rows(submenu)), None, true),
+                sub: next(&enabled(&shown.rows(submenu)), None, Direction::Down),
                 ..self
             },
             None => self,
@@ -324,18 +340,17 @@ fn enabled(rows: &[SubRow]) -> Vec<bool> {
     rows.iter().map(|row| row.enabled).collect()
 }
 
-/// The next row that can run after `from`, down or up: with none highlighted, the first or the
-/// last. The highlight stays at the ends.
-fn next(enabled: &[bool], from: Option<usize>, down: bool) -> Option<usize> {
+/// The next row that can run after `from`: with none highlighted, the first or the last. The
+/// highlight stays at the ends.
+fn next(enabled: &[bool], from: Option<usize>, direction: Direction) -> Option<usize> {
     let mut runnable = enabled
         .iter()
         .enumerate()
         .filter(|&(_, &can_run)| can_run)
         .map(|(index, _)| index);
-    let found = if down {
-        runnable.find(|&index| from.is_none_or(|from| index > from))
-    } else {
-        runnable.rfind(|&index| from.is_none_or(|from| index < from))
+    let found = match direction {
+        Direction::Down => runnable.find(|&index| from.is_none_or(|from| index > from)),
+        Direction::Up => runnable.rfind(|&index| from.is_none_or(|from| index < from)),
     };
     found.or(from)
 }
@@ -450,18 +465,17 @@ fn MenuBody(shown: RowMenuShown) -> Element {
     };
     let now = cursor();
     let row_class = |index: usize, extra: &str| {
-        let highlighted = if now.item == Some(index) {
-            " highlighted"
+        if now.item == Some(index) {
+            format!("menu-item{extra} {HIGHLIGHTED_CLASS}")
         } else {
-            ""
-        };
-        format!("menu-item{extra}{highlighted}")
+            format!("menu-item{extra}")
+        }
     };
     let sub_class = |submenu: Submenu, index: usize| {
         if now.open == Some(submenu) && now.sub == Some(index) {
-            "menu-item highlighted"
+            format!("menu-item {HIGHLIGHTED_CLASS}")
         } else {
-            "menu-item"
+            "menu-item".to_owned()
         }
     };
     let action_row = move |item: Item, label: &'static str, extra: &'static str| {
@@ -520,14 +534,14 @@ fn MenuBody(shown: RowMenuShown) -> Element {
                 role: "menuitemradio",
                 tabindex: -1,
                 aria_checked: chosen,
-                onmouseenter: move |_| point_in_submenu(index, true),
+                onmouseenter: move |_| point_in_submenu(index, /* can_run */ true),
                 onclick: move |_| act(pick),
                 span { class: "menu-check",
                     if chosen {
                         Icon { kind: IconKind::Check, size: 14 }
                     }
                 }
-                span { class: "menu-label", "{choice_label(level)}" }
+                span { class: "menu-label", "{levels_ui::choice_label(level)}" }
                 span { class: "menu-hint", "{hint}" }
             }
         }
@@ -580,12 +594,17 @@ fn MenuBody(shown: RowMenuShown) -> Element {
                 if modifiers.ctrl() || modifiers.alt() || modifiers.meta() || event.is_composing() {
                     return;
                 }
-                let Some(key) = MenuKey::from_key(&event.key()) else {
+                // The menu keeps the focus while it is open, or its keys would stop working.
+                if event.key() == Key::Tab {
+                    event.prevent_default();
+                    return;
+                }
+                let Some(key) = MenuKey::from_event(&event.key(), event.code()) else {
                     return;
                 };
                 event.prevent_default();
                 cancel_delay();
-                let (moved, pick) = cursor.peek().key(&key, &shown_for_keys);
+                let (moved, pick) = cursor.peek().after_key(&key, &shown_for_keys);
                 if moved != *cursor.peek() {
                     cursor.set(moved);
                 }
@@ -597,7 +616,7 @@ fn MenuBody(shown: RowMenuShown) -> Element {
             {action_row(Item::Rename, "Rename", "")}
             div { class: "menu-divider" }
             div { class: "submenu-anchor",
-                {trigger_row(Submenu::Notifications, "Notifications", Some(short_label(notifications)))}
+                {trigger_row(Submenu::Notifications, "Notifications", Some(levels_ui::short_label(notifications)))}
                 Presence { open: now.open == Some(Submenu::Notifications),
                     div {
                         class: "popover menu submenu",
@@ -673,8 +692,9 @@ mod tests {
     }
 
     fn press(cursor: Cursor, keys: &[MenuKey], shown: &RowMenuShown) -> (Cursor, Option<Pick>) {
-        keys.iter()
-            .fold((cursor, None), |(cursor, _), key| cursor.key(key, shown))
+        keys.iter().fold((cursor, None), |(cursor, _), key| {
+            cursor.after_key(key, shown)
+        })
     }
 
     #[test]
@@ -800,13 +820,30 @@ mod tests {
     #[test]
     fn a_key_reads_as_its_lower_case_letter() {
         assert_eq!(
-            MenuKey::from_key(&Key::Character("W".to_owned())),
+            MenuKey::from_event(&Key::Character("W".to_owned()), Code::KeyZ),
             Some(MenuKey::Char('w'))
         );
         assert_eq!(
-            MenuKey::from_key(&Key::Character(" ".to_owned())),
+            MenuKey::from_event(&Key::Character(" ".to_owned()), Code::Space),
             Some(MenuKey::Enter)
         );
-        assert_eq!(MenuKey::from_key(&Key::Tab), None);
+        assert_eq!(MenuKey::from_event(&Key::Tab, Code::Tab), None);
+    }
+
+    #[test]
+    fn a_digit_key_reads_as_its_digit_on_a_layout_that_needs_shift_for_digits() {
+        // An AZERTY keyboard gives "&" and "é" on the keys of 1 and 2 without Shift.
+        assert_eq!(
+            MenuKey::from_event(&Key::Character("&".to_owned()), Code::Digit1),
+            Some(MenuKey::Char('1'))
+        );
+        assert_eq!(
+            MenuKey::from_event(&Key::Character("é".to_owned()), Code::Digit2),
+            Some(MenuKey::Char('2'))
+        );
+        assert_eq!(
+            MenuKey::from_event(&Key::Character("3".to_owned()), Code::Numpad3),
+            Some(MenuKey::Char('3'))
+        );
     }
 }
