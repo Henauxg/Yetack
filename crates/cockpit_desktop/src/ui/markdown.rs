@@ -20,6 +20,9 @@ use crate::{bridge, browser};
 /// and a table too wide for the column scrolls instead.
 const SHORT_CELL_CHARS: usize = 30;
 
+/// The box of the rendered text, whose lines the fold script counts.
+pub const MARKDOWN_CLASS: &str = "markdown";
+
 /// `folder` is the agent's, against which relative paths in the text resolve. `file_folder`,
 /// absolute, holds the markdown file the text comes from, where its relative links start.
 #[component]
@@ -34,7 +37,7 @@ pub fn MarkdownView(
         None => parse_markdown(&markdown, &folder),
     };
     rsx! {
-        div { class: "markdown", {blocks_view(agent, &blocks)} }
+        div { class: MARKDOWN_CLASS, {blocks_view(agent, &blocks)} }
     }
 }
 

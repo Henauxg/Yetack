@@ -2583,6 +2583,9 @@ html.reordering * {
   color: var(--text-soft);
   font-family: var(--sans);
   font-size: 12.5px;
+  /* WebKitGTK reads only the prefixed property. */
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .io-row[data-tall] .fold-lines {
@@ -2591,6 +2594,36 @@ html.reordering * {
 
 .io-row.unfolded .fold-more,
 .io-row:not(.unfolded) .fold-less {
+  display: none;
+}
+
+/* A long message you sent folds as an IN or OUT row does. The fold script sets `--fold-height`
+   where the message's last kept line ends. */
+.message-clip {
+  position: relative;
+}
+
+.message-fold[data-tall]:not(.unfolded) .message-clip {
+  max-height: var(--fold-height);
+  overflow: hidden;
+}
+
+.message-fold[data-tall]:not(.unfolded) .message-clip::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  height: 1.2em;
+  background: linear-gradient(to bottom, transparent, var(--hover));
+  pointer-events: none;
+}
+
+.message-fold[data-tall] .fold-lines {
+  display: block;
+  margin-left: auto;
+}
+
+.message-fold.unfolded .fold-more,
+.message-fold:not(.unfolded) .fold-less {
   display: none;
 }
 
@@ -6752,6 +6785,7 @@ label.icon-button,
 .filter:active,
 .copy-button:not(:disabled):active,
 .back-button:active,
+.fold-lines:active,
 .option:active,
 .filter-chip:active,
 .file-list-button:active,
