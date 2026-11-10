@@ -55,6 +55,9 @@ pub fn FilesPane() -> Element {
     let name = style
         .file_name(&folder.to_string_lossy())
         .map_or_else(|| full_folder.clone(), str::to_owned);
+    let any_open = rows
+        .iter()
+        .any(|row| matches!(row.kind, RowKind::Folder { open: true, .. }));
     let key_rows = rows.clone();
     rsx! {
         aside { id: FILES_PANE_ID, class: "files-pane", aria_label: "Files",
@@ -86,6 +89,7 @@ pub fn FilesPane() -> Element {
                     class: "icon-button tiny",
                     aria_label: "Close every folder",
                     title: "Close every folder",
+                    disabled: !any_open,
                     onclick: move |_| cockpit.update(|state| file_tree::collapse_all(state, agent)),
                     Icon { kind: IconKind::Collapse, size: 14 }
                 }
@@ -286,7 +290,7 @@ fn TreeRowView(agent: AgentId, row: TreeRow, highlighted: bool, shown: bool) -> 
     if row.marks.change.is_some() {
         classes.push("changed");
     }
-    let open = matches!(row.kind, RowKind::Folder { open: true });
+    let open = matches!(row.kind, RowKind::Folder { open: true, .. });
     let is_folder = matches!(row.kind, RowKind::Folder { .. });
     let full = path_style::shown(&row.path);
     let clicked = row.clone();
@@ -393,7 +397,7 @@ pub fn TreeMenu() -> Element {
                         file_tree::activate(state, agent, &open_row);
                     }),
                     span { class: "menu-label",
-                        if open_row.kind == (RowKind::Folder { open: true }) { "Close" } else { "Open" }
+                        if matches!(open_row.kind, RowKind::Folder { open: true, .. }) { "Close" } else { "Open" }
                     }
                     span { class: "menu-hint", "Enter" }
                 }
