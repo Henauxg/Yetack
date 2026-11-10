@@ -23,8 +23,9 @@ use super::app_state::{AgentEntry, AppState, Loadable};
 use super::drafts::Drafts;
 use super::file_edits::{self, BASH_TOOL, FILE_FIELDS, READ_TOOL};
 use super::ui_state::{FileSearch, Popover, ViewMode};
+use crate::machine::MachineId;
 use crate::path_style::PathStyle;
-use crate::prefs;
+use crate::prefs::{self, PaneState};
 
 /// The rows a filter keeps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -620,19 +621,36 @@ pub fn shown_folders(tree: &FileTree, folder: &Path, footprint: &Footprint) -> V
         .collect()
 }
 
-/// Opens the pane, or closes it. It shows every agent's tree, each with its own folders.
-pub fn toggle_pane(state: &mut AppState) {
-    state.prefs.files_pane.open = !state.prefs.files_pane.open;
+/// Whether the agent's files pane shows: as the agent last left it, else as Settings has it for
+/// new agents.
+pub fn pane_open(state: &AppState, agent: AgentId) -> bool {
+    let pane = state
+        .daemon_machine(agent)
+        .map_or(state.prefs.files_pane.new_agents, |machine| {
+            state
+                .prefs
+                .files_pane
+                .agent(machine, MachineId::daemon_agent(agent))
+        });
+    pane == PaneState::Open
 }
 
-/// The header's changes chip: opens the pane on the agent's changes, or on all its files when it
+/// Opens the selected agent's pane, or closes it. Each agent keeps its own.
+pub fn toggle_pane(state: &mut AppState) {
+    if let Some(agent) = state.ui.selected {
+        let toggled = pane_state(state, agent).toggled();
+        set_pane(state, agent, toggled);
+    }
+}
+
+/// The header's changes chip: opens the agent's pane on its changes, or on all its files when it
 /// changed none, or closes the pane.
 pub fn toggle_from_changes(state: &mut AppState, agent: AgentId) {
-    if state.prefs.files_pane.open {
-        state.prefs.files_pane.open = false;
+    if pane_open(state, agent) {
+        set_pane(state, agent, PaneState::Closed);
         return;
     }
-    state.prefs.files_pane.open = true;
+    set_pane(state, agent, PaneState::Open);
     if let Some(entry) = state.agents.get_mut(&agent) {
         let changed = entry
             .details
@@ -963,6 +981,35 @@ pub fn set_width(state: &mut AppState, width: f64) {
 
 pub fn reset_width(state: &mut AppState) {
     state.prefs.files_pane.width = None;
+}
+
+fn pane_state(state: &AppState, agent: AgentId) -> PaneState {
+    if pane_open(state, agent) {
+        PaneState::Open
+    } else {
+        PaneState::Closed
+    }
+}
+
+fn set_pane(state: &mut AppState, agent: AgentId, pane: PaneState) {
+    let Some(machine) = state.daemon_machine(agent).map(str::to_owned) else {
+        return;
+    };
+    state
+        .prefs
+        .files_pane
+        .set_agent(&machine, MachineId::daemon_agent(agent), pane);
+}
+
+/// Drops the pane of an agent the daemon removed.
+pub fn forget_pane(state: &mut AppState, agent: AgentId) {
+    let Some(machine) = state.daemon_machine(agent).map(str::to_owned) else {
+        return;
+    };
+    state
+        .prefs
+        .files_pane
+        .forget_agent(&machine, MachineId::daemon_agent(agent));
 }
 
 #[cfg(test)]
@@ -1678,15 +1725,40 @@ mod tests {
     }
 
     #[test]
+    fn each_agent_keeps_its_pane_and_a_new_one_takes_the_settings_one() {
+        let mut state = crate::state::state_with(vec![
+            crate::state::summary(1, AgentStatus::Idle),
+            crate::state::summary(2, AgentStatus::Idle),
+        ]);
+        let (first, second) = (AgentId::new(1), AgentId::new(2));
+        state.ui.selected = Some(first);
+
+        toggle_pane(&mut state);
+        let after_toggle = (pane_open(&state, first), pane_open(&state, second));
+        state.prefs.files_pane.new_agents = PaneState::Open;
+        let with_open_default = (pane_open(&state, first), pane_open(&state, second));
+        state.ui.selected = Some(second);
+        toggle_pane(&mut state);
+        state.prefs.files_pane.new_agents = PaneState::Closed;
+        let set_both = (pane_open(&state, first), pane_open(&state, second));
+        forget_pane(&mut state, first);
+
+        assert_eq!(after_toggle, (true, false));
+        assert_eq!(with_open_default, (true, true));
+        assert_eq!(set_both, (true, false));
+        assert!(!pane_open(&state, first));
+    }
+
+    #[test]
     fn the_files_chip_opens_the_pane_on_the_changes_then_closes_it() {
         let (mut state, agent) = listed_agent();
 
         toggle_from_changes(&mut state, agent);
-        assert!(state.prefs.files_pane.open);
+        assert!(pane_open(&state, agent));
         assert_eq!(state.agents[&agent].tree.filter, TreeFilter::All);
 
         toggle_from_changes(&mut state, agent);
-        assert!(!state.prefs.files_pane.open);
+        assert!(!pane_open(&state, agent));
 
         state.agents.get_mut(&agent).unwrap().details = Loadable::Loaded(AgentDetails {
             changed_files: vec![ChangedFile {

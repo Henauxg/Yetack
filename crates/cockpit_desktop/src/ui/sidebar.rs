@@ -18,7 +18,7 @@ use crate::state::{
     AgentEntry, AppState, ConnectionState, Dialog, TitleEdit, TitlePlace, actions, daemon_update,
     machines, notification_levels, settings, to_handle,
 };
-use crate::ui::accounts::{AccountTag, AccountsButton};
+use crate::ui::accounts::{AccountLetter, AccountsButton};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::machines::THIS_COMPUTER;
 use crate::ui::notification_levels::{self as levels_ui, AppBell, LevelIcon};
@@ -552,6 +552,9 @@ fn AgentRowView(row: AgentRow) -> Element {
             div { id: reorder::row_id(agent), class,
                 span { class: "row-line",
                     span { class: "status-dot", aria_hidden: true }
+                    if let Some(label) = row.account.clone() {
+                        AccountLetter { label }
+                    }
                     input {
                         id: ROW_TITLE_FIELD_ID,
                         class: "row-title-field",
@@ -572,7 +575,6 @@ fn AgentRowView(row: AgentRow) -> Element {
                         onblur: move |_| cockpit.title_field_blurred(TitlePlace::Sidebar),
                     }
                 }
-                RowSecondLine { row: row.clone() }
             }
         };
     }
@@ -613,6 +615,9 @@ fn AgentRowButton(row: AgentRow, class: String) -> Element {
             },
             span { class: "row-line",
                 span { class: "status-dot", aria_hidden: true }
+                if let Some(label) = row.account.clone() {
+                    AccountLetter { label }
+                }
                 span {
                     class: "row-title",
                     ondoubleclick: move |_| cockpit.change_with_drafts(|state, drafts| {
@@ -632,6 +637,7 @@ fn AgentRowButton(row: AgentRow, class: String) -> Element {
                     }
                 }
                 RowBell { level: row.notifications }
+                RowActivity { activity: row.activity.clone(), warns: row.warns }
                 if let Some(tasks) = &row.tasks {
                     span { class: "row-tasks", title: "Tasks done", "{tasks}" }
                 }
@@ -646,25 +652,25 @@ fn AgentRowButton(row: AgentRow, class: String) -> Element {
                     span { class: "visually-hidden", "unread" }
                 }
             }
-            RowSecondLine { row: row.clone() }
         }
     }
 }
 
-/// The account's tag, then what the agent does.
+/// What the agent does, dimmed after its title, whole on hover. Empty, it still takes the line's
+/// free width, which keeps the time at the right edge.
 #[component]
-fn RowSecondLine(row: AgentRow) -> Element {
+fn RowActivity(activity: String, warns: bool) -> Element {
+    let class = match (activity.is_empty(), warns) {
+        (true, _) => "row-activity empty",
+        (false, true) => "row-activity warning",
+        (false, false) => "row-activity",
+    };
     rsx! {
-        span { class: "row-line row-second",
-            if let Some(label) = row.account {
-                AccountTag { label }
-            }
-            span { class: if row.warns { "row-activity warning" } else { "row-activity" },
-                if row.activity.is_empty() {
-                    span { class: "visually-hidden", {format::status_label(AgentStatus::Idle)} }
-                } else {
-                    "{row.activity}"
-                }
+        span { class, title: "{activity}",
+            if activity.is_empty() {
+                span { class: "visually-hidden", {format::status_label(AgentStatus::Idle)} }
+            } else {
+                "{activity}"
             }
         }
     }

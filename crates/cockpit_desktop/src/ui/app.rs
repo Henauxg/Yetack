@@ -8,7 +8,7 @@ use dioxus::prelude::*;
 use crate::bridge::use_bridge;
 use crate::connection::{Cockpit, Startup, use_clock, use_cockpit};
 use crate::prefs::use_prefs_saver;
-use crate::state::{ConnectionState, NoteKind, actions};
+use crate::state::{ConnectionState, NoteKind, actions, file_tree};
 use crate::ui::blocks::FloatingBlocks;
 use crate::ui::composer::Composer;
 use crate::ui::dialogs::Dialogs;
@@ -51,21 +51,35 @@ pub fn App() -> Element {
     let file_view_agent = selected.filter(|agent| state.ui.file_view(*agent).is_some());
     let file_view_open = file_view_agent.is_some();
     let file_view = use_presence(file_view_agent);
-    // The pane shows whichever agent is selected: a switch keeps it open.
-    let files_open = selected.is_some() && state.prefs.files_pane.open;
-    let files_pane = use_presence(files_open.then_some(()));
-    let files_leaving = files_pane.as_ref().is_some_and(|shown| shown.leaving);
+    // Each agent keeps its pane open or closed. As the file view, the pane leaves with a slide
+    // only for the agent that closed it, and opens at once when a switch shows it.
+    let files_agent = selected.filter(|agent| file_tree::pane_open(&state, *agent));
+    let files_open = files_agent.is_some();
+    let files_pane = use_presence(files_agent);
+    let files_leaving = files_pane
+        .as_ref()
+        .is_some_and(|shown| shown.leaving && Some(shown.value) == selected);
+    let mut last_files_opening = use_hook(|| CopyValue::new(PaneOpening::default()));
+    if let Some(shown) = &files_pane
+        && !shown.leaving
+        && last_files_opening().opening != shown.opening
+    {
+        last_files_opening.set(PaneOpening {
+            opening: shown.opening,
+            by_switch: switching,
+        });
+    }
     // A switch shows the next agent's layout at once: only the agent that closed its file view
     // sees it leave, and a file view that opens with its agent does not slide in.
     let file_view_leaving = file_view
         .as_ref()
         .is_some_and(|shown| shown.leaving && Some(shown.value) == selected);
-    let mut last_opening = use_hook(|| CopyValue::new(FileViewOpening::default()));
+    let mut last_opening = use_hook(|| CopyValue::new(PaneOpening::default()));
     if let Some(shown) = &file_view
         && !shown.leaving
         && last_opening().opening != shown.opening
     {
-        last_opening.set(FileViewOpening {
+        last_opening.set(PaneOpening {
             opening: shown.opening,
             by_switch: switching,
         });
@@ -76,6 +90,9 @@ pub fn App() -> Element {
     }
     if file_view_open && last_opening().by_switch {
         app_classes.push("file-view-instant");
+    }
+    if files_open && last_files_opening().by_switch {
+        app_classes.push("files-pane-instant");
     }
     let app_class = app_classes.join(" ");
     // With servers, the question shows from this computer's panel, and the servers stay in use.
@@ -146,9 +163,9 @@ pub fn App() -> Element {
     }
 }
 
-/// The file view's last opening, and whether an agent switch opened it.
+/// A side panel's last opening, and whether an agent switch opened it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-struct FileViewOpening {
+struct PaneOpening {
     opening: u32,
     by_switch: bool,
 }
