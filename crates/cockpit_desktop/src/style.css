@@ -2699,13 +2699,22 @@ html.reordering * {
   transition: max-height var(--motion-out) var(--ease-in);
 }
 
-.io-row[data-tall]:not(.unfolded) .io-clip::after {
+.io-row[data-tall] .io-clip::after,
+.message-fold[data-tall] .message-clip::after {
   content: "";
   position: absolute;
   inset: auto 0 0;
   height: 1.2em;
   background: linear-gradient(to bottom, transparent, var(--well));
   pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--motion-out) var(--ease-in);
+}
+
+.io-row[data-tall]:not(.unfolded) .io-clip::after,
+.message-fold[data-tall]:not(.unfolded) .message-clip::after {
+  opacity: 1;
+  transition: opacity var(--motion-in) var(--ease-out);
 }
 
 .fold-lines {
@@ -2731,15 +2740,10 @@ html.reordering * {
   display: none;
 }
 
-/* A long message you sent folds as an IN or OUT row does, its `--fold-height` where its last kept
-   line ends. */
-.message-fold[data-tall]:not(.unfolded) .message-clip::after {
-  content: "";
-  position: absolute;
-  inset: auto 0 0;
-  height: 1.2em;
+/* A long message you sent folds as an IN or OUT row does. Its `--fold-height` is where its last
+   kept line ends. */
+.message-fold[data-tall] .message-clip::after {
   background: linear-gradient(to bottom, transparent, var(--hover));
-  pointer-events: none;
 }
 
 .message-fold[data-tall] .fold-lines {

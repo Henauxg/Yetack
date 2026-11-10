@@ -56,11 +56,11 @@ const FOLD_LINES_PROPERTY: &str = "--fold-lines";
 /// page knows: wrapping depends on the width. It marks `data-tall` each row whose text takes more
 /// screen lines than the `--fold-lines` the row sets, and writes on its button how many lines the
 /// fold hides. A message's Markdown has gaps between its blocks, so the script counts its lines
-/// of text and cuts it where its last kept line ends. The script sets that height and the text's
-/// full height on the clip (`--fold-height`, `--full-height`), and a fold or an unfold animates
-/// the clip between them. A ResizeObserver measures each row's text when it appears and when its
-/// width or its text changes, so a resize of the window renders nothing. Message fields are
-/// serde's names for `FoldClasses`.
+/// of text and cuts it where its last kept line ends. The script sets on each clip the height of
+/// its kept lines (`--fold-height`) and of its whole text (`--full-height`), and a fold or an
+/// unfold animates the clip between the two. A ResizeObserver measures each row's text when it
+/// appears and when its width or its text changes, so a resize of the window renders nothing.
+/// Message fields are serde's names for `FoldClasses`.
 const FOLD_SCRIPT: &str = r#"
 const classes = await dioxus.recv();
 if (!window.agentsCockpitFolds) {
@@ -94,33 +94,32 @@ if (!window.agentsCockpitFolds) {
       return;
     }
     const kept = parseInt(getComputedStyle(row).getPropertyValue(classes.lines_property), 10);
-    // The clip animates its height between the two.
-    const clip = text.parentElement;
-    clip.style.setProperty("--full-height", `${Math.ceil(height)}px`);
     let hidden;
+    let foldHeight;
     if (row.matches(`.${classes.message_row}`)) {
       const bottoms = lineBottoms(text);
       hidden = bottoms.length - kept;
-      if (hidden > 0) {
-        clip.style.setProperty("--fold-height", `${Math.ceil(bottoms[kept - 1])}px`);
-      }
+      foldHeight = bottoms[kept - 1];
     } else {
       const lineHeight = parseFloat(getComputedStyle(text).lineHeight);
       hidden = Math.round(height / lineHeight) - kept;
-      clip.style.setProperty("--fold-height", `${Math.ceil(kept * lineHeight)}px`);
+      foldHeight = kept * lineHeight;
     }
     if (!(hidden > 0)) {
       delete row.dataset.tall;
       return;
     }
+    const clip = text.parentElement;
+    clip.style.setProperty("--fold-height", `${Math.ceil(foldHeight)}px`);
+    clip.style.setProperty("--full-height", `${Math.ceil(height)}px`);
     row.dataset.tall = "";
     const label = row.querySelector(`.${classes.label}`);
     if (label !== null) {
       label.textContent = `Show ${hidden} ${hidden === 1 ? "line" : "lines"} more`;
     }
   };
-  // A height measured again applies at once: an unfolded clip that trailed its text would cut
-  // its last lines while the window resizes.
+  // A height measured again applies at once, before the transition comes back: an unfolded clip
+  // that trailed its text would cut its last lines while the window resizes.
   const sizes = new ResizeObserver((entries) => {
     const clips = entries.map((entry) => entry.target.parentElement);
     clips.forEach((clip) => clip.style.setProperty("transition", "none"));
