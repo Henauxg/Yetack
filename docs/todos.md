@@ -13,6 +13,8 @@ Ideas and fixes noted for later. None of them is planned yet.
 - **Details updates per subagent call.** Each update carries the whole subagent list (up to about 70 KB), and the event logs keep every one. Send at most one per agent every 250 to 500 ms, or a per-subagent event.
 - **Add this computer next to a server, from the app (needs design).** When the config's `[daemon]` is a server over SSH, the app reaches no local daemon, so the New agent dialog has no Machine row and no agent can start on this computer. Today the fix is editing `config.toml` by hand: `[daemon]` becomes `in_app` or `local`, and the server moves to a `[[machines]]` table. The Machines dialog could offer this move. To design: where the action lives, which local daemon it asks for (in the app, or the background service where one exists), and what the user sees while the server's connection moves to its new place.
 - **Smaller fixes noticed in reviews, not done:**
+  - Undo after closing an agent brings it back under a new id, so it loses its files pane (open or closed) and its notification level. Carry both through the undo (`ui.closed`, `Reopening`).
+  - The notification levels of agents closed while the app was away, or of a removed server's agents, stay in `prefs.json` for good. Drop them as the files panes are dropped: after a snapshot (`file_tree::keep_listed_panes`) and in `machines::forget`.
   - With the typed "/" palette open, Shift+Enter picks a command instead of adding a line.
   - The new agent dialog fills its folder from the first recent folder before the past sessions arrive, so it can open on an older folder.
   - A background subagent's tool call may set an activity line on an idle agent's sidebar row.
