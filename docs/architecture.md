@@ -688,6 +688,7 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
   The chat's scroll script scrolls and highlights (`ChatReveal` in the UI state), and keeps the new place as after a scroll by the user.
   While the map is open, the page's script passes Up, Down, Left, Right and Enter to it, and Y and N when the selected subagent's approval or plan waits. The outline takes the focus when the map opens, so Enter never presses a button left focused behind the dialog.
 - **Shortcuts**: Ctrl+K, Ctrl+N, Ctrl+M (the agent map), Esc (closes what is open, never stops the agent), Y, N, 1 to 9, as in plan.md, Enter outside text fields for the sign-in card's "Send the message again", Alt+Up and Alt+Down to move the selected agent in the sidebar, F2 to rename it, and Ctrl+Shift+W to close it.
+  On a sidebar row or machine header, Up and Down select the agent above or below among the rows on screen and move the focus with it, Left folds the machine and moves the focus to its header, and Right shows its rows again (`state/sidebar_keys.rs`).
 
 ## Errors
 

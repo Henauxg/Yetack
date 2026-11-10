@@ -8,10 +8,12 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::connection::Cockpit;
+use crate::state::sidebar_keys::SidebarItem;
 use crate::state::{
     ANSWER_KEYS, AppState, CLOSE_AGENT_KEY, COMMAND_KEYS, Dialog, KeyPress, PaletteOrigin, Popover,
-    Utf16Offset, WaitingKind, accounts, actions, agent_map, handle_key,
+    Utf16Offset, WaitingKind, accounts, actions, agent_map, handle_key, sidebar_keys,
 };
+use crate::ui::sidebar_item_id;
 
 /// The composer's text area, whose keys the script treats apart.
 pub const COMPOSER_ID: &str = "composer";
@@ -55,6 +57,18 @@ const SCRIPT: &str = r#"
 const settings = await dioxus.recv();
 let mode = { answer_letters: false, answer_numbers: false, palette: false, dialog: false };
 const send = (message) => dioxus.send(message);
+// The sidebar row or machine header that has the focus, as the app names it.
+const sidebarItem = (element) => {
+  const data = element?.dataset;
+  if (data?.rowAgent !== undefined) {
+    return { kind: "agent", id: Number(data.rowAgent) };
+  }
+  if (data?.headMachine !== undefined) {
+    return { kind: "machine", id: Number(data.headMachine) };
+  }
+  return null;
+};
+const arrowKeys = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"];
 (async () => {
   for (;;) {
     mode = await dioxus.recv();
@@ -172,6 +186,13 @@ document.addEventListener("keydown", (event) => {
   }
   const answers = (mode.answer_letters && settings.answer_keys.includes(letter))
     || (mode.answer_numbers && (/^[1-9]$/.test(key) || key === "Enter"));
+  // The arrows on a sidebar row or machine header move the selection and fold the machines.
+  const focused = sidebarItem(target);
+  if (focused !== null && plain && !event.shiftKey && !mode.dialog && arrowKeys.includes(key)) {
+    event.preventDefault();
+    send({ type: "sidebar_key", key, focused });
+    return;
+  }
   const text = composer ? target.value : "";
   let take = false;
   if (command && !event.altKey && !event.shiftKey && settings.command_keys.includes(letter)) {
@@ -408,6 +429,11 @@ impl KeyMode {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum BridgeMessage {
     Key(KeyPress),
+    /// An arrow key on the sidebar element that has the focus.
+    SidebarKey {
+        key: String,
+        focused: SidebarItem,
+    },
     /// The composer's text, with the caret.
     ComposerInput {
         agent: AgentId,
@@ -465,6 +491,13 @@ fn receive(cockpit: Cockpit, message: BridgeMessage) {
     match message {
         BridgeMessage::Key(press) => {
             cockpit.change_with_drafts(|state, drafts| handle_key(state, drafts, &press));
+        }
+        BridgeMessage::SidebarKey { key, focused } => {
+            let mut next = None;
+            cockpit.update(|state| next = sidebar_keys::press(state, focused, &key));
+            if let Some(item) = next {
+                focus_element(sidebar_item_id(item));
+            }
         }
         BridgeMessage::ComposerInput { agent, text, caret } => {
             cockpit.type_in_composer(agent, text, caret);
@@ -535,6 +568,13 @@ pub fn focus_field(field_id: &'static str) {
     let script = document::eval(FOCUS_SCRIPT);
     if let Err(error) = script.send(field_id) {
         tracing::warn!("cannot focus the field {field_id}: {error}");
+    }
+}
+
+pub fn focus_element(element_id: String) {
+    let script = document::eval(FOCUS_SCRIPT);
+    if let Err(error) = script.send(&element_id) {
+        tracing::warn!("cannot focus {element_id}: {error}");
     }
 }
 
@@ -626,6 +666,26 @@ mod tests {
         let message: BridgeMessage = serde_json::from_str(line).unwrap();
 
         assert!(matches!(message, BridgeMessage::Key(press) if press.key == "y"));
+    }
+
+    #[test]
+    fn sidebar_keys_parse_from_the_script() {
+        let row = r#"{"type":"sidebar_key","key":"ArrowDown","focused":{"kind":"agent","id":3}}"#;
+        let head =
+            r#"{"type":"sidebar_key","key":"ArrowLeft","focused":{"kind":"machine","id":1}}"#;
+
+        let row: BridgeMessage = serde_json::from_str(row).unwrap();
+        let head: BridgeMessage = serde_json::from_str(head).unwrap();
+
+        assert!(matches!(
+            row,
+            BridgeMessage::SidebarKey { focused: SidebarItem::Agent(agent), .. } if agent == AgentId::new(3)
+        ));
+        assert!(matches!(
+            head,
+            BridgeMessage::SidebarKey { focused: SidebarItem::Machine(machine), .. }
+                if machine == crate::machine::MachineId::new(1)
+        ));
     }
 
     #[test]

@@ -7,6 +7,7 @@
 
 use cockpit_client::SessionUpdate;
 use cockpit_protocol::{AgentId, Catchup, Request, ResponseBody};
+use serde::Deserialize;
 
 /// The bits of an app id that hold the daemon's id: a daemon numbers about a million agents
 /// before its ids reach another machine's.
@@ -14,7 +15,8 @@ const DAEMON_BITS: u32 = 20;
 const DAEMON_MASK: u32 = (1 << DAEMON_BITS) - 1;
 
 /// A machine the app reaches. The default is this computer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Deserialize)]
+#[serde(transparent)]
 pub struct MachineId(u16);
 
 impl MachineId {

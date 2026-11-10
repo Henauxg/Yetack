@@ -17,6 +17,7 @@ pub mod no_daemon;
 pub mod open_file;
 mod requests;
 mod shortcuts;
+pub mod sidebar_keys;
 pub mod title_emoji;
 mod transcript;
 mod ui_state;
