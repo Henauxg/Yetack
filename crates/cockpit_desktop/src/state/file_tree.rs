@@ -436,14 +436,23 @@ impl Builder<'_> {
         }
     }
 
+    /// `node`'s folders and files under `folder`. A folder that holds one folder and no file
+    /// shares its row: "src", then "ui" under it, show as "src/ui", with the path of "ui".
     fn node_rows(&self, folder: &Path, node: &Node<'_>, depth: usize, rows: &mut Vec<TreeRow>) {
         for ((_, name), child) in &node.folders {
-            let path = self.path_in(folder, name);
+            let mut path = self.path_in(folder, name);
+            let mut shown = (*name).to_owned();
+            let mut child = child;
+            while let Some((inner, only)) = child.only_folder() {
+                path = self.path_in(&path, inner);
+                shown = self.style.join(&shown, inner);
+                child = only;
+            }
             let open = !self.tree.closed.contains(&path);
             rows.push(TreeRow {
                 marks: self.marks(&path, true, false),
                 path: path.clone(),
-                name: (*name).to_owned(),
+                name: shown,
                 depth,
                 kind: RowKind::Folder {
                     open,
@@ -509,6 +518,15 @@ struct Node<'name> {
 }
 
 impl<'name> Node<'name> {
+    /// The one folder this node holds, when it holds no file and no other folder.
+    fn only_folder(&self) -> Option<(&'name str, &Self)> {
+        let mut folders = self.folders.iter();
+        match (folders.next(), folders.next()) {
+            (Some(((_, name), node)), None) if self.files.is_empty() => Some((name, node)),
+            _ => None,
+        }
+    }
+
     fn insert(&mut self, names: &[&'name str]) {
         match names {
             [] => {}
@@ -1237,10 +1255,8 @@ mod tests {
                 "· README.md",
                 "# Also worked in",
                 "▾ app_GH42Q/",
-                "  ▾ crates",
-                "    ▾ lexer",
-                "      ▾ src",
-                "        · token.rs",
+                "  ▾ crates/lexer/src",
+                "    · token.rs",
             ]
         );
         assert_eq!(
@@ -1343,6 +1359,48 @@ mod tests {
         assert_eq!(
             files.into_iter().collect::<Vec<_>>(),
             [PathBuf::from("/work/app/src/lib.rs")]
+        );
+    }
+
+    #[test]
+    fn a_folder_that_holds_only_one_folder_shares_its_row() {
+        let tree = FileTree {
+            filter: TreeFilter::Changed,
+            ..FileTree::default()
+        };
+        let footprint = Footprint {
+            changed: [
+                changed("/work/app/web/src/views/login/form.ts", 7, 3),
+                changed("/work/app/web/src/views/search/list.ts", 21, 9),
+                changed("/work/app/service/seeds/41_users.sql", 41, 21),
+                changed("/work/app/service/src/grpc/users.proto", 3, 2),
+            ]
+            .into_iter()
+            .collect(),
+            read: BTreeSet::new(),
+        };
+
+        let rows = rows(&tree, Path::new(FOLDER), &footprint);
+
+        assert_eq!(
+            shown(&rows),
+            [
+                "▾ service",
+                "  ▾ seeds",
+                "    · 41_users.sql",
+                "  ▾ src/grpc",
+                "    · users.proto",
+                "▾ web/src/views",
+                "  ▾ login",
+                "    · form.ts",
+                "  ▾ search",
+                "    · list.ts",
+            ]
+        );
+        let merged = rows.iter().find(|row| row.name == "web/src/views");
+        assert_eq!(
+            merged.map(|row| (row.path.clone(), row.marks.holds_change)),
+            Some((PathBuf::from("/work/app/web/src/views"), true))
         );
     }
 
@@ -1507,15 +1565,20 @@ mod tests {
         let work = PathBuf::from("/work");
         let feature = PathBuf::from("/work/project-1_feature");
         let agent_entry = state.agents.get_mut(&agent).unwrap();
+        // The file right in `project-1_feature` keeps its inner copy from sharing a row with `src`.
         agent_entry.details = Loadable::Loaded(AgentDetails {
-            changed_files: ["/work/notes.txt", "/work/project-1_feature/src/x.rs"]
-                .into_iter()
-                .map(|path| ChangedFile {
-                    path: PathBuf::from(path),
-                    lines_added: 1,
-                    lines_removed: 0,
-                })
-                .collect(),
+            changed_files: [
+                "/work/notes.txt",
+                "/work/project-1_feature/Cargo.toml",
+                "/work/project-1_feature/src/x.rs",
+            ]
+            .into_iter()
+            .map(|path| ChangedFile {
+                path: PathBuf::from(path),
+                lines_added: 1,
+                lines_removed: 0,
+            })
+            .collect(),
             ..AgentDetails::default()
         });
         agent_entry.tree.expanded.insert(work.clone());
@@ -1568,6 +1631,35 @@ mod tests {
             .find(|row| row.path == path)
             .unwrap();
         activate(state, agent, &row);
+    }
+
+    #[test]
+    fn a_shared_row_closes_and_opens_again_by_its_last_folder() {
+        let (mut state, agent) = changed_agent();
+        state.agents.get_mut(&agent).unwrap().details = Loadable::Loaded(AgentDetails {
+            changed_files: vec![ChangedFile {
+                path: PathBuf::from("/work/project-1/src/ui/view.rs"),
+                lines_added: 2,
+                lines_removed: 0,
+            }],
+            ..AgentDetails::default()
+        });
+        let ui = Path::new("/work/project-1/src/ui");
+
+        collapse_all(&mut state, agent);
+        let closed = shown(&shown_rows(&state, agent));
+        actions::open_file(
+            &mut state,
+            agent,
+            PathBuf::from("/work/project-1/src/ui/view.rs"),
+            None,
+        );
+        reveal(&mut state, agent);
+        let revealed = shown(&shown_rows(&state, agent));
+
+        assert_eq!(closed, ["▸ src/ui"]);
+        assert_eq!(revealed, ["▾ src/ui", "  · view.rs"]);
+        assert!(!state.agents[&agent].tree.closed.contains(ui));
     }
 
     /// `listed_agent` on "Changed", having changed `src/lib.rs`.
