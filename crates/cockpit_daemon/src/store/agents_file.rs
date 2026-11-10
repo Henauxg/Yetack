@@ -50,6 +50,9 @@ pub(crate) struct AgentRecord {
     /// existed.
     #[serde(default)]
     pub(crate) account: AccountId,
+    /// You marked the agent as one to handle. False in a file saved before marks existed.
+    #[serde(default)]
+    pub(crate) to_handle: bool,
 }
 
 /// A process, told apart from a later one that reuses its id by when it started.
@@ -140,7 +143,8 @@ mod tests {
         "started": 987654,
         "boot": "6e1f0c2a-3b4d-4e5f-8a9b-0c1d2e3f4a5b"
       },
-      "account": 5
+      "account": 5,
+      "to_handle": true
     }
   ]
 }
@@ -173,6 +177,7 @@ mod tests {
                     )),
                 }),
                 account: AccountId::new(5),
+                to_handle: true,
             }],
         }
     }
@@ -206,6 +211,19 @@ mod tests {
         let file = AgentsFile::load(&path).unwrap();
 
         assert_eq!(file.agents[0].past, None);
+    }
+
+    #[test]
+    fn an_agent_saved_before_marks_loads_unmarked() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("agents.json");
+        let without_mark = AGENTS_JSON.replace(",\n      \"to_handle\": true", "");
+        assert_ne!(without_mark, AGENTS_JSON);
+        std::fs::write(&path, without_mark).unwrap();
+
+        let file = AgentsFile::load(&path).unwrap();
+
+        assert!(!file.agents[0].to_handle);
     }
 
     #[test]

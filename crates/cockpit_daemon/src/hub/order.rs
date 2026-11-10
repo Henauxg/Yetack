@@ -218,6 +218,7 @@ mod tests {
             position: Position::default(),
             process: None,
             account: AccountId::DEFAULT,
+            to_handle: false,
         };
         AgentsFile {
             next_agent: AgentId::new(4),

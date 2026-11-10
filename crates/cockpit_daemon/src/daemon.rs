@@ -150,6 +150,7 @@ mod tests {
                 position: Position::default(),
                 process,
                 account: AccountId::DEFAULT,
+                to_handle: false,
             }],
         }
         .save(&state.agents_file())

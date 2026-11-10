@@ -62,6 +62,7 @@ impl Hub {
             Request::AgentSetEffort(params) => agents::respond(reply, self.set_effort(params)),
             Request::AgentSetMode(params) => self.set_mode(params, reply),
             Request::AgentRename(params) => agents::respond(reply, self.rename(params)),
+            Request::AgentMark(params) => agents::respond(reply, self.mark(params)),
             Request::AgentMove(params) => agents::respond(reply, self.move_agent(params)),
             Request::AgentContextUsage(params) => self.control(
                 params.agent,

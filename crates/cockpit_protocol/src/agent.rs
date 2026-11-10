@@ -123,6 +123,10 @@ pub struct AgentSummary {
     /// that started them. 0 when missing, as from a daemon that predates it.
     #[serde(default)]
     pub background_running: u16,
+    /// You marked the agent as one to handle: a reminder that stays until you clear it or send
+    /// the agent a prompt. False when missing, as from a daemon that predates it.
+    #[serde(default)]
+    pub to_handle: bool,
 }
 
 /// Where an agent's effort comes from.

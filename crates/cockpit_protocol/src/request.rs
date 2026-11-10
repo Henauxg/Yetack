@@ -58,6 +58,9 @@ pub enum Request {
     /// Renames the agent, and its Claude session when its process runs. Answered by `Done`, and
     /// an `AgentUpdated` event to every client.
     AgentRename(RenameParams),
+    /// Marks the agent as one you have to handle, or clears the mark. Sending the agent a prompt
+    /// clears it too. Answered by `Done`, and an `AgentUpdated` event to every client.
+    AgentMark(MarkParams),
     /// Places the agent in the list. Answered by `Done`, and an `AgentUpdated` event for each
     /// agent whose position changed: the moved one alone, unless its new neighbours leave no room.
     AgentMove(MoveParams),
@@ -149,6 +152,8 @@ pub enum Method {
     AgentSetMode,
     #[strum(serialize = "agent.rename")]
     AgentRename,
+    #[strum(serialize = "agent.mark")]
+    AgentMark,
     #[strum(serialize = "agent.move")]
     AgentMove,
     #[strum(serialize = "agent.context_usage")]
@@ -341,6 +346,12 @@ pub struct RenameParams {
     pub title: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkParams {
+    pub agent: AgentId,
+    pub to_handle: bool,
+}
+
 /// The agent goes just above `before`, or to the bottom of the list when `before` is `None`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MoveParams {
@@ -481,6 +492,7 @@ impl Request {
             Self::AgentSetEffort(_) => Method::AgentSetEffort,
             Self::AgentSetMode(_) => Method::AgentSetMode,
             Self::AgentRename(_) => Method::AgentRename,
+            Self::AgentMark(_) => Method::AgentMark,
             Self::AgentMove(_) => Method::AgentMove,
             Self::AgentContextUsage(_) => Method::AgentContextUsage,
             Self::AgentStopTask(_) => Method::AgentStopTask,
@@ -538,6 +550,7 @@ impl Serialize for Request {
             Self::AgentSetEffort(params) => tagged(method, params, serializer),
             Self::AgentSetMode(params) => tagged(method, params, serializer),
             Self::AgentRename(params) => tagged(method, params, serializer),
+            Self::AgentMark(params) => tagged(method, params, serializer),
             Self::AgentMove(params) => tagged(method, params, serializer),
             Self::AgentContextUsage(params) => tagged(method, params, serializer),
             Self::AgentStopTask(params) => tagged(method, params, serializer),
@@ -594,6 +607,7 @@ impl<'de> Deserialize<'de> for Request {
             Method::AgentSetEffort => Self::AgentSetEffort(params(raw)?),
             Method::AgentSetMode => Self::AgentSetMode(params(raw)?),
             Method::AgentRename => Self::AgentRename(params(raw)?),
+            Method::AgentMark => Self::AgentMark(params(raw)?),
             Method::AgentMove => Self::AgentMove(params(raw)?),
             Method::AgentContextUsage => Self::AgentContextUsage(params(raw)?),
             Method::AgentStopTask => Self::AgentStopTask(params(raw)?),

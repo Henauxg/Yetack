@@ -71,6 +71,7 @@ pub(crate) fn restore(state: &StateDir, default_folder: &Path) -> Result<Restore
             summary.folder = record.folder.clone();
             summary.position = record.position;
             summary.account = record.account;
+            summary.to_handle = record.to_handle;
             let items: Vec<TranscriptItem> = logged.items.into_values().collect();
             let mut view = AgentView::restore(summary, logged.details, items, ttl);
             let account = settings.accounts.get(record.account, default_folder);
@@ -138,6 +139,7 @@ mod tests {
             position: Position::default(),
             process: None,
             account: AccountId::DEFAULT,
+            to_handle: false,
         }
     }
 

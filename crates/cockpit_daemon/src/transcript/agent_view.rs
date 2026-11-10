@@ -287,6 +287,7 @@ impl AgentView {
             account: AccountId::DEFAULT,
             sign_in_wait: SignInWait::NotWaiting,
             background_running: 0,
+            to_handle: false,
         };
         Self::new(summary, Duration::ZERO)
     }
@@ -753,6 +754,10 @@ impl AgentView {
 
     pub(crate) fn set_position(&mut self, position: Position) {
         self.summary.position = position;
+    }
+
+    pub(crate) fn set_to_handle(&mut self, to_handle: bool) {
+        self.summary.to_handle = to_handle;
     }
 
     fn apply_system(&mut self, event: SystemEvent, now: Timestamp) {
@@ -1794,6 +1799,7 @@ mod tests {
             position: Position::default(),
             account: AccountId::DEFAULT,
             sign_in_wait: SignInWait::NotWaiting,
+            to_handle: false,
             background_running: 0,
         };
         let mut view = AgentView::new(summary, Duration::from_secs(3600));
