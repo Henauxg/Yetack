@@ -1,6 +1,7 @@
 //! What the transcript shows of a tool call: its one-line summary, its edit, its output.
 
 use std::collections::BTreeSet;
+use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
 use claude_protocol::{ContentBlock, ToolInput};
@@ -109,6 +110,29 @@ pub(crate) fn touched_files(items: &[TranscriptItem], changed: &[ChangedFile]) -
         }
     }
     files
+}
+
+/// The finished edits of every file named `name`, whatever its case, oldest first, subagents'
+/// included. They are copies, so they can leave the hub for the task that keeps the edits of the
+/// file it read.
+pub(crate) fn edits_named(items: &[TranscriptItem], name: &OsStr) -> Vec<FileEdit> {
+    let name = name.to_string_lossy().to_lowercase();
+    let finished = items.iter().filter_map(|item| match &item.body {
+        ItemBody::ToolCall(call) | ItemBody::Subagent(call)
+            if call.status == ToolCallStatus::Done =>
+        {
+            call.edit.as_ref()
+        }
+        _ => None,
+    });
+    finished
+        .filter(|edit| {
+            edit.path
+                .file_name()
+                .is_some_and(|edited| edited.to_string_lossy().to_lowercase() == name)
+        })
+        .cloned()
+        .collect()
 }
 
 fn touched_file(call: &ToolCall) -> Option<PathBuf> {
@@ -467,5 +491,38 @@ mod tests {
 
         assert_eq!(original_file(Some(&record)).as_deref(), Some("old text"));
         assert_eq!(original_file(Some(&json!("Done"))), None);
+    }
+
+    #[test]
+    fn edits_named_keeps_the_finished_edits_of_files_of_that_name() {
+        let call = |id: u32, status: ToolCallStatus, path: &str| TranscriptItem {
+            id: cockpit_protocol::ItemId::new(id),
+            parent: None,
+            body: ItemBody::ToolCall(ToolCall {
+                tool: "Edit".to_owned(),
+                summary: String::new(),
+                input: Value::Null,
+                status,
+                output: None,
+                exit_code: None,
+                edit: Some(FileEdit {
+                    path: PathBuf::from(path),
+                    old_text: "old".to_owned(),
+                    new_text: id.to_string(),
+                }),
+            }),
+        };
+        let done = ToolCallStatus::Done;
+        let items = [
+            call(1, done, "/work/app/notes.txt"),
+            call(2, ToolCallStatus::Failed, "/work/app/notes.txt"),
+            call(3, done, "/work/app/notes.md"),
+            call(4, done, "/work/app/old/NOTES.TXT"),
+        ];
+
+        let edits = edits_named(&items, OsStr::new("notes.txt"));
+
+        let new_texts: Vec<&str> = edits.iter().map(|edit| edit.new_text.as_str()).collect();
+        assert_eq!(new_texts, ["1", "4"]);
     }
 }

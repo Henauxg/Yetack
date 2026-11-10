@@ -10,7 +10,7 @@ use crate::details::{AgentDetails, ContextUsage, McpServer, SlashCommand};
 use crate::ids::{AccountId, AgentId, ClaudeSessionId};
 use crate::machine_load::MachineLoad;
 use crate::time::Timestamp;
-use crate::transcript::{Image, TranscriptItem};
+use crate::transcript::{FileEdit, Image, TranscriptItem};
 
 /// The result of one request: a body, or an error. The connection stays open either way.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -58,10 +58,15 @@ pub enum ResponseBody {
     },
     /// `path` is where the file was read, absolute: the path asked for, or the file the daemon
     /// found for it. `None` from a daemon that predates it, which reads only the path asked for.
+    ///
+    /// `edits` are the agent's finished edits of the file, its subagents' included, oldest first,
+    /// over the whole session. When they would not fit in the answer, the oldest are left out.
     File {
         #[serde(default)]
         path: Option<PathBuf>,
         text: String,
+        #[serde(default)]
+        edits: Vec<FileEdit>,
     },
     /// For `agent.read_file`, an image file, which the daemon reads by its extension. `path` is
     /// as for `File`.

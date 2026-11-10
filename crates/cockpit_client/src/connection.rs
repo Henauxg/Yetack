@@ -342,6 +342,7 @@ mod tests {
         ResponseBody::File {
             path: None,
             text: request.method().to_string(),
+            edits: Vec::new(),
         }
     }
 

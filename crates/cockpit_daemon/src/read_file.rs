@@ -36,7 +36,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use cockpit_protocol::{ErrorBody, ErrorCode, Image, ImageMediaType};
+use cockpit_protocol::{ErrorBody, ErrorCode, FileEdit, Image, ImageMediaType};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::task::JoinError;
@@ -511,6 +511,31 @@ fn is_inside(path: &Path, folder: &Path) -> bool {
 
 fn is_same(left: &Path, right: &Path) -> bool {
     is_inside(left, right) && is_inside(right, left)
+}
+
+/// The edits of `file`, out of `edits` oldest first: the newest whose JSON fits in `max_bytes`.
+/// A relative edit path is in `folder`.
+pub(crate) fn edits_of(
+    edits: Vec<FileEdit>,
+    folder: &Path,
+    file: &Path,
+    max_bytes: usize,
+) -> Vec<FileEdit> {
+    let mut kept = Vec::new();
+    let mut bytes: usize = 0;
+    for edit in edits.into_iter().rev() {
+        if !is_same(&folder.join(&edit.path), file) {
+            continue;
+        }
+        let size = serde_json::to_vec(&edit).map_or(usize::MAX, |encoded| encoded.len());
+        bytes = bytes.saturating_add(size);
+        if bytes > max_bytes {
+            break;
+        }
+        kept.push(edit);
+    }
+    kept.reverse();
+    kept
 }
 
 /// Opens a file for reading without waiting: opening a FIFO waits for a writer otherwise.
@@ -1142,5 +1167,67 @@ mod tests {
             read(&access, Path::new("INSIDE.TXT")).unwrap(),
             text("inside")
         );
+    }
+
+    fn edit(path: &str, old_text: &str, new_text: &str) -> FileEdit {
+        FileEdit {
+            path: PathBuf::from(path),
+            old_text: old_text.to_owned(),
+            new_text: new_text.to_owned(),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_keeps_its_own_edits_and_a_relative_one_in_the_folder() {
+        let folder = Path::new("/work/app");
+        let edits = vec![
+            edit("/work/app/notes.txt", "a", "b"),
+            edit("/work/app/old/notes.txt", "c", "d"),
+            edit("notes.txt", "b", "e"),
+        ];
+
+        let kept = edits_of(edits, folder, Path::new("/work/app/notes.txt"), usize::MAX);
+
+        let new_texts: Vec<&str> = kept.iter().map(|edit| edit.new_text.as_str()).collect();
+        assert_eq!(new_texts, ["b", "e"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn edits_over_the_limit_lose_the_oldest() {
+        let file = "/work/app/notes.txt";
+        let edits = vec![
+            edit(file, "a", "b"),
+            edit(file, "b", "c"),
+            edit(file, "c", "d"),
+        ];
+        let one = serde_json::to_vec(&edits[0]).unwrap().len();
+
+        let kept = edits_of(edits, Path::new("/work/app"), Path::new(file), 2 * one);
+
+        let new_texts: Vec<&str> = kept.iter().map(|edit| edit.new_text.as_str()).collect();
+        assert_eq!(new_texts, ["c", "d"]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_file_keeps_its_edits_whatever_their_case_and_separators() {
+        let folder = Path::new(r"C:\work\app");
+        let edits = vec![
+            edit("c:/work/APP/src/Notes.txt", "a", "b"),
+            edit(r"C:\work\app\old\notes.txt", "c", "d"),
+            edit(r"src\notes.txt", "b", "e"),
+        ];
+
+        let kept = edits_of(
+            edits,
+            folder,
+            Path::new(r"C:\work\app\src\notes.txt"),
+            usize::MAX,
+        );
+
+        let new_texts: Vec<&str> = kept.iter().map(|edit| edit.new_text.as_str()).collect();
+        assert_eq!(new_texts, ["b", "e"]);
     }
 }

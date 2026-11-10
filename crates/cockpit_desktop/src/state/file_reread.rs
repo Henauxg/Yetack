@@ -29,7 +29,7 @@ pub fn reread(state: &mut AppState, agent: AgentId) {
         return;
     };
     match held {
-        Loadable::Loaded(FileRead::Text(_) | FileRead::Image(_)) => {
+        Loadable::Loaded(FileRead::Text { .. } | FileRead::Image(_)) => {
             let freshness = &mut entry.file_freshness;
             freshness.reread = match freshness.reread {
                 Reread::Idle | Reread::Wanted => Reread::Wanted,
@@ -94,7 +94,9 @@ pub fn arrived(
         && old != new
     {
         let lines = match (old, new) {
-            (FileRead::Text(old), FileRead::Text(new)) => render::changed_lines(old, new),
+            (FileRead::Text { text: old, .. }, FileRead::Text { text: new, .. }) => {
+                render::changed_lines(old, new)
+            }
             _ => BTreeSet::new(),
         };
         let serial = freshness
@@ -143,7 +145,7 @@ mod tests {
             agent(),
             path,
             path,
-            FileRead::Text(text.to_owned()),
+            FileRead::unedited(text),
             at(1_000),
         );
         state
@@ -188,11 +190,11 @@ mod tests {
         assert_eq!(freshness(&state).reread, Reread::Reading { again: false });
         assert_eq!(
             state.agents[&agent()].files[Path::new("notes.md")],
-            Loadable::Loaded(FileRead::Text("one\ntwo\n".to_owned()))
+            Loadable::Loaded(FileRead::unedited("one\ntwo\n"))
         );
 
         let path = Path::new("notes.md");
-        let new = FileRead::Text("one\nTWO\nthree\n".to_owned());
+        let new = FileRead::unedited("one\nTWO\nthree\n");
         actions::show_read_file(&mut state, agent(), path, path, new, at(2_000));
 
         let fresh = freshness(&state);
@@ -219,7 +221,7 @@ mod tests {
         let _ = crate::state::needed_requests(&mut state);
 
         let path = Path::new("notes.md");
-        let new = FileRead::Text("two\n".to_owned());
+        let new = FileRead::unedited("two\n");
         actions::show_read_file(&mut state, agent(), path, path, new, at(2_000));
 
         assert_eq!(
@@ -235,7 +237,7 @@ mod tests {
         let _ = crate::state::needed_requests(&mut state);
 
         let path = Path::new("notes.md");
-        let same = FileRead::Text("one\n".to_owned());
+        let same = FileRead::unedited("one\n");
         actions::show_read_file(&mut state, agent(), path, path, same, at(2_000));
 
         assert_eq!(freshness(&state).update, None);
@@ -251,7 +253,7 @@ mod tests {
         reread(&mut state, agent());
         assert_eq!(freshness(&state).reread, Reread::Reading { again: true });
         let path = Path::new("notes.md");
-        let new = FileRead::Text("two\n".to_owned());
+        let new = FileRead::unedited("two\n");
         actions::show_read_file(&mut state, agent(), path, path, new, at(2_000));
 
         assert_eq!(freshness(&state).reread, Reread::Wanted);

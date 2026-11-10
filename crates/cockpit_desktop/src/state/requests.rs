@@ -471,9 +471,14 @@ pub fn apply_response(
         Purpose::ReadFile { agent, path } => {
             let now = Timestamp::from_system_time(SystemTime::now());
             let read = match result {
-                Ok(ResponseBody::File { path: found, text }) => {
+                Ok(ResponseBody::File {
+                    path: found,
+                    text,
+                    edits,
+                }) => {
                     let found = found.unwrap_or_else(|| path.clone());
-                    actions::show_read_file(state, agent, &path, &found, FileRead::Text(text), now);
+                    let read = FileRead::Text { text, edits };
+                    actions::show_read_file(state, agent, &path, &found, read, now);
                     return;
                 }
                 Ok(ResponseBody::Image { path: found, image }) => {
@@ -1063,7 +1068,7 @@ mod tests {
         let agent = AgentId::new(1);
         let path = PathBuf::from("notes.md");
         actions::open_file(&mut state, agent, path.clone(), None);
-        let text = FileRead::Text("one\n".to_owned());
+        let text = FileRead::unedited("one\n");
         actions::show_read_file(&mut state, agent, &path, &path, text, None);
         crate::state::file_reread::reread(&mut state, agent);
         needed_requests(&mut state);

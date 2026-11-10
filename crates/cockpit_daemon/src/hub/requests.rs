@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use claude_protocol::{ControlRequest, TaskId};
 use cockpit_protocol::{
     AgentId, ErrorBody, ErrorCode, Event, FindFilesParams, FoldersListParams, HistoryParams,
-    ListDirParams, McpRemoveParams, McpToggleAction, ReadFileParams, Request, ResponseBody,
-    SessionResumeParams, Settings, StopProcessParams,
+    ListDirParams, MAX_LINE_BYTES, McpRemoveParams, McpToggleAction, ReadFileParams, Request,
+    ResponseBody, SessionResumeParams, Settings, StopProcessParams,
 };
 
 use crate::accounts::ClaudeEnv;
@@ -19,8 +19,12 @@ use crate::machine_load::AgentRoot;
 use crate::read_file::{Content, Found};
 use crate::sessions::AccountFolder;
 use crate::store::{DaemonSettings, LogName};
-use crate::transcript::{touched_files, words};
+use crate::transcript::{edits_named, touched_files, words};
 use crate::{browse, machine_load, mcp_remove, read_file, sessions};
+
+/// The most JSON bytes of edits a file's answer holds. With the largest file the view reads, the
+/// answer stays well under the framing maximum.
+const MAX_EDITS_BYTES: usize = MAX_LINE_BYTES / 4;
 
 /// What the requests that read the agent's files need, taken from the hub before they leave it.
 struct FileAccess {
@@ -154,21 +158,30 @@ impl Hub {
             Ok(access) => access,
             Err(error) => return agents::respond(reply, Err(error)),
         };
+        // The file found has the name asked for, wherever it is.
+        let named = match (self.agent(params.agent), params.path.file_name()) {
+            (Ok(agent), Some(name)) => edits_named(agent.view.items(), name),
+            _ => Vec::new(),
+        };
         tokio::spawn(async move {
             let FileAccess {
                 folder,
                 touched,
                 home,
             } = access;
-            let found = read_file::find_and_read(folder, touched, home, params.path).await;
+            let found = read_file::find_and_read(folder.clone(), touched, home, params.path).await;
             let result = match found {
                 Ok(Found::File {
                     path,
                     content: Content::Text(text),
-                }) => Ok(ResponseBody::File {
-                    path: Some(path),
-                    text,
-                }),
+                }) => {
+                    let edits = read_file::edits_of(named, &folder, &path, MAX_EDITS_BYTES);
+                    Ok(ResponseBody::File {
+                        path: Some(path),
+                        text,
+                        edits,
+                    })
+                }
                 Ok(Found::File {
                     path,
                     content: Content::Image(image),

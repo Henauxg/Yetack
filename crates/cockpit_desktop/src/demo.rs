@@ -31,7 +31,9 @@ use crate::state::daemon_update::{
     self, OutputLine, OutputStream, ProtocolGap, UpdateFailure, UpdatePlan, VersionGap,
 };
 use crate::state::no_daemon::{self, Absence};
-use crate::state::{AgentEntry, AppState, ConnectionState, Dialog, Loadable, MachineState};
+use crate::state::{
+    AgentEntry, AppState, ConnectionState, Dialog, Loadable, MachineState, file_edits,
+};
 
 /// The command-line flag that starts the demo.
 pub const DEMO_FLAG: &str = "--demo";
@@ -708,7 +710,9 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
             .context
             .map(ResponseBody::ContextUsage)
             .ok_or_else(|| refused(ErrorCode::NotFound, "No context usage in the demo.")),
-        Request::AgentReadFile(params) => read_file(&params.path),
+        Request::AgentReadFile(params) => {
+            read_file(&params.path).map(|body| with_edits(state, params.agent, body))
+        }
         Request::AgentListDir(params) => list_dir(&params.path),
         Request::AgentFindFiles(params) => Ok(find_files(&params.name)),
         Request::FoldersList(params) => list_folders(state, &params.path),
@@ -1170,6 +1174,30 @@ fn find_files(name: &str) -> ResponseBody {
     ResponseBody::FileMatches { matches }
 }
 
+/// A file's answer with the edits `agent` made to it, as the daemon gives them: the demo's
+/// transcript holds them all.
+fn with_edits(state: &AppState, agent: AgentId, body: ResponseBody) -> ResponseBody {
+    let (
+        ResponseBody::File {
+            path: Some(found),
+            text,
+            ..
+        },
+        Some(entry),
+    ) = (&body, state.agents.get(&agent))
+    else {
+        return body;
+    };
+    let folder = &entry.summary.folder;
+    let relative = file_edits::relative_path(folder, found);
+    let edits = file_edits::edits_for(&entry.transcript, folder, &relative);
+    ResponseBody::File {
+        path: Some(found.clone()),
+        text: text.clone(),
+        edits: edits.into_iter().cloned().collect(),
+    }
+}
+
 /// As the daemon answers for the parser agent: the path itself, else the sample's files whose
 /// path ends with it, one read or several listed. Any PNG is the app's icon.
 fn read_file(path: &Path) -> Result<ResponseBody, RequestError> {
@@ -1205,6 +1233,7 @@ fn read_file(path: &Path) -> Result<ResponseBody, RequestError> {
         [(path, text)] => Ok(ResponseBody::File {
             path: Some(path.clone()),
             text: (*text).to_owned(),
+            edits: Vec::new(),
         }),
         several => Ok(ResponseBody::FileMatches {
             matches: several.iter().map(|(path, _)| path.clone()).collect(),
@@ -3082,7 +3111,7 @@ mod tests {
     use cockpit_protocol::{FoldersListParams, HistoryParams, ReadFileParams, RenameParams};
 
     use super::*;
-    use crate::state::{HistoryState, WaitingKind, file_edits};
+    use crate::state::{HistoryState, WaitingKind};
 
     #[test]
     fn an_update_screen_needs_the_demo() {
@@ -3383,16 +3412,15 @@ pub struct ParseError {
     fn the_changed_file_undoes_to_its_original() {
         let state = state(label());
         let entry = &state.agents[&AgentId::new(1)];
-        let folder = Path::new(PARSER_FOLDER);
         let request = Request::AgentReadFile(ReadFileParams {
             agent: entry.id(),
             path: PathBuf::from(ERROR_FILE),
         });
 
-        let Ok(ResponseBody::File { text, .. }) = answer(&state, &request) else {
+        let Ok(ResponseBody::File { text, edits, .. }) = answer(&state, &request) else {
             panic!("the demo answers with the file");
         };
-        let edits = file_edits::edits_for(&entry.transcript, folder, Path::new(ERROR_FILE));
+        let edits: Vec<&FileEdit> = edits.iter().collect();
 
         assert_eq!(
             file_edits::original_text(&text, &edits).as_deref(),

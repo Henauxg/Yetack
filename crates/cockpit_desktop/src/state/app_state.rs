@@ -5,9 +5,9 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_protocol::{
-    Account, AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, AnswerState, Image,
-    ItemBody, ItemId, PastSession, PlanUsage, Settings, Timestamp, ToolCallStatus, TranscriptItem,
-    WaitingPrompt, list_order,
+    Account, AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, AnswerState, FileEdit,
+    Image, ItemBody, ItemId, PastSession, PlanUsage, Settings, Timestamp, ToolCallStatus,
+    TranscriptItem, WaitingPrompt, list_order,
 };
 use strum::VariantArray;
 
@@ -54,13 +54,28 @@ impl<T> Loadable<T> {
 /// What the daemon answered for the file view's path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileRead {
-    Text(String),
+    /// `edits` are the agent's edits of the file, oldest first, read with the text.
+    Text {
+        text: String,
+        edits: Vec<FileEdit>,
+    },
     Image(Image),
     /// Several files end with the path, which names none in the agent's folder: the user picks
     /// one. Absolute paths.
     Choices(Vec<PathBuf>),
     /// No file matches: the daemon's sentence that says so.
     Missing(String),
+}
+
+#[cfg(test)]
+impl FileRead {
+    /// A text the agent did not edit.
+    pub fn unedited(text: &str) -> Self {
+        Self::Text {
+            text: text.to_owned(),
+            edits: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

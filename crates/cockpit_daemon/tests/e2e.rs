@@ -22,8 +22,8 @@ use cockpit_protocol::{
     AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState, Approval,
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, Catchup, ClaudeSessionId, CommandKind,
     CostUsd, CredentialSource, Effort, EffortSource, EnvironmentCredentials, ErrorCode, Event,
-    EventRecord, HistoryParams, Image, ImageMediaType, ItemBody, McpRemoveParams, McpScope,
-    McpServerParams, McpServerStatus, McpToggleAction, McpToggleParams, MoveParams,
+    EventRecord, FileEdit, HistoryParams, Image, ImageMediaType, ItemBody, McpRemoveParams,
+    McpScope, McpServerParams, McpServerStatus, McpToggleAction, McpToggleParams, MoveParams,
     PROTOCOL_VERSION, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, PlanUsage,
     ProcessId, Prompt, PromptDelivery, PromptParams, Question, QuestionAnswer, QueuedPromptParams,
     ReadFileParams, RenameParams, Request, ResponseBody, Seq, SessionResumeParams, SetEffortParams,
@@ -1690,6 +1690,43 @@ async fn malformed_requests_get_an_error_and_the_connection_stays() {
 }
 
 #[tokio::test]
+async fn a_file_comes_with_its_edits() {
+    let setup = Setup::new();
+    let mut client = setup.connect().await;
+    let work = setup.work();
+    std::fs::create_dir(work.join("old")).unwrap();
+    std::fs::write(work.join("notes.txt"), "remember the bread\n").unwrap();
+    std::fs::write(work.join("old/notes.txt"), "remember the tea\n").unwrap();
+    let agent = client.start(&work, "edit notes.txt milk bread").await;
+    client.says(agent, "Edited.").await;
+    client.idle(agent).await;
+    client.prompt(agent, "edit old/notes.txt coffee tea").await;
+    client.says(agent, "Edited.").await;
+    client.idle(agent).await;
+
+    let answer = client
+        .ok(Request::AgentReadFile(ReadFileParams {
+            agent,
+            path: PathBuf::from("notes.txt"),
+        }))
+        .await;
+
+    // The other file of the same name keeps its own edit.
+    assert_eq!(
+        answer,
+        ResponseBody::File {
+            path: Some(work.join("notes.txt")),
+            text: "remember the bread\n".to_owned(),
+            edits: vec![FileEdit {
+                path: work.join("notes.txt"),
+                old_text: "milk".to_owned(),
+                new_text: "bread".to_owned(),
+            }],
+        }
+    );
+}
+
+#[tokio::test]
 async fn files_settings_sessions_and_agent_settings() {
     let setup = Setup::new();
     let mut client = setup.connect().await;
@@ -1709,7 +1746,8 @@ async fn files_settings_sessions_and_agent_settings() {
         client.ok(read("notes.txt")).await,
         ResponseBody::File {
             path: Some(setup.work().join("notes.txt")),
-            text: "remember the milk\n".to_owned()
+            text: "remember the milk\n".to_owned(),
+            edits: Vec::new(),
         }
     );
     assert_eq!(
