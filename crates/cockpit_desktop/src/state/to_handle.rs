@@ -1,22 +1,30 @@
 //! The "to handle" mark: a reminder you put on an agent, from its row's menu or Ctrl+Shift+H.
 //! The daemon keeps it, and clears it when you send the agent a prompt.
 
-use cockpit_protocol::{AgentId, MarkParams, Request};
+use cockpit_protocol::{AgentId, Mark, MarkParams, Request};
 
 use super::app_state::AppState;
 use super::requests::Outgoing;
 use super::ui_state::Popover;
 
 /// Marks the agent, or clears its mark. The row changes once the daemon's update comes back.
-pub fn set(state: &mut AppState, agent: AgentId, to_handle: bool) -> Vec<Outgoing> {
+pub fn set(state: &mut AppState, agent: AgentId, mark: Mark) -> Vec<Outgoing> {
     close_menu(state);
     if !state.agents.contains_key(&agent) {
         return Vec::new();
     }
     vec![Outgoing::action(Request::AgentMark(MarkParams {
         agent,
-        to_handle,
+        mark,
     }))]
+}
+
+/// The mark that clears `mark`, or that marks an agent without one.
+pub fn toggled(mark: Mark) -> Mark {
+    match mark {
+        Mark::Unmarked => Mark::ToHandle,
+        Mark::ToHandle => Mark::Unmarked,
+    }
 }
 
 /// Ctrl+Shift+H: marks the selected agent, or clears its mark.
@@ -24,8 +32,8 @@ pub fn toggle_selected(state: &mut AppState) -> Vec<Outgoing> {
     let Some(entry) = state.selected() else {
         return Vec::new();
     };
-    let (agent, marked) = (entry.id(), entry.summary.to_handle);
-    set(state, agent, !marked)
+    let (agent, mark) = (entry.id(), entry.summary.mark);
+    set(state, agent, toggled(mark))
 }
 
 /// A right-click on the agent's row opens its menu at the pointer, in the window's pixels.
@@ -65,7 +73,7 @@ mod tests {
 
         let marked = toggle_selected(&mut state);
         if let Some(entry) = state.agents.get_mut(&AgentId::new(1)) {
-            entry.summary.to_handle = true;
+            entry.summary.mark = Mark::ToHandle;
         }
         let cleared = toggle_selected(&mut state);
 
@@ -74,14 +82,14 @@ mod tests {
             marks(&marked),
             [MarkParams {
                 agent,
-                to_handle: true
+                mark: Mark::ToHandle
             }]
         );
         assert_eq!(
             marks(&cleared),
             [MarkParams {
                 agent,
-                to_handle: false
+                mark: Mark::Unmarked
             }]
         );
     }
@@ -94,7 +102,7 @@ mod tests {
         let unknown = state.ui.popover;
         open_menu(&mut state, AgentId::new(1), 10, 20);
         let opened = state.ui.popover;
-        let picked = set(&mut state, AgentId::new(1), true);
+        let picked = set(&mut state, AgentId::new(1), Mark::ToHandle);
 
         assert_eq!(unknown, None);
         assert_eq!(

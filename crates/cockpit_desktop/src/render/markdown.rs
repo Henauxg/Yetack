@@ -3,6 +3,7 @@
 use std::iter::{self, Peekable};
 use std::path::Path;
 
+use cockpit_protocol::ImageMediaType;
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use crate::path_style::PathStyle;
@@ -30,9 +31,6 @@ const WEB_SCHEMES: [&str; 2] = ["http", "https"];
 const WEB_URL_STARTS: [&str; 2] = ["http://", "https://"];
 /// What both of [`WEB_URL_STARTS`] start with.
 const WEB_URL_PREFIX: &str = "http";
-
-/// The extensions of the images a message shows, those the daemon sends as images.
-const IMAGE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Block {
@@ -445,15 +443,12 @@ fn image(url: &str, content: Vec<Inline>, style: PathStyle) -> Inline {
             })],
         };
     }
+    // The daemon sends the same types as images.
     let is_image = |path: &str| {
         style
             .file_name(path)
-            .and_then(|name| name.rsplit_once('.'))
-            .is_some_and(|(_, extension)| {
-                IMAGE_EXTENSIONS
-                    .iter()
-                    .any(|known| extension.eq_ignore_ascii_case(known))
-            })
+            .and_then(ImageMediaType::from_file_name)
+            .is_some()
     };
     match local_file_target(url, style) {
         Some((path, None)) if is_image(path) => Inline::Image {

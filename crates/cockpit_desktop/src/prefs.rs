@@ -31,7 +31,7 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use cockpit_protocol::{AccountId, AgentStatus, AgentSummary};
+use cockpit_protocol::{AccountId, AgentStatus, AgentSummary, Mark};
 use dioxus::prelude::*;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use strum::{EnumString, IntoStaticStr, VariantArray};
@@ -190,7 +190,7 @@ impl StatusFilter {
 
     pub fn admits(self, summary: &AgentSummary) -> bool {
         match self {
-            Self::ToHandle => summary.to_handle,
+            Self::ToHandle => summary.mark == Mark::ToHandle,
             _ => self.status().is_none_or(|kept| kept == summary.status),
         }
     }

@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant, SystemTime};
 
-use cockpit_protocol::{AgentId, AgentStatus, AgentSummary, MAX_TITLE_CHARS, Timestamp};
+use cockpit_protocol::{AgentId, AgentStatus, AgentSummary, MAX_TITLE_CHARS, Mark, Timestamp};
 use dioxus::prelude::*;
 
 use crate::bridge::{self, ROW_TITLE_FIELD_ID};
@@ -65,7 +65,7 @@ impl AgentRow {
                 .task_progress
                 .map(|progress| format!("{}/{}", progress.done, progress.total)),
             time: row_time(summary),
-            to_handle: summary.to_handle,
+            to_handle: summary.mark == Mark::ToHandle,
             edit,
         }
     }
@@ -168,13 +168,15 @@ fn filter_label(filter: StatusFilter) -> &'static str {
 /// The class that gives a chip its color.
 fn chip_class(filter: StatusFilter) -> &'static str {
     match filter {
-        StatusFilter::ToHandle => "to-handle",
+        StatusFilter::ToHandle => TO_HANDLE_CLASS,
         _ => filter.status().map_or("", format::status_class),
     }
 }
 
 /// The mark's name, in the filter and the row's tooltip.
 const TO_HANDLE: &str = "To handle";
+
+const TO_HANDLE_CLASS: &str = "to-handle";
 
 /// What the list says when the filter leaves no row.
 fn empty_list_text(filter: StatusFilter) -> &'static str {
@@ -325,16 +327,12 @@ impl MachineGroup {
             .agents
             .values()
             .filter(|entry| MachineId::of(entry.id()) == machine);
-        let (count, needs_you, to_handle) =
-            agents.fold((0, 0, 0), |(count, needs_you, to_handle), entry| {
-                let waits = entry.summary.status == AgentStatus::NeedsYou;
-                let marked = entry.summary.to_handle;
-                (
-                    count + 1,
-                    needs_you + usize::from(waits),
-                    to_handle + usize::from(marked),
-                )
-            });
+        let (mut count, mut needs_you, mut to_handle) = (0, 0, 0);
+        for entry in agents {
+            count += 1;
+            needs_you += usize::from(entry.summary.status == AgentStatus::NeedsYou);
+            to_handle += usize::from(entry.summary.mark == Mark::ToHandle);
+        }
         let trouble = known.and_then(|known| {
             if let Some(line) = daemon_update::update_line(known) {
                 return Some(MachineTrouble {
@@ -516,7 +514,7 @@ fn AgentRowView(row: AgentRow) -> Element {
         classes.push("unread");
     }
     if row.to_handle {
-        classes.push("to-handle");
+        classes.push(TO_HANDLE_CLASS);
     }
     if let Some(TitleEdit {
         title, select_all, ..
@@ -733,14 +731,14 @@ pub fn RowMenu() -> Element {
             Some(Popover::RowMenu { agent, x, y }) => state
                 .agents
                 .get(&agent)
-                .map(|entry| (agent, x, y, entry.summary.to_handle)),
+                .map(|entry| (agent, x, y, entry.summary.mark)),
             _ => None,
         }
     };
     let Some(shown) = use_presence(open) else {
         return rsx! {};
     };
-    let (agent, x, y, marked) = shown.value;
+    let (agent, x, y, mark) = shown.value;
     let close_menu = |state: &mut AppState| state.ui.popover = None;
     rsx! {
         div {
@@ -753,10 +751,10 @@ pub fn RowMenu() -> Element {
                 button {
                     class: "menu-item",
                     role: "menuitem",
-                    onclick: move |_| cockpit.change(|state| to_handle::set(state, agent, !marked)),
+                    onclick: move |_| cockpit.change(|state| to_handle::set(state, agent, to_handle::toggled(mark))),
                     span { class: "menu-label",
                         Icon { kind: IconKind::Flag, size: 14 }
-                        if marked { "Done handling" } else { "Mark to handle" }
+                        if mark == Mark::ToHandle { "Done handling" } else { "Mark to handle" }
                     }
                     span { class: "menu-hint", "Ctrl+Shift+H" }
                 }

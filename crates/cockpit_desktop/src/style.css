@@ -772,6 +772,7 @@ button:disabled {
   color: var(--violet);
   font-size: 11px;
   font-weight: 600;
+  animation: fade-in var(--motion-in) var(--ease-out) backwards;
 }
 
 .filter-chip.to-handle {
@@ -1952,6 +1953,7 @@ html.reordering * {
   border-radius: 8px;
   border: 1px solid var(--line-strong);
   animation: fade-in var(--motion-in) var(--ease-out) backwards;
+  transition: border-color var(--motion-hover) var(--ease);
 }
 
 .chat-image:hover > img {

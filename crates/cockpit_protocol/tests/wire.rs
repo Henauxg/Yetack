@@ -22,7 +22,7 @@ use cockpit_protocol::{
     ContextCategory, ContextUsage, Cores, CostUsd, CredentialSource, DirEntry, DirListing, Effort,
     EffortSource, EntryKind, EntryLink, EnvironmentCredentials, ErrorBody, ErrorCode, Event,
     EventRecord, FileEdit, FindFilesParams, FoldersListParams, HistoryPage, HistoryParams, Image,
-    ImageMediaType, ItemBody, ItemId, ListDirParams, LoadAverage, LoadHistory, MachineLoad,
+    ImageMediaType, ItemBody, ItemId, ListDirParams, LoadAverage, LoadHistory, MachineLoad, Mark,
     MarkParams, McpRemoveParams, McpScope, McpServer, McpServerParams, McpServerStatus,
     McpToggleAction, McpToggleParams, McpTool, McpTransport, Method, MoveParams, OlderItems,
     PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision,
@@ -84,7 +84,7 @@ fn summary() -> AgentSummary {
         account: work_account().id,
         sign_in_wait: SignInWait::Waiting,
         background_running: 2,
-        to_handle: true,
+        mark: Mark::ToHandle,
     }
 }
 
@@ -113,7 +113,7 @@ fn idle_summary() -> AgentSummary {
         account: AccountId::DEFAULT,
         sign_in_wait: SignInWait::NotWaiting,
         background_running: 0,
-        to_handle: false,
+        mark: Mark::Unmarked,
     }
 }
 
@@ -592,7 +592,7 @@ fn requests() -> Vec<Request> {
         }),
         Request::AgentMark(MarkParams {
             agent,
-            to_handle: true,
+            mark: Mark::ToHandle,
         }),
         Request::AgentMove(MoveParams {
             agent,
@@ -1227,6 +1227,7 @@ fn words_are_pinned() {
     assert_eq!(words::<EnvironmentCredentials>(), ["set", "unset"]);
     assert_eq!(words::<EffortSource>(), ["chosen", "claude_code_default"]);
     assert_eq!(words::<SignInWait>(), ["not_waiting", "waiting"]);
+    assert_eq!(words::<Mark>(), ["unmarked", "to_handle"]);
     assert_eq!(words::<Selection>(), ["single", "multiple"]);
     assert_eq!(
         words::<TurnOutcome>(),
@@ -1377,7 +1378,7 @@ fn a_mark_request_on_the_wire() {
         id: RequestId::new(10),
         request: Request::AgentMark(MarkParams {
             agent: agent(),
-            to_handle: true,
+            mark: Mark::ToHandle,
         }),
     };
 
@@ -1388,7 +1389,7 @@ fn a_mark_request_on_the_wire() {
             "id": 10,
             "request": {
                 "method": "agent.mark",
-                "params": {"agent": 3, "to_handle": true},
+                "params": {"agent": 3, "mark": "to_handle"},
             },
         }),
     );
@@ -1818,7 +1819,7 @@ fn an_agent_update_on_the_wire() {
                 "account": 2,
                 "sign_in_wait": "waiting",
                 "background_running": 2,
-                "to_handle": true,
+                "mark": "to_handle",
             },
         }),
     );
@@ -1830,12 +1831,12 @@ fn an_agent_update_on_the_wire() {
 fn a_summary_without_its_background_count_reads_none_running() {
     let mut older = serde_json::to_value(summary()).unwrap();
     older.as_object_mut().unwrap().remove("background_running");
-    older.as_object_mut().unwrap().remove("to_handle");
+    older.as_object_mut().unwrap().remove("mark");
 
     let read: AgentSummary = serde_json::from_value(older).unwrap();
 
     assert_eq!(read.background_running, 0);
-    assert!(!read.to_handle);
+    assert_eq!(read.mark, Mark::Unmarked);
 }
 
 #[test]

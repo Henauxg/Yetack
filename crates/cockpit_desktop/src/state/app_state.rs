@@ -476,7 +476,7 @@ impl AppState {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use cockpit_protocol::{CostUsd, EffortSource, PermissionMode, Position, SignInWait};
+    use cockpit_protocol::{CostUsd, EffortSource, Mark, PermissionMode, Position, SignInWait};
 
     use super::*;
 
@@ -505,7 +505,7 @@ pub(crate) mod tests {
             account: AccountId::DEFAULT,
             sign_in_wait: SignInWait::NotWaiting,
             background_running: 0,
-            to_handle: false,
+            mark: Mark::Unmarked,
         }
     }
 

@@ -16,10 +16,10 @@ use claude_protocol::{
 use cockpit_protocol::{
     AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, Answer, AnswerState, Approval,
     BackgroundTask, BackgroundTaskId, BackgroundTaskStatus, ClaudeSessionId, ContextUsage, CostUsd,
-    Effort, EffortSource, Event, Image, ItemBody, ItemId, McpServer, PendingId, PermissionMode,
-    Plan, Position, Prompt, PromptId, Question, SignInWait, SubagentRun, SubagentStatus,
-    SubagentToolCall, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd,
-    TurnOutcome, UserMessage, WaitingPrompt, WaitingState,
+    Effort, EffortSource, Event, Image, ItemBody, ItemId, Mark, McpServer, PendingId,
+    PermissionMode, Plan, Position, Prompt, PromptId, Question, SignInWait, SubagentRun,
+    SubagentStatus, SubagentToolCall, Timestamp, TokenUsage, ToolCall, ToolCallStatus,
+    TranscriptItem, TurnEnd, TurnOutcome, UserMessage, WaitingPrompt, WaitingState,
 };
 use serde_json::{Map, Value};
 use strum::{EnumString, IntoStaticStr, VariantArray};
@@ -287,7 +287,7 @@ impl AgentView {
             account: AccountId::DEFAULT,
             sign_in_wait: SignInWait::NotWaiting,
             background_running: 0,
-            to_handle: false,
+            mark: Mark::Unmarked,
         };
         Self::new(summary, Duration::ZERO)
     }
@@ -756,8 +756,8 @@ impl AgentView {
         self.summary.position = position;
     }
 
-    pub(crate) fn set_to_handle(&mut self, to_handle: bool) {
-        self.summary.to_handle = to_handle;
+    pub(crate) fn set_mark(&mut self, mark: Mark) {
+        self.summary.mark = mark;
     }
 
     fn apply_system(&mut self, event: SystemEvent, now: Timestamp) {
@@ -1799,7 +1799,7 @@ mod tests {
             position: Position::default(),
             account: AccountId::DEFAULT,
             sign_in_wait: SignInWait::NotWaiting,
-            to_handle: false,
+            mark: Mark::Unmarked,
             background_running: 0,
         };
         let mut view = AgentView::new(summary, Duration::from_secs(3600));

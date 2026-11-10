@@ -10,7 +10,7 @@ use serde_json::Value;
 use strum::{Display, EnumString, IntoStaticStr, VariantArray};
 
 use crate::account::CredentialSource;
-use crate::agent::{Effort, PermissionMode};
+use crate::agent::{Effort, Mark, PermissionMode};
 use crate::details::McpScope;
 use crate::ids::{
     AccountId, AgentId, BackgroundTaskId, ClaudeSessionId, ItemId, PendingId, ProcessId, PromptId,
@@ -349,7 +349,7 @@ pub struct RenameParams {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MarkParams {
     pub agent: AgentId,
-    pub to_handle: bool,
+    pub mark: Mark,
 }
 
 /// The agent goes just above `before`, or to the bottom of the list when `before` is `None`.

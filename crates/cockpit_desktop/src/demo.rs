@@ -13,7 +13,7 @@ use cockpit_protocol::{
     CommandLoad, Completeness, ContextCategory, ContextUsage, Cores, CostUsd, CredentialSource,
     DirEntry, DirListing, Effort, EffortSource, EntryKind, EntryLink, EnvironmentCredentials,
     ErrorBody, ErrorCode, FileEdit, HistoryPage, Image, ImageMediaType, ItemBody, ItemId,
-    LoadAverage, LoadHistory, MachineLoad, McpScope, McpServer, McpServerStatus, McpTool,
+    LoadAverage, LoadHistory, MachineLoad, Mark, McpScope, McpServer, McpServerStatus, McpTool,
     McpTransport, OlderItems, PastSession, PendingId, PermissionMode, Plan, PlanUsage, Position,
     ProcessId, PromptId, Question, QuestionOption, RateLimitStatus, Request, ResourceUse,
     ResponseBody, Selection, ServerLoad, ServerPoint, SignIn, SignInWait, SlashCommand, Subagent,
@@ -627,12 +627,12 @@ pub fn apply(state: &mut AppState, request: &Request) {
         }
         Request::AgentMark(params) => {
             if let Some(entry) = state.agents.get_mut(&params.agent) {
-                entry.summary.to_handle = params.to_handle;
+                entry.summary.mark = params.mark;
             }
         }
         Request::AgentPrompt(params) => {
             if let Some(entry) = state.agents.get_mut(&params.agent) {
-                entry.summary.to_handle = false;
+                entry.summary.mark = Mark::Unmarked;
             }
         }
         _ => {}
@@ -1204,7 +1204,7 @@ fn summary(parts: SummaryParts<'_>, now: SystemTime) -> AgentSummary {
         account: AccountId::DEFAULT,
         sign_in_wait: SignInWait::NotWaiting,
         background_running: 0,
-        to_handle: false,
+        mark: Mark::Unmarked,
     }
 }
 
@@ -1965,7 +1965,7 @@ fn exited_agent(now: SystemTime) -> Sample {
         now,
     );
     summary.cache_expires_at = Some(at(now, 600));
-    summary.to_handle = true;
+    summary.mark = Mark::ToHandle;
     let items = vec![
         item(
             1,

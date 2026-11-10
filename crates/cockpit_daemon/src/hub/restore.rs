@@ -71,7 +71,7 @@ pub(crate) fn restore(state: &StateDir, default_folder: &Path) -> Result<Restore
             summary.folder = record.folder.clone();
             summary.position = record.position;
             summary.account = record.account;
-            summary.to_handle = record.to_handle;
+            summary.mark = record.mark;
             let items: Vec<TranscriptItem> = logged.items.into_values().collect();
             let mut view = AgentView::restore(summary, logged.details, items, ttl);
             let account = settings.accounts.get(record.account, default_folder);
@@ -116,7 +116,7 @@ mod tests {
     use std::path::PathBuf;
 
     use cockpit_protocol::{
-        AgentStatus, ClaudeSessionId, EventRecord, Frame, ItemBody, Position, ServerMessage,
+        AgentStatus, ClaudeSessionId, EventRecord, Frame, ItemBody, Mark, Position, ServerMessage,
         Settings, Timestamp,
     };
 
@@ -139,7 +139,7 @@ mod tests {
             position: Position::default(),
             process: None,
             account: AccountId::DEFAULT,
-            to_handle: false,
+            mark: Mark::Unmarked,
         }
     }
 
@@ -229,7 +229,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let state = StateDir::create(temp.path()).unwrap();
         let marked = AgentRecord {
-            to_handle: true,
+            mark: Mark::ToHandle,
             ..record(1)
         };
         AgentsFile {
@@ -241,7 +241,7 @@ mod tests {
         .unwrap();
         let mut logs = EventLogs::new(state.events());
         let mut cleared = initial_summary(&marked);
-        cleared.to_handle = false;
+        cleared.mark = Mark::Unmarked;
         log(
             &mut logs,
             LogName::Agent(AgentId::new(1)),
@@ -249,7 +249,7 @@ mod tests {
             Event::AgentAdded(cleared),
         );
         let mut stale = initial_summary(&record(2));
-        stale.to_handle = true;
+        stale.mark = Mark::ToHandle;
         log(
             &mut logs,
             LogName::Agent(AgentId::new(2)),
@@ -259,12 +259,12 @@ mod tests {
 
         let restored = restore(&state, &temp.path().join("claude")).unwrap();
 
-        let marks: Vec<bool> = restored
+        let marks: Vec<Mark> = restored
             .agents
             .iter()
-            .map(|(_, view)| view.summary().to_handle)
+            .map(|(_, view)| view.summary().mark)
             .collect();
-        assert_eq!(marks, [true, false]);
+        assert_eq!(marks, [Mark::ToHandle, Mark::Unmarked]);
     }
 
     /// Each log applies in its own order, wherever the other logs put their numbers, and a line

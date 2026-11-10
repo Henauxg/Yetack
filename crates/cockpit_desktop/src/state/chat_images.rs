@@ -61,11 +61,11 @@ pub fn hide(state: &mut AppState, agent: AgentId, path: &Path) {
     let Some(index) = entry.images.iter().position(|kept| kept.path == path) else {
         return;
     };
-    let gone = entry.images.get_mut(index).is_some_and(|kept| {
-        kept.shown = kept.shown.saturating_sub(1);
-        kept.shown == 0 && matches!(kept.image, Loadable::Failed(_))
-    });
-    if gone {
+    let Some(kept) = entry.images.get_mut(index) else {
+        return;
+    };
+    kept.shown = kept.shown.saturating_sub(1);
+    if kept.shown == 0 && matches!(kept.image, Loadable::Failed(_)) {
         entry.images.remove(index);
     }
     drop_hidden(entry);
@@ -74,13 +74,13 @@ pub fn hide(state: &mut AppState, agent: AgentId, path: &Path) {
 /// Drops the oldest images no place shows, beyond [`KEPT`].
 fn drop_hidden(entry: &mut AgentEntry) {
     let mut hidden = entry.images.iter().filter(|kept| kept.shown == 0).count();
-    entry.images.retain(|kept| {
-        let drops = kept.shown == 0 && hidden > KEPT;
-        if drops {
-            hidden -= 1;
-        }
-        !drops
-    });
+    while hidden > KEPT {
+        let Some(oldest) = entry.images.iter().position(|kept| kept.shown == 0) else {
+            return;
+        };
+        entry.images.remove(oldest);
+        hidden -= 1;
+    }
 }
 
 /// Asks for the agent's images that no request asked for yet.
