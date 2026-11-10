@@ -2499,6 +2499,14 @@ html.reordering * {
   flex: none;
   display: flex;
   background: linear-gradient(var(--row-tint), var(--row-tint)), var(--well);
+  user-select: none;
+}
+
+/* Drawn content, which a selection skips and a copy leaves out: dragging over the rows copies the
+   code alone. */
+.line-number::before,
+.line-sign::before {
+  content: attr(data-text);
 }
 
 .diff-row.marked .line-gutter {
@@ -4012,6 +4020,14 @@ html.splitting * {
   border: 1px solid var(--line-control);
   font-size: 11.5px;
   color: var(--muted);
+}
+
+.file-bar .copy-button {
+  position: static;
+}
+
+.copy-button:disabled {
+  opacity: 0.5;
 }
 
 .segmented {
@@ -6113,7 +6129,7 @@ label.icon-button,
   color: var(--text-bright);
 }
 
-.copy-button:hover {
+.copy-button:not(:disabled):hover {
   border-color: #444444;
   background: var(--raised-hover);
   color: var(--text);
@@ -6219,7 +6235,7 @@ label.icon-button,
 .stop-button:active,
 .effort:active,
 .filter:active,
-.copy-button:active,
+.copy-button:not(:disabled):active,
 .back-button:active,
 .option:active,
 .filter-chip:active {

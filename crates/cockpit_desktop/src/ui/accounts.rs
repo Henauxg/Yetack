@@ -20,13 +20,11 @@ use crate::state::accounts::{
     RemoveBlock,
 };
 use crate::state::{AppState, Dialog, FormMenu, actions};
+use crate::ui::code::CopyButton;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::machines::machine_choices;
 use crate::ui::presence::Presence;
 use crate::{bridge, format};
-
-/// How long a copy button says "Copied".
-const COPIED_FOR: Duration = Duration::from_secs(2);
 
 /// The add dialog's fields, which the page's script fills.
 const ADD_NAME_FIELD_ID: &str = "add-account-name";
@@ -71,29 +69,10 @@ pub fn AccountMini(label: AccountLabel) -> Element {
 /// A command to type in a terminal, with a button that copies it.
 #[component]
 pub fn CommandBox(command: String) -> Element {
-    let mut copied = use_signal(|| false);
     rsx! {
         div { class: "command-box",
             span { class: "command-text", "{command}" }
-            button {
-                class: "copy-button",
-                title: "Copy the command",
-                onclick: move |_| {
-                    bridge::copy_to_clipboard(command.clone());
-                    copied.set(true);
-                    spawn(async move {
-                        tokio::time::sleep(COPIED_FOR).await;
-                        copied.set(false);
-                    });
-                },
-                if copied() {
-                    span { class: "copied-check", Icon { kind: IconKind::Check, size: 14 } }
-                    "Copied"
-                } else {
-                    Icon { kind: IconKind::Copy, size: 14 }
-                    "Copy"
-                }
-            }
+            CopyButton { text: command, label: "Copy the command", worded: true }
         }
     }
 }

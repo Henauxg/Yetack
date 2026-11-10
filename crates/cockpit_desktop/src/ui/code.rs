@@ -1,4 +1,4 @@
-//! Code blocks with a copy button, and diff rows with syntax colors and word highlights.
+//! The copy button, code blocks, and diff rows with syntax colors and word highlights.
 
 use std::time::Duration;
 
@@ -19,9 +19,44 @@ pub enum LineNumbers {
     Hidden,
 }
 
+/// A button that copies `text`, then says "Copied" for a moment. `label` names what it copies, for
+/// its tooltip and screen readers; `worded` writes "Copy" beside the icon. Without `text`, it is
+/// disabled: the file view keeps it in place while the file loads.
+#[component]
+pub fn CopyButton(text: Option<String>, label: String, worded: bool) -> Element {
+    let mut copied = use_signal(|| false);
+    rsx! {
+        button {
+            class: "copy-button",
+            aria_label: "{label}",
+            title: "{label}",
+            disabled: text.is_none(),
+            onclick: move |_| {
+                let Some(text) = text.clone() else {
+                    return;
+                };
+                bridge::copy_to_clipboard(text);
+                copied.set(true);
+                spawn(async move {
+                    tokio::time::sleep(COPIED_FOR).await;
+                    copied.set(false);
+                });
+            },
+            if copied() {
+                span { class: "copied-check", Icon { kind: IconKind::Check, size: 14 } }
+                "Copied"
+            } else {
+                Icon { kind: IconKind::Copy, size: 14 }
+                if worded {
+                    "Copy"
+                }
+            }
+        }
+    }
+}
+
 #[component]
 pub fn CodeBlock(language: Option<String>, code: String) -> Element {
-    let mut copied = use_signal(|| false);
     let lines = render::highlight_capped(
         &code,
         language.as_deref().and_then(Language::from_tag),
@@ -38,25 +73,7 @@ pub fn CodeBlock(language: Option<String>, code: String) -> Element {
             if !label.is_empty() {
                 span { class: "code-language mono", "{label}" }
             }
-            button {
-                class: "copy-button",
-                aria_label: "{copy_label}",
-                title: "{copy_label}",
-                onclick: move |_| {
-                    bridge::copy_to_clipboard(code.clone());
-                    copied.set(true);
-                    spawn(async move {
-                        tokio::time::sleep(COPIED_FOR).await;
-                        copied.set(false);
-                    });
-                },
-                if copied() {
-                    span { class: "copied-check", Icon { kind: IconKind::Check, size: 14 } }
-                    "Copied"
-                } else {
-                    Icon { kind: IconKind::Copy, size: 14 }
-                }
-            }
+            CopyButton { text: code, label: copy_label, worded: false }
             div { class: "code-lines mono scroll-x",
                 for (index, spans) in lines.rows.into_iter().enumerate() {
                     div { key: "{index}", class: "code-line",
@@ -129,10 +146,12 @@ pub fn diff_line(line: &DiffLine, numbers: LineNumbers, marked: Option<u32>) -> 
         LineNumbers::Shown => number.map(|number| number.to_string()).unwrap_or_default(),
         LineNumbers::Hidden => String::new(),
     };
+    // The style sheet draws the number and the sign from these attributes, so that a selection
+    // of the text, and its copy, leave them out.
     let content = rsx! {
         span { class: "line-gutter",
-            span { class: "line-number", "{number}" }
-            span { class: "line-sign", "{sign}" }
+            span { class: "line-number", "data-text": "{number}" }
+            span { class: "line-sign", "data-text": "{sign}" }
         }
         span { class: "line-text",
             for segment in line.segments.iter() {

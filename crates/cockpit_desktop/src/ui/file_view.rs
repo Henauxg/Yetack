@@ -12,7 +12,7 @@ use crate::path_style::PathStyle;
 use crate::render::{self, Diff, Language, MAX_RENDERED_LINES, diff_lines};
 use crate::state::{FileRead, Loadable, ViewMode, actions, file_edits};
 use crate::ui::changes_list;
-use crate::ui::code::{LineNumbers, diff_line, diff_row, lines_not_shown};
+use crate::ui::code::{CopyButton, LineNumbers, diff_line, diff_row, lines_not_shown};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::splitter::FILE_VIEW_ID;
 use crate::{bridge, format};
@@ -62,6 +62,10 @@ pub fn FileViewPanel() -> Element {
     let shown = view.path.clone();
     let loading = matches!(text, Loadable::NotRequested | Loadable::Loading);
     let image = matches!(text, Loadable::Loaded(FileRead::Image(_)));
+    let copied_text = match &text {
+        Loadable::Loaded(FileRead::Text(text)) => Some(text.clone()),
+        _ => None,
+    };
     let wrap = state.prefs.file_view.wrap;
     rsx! {
         section {
@@ -134,6 +138,9 @@ pub fn FileViewPanel() -> Element {
                             "Wrap"
                         }
                     }
+                    // The file's whole text, in the diff too. Last, so that "Copied", wider than
+                    // "Copy", pushes nothing aside.
+                    CopyButton { text: copied_text, label: "Copy the file's text", worded: true }
                 }
             }
             div {
