@@ -1546,7 +1546,7 @@ impl AgentView {
         match self
             .awaited_echoes
             .iter()
-            .position(|awaited| awaited == text)
+            .position(|awaited| same_words(awaited, text))
         {
             Some(index) => {
                 self.awaited_echoes.remove(index);
@@ -1642,6 +1642,12 @@ fn change_item(change: ItemChange) -> ItemId {
 fn find_item(items: &[TranscriptItem], id: ItemId) -> Option<&TranscriptItem> {
     let index = items.binary_search_by_key(&id, |item| item.id).ok()?;
     items.get(index)
+}
+
+/// Whether a sent prompt and an echo hold the same words. Claude Code trims a slash command's
+/// arguments, so `/greet  world` comes back as `/greet world`.
+fn same_words(sent: &str, echo: &str) -> bool {
+    sent.split_whitespace().eq(echo.split_whitespace())
 }
 
 fn user_message(text: String, images: Vec<Image>) -> ItemBody {
@@ -3295,6 +3301,22 @@ mod tests {
                 &user_message("/review".to_owned(), Vec::new()),
             ]
         );
+    }
+
+    #[test]
+    fn a_typed_command_with_extra_spaces_still_matches_its_echo() {
+        let mut view = view();
+        view.add_prompt(&prompt("/greet  big   world\n"), now());
+
+        apply(
+            &mut view,
+            echo(
+                "<command-message>greet</command-message>\n\
+                 <command-name>/greet</command-name>\n<command-args>big   world</command-args>",
+            ),
+        );
+
+        assert_eq!(user_texts(&view), ["/greet  big   world\n"]);
     }
 
     #[test]
