@@ -500,6 +500,15 @@ fn StartForm(form: NewAgentForm) -> Element {
             start();
         }
     };
+    // As in the composer: Enter starts, and Shift+Enter adds a line.
+    let start_on_enter = move |event: KeyboardEvent| {
+        let modifiers = event.modifiers();
+        let plain_enter = event.key() == Key::Enter && !modifiers.shift() && !modifiers.alt();
+        if plain_enter && !event.is_composing() {
+            event.prevent_default();
+            start();
+        }
+    };
     let toggle_menu = move |menu: FormMenu| {
         move |event: MouseEvent| {
             event.stop_propagation();
@@ -650,7 +659,7 @@ fn StartForm(form: NewAgentForm) -> Element {
                         }
                     },
                     oninput: move |event: FormEvent| cockpit.with_drafts(|_, drafts| drafts.new_agent.prompt = event.value()),
-                    onkeydown: start_on_command_enter,
+                    onkeydown: start_on_enter,
                 }
                 div { class: "prompt-tools",
                     div { class: "menu-anchor",
@@ -822,7 +831,8 @@ fn type_folder(cockpit: Cockpit, text: String) {
     }
 }
 
-/// The folder field's keys, as the "Open file" dialog's path field has them.
+/// The folder field's keys, as the "Open file" dialog's path field has them. Enter takes the
+/// highlighted folder, or with none highlighted, starts the agent.
 fn folder_key(cockpit: Cockpit, event: &KeyboardEvent) {
     if event.modifiers().alt() {
         return;
@@ -839,7 +849,9 @@ fn folder_key(cockpit: Cockpit, event: &KeyboardEvent) {
         }
         Key::Enter => {
             event.prevent_default();
-            take_folder(cockpit, None);
+            if !take_folder(cockpit, None) {
+                cockpit.change_with_drafts(|state, drafts| actions::start_agent(state, drafts));
+            }
             return;
         }
         // The page's script passes Backspace on only with the caret at the end and nothing

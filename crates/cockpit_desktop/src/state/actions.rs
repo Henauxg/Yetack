@@ -1856,8 +1856,9 @@ const NEW_AGENT_MODEL: &str = format::OPUS.alias;
 /// has no mode the dialog carries over.
 const NEW_AGENT_MODE: PermissionMode = PermissionMode::Auto;
 
-/// Opens the new agent dialog on the last used folder, with the model, effort and permission
-/// mode of the last agent started, else Opus and Auto. A mode the mode menu does not offer, or
+/// Opens the new agent dialog on the machine of the last agent started, else this computer, and
+/// on that machine's last used folder. A machine that does not answer gives way to this computer.
+/// The model, effort and permission mode are the last agent's too, else Opus and Auto. A mode the mode menu does not offer, or
 /// Plan, which is usually for a while, is not carried over. The past sessions are listed again,
 /// since sessions end and start while the app runs. An open dialog stays as it is, with what its
 /// fields hold, and an "Accounts" dialog that goes back to it does so.
@@ -1869,16 +1870,25 @@ pub fn open_new_agent(state: &mut AppState, drafts: &mut Drafts) {
         state.ui.close_dialog();
         return;
     }
-    let folder = state
-        .recent_folders(MachineId::THIS)
-        .first()
-        .map(|recent| path_style::shown(&recent.folder))
-        .unwrap_or_default();
     let last = state
         .agents
         .values()
         .map(|entry| &entry.summary)
         .max_by_key(|summary| summary.started_at);
+    let machine = last
+        .map(|summary| MachineId::of(summary.id))
+        .filter(|machine| {
+            state
+                .machines
+                .get(*machine)
+                .is_some_and(MachineState::is_connected)
+        })
+        .unwrap_or(MachineId::THIS);
+    let folder = state
+        .recent_folders(machine)
+        .first()
+        .map(|recent| path_style::shown(&recent.folder))
+        .unwrap_or_default();
     let model = last
         .and_then(|summary| summary.model.as_deref())
         .and_then(format::model_alias)
@@ -1891,12 +1901,15 @@ pub fn open_new_agent(state: &mut AppState, drafts: &mut Drafts) {
         .map(|summary| summary.mode)
         .filter(|mode| MODE_CHOICES.contains(mode) && *mode != PermissionMode::Plan)
         .unwrap_or(NEW_AGENT_MODE);
-    if state.machines.this.sessions != Loadable::Loading {
-        state.machines.this.sessions = Loadable::NotRequested;
+    if let Some(known) = state.machines.get_mut(machine) {
+        if known.sessions != Loadable::Loading {
+            known.sessions = Loadable::NotRequested;
+        }
+        known.sign_ins.refresh();
     }
-    state.machines.this.sign_ins.refresh();
     state.ui.popover = None;
     state.ui.dialog = Some(Dialog::NewAgent(NewAgentForm {
+        machine,
         model: Some(model),
         effort,
         mode: Some(mode),
@@ -4151,6 +4164,54 @@ mod tests {
         );
     }
 
+    /// Makes devbox's agent 2 the last agent started, in `/srv/shop`.
+    fn devbox_started_last(state: &mut AppState, devbox: MachineId) {
+        if let Some(entry) = state.agents.get_mut(&devbox.app_agent(AgentId::new(2))) {
+            entry.summary.started_at = Timestamp::from_unix_millis(90_000);
+            entry.summary.folder = PathBuf::from("/srv/shop");
+        }
+    }
+
+    #[test]
+    fn the_new_agent_dialog_opens_where_the_last_agent_started() {
+        let (mut state, devbox) = two_machines();
+        devbox_started_last(&mut state, devbox);
+        let mut drafts = Drafts::default();
+
+        open_new_agent(&mut state, &mut drafts);
+        let asked = crate::state::needed_requests(&mut state);
+
+        assert!(matches!(
+            &state.ui.dialog,
+            Some(Dialog::NewAgent(form)) if form.machine == devbox
+        ));
+        assert_eq!(drafts.new_agent.folder, "/srv/shop");
+        assert!(
+            asked
+                .iter()
+                .any(|outgoing| outgoing.request == Request::SessionsList && outgoing.to == devbox),
+            "the dialog lists devbox's past sessions: {asked:?}"
+        );
+    }
+
+    #[test]
+    fn the_new_agent_dialog_opens_on_this_computer_when_the_last_machine_does_not_answer() {
+        let (mut state, devbox) = two_machines();
+        devbox_started_last(&mut state, devbox);
+        if let Some(known) = state.machines.others.get_mut(&devbox) {
+            known.connection = ConnectionState::Connecting { attempt: 2 };
+        }
+        let mut drafts = Drafts::default();
+
+        open_new_agent(&mut state, &mut drafts);
+
+        assert!(matches!(
+            &state.ui.dialog,
+            Some(Dialog::NewAgent(form)) if form.machine == MachineId::THIS
+        ));
+        assert!(drafts.new_agent.folder.starts_with("/work/project-"));
+    }
+
     #[test]
     fn a_new_agent_starts_on_the_machine_picked_with_its_default_account() {
         let (mut state, devbox) = two_machines();
@@ -4509,7 +4570,7 @@ mod tests {
         assert_eq!(form.mode, Some(PermissionMode::Default));
     }
 
-    /// Ctrl+N then Ctrl+Enter would otherwise start an agent that runs everything without
+    /// Ctrl+N then Enter would otherwise start an agent that runs everything without
     /// asking, in a mode the dialog never offers.
     #[test]
     fn the_new_agent_form_carries_over_only_a_mode_it_offers_other_than_plan() {
