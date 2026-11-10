@@ -1,6 +1,9 @@
 //! Syntax colors: syntect's default syntaxes and bat's extra ones, mapped onto the few classes of
 //! the mockup palette.
 
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
 use std::sync::LazyLock;
 
@@ -114,7 +117,7 @@ pub struct Span {
 }
 
 /// A syntax of [`SYNTAXES`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Language(usize);
 
 impl Language {
@@ -167,13 +170,95 @@ impl Language {
 /// One `Vec<Span>` per line of `code`, as `str::lines` splits it (no line endings, a final newline
 /// adds no line). An empty line is an empty Vec. `None` gives one plain span per non-empty line.
 /// Adjacent spans of the same class are merged.
+///
+/// The grammar is most of a chat's Rust work, and a chat draws the same code again, as on a
+/// switch back to its agent: the result is kept for that text and language ([`HighlightCache`]).
 pub fn highlight(code: &str, language: Option<Language>) -> Vec<Vec<Span>> {
-    let syntax = language
-        .and_then(Language::syntax)
-        .filter(|_| code.len() <= MAX_HIGHLIGHT_BYTES);
-    let Some(syntax) = syntax else {
+    let colored = language.filter(|_| code.len() <= MAX_HIGHLIGHT_BYTES);
+    let Some((language, syntax)) =
+        colored.and_then(|language| Some((language, language.syntax()?)))
+    else {
         return code.lines().map(plain_line).collect();
     };
+    let key = CacheKey::new(code, language);
+    if let Some(lines) = CACHE.with_borrow(|cache| cache.get(&key)) {
+        return lines;
+    }
+    let lines = highlight_with(code, syntax);
+    CACHE.with_borrow_mut(|cache| cache.insert(key, lines.clone()));
+    lines
+}
+
+/// The text kept in [`CACHE`], in bytes of source code. The spans take about twice as much.
+const MAX_CACHED_BYTES: usize = 4 * 1024 * 1024;
+
+thread_local! {
+    /// The chat renders on one thread: its cache needs no lock.
+    static CACHE: RefCell<HighlightCache> = RefCell::new(HighlightCache::new(MAX_CACHED_BYTES));
+}
+
+/// A text by its language, hash and length. Two texts that share all three would share colors:
+/// with a 64-bit hash, no chat meets that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct CacheKey {
+    language: Language,
+    hash: u64,
+    bytes: usize,
+}
+
+impl CacheKey {
+    fn new(code: &str, language: Language) -> Self {
+        let mut hasher = DefaultHasher::new();
+        code.hash(&mut hasher);
+        Self {
+            language,
+            hash: hasher.finish(),
+            bytes: code.len(),
+        }
+    }
+}
+
+/// Highlighted texts, the oldest dropped first once they pass `max_bytes` of source code.
+#[derive(Debug, Default)]
+struct HighlightCache {
+    max_bytes: usize,
+    bytes: usize,
+    lines: HashMap<CacheKey, Vec<Vec<Span>>>,
+    order: VecDeque<CacheKey>,
+}
+
+impl HighlightCache {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            max_bytes,
+            ..Self::default()
+        }
+    }
+
+    fn get(&self, key: &CacheKey) -> Option<Vec<Vec<Span>>> {
+        self.lines.get(key).cloned()
+    }
+
+    /// Keeps `lines` for `key`. A text larger than the whole cache is not kept.
+    fn insert(&mut self, key: CacheKey, lines: Vec<Vec<Span>>) {
+        if key.bytes > self.max_bytes || self.lines.contains_key(&key) {
+            return;
+        }
+        while self.bytes + key.bytes > self.max_bytes {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            if self.lines.remove(&oldest).is_some() {
+                self.bytes -= oldest.bytes;
+            }
+        }
+        self.bytes += key.bytes;
+        self.order.push_back(key);
+        self.lines.insert(key, lines);
+    }
+}
+
+fn highlight_with(code: &str, syntax: &SyntaxReference) -> Vec<Vec<Span>> {
     let capitalized_types = syntax.name == RUST_SYNTAX;
     let mut parser = Some(LineParser::new(syntax));
     let mut lines = Vec::new();
@@ -384,6 +469,40 @@ mod tests {
         let language = Language::from_tag(tag);
         assert!(language.is_some(), "{tag} is a known tag");
         language
+    }
+
+    #[test]
+    fn a_text_drawn_again_takes_its_kept_colors() {
+        let rust = language("rust").unwrap();
+        let code = "fn total(items: &[Item]) -> u32 {\n    items.len() as u32\n}\n";
+        let fresh = highlight_with(code, rust.syntax().unwrap());
+
+        let first = highlight(code, Some(rust));
+        let kept = CACHE.with_borrow(|cache| cache.get(&CacheKey::new(code, rust)));
+        let again = highlight(code, Some(rust));
+
+        assert_eq!(first, fresh);
+        assert_eq!(kept.as_ref(), Some(&fresh));
+        assert_eq!(again, fresh);
+    }
+
+    #[test]
+    fn the_cache_drops_its_oldest_texts_past_its_size() {
+        let rust = language("rust").unwrap();
+        let key = |code: &str| CacheKey::new(code, rust);
+        let mut cache = HighlightCache::new(10);
+        let lines = vec![plain_line("x")];
+
+        cache.insert(key("abcd"), lines.clone());
+        cache.insert(key("efgh"), lines.clone());
+        cache.insert(key("ijkl"), lines.clone());
+        cache.insert(key("too long a text"), lines.clone());
+
+        assert_eq!(cache.get(&key("abcd")), None, "the oldest went");
+        assert!(cache.get(&key("efgh")).is_some());
+        assert!(cache.get(&key("ijkl")).is_some());
+        assert_eq!(cache.get(&key("too long a text")), None);
+        assert_eq!(cache.bytes, 8);
     }
 
     fn line_texts(lines: &[Vec<Span>]) -> Vec<String> {

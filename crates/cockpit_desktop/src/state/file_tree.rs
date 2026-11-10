@@ -38,8 +38,11 @@ pub enum TreeFilter {
 /// One agent's tree. Every path is absolute.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct FileTree {
-    /// The open folders.
+    /// The folders opened where folders start closed: the listed ones of "All".
     pub expanded: BTreeSet<PathBuf>,
+    /// The folders closed where folders start open: those of "Changed" and "Read", and those
+    /// under a folder outside every checkout, which only shows the files the agent touched.
+    pub closed: BTreeSet<PathBuf>,
     pub listings: BTreeMap<PathBuf, Listing>,
     pub filter: TreeFilter,
     /// The row the keys and the pointer moved to.
@@ -86,6 +89,8 @@ pub struct TreeRow {
 pub enum RowKind {
     Folder {
         open: bool,
+        /// It shows open until closed, else closed until opened.
+        starts_open: bool,
     },
     File,
     /// The head of the folders outside the agent's.
@@ -113,14 +118,6 @@ pub const OUTSIDE_SECTION: &str = "Also worked in";
 
 /// The note under a folder whose listing left entries out.
 const TRUNCATED_NOTE: &str = "More entries not shown";
-
-impl FileTree {
-    /// Whether its folders open and close: only "All" lists folders, and the others show every
-    /// folder open.
-    pub fn folds(&self) -> bool {
-        self.search.is_none() && self.filter == TreeFilter::All
-    }
-}
 
 impl RowKind {
     /// Whether the keys and the pointer can highlight the row.
@@ -326,7 +323,10 @@ impl Builder<'_> {
                 name: entry.name.clone(),
                 depth,
                 kind: if is_folder {
-                    RowKind::Folder { open }
+                    RowKind::Folder {
+                        open,
+                        starts_open: false,
+                    }
                 } else {
                     RowKind::File
                 },
@@ -347,7 +347,10 @@ impl Builder<'_> {
             path: root.to_owned(),
             name: root_label(root),
             depth: 0,
-            kind: RowKind::Folder { open },
+            kind: RowKind::Folder {
+                open,
+                starts_open: false,
+            },
             marks: self.marks(root, true, false),
         });
         if !open {
@@ -380,8 +383,8 @@ impl Builder<'_> {
         self.node_rows(root, &node, 1, rows);
     }
 
-    /// `paths` under their folders, all open: the agent's folder's first, then each folder
-    /// outside it.
+    /// `paths` under their folders, which start open: the agent's folder's first, then each
+    /// folder outside it.
     fn picked_rows(&self, folder: &Path, paths: &[&Path], rows: &mut Vec<TreeRow>) {
         let folder_text = folder.to_string_lossy();
         let mut groups: BTreeMap<Option<PathBuf>, Vec<String>> = BTreeMap::new();
@@ -414,30 +417,51 @@ impl Builder<'_> {
                         rows.push(section(folder));
                         sectioned = true;
                     }
+                    let open = !self.tree.closed.contains(&root);
                     rows.push(TreeRow {
                         path: root.clone(),
                         name: root_label(&root),
                         depth: 0,
-                        kind: RowKind::Folder { open: true },
+                        kind: RowKind::Folder {
+                            open,
+                            starts_open: true,
+                        },
                         marks: self.marks(&root, true, false),
                     });
-                    self.node_rows(&root, &node, 1, rows);
+                    if open {
+                        self.node_rows(&root, &node, 1, rows);
+                    }
                 }
             }
         }
     }
 
+    /// `node`'s folders and files under `folder`. A folder that holds one folder and no file
+    /// shares its row: "src", then "ui" under it, show as "src/ui", with the path of "ui".
     fn node_rows(&self, folder: &Path, node: &Node<'_>, depth: usize, rows: &mut Vec<TreeRow>) {
         for ((_, name), child) in &node.folders {
-            let path = self.path_in(folder, name);
+            let mut path = self.path_in(folder, name);
+            let mut shown = (*name).to_owned();
+            let mut child = child;
+            while let Some((inner, only)) = child.only_folder() {
+                path = self.path_in(&path, inner);
+                shown = self.style.join(&shown, inner);
+                child = only;
+            }
+            let open = !self.tree.closed.contains(&path);
             rows.push(TreeRow {
                 marks: self.marks(&path, true, false),
                 path: path.clone(),
-                name: (*name).to_owned(),
+                name: shown,
                 depth,
-                kind: RowKind::Folder { open: true },
+                kind: RowKind::Folder {
+                    open,
+                    starts_open: true,
+                },
             });
-            self.node_rows(&path, child, depth + 1, rows);
+            if open {
+                self.node_rows(&path, child, depth + 1, rows);
+            }
         }
         for (_, name) in &node.files {
             let path = self.path_in(folder, name);
@@ -494,6 +518,15 @@ struct Node<'name> {
 }
 
 impl<'name> Node<'name> {
+    /// The one folder this node holds, when it holds no file and no other folder.
+    fn only_folder(&self) -> Option<(&'name str, &Self)> {
+        let mut folders = self.folders.iter();
+        match (folders.next(), folders.next()) {
+            (Some(((_, name), node)), None) if self.files.is_empty() => Some((name, node)),
+            _ => None,
+        }
+    }
+
     fn insert(&mut self, names: &[&'name str]) {
         match names {
             [] => {}
@@ -621,26 +654,75 @@ pub fn set_filter(state: &mut AppState, agent: AgentId, filter: TreeFilter) {
     }
 }
 
-/// Opens a folder, or closes it. A folder opened again lists again. Under "Changed", "Read" or a
-/// search every folder stays open.
-pub fn toggle_folder(state: &mut AppState, agent: AgentId, path: &Path) {
+/// Opens a folder's row, or closes it. A folder opened again lists again. The row says which way
+/// its folder starts: a folder can show twice, inside a folder outside every checkout and at the
+/// top level, each with its own way.
+pub fn toggle_folder(state: &mut AppState, agent: AgentId, row: &TreeRow) {
+    let RowKind::Folder { starts_open, .. } = row.kind else {
+        return;
+    };
     let Some(entry) = state.agents.get_mut(&agent) else {
         return;
     };
     let tree = &mut entry.tree;
-    if tree.folds() && !tree.expanded.remove(path) {
-        tree.expanded.insert(path.to_owned());
+    let path = &row.path;
+    if starts_open {
+        if !tree.closed.remove(path) {
+            tree.closed.insert(path.clone());
+        }
+    } else if !tree.expanded.remove(path) {
+        tree.expanded.insert(path.clone());
         if let Some(listing) = tree.listings.get_mut(path) {
             listing.stale = true;
         }
     }
-    tree.highlighted = Some(path.to_owned());
+    tree.highlighted = Some(path.clone());
 }
 
+/// Closes the folders of every view: those opened under "All", and those that start open.
 pub fn collapse_all(state: &mut AppState, agent: AgentId) {
     if let Some(entry) = state.agents.get_mut(&agent) {
+        let starting_open = starting_open(&entry.summary.folder, &footprint(entry));
         entry.tree.expanded.clear();
+        entry.tree.closed.extend(starting_open);
     }
+}
+
+/// Whether "Close every folder" has a folder to close, in any view.
+pub fn can_collapse(tree: &FileTree, folder: &Path, footprint: &Footprint) -> bool {
+    !tree.expanded.is_empty()
+        || starting_open(folder, footprint)
+            .iter()
+            .any(|folder| !tree.closed.contains(folder))
+}
+
+/// The folders that start open, by the paths their rows take: each folder outside the agent's
+/// that holds a file it changed or read, and the folders between such a file and the agent's
+/// folder or that folder outside it.
+fn starting_open(folder: &Path, footprint: &Footprint) -> BTreeSet<PathBuf> {
+    let style = PathStyle::of(folder);
+    let folder_text = folder.to_string_lossy();
+    let mut folders = BTreeSet::new();
+    for path in footprint.changed.keys().chain(&footprint.read) {
+        let text = path.to_string_lossy();
+        let (root, relative) = match style.strip_prefix(&text, &folder_text) {
+            Some(relative) if !relative.is_empty() => (folder.to_string_lossy(), relative),
+            Some(_) | None => {
+                let root = outside_root(folder, path);
+                let root_text = root.to_string_lossy().into_owned();
+                let relative = style.strip_prefix(&text, &root_text).unwrap_or(&text);
+                folders.insert(root);
+                (root_text.into(), relative)
+            }
+        };
+        let names: Vec<&str> = style.names(relative).collect();
+        let mut current = root.into_owned();
+        for name in names.iter().take(names.len().saturating_sub(1)) {
+            current = style.join(&current, name);
+            folders.insert(PathBuf::from(&current));
+        }
+    }
+    folders
 }
 
 /// Lists every folder again, as they show. A search keeps its files: typing again searches again.
@@ -728,19 +810,13 @@ pub fn step_sideways(state: &mut AppState, agent: AgentId, direction: Sideways) 
     let Some(row) = rows.get(at) else {
         return;
     };
-    let folds = state
-        .agents
-        .get(&agent)
-        .is_some_and(|entry| entry.tree.folds());
     let target = match (direction, &row.kind) {
-        (Sideways::Right, RowKind::Folder { open: false })
-        | (Sideways::Left, RowKind::Folder { open: true })
-            if folds =>
-        {
-            toggle_folder(state, agent, &highlighted);
+        (Sideways::Right, RowKind::Folder { open: false, .. })
+        | (Sideways::Left, RowKind::Folder { open: true, .. }) => {
+            toggle_folder(state, agent, row);
             return;
         }
-        (Sideways::Right, RowKind::Folder { open: true }) => rows
+        (Sideways::Right, RowKind::Folder { open: true, .. }) => rows
             .get(at + 1)
             .filter(|next| next.depth > row.depth && next.kind.is_entry()),
         (Sideways::Left, _) => rows.get(..at).and_then(|above| {
@@ -778,7 +854,7 @@ pub fn activate(state: &mut AppState, agent: AgentId, row: &TreeRow) {
             highlight(state, agent, &row.path);
             actions::open_file(state, agent, row.path.clone(), None);
         }
-        RowKind::Folder { .. } => toggle_folder(state, agent, &row.path),
+        RowKind::Folder { .. } => toggle_folder(state, agent, row),
         RowKind::Section | RowKind::Loading | RowKind::Note => {}
     }
 }
@@ -855,6 +931,7 @@ pub fn reveal(state: &mut AppState, agent: AgentId) {
             break;
         }
         let parent_path = PathBuf::from(&parent);
+        entry.tree.closed.remove(&parent_path);
         if parent_path != entry.summary.folder {
             entry.tree.expanded.insert(parent_path);
         }
@@ -934,8 +1011,8 @@ mod tests {
         rows.iter()
             .map(|row| {
                 let sign = match row.kind {
-                    RowKind::Folder { open: false } => "▸",
-                    RowKind::Folder { open: true } => "▾",
+                    RowKind::Folder { open: false, .. } => "▸",
+                    RowKind::Folder { open: true, .. } => "▾",
                     RowKind::File => "·",
                     RowKind::Section => "#",
                     RowKind::Loading => "…",
@@ -1178,10 +1255,8 @@ mod tests {
                 "· README.md",
                 "# Also worked in",
                 "▾ app_GH42Q/",
-                "  ▾ crates",
-                "    ▾ lexer",
-                "      ▾ src",
-                "        · token.rs",
+                "  ▾ crates/lexer/src",
+                "    · token.rs",
             ]
         );
         assert_eq!(
@@ -1288,6 +1363,48 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_that_holds_only_one_folder_shares_its_row() {
+        let tree = FileTree {
+            filter: TreeFilter::Changed,
+            ..FileTree::default()
+        };
+        let footprint = Footprint {
+            changed: [
+                changed("/work/app/web/src/views/login/form.ts", 7, 3),
+                changed("/work/app/web/src/views/search/list.ts", 21, 9),
+                changed("/work/app/service/seeds/41_users.sql", 41, 21),
+                changed("/work/app/service/src/grpc/users.proto", 3, 2),
+            ]
+            .into_iter()
+            .collect(),
+            read: BTreeSet::new(),
+        };
+
+        let rows = rows(&tree, Path::new(FOLDER), &footprint);
+
+        assert_eq!(
+            shown(&rows),
+            [
+                "▾ service",
+                "  ▾ seeds",
+                "    · 41_users.sql",
+                "  ▾ src/grpc",
+                "    · users.proto",
+                "▾ web/src/views",
+                "  ▾ login",
+                "    · form.ts",
+                "  ▾ search",
+                "    · list.ts",
+            ]
+        );
+        let merged = rows.iter().find(|row| row.name == "web/src/views");
+        assert_eq!(
+            merged.map(|row| (row.path.clone(), row.marks.holds_change)),
+            Some((PathBuf::from("/work/app/web/src/views"), true))
+        );
+    }
+
+    #[test]
     fn a_group_head_names_its_folder_once() {
         assert_eq!(
             root_label(Path::new("/work/app_GH42Q-report-columns")),
@@ -1375,9 +1492,179 @@ mod tests {
     }
 
     #[test]
-    fn folders_stay_open_outside_the_all_view() {
-        let (mut state, agent) = listed_agent();
+    fn folders_start_open_outside_the_all_view_and_close_on_a_click_or_a_key() {
+        let (mut state, agent) = changed_agent();
         let src = Path::new("/work/project-1/src");
+        let lines = |state: &AppState| shown(&shown_rows(state, agent));
+        let opened = lines(&state);
+
+        highlight(&mut state, agent, src);
+        step_sideways(&mut state, agent, Sideways::Left);
+        let closed_by_key = lines(&state);
+        click(&mut state, agent, src);
+        let opened_by_click = lines(&state);
+
+        assert_eq!(opened, ["▾ src", "  · lib.rs"]);
+        assert_eq!(closed_by_key, ["▸ src"]);
+        assert_eq!(opened_by_click, opened);
+        assert!(state.agents[&agent].tree.expanded.is_empty());
+        assert_eq!(highlighted(&state, agent), Some(src));
+    }
+
+    #[test]
+    fn close_every_folder_closes_the_open_folders_of_every_view() {
+        let (mut state, agent) = changed_agent();
+        let src = Path::new("/work/project-1/src");
+        set_filter(&mut state, agent, TreeFilter::All);
+        click(&mut state, agent, src);
+        set_filter(&mut state, agent, TreeFilter::Changed);
+
+        collapse_all(&mut state, agent);
+        let changed = shown(&shown_rows(&state, agent));
+        set_filter(&mut state, agent, TreeFilter::All);
+        let all = shown(&shown_rows(&state, agent));
+
+        assert_eq!(changed, ["▸ src"]);
+        assert_eq!(all, ["▸ src", "· README.md"]);
+    }
+
+    #[test]
+    fn showing_the_file_views_file_opens_its_closed_folders() {
+        let (mut state, agent) = changed_agent();
+        collapse_all(&mut state, agent);
+        actions::open_file(
+            &mut state,
+            agent,
+            PathBuf::from("/work/project-1/src/lib.rs"),
+            None,
+        );
+
+        reveal(&mut state, agent);
+
+        assert_eq!(shown(&shown_rows(&state, agent)), ["▾ src", "  · lib.rs"]);
+    }
+
+    #[test]
+    fn close_every_folder_under_all_closes_the_folders_of_changed_too() {
+        let (mut state, agent) = changed_agent();
+        set_filter(&mut state, agent, TreeFilter::All);
+        let before = collapsible(&state, agent);
+
+        collapse_all(&mut state, agent);
+        let after = collapsible(&state, agent);
+        set_filter(&mut state, agent, TreeFilter::Changed);
+
+        assert!(before);
+        assert!(!after);
+        assert_eq!(shown(&shown_rows(&state, agent)), ["▸ src"]);
+    }
+
+    #[test]
+    fn a_click_opens_the_clicked_copy_of_a_folder_that_shows_twice() {
+        let (mut state, agent) = listed_agent();
+        let work = PathBuf::from("/work");
+        let feature = PathBuf::from("/work/project-1_feature");
+        let agent_entry = state.agents.get_mut(&agent).unwrap();
+        // The file right in `project-1_feature` keeps its inner copy from sharing a row with `src`.
+        agent_entry.details = Loadable::Loaded(AgentDetails {
+            changed_files: [
+                "/work/notes.txt",
+                "/work/project-1_feature/Cargo.toml",
+                "/work/project-1_feature/src/x.rs",
+            ]
+            .into_iter()
+            .map(|path| ChangedFile {
+                path: PathBuf::from(path),
+                lines_added: 1,
+                lines_removed: 0,
+            })
+            .collect(),
+            ..AgentDetails::default()
+        });
+        agent_entry.tree.expanded.insert(work.clone());
+        agent_entry.tree.listings.insert(
+            work,
+            Listing {
+                entries: Loadable::Failed("outside every checkout".to_owned()),
+                stale: false,
+                reading: false,
+            },
+        );
+        let (path, listing) = listing(
+            "/work/project-1_feature",
+            vec![entry("src", EntryKind::Folder, GitIgnore::Kept)],
+        );
+        state
+            .agents
+            .get_mut(&agent)
+            .unwrap()
+            .tree
+            .listings
+            .insert(path, listing);
+        let top = shown_rows(&state, agent)
+            .into_iter()
+            .rfind(|row| row.path == feature)
+            .unwrap();
+
+        activate(&mut state, agent, &top);
+
+        let lines = shown(&shown_rows(&state, agent));
+        assert!(
+            lines.contains(&"  ▾ project-1_feature".to_owned()),
+            "{lines:?}"
+        );
+        assert!(
+            lines.contains(&"▾ project-1_feature/".to_owned()),
+            "{lines:?}"
+        );
+    }
+
+    fn collapsible(state: &AppState, agent: AgentId) -> bool {
+        let entry = &state.agents[&agent];
+        can_collapse(&entry.tree, &entry.summary.folder, &footprint(entry))
+    }
+
+    /// A click on the first row of `path`, as the pane makes it.
+    fn click(state: &mut AppState, agent: AgentId, path: &Path) {
+        let row = shown_rows(state, agent)
+            .into_iter()
+            .find(|row| row.path == path)
+            .unwrap();
+        activate(state, agent, &row);
+    }
+
+    #[test]
+    fn a_shared_row_closes_and_opens_again_by_its_last_folder() {
+        let (mut state, agent) = changed_agent();
+        state.agents.get_mut(&agent).unwrap().details = Loadable::Loaded(AgentDetails {
+            changed_files: vec![ChangedFile {
+                path: PathBuf::from("/work/project-1/src/ui/view.rs"),
+                lines_added: 2,
+                lines_removed: 0,
+            }],
+            ..AgentDetails::default()
+        });
+        let ui = Path::new("/work/project-1/src/ui");
+
+        collapse_all(&mut state, agent);
+        let closed = shown(&shown_rows(&state, agent));
+        actions::open_file(
+            &mut state,
+            agent,
+            PathBuf::from("/work/project-1/src/ui/view.rs"),
+            None,
+        );
+        reveal(&mut state, agent);
+        let revealed = shown(&shown_rows(&state, agent));
+
+        assert_eq!(closed, ["▸ src/ui"]);
+        assert_eq!(revealed, ["▾ src/ui", "  · view.rs"]);
+        assert!(!state.agents[&agent].tree.closed.contains(ui));
+    }
+
+    /// `listed_agent` on "Changed", having changed `src/lib.rs`.
+    fn changed_agent() -> (AppState, AgentId) {
+        let (mut state, agent) = listed_agent();
         state.agents.get_mut(&agent).unwrap().details = Loadable::Loaded(AgentDetails {
             changed_files: vec![ChangedFile {
                 path: PathBuf::from("/work/project-1/src/lib.rs"),
@@ -1387,13 +1674,7 @@ mod tests {
             ..AgentDetails::default()
         });
         set_filter(&mut state, agent, TreeFilter::Changed);
-        highlight(&mut state, agent, src);
-
-        step_sideways(&mut state, agent, Sideways::Left);
-        toggle_folder(&mut state, agent, src);
-
-        assert!(state.agents[&agent].tree.expanded.is_empty());
-        assert_eq!(highlighted(&state, agent), Some(src));
+        (state, agent)
     }
 
     #[test]

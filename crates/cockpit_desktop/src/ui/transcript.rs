@@ -56,9 +56,11 @@ const FOLD_LINES_PROPERTY: &str = "--fold-lines";
 /// page knows: wrapping depends on the width. It marks `data-tall` each row whose text takes more
 /// screen lines than the `--fold-lines` the row sets, and writes on its button how many lines the
 /// fold hides. A message's Markdown has gaps between its blocks, so the script counts its lines
-/// of text and sets `--fold-height` on its clip, where its last kept line ends. A ResizeObserver
-/// measures each row's text when it appears and when its width or its text changes, so a resize
-/// of the window renders nothing. Message fields are serde's names for `FoldClasses`.
+/// of text and cuts it where its last kept line ends. The script sets on each clip the height of
+/// its kept lines (`--fold-height`) and of its whole text (`--full-height`), and a fold or an
+/// unfold animates the clip between the two. A ResizeObserver measures each row's text when it
+/// appears and when its width or its text changes, so a resize of the window renders nothing.
+/// Message fields are serde's names for `FoldClasses`.
 const FOLD_SCRIPT: &str = r#"
 const classes = await dioxus.recv();
 if (!window.agentsCockpitFolds) {
@@ -93,29 +95,39 @@ if (!window.agentsCockpitFolds) {
     }
     const kept = parseInt(getComputedStyle(row).getPropertyValue(classes.lines_property), 10);
     let hidden;
+    let foldHeight;
     if (row.matches(`.${classes.message_row}`)) {
       const bottoms = lineBottoms(text);
       hidden = bottoms.length - kept;
-      if (hidden > 0) {
-        text.parentElement.style.setProperty("--fold-height", `${Math.ceil(bottoms[kept - 1])}px`);
-      }
+      foldHeight = bottoms[kept - 1];
     } else {
-      hidden = Math.round(height / parseFloat(getComputedStyle(text).lineHeight)) - kept;
+      const lineHeight = parseFloat(getComputedStyle(text).lineHeight);
+      hidden = Math.round(height / lineHeight) - kept;
+      foldHeight = kept * lineHeight;
     }
     if (!(hidden > 0)) {
       delete row.dataset.tall;
       return;
     }
+    const clip = text.parentElement;
+    clip.style.setProperty("--fold-height", `${Math.ceil(foldHeight)}px`);
+    clip.style.setProperty("--full-height", `${Math.ceil(height)}px`);
     row.dataset.tall = "";
     const label = row.querySelector(`.${classes.label}`);
     if (label !== null) {
       label.textContent = `Show ${hidden} ${hidden === 1 ? "line" : "lines"} more`;
     }
   };
+  // A height measured again applies at once, before the transition comes back: an unfolded clip
+  // that trailed its text would cut its last lines while the window resizes.
   const sizes = new ResizeObserver((entries) => {
+    const clips = entries.map((entry) => entry.target.parentElement);
+    clips.forEach((clip) => clip.style.setProperty("transition", "none"));
     for (const entry of entries) {
       measure(entry.target, entry.contentRect.height);
     }
+    void document.body.offsetHeight;
+    clips.forEach((clip) => clip.style.removeProperty("transition"));
   });
   const watch = (node, added) => {
     if (!(node instanceof Element)) {
@@ -158,8 +170,44 @@ const DESCRIPTION_FIELD: &str = "description";
 const OFFSET_FIELD: &str = "offset";
 
 /// The rows a chat draws in the frame it opens, enough to fill the window. The older rows follow
-/// in the next frame: drawing a long conversation at once delays the whole window's switch.
+/// in chunks, one per frame: drawing a long conversation at once keeps the window from answering
+/// a click for about 100 ms.
 const FIRST_ROWS: usize = 25;
+/// The older rows each following frame adds.
+const CHUNK_ROWS: usize = 40;
+
+/// How far up the chat draws the selected agent's rows, past the frame it opens in. A row's item
+/// marks the edge, so a row the working agent adds below moves nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Drawn {
+    /// From this item's row on.
+    From(AgentId, ItemId),
+    All(AgentId),
+}
+
+/// The next step after the chat drew `drawn` of `rows`, the ids of its rows, oldest first: the
+/// next chunk's edge, or all of them. A chat that opens on a place scrolled up draws all at once,
+/// since its skeleton shows until then.
+fn next_drawn(
+    agent: AgentId,
+    drawn: Option<Drawn>,
+    rows: &[ItemId],
+    scrolled_up: bool,
+) -> Option<Drawn> {
+    let first = match drawn {
+        Some(Drawn::All(shown)) if shown == agent => return None,
+        Some(Drawn::From(shown, from)) if shown == agent => {
+            rows.iter().position(|id| *id >= from).unwrap_or(rows.len())
+        }
+        _ if scrolled_up => 0,
+        _ => rows.len().saturating_sub(FIRST_ROWS),
+    };
+    let next = first.saturating_sub(CHUNK_ROWS);
+    Some(match rows.get(next) {
+        Some(id) if next > 0 => Drawn::From(agent, *id),
+        _ => Drawn::All(agent),
+    })
+}
 
 /// Which rows of the main conversation the chat draws.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,6 +221,22 @@ enum ShownRows {
 }
 
 impl ShownRows {
+    /// The rows of `agent`'s chat, whose rows have the ids `rows`, oldest first, as far as
+    /// `drawn` reached. Only the opening frame looks at `scrolled_up`: a scroll while the chunks
+    /// come keeps the rows drawn.
+    fn of(agent: AgentId, drawn: Option<Drawn>, rows: &[ItemId], scrolled_up: bool) -> Self {
+        match drawn {
+            Some(Drawn::All(shown)) if shown == agent => Self::All,
+            Some(Drawn::From(shown, from)) if shown == agent => {
+                match rows.iter().position(|id| *id >= from) {
+                    Some(first) if first > 0 => Self::Latest(first),
+                    Some(_) | None => Self::All,
+                }
+            }
+            _ => Self::opening(rows.len(), scrolled_up),
+        }
+    }
+
     /// In the frame a chat of `rows` rows opens.
     fn opening(rows: usize, scrolled_up: bool) -> Self {
         if rows <= FIRST_ROWS {
@@ -209,9 +273,32 @@ pub fn TranscriptView() -> Element {
             .map(AgentEntry::id)
     });
     // Effects run once the frame's changes are on the page: the chat draws its latest rows in
-    // one frame, and all of them in the next.
-    let mut whole = use_signal(|| None::<AgentId>);
-    use_effect(move || whole.set(opened()));
+    // one frame, then a chunk of older ones in each following frame. The rows' ids come from the
+    // last render, which the effect follows.
+    let mut drawn = use_signal(|| None::<Drawn>);
+    let mut rows = use_hook(|| CopyValue::new((None::<AgentId>, Vec::<ItemId>::new())));
+    use_effect(move || {
+        let Some(agent) = opened() else {
+            return;
+        };
+        let current = drawn();
+        let scrolled_up = cockpit
+            .state
+            .peek()
+            .ui
+            .chat_scrolled_up
+            .contains_key(&agent);
+        let next = {
+            let (rows_agent, ids) = &*rows.read();
+            if *rows_agent != Some(agent) {
+                return;
+            }
+            next_drawn(agent, current, ids, scrolled_up)
+        };
+        if let Some(next) = next {
+            drawn.set(Some(next));
+        }
+    });
     let state = cockpit.state.read();
     let Some(entry) = state.selected() else {
         return rsx! {
@@ -259,11 +346,9 @@ pub fn TranscriptView() -> Element {
     let working_linked = is_step.last().copied().unwrap_or(false);
     let notes = older_step_notes(&top_items, &loaded);
     let scrolled_up = state.ui.chat_scrolled_up.get(&agent).copied();
-    let shown = if whole() == Some(agent) {
-        ShownRows::All
-    } else {
-        ShownRows::opening(top_items.len(), scrolled_up.is_some())
-    };
+    let row_ids: Vec<ItemId> = top_items.iter().map(|item| item.id).collect();
+    let shown = ShownRows::of(agent, drawn(), &row_ids, scrolled_up.is_some());
+    rows.set((Some(agent), row_ids));
     let first = shown.first(top_items.len());
     let top: Vec<TopRow> = top_items
         .iter()
@@ -1297,6 +1382,60 @@ mod tests {
     use cockpit_protocol::{Approval, ApprovalAnswer, ApprovalDecision, FileEdit, PendingId};
 
     use super::*;
+
+    #[test]
+    fn a_long_chat_draws_older_rows_in_chunks_up_to_all() {
+        let agent = AgentId::new(7);
+        let other = AgentId::new(8);
+        // 100 rows, whose ids skip some numbers, as nested items leave gaps.
+        let rows: Vec<ItemId> = (0..100).map(|row| ItemId::new(row * 2 + 1)).collect();
+        let row = |index: usize| rows[index];
+
+        let first = next_drawn(agent, None, &rows, false);
+        let second = next_drawn(agent, first, &rows, false);
+        let third = next_drawn(agent, second, &rows, false);
+
+        // The opening frame drew the latest 25: rows 75 on.
+        assert_eq!(first, Some(Drawn::From(agent, row(35))));
+        assert_eq!(second, Some(Drawn::All(agent)));
+        assert_eq!(third, None, "all drawn: nothing more to do");
+        assert_eq!(
+            next_drawn(agent, Some(Drawn::All(other)), &rows, false),
+            first,
+            "another agent's progress starts again"
+        );
+        assert_eq!(
+            next_drawn(agent, None, &rows, true),
+            Some(Drawn::All(agent)),
+            "a chat scrolled up draws all at once"
+        );
+        assert_eq!(
+            next_drawn(agent, None, &rows[..20], false),
+            Some(Drawn::All(agent))
+        );
+    }
+
+    #[test]
+    fn a_scroll_up_while_the_chunks_come_keeps_the_rows_drawn() {
+        let agent = AgentId::new(7);
+        let rows: Vec<ItemId> = (0..100).map(ItemId::new).collect();
+        let drawn = Some(Drawn::From(agent, ItemId::new(35)));
+
+        assert_eq!(
+            ShownRows::of(agent, drawn, &rows, false),
+            ShownRows::Latest(35)
+        );
+        assert_eq!(
+            ShownRows::of(agent, drawn, &rows, true),
+            ShownRows::Latest(35),
+            "scrolled up meanwhile: no skeleton over the rows"
+        );
+        assert_eq!(
+            ShownRows::of(agent, None, &rows, true),
+            ShownRows::Skeleton,
+            "opening on a place scrolled up"
+        );
+    }
 
     fn notice(id: u32, parent: Option<u32>) -> TranscriptItem {
         TranscriptItem {
