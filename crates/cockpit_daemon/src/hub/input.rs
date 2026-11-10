@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use cockpit_protocol::{
@@ -69,7 +70,7 @@ pub(crate) enum HubInput {
 
 /// Whether each account is signed in, and when its login was written.
 pub(crate) struct SignInCheck {
-    pub(crate) sign_ins: Vec<(AccountId, SignIn)>,
+    pub(crate) sign_ins: BTreeMap<AccountId, SignIn>,
     pub(crate) logins: Vec<AccountLogin>,
 }
 

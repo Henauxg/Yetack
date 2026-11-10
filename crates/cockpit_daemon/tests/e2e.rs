@@ -2306,7 +2306,8 @@ async fn an_agent_without_a_login_needs_you_until_its_account_signs_in() {
     std::fs::create_dir_all(&folder).unwrap();
     std::fs::write(folder.join(".credentials.json"), "{}").unwrap();
     client.ok(Request::AccountsList).await;
-    let Catchup::Snapshot(listed) = setup.connect_after(None).await.1 else {
+    let (_listing, catchup) = setup.connect_after(None).await;
+    let Catchup::Snapshot(listed) = catchup else {
         panic!("expected a snapshot");
     };
     let signed_in = client

@@ -1,6 +1,7 @@
 //! The accounts' requests, and what an agent gets from its account: its folder, its plan usage,
 //! and the notice that says how to sign in to it.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use claude_protocol::RateLimitInfo;
@@ -135,10 +136,10 @@ impl Hub {
         let inputs = self.inputs.clone();
         tokio::spawn(async move {
             let checked = tokio::task::spawn_blocking(move || {
-                let mut sign_ins = Vec::with_capacity(accounts.len());
+                let mut sign_ins = BTreeMap::new();
                 let mut logins = Vec::new();
                 for account in &accounts {
-                    sign_ins.push((account.id, sign_in_of(account)));
+                    sign_ins.insert(account.id, sign_in_of(account));
                     if let Some(written) = login_written(account) {
                         logins.push(AccountLogin {
                             account: account.id,
@@ -172,7 +173,7 @@ impl Hub {
             && sign_ins
                 .iter()
                 .any(|(account, sign_in)| self.sign_ins.get(account) != Some(sign_in));
-        self.sign_ins = sign_ins.into_iter().collect();
+        self.sign_ins = sign_ins;
         if changed {
             let accounts = self.accounts();
             self.emit(LogName::Daemon, Event::AccountsChanged { accounts });
@@ -306,20 +307,20 @@ impl Hub {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::SignIn;
+    use cockpit_protocol::{Frame, SignIn};
     use tokio::sync::mpsc;
 
     use super::*;
 
     fn check(sign_in: SignIn) -> Option<SignInCheck> {
         Some(SignInCheck {
-            sign_ins: vec![(AccountId::DEFAULT, sign_in)],
+            sign_ins: BTreeMap::from([(AccountId::DEFAULT, sign_in)]),
             logins: Vec::new(),
         })
     }
 
     /// The frames the client got, as text.
-    fn sent(frames: &mut mpsc::Receiver<cockpit_protocol::Frame>) -> Vec<String> {
+    fn sent(frames: &mut mpsc::Receiver<Frame>) -> Vec<String> {
         let mut sent = Vec::new();
         while let Ok(frame) = frames.try_recv() {
             sent.push(String::from_utf8_lossy(frame.as_bytes()).into_owned());
@@ -364,17 +365,19 @@ mod tests {
         let mut hub = Hub::for_tests(&temp.path().join("state"));
         let (client, mut frames) = mpsc::channel(16);
         hub.clients.push(client);
-        let work = (AccountId::new(1), SignIn::NotSignedIn);
-        let default = (AccountId::DEFAULT, SignIn::NotSignedIn);
-        let checked = |sign_ins: Vec<(AccountId, SignIn)>| SignInCheck {
-            sign_ins,
+        let work = AccountId::new(1);
+        let checked = |accounts: &[AccountId]| SignInCheck {
+            sign_ins: accounts
+                .iter()
+                .map(|account| (*account, SignIn::NotSignedIn))
+                .collect(),
             logins: Vec::new(),
         };
 
-        hub.sign_ins_checked(Some(checked(vec![default])));
-        hub.sign_ins_checked(Some(checked(vec![default, work])));
+        hub.sign_ins_checked(Some(checked(&[AccountId::DEFAULT])));
+        hub.sign_ins_checked(Some(checked(&[AccountId::DEFAULT, work])));
         let added = sent(&mut frames);
-        hub.sign_ins_checked(Some(checked(vec![default])));
+        hub.sign_ins_checked(Some(checked(&[AccountId::DEFAULT])));
         let removed = sent(&mut frames);
 
         assert!(
