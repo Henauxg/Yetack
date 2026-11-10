@@ -50,6 +50,8 @@ const FOLD_LAST_CLASS: &str = "fold-last";
 
 /// The same for a message you sent: the bubble, and the box that cuts its text.
 const MESSAGE_ROW_CLASS: &str = "message-fold";
+/// A message you sent. The quotes' script finds the quotes in it.
+pub const USER_BUBBLE_CLASS: &str = "user-bubble";
 const MESSAGE_CLIP_CLASS: &str = "message-clip";
 
 /// The CSS property in which a row tells the fold script how many screen lines it keeps.
@@ -888,7 +890,7 @@ fn UserBubble(agent: AgentId, folder: PathBuf, message: UserMessage) -> Element 
             }
             if !message.text.is_empty() {
                 div {
-                    class: "user-bubble {MESSAGE_ROW_CLASS}{state}",
+                    class: "{USER_BUBBLE_CLASS} {MESSAGE_ROW_CLASS}{state}",
                     style: "{FOLD_LINES_PROPERTY}: {MESSAGE_FOLD_LINES}",
                     div { class: MESSAGE_CLIP_CLASS,
                         MarkdownView { agent, folder, markdown: message.text }

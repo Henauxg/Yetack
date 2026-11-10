@@ -418,7 +418,8 @@ fn shows_machine(dialog: &Dialog, machine: MachineId) -> bool {
         | Dialog::AddAccount(_)
         | Dialog::Machines(_)
         | Dialog::ImageView(_)
-        | Dialog::WorkingFolder(_) => false,
+        | Dialog::WorkingFolder(_)
+        | Dialog::Settings => false,
     }
 }
 

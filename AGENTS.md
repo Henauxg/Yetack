@@ -16,6 +16,14 @@ Use quiet flags so the output stays short.
 
 The review skills write `cargo +nightly fmt`; in this repository, `cargo fmt` in the dev shell is the same thing.
 
+## Working beside other agents
+
+Several agent sessions work on this repository at once.
+
+1. Work in your own git worktree, on your own branch: `git worktree add ../agents-cockpit-<topic> -b feat/<topic> main`.
+2. Leave the main checkout on a clean `main`. It is only for merging finished branches and pushing. Merge only once it has no uncommitted changes.
+3. A new worktree has its own `target/` folder, so its first build takes a few minutes.
+
 ## Rules
 
 - The desktop app's interface follows [crates/cockpit_desktop/AGENTS.md](crates/cockpit_desktop/AGENTS.md): feedback on every control, and animated changes of size, place and presence.

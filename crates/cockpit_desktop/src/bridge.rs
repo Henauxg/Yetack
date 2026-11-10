@@ -229,7 +229,7 @@ document.addEventListener("keydown", (event) => {
       || (text === "" && answers)
       || (key === "Enter" && !event.shiftKey);
   } else if (where === "page" && plain && !mode.dialog
-    // A tree takes its own keys: Enter there opens a row, and answers nothing.
+    // A tree or a menu takes its own keys: Enter or a digit there acts on it, and answers nothing.
     && !(target !== null && target.closest("[data-own-keys]") !== null)
     && (answers || (mode.send_again && key === "Enter" && !event.shiftKey))) {
     take = !(key === "Enter" && target !== null && target.tagName === "BUTTON");

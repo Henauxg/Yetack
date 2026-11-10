@@ -865,23 +865,22 @@ button:disabled {
 .popover.row-menu {
   --enter-y: -4px;
   position: fixed;
-  left: min(var(--menu-x), calc(100vw - 262px));
-  /* The menu is about 430 px high. */
-  top: max(8px, min(var(--menu-y), calc(100vh - 440px)));
+  left: min(var(--menu-x), calc(100vw - 290px));
+  /* The agent menu with its folder submenu open is about 200 px high. */
+  top: max(8px, min(var(--menu-y), calc(100vh - 210px)));
   bottom: auto;
-  width: 250px;
+  min-width: 200px;
+  max-width: 280px;
+  gap: 0;
+  padding: 4px;
+  border-radius: 10px;
   transform-origin: top left;
 }
 
-/* A group of a menu's items under its title, as wide as the menu. */
-.menu-section {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
 .row-menu .menu-item {
+  min-height: 28px;
   gap: 16px;
+  padding: 0 8px;
   white-space: nowrap;
 }
 
@@ -892,11 +891,97 @@ button:disabled {
   color: var(--dim);
 }
 
-/* The working folder the section's actions act on: cut at its start, as file paths are, since its
-   end names it. */
+.row-menu .menu-divider {
+  margin: 4px 8px;
+}
+
+/* The agent menu has one highlight, which the pointer and the keys move: no hover of its own, and
+   no ring, since the menu keeps the focus. */
+.agent-menu:focus,
+.agent-menu .menu-item:focus-visible {
+  outline: none;
+}
+
+.agent-menu .menu-item {
+  gap: 8px;
+  transition: none;
+}
+
+.agent-menu .menu-item:hover {
+  background: transparent;
+}
+
+.agent-menu .menu-item.highlighted {
+  background: var(--selected);
+}
+
+.agent-menu .menu-item:enabled:active {
+  background: var(--pressed);
+}
+
+.agent-menu .menu-label {
+  flex: 1 1 auto;
+}
+
+/* The hints, the chevrons and the current value end in one column. */
+.agent-menu .menu-hint {
+  min-width: 14px;
+  margin-left: 16px;
+  text-align: center;
+}
+
+.agent-menu .menu-item > .icon {
+  margin-left: 16px;
+  color: var(--dim);
+}
+
+.agent-menu .menu-item > .menu-value + .icon {
+  margin-left: 0;
+}
+
+.menu-value {
+  margin-left: 16px;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.agent-menu .menu-item.danger {
+  color: var(--red);
+}
+
+/* The check of a submenu's chosen row, in a column of its own so the labels line up. */
+.menu-check {
+  display: inline-flex;
+  width: 14px;
+  color: var(--text);
+}
+
+/* A row with its submenu, which opens beside it, its first row level with the trigger. */
+.submenu-anchor {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.popover.menu.submenu {
+  --enter-y: 0px;
+  top: -5px;
+  bottom: auto;
+  left: calc(100% + 9px);
+  width: max-content;
+  min-width: 180px;
+  max-width: 300px;
+  gap: 0;
+  padding: 4px;
+  border-radius: 10px;
+  transform-origin: top left;
+}
+
+/* The working folder the submenu's actions act on: cut at its start, as file paths are, since
+   its end names it. */
 .menu-folder {
   display: block;
-  padding: 0 10px 6px;
+  padding: 6px 8px 2px;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -910,10 +995,6 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-}
-
-.menu-label > .icon {
-  color: var(--violet);
 }
 
 .menu-hint {
@@ -1058,10 +1139,6 @@ html.reordering * {
   border-radius: 50%;
 }
 
-.connection.connected .connection-dot {
-  background: var(--teal);
-}
-
 .connection.connecting .connection-dot {
   background: var(--amber);
 }
@@ -1077,6 +1154,13 @@ html.reordering * {
 .connection-error {
   color: #f6a49c;
   overflow-wrap: anywhere;
+}
+
+/* Shows only while this computer's daemon does not answer. */
+.connection-trouble {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 /* Center pane. */
@@ -3994,6 +4078,417 @@ html.reordering * {
   height: 28px;
   object-fit: cover;
   border-radius: 4px;
+}
+
+/* Quotes: passages of the chat with your comments, until the message goes. The script in
+   ui/quotes.rs draws the highlights and places the layer's children. */
+
+::highlight(quote-pending) {
+  background-color: rgba(45, 212, 191, 0.14);
+  color: var(--text-bright);
+  text-decoration: underline 1.5px rgba(45, 212, 191, 0.65);
+}
+
+::highlight(quote-sent) {
+  text-decoration: underline 1px rgba(45, 212, 191, 0.4);
+}
+
+::highlight(quote-flash) {
+  background-color: rgba(45, 212, 191, 0.32);
+}
+
+/* Under the floating blocks, which notes never cover. */
+.quote-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.quote-links {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  fill: none;
+  stroke: rgba(45, 212, 191, 0.45);
+  stroke-dasharray: 3 3;
+}
+
+/* Hidden until the script gives them a place. */
+.quote-reply-place,
+.quote-pin-group,
+.quote-note,
+.quote-editor {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: auto;
+  visibility: hidden;
+  opacity: 0;
+  transition-property: opacity, visibility;
+  transition-duration: var(--motion-out), 0s;
+  transition-timing-function: var(--ease-in), linear;
+  transition-delay: 0s, var(--motion-out);
+}
+
+:is(.quote-reply-place, .quote-pin-group, .quote-note, .quote-editor)[data-placed] {
+  visibility: visible;
+  opacity: 1;
+  transition-duration: var(--motion-in), 0s;
+  transition-timing-function: var(--ease-out), linear;
+  transition-delay: 0s;
+}
+
+/* Its place fades in, so the popover's own animation stays off. */
+.quote-reply-place > .quote-reply {
+  position: static;
+  animation: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 6px 0 10px;
+  border-radius: 9px;
+  color: var(--text-soft);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.quote-pin-group {
+  width: 18px;
+  height: 18px;
+}
+
+.quote-pin,
+.quote-number {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--teal);
+  color: #0b1f1c;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.quote-number.new {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--teal);
+}
+
+/* A number's card, while its comment shows in no note. It extends left, over the text. */
+.quote-pin-card {
+  position: absolute;
+  top: 26px;
+  right: -4px;
+  width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 8px 8px 12px;
+  border-radius: 10px;
+  visibility: hidden;
+  opacity: 0;
+  transition-property: opacity, visibility;
+  transition-duration: var(--motion-out), 0s;
+  transition-timing-function: var(--ease-in), linear;
+  transition-delay: 0s, var(--motion-out);
+}
+
+.quote-pin-group[data-up] .quote-pin-card {
+  top: auto;
+  bottom: 26px;
+}
+
+/* Bridges the gap to the number, so the pointer keeps the card on its way to it. */
+.quote-pin-card::before {
+  content: "";
+  position: absolute;
+  top: -10px;
+  left: 0;
+  right: 0;
+  height: 10px;
+}
+
+.quote-pin-group[data-up] .quote-pin-card::before {
+  top: auto;
+  bottom: -10px;
+}
+
+.quote-pin-group:is(:hover, :focus-within):not([data-note-visible]) .quote-pin-card {
+  visibility: visible;
+  opacity: 1;
+  transition-duration: var(--motion-in), 0s;
+  transition-timing-function: var(--ease-out), linear;
+  transition-delay: 0s;
+}
+
+.quote-note {
+  left: auto;
+  right: 16px;
+  width: 272px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 8px 10px 10px;
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+}
+
+.quote-note-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  color: var(--dim);
+}
+
+.quote-note-state {
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.quote-comment {
+  margin: 0;
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.quote-comment.dim {
+  color: var(--dim);
+}
+
+/* The passage, three lines at most. */
+.quote-passage {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  margin: 0;
+  padding-left: 8px;
+  overflow: hidden;
+  box-shadow: inset 2px 0 0 #4a4a4a;
+  color: var(--muted);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.quote-tools {
+  display: flex;
+  justify-content: flex-end;
+  gap: 2px;
+}
+
+.quote-editor {
+  width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px 10px;
+  border-radius: 12px;
+}
+
+.quote-editor[data-form="note"]:not([data-fallback]) {
+  left: auto;
+  right: 16px;
+  width: 272px;
+}
+
+.quote-field {
+  field-sizing: content;
+  width: 100%;
+  min-height: 48px;
+  max-height: calc(8lh + 14px);
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(45, 212, 191, 0.55);
+  background: var(--bg);
+  box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.12);
+  color: var(--text);
+  font-size: 13px;
+  resize: none;
+  outline: none;
+}
+
+.quote-hint {
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.quote-hint kbd {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--muted);
+  font-family: var(--sans);
+  font-size: 11px;
+}
+
+/* The composer's list: one line per quote. At most four show; more scroll inside the list. */
+.quote-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 134px;
+  overflow-y: auto;
+}
+
+.quote-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 32px;
+  padding-right: 4px;
+  border-radius: 8px;
+  background: var(--raised);
+}
+
+.quote-row-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+}
+
+.quote-row-passage {
+  flex: 0 1 38%;
+  min-width: 0;
+  padding-left: 8px;
+  overflow: hidden;
+  box-shadow: inset 2px 0 0 #4a4a4a;
+  color: var(--muted);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quote-row-comment {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quote-row .icon-button {
+  color: var(--muted);
+}
+
+.quote-row .icon-button.off {
+  color: var(--faint);
+}
+
+/* "You replied", over a passage that a message you sent quotes. The script makes it. */
+.replied-card {
+  position: absolute;
+  width: 320px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  pointer-events: auto;
+}
+
+.replied-head {
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.replied-card p {
+  margin: 0;
+  font-size: 13px;
+}
+
+.replied-go {
+  color: var(--teal);
+  font-size: 12.5px;
+}
+
+/* A quote in a message you sent leads back to its passage. */
+.user-bubble blockquote[data-quote-link] {
+  border-radius: 0 6px 6px 0;
+  cursor: pointer;
+  transition-property: background-color, border-color, color;
+  transition-duration: var(--motion-hover);
+  transition-timing-function: var(--ease);
+}
+
+/* Settings. */
+
+.dialog.settings {
+  width: 600px;
+}
+
+.settings-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.setting-text {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.setting-label {
+  font-size: 13.5px;
+}
+
+.setting-help {
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.setting-row .segmented {
+  flex: none;
+}
+
+.setting-row .segment {
+  white-space: nowrap;
+}
+
+.foot-settings {
+  width: 26px;
+  padding: 0;
+  justify-content: center;
+}
+
+.foot-settings.pressed {
+  background: var(--hover);
+  color: var(--text);
 }
 
 .palette {
@@ -6977,6 +7472,30 @@ label.icon-button,
 
 /* Hover. */
 
+.quote-reply:hover {
+  background: var(--raised);
+  color: var(--text);
+}
+
+.quote-pin:hover,
+.quote-pin:focus-visible {
+  box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.3);
+}
+
+.quote-row-main:hover {
+  background: var(--raised-hover);
+}
+
+.user-bubble blockquote[data-quote-link]:hover {
+  border-left-color: var(--teal);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-soft);
+}
+
+.replied-go:hover {
+  color: var(--link-hover);
+}
+
 .button:not(:disabled):hover {
   border-color: #444444;
   background: var(--raised-hover);
@@ -7177,6 +7696,9 @@ label.icon-button,
 
 .button:not(:disabled):active,
 .icon-button:active,
+.quote-reply:active,
+.quote-pin:active,
+.quote-row-main:active,
 .chip:active,
 .menu-button:active,
 .send-button:not(:disabled):active,
@@ -7448,6 +7970,18 @@ html.splitting .sidebar {
 
 .presence.leaving > .popover {
   animation: popover-out var(--motion-out) var(--ease-in) forwards;
+}
+
+.quote-editor.leaving {
+  animation: popover-out var(--motion-out) var(--ease-in) forwards;
+}
+
+.connection-trouble {
+  animation: rise-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.connection-trouble.leaving {
+  animation: fade-out var(--motion-out) var(--ease-in) forwards;
 }
 
 @media (prefers-reduced-motion: reduce) {

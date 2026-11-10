@@ -819,10 +819,13 @@ mod tests {
     use super::*;
     use crate::daemon_label::DaemonLabel;
     use crate::machine::MachineId;
+    use crate::prefs::CommentPlacement;
     use crate::state::app_state::ConnectionState;
     use crate::state::app_state::tests::{state_with, summary};
     use crate::state::folder_field;
+    use crate::state::quotes::{self, Passage, QuoteAnchor};
     use crate::state::ui_state::{Block, FileView};
+    use crate::state::utf16_offset::Utf16Offset;
 
     fn connected_with_selection() -> AppState {
         let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
@@ -1207,10 +1210,31 @@ mod tests {
     fn a_failed_prompt_gives_the_draft_back() {
         let mut state = connected_with_selection();
         let agent = AgentId::new(1);
+        let mut quoted = Drafts::default();
+        quotes::start(
+            &mut quoted,
+            agent,
+            Passage {
+                anchor: QuoteAnchor {
+                    item: ItemId::new(4),
+                    start: Utf16Offset::new(0),
+                    end: Utf16Offset::new(5),
+                },
+                raw: "cache".to_owned(),
+                text: "cache".to_owned(),
+                code: false,
+            },
+        );
+        quotes::commit(&mut quoted, CommentPlacement::Beside);
         let draft = Draft {
             text: "Run the tests".to_owned(),
             images: Vec::new(),
+            quotes: quoted
+                .draft(agent)
+                .map(|draft| draft.quotes.clone())
+                .unwrap_or_default(),
         };
+        assert_eq!(draft.quotes.len(), 1);
         let mut drafts = Drafts::default();
 
         apply_response(
@@ -1248,6 +1272,7 @@ mod tests {
                 draft: Draft {
                     text: "Run the tests".to_owned(),
                     images: Vec::new(),
+                    quotes: Vec::new(),
                 },
             },
             Err(RequestError::NotConnected),

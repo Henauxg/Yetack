@@ -12,11 +12,19 @@ use crate::ui::icons::{Icon, IconKind};
 use crate::ui::presence::{Presence, use_presence};
 
 /// A choice, as the menus list it.
-fn choice_label(level: NotificationLevel) -> &'static str {
+pub fn choice_label(level: NotificationLevel) -> &'static str {
     match level {
         NotificationLevel::All => "All",
         NotificationLevel::NeedsYou => "Only when it needs you",
         NotificationLevel::Off => "Off",
+    }
+}
+
+/// A choice in a few words, as the row menu's "Notifications" row shows the current one.
+pub fn short_label(level: NotificationLevel) -> &'static str {
+    match level {
+        NotificationLevel::NeedsYou => "Needs you",
+        NotificationLevel::All | NotificationLevel::Off => choice_label(level),
     }
 }
 

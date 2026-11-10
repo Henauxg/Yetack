@@ -77,14 +77,4 @@ impl DaemonLabel {
             DaemonPlace::InApp => "The daemon in this app".to_owned(),
         }
     }
-
-    /// The daemon as the sidebar's foot names it once connected.
-    pub fn connected_line(&self) -> String {
-        match self.place {
-            DaemonPlace::Socket => "The daemon on this machine".to_owned(),
-            DaemonPlace::Service => "The background service on this machine".to_owned(),
-            DaemonPlace::Ssh => format!("{}, over SSH", self.machine),
-            DaemonPlace::InApp => "Agents run in this app".to_owned(),
-        }
-    }
 }

@@ -34,6 +34,7 @@ use crate::ui::machines::{MachinesDialog, machine_choices};
 use crate::ui::no_daemon::NoDaemonCard;
 use crate::ui::open_file::{self as open_file_view, OpenFileDialog, UP_ROW};
 use crate::ui::presence::{Presence, Shown, use_presence};
+use crate::ui::settings::SettingsDialog;
 use crate::ui::zoom::ZoomImage;
 
 /// Recent folders the new agent dialog offers.
@@ -146,6 +147,9 @@ pub fn Dialogs() -> Element {
                     },
                     Dialog::WorkingFolder(form) => rsx! {
                         WorkingFolderDialog { form }
+                    },
+                    Dialog::Settings => rsx! {
+                        SettingsDialog {}
                     },
                 }
             }

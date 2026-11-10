@@ -11,7 +11,7 @@ use super::requests::Outgoing;
 use super::transcript::WaitingKind;
 use super::ui_state::{Dialog, PaletteOrigin, Popover};
 use super::utf16_offset::Utf16Offset;
-use super::{accounts, agent_map, file_reread, file_tree, open_file, to_handle};
+use super::{accounts, agent_map, file_reread, file_tree, open_file, quotes, to_handle};
 
 /// `KeyboardEvent.key` values.
 const KEY_ESCAPE: &str = "Escape";
@@ -106,6 +106,10 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
     // Esc only closes what is open: the Stop button alone stops an agent, so a stray Esc never
     // cuts a turn short.
     if press.key == KEY_ESCAPE {
+        // The comment field closes first, and alone: a dialog behind it stays.
+        if quotes::cancel(drafts, state.ui.selected) {
+            return Vec::new();
+        }
         // A palette opened by typing stays closed for the rest of its "/" word.
         if state.ui.popover == Some(Popover::Palette(PaletteOrigin::Typed))
             && let (Some(agent), Some(word)) = (state.ui.selected, drafts.palette.word)
@@ -731,6 +735,49 @@ mod tests {
 
         let draft = drafts.draft(agent).map(|draft| draft.text.as_str());
         assert_eq!((requests.len(), draft), (0, Some("/mcp ")));
+    }
+
+    #[test]
+    fn escape_closes_the_shown_comment_field_alone_and_leaves_another_agents_field() {
+        let mut drafts = Drafts::default();
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::Idle),
+            summary(2, AgentStatus::Idle),
+        ]);
+        state.machines.this.connection = ConnectionState::Connected;
+        state.ui.selected = Some(AgentId::new(1));
+        let passage = quotes::Passage {
+            anchor: quotes::QuoteAnchor {
+                item: ItemId::new(3),
+                start: Utf16Offset::new(0),
+                end: Utf16Offset::new(4),
+            },
+            raw: "word".to_owned(),
+            text: "word".to_owned(),
+            code: false,
+        };
+        quotes::start(&mut drafts, AgentId::new(2), passage.clone());
+        state.ui.popover = Some(Popover::Model);
+
+        handle_key(&mut state, &mut drafts, &press(KEY_ESCAPE, KeyTarget::Page));
+        let other_field_kept = drafts.quote_editor.is_some();
+        let popover_closed = state.ui.popover.is_none();
+        quotes::start(&mut drafts, AgentId::new(1), passage);
+        state.ui.popover = Some(Popover::Model);
+        handle_key(
+            &mut state,
+            &mut drafts,
+            &press(KEY_ESCAPE, KeyTarget::Field),
+        );
+
+        assert!(other_field_kept, "the hidden field of agent 2 stays");
+        assert!(popover_closed, "Esc closes what shows");
+        assert_eq!(drafts.quote_editor, None);
+        assert_eq!(
+            state.ui.popover,
+            Some(Popover::Model),
+            "the shown field closes first, and alone"
+        );
     }
 
     #[test]
