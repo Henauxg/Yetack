@@ -10,17 +10,18 @@ use crate::bridge::{self, ROW_TITLE_FIELD_ID};
 use crate::connection::{Clock, Cockpit};
 use crate::daemon_label::DaemonPlace;
 use crate::machine::MachineId;
-use crate::prefs::StatusFilter;
+use crate::prefs::{NotificationLevel, StatusFilter};
 use crate::state::accounts::{self, AccountLabel, SignInLine};
 use crate::state::no_daemon::Absence;
 use crate::state::sidebar_keys::SidebarItem;
 use crate::state::{
     AgentEntry, AppState, ConnectionState, Dialog, FolderAction, Popover, TitleEdit, TitlePlace,
-    actions, daemon_update, machines, to_handle, working_folder,
+    actions, daemon_update, machines, notification_levels, to_handle, working_folder,
 };
 use crate::ui::accounts::{AccountTag, AccountsButton};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::machines::THIS_COMPUTER;
+use crate::ui::notification_levels::{self as levels_ui, AppBell, LevelChoices, LevelIcon};
 use crate::ui::presence::use_presence;
 use crate::ui::reorder::{self, LIST_ID, ROW_CLASS};
 use crate::ui::splitter::SIDEBAR_ID;
@@ -46,6 +47,7 @@ struct AgentRow {
     warns: bool,
     /// You marked the agent as one to handle.
     to_handle: bool,
+    notifications: NotificationLevel,
 }
 
 impl AgentRow {
@@ -67,6 +69,7 @@ impl AgentRow {
                 .map(|progress| format!("{}/{}", progress.done, progress.total)),
             time: row_time(summary),
             to_handle: summary.mark == Mark::ToHandle,
+            notifications: notification_levels::agent_level(state, entry.id()),
             edit,
         }
     }
@@ -179,6 +182,26 @@ const TO_HANDLE: &str = "To handle";
 
 const TO_HANDLE_CLASS: &str = "to-handle";
 
+/// The bell of an agent whose level is not "All". Always there, so that the style sheet can grow
+/// it in and shrink it out, and it keeps its last bell while it shrinks.
+#[component]
+fn RowBell(level: NotificationLevel) -> Element {
+    let shown = use_presence((level != NotificationLevel::All).then_some(level));
+    let bell = shown.map_or(NotificationLevel::Off, |shown| shown.value);
+    let on = level != NotificationLevel::All;
+    rsx! {
+        span {
+            class: if on { "row-bell on" } else { "row-bell" },
+            title: if on { levels_ui::agent_label(level) } else { "" },
+            aria_hidden: !on,
+            LevelIcon { level: bell, size: 12 }
+            if on {
+                span { class: "visually-hidden", "{levels_ui::agent_label(level)}" }
+            }
+        }
+    }
+}
+
 /// What the list says when the filter leaves no row.
 fn empty_list_text(filter: StatusFilter) -> &'static str {
     match filter {
@@ -237,6 +260,7 @@ pub fn Sidebar() -> Element {
         nav { id: SIDEBAR_ID, class: "sidebar", aria_label: "Agents",
             div { class: "sidebar-head",
                 span { class: "app-name", "{APP_NAME}" }
+                AppBell {}
                 button {
                     class: "icon-button",
                     title: "Find an agent (Ctrl+K)",
@@ -607,6 +631,7 @@ fn AgentRowButton(row: AgentRow, class: String) -> Element {
                         span { class: "visually-hidden", "{TO_HANDLE}" }
                     }
                 }
+                RowBell { level: row.notifications }
                 if let Some(tasks) = &row.tasks {
                     span { class: "row-tasks", title: "Tasks done", "{tasks}" }
                 }
@@ -728,6 +753,7 @@ struct RowMenuShown {
     x: i32,
     y: i32,
     mark: Mark,
+    notifications: NotificationLevel,
     /// The agent's working folder, as paths show.
     folder: String,
     /// Why the fork or the move cannot run now.
@@ -749,6 +775,7 @@ pub fn RowMenu() -> Element {
                     x,
                     y,
                     mark: entry.summary.mark,
+                    notifications: notification_levels::agent_level(&state, agent),
                     folder: path_style::shown(&entry.summary.folder),
                     fork_blocked: working_folder::blocked(&state, agent, FolderAction::Fork),
                     move_blocked: working_folder::blocked(&state, agent, FolderAction::Move),
@@ -765,6 +792,7 @@ pub fn RowMenu() -> Element {
         x,
         y,
         mark,
+        notifications,
         folder,
         fork_blocked,
         move_blocked,
@@ -805,6 +833,11 @@ pub fn RowMenu() -> Element {
                     }),
                     span { class: "menu-label", "Rename" }
                     span { class: "menu-hint", "F2" }
+                }
+                div { class: "menu-divider" }
+                div { class: "menu-section", role: "group", aria_label: "Notifications",
+                    span { class: "menu-title", "Notifications" }
+                    LevelChoices { agent: Some(agent), level: notifications }
                 }
                 div { class: "menu-divider" }
                 // These act on the folder `claude` runs in, not on the sidebar.

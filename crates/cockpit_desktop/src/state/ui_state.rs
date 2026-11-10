@@ -53,6 +53,10 @@ pub enum Popover {
         x: i32,
         y: i32,
     },
+    /// The selected agent's notification levels, from its header tag.
+    AgentNotifications,
+    /// The app's notification levels, from the sidebar's bell.
+    AppNotifications,
 }
 
 /// How the command palette opened, which decides when it closes.

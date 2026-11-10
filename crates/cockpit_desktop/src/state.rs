@@ -18,6 +18,7 @@ pub mod folder_field;
 pub mod machine_load;
 pub mod machines;
 pub mod no_daemon;
+pub mod notification_levels;
 pub mod open_file;
 mod requests;
 mod shortcuts;

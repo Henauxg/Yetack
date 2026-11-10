@@ -86,10 +86,13 @@ fn main() -> anyhow::Result<ExitCode> {
             );
         }
     }
-    let prefs_file = prefs::file(&environment);
+    // The demo's agents take the ids of real ones: its choices, a muted agent first, stay out of
+    // the real preferences.
+    let prefs_file = prefs::file(&environment).filter(|_| !demo);
     if let Some(file) = &prefs_file {
         state.prefs = Prefs::load(file);
     }
+    state::notification_levels::start_from_config(&mut state, config.notifications.enabled);
     let in_app = InAppHost::default();
     in_app_host::stop_on_signals(in_app.clone());
     in_app_host::stop_on_panic(in_app.clone());
@@ -99,7 +102,7 @@ fn main() -> anyhow::Result<ExitCode> {
         machines,
         places,
         in_app: in_app.clone(),
-        notifications: config.notifications.enabled && !demo,
+        notifications: !demo,
         demo,
         prefs_file,
     };

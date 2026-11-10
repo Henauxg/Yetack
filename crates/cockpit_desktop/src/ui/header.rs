@@ -19,6 +19,7 @@ use crate::ui::accounts::{AccountDot, AccountTag, PlanAccounts};
 use crate::ui::emoji_picker::EmojiPicker;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::load_card::{LoadCard, LoadChip};
+use crate::ui::notification_levels::AgentNotificationTag;
 use crate::ui::presence::Presence;
 use crate::{bridge, format, path_style};
 
@@ -251,6 +252,7 @@ pub fn Header() -> Element {
                     if let Some(label) = account_label.clone() {
                         AccountTag { label }
                     }
+                    AgentNotificationTag { agent }
                 }
                 span { class: "header-folder", "{folder}" }
                 Presence { open: emoji_open,

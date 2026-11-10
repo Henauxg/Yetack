@@ -17,7 +17,7 @@ use tokio::sync::{mpsc, oneshot};
 
 #[cfg(unix)]
 use crate::APP_NAME;
-use crate::state::{Alert, AlertKind, AppState};
+use crate::state::{Alert, AlertKind, AppState, notification_levels};
 
 /// The action a click on the notification's body triggers.
 #[cfg(unix)]
@@ -81,20 +81,24 @@ struct Ledger {
 impl Ledger {
     /// Each alert replaces its agent's notification. A "needs you" notification closes once its
     /// agent no longer needs you; a "finished" one goes away on the service's timeout. Any
-    /// notification closes once its agent is gone.
+    /// notification closes once its agent is gone, or once the levels no longer let it through.
+    /// An alert the levels hold back is dropped.
     fn update(&mut self, alerts: Vec<Alert>, state: &AppState) -> Vec<Command> {
         let mut commands = Vec::new();
         for alert in alerts {
-            self.shown.insert(alert.agent, alert.kind);
-            commands.push(Command::Show(alert));
+            if notification_levels::shows(state, alert.agent, alert.kind) {
+                self.shown.insert(alert.agent, alert.kind);
+                commands.push(Command::Show(alert));
+            }
         }
         let stale: Vec<AgentId> = self
             .shown
             .iter()
-            .filter(|&(agent, kind)| {
-                let status = state.agents.get(agent).map(|entry| entry.summary.status);
+            .filter(|&(&agent, &kind)| {
+                let status = state.agents.get(&agent).map(|entry| entry.summary.status);
                 match (kind, status) {
                     (_, None) => true,
+                    _ if !notification_levels::shows(state, agent, kind) => true,
                     (AlertKind::NeedsYou, Some(status)) => status != AgentStatus::NeedsYou,
                     (AlertKind::Finished, Some(_)) => false,
                 }
@@ -198,6 +202,7 @@ fn escaped_body(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prefs::NotificationLevel;
     use crate::state::{state_with, summary};
 
     fn alert(id: u32, kind: AlertKind) -> Alert {
@@ -274,5 +279,29 @@ mod tests {
         let commands = ledger.update(Vec::new(), &state);
 
         assert_eq!(commands, [Command::Close(AgentId::new(1))]);
+    }
+
+    #[test]
+    fn the_levels_hold_back_an_alert_and_close_what_they_no_longer_let_through() {
+        let state_of = |level| {
+            let mut state = state_with(vec![
+                summary(1, AgentStatus::Idle),
+                summary(2, AgentStatus::NeedsYou),
+            ]);
+            notification_levels::set_agent(&mut state, AgentId::new(1), level);
+            state
+        };
+        let needs_you_only = state_of(NotificationLevel::NeedsYou);
+        let mut ledger = Ledger::default();
+
+        let held_back = ledger.update(vec![alert(1, AlertKind::Finished)], &needs_you_only);
+        let shown = ledger.update(vec![alert(2, AlertKind::NeedsYou)], &needs_you_only);
+        let mut app_off = state_of(NotificationLevel::NeedsYou);
+        notification_levels::set_app(&mut app_off, NotificationLevel::Off);
+        let closed = ledger.update(Vec::new(), &app_off);
+
+        assert!(held_back.is_empty());
+        assert_eq!(shown.len(), 1);
+        assert_eq!(closed, [Command::Close(AgentId::new(2))]);
     }
 }

@@ -23,7 +23,7 @@ use crate::daemon_label::DaemonLabel;
 use crate::format;
 use crate::machine::MachineId;
 use crate::path_style::PathStyle;
-use crate::prefs::{Prefs, StatusFilter};
+use crate::prefs::{NotificationLevel, Prefs, StatusFilter};
 
 /// Data the app asks the daemon for when it needs it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -343,6 +343,9 @@ pub struct AppState {
     pub ui: UiState,
     /// The choices the app saves on this machine.
     pub prefs: Prefs,
+    /// The app's notification level from the config file, until the window saves one. Never
+    /// saved.
+    pub config_notifications: NotificationLevel,
 }
 
 /// Agents that wait for you come first, then working, idle and exited ones.
@@ -365,6 +368,7 @@ impl AppState {
             agents: BTreeMap::new(),
             ui: UiState::default(),
             prefs: Prefs::default(),
+            config_notifications: NotificationLevel::All,
         }
     }
 

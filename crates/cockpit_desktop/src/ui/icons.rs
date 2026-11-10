@@ -53,6 +53,10 @@ pub enum IconKind {
     Flag,
     /// Long lines wrapped, for the file view's wrap toggle.
     Wrap,
+    /// Notifications, of the app or of an agent.
+    Bell,
+    /// Notifications turned off.
+    BellOff,
 }
 
 impl IconKind {
@@ -147,6 +151,12 @@ impl IconKind {
             }
             Self::Wrap => {
                 r#"<path d="M3 6h18"></path><path d="M3 12h15a3 3 0 0 1 0 6h-4"></path><path d="M16 16l-2 2 2 2"></path><path d="M3 18h7"></path>"#
+            }
+            Self::Bell => {
+                r#"<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path><path d="M13.73 21a2 2 0 0 1-3.46 0"></path>"#
+            }
+            Self::BellOff => {
+                r#"<path d="M13.73 21a2 2 0 0 1-3.46 0"></path><path d="M18.63 13A17.89 17.89 0 0 1 18 8"></path><path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14"></path><path d="M18 8a6 6 0 0 0-9.33-5"></path><path d="M3 3l18 18"></path>"#
             }
         }
     }
