@@ -4486,10 +4486,10 @@ html.reordering * {
   white-space: nowrap;
 }
 
+/* As wide as the sidebar head's buttons. */
 .foot-settings {
-  width: 26px;
-  padding: 0;
-  justify-content: center;
+  width: 30px;
+  height: 30px;
 }
 
 .foot-settings.pressed {
@@ -7405,13 +7405,13 @@ button.map-toggle:hover {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 26px;
+  height: 30px;
   padding: 0 8px;
   border-radius: 7px;
-  border: 1px solid var(--line);
+  border: 0;
   background: transparent;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
 .foot-accounts:hover {
@@ -7715,6 +7715,7 @@ label.icon-button,
 
 .button:not(:disabled):active,
 .icon-button:active,
+.foot-accounts:active,
 .quote-reply:active,
 .quote-pin:active,
 .quote-row-main:active,

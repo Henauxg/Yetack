@@ -195,7 +195,7 @@ pub fn AccountsButton() -> Element {
             title: "Claude accounts",
             onclick: move |_| cockpit.update(|state| accounts::open_accounts(state, None)),
             if dots.is_empty() {
-                Icon { kind: IconKind::Person, size: 13 }
+                Icon { kind: IconKind::Person, size: 14 }
             } else {
                 span { class: "dots", aria_hidden: true,
                     for (index, color) in dots.into_iter().enumerate() {
