@@ -55,9 +55,7 @@ pub fn FilesPane() -> Element {
     let name = style
         .file_name(&folder.to_string_lossy())
         .map_or_else(|| full_folder.clone(), str::to_owned);
-    let any_open = rows
-        .iter()
-        .any(|row| matches!(row.kind, RowKind::Folder { open: true, .. }));
+    let any_open = file_tree::can_collapse(&entry.tree, &folder, &footprint);
     let key_rows = rows.clone();
     rsx! {
         aside { id: FILES_PANE_ID, class: "files-pane", aria_label: "Files",
