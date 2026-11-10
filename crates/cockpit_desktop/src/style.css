@@ -2746,6 +2746,11 @@ html.reordering * {
   background: linear-gradient(to bottom, transparent, var(--hover));
 }
 
+/* The clip cuts what goes past its edge, a focus ring drawn outside included. */
+.message-clip :focus-visible {
+  outline-offset: -2px;
+}
+
 .message-fold[data-tall] .fold-lines {
   display: block;
   margin-left: auto;
