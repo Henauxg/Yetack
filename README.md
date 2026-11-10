@@ -23,6 +23,7 @@ ssh <host> sh -s -- --commit <commit> --binary <path> < contrib/update-daemon.sh
 Its exit status is 0 when the daemon runs the new version, 1 when it failed before anything changed, 3 when it refused because of agents, 4 when the install or the restart failed, 5 when the new daemon did not start and the previous version runs again, and 6 when another update is running.
 
 The server needs a way to restart the daemon: the `agents-cockpit` systemd user service, or a shell script at `~/.config/agents-cockpit/start-daemon` that starts the daemon in the background and returns.
+`contrib/agents-cockpit.service` is an example of the service, and `contrib/start-daemon` an example of the script, which starts the daemon in tmux.
 
 ## Development
 
