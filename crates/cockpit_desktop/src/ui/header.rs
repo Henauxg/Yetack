@@ -149,7 +149,7 @@ pub fn Header() -> Element {
         Some((emoji, rest)) => (Some(emoji.to_owned()), rest.to_owned()),
         None => (None, summary.title.clone()),
     };
-    let files_open = state.prefs.files_pane.open;
+    let files_open = file_tree::pane_open(&state, agent);
     let plan_text = plan.map_or_else(|| "?".to_owned(), |percent| format!("{percent}%"));
     let context_text = context.map_or_else(|| "?".to_owned(), |percent| format!("{percent}%"));
     let plan_words = match chip {

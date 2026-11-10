@@ -7820,9 +7820,14 @@ html.splitting .sidebar {
   animation: none;
 }
 
-/* The files pane opens and closes by its width. A switch to another agent keeps it open. */
+/* The files pane opens and closes by its width. Each agent keeps its own: a switch shows the next
+   agent's at once. */
 .files-pane {
   animation: files-pane-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.app.files-pane-instant .files-pane {
+  animation: none;
 }
 
 .files-pane.leaving {

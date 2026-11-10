@@ -440,6 +440,13 @@ impl AppState {
             .unwrap_or(&self.machines.this)
     }
 
+    /// The name of the daemon machine `agent` is on, which keys the agent's preferences. `None`
+    /// for a machine the app no longer knows.
+    pub fn daemon_machine(&self, agent: AgentId) -> Option<&str> {
+        let machine = self.machines.get(MachineId::of(agent))?;
+        Some(&machine.daemon.machine)
+    }
+
     /// Whether the app is connected to the daemon of the machine `agent` is on.
     pub fn reaches_agent(&self, agent: AgentId) -> bool {
         self.machines

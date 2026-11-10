@@ -207,6 +207,7 @@ pub fn apply(
         Event::AgentRemoved { agent } => {
             forget_agent(state, drafts, agent);
             notification_levels::forget_agent(state, agent);
+            file_tree::forget_pane(state, agent);
             state.ui.closing.remove(&agent);
             if state.ui.selected == Some(agent) {
                 state.ui.selected = None;
