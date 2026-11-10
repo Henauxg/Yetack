@@ -429,7 +429,10 @@ pub fn TranscriptView() -> Element {
         })
         .collect();
     let history = entry.transcript.history().clone();
-    let waiting = scrolled_up.map_or(0, |last_seen| actions::new_entries(entry, last_seen).count);
+    // A run of new reads counts once, as it shows.
+    let waiting = scrolled_up.map_or(0, |last_seen| {
+        tool_rows::new_rows(&top_rows, actions::new_entries(entry, last_seen).first)
+    });
     rsx! {
         div {
             id: CHAT_SCROLL_ID,
@@ -1202,6 +1205,22 @@ fn start_fold_script() {
     }
 }
 
+/// Where a folded OUT row keeps its lines. A command's last lines say how it ended, but JSON's are
+/// closing brackets.
+fn out_fold(shape: &ToolShape, output: &str) -> FoldEnd {
+    let json = output.trim_start().starts_with(JSON_STARTS);
+    match shape {
+        ToolShape::Command { .. } if !json => FoldEnd::Last,
+        ToolShape::Command { .. }
+        | ToolShape::Mcp { .. }
+        | ToolShape::File { .. }
+        | ToolShape::Other => FoldEnd::First,
+    }
+}
+
+/// How a JSON document starts.
+const JSON_STARTS: [char; 2] = ['{', '['];
+
 /// Which screen lines a folded IN or OUT row keeps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FoldEnd {
@@ -1411,10 +1430,7 @@ fn ToolView(agent: AgentId, id: ItemId, call: ToolCall, stage: CallStage) -> Ele
         .clone()
         .filter(|output| !output.is_empty() && !hides_output(&call, stage));
     // A command's last lines say how it ended.
-    let out_fold = match shape {
-        ToolShape::Command { .. } => FoldEnd::Last,
-        ToolShape::Mcp { .. } | ToolShape::File { .. } | ToolShape::Other => FoldEnd::First,
-    };
+    let out_fold = out_fold(&shape, output.as_deref().unwrap_or_default());
     let framed = input.is_some() || output.is_some();
     rsx! {
         div { class: stage.class(),
@@ -2019,6 +2035,22 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn a_command_keeps_its_last_lines_unless_it_answers_json() {
+        let command = ToolShape::Command {
+            description: None,
+            command: "cargo test".to_owned(),
+        };
+
+        assert_eq!(out_fold(&command, "running 4 tests\nok"), FoldEnd::Last);
+        assert_eq!(
+            out_fold(&command, "  [\n  {\"case\": 1}\n]"),
+            FoldEnd::First
+        );
+        assert_eq!(out_fold(&command, "{\"ok\": true}"), FoldEnd::First);
+        assert_eq!(out_fold(&ToolShape::Other, "a\nb"), FoldEnd::First);
     }
 
     #[test]

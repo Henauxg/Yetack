@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::format;
 use crate::render::SearchTool;
-use crate::state::file_edits;
+use crate::state::{actions, file_edits};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::markdown::MarkdownView;
 use crate::ui::transcript::{self, CallStage, CompactItem, RunningMeta};
@@ -116,6 +116,17 @@ pub fn rows<'item>(
         rows.push(Row::Item(item));
     }
     rows
+}
+
+/// How many rows hold new items, from `first_new` on: the count the chat's jump button shows.
+pub fn new_rows(rows: &[Row<'_>], first_new: Option<ItemId>) -> usize {
+    let Some(first_new) = first_new else {
+        return 0;
+    };
+    rows.iter()
+        .map(Row::first)
+        .filter(|item| item.id >= first_new && actions::is_counted(item))
+        .count()
 }
 
 fn skill_call(item: &TranscriptItem) -> Option<&ToolCall> {
@@ -400,6 +411,23 @@ mod tests {
         assert_eq!(shapes, [vec![1, 2, 3], vec![4], vec![5], vec![6]]);
         assert!(matches!(rows.first(), Some(Row::Explored { .. })));
         assert!(matches!(rows.get(2), Some(Row::Item(_))));
+    }
+
+    #[test]
+    fn a_run_of_new_reads_counts_as_one_new_row() {
+        let items = [
+            read(1, "src/a.rs"),
+            text(2),
+            read(3, "src/b.rs"),
+            read(4, "src/c.rs"),
+            read(5, "src/d.rs"),
+        ];
+        let refs: Vec<&TranscriptItem> = items.iter().collect();
+        let first_new = Some(ItemId::new(2));
+        let rows = rows(&refs, &BTreeSet::new(), first_new);
+
+        assert_eq!(new_rows(&rows, first_new), 2);
+        assert_eq!(new_rows(&rows, None), 0);
     }
 
     #[test]

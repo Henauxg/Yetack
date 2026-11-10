@@ -14,7 +14,7 @@ use cockpit_protocol::{
     PlanAnswer, PlanDecision, Prompt, PromptDelivery, PromptId, PromptParams, Question,
     QuestionAnswer, QueuedPromptParams, RenameParams, Request, Selection, SessionResumeParams,
     SetEffortParams, SetModeParams, SetModelParams, SlashCommand, StartParams, StopTaskParams,
-    Timestamp,
+    Timestamp, TranscriptItem,
 };
 use strum::VariantArray;
 
@@ -148,25 +148,32 @@ pub struct NewEntries {
 /// The entries after `last_seen` that a reader counts: messages, Claude's text, tool calls and
 /// cards, not notices, thinking or a turn's end.
 pub fn new_entries(entry: &AgentEntry, last_seen: Option<ItemId>) -> NewEntries {
-    let counted = entry.transcript.items_after(last_seen).filter(|item| {
-        item.parent.is_none()
-            && matches!(
-                item.body,
-                ItemBody::UserMessage(_)
-                    | ItemBody::AssistantText { .. }
-                    | ItemBody::ToolCall(_)
-                    | ItemBody::Subagent(_)
-                    | ItemBody::Approval(_)
-                    | ItemBody::Question(_)
-                    | ItemBody::Plan(_)
-            )
-    });
+    let counted = entry
+        .transcript
+        .items_after(last_seen)
+        .filter(|item| is_counted(item));
     let mut news = NewEntries::default();
     for item in counted {
         news.first = news.first.or(Some(item.id));
         news.count += 1;
     }
     news
+}
+
+/// Whether a reader counts the item among the new entries: a top-level message, Claude's text, a
+/// tool call or a card.
+pub fn is_counted(item: &TranscriptItem) -> bool {
+    item.parent.is_none()
+        && matches!(
+            item.body,
+            ItemBody::UserMessage(_)
+                | ItemBody::AssistantText { .. }
+                | ItemBody::ToolCall(_)
+                | ItemBody::Subagent(_)
+                | ItemBody::Approval(_)
+                | ItemBody::Question(_)
+                | ItemBody::Plan(_)
+        )
 }
 
 /// Where the chat's "New" divider goes: above the first new entry while scrolled up, else where
