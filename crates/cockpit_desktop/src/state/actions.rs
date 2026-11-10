@@ -28,7 +28,7 @@ use super::ui_state::{
     TitleEdit, TitlePlace, ViewMode, is_markdown,
 };
 use super::utf16_offset::Utf16Offset;
-use super::{accounts, export, file_edits, file_reread, file_tree, open_file, title_emoji};
+use super::{accounts, export, file_edits, file_reread, file_tree, open_file, quotes, title_emoji};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::machine::MachineId;
 use crate::path_style;
@@ -1044,6 +1044,14 @@ pub fn send_prompt(
     if exited {
         return Vec::new();
     }
+    // A comment still being written goes with the message.
+    if drafts
+        .quote_editor
+        .as_ref()
+        .is_some_and(|editor| editor.agent == agent)
+    {
+        quotes::commit(drafts, state.prefs.chat.comments);
+    }
     let draft = drafts.draft_mut(agent);
     if let Some(typed) = typed {
         draft.text = typed;
@@ -1059,7 +1067,7 @@ pub fn send_prompt(
     state.ui.chat_new_from.remove(&agent);
     state.ui.chat_jumps = state.ui.chat_jumps.wrapping_add(1);
     let prompt = Prompt {
-        text: draft.text.trim().to_owned(),
+        text: quotes::message(&draft.quotes, &draft.text),
         images: draft.images.clone(),
     };
     vec![Outgoing {
@@ -2205,6 +2213,7 @@ mod tests {
 
     use super::*;
     use crate::daemon_label::DaemonLabel;
+    use crate::prefs::CommentPlacement;
     use crate::state::app_state::ConnectionState;
     use crate::state::app_state::tests::{ids, placed, state_with, summary};
     use crate::state::requests::{apply_response, needed_requests};
@@ -3643,6 +3652,49 @@ mod tests {
         };
         assert_eq!(params.prompt.text, "Also cover the edge case");
         assert_eq!(params.delivery, PromptDelivery::Queue);
+        assert!(drafts.draft(agent()).is_some_and(|draft| draft.is_empty()));
+    }
+
+    #[test]
+    fn sending_quotes_the_passages_and_takes_the_comment_still_being_written() {
+        let mut state = state(AgentStatus::Idle);
+        let mut drafts = Drafts::default();
+        let passage = |item: u32, text: &str| quotes::Passage {
+            anchor: quotes::QuoteAnchor {
+                item: ItemId::new(item),
+                start: Utf16Offset::new(0),
+                end: Utf16Offset::end_of(text),
+            },
+            raw: text.to_owned(),
+            text: text.to_owned(),
+            code: false,
+        };
+        quotes::start(&mut drafts, agent(), passage(3, "keep one cache per host"));
+        quotes::type_comment(&mut drafts, "Per host limits too?".to_owned());
+        quotes::commit(&mut drafts, CommentPlacement::Beside);
+        quotes::start(&mut drafts, agent(), passage(5, "drop it on read"));
+        quotes::type_comment(&mut drafts, "And on a timer?".to_owned());
+
+        let requests = send_prompt(
+            &mut state,
+            &mut drafts,
+            agent(),
+            Some("Then go ahead.".to_owned()),
+            PromptDelivery::Steer,
+        );
+
+        let Some(Outgoing {
+            request: Request::AgentPrompt(params),
+            ..
+        }) = requests.first()
+        else {
+            panic!("expected a prompt, got {requests:?}");
+        };
+        assert_eq!(
+            params.prompt.text,
+            "> keep one cache per host\n\nPer host limits too?\n\n> drop it on read\n\nAnd on a timer?\n\nThen go ahead."
+        );
+        assert_eq!(drafts.quote_editor, None);
         assert!(drafts.draft(agent()).is_some_and(|draft| draft.is_empty()));
     }
 

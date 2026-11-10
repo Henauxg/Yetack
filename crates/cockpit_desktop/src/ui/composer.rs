@@ -18,6 +18,7 @@ use crate::ui::header::cache_left;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::palette::Palette;
 use crate::ui::presence::Presence;
+use crate::ui::quotes::{QuoteRows, chat_is_wide};
 use crate::ui::waiting_prompts::WaitingPrompts;
 
 pub fn mode_icon(mode: PermissionMode) -> IconKind {
@@ -146,6 +147,9 @@ pub fn Composer() -> Element {
                 }
                 WaitingPrompts { agent, prompts: waiting }
                 div { class: "composer",
+                    if !draft.quotes.is_empty() {
+                        QuoteRows { agent, quotes: draft.quotes.clone(), wide: chat_is_wide(&state, agent) }
+                    }
                     if !draft.images.is_empty() {
                         div { class: "attachments",
                             for (index, image) in draft.images.iter().enumerate() {

@@ -7,17 +7,20 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use cockpit_protocol::{AgentId, Image, PendingId};
 
+use super::quotes::{Quote, QuoteEditor};
 use super::utf16_offset::Utf16Offset;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Draft {
     pub text: String,
     pub images: Vec<Image>,
+    /// The passages of the chat the message quotes, in the chat's order.
+    pub quotes: Vec<Quote>,
 }
 
 impl Draft {
     pub fn is_empty(&self) -> bool {
-        self.text.trim().is_empty() && self.images.is_empty()
+        self.text.trim().is_empty() && self.images.is_empty() && self.quotes.is_empty()
     }
 }
 
@@ -119,6 +122,10 @@ pub struct Drafts {
     pub switcher: SwitcherDraft,
     pub open_file: OpenFileDraft,
     pub file_list: FileListDraft,
+    /// The field where a comment on a quote is written, while it is open.
+    pub quote_editor: Option<QuoteEditor>,
+    /// The last quote id or opening of the comment field given out.
+    pub(super) quote_serial: u32,
 }
 
 impl Drafts {
@@ -166,5 +173,12 @@ impl Drafts {
         self.composer.retain(|&agent, _| keep(agent));
         self.composer_writes.retain(|&agent, _| keep(agent));
         self.composer_carets.retain(|&agent, _| keep(agent));
+        if self
+            .quote_editor
+            .as_ref()
+            .is_some_and(|editor| !keep(editor.agent))
+        {
+            self.quote_editor = None;
+        }
     }
 }

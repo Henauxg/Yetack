@@ -93,6 +93,8 @@ pub enum Dialog {
     ImageView(ImageView),
     /// Forks or moves an agent's conversation to another working folder, from its row's menu.
     WorkingFolder(WorkingFolderForm),
+    /// The app's settings, from the gear in the sidebar's foot.
+    Settings,
 }
 
 /// The image the full view shows, with the file it comes from.
@@ -190,7 +192,8 @@ impl Dialog {
             | Self::AddAccount(_)
             | Self::Machines(_)
             | Self::NoDaemon
-            | Self::DaemonUpdate(_) => None,
+            | Self::DaemonUpdate(_)
+            | Self::Settings => None,
         }
     }
 }

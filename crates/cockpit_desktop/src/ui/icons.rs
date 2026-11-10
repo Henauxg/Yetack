@@ -57,6 +57,10 @@ pub enum IconKind {
     Bell,
     /// Notifications turned off.
     BellOff,
+    /// The app's settings.
+    Gear,
+    /// Reply to a passage of the chat.
+    Reply,
 }
 
 impl IconKind {
@@ -157,6 +161,12 @@ impl IconKind {
             }
             Self::BellOff => {
                 r#"<path d="M13.73 21a2 2 0 0 1-3.46 0"></path><path d="M18.63 13A17.89 17.89 0 0 1 18 8"></path><path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14"></path><path d="M18 8a6 6 0 0 0-9.33-5"></path><path d="M3 3l18 18"></path>"#
+            }
+            Self::Gear => {
+                r#"<path d="M9.8 4.7 L10.4 2.1 L13.6 2.1 L14.2 4.7 L15.6 5.3 L17.9 3.9 L20.1 6.1 L18.7 8.4 L19.3 9.8 L21.9 10.4 L21.9 13.6 L19.3 14.2 L18.7 15.6 L20.1 17.9 L17.9 20.1 L15.6 18.7 L14.2 19.3 L13.6 21.9 L10.4 21.9 L9.8 19.3 L8.4 18.7 L6.1 20.1 L3.9 17.9 L5.3 15.6 L4.7 14.2 L2.1 13.6 L2.1 10.4 L4.7 9.8 L5.3 8.4 L3.9 6.1 L6.1 3.9 L8.4 5.3Z"></path><circle cx="12" cy="12" r="3"></circle>"#
+            }
+            Self::Reply => {
+                r#"<path d="M10 7l-5 5 5 5"></path><path d="M5 12h10a4 4 0 0 1 4 4v2"></path>"#
             }
         }
     }

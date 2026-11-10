@@ -1,0 +1,1302 @@
+//! Quotes of the chat with your comments: the Reply button over a selection, the comment field,
+//! each quote's number beside its passage, the notes in the strip on the chat's right, and the
+//! quotes listed in the composer. Once sent, a quoted passage keeps an underline that tells what
+//! you replied.
+//!
+//! The components draw these elements and the page's script (`SCRIPT`) places them: it measures
+//! the passages, which only the page knows, and draws their highlights with the CSS Custom
+//! Highlight API, which leaves the chat's own elements as Dioxus rendered them.
+
+use cockpit_protocol::AgentId;
+use dioxus::prelude::*;
+use serde::{Deserialize, Serialize};
+use strum::{IntoStaticStr, VariantArray};
+
+use crate::bridge::{self, COMPOSER_ID};
+use crate::connection::Cockpit;
+use crate::prefs::CommentPlacement;
+use crate::state::quotes::{self, EditorTarget, Passage, Quote, QuoteAnchor, QuoteEditor, QuoteId};
+use crate::state::{AppState, Drafts};
+use crate::ui::blocks::{BLOCK_CARD_CLASS, BLOCKS_CLASS};
+use crate::ui::chat_scroll::{CHAT_SCROLL_ID, ENTRY_CLASS, REVEALED_CLASS};
+use crate::ui::icons::{Icon, IconKind};
+use crate::ui::markdown::MARKDOWN_CLASS;
+use crate::ui::presence::{Shown, use_presence};
+use crate::ui::transcript::USER_BUBBLE_CLASS;
+
+/// The field where a comment is written.
+const COMMENT_FIELD_ID: &str = "quote-comment";
+/// Covers the chat area. The script places its children.
+const LAYER_ID: &str = "quote-layer";
+const REPLY_BUTTON_ID: &str = "quote-reply";
+/// The lines from a passage to its note, which the script draws.
+const LINKS_ID: &str = "quote-links";
+/// Holds the "You replied" card, which the script makes.
+const REPLIED_HOST_ID: &str = "quote-replied";
+/// With Ctrl, opens the comment field on the chat's selection.
+const REPLY_KEY: &str = "r";
+/// The title of what scrolls to a quote's passage.
+const SHOW_PASSAGE: &str = "Show the passage";
+/// The `data-quote` of the comment field on a passage just selected, in place of a quote's id.
+const NEW_FIELD: &str = "new";
+const PIN_GROUP_CLASS: &str = "quote-pin-group";
+const NOTE_CLASS: &str = "quote-note";
+const FIELD_CLASS: &str = "quote-editor";
+/// A field that closes and plays its exit, which the script leaves where it is.
+const LEAVING_CLASS: &str = "leaving";
+
+/// How the comment field shows: as a note in the strip, or as a card under its passage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, IntoStaticStr, VariantArray)]
+#[strum(serialize_all = "snake_case")]
+enum FieldForm {
+    Note,
+    Card,
+}
+
+/// The comment field, with the number of the quote it edits.
+#[derive(Debug, Clone, PartialEq)]
+struct FieldView {
+    editor: QuoteEditor,
+    number: Option<usize>,
+    form: FieldForm,
+}
+
+/// Waits for its settings, then places the quotes' elements and draws their highlights. Message
+/// and field names are serde's names for `Settings`, `QuoteCommand` and `QuoteMessage`.
+const SCRIPT: &str = r#"
+const settings = await dioxus.recv();
+const send = (message) => dioxus.send(message);
+// WebKitGTK before 2.44 has no highlights: the numbers and notes still show.
+const highlights = typeof CSS !== "undefined" && "highlights" in CSS && typeof Highlight === "function";
+const drawn = new Map();
+// Ranges are live: one drawn stays right while the page changes, so a highlight is set again only
+// for other ranges.
+const rangeIds = new WeakMap();
+let lastRangeId = 0;
+const rangeId = (range) => {
+  if (!rangeIds.has(range)) {
+    lastRangeId += 1;
+    rangeIds.set(range, lastRangeId);
+  }
+  return rangeIds.get(range);
+};
+const highlight = (name, ranges) => {
+  if (!highlights) {
+    return;
+  }
+  const key = ranges.map(rangeId).join(" ");
+  if (drawn.get(name) === key) {
+    return;
+  }
+  drawn.set(name, key);
+  if (ranges.length === 0) {
+    CSS.highlights.delete(name);
+  } else {
+    CSS.highlights.set(name, new Highlight(...ranges));
+  }
+};
+let layout = { agent: null, quotes: [], editor: null };
+const chat = () => document.getElementById(settings.chat_scroll_id);
+const layer = () => document.getElementById(settings.layer_id);
+// An entry's wrapper ends with the element that shows its row (see the chat's scroll script).
+const shownOf = (entry) => entry.lastElementChild;
+const entryOf = (node) => {
+  const element = node instanceof Element ? node : node.parentElement;
+  return element === null ? null : element.closest(`#${settings.chat_scroll_id} .${settings.entry_class}`);
+};
+// An entry's id is `entry-<agent>-<item>` (see `entry_id`).
+const idParts = (entry) => entry.id.split("-").map(Number);
+// Offsets count UTF-16 units of text, as `Range.toString` does.
+const offsetIn = (root, node, offset) => {
+  const range = document.createRange();
+  range.setStart(root, 0);
+  range.setEnd(node, offset);
+  return range.toString().length;
+};
+const rangeIn = (root, start, end) => {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const range = document.createRange();
+  let seen = 0;
+  let started = false;
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    const length = node.data.length;
+    if (!started && start <= seen + length) {
+      range.setStart(node, start - seen);
+      started = true;
+    }
+    if (started && end <= seen + length) {
+      range.setEnd(node, end - seen);
+      return range;
+    }
+    seen += length;
+  }
+  return null;
+};
+// The passage at its offsets, or, when the entry's text moved, its occurrence nearest to them.
+const resolve = (anchor, raw) => {
+  const entry = document.getElementById(`entry-${layout.agent}-${anchor.item}`);
+  const root = entry === null ? null : shownOf(entry);
+  if (root === null) {
+    return null;
+  }
+  const range = rangeIn(root, anchor.start, anchor.end);
+  if (range !== null && range.toString() === raw) {
+    return range;
+  }
+  const text = root.textContent;
+  let best = -1;
+  for (let at = text.indexOf(raw); at !== -1; at = text.indexOf(raw, at + 1)) {
+    if (best === -1 || Math.abs(at - anchor.start) < Math.abs(best - anchor.start)) {
+      best = at;
+    }
+  }
+  return best === -1 ? null : rangeIn(root, best, best + raw.length);
+};
+const ranges = new Map();
+const rangeOf = (key, anchor, raw) => {
+  const kept = ranges.get(key);
+  if (kept !== undefined && kept.range.startContainer.isConnected && kept.range.toString() === raw) {
+    return kept.range;
+  }
+  const range = resolve(anchor, raw);
+  if (range === null) {
+    ranges.delete(key);
+  } else {
+    ranges.set(key, { range });
+  }
+  return range;
+};
+const lineRects = (range) => Array.from(range.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0);
+const codeSelector = "pre, code, .code-block, .code-lines, .io-text, .diff-box";
+// The chat's selection, when it lies in one entry of the shown agent.
+const selected = () => {
+  const selection = document.getSelection();
+  if (selection === null || selection.isCollapsed || selection.rangeCount === 0 || layout.agent === null) {
+    return null;
+  }
+  const range = selection.getRangeAt(0);
+  const entry = entryOf(range.startContainer);
+  if (entry === null || entryOf(range.endContainer) !== entry) {
+    return null;
+  }
+  const root = shownOf(entry);
+  const [, agent, item] = idParts(entry);
+  if (root === null || agent !== layout.agent || !root.contains(range.startContainer) || !root.contains(range.endContainer)) {
+    return null;
+  }
+  const text = selection.toString();
+  const raw = range.toString();
+  if (text.trim() === "" || raw === "") {
+    return null;
+  }
+  const start = offsetIn(root, range.startContainer, range.startOffset);
+  const common = range.commonAncestorContainer;
+  const container = common instanceof Element ? common : common.parentElement;
+  const code = container !== null && container.closest(codeSelector) !== null;
+  return { range, passage: { anchor: { item, start, end: start + raw.length }, raw, text, code } };
+};
+const reply = () => {
+  const found = selected();
+  if (found === null) {
+    return;
+  }
+  send({ type: "reply", agent: layout.agent, passage: found.passage });
+  document.getSelection()?.removeAllRanges();
+  schedule();
+};
+// Places by `left` and `top`: a popover's entry animation moves its `transform`. A note keeps the
+// strip's right edge from the style sheet, so it takes no `left`.
+const at = (element, x, y) => {
+  element.style.left = x === null ? "" : `${Math.round(x)}px`;
+  element.style.top = `${Math.round(y)}px`;
+  element.dataset.placed = "";
+};
+const away = (element) => {
+  delete element.dataset.placed;
+};
+const placeReply = (area, view) => {
+  const button = document.getElementById(settings.reply_button_id);
+  if (button === null) {
+    return;
+  }
+  const found = selected();
+  const rects = found === null ? [] : lineRects(found.range);
+  if (rects.length === 0) {
+    away(button);
+    return;
+  }
+  const first = rects[0];
+  const last = rects[rects.length - 1];
+  const width = button.offsetWidth;
+  const height = button.offsetHeight;
+  const x = Math.min(Math.max(first.right - width, area.left + 8), area.right - width - 8);
+  const above = first.top - height - 6;
+  const y = above >= view.top + 4 ? above : last.bottom + 6;
+  at(button, x - area.left, y - area.top);
+};
+// The links from passages to their notes.
+const drawLinks = (paths) => {
+  const svg = document.getElementById(settings.links_id);
+  if (svg === null) {
+    return;
+  }
+  while (svg.childElementCount > paths.length) {
+    svg.lastElementChild.remove();
+  }
+  while (svg.childElementCount < paths.length) {
+    svg.appendChild(document.createElementNS("http://www.w3.org/2000/svg", "path"));
+  }
+  paths.forEach((d, index) => {
+    const path = svg.children[index];
+    if (path.getAttribute("d") !== d) {
+      path.setAttribute("d", d);
+    }
+  });
+};
+const place = () => {
+  const area = layer()?.getBoundingClientRect();
+  const box = chat();
+  if (area === undefined || box === null) {
+    highlight("quote-pending", []);
+    return;
+  }
+  watch(box);
+  const view = box.getBoundingClientRect();
+  const column = box.firstElementChild;
+  const textRight = column === null ? view.right : column.getBoundingClientRect().right - parseFloat(getComputedStyle(column).paddingRight);
+  scanSent(box);
+  placeReply(area, view);
+  // The quotes and the passage being commented, in the chat's order.
+  const items = layout.quotes.map((quote) => ({ key: `${layout.agent}:${quote.id}`, id: String(quote.id), anchor: quote.anchor, raw: quote.raw }));
+  const editor = document.querySelector(`#${settings.layer_id} .${settings.field_class}:not(.${settings.leaving_class})`);
+  if (layout.editor !== null) {
+    const id = layout.editor.quote === null ? settings.new_field : String(layout.editor.quote);
+    if (id === settings.new_field) {
+      items.push({ key: `${layout.agent}:new:${layout.editor.anchor.item}:${layout.editor.anchor.start}`, id, anchor: layout.editor.anchor, raw: layout.editor.raw });
+    }
+  }
+  items.sort((a, b) => a.anchor.item - b.anchor.item || a.anchor.start - b.anchor.start);
+  // A range holds its nodes: one kept for a quote that went would keep a removed chat alive.
+  const current = new Set(items.map((item) => item.key));
+  for (const key of ranges.keys()) {
+    if (!current.has(key)) {
+      ranges.delete(key);
+    }
+  }
+  const found = [];
+  for (const item of items) {
+    const range = rangeOf(item.key, item.anchor, item.raw);
+    const rects = range === null ? [] : lineRects(range);
+    found.push({ ...item, range, rects });
+  }
+  highlight("quote-pending", found.filter((item) => item.range !== null).map((item) => item.range));
+  // Numbers sit at the end of the passage's last line, past the text's right edge.
+  const pinX = textRight - area.left + 2;
+  let lastPinY = -Infinity;
+  for (const item of found) {
+    const group = document.querySelector(`#${settings.layer_id} .${settings.pin_group_class}[data-quote="${item.id}"]`);
+    if (group === null) {
+      continue;
+    }
+    const last = item.rects[item.rects.length - 1];
+    const middle = last === undefined ? 0 : last.top + last.height / 2;
+    if (last === undefined || middle < view.top + 9 || middle > view.bottom - 9) {
+      away(group);
+      continue;
+    }
+    let y = middle - 9 - area.top;
+    // Two passages that end on one line: the second number sits below the first.
+    if (y < lastPinY + 20) {
+      y = lastPinY + 20;
+    }
+    lastPinY = y;
+    at(group, pinX, y);
+    group.toggleAttribute("data-up", last.top > view.top + view.height / 2);
+  }
+  // Notes go in the strip, below the cards, in the chat's order, each below the one above.
+  const cards = document.querySelectorAll(`.${settings.blocks_class} .${settings.block_card_class}`);
+  const floor = cards.length > 0 ? cards[cards.length - 1].getBoundingClientRect().bottom + 10 : view.top + 8;
+  let below = -Infinity;
+  const paths = [];
+  for (const item of found) {
+    const group = document.querySelector(`#${settings.layer_id} .${settings.pin_group_class}[data-quote="${item.id}"]`);
+    const own = document.querySelector(`#${settings.layer_id} .${settings.note_class}[data-quote="${item.id}"]`);
+    const editing = editor !== null && editor.dataset.quote === item.id && editor.dataset.form === settings.note_form;
+    const note = editing ? editor : own;
+    group?.removeAttribute("data-note-visible");
+    if (note === null) {
+      continue;
+    }
+    if (!editing && note.dataset.placement !== settings.beside) {
+      away(note);
+      continue;
+    }
+    const first = item.rects[0];
+    const last = item.rects[item.rects.length - 1];
+    const inView = first !== undefined && last.bottom > view.top && first.top < view.bottom;
+    const height = note.offsetHeight;
+    const top = inView ? Math.max(first.top - 10, floor, below + 8) : 0;
+    if (!inView || top + height > view.bottom - 8) {
+      if (editing) {
+        editor.dataset.fallback = "";
+      } else {
+        away(note);
+      }
+      continue;
+    }
+    if (editing) {
+      delete editor.dataset.fallback;
+    }
+    below = top + height;
+    at(note, null, top - area.top);
+    const left = note.getBoundingClientRect().left;
+    group?.setAttribute("data-note-visible", "");
+    const x1 = pinX + 20;
+    const y1 = last.top + last.height / 2 - area.top;
+    const x2 = left - area.left;
+    const middle = x2 - 12;
+    const y2 = top - area.top + 17;
+    if (x2 > x1) {
+      paths.push(`M${x1} ${y1} H${middle} V${y2} H${x2}`);
+    }
+  }
+  drawLinks(paths);
+  // The comment field as a card under its passage: in a narrow chat, for a hidden comment, or
+  // when the strip has no room.
+  if (editor !== null && (editor.dataset.form !== settings.note_form || editor.dataset.fallback !== undefined)) {
+    const item = found.find((candidate) => candidate.id === editor.dataset.quote);
+    const first = item?.rects[0];
+    const last = item?.rects[item.rects.length - 1];
+    const width = editor.offsetWidth;
+    const height = editor.offsetHeight;
+    let x = first === undefined ? view.left + 20 : first.left;
+    x = Math.min(Math.max(x, area.left + 8), textRight - width);
+    let y = last === undefined ? view.bottom - height - 8 : last.bottom + 8;
+    if (y + height > view.bottom - 8 && first !== undefined) {
+      y = first.top - height - 8;
+    }
+    y = Math.min(Math.max(y, view.top + 8), view.bottom - height - 8);
+    at(editor, x - area.left, y - area.top);
+  }
+  // A hidden field takes no focus: it takes it once placed, the first time.
+  if (editor !== null && editor.dataset.placed !== undefined && editor.dataset.focused === undefined) {
+    editor.dataset.focused = "";
+    const field = editor.querySelector("textarea");
+    field?.focus();
+    field?.setSelectionRange(field.value.length, field.value.length);
+  }
+};
+// After a send: each quote of a message you sent underlines its passage in an earlier entry.
+const sentFound = new WeakMap();
+let sent = [];
+const normalize = (text) => text.replace(/\s+/g, " ").trim();
+const findNormalized = (root, wanted) => {
+  if (!normalize(root.textContent).includes(wanted)) {
+    return null;
+  }
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let text = "";
+  const nodes = [];
+  const offsets = [];
+  let space = true;
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+    const data = node.data;
+    for (let index = 0; index < data.length; index += 1) {
+      const blank = /\s/.test(data[index]);
+      if (blank && space) {
+        continue;
+      }
+      text += blank ? " " : data[index];
+      nodes.push(node);
+      offsets.push(index);
+      space = blank;
+    }
+  }
+  const start = text.indexOf(wanted);
+  if (start === -1) {
+    return null;
+  }
+  const end = start + wanted.length - 1;
+  const range = document.createRange();
+  range.setStart(nodes[start], offsets[start]);
+  range.setEnd(nodes[end], offsets[end] + 1);
+  return range;
+};
+// The text after a quote, up to the next quote: the comment on it, at most its first block.
+const commentAfter = (quote) => {
+  const next = quote.nextElementSibling;
+  return next === null || next.tagName === "BLOCKQUOTE" ? "" : normalize(next.textContent);
+};
+const unlink = (quote) => {
+  for (const name of ["data-quote-link", "tabindex", "role", "title"]) {
+    quote.removeAttribute(name);
+  }
+};
+let sentDirty = true;
+const scanSent = (box) => {
+  if (!sentDirty) {
+    return;
+  }
+  sentDirty = false;
+  const entries = Array.from(box.getElementsByClassName(settings.entry_class));
+  const found = [];
+  entries.forEach((entry, index) => {
+    for (const quote of entry.querySelectorAll(`.${settings.user_bubble_class} .${settings.markdown_class} > blockquote`)) {
+      const wanted = normalize(quote.textContent);
+      let hit = sentFound.get(quote);
+      // A passage not found stays so until older entries load above it.
+      if (hit !== undefined && hit.missed !== undefined && hit.missed === index) {
+        unlink(quote);
+        continue;
+      }
+      if (hit !== undefined && (hit.missed !== undefined || !(hit.range.startContainer.isConnected && normalize(hit.range.toString()) === wanted))) {
+        hit = undefined;
+      }
+      for (let back = index - 1; hit === undefined && back >= 0 && wanted.length > 0; back -= 1) {
+        const root = shownOf(entries[back]);
+        const range = root === null ? null : findNormalized(root, wanted);
+        if (range !== null) {
+          hit = { range, entry, comment: commentAfter(quote) };
+          sentFound.set(quote, hit);
+        }
+      }
+      if (hit === undefined) {
+        sentFound.set(quote, { missed: index });
+        unlink(quote);
+        continue;
+      }
+      if (!quote.hasAttribute("data-quote-link")) {
+        quote.setAttribute("data-quote-link", "");
+        quote.setAttribute("tabindex", "0");
+        quote.setAttribute("role", "button");
+        quote.setAttribute("title", settings.show_passage);
+      }
+      found.push(hit);
+    }
+  });
+  sent = found;
+  highlight("quote-sent", sent.map((hit) => hit.range));
+};
+// Scrolls the chat until `rect()` sits in the middle of its view, once now and once the entries
+// that came into view took their real height.
+const center = (rect) => {
+  const box = chat();
+  if (box === null) {
+    return;
+  }
+  const scroll = () => {
+    const target = rect();
+    const view = box.getBoundingClientRect();
+    box.scrollTop += target.top - view.top - Math.max(12, (box.clientHeight - target.height) / 2);
+  };
+  scroll();
+  requestAnimationFrame(scroll);
+};
+let flashTimer = null;
+const flash = (range) => {
+  highlight("quote-flash", [range]);
+  clearTimeout(flashTimer);
+  flashTimer = setTimeout(() => highlight("quote-flash", []), settings.flash_ms);
+};
+const revealRange = (range) => {
+  center(() => range.getBoundingClientRect());
+  flash(range);
+};
+const revealEntry = (entry) => {
+  const element = shownOf(entry);
+  if (element === null) {
+    return;
+  }
+  center(() => element.getBoundingClientRect());
+  element.classList.remove(settings.revealed_class);
+  void element.offsetWidth;
+  element.classList.add(settings.revealed_class);
+  element.addEventListener("animationend", () => element.classList.remove(settings.revealed_class), { once: true });
+};
+// "You replied", while the pointer is on an underlined passage or on the card.
+let replied = null;
+let pointer = null;
+let hideTimer = null;
+const repliedCard = (hit) => {
+  const card = document.createElement("div");
+  card.className = "popover replied-card";
+  const head = document.createElement("span");
+  head.className = "replied-head";
+  head.textContent = settings.you_replied;
+  card.appendChild(head);
+  if (hit.comment !== "") {
+    const comment = document.createElement("p");
+    comment.textContent = hit.comment;
+    card.appendChild(comment);
+  }
+  const go = document.createElement("button");
+  go.type = "button";
+  go.className = "link-button replied-go";
+  go.textContent = settings.show_message;
+  go.addEventListener("click", () => {
+    hideReplied();
+    revealEntry(hit.entry);
+  });
+  card.appendChild(go);
+  return card;
+};
+const hideReplied = () => {
+  clearTimeout(hideTimer);
+  hideTimer = null;
+  document.getElementById(settings.replied_host_id)?.replaceChildren();
+  replied = null;
+};
+const inside = (rect, point, margin) => point.x >= rect.left - margin && point.x <= rect.right + margin
+  && point.y >= rect.top - margin && point.y <= rect.bottom + margin;
+const hover = () => {
+  const host = document.getElementById(settings.replied_host_id);
+  const area = layer()?.getBoundingClientRect();
+  if (host === null || area === undefined || pointer === null) {
+    return;
+  }
+  const card = host.firstElementChild;
+  if (card !== null && inside(card.getBoundingClientRect(), pointer, 4)) {
+    clearTimeout(hideTimer);
+    hideTimer = null;
+    return;
+  }
+  let hit = null;
+  let hitRect = null;
+  for (const candidate of sent) {
+    const rect = lineRects(candidate.range).find((line) => inside(line, pointer, 1));
+    if (rect !== undefined) {
+      hit = candidate;
+      hitRect = rect;
+      break;
+    }
+  }
+  if (hit === null) {
+    if (replied !== null && hideTimer === null) {
+      hideTimer = setTimeout(hideReplied, settings.hide_ms);
+    }
+    return;
+  }
+  clearTimeout(hideTimer);
+  hideTimer = null;
+  if (replied === hit) {
+    return;
+  }
+  replied = hit;
+  const shown = repliedCard(hit);
+  host.replaceChildren(shown);
+  const x = Math.min(hitRect.left, area.right - shown.offsetWidth - 8);
+  let y = hitRect.bottom + 6;
+  if (y + shown.offsetHeight > area.bottom - 8) {
+    y = hitRect.top - 6 - shown.offsetHeight;
+  }
+  at(shown, x - area.left, y - area.top);
+};
+let hoverQueued = false;
+document.addEventListener("mousemove", (event) => {
+  pointer = { x: event.clientX, y: event.clientY };
+  if (!hoverQueued) {
+    hoverQueued = true;
+    requestAnimationFrame(() => {
+      hoverQueued = false;
+      hover();
+    });
+  }
+}, { passive: true });
+let queued = false;
+const schedule = () => {
+  if (!queued) {
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      place();
+    });
+  }
+};
+const resizes = new ResizeObserver(schedule);
+let watched = [];
+const watch = (box) => {
+  const now = [box, box.firstElementChild, document.querySelector(`.${settings.blocks_class}`), layer()].filter((element) => element !== null);
+  if (now.length === watched.length && now.every((element, index) => element === watched[index])) {
+    return;
+  }
+  resizes.disconnect();
+  now.forEach((element) => resizes.observe(element));
+  watched = now;
+};
+new MutationObserver((records) => {
+  const own = layer();
+  if (records.some((record) => own === null || !own.contains(record.target))) {
+    sentDirty = true;
+    schedule();
+  }
+}).observe(document.body, { childList: true, subtree: true, characterData: true });
+document.addEventListener("scroll", () => {
+  schedule();
+  if (replied !== null) {
+    hideReplied();
+  }
+}, { capture: true, passive: true });
+document.addEventListener("selectionchange", schedule);
+window.addEventListener("resize", schedule);
+// A press on Reply keeps the selection it replies to.
+document.addEventListener("pointerdown", (event) => {
+  if (event.target instanceof Element && event.target.closest(`#${settings.reply_button_id}`) !== null) {
+    event.preventDefault();
+  }
+}, true);
+const revealSent = (quote) => {
+  const hit = sentFound.get(quote);
+  if (hit !== undefined && hit.range !== undefined) {
+    revealRange(hit.range);
+  }
+};
+document.addEventListener("click", (event) => {
+  if (!(event.target instanceof Element)) {
+    return;
+  }
+  if (event.target.closest(`#${settings.reply_button_id}`) !== null) {
+    reply();
+    return;
+  }
+  const quote = event.target.closest("[data-quote-link]");
+  const own = event.target.closest("a, button");
+  const ownInQuote = own !== null && quote !== null && quote.contains(own);
+  if (quote !== null && !ownInQuote && document.getSelection()?.isCollapsed !== false) {
+    revealSent(quote);
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if (event.isComposing) {
+    return;
+  }
+  const command = event.ctrlKey || event.metaKey;
+  const target = event.target;
+  if (command && !event.altKey && !event.shiftKey && event.key.toLowerCase() === settings.reply_key) {
+    // Ctrl+R would reload the page.
+    event.preventDefault();
+    reply();
+    return;
+  }
+  if (command || event.altKey) {
+    return;
+  }
+  if (target instanceof HTMLTextAreaElement && target.id === settings.comment_field_id && event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    send({ type: "commit", text: target.value });
+    return;
+  }
+  if (target instanceof Element && target.matches("[data-quote-link]") && (event.key === "Enter" || event.key === " ")) {
+    event.preventDefault();
+    revealSent(target);
+  }
+}, true);
+for (;;) {
+  const command = await dioxus.recv();
+  if (command.type === "layout") {
+    layout = command;
+    schedule();
+  } else if (command.type === "reveal") {
+    const kept = ranges.get(`${layout.agent}:${command.id}`);
+    if (kept !== undefined) {
+      revealRange(kept.range);
+    }
+  }
+}
+"#;
+
+#[derive(Debug, Serialize)]
+struct Settings {
+    chat_scroll_id: &'static str,
+    entry_class: &'static str,
+    layer_id: &'static str,
+    reply_button_id: &'static str,
+    links_id: &'static str,
+    replied_host_id: &'static str,
+    comment_field_id: &'static str,
+    revealed_class: &'static str,
+    reply_key: &'static str,
+    /// How long a passage the chat scrolled to stays lit.
+    flash_ms: u32,
+    /// How long "You replied" waits for the pointer to come back before it goes.
+    hide_ms: u32,
+    you_replied: &'static str,
+    show_message: &'static str,
+    show_passage: &'static str,
+    new_field: &'static str,
+    pin_group_class: &'static str,
+    note_class: &'static str,
+    field_class: &'static str,
+    leaving_class: &'static str,
+    blocks_class: &'static str,
+    block_card_class: &'static str,
+    user_bubble_class: &'static str,
+    markdown_class: &'static str,
+    /// The field's form that shows in the strip.
+    note_form: &'static str,
+    /// The placement of a note that shows.
+    beside: &'static str,
+}
+
+/// What the app tells the script.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum QuoteCommand {
+    Layout(Layout),
+    /// Scrolls the chat to a quote's passage and lights it for a moment.
+    Reveal {
+        id: QuoteId,
+    },
+}
+
+/// The shown agent's quotes and the passage being commented, which the script highlights and
+/// places the elements of.
+#[derive(Debug, Clone, PartialEq, Default, Serialize)]
+struct Layout {
+    agent: Option<AgentId>,
+    quotes: Vec<PassagePlace>,
+    editor: Option<EditorPlace>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct PassagePlace {
+    id: QuoteId,
+    anchor: QuoteAnchor,
+    raw: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct EditorPlace {
+    /// The quote whose comment the field changes; `None` for a passage just selected.
+    quote: Option<QuoteId>,
+    anchor: QuoteAnchor,
+    raw: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum QuoteMessage {
+    /// Reply on a selection, or Ctrl+R.
+    Reply { agent: AgentId, passage: Passage },
+    /// Enter in the comment field.
+    Commit { text: String },
+}
+
+/// The script, for the components that ask it to scroll.
+#[derive(Clone, Copy)]
+struct QuoteScript(document::Eval);
+
+impl QuoteScript {
+    fn reveal(self, id: QuoteId) {
+        if let Err(error) = self.0.send(QuoteCommand::Reveal { id }) {
+            tracing::warn!("cannot scroll to the quote: {error}");
+        }
+    }
+}
+
+/// Runs the script for the window's life, and keeps it told of the shown agent's quotes.
+pub fn use_quotes(cockpit: Cockpit) {
+    let script = use_hook(|| {
+        let mut script = document::eval(SCRIPT);
+        if let Err(error) = script.send(Settings {
+            chat_scroll_id: CHAT_SCROLL_ID,
+            entry_class: ENTRY_CLASS,
+            layer_id: LAYER_ID,
+            reply_button_id: REPLY_BUTTON_ID,
+            links_id: LINKS_ID,
+            replied_host_id: REPLIED_HOST_ID,
+            comment_field_id: COMMENT_FIELD_ID,
+            revealed_class: REVEALED_CLASS,
+            reply_key: REPLY_KEY,
+            flash_ms: 1200,
+            hide_ms: 250,
+            you_replied: "You replied",
+            show_message: "Show your message",
+            show_passage: SHOW_PASSAGE,
+            new_field: NEW_FIELD,
+            pin_group_class: PIN_GROUP_CLASS,
+            note_class: NOTE_CLASS,
+            field_class: FIELD_CLASS,
+            leaving_class: LEAVING_CLASS,
+            blocks_class: BLOCKS_CLASS,
+            block_card_class: BLOCK_CARD_CLASS,
+            user_bubble_class: USER_BUBBLE_CLASS,
+            markdown_class: MARKDOWN_CLASS,
+            note_form: FieldForm::Note.into(),
+            beside: CommentPlacement::Beside.into(),
+        }) {
+            tracing::warn!("cannot start the quotes' script: {error}");
+        }
+        spawn(async move {
+            loop {
+                match script.recv::<QuoteMessage>().await {
+                    Ok(message) => receive(cockpit, message),
+                    Err(document::EvalError::Serialization(error)) => {
+                        tracing::warn!("cannot read a message of the quotes' script: {error}");
+                    }
+                    Err(error) => {
+                        tracing::warn!("the quotes' script stopped: {error}");
+                        return;
+                    }
+                }
+            }
+        });
+        script
+    });
+    use_context_provider(|| QuoteScript(script));
+    let layout = use_memo(move || layout(&cockpit.state.read(), &cockpit.drafts.read()));
+    use_effect(move || {
+        if let Err(error) = script.send(QuoteCommand::Layout(layout())) {
+            tracing::warn!("cannot update the quotes' script: {error}");
+        }
+    });
+}
+
+fn receive(cockpit: Cockpit, message: QuoteMessage) {
+    match message {
+        QuoteMessage::Reply { agent, passage } => {
+            cockpit.with_drafts(|state, drafts| {
+                if state.ui.selected == Some(agent) {
+                    quotes::start(drafts, agent, passage);
+                }
+            });
+        }
+        QuoteMessage::Commit { text } => {
+            cockpit.with_drafts(|state, drafts| {
+                quotes::type_comment(drafts, text);
+                quotes::commit(drafts, state.prefs.chat.comments);
+            });
+            bridge::focus_field(COMPOSER_ID);
+        }
+    }
+}
+
+fn layout(state: &AppState, drafts: &Drafts) -> Layout {
+    let Some(agent) = state.ui.selected else {
+        return Layout::default();
+    };
+    let quotes = drafts
+        .draft(agent)
+        .map(|draft| {
+            draft
+                .quotes
+                .iter()
+                .map(|quote| PassagePlace {
+                    id: quote.id,
+                    anchor: quote.passage.anchor,
+                    raw: quote.passage.raw.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let editor = shown_editor(drafts, agent).and_then(|editor| {
+        let (quote, passage) = match &editor.target {
+            EditorTarget::New(passage) => (None, passage),
+            EditorTarget::Existing(id) => (Some(*id), &find(drafts, agent, *id)?.passage),
+        };
+        Some(EditorPlace {
+            quote,
+            anchor: passage.anchor,
+            raw: passage.raw.clone(),
+        })
+    });
+    Layout {
+        agent: Some(agent),
+        quotes,
+        editor,
+    }
+}
+
+fn shown_editor(drafts: &Drafts, agent: AgentId) -> Option<&QuoteEditor> {
+    drafts
+        .quote_editor
+        .as_ref()
+        .filter(|editor| editor.agent == agent)
+}
+
+fn find(drafts: &Drafts, agent: AgentId, id: QuoteId) -> Option<&Quote> {
+    drafts
+        .draft(agent)?
+        .quotes
+        .iter()
+        .find(|quote| quote.id == id)
+}
+
+fn field_view(state: &AppState, drafts: &Drafts, agent: AgentId) -> Option<FieldView> {
+    let editor = shown_editor(drafts, agent)?.clone();
+    let wide = chat_is_wide(state, agent);
+    let (number, beside) = match &editor.target {
+        EditorTarget::New(_) => (None, state.prefs.chat.comments == CommentPlacement::Beside),
+        EditorTarget::Existing(id) => {
+            let quotes = drafts
+                .draft(agent)
+                .map_or(&[][..], |draft| draft.quotes.as_slice());
+            let index = quotes.iter().position(|quote| quote.id == *id);
+            let beside = index
+                .and_then(|index| quotes.get(index))
+                .is_some_and(|quote| quote.placement == CommentPlacement::Beside);
+            (index.map(quotes::number), beside)
+        }
+    };
+    let form = if wide && beside {
+        FieldForm::Note
+    } else {
+        FieldForm::Card
+    };
+    Some(FieldView {
+        editor,
+        number,
+        form,
+    })
+}
+
+/// Whether the chat has the strip on its right, where notes show: the file view takes it.
+pub fn chat_is_wide(state: &AppState, agent: AgentId) -> bool {
+    state.ui.file_view(agent).is_none()
+}
+
+/// The elements the script places over the chat area.
+#[component]
+pub fn QuoteLayer() -> Element {
+    let cockpit: Cockpit = use_context();
+    let state = cockpit.state.read();
+    let drafts = cockpit.drafts.read();
+    let selected = state.ui.selected;
+    let field_view = selected.and_then(|agent| field_view(&state, &drafts, agent));
+    // A field that closes plays its exit, in its place.
+    let field = use_presence(field_view);
+    let Some(agent) = selected else {
+        return rsx! {};
+    };
+    let wide = chat_is_wide(&state, agent);
+    let quotes = drafts
+        .draft(agent)
+        .map(|draft| draft.quotes.clone())
+        .unwrap_or_default();
+    let editing = shown_editor(&drafts, agent).and_then(|editor| match editor.target {
+        EditorTarget::Existing(id) => Some(id),
+        EditorTarget::New(_) => None,
+    });
+    // Every note of a wide chat is drawn: a hidden one fades out rather than going at once.
+    let notes: Vec<(usize, Quote)> = quotes
+        .iter()
+        .enumerate()
+        .filter(|(_, quote)| wide && editing != Some(quote.id))
+        .map(|(index, quote)| (quotes::number(index), quote.clone()))
+        .collect();
+    rsx! {
+        div { id: LAYER_ID, class: "quote-layer",
+            svg { id: LINKS_ID, class: "quote-links", "aria-hidden": "true" }
+            div { id: REPLY_BUTTON_ID, class: "quote-reply-place",
+                button {
+                    class: "popover quote-reply",
+                    tabindex: "-1",
+                    title: "Reply to the selection (Ctrl+R)",
+                    Icon { kind: IconKind::Reply, size: 14 }
+                    span { "Reply" }
+                    span { class: "key-hint", "Ctrl+R" }
+                }
+            }
+            for (index, quote) in quotes.into_iter().enumerate() {
+                QuotePin { key: "{quote.id.get()}", agent, number: quotes::number(index), quote, wide }
+            }
+            for (number, quote) in notes {
+                QuoteNote { key: "{quote.id.get()}", agent, number, quote }
+            }
+            // A switch draws the other agent at once: the field of the agent that left goes with it.
+            if let Some(Shown { value: FieldView { editor, number, form }, leaving, .. }) = field
+                && editor.agent == agent
+            {
+                // Keyed by opening: a new opening mounts a new field, with the draft's text.
+                CommentField { key: "{editor.opening}", editor, number, form, leaving }
+            }
+            div { id: REPLIED_HOST_ID, class: "quote-replied-host" }
+        }
+    }
+}
+
+/// A quote's number beside its passage. While its note does not show, hovering or focusing it
+/// shows the passage and the comment.
+#[component]
+fn QuotePin(agent: AgentId, number: usize, quote: Quote, wide: bool) -> Element {
+    let cockpit: Cockpit = use_context();
+    let id = quote.id;
+    let comment = quote.comment.clone();
+    let label = if comment.is_empty() {
+        format!("Quote {number}, no comment")
+    } else {
+        format!("Quote {number}: {comment}")
+    };
+    rsx! {
+        div { class: PIN_GROUP_CLASS, "data-quote": "{id.get()}",
+            button { class: "quote-pin", aria_label: "{label}", "{number}" }
+            div { class: "popover quote-pin-card",
+                p { class: "quote-passage", "{quote.passage.text}" }
+                if comment.is_empty() {
+                    p { class: "quote-comment dim", "No comment" }
+                } else {
+                    p { class: "quote-comment", "{comment}" }
+                }
+                div { class: "quote-tools",
+                    // A comment set to show beside the text that has no room there shows here.
+                    if wide && quote.placement == CommentPlacement::Hidden {
+                        button {
+                            class: "icon-button tiny",
+                            title: "Show beside the text",
+                            aria_label: "Show the comment beside the text",
+                            onclick: move |_| cockpit.with_drafts(|_, drafts| quotes::set_placement(drafts, agent, id, CommentPlacement::Beside)),
+                            Icon { kind: IconKind::Eye, size: 13 }
+                        }
+                    }
+                    EditButton { agent, id }
+                    RemoveButton { agent, id }
+                }
+            }
+        }
+    }
+}
+
+/// A quote's comment in the strip beside its passage.
+#[component]
+fn QuoteNote(agent: AgentId, number: usize, quote: Quote) -> Element {
+    let cockpit: Cockpit = use_context();
+    let id = quote.id;
+    let placement: &'static str = quote.placement.into();
+    rsx! {
+        div {
+            class: NOTE_CLASS,
+            "data-quote": "{id.get()}",
+            "data-placement": placement,
+            div { class: "quote-note-head",
+                span { class: "quote-number", "{number}" }
+                span { class: "quote-note-state", "Not sent yet" }
+                span { class: "spacer" }
+                EditButton { agent, id }
+                button {
+                    class: "icon-button tiny",
+                    title: "Hide: keep the number only",
+                    aria_label: "Hide the comment, keep the number only",
+                    onclick: move |_| cockpit.with_drafts(|_, drafts| quotes::set_placement(drafts, agent, id, CommentPlacement::Hidden)),
+                    Icon { kind: IconKind::EyeOff, size: 13 }
+                }
+                RemoveButton { agent, id }
+            }
+            if quote.comment.is_empty() {
+                p { class: "quote-comment dim", "No comment" }
+            } else {
+                p { class: "quote-comment", "{quote.comment}" }
+            }
+        }
+    }
+}
+
+#[component]
+fn EditButton(agent: AgentId, id: QuoteId) -> Element {
+    let cockpit: Cockpit = use_context();
+    rsx! {
+        button {
+            class: "icon-button tiny",
+            title: "Edit the comment",
+            aria_label: "Edit the comment",
+            onclick: move |_| cockpit.with_drafts(|_, drafts| quotes::edit(drafts, agent, id)),
+            Icon { kind: IconKind::Pencil, size: 13 }
+        }
+    }
+}
+
+#[component]
+fn RemoveButton(agent: AgentId, id: QuoteId) -> Element {
+    let cockpit: Cockpit = use_context();
+    rsx! {
+        button {
+            class: "icon-button tiny",
+            title: "Remove the quote",
+            aria_label: "Remove the quote",
+            onclick: move |_| cockpit.with_drafts(|_, drafts| quotes::remove(drafts, agent, id)),
+            Icon { kind: IconKind::Close, size: 13 }
+        }
+    }
+}
+
+/// The comment field: a note in the strip, or a card under the passage. Enter adds the quote or
+/// saves the comment, and Esc closes it.
+#[component]
+fn CommentField(
+    editor: QuoteEditor,
+    number: Option<usize>,
+    form: FieldForm,
+    leaving: bool,
+) -> Element {
+    let cockpit: Cockpit = use_context();
+    let agent = editor.agent;
+    let (quote, passage, hint) = match &editor.target {
+        EditorTarget::New(passage) => (NEW_FIELD.to_owned(), Some(passage.text.clone()), "adds it"),
+        EditorTarget::Existing(id) => (id.get().to_string(), None, "saves it"),
+    };
+    let state = if number.is_some() {
+        "Edit the comment"
+    } else {
+        "New"
+    };
+    let class = if leaving {
+        format!("popover {FIELD_CLASS} {LEAVING_CLASS}")
+    } else {
+        format!("popover {FIELD_CLASS}")
+    };
+    let form: &'static str = form.into();
+    rsx! {
+        div {
+            class,
+            inert: leaving.then_some(true),
+            "data-quote": "{quote}",
+            "data-form": form,
+            div { class: "quote-note-head",
+                if let Some(number) = number {
+                    span { class: "quote-number", "{number}" }
+                } else {
+                    span { class: "quote-number new" }
+                }
+                span { class: "quote-note-state", "{state}" }
+                span { class: "spacer" }
+                button {
+                    class: "icon-button tiny",
+                    title: "Cancel (Esc)",
+                    aria_label: "Cancel the comment",
+                    onclick: move |_| {
+                        cockpit.with_drafts(|_, drafts| quotes::cancel(drafts, Some(agent)));
+                    },
+                    Icon { kind: IconKind::Close, size: 13 }
+                }
+            }
+            if let Some(passage) = passage {
+                p { class: "quote-passage", "{passage}" }
+            }
+            textarea {
+                // The field that leaves gives its id to the next one.
+                id: (!leaving).then_some(COMMENT_FIELD_ID),
+                class: "quote-field",
+                rows: "2",
+                aria_label: "Your comment on the quote",
+                placeholder: "Your comment",
+                initial_value: "{editor.text}",
+                oninput: move |event: FormEvent| cockpit.with_drafts(|_, drafts| quotes::type_comment(drafts, event.value())),
+            }
+            span { class: "quote-hint",
+                kbd { "Enter" }
+                " {hint} · "
+                kbd { "Esc" }
+                " cancels"
+            }
+        }
+    }
+}
+
+/// The quotes the message will carry, one line each, above the composer's text.
+#[component]
+pub fn QuoteRows(agent: AgentId, quotes: Vec<Quote>, wide: bool) -> Element {
+    let cockpit: Cockpit = use_context();
+    let script: QuoteScript = use_context();
+    rsx! {
+        div { class: "quote-rows", role: "list", aria_label: "Quotes sent with the message",
+            for (index, quote) in quotes.into_iter().enumerate() {
+                {
+                    let id = quote.id;
+                    let shown = quote.placement == CommentPlacement::Beside;
+                    let other = if shown { CommentPlacement::Hidden } else { CommentPlacement::Beside };
+                    let number = quotes::number(index);
+                    rsx! {
+                        div { key: "{id.get()}", class: "quote-row", role: "listitem",
+                            button {
+                                class: "quote-row-main",
+                                title: SHOW_PASSAGE,
+                                onclick: move |_| script.reveal(id),
+                                span { class: "quote-number", "{number}" }
+                                span { class: "quote-row-passage", "{quote.passage.text}" }
+                                span { class: "quote-row-comment", "{quote.comment}" }
+                            }
+                            if wide {
+                                button {
+                                    class: if shown { "icon-button tiny" } else { "icon-button tiny off" },
+                                    title: if shown { "Hide the note: keep the number only" } else { "Show the note beside the text" },
+                                    aria_label: if shown { "Hide the note" } else { "Show the note beside the text" },
+                                    aria_pressed: shown,
+                                    onclick: move |_| cockpit.with_drafts(|_, drafts| quotes::set_placement(drafts, agent, id, other)),
+                                    Icon { kind: if shown { IconKind::Eye } else { IconKind::EyeOff }, size: 13 }
+                                }
+                            }
+                            EditButton { agent, id }
+                            RemoveButton { agent, id }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cockpit_protocol::{AgentStatus, ItemId};
+
+    use super::*;
+    use crate::state::quotes::QuoteAnchor;
+    use crate::state::{Utf16Offset, state_with, summary};
+
+    fn passage(item: u32, text: &str) -> Passage {
+        Passage {
+            anchor: QuoteAnchor {
+                item: ItemId::new(item),
+                start: Utf16Offset::new(4),
+                end: Utf16Offset::new(4 + text.len()),
+            },
+            raw: text.to_owned(),
+            text: text.to_owned(),
+            code: false,
+        }
+    }
+
+    /// The script reads these words from the field's `data-form`.
+    #[test]
+    fn the_field_forms_are_pinned() {
+        let words: Vec<&str> = FieldForm::VARIANTS
+            .iter()
+            .map(|&form| form.into())
+            .collect();
+
+        assert_eq!(words, ["note", "card"]);
+    }
+
+    #[test]
+    fn the_script_sees_the_shown_agents_quotes_and_its_field_alone() {
+        let shown = AgentId::new(1);
+        let other = AgentId::new(2);
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::Idle),
+            summary(2, AgentStatus::Idle),
+        ]);
+        state.ui.selected = Some(shown);
+        let mut drafts = Drafts::default();
+        quotes::start(&mut drafts, shown, passage(3, "kept"));
+        quotes::commit(&mut drafts, CommentPlacement::Beside);
+        let id = drafts.draft(shown).map(|draft| draft.quotes[0].id);
+        quotes::start(&mut drafts, other, passage(9, "elsewhere"));
+
+        let other_field = layout(&state, &drafts);
+        if let Some(id) = id {
+            quotes::edit(&mut drafts, shown, id);
+        }
+        let editing = layout(&state, &drafts);
+
+        assert_eq!(other_field.agent, Some(shown));
+        assert_eq!(other_field.quotes.len(), 1);
+        assert_eq!(other_field.quotes[0].raw, "kept");
+        assert_eq!(other_field.editor, None);
+        assert_eq!(
+            editing.editor,
+            Some(EditorPlace {
+                quote: id,
+                anchor: passage(3, "kept").anchor,
+                raw: "kept".to_owned(),
+            })
+        );
+    }
+}

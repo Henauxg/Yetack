@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// A position in a text, in UTF-16 code units, as the webview reports a caret.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Utf16Offset(usize);
 

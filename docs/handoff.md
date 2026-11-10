@@ -48,6 +48,16 @@ These notes are about Claude Code's cloud sessions, where most of this branch wa
 - On-screen checks: the demo (`agents-cockpit-desktop --demo`) under Xvfb with openbox, wmctrl and xdotool, screenshots with `import -window root`. Close the window with wmctrl: xdotool's close aborts GTK.
 - An agent started with `isolation: "worktree"` gets a worktree of `main`: its first step must check out the working branch. Two agents in one checkout work if each owns separate crates and commits only its own files.
 
+## Checking the app on Windows
+
+The demo can be driven by a script, which sees and acts on the real page:
+
+1. Build, then start the demo with its own WebView2 data folder and a debugging port: `WEBVIEW2_USER_DATA_FOLDER=<a scratch folder> WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9333 target/debug/agents-cockpit-desktop.exe --demo`. The data folder matters when the user's own app runs: WebView2 keeps one browser per data folder, and that browser keeps the arguments it started with, so the port would not open.
+2. Drive it over the Chrome DevTools Protocol from Node 22, which has `fetch` and `WebSocket` built in: `http://127.0.0.1:9333/json` lists the page, then `Runtime.evaluate`, `Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`, `Input.insertText` and `Page.captureScreenshot`. A selection is made with `document.createRange` and `getSelection().addRange`.
+3. Stop the demo before the next build: Windows locks a running program's file.
+
+The window shows on the user's screen meanwhile.
+
 ## Several machines
 
 The user approved option A of the sidebar mockup: one panel per machine, folding, with no coloured dot per machine. How it works is in docs/architecture.md, "Several machines".
