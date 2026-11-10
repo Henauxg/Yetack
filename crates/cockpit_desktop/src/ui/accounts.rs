@@ -34,8 +34,7 @@ fn color_style(color: AccountColor) -> String {
     format!("--acct: {}", color.css())
 }
 
-/// The account's name in its color: on a sidebar row's second line, after the header's status,
-/// on a past session.
+/// The account's name in its color: after the header's status, on a past session.
 #[component]
 pub fn AccountTag(label: AccountLabel) -> Element {
     rsx! {
@@ -46,6 +45,26 @@ pub fn AccountTag(label: AccountLabel) -> Element {
             "{label.name}"
         }
     }
+}
+
+/// The account's first letter in its color, where a line has no room for its name: on a sidebar
+/// row. The name shows on hover.
+#[component]
+pub fn AccountLetter(label: AccountLabel) -> Element {
+    rsx! {
+        span {
+            class: "acct-letter",
+            style: color_style(label.color),
+            title: "Account: {label.name}",
+            span { aria_hidden: true, "{first_letter(&label.name)}" }
+            span { class: "visually-hidden", "Account: {label.name}" }
+        }
+    }
+}
+
+/// The first letter of `name`, in capitals. A letter whose capital is two letters keeps both.
+fn first_letter(name: &str) -> String {
+    name.chars().take(1).flat_map(char::to_uppercase).collect()
 }
 
 #[component]
@@ -1059,6 +1078,16 @@ pub fn dialog(dialog: Dialog) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_accounts_letter_is_its_first_one_in_capitals() {
+        let letters: Vec<String> = ["work", "Élan", "ßeta", ""]
+            .into_iter()
+            .map(first_letter)
+            .collect();
+
+        assert_eq!(letters, ["W", "É", "SS", ""]);
+    }
 
     #[test]
     fn the_check_says_how_long_ago_it_ran() {
