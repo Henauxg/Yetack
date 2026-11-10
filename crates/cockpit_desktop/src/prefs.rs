@@ -25,6 +25,9 @@
 //!     "agents": {
 //!       "build-box": { "4": "off", "7": "needs_you" }
 //!     }
+//!   },
+//!   "chat": {
+//!     "comments": "hidden"
 //!   }
 //! }
 //! ```
@@ -69,6 +72,41 @@ pub struct Prefs {
     pub files_pane: FilesPanePrefs,
     pub accounts: AccountPrefs,
     pub notifications: NotificationPrefs,
+    pub chat: ChatPrefs,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChatPrefs {
+    /// Where a new comment on a quote shows while it waits to be sent.
+    pub comments: CommentPlacement,
+}
+
+/// Where a comment on a quote shows in the chat, from the Settings dialog.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumString, IntoStaticStr, VariantArray,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum CommentPlacement {
+    /// In a note beside its passage, while the chat has room for one.
+    #[default]
+    Beside,
+    /// As its quote's number alone: hovering the number shows it.
+    Hidden,
+}
+
+impl Serialize for CommentPlacement {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.into())
+    }
+}
+
+/// A word this version does not know, from another version of the app, reads as the default.
+impl<'de> Deserialize<'de> for CommentPlacement {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let word = String::deserialize(deserializer)?;
+        Ok(word.parse().unwrap_or_default())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -559,6 +597,9 @@ mod tests {
         "4": "off"
       }
     }
+  },
+  "chat": {
+    "comments": "hidden"
   }
 }
 "#;
@@ -595,6 +636,9 @@ mod tests {
                         "build-box".to_owned(),
                         BTreeMap::from([(AgentId::new(4), NotificationLevel::Off)]),
                     )]),
+                },
+                chat: ChatPrefs {
+                    comments: CommentPlacement::Hidden,
                 },
             }
         );
@@ -664,6 +708,23 @@ mod tests {
         );
         assert_eq!(unknown.sidebar.filter, StatusFilter::All);
         assert_eq!(unknown.file_view.width_share, Some(0.3));
+    }
+
+    #[test]
+    fn the_comment_placements_are_pinned_and_an_unknown_one_reads_as_beside() {
+        let words: Vec<&str> = CommentPlacement::VARIANTS
+            .iter()
+            .map(|&placement| placement.into())
+            .collect();
+        let hidden: Prefs = serde_json::from_str(r#"{"chat": {"comments": "hidden"}}"#).unwrap();
+        let unknown: Prefs =
+            serde_json::from_str(r#"{"chat": {"comments": "folded"}, "sidebar": {"width": 300}}"#)
+                .unwrap();
+
+        assert_eq!(words, ["beside", "hidden"]);
+        assert_eq!(hidden.chat.comments, CommentPlacement::Hidden);
+        assert_eq!(unknown.chat.comments, CommentPlacement::Beside);
+        assert_eq!(unknown.sidebar.width, Some(300));
     }
 
     #[test]
@@ -789,6 +850,7 @@ mod tests {
             },
             accounts: AccountPrefs::default(),
             notifications: NotificationPrefs::default(),
+            chat: ChatPrefs::default(),
         };
 
         Prefs::default().save(&file).unwrap();

@@ -1051,7 +1051,8 @@ pub fn dialog(dialog: Dialog) -> Element {
         | Dialog::NoDaemon
         | Dialog::DaemonUpdate(_)
         | Dialog::ImageView(_)
-        | Dialog::WorkingFolder(_) => rsx! {},
+        | Dialog::WorkingFolder(_)
+        | Dialog::Settings => rsx! {},
     }
 }
 

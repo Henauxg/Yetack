@@ -30,7 +30,7 @@ pub const ENTRY_CLASS: &str = "transcript-entry";
 pub const FOLD_BUTTON_CLASS: &str = "fold-lines";
 
 /// The class that highlights an entry the chat scrolled to, for as long as its animation runs.
-const REVEALED_CLASS: &str = "chat-revealed";
+pub const REVEALED_CLASS: &str = "chat-revealed";
 
 /// How close to the bottom, in pixels, the chat still follows new entries.
 const BOTTOM_THRESHOLD_PX: u16 = 40;

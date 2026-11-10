@@ -18,6 +18,10 @@ use crate::state::{Block, actions, agent_map};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::mcp::{McpPanel, mcp_summary};
 
+/// The floating blocks' box. The quotes' notes go below its cards.
+pub const BLOCKS_CLASS: &str = "blocks";
+pub const BLOCK_CARD_CLASS: &str = "block-card";
+
 #[component]
 pub fn FloatingBlocks() -> Element {
     let cockpit: Cockpit = use_context();
@@ -82,8 +86,13 @@ pub fn FloatingBlocks() -> Element {
     let mcp_open = is_open(Block::Mcp);
     let has_tasks = !tasks.is_empty();
     let has_background = !background.is_empty();
+    let class = if badge_mode {
+        format!("{BLOCKS_CLASS} beside-badges")
+    } else {
+        BLOCKS_CLASS.to_owned()
+    };
     rsx! {
-        div { class: if badge_mode { "blocks beside-badges" } else { "blocks" },
+        div { class,
             if show_tasks {
                 BlockCard {
                     agent,
@@ -216,7 +225,7 @@ fn BlockCard(
     children: Element,
 ) -> Element {
     let cockpit: Cockpit = use_context();
-    let mut class = vec!["block-card"];
+    let mut class = vec![BLOCK_CARD_CLASS];
     if wide {
         class.push("wide");
     }

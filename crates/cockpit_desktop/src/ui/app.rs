@@ -18,6 +18,7 @@ use crate::ui::header::Header;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::no_daemon::NoDaemonScreen;
 use crate::ui::presence::use_presence;
+use crate::ui::quotes::{QuoteLayer, use_quotes};
 use crate::ui::reorder::use_reorder;
 use crate::ui::sidebar::{RowMenu, Sidebar};
 use crate::ui::splitter::{
@@ -40,6 +41,7 @@ pub fn App() -> Element {
     use_prefs_saver(cockpit, prefs_file);
     use_clock();
     use_bridge(cockpit);
+    use_quotes(cockpit);
     use_splitter(cockpit);
     use_reorder(cockpit);
     let state = cockpit.state.read();
@@ -105,6 +107,7 @@ pub fn App() -> Element {
                 }
                 div { class: "chat-area",
                     TranscriptView {}
+                    QuoteLayer {}
                     FloatingBlocks {}
                     ErrorNotes {}
                 }

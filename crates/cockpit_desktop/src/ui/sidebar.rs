@@ -16,7 +16,7 @@ use crate::state::no_daemon::Absence;
 use crate::state::sidebar_keys::SidebarItem;
 use crate::state::{
     AgentEntry, AppState, ConnectionState, Dialog, FolderAction, Popover, TitleEdit, TitlePlace,
-    actions, daemon_update, machines, notification_levels, to_handle, working_folder,
+    actions, daemon_update, machines, notification_levels, settings, to_handle, working_folder,
 };
 use crate::ui::accounts::{AccountTag, AccountsButton};
 use crate::ui::icons::{Icon, IconKind};
@@ -721,6 +721,7 @@ fn ConnectionFooter() -> Element {
     };
     // With several machines, each panel says how its machine answers.
     let panels = !state.machines.others.is_empty();
+    let settings_open = state.ui.dialog == Some(Dialog::Settings);
     rsx! {
         div { class: "sidebar-foot",
             div { class: "foot-buttons",
@@ -731,6 +732,14 @@ fn ConnectionFooter() -> Element {
                     onclick: move |_| cockpit.update(machines::open_machines),
                     Icon { kind: IconKind::Server, size: 13 }
                     "Machines"
+                }
+                span { class: "spacer" }
+                button {
+                    class: if settings_open { "foot-accounts foot-settings pressed" } else { "foot-accounts foot-settings" },
+                    title: "Settings",
+                    aria_label: "Settings",
+                    onclick: move |_| cockpit.update(settings::open),
+                    Icon { kind: IconKind::Gear, size: 15 }
                 }
             }
             if !panels {
