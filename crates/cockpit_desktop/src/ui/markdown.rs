@@ -223,7 +223,7 @@ fn FileLink(agent: AgentId, file: FileRef) -> Element {
 }
 
 /// An image file the message shows, at a fixed height so that the text below does not move when
-/// it arrives. A click opens it in the file view.
+/// it arrives. A click opens it over the whole window, or in the file view until it is loaded.
 #[component]
 fn ChatImage(agent: AgentId, path: String, alt: String) -> Element {
     let cockpit: Cockpit = use_context();
@@ -276,7 +276,15 @@ fn ChatImage(agent: AgentId, path: String, alt: String) -> Element {
             title: "{path}",
             onclick: move |_| {
                 let path = PathBuf::from(&path);
-                cockpit.update(|state| actions::open_file(state, agent, path, None));
+                // Read before the update: a memo that computes again reads the state, which the
+                // update holds.
+                let shown = shown();
+                cockpit.update(|state| match shown {
+                    Some(Loadable::Loaded(image)) => {
+                        chat_images::open_full_view(state, agent, path, image);
+                    }
+                    _ => actions::open_file(state, agent, path, None),
+                });
             },
             {body}
         }

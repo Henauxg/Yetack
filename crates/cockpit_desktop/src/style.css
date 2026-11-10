@@ -1978,6 +1978,69 @@ html.reordering * {
   cursor: default;
 }
 
+/* An image you zoom with Ctrl+wheel. It fits its frame at first, and the frame cuts what the zoom
+   pushes out. */
+.zoom-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 6px;
+  user-select: none;
+}
+
+.zoom-layer {
+  width: 100%;
+  height: 100%;
+  transform-origin: 0 0;
+  pointer-events: none;
+  transition: transform var(--motion-hover) var(--ease);
+}
+
+.zoom-layer > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  user-select: none;
+}
+
+.zoom-frame.opens {
+  cursor: zoom-in;
+}
+
+.zoom-frame.zoomed {
+  cursor: grab;
+}
+
+.zoom-frame.dragging {
+  cursor: grabbing;
+}
+
+/* The image follows the pointer at once while it is dragged. */
+.zoom-frame.dragging > .zoom-layer {
+  transition: none;
+}
+
+/* The full view of an image, over the whole window. */
+.dialog.image-view {
+  width: min(1400px, calc(100% - 32px));
+  height: calc(100% - 32px);
+}
+
+.image-view .zoom-frame {
+  width: auto;
+  margin: 0 16px 16px;
+}
+
+.image-view-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .notice,
 .turn-end {
   align-self: center;
@@ -4449,15 +4512,22 @@ html.splitting * {
 
 .file-image {
   display: flex;
-  justify-content: center;
+  height: 100%;
   padding: 16px;
 }
 
-.file-image img {
-  max-width: 100%;
-  height: auto;
-  border-radius: 6px;
+.file-image .zoom-frame {
   border: 1px solid var(--line-strong);
+  transition: border-color var(--motion-hover) var(--ease);
+}
+
+.file-image .zoom-frame.opens:hover {
+  border-color: var(--line-control);
+}
+
+/* A small image keeps its own size in the file view. */
+.file-image .zoom-layer > img {
+  object-fit: scale-down;
 }
 
 .file-note {
@@ -4835,7 +4905,8 @@ html.splitting * {
   --tool: var(--faint);
 }
 
-.overlay.map-overlay {
+/* The agent map and an image's full view take most of the window's height. */
+.overlay.tall-overlay {
   padding-top: 40px;
 }
 
@@ -6652,7 +6723,8 @@ label.icon-button,
 .filter-chip:active,
 .file-list-button:active,
 .file-list-close:active,
-.file-reload:not(:disabled):active {
+.file-reload:not(:disabled):active,
+.zoom-frame.opens:active {
   transform: scale(var(--press-scale));
 }
 

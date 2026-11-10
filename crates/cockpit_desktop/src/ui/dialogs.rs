@@ -1,5 +1,5 @@
 //! The agent switcher (Ctrl+K), the new agent dialog (Ctrl+N), the question before closing an
-//! agent, and the frame of the "Open file" dialog (Ctrl+O).
+//! agent, the frame of the "Open file" dialog (Ctrl+O), and the full view of an image.
 
 use std::path::{Path, PathBuf};
 
@@ -7,6 +7,7 @@ use cockpit_protocol::{
     AgentId, AgentStatus, Completeness, Effort, PastSession, PermissionMode, Timestamp,
 };
 use dioxus::html::geometry::ScreenPoint;
+use dioxus::html::input_data::MouseButton;
 use dioxus::html::point_interaction::InteractionLocation;
 use dioxus::prelude::*;
 use rfd::AsyncFileDialog;
@@ -21,7 +22,7 @@ use crate::state::accounts::AccountLabel;
 use crate::state::actions::{Direction, StartField};
 use crate::state::folder_field::{self, FolderRow};
 use crate::state::{
-    Dialog, FolderList, FormMenu, Loadable, NewAgentForm, NewAgentTab, accounts, actions,
+    Dialog, FolderList, FormMenu, ImageView, Loadable, NewAgentForm, NewAgentTab, accounts, actions,
 };
 use crate::ui::accounts::{self as accounts_view, AccountMini, AccountPicker};
 use crate::ui::agent_map::AgentMapDialog;
@@ -32,6 +33,7 @@ use crate::ui::machines::{MachinesDialog, machine_choices};
 use crate::ui::no_daemon::NoDaemonCard;
 use crate::ui::open_file::{self as open_file_view, OpenFileDialog, UP_ROW};
 use crate::ui::presence::{Presence, Shown, use_presence};
+use crate::ui::zoom::ZoomImage;
 
 /// Recent folders the new agent dialog offers.
 const RECENT_FOLDERS: usize = 6;
@@ -76,6 +78,9 @@ impl PointerMoves {
 #[component]
 pub fn Dialogs() -> Element {
     let cockpit: Cockpit = use_context();
+    // A click beside the dialog closes it only when its press reached the overlay. The full view
+    // of an image stops its presses, since a drag of the image may end beside it.
+    let mut pressed_beside = use_signal(|| false);
     let dialog = cockpit.state.read().ui.dialog.clone();
     let Some(Shown {
         value: dialog,
@@ -86,8 +91,8 @@ pub fn Dialogs() -> Element {
         return rsx! {};
     };
     let mut overlay_class = vec!["overlay"];
-    if matches!(dialog, Dialog::AgentMap(_)) {
-        overlay_class.push("map-overlay");
+    if matches!(dialog, Dialog::AgentMap(_) | Dialog::ImageView(_)) {
+        overlay_class.push("tall-overlay");
     }
     if leaving {
         overlay_class.push("leaving");
@@ -101,7 +106,14 @@ pub fn Dialogs() -> Element {
                 key: "{opening}",
                 class: "{overlay_class}",
                 inert: leaving.then_some(true),
-                onclick: move |_| cockpit.update(|state| state.ui.close_dialog()),
+                onmousedown: move |event| {
+                    pressed_beside.set(event.trigger_button() == Some(MouseButton::Primary));
+                },
+                onclick: move |_| {
+                    if pressed_beside.take() {
+                        cockpit.update(|state| state.ui.close_dialog());
+                    }
+                },
                 match dialog.clone() {
                     Dialog::Switcher => rsx! {
                         SwitcherDialog {}
@@ -127,6 +139,9 @@ pub fn Dialogs() -> Element {
                     },
                     Dialog::DaemonUpdate(machine) => rsx! {
                         DaemonUpdateScreens { machine }
+                    },
+                    Dialog::ImageView(view) => rsx! {
+                        ImageViewDialog { view }
                     },
                 }
             }
@@ -1164,6 +1179,56 @@ fn ResumeList(starting: bool) -> Element {
                         }
                     }
                 },
+            }
+        }
+    }
+}
+
+/// The full view's frame, which takes the focus so that Ctrl+0 and Ctrl+= reach it.
+const IMAGE_VIEW_FRAME_ID: &str = "image-view-frame";
+
+/// An image over the whole window. Esc, the close button or a click beside it closes it.
+#[component]
+fn ImageViewDialog(view: ImageView) -> Element {
+    let cockpit: Cockpit = use_context();
+    let ImageView { agent, path, image } = view;
+    let style = PathStyle::of(&path);
+    let full = path.to_string_lossy().into_owned();
+    let name = style.file_name(&full).unwrap_or(&full).to_owned();
+    rsx! {
+        div {
+            class: "dialog image-view",
+            role: "dialog",
+            aria_label: "{name}",
+            onclick: move |event| event.stop_propagation(),
+            onmousedown: move |event| event.stop_propagation(),
+            onmounted: move |_| bridge::focus_field(IMAGE_VIEW_FRAME_ID),
+            div { class: "dialog-head",
+                h2 { class: "image-view-name", title: "{full}", "{name}" }
+                span { class: "key-hint", "Ctrl+wheel zooms" }
+                button {
+                    class: "button",
+                    onclick: move |_| {
+                        let path = path.clone();
+                        cockpit.update(|state| {
+                            state.ui.close_dialog();
+                            actions::open_file(state, agent, path, None);
+                        });
+                    },
+                    "Open in the file view"
+                }
+                button {
+                    class: "icon-button",
+                    aria_label: "Close",
+                    title: "Close (Esc)",
+                    onclick: move |_| cockpit.update(|state| state.ui.close_dialog()),
+                    Icon { kind: IconKind::Close, size: 16 }
+                }
+            }
+            ZoomImage {
+                image,
+                alt: name.clone(),
+                id: IMAGE_VIEW_FRAME_ID.to_owned(),
             }
         }
     }

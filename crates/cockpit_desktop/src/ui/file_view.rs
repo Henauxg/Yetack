@@ -2,6 +2,7 @@
 //! markdown file rendered, and the line a `path:line` link marks.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use cockpit_protocol::{AgentId, FileEdit};
@@ -12,8 +13,8 @@ use crate::connection::{Clock, Cockpit};
 use crate::path_style::PathStyle;
 use crate::render::{self, Diff, Language, MAX_RENDERED_LINES, diff_lines};
 use crate::state::{
-    FileFreshness, FileRead, FileUpdate, Loadable, Popover, Reread, ViewMode, actions, file_edits,
-    file_reread, is_markdown,
+    FileFreshness, FileRead, FileUpdate, Loadable, Popover, Reread, ViewMode, actions, chat_images,
+    file_edits, file_reread, is_markdown,
 };
 use crate::ui::changes_list;
 use crate::ui::code::{
@@ -23,6 +24,7 @@ use crate::ui::file_list::FileListButton;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::markdown::MarkdownView;
 use crate::ui::splitter::FILE_VIEW_ID;
+use crate::ui::zoom::ZoomImage;
 use crate::{bridge, format};
 
 /// The shown tab's id, which keeps it in view in a long row of tabs.
@@ -200,11 +202,31 @@ pub fn FileViewPanel() -> Element {
                     Loadable::Loaded(FileRead::Text(text)) => rsx! {
                         FileContent { path: view.path.clone(), text, mode, line: view.line, edits, update }
                     },
-                    Loadable::Loaded(FileRead::Image(image)) => rsx! {
-                        div { class: "file-image",
-                            img { src: bridge::image_url(&image), alt: "{full}" }
+                    Loadable::Loaded(FileRead::Image(image)) => {
+                        let image = Arc::new(image);
+                        let path = view.path.clone();
+                        let open_full_view = {
+                            let image = Arc::clone(&image);
+                            move |()| {
+                                let (path, image) = (path.clone(), Arc::clone(&image));
+                                cockpit.update(|state| chat_images::open_full_view(state, agent, path, image));
+                            }
+                        };
+                        rsx! {
+                            div { class: "file-image",
+                                // Keyed by the path, so that another file does not show for a
+                                // frame at the last one's zoom.
+                                for shown in [view.path.clone()] {
+                                    ZoomImage {
+                                        key: "{shown.display()}",
+                                        image: Arc::clone(&image),
+                                        alt: full.clone(),
+                                        on_click: open_full_view.clone(),
+                                    }
+                                }
+                            }
                         }
-                    },
+                    }
                 }
             }
             FileFoot { agent, note, freshness }
