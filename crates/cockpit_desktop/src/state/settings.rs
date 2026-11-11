@@ -2,7 +2,7 @@
 //! preferences. Its Keyboard tab records new shortcuts for the commands.
 
 use super::app_state::AppState;
-use super::projects::{self, ProjectKey, RuleKind};
+use super::projects::{self, NEW_PROJECT_NAME, ProjectKey, RuleKind};
 use super::ui_state::{Dialog, RefusedChord, SettingsTab, SettingsView};
 use crate::keymap::{Chord, Command, Refusal};
 use crate::prefs::{CommentPlacement, EscStop, PaneState, ProjectId, SteerHold};
@@ -151,7 +151,7 @@ pub fn add_rule(state: &mut AppState, project: ProjectId, kind: RuleKind, text: 
 
 /// A new project with no rule, its card open on its name.
 pub fn new_project(state: &mut AppState) {
-    let id = projects::create(state, "New project");
+    let id = projects::create(state, NEW_PROJECT_NAME);
     if let Some(view) = view_mut(state) {
         view.project = Some(ProjectKey::Kept(id));
         view.adding_rule = None;
@@ -185,6 +185,7 @@ fn view_mut(state: &mut AppState) -> Option<&mut SettingsView> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prefs::ProjectRule;
     use crate::state::Popover;
 
     fn chord(text: &str) -> Chord {
@@ -237,9 +238,7 @@ mod tests {
         assert_eq!(view(&state).adding_rule, None);
         assert_eq!(
             state.prefs.projects.list[0].rules,
-            [crate::prefs::ProjectRule::Repository(
-                "github.com/acme/app".to_owned()
-            )]
+            [ProjectRule::Repository("github.com/acme/app".to_owned())]
         );
     }
 

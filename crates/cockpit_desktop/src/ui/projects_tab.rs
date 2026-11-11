@@ -10,7 +10,7 @@ use crate::connection::Cockpit;
 use crate::prefs::{AccountColor, GroupBy, ProjectId, ProjectRule};
 use crate::state::projects::{self, ProjectKey, RuleKind};
 use crate::state::{AppState, SettingsView, grouping, settings};
-use crate::ui::accounts::Swatches;
+use crate::ui::accounts::{self, Swatches};
 use crate::ui::grouping::group_by_label;
 use crate::ui::icons::{Icon, IconKind};
 use crate::{bridge, format};
@@ -76,6 +76,28 @@ fn project_cards(state: &AppState) -> Vec<ProjectCard> {
 fn rule_text(rule: &ProjectRule) -> &str {
     match rule {
         ProjectRule::Repository(text) | ProjectRule::Folder(text) => text,
+    }
+}
+
+/// The style that colors a project's swatch, from the color's CSS value. Empty for "No project",
+/// which has no color.
+pub fn swatch_style(color: Option<&str>) -> String {
+    color
+        .map(|color| format!("--project: {color}"))
+        .unwrap_or_default()
+}
+
+fn kind_label(kind: RuleKind) -> &'static str {
+    match kind {
+        RuleKind::Repository => "Repository",
+        RuleKind::Folder => "Folder",
+    }
+}
+
+fn kind_icon(kind: RuleKind) -> IconKind {
+    match kind {
+        RuleKind::Repository => IconKind::Repository,
+        RuleKind::Folder => IconKind::Folder,
     }
 }
 
@@ -148,7 +170,7 @@ fn ProjectCardView(
     let agents = format::count(agents, "agent", "agents");
     let summary = rules.iter().map(rule_text).collect::<Vec<_>>().join(" · ");
     let toggled = key.clone();
-    let style = format!("--acct: {}", color.css());
+    let style = accounts::color_style(color);
     rsx! {
         div { class: if open { "acct-card open" } else { "acct-card" }, style,
             button {
@@ -250,13 +272,13 @@ fn KeptBody(
                             class: "button small",
                             onclick: move |_| cockpit.update(|state| settings::show_rule_field(state, Some(RuleKind::Repository))),
                             Icon { kind: IconKind::Plus, size: 14 }
-                            "Repository"
+                            {kind_label(RuleKind::Repository)}
                         }
                         button {
                             class: "button small",
                             onclick: move |_| cockpit.update(|state| settings::show_rule_field(state, Some(RuleKind::Folder))),
                             Icon { kind: IconKind::Plus, size: 14 }
-                            "Folder"
+                            {kind_label(RuleKind::Folder)}
                         }
                     }
                 }
@@ -276,16 +298,13 @@ fn KeptBody(
 #[component]
 fn RuleRow(id: ProjectId, index: usize, rule: ProjectRule) -> Element {
     let cockpit: Cockpit = use_context();
-    let (icon, kind) = match &rule {
-        ProjectRule::Repository(_) => (IconKind::Repository, "Repository"),
-        ProjectRule::Folder(_) => (IconKind::Folder, "Folder"),
-    };
+    let kind = RuleKind::from(&rule);
     let text = rule_text(&rule).to_owned();
     rsx! {
         div { class: "rule-row",
-            Icon { kind: icon, size: 14 }
+            Icon { kind: kind_icon(kind), size: 14 }
             span { class: "rule-value mono", title: "{text}", "{text}" }
-            span { class: "rule-kind", "{kind}" }
+            span { class: "rule-kind", {kind_label(kind)} }
             button {
                 class: "icon-button tiny",
                 title: "Remove this rule",
@@ -302,13 +321,9 @@ fn RuleRow(id: ProjectId, index: usize, rule: ProjectRule) -> Element {
 fn RuleField(id: ProjectId, kind: RuleKind) -> Element {
     let cockpit: Cockpit = use_context();
     let mut text = use_signal(String::new);
-    let (icon, placeholder, label) = match kind {
-        RuleKind::Repository => (IconKind::Repository, "github.com/acme/app", "Repository"),
-        RuleKind::Folder => (
-            IconKind::Folder,
-            "/home/me/work/app, or /home/me/work/*",
-            "Folder",
-        ),
+    let placeholder = match kind {
+        RuleKind::Repository => "github.com/acme/app",
+        RuleKind::Folder => "/home/me/work/app, or /home/me/work/*",
     };
     let empty = text.read().trim().is_empty();
     let add = move || {
@@ -317,13 +332,13 @@ fn RuleField(id: ProjectId, kind: RuleKind) -> Element {
     };
     rsx! {
         div { class: "rule-row adding",
-            Icon { kind: icon, size: 14 }
+            Icon { kind: kind_icon(kind), size: 14 }
             input {
                 id: RULE_FIELD_ID,
                 class: "rule-input mono",
                 r#type: "text",
                 spellcheck: false,
-                aria_label: "{label}",
+                aria_label: kind_label(kind),
                 placeholder,
                 onmounted: move |_| bridge::focus_field_at_end(RULE_FIELD_ID),
                 oninput: move |event: FormEvent| text.set(event.value()),
@@ -362,9 +377,9 @@ fn TemporaryBody(repository: String) -> Element {
                 span { class: "field-label", "An agent joins it when its folder is in" }
                 div { class: "rule-list",
                     div { class: "rule-row",
-                        Icon { kind: IconKind::Repository, size: 14 }
+                        Icon { kind: kind_icon(RuleKind::Repository), size: 14 }
                         span { class: "rule-value mono", title: "{text}", "{text}" }
-                        span { class: "rule-kind", "Repository" }
+                        span { class: "rule-kind", {kind_label(RuleKind::Repository)} }
                     }
                 }
             }

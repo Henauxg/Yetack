@@ -30,7 +30,7 @@ use crate::{bridge, format};
 const ADD_NAME_FIELD_ID: &str = "add-account-name";
 const ADD_FOLDER_FIELD_ID: &str = "add-account-folder";
 
-fn color_style(color: AccountColor) -> String {
+pub fn color_style(color: AccountColor) -> String {
     format!("--acct: {}", color.css())
 }
 

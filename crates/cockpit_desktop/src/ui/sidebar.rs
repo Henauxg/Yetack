@@ -27,8 +27,10 @@ use crate::ui::icons::{Icon, IconKind};
 use crate::ui::machines::THIS_COMPUTER;
 use crate::ui::notification_levels::{self as levels_ui, AppBell, LevelIcon};
 use crate::ui::presence::{Shown, use_presence};
+use crate::ui::projects_tab;
 use crate::ui::reorder::{
-    self, GROUP_END_CLASS, KEPT_GROUP_ID_PREFIX, LIST_ID, PROJECT_DRAG_CLASS, ROW_CLASS,
+    self, GROUP_END_CLASS, GROUP_HEAD_CLASS, KEPT_GROUP_ID_PREFIX, LIST_ID, PROJECT_DRAG_CLASS,
+    ROW_CLASS,
 };
 use crate::ui::splitter::SIDEBAR_ID;
 use crate::{APP_NAME, format};
@@ -608,9 +610,7 @@ fn ProjectGroupView(group: ProjectGroup) -> Element {
         (Some(_), true) => "project-swatch temporary",
         (Some(_), false) => "project-swatch",
     };
-    let swatch_style = color
-        .map(|color| format!("--project: {color}"))
-        .unwrap_or_default();
+    let swatch_style = projects_tab::swatch_style(color);
     let head = project_head_id(&project);
     // Only a kept project has a place the user chose: a drag by its header moves it.
     let (group_id, group_class) = match &project {
@@ -627,7 +627,7 @@ fn ProjectGroupView(group: ProjectGroup) -> Element {
             div { class: "project-head-row",
                 button {
                     id: head,
-                    class: "machine-head",
+                    class: GROUP_HEAD_CLASS,
                     "data-head-project": "{key}",
                     aria_expanded: !folded,
                     title: "{fold_label}",

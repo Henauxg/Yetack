@@ -37,6 +37,7 @@ use crate::ui::machines::{MachinesDialog, machine_choices};
 use crate::ui::no_daemon::NoDaemonCard;
 use crate::ui::open_file::{self as open_file_view, OpenFileDialog, UP_ROW};
 use crate::ui::presence::{Presence, Shown, use_presence};
+use crate::ui::projects_tab;
 use crate::ui::settings::SettingsDialog;
 use crate::ui::zoom::ZoomImage;
 
@@ -1321,10 +1322,7 @@ fn ProjectSwatch(project: FormProject) -> Element {
         (Some(_), true) => "menu-swatch temporary",
         (Some(_), false) => "menu-swatch",
     };
-    let style = project
-        .color
-        .map(|color| format!("--project: {color}"))
-        .unwrap_or_default();
+    let style = projects_tab::swatch_style(project.color);
     rsx! {
         span { class, style, aria_hidden: true }
     }

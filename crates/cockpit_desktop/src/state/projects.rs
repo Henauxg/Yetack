@@ -33,6 +33,8 @@ const REPOSITORY_PREFIX: &str = "repo:";
 const NONE_WORD: &str = "none";
 /// What a folder rule ends with to hold every path that starts with the rest.
 const WILDCARD: char = '*';
+/// The name of a project made without one.
+pub const NEW_PROJECT_NAME: &str = "New project";
 
 /// A project the sidebar groups agents by.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -91,6 +93,15 @@ impl RuleKind {
         match self {
             Self::Repository => ProjectRule::Repository(text),
             Self::Folder => ProjectRule::Folder(text),
+        }
+    }
+}
+
+impl From<&ProjectRule> for RuleKind {
+    fn from(rule: &ProjectRule) -> Self {
+        match rule {
+            ProjectRule::Repository(_) => Self::Repository,
+            ProjectRule::Folder(_) => Self::Folder,
         }
     }
 }
@@ -291,7 +302,7 @@ pub fn create_for(state: &mut AppState, agent: AgentId) -> Option<ProjectId> {
             let folder = entry.summary.folder.to_string_lossy();
             PathStyle::of(&entry.summary.folder)
                 .file_name(&folder)
-                .unwrap_or("New project")
+                .unwrap_or(NEW_PROJECT_NAME)
                 .to_owned()
         }
     };

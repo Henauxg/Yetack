@@ -21,8 +21,8 @@ use crate::state::{
     to_handle, unread, working_folder,
 };
 use crate::ui::icons::{Icon, IconKind};
-use crate::ui::notification_levels as levels_ui;
 use crate::ui::presence::{Presence, use_presence};
+use crate::ui::{notification_levels as levels_ui, projects_tab};
 
 /// How long the pointer may cross other rows on its way into the open submenu before the submenu
 /// follows the row under the pointer.
@@ -497,7 +497,6 @@ fn MenuBody(shown: RowMenuShown) -> Element {
         move_blocked,
     } = shown;
     let folder = folder.clone();
-    let project = project.clone();
     let projects = projects.clone();
     let act = move |pick: Pick| run(cockpit, agent, mark, unread, pick);
     let keys = cockpit.state.read().prefs.keys.clone();
@@ -572,7 +571,7 @@ fn MenuBody(shown: RowMenuShown) -> Element {
             }
         }
     };
-    let trigger_row = move |submenu: Submenu, label: &'static str, value: Option<String>| {
+    let trigger_row = move |submenu: Submenu, label: &'static str, value: Option<&str>| {
         let index = submenu.trigger().index();
         let open = now.open == Some(submenu);
         rsx! {
@@ -602,10 +601,7 @@ fn MenuBody(shown: RowMenuShown) -> Element {
             (Some(_), true) => "menu-swatch temporary",
             (Some(_), false) => "menu-swatch",
         };
-        let style = choice
-            .color
-            .map(|color| format!("--project: {color}"))
-            .unwrap_or_default();
+        let style = projects_tab::swatch_style(choice.color);
         rsx! {
             button {
                 key: "{index}",
@@ -723,7 +719,7 @@ fn MenuBody(shown: RowMenuShown) -> Element {
             {action_row(Item::Rename, "Rename", "")}
             div { class: "menu-divider" }
             div { class: "submenu-anchor",
-                {trigger_row(Submenu::Project, "Project", Some(project))}
+                {trigger_row(Submenu::Project, "Project", Some(project.as_str()))}
                 Presence { open: now.open == Some(Submenu::Project),
                     div {
                         class: "popover menu submenu project-submenu",
@@ -746,7 +742,7 @@ fn MenuBody(shown: RowMenuShown) -> Element {
                 }
             }
             div { class: "submenu-anchor",
-                {trigger_row(Submenu::Notifications, "Notifications", Some(levels_ui::short_label(notifications).to_owned()))}
+                {trigger_row(Submenu::Notifications, "Notifications", Some(levels_ui::short_label(notifications)))}
                 Presence { open: now.open == Some(Submenu::Notifications),
                     div {
                         class: "popover menu submenu",
