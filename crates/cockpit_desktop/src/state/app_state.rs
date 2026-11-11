@@ -14,17 +14,18 @@ use strum::VariantArray;
 use super::accounts::SignIns;
 use super::chat_images::KeptImage;
 use super::daemon_update::{DaemonUpdate, VersionGap};
-use super::file_edits;
 use super::file_tree::FileTree;
+use super::grouping::GroupKey;
 use super::no_daemon::NoDaemon;
 use super::sending::Sending;
 use super::transcript::Transcript;
 use super::ui_state::UiState;
+use super::{file_edits, grouping, projects};
 use crate::daemon_label::DaemonLabel;
 use crate::format;
 use crate::machine::MachineId;
 use crate::path_style::PathStyle;
-use crate::prefs::{NotificationLevel, Prefs, StatusFilter};
+use crate::prefs::{GroupBy, NotificationLevel, Prefs, StatusFilter};
 
 /// Data the app asks the daemon for when it needs it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -360,10 +361,10 @@ impl Machines {
     }
 }
 
-/// A machine's header in the sidebar, and the rows under it.
+/// A header in the sidebar, a machine's or a project's, and the rows under it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SidebarGroup<'state> {
-    pub machine: MachineId,
+    pub key: GroupKey,
     pub rows: Vec<&'state AgentEntry>,
 }
 
@@ -414,25 +415,48 @@ impl AppState {
         agents
     }
 
-    /// The machines the sidebar heads, with the rows each shows: this computer first, then the
-    /// others in the config's order. Empty while the app reaches this computer alone, which
-    /// needs no header.
-    pub fn sidebar_groups(&self) -> Vec<SidebarGroup<'_>> {
-        if self.machines.others.is_empty() {
-            return Vec::new();
+    /// Every agent in the sidebar's order: each daemon's when grouped by machine, else the app's.
+    pub fn sidebar_order(&self) -> Vec<&AgentEntry> {
+        match self.prefs.sidebar.group_by {
+            GroupBy::Machine => self.agents_in_order(),
+            GroupBy::Project | GroupBy::None => grouping::app_order(self),
         }
+    }
+
+    /// The headers the sidebar shows, with the rows under each. Grouped by machine: this computer
+    /// first, then the others in the config's order, and none while the app reaches this computer
+    /// alone. Grouped by project: the projects that have agents. Not grouped: none.
+    pub fn sidebar_groups(&self) -> Vec<SidebarGroup<'_>> {
         let shown = self.sidebar_agents();
-        let machines = std::iter::once(MachineId::THIS).chain(self.machines.others.keys().copied());
-        machines
-            .map(|machine| {
-                let rows = shown
-                    .iter()
-                    .copied()
-                    .filter(|entry| MachineId::of(entry.id()) == machine)
-                    .collect();
-                SidebarGroup { machine, rows }
-            })
-            .collect()
+        match self.prefs.sidebar.group_by {
+            GroupBy::None => Vec::new(),
+            GroupBy::Machine if self.machines.others.is_empty() => Vec::new(),
+            GroupBy::Machine => {
+                let machines =
+                    std::iter::once(MachineId::THIS).chain(self.machines.others.keys().copied());
+                machines
+                    .map(|machine| SidebarGroup {
+                        key: GroupKey::Machine(machine),
+                        rows: shown
+                            .iter()
+                            .copied()
+                            .filter(|entry| MachineId::of(entry.id()) == machine)
+                            .collect(),
+                    })
+                    .collect()
+            }
+            GroupBy::Project => projects::shown_projects(self)
+                .into_iter()
+                .map(|project| SidebarGroup {
+                    rows: shown
+                        .iter()
+                        .copied()
+                        .filter(|entry| projects::project_of(self, entry) == project)
+                        .collect(),
+                    key: GroupKey::Project(project),
+                })
+                .collect(),
+        }
     }
 
     /// The machine of the selected agent, else this computer.
@@ -461,11 +485,19 @@ impl AppState {
             .is_some_and(MachineState::is_connected)
     }
 
-    /// The agents the sidebar shows, in its order: those its status filter keeps.
+    /// The agents the sidebar shows, from top to bottom: those its status filter keeps. Grouped
+    /// by project, the rows follow their groups, whatever the app's order puts between them.
     pub fn sidebar_agents(&self) -> Vec<&AgentEntry> {
         let filter = self.prefs.sidebar.filter;
-        let mut agents = self.agents_in_order();
+        let mut agents = self.sidebar_order();
         agents.retain(|entry| filter.admits(&entry.summary));
+        if self.prefs.sidebar.group_by == GroupBy::Project {
+            let groups = projects::shown_projects(self);
+            agents.sort_by_cached_key(|entry| {
+                let project = projects::project_of(self, entry);
+                groups.iter().position(|group| *group == project)
+            });
+        }
         agents
     }
 
@@ -626,6 +658,7 @@ pub(crate) mod tests {
             sign_in_wait: SignInWait::NotWaiting,
             background_running: 0,
             mark: Mark::Unmarked,
+            repository: None,
         }
     }
 

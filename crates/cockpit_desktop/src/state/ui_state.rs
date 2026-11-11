@@ -14,8 +14,10 @@ use strum::{EnumString, IntoStaticStr, VariantArray};
 use super::accounts::{AccountsView, AddAccountForm};
 use super::agent_map::MapView;
 use super::app_state::Loadable;
+use super::projects::{ProjectKey, RuleKind};
 use crate::keymap::{Chord, Command, Refusal};
 use crate::machine::MachineId;
+use crate::prefs::ProjectId;
 
 /// How many error notes stay on screen; an older one goes when a new one comes.
 const MAX_ERRORS: usize = 4;
@@ -66,6 +68,8 @@ pub enum Popover {
     },
     /// The file view's list of its open files.
     FileList,
+    /// The sidebar's choice of what its panels group, from the line above its list.
+    GroupBy,
     /// A row's menu in the files pane, opened by a right-click at `x`, `y` in the window's pixels.
     /// The tree holds the row.
     TreeMenu {
@@ -134,6 +138,12 @@ pub struct SettingsView {
     pub recording: Option<Command>,
     /// The last chord that could not run its command, and why.
     pub refused: Option<RefusedChord>,
+    /// The project whose card is open in the Projects tab.
+    pub project: Option<ProjectKey>,
+    /// The kind of rule the open card's field adds, while the field shows.
+    pub adding_rule: Option<RuleKind>,
+    /// The project the tab just created, whose name field takes the focus.
+    pub created: Option<ProjectId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -141,6 +151,7 @@ pub enum SettingsTab {
     #[default]
     General,
     Keyboard,
+    Projects,
 }
 
 /// A chord a command could not take: pressed while recording, or the default a reset asked for.
@@ -313,6 +324,7 @@ pub enum FormMenu {
     /// The model and the effort.
     Model,
     Mode,
+    Project,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -327,6 +339,8 @@ pub struct NewAgentForm {
     /// The account picked in the menu. `None` follows the folder: the account of the last agent
     /// there, else the default one.
     pub account: Option<AccountId>,
+    /// The project picked in the menu. `None` lets the folder's rules and repository choose.
+    pub project: Option<ProjectKey>,
     pub menu: Option<FormMenu>,
     /// A start or resume request is on its way.
     pub starting: bool,
@@ -479,6 +493,11 @@ pub struct UiState {
     pub unread: BTreeSet<AgentId>,
     /// The machines whose agents the sidebar folds under their header.
     pub folded_machines: BTreeSet<MachineId>,
+    /// The projects whose agents the sidebar folds under their header.
+    pub folded_projects: BTreeSet<ProjectKey>,
+    /// The project picked in the new agent dialog for a started agent whose summary has not
+    /// arrived yet.
+    pub picked_projects: BTreeMap<AgentId, ProjectKey>,
     pub window_focused: bool,
     /// The floating blocks shown unfolded.
     pub open_blocks: BTreeSet<Block>,
@@ -521,6 +540,8 @@ impl Default for UiState {
             selected: None,
             unread: BTreeSet::new(),
             folded_machines: BTreeSet::new(),
+            folded_projects: BTreeSet::new(),
+            picked_projects: BTreeMap::new(),
             window_focused: true,
             open_blocks: BTreeSet::from([Block::Tasks, Block::Messages, Block::Running]),
             badge: None,
@@ -699,8 +720,9 @@ impl UiState {
         }
     }
 
-    /// Closes every popover and the dialog, or only the start tab's menu or folder list when one
-    /// is open, and cancels a title edit. Returns whether anything was open.
+    /// Closes every popover and the dialog, or only the start tab's menu or folder list, or the
+    /// Projects tab's rule field, when one is open, and cancels a title edit. Returns whether
+    /// anything was open.
     pub fn close_overlays(&mut self) -> bool {
         if let Some(Dialog::NewAgent(form)) = &mut self.dialog
             && form.tab == NewAgentTab::Start
@@ -709,6 +731,11 @@ impl UiState {
             if form.menu.take().is_none() {
                 form.folders = None;
             }
+            return true;
+        }
+        if let Some(Dialog::Settings(view)) = &mut self.dialog
+            && view.adding_rule.take().is_some()
+        {
             return true;
         }
         let open = self.popover.is_some()

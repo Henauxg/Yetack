@@ -22,6 +22,7 @@ mod frame;
 mod ids;
 mod machine_load;
 mod position;
+mod repository;
 mod request;
 mod response;
 mod session;
@@ -55,6 +56,7 @@ pub use machine_load::{
     ResourceUse, ServerLoad, ServerPoint,
 };
 pub use position::{Placed, Position, list_order, move_agent, place_on_top};
+pub use repository::Repository;
 pub use request::{
     AccountAddParams, AccountChangeParams, AccountParams, AgentParams, Answer, AnswerParams,
     COMMAND_PREFIX, FindFilesParams, FolderParams, FoldersListParams, HistoryParams, ListDirParams,

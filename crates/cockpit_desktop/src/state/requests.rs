@@ -13,6 +13,7 @@ use cockpit_protocol::{
 use super::app_state::{AgentEntry, AppState, FileRead, Loadable, MachineState, Reread};
 use super::chat_images::ImageKey;
 use super::drafts::{Draft, Drafts};
+use super::projects::{self, ProjectKey};
 use super::sending::{self, SendingId};
 use super::transcript::HistoryState;
 use super::ui_state::{Dialog, FolderAction, OpenFileView};
@@ -87,8 +88,10 @@ pub enum Purpose {
     Folders {
         folder: PathBuf,
     },
-    /// `agent.start` or `sessions.resume`: the new agent opens.
-    Start,
+    /// `agent.start` or `sessions.resume`: the new agent opens, in the project picked for it.
+    Start {
+        project: Option<ProjectKey>,
+    },
     /// `agent.fork` or `agent.change_folder` from the working folder dialog.
     WorkingFolder {
         action: FolderAction,
@@ -648,8 +651,11 @@ pub fn apply_response(
         Purpose::WorkingFolder { action } => {
             working_folder::answered(state, action, result.map_err(|failure| failure.message));
         }
-        Purpose::Start => match result {
+        Purpose::Start { project } => match result {
             Ok(ResponseBody::AgentStarted { agent }) => {
+                if let Some(project) = project {
+                    projects::pick_for_new_agent(state, agent, project);
+                }
                 actions::select_agent(state, agent);
                 state.ui.new_agent_started();
             }
@@ -1021,7 +1027,7 @@ mod tests {
         answer(
             &mut state,
             gone,
-            Purpose::Start,
+            Purpose::Start { project: None },
             ResponseBody::AgentStarted {
                 agent: gone.app_agent(AgentId::new(5)),
             },
@@ -1030,7 +1036,7 @@ mod tests {
         answer(
             &mut state,
             devbox,
-            Purpose::Start,
+            Purpose::Start { project: None },
             ResponseBody::AgentStarted { agent: started },
         );
 
@@ -1309,7 +1315,7 @@ mod tests {
             &mut state,
             &mut Drafts::default(),
             Method::AgentStart,
-            Purpose::Start,
+            Purpose::Start { project: None },
             Ok(ResponseBody::AgentStarted {
                 agent: AgentId::new(9),
             }),

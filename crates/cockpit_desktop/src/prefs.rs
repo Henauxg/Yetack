@@ -56,8 +56,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use cockpit_protocol::{AccountId, AgentId, AgentStatus, AgentSummary, Mark};
+use cockpit_protocol::{AccountId, AgentId, AgentStatus, AgentSummary, Mark, Repository};
 use dioxus::prelude::*;
+use serde::de::IgnoredAny;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
@@ -88,6 +89,129 @@ pub struct Prefs {
     pub chat: ChatPrefs,
     /// The shortcuts changed in the Settings dialog.
     pub keys: Keymap,
+    /// The sidebar's order when it groups by project or not at all, top first. Grouped by
+    /// machine, each daemon keeps its own order instead. An agent missing from it is newer, and
+    /// shows above the others.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub agent_order: Vec<AgentKey>,
+    #[serde(skip_serializing_if = "ProjectsPrefs::is_empty")]
+    pub projects: ProjectsPrefs,
+}
+
+/// The projects the user kept, and the agents moved to a project by hand. A repository no kept
+/// project claims makes a temporary project, which the app computes and never saves.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProjectsPrefs {
+    /// In the sidebar's order.
+    pub list: Vec<Project>,
+    /// The id the next project takes: ids are never taken again, so a deleted project's moved
+    /// agents never land in a new one.
+    pub next_id: u32,
+    /// By daemon machine, then by the daemon's agent id: the project an agent was moved to, or
+    /// `None` for "No project". It wins over the rules.
+    pub agents: BTreeMap<String, BTreeMap<AgentId, Option<ProjectId>>>,
+}
+
+impl ProjectsPrefs {
+    fn is_empty(&self) -> bool {
+        self.list.is_empty() && self.agents.is_empty() && self.next_id == 0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ProjectId(u32);
+
+impl ProjectId {
+    pub fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    pub fn get(self) -> u32 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Project {
+    pub id: ProjectId,
+    pub name: String,
+    pub color: AccountColor,
+    /// An agent belongs to the project with the most precise rule that holds its folder.
+    #[serde(default, deserialize_with = "known_rules")]
+    pub rules: Vec<ProjectRule>,
+}
+
+/// The rules this version knows. A rule of a kind from another version of the app is left out,
+/// so that the rest of the file still reads.
+fn known_rules<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<ProjectRule>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Read {
+        Known(ProjectRule),
+        Unknown(IgnoredAny),
+    }
+    let rules: Vec<Read> = Vec::deserialize(deserializer)?;
+    Ok(rules
+        .into_iter()
+        .filter_map(|rule| match rule {
+            Read::Known(rule) => Some(rule),
+            Read::Unknown(_) => None,
+        })
+        .collect())
+}
+
+/// What a project holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectRule {
+    /// A git repository by its remote, as `Repository::from_remote` writes it: every clone and
+    /// worktree of it, on every machine.
+    Repository(Repository),
+    /// A folder and the folders inside it, by its absolute path. A path that ends with `*` holds
+    /// every folder whose path starts with the rest.
+    Folder(String),
+}
+
+/// An agent as the preferences name it: its daemon machine's name and the daemon's agent id,
+/// which last across the app's restarts, unlike the app's own ids.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct AgentKey {
+    pub machine: String,
+    pub agent: AgentId,
+}
+
+/// What the sidebar's panels group: each machine's agents, or one list.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumString, IntoStaticStr, VariantArray,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum GroupBy {
+    #[default]
+    Machine,
+    Project,
+    None,
+}
+
+impl GroupBy {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+impl Serialize for GroupBy {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.into())
+    }
+}
+
+/// A word this version does not know reads as `Machine`, rather than costing the whole file.
+impl<'de> Deserialize<'de> for GroupBy {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let word = String::deserialize(deserializer)?;
+        Ok(word.parse().unwrap_or_default())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -405,6 +529,8 @@ pub struct SidebarPrefs {
     /// `None` keeps the default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub width: Option<u16>,
+    #[serde(skip_serializing_if = "GroupBy::is_default")]
+    pub group_by: GroupBy,
 }
 
 /// The sidebar's width, in pixels, until it is moved.
@@ -811,7 +937,8 @@ mod tests {
   },
   "sidebar": {
     "filter": "needs_you",
-    "width": 300
+    "width": 300,
+    "group_by": "project"
   },
   "files_pane": {
     "new_agents": "open",
@@ -854,6 +981,36 @@ mod tests {
   },
   "keys": {
     "switcher": "Ctrl+j"
+  },
+  "agent_order": [
+    {
+      "machine": "build-box",
+      "agent": 4
+    }
+  ],
+  "projects": {
+    "list": [
+      {
+        "id": 0,
+        "name": "billing",
+        "color": "violet",
+        "rules": [
+          {
+            "repository": "github.com/acme/billing"
+          },
+          {
+            "folder": "/srv/billing-*"
+          }
+        ]
+      }
+    ],
+    "next_id": 1,
+    "agents": {
+      "build-box": {
+        "4": 0,
+        "5": null
+      }
+    }
   }
 }
 "#;
@@ -874,6 +1031,7 @@ mod tests {
                 sidebar: SidebarPrefs {
                     filter: StatusFilter::NeedsYou,
                     width: Some(300),
+                    group_by: GroupBy::Project,
                 },
                 files_pane: FilesPanePrefs {
                     new_agents: PaneState::Open,
@@ -911,6 +1069,31 @@ mod tests {
                     esc_stop: EscStop::AtOnce,
                 },
                 keys: switched,
+                agent_order: vec![AgentKey {
+                    machine: "build-box".to_owned(),
+                    agent: AgentId::new(4),
+                }],
+                projects: ProjectsPrefs {
+                    list: vec![Project {
+                        id: ProjectId::new(0),
+                        name: "billing".to_owned(),
+                        color: AccountColor::Violet,
+                        rules: vec![
+                            ProjectRule::Repository(Repository::from_remote(
+                                "github.com/acme/billing"
+                            )),
+                            ProjectRule::Folder("/srv/billing-*".to_owned()),
+                        ],
+                    }],
+                    next_id: 1,
+                    agents: BTreeMap::from([(
+                        "build-box".to_owned(),
+                        BTreeMap::from([
+                            (AgentId::new(4), Some(ProjectId::new(0))),
+                            (AgentId::new(5), None),
+                        ]),
+                    )]),
+                },
             }
         );
         assert_eq!(serde_json::to_string_pretty(&prefs).unwrap() + "\n", text);
@@ -970,6 +1153,28 @@ mod tests {
         assert_eq!(prefs.file_view.width_share, None);
         assert!(prefs.file_view.wrap);
         assert_eq!(prefs.sidebar.filter, StatusFilter::All);
+    }
+
+    #[test]
+    fn a_rule_of_an_unknown_kind_is_left_out_and_the_file_still_reads() {
+        let prefs: Prefs = serde_json::from_str(
+            r#"{
+                "chat": {"comments": "hidden"},
+                "projects": {"list": [{
+                    "id": 0,
+                    "name": "billing",
+                    "color": "violet",
+                    "rules": [{"branch": "main"}, {"folder": "/work/billing"}]
+                }]}
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(prefs.chat.comments, CommentPlacement::Hidden);
+        assert_eq!(
+            prefs.projects.list[0].rules,
+            [ProjectRule::Folder("/work/billing".to_owned())]
+        );
     }
 
     #[test]
@@ -1046,6 +1251,19 @@ mod tests {
         assert_eq!(at_once.chat.esc_stop, EscStop::AtOnce);
         assert_eq!(older.chat.esc_stop, EscStop::Ask);
         assert_eq!(unknown.chat.esc_stop, EscStop::Ask);
+    }
+
+    #[test]
+    fn the_group_by_words_are_pinned_and_an_unknown_one_reads_as_machine() {
+        let words: Vec<&str> = GroupBy::VARIANTS
+            .iter()
+            .map(|&group_by| group_by.into())
+            .collect();
+        let unknown: Prefs =
+            serde_json::from_str(r#"{"sidebar": {"group_by": "folder"}}"#).unwrap();
+
+        assert_eq!(words, ["machine", "project", "none"]);
+        assert_eq!(unknown.sidebar.group_by, GroupBy::Machine);
     }
 
     #[test]
@@ -1140,6 +1358,7 @@ mod tests {
             sidebar: SidebarPrefs {
                 filter: StatusFilter::Exited,
                 width: Some(220),
+                group_by: GroupBy::None,
             },
             files_pane: FilesPanePrefs {
                 new_agents: PaneState::Open,
@@ -1151,6 +1370,8 @@ mod tests {
             notifications: NotificationPrefs::default(),
             chat: ChatPrefs::default(),
             keys: Keymap::default(),
+            agent_order: Vec::new(),
+            projects: ProjectsPrefs::default(),
         };
 
         prefs.save(&file).unwrap();
@@ -1182,17 +1403,14 @@ mod tests {
             sidebar: SidebarPrefs {
                 filter: StatusFilter::Exited,
                 width: Some(220),
+                group_by: GroupBy::None,
             },
             files_pane: FilesPanePrefs {
                 new_agents: PaneState::Open,
                 agents: BTreeMap::new(),
                 width: Some(300),
             },
-            blocks: BlocksPrefs::default(),
-            accounts: AccountPrefs::default(),
-            notifications: NotificationPrefs::default(),
-            chat: ChatPrefs::default(),
-            keys: Keymap::default(),
+            ..Prefs::default()
         };
 
         Prefs::default().save(&file).unwrap();

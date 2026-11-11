@@ -30,7 +30,7 @@ use crate::{bridge, format};
 const ADD_NAME_FIELD_ID: &str = "add-account-name";
 const ADD_FOLDER_FIELD_ID: &str = "add-account-folder";
 
-fn color_style(color: AccountColor) -> String {
+pub fn color_style(color: AccountColor) -> String {
     format!("--acct: {}", color.css())
 }
 
@@ -449,7 +449,7 @@ fn PlanWindow(window: UsageWindow, usage: WindowUsage, now: SystemTime) -> Eleme
 
 /// Six swatches; a click picks one.
 #[component]
-fn Swatches(chosen: AccountColor, onpick: EventHandler<AccountColor>) -> Element {
+pub fn Swatches(chosen: AccountColor, onpick: EventHandler<AccountColor>) -> Element {
     use strum::VariantArray;
 
     rsx! {

@@ -69,6 +69,8 @@ pub enum IconKind {
     Lock,
     /// A speech bubble, for the messages the user sent.
     Message,
+    /// A git repository: a branch leaving its trunk.
+    Repository,
 }
 
 impl IconKind {
@@ -133,6 +135,9 @@ impl IconKind {
             }
             Self::Message => {
                 r#"<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"></path>"#
+            }
+            Self::Repository => {
+                r#"<circle cx="6" cy="5" r="2"></circle><circle cx="6" cy="19" r="2"></circle><circle cx="18" cy="7" r="2"></circle><path d="M6 7v10"></path><path d="M18 9c0 5-6 4-11.5 8.5"></path>"#
             }
             Self::Eye => {
                 r#"<path d="M3 12s4-6 9-6 9 6 9 6-4 6-9 6-9-6-9-6z"></path><circle cx="12" cy="12" r="3"></circle>"#

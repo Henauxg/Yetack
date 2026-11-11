@@ -546,6 +546,133 @@ button:disabled {
   border-color: rgba(244, 112, 103, 0.35);
 }
 
+/* The line above the list that says what the panels group, and opens the choices. */
+.group-anchor {
+  position: relative;
+  flex: none;
+}
+
+.group-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 4px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dim);
+  font-size: 11.5px;
+}
+
+.group-switch b {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.group-switch:hover,
+.group-switch.open {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.popover.menu.group-menu {
+  --enter-y: -4px;
+  left: 4px;
+  top: calc(100% + 4px);
+  bottom: auto;
+  width: 220px;
+  transform-origin: top left;
+}
+
+/* The machine of an agent whose panel does not say it, as an icon, the name on hover. */
+.row-machine {
+  flex: none;
+  display: inline-flex;
+  color: var(--dim);
+}
+
+/* A project's header: its color, dashed while the project is temporary, and Keep beside it. */
+.project-head-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.project-head-row .machine-head {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* A project in a menu: its color, dashed while it is temporary. */
+.menu-swatch {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  background: var(--project);
+}
+
+.menu-swatch.temporary {
+  border: 1.5px dashed var(--project);
+  background: transparent;
+}
+
+.menu-swatch.none {
+  background: var(--line-strong);
+}
+
+.menu-tag {
+  flex: none;
+  color: var(--dim);
+  font-size: 11.5px;
+}
+
+/* Many projects scroll inside the submenu, which stays in the window. */
+.popover.menu.submenu.project-submenu {
+  max-height: min(360px, 60vh);
+  overflow-y: auto;
+}
+
+.project-swatch {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--project);
+}
+
+.project-swatch.temporary {
+  border: 1.5px dashed var(--project);
+  background: transparent;
+}
+
+.project-swatch.none {
+  background: var(--line-strong);
+}
+
+.machine-name.temporary {
+  font-style: italic;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.keep-button {
+  flex: none;
+  margin-right: 6px;
+  padding: 1px 8px;
+  border: 1px solid var(--line-control);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.keep-button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
 .machine-head {
   display: flex;
   align-items: center;
@@ -864,8 +991,8 @@ button:disabled {
   --enter-y: -4px;
   position: fixed;
   left: min(var(--menu-x), calc(100vw - 290px));
-  /* The agent menu with its folder submenu open is about 230 px high. */
-  top: max(8px, min(var(--menu-y), calc(100vh - 240px)));
+  /* The agent menu with its folder submenu open is about 260 px high. */
+  top: max(8px, min(var(--menu-y), calc(100vh - 270px)));
   bottom: auto;
   min-width: 200px;
   max-width: 280px;
@@ -1073,8 +1200,33 @@ button:disabled {
   display: contents;
 }
 
-.block-card[data-dragged] {
+.block-card[data-dragged],
+.project-group[data-dragged] {
   opacity: 0.35;
+}
+
+/* A project group's lifted copy shows its header alone, whatever the group's height. */
+.project-group.drag-ghost {
+  position: fixed;
+  z-index: 50;
+  height: auto !important;
+  overflow: hidden;
+  transform: translateX(24px) scale(1.02);
+  border-radius: 6px;
+  background: var(--raised);
+  box-shadow: var(--shadow);
+  pointer-events: none;
+  transition: none;
+  animation: lift var(--motion-in) var(--ease-out);
+}
+
+.project-group.drag-ghost .agent-row {
+  display: none;
+}
+
+/* The end of a project group, which a dragged row can land above. */
+.group-end {
+  height: 0;
 }
 
 /* A block's lifted copy, out of the blocks' box. */
@@ -7206,6 +7358,23 @@ button.map-toggle:hover {
   width: 330px;
 }
 
+.form-menu.project-menu {
+  left: 0;
+  width: 280px;
+  max-height: min(360px, 50vh);
+  overflow-y: auto;
+}
+
+.project-menu .menu-item:not(.two-lines) {
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.project-menu .menu-label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .form-menu.mode-menu {
   right: 0;
   left: auto;
@@ -7800,6 +7969,87 @@ button.map-toggle:hover {
   opacity: 0.5;
 }
 
+/* The Projects tab of the settings: cards as the accounts', with each project's rules. */
+.acct-swatch.temporary {
+  border: 1.5px dashed var(--acct);
+  background: transparent;
+}
+
+.projects-intro {
+  margin: 0;
+}
+
+.projects-grouping {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.acct-list.projects {
+  margin-top: 4px;
+}
+
+.rule-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rule-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 4px 0 10px;
+  border: 1px solid var(--line-control);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--dim);
+}
+
+.rule-row.adding {
+  margin-top: 6px;
+  border-color: var(--teal);
+}
+
+.rule-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--text-soft);
+}
+
+.rule-kind {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.rule-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.rule-adds {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.projects-foot {
+  display: flex;
+}
+
 .default-tag {
   font-size: 11px;
   font-weight: 500;
@@ -8276,6 +8526,8 @@ label.icon-button,
 .repeat-count:active,
 .option:active,
 .filter-chip:active,
+.group-switch:active,
+.keep-button:active,
 .file-list-button:active,
 .file-list-close:active,
 .notification-tag:active,

@@ -22,6 +22,7 @@ use strum::VariantArray;
 use super::app_state::{AgentEntry, AppState, FileFreshness, FileRead, Loadable, MachineState};
 use super::apply::forget_agent;
 use super::drafts::{Drafts, NewAgentDraft, Palette, QuestionDraft, SlashWord, SwitcherDraft};
+use super::projects::ProjectKey;
 use super::requests::{Outgoing, Purpose, Shift, history_request};
 use super::transcript::HistoryState;
 use super::ui_state::{
@@ -30,12 +31,13 @@ use super::ui_state::{
 };
 use super::utf16_offset::Utf16Offset;
 use super::{
-    accounts, export, file_edits, file_reread, file_tree, open_file, quotes, sending, title_emoji,
+    accounts, export, file_edits, file_reread, file_tree, grouping, open_file, projects, quotes,
+    sending, title_emoji,
 };
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::machine::MachineId;
 use crate::path_style;
-use crate::prefs::{self, EscStop, StatusFilter};
+use crate::prefs::{self, EscStop, GroupBy, StatusFilter};
 
 /// The commands the palette's Clear and Compact entries send to Claude as prompts.
 const CLEAR_COMMAND: &str = "clear";
@@ -1763,10 +1765,15 @@ pub fn toggle_switcher(state: &mut AppState, drafts: &mut Drafts) {
     drafts.switcher = SwitcherDraft::default();
 }
 
-/// Moves `agent` just above `before`, or to the bottom of the list. The sidebar shows the new
-/// order at once, with the positions the daemon then sends in its events. Without a connection
-/// nothing moves: a refused move puts the agents back only where no later move took them.
+/// Moves `agent` just above `before`, or to the bottom of the list. Grouped by machine, the
+/// sidebar shows the new order at once, with the positions the daemon then sends in its events;
+/// without a connection nothing moves, and a refused move puts the agents back only where no
+/// later move took them. Otherwise the app keeps the order itself.
 pub fn move_agent(state: &mut AppState, agent: AgentId, before: Option<AgentId>) -> Vec<Outgoing> {
+    if state.prefs.sidebar.group_by != GroupBy::Machine {
+        grouping::move_in_app_order(state, agent, before);
+        return Vec::new();
+    }
     if !state.reaches_agent(agent) {
         let error = RequestError::NotConnected;
         state.ui.report(format!("The agent was not moved: {error}"));
@@ -1808,29 +1815,58 @@ pub fn move_agent(state: &mut AppState, agent: AgentId, before: Option<AgentId>)
     }]
 }
 
-/// Drops a dragged sidebar row just above the row of `before_row`, or below the last row when
-/// it is `None`. Hidden agents keep their places: a drop below the last row lands just under it.
+/// Drops a dragged sidebar row just above the row of `before_row`, or at the end of the project
+/// group `end`, or below the last row when both are `None`. Hidden agents keep their places: a
+/// drop below a last row lands just under it. Grouped by project, a drop in another group moves
+/// the agent to that project.
 pub fn drop_agent(
     state: &mut AppState,
     agent: AgentId,
     before_row: Option<AgentId>,
+    end: Option<&ProjectKey>,
 ) -> Vec<Outgoing> {
+    let by_project = state.prefs.sidebar.group_by == GroupBy::Project;
+    let target = match (end, before_row) {
+        _ if !by_project => None,
+        (Some(end), _) => Some(end.clone()),
+        (None, Some(row)) => state
+            .agents
+            .get(&row)
+            .map(|entry| projects::project_of(state, entry)),
+        (None, None) => None,
+    };
     let before = match before_row {
         Some(row) => Some(row),
         None => {
-            let shown = state.sidebar_agents();
-            let Some(last) = shown
+            let last = state
+                .sidebar_agents()
                 .iter()
                 .rev()
+                .filter(|entry| {
+                    target
+                        .as_ref()
+                        .is_none_or(|target| projects::project_of(state, entry) == *target)
+                })
                 .map(|entry| entry.id())
-                .find(|id| *id != agent)
-            else {
-                return Vec::new();
-            };
-            below_in_order(state, last, agent)
+                .find(|id| *id != agent);
+            match last {
+                Some(last) => below_in_order(state, last, agent),
+                None if target.is_some() => None,
+                None => return Vec::new(),
+            }
         }
     };
-    move_agent(state, agent, before)
+    let outgoing = move_agent(state, agent, before);
+    if let Some(target) = target {
+        let current = state
+            .agents
+            .get(&agent)
+            .map(|entry| projects::project_of(state, entry));
+        if current.as_ref() != Some(&target) {
+            projects::move_agent(state, agent, &target);
+        }
+    }
+    outgoing
 }
 
 /// Folds a machine's rows under its header in the sidebar, or unfolds them.
@@ -1876,7 +1912,7 @@ pub fn move_selected(state: &mut AppState, direction: Direction) -> Vec<Outgoing
 /// above to land just below `row`. `None` when `row` is the last.
 fn below_in_order(state: &AppState, row: AgentId, moving: AgentId) -> Option<AgentId> {
     let order: Vec<AgentId> = state
-        .agents_in_order()
+        .sidebar_order()
         .iter()
         .map(|entry| entry.id())
         .filter(|id| *id != moving)
@@ -2150,6 +2186,7 @@ pub fn start_agent(state: &mut AppState, drafts: &Drafts) -> Vec<Outgoing> {
     }
     let account = accounts::new_agent_account(state, form);
     let machine = form.machine;
+    let project = form.project.clone();
     let prompt = drafts.new_agent.prompt.trim();
     let params = StartParams {
         folder: PathBuf::from(folder),
@@ -2166,7 +2203,7 @@ pub fn start_agent(state: &mut AppState, drafts: &Drafts) -> Vec<Outgoing> {
     with_new_agent_form(state, |form| form.starting = true);
     vec![Outgoing {
         request: Request::AgentStart(params),
-        purpose: Purpose::Start,
+        purpose: Purpose::Start { project },
         to: machine,
     }]
 }
@@ -2319,16 +2356,18 @@ pub fn resume_session(
     account: AccountId,
 ) -> Vec<Outgoing> {
     let mut machine = MachineId::THIS;
+    let mut project = None;
     if let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog {
         if form.starting {
             return Vec::new();
         }
         form.starting = true;
         machine = form.machine;
+        project = form.project.clone();
     }
     vec![Outgoing {
         request: Request::SessionsResume(SessionResumeParams { session, account }),
-        purpose: Purpose::Start,
+        purpose: Purpose::Start { project },
         to: machine,
     }]
 }
@@ -2350,6 +2389,7 @@ mod tests {
     use crate::prefs::CommentPlacement;
     use crate::state::app_state::ConnectionState;
     use crate::state::app_state::tests::{ids, placed, state_with, summary};
+    use crate::state::grouping::GroupKey;
     use crate::state::requests::{apply_response, needed_requests};
     use crate::state::ui_state::{ClosedAgent, NoteKind};
 
@@ -4549,7 +4589,7 @@ mod tests {
         let mut state = ordered();
         state.machines.this.connection = ConnectionState::Connecting { attempt: 2 };
 
-        let dropped = drop_agent(&mut state, AgentId::new(1), Some(AgentId::new(3)));
+        let dropped = drop_agent(&mut state, AgentId::new(1), Some(AgentId::new(3)), None);
         let pressed = move_selected(&mut state, Direction::Up);
 
         assert!(dropped.is_empty());
@@ -4617,8 +4657,8 @@ mod tests {
     fn a_row_dropped_below_the_last_one_goes_to_the_bottom() {
         let mut state = ordered();
 
-        let to_bottom = drop_agent(&mut state, AgentId::new(3), None);
-        let to_top = drop_agent(&mut state, AgentId::new(1), Some(AgentId::new(2)));
+        let to_bottom = drop_agent(&mut state, AgentId::new(3), None, None);
+        let to_top = drop_agent(&mut state, AgentId::new(1), Some(AgentId::new(2)), None);
 
         assert_eq!(sent_move(&to_bottom).and_then(|params| params.before), None);
         assert_eq!(
@@ -4652,8 +4692,14 @@ mod tests {
 
         let groups = state.sidebar_groups();
 
-        let machines: Vec<MachineId> = groups.iter().map(|group| group.machine).collect();
-        assert_eq!(machines, [MachineId::THIS, devbox]);
+        let keys: Vec<GroupKey> = groups.iter().map(|group| group.key.clone()).collect();
+        assert_eq!(
+            keys,
+            [
+                GroupKey::Machine(MachineId::THIS),
+                GroupKey::Machine(devbox)
+            ]
+        );
         assert_eq!(
             ids(&groups[0].rows),
             [AgentId::new(3), AgentId::new(2), AgentId::new(1)]
@@ -4677,8 +4723,8 @@ mod tests {
         let first_on_devbox = devbox.app_agent(AgentId::new(2));
         let last_on_devbox = devbox.app_agent(AgentId::new(1));
 
-        let below = drop_agent(&mut state, AgentId::new(3), Some(first_on_devbox));
-        let above = drop_agent(&mut state, last_on_devbox, Some(AgentId::new(1)));
+        let below = drop_agent(&mut state, AgentId::new(3), Some(first_on_devbox), None);
+        let above = drop_agent(&mut state, last_on_devbox, Some(AgentId::new(1)), None);
 
         let moved = |outgoing: &[Outgoing]| match outgoing.first().map(|outgoing| &outgoing.request)
         {
@@ -4921,7 +4967,7 @@ mod tests {
 
         let down = move_selected(&mut state, Direction::Down);
         let after_down = ids(&state.agents_in_order());
-        let dropped = drop_agent(&mut state, AgentId::new(1), None);
+        let dropped = drop_agent(&mut state, AgentId::new(1), None, None);
         state.ui.selected = Some(AgentId::new(2));
         let hidden = move_selected(&mut state, Direction::Up);
 

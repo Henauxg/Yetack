@@ -1,10 +1,13 @@
 //! The Settings dialog: the app's choices that are not made where they act, kept in the
 //! preferences. Its Keyboard tab records new shortcuts for the commands.
 
+use cockpit_protocol::Repository;
+
 use super::app_state::AppState;
+use super::projects::{self, NEW_PROJECT_NAME, ProjectKey, RuleKind};
 use super::ui_state::{Dialog, RefusedChord, SettingsTab, SettingsView};
 use crate::keymap::{Chord, Command, Refusal};
-use crate::prefs::{CommentPlacement, EscStop, PaneState, SteerHold};
+use crate::prefs::{CommentPlacement, EscStop, PaneState, ProjectId, SteerHold};
 
 /// Opens the dialog, from the gear in the sidebar's foot.
 pub fn open(state: &mut AppState) {
@@ -115,6 +118,65 @@ fn settle(state: &mut AppState, command: Command, chord: Chord, result: Result<(
     }
 }
 
+/// Opens the dialog on the Projects tab, with the card of `project` open and its name field
+/// focused.
+pub fn open_project(state: &mut AppState, project: ProjectId) {
+    state.ui.popover = None;
+    state.ui.dialog = Some(Dialog::Settings(SettingsView {
+        tab: SettingsTab::Projects,
+        project: Some(ProjectKey::Kept(project)),
+        created: Some(project),
+        ..SettingsView::default()
+    }));
+}
+
+/// Opens the project's card in the Projects tab, or closes it when it is open.
+pub fn toggle_project(state: &mut AppState, project: &ProjectKey) {
+    if let Some(view) = view_mut(state) {
+        view.project = (view.project.as_ref() != Some(project)).then(|| project.clone());
+        view.adding_rule = None;
+        view.created = None;
+    }
+}
+
+/// Shows the open card's field for a new rule of `kind`, or hides it.
+pub fn show_rule_field(state: &mut AppState, kind: Option<RuleKind>) {
+    if let Some(view) = view_mut(state) {
+        view.adding_rule = kind;
+    }
+}
+
+pub fn add_rule(state: &mut AppState, project: ProjectId, kind: RuleKind, text: String) {
+    projects::add_rule(state, project, kind.rule(text));
+    show_rule_field(state, None);
+}
+
+/// A new project with no rule, its card open on its name.
+pub fn new_project(state: &mut AppState) {
+    let id = projects::create(state, NEW_PROJECT_NAME);
+    if let Some(view) = view_mut(state) {
+        view.project = Some(ProjectKey::Kept(id));
+        view.adding_rule = None;
+        view.created = Some(id);
+    }
+}
+
+/// Keeps a temporary project, and leaves its card open under its kept key.
+pub fn keep_project(state: &mut AppState, repository: &Repository) {
+    let id = projects::keep(state, repository);
+    if let Some(view) = view_mut(state) {
+        view.project = Some(ProjectKey::Kept(id));
+    }
+}
+
+pub fn delete_project(state: &mut AppState, project: ProjectId) {
+    projects::delete(state, project);
+    if let Some(view) = view_mut(state) {
+        view.project = None;
+        view.adding_rule = None;
+    }
+}
+
 fn view_mut(state: &mut AppState) -> Option<&mut SettingsView> {
     match &mut state.ui.dialog {
         Some(Dialog::Settings(view)) => Some(view),
@@ -125,6 +187,7 @@ fn view_mut(state: &mut AppState) -> Option<&mut SettingsView> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prefs::ProjectRule;
     use crate::state::Popover;
 
     fn chord(text: &str) -> Chord {
@@ -143,6 +206,61 @@ mod tests {
         open(&mut state);
         show_tab(&mut state, SettingsTab::Keyboard);
         state
+    }
+
+    fn projects_tab() -> AppState {
+        let mut state = crate::state::state_with(Vec::new());
+        open(&mut state);
+        show_tab(&mut state, SettingsTab::Projects);
+        state
+    }
+
+    #[test]
+    fn a_new_project_opens_its_card_and_esc_closes_its_rule_field_first() {
+        let mut state = projects_tab();
+
+        new_project(&mut state);
+        let id = state.prefs.projects.list[0].id;
+        let created = view(&state);
+        show_rule_field(&mut state, Some(RuleKind::Folder));
+        let first_esc = state.ui.close_overlays();
+        let after_first = view(&state).adding_rule;
+        show_rule_field(&mut state, Some(RuleKind::Repository));
+        add_rule(
+            &mut state,
+            id,
+            RuleKind::Repository,
+            "https://github.com/acme/app.git".to_owned(),
+        );
+
+        assert_eq!(created.project, Some(ProjectKey::Kept(id)));
+        assert_eq!(created.created, Some(id));
+        assert!(first_esc);
+        assert_eq!(after_first, None);
+        assert_eq!(view(&state).adding_rule, None);
+        assert_eq!(
+            state.prefs.projects.list[0].rules,
+            [ProjectRule::Repository(Repository::from_remote(
+                "github.com/acme/app"
+            ))]
+        );
+    }
+
+    #[test]
+    fn keeping_a_temporary_project_leaves_its_card_open_and_deleting_closes_it() {
+        let mut state = projects_tab();
+        let repository = Repository::from_remote("github.com/acme/app");
+        let temporary = ProjectKey::Repository(repository.clone());
+        toggle_project(&mut state, &temporary);
+
+        keep_project(&mut state, &repository);
+        let id = state.prefs.projects.list[0].id;
+        let kept = view(&state).project;
+        delete_project(&mut state, id);
+
+        assert_eq!(kept, Some(ProjectKey::Kept(id)));
+        assert_eq!(view(&state).project, None);
+        assert!(state.prefs.projects.list.is_empty());
     }
 
     #[test]

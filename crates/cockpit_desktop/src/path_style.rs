@@ -179,11 +179,35 @@ impl PathStyle {
             .filter(|name| *name != PARENT)
     }
 
+    /// How many names follow the root: 2 for `/work/billing/`, as for `/work//billing`.
+    pub fn depth(self, path: &str) -> usize {
+        self.names_at(path).len()
+    }
+
     /// Whether two names are the same name.
     pub fn same_name(self, left: &str, right: &str) -> bool {
         match self {
             Self::Unix => left == right,
             Self::Windows => left.chars().map(upper).eq(right.chars().map(upper)),
+        }
+    }
+
+    /// Whether `path` starts with the text `start`, which may end inside a name: on Windows, `\`
+    /// and `/` match and case does not count, so `c:/work/calc-` starts `C:\work\calc-parser`.
+    pub fn starts_with_text(self, path: &str, start: &str) -> bool {
+        let mut path = path.chars();
+        start.chars().all(|wanted| {
+            path.next()
+                .is_some_and(|found| self.same_character(found, wanted))
+        })
+    }
+
+    fn same_character(self, left: char, right: char) -> bool {
+        match self {
+            Self::Unix => left == right,
+            Self::Windows => {
+                (self.is_separator(left) && self.is_separator(right)) || upper(left) == upper(right)
+            }
         }
     }
 

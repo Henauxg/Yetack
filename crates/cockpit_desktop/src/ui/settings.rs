@@ -1,7 +1,7 @@
 //! The Settings dialog, from the gear in the sidebar's foot. Its General tab holds the app's
 //! notifications, as the sidebar's bell sets them, where comments on quotes show, how long a message
 //! sent to a working agent can still be cancelled, and whether a new agent's files pane shows. Its Keyboard tab lists every shortcut and records new ones for the
-//! commands.
+//! commands. Its Projects tab edits the projects the sidebar can group agents by.
 
 use dioxus::prelude::*;
 use strum::VariantArray;
@@ -9,17 +9,22 @@ use strum::VariantArray;
 use crate::connection::Cockpit;
 use crate::format;
 use crate::keymap::{self, Chord, Command, FixedShortcut, Group, Keymap, Refusal};
-use crate::prefs::{CommentPlacement, EscStop, NotificationLevel, PaneState, SteerHold};
-use crate::state::{RefusedChord, SettingsTab, SettingsView, notification_levels, settings};
+use crate::prefs::{CommentPlacement, EscStop, GroupBy, NotificationLevel, PaneState, SteerHold};
+use crate::state::{
+    RefusedChord, SettingsTab, SettingsView, grouping, notification_levels, settings,
+};
+use crate::ui::grouping::group_by_label;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::notification_levels as levels_ui;
 use crate::ui::presence::{Presence, Shown, use_presence};
+use crate::ui::projects_tab::ProjectsTab;
 
 const NOTIFICATIONS_LABEL_ID: &str = "setting-notifications";
 const COMMENTS_LABEL_ID: &str = "setting-comments";
 const STEER_HOLD_LABEL_ID: &str = "setting-steer-hold";
 const ESC_STOP_LABEL_ID: &str = "setting-esc-stop";
 const FILES_PANE_LABEL_ID: &str = "setting-files-pane";
+const GROUP_BY_LABEL_ID: &str = "setting-group-by";
 
 fn pane_label(pane: PaneState) -> &'static str {
     match pane {
@@ -83,6 +88,7 @@ pub fn SettingsDialog(view: SettingsView) -> Element {
             div { class: "dialog-tabs", role: "tablist", aria_label: "Settings",
                 {tab(SettingsTab::General, IconKind::Gear, "General")}
                 {tab(SettingsTab::Keyboard, IconKind::Keyboard, "Keyboard")}
+                {tab(SettingsTab::Projects, IconKind::Folder, "Projects")}
             }
             match view.tab {
                 SettingsTab::General => rsx! {
@@ -90,6 +96,9 @@ pub fn SettingsDialog(view: SettingsView) -> Element {
                 },
                 SettingsTab::Keyboard => rsx! {
                     KeyboardTab { recording: view.recording, refused: view.refused }
+                },
+                SettingsTab::Projects => rsx! {
+                    ProjectsTab { view: view.clone() }
                 },
             }
         }
@@ -99,9 +108,10 @@ pub fn SettingsDialog(view: SettingsView) -> Element {
 #[component]
 fn GeneralTab() -> Element {
     let cockpit: Cockpit = use_context();
-    let (notifications, comments, steer_hold, esc_stop, new_pane, pane_keys) = {
+    let (group_by, notifications, comments, steer_hold, esc_stop, new_pane, pane_keys) = {
         let state = cockpit.state.read();
         (
+            state.prefs.sidebar.group_by,
             notification_levels::app_level(&state),
             state.prefs.chat.comments,
             state.prefs.chat.steer_hold,
@@ -112,6 +122,24 @@ fn GeneralTab() -> Element {
     };
     rsx! {
         div { class: "dialog-body",
+            h3 { class: "settings-title", "Sidebar" }
+            div { class: "setting-row",
+                div { class: "setting-text",
+                    span { id: GROUP_BY_LABEL_ID, class: "setting-label", "Group the agents by" }
+                    span { class: "setting-help", "The line above the sidebar's list sets it too." }
+                }
+                div { class: "segmented", role: "group", aria_labelledby: GROUP_BY_LABEL_ID,
+                    for &choice in GroupBy::VARIANTS {
+                        button {
+                            key: "{group_by_label(choice)}",
+                            class: if choice == group_by { "segment chosen" } else { "segment" },
+                            aria_pressed: choice == group_by,
+                            onclick: move |_| cockpit.update(|state| grouping::set_group_by(state, choice)),
+                            "{group_by_label(choice)}"
+                        }
+                    }
+                }
+            }
             h3 { class: "settings-title", "Notifications" }
             div { class: "setting-row",
                 div { class: "setting-text",

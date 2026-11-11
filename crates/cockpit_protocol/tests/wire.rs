@@ -85,6 +85,7 @@ fn summary() -> AgentSummary {
         sign_in_wait: SignInWait::Waiting,
         background_running: 2,
         mark: Mark::ToHandle,
+        repository: None,
     }
 }
 
@@ -114,6 +115,7 @@ fn idle_summary() -> AgentSummary {
         sign_in_wait: SignInWait::NotWaiting,
         background_running: 0,
         mark: Mark::Unmarked,
+        repository: None,
     }
 }
 

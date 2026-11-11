@@ -16,11 +16,11 @@ use cockpit_protocol::{
     ImageMediaType, ItemBody, ItemId, LoadAverage, LoadHistory, MachineLoad, Mark, McpScope,
     McpServer, McpServerStatus, McpTool, McpTransport, OlderItems, PastSession, PendingId,
     PermissionMode, Plan, PlanUsage, Position, ProcessId, Prompt, PromptId, Question,
-    QuestionOption, RateLimitStatus, ReleaseVersion, Request, ResourceUse, ResponseBody, Selection,
-    ServerLoad, ServerPoint, SignIn, SignInWait, SlashCommand, Subagent, SubagentRun,
-    SubagentStatus, SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, Timestamp,
-    TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UsageWindow,
-    UserMessage, WaitingPrompt, WaitingState, WindowUsage,
+    QuestionOption, RateLimitStatus, ReleaseVersion, Repository, Request, ResourceUse,
+    ResponseBody, Selection, ServerLoad, ServerPoint, SignIn, SignInWait, SlashCommand, Subagent,
+    SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem, TaskProgress, TaskStatus,
+    Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome,
+    UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
 };
 use serde_json::Value;
 
@@ -1734,7 +1734,15 @@ fn summary(parts: SummaryParts<'_>, now: SystemTime) -> AgentSummary {
         sign_in_wait: SignInWait::NotWaiting,
         background_running: 0,
         mark: Mark::Unmarked,
+        repository: demo_repository(parts.folder),
     }
+}
+
+/// A made-up remote for a demo folder, named after the folder without a worktree's suffix.
+fn demo_repository(folder: &str) -> Option<Repository> {
+    let name = folder.rsplit('/').next()?;
+    let name = name.split('_').next().unwrap_or(name);
+    (!name.is_empty()).then(|| Repository::from_remote(&format!("example.com/acme/{name}")))
 }
 
 fn item(id: u32, parent: Option<u32>, body: ItemBody) -> TranscriptItem {
