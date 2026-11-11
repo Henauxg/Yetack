@@ -66,6 +66,8 @@ pub enum Popover {
     },
     /// The file view's list of its open files.
     FileList,
+    /// The sidebar's choice of what its panels group, from the line above its list.
+    GroupBy,
     /// A row's menu in the files pane, opened by a right-click at `x`, `y` in the window's pixels.
     /// The tree holds the row.
     TreeMenu {

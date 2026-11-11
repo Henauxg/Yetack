@@ -14,6 +14,7 @@ mod emoji_picker;
 mod file_list;
 mod file_view;
 mod files_pane;
+mod grouping;
 mod header;
 mod icons;
 mod last_instruction;

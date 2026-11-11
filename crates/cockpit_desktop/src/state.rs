@@ -15,6 +15,7 @@ pub mod file_list;
 pub mod file_reread;
 pub mod file_tree;
 pub mod folder_field;
+pub mod grouping;
 pub mod machine_load;
 pub mod machines;
 pub mod no_daemon;

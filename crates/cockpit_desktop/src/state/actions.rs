@@ -30,12 +30,13 @@ use super::ui_state::{
 };
 use super::utf16_offset::Utf16Offset;
 use super::{
-    accounts, export, file_edits, file_reread, file_tree, open_file, quotes, sending, title_emoji,
+    accounts, export, file_edits, file_reread, file_tree, grouping, open_file, quotes, sending,
+    title_emoji,
 };
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::machine::MachineId;
 use crate::path_style;
-use crate::prefs::{self, EscStop, StatusFilter};
+use crate::prefs::{self, EscStop, GroupBy, StatusFilter};
 
 /// The commands the palette's Clear and Compact entries send to Claude as prompts.
 const CLEAR_COMMAND: &str = "clear";
@@ -1763,10 +1764,15 @@ pub fn toggle_switcher(state: &mut AppState, drafts: &mut Drafts) {
     drafts.switcher = SwitcherDraft::default();
 }
 
-/// Moves `agent` just above `before`, or to the bottom of the list. The sidebar shows the new
-/// order at once, with the positions the daemon then sends in its events. Without a connection
-/// nothing moves: a refused move puts the agents back only where no later move took them.
+/// Moves `agent` just above `before`, or to the bottom of the list. Grouped by machine, the
+/// sidebar shows the new order at once, with the positions the daemon then sends in its events;
+/// without a connection nothing moves, and a refused move puts the agents back only where no
+/// later move took them. Otherwise the app keeps the order itself.
 pub fn move_agent(state: &mut AppState, agent: AgentId, before: Option<AgentId>) -> Vec<Outgoing> {
+    if state.prefs.sidebar.group_by != GroupBy::Machine {
+        grouping::move_in_app_order(state, agent, before);
+        return Vec::new();
+    }
     if !state.reaches_agent(agent) {
         let error = RequestError::NotConnected;
         state.ui.report(format!("The agent was not moved: {error}"));
@@ -1876,7 +1882,7 @@ pub fn move_selected(state: &mut AppState, direction: Direction) -> Vec<Outgoing
 /// above to land just below `row`. `None` when `row` is the last.
 fn below_in_order(state: &AppState, row: AgentId, moving: AgentId) -> Option<AgentId> {
     let order: Vec<AgentId> = state
-        .agents_in_order()
+        .sidebar_order()
         .iter()
         .map(|entry| entry.id())
         .filter(|id| *id != moving)

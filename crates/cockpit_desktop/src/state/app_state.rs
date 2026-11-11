@@ -14,17 +14,17 @@ use strum::VariantArray;
 use super::accounts::SignIns;
 use super::chat_images::KeptImage;
 use super::daemon_update::{DaemonUpdate, VersionGap};
-use super::file_edits;
 use super::file_tree::FileTree;
 use super::no_daemon::NoDaemon;
 use super::sending::Sending;
 use super::transcript::Transcript;
 use super::ui_state::UiState;
+use super::{file_edits, grouping};
 use crate::daemon_label::DaemonLabel;
 use crate::format;
 use crate::machine::MachineId;
 use crate::path_style::PathStyle;
-use crate::prefs::{NotificationLevel, Prefs, StatusFilter};
+use crate::prefs::{GroupBy, NotificationLevel, Prefs, StatusFilter};
 
 /// Data the app asks the daemon for when it needs it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -414,11 +414,19 @@ impl AppState {
         agents
     }
 
+    /// Every agent in the sidebar's order: each daemon's when grouped by machine, else the app's.
+    pub fn sidebar_order(&self) -> Vec<&AgentEntry> {
+        match self.prefs.sidebar.group_by {
+            GroupBy::Machine => self.agents_in_order(),
+            GroupBy::Project | GroupBy::None => grouping::app_order(self),
+        }
+    }
+
     /// The machines the sidebar heads, with the rows each shows: this computer first, then the
     /// others in the config's order. Empty while the app reaches this computer alone, which
-    /// needs no header.
+    /// needs no header, and when the sidebar does not group by machine.
     pub fn sidebar_groups(&self) -> Vec<SidebarGroup<'_>> {
-        if self.machines.others.is_empty() {
+        if self.machines.others.is_empty() || self.prefs.sidebar.group_by != GroupBy::Machine {
             return Vec::new();
         }
         let shown = self.sidebar_agents();
@@ -464,7 +472,7 @@ impl AppState {
     /// The agents the sidebar shows, in its order: those its status filter keeps.
     pub fn sidebar_agents(&self) -> Vec<&AgentEntry> {
         let filter = self.prefs.sidebar.filter;
-        let mut agents = self.agents_in_order();
+        let mut agents = self.sidebar_order();
         agents.retain(|entry| filter.admits(&entry.summary));
         agents
     }

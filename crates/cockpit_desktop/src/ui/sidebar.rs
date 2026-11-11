@@ -17,9 +17,10 @@ use crate::state::no_daemon::Absence;
 use crate::state::sidebar_keys::SidebarItem;
 use crate::state::{
     AgentEntry, AppState, ConnectionState, Dialog, TitleEdit, TitlePlace, actions, daemon_update,
-    machines, notification_levels, settings, to_handle,
+    grouping, machines, notification_levels, settings, to_handle,
 };
 use crate::ui::accounts::{AccountLetter, AccountsButton};
+use crate::ui::grouping::GroupSwitch;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::machines::THIS_COMPUTER;
 use crate::ui::notification_levels::{self as levels_ui, AppBell, LevelIcon};
@@ -48,6 +49,8 @@ struct AgentRow {
     warns: bool,
     /// You marked the agent as one to handle.
     to_handle: bool,
+    /// The machine the agent runs on, when no panel says it.
+    machine: Option<String>,
     notifications: NotificationLevel,
     /// The shortcut that closes the selected agent, for the close button's tooltip.
     close_keys: String,
@@ -72,6 +75,7 @@ impl AgentRow {
                 .map(|progress| format!("{}/{}", progress.done, progress.total)),
             time: row_time(summary),
             to_handle: summary.mark == Mark::ToHandle,
+            machine: grouping::machine_shown_on_row(state, entry.id()).map(str::to_owned),
             notifications: notification_levels::agent_level(state, entry.id()),
             close_keys: state.prefs.keys.shown(Command::CloseAgent),
             edit,
@@ -292,6 +296,7 @@ pub fn Sidebar() -> Element {
             if !chips.is_empty() {
                 StatusFilters { chips }
             }
+            GroupSwitch {}
             div { id: LIST_ID, class: "agent-list scroll",
                 if selected_hidden {
                     p { class: "hidden-note",
@@ -638,6 +643,12 @@ fn AgentRowButton(row: AgentRow, class: String) -> Element {
                         Vec::new()
                     }),
                     "{row.title}"
+                }
+                if let Some(machine) = &row.machine {
+                    span { class: "row-machine", title: "Runs on {machine}",
+                        Icon { kind: IconKind::Server, size: 11 }
+                        span { class: "visually-hidden", "on {machine}" }
+                    }
                 }
                 // Always there, so that the style sheet can grow it in and shrink it out.
                 span {

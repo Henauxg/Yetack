@@ -88,6 +88,51 @@ pub struct Prefs {
     pub chat: ChatPrefs,
     /// The shortcuts changed in the Settings dialog.
     pub keys: Keymap,
+    /// The sidebar's order when it groups by project or not at all, top first. Grouped by
+    /// machine, each daemon keeps its own order instead. An agent missing from it is newer, and
+    /// shows above the others.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub agent_order: Vec<AgentKey>,
+}
+
+/// An agent as the preferences name it: its daemon machine's name and the daemon's agent id,
+/// which last across the app's restarts, unlike the app's own ids.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct AgentKey {
+    pub machine: String,
+    pub agent: AgentId,
+}
+
+/// What the sidebar's panels group: each machine's agents, or one list.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumString, IntoStaticStr, VariantArray,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum GroupBy {
+    #[default]
+    Machine,
+    Project,
+    None,
+}
+
+impl GroupBy {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+impl Serialize for GroupBy {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.into())
+    }
+}
+
+/// A word this version does not know reads as `Machine`, rather than costing the whole file.
+impl<'de> Deserialize<'de> for GroupBy {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let word = String::deserialize(deserializer)?;
+        Ok(word.parse().unwrap_or_default())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -405,6 +450,8 @@ pub struct SidebarPrefs {
     /// `None` keeps the default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub width: Option<u16>,
+    #[serde(skip_serializing_if = "GroupBy::is_default")]
+    pub group_by: GroupBy,
 }
 
 /// The sidebar's width, in pixels, until it is moved.
@@ -811,7 +858,8 @@ mod tests {
   },
   "sidebar": {
     "filter": "needs_you",
-    "width": 300
+    "width": 300,
+    "group_by": "project"
   },
   "files_pane": {
     "new_agents": "open",
@@ -854,7 +902,13 @@ mod tests {
   },
   "keys": {
     "switcher": "Ctrl+j"
-  }
+  },
+  "agent_order": [
+    {
+      "machine": "build-box",
+      "agent": 4
+    }
+  ]
 }
 "#;
 
@@ -874,6 +928,7 @@ mod tests {
                 sidebar: SidebarPrefs {
                     filter: StatusFilter::NeedsYou,
                     width: Some(300),
+                    group_by: GroupBy::Project,
                 },
                 files_pane: FilesPanePrefs {
                     new_agents: PaneState::Open,
@@ -911,6 +966,10 @@ mod tests {
                     esc_stop: EscStop::AtOnce,
                 },
                 keys: switched,
+                agent_order: vec![AgentKey {
+                    machine: "build-box".to_owned(),
+                    agent: AgentId::new(4),
+                }],
             }
         );
         assert_eq!(serde_json::to_string_pretty(&prefs).unwrap() + "\n", text);
@@ -1140,6 +1199,7 @@ mod tests {
             sidebar: SidebarPrefs {
                 filter: StatusFilter::Exited,
                 width: Some(220),
+                group_by: GroupBy::None,
             },
             files_pane: FilesPanePrefs {
                 new_agents: PaneState::Open,
@@ -1151,6 +1211,7 @@ mod tests {
             notifications: NotificationPrefs::default(),
             chat: ChatPrefs::default(),
             keys: Keymap::default(),
+            agent_order: Vec::new(),
         };
 
         prefs.save(&file).unwrap();
@@ -1182,17 +1243,14 @@ mod tests {
             sidebar: SidebarPrefs {
                 filter: StatusFilter::Exited,
                 width: Some(220),
+                group_by: GroupBy::None,
             },
             files_pane: FilesPanePrefs {
                 new_agents: PaneState::Open,
                 agents: BTreeMap::new(),
                 width: Some(300),
             },
-            blocks: BlocksPrefs::default(),
-            accounts: AccountPrefs::default(),
-            notifications: NotificationPrefs::default(),
-            chat: ChatPrefs::default(),
-            keys: Keymap::default(),
+            ..Prefs::default()
         };
 
         Prefs::default().save(&file).unwrap();
