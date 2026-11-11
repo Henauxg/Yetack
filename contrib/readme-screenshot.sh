@@ -9,7 +9,7 @@
 #   nix shell nixpkgs#openbox nixpkgs#wmctrl nixpkgs#xdotool nixpkgs#imagemagick
 set -eu
 
-app=target/release/agents-cockpit-desktop
+app=${CARGO_TARGET_DIR:-target}/release/agents-cockpit-desktop
 out=docs/images/app.png
 [ -x "$app" ] || { echo "build $app first: cargo build --release -p cockpit_desktop" >&2; exit 1; }
 
@@ -24,6 +24,9 @@ stop() {
     rm -rf "$work"
 }
 trap stop EXIT
+# dash, which is sh on Debian and Ubuntu, skips the EXIT trap when a signal ends the script.
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
 
 Xvfb ":$display" -screen 0 2560x1440x24 >/dev/null 2>&1 &
 pids="$!"
