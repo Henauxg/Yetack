@@ -449,7 +449,7 @@ fn PlanWindow(window: UsageWindow, usage: WindowUsage, now: SystemTime) -> Eleme
 
 /// Six swatches; a click picks one.
 #[component]
-fn Swatches(chosen: AccountColor, onpick: EventHandler<AccountColor>) -> Element {
+pub fn Swatches(chosen: AccountColor, onpick: EventHandler<AccountColor>) -> Element {
     use strum::VariantArray;
 
     rsx! {

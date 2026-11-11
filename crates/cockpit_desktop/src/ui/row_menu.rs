@@ -17,8 +17,8 @@ use crate::path_style;
 use crate::prefs::{AccountColor, NotificationLevel};
 use crate::state::actions::Direction;
 use crate::state::{
-    AgentEntry, AppState, FolderAction, Popover, actions, notification_levels, projects, to_handle,
-    unread, working_folder,
+    AgentEntry, AppState, FolderAction, Popover, actions, notification_levels, projects, settings,
+    to_handle, unread, working_folder,
 };
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::notification_levels as levels_ui;
@@ -808,7 +808,9 @@ fn run(cockpit: Cockpit, agent: AgentId, mark: Mark, unread: bool, pick: Pick) {
         }),
         Pick::NewProject => cockpit.update(|state| {
             close_menu(state);
-            projects::create_for(state, agent);
+            if let Some(project) = projects::create_for(state, agent) {
+                settings::open_project(state, project);
+            }
         }),
         Pick::Level(level) => cockpit.set_notifications(Some(agent), level),
         Pick::Folder(action) => cockpit.update_with_drafts(|state, drafts| {

@@ -29,6 +29,7 @@ mod notification_levels;
 mod open_file;
 mod palette;
 mod presence;
+mod projects_tab;
 mod quotes;
 mod reorder;
 mod row_menu;

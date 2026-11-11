@@ -1,7 +1,7 @@
 //! The Settings dialog, from the gear in the sidebar's foot. Its General tab holds the app's
 //! notifications, as the sidebar's bell sets them, where comments on quotes show, how long a message
 //! sent to a working agent can still be cancelled, and whether a new agent's files pane shows. Its Keyboard tab lists every shortcut and records new ones for the
-//! commands.
+//! commands. Its Projects tab edits the projects the sidebar can group agents by.
 
 use dioxus::prelude::*;
 use strum::VariantArray;
@@ -17,6 +17,7 @@ use crate::ui::grouping::group_by_label;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::notification_levels as levels_ui;
 use crate::ui::presence::{Presence, Shown, use_presence};
+use crate::ui::projects_tab::ProjectsTab;
 
 const NOTIFICATIONS_LABEL_ID: &str = "setting-notifications";
 const COMMENTS_LABEL_ID: &str = "setting-comments";
@@ -87,6 +88,7 @@ pub fn SettingsDialog(view: SettingsView) -> Element {
             div { class: "dialog-tabs", role: "tablist", aria_label: "Settings",
                 {tab(SettingsTab::General, IconKind::Gear, "General")}
                 {tab(SettingsTab::Keyboard, IconKind::Keyboard, "Keyboard")}
+                {tab(SettingsTab::Projects, IconKind::Folder, "Projects")}
             }
             match view.tab {
                 SettingsTab::General => rsx! {
@@ -94,6 +96,9 @@ pub fn SettingsDialog(view: SettingsView) -> Element {
                 },
                 SettingsTab::Keyboard => rsx! {
                     KeyboardTab { recording: view.recording, refused: view.refused }
+                },
+                SettingsTab::Projects => rsx! {
+                    ProjectsTab { view: view.clone() }
                 },
             }
         }

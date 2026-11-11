@@ -14,9 +14,10 @@ use strum::{EnumString, IntoStaticStr, VariantArray};
 use super::accounts::{AccountsView, AddAccountForm};
 use super::agent_map::MapView;
 use super::app_state::Loadable;
-use super::projects::ProjectKey;
+use super::projects::{ProjectKey, RuleKind};
 use crate::keymap::{Chord, Command, Refusal};
 use crate::machine::MachineId;
+use crate::prefs::ProjectId;
 
 /// How many error notes stay on screen; an older one goes when a new one comes.
 const MAX_ERRORS: usize = 4;
@@ -137,6 +138,12 @@ pub struct SettingsView {
     pub recording: Option<Command>,
     /// The last chord that could not run its command, and why.
     pub refused: Option<RefusedChord>,
+    /// The project whose card is open in the Projects tab.
+    pub project: Option<ProjectKey>,
+    /// The kind of rule the open card's field adds, while the field shows.
+    pub adding_rule: Option<RuleKind>,
+    /// The project the tab just created, whose name field takes the focus.
+    pub created: Option<ProjectId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -144,6 +151,7 @@ pub enum SettingsTab {
     #[default]
     General,
     Keyboard,
+    Projects,
 }
 
 /// A chord a command could not take: pressed while recording, or the default a reset asked for.
@@ -708,8 +716,8 @@ impl UiState {
         }
     }
 
-    /// Closes every popover and the dialog, or only the start tab's menu or folder list when one
-    /// is open, and cancels a title edit. Returns whether anything was open.
+    /// Closes every popover and the dialog, or only the start tab's menu or folder list, or the
+    /// Projects tab's rule field, when one is open, and cancels a title edit. Returns whether anything was open.
     pub fn close_overlays(&mut self) -> bool {
         if let Some(Dialog::NewAgent(form)) = &mut self.dialog
             && form.tab == NewAgentTab::Start
@@ -718,6 +726,11 @@ impl UiState {
             if form.menu.take().is_none() {
                 form.folders = None;
             }
+            return true;
+        }
+        if let Some(Dialog::Settings(view)) = &mut self.dialog
+            && view.adding_rule.take().is_some()
+        {
             return true;
         }
         let open = self.popover.is_some()

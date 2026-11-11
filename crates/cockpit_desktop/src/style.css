@@ -599,7 +599,12 @@ button:disabled {
   gap: 4px;
 }
 
-.project-head-row /* A project in the row menu's Project submenu: its color, dashed while it is temporary. */
+.project-head-row .machine-head {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* A project in a menu: its color, dashed while it is temporary. */
 .menu-swatch {
   flex: none;
   width: 9px;
@@ -627,11 +632,6 @@ button:disabled {
 .popover.menu.submenu.project-submenu {
   max-height: min(360px, 60vh);
   overflow-y: auto;
-}
-
-.machine-head {
-  flex: 1 1 auto;
-  min-width: 0;
 }
 
 .project-swatch {
@@ -7365,6 +7365,16 @@ button.map-toggle:hover {
   overflow-y: auto;
 }
 
+.project-menu .menu-item:not(.two-lines) {
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.project-menu .menu-label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .form-menu.mode-menu {
   right: 0;
   left: auto;
@@ -7957,6 +7967,87 @@ button.map-toggle:hover {
 
 .acct-card-actions .button:disabled {
   opacity: 0.5;
+}
+
+/* The Projects tab of the settings: cards as the accounts', with each project's rules. */
+.acct-swatch.temporary {
+  border: 1.5px dashed var(--acct);
+  background: transparent;
+}
+
+.projects-intro {
+  margin: 0;
+}
+
+.projects-grouping {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.acct-list.projects {
+  margin-top: 4px;
+}
+
+.rule-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rule-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 4px 0 10px;
+  border: 1px solid var(--line-control);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--dim);
+}
+
+.rule-row.adding {
+  margin-top: 6px;
+  border-color: var(--teal);
+}
+
+.rule-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--text-soft);
+}
+
+.rule-kind {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.rule-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.rule-adds {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.projects-foot {
+  display: flex;
 }
 
 .default-tag {

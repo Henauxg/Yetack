@@ -9,8 +9,8 @@
 //!    away with its last agent;
 //! 4. no project.
 //!
-//! A temporary project becomes a kept one as soon as the user changes it: renames it, colors it,
-//! adds a rule, keeps it, or moves an agent into it.
+//! A temporary project becomes a kept one when the user keeps it, or moves an agent into it.
+//! Only then can it be renamed, colored, or given more rules.
 
 use std::fmt;
 use std::path::Path;
@@ -76,6 +76,22 @@ impl<'de> Deserialize<'de> for ProjectKey {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let text = String::deserialize(deserializer)?;
         text.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+/// The kind of rule the Projects tab's field adds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleKind {
+    Repository,
+    Folder,
+}
+
+impl RuleKind {
+    pub fn rule(self, text: String) -> ProjectRule {
+        match self {
+            Self::Repository => ProjectRule::Repository(text),
+            Self::Folder => ProjectRule::Folder(text),
+        }
     }
 }
 
@@ -373,25 +389,26 @@ pub fn move_agent(state: &mut AppState, agent: AgentId, target: &ProjectKey) {
     }
 }
 
-pub fn rename(state: &mut AppState, key: &ProjectKey, name: &str) {
+/// Renames a kept project. An empty name changes nothing.
+pub fn rename(state: &mut AppState, id: ProjectId, name: &str) {
     let name = name.trim();
     if name.is_empty() {
         return;
     }
-    if let Some(project) = kept_mut(state, key) {
+    if let Some(project) = kept_mut(state, id) {
         name.clone_into(&mut project.name);
     }
 }
 
-pub fn set_color(state: &mut AppState, key: &ProjectKey, color: AccountColor) {
-    if let Some(project) = kept_mut(state, key) {
+pub fn set_color(state: &mut AppState, id: ProjectId, color: AccountColor) {
+    if let Some(project) = kept_mut(state, id) {
         project.color = color;
     }
 }
 
 /// Adds a rule from what the user typed: a remote in any form, or a folder's path. Empty text
 /// and a rule the project has already add nothing.
-pub fn add_rule(state: &mut AppState, key: &ProjectKey, rule: ProjectRule) {
+pub fn add_rule(state: &mut AppState, id: ProjectId, rule: ProjectRule) {
     let rule = match rule {
         ProjectRule::Repository(text) => ProjectRule::Repository(normalized_repository(&text)),
         ProjectRule::Folder(text) => ProjectRule::Folder(text.trim().to_owned()),
@@ -402,7 +419,7 @@ pub fn add_rule(state: &mut AppState, key: &ProjectKey, rule: ProjectRule) {
     if empty {
         return;
     }
-    if let Some(project) = kept_mut(state, key)
+    if let Some(project) = kept_mut(state, id)
         && !project.rules.contains(&rule)
     {
         project.rules.push(rule);
@@ -410,7 +427,7 @@ pub fn add_rule(state: &mut AppState, key: &ProjectKey, rule: ProjectRule) {
 }
 
 pub fn remove_rule(state: &mut AppState, id: ProjectId, index: usize) {
-    if let Some(project) = kept_mut(state, &ProjectKey::Kept(id))
+    if let Some(project) = kept_mut(state, id)
         && index < project.rules.len()
     {
         project.rules.remove(index);
@@ -455,9 +472,7 @@ pub fn forget_agent(state: &mut AppState, agent: AgentId) {
     }
 }
 
-/// The kept project behind `key`, keeping a temporary one first.
-fn kept_mut<'state>(state: &'state mut AppState, key: &ProjectKey) -> Option<&'state mut Project> {
-    let id = kept_id(state, key)?;
+fn kept_mut(state: &mut AppState, id: ProjectId) -> Option<&mut Project> {
     state
         .prefs
         .projects
@@ -558,7 +573,7 @@ mod tests {
         let work = create(&mut state, "Work");
         add_rule(
             &mut state,
-            &ProjectKey::Kept(work),
+            work,
             ProjectRule::Folder("/scratch/*".to_owned()),
         );
         let guess = |state: &AppState, folder: &str| {
@@ -647,13 +662,13 @@ mod tests {
         let id = create(&mut state, "Work");
         add_rule(
             &mut state,
-            &ProjectKey::Kept(id),
+            id,
             ProjectRule::Folder("/work/project-4".to_owned()),
         );
         let other = create(&mut state, "Wildcard");
         add_rule(
             &mut state,
-            &ProjectKey::Kept(other),
+            other,
             ProjectRule::Folder("/work/project-*".to_owned()),
         );
 
@@ -668,7 +683,7 @@ mod tests {
 
         add_rule(
             &mut state,
-            &ProjectKey::Kept(id),
+            id,
             ProjectRule::Repository("git@github.com:acme/api-gateway.git".to_owned()),
         );
 
