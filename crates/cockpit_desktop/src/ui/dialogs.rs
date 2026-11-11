@@ -19,6 +19,7 @@ use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::keymap::Command;
 use crate::machine::MachineId;
 use crate::path_style::{self, PathStyle};
+use crate::prefs::EscStop;
 use crate::state::accounts::AccountLabel;
 use crate::state::actions::{Direction, StartField};
 use crate::state::folder_field::{self, FolderRow};
@@ -130,6 +131,9 @@ pub fn Dialogs() -> Element {
                     Dialog::CloseAgent(agent) => rsx! {
                         CloseAgentDialog { agent }
                     },
+                    Dialog::StopAgent(agent) => rsx! {
+                        StopAgentDialog { agent }
+                    },
                     Dialog::AgentMap(view) => rsx! {
                         AgentMapDialog { view }
                     },
@@ -210,6 +214,72 @@ fn CloseAgentDialog(agent: AgentId) -> Element {
                     },
                     onclick: move |_| cockpit.change_with_drafts(|state, drafts| actions::close_agent(state, drafts, agent)),
                     "Close agent"
+                }
+            }
+        }
+    }
+}
+
+/// Asks before Esc stops a busy agent. Its box turns the question off for good: Settings turns it
+/// back on.
+#[component]
+fn StopAgentDialog(agent: AgentId) -> Element {
+    let cockpit: Cockpit = use_context();
+    let mut never_ask = use_signal(|| false);
+    let title = {
+        let state = cockpit.state.read();
+        let Some(entry) = state.agents.get(&agent) else {
+            return rsx! {};
+        };
+        entry.summary.title.clone()
+    };
+    let written = cockpit
+        .drafts
+        .read()
+        .draft(agent)
+        .is_some_and(|draft| !draft.is_empty());
+    let esc_stop = if never_ask() {
+        EscStop::AtOnce
+    } else {
+        EscStop::Ask
+    };
+    rsx! {
+        div {
+            class: "dialog stop-agent",
+            role: "alertdialog",
+            aria_label: "Stop the agent",
+            onclick: move |event| event.stop_propagation(),
+            div { class: "dialog-head",
+                h2 { "Stop the agent" }
+            }
+            p { class: "dialog-text",
+                "Stop \u{201c}{title}\u{201d}? Claude stops its current turn."
+                if written {
+                    " Your message stays in the composer."
+                }
+            }
+            label { class: "dialog-tick",
+                input {
+                    r#type: "checkbox",
+                    checked: never_ask(),
+                    onchange: move |_| never_ask.toggle(),
+                }
+                span { "Stop without asking next time" }
+            }
+            div { class: "dialog-actions",
+                button {
+                    class: "button",
+                    onclick: move |_| cockpit.update(|state| state.ui.dialog = None),
+                    "Keep working"
+                }
+                button {
+                    class: "button danger",
+                    onmounted: move |event| async move {
+                        // The dialog may have closed already: nothing to focus then.
+                        let _ = event.data().set_focus(true).await;
+                    },
+                    onclick: move |_| cockpit.change(|state| actions::stop_from_dialog(state, agent, esc_stop)),
+                    "Stop"
                 }
             }
         }

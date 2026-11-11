@@ -1,7 +1,7 @@
 //! The keyboard shortcuts of R4-parts, resolved against the state. The page's script decides
 //! which key presses reach here (`bridge`), so typing in a field is never taken over.
 
-use cockpit_protocol::{AgentId, ApprovalDecision, PlanDecision, PromptDelivery};
+use cockpit_protocol::{AgentId, AgentStatus, ApprovalDecision, PlanDecision, PromptDelivery};
 use serde::Deserialize;
 
 use super::actions::{self, Direction};
@@ -13,6 +13,7 @@ use super::ui_state::{Dialog, PaletteOrigin, Popover};
 use super::utf16_offset::Utf16Offset;
 use super::{accounts, agent_map, file_reread, file_tree, open_file, quotes, to_handle};
 use crate::keymap::{Chord, Command};
+use crate::prefs::EscStop;
 
 /// `KeyboardEvent.key` values.
 const KEY_ESCAPE: &str = "Escape";
@@ -43,6 +44,30 @@ pub struct KeyPress {
     /// received yet.
     #[serde(default)]
     pub composer_text: String,
+}
+
+/// Esc with nothing left open: the selected agent's turn stops, at once or after the dialog that
+/// Settings asks for. An agent with no turn to stop is left alone.
+fn stop_on_escape(state: &mut AppState) -> Vec<Outgoing> {
+    let Some(agent) = state.ui.selected else {
+        return Vec::new();
+    };
+    let busy = state.agents.get(&agent).is_some_and(|entry| {
+        matches!(
+            accounts::turn_status(&entry.summary),
+            AgentStatus::Working | AgentStatus::NeedsYou
+        )
+    });
+    if !busy {
+        return Vec::new();
+    }
+    match state.prefs.chat.esc_stop {
+        EscStop::Ask => {
+            state.ui.dialog = Some(Dialog::StopAgent(agent));
+            Vec::new()
+        }
+        EscStop::AtOnce => actions::interrupt(state, agent),
+    }
 }
 
 /// Runs the command a shortcut is bound to. The page script passes a shortcut on only where its
@@ -108,8 +133,8 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
     if let Some(bound) = bound {
         return run(state, drafts, bound, press.target);
     }
-    // Esc only closes what is open: the Stop button alone stops an agent, so a stray Esc never
-    // cuts a turn short.
+    // Esc closes what is open first. Only then does it stop a busy agent, and by default after a
+    // dialog, so that an Esc meant to close something never cuts a turn short.
     if press.key == KEY_ESCAPE {
         // The comment field closes first, and alone: a dialog behind it stays.
         if quotes::cancel(drafts, state.ui.selected) {
@@ -121,8 +146,14 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
         {
             drafts.palette_dismissed.insert(agent, word.start);
         }
-        state.ui.close_overlays();
-        return Vec::new();
+        if state.ui.close_overlays() {
+            return Vec::new();
+        }
+        // In another text field, such as a search, Esc never stops an agent.
+        if press.target == KeyTarget::Field {
+            return Vec::new();
+        }
+        return stop_on_escape(state);
     }
     // The map takes its keys from anywhere, the composer behind it included.
     if matches!(state.ui.dialog, Some(Dialog::AgentMap(_))) {
@@ -443,23 +474,56 @@ mod tests {
     }
 
     #[test]
-    fn escape_closes_what_is_open_and_never_stops_a_working_agent() {
+    fn escape_closes_what_is_open_then_asks_before_it_stops_a_working_agent() {
         let mut drafts = Drafts::default();
         let mut state = state(AgentStatus::Working, None);
         state.ui.popover = Some(Popover::Usage);
+        let mut escape = |state: &mut AppState, target| {
+            handle_key(state, &mut drafts, &press(KEY_ESCAPE, target))
+        };
 
-        let first = handle_key(&mut state, &mut drafts, &press(KEY_ESCAPE, KeyTarget::Page));
-        let second = handle_key(&mut state, &mut drafts, &press(KEY_ESCAPE, KeyTarget::Page));
-        let from_composer = handle_key(
-            &mut state,
-            &mut drafts,
-            &press(KEY_ESCAPE, KeyTarget::Composer),
+        let closing = escape(&mut state, KeyTarget::Page);
+        let popover_after = state.ui.popover;
+        let asking = escape(&mut state, KeyTarget::Composer);
+        let dialog_after = state.ui.dialog.clone();
+        let keeping = escape(&mut state, KeyTarget::Page);
+
+        assert!(closing.is_empty());
+        assert_eq!(popover_after, None);
+        assert!(asking.is_empty());
+        assert_eq!(dialog_after, Some(Dialog::StopAgent(AgentId::new(1))));
+        assert!(
+            keeping.is_empty(),
+            "Esc on the dialog keeps the agent working"
         );
+        assert_eq!(state.ui.dialog, None);
+    }
 
-        assert!(first.is_empty());
-        assert_eq!(state.ui.popover, None);
-        assert!(second.is_empty());
-        assert!(from_composer.is_empty());
+    #[test]
+    fn escape_stops_a_busy_agent_at_once_when_settings_say_so() {
+        let mut drafts = Drafts::default();
+        let mut state = state(AgentStatus::NeedsYou, None);
+        state.prefs.chat.esc_stop = EscStop::AtOnce;
+
+        let sent = handle_key(&mut state, &mut drafts, &press(KEY_ESCAPE, KeyTarget::Page));
+
+        let methods: Vec<Method> = sent
+            .iter()
+            .map(|outgoing| outgoing.request.method())
+            .collect();
+        assert_eq!(methods, [Method::AgentInterrupt]);
+        assert_eq!(state.ui.dialog, None);
+    }
+
+    #[test]
+    fn escape_leaves_an_idle_agent_alone() {
+        let mut drafts = Drafts::default();
+        let mut state = state(AgentStatus::Idle, None);
+
+        let sent = handle_key(&mut state, &mut drafts, &press(KEY_ESCAPE, KeyTarget::Page));
+
+        assert!(sent.is_empty());
+        assert_eq!(state.ui.dialog, None);
     }
 
     #[test]

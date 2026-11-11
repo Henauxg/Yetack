@@ -223,7 +223,7 @@ pub struct FixedShortcut {
 
 pub const FIXED: [FixedShortcut; 9] = [
     FixedShortcut {
-        label: "Close what is open",
+        label: "Close what is open, else stop a busy agent",
         context: None,
         keys: &[&["Esc"]],
         group: Group::Anywhere,

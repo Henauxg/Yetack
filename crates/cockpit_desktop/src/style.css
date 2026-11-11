@@ -6183,7 +6183,8 @@ html.splitting * {
   padding: 14px 12px 8px 20px;
 }
 
-.dialog.close-agent {
+.dialog.close-agent,
+.dialog.stop-agent {
   width: 440px;
 }
 
@@ -6205,8 +6206,25 @@ html.splitting * {
   color: var(--text-soft);
 }
 
-.dialog.close-agent .dialog-actions {
+.dialog.close-agent .dialog-actions,
+.dialog.stop-agent .dialog-actions {
   padding: 0 16px 16px;
+}
+
+/* A box between a dialog's text and its buttons, as "Stop without asking next time". */
+.dialog-tick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 16px 14px;
+  color: var(--text-soft);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.dialog-tick input {
+  margin: 0;
+  accent-color: var(--teal);
 }
 
 .dialog-head h2 {

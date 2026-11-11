@@ -35,7 +35,7 @@ use super::{
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::machine::MachineId;
 use crate::path_style;
-use crate::prefs::{self, StatusFilter};
+use crate::prefs::{self, EscStop, StatusFilter};
 
 /// The commands the palette's Clear and Compact entries send to Claude as prompts.
 const CLEAR_COMMAND: &str = "clear";
@@ -1150,6 +1150,14 @@ pub fn send_prompt(
         },
         to: MachineId::THIS,
     }]
+}
+
+/// The Stop of the dialog that Esc opens: it keeps the dialog's choice of asking again, then
+/// stops the agent's turn.
+pub fn stop_from_dialog(state: &mut AppState, agent: AgentId, esc_stop: EscStop) -> Vec<Outgoing> {
+    state.ui.close_dialog();
+    state.prefs.chat.esc_stop = esc_stop;
+    interrupt(state, agent)
 }
 
 /// Stops the current turn. Only a working agent, or one waiting for you, has a turn to stop.
@@ -5376,5 +5384,23 @@ mod tests {
         };
         assert_eq!(params.before, Some(ItemId::new(50)));
         assert!(load_older(&mut state, agent()).is_empty());
+    }
+
+    #[test]
+    fn the_stop_dialog_stops_the_agent_and_keeps_the_choice_of_asking_again() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Working)]);
+        state.ui.dialog = Some(Dialog::StopAgent(agent()));
+
+        let sent = stop_from_dialog(&mut state, agent(), EscStop::AtOnce);
+
+        assert!(matches!(
+            sent.as_slice(),
+            [Outgoing {
+                request: Request::AgentInterrupt(AgentParams { agent: stopped }),
+                ..
+            }] if *stopped == agent()
+        ));
+        assert_eq!(state.ui.dialog, None);
+        assert_eq!(state.prefs.chat.esc_stop, EscStop::AtOnce);
     }
 }

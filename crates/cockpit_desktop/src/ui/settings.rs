@@ -9,7 +9,7 @@ use strum::VariantArray;
 use crate::connection::Cockpit;
 use crate::format;
 use crate::keymap::{self, Chord, Command, FixedShortcut, Group, Keymap, Refusal};
-use crate::prefs::{CommentPlacement, NotificationLevel, PaneState, SteerHold};
+use crate::prefs::{CommentPlacement, EscStop, NotificationLevel, PaneState, SteerHold};
 use crate::state::{RefusedChord, SettingsTab, SettingsView, notification_levels, settings};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::notification_levels as levels_ui;
@@ -18,6 +18,7 @@ use crate::ui::presence::{Presence, Shown, use_presence};
 const NOTIFICATIONS_LABEL_ID: &str = "setting-notifications";
 const COMMENTS_LABEL_ID: &str = "setting-comments";
 const STEER_HOLD_LABEL_ID: &str = "setting-steer-hold";
+const ESC_STOP_LABEL_ID: &str = "setting-esc-stop";
 const FILES_PANE_LABEL_ID: &str = "setting-files-pane";
 
 fn pane_label(pane: PaneState) -> &'static str {
@@ -33,6 +34,13 @@ fn hold_label(hold: SteerHold) -> &'static str {
         SteerHold::ThreeSeconds => "3 s",
         SteerHold::FiveSeconds => "5 s",
         SteerHold::TenSeconds => "10 s",
+    }
+}
+
+fn esc_stop_label(esc_stop: EscStop) -> &'static str {
+    match esc_stop {
+        EscStop::Ask => "Ask",
+        EscStop::AtOnce => "Stop at once",
     }
 }
 
@@ -91,12 +99,13 @@ pub fn SettingsDialog(view: SettingsView) -> Element {
 #[component]
 fn GeneralTab() -> Element {
     let cockpit: Cockpit = use_context();
-    let (notifications, comments, steer_hold, new_pane, pane_keys) = {
+    let (notifications, comments, steer_hold, esc_stop, new_pane, pane_keys) = {
         let state = cockpit.state.read();
         (
             notification_levels::app_level(&state),
             state.prefs.chat.comments,
             state.prefs.chat.steer_hold,
+            state.prefs.chat.esc_stop,
             state.prefs.files_pane.new_agents,
             state.prefs.keys.shown(Command::FilesPane),
         )
@@ -158,6 +167,25 @@ fn GeneralTab() -> Element {
                             aria_pressed: hold == steer_hold,
                             onclick: move |_| cockpit.update(|state| settings::set_steer_hold(state, hold)),
                             "{hold_label(hold)}"
+                        }
+                    }
+                }
+            }
+            div { class: "setting-row",
+                div { class: "setting-text",
+                    span { id: ESC_STOP_LABEL_ID, class: "setting-label", "Ask before Esc stops an agent" }
+                    span { class: "setting-help",
+                        "With nothing open to close, Esc stops the turn of the agent that works or waits for you. Ask shows a dialog first."
+                    }
+                }
+                div { class: "segmented", role: "group", aria_labelledby: ESC_STOP_LABEL_ID,
+                    for &choice in EscStop::VARIANTS {
+                        button {
+                            key: "{esc_stop_label(choice)}",
+                            class: if choice == esc_stop { "segment chosen" } else { "segment" },
+                            aria_pressed: choice == esc_stop,
+                            onclick: move |_| cockpit.update(|state| settings::set_esc_stop(state, choice)),
+                            "{esc_stop_label(choice)}"
                         }
                     }
                 }
