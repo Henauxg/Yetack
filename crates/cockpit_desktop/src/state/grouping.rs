@@ -110,17 +110,23 @@ pub fn move_in_app_order(state: &mut AppState, agent: AgentId, before: Option<Ag
         .and_then(|before| keys.iter().position(|key| *key == before))
         .unwrap_or(keys.len());
     keys.insert(at, moved);
-    // Agents of a machine the app does not reach now keep their places.
-    let shown: Vec<AgentKey> = keys.clone();
-    let mut kept: Vec<AgentKey> = state
+    // Agents of a machine the app does not reach now keep their places: the others take the
+    // places the order gave them, in their new order.
+    let mut placed = keys.clone().into_iter();
+    let mut order: Vec<AgentKey> = state
         .prefs
         .agent_order
         .iter()
-        .filter(|key| !shown.contains(key))
-        .cloned()
+        .filter_map(|key| {
+            if keys.contains(key) {
+                placed.next()
+            } else {
+                Some(key.clone())
+            }
+        })
         .collect();
-    kept.extend(keys);
-    state.prefs.agent_order = kept;
+    order.extend(placed);
+    state.prefs.agent_order = order;
 }
 
 /// Drops the place of an agent the daemon removed, whose id a later agent may take.
@@ -200,6 +206,31 @@ mod tests {
         assert_eq!(
             with_newer,
             [AgentId::new(3), remote, AgentId::new(1), AgentId::new(2)]
+        );
+    }
+
+    #[test]
+    fn an_agent_of_a_machine_not_reached_yet_keeps_its_place_in_the_order() {
+        let mut state = two_machines();
+        let remote = devbox().app_agent(AgentId::new(1));
+        let key = |state: &AppState, agent| agent_key(state, agent).unwrap();
+        state.prefs.agent_order = vec![
+            key(&state, AgentId::new(1)),
+            key(&state, remote),
+            key(&state, AgentId::new(2)),
+        ];
+        let remote_key = key(&state, remote);
+        state.agents.remove(&remote);
+
+        move_in_app_order(&mut state, AgentId::new(2), Some(AgentId::new(1)));
+
+        assert_eq!(
+            state.prefs.agent_order,
+            [
+                key(&state, AgentId::new(2)),
+                remote_key,
+                key(&state, AgentId::new(1)),
+            ]
         );
     }
 
