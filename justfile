@@ -27,7 +27,7 @@ clippy:
 # Checks the update script and the example start script.
 [unix]
 shellcheck:
-    shellcheck -s sh contrib/update-daemon.sh contrib/start-daemon
+    shellcheck -s sh contrib/update-daemon.sh contrib/start-daemon contrib/release/build.sh contrib/readme-screenshot.sh
 
 # Checks the shell scripts, on Linux only.
 [windows]
@@ -118,3 +118,11 @@ release:
         -v agents-cockpit-release-target:/src/target \
         agents-cockpit-release sh -c 'tar -xm && exec sh contrib/release/build.sh'
     ls -l dist
+
+# Needs Xvfb, openbox, wmctrl, xdotool and ImageMagick: see the script.
+
+# Retakes the README's picture, docs/images/app.png, from the demo's showcase.
+[unix]
+readme-screenshot:
+    cargo build -q --release -p cockpit_desktop
+    sh contrib/readme-screenshot.sh

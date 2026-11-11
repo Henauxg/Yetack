@@ -44,6 +44,19 @@ pub const DEMO_FLAG: &str = "--demo";
 /// With the demo, opens one of the screens of a daemon's update: `--demo-update older`.
 const UPDATE_SCREEN_FLAG: &str = "--demo-update";
 
+/// With the demo, trims it for the README's picture.
+const SHOWCASE_FLAG: &str = "--demo-showcase";
+
+/// The showcase's third machine.
+const GPU_SERVER: MachineId = MachineId::new(3);
+const GPU_HOST: &str = "gpu-box";
+const GPU_FOLDER: &str = "/home/dev/ml/ranking";
+
+/// The agents of this computer the showcase leaves out: the sign-in, the map and the plan.
+const SHOWCASE_LEFT_OUT: [u32; 3] = [SIGN_IN_AGENT, MAP_AGENT, 4];
+/// The agent that waits for an approval, which the showcase moves to the server.
+const APPROVAL_AGENT: u32 = 3;
+
 const UPDATE_MACHINE: &str = "build-box";
 /// A made-up commit.
 const UPDATE_COMMIT: &str = "3f9c2e17ab54c90d1e2f3a4b5c6d7e8f90a1b2c3";
@@ -665,12 +678,6 @@ pub fn state(daemon: DaemonLabel) -> AppState {
 
 /// A server with three agents of its own, which show in a second panel of the sidebar.
 fn add_server(state: &mut AppState, now: SystemTime) {
-    let mut server = MachineState::new(DaemonLabel::ssh(SERVER_HOST.to_owned()));
-    server.connection = ConnectionState::Connected;
-    server.daemon_version = Some(ReleaseVersion::new(APP_VERSION.to_owned()));
-    server.plan_usage = plan_usage(now);
-    server.accounts = accounts().into_iter().take(1).collect();
-    state.machines.others.insert(SERVER, server);
     let parts = |id, title, status, activity, since| SummaryParts {
         id,
         title,
@@ -724,16 +731,30 @@ fn add_server(state: &mut AppState, now: SystemTime) {
             ],
         ),
     ];
+    insert_server(state, now, SERVER, SERVER_HOST, agents);
+}
+
+/// Adds a connected server with `agents`, listed top first, each with a short conversation.
+fn insert_server<const N: usize>(
+    state: &mut AppState,
+    now: SystemTime,
+    machine: MachineId,
+    host: &str,
+    agents: [(SummaryParts<'_>, [ItemBody; 2]); N],
+) {
+    let mut server = MachineState::new(DaemonLabel::ssh(host.to_owned()));
+    server.connection = ConnectionState::Connected;
+    server.daemon_version = Some(ReleaseVersion::new(APP_VERSION.to_owned()));
+    server.plan_usage = plan_usage(now);
+    server.accounts = accounts().into_iter().take(1).collect();
+    state.machines.others.insert(machine, server);
     // The bottom agent first: positions grow towards the top.
     let bottom_first = (1_u32..).zip(agents.into_iter().rev());
     for (step, (parts, bodies)) in bottom_first {
         let mut summary = summary(parts, now);
         // Undo finds a closed agent by its session, which this computer's agents use too.
-        summary.session = Some(ClaudeSessionId::new(format!(
-            "demo-server-session-{}",
-            summary.id.get()
-        )));
-        summary.id = SERVER.app_agent(summary.id);
+        summary.session = Some(server_session(machine, summary.id));
+        summary.id = machine.app_agent(summary.id);
         summary.position = Position::new(step * POSITION_STEP);
         let mut items: Vec<TranscriptItem> = (1..)
             .zip(bodies)
@@ -748,6 +769,91 @@ fn add_server(state: &mut AppState, now: SystemTime) {
         entry.details = Loadable::Loaded(details());
         state.agents.insert(entry.id(), entry);
     }
+}
+
+/// The Claude session of a server's agent, which no other machine's agent has.
+fn server_session(machine: MachineId, agent: AgentId) -> ClaudeSessionId {
+    ClaudeSessionId::new(format!("demo-session-{}-{}", machine.get(), agent.get()))
+}
+
+/// Whether the arguments ask for the showcase: `--demo --demo-showcase`.
+pub fn showcase_requested(arguments: &[String]) -> bool {
+    is_requested(arguments) && arguments.iter().any(|argument| argument == SHOWCASE_FLAG)
+}
+
+/// Trims the demo for the README's picture: two accounts, one agent waiting on this computer, no
+/// emoji in titles, an approval on the server, and a third machine.
+pub fn showcase(state: &mut AppState) {
+    for agent in SHOWCASE_LEFT_OUT {
+        state.agents.remove(&AgentId::new(agent));
+    }
+    let shown_account =
+        |account: &Account| account.id.is_default() || account.id == AccountId::new(WORK_ACCOUNT);
+    state.machines.this.accounts.retain(shown_account);
+    for entry in state.agents.values_mut() {
+        let title = entry
+            .summary
+            .title
+            .trim_start_matches(|character: char| !character.is_alphanumeric());
+        entry.summary.title = title.to_owned();
+    }
+    // It goes on top of the server's three agents.
+    if let Some(mut approval) = state.agents.remove(&AgentId::new(APPROVAL_AGENT)) {
+        let agent = AgentId::new(4);
+        approval.summary.session = Some(server_session(SERVER, agent));
+        approval.summary.id = SERVER.app_agent(agent);
+        approval.summary.position = Position::new(4 * POSITION_STEP);
+        state.agents.insert(approval.id(), approval);
+    }
+    let accounts = state.machines.this.accounts.clone();
+    if let Some(server) = state.machines.others.get_mut(&SERVER) {
+        server.accounts = accounts;
+    }
+    if let Some(entry) = state.agents.get_mut(&SERVER.app_agent(AgentId::new(1))) {
+        entry.summary.account = AccountId::new(WORK_ACCOUNT);
+    }
+    let parts = |id, title, status, activity, since| SummaryParts {
+        id,
+        title,
+        folder: GPU_FOLDER,
+        status,
+        activity,
+        pending: 0,
+        since,
+    };
+    let agents = [
+        (
+            parts(
+                1,
+                "Train the ranking model",
+                AgentStatus::Working,
+                Some("Running epoch 3 of 10"),
+                Duration::from_secs(4 * 60),
+            ),
+            [
+                user("Train the ranking model on last week's clicks."),
+                text(
+                    "Training runs on both GPUs. Epoch 2 reached 0.81 NDCG on the validation set.",
+                ),
+            ],
+        ),
+        (
+            parts(
+                2,
+                "Profile the data loader",
+                AgentStatus::Idle,
+                None,
+                Duration::from_secs(40 * 60),
+            ),
+            [
+                user("Why does the data loader use only one core?"),
+                text(
+                    "It reads the shards one at a time. Reading four at once keeps both GPUs busy.",
+                ),
+            ],
+        ),
+    ];
+    insert_server(state, SystemTime::now(), GPU_SERVER, GPU_HOST, agents);
 }
 
 /// The demo's drafts: a reply under way to the selected agent, which quotes a passage of its
@@ -2155,7 +2261,7 @@ fn question_agent(now: SystemTime) -> Sample {
 fn approval_agent(now: SystemTime) -> Sample {
     let summary = summary(
         SummaryParts {
-            id: 3,
+            id: APPROVAL_AGENT,
             title: "Docs preview",
             folder: "/home/dev/projects/docs-site",
             status: AgentStatus::NeedsYou,
@@ -3867,5 +3973,51 @@ pub struct ParseError {
             .collect();
 
         assert_eq!(sessions.len(), state.agents.len());
+    }
+
+    #[test]
+    fn the_showcase_needs_the_demo() {
+        let arguments = |list: &[&str]| {
+            list.iter()
+                .map(|&argument| argument.to_owned())
+                .collect::<Vec<_>>()
+        };
+
+        assert!(showcase_requested(&arguments(&[DEMO_FLAG, SHOWCASE_FLAG])));
+        assert!(!showcase_requested(&arguments(&[SHOWCASE_FLAG])));
+    }
+
+    #[test]
+    fn the_showcase_waits_on_one_agent_per_machine_with_two_accounts() {
+        let mut state = state(label());
+
+        showcase(&mut state);
+
+        let waiting_on = |machine: MachineId| {
+            state
+                .agents
+                .values()
+                .filter(|entry| MachineId::of(entry.id()) == machine)
+                .filter(|entry| entry.summary.status == AgentStatus::NeedsYou)
+                .count()
+        };
+        let titles_start_with_a_letter = state.agents.values().all(|entry| {
+            entry
+                .summary
+                .title
+                .starts_with(|character: char| character.is_alphanumeric())
+        });
+        let no_two_sessions: BTreeSet<&ClaudeSessionId> = state
+            .agents
+            .values()
+            .filter_map(|entry| entry.summary.session.as_ref())
+            .collect();
+        assert_eq!(waiting_on(MachineId::THIS), 1);
+        assert_eq!(waiting_on(SERVER), 1);
+        assert_eq!(state.machines.others.len(), 2);
+        assert_eq!(state.machines.this.accounts.len(), 2);
+        assert!(titles_start_with_a_letter);
+        assert_eq!(no_two_sessions.len(), state.agents.len());
+        assert!(state.agents.contains_key(&AgentId::new(1)));
     }
 }
