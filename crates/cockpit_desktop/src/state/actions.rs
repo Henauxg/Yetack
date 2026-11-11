@@ -2186,6 +2186,7 @@ pub fn start_agent(state: &mut AppState, drafts: &Drafts) -> Vec<Outgoing> {
     }
     let account = accounts::new_agent_account(state, form);
     let machine = form.machine;
+    let project = form.project.clone();
     let prompt = drafts.new_agent.prompt.trim();
     let params = StartParams {
         folder: PathBuf::from(folder),
@@ -2202,7 +2203,7 @@ pub fn start_agent(state: &mut AppState, drafts: &Drafts) -> Vec<Outgoing> {
     with_new_agent_form(state, |form| form.starting = true);
     vec![Outgoing {
         request: Request::AgentStart(params),
-        purpose: Purpose::Start,
+        purpose: Purpose::Start { project },
         to: machine,
     }]
 }
@@ -2355,16 +2356,18 @@ pub fn resume_session(
     account: AccountId,
 ) -> Vec<Outgoing> {
     let mut machine = MachineId::THIS;
+    let mut project = None;
     if let Some(Dialog::NewAgent(form)) = &mut state.ui.dialog {
         if form.starting {
             return Vec::new();
         }
         form.starting = true;
         machine = form.machine;
+        project = form.project.clone();
     }
     vec![Outgoing {
         request: Request::SessionsResume(SessionResumeParams { session, account }),
-        purpose: Purpose::Start,
+        purpose: Purpose::Start { project },
         to: machine,
     }]
 }

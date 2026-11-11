@@ -623,7 +623,7 @@ fn MenuBody(shown: RowMenuShown) -> Element {
                 span { class: swatch, style, aria_hidden: true }
                 span { class: "menu-label", "{choice.name}" }
                 if choice.temporary {
-                    span { class: "menu-note", "temporary" }
+                    span { class: "menu-tag", "temporary" }
                 }
             }
         }

@@ -22,6 +22,7 @@ use strum::VariantArray;
 
 use super::app_state::{AgentEntry, AppState};
 use super::grouping;
+use crate::machine::MachineId;
 use crate::path_style::PathStyle;
 use crate::prefs::{AccountColor, Project, ProjectId, ProjectRule};
 
@@ -101,6 +102,28 @@ pub fn project_of(state: &AppState, entry: &AgentEntry) -> ProjectKey {
         (Some(project), _) => ProjectKey::Kept(project.id),
         (None, Some(repository)) => ProjectKey::Repository(repository.clone()),
         (None, None) => ProjectKey::None,
+    }
+}
+
+/// The project an agent started in `folder` on `machine` joins by itself, when the app can tell
+/// before it starts: from a kept project's folder rule, or from the repository of an agent
+/// already in that folder. `None` when only the new agent's repository can tell.
+pub fn for_new_agent(state: &AppState, machine: MachineId, folder: &Path) -> Option<ProjectKey> {
+    let repository = state
+        .agents
+        .values()
+        .filter(|entry| MachineId::of(entry.id()) == machine && entry.summary.folder == folder)
+        .find_map(|entry| entry.summary.repository.as_deref());
+    let kept = state.prefs.projects.list.iter().find(|project| {
+        project
+            .rules
+            .iter()
+            .any(|rule| holds(rule, folder, repository))
+    });
+    match (kept, repository) {
+        (Some(project), _) => Some(ProjectKey::Kept(project.id)),
+        (None, Some(repository)) => Some(ProjectKey::Repository(repository.to_owned())),
+        (None, None) => None,
     }
 }
 
@@ -445,12 +468,14 @@ fn kept_mut<'state>(state: &'state mut AppState, key: &ProjectKey) -> Option<&'s
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::AgentStatus;
+    use cockpit_protocol::{AgentStatus, Method, ResponseBody};
 
     use super::*;
     use crate::prefs::GroupBy;
     use crate::state::actions;
     use crate::state::app_state::tests::{state_with, summary};
+    use crate::state::drafts::Drafts;
+    use crate::state::requests::{self, Purpose};
 
     const BILLING: &str = "github.com/acme/billing";
     const GATEWAY: &str = "github.com/acme/api-gateway";
@@ -525,6 +550,57 @@ mod tests {
         assert!(state.prefs.projects.agents.is_empty());
         assert!(state.prefs.projects.list.is_empty());
         assert!(just_above(&state, 2, 1));
+    }
+
+    #[test]
+    fn a_new_agent_s_project_comes_from_the_folder_s_rules_or_its_agents() {
+        let mut state = agents();
+        let work = create(&mut state, "Work");
+        add_rule(
+            &mut state,
+            &ProjectKey::Kept(work),
+            ProjectRule::Folder("/scratch/*".to_owned()),
+        );
+        let guess = |state: &AppState, folder: &str| {
+            for_new_agent(state, MachineId::THIS, Path::new(folder))
+        };
+
+        assert_eq!(
+            guess(&state, "/work/project-1"),
+            Some(ProjectKey::Repository(BILLING.to_owned()))
+        );
+        assert_eq!(
+            guess(&state, "/scratch/notes"),
+            Some(ProjectKey::Kept(work))
+        );
+        assert_eq!(guess(&state, "/elsewhere"), None);
+        assert_eq!(
+            for_new_agent(&state, MachineId::new(1), Path::new("/work/project-1")),
+            None
+        );
+    }
+
+    #[test]
+    fn a_started_agent_joins_the_project_picked_in_the_dialog() {
+        let mut state = agents();
+        let started = AgentId::new(9);
+
+        requests::apply_response(
+            &mut state,
+            &mut Drafts::default(),
+            Method::AgentStart,
+            Purpose::Start {
+                project: Some(ProjectKey::Repository(GATEWAY.to_owned())),
+            },
+            Ok(ResponseBody::AgentStarted { agent: started }),
+            MachineId::THIS,
+        );
+        let mut agent = summary(9, AgentStatus::Idle);
+        agent.repository = Some(BILLING.to_owned());
+        state.agents.insert(started, AgentEntry::new(agent));
+
+        let gateway = keep(&mut state, GATEWAY);
+        assert_eq!(project(&state, 9), ProjectKey::Kept(gateway));
     }
 
     #[test]

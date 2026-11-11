@@ -19,13 +19,14 @@ use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::keymap::Command;
 use crate::machine::MachineId;
 use crate::path_style::{self, PathStyle};
-use crate::prefs::EscStop;
+use crate::prefs::{AccountColor, EscStop};
 use crate::state::accounts::AccountLabel;
 use crate::state::actions::{Direction, StartField};
 use crate::state::folder_field::{self, FolderRow};
+use crate::state::projects::ProjectKey;
 use crate::state::{
-    Dialog, FolderAction, FolderList, FormMenu, ImageView, Loadable, NewAgentForm, NewAgentTab,
-    WorkingFolderForm, accounts, actions, working_folder,
+    AppState, Dialog, FolderAction, FolderList, FormMenu, ImageView, Loadable, NewAgentForm,
+    NewAgentTab, WorkingFolderForm, accounts, actions, projects, working_folder,
 };
 use crate::ui::accounts::{self as accounts_view, AccountMini, AccountPicker};
 use crate::ui::agent_map::AgentMapDialog;
@@ -609,8 +610,9 @@ fn StartForm(form: NewAgentForm) -> Element {
     let focus = use_hook(|| actions::start_focus(&cockpit.drafts.peek().new_agent));
     // The recent folder under the pointer, the one row lit. The field's folder is only marked.
     let mut pointed = use_signal(|| None::<PathBuf>);
-    let (folders, machine, local, sessions_loading, folders_unknown) = {
+    let (folders, machine, local, sessions_loading, folders_unknown, project) = {
         let state = cockpit.state.read();
+        let project = FormProjects::new(&state, &form, typed_folder.trim());
         let chosen = state.machines.get(form.machine);
         let mut folders: Vec<(PathBuf, Timestamp, Option<AccountLabel>)> = state
             .recent_folders(form.machine)
@@ -634,6 +636,7 @@ fn StartForm(form: NewAgentForm) -> Element {
             local,
             loading,
             chosen.is_some_and(|known| known.folders_unknown),
+            project,
         )
     };
     // The past sessions bring more recent folders: rows stand for them until they arrive, so the
@@ -680,6 +683,8 @@ fn StartForm(form: NewAgentForm) -> Element {
     let mode_icon = mode_icon(form.mode.unwrap_or_default());
     let model_open = form.menu == Some(FormMenu::Model);
     let mode_open = form.menu == Some(FormMenu::Mode);
+    let project_open = form.menu == Some(FormMenu::Project);
+    let project_button = project.button();
     rsx! {
         div { class: "dialog-body",
             div { class: "field-group",
@@ -832,6 +837,24 @@ fn StartForm(form: NewAgentForm) -> Element {
                         }
                         Presence { open: model_open,
                             FormModelMenu { model: form.model.clone(), effort: form.effort }
+                        }
+                    }
+                    div { class: "menu-anchor",
+                        button {
+                            class: if project_open { "menu-button open" } else { "menu-button" },
+                            aria_haspopup: "menu",
+                            aria_expanded: project_open,
+                            title: "The project the sidebar shows the agent under",
+                            onclick: toggle_menu(FormMenu::Project),
+                            ProjectSwatch { project: project_button.clone() }
+                            "{project_button.name}"
+                            if project.picked.is_none() {
+                                span { class: "muted", "auto" }
+                            }
+                            Icon { kind: IconKind::ChevronDown, size: 12 }
+                        }
+                        Presence { open: project_open,
+                            FormProjectMenu { projects: project.clone() }
                         }
                     }
                     span { class: "spacer" }
@@ -1221,6 +1244,142 @@ fn FormModelMenu(model: Option<String>, effort: Option<Effort>) -> Element {
                         title: format::effort_label(level),
                         onclick: move |_| change_form(cockpit, |form| form.effort = Some(level)),
                         "{format::effort_short_label(level)}"
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A project as the new agent dialog shows it.
+#[derive(Debug, Clone, PartialEq)]
+struct FormProject {
+    key: ProjectKey,
+    name: String,
+    /// The color's CSS value, `None` for "No project".
+    color: Option<&'static str>,
+    temporary: bool,
+}
+
+impl FormProject {
+    fn new(state: &AppState, key: ProjectKey) -> Self {
+        let look = projects::look(state, &key);
+        Self {
+            key,
+            name: look.name,
+            color: look.color.map(AccountColor::css),
+            temporary: look.temporary,
+        }
+    }
+}
+
+/// The new agent dialog's project menu: the project picked, the one the folder would give, and
+/// every project the agent can join.
+#[derive(Debug, Clone, PartialEq)]
+struct FormProjects {
+    picked: Option<FormProject>,
+    /// What "Automatic" gives, when the app can tell before the agent starts.
+    automatic: Option<FormProject>,
+    targets: Vec<FormProject>,
+}
+
+impl FormProjects {
+    fn new(state: &AppState, form: &NewAgentForm, folder: &str) -> Self {
+        let automatic = (!folder.is_empty())
+            .then(|| projects::for_new_agent(state, form.machine, Path::new(folder)))
+            .flatten()
+            .map(|key| FormProject::new(state, key));
+        Self {
+            picked: form.project.clone().map(|key| FormProject::new(state, key)),
+            automatic,
+            targets: projects::move_targets(state)
+                .into_iter()
+                .map(|key| FormProject::new(state, key))
+                .collect(),
+        }
+    }
+
+    /// What the menu's button shows: the project picked, else the automatic one.
+    fn button(&self) -> FormProject {
+        self.picked
+            .clone()
+            .or_else(|| self.automatic.clone())
+            .unwrap_or_else(|| FormProject {
+                key: ProjectKey::None,
+                name: "Project".to_owned(),
+                color: None,
+                temporary: true,
+            })
+    }
+}
+
+/// A project's color square: dashed for a temporary project, gray for "No project".
+#[component]
+fn ProjectSwatch(project: FormProject) -> Element {
+    let class = match (project.color, project.temporary) {
+        (None, _) => "menu-swatch none",
+        (Some(_), true) => "menu-swatch temporary",
+        (Some(_), false) => "menu-swatch",
+    };
+    let style = project
+        .color
+        .map(|color| format!("--project: {color}"))
+        .unwrap_or_default();
+    rsx! {
+        span { class, style, aria_hidden: true }
+    }
+}
+
+/// The form's project menu: "Automatic", then the projects the agent can join.
+#[component]
+fn FormProjectMenu(projects: FormProjects) -> Element {
+    let cockpit: Cockpit = use_context();
+    let automatic = projects.picked.is_none();
+    let automatic_note = projects.automatic.as_ref().map_or_else(
+        || "From the folder's rules and repository".to_owned(),
+        |project| format!("{}, from the folder", project.name),
+    );
+    let picked = projects.picked.map(|project| project.key);
+    rsx! {
+        div {
+            class: "popover menu project-menu form-menu",
+            onclick: move |event| event.stop_propagation(),
+            button {
+                class: if automatic { "menu-item two-lines chosen" } else { "menu-item two-lines" },
+                aria_pressed: automatic,
+                onclick: move |_| change_form(cockpit, |form| {
+                    form.project = None;
+                    form.menu = None;
+                }),
+                span { "Automatic" }
+                span { class: "muted small", "{automatic_note}" }
+            }
+            div { class: "menu-divider" }
+            for project in projects.targets {
+                {
+                    let chosen = picked.as_ref() == Some(&project.key);
+                    let key = project.key.clone();
+                    rsx! {
+                        button {
+                            key: "{project.key}",
+                            class: if chosen { "menu-item chosen" } else { "menu-item" },
+                            aria_pressed: chosen,
+                            onclick: move |_| {
+                                let key = key.clone();
+                                change_form(cockpit, move |form| {
+                                    form.project = Some(key);
+                                    form.menu = None;
+                                });
+                            },
+                            ProjectSwatch { project: project.clone() }
+                            span { class: "menu-label", "{project.name}" }
+                            if project.temporary {
+                                span { class: "menu-tag", "temporary" }
+                            }
+                            if chosen {
+                                Icon { kind: IconKind::Check, size: 14 }
+                            }
+                        }
                     }
                 }
             }

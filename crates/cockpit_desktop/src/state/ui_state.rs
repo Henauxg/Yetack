@@ -316,6 +316,7 @@ pub enum FormMenu {
     /// The model and the effort.
     Model,
     Mode,
+    Project,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -330,6 +331,8 @@ pub struct NewAgentForm {
     /// The account picked in the menu. `None` follows the folder: the account of the last agent
     /// there, else the default one.
     pub account: Option<AccountId>,
+    /// The project picked in the menu. `None` lets the folder's rules and repository choose.
+    pub project: Option<ProjectKey>,
     pub menu: Option<FormMenu>,
     /// A start or resume request is on its way.
     pub starting: bool,

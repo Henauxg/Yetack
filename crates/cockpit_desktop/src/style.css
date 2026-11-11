@@ -617,7 +617,7 @@ button:disabled {
   background: var(--line-strong);
 }
 
-.menu-note {
+.menu-tag {
   flex: none;
   color: var(--dim);
   font-size: 11.5px;
@@ -7356,6 +7356,13 @@ button.map-toggle:hover {
 .form-menu.model-menu {
   left: 0;
   width: 330px;
+}
+
+.form-menu.project-menu {
+  left: 0;
+  width: 280px;
+  max-height: min(360px, 50vh);
+  overflow-y: auto;
 }
 
 .form-menu.mode-menu {
