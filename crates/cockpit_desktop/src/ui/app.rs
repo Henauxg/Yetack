@@ -33,12 +33,6 @@ pub fn App() -> Element {
     let startup: Startup = use_hook(consume_context);
     let prefs_file = startup.prefs_file.clone();
     let cockpit = use_cockpit(startup);
-    #[cfg(target_os = "linux")]
-    use_hook(|| {
-        crate::webview_settings::turn_off_accelerated_compositing(
-            &dioxus::desktop::window().webview,
-        )
-    });
     use_prefs_saver(cockpit, prefs_file);
     use_clock();
     use_bridge(cockpit);
