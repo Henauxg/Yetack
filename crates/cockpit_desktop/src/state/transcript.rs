@@ -198,6 +198,13 @@ impl Transcript {
             .rev()
             .find_map(|(id, item)| user_message(item).map(|_| *id))
     }
+
+    /// The message the reader is on, from the first and the last entry in view. Scrolled up, it is
+    /// the one whose answer shows at the top, where a click in the Messages block brings a
+    /// message. At the bottom, it is the latest message on screen.
+    pub fn message_read(&self, top: ItemId, bottom: ItemId, scrolled_up: bool) -> Option<ItemId> {
+        self.message_at(if scrolled_up { top } else { bottom })
+    }
 }
 
 /// A message the user sent to the agent, not one of a subagent's.
@@ -544,6 +551,35 @@ mod tests {
         assert_eq!(at(6), Some(6));
         assert_eq!(at(1), None);
         assert_eq!(at(9), Some(6));
+    }
+
+    /// Message 2 at the top of the view, its answer and message 6 below it.
+    #[test]
+    fn scrolled_up_the_message_read_is_the_one_at_the_top() {
+        let sent = |id: u32, text: &str| {
+            item(
+                id,
+                None,
+                ItemBody::UserMessage(UserMessage {
+                    text: text.to_owned(),
+                    images: Vec::new(),
+                    sent_at: None,
+                }),
+            )
+        };
+        let mut transcript = Transcript::default();
+        transcript.append(sent(2, "Run the tests"));
+        transcript.append(text(3, "All pass"));
+        transcript.append(sent(6, "Now the lints"));
+        transcript.append(text(7, "Clean"));
+        let read = |scrolled_up| {
+            transcript
+                .message_read(ItemId::new(2), ItemId::new(7), scrolled_up)
+                .map(ItemId::get)
+        };
+
+        assert_eq!(read(true), Some(2));
+        assert_eq!(read(false), Some(6));
     }
 
     #[test]
