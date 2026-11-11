@@ -31,6 +31,7 @@ use crate::prefs::CommentPlacement;
 use crate::state::daemon_update::{
     self, OutputLine, OutputStream, ProtocolGap, UpdateFailure, UpdatePlan, VersionGap,
 };
+use crate::state::file_tree::TreeFilter;
 use crate::state::no_daemon::{self, Absence};
 use crate::state::{
     AgentEntry, AppState, ConnectionState, Dialog, Drafts, Loadable, MachineState, Utf16Offset,
@@ -60,6 +61,8 @@ const APPROVAL_AGENT: u32 = 3;
 const PLAN_AGENT: u32 = 4;
 /// The agent that finished its benchmark while the user looked elsewhere.
 const BENCHMARK_AGENT: u32 = 5;
+/// A subagent the selected agent runs in the background, which the showcase leaves out.
+const FUZZ_TASK: &str = "Write fuzz inputs with unicode";
 
 const UPDATE_MACHINE: &str = "build-box";
 /// A made-up commit.
@@ -902,9 +905,47 @@ pub fn showcase(state: &mut AppState) {
     // Finished and unread, with nothing left running in the background.
     if let Some(entry) = state.agents.get_mut(&AgentId::new(BENCHMARK_AGENT)) {
         entry.summary.background_running = 0;
+        if let Loadable::Loaded(details) = &mut entry.details {
+            details.background_tasks.clear();
+        }
     }
-    // As the header's changes chip does: on the files the agent changed.
-    file_tree::toggle_from_changes(state, AgentId::new(1));
+    let selected = AgentId::new(1);
+    if let Some(entry) = state.agents.get_mut(&selected) {
+        trim_for_notes(entry);
+        entry
+            .tree
+            .expanded
+            .insert(PathBuf::from(PARSER_FOLDER).join("src"));
+    }
+    file_tree::toggle_from_changes(state, selected);
+    file_tree::set_filter(state, selected, TreeFilter::All);
+}
+
+/// Shortens the selected agent's blocks by a task and a running subagent, so that the third
+/// comment's note fits under them.
+fn trim_for_notes(entry: &mut AgentEntry) {
+    let Loadable::Loaded(details) = &mut entry.details else {
+        return;
+    };
+    details
+        .background_tasks
+        .retain(|task| task.description != FUZZ_TASK);
+    if let Some(first_done) = details
+        .tasks
+        .iter()
+        .position(|task| task.status == TaskStatus::Completed)
+    {
+        details.tasks.remove(first_done);
+    }
+    let done = details
+        .tasks
+        .iter()
+        .filter(|task| task.status == TaskStatus::Completed)
+        .count();
+    entry.summary.task_progress = Some(TaskProgress {
+        done: u16::try_from(done).unwrap_or(u16::MAX),
+        total: u16::try_from(details.tasks.len()).unwrap_or(u16::MAX),
+    });
 }
 
 /// The demo's drafts: a reply under way to the selected agent, which quotes passages of its
@@ -1967,7 +2008,7 @@ fn parser_background_tasks(now: SystemTime) -> Vec<BackgroundTask> {
         (Command, "cargo test lexer", Stopped, 980, Some(950), 0),
         (Agent, "Draft the changelog entry", Done, 900, Some(700), 6),
         (Agent, "Look for callers of Token::column", Done, 860, Some(640), 11),
-        (Agent, "Write fuzz inputs with unicode", Running, 600, None, 8),
+        (Agent, FUZZ_TASK, Running, 600, None, 8),
         (Command, "cargo doc --no-deps", Done, 420, Some(380), 0),
         (Agent, "Check the docs for column examples", Done, 300, Some(150), 7),
         (Agent, "Summarize the error type review", Done, 200, Some(90), 4),
