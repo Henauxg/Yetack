@@ -26,7 +26,7 @@ impl MachineId {
     /// The last machine whose number fits in the high bits of an app id.
     pub const LAST: Self = Self((1 << (u32::BITS - DAEMON_BITS)) - 1);
 
-    pub fn new(raw: u16) -> Self {
+    pub const fn new(raw: u16) -> Self {
         Self(raw)
     }
 

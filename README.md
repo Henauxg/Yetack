@@ -1,14 +1,18 @@
 # agents-cockpit
 
-Run several Claude Code agents, on your computer or on a server, and watch and steer them from one desktop app: their conversations, tool calls, approvals, questions and plans.
+Run Claude Code agents on your computer and on your servers, and watch and steer them all from one desktop app.
 
-![The app with nine agents: the sidebar lists them, the middle shows one agent's conversation, the right column its tasks and messages](docs/images/app.png)
+![The app with agents on two machines: the sidebar lists them, the middle shows one agent's conversation, the right column its tasks, messages and subagents](docs/images/app.png)
 
-- The agents run in a daemon, so they keep working when the app closes or the laptop sleeps.
-- The app reaches a server over SSH, with your SSH key. The daemon opens no network port.
-- Claude Code runs unmodified, signed in with your own account. The app never sees your credentials.
+- **Several machines.** The app connects to this computer and to any number of servers over SSH. Each machine has its own panel in the sidebar.
+- **Several Claude accounts.** A personal and a work subscription work side by side. You pick the account of each agent, and the app shows the plan usage of each account.
+- **Sessions that persist on remote machines.** The agents run in a daemon on the server, so they keep working when the app closes, the laptop sleeps or the connection drops. When the app reconnects, it shows what the agents did meanwhile.
+- **Steer while they work.** Answer approvals, questions and plans from the app. A message you send while an agent works reaches Claude at its next step.
+- **Reply to a passage.** Select text in the chat to quote it, and write a comment beside it. Paste images into a message.
+- **See what they do.** A map shows the subagents, and a block beside the chat shows the background tasks. The files pane shows the files each agent changed or read, with their diffs.
+- **Notifications.** The app tells you when an agent needs you or finishes.
 
-Status: early. The first users are colleagues of the author, on Linux and Windows.
+Claude Code runs unmodified, signed in with your own account. The app never sees your credentials. It reaches a server with your SSH key, and the daemon opens no network port.
 
 ## Install
 
@@ -17,17 +21,17 @@ Download the files from the [releases page](https://github.com/Henauxg/agents-co
 | Your computer | File | How |
 | --- | --- | --- |
 | Ubuntu 22.04 or newer, Debian 12 | `agents-cockpit_<version>_amd64.deb` | `sudo apt install ./agents-cockpit_<version>_amd64.deb` |
-| Windows 10 or 11 | `agents-cockpit-desktop-<version>-windows-x64.zip` | Unzip it anywhere and run `agents-cockpit-desktop.exe` |
+| Windows 10 or 11 | `agents-cockpit-desktop-<version>-windows-x64.zip`, when the release has one | Unzip it anywhere and run `agents-cockpit-desktop.exe` |
 | NixOS, or Linux with Nix | | `nix profile install github:Henauxg/agents-cockpit` |
-| macOS, other Linux | | Build from source: [docs/development.md](docs/development.md) |
+| Anything else | | Build it: [docs/install-from-source.md](docs/install-from-source.md) |
 
 The `.deb` installs the app (`agents-cockpit-desktop`) and the daemon and command line (`agents-cockpit`).
 
 You also need Claude Code on each machine where agents run. Install [Claude Code](https://claude.com/claude-code), then run `claude` once and sign in.
 
-## Choose where the agents run
+## Local or remote agents
 
-### Only this computer
+### On this computer
 
 Start the app. The first time, it shows "Where should agents run?":
 
@@ -36,9 +40,9 @@ Start the app. The first time, it shows "Where should agents run?":
 
 "Use this every time" is ticked, so the app keeps your choice. Untick it to be asked again at the next start.
 
-### A server over SSH
+### On a server over SSH
 
-The server needs Linux on x86_64, SSH access with a key, and Claude Code signed in. You need two files from the release page: `agents-cockpit-<version>-x86_64-linux` and `agents-cockpit.service`. On Linux, the `.deb` also put the daemon at `/usr/bin/agents-cockpit`.
+The server needs Linux on x86_64 (for another CPU, build the daemon: [docs/install-from-source.md](docs/install-from-source.md)), SSH access with a key, and Claude Code signed in. You need two files from the release page: `agents-cockpit-<version>-x86_64-linux` and `agents-cockpit.service`. On Linux, the `.deb` also put the daemon at `/usr/bin/agents-cockpit`.
 
 1. From your computer, copy them to the server. Replace `devbox` with the server's name in your SSH config:
 
@@ -81,15 +85,7 @@ The app's "Update" button builds the daemon from source on the server, so it wor
 
 ## When something goes wrong
 
-**The server's agents do not start, and the daemon cannot find `claude`.** The service's `PATH` is in `~/.config/systemd/user/agents-cockpit.service`: add the folder that holds `claude` (run `command -v claude` on the server), then `systemctl --user daemon-reload` and `systemctl --user restart agents-cockpit`.
-
-**The agents stop when you log out of the server.** Linger is off. Run `loginctl enable-linger "$USER"` on the server.
-
-**The app cannot reach the server.** The app runs `ssh <host>` without a terminal, so `ssh devbox true` must work on your computer with no password and no question. Check that the path of `agents-cockpit` in the Machines dialog is the full path on the server.
-
-**The server's row says "Runs an older version" or "Runs a newer version".** The app and the server's daemon come from different releases. Update the older one.
-
-**The service does not start.** `journalctl --user -u agents-cockpit -e` on the server shows why.
+[docs/troubleshooting.md](docs/troubleshooting.md) covers an app that cannot reach a server, a service that does not start, a `claude` the daemon cannot find, agents that stop when you log out, and a server that runs another version.
 
 ## License
 

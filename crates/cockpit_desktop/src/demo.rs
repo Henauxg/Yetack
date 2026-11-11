@@ -27,12 +27,14 @@ use serde_json::Value;
 use crate::daemon_label::DaemonLabel;
 use crate::machine::MachineId;
 use crate::path_style::PathStyle;
+use crate::prefs::CommentPlacement;
 use crate::state::daemon_update::{
     self, OutputLine, OutputStream, ProtocolGap, UpdateFailure, UpdatePlan, VersionGap,
 };
 use crate::state::no_daemon::{self, Absence};
 use crate::state::{
-    AgentEntry, AppState, ConnectionState, Dialog, Loadable, MachineState, file_edits, sending,
+    AgentEntry, AppState, ConnectionState, Dialog, Drafts, Loadable, MachineState, Utf16Offset,
+    file_edits, quotes, sending,
 };
 use crate::update_script::APP_VERSION;
 
@@ -82,6 +84,19 @@ const LAB_ACCOUNT: u32 = 2;
 const CLIENT_ACCOUNT: u32 = 3;
 const SIGN_IN_AGENT: u32 = 9;
 const SIGN_IN_FOLDER: &str = "/home/dev/projects/billing";
+
+/// The screenshot of the failing test, in a message of the selected agent.
+const FAILING_TEST_PNG: &[u8] = include_bytes!("../assets/demo-failing-test.png");
+
+/// The second machine: a server with agents of its own.
+const SERVER: MachineId = MachineId::new(1);
+const SERVER_HOST: &str = "devbox";
+const SERVER_FOLDER: &str = "/home/dev/services/invoices";
+
+/// The selected agent's answer that the demo's draft quotes.
+const LOOKUP_ITEM: u32 = 20;
+const QUOTED_PASSAGE: &str = "The old cache.rs:10 is gone.";
+const QUOTE_COMMENT: &str = "Then drop its import in lib.rs too.";
 
 /// How often the live agent adds or finishes an entry.
 pub const LIVE_TICK: Duration = Duration::from_millis(1500);
@@ -507,7 +522,8 @@ fn this_computer_refused(state: &mut AppState, gap: VersionGap) {
 
 /// A server beside this computer that refuses the app, the demo's agents staying in use.
 fn server_refused(state: &mut AppState) -> MachineId {
-    let machine = MachineId::new(1);
+    // After the demo's server, devbox.
+    let machine = MachineId::new(2);
     let mut server = MachineState::new(DaemonLabel::ssh(UPDATE_MACHINE.to_owned()));
     server.connection = ConnectionState::Disconnected {
         error: format!("the daemon refused the connection: {REFUSED_FOR_OLDER}"),
@@ -643,7 +659,118 @@ pub fn state(daemon: DaemonLabel) -> AppState {
         BTreeMap::from([(AccountId::new(WORK_ACCOUNT), work_plan_usage(now))]);
     state.ui.selected = Some(AgentId::new(1));
     state.ui.unread.insert(AgentId::new(5));
+    add_server(&mut state, now);
     state
+}
+
+/// A server with three agents of its own, which show in a second panel of the sidebar.
+fn add_server(state: &mut AppState, now: SystemTime) {
+    let mut server = MachineState::new(DaemonLabel::ssh(SERVER_HOST.to_owned()));
+    server.connection = ConnectionState::Connected;
+    server.daemon_version = Some(ReleaseVersion::new(APP_VERSION.to_owned()));
+    server.plan_usage = plan_usage(now);
+    server.accounts = accounts().into_iter().take(1).collect();
+    state.machines.others.insert(SERVER, server);
+    let parts = |id, title, status, activity, since| SummaryParts {
+        id,
+        title,
+        folder: SERVER_FOLDER,
+        status,
+        activity,
+        pending: 0,
+        since,
+    };
+    // Top first.
+    let agents = [
+        (
+            parts(
+                1,
+                "Migrate the invoices",
+                AgentStatus::Working,
+                Some("Running the migration tests"),
+                Duration::from_secs(95),
+            ),
+            [
+                user("Move the invoices to the new schema, one table at a time."),
+                text("I start with `invoice_lines`, which no other service writes to."),
+            ],
+        ),
+        (
+            parts(
+                2,
+                "Find the slow invoice query",
+                AgentStatus::Idle,
+                None,
+                Duration::from_secs(12 * 60),
+            ),
+            [
+                user("The invoice list takes 4 s to load. Find out why."),
+                text(
+                    "The list sorts on `issued_at`, which has no index. Adding one brings it to 40 ms.",
+                ),
+            ],
+        ),
+        (
+            parts(
+                3,
+                "Renew the staging certificates",
+                AgentStatus::Idle,
+                None,
+                Duration::from_secs(5 * 3600),
+            ),
+            [
+                user("Renew the staging certificates before Friday."),
+                text("Renewed. They now expire on 9 February."),
+            ],
+        ),
+    ];
+    // The bottom agent first: positions grow towards the top.
+    let bottom_first = (1_u32..).zip(agents.into_iter().rev());
+    for (step, (parts, bodies)) in bottom_first {
+        let mut summary = summary(parts, now);
+        // Undo finds a closed agent by its session, which this computer's agents use too.
+        summary.session = Some(ClaudeSessionId::new(format!(
+            "demo-server-session-{}",
+            summary.id.get()
+        )));
+        summary.id = SERVER.app_agent(summary.id);
+        summary.position = Position::new(step * POSITION_STEP);
+        let mut items: Vec<TranscriptItem> = (1..)
+            .zip(bodies)
+            .map(|(id, body)| item(id, None, body))
+            .collect();
+        date_messages(&mut items, now);
+        let mut entry = AgentEntry::new(summary);
+        entry.transcript.merge_page(HistoryPage {
+            items,
+            older_items: OlderItems::None,
+        });
+        entry.details = Loadable::Loaded(details());
+        state.agents.insert(entry.id(), entry);
+    }
+}
+
+/// The demo's drafts: a reply under way to the selected agent, which quotes a passage of its
+/// last answer with a comment beside it.
+pub fn drafts() -> Drafts {
+    let mut drafts = Drafts::default();
+    let Some((before, _)) = LOOKUP_ANSWER.split_once(QUOTED_PASSAGE) else {
+        return drafts;
+    };
+    let passage = quotes::Passage {
+        anchor: quotes::QuoteAnchor {
+            item: ItemId::new(LOOKUP_ITEM),
+            start: Utf16Offset::end_of(before),
+            end: Utf16Offset::end_of(&format!("{before}{QUOTED_PASSAGE}")),
+        },
+        raw: QUOTED_PASSAGE.to_owned(),
+        text: QUOTED_PASSAGE.to_owned(),
+        code: false,
+    };
+    quotes::start(&mut drafts, AgentId::new(1), passage);
+    quotes::type_comment(&mut drafts, QUOTE_COMMENT.to_owned());
+    quotes::commit(&mut drafts, CommentPlacement::Beside);
+    drafts
 }
 
 /// How long the demo takes to answer, as a daemon would for the past sessions, the context usage
@@ -732,7 +859,52 @@ fn echo_prompt(entry: &mut AgentEntry, prompt: &Prompt) {
     entry.transcript.append(item);
 }
 
-/// What a daemon holding the sample would answer.
+/// What `machine`'s daemon would answer: the server's own answer where it differs from this
+/// computer's.
+pub fn answer_from(
+    state: &AppState,
+    machine: MachineId,
+    request: &Request,
+) -> Result<ResponseBody, RequestError> {
+    if machine == MachineId::THIS {
+        return answer(state, request);
+    }
+    match request {
+        Request::SessionsList => Ok(ResponseBody::Sessions {
+            sessions: Vec::new(),
+        }),
+        Request::FoldersList(params) => list_folders(state, machine, &params.path),
+        // The server's demo agents run nothing: its load is the machine's alone.
+        Request::MachineLoad => {
+            let mut load = machine_load(SystemTime::now());
+            load.agents.clear();
+            Ok(ResponseBody::MachineLoad(load))
+        }
+        Request::AccountsList => Ok(ResponseBody::Accounts {
+            accounts: state
+                .machines
+                .get(machine)
+                .map(|known| known.accounts.clone())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|account| account_state(state, account))
+                .collect(),
+            environment_credentials: EnvironmentCredentials::Set,
+        }),
+        Request::AccountsAdd(_) | Request::AccountsChange(_) | Request::AccountsRemove(_) => {
+            Err(refused(
+                ErrorCode::InvalidRequest,
+                "The demo changes the accounts of this computer only.",
+            ))
+        }
+        Request::AgentListDir(_) | Request::AgentReadFile(_) | Request::AgentFindFiles(_) => Err(
+            refused(ErrorCode::NotFound, "The demo has no files on its server."),
+        ),
+        _ => answer(state, request),
+    }
+}
+
+/// What this computer's daemon, holding the sample, would answer.
 pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, RequestError> {
     let agent_details = |agent: AgentId| -> Result<AgentDetails, RequestError> {
         state
@@ -762,7 +934,7 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
         }
         Request::AgentListDir(params) => list_dir(&params.path),
         Request::AgentFindFiles(params) => Ok(find_files(&params.name)),
-        Request::FoldersList(params) => list_folders(state, &params.path),
+        Request::FoldersList(params) => list_folders(state, MachineId::THIS, &params.path),
         Request::AgentFork(_) => Err(refused(
             ErrorCode::InvalidRequest,
             "The demo runs no Claude session to fork.",
@@ -1153,27 +1325,39 @@ const OTHER_FOLDERS: [&str; 5] = [
 
 /// As the daemon lists the folders in `path` for the new agent dialog: the folders of the sample's
 /// agents, past sessions and files, the folders above them, and a few others.
-fn list_folders(state: &AppState, path: &Path) -> Result<ResponseBody, RequestError> {
+/// The folders under `path` on `machine`: its home and its agents' folders, and on this computer
+/// the past sessions' folders and the sample's.
+fn list_folders(
+    state: &AppState,
+    machine: MachineId,
+    path: &Path,
+) -> Result<ResponseBody, RequestError> {
     if !PathStyle::Unix.is_absolute(&path.to_string_lossy()) {
         return Err(refused(
             ErrorCode::InvalidRequest,
             &format!("the folder {} is not absolute", path.display()),
         ));
     }
-    let agents = state
+    let mut folders: Vec<PathBuf> = state
         .agents
         .values()
-        .map(|entry| entry.summary.folder.clone());
-    let past = sessions(SystemTime::now())
-        .into_iter()
-        .map(|session| session.folder);
-    let holding = files()
-        .into_iter()
-        .filter_map(|(file, _)| file.parent().map(Path::to_owned));
-    let others = OTHER_FOLDERS.iter().map(PathBuf::from);
+        .filter(|entry| MachineId::of(entry.id()) == machine)
+        .map(|entry| entry.summary.folder.clone())
+        .chain([PathBuf::from(DEMO_HOME)])
+        .collect();
+    if machine == MachineId::THIS {
+        let past = sessions(SystemTime::now())
+            .into_iter()
+            .map(|session| session.folder);
+        let holding = files()
+            .into_iter()
+            .filter_map(|(file, _)| file.parent().map(Path::to_owned));
+        let others = OTHER_FOLDERS.iter().map(PathBuf::from);
+        folders.extend(past.chain(holding).chain(others));
+    }
     let mut exists = false;
     let mut names: BTreeSet<String> = BTreeSet::new();
-    for folder in agents.chain(past).chain(holding).chain(others) {
+    for folder in folders {
         for above in folder.ancestors() {
             exists |= above == path;
             if above.parent() == Some(path)
@@ -1377,8 +1561,8 @@ fn user(text: &str) -> ItemBody {
     })
 }
 
-/// A message with a screenshot attached: the app's icon.
-fn user_with_image(text: &str) -> ItemBody {
+/// A message with a PNG screenshot attached.
+fn user_with_image(text: &str, png: &[u8]) -> ItemBody {
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD as BASE64;
 
@@ -1386,7 +1570,7 @@ fn user_with_image(text: &str) -> ItemBody {
         text: text.to_owned(),
         images: vec![Image {
             media_type: ImageMediaType::Png,
-            data: BASE64.encode(crate::ICON_PNG),
+            data: BASE64.encode(png),
         }],
         sent_at: None,
     })
@@ -1770,7 +1954,10 @@ fn parser_agent(now: SystemTime) -> Sample {
         item(
             14,
             None,
-            user("Fix the count in the lexer, not in the parser."),
+            user_with_image(
+                "Fix the count in the lexer, not in the parser. The test says:",
+                FAILING_TEST_PNG,
+            ),
         ),
         item(
             15,
@@ -1791,7 +1978,7 @@ fn parser_agent(now: SystemTime) -> Sample {
             user("Is the column math the same in the columns worktree?"),
         ),
         item(19, None, ItemBody::ToolCall(position_read)),
-        item(20, None, text(LOOKUP_ANSWER)),
+        item(LOOKUP_ITEM, None, text(LOOKUP_ANSWER)),
         item(
             21,
             None,
@@ -1982,7 +2169,10 @@ fn approval_agent(now: SystemTime) -> Sample {
         item(
             1,
             None,
-            user_with_image("Fix the broken links and push a preview. Here is what I see:"),
+            user_with_image(
+                "Fix the broken links and push a preview. Here is what I see:",
+                crate::ICON_PNG,
+            ),
         ),
         item(
             2,
@@ -3420,6 +3610,10 @@ pub struct ParseError {
                 Some(WaitingKind::Approval),
                 // Its account waits for a sign-in: no answer is asked.
                 None,
+                // The server's agents ask nothing.
+                None,
+                None,
+                None,
             ]
         );
         let sign_in = state.agents.get(&AgentId::new(SIGN_IN_AGENT)).unwrap();
@@ -3521,6 +3715,7 @@ pub struct ParseError {
         let order: Vec<u32> = state
             .agents_in_order()
             .iter()
+            .filter(|entry| MachineId::of(entry.id()) == MachineId::THIS)
             .map(|entry| entry.id().get())
             .collect();
 
@@ -3545,5 +3740,132 @@ pub struct ParseError {
             file_edits::original_text(&text, &edits).as_deref(),
             Some(ERROR_BEFORE)
         );
+    }
+
+    #[test]
+    fn a_server_shows_its_own_agents_in_order() {
+        let state = state(label());
+
+        let server = state.machines.others.get(&SERVER).unwrap();
+        let titles: Vec<&str> = state
+            .agents_in_order()
+            .into_iter()
+            .filter(|entry| MachineId::of(entry.id()) == SERVER)
+            .map(|entry| entry.summary.title.as_str())
+            .collect();
+
+        assert!(server.is_connected());
+        assert_eq!(server.daemon.machine, SERVER_HOST);
+        assert_eq!(
+            titles,
+            [
+                "Migrate the invoices",
+                "Find the slow invoice query",
+                "Renew the staging certificates",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_draft_quotes_a_passage_of_the_lookup_answer_with_a_comment() {
+        let drafts = drafts();
+
+        let draft = drafts.draft(AgentId::new(1)).unwrap();
+        let [quote] = draft.quotes.as_slice() else {
+            panic!("one quote, not {:?}", draft.quotes);
+        };
+        let anchor = quote.passage.anchor;
+        let quoted = LOOKUP_ANSWER
+            .get(anchor.start.byte_offset(LOOKUP_ANSWER)..anchor.end.byte_offset(LOOKUP_ANSWER));
+
+        assert_eq!(anchor.item, ItemId::new(LOOKUP_ITEM));
+        assert_eq!(quoted, Some(QUOTED_PASSAGE));
+        assert_eq!(quote.comment, QUOTE_COMMENT);
+        assert_eq!(quote.placement, CommentPlacement::Beside);
+        assert!(drafts.quote_editor.is_none());
+    }
+
+    #[test]
+    fn the_server_answers_with_its_own_sessions_folders_accounts_and_no_files() {
+        let state = state(label());
+        let ask = |request: Request| answer_from(&state, SERVER, &request);
+        let agent = SERVER.app_agent(AgentId::new(1));
+
+        let sessions = ask(Request::SessionsList);
+        let folders = ask(Request::FoldersList(FoldersListParams {
+            path: PathBuf::from("/home/dev/"),
+        }));
+        let accounts = ask(Request::AccountsList);
+        let file = ask(Request::AgentReadFile(ReadFileParams {
+            agent,
+            path: PathBuf::from(SERVER_FOLDER).join("README.md"),
+        }));
+
+        assert!(matches!(sessions, Ok(ResponseBody::Sessions { sessions }) if sessions.is_empty()));
+        let Ok(ResponseBody::Directory(listing)) = folders else {
+            panic!("a listing, not {folders:?}");
+        };
+        let names: Vec<String> = listing
+            .entries
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        assert_eq!(names, ["services"]);
+        let Ok(ResponseBody::Accounts { accounts, .. }) = accounts else {
+            panic!("the accounts, not {accounts:?}");
+        };
+        assert_eq!(accounts.len(), 1);
+        assert!(file.is_err());
+    }
+
+    #[test]
+    fn a_server_shows_no_agent_of_this_computer_in_its_load() {
+        let state = state(label());
+
+        let load = answer_from(&state, SERVER, &Request::MachineLoad);
+
+        let Ok(ResponseBody::MachineLoad(load)) = load else {
+            panic!("the load, not {load:?}");
+        };
+        assert!(load.agents.is_empty());
+    }
+
+    #[test]
+    fn a_machine_without_agents_still_lists_its_home() {
+        let state = state(label());
+        let empty = MachineId::new(2);
+        let names = |path: &str| {
+            let listed = answer_from(
+                &state,
+                empty,
+                &Request::FoldersList(FoldersListParams {
+                    path: PathBuf::from(path),
+                }),
+            );
+            let Ok(ResponseBody::Directory(listing)) = listed else {
+                panic!("a listing of {path}, not {listed:?}");
+            };
+            listing
+                .entries
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect::<Vec<String>>()
+        };
+
+        assert_eq!(names("/"), ["home"]);
+        assert_eq!(names("/home"), ["dev"]);
+    }
+
+    #[test]
+    fn no_two_agents_share_a_session() {
+        let state = state(label());
+
+        let sessions: BTreeSet<&ClaudeSessionId> = state
+            .agents
+            .values()
+            .filter_map(|entry| entry.summary.session.as_ref())
+            .collect();
+
+        assert_eq!(sessions.len(), state.agents.len());
     }
 }
