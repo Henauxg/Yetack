@@ -511,8 +511,8 @@ impl AppState {
         self.ui.unread.contains(&agent)
     }
 
-    /// Keeps the selection on an agent that exists, or picks the sidebar's first row. When the
-    /// filter hides every agent, it picks the first of the whole order.
+    /// Keeps the selection on an agent that exists, or picks the sidebar's first row, which it
+    /// marks read. When the filter hides every agent, it picks the first of the whole order.
     pub fn fix_selection(&mut self) {
         let valid = self
             .ui
@@ -525,9 +525,11 @@ impl AppState {
             let first =
                 first_row.or_else(|| self.agents_in_order().first().map(|entry| entry.id()));
             self.ui.selected = first;
-        }
-        if let Some(selected) = self.ui.selected {
-            self.ui.unread.remove(&selected);
+            // An agent you marked unread while it was selected stays unread: only a new selection
+            // reads it.
+            if let Some(selected) = first {
+                self.ui.unread.remove(&selected);
+            }
         }
     }
 

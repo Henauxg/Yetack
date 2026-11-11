@@ -443,7 +443,8 @@ pub enum TitlePlace {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UiState {
     pub selected: Option<AgentId>,
-    /// Agents that finished while another one was selected: bold title and a white dot.
+    /// Agents that finished while another one was selected, or that their row's menu marked
+    /// unread (the selected one too): bold title and a white dot, until they are selected.
     pub unread: BTreeSet<AgentId>,
     /// The machines whose agents the sidebar folds under their header.
     pub folded_machines: BTreeSet<MachineId>,

@@ -868,8 +868,8 @@ button:disabled {
   --enter-y: -4px;
   position: fixed;
   left: min(var(--menu-x), calc(100vw - 290px));
-  /* The agent menu with its folder submenu open is about 200 px high. */
-  top: max(8px, min(var(--menu-y), calc(100vh - 210px)));
+  /* The agent menu with its folder submenu open is about 230 px high. */
+  top: max(8px, min(var(--menu-y), calc(100vh - 240px)));
   bottom: auto;
   min-width: 200px;
   max-width: 280px;
