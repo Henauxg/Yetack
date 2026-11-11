@@ -3370,7 +3370,6 @@ html.reordering * {
 
 .block-card {
   --block-head-height: 40px;
-  --block-padding: 12px;
   flex: none;
   display: flex;
   flex-direction: column;
@@ -3431,7 +3430,7 @@ html.reordering * {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 0 var(--block-padding) var(--block-padding);
+  padding: 0 12px 12px;
 }
 
 .block-note {

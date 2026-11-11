@@ -58,7 +58,7 @@ if (!window.agentsCockpitKeptRows) {
     return children.reduce((sum, child) => sum + (child === inner ? innerHeight : child.getBoundingClientRect().height), edges)
       + gap * Math.max(0, children.length - 1);
   };
-  // The cards given a least height. A card that folds, or shows no list, loses it.
+  // The cards with a least height, which they lose with their list.
   const sized = new Set();
   const measure = (list) => {
     const card = cardOf(list);
@@ -887,7 +887,7 @@ mod tests {
         };
 
         assert_eq!(
-            serde_json::to_value(settings).unwrap(),
+            serde_json::to_value(settings).expect("the settings are plain strings"),
             json!({
                 "attribute": "data-kept-rows",
                 "blocks_id": "floating-blocks",
