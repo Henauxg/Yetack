@@ -1,6 +1,8 @@
 //! The composer: attachments, the prompt, the slash button, the prompt cache timer, the model,
 //! effort and permission mode menus, and Send and Stop.
 
+use std::time::{Duration, Instant};
+
 use base64::engine::general_purpose::STANDARD as BASE64;
 use cockpit_protocol::{
     AgentId, AgentStatus, Effort, Image, ImageMediaType, PermissionMode, PromptDelivery,
@@ -15,7 +17,7 @@ use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::keymap::Command;
 use crate::state::actions::ImageTooLarge;
 use crate::state::sending::{SendingPlace, SendingPrompt};
-use crate::state::{PaletteOrigin, Popover, accounts, actions, agent_map};
+use crate::state::{Draft, PaletteOrigin, Popover, accounts, actions, agent_map};
 use crate::ui::header::cache_left;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::palette::Palette;
@@ -43,6 +45,10 @@ fn placeholder(status: AgentStatus) -> &'static str {
     }
 }
 
+/// After a send, a Stop click within this time does nothing. The send empties the message, so the
+/// button under the pointer turns into Stop, and the second click of a double click lands on it.
+const STOP_AFTER_SEND: Duration = Duration::from_secs(1);
+
 /// What the button at the end of the composer does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EndButton {
@@ -50,22 +56,29 @@ enum EndButton {
     Stop,
     /// The agent works or waits for you: Claude reads the message at its next step.
     SendNow,
-    /// The agent is idle or has exited. Empty, the message cannot go.
+    /// The agent is idle or has exited. The button is off while the message is empty.
     Send,
 }
 
 impl EndButton {
-    fn new(status: AgentStatus, empty: bool) -> Self {
+    fn new(status: AgentStatus, draft: &Draft) -> Self {
         match status {
-            AgentStatus::Working | AgentStatus::NeedsYou if empty => Self::Stop,
+            AgentStatus::Working | AgentStatus::NeedsYou if draft.is_empty() => Self::Stop,
             AgentStatus::Working | AgentStatus::NeedsYou => Self::SendNow,
             AgentStatus::Idle | AgentStatus::Exited => Self::Send,
         }
     }
 
-    fn title(self) -> &'static str {
+    fn label(self) -> &'static str {
         match self {
             Self::Stop => "Stop the agent",
+            Self::SendNow | Self::Send => "Send the message",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::Stop => self.label(),
             Self::SendNow => {
                 "Send now: Claude reads it at its next step (Enter). Alt+Enter queues it until the turn ends."
             }
@@ -78,6 +91,8 @@ impl EndButton {
 pub fn Composer() -> Element {
     let cockpit: Cockpit = use_context();
     let Clock(now) = use_context::<Clock>();
+    // When this composer last sent: see `STOP_AFTER_SEND`.
+    let mut sent_at = use_signal(|| None::<Instant>);
     // The text area is not bound to the draft, whose renders can lag behind typing: it takes the
     // draft's text only when another agent opens or the app changes the draft.
     let shown = use_memo(move || {
@@ -107,7 +122,7 @@ pub fn Composer() -> Element {
     let draft = drafts.draft(agent).cloned().unwrap_or_default();
     let popover = state.ui.popover;
     let exited = status == AgentStatus::Exited;
-    let end = EndButton::new(status, draft.is_empty());
+    let end = EndButton::new(status, &draft);
     let (cache_text, cache_low) = cache_left(summary.cache_expires_at, now());
     let cache_short = match summary
         .cache_expires_at
@@ -250,14 +265,15 @@ pub fn Composer() -> Element {
                         // One button, so that it changes in place rather than another appearing.
                         button {
                             class: if end == EndButton::Stop { "send-button stop" } else { "send-button" },
-                            aria_label: if end == EndButton::Stop { "Stop the agent" } else { "Send the message" },
+                            aria_label: end.label(),
                             title: end.title(),
                             disabled: end == EndButton::Send && !can_send,
                             onclick: move |_| {
-                                if end == EndButton::Stop {
-                                    cockpit.change(|state| actions::interrupt(state, agent));
-                                } else {
+                                if end != EndButton::Stop {
+                                    sent_at.set(Some(Instant::now()));
                                     cockpit.change_with_drafts(|state, drafts| actions::send_prompt(state, drafts, agent, None, PromptDelivery::Steer));
+                                } else if sent_at().is_none_or(|sent| sent.elapsed() >= STOP_AFTER_SEND) {
+                                    cockpit.change(|state| actions::interrupt(state, agent));
                                 }
                             },
                             span { class: "stop-square", aria_hidden: true }
@@ -410,15 +426,20 @@ mod tests {
 
     #[test]
     fn the_end_button_stops_a_busy_agent_until_a_message_is_written() {
-        let end = |status, empty| EndButton::new(status, empty);
+        let empty = Draft::default();
+        let written = Draft {
+            text: "Also check the tests.".to_owned(),
+            ..Draft::default()
+        };
+        let end = |status, draft: &Draft| EndButton::new(status, draft);
 
-        assert_eq!(end(AgentStatus::Working, true), EndButton::Stop);
-        assert_eq!(end(AgentStatus::NeedsYou, true), EndButton::Stop);
-        assert_eq!(end(AgentStatus::Working, false), EndButton::SendNow);
-        assert_eq!(end(AgentStatus::NeedsYou, false), EndButton::SendNow);
-        assert_eq!(end(AgentStatus::Idle, true), EndButton::Send);
-        assert_eq!(end(AgentStatus::Idle, false), EndButton::Send);
-        assert_eq!(end(AgentStatus::Exited, false), EndButton::Send);
+        assert_eq!(end(AgentStatus::Working, &empty), EndButton::Stop);
+        assert_eq!(end(AgentStatus::NeedsYou, &empty), EndButton::Stop);
+        assert_eq!(end(AgentStatus::Working, &written), EndButton::SendNow);
+        assert_eq!(end(AgentStatus::NeedsYou, &written), EndButton::SendNow);
+        assert_eq!(end(AgentStatus::Idle, &empty), EndButton::Send);
+        assert_eq!(end(AgentStatus::Idle, &written), EndButton::Send);
+        assert_eq!(end(AgentStatus::Exited, &written), EndButton::Send);
     }
 
     #[test]

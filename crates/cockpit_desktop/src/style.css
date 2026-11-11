@@ -4323,6 +4323,9 @@ html.reordering * {
 .send-button.stop > .send-glyph {
   opacity: 0;
   transform: scale(0.5);
+  transition:
+    opacity var(--motion-out) var(--ease-in),
+    transform var(--motion-out) var(--ease-in);
 }
 
 /* The square takes 14 of the button's 36 pixels, 11 on each side, to read as Stop at a glance. */
@@ -8343,7 +8346,7 @@ html.splitting .sidebar {
 
 /* A switch to another agent draws its layout at once. `!important` beats the rules above, some of
    which are more specific. */
-.app.switching :is(.chat-scroll, .composer-wrap, .last-instruction, .block-card, .jump-latest) {
+.app.switching :is(.chat-scroll, .composer-wrap, .last-instruction, .block-card, .jump-latest, .send-button, .send-button > *) {
   transition-duration: 0s !important;
 }
 

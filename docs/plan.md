@@ -185,7 +185,7 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   - Usage goes in the header of the center pane, not in the sidebar.
   - Small edits show inline in the chat as compact diffs.
   - Code blocks in agent answers have a copy button.
-  - Stop shows beside Send while an agent works. Send (Enter) steers the agent: Claude reads the message at its next step. Alt+Enter queues it until the turn ends.
+  - One button ends the composer. While an agent works or waits for you, it is Stop while the message is empty, and Send once something is written. Send (Enter) steers the agent: Claude reads the message at its next step. Alt+Enter queues it until the turn ends. A Stop click within a second of a send does nothing, so a double click on Send never stops the agent.
   - The composer shows the model and effort, the prompt cache timer and the permission mode.
   - Changed files open from a compact list, not a full side panel.
   - A read-only file view opens on the right and closes with a cross.
@@ -207,7 +207,7 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   - Pasted screenshots show as thumbnails in the composer and in the sent message.
   - Messages Claude has not read yet show in a list pinned above the composer: "Next step" for a sent one, "After this turn" for a queued one, which has Send now and Cancel.
   - Command output collapses after 5 lines, and a message you sent after 8; a failed command has a red dot and its exit code.
-  - Ctrl+N opens the new agent dialog (recent folders, or resume a past session); Ctrl+K opens the agent switcher; Ctrl+H, or a right-click on a sidebar row, marks an agent to handle until you send it a message; Esc closes what is open (a menu, a dialog, an edit) and never stops the agent, which only the Stop button does; Y and N answer an approval or a plan.
+  - Ctrl+N opens the new agent dialog (recent folders, or resume a past session); Ctrl+K opens the agent switcher; Ctrl+H, or a right-click on a sidebar row, marks an agent to handle until you send it a message; Esc closes what is open (a menu, a dialog, an edit) and never stops the agent: the composer's Stop, shown while the message is empty, and the agent map do; Y and N answer an approval or a plan.
   - No rewind of file changes in v1.
 - Decided after round 4 (mocked in round 5), replacing the right panel above:
   - Tasks, the messages sent, background work and MCP servers are floating blocks at the top right of the chat, each folding to one line. They show only when they have content, except MCP servers.
