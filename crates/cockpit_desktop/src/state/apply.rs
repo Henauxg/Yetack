@@ -462,7 +462,9 @@ mod tests {
     use super::*;
     use crate::daemon_label::DaemonLabel;
     use crate::prefs::StatusFilter;
-    use crate::state::app_state::tests::{connected, placed, state_with, summary};
+    use crate::state::app_state::tests::{
+        DAEMON_VERSION, connected_update, placed, state_with, summary,
+    };
     use crate::state::ui_state::{Block, Dialog, PaletteOrigin, Popover, TitleEdit, TitlePlace};
     use crate::state::{MachineState, agent_map, chat_images};
 
@@ -540,7 +542,7 @@ mod tests {
         apply_update(
             &mut state,
             &mut Drafts::default(),
-            connected(Catchup::Snapshot(Snapshot {
+            connected_update(Catchup::Snapshot(Snapshot {
                 agents: vec![remote],
                 plan_usage: PlanUsage::default(),
                 settings: Settings::default(),
@@ -1438,14 +1440,14 @@ mod tests {
         apply_update(
             &mut state,
             &mut Drafts::default(),
-            connected(Catchup::Replay),
+            connected_update(Catchup::Replay),
             now,
             MachineId::THIS,
         );
         assert!(state.machines.this.is_connected());
         assert_eq!(
             state.machines.this.daemon_version,
-            Some(ReleaseVersion::new("0.4.2".to_owned()))
+            Some(ReleaseVersion::new(DAEMON_VERSION.to_owned()))
         );
     }
 }

@@ -637,10 +637,13 @@ pub(crate) mod tests {
         state
     }
 
-    /// A daemon of release 0.4.2 accepted the connection with `catchup`.
-    pub(crate) fn connected(catchup: Catchup) -> SessionUpdate {
+    /// The release of the daemon in `connected_update`.
+    pub(crate) const DAEMON_VERSION: &str = "0.4.2";
+
+    /// A daemon of release `DAEMON_VERSION` accepted the connection with `catchup`.
+    pub(crate) fn connected_update(catchup: Catchup) -> SessionUpdate {
         SessionUpdate::Connected(Welcome {
-            daemon_version: ReleaseVersion::new("0.4.2".to_owned()),
+            daemon_version: ReleaseVersion::new(DAEMON_VERSION.to_owned()),
             catchup,
         })
     }

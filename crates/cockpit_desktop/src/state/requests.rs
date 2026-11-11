@@ -1084,7 +1084,7 @@ mod tests {
         crate::state::apply::apply_update(
             &mut state,
             &mut Drafts::default(),
-            crate::state::connected(Catchup::Replay),
+            crate::state::connected_update(Catchup::Replay),
             Instant::now(),
             MachineId::THIS,
         );
