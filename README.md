@@ -2,7 +2,7 @@
 
 Run Claude Code agents on your computer and on your servers, and watch and steer them all from one desktop app.
 
-![The app with agents on two machines: the sidebar lists them, the middle shows one agent's conversation, the right column its tasks, messages and subagents](docs/images/app.png)
+![The app with agents on three machines: the sidebar lists them by machine, the middle shows one agent's conversation with a reply under way, the right column its tasks, subagents and messages](docs/images/app.png)
 
 - **Several machines.** The app connects to this computer and to any number of servers over SSH. Each machine has its own panel in the sidebar.
 - **Several Claude accounts.** A personal and a work subscription work side by side. You pick the account of each agent, and the app shows the plan usage of each account.

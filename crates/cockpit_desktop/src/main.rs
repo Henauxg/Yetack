@@ -85,6 +85,9 @@ fn main() -> anyhow::Result<ExitCode> {
     if let Some(screen) = demo::update_screen(&arguments) {
         demo::show_update_screen(&mut state, screen);
     }
+    if demo::showcase_requested(&arguments) {
+        demo::showcase(&mut state);
+    }
     let machines: Vec<(MachineId, MachineConfig)> =
         (1..).map(MachineId::new).zip(config.machines).collect();
     if !demo {

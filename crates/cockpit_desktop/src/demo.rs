@@ -31,10 +31,11 @@ use crate::prefs::CommentPlacement;
 use crate::state::daemon_update::{
     self, OutputLine, OutputStream, ProtocolGap, UpdateFailure, UpdatePlan, VersionGap,
 };
+use crate::state::file_tree::TreeFilter;
 use crate::state::no_daemon::{self, Absence};
 use crate::state::{
     AgentEntry, AppState, ConnectionState, Dialog, Drafts, Loadable, MachineState, Utf16Offset,
-    file_edits, quotes, sending,
+    file_edits, file_tree, quotes, sending,
 };
 use crate::update_script::APP_VERSION;
 
@@ -43,6 +44,25 @@ pub const DEMO_FLAG: &str = "--demo";
 
 /// With the demo, opens one of the screens of a daemon's update: `--demo-update older`.
 const UPDATE_SCREEN_FLAG: &str = "--demo-update";
+
+/// With the demo, trims it for the README's picture.
+const SHOWCASE_FLAG: &str = "--demo-showcase";
+
+/// The showcase's third machine.
+const GPU_SERVER: MachineId = MachineId::new(3);
+const GPU_HOST: &str = "gpu-box";
+const GPU_FOLDER: &str = "/home/dev/ml/ranking";
+
+/// The agents of this computer the showcase leaves out: the sign-in, the map and the plan.
+const SHOWCASE_LEFT_OUT: [u32; 3] = [SIGN_IN_AGENT, MAP_AGENT, PLAN_AGENT];
+/// The agent that waits for an approval, which the showcase moves to the server.
+const APPROVAL_AGENT: u32 = 3;
+/// The agent that waits for its plan to be approved.
+const PLAN_AGENT: u32 = 4;
+/// The agent that finished its benchmark while the user looked elsewhere.
+const BENCHMARK_AGENT: u32 = 5;
+/// A subagent the selected agent runs in the background, which the showcase leaves out.
+const FUZZ_TASK: &str = "Write fuzz inputs with unicode";
 
 const UPDATE_MACHINE: &str = "build-box";
 /// A made-up commit.
@@ -77,7 +97,7 @@ const RUNNING_CALLS_FOR: Duration = Duration::from_secs(48);
 /// A second Claude account, which the service's agents and the platform's past sessions use.
 const WORK_ACCOUNT: u32 = 1;
 /// The agents of the work account.
-const WORK_AGENTS: [u32; 2] = [4, 5];
+const WORK_AGENTS: [u32; 2] = [PLAN_AGENT, BENCHMARK_AGENT];
 /// An account that bills the daemon's API key, which the map's agent uses.
 const LAB_ACCOUNT: u32 = 2;
 /// An account no one signed in to yet, whose agent waits for the sign-in.
@@ -93,10 +113,41 @@ const SERVER: MachineId = MachineId::new(1);
 const SERVER_HOST: &str = "devbox";
 const SERVER_FOLDER: &str = "/home/dev/services/invoices";
 
-/// The selected agent's answer that the demo's draft quotes.
+/// The selected agent's explanation of the failing test, and its last answer.
+const COUNT_ITEM: u32 = 15;
+const COUNT_ANSWER: &str = "The test expects the column to count from 1, and the lexer counts from 0. See `tests/columns.rs:6`. I am fixing the lexer.";
 const LOOKUP_ITEM: u32 = 20;
-const QUOTED_PASSAGE: &str = "The old cache.rs:10 is gone.";
-const QUOTE_COMMENT: &str = "Then drop its import in lib.rs too.";
+
+/// A passage of the selected agent's answers that the demo's draft quotes, with its comment.
+struct DemoQuote {
+    item: u32,
+    /// The text of the answer the passage is in.
+    answer: &'static str,
+    passage: &'static str,
+    comment: &'static str,
+}
+
+/// The demo draft's quotes, in the chat's order.
+const DEMO_QUOTES: [DemoQuote; 3] = [
+    DemoQuote {
+        item: COUNT_ITEM,
+        answer: COUNT_ANSWER,
+        passage: "the lexer counts from 0",
+        comment: "Keep 0 inside the lexer, and add 1 where errors are built.",
+    },
+    DemoQuote {
+        item: LOOKUP_ITEM,
+        answer: LOOKUP_ANSWER,
+        passage: "the column math is in position.rs:12-20",
+        comment: "Does it count a tab as one column?",
+    },
+    DemoQuote {
+        item: LOOKUP_ITEM,
+        answer: LOOKUP_ANSWER,
+        passage: "The old cache.rs:10 is gone.",
+        comment: "Then drop its import in lib.rs too.",
+    },
+];
 
 /// How often the live agent adds or finishes an entry.
 pub const LIVE_TICK: Duration = Duration::from_millis(1500);
@@ -436,7 +487,17 @@ const PLAN_TEXT: &str = "## Add a result cache
 4. Add a test that evaluates the same expression twice.";
 
 /// The sidebar's order, top first, as a user arranged it: neither by id nor by status.
-const SIDEBAR_ORDER: [u32; 9] = [1, SIGN_IN_AGENT, MAP_AGENT, LIVE_AGENT, 4, 2, 5, 3, 6];
+const SIDEBAR_ORDER: [u32; 9] = [
+    1,
+    SIGN_IN_AGENT,
+    MAP_AGENT,
+    LIVE_AGENT,
+    PLAN_AGENT,
+    2,
+    BENCHMARK_AGENT,
+    APPROVAL_AGENT,
+    6,
+];
 
 /// The room between two agents' positions, as the daemon leaves it.
 const POSITION_STEP: u32 = 1024;
@@ -658,19 +719,13 @@ pub fn state(daemon: DaemonLabel) -> AppState {
     state.machines.this.other_plan_usage =
         BTreeMap::from([(AccountId::new(WORK_ACCOUNT), work_plan_usage(now))]);
     state.ui.selected = Some(AgentId::new(1));
-    state.ui.unread.insert(AgentId::new(5));
+    state.ui.unread.insert(AgentId::new(BENCHMARK_AGENT));
     add_server(&mut state, now);
     state
 }
 
 /// A server with three agents of its own, which show in a second panel of the sidebar.
 fn add_server(state: &mut AppState, now: SystemTime) {
-    let mut server = MachineState::new(DaemonLabel::ssh(SERVER_HOST.to_owned()));
-    server.connection = ConnectionState::Connected;
-    server.daemon_version = Some(ReleaseVersion::new(APP_VERSION.to_owned()));
-    server.plan_usage = plan_usage(now);
-    server.accounts = accounts().into_iter().take(1).collect();
-    state.machines.others.insert(SERVER, server);
     let parts = |id, title, status, activity, since| SummaryParts {
         id,
         title,
@@ -724,16 +779,30 @@ fn add_server(state: &mut AppState, now: SystemTime) {
             ],
         ),
     ];
+    insert_server(state, now, SERVER, SERVER_HOST, agents);
+}
+
+/// Adds a connected server with `agents`, listed top first, each with a short conversation.
+fn insert_server<const N: usize>(
+    state: &mut AppState,
+    now: SystemTime,
+    machine: MachineId,
+    host: &str,
+    agents: [(SummaryParts<'_>, [ItemBody; 2]); N],
+) {
+    let mut server = MachineState::new(DaemonLabel::ssh(host.to_owned()));
+    server.connection = ConnectionState::Connected;
+    server.daemon_version = Some(ReleaseVersion::new(APP_VERSION.to_owned()));
+    server.plan_usage = plan_usage(now);
+    server.accounts = accounts().into_iter().take(1).collect();
+    state.machines.others.insert(machine, server);
     // The bottom agent first: positions grow towards the top.
     let bottom_first = (1_u32..).zip(agents.into_iter().rev());
     for (step, (parts, bodies)) in bottom_first {
         let mut summary = summary(parts, now);
         // Undo finds a closed agent by its session, which this computer's agents use too.
-        summary.session = Some(ClaudeSessionId::new(format!(
-            "demo-server-session-{}",
-            summary.id.get()
-        )));
-        summary.id = SERVER.app_agent(summary.id);
+        summary.session = Some(server_session(machine, summary.id));
+        summary.id = machine.app_agent(summary.id);
         summary.position = Position::new(step * POSITION_STEP);
         let mut items: Vec<TranscriptItem> = (1..)
             .zip(bodies)
@@ -750,26 +819,163 @@ fn add_server(state: &mut AppState, now: SystemTime) {
     }
 }
 
-/// The demo's drafts: a reply under way to the selected agent, which quotes a passage of its
-/// last answer with a comment beside it.
+/// The Claude session of a server's agent, which no other machine's agent has.
+fn server_session(machine: MachineId, agent: AgentId) -> ClaudeSessionId {
+    ClaudeSessionId::new(format!("demo-session-{}-{}", machine.get(), agent.get()))
+}
+
+/// Whether the arguments ask for the showcase: `--demo --demo-showcase`.
+pub fn showcase_requested(arguments: &[String]) -> bool {
+    is_requested(arguments) && arguments.iter().any(|argument| argument == SHOWCASE_FLAG)
+}
+
+/// Trims the demo for the README's picture: two accounts, one agent waiting on this computer, no
+/// emoji in titles, an approval on the server, and a third machine.
+pub fn showcase(state: &mut AppState) {
+    for agent in SHOWCASE_LEFT_OUT {
+        state.agents.remove(&AgentId::new(agent));
+    }
+    let shown_account =
+        |account: &Account| account.id.is_default() || account.id == AccountId::new(WORK_ACCOUNT);
+    state.machines.this.accounts.retain(shown_account);
+    for entry in state.agents.values_mut() {
+        let title = entry
+            .summary
+            .title
+            .trim_start_matches(|character: char| !character.is_alphanumeric());
+        entry.summary.title = title.to_owned();
+    }
+    // It goes on top of the server's three agents.
+    if let Some(mut approval) = state.agents.remove(&AgentId::new(APPROVAL_AGENT)) {
+        let agent = AgentId::new(4);
+        approval.summary.session = Some(server_session(SERVER, agent));
+        approval.summary.id = SERVER.app_agent(agent);
+        approval.summary.position = Position::new(4 * POSITION_STEP);
+        state.agents.insert(approval.id(), approval);
+    }
+    let accounts = state.machines.this.accounts.clone();
+    if let Some(server) = state.machines.others.get_mut(&SERVER) {
+        server.accounts = accounts;
+    }
+    if let Some(entry) = state.agents.get_mut(&SERVER.app_agent(AgentId::new(1))) {
+        entry.summary.account = AccountId::new(WORK_ACCOUNT);
+    }
+    let parts = |id, title, status, activity, since| SummaryParts {
+        id,
+        title,
+        folder: GPU_FOLDER,
+        status,
+        activity,
+        pending: 0,
+        since,
+    };
+    let agents = [
+        (
+            parts(
+                1,
+                "Train the ranking model",
+                AgentStatus::Working,
+                Some("Running epoch 3 of 10"),
+                Duration::from_secs(4 * 60),
+            ),
+            [
+                user("Train the ranking model on last week's clicks."),
+                text(
+                    "Training runs on both GPUs. Epoch 2 reached 0.81 NDCG on the validation set.",
+                ),
+            ],
+        ),
+        (
+            parts(
+                2,
+                "Profile the data loader",
+                AgentStatus::Idle,
+                None,
+                Duration::from_secs(40 * 60),
+            ),
+            [
+                user("Why does the data loader use only one core?"),
+                text(
+                    "It reads the shards one at a time. Reading four at once keeps both GPUs busy.",
+                ),
+            ],
+        ),
+    ];
+    insert_server(state, SystemTime::now(), GPU_SERVER, GPU_HOST, agents);
+    // Finished and unread, with nothing left running in the background.
+    if let Some(entry) = state.agents.get_mut(&AgentId::new(BENCHMARK_AGENT)) {
+        entry.summary.background_running = 0;
+        if let Loadable::Loaded(details) = &mut entry.details {
+            details.background_tasks.clear();
+        }
+    }
+    let Some(selected) = state.ui.selected else {
+        return;
+    };
+    if let Some(entry) = state.agents.get_mut(&selected) {
+        trim_for_notes(entry);
+        entry
+            .tree
+            .expanded
+            .insert(PathBuf::from(PARSER_FOLDER).join("src"));
+    }
+    // Opens the pane, as the header's changes chip does.
+    file_tree::toggle_from_changes(state, selected);
+    file_tree::set_filter(state, selected, TreeFilter::All);
+}
+
+/// Shortens the selected agent's blocks by a task and a running subagent, so that the third
+/// comment's note fits under them, and counts the task progress again.
+fn trim_for_notes(entry: &mut AgentEntry) {
+    let Loadable::Loaded(details) = &mut entry.details else {
+        return;
+    };
+    details
+        .background_tasks
+        .retain(|task| task.description != FUZZ_TASK);
+    details
+        .subagents
+        .retain(|subagent| subagent.description != FUZZ_TASK);
+    if let Some(first_done) = details
+        .tasks
+        .iter()
+        .position(|task| task.status == TaskStatus::Completed)
+    {
+        details.tasks.remove(first_done);
+    }
+    let done = details
+        .tasks
+        .iter()
+        .filter(|task| task.status == TaskStatus::Completed)
+        .count();
+    entry.summary.task_progress = Some(TaskProgress {
+        done: u16::try_from(done).unwrap_or(u16::MAX),
+        total: u16::try_from(details.tasks.len()).unwrap_or(u16::MAX),
+    });
+}
+
+/// The demo's drafts: a reply under way to the selected agent, which quotes passages of its
+/// answers with a comment beside each.
 pub fn drafts() -> Drafts {
     let mut drafts = Drafts::default();
-    let Some((before, _)) = LOOKUP_ANSWER.split_once(QUOTED_PASSAGE) else {
-        return drafts;
-    };
-    let passage = quotes::Passage {
-        anchor: quotes::QuoteAnchor {
-            item: ItemId::new(LOOKUP_ITEM),
-            start: Utf16Offset::end_of(before),
-            end: Utf16Offset::end_of(&format!("{before}{QUOTED_PASSAGE}")),
-        },
-        raw: QUOTED_PASSAGE.to_owned(),
-        text: QUOTED_PASSAGE.to_owned(),
-        code: false,
-    };
-    quotes::start(&mut drafts, AgentId::new(1), passage);
-    quotes::type_comment(&mut drafts, QUOTE_COMMENT.to_owned());
-    quotes::commit(&mut drafts, CommentPlacement::Beside);
+    for quote in DEMO_QUOTES {
+        let Some((before, _)) = quote.answer.split_once(quote.passage) else {
+            continue;
+        };
+        let passage = quotes::Passage {
+            anchor: quotes::QuoteAnchor {
+                item: ItemId::new(quote.item),
+                start: Utf16Offset::end_of(before),
+                end: Utf16Offset::end_of(&format!("{before}{}", quote.passage)),
+            },
+            raw: quote.passage.to_owned(),
+            text: quote.passage.to_owned(),
+            code: false,
+        };
+        quotes::start(&mut drafts, AgentId::new(1), passage);
+        quotes::type_comment(&mut drafts, quote.comment.to_owned());
+        quotes::commit(&mut drafts, CommentPlacement::Beside);
+    }
     drafts
 }
 
@@ -1808,7 +2014,7 @@ fn parser_background_tasks(now: SystemTime) -> Vec<BackgroundTask> {
         (Command, "cargo test lexer", Stopped, 980, Some(950), 0),
         (Agent, "Draft the changelog entry", Done, 900, Some(700), 6),
         (Agent, "Look for callers of Token::column", Done, 860, Some(640), 11),
-        (Agent, "Write fuzz inputs with unicode", Running, 600, None, 8),
+        (Agent, FUZZ_TASK, Running, 600, None, 8),
         (Command, "cargo doc --no-deps", Done, 420, Some(380), 0),
         (Agent, "Check the docs for column examples", Done, 300, Some(150), 7),
         (Agent, "Summarize the error type review", Done, 200, Some(90), 4),
@@ -1959,13 +2165,7 @@ fn parser_agent(now: SystemTime) -> Sample {
                 FAILING_TEST_PNG,
             ),
         ),
-        item(
-            15,
-            None,
-            text(
-                "The test expects the column to count from 1, and the lexer counts from 0. See `tests/columns.rs:6`. I am fixing the lexer.",
-            ),
-        ),
+        item(COUNT_ITEM, None, text(COUNT_ANSWER)),
         item(
             16,
             None,
@@ -2155,7 +2355,7 @@ fn question_agent(now: SystemTime) -> Sample {
 fn approval_agent(now: SystemTime) -> Sample {
     let summary = summary(
         SummaryParts {
-            id: 3,
+            id: APPROVAL_AGENT,
             title: "Docs preview",
             folder: "/home/dev/projects/docs-site",
             status: AgentStatus::NeedsYou,
@@ -2219,7 +2419,7 @@ fn approval_agent(now: SystemTime) -> Sample {
 fn plan_agent(now: SystemTime) -> Sample {
     let mut summary = summary(
         SummaryParts {
-            id: 4,
+            id: PLAN_AGENT,
             title: "🧭 Cache layer plan",
             folder: SERVICE_FOLDER,
             status: AgentStatus::NeedsYou,
@@ -2257,7 +2457,7 @@ fn plan_agent(now: SystemTime) -> Sample {
 fn benchmark_agent(now: SystemTime) -> Sample {
     let mut summary = summary(
         SummaryParts {
-            id: 5,
+            id: BENCHMARK_AGENT,
             title: "⏱\u{fe0f} Benchmark in CI",
             folder: SERVICE_FOLDER,
             status: AgentStatus::Idle,
@@ -3767,21 +3967,35 @@ pub struct ParseError {
     }
 
     #[test]
-    fn the_draft_quotes_a_passage_of_the_lookup_answer_with_a_comment() {
+    fn the_draft_quotes_each_passage_of_the_answers_with_its_comment() {
         let drafts = drafts();
 
         let draft = drafts.draft(AgentId::new(1)).unwrap();
-        let [quote] = draft.quotes.as_slice() else {
-            panic!("one quote, not {:?}", draft.quotes);
-        };
-        let anchor = quote.passage.anchor;
-        let quoted = LOOKUP_ANSWER
-            .get(anchor.start.byte_offset(LOOKUP_ANSWER)..anchor.end.byte_offset(LOOKUP_ANSWER));
+        let shown: Vec<(ItemId, Option<&str>, &str)> = draft
+            .quotes
+            .iter()
+            .zip(DEMO_QUOTES)
+            .map(|(quote, demo)| {
+                let anchor = quote.passage.anchor;
+                let quoted = demo.answer.get(
+                    anchor.start.byte_offset(demo.answer)..anchor.end.byte_offset(demo.answer),
+                );
+                (anchor.item, quoted, quote.comment.as_str())
+            })
+            .collect();
+        let expected: Vec<(ItemId, Option<&str>, &str)> = DEMO_QUOTES
+            .iter()
+            .map(|demo| (ItemId::new(demo.item), Some(demo.passage), demo.comment))
+            .collect();
 
-        assert_eq!(anchor.item, ItemId::new(LOOKUP_ITEM));
-        assert_eq!(quoted, Some(QUOTED_PASSAGE));
-        assert_eq!(quote.comment, QUOTE_COMMENT);
-        assert_eq!(quote.placement, CommentPlacement::Beside);
+        assert_eq!(draft.quotes.len(), DEMO_QUOTES.len());
+        assert_eq!(shown, expected);
+        assert!(
+            draft
+                .quotes
+                .iter()
+                .all(|quote| quote.placement == CommentPlacement::Beside)
+        );
         assert!(drafts.quote_editor.is_none());
     }
 
@@ -3867,5 +4081,52 @@ pub struct ParseError {
             .collect();
 
         assert_eq!(sessions.len(), state.agents.len());
+    }
+
+    #[test]
+    fn the_showcase_needs_the_demo() {
+        let arguments = |list: &[&str]| -> Vec<String> {
+            list.iter().map(|&argument| argument.to_owned()).collect()
+        };
+
+        assert!(showcase_requested(&arguments(&[DEMO_FLAG, SHOWCASE_FLAG])));
+        assert!(!showcase_requested(&arguments(&[SHOWCASE_FLAG])));
+    }
+
+    #[test]
+    fn the_showcase_waits_on_one_agent_per_machine_with_two_accounts() {
+        let mut state = state(label());
+
+        showcase(&mut state);
+
+        let waiting_on = |machine: MachineId| {
+            state
+                .agents
+                .values()
+                .filter(|entry| MachineId::of(entry.id()) == machine)
+                .filter(|entry| entry.summary.status == AgentStatus::NeedsYou)
+                .count()
+        };
+        let titles_start_with_a_letter = state.agents.values().all(|entry| {
+            entry
+                .summary
+                .title
+                .starts_with(|character: char| character.is_alphanumeric())
+        });
+        let no_two_sessions: BTreeSet<&ClaudeSessionId> = state
+            .agents
+            .values()
+            .filter_map(|entry| entry.summary.session.as_ref())
+            .collect();
+        assert_eq!(waiting_on(MachineId::THIS), 1);
+        assert_eq!(waiting_on(SERVER), 1);
+        assert_eq!(state.machines.others.len(), 2);
+        assert_eq!(state.machines.this.accounts.len(), 2);
+        assert!(titles_start_with_a_letter);
+        assert_eq!(no_two_sessions.len(), state.agents.len());
+        assert!(
+            state.agents.contains_key(&AgentId::new(1)),
+            "the showcase keeps agent 1, which the demo selects and its draft quotes"
+        );
     }
 }
