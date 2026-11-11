@@ -627,8 +627,9 @@ async fn run_demo(
     loop {
         tokio::select! {
             _ = load_ticks.tick() => {
-                let answer = demo::answer(&state.peek(), &Request::MachineLoad);
-                show_load(load, MachineId::THIS, LoadView::from_result(answer));
+                let machine = state.peek().selected_machine();
+                let answer = demo::answer_from(&state.peek(), machine, &Request::MachineLoad);
+                show_load(load, machine, LoadView::from_result(answer));
             }
             outgoing = requests.next() => {
                 let outgoing = match outgoing {
@@ -646,13 +647,16 @@ async fn run_demo(
                     None => return,
                 };
                 let mut queue = VecDeque::from([outgoing]);
-                while let Some(Outgoing { request, purpose, .. }) = queue.pop_front() {
+                while let Some(mut outgoing) = queue.pop_front() {
+                    let machine = outgoing.machine();
+                    let Outgoing { request, purpose, .. } = outgoing;
                     tokio::time::sleep(demo::latency(&request)).await;
                     if let Purpose::Close { entry } = &purpose {
                         closed.push(entry.as_ref().clone());
                     }
                     let reopened = demo::reopen(&mut state.write(), &mut closed, &request);
-                    let result = reopened.unwrap_or_else(|| demo::answer(&state.read(), &request));
+                    let result = reopened
+                        .unwrap_or_else(|| demo::answer_from(&state.read(), machine, &request));
                     let mut state = state.write();
                     if result.is_ok() {
                         demo::apply(&mut state, &request);
@@ -664,7 +668,7 @@ async fn run_demo(
                         method,
                         purpose,
                         result,
-                        MachineId::THIS,
+                        machine,
                     );
                     queue.extend(state::needed_requests(&mut state));
                 }

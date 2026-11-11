@@ -9,7 +9,7 @@ Run Claude Code agents on your computer and on your servers, and watch and steer
 - **Sessions that persist on remote machines.** The agents run in a daemon on the server, so they keep working when the app closes, the laptop sleeps or the connection drops. When the app reconnects, it shows what the agents did meanwhile.
 - **Steer while they work.** Answer approvals, questions and plans from the app. A message you send while an agent works reaches Claude at its next step.
 - **Reply to a passage.** Select text in the chat to quote it, and write a comment beside it. Paste images into a message.
-- **See what they do.** A map shows the subagents and background tasks. The files pane shows the files each agent changed or read, with their diffs.
+- **See what they do.** A map shows the subagents, and a block beside the chat shows the background tasks. The files pane shows the files each agent changed or read, with their diffs.
 - **Notifications.** The app tells you when an agent needs you or finishes.
 
 Claude Code runs unmodified, signed in with your own account. The app never sees your credentials. It reaches a server with your SSH key, and the daemon opens no network port.

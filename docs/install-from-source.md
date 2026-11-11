@@ -53,7 +53,7 @@ The app has not been tested on macOS. `cargo build --release --locked -p cockpit
 
 ## The daemon, for a server
 
-On the server, or on any Linux machine of the same CPU type:
+On the server, or on any Linux machine of the same CPU type, install a C linker first (on Ubuntu and Debian: `sudo apt install build-essential`), then:
 
 ```sh
 cargo install --locked --path crates/agents_cockpit --root ~/.local
