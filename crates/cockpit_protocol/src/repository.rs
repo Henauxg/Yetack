@@ -7,7 +7,8 @@
 /// - `git@github.com:acme/billing.git` gives `github.com/acme/billing`;
 /// - `https://user@GitHub.com:443/acme/billing/` gives `github.com/acme/billing`;
 /// - `ssh://git@github.com/acme/billing` gives `github.com/acme/billing`;
-/// - a local path, such as `/srv/git/billing.git`, gives `/srv/git/billing`.
+/// - a local path, such as `/srv/git/billing.git`, gives `/srv/git/billing`, and
+///   `C:\repos\billing.git` gives `C:\repos\billing`.
 pub fn normalized_repository(url: &str) -> String {
     let url = url.trim();
     let (host, path) = match url.split_once("://") {
@@ -16,9 +17,14 @@ pub fn normalized_repository(url: &str) -> String {
             Some((authority, path)) => (authority, path),
             None => (rest, ""),
         },
-        // `user@host:path`, the form scp takes. A `:` after a `/` is part of a local path.
+        // `user@host:path`, the form scp takes. A `:` after a `/` is part of a local path, and
+        // one after a drive letter starts a Windows path.
         None => match url.split_once(':') {
-            Some((authority, path)) if !authority.contains('/') && !authority.is_empty() => {
+            Some((authority, path))
+                if !authority.contains('/')
+                    && !authority.is_empty()
+                    && !is_drive(authority, path) =>
+            {
                 (authority, path)
             }
             _ => return trimmed(url).to_owned(),
@@ -35,8 +41,18 @@ pub fn normalized_repository(url: &str) -> String {
 }
 
 fn trimmed(path: &str) -> &str {
-    let path = path.trim_end_matches('/');
+    let path = path.trim_end_matches(['/', '\\']);
     path.strip_suffix(".git").unwrap_or(path)
+}
+
+/// Whether `C` and `\repos` are a drive letter and the path after it.
+fn is_drive(authority: &str, path: &str) -> bool {
+    let mut letters = authority.chars();
+    let one_letter = letters
+        .next()
+        .is_some_and(|letter| letter.is_ascii_alphabetic())
+        && letters.next().is_none();
+    one_letter && path.starts_with(['/', '\\'])
 }
 
 #[cfg(test)]
@@ -73,5 +89,13 @@ mod tests {
             "/srv/git/billing"
         );
         assert_eq!(normalized_repository("../billing"), "../billing");
+        assert_eq!(
+            normalized_repository(r"C:\repos\billing.git\"),
+            r"C:\repos\billing"
+        );
+        assert_eq!(
+            normalized_repository("C:/repos/billing"),
+            "C:/repos/billing"
+        );
     }
 }

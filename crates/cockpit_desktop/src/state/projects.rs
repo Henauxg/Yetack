@@ -222,7 +222,7 @@ pub fn look(state: &AppState, key: &ProjectKey) -> ProjectLook {
 /// A repository's last name: `billing` for `github.com/acme/billing`.
 pub fn repository_name(repository: &str) -> &str {
     repository
-        .rsplit(['/', ':'])
+        .rsplit(['/', '\\', ':'])
         .find(|name| !name.is_empty())
         .unwrap_or(repository)
 }
@@ -736,10 +736,17 @@ mod tests {
             entry.summary.folder = PathBuf::from(r"C:\Work\Calc-Parser");
         }
         let id = create(&mut state, "Calc");
-        add_rule(&mut state, id, ProjectRule::Folder("c:/work/calc-*".to_owned()));
+        add_rule(
+            &mut state,
+            id,
+            ProjectRule::Folder("c:/work/calc-*".to_owned()),
+        );
 
         assert_eq!(project(&state, 4), ProjectKey::Kept(id));
-        assert_eq!(project(&state, 3), ProjectKey::Repository(GATEWAY.to_owned()));
+        assert_eq!(
+            project(&state, 3),
+            ProjectKey::Repository(GATEWAY.to_owned())
+        );
     }
 
     #[test]
@@ -825,5 +832,6 @@ mod tests {
     fn a_temporary_project_keeps_its_color() {
         assert_eq!(color_of(BILLING), color_of(BILLING));
         assert_eq!(repository_name("/srv/git/billing"), "billing");
+        assert_eq!(repository_name(r"C:\repos\billing"), "billing");
     }
 }
