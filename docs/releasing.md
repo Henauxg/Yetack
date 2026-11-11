@@ -1,17 +1,17 @@
 # Releasing
 
 How to publish a release of agents-cockpit, for example `0.1.0`.
-A release has five files:
+A release has up to five files:
 
 | File | What it is |
 | --- | --- |
 | `agents-cockpit-0.1.0-x86_64-linux` | The daemon and command line for Linux x86_64, static: it runs on any distribution |
 | `agents-cockpit_0.1.0_amd64.deb` | The app for Ubuntu 22.04 and newer, and Debian 12, with the daemon beside it |
-| `agents-cockpit-desktop-0.1.0-windows-x64.zip` | The app for Windows |
+| `agents-cockpit-desktop-0.1.0-windows-x64.zip` | The app for Windows, when a Windows machine is at hand |
 | `agents-cockpit.service` | The systemd user service that runs the daemon on a server |
 | `SHA256SUMS` | The checksum of each file |
 
-The Windows zip is built on a Windows machine, the other files on a Linux machine with Docker.
+The Windows zip is built on a Windows machine, the other files on a Linux machine with Docker. A release can go out without the zip: the README sends Windows users to [install-from-source.md](./install-from-source.md) until a release has one.
 
 ## 1. Set the version
 
@@ -26,9 +26,9 @@ The Windows zip is built on a Windows machine, the other files on a Linux machin
    git push origin main v0.1.0
    ```
 
-## 2. Build the Windows zip
+## 2. Build the Windows zip, if you can
 
-On the Windows machine, in PowerShell, in a checkout of the repository:
+Skip this step when no Windows machine is at hand. On the Windows machine, in PowerShell, in a checkout of the repository:
 
 ```powershell
 git fetch --tags
@@ -60,7 +60,7 @@ The app inside the `.deb` knows the commit it was built from, so its "Update" bu
 
 1. Install the `.deb` on Ubuntu or Debian (`sudo apt install ./dist/agents-cockpit_0.1.0_amd64.deb`), start the app, and open the Machines dialog: it says "This app is version 0.1.0".
 2. Copy `dist/agents-cockpit-0.1.0-x86_64-linux` to a server and run it with `--version`.
-3. Unzip the Windows build and start it.
+3. If there is a Windows zip, unzip it on Windows and start the app.
 
 ## 5. Publish
 
@@ -68,7 +68,8 @@ Write the release notes in a file outside the repository: what changed, and the 
 
 ```sh
 version=0.1.0
+zip="dist/agents-cockpit-desktop-$version-windows-x64.zip"
 gh release create "v$version" --title "agents-cockpit $version" --notes-file <notes file> \
     "dist/agents-cockpit-$version-x86_64-linux" "dist/agents-cockpit_${version}_amd64.deb" \
-    "dist/agents-cockpit-desktop-$version-windows-x64.zip" dist/agents-cockpit.service dist/SHA256SUMS
+    dist/agents-cockpit.service dist/SHA256SUMS $(test -e "$zip" && echo "$zip")
 ```
