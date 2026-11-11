@@ -218,6 +218,7 @@ pub fn apply(
         Event::AgentUpdated(summary) => {
             let alert = update_agent(state, summary);
             actions::follow_hidden_title_edit(state, drafts);
+            actions::follow_stop_dialog(state);
             alert
         }
         Event::AgentRemoved { agent } => {

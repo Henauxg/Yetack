@@ -1,7 +1,7 @@
 //! The keyboard shortcuts of R4-parts, resolved against the state. The page's script decides
 //! which key presses reach here (`bridge`), so typing in a field is never taken over.
 
-use cockpit_protocol::{AgentId, AgentStatus, ApprovalDecision, PlanDecision, PromptDelivery};
+use cockpit_protocol::{AgentId, ApprovalDecision, PlanDecision, PromptDelivery};
 use serde::Deserialize;
 
 use super::actions::{self, Direction};
@@ -52,13 +52,7 @@ fn stop_on_escape(state: &mut AppState) -> Vec<Outgoing> {
     let Some(agent) = state.ui.selected else {
         return Vec::new();
     };
-    let busy = state.agents.get(&agent).is_some_and(|entry| {
-        matches!(
-            accounts::turn_status(&entry.summary),
-            AgentStatus::Working | AgentStatus::NeedsYou
-        )
-    });
-    if !busy {
+    if !actions::has_turn(state, agent) {
         return Vec::new();
     }
     match state.prefs.chat.esc_stop {

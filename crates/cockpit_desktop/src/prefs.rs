@@ -1033,6 +1033,22 @@ mod tests {
     }
 
     #[test]
+    fn the_esc_stop_words_are_pinned_and_esc_asks_by_default() {
+        let words: Vec<&str> = EscStop::VARIANTS
+            .iter()
+            .map(|&choice| choice.into())
+            .collect();
+        let at_once: Prefs = serde_json::from_str(r#"{"chat": {"esc_stop": "at_once"}}"#).unwrap();
+        let older: Prefs = serde_json::from_str(r#"{"chat": {"comments": "hidden"}}"#).unwrap();
+        let unknown: Prefs = serde_json::from_str(r#"{"chat": {"esc_stop": "never"}}"#).unwrap();
+
+        assert_eq!(words, ["ask", "at_once"]);
+        assert_eq!(at_once.chat.esc_stop, EscStop::AtOnce);
+        assert_eq!(older.chat.esc_stop, EscStop::Ask);
+        assert_eq!(unknown.chat.esc_stop, EscStop::Ask);
+    }
+
+    #[test]
     fn the_notification_words_are_pinned_and_an_unknown_one_reads_as_all() {
         let words: Vec<&str> = NotificationLevel::VARIANTS
             .iter()

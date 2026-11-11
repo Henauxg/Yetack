@@ -1160,15 +1160,28 @@ pub fn stop_from_dialog(state: &mut AppState, agent: AgentId, esc_stop: EscStop)
     interrupt(state, agent)
 }
 
-/// Stops the current turn. Only a working agent, or one waiting for you, has a turn to stop.
-pub fn interrupt(state: &AppState, agent: AgentId) -> Vec<Outgoing> {
-    let has_turn = state.agents.get(&agent).is_some_and(|entry| {
+/// Closes the stop dialog once its agent has no turn left to stop.
+pub fn follow_stop_dialog(state: &mut AppState) {
+    if let Some(Dialog::StopAgent(agent)) = state.ui.dialog
+        && !has_turn(state, agent)
+    {
+        state.ui.close_dialog();
+    }
+}
+
+/// Only a working agent, or one waiting for you, has a turn to stop.
+pub fn has_turn(state: &AppState, agent: AgentId) -> bool {
+    state.agents.get(&agent).is_some_and(|entry| {
         matches!(
             accounts::turn_status(&entry.summary),
             AgentStatus::Working | AgentStatus::NeedsYou
         )
-    });
-    if !has_turn {
+    })
+}
+
+/// Stops the current turn, when the agent has one.
+pub fn interrupt(state: &AppState, agent: AgentId) -> Vec<Outgoing> {
+    if !has_turn(state, agent) {
         return Vec::new();
     }
     vec![Outgoing::action(Request::AgentInterrupt(AgentParams {
@@ -5384,6 +5397,20 @@ mod tests {
         };
         assert_eq!(params.before, Some(ItemId::new(50)));
         assert!(load_older(&mut state, agent()).is_empty());
+    }
+
+    #[test]
+    fn the_stop_dialog_closes_once_its_agent_has_no_turn_left() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Working)]);
+        state.ui.dialog = Some(Dialog::StopAgent(agent()));
+
+        follow_stop_dialog(&mut state);
+        let while_working = state.ui.dialog.clone();
+        state.agents.get_mut(&agent()).unwrap().summary.status = AgentStatus::Idle;
+        follow_stop_dialog(&mut state);
+
+        assert_eq!(while_working, Some(Dialog::StopAgent(agent())));
+        assert_eq!(state.ui.dialog, None);
     }
 
     #[test]

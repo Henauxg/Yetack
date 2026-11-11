@@ -220,8 +220,8 @@ fn CloseAgentDialog(agent: AgentId) -> Element {
     }
 }
 
-/// Asks before Esc stops a busy agent. Its box turns the question off for good: Settings turns it
-/// back on.
+/// Asks before Esc stops a busy agent. Its box turns the question off until Settings turns it back
+/// on.
 #[component]
 fn StopAgentDialog(agent: AgentId) -> Element {
     let cockpit: Cockpit = use_context();
@@ -238,19 +238,35 @@ fn StopAgentDialog(agent: AgentId) -> Element {
         .read()
         .draft(agent)
         .is_some_and(|draft| !draft.is_empty());
-    let esc_stop = if never_ask() {
-        EscStop::AtOnce
-    } else {
-        EscStop::Ask
+    let stop = move || {
+        let esc_stop = if never_ask() {
+            EscStop::AtOnce
+        } else {
+            EscStop::Ask
+        };
+        cockpit.change(|state| actions::stop_from_dialog(state, agent, esc_stop));
     };
     rsx! {
         div {
             class: "dialog stop-agent",
             role: "alertdialog",
             aria_label: "Stop the agent",
+            // The dialog, not its Stop, takes the focus: a user who goes on typing after a stray Esc
+            // presses Space, which would press a focused button. Enter stops.
+            tabindex: "-1",
+            onmounted: move |event| async move {
+                // The dialog may have closed already: nothing to focus then.
+                let _ = event.data().set_focus(true).await;
+            },
+            onkeydown: move |event| {
+                if event.key() == Key::Enter {
+                    stop();
+                }
+            },
             onclick: move |event| event.stop_propagation(),
             div { class: "dialog-head",
                 h2 { "Stop the agent" }
+                span { class: "key-hint", "Enter" }
             }
             p { class: "dialog-text",
                 "Stop \u{201c}{title}\u{201d}? Claude stops its current turn."
@@ -258,7 +274,9 @@ fn StopAgentDialog(agent: AgentId) -> Element {
                     " Your message stays in the composer."
                 }
             }
+            // The box and the buttons take their own keys: Enter on Keep working keeps the agent.
             label { class: "dialog-tick",
+                onkeydown: move |event| event.stop_propagation(),
                 input {
                     r#type: "checkbox",
                     checked: never_ask(),
@@ -267,6 +285,7 @@ fn StopAgentDialog(agent: AgentId) -> Element {
                 span { "Stop without asking next time" }
             }
             div { class: "dialog-actions",
+                onkeydown: move |event| event.stop_propagation(),
                 button {
                     class: "button",
                     onclick: move |_| cockpit.update(|state| state.ui.dialog = None),
@@ -274,11 +293,8 @@ fn StopAgentDialog(agent: AgentId) -> Element {
                 }
                 button {
                     class: "button danger",
-                    onmounted: move |event| async move {
-                        // The dialog may have closed already: nothing to focus then.
-                        let _ = event.data().set_focus(true).await;
-                    },
-                    onclick: move |_| cockpit.change(|state| actions::stop_from_dialog(state, agent, esc_stop)),
+                    title: "Enter",
+                    onclick: move |_| stop(),
                     "Stop"
                 }
             }

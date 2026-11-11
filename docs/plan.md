@@ -185,7 +185,7 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   - Usage goes in the header of the center pane, not in the sidebar.
   - Small edits show inline in the chat as compact diffs.
   - Code blocks in agent answers have a copy button.
-  - One button ends the composer. While an agent works or waits for you, it is Stop while the message is empty, and Send once something is written. Send (Enter) steers the agent: Claude reads the message at its next step. Alt+Enter queues it until the turn ends. For a second after the button sends, it stays a disabled Send, and the focus goes back to the text, so a double click or a key pressed next never stops the agent.
+  - One button ends the composer. While an agent works or waits for you, it is Stop while the message is empty, and Send once something is written. Send (Enter) steers the agent: Claude reads the message at its next step. Alt+Enter queues it until the turn ends. For a second after the button sends, it stays an inactive Send, and the focus goes back to the text, so a double click or a key pressed next never stops the agent.
   - The composer shows the model and effort, the prompt cache timer and the permission mode.
   - Changed files open from a compact list, not a full side panel.
   - A read-only file view opens on the right and closes with a cross.
