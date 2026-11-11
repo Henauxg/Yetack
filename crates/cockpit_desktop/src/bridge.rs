@@ -363,6 +363,8 @@ const text = await dioxus.recv();
 const field = document.getElementById(field_id);
 if (field !== null) {
   field.focus();
+  // The composer's undo history adds a step on beforeinput, as for a key press.
+  field.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, data: text, inputType: "insertText" }));
   const end = field.value.length;
   field.setRangeText(text, end, end, "end");
   field.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: "insertText" }));
