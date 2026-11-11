@@ -1125,7 +1125,16 @@ pub fn send_prompt(
     };
     // Shown at once: the daemon's echo takes a round trip, long to a server. A message steered to
     // a busy agent waits in the app first, and leaves later.
-    let Some(sent) = sending::start(state, agent, &prompt, delivery, &draft, Instant::now()) else {
+    let hold = state.prefs.chat.steer_hold.duration();
+    let Some(sent) = sending::start(
+        state,
+        agent,
+        &prompt,
+        delivery,
+        &draft,
+        hold,
+        Instant::now(),
+    ) else {
         return Vec::new();
     };
     vec![Outgoing {

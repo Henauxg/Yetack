@@ -34,7 +34,8 @@
 //!   },
 //!   "chat": {
 //!     "comments": "hidden",
-//!     "last_message": "hidden"
+//!     "last_message": "hidden",
+//!     "steer_hold": "three_seconds"
 //!   }
 //! }
 //! ```
@@ -52,6 +53,7 @@ use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use cockpit_protocol::{AccountId, AgentId, AgentStatus, AgentSummary, Mark};
 use dioxus::prelude::*;
@@ -94,6 +96,49 @@ pub struct ChatPrefs {
     pub comments: CommentPlacement,
     /// The bubble over the chat with the user's last message, from the eye in the Messages block.
     pub last_message: LastMessage,
+    /// How long a message steered to a busy agent waits in the app, where Cancel can still stop it.
+    pub steer_hold: SteerHold,
+}
+
+/// How long the app holds a message steered to a busy agent before it sends it: once sent, Claude
+/// Code holds it, and nothing takes it back.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumString, IntoStaticStr, VariantArray,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum SteerHold {
+    /// The message leaves at once.
+    #[default]
+    Off,
+    ThreeSeconds,
+    FiveSeconds,
+    TenSeconds,
+}
+
+impl SteerHold {
+    pub fn duration(self) -> Duration {
+        let seconds = match self {
+            Self::Off => 0,
+            Self::ThreeSeconds => 3,
+            Self::FiveSeconds => 5,
+            Self::TenSeconds => 10,
+        };
+        Duration::from_secs(seconds)
+    }
+}
+
+impl Serialize for SteerHold {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.into())
+    }
+}
+
+/// A word this version does not know, from another version of the app, reads as the default.
+impl<'de> Deserialize<'de> for SteerHold {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let word = String::deserialize(deserializer)?;
+        Ok(word.parse().unwrap_or_default())
+    }
 }
 
 /// Whether the user's last message shows over the chat once it scrolled out above.
@@ -772,7 +817,8 @@ mod tests {
   },
   "chat": {
     "comments": "hidden",
-    "last_message": "hidden"
+    "last_message": "hidden",
+    "steer_hold": "three_seconds"
   },
   "keys": {
     "switcher": "Ctrl+j"
@@ -829,6 +875,7 @@ mod tests {
                 chat: ChatPrefs {
                     comments: CommentPlacement::Hidden,
                     last_message: LastMessage::Hidden,
+                    steer_hold: SteerHold::ThreeSeconds,
                 },
                 keys: switched,
             }

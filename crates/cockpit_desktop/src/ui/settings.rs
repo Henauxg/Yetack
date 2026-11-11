@@ -1,6 +1,6 @@
 //! The Settings dialog, from the gear in the sidebar's foot. Its General tab holds the app's
-//! notifications, as the sidebar's bell sets them, where comments on quotes show, and whether a new
-//! agent's files pane shows. Its Keyboard tab lists every shortcut and records new ones for the
+//! notifications, as the sidebar's bell sets them, where comments on quotes show, how long a message
+//! sent to a working agent can still be cancelled, and whether a new agent's files pane shows. Its Keyboard tab lists every shortcut and records new ones for the
 //! commands.
 
 use dioxus::prelude::*;
@@ -9,7 +9,7 @@ use strum::VariantArray;
 use crate::connection::Cockpit;
 use crate::format;
 use crate::keymap::{self, Chord, Command, FixedShortcut, Group, Keymap, Refusal};
-use crate::prefs::{CommentPlacement, NotificationLevel, PaneState};
+use crate::prefs::{CommentPlacement, NotificationLevel, PaneState, SteerHold};
 use crate::state::{RefusedChord, SettingsTab, SettingsView, notification_levels, settings};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::notification_levels as levels_ui;
@@ -17,12 +17,22 @@ use crate::ui::presence::{Presence, Shown, use_presence};
 
 const NOTIFICATIONS_LABEL_ID: &str = "setting-notifications";
 const COMMENTS_LABEL_ID: &str = "setting-comments";
+const STEER_HOLD_LABEL_ID: &str = "setting-steer-hold";
 const FILES_PANE_LABEL_ID: &str = "setting-files-pane";
 
 fn pane_label(pane: PaneState) -> &'static str {
     match pane {
         PaneState::Open => "Open",
         PaneState::Closed => "Closed",
+    }
+}
+
+fn hold_label(hold: SteerHold) -> &'static str {
+    match hold {
+        SteerHold::Off => "Off",
+        SteerHold::ThreeSeconds => "3 s",
+        SteerHold::FiveSeconds => "5 s",
+        SteerHold::TenSeconds => "10 s",
     }
 }
 
@@ -81,11 +91,12 @@ pub fn SettingsDialog(view: SettingsView) -> Element {
 #[component]
 fn GeneralTab() -> Element {
     let cockpit: Cockpit = use_context();
-    let (notifications, comments, new_pane, pane_keys) = {
+    let (notifications, comments, steer_hold, new_pane, pane_keys) = {
         let state = cockpit.state.read();
         (
             notification_levels::app_level(&state),
             state.prefs.chat.comments,
+            state.prefs.chat.steer_hold,
             state.prefs.files_pane.new_agents,
             state.prefs.keys.shown(Command::FilesPane),
         )
@@ -128,6 +139,25 @@ fn GeneralTab() -> Element {
                             aria_pressed: placement == comments,
                             onclick: move |_| cockpit.update(|state| settings::set_comment_placement(state, placement)),
                             "{placement_label(placement)}"
+                        }
+                    }
+                }
+            }
+            div { class: "setting-row",
+                div { class: "setting-text",
+                    span { id: STEER_HOLD_LABEL_ID, class: "setting-label", "Time to cancel a message sent while the agent works" }
+                    span { class: "setting-help",
+                        "Claude reads such a message at its next step, and once it has it, nothing takes it back. With a time set, the message waits that long above the composer first, with Send now and Cancel."
+                    }
+                }
+                div { class: "segmented", role: "group", aria_labelledby: STEER_HOLD_LABEL_ID,
+                    for &hold in SteerHold::VARIANTS {
+                        button {
+                            key: "{hold_label(hold)}",
+                            class: if hold == steer_hold { "segment chosen" } else { "segment" },
+                            aria_pressed: hold == steer_hold,
+                            onclick: move |_| cockpit.update(|state| settings::set_steer_hold(state, hold)),
+                            "{hold_label(hold)}"
                         }
                     }
                 }

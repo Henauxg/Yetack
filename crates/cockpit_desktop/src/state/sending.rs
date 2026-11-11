@@ -12,9 +12,9 @@
 //! - The daemon's answer to `agent.prompt` can come before its echo: only the echo ends a wait.
 //!   A reconnect with a snapshot builds the agent again without its messages, and the transcript
 //!   it then loads holds the ones the daemon took.
-//! - A message steered to a busy agent waits `HOLD` in the app before it leaves, which Cancel can
-//!   still stop: once sent, Claude Code holds it, and no request takes it back. A reconnect's
-//!   snapshot keeps the held messages.
+//! - A message steered to a busy agent can wait in the app before it leaves, as long as the
+//!   preferences' `SteerHold` says, so that Cancel can still stop it: once sent, Claude Code holds
+//!   it, and no request takes it back. A reconnect's snapshot keeps the held messages.
 
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
@@ -29,9 +29,6 @@ use super::app_state::{AgentEntry, AppState};
 use super::drafts::{Draft, Drafts};
 use super::requests::{Outgoing, Purpose};
 use crate::machine::MachineId;
-
-/// How long a message steered to a busy agent stays in the app, where Cancel can still stop it.
-pub const HOLD: Duration = Duration::from_secs(3);
 
 /// Names one message on its way, among all of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -114,7 +111,7 @@ impl Sending {
 }
 
 /// Shows `prompt` on its way, where the daemon most likely puts it: the daemon queues a message
-/// while the agent's turn runs or while messages wait. A message steered there waits `HOLD` in
+/// while the agent's turn runs or while messages wait. A message steered there waits `hold` in
 /// the app first: then `None` comes back, and `release_due` sends it.
 pub fn start(
     state: &mut AppState,
@@ -122,6 +119,7 @@ pub fn start(
     prompt: &Prompt,
     delivery: PromptDelivery,
     draft: &Draft,
+    hold: Duration,
     now: Instant,
 ) -> Option<SendingId> {
     let entry = state.agents.get_mut(&agent)?;
@@ -150,8 +148,9 @@ pub fn start(
         .iter()
         .filter_map(SendingPrompt::held_until)
         .max();
-    let until = if place == SendingPlace::Waiting && steered {
-        Some(now + HOLD)
+    // Never before an older held message, even after the hold was shortened.
+    let until = if place == SendingPlace::Waiting && steered && !hold.is_zero() {
+        behind.max(Some(now + hold))
     } else {
         behind
     };
@@ -423,6 +422,9 @@ mod tests {
 
     use super::*;
     use crate::machine::MachineId;
+
+    /// The hold of the tests that hold a message.
+    const HOLD: Duration = Duration::from_secs(3);
     use crate::state::app_state::{AppState, Loadable};
     use crate::state::drafts::Drafts;
     use crate::state::{actions, apply_response, state_with, summary};
@@ -456,6 +458,7 @@ mod tests {
             &prompt(text),
             PromptDelivery::Queue,
             &Draft::default(),
+            HOLD,
             Instant::now(),
         )
         .unwrap()
@@ -713,6 +716,7 @@ mod tests {
             &prompt(text),
             PromptDelivery::Steer,
             &draft,
+            HOLD,
             now,
         )
     }
@@ -952,5 +956,56 @@ mod tests {
             drafts.draft(agent()).map(|draft| draft.text.as_str()),
             Some("Look at this")
         );
+    }
+
+    #[test]
+    fn without_a_hold_a_steered_message_leaves_at_once() {
+        let mut state = working_agent(Loadable::Loaded(waiting(&[])));
+        let draft = Draft {
+            text: "Also the docs".to_owned(),
+            ..Draft::default()
+        };
+
+        let sent = start(
+            &mut state,
+            agent(),
+            &prompt("Also the docs"),
+            PromptDelivery::Steer,
+            &draft,
+            Duration::ZERO,
+            Instant::now(),
+        );
+
+        assert!(sent.is_some());
+        assert!(held(&mut state).is_empty());
+        assert_eq!(texts(&mut state, SendingPlace::Waiting), ["Also the docs"]);
+        assert_eq!(state.prefs.chat.steer_hold.duration(), Duration::ZERO);
+    }
+
+    #[test]
+    fn a_shorter_hold_set_meanwhile_keeps_the_order_sent() {
+        let now = Instant::now();
+        let mut state = working_agent(Loadable::Loaded(waiting(&[])));
+        let steer_for = |state: &mut AppState, text: &str, hold: Duration, at: Instant| {
+            let draft = Draft {
+                text: text.to_owned(),
+                ..Draft::default()
+            };
+            start(
+                state,
+                agent(),
+                &prompt(text),
+                PromptDelivery::Steer,
+                &draft,
+                hold,
+                at,
+            )
+        };
+        steer_for(&mut state, "A first", Duration::from_secs(10), now);
+        steer_for(&mut state, "B second", HOLD, now + Duration::from_secs(1));
+
+        assert!(release_due(&mut state, now + Duration::from_secs(5)).is_empty());
+        let sent = release_due(&mut state, now + Duration::from_secs(10));
+        assert_eq!(left_texts(&sent), ["A first", "B second"]);
     }
 }

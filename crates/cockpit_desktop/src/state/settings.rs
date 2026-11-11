@@ -4,7 +4,7 @@
 use super::app_state::AppState;
 use super::ui_state::{Dialog, RefusedChord, SettingsTab, SettingsView};
 use crate::keymap::{Chord, Command, Refusal};
-use crate::prefs::{CommentPlacement, PaneState};
+use crate::prefs::{CommentPlacement, PaneState, SteerHold};
 
 /// Opens the dialog, from the gear in the sidebar's foot.
 pub fn open(state: &mut AppState) {
@@ -15,6 +15,12 @@ pub fn open(state: &mut AppState) {
 /// Where new comments on quotes show. The comments already written keep their place.
 pub fn set_comment_placement(state: &mut AppState, placement: CommentPlacement) {
     state.prefs.chat.comments = placement;
+}
+
+/// How long a message steered to a busy agent waits in the app. The messages already held keep
+/// their hold.
+pub fn set_steer_hold(state: &mut AppState, hold: SteerHold) {
+    state.prefs.chat.steer_hold = hold;
 }
 
 /// The files pane of an agent never opened or closed. The others keep theirs.
