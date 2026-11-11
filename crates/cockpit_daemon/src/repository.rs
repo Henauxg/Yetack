@@ -22,7 +22,7 @@ pub(crate) fn of_folder(folder: &Path) -> Option<String> {
         .ancestors()
         .find(|ancestor| ancestor.join(GIT_ENTRY).symlink_metadata().is_ok())?;
     let git_dir = git_dir(&checkout.join(GIT_ENTRY))?;
-    let config = fs::read_to_string(common_dir(&git_dir).join(CONFIG_FILE)).ok()?;
+    let config = read_regular(&common_dir(&git_dir).join(CONFIG_FILE))?;
     let remotes = remote_urls(&config);
     let url = remotes
         .iter()
@@ -37,7 +37,7 @@ fn git_dir(entry: &Path) -> Option<PathBuf> {
     if entry.is_dir() {
         return Some(entry.to_owned());
     }
-    let text = fs::read_to_string(entry).ok()?;
+    let text = read_regular(entry)?;
     let named = text.trim().strip_prefix(GITDIR_PREFIX)?.trim();
     let named = Path::new(named);
     Some(if named.is_absolute() {
@@ -49,8 +49,8 @@ fn git_dir(entry: &Path) -> Option<PathBuf> {
 
 /// The git folder that holds the config: a worktree's names it in `commondir`.
 fn common_dir(git_dir: &Path) -> PathBuf {
-    match fs::read_to_string(git_dir.join(COMMONDIR_FILE)) {
-        Ok(text) => {
+    match read_regular(&git_dir.join(COMMONDIR_FILE)) {
+        Some(text) => {
             let named = Path::new(text.trim());
             if named.is_absolute() {
                 named.to_owned()
@@ -58,8 +58,17 @@ fn common_dir(git_dir: &Path) -> PathBuf {
                 git_dir.join(named)
             }
         }
-        Err(_) => git_dir.to_owned(),
+        None => git_dir.to_owned(),
     }
+}
+
+/// The text of `path` when it is a regular file. Reading anything else, such as a FIFO an
+/// agent made, could block the daemon or never end.
+fn read_regular(path: &Path) -> Option<String> {
+    if !fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
+    fs::read_to_string(path).ok()
 }
 
 /// Each `[remote "<name>"]` section's name and `url`, in the file's order.
@@ -150,5 +159,33 @@ mod tests {
         fs::write(temp.path().join(".git/config"), "[core]\n\tbare = false\n").unwrap();
         assert_eq!(of_folder(temp.path()), None);
         assert_eq!(of_folder(&temp.path().join("missing")), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_in_place_of_a_git_file_names_no_repository_at_once() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        use rustix::fs::{CWD, Mode, mkfifoat};
+
+        let temp = tempfile::tempdir().unwrap();
+        let entry_fifo = temp.path().join("notes");
+        fs::create_dir_all(&entry_fifo).unwrap();
+        mkfifoat(CWD, &entry_fifo.join(".git"), Mode::RUSR).unwrap();
+        let config_fifo = temp.path().join("billing");
+        fs::create_dir_all(config_fifo.join(".git")).unwrap();
+        mkfifoat(CWD, &config_fifo.join(".git/config"), Mode::RUSR).unwrap();
+        let (sender, receiver) = mpsc::channel();
+
+        // Opening a FIFO waits for a writer: the reads run in a thread the test can leave behind.
+        std::thread::spawn(move || {
+            let _ = sender.send((of_folder(&entry_fifo), of_folder(&config_fifo)));
+        });
+
+        let found = receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("an answer without a writer on the FIFOs");
+        assert_eq!(found, (None, None));
     }
 }
