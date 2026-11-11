@@ -56,7 +56,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use cockpit_protocol::{AccountId, AgentId, AgentStatus, AgentSummary, Mark};
+use cockpit_protocol::{AccountId, AgentId, AgentStatus, AgentSummary, Mark, Repository};
 use dioxus::prelude::*;
 use serde::de::IgnoredAny;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -166,9 +166,9 @@ fn known_rules<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Project
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectRule {
-    /// A git repository by its remote, as `normalized_repository` writes it: every clone and
+    /// A git repository by its remote, as `Repository::from_remote` writes it: every clone and
     /// worktree of it, on every machine.
-    Repository(String),
+    Repository(Repository),
     /// A folder and the folders inside it, by its absolute path. A path that ends with `*` holds
     /// every folder whose path starts with the rest.
     Folder(String),
@@ -1079,7 +1079,9 @@ mod tests {
                         name: "billing".to_owned(),
                         color: AccountColor::Violet,
                         rules: vec![
-                            ProjectRule::Repository("github.com/acme/billing".to_owned()),
+                            ProjectRule::Repository(Repository::from_remote(
+                                "github.com/acme/billing"
+                            )),
                             ProjectRule::Folder("/srv/billing-*".to_owned()),
                         ],
                     }],

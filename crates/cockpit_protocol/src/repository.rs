@@ -1,6 +1,45 @@
 //! A git repository named by its remote, the same way whatever the URL's form, so that two
 //! clones or worktrees of one repository on two machines name it alike.
 
+use std::fmt;
+
+use serde::{Deserialize, Serialize};
+
+/// A git repository by its remote, as [`Repository::from_remote`] writes it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Repository(String);
+
+impl Repository {
+    /// The repository of a remote's URL, in any of its forms. The URL of a repository written
+    /// this way gives it back.
+    pub fn from_remote(url: &str) -> Self {
+        Self(normalized(url))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Its last name: `billing` for `github.com/acme/billing` or `C:\repos\billing`.
+    pub fn name(&self) -> &str {
+        self.0
+            .rsplit(['/', '\\', ':'])
+            .find(|name| !name.is_empty())
+            .unwrap_or(&self.0)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl fmt::Display for Repository {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
 /// `url` without its scheme, user, port, trailing `.git` and slashes, and with its host in lower
 /// case:
 ///
@@ -9,7 +48,7 @@
 /// - `ssh://git@github.com/acme/billing` gives `github.com/acme/billing`;
 /// - a local path, such as `/srv/git/billing.git`, gives `/srv/git/billing`, and
 ///   `C:\repos\billing.git` gives `C:\repos\billing`.
-pub fn normalized_repository(url: &str) -> String {
+fn normalized(url: &str) -> String {
     let url = url.trim();
     let (host, path) = match url.split_once("://") {
         Some(("file", path)) => return trimmed(path).to_owned(),
@@ -70,32 +109,22 @@ mod tests {
         ];
 
         for form in forms {
-            assert_eq!(
-                normalized_repository(form),
-                "github.com/acme/billing",
-                "{form}"
-            );
+            assert_eq!(normalized(form), "github.com/acme/billing", "{form}");
         }
     }
 
     #[test]
     fn a_local_remote_keeps_its_path() {
+        assert_eq!(normalized("/srv/git/billing.git"), "/srv/git/billing");
         assert_eq!(
-            normalized_repository("/srv/git/billing.git"),
+            normalized("file:///srv/git/billing.git"),
             "/srv/git/billing"
         );
-        assert_eq!(
-            normalized_repository("file:///srv/git/billing.git"),
-            "/srv/git/billing"
-        );
-        assert_eq!(normalized_repository("../billing"), "../billing");
-        assert_eq!(
-            normalized_repository(r"C:\repos\billing.git\"),
-            r"C:\repos\billing"
-        );
-        assert_eq!(
-            normalized_repository("C:/repos/billing"),
-            "C:/repos/billing"
-        );
+        assert_eq!(normalized("../billing"), "../billing");
+        let windows = Repository::from_remote(r"C:\repos\billing.git");
+        assert_eq!(windows.name(), "billing");
+        assert_eq!(Repository::from_remote(windows.as_str()), windows);
+        assert_eq!(normalized(r"C:\repos\billing.git\"), r"C:\repos\billing");
+        assert_eq!(normalized("C:/repos/billing"), "C:/repos/billing");
     }
 }

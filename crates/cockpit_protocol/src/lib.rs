@@ -56,7 +56,7 @@ pub use machine_load::{
     ResourceUse, ServerLoad, ServerPoint,
 };
 pub use position::{Placed, Position, list_order, move_agent, place_on_top};
-pub use repository::normalized_repository;
+pub use repository::Repository;
 pub use request::{
     AccountAddParams, AccountChangeParams, AccountParams, AgentParams, Answer, AnswerParams,
     COMMAND_PREFIX, FindFilesParams, FolderParams, FoldersListParams, HistoryParams, ListDirParams,

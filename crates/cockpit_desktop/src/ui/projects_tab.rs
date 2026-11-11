@@ -4,6 +4,8 @@
 
 use std::collections::HashMap;
 
+use cockpit_protocol::Repository;
+
 use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
@@ -75,7 +77,8 @@ fn project_cards(state: &AppState) -> Vec<ProjectCard> {
 
 fn rule_text(rule: &ProjectRule) -> &str {
     match rule {
-        ProjectRule::Repository(text) | ProjectRule::Folder(text) => text,
+        ProjectRule::Repository(repository) => repository.as_str(),
+        ProjectRule::Folder(text) => text,
     }
 }
 
@@ -368,7 +371,7 @@ fn RuleField(id: ProjectId, kind: RuleKind) -> Element {
 }
 
 #[component]
-fn TemporaryBody(repository: String) -> Element {
+fn TemporaryBody(repository: Repository) -> Element {
     let cockpit: Cockpit = use_context();
     let text = repository.clone();
     rsx! {

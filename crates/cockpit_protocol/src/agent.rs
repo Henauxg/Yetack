@@ -7,6 +7,7 @@ use strum::VariantArray;
 
 use crate::ids::{AccountId, AgentId, ClaudeSessionId};
 use crate::position::Position;
+use crate::repository::Repository;
 use crate::stored_bool::{FromStoredBool, enum_or_stored_bool};
 use crate::time::Timestamp;
 use crate::usage::CostUsd;
@@ -127,10 +128,10 @@ pub struct AgentSummary {
     #[serde(default)]
     pub mark: Mark,
     /// The git repository the agent's folder belongs to, by its `origin` remote, as
-    /// [`normalized_repository`](crate::normalized_repository) writes it. `None` outside git, for
+    /// [`Repository::from_remote`] writes it. `None` outside git, for
     /// a repository without a remote, and from a daemon that predates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub repository: Option<String>,
+    pub repository: Option<Repository>,
 }
 
 /// Where an agent's effort comes from.

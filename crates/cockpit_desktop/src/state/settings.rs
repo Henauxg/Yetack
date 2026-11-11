@@ -1,6 +1,8 @@
 //! The Settings dialog: the app's choices that are not made where they act, kept in the
 //! preferences. Its Keyboard tab records new shortcuts for the commands.
 
+use cockpit_protocol::Repository;
+
 use super::app_state::AppState;
 use super::projects::{self, NEW_PROJECT_NAME, ProjectKey, RuleKind};
 use super::ui_state::{Dialog, RefusedChord, SettingsTab, SettingsView};
@@ -160,7 +162,7 @@ pub fn new_project(state: &mut AppState) {
 }
 
 /// Keeps a temporary project, and leaves its card open under its kept key.
-pub fn keep_project(state: &mut AppState, repository: &str) {
+pub fn keep_project(state: &mut AppState, repository: &Repository) {
     let id = projects::keep(state, repository);
     if let Some(view) = view_mut(state) {
         view.project = Some(ProjectKey::Kept(id));
@@ -238,17 +240,20 @@ mod tests {
         assert_eq!(view(&state).adding_rule, None);
         assert_eq!(
             state.prefs.projects.list[0].rules,
-            [ProjectRule::Repository("github.com/acme/app".to_owned())]
+            [ProjectRule::Repository(Repository::from_remote(
+                "github.com/acme/app"
+            ))]
         );
     }
 
     #[test]
     fn keeping_a_temporary_project_leaves_its_card_open_and_deleting_closes_it() {
         let mut state = projects_tab();
-        let temporary = ProjectKey::Repository("github.com/acme/app".to_owned());
+        let repository = Repository::from_remote("github.com/acme/app");
+        let temporary = ProjectKey::Repository(repository.clone());
         toggle_project(&mut state, &temporary);
 
-        keep_project(&mut state, "github.com/acme/app");
+        keep_project(&mut state, &repository);
         let id = state.prefs.projects.list[0].id;
         let kept = view(&state).project;
         delete_project(&mut state, id);

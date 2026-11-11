@@ -16,7 +16,7 @@ use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
 
-use cockpit_protocol::{AgentId, normalized_repository};
+use cockpit_protocol::{AgentId, Repository};
 use serde::{Deserialize, Deserializer};
 use strum::VariantArray;
 
@@ -41,7 +41,7 @@ pub const NEW_PROJECT_NAME: &str = "New project";
 pub enum ProjectKey {
     Kept(ProjectId),
     /// The temporary project of a repository no kept project claims.
-    Repository(String),
+    Repository(Repository),
     /// "No project".
     None,
 }
@@ -64,7 +64,7 @@ impl FromStr for ProjectKey {
             return Ok(Self::None);
         }
         if let Some(repository) = text.strip_prefix(REPOSITORY_PREFIX) {
-            return Ok(Self::Repository(repository.to_owned()));
+            return Ok(Self::Repository(Repository::from_remote(repository)));
         }
         text.strip_prefix(KEPT_PREFIX)
             .and_then(|id| id.parse().ok())
@@ -91,7 +91,7 @@ pub enum RuleKind {
 impl RuleKind {
     pub fn rule(self, text: String) -> ProjectRule {
         match self {
-            Self::Repository => ProjectRule::Repository(text),
+            Self::Repository => ProjectRule::Repository(Repository::from_remote(&text)),
             Self::Folder => ProjectRule::Folder(text),
         }
     }
@@ -123,7 +123,7 @@ pub fn project_of(state: &AppState, entry: &AgentEntry) -> ProjectKey {
         project
             .rules
             .iter()
-            .any(|rule| holds(rule, &summary.folder, summary.repository.as_deref()))
+            .any(|rule| holds(rule, &summary.folder, summary.repository.as_ref()))
     });
     match (kept, &summary.repository) {
         (Some(project), _) => ProjectKey::Kept(project.id),
@@ -140,7 +140,7 @@ pub fn for_new_agent(state: &AppState, machine: MachineId, folder: &Path) -> Opt
         .agents
         .values()
         .filter(|entry| MachineId::of(entry.id()) == machine && entry.summary.folder == folder)
-        .find_map(|entry| entry.summary.repository.as_deref());
+        .find_map(|entry| entry.summary.repository.as_ref());
     let kept = state.prefs.projects.list.iter().find(|project| {
         project
             .rules
@@ -149,7 +149,7 @@ pub fn for_new_agent(state: &AppState, machine: MachineId, folder: &Path) -> Opt
     });
     match (kept, repository) {
         (Some(project), _) => Some(ProjectKey::Kept(project.id)),
-        (None, Some(repository)) => Some(ProjectKey::Repository(repository.to_owned())),
+        (None, Some(repository)) => Some(ProjectKey::Repository(repository.clone())),
         (None, None) => None,
     }
 }
@@ -169,9 +169,9 @@ fn moved_to(state: &AppState, agent: AgentId) -> Option<ProjectKey> {
     }
 }
 
-fn holds(rule: &ProjectRule, folder: &Path, repository: Option<&str>) -> bool {
+fn holds(rule: &ProjectRule, folder: &Path, repository: Option<&Repository>) -> bool {
     match rule {
-        ProjectRule::Repository(wanted) => repository == Some(wanted.as_str()),
+        ProjectRule::Repository(wanted) => repository == Some(wanted),
         ProjectRule::Folder(wanted) => {
             let text = folder.to_string_lossy();
             let style = PathStyle::of(folder);
@@ -207,7 +207,7 @@ pub fn look(state: &AppState, key: &ProjectKey) -> ProjectLook {
             },
         ),
         ProjectKey::Repository(repository) => ProjectLook {
-            name: repository_name(repository).to_owned(),
+            name: repository.name().to_owned(),
             color: Some(color_of(repository)),
             temporary: true,
         },
@@ -219,19 +219,11 @@ pub fn look(state: &AppState, key: &ProjectKey) -> ProjectLook {
     }
 }
 
-/// A repository's last name: `billing` for `github.com/acme/billing`.
-pub fn repository_name(repository: &str) -> &str {
-    repository
-        .rsplit(['/', '\\', ':'])
-        .find(|name| !name.is_empty())
-        .unwrap_or(repository)
-}
-
 /// A temporary project's color, the same for a repository every time.
-fn color_of(repository: &str) -> AccountColor {
+fn color_of(repository: &Repository) -> AccountColor {
     // FNV-1a: stable across runs and versions, unlike the standard hasher.
     let mut hash: u32 = 0x811c_9dc5;
-    for byte in repository.bytes() {
+    for byte in repository.as_str().bytes() {
         hash = (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193);
     }
     let count = u32::try_from(AccountColor::VARIANTS.len()).unwrap_or(1);
@@ -298,7 +290,7 @@ pub fn move_targets(state: &AppState) -> Vec<ProjectKey> {
 pub fn create_for(state: &mut AppState, agent: AgentId) -> Option<ProjectId> {
     let entry = state.agents.get(&agent)?;
     let name = match &entry.summary.repository {
-        Some(repository) => repository_name(repository).to_owned(),
+        Some(repository) => repository.name().to_owned(),
         None => {
             let folder = entry.summary.folder.to_string_lossy();
             PathStyle::of(&entry.summary.folder)
@@ -314,22 +306,22 @@ pub fn create_for(state: &mut AppState, agent: AgentId) -> Option<ProjectId> {
 
 /// Makes the temporary project of `repository` a kept one, at the end of the order, or finds
 /// the kept one that already claims it.
-pub fn keep(state: &mut AppState, repository: &str) -> ProjectId {
+pub fn keep(state: &mut AppState, repository: &Repository) -> ProjectId {
     let claimed = state.prefs.projects.list.iter().find(|project| {
         project
             .rules
-            .contains(&ProjectRule::Repository(repository.to_owned()))
+            .contains(&ProjectRule::Repository(repository.clone()))
     });
     if let Some(project) = claimed {
         return project.id;
     }
-    let name = repository_name(repository).to_owned();
+    let name = repository.name().to_owned();
     let color = color_of(repository);
     add(
         state,
         name,
         color,
-        vec![ProjectRule::Repository(repository.to_owned())],
+        vec![ProjectRule::Repository(repository.clone())],
     )
 }
 
@@ -422,11 +414,12 @@ pub fn set_color(state: &mut AppState, id: ProjectId, color: AccountColor) {
 /// and a rule the project has already add nothing.
 pub fn add_rule(state: &mut AppState, id: ProjectId, rule: ProjectRule) {
     let rule = match rule {
-        ProjectRule::Repository(text) => ProjectRule::Repository(normalized_repository(&text)),
         ProjectRule::Folder(text) => ProjectRule::Folder(text.trim().to_owned()),
+        repository @ ProjectRule::Repository(_) => repository,
     };
     let empty = match &rule {
-        ProjectRule::Repository(text) | ProjectRule::Folder(text) => text.is_empty(),
+        ProjectRule::Repository(repository) => repository.is_empty(),
+        ProjectRule::Folder(text) => text.is_empty(),
     };
     if empty {
         return;
@@ -509,6 +502,10 @@ mod tests {
     const BILLING: &str = "github.com/acme/billing";
     const GATEWAY: &str = "github.com/acme/api-gateway";
 
+    fn repo(remote: &str) -> Repository {
+        Repository::from_remote(remote)
+    }
+
     /// Agents 1 and 2 in the billing repository, 3 in the gateway's, 4 outside git.
     fn agents() -> AppState {
         let mut state = state_with(
@@ -521,7 +518,7 @@ mod tests {
             .into_iter()
             .map(|(id, repository)| {
                 let mut agent = summary(id, AgentStatus::Idle);
-                agent.repository = repository.map(str::to_owned);
+                agent.repository = repository.map(repo);
                 agent
             })
             .collect(),
@@ -635,7 +632,7 @@ mod tests {
 
         assert_eq!(
             guess(&state, "/work/project-1"),
-            Some(ProjectKey::Repository(BILLING.to_owned()))
+            Some(ProjectKey::Repository(repo(BILLING)))
         );
         assert_eq!(
             guess(&state, "/scratch/notes"),
@@ -658,16 +655,16 @@ mod tests {
             &mut Drafts::default(),
             Method::AgentStart,
             Purpose::Start {
-                project: Some(ProjectKey::Repository(GATEWAY.to_owned())),
+                project: Some(ProjectKey::Repository(repo(GATEWAY))),
             },
             Ok(ResponseBody::AgentStarted { agent: started }),
             MachineId::THIS,
         );
         let mut agent = summary(9, AgentStatus::Idle);
-        agent.repository = Some(BILLING.to_owned());
+        agent.repository = Some(repo(BILLING));
         state.agents.insert(started, AgentEntry::new(agent));
 
-        let gateway = keep(&mut state, GATEWAY);
+        let gateway = keep(&mut state, &repo(GATEWAY));
         assert_eq!(project(&state, 9), ProjectKey::Kept(gateway));
     }
 
@@ -675,24 +672,18 @@ mod tests {
     fn without_kept_projects_each_repository_makes_a_temporary_one() {
         let state = agents();
 
-        assert_eq!(
-            project(&state, 1),
-            ProjectKey::Repository(BILLING.to_owned())
-        );
-        assert_eq!(
-            project(&state, 3),
-            ProjectKey::Repository(GATEWAY.to_owned())
-        );
+        assert_eq!(project(&state, 1), ProjectKey::Repository(repo(BILLING)));
+        assert_eq!(project(&state, 3), ProjectKey::Repository(repo(GATEWAY)));
         assert_eq!(project(&state, 4), ProjectKey::None);
         assert_eq!(
             shown_projects(&state),
             [
-                ProjectKey::Repository(GATEWAY.to_owned()),
-                ProjectKey::Repository(BILLING.to_owned()),
+                ProjectKey::Repository(repo(GATEWAY)),
+                ProjectKey::Repository(repo(BILLING)),
                 ProjectKey::None,
             ]
         );
-        let look = look(&state, &ProjectKey::Repository(BILLING.to_owned()));
+        let look = look(&state, &ProjectKey::Repository(repo(BILLING)));
         assert_eq!((look.name.as_str(), look.temporary), ("billing", true));
     }
 
@@ -700,8 +691,8 @@ mod tests {
     fn keeping_a_temporary_project_saves_it_with_its_repository() {
         let mut state = agents();
 
-        let id = keep(&mut state, BILLING);
-        let again = keep(&mut state, BILLING);
+        let id = keep(&mut state, &repo(BILLING));
+        let again = keep(&mut state, &repo(BILLING));
 
         assert_eq!(id, again);
         assert_eq!(project(&state, 2), ProjectKey::Kept(id));
@@ -743,10 +734,7 @@ mod tests {
         );
 
         assert_eq!(project(&state, 4), ProjectKey::Kept(id));
-        assert_eq!(
-            project(&state, 3),
-            ProjectKey::Repository(GATEWAY.to_owned())
-        );
+        assert_eq!(project(&state, 3), ProjectKey::Repository(repo(GATEWAY)));
     }
 
     #[test]
@@ -757,7 +745,7 @@ mod tests {
         add_rule(
             &mut state,
             id,
-            ProjectRule::Repository("git@github.com:acme/api-gateway.git".to_owned()),
+            RuleKind::Repository.rule("git@github.com:acme/api-gateway.git".to_owned()),
         );
 
         assert_eq!(project(&state, 3), ProjectKey::Kept(id));
@@ -773,7 +761,7 @@ mod tests {
         move_agent(
             &mut state,
             AgentId::new(1),
-            &ProjectKey::Repository(BILLING.to_owned()),
+            &ProjectKey::Repository(repo(BILLING)),
         );
         let back = project(&state, 1);
         move_agent(&mut state, AgentId::new(2), &ProjectKey::Kept(id));
@@ -820,7 +808,7 @@ mod tests {
     fn a_header_key_reads_back_from_its_text() {
         for key in [
             ProjectKey::Kept(ProjectId::new(3)),
-            ProjectKey::Repository(BILLING.to_owned()),
+            ProjectKey::Repository(repo(BILLING)),
             ProjectKey::None,
         ] {
             assert_eq!(key.to_string().parse::<ProjectKey>(), Ok(key));
@@ -830,8 +818,6 @@ mod tests {
 
     #[test]
     fn a_temporary_project_keeps_its_color() {
-        assert_eq!(color_of(BILLING), color_of(BILLING));
-        assert_eq!(repository_name("/srv/git/billing"), "billing");
-        assert_eq!(repository_name(r"C:\repos\billing"), "billing");
+        assert_eq!(color_of(&repo(BILLING)), color_of(&repo(BILLING)));
     }
 }

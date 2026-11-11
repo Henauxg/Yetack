@@ -5,7 +5,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use cockpit_protocol::normalized_repository;
+use cockpit_protocol::Repository;
 
 const GIT_ENTRY: &str = ".git";
 /// What a worktree's `.git` file starts with, before the path of its git folder.
@@ -17,7 +17,7 @@ const ORIGIN: &str = "origin";
 
 /// The repository of the git checkout that holds `folder`, by its `origin` remote, else by its
 /// first remote. `None` outside git, or for a checkout without a remote.
-pub(crate) fn of_folder(folder: &Path) -> Option<String> {
+pub(crate) fn of_folder(folder: &Path) -> Option<Repository> {
     let checkout = folder
         .ancestors()
         .find(|ancestor| ancestor.join(GIT_ENTRY).symlink_metadata().is_ok())?;
@@ -28,7 +28,7 @@ pub(crate) fn of_folder(folder: &Path) -> Option<String> {
         .iter()
         .find(|remote| remote.name == ORIGIN)
         .or_else(|| remotes.first())?;
-    Some(normalized_repository(&remote.url))
+    Some(Repository::from_remote(&remote.url))
 }
 
 /// A `[remote "<name>"]` section of a git config.
@@ -128,7 +128,10 @@ mod tests {
 
         let repository = of_folder(&checkout.join("src/invoices"));
 
-        assert_eq!(repository.as_deref(), Some("github.com/acme/billing"));
+        assert_eq!(
+            repository.as_ref().map(Repository::as_str),
+            Some("github.com/acme/billing")
+        );
     }
 
     #[test]
@@ -148,7 +151,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            of_folder(&worktree).as_deref(),
+            of_folder(&worktree).as_ref().map(Repository::as_str),
             Some("github.com/acme/billing")
         );
     }

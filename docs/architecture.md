@@ -81,7 +81,7 @@ id, title, folder, status, activity line, pending count, model, effort, permissi
 
 `repository` is the remote of the folder's repository, which the app groups agents by when it groups them by project.
 The daemon reads it from the folder's git files when the agent starts, is restored, or changes folder (`cockpit_daemon` `repository.rs`): the `origin` remote, else the first remote, through a worktree's or a submodule's `.git` file too.
-`cockpit_protocol::normalized_repository` writes every form of a remote the same way, so that `git@github.com:acme/app.git` and `https://github.com/acme/app` are both `github.com/acme/app`.
+`cockpit_protocol::Repository::from_remote` writes every form of a remote the same way, so that `git@github.com:acme/app.git` and `https://github.com/acme/app` are both `github.com/acme/app`. A repository travels and is saved as that text.
 A folder outside git, or a summary from an older daemon, has no repository.
 A background task (a subagent or a command started in the background) can outlive the turn that started it, so an `Idle` agent can still have work running: the daemon sends a new summary when that count changes. A summary without the count reads 0.
 
