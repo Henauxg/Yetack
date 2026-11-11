@@ -29,6 +29,7 @@ pub mod title_emoji;
 pub mod to_handle;
 mod transcript;
 mod ui_state;
+pub mod unread;
 mod utf16_offset;
 pub mod working_folder;
 

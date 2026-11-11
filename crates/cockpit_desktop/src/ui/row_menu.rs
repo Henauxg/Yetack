@@ -1,5 +1,5 @@
-//! The menu a right-click on a sidebar row opens, at the pointer: the agent's mark, its name, its
-//! notifications and its working folder in two submenus, and its close.
+//! The menu a right-click on a sidebar row opens, at the pointer: the agent's mark, its unread
+//! dot, its name, its notifications and its working folder in two submenus, and its close.
 //!
 //! One highlight runs through the menu and its open submenu, moved by the pointer and the arrows.
 //! While the menu is open, a letter or a digit picks the item that shows it.
@@ -17,7 +17,8 @@ use crate::path_style;
 use crate::prefs::NotificationLevel;
 use crate::state::actions::Direction;
 use crate::state::{
-    AppState, FolderAction, Popover, actions, notification_levels, to_handle, working_folder,
+    AppState, FolderAction, Popover, actions, notification_levels, to_handle, unread,
+    working_folder,
 };
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::notification_levels as levels_ui;
@@ -31,6 +32,7 @@ const SUBMENU_DELAY: Duration = Duration::from_millis(200);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Item {
     Mark,
+    Unread,
     Rename,
     Notifications,
     Folder,
@@ -38,8 +40,9 @@ enum Item {
 }
 
 /// The menu's rows, in order.
-const ITEMS: [Item; 5] = [
+const ITEMS: [Item; 6] = [
     Item::Mark,
+    Item::Unread,
     Item::Rename,
     Item::Notifications,
     Item::Folder,
@@ -51,7 +54,7 @@ impl Item {
         match self {
             Self::Notifications => Some(Submenu::Notifications),
             Self::Folder => Some(Submenu::Folder),
-            Self::Mark | Self::Rename | Self::Close => None,
+            Self::Mark | Self::Unread | Self::Rename | Self::Close => None,
         }
     }
 
@@ -59,6 +62,7 @@ impl Item {
     fn pick(self) -> Option<Pick> {
         match self {
             Self::Mark => Some(Pick::Mark),
+            Self::Unread => Some(Pick::Unread),
             Self::Rename => Some(Pick::Rename),
             Self::Close => Some(Pick::Close),
             Self::Notifications | Self::Folder => None,
@@ -69,6 +73,7 @@ impl Item {
     fn key(self) -> Option<char> {
         match self {
             Self::Mark => Some('h'),
+            Self::Unread => Some('u'),
             Self::Rename => Some('r'),
             Self::Close => Some('w'),
             Self::Notifications | Self::Folder => None,
@@ -100,6 +105,7 @@ impl Submenu {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Pick {
     Mark,
+    Unread,
     Rename,
     Close,
     Level(NotificationLevel),
@@ -115,7 +121,7 @@ impl Pick {
             Self::Level(NotificationLevel::Off) => Some('3'),
             Self::Folder(FolderAction::Fork) => Some('f'),
             Self::Folder(FolderAction::Move) => Some('m'),
-            Self::Mark | Self::Rename | Self::Close => None,
+            Self::Mark | Self::Unread | Self::Rename | Self::Close => None,
         }
     }
 }
@@ -134,6 +140,7 @@ struct RowMenuShown {
     x: i32,
     y: i32,
     mark: Mark,
+    unread: bool,
     notifications: NotificationLevel,
     /// The agent's working folder, as paths show.
     folder: String,
@@ -362,7 +369,7 @@ fn shortcut_title(item: Item, keys: &Keymap) -> String {
         Item::Mark => Command::MarkToHandle,
         Item::Rename => Command::Rename,
         Item::Close => Command::CloseAgent,
-        Item::Notifications | Item::Folder => return String::new(),
+        Item::Unread | Item::Notifications | Item::Folder => return String::new(),
     };
     format!("{} does this for the selected agent", keys.shown(command))
 }
@@ -381,6 +388,7 @@ pub fn RowMenu() -> Element {
                     x,
                     y,
                     mark: entry.summary.mark,
+                    unread: state.is_unread(agent),
                     notifications: notification_levels::agent_level(&state, agent),
                     folder: path_style::shown(&entry.summary.folder),
                     fork_blocked: working_folder::blocked(&state, agent, FolderAction::Fork),
@@ -424,13 +432,14 @@ fn MenuBody(shown: RowMenuShown) -> Element {
         x,
         y,
         mark,
+        unread,
         notifications,
         ref folder,
         fork_blocked,
         move_blocked,
     } = shown;
     let folder = folder.clone();
-    let act = move |pick: Pick| run(cockpit, agent, mark, pick);
+    let act = move |pick: Pick| run(cockpit, agent, mark, unread, pick);
     let keys = cockpit.state.read().prefs.keys.clone();
     let mut cancel_delay = move || {
         let next = moves.peek().wrapping_add(1);
@@ -616,6 +625,7 @@ fn MenuBody(shown: RowMenuShown) -> Element {
                 }
             },
             {action_row(Item::Mark, if mark == Mark::ToHandle { "Done handling" } else { "Mark to handle" }, "")}
+            {action_row(Item::Unread, if unread { "Mark as read" } else { "Mark as unread" }, "")}
             {action_row(Item::Rename, "Rename", "")}
             div { class: "menu-divider" }
             div { class: "submenu-anchor",
@@ -654,13 +664,16 @@ fn MenuBody(shown: RowMenuShown) -> Element {
     }
 }
 
-/// Runs what the menu picked, on the menu's agent.
-fn run(cockpit: Cockpit, agent: AgentId, mark: Mark, pick: Pick) {
+/// Runs what the menu picked, on the menu's agent. `mark` and `unread` are what the menu
+/// showed: a toggle does what its label said, even if the agent changed since.
+fn run(cockpit: Cockpit, agent: AgentId, mark: Mark, unread: bool, pick: Pick) {
     let close_menu = |state: &mut AppState| state.ui.popover = None;
     match pick {
         Pick::Mark => {
             cockpit.change(|state| to_handle::set(state, agent, to_handle::toggled(mark)))
         }
+        Pick::Unread if unread => cockpit.update(|state| unread::mark_read(state, agent)),
+        Pick::Unread => cockpit.update(|state| unread::mark_unread(state, agent)),
         Pick::Rename => cockpit.change_with_drafts(|state, drafts| {
             close_menu(state);
             actions::start_rename_in_sidebar(state, drafts, agent);
@@ -687,6 +700,7 @@ mod tests {
             x: 10,
             y: 20,
             mark: Mark::Unmarked,
+            unread: false,
             notifications: NotificationLevel::All,
             folder: "/work/project".to_owned(),
             fork_blocked: None,
@@ -800,6 +814,21 @@ mod tests {
         assert_eq!(open_two, Some(Pick::Level(NotificationLevel::NeedsYou)));
         assert_eq!(close, Some(Pick::Close));
         assert_eq!(mark, Some(Pick::Mark));
+    }
+
+    #[test]
+    fn u_or_enter_on_its_row_marks_the_agent_unread() {
+        let shown = shown();
+        let on_unread = Cursor {
+            item: Some(Item::Unread.index()),
+            ..Cursor::default()
+        };
+
+        let (_, by_letter) = press(Cursor::default(), &[MenuKey::Char('u')], &shown);
+        let (_, by_enter) = press(on_unread, &[MenuKey::Enter], &shown);
+
+        assert_eq!(by_letter, Some(Pick::Unread));
+        assert_eq!(by_enter, Some(Pick::Unread));
     }
 
     #[test]
