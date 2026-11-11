@@ -77,6 +77,13 @@ const FOLD_SCRIPT: &str = r#"
 const classes = await dioxus.recv();
 if (!window.agentsCockpitFolds) {
   window.agentsCockpitFolds = true;
+  // A folded message scrolled to its end cuts no line: it shows no fade there.
+  document.addEventListener("scroll", (event) => {
+    const clip = event.target;
+    if (clip instanceof Element && clip.matches(`.${classes.message_clip}`)) {
+      clip.toggleAttribute("data-end", clip.scrollTop + clip.clientHeight >= clip.scrollHeight - 1);
+    }
+  }, { capture: true, passive: true });
   const textSelector = `.${classes.clip} > pre, .${classes.message_clip} > .${classes.markdown}`;
   // Where each screen line of the text ends, from the text's top. A table row's cells overlap
   // and count as one line.
