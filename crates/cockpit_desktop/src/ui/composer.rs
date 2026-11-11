@@ -1,7 +1,7 @@
 //! The composer: attachments, the prompt, the slash button, the prompt cache timer, the model,
 //! effort and permission mode menus, and Send and Stop.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use cockpit_protocol::{
@@ -45,8 +45,8 @@ fn placeholder(status: AgentStatus) -> &'static str {
     }
 }
 
-/// After a send, a Stop click within this time does nothing. The send empties the message, so the
-/// button under the pointer turns into Stop, and the second click of a double click lands on it.
+/// For this long after the button sends, it stays a disabled Send rather than turning into Stop.
+/// The send empties the message, and the second click of a double click lands on the button.
 const STOP_AFTER_SEND: Duration = Duration::from_secs(1);
 
 /// What the button at the end of the composer does.
@@ -91,8 +91,8 @@ impl EndButton {
 pub fn Composer() -> Element {
     let cockpit: Cockpit = use_context();
     let Clock(now) = use_context::<Clock>();
-    // When this composer last sent: see `STOP_AFTER_SEND`.
-    let mut sent_at = use_signal(|| None::<Instant>);
+    // The agent the button sent to in the last `STOP_AFTER_SEND`.
+    let mut just_sent = use_signal(|| None::<AgentId>);
     // The text area is not bound to the draft, whose renders can lag behind typing: it takes the
     // draft's text only when another agent opens or the app changes the draft.
     let shown = use_memo(move || {
@@ -122,7 +122,11 @@ pub fn Composer() -> Element {
     let draft = drafts.draft(agent).cloned().unwrap_or_default();
     let popover = state.ui.popover;
     let exited = status == AgentStatus::Exited;
-    let end = EndButton::new(status, &draft);
+    // Right after a send, the button looks off without being `disabled`: a disabled button that
+    // takes the second click of a double click takes the focus off the text area.
+    let natural = EndButton::new(status, &draft);
+    let resting = natural == EndButton::Stop && just_sent() == Some(agent);
+    let end = if resting { EndButton::Send } else { natural };
     let (cache_text, cache_low) = cache_left(summary.cache_expires_at, now());
     let cache_short = match summary
         .cache_expires_at
@@ -264,17 +268,34 @@ pub fn Composer() -> Element {
                         }
                         // One button, so that it changes in place rather than another appearing.
                         button {
-                            class: if end == EndButton::Stop { "send-button stop" } else { "send-button" },
+                            class: match (end, resting) {
+                                (EndButton::Stop, _) => "send-button stop",
+                                (_, true) => "send-button resting",
+                                (_, false) => "send-button",
+                            },
                             aria_label: end.label(),
                             title: end.title(),
-                            disabled: end == EndButton::Send && !can_send,
+                            disabled: end == EndButton::Send && !can_send && !resting,
+                            aria_disabled: resting,
                             onclick: move |_| {
-                                if end != EndButton::Stop {
-                                    sent_at.set(Some(Instant::now()));
-                                    cockpit.change_with_drafts(|state, drafts| actions::send_prompt(state, drafts, agent, None, PromptDelivery::Steer));
-                                } else if sent_at().is_none_or(|sent| sent.elapsed() >= STOP_AFTER_SEND) {
-                                    cockpit.change(|state| actions::interrupt(state, agent));
+                                if resting {
+                                    bridge::focus_field(COMPOSER_ID);
+                                    return;
                                 }
+                                if end == EndButton::Stop {
+                                    cockpit.change(|state| actions::interrupt(state, agent));
+                                    return;
+                                }
+                                just_sent.set(Some(agent));
+                                cockpit.change_with_drafts(|state, drafts| actions::send_prompt(state, drafts, agent, None, PromptDelivery::Steer));
+                                // A key pressed next goes to the text, not to a button that may stop the agent.
+                                bridge::focus_field(COMPOSER_ID);
+                                spawn(async move {
+                                    tokio::time::sleep(STOP_AFTER_SEND).await;
+                                    if *just_sent.peek() == Some(agent) {
+                                        just_sent.set(None);
+                                    }
+                                });
                             },
                             span { class: "stop-square", aria_hidden: true }
                             span { class: "send-glyph", aria_hidden: true,

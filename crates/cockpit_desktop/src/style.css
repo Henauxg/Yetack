@@ -4339,9 +4339,14 @@ html.reordering * {
   color: #c4372e;
 }
 
-.send-button:disabled {
+.send-button:disabled,
+.send-button.resting {
   background: var(--line-strong);
   color: var(--dim);
+}
+
+.send-button.resting {
+  cursor: default;
 }
 
 .attachments {
@@ -8061,7 +8066,7 @@ label.icon-button,
   background: #323232;
 }
 
-.send-button:not(:disabled):hover {
+.send-button:not(:disabled, .resting):hover {
   background: var(--text-bright);
   box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
 }
@@ -8235,7 +8240,7 @@ label.icon-button,
 .quote-row-main:active,
 .chip:active,
 .menu-button:active,
-.send-button:not(:disabled):active,
+.send-button:not(:disabled, .resting):active,
 .badge:active,
 .block-head-action:active,
 .stop-button:active,
