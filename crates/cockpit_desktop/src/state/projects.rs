@@ -223,6 +223,44 @@ pub fn shown_projects(state: &AppState) -> Vec<ProjectKey> {
     keys
 }
 
+/// The projects an agent can move to, as its row's menu lists them: every kept project in
+/// its order, the temporary ones by name, then "No project".
+pub fn move_targets(state: &AppState) -> Vec<ProjectKey> {
+    let mut targets: Vec<ProjectKey> = state
+        .prefs
+        .projects
+        .list
+        .iter()
+        .map(|project| ProjectKey::Kept(project.id))
+        .collect();
+    targets.extend(
+        shown_projects(state)
+            .into_iter()
+            .filter(|key| matches!(key, ProjectKey::Repository(_))),
+    );
+    targets.push(ProjectKey::None);
+    targets
+}
+
+/// A new kept project for the agent, named after its repository or its folder, with the agent
+/// moved into it.
+pub fn create_for(state: &mut AppState, agent: AgentId) -> Option<ProjectId> {
+    let entry = state.agents.get(&agent)?;
+    let name = match &entry.summary.repository {
+        Some(repository) => repository_name(repository).to_owned(),
+        None => {
+            let folder = entry.summary.folder.to_string_lossy();
+            PathStyle::of(&entry.summary.folder)
+                .file_name(&folder)
+                .unwrap_or("New project")
+                .to_owned()
+        }
+    };
+    let id = create(state, &name);
+    move_agent(state, agent, &ProjectKey::Kept(id));
+    Some(id)
+}
+
 /// Makes the temporary project of `repository` a kept one, at the end of the order, or finds
 /// the kept one that already claims it.
 pub fn keep(state: &mut AppState, repository: &str) -> ProjectId {

@@ -14,11 +14,11 @@ use crate::bridge::HIGHLIGHTED_CLASS;
 use crate::connection::Cockpit;
 use crate::keymap::{Command, Keymap};
 use crate::path_style;
-use crate::prefs::NotificationLevel;
+use crate::prefs::{AccountColor, NotificationLevel};
 use crate::state::actions::Direction;
 use crate::state::{
-    AppState, FolderAction, Popover, actions, notification_levels, to_handle, unread,
-    working_folder,
+    AgentEntry, AppState, FolderAction, Popover, actions, notification_levels, projects, to_handle,
+    unread, working_folder,
 };
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::notification_levels as levels_ui;
@@ -34,16 +34,18 @@ enum Item {
     Mark,
     Unread,
     Rename,
+    Project,
     Notifications,
     Folder,
     Close,
 }
 
 /// The menu's rows, in order.
-const ITEMS: [Item; 6] = [
+const ITEMS: [Item; 7] = [
     Item::Mark,
     Item::Unread,
     Item::Rename,
+    Item::Project,
     Item::Notifications,
     Item::Folder,
     Item::Close,
@@ -52,6 +54,7 @@ const ITEMS: [Item; 6] = [
 impl Item {
     fn submenu(self) -> Option<Submenu> {
         match self {
+            Self::Project => Some(Submenu::Project),
             Self::Notifications => Some(Submenu::Notifications),
             Self::Folder => Some(Submenu::Folder),
             Self::Mark | Self::Unread | Self::Rename | Self::Close => None,
@@ -65,7 +68,7 @@ impl Item {
             Self::Unread => Some(Pick::Unread),
             Self::Rename => Some(Pick::Rename),
             Self::Close => Some(Pick::Close),
-            Self::Notifications | Self::Folder => None,
+            Self::Project | Self::Notifications | Self::Folder => None,
         }
     }
 
@@ -76,7 +79,7 @@ impl Item {
             Self::Unread => Some('u'),
             Self::Rename => Some('r'),
             Self::Close => Some('w'),
-            Self::Notifications | Self::Folder => None,
+            Self::Project | Self::Notifications | Self::Folder => None,
         }
     }
 
@@ -87,6 +90,7 @@ impl Item {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Submenu {
+    Project,
     Notifications,
     Folder,
 }
@@ -95,6 +99,7 @@ impl Submenu {
     /// The menu row that opens it.
     fn trigger(self) -> Item {
         match self {
+            Self::Project => Item::Project,
             Self::Notifications => Item::Notifications,
             Self::Folder => Item::Folder,
         }
@@ -108,6 +113,9 @@ enum Pick {
     Unread,
     Rename,
     Close,
+    /// The project at this place among the ones the submenu lists (`projects::move_targets`).
+    Project(usize),
+    NewProject,
     Level(NotificationLevel),
     Folder(FolderAction),
 }
@@ -121,7 +129,12 @@ impl Pick {
             Self::Level(NotificationLevel::Off) => Some('3'),
             Self::Folder(FolderAction::Fork) => Some('f'),
             Self::Folder(FolderAction::Move) => Some('m'),
-            Self::Mark | Self::Unread | Self::Rename | Self::Close => None,
+            Self::Mark
+            | Self::Unread
+            | Self::Rename
+            | Self::Close
+            | Self::Project(_)
+            | Self::NewProject => None,
         }
     }
 }
@@ -133,6 +146,34 @@ struct SubRow {
     enabled: bool,
 }
 
+/// A project the agent can move to, as the submenu shows it.
+#[derive(Debug, Clone, PartialEq)]
+struct ProjectChoice {
+    name: String,
+    /// The color's CSS value, `None` for "No project".
+    color: Option<&'static str>,
+    temporary: bool,
+    /// The agent is in it.
+    chosen: bool,
+}
+
+/// The projects the agent can move to, in the order `projects::move_targets` gives.
+fn project_choices(state: &AppState, entry: &AgentEntry) -> Vec<ProjectChoice> {
+    let current = projects::project_of(state, entry);
+    projects::move_targets(state)
+        .into_iter()
+        .map(|key| {
+            let look = projects::look(state, &key);
+            ProjectChoice {
+                name: look.name,
+                color: look.color.map(AccountColor::css),
+                temporary: look.temporary,
+                chosen: key == current,
+            }
+        })
+        .collect()
+}
+
 /// What the menu shows, read as it opens.
 #[derive(Debug, Clone, PartialEq)]
 struct RowMenuShown {
@@ -141,6 +182,9 @@ struct RowMenuShown {
     y: i32,
     mark: Mark,
     unread: bool,
+    /// The agent's project, and the ones it can move to.
+    project: String,
+    projects: Vec<ProjectChoice>,
     notifications: NotificationLevel,
     /// The agent's working folder, as paths show.
     folder: String,
@@ -152,6 +196,16 @@ struct RowMenuShown {
 impl RowMenuShown {
     fn rows(&self, submenu: Submenu) -> Vec<SubRow> {
         match submenu {
+            Submenu::Project => (0..self.projects.len())
+                .map(|index| SubRow {
+                    pick: Pick::Project(index),
+                    enabled: true,
+                })
+                .chain(std::iter::once(SubRow {
+                    pick: Pick::NewProject,
+                    enabled: true,
+                }))
+                .collect(),
             Submenu::Notifications => NotificationLevel::VARIANTS
                 .iter()
                 .map(|&level| SubRow {
@@ -369,7 +423,7 @@ fn shortcut_title(item: Item, keys: &Keymap) -> String {
         Item::Mark => Command::MarkToHandle,
         Item::Rename => Command::Rename,
         Item::Close => Command::CloseAgent,
-        Item::Unread | Item::Notifications | Item::Folder => return String::new(),
+        Item::Unread | Item::Project | Item::Notifications | Item::Folder => return String::new(),
     };
     format!("{} does this for the selected agent", keys.shown(command))
 }
@@ -389,6 +443,8 @@ pub fn RowMenu() -> Element {
                     y,
                     mark: entry.summary.mark,
                     unread: state.is_unread(agent),
+                    project: projects::look(&state, &projects::project_of(&state, entry)).name,
+                    projects: project_choices(&state, entry),
                     notifications: notification_levels::agent_level(&state, agent),
                     folder: path_style::shown(&entry.summary.folder),
                     fork_blocked: working_folder::blocked(&state, agent, FolderAction::Fork),
@@ -433,12 +489,16 @@ fn MenuBody(shown: RowMenuShown) -> Element {
         y,
         mark,
         unread,
+        ref project,
+        ref projects,
         notifications,
         ref folder,
         fork_blocked,
         move_blocked,
     } = shown;
     let folder = folder.clone();
+    let project = project.clone();
+    let projects = projects.clone();
     let act = move |pick: Pick| run(cockpit, agent, mark, unread, pick);
     let keys = cockpit.state.read().prefs.keys.clone();
     let mut cancel_delay = move || {
@@ -512,7 +572,7 @@ fn MenuBody(shown: RowMenuShown) -> Element {
             }
         }
     };
-    let trigger_row = move |submenu: Submenu, label: &'static str, value: Option<&'static str>| {
+    let trigger_row = move |submenu: Submenu, label: &'static str, value: Option<String>| {
         let index = submenu.trigger().index();
         let open = now.open == Some(submenu);
         rsx! {
@@ -535,6 +595,40 @@ fn MenuBody(shown: RowMenuShown) -> Element {
             }
         }
     };
+    let project_row = move |index: usize, choice: ProjectChoice| {
+        let pick = Pick::Project(index);
+        let swatch = match (choice.color, choice.temporary) {
+            (None, _) => "menu-swatch none",
+            (Some(_), true) => "menu-swatch temporary",
+            (Some(_), false) => "menu-swatch",
+        };
+        let style = choice
+            .color
+            .map(|color| format!("--project: {color}"))
+            .unwrap_or_default();
+        rsx! {
+            button {
+                key: "{index}",
+                class: sub_class(Submenu::Project, index),
+                role: "menuitemradio",
+                tabindex: -1,
+                aria_checked: choice.chosen,
+                onmouseenter: move |_| point_in_submenu(index, /* can_run */ true),
+                onclick: move |_| act(pick),
+                span { class: "menu-check",
+                    if choice.chosen {
+                        Icon { kind: IconKind::Check, size: 14 }
+                    }
+                }
+                span { class: swatch, style, aria_hidden: true }
+                span { class: "menu-label", "{choice.name}" }
+                if choice.temporary {
+                    span { class: "menu-note", "temporary" }
+                }
+            }
+        }
+    };
+    let new_project_index = projects.len();
     let level_row = move |index: usize, level: NotificationLevel| {
         let pick = Pick::Level(level);
         let chosen = level == notifications;
@@ -629,7 +723,30 @@ fn MenuBody(shown: RowMenuShown) -> Element {
             {action_row(Item::Rename, "Rename", "")}
             div { class: "menu-divider" }
             div { class: "submenu-anchor",
-                {trigger_row(Submenu::Notifications, "Notifications", Some(levels_ui::short_label(notifications)))}
+                {trigger_row(Submenu::Project, "Project", Some(project))}
+                Presence { open: now.open == Some(Submenu::Project),
+                    div {
+                        class: "popover menu submenu project-submenu",
+                        role: "menu",
+                        aria_label: "Project",
+                        for (index, choice) in projects.into_iter().enumerate() {
+                            {project_row(index, choice)}
+                        }
+                        div { class: "menu-divider" }
+                        button {
+                            class: sub_class(Submenu::Project, new_project_index),
+                            role: "menuitem",
+                            tabindex: -1,
+                            onmouseenter: move |_| point_in_submenu(new_project_index, /* can_run */ true),
+                            onclick: move |_| act(Pick::NewProject),
+                            span { class: "menu-check" }
+                            span { class: "menu-label", "New project…" }
+                        }
+                    }
+                }
+            }
+            div { class: "submenu-anchor",
+                {trigger_row(Submenu::Notifications, "Notifications", Some(levels_ui::short_label(notifications).to_owned()))}
                 Presence { open: now.open == Some(Submenu::Notifications),
                     div {
                         class: "popover menu submenu",
@@ -683,6 +800,16 @@ fn run(cockpit: Cockpit, agent: AgentId, mark: Mark, unread: bool, pick: Pick) {
             close_menu(state);
             actions::request_close(state, drafts, agent)
         }),
+        Pick::Project(index) => cockpit.update(|state| {
+            close_menu(state);
+            if let Some(target) = projects::move_targets(state).get(index).cloned() {
+                projects::move_agent(state, agent, &target);
+            }
+        }),
+        Pick::NewProject => cockpit.update(|state| {
+            close_menu(state);
+            projects::create_for(state, agent);
+        }),
         Pick::Level(level) => cockpit.set_notifications(Some(agent), level),
         Pick::Folder(action) => cockpit.update_with_drafts(|state, drafts| {
             working_folder::open(state, drafts, agent, action);
@@ -701,6 +828,8 @@ mod tests {
             y: 20,
             mark: Mark::Unmarked,
             unread: false,
+            project: "billing".to_owned(),
+            projects: Vec::new(),
             notifications: NotificationLevel::All,
             folder: "/work/project".to_owned(),
             fork_blocked: None,
@@ -727,6 +856,36 @@ mod tests {
         assert_eq!(top.item, Some(0));
         assert_eq!(last.item, Some(ITEMS.len() - 1));
         assert_eq!(bottom.item, Some(ITEMS.len() - 1));
+    }
+
+    #[test]
+    fn the_project_submenu_lists_the_projects_then_new_project() {
+        let choice = |name: &str| ProjectChoice {
+            name: name.to_owned(),
+            color: None,
+            temporary: false,
+            chosen: false,
+        };
+        let shown = RowMenuShown {
+            projects: vec![choice("billing"), choice("No project")],
+            ..shown()
+        };
+        let on_project = Cursor {
+            item: Some(Item::Project.index()),
+            ..Cursor::default()
+        };
+
+        let (opened, _) = press(on_project, &[MenuKey::Right], &shown);
+        let (_, second) = press(opened, &[MenuKey::Down, MenuKey::Enter], &shown);
+        let (_, new) = press(
+            opened,
+            &[MenuKey::Down, MenuKey::Down, MenuKey::Enter],
+            &shown,
+        );
+
+        assert_eq!(opened.open, Some(Submenu::Project));
+        assert_eq!(second, Some(Pick::Project(1)));
+        assert_eq!(new, Some(Pick::NewProject));
     }
 
     #[test]

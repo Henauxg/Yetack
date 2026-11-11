@@ -599,7 +599,37 @@ button:disabled {
   gap: 4px;
 }
 
-.project-head-row .machine-head {
+.project-head-row /* A project in the row menu's Project submenu: its color, dashed while it is temporary. */
+.menu-swatch {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  background: var(--project);
+}
+
+.menu-swatch.temporary {
+  border: 1.5px dashed var(--project);
+  background: transparent;
+}
+
+.menu-swatch.none {
+  background: var(--line-strong);
+}
+
+.menu-note {
+  flex: none;
+  color: var(--dim);
+  font-size: 11.5px;
+}
+
+/* Many projects scroll inside the submenu, which stays in the window. */
+.popover.menu.submenu.project-submenu {
+  max-height: min(360px, 60vh);
+  overflow-y: auto;
+}
+
+.machine-head {
   flex: 1 1 auto;
   min-width: 0;
 }
@@ -961,8 +991,8 @@ button:disabled {
   --enter-y: -4px;
   position: fixed;
   left: min(var(--menu-x), calc(100vw - 290px));
-  /* The agent menu with its folder submenu open is about 230 px high. */
-  top: max(8px, min(var(--menu-y), calc(100vh - 240px)));
+  /* The agent menu with its folder submenu open is about 260 px high. */
+  top: max(8px, min(var(--menu-y), calc(100vh - 270px)));
   bottom: auto;
   min-width: 200px;
   max-width: 280px;
