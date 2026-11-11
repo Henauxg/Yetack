@@ -925,6 +925,7 @@ mod tests {
             accounts: AccountPrefs::default(),
             notifications: NotificationPrefs::default(),
             chat: ChatPrefs::default(),
+            keys: Keymap::default(),
         };
 
         prefs.save(&file).unwrap();

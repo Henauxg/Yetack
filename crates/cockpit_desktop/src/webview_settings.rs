@@ -2,15 +2,46 @@
 //! first frame once more after its last, at random: a popover, a dialog or a card flashes as it
 //! opens or closes. Without it, the page draws on the main thread, and the window's animations,
 //! short and small, still run at the screen's rate.
+//!
+//! It goes through the environment, which WebKitGTK reads as it creates the web view. The web
+//! view's hardware acceleration setting, changed once the view exists, stops the view's drawing at
+//! its first resize to full screen: the window stays blank until the app restarts.
 
-use dioxus::desktop::wry::{WebView, WebViewExtUnix};
-use webkit2gtk::{HardwareAccelerationPolicy, SettingsExt, WebViewExt};
+use std::ffi::OsStr;
 
-pub fn turn_off_accelerated_compositing(webview: &WebView) {
-    match webview.webview().settings() {
-        Some(settings) => {
-            settings.set_hardware_acceleration_policy(HardwareAccelerationPolicy::Never)
-        }
-        None => tracing::warn!("the web view has no settings: its animations may flash"),
+/// The variable that turns accelerated compositing off before the web view exists.
+const COMPOSITING_VAR: &str = "WEBKIT_DISABLE_COMPOSITING_MODE";
+
+/// Sets the variable, unless the user set it: their value wins.
+///
+/// Safe code cannot do it: WebKitGTK reads the variable from the process's environment, and a
+/// restart of the app with the variable set would be the only other way.
+///
+/// # Safety
+///
+/// No other thread may run: it would read or write the environment while this writes it.
+pub unsafe fn turn_off_accelerated_compositing() {
+    if !needs_setting(std::env::var_os(COMPOSITING_VAR).as_deref()) {
+        return;
+    }
+    // SAFETY: the caller guarantees that no other thread runs.
+    unsafe { std::env::set_var(COMPOSITING_VAR, "1") };
+}
+
+/// Whether the app sets the variable, given its value at the start.
+fn needs_setting(current: Option<&OsStr>) -> bool {
+    current.is_none()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_variable_is_set_only_when_the_user_did_not_set_it() {
+        assert!(needs_setting(None));
+        assert!(!needs_setting(Some(OsStr::new("0"))));
+        assert!(!needs_setting(Some(OsStr::new("1"))));
+        assert!(!needs_setting(Some(OsStr::new(""))));
     }
 }
