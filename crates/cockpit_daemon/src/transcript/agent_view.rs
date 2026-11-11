@@ -24,10 +24,10 @@ use cockpit_protocol::{
 use serde_json::{Map, Value};
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
-use crate::sessions;
 use crate::transcript::past_transcript::LAST_PAST_ID;
 use crate::transcript::subagents::{Ended, Started};
 use crate::transcript::{answers, details, notices, subagents, tools, words};
+use crate::{repository, sessions};
 
 /// What the hub does after a line, beyond publishing the view's events.
 #[derive(Debug, Clone, PartialEq)]
@@ -286,6 +286,7 @@ impl AgentView {
             sign_in_wait: SignInWait::NotWaiting,
             background_running: 0,
             mark: Mark::Unmarked,
+            repository: None,
         };
         Self::new(summary, Duration::ZERO)
     }
@@ -767,7 +768,9 @@ impl AgentView {
         self.summary.title = title;
     }
 
+    /// Moves the agent to `folder`, which may belong to another repository.
     pub(crate) fn set_folder(&mut self, folder: PathBuf) {
+        self.summary.repository = repository::of_folder(&folder);
         self.summary.folder = folder;
     }
 
@@ -1835,6 +1838,7 @@ mod tests {
             account: AccountId::DEFAULT,
             sign_in_wait: SignInWait::NotWaiting,
             mark: Mark::Unmarked,
+            repository: None,
             background_running: 0,
         };
         let mut view = AgentView::new(summary, Duration::from_secs(3600));

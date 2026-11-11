@@ -22,7 +22,7 @@ use crate::sessions::FoundSession;
 use crate::store::{AgentRecord, LogName, RawLog, ResumeAs};
 use crate::transcript::prompts::TypedSetting;
 use crate::transcript::{AgentView, AnswerError, FollowUp, ProcessSession, prompts, words};
-use crate::{machine_load, read_file, sessions};
+use crate::{machine_load, read_file, repository, sessions};
 
 /// A title made from a prompt keeps this many characters.
 const TITLE_MAX_CHARS: usize = 60;
@@ -772,6 +772,7 @@ pub(super) fn initial_summary(record: &AgentRecord) -> AgentSummary {
         sign_in_wait: SignInWait::NotWaiting,
         background_running: 0,
         mark: record.mark,
+        repository: repository::of_folder(&record.folder),
     }
 }
 

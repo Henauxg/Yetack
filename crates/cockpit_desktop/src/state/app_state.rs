@@ -634,6 +634,7 @@ pub(crate) mod tests {
             sign_in_wait: SignInWait::NotWaiting,
             background_running: 0,
             mark: Mark::Unmarked,
+            repository: None,
         }
     }
 

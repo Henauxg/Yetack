@@ -15,6 +15,7 @@ mod machine_load;
 mod mcp_remove;
 mod process;
 mod read_file;
+mod repository;
 mod serve;
 mod server;
 mod sessions;

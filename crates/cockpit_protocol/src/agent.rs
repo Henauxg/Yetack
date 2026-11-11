@@ -126,6 +126,11 @@ pub struct AgentSummary {
     /// `Unmarked` when missing, as from a daemon that predates marks.
     #[serde(default)]
     pub mark: Mark,
+    /// The git repository the agent's folder belongs to, by its `origin` remote, as
+    /// [`normalized_repository`](crate::normalized_repository) writes it. `None` outside git, for
+    /// a repository without a remote, and from a daemon that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
 }
 
 /// Where an agent's effort comes from.

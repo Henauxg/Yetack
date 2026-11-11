@@ -1734,7 +1734,15 @@ fn summary(parts: SummaryParts<'_>, now: SystemTime) -> AgentSummary {
         sign_in_wait: SignInWait::NotWaiting,
         background_running: 0,
         mark: Mark::Unmarked,
+        repository: demo_repository(parts.folder),
     }
+}
+
+/// A made-up remote for a demo folder, named after the folder without a worktree's suffix.
+fn demo_repository(folder: &str) -> Option<String> {
+    let name = folder.rsplit('/').next()?;
+    let name = name.split('_').next().unwrap_or(name);
+    (!name.is_empty()).then(|| format!("example.com/acme/{name}"))
 }
 
 fn item(id: u32, parent: Option<u32>, body: ItemBody) -> TranscriptItem {
