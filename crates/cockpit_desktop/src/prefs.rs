@@ -93,6 +93,65 @@ pub struct Prefs {
     /// shows above the others.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub agent_order: Vec<AgentKey>,
+    #[serde(skip_serializing_if = "ProjectsPrefs::is_empty")]
+    pub projects: ProjectsPrefs,
+}
+
+/// The projects the user kept, and the agents moved to a project by hand. A repository no kept
+/// project claims makes a temporary project, which the app computes and never saves.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProjectsPrefs {
+    /// In the sidebar's order.
+    pub list: Vec<Project>,
+    /// The id the next project takes: ids are never taken again, so a deleted project's moved
+    /// agents never land in a new one.
+    pub next_id: u32,
+    /// By daemon machine, then by the daemon's agent id: the project an agent was moved to, or
+    /// `None` for "No project". It wins over the rules.
+    pub agents: BTreeMap<String, BTreeMap<AgentId, Option<ProjectId>>>,
+}
+
+impl ProjectsPrefs {
+    fn is_empty(&self) -> bool {
+        self.list.is_empty() && self.agents.is_empty() && self.next_id == 0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ProjectId(u32);
+
+impl ProjectId {
+    pub fn new(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    pub fn get(self) -> u32 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Project {
+    pub id: ProjectId,
+    pub name: String,
+    pub color: AccountColor,
+    /// An agent belongs to the first project with a rule that holds its folder.
+    #[serde(default)]
+    pub rules: Vec<ProjectRule>,
+}
+
+/// What a project holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectRule {
+    /// A git repository by its remote, as `normalized_repository` writes it: every clone and
+    /// worktree of it, on every machine.
+    Repository(String),
+    /// A folder and the folders inside it, by its absolute path. A path that ends with `*` holds
+    /// every folder whose path starts with the rest.
+    Folder(String),
 }
 
 /// An agent as the preferences name it: its daemon machine's name and the daemon's agent id,
@@ -908,7 +967,31 @@ mod tests {
       "machine": "build-box",
       "agent": 4
     }
-  ]
+  ],
+  "projects": {
+    "list": [
+      {
+        "id": 0,
+        "name": "billing",
+        "color": "violet",
+        "rules": [
+          {
+            "repository": "github.com/acme/billing"
+          },
+          {
+            "folder": "/srv/billing-*"
+          }
+        ]
+      }
+    ],
+    "next_id": 1,
+    "agents": {
+      "build-box": {
+        "4": 0,
+        "5": null
+      }
+    }
+  }
 }
 "#;
 
@@ -970,6 +1053,25 @@ mod tests {
                     machine: "build-box".to_owned(),
                     agent: AgentId::new(4),
                 }],
+                projects: ProjectsPrefs {
+                    list: vec![Project {
+                        id: ProjectId::new(0),
+                        name: "billing".to_owned(),
+                        color: AccountColor::Violet,
+                        rules: vec![
+                            ProjectRule::Repository("github.com/acme/billing".to_owned()),
+                            ProjectRule::Folder("/srv/billing-*".to_owned()),
+                        ],
+                    }],
+                    next_id: 1,
+                    agents: BTreeMap::from([(
+                        "build-box".to_owned(),
+                        BTreeMap::from([
+                            (AgentId::new(4), Some(ProjectId::new(0))),
+                            (AgentId::new(5), None),
+                        ]),
+                    )]),
+                },
             }
         );
         assert_eq!(serde_json::to_string_pretty(&prefs).unwrap() + "\n", text);
@@ -1212,6 +1314,7 @@ mod tests {
             chat: ChatPrefs::default(),
             keys: Keymap::default(),
             agent_order: Vec::new(),
+            projects: ProjectsPrefs::default(),
         };
 
         prefs.save(&file).unwrap();

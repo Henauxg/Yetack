@@ -592,6 +592,57 @@ button:disabled {
   color: var(--dim);
 }
 
+/* A project's header: its color, dashed while the project is temporary, and Keep beside it. */
+.project-head-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.project-head-row .machine-head {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.project-swatch {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--project);
+}
+
+.project-swatch.temporary {
+  border: 1.5px dashed var(--project);
+  background: transparent;
+}
+
+.project-swatch.none {
+  background: var(--line-strong);
+}
+
+.machine-name.temporary {
+  font-style: italic;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.keep-button {
+  flex: none;
+  margin-right: 6px;
+  padding: 1px 8px;
+  border: 1px solid var(--line-control);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.keep-button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
 .machine-head {
   display: flex;
   align-items: center;
@@ -8323,6 +8374,7 @@ label.icon-button,
 .option:active,
 .filter-chip:active,
 .group-switch:active,
+.keep-button:active,
 .file-list-button:active,
 .file-list-close:active,
 .notification-tag:active,

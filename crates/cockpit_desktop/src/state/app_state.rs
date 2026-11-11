@@ -15,11 +15,12 @@ use super::accounts::SignIns;
 use super::chat_images::KeptImage;
 use super::daemon_update::{DaemonUpdate, VersionGap};
 use super::file_tree::FileTree;
+use super::grouping::GroupKey;
 use super::no_daemon::NoDaemon;
 use super::sending::Sending;
 use super::transcript::Transcript;
 use super::ui_state::UiState;
-use super::{file_edits, grouping};
+use super::{file_edits, grouping, projects};
 use crate::daemon_label::DaemonLabel;
 use crate::format;
 use crate::machine::MachineId;
@@ -360,10 +361,10 @@ impl Machines {
     }
 }
 
-/// A machine's header in the sidebar, and the rows under it.
+/// A header in the sidebar, a machine's or a project's, and the rows under it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SidebarGroup<'state> {
-    pub machine: MachineId,
+    pub key: GroupKey,
     pub rows: Vec<&'state AgentEntry>,
 }
 
@@ -422,25 +423,40 @@ impl AppState {
         }
     }
 
-    /// The machines the sidebar heads, with the rows each shows: this computer first, then the
-    /// others in the config's order. Empty while the app reaches this computer alone, which
-    /// needs no header, and when the sidebar does not group by machine.
+    /// The headers the sidebar shows, with the rows under each. Grouped by machine: this computer
+    /// first, then the others in the config's order, and none while the app reaches this computer
+    /// alone. Grouped by project: the projects that have agents. Not grouped: none.
     pub fn sidebar_groups(&self) -> Vec<SidebarGroup<'_>> {
-        if self.machines.others.is_empty() || self.prefs.sidebar.group_by != GroupBy::Machine {
-            return Vec::new();
-        }
         let shown = self.sidebar_agents();
-        let machines = std::iter::once(MachineId::THIS).chain(self.machines.others.keys().copied());
-        machines
-            .map(|machine| {
-                let rows = shown
-                    .iter()
-                    .copied()
-                    .filter(|entry| MachineId::of(entry.id()) == machine)
-                    .collect();
-                SidebarGroup { machine, rows }
-            })
-            .collect()
+        match self.prefs.sidebar.group_by {
+            GroupBy::None => Vec::new(),
+            GroupBy::Machine if self.machines.others.is_empty() => Vec::new(),
+            GroupBy::Machine => {
+                let machines =
+                    std::iter::once(MachineId::THIS).chain(self.machines.others.keys().copied());
+                machines
+                    .map(|machine| SidebarGroup {
+                        key: GroupKey::Machine(machine),
+                        rows: shown
+                            .iter()
+                            .copied()
+                            .filter(|entry| MachineId::of(entry.id()) == machine)
+                            .collect(),
+                    })
+                    .collect()
+            }
+            GroupBy::Project => projects::shown_projects(self)
+                .into_iter()
+                .map(|project| SidebarGroup {
+                    rows: shown
+                        .iter()
+                        .copied()
+                        .filter(|entry| projects::project_of(self, entry) == project)
+                        .collect(),
+                    key: GroupKey::Project(project),
+                })
+                .collect(),
+        }
     }
 
     /// The machine of the selected agent, else this computer.

@@ -14,6 +14,7 @@ use strum::{EnumString, IntoStaticStr, VariantArray};
 use super::accounts::{AccountsView, AddAccountForm};
 use super::agent_map::MapView;
 use super::app_state::Loadable;
+use super::projects::ProjectKey;
 use crate::keymap::{Chord, Command, Refusal};
 use crate::machine::MachineId;
 
@@ -481,6 +482,8 @@ pub struct UiState {
     pub unread: BTreeSet<AgentId>,
     /// The machines whose agents the sidebar folds under their header.
     pub folded_machines: BTreeSet<MachineId>,
+    /// The projects whose agents the sidebar folds under their header.
+    pub folded_projects: BTreeSet<ProjectKey>,
     pub window_focused: bool,
     /// The floating blocks shown unfolded.
     pub open_blocks: BTreeSet<Block>,
@@ -523,6 +526,7 @@ impl Default for UiState {
             selected: None,
             unread: BTreeSet::new(),
             folded_machines: BTreeSet::new(),
+            folded_projects: BTreeSet::new(),
             window_focused: true,
             open_blocks: BTreeSet::from([Block::Tasks, Block::Messages, Block::Running]),
             badge: None,

@@ -11,13 +11,15 @@ use crate::connection::{Clock, Cockpit};
 use crate::daemon_label::DaemonPlace;
 use crate::keymap::{Command, Keymap};
 use crate::machine::MachineId;
-use crate::prefs::{NotificationLevel, StatusFilter};
+use crate::prefs::{AccountColor, NotificationLevel, StatusFilter};
 use crate::state::accounts::{self, AccountLabel, SignInLine};
+use crate::state::grouping::GroupKey;
 use crate::state::no_daemon::Absence;
+use crate::state::projects::ProjectKey;
 use crate::state::sidebar_keys::SidebarItem;
 use crate::state::{
     AgentEntry, AppState, ConnectionState, Dialog, TitleEdit, TitlePlace, actions, daemon_update,
-    grouping, machines, notification_levels, settings, to_handle,
+    grouping, machines, notification_levels, projects, settings, to_handle,
 };
 use crate::ui::accounts::{AccountLetter, AccountsButton};
 use crate::ui::grouping::GroupSwitch;
@@ -115,6 +117,7 @@ pub fn item_id(item: SidebarItem) -> String {
     match item {
         SidebarItem::Agent(agent) => reorder::row_id(agent),
         SidebarItem::Machine(machine) => head_id(machine),
+        SidebarItem::Project(project) => project_head_id(&project),
     }
 }
 
@@ -257,15 +260,19 @@ pub fn Sidebar() -> Element {
             .cloned();
         AgentRow::new(&state, entry, edit)
     };
-    let groups: Vec<MachineGroup> = state
+    let groups: Vec<Panel> = state
         .sidebar_groups()
         .into_iter()
         .map(|group| {
-            MachineGroup::new(
-                &state,
-                group.machine,
-                group.rows.into_iter().map(row).collect(),
-            )
+            let rows = group.rows.into_iter().map(row).collect();
+            match group.key {
+                GroupKey::Machine(machine) => {
+                    Panel::Machine(MachineGroup::new(&state, machine, rows))
+                }
+                GroupKey::Project(project) => {
+                    Panel::Project(ProjectGroup::new(&state, project, rows))
+                }
+            }
         })
         .collect();
     let rows: Vec<AgentRow> = if groups.is_empty() {
@@ -314,13 +321,26 @@ pub fn Sidebar() -> Element {
                 for row in rows {
                     AgentRowView { key: "{row.id.get()}", row }
                 }
-                for group in groups {
-                    MachineGroupView { key: "{group.key}", group }
+                for panel in groups {
+                    match panel {
+                        Panel::Machine(group) => rsx! {
+                            MachineGroupView { key: "{group.key}", group }
+                        },
+                        Panel::Project(group) => rsx! {
+                            ProjectGroupView { key: "{group.key}", group }
+                        },
+                    }
                 }
             }
             ConnectionFooter {}
         }
     }
+}
+
+/// A header and its rows: a machine's or a project's.
+enum Panel {
+    Machine(MachineGroup),
+    Project(ProjectGroup),
 }
 
 /// A machine's panel in the sidebar: its header, a note when it does not answer, and its rows.
@@ -500,6 +520,134 @@ fn MachineGroupView(group: MachineGroup) -> Element {
                             onclick: move |_| cockpit.update(|state| state.ui.dialog = Some(Dialog::NoDaemon)),
                             "Choose how agents run here"
                         }
+                    }
+                }
+            }
+            if !folded {
+                for row in rows {
+                    AgentRowView { key: "{row.id.get()}", row }
+                }
+            }
+        }
+    }
+}
+
+/// A project's panel in the sidebar: its header, with Keep for a temporary project, and its rows.
+#[derive(Debug, Clone, PartialEq)]
+struct ProjectGroup {
+    project: ProjectKey,
+    key: String,
+    name: String,
+    /// The color's CSS value, `None` for "No project".
+    color: Option<&'static str>,
+    temporary: bool,
+    folded: bool,
+    /// The project's agents, whatever the filter shows.
+    count: usize,
+    needs_you: usize,
+    to_handle: usize,
+    rows: Vec<AgentRow>,
+}
+
+impl ProjectGroup {
+    fn new(state: &AppState, project: ProjectKey, rows: Vec<AgentRow>) -> Self {
+        let look = projects::look(state, &project);
+        let (mut count, mut needs_you, mut to_handle) = (0, 0, 0);
+        for entry in state.agents.values() {
+            if projects::project_of(state, entry) == project {
+                count += 1;
+                needs_you += usize::from(entry.summary.status == AgentStatus::NeedsYou);
+                to_handle += usize::from(entry.summary.mark == Mark::ToHandle);
+            }
+        }
+        Self {
+            key: project.to_string(),
+            folded: state.ui.folded_projects.contains(&project),
+            project,
+            name: look.name,
+            color: look.color.map(AccountColor::css),
+            temporary: look.temporary,
+            count,
+            needs_you,
+            to_handle,
+            rows,
+        }
+    }
+}
+
+/// The id of a project's header, which the arrow keys give the focus to.
+fn project_head_id(project: &ProjectKey) -> String {
+    format!("project-head-{project}")
+}
+
+#[component]
+fn ProjectGroupView(group: ProjectGroup) -> Element {
+    let cockpit: Cockpit = use_context();
+    let ProjectGroup {
+        project,
+        key,
+        name,
+        color,
+        temporary,
+        folded,
+        count,
+        needs_you,
+        to_handle,
+        rows,
+    } = group;
+    let fold_label = if folded {
+        format!("Show the agents of {name}")
+    } else {
+        format!("Fold the agents of {name}")
+    };
+    let toggled = GroupKey::Project(project.clone());
+    let swatch_class = match (color, temporary) {
+        (None, _) => "project-swatch none",
+        (Some(_), true) => "project-swatch temporary",
+        (Some(_), false) => "project-swatch",
+    };
+    let swatch_style = color
+        .map(|color| format!("--project: {color}"))
+        .unwrap_or_default();
+    let head = project_head_id(&project);
+    rsx! {
+        div { class: "machine-group project-group",
+            div { class: "project-head-row",
+                button {
+                    id: head,
+                    class: "machine-head",
+                    "data-head-project": "{key}",
+                    aria_expanded: !folded,
+                    title: "{fold_label}",
+                    onclick: move |_| cockpit.update(|state| grouping::toggle_folded(state, &toggled)),
+                    Icon {
+                        kind: if folded { IconKind::ChevronRight } else { IconKind::ChevronDown },
+                        size: 13,
+                    }
+                    span { class: swatch_class, style: swatch_style, aria_hidden: true }
+                    span { class: if temporary { "machine-name temporary" } else { "machine-name" }, "{name}" }
+                    if folded && needs_you > 0 {
+                        span { class: "machine-needs-you", title: "Agents that wait for you", "{needs_you}" }
+                    }
+                    if folded && to_handle > 0 {
+                        span { class: "machine-to-handle", title: "Agents marked to handle",
+                            Icon { kind: IconKind::Flag, size: 11 }
+                            "{to_handle}"
+                        }
+                    }
+                    span { class: "machine-count", "{count}" }
+                }
+                if let ProjectKey::Repository(repository) = project {
+                    button {
+                        class: "keep-button",
+                        title: "Keep this project when it has no agent left, with its name, color and rules",
+                        onclick: move |_| {
+                            let repository = repository.clone();
+                            cockpit.update(move |state| {
+                                projects::keep(state, &repository);
+                            });
+                        },
+                        "Keep"
                     }
                 }
             }

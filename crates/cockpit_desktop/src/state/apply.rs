@@ -17,7 +17,8 @@ use super::drafts::Drafts;
 use super::sending::Sending;
 use super::transcript::KEPT_ITEMS_AWAY;
 use super::{
-    actions, daemon_update, file_reread, file_tree, grouping, notification_levels, sending,
+    actions, daemon_update, file_reread, file_tree, grouping, notification_levels, projects,
+    sending,
 };
 use crate::machine::MachineId;
 
@@ -229,6 +230,7 @@ pub fn apply(
             notification_levels::forget_agent(state, agent);
             file_tree::forget_pane(state, agent);
             grouping::forget(state, agent);
+            projects::forget_agent(state, agent);
             state.ui.closing.remove(&agent);
             if state.ui.selected == Some(agent) {
                 state.ui.selected = None;

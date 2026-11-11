@@ -70,6 +70,9 @@ const sidebarItem = (element) => {
   if (data?.headMachine !== undefined) {
     return { kind: "machine", id: Number(data.headMachine) };
   }
+  if (data?.headProject !== undefined) {
+    return { kind: "project", id: data.headProject };
+  }
   return null;
 };
 (async () => {
@@ -574,7 +577,7 @@ fn receive(cockpit: Cockpit, message: BridgeMessage) {
         }
         BridgeMessage::SidebarKey { key, focused } => {
             let mut next = None;
-            cockpit.update(|state| next = sidebar_keys::press(state, focused, &key));
+            cockpit.update(|state| next = sidebar_keys::press(state, &focused, &key));
             if let Some(item) = next {
                 focus_element(sidebar_item_id(item));
             }

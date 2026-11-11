@@ -8,9 +8,60 @@ use std::collections::HashMap;
 use cockpit_protocol::AgentId;
 
 use super::app_state::{AgentEntry, AppState};
+use super::projects::{self, ProjectKey};
 use super::ui_state::Popover;
 use crate::machine::MachineId;
 use crate::prefs::{AgentKey, GroupBy};
+
+/// A header of the sidebar: a machine's, or a project's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GroupKey {
+    Machine(MachineId),
+    Project(ProjectKey),
+}
+
+pub fn is_folded(state: &AppState, group: &GroupKey) -> bool {
+    match group {
+        GroupKey::Machine(machine) => state.ui.folded_machines.contains(machine),
+        GroupKey::Project(project) => state.ui.folded_projects.contains(project),
+    }
+}
+
+pub fn set_folded(state: &mut AppState, group: &GroupKey, folded: bool) {
+    match (group, folded) {
+        (GroupKey::Machine(machine), true) => {
+            state.ui.folded_machines.insert(*machine);
+        }
+        (GroupKey::Machine(machine), false) => {
+            state.ui.folded_machines.remove(machine);
+        }
+        (GroupKey::Project(project), true) => {
+            state.ui.folded_projects.insert(project.clone());
+        }
+        (GroupKey::Project(project), false) => {
+            state.ui.folded_projects.remove(project);
+        }
+    }
+}
+
+pub fn toggle_folded(state: &mut AppState, group: &GroupKey) {
+    let folded = is_folded(state, group);
+    set_folded(state, group, !folded);
+}
+
+/// The header the agent's row shows under, if the sidebar has headers.
+pub fn group_of(state: &AppState, agent: AgentId) -> Option<GroupKey> {
+    match state.prefs.sidebar.group_by {
+        GroupBy::None => None,
+        GroupBy::Machine => {
+            (!state.machines.others.is_empty()).then(|| GroupKey::Machine(MachineId::of(agent)))
+        }
+        GroupBy::Project => state
+            .agents
+            .get(&agent)
+            .map(|entry| GroupKey::Project(projects::project_of(state, entry))),
+    }
+}
 
 /// The agent as the preferences name it. `None` for a machine the app no longer knows.
 pub fn agent_key(state: &AppState, agent: AgentId) -> Option<AgentKey> {

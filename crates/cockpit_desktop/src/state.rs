@@ -21,6 +21,7 @@ pub mod machines;
 pub mod no_daemon;
 pub mod notification_levels;
 pub mod open_file;
+pub mod projects;
 pub mod quotes;
 mod requests;
 pub mod sending;

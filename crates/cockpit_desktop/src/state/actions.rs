@@ -2356,6 +2356,7 @@ mod tests {
     use crate::prefs::CommentPlacement;
     use crate::state::app_state::ConnectionState;
     use crate::state::app_state::tests::{ids, placed, state_with, summary};
+    use crate::state::grouping::GroupKey;
     use crate::state::requests::{apply_response, needed_requests};
     use crate::state::ui_state::{ClosedAgent, NoteKind};
 
@@ -4658,8 +4659,14 @@ mod tests {
 
         let groups = state.sidebar_groups();
 
-        let machines: Vec<MachineId> = groups.iter().map(|group| group.machine).collect();
-        assert_eq!(machines, [MachineId::THIS, devbox]);
+        let keys: Vec<GroupKey> = groups.iter().map(|group| group.key.clone()).collect();
+        assert_eq!(
+            keys,
+            [
+                GroupKey::Machine(MachineId::THIS),
+                GroupKey::Machine(devbox)
+            ]
+        );
         assert_eq!(
             ids(&groups[0].rows),
             [AgentId::new(3), AgentId::new(2), AgentId::new(1)]
