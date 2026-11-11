@@ -354,6 +354,23 @@ if (field !== null) {
 }
 "#;
 
+/// Focuses the field whose id it receives, and types the text it receives next at its end, as a
+/// key press would: its `input` event reaches the app as typing does, so keys typed after it come
+/// after it.
+const TYPE_AT_END_SCRIPT: &str = r#"
+const field_id = await dioxus.recv();
+const text = await dioxus.recv();
+const field = document.getElementById(field_id);
+if (field !== null) {
+  field.focus();
+  // The composer's undo history adds a step on beforeinput, as for a key press.
+  field.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, data: text, inputType: "insertText" }));
+  const end = field.value.length;
+  field.setRangeText(text, end, end, "end");
+  field.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: "insertText" }));
+}
+"#;
+
 /// Gives the focus to the field whose id it receives, its text selected.
 const SELECT_SCRIPT: &str = r#"
 const field_id = await dioxus.recv();
@@ -654,6 +671,14 @@ pub fn focus_field_at_end(field_id: &'static str) {
     let script = document::eval(FOCUS_AT_END_SCRIPT);
     if let Err(error) = script.send(field_id) {
         tracing::warn!("cannot focus the field {field_id}: {error}");
+    }
+}
+
+/// Focuses a field and types `text` at its end, as the user would.
+pub fn type_at_end(field_id: &'static str, text: String) {
+    let script = document::eval(TYPE_AT_END_SCRIPT);
+    if let Err(error) = script.send(field_id).and_then(|()| script.send(text)) {
+        tracing::warn!("cannot type into the field {field_id}: {error}");
     }
 }
 

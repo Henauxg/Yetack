@@ -476,6 +476,7 @@ pub fn toggle(state: &mut AppState) {
             Dialog::Switcher
             | Dialog::OpenFile(_)
             | Dialog::CloseAgent(_)
+            | Dialog::StopAgent(_)
             | Dialog::Accounts(_)
             | Dialog::NoDaemon
             | Dialog::DaemonUpdate(_)

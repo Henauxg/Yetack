@@ -1065,6 +1065,7 @@ pub fn dialog(dialog: Dialog) -> Element {
         | Dialog::NewAgent(_)
         | Dialog::OpenFile(_)
         | Dialog::CloseAgent(_)
+        | Dialog::StopAgent(_)
         | Dialog::AgentMap(_)
         | Dialog::Machines(_)
         | Dialog::NoDaemon

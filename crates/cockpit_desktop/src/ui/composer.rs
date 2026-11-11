@@ -1,6 +1,8 @@
 //! The composer: attachments, the prompt, the slash button, the prompt cache timer, the model,
 //! effort and permission mode menus, and Send and Stop.
 
+use std::time::Duration;
+
 use base64::engine::general_purpose::STANDARD as BASE64;
 use cockpit_protocol::{
     AgentId, AgentStatus, Effort, Image, ImageMediaType, PermissionMode, PromptDelivery,
@@ -15,7 +17,7 @@ use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::keymap::Command;
 use crate::state::actions::ImageTooLarge;
 use crate::state::sending::{SendingPlace, SendingPrompt};
-use crate::state::{PaletteOrigin, Popover, accounts, actions, agent_map};
+use crate::state::{Draft, PaletteOrigin, Popover, accounts, actions, agent_map};
 use crate::ui::header::cache_left;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::palette::Palette;
@@ -43,33 +45,44 @@ fn placeholder(status: AgentStatus) -> &'static str {
     }
 }
 
-/// The buttons at the end of the composer.
+/// For this long after the button sends, it stays an inactive Send rather than turning into Stop.
+/// The send empties the message, and the second click of a double click lands on the button.
+const STOP_AFTER_SEND: Duration = Duration::from_secs(1);
+
+/// What the button at the end of the composer does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EndButtons {
+enum EndButton {
+    /// The agent works or waits for you, and the message is empty.
+    Stop,
+    /// The agent works or waits for you: Claude reads the message at its next step.
+    SendNow,
+    /// The agent is idle or has exited. The button is off while the message is empty.
     Send,
-    /// While the agent works or waits for you, Esc does not stop it, and Send tells Claude what
-    /// to do at its next step.
-    StopAndSend,
 }
 
-impl EndButtons {
-    fn new(status: AgentStatus) -> Self {
+impl EndButton {
+    fn new(status: AgentStatus, draft: &Draft) -> Self {
         match status {
-            AgentStatus::Working | AgentStatus::NeedsYou => Self::StopAndSend,
+            AgentStatus::Working | AgentStatus::NeedsYou if draft.is_empty() => Self::Stop,
+            AgentStatus::Working | AgentStatus::NeedsYou => Self::SendNow,
             AgentStatus::Idle | AgentStatus::Exited => Self::Send,
         }
     }
 
-    fn stop(self) -> bool {
-        self == Self::StopAndSend
+    fn label(self) -> &'static str {
+        match self {
+            Self::Stop => "Stop the agent",
+            Self::SendNow | Self::Send => "Send the message",
+        }
     }
 
-    fn send_title(self) -> &'static str {
+    fn title(self) -> &'static str {
         match self {
-            Self::Send => "Send the message (Enter)",
-            Self::StopAndSend => {
+            Self::Stop => self.label(),
+            Self::SendNow => {
                 "Send now: Claude reads it at its next step (Enter). Alt+Enter queues it until the turn ends."
             }
+            Self::Send => "Send the message (Enter)",
         }
     }
 }
@@ -78,6 +91,10 @@ impl EndButtons {
 pub fn Composer() -> Element {
     let cockpit: Cockpit = use_context();
     let Clock(now) = use_context::<Clock>();
+    // The agent the button sent to in the last `STOP_AFTER_SEND`, and the number of that send, so
+    // that the timer of an earlier send does not cut a later send's second short.
+    let mut just_sent = use_signal(|| None::<(AgentId, u32)>);
+    let mut sends = use_signal(|| 0_u32);
     // The text area is not bound to the draft, whose renders can lag behind typing: it takes the
     // draft's text only when another agent opens or the app changes the draft.
     let shown = use_memo(move || {
@@ -107,8 +124,15 @@ pub fn Composer() -> Element {
     let draft = drafts.draft(agent).cloned().unwrap_or_default();
     let popover = state.ui.popover;
     let exited = status == AgentStatus::Exited;
-    let buttons = EndButtons::new(status);
-    let stop_label = "Stop the agent";
+    // Right after a send, the button looks off without being `disabled`: a disabled button that
+    // takes the second click of a double click takes the focus off the text area.
+    // An idle agent rests too: its Working status may arrive after the second click.
+    let resting = draft.is_empty() && just_sent().is_some_and(|(sent_to, _)| sent_to == agent);
+    let end = if resting {
+        EndButton::Send
+    } else {
+        EndButton::new(status, &draft)
+    };
     let (cache_text, cache_low) = cache_left(summary.cache_expires_at, now());
     let cache_short = match summary
         .cache_expires_at
@@ -248,22 +272,43 @@ pub fn Composer() -> Element {
                             span { class: "menu-button-label", "{mode_label}" }
                             Icon { kind: IconKind::ChevronDown, size: 12 }
                         }
-                        if buttons.stop() {
-                            button {
-                                class: "send-button stop",
-                                aria_label: "{stop_label}",
-                                title: "{stop_label}",
-                                onclick: move |_| cockpit.change(|state| actions::interrupt(state, agent)),
-                                span { class: "stop-square", aria_hidden: true }
-                            }
-                        }
+                        // One button, so that it changes in place rather than another appearing.
                         button {
-                            class: "send-button",
-                            aria_label: "Send the message",
-                            title: buttons.send_title(),
-                            disabled: !can_send,
-                            onclick: move |_| cockpit.change_with_drafts(|state, drafts| actions::send_prompt(state, drafts, agent, None, PromptDelivery::Steer)),
-                            Icon { kind: IconKind::Send, size: 16 }
+                            class: match (end, resting) {
+                                (EndButton::Stop, _) => "send-button stop",
+                                (_, true) => "send-button resting",
+                                (_, false) => "send-button",
+                            },
+                            aria_label: end.label(),
+                            title: end.title(),
+                            disabled: end == EndButton::Send && !can_send && !resting,
+                            aria_disabled: resting,
+                            onclick: move |_| {
+                                if resting {
+                                    bridge::focus_field(COMPOSER_ID);
+                                    return;
+                                }
+                                if end == EndButton::Stop {
+                                    cockpit.change(|state| actions::interrupt(state, agent));
+                                    return;
+                                }
+                                let send = sends().wrapping_add(1);
+                                sends.set(send);
+                                just_sent.set(Some((agent, send)));
+                                cockpit.change_with_drafts(|state, drafts| actions::send_prompt(state, drafts, agent, None, PromptDelivery::Steer));
+                                // A key pressed next goes to the text, not to a button that may stop the agent.
+                                bridge::focus_field(COMPOSER_ID);
+                                spawn(async move {
+                                    tokio::time::sleep(STOP_AFTER_SEND).await;
+                                    if *just_sent.peek() == Some((agent, send)) {
+                                        just_sent.set(None);
+                                    }
+                                });
+                            },
+                            span { class: "stop-square", aria_hidden: true }
+                            span { class: "send-glyph", aria_hidden: true,
+                                Icon { kind: IconKind::Send, size: 16 }
+                            }
                         }
                     }
                 }
@@ -409,13 +454,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stop_shows_beside_send_while_the_agent_works_or_waits_for_you() {
-        let stop = |status| EndButtons::new(status).stop();
+    fn the_end_button_stops_a_busy_agent_until_a_message_is_written() {
+        let empty = Draft::default();
+        let written = Draft {
+            text: "Also check the tests.".to_owned(),
+            ..Draft::default()
+        };
+        let end = |status, draft: &Draft| EndButton::new(status, draft);
 
-        assert!(stop(AgentStatus::NeedsYou));
-        assert!(stop(AgentStatus::Working));
-        assert!(!stop(AgentStatus::Idle));
-        assert!(!stop(AgentStatus::Exited));
+        assert_eq!(end(AgentStatus::Working, &empty), EndButton::Stop);
+        assert_eq!(end(AgentStatus::NeedsYou, &empty), EndButton::Stop);
+        assert_eq!(end(AgentStatus::Working, &written), EndButton::SendNow);
+        assert_eq!(end(AgentStatus::NeedsYou, &written), EndButton::SendNow);
+        assert_eq!(end(AgentStatus::Idle, &empty), EndButton::Send);
+        assert_eq!(end(AgentStatus::Idle, &written), EndButton::Send);
+        assert_eq!(end(AgentStatus::Exited, &written), EndButton::Send);
     }
 
     #[test]

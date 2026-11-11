@@ -105,6 +105,8 @@ pub enum Dialog {
     OpenFile(OpenFileView),
     /// Asks before closing an agent that works, waits for you, or holds an unsent draft.
     CloseAgent(AgentId),
+    /// Asks before Esc stops an agent that works or waits for you.
+    StopAgent(AgentId),
     /// The agent and every subagent it started (Ctrl+M).
     AgentMap(MapView),
     /// Every Claude account, from the sidebar's foot.
@@ -234,7 +236,7 @@ impl Dialog {
     /// or whose image it shows.
     pub fn agent(&self) -> Option<AgentId> {
         match self {
-            Self::CloseAgent(agent) => Some(*agent),
+            Self::CloseAgent(agent) | Self::StopAgent(agent) => Some(*agent),
             Self::AgentMap(view) => Some(view.agent),
             Self::ImageView(view) => Some(view.agent),
             Self::WorkingFolder(form) => Some(form.agent),

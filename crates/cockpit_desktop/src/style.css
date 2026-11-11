@@ -4289,21 +4289,47 @@ html.reordering * {
   margin-left: 6px;
 }
 
+/* Stop and Send share one cell: the glyph that does not apply fades and shrinks away. */
 .send-button {
   width: 36px;
   height: 36px;
   margin-left: 4px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  display: inline-grid;
+  place-items: center;
   border-radius: 10px;
   border: 0;
   background: var(--text);
   color: var(--bg);
+  transition:
+    background-color var(--motion-hover) var(--ease),
+    color var(--motion-hover) var(--ease),
+    box-shadow var(--motion-hover) var(--ease),
+    transform var(--motion-hover) var(--ease);
+}
+
+.send-button > .stop-square,
+.send-button > .send-glyph {
+  grid-area: 1 / 1;
+  transition:
+    opacity var(--motion-in) var(--ease-out),
+    transform var(--motion-in) var(--ease-out);
+}
+
+.send-button > .send-glyph {
+  display: inline-flex;
+}
+
+.send-button:not(.stop) > .stop-square,
+.send-button.stop > .send-glyph {
+  opacity: 0;
+  transform: scale(0.5);
+  transition:
+    opacity var(--motion-out) var(--ease-in),
+    transform var(--motion-out) var(--ease-in);
 }
 
 /* The square takes 14 of the button's 36 pixels, 11 on each side, to read as Stop at a glance. */
-.send-button.stop .stop-square {
+.send-button .stop-square {
   width: 14px;
   height: 14px;
   border-radius: 3px;
@@ -4313,9 +4339,14 @@ html.reordering * {
   color: #c4372e;
 }
 
-.send-button:disabled {
+.send-button:disabled,
+.send-button.resting {
   background: var(--line-strong);
   color: var(--dim);
+}
+
+.send-button.resting {
+  cursor: default;
 }
 
 .attachments {
@@ -6152,8 +6183,14 @@ html.splitting * {
   padding: 14px 12px 8px 20px;
 }
 
-.dialog.close-agent {
+.dialog.close-agent,
+.dialog.stop-agent {
   width: 440px;
+}
+
+/* The dialog takes the focus so that Enter stops: the key hint in its head says so, not a ring. */
+.dialog.stop-agent:focus {
+  outline: none;
 }
 
 .dialog.working-folder {
@@ -6174,8 +6211,25 @@ html.splitting * {
   color: var(--text-soft);
 }
 
-.dialog.close-agent .dialog-actions {
+.dialog.close-agent .dialog-actions,
+.dialog.stop-agent .dialog-actions {
   padding: 0 16px 16px;
+}
+
+/* A box between a dialog's text and its buttons, as "Stop without asking next time". */
+.dialog-tick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 16px 14px;
+  color: var(--text-soft);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.dialog-tick input {
+  margin: 0;
+  accent-color: var(--teal);
 }
 
 .dialog-head h2 {
@@ -8035,7 +8089,7 @@ label.icon-button,
   background: #323232;
 }
 
-.send-button:not(:disabled):hover {
+.send-button:not(:disabled, .resting):hover {
   background: var(--text-bright);
   box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
 }
@@ -8209,7 +8263,7 @@ label.icon-button,
 .quote-row-main:active,
 .chip:active,
 .menu-button:active,
-.send-button:not(:disabled):active,
+.send-button:not(:disabled, .resting):active,
 .badge:active,
 .block-head-action:active,
 .stop-button:active,
@@ -8320,7 +8374,7 @@ html.splitting .sidebar {
 
 /* A switch to another agent draws its layout at once. `!important` beats the rules above, some of
    which are more specific. */
-.app.switching :is(.chat-scroll, .composer-wrap, .last-instruction, .block-card, .jump-latest) {
+.app.switching :is(.chat-scroll, .composer-wrap, .last-instruction, .block-card, .jump-latest, .send-button, .send-button > *) {
   transition-duration: 0s !important;
 }
 

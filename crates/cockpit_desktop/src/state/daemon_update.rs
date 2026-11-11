@@ -413,6 +413,7 @@ fn shows_machine(dialog: &Dialog, machine: MachineId) -> bool {
         | Dialog::NewAgent(_)
         | Dialog::OpenFile(_)
         | Dialog::CloseAgent(_)
+        | Dialog::StopAgent(_)
         | Dialog::AgentMap(_)
         | Dialog::Accounts(_)
         | Dialog::AddAccount(_)

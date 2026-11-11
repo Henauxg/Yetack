@@ -4,7 +4,7 @@
 use super::app_state::AppState;
 use super::ui_state::{Dialog, RefusedChord, SettingsTab, SettingsView};
 use crate::keymap::{Chord, Command, Refusal};
-use crate::prefs::{CommentPlacement, PaneState, SteerHold};
+use crate::prefs::{CommentPlacement, EscStop, PaneState, SteerHold};
 
 /// Opens the dialog, from the gear in the sidebar's foot.
 pub fn open(state: &mut AppState) {
@@ -21,6 +21,10 @@ pub fn set_comment_placement(state: &mut AppState, placement: CommentPlacement) 
 /// their hold.
 pub fn set_steer_hold(state: &mut AppState, hold: SteerHold) {
     state.prefs.chat.steer_hold = hold;
+}
+
+pub fn set_esc_stop(state: &mut AppState, esc_stop: EscStop) {
+    state.prefs.chat.esc_stop = esc_stop;
 }
 
 /// The files pane of an agent never opened or closed. The others keep theirs.

@@ -35,7 +35,8 @@
 //!   "chat": {
 //!     "comments": "hidden",
 //!     "last_message": "hidden",
-//!     "steer_hold": "three_seconds"
+//!     "steer_hold": "three_seconds",
+//!     "esc_stop": "at_once"
 //!   }
 //! }
 //! ```
@@ -98,6 +99,36 @@ pub struct ChatPrefs {
     pub last_message: LastMessage,
     /// How long a message steered to a busy agent waits in the app, where Cancel can still stop it.
     pub steer_hold: SteerHold,
+    /// What Esc does to a busy agent once nothing is left open.
+    pub esc_stop: EscStop,
+}
+
+/// What Esc does to the selected agent while it works or waits for you, once nothing is left open
+/// for it to close.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumString, IntoStaticStr, VariantArray,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum EscStop {
+    /// A dialog asks before the agent stops.
+    #[default]
+    Ask,
+    /// The agent stops at once.
+    AtOnce,
+}
+
+impl Serialize for EscStop {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.into())
+    }
+}
+
+/// A word this version does not know, from another version of the app, reads as the default.
+impl<'de> Deserialize<'de> for EscStop {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let word = String::deserialize(deserializer)?;
+        Ok(word.parse().unwrap_or_default())
+    }
 }
 
 /// How long the app holds a message steered to a busy agent before it sends it: once sent, Claude
@@ -818,7 +849,8 @@ mod tests {
   "chat": {
     "comments": "hidden",
     "last_message": "hidden",
-    "steer_hold": "three_seconds"
+    "steer_hold": "three_seconds",
+    "esc_stop": "at_once"
   },
   "keys": {
     "switcher": "Ctrl+j"
@@ -876,6 +908,7 @@ mod tests {
                     comments: CommentPlacement::Hidden,
                     last_message: LastMessage::Hidden,
                     steer_hold: SteerHold::ThreeSeconds,
+                    esc_stop: EscStop::AtOnce,
                 },
                 keys: switched,
             }
@@ -997,6 +1030,22 @@ mod tests {
         assert_eq!(unknown.chat.last_message, LastMessage::Shown);
         assert_eq!(Prefs::default().chat.last_message, LastMessage::Shown);
         assert_eq!(LastMessage::Shown.toggled(), LastMessage::Hidden);
+    }
+
+    #[test]
+    fn the_esc_stop_words_are_pinned_and_esc_asks_by_default() {
+        let words: Vec<&str> = EscStop::VARIANTS
+            .iter()
+            .map(|&choice| choice.into())
+            .collect();
+        let at_once: Prefs = serde_json::from_str(r#"{"chat": {"esc_stop": "at_once"}}"#).unwrap();
+        let older: Prefs = serde_json::from_str(r#"{"chat": {"comments": "hidden"}}"#).unwrap();
+        let unknown: Prefs = serde_json::from_str(r#"{"chat": {"esc_stop": "never"}}"#).unwrap();
+
+        assert_eq!(words, ["ask", "at_once"]);
+        assert_eq!(at_once.chat.esc_stop, EscStop::AtOnce);
+        assert_eq!(older.chat.esc_stop, EscStop::Ask);
+        assert_eq!(unknown.chat.esc_stop, EscStop::Ask);
     }
 
     #[test]
