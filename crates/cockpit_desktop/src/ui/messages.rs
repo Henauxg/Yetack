@@ -13,6 +13,7 @@ use crate::connection::{Clock, Cockpit};
 use crate::format;
 use crate::prefs::LastMessage;
 use crate::state::RevealPlace;
+use crate::ui::blocks::KEPT_ROWS;
 use crate::ui::chat_scroll::InView;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::last_instruction::shown_text;
@@ -86,7 +87,7 @@ pub fn MessagesBody(
     // The list stacks from the bottom, so it opens on the latest messages: its first child is the
     // last row.
     rsx! {
-        div { class: "message-list scroll", role: "list",
+        div { class: "message-list scroll", role: "list", "data-kept-rows": KEPT_ROWS,
             for prompt in waiting.into_iter().rev() {
                 {
                     let image_count = usize::try_from(prompt.image_count).unwrap_or(usize::MAX);

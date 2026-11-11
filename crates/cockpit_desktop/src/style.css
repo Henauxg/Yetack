@@ -3369,6 +3369,7 @@ html.reordering * {
 }
 
 .block-card {
+  --block-head-height: 40px;
   flex: none;
   display: flex;
   flex-direction: column;
@@ -3387,7 +3388,7 @@ html.reordering * {
   align-items: center;
   gap: 8px;
   width: 100%;
-  min-height: 40px;
+  min-height: var(--block-head-height);
   padding: 0 12px;
   border: 0;
   background: transparent;
@@ -3542,6 +3543,35 @@ html.reordering * {
   max-height: 300px;
   margin: 0 -6px;
   overscroll-behavior: contain;
+}
+
+/* In a short window the open cards with a list share the column's height before it has to scroll:
+   each list shrinks down to its first rows and scrolls, the rest of its card keeps its size. The
+   blocks' script sets the lists' and the cards' least heights from the rows it measures. */
+.block-card:has([data-kept-rows]) {
+  flex: 0 1 auto;
+  min-height: var(--block-head-height);
+  overflow: hidden;
+}
+
+.block-card:has([data-kept-rows]) > .block-body {
+  flex: 0 1 auto;
+  min-height: 0;
+}
+
+.block-card:has([data-kept-rows]) > *,
+.block-card:has([data-kept-rows]) > .block-body > * {
+  flex: none;
+}
+
+.block-card:has([data-kept-rows]) > .block-body > [data-kept-rows] {
+  flex: 0 1 auto;
+}
+
+[data-kept-rows] {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
 .message-row {
@@ -3872,7 +3902,9 @@ html.reordering * {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 8px 0;
+  /* The body's 8px gap spaces it from the list. The 2px side padding puts its text where the rows'
+     text is, 8px in from the list's -6px margin. */
+  padding: 0 2px;
   font-size: 12px;
   color: var(--dim);
 }

@@ -39,6 +39,11 @@ const BOTTOM_THRESHOLD_PX: u16 = 40;
 /// The room, in pixels, above an entry the chat scrolls to.
 const REVEAL_TOP_PX: u16 = 12;
 
+/// How long after a wheel turned up the chat follows new entries only from its very bottom. WebKit
+/// spreads a notch over a few frames, and a frame can land within `BOTTOM_THRESHOLD_PX` of the
+/// bottom.
+const WHEEL_UP_MS: u16 = 600;
+
 /// The most new entries the jump button's badge counts; past it, it shows "99+".
 const MAX_BADGE_COUNT: usize = 99;
 
@@ -67,6 +72,7 @@ const places = new Map();
 // The user scrolled while the chat drew its rows, naming no agent yet: once it names its agent,
 // that scroll holds, in place of the agent's place from before.
 let scrolledWhileDrawing = false;
+let wheeledUpAt = -Infinity;
 const boxTop = () => box.getBoundingClientRect().top;
 const gapBelow = () => column.getBoundingClientRect().bottom - box.getBoundingClientRect().bottom;
 // An entry's wrapper has padding past the entry: its last element shows the entry, after the
@@ -140,7 +146,8 @@ const record = () => {
   }
   corrected = null;
   pinned = null;
-  following = gapBelow() <= settings.bottom_threshold_px;
+  const wheelingUp = performance.now() - wheeledUpAt < settings.wheel_up_ms;
+  following = gapBelow() <= (wheelingUp ? 1 : settings.bottom_threshold_px);
   anchor = following ? null : firstInView();
   if (agent === null) {
     scrolledWhileDrawing = true;
@@ -202,6 +209,18 @@ const changed = () => {
 };
 const mutations = new MutationObserver(changed);
 const resizes = new ResizeObserver(changed);
+// A wheel turned up over `target` scrolls a box inside the chat, such as a folded message, until
+// that box reaches its top.
+const scrollsInside = (target) => {
+  let element = target;
+  while (element instanceof Element && element !== box) {
+    if (element.scrollTop > 0 && ["auto", "scroll"].includes(getComputedStyle(element).overflowY)) {
+      return true;
+    }
+    element = element.parentElement;
+  }
+  return false;
+};
 // The chat's box comes and goes with the selected agent.
 const attach = () => {
   const found = document.getElementById(settings.chat_scroll_id);
@@ -217,6 +236,16 @@ const attach = () => {
     return;
   }
   box.addEventListener("scroll", record, { passive: true });
+  box.addEventListener("wheel", (event) => {
+    if (event.deltaY < 0 && !scrollsInside(event.target)) {
+      wheeledUpAt = performance.now();
+      // Before the first scroll of the notch, a change of the content would take the chat back down.
+      if (following && box.scrollHeight > box.clientHeight) {
+        following = false;
+        anchor = firstInView();
+      }
+    }
+  }, { passive: true });
   mutations.observe(box, { childList: true, subtree: true, characterData: true });
   resizes.observe(column);
   resizes.observe(box);
@@ -320,6 +349,7 @@ struct Settings {
     bottom_threshold_px: u16,
     /// The room an entry the chat scrolls to keeps above it.
     reveal_top_px: u16,
+    wheel_up_ms: u16,
 }
 
 /// What the app tells the script once it runs.
@@ -424,6 +454,7 @@ pub fn use_chat_scroll(cockpit: Cockpit, mut in_view: Signal<Option<InView>>) {
             revealed_class: REVEALED_CLASS,
             bottom_threshold_px: BOTTOM_THRESHOLD_PX,
             reveal_top_px: REVEAL_TOP_PX,
+            wheel_up_ms: WHEEL_UP_MS,
         };
         if let Err(error) = script.send(settings) {
             tracing::warn!("cannot start the chat's scroll script: {error}");
@@ -511,6 +542,7 @@ mod tests {
             revealed_class: REVEALED_CLASS,
             bottom_threshold_px: BOTTOM_THRESHOLD_PX,
             reveal_top_px: REVEAL_TOP_PX,
+            wheel_up_ms: WHEEL_UP_MS,
         };
         let message: ScrollMessage =
             serde_json::from_value(json!({ "type": "at_bottom", "agent": 7, "at_bottom": false }))
@@ -528,6 +560,7 @@ mod tests {
                 "revealed_class": "chat-revealed",
                 "bottom_threshold_px": 40,
                 "reveal_top_px": 12,
+                "wheel_up_ms": 600,
             })
         );
         assert!(matches!(
