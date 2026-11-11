@@ -182,11 +182,29 @@ impl Command {
             Self::FilesPane => Chord::ctrl("b"),
             Self::AgentMap => Chord::ctrl("m"),
             Self::Rename => Chord::plain("F2"),
-            Self::MarkToHandle => Chord::ctrl_shift("h"),
+            Self::MarkToHandle => Chord::ctrl("h"),
             Self::CloseAgent => Chord::ctrl_shift("w"),
             Self::MoveUp => Chord::alt("ArrowUp"),
             Self::MoveDown => Chord::alt("ArrowDown"),
             Self::ReloadFile => Chord::plain("F5"),
+        }
+    }
+
+    /// Its defaults in earlier versions, the newest first. A preferences file may give its
+    /// default of today to another command: it then keeps a former one.
+    fn former_chords(self) -> Vec<Chord> {
+        match self {
+            Self::MarkToHandle => vec![Chord::ctrl_shift("h")],
+            Self::Switcher
+            | Self::NewAgent
+            | Self::OpenFile
+            | Self::FilesPane
+            | Self::AgentMap
+            | Self::Rename
+            | Self::CloseAgent
+            | Self::MoveUp
+            | Self::MoveDown
+            | Self::ReloadFile => Vec::new(),
         }
     }
 }
@@ -555,7 +573,9 @@ impl Keymap {
 
     /// The map with only the changes that hold: a chord no command can take goes back to the
     /// default, and so do the changed commands that share a chord with another command, until
-    /// none does. A swap holds: both its commands take their chords at once.
+    /// none does. A swap holds: both its commands take their chords at once. A change that took a
+    /// chord before it became another command's default holds too: that command keeps a former
+    /// default that is free.
     fn checked(changes: BTreeMap<Command, Chord>) -> Self {
         let mut keymap = Self {
             changed: changes
@@ -565,18 +585,48 @@ impl Keymap {
                 })
                 .collect(),
         };
+        let mut moved = Vec::new();
+        for &command in Command::VARIANTS {
+            if keymap.changed.contains_key(&command) || !keymap.shares_chord(command) {
+                continue;
+            }
+            let former = command
+                .former_chords()
+                .into_iter()
+                .find(|chord| keymap.command(chord).is_none());
+            if let Some(former) = former {
+                keymap.changed.insert(command, former);
+                moved.push(command);
+            }
+        }
+        keymap.drop_shared();
+        // A change that took the default went with the shared ones: the command takes it back.
+        for command in moved {
+            let default = command.default_chord();
+            let taken = Command::VARIANTS
+                .iter()
+                .any(|&other| other != command && keymap.chord(other) == default);
+            if !taken {
+                keymap.changed.remove(&command);
+            }
+        }
+        keymap
+    }
+
+    /// Drops the changed commands that share a chord with another command, until none does.
+    fn drop_shared(&mut self) {
         loop {
-            let shared: Vec<Command> = keymap
+            let shared: Vec<Command> = self
                 .changed
                 .keys()
                 .copied()
-                .filter(|&command| keymap.shares_chord(command))
+                .filter(|&command| self.shares_chord(command))
                 .collect();
             if shared.is_empty() {
-                return keymap;
+                return;
             }
             for command in shared {
-                keymap.changed.remove(&command);
+                self.changed.remove(&command);
             }
         }
     }
@@ -647,6 +697,35 @@ mod tests {
         let read: Keymap = serde_json::from_str(&written).unwrap();
 
         assert_eq!(read, keymap);
+    }
+
+    #[test]
+    fn a_saved_chord_that_became_another_default_holds_and_that_command_keeps_its_former() {
+        let read: Keymap = serde_json::from_value(serde_json::json!({
+            "switcher": "Ctrl+h",
+        }))
+        .unwrap();
+        let both_taken: Keymap = serde_json::from_value(serde_json::json!({
+            "switcher": "Ctrl+h",
+            "new_agent": "Ctrl+Shift+h",
+        }))
+        .unwrap();
+        // Two commands on the chord: both go back to their defaults, and so does the mark.
+        let clashing: Keymap = serde_json::from_value(serde_json::json!({
+            "switcher": "Ctrl+h",
+            "new_agent": "Ctrl+h",
+        }))
+        .unwrap();
+        let written = serde_json::to_value(&read).unwrap();
+
+        assert_eq!(read.shown(Command::Switcher), "Ctrl+H");
+        assert_eq!(read.shown(Command::MarkToHandle), "Ctrl+Shift+H");
+        assert_eq!(serde_json::from_value::<Keymap>(written).unwrap(), read);
+        assert_eq!(clashing, Keymap::default());
+        // With no former default free, the change goes back to its own default, as before.
+        assert_eq!(both_taken.shown(Command::Switcher), "Ctrl+K");
+        assert_eq!(both_taken.shown(Command::MarkToHandle), "Ctrl+H");
+        assert_eq!(both_taken.shown(Command::NewAgent), "Ctrl+Shift+H");
     }
 
     #[test]
@@ -758,6 +837,7 @@ mod tests {
             assert_eq!(keymap.check(command, &command.default_chord()), Ok(()));
         }
         assert_eq!(keymap.shown(Command::MoveUp), "Alt+↑");
+        assert_eq!(keymap.shown(Command::MarkToHandle), "Ctrl+H");
     }
 
     #[test]
