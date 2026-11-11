@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
+description = "Watch and steer Claude Code agents, on this computer or on a server"
 
 [[bin]]
 name = "agents-cockpit-desktop"

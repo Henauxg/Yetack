@@ -93,12 +93,15 @@ release:
         exit 1
     fi
     docker build -q -t agents-cockpit-release contrib/release >/dev/null
-    rm -rf dist
-    mkdir dist
+    # A Windows zip copied into dist/ stays, and goes into SHA256SUMS.
+    mkdir -p dist
+    rm -f dist/agents-cockpit-*-x86_64-linux dist/agents-cockpit_*_amd64.deb dist/agents-cockpit.service dist/SHA256SUMS
+    # tar -m dates every file now: with the commit's dates, cargo would reuse the cached builds
+    # of a later commit.
     git archive --format=tar HEAD | docker run --rm -i \
         -e AGENTS_COCKPIT_COMMIT="$(git rev-parse HEAD)" -e OWNER="$(id -u):$(id -g)" \
         -v "$PWD/dist:/out" \
         -v agents-cockpit-release-registry:/opt/cargo/registry \
         -v agents-cockpit-release-target:/src/target \
-        agents-cockpit-release sh -c 'tar -x && exec sh contrib/release/build.sh'
+        agents-cockpit-release sh -c 'tar -xm && exec sh contrib/release/build.sh'
     ls -l dist

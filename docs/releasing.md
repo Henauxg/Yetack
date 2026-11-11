@@ -1,16 +1,17 @@
 # Releasing
 
 How to publish a release of agents-cockpit, for example `0.1.0`.
-A release has four files:
+A release has five files:
 
 | File | What it is |
 | --- | --- |
 | `agents-cockpit-0.1.0-x86_64-linux` | The daemon and command line for Linux x86_64, static: it runs on any distribution |
 | `agents-cockpit_0.1.0_amd64.deb` | The app for Ubuntu 22.04 and newer, and Debian 12, with the daemon beside it |
 | `agents-cockpit-desktop-0.1.0-windows-x64.zip` | The app for Windows |
+| `agents-cockpit.service` | The systemd user service that runs the daemon on a server |
 | `SHA256SUMS` | The checksum of each file |
 
-The Linux files are built on a Linux machine with Docker, the zip on a Windows machine.
+The Windows zip is built on a Windows machine, the other files on a Linux machine with Docker.
 
 ## 1. Set the version
 
@@ -25,17 +26,7 @@ The Linux files are built on a Linux machine with Docker, the zip on a Windows m
    git push origin main v0.1.0
    ```
 
-## 2. Build the Linux files
-
-```sh
-nix develop -c just release
-```
-
-The recipe refuses a tree with uncommitted changes. It builds `HEAD` inside an Ubuntu 22.04 container ([contrib/release/Dockerfile](../contrib/release/Dockerfile), [contrib/release/build.sh](../contrib/release/build.sh)) and writes the two files and `SHA256SUMS` to `dist/`. The first run takes about ten minutes. Later runs reuse two Docker volumes, `agents-cockpit-release-registry` and `agents-cockpit-release-target`.
-
-The app inside the `.deb` knows the commit it was built from, so its "Update" button builds that commit on a server.
-
-## 3. Build the Windows zip
+## 2. Build the Windows zip
 
 On the Windows machine, in PowerShell, in a checkout of the repository:
 
@@ -49,21 +40,31 @@ Compress-Archive -Force -Path target\release\agents-cockpit-desktop.exe, LICENSE
     -DestinationPath "dist\agents-cockpit-desktop-$version-windows-x64.zip"
 ```
 
-Copy the zip into `dist/` on the Linux machine, then add it to the checksums:
+Copy the zip into `dist/` of the Linux machine's checkout.
+
+## 3. Build the Linux files
+
+On the Linux machine, with the tag checked out:
 
 ```sh
-cd dist && sha256sum agents-cockpit* > SHA256SUMS
+nix develop -c just release
 ```
+
+The recipe refuses a tree with uncommitted changes. It builds `HEAD` inside an Ubuntu 22.04 container ([contrib/release/Dockerfile](../contrib/release/Dockerfile), [contrib/release/build.sh](../contrib/release/build.sh)), writes the Linux files to `dist/`, and writes `SHA256SUMS` for every file there, the Windows zip included. It replaces the Linux files of an earlier run and keeps the zip.
+
+The first run takes about ten minutes. Later runs reuse two Docker volumes, `agents-cockpit-release-registry` and `agents-cockpit-release-target`, and still rebuild every crate of the repository.
+
+The app inside the `.deb` knows the commit it was built from, so its "Update" button builds that commit on a server.
 
 ## 4. Check the files
 
-1. Install the `.deb` on Ubuntu or Debian (`sudo apt install ./agents-cockpit_0.1.0_amd64.deb`), start the app, and open the Machines dialog: it says "This app is version 0.1.0".
-2. Run `./agents-cockpit-0.1.0-x86_64-linux --version` on a server.
+1. Install the `.deb` on Ubuntu or Debian (`sudo apt install ./dist/agents-cockpit_0.1.0_amd64.deb`), start the app, and open the Machines dialog: it says "This app is version 0.1.0".
+2. Copy `dist/agents-cockpit-0.1.0-x86_64-linux` to a server and run it with `--version`.
 3. Unzip the Windows build and start it.
 
 ## 5. Publish
 
-Write the release notes in a file outside the repository: what changed, and the Claude Code version the release was tested with (`claude --version`). Then:
+Write the release notes in a file outside the repository: what changed, and the Claude Code version the release was tested with (`claude --version`). Then, from the checkout's root:
 
 ```sh
 gh release create v0.1.0 dist/* --title "agents-cockpit 0.1.0" --notes-file <notes file>
