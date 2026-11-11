@@ -220,6 +220,15 @@ fn CloseAgentDialog(agent: AgentId) -> Element {
     }
 }
 
+/// The keys a control of the stop dialog keeps from the dialog: the ones that press or tick it.
+fn keeps_own_key(key: &Key) -> bool {
+    match key {
+        Key::Enter => true,
+        Key::Character(typed) => typed == " ",
+        _ => false,
+    }
+}
+
 /// Asks before Esc stops a busy agent. Its box turns the question off until Settings turns it back
 /// on.
 #[component]
@@ -260,13 +269,20 @@ fn StopAgentDialog(agent: AgentId) -> Element {
             },
             onkeydown: move |event| {
                 let modifiers = event.modifiers();
-                let command = modifiers.intersects(Modifiers::CONTROL | Modifiers::META);
+                // Alt too: a shortcut may take Alt and a letter, and the page's script runs it.
+                let chord = modifiers.intersects(Modifiers::CONTROL | Modifiers::META | Modifiers::ALT);
                 match event.key() {
                     Key::Enter if modifiers.is_empty() && !event.is_auto_repeating() => stop(),
-                    // A letter means the user goes on typing: the agent keeps working.
-                    Key::Character(_) if !command => {
-                        cockpit.update(|state| state.ui.dialog = None);
-                        bridge::focus_field(COMPOSER_ID);
+                    // A typed character means the user goes on typing: the agent keeps working, and
+                    // the character goes into the message. Lost, it could leave the message empty,
+                    // where Y or N answers an approval.
+                    Key::Character(typed) if !chord => {
+                        cockpit.update_with_drafts(|state, drafts| {
+                            state.ui.dialog = None;
+                            drafts.draft_mut(agent).text.push_str(&typed);
+                            drafts.draft_written(agent);
+                        });
+                        bridge::focus_field_at_end(COMPOSER_ID);
                     }
                     // The page's script closes the dialog on Esc.
                     Key::Escape => bridge::focus_field(COMPOSER_ID),
@@ -284,9 +300,13 @@ fn StopAgentDialog(agent: AgentId) -> Element {
                     " Your message stays in the composer."
                 }
             }
-            // The box and the buttons take their own keys: Enter on Keep working keeps the agent.
+            // The box and the buttons keep Enter and Space: Enter on Keep working keeps the agent.
             label { class: "dialog-tick",
-                onkeydown: move |event| event.stop_propagation(),
+                onkeydown: move |event| {
+                    if keeps_own_key(&event.key()) {
+                        event.stop_propagation();
+                    }
+                },
                 input {
                     r#type: "checkbox",
                     checked: never_ask(),
@@ -295,7 +315,11 @@ fn StopAgentDialog(agent: AgentId) -> Element {
                 span { "Stop without asking next time" }
             }
             div { class: "dialog-actions",
-                onkeydown: move |event| event.stop_propagation(),
+                onkeydown: move |event| {
+                    if keeps_own_key(&event.key()) {
+                        event.stop_propagation();
+                    }
+                },
                 button {
                     class: "button",
                     onclick: move |_| {
@@ -1492,5 +1516,16 @@ mod tests {
             folder_parts(Path::new("C:/")),
             (String::new(), r"C:\".to_owned())
         );
+    }
+
+    #[test]
+    fn the_stop_dialogs_controls_keep_enter_and_space_and_let_the_rest_through() {
+        let kept = |key: Key| keeps_own_key(&key);
+
+        assert!(kept(Key::Enter));
+        assert!(kept(Key::Character(" ".to_owned())));
+        assert!(!kept(Key::Character("a".to_owned())));
+        assert!(!kept(Key::Escape));
+        assert!(!kept(Key::Tab));
     }
 }
