@@ -43,33 +43,33 @@ fn placeholder(status: AgentStatus) -> &'static str {
     }
 }
 
-/// The buttons at the end of the composer.
+/// What the button at the end of the composer does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EndButtons {
+enum EndButton {
+    /// The agent works or waits for you, and the message is empty.
+    Stop,
+    /// The agent works or waits for you: Claude reads the message at its next step.
+    SendNow,
+    /// The agent is idle or has exited. Empty, the message cannot go.
     Send,
-    /// While the agent works or waits for you, Esc does not stop it, and Send tells Claude what
-    /// to do at its next step.
-    StopAndSend,
 }
 
-impl EndButtons {
-    fn new(status: AgentStatus) -> Self {
+impl EndButton {
+    fn new(status: AgentStatus, empty: bool) -> Self {
         match status {
-            AgentStatus::Working | AgentStatus::NeedsYou => Self::StopAndSend,
+            AgentStatus::Working | AgentStatus::NeedsYou if empty => Self::Stop,
+            AgentStatus::Working | AgentStatus::NeedsYou => Self::SendNow,
             AgentStatus::Idle | AgentStatus::Exited => Self::Send,
         }
     }
 
-    fn stop(self) -> bool {
-        self == Self::StopAndSend
-    }
-
-    fn send_title(self) -> &'static str {
+    fn title(self) -> &'static str {
         match self {
-            Self::Send => "Send the message (Enter)",
-            Self::StopAndSend => {
+            Self::Stop => "Stop the agent",
+            Self::SendNow => {
                 "Send now: Claude reads it at its next step (Enter). Alt+Enter queues it until the turn ends."
             }
+            Self::Send => "Send the message (Enter)",
         }
     }
 }
@@ -107,8 +107,7 @@ pub fn Composer() -> Element {
     let draft = drafts.draft(agent).cloned().unwrap_or_default();
     let popover = state.ui.popover;
     let exited = status == AgentStatus::Exited;
-    let buttons = EndButtons::new(status);
-    let stop_label = "Stop the agent";
+    let end = EndButton::new(status, draft.is_empty());
     let (cache_text, cache_low) = cache_left(summary.cache_expires_at, now());
     let cache_short = match summary
         .cache_expires_at
@@ -248,22 +247,23 @@ pub fn Composer() -> Element {
                             span { class: "menu-button-label", "{mode_label}" }
                             Icon { kind: IconKind::ChevronDown, size: 12 }
                         }
-                        if buttons.stop() {
-                            button {
-                                class: "send-button stop",
-                                aria_label: "{stop_label}",
-                                title: "{stop_label}",
-                                onclick: move |_| cockpit.change(|state| actions::interrupt(state, agent)),
-                                span { class: "stop-square", aria_hidden: true }
-                            }
-                        }
+                        // One button, so that it changes in place rather than another appearing.
                         button {
-                            class: "send-button",
-                            aria_label: "Send the message",
-                            title: buttons.send_title(),
-                            disabled: !can_send,
-                            onclick: move |_| cockpit.change_with_drafts(|state, drafts| actions::send_prompt(state, drafts, agent, None, PromptDelivery::Steer)),
-                            Icon { kind: IconKind::Send, size: 16 }
+                            class: if end == EndButton::Stop { "send-button stop" } else { "send-button" },
+                            aria_label: if end == EndButton::Stop { "Stop the agent" } else { "Send the message" },
+                            title: end.title(),
+                            disabled: end == EndButton::Send && !can_send,
+                            onclick: move |_| {
+                                if end == EndButton::Stop {
+                                    cockpit.change(|state| actions::interrupt(state, agent));
+                                } else {
+                                    cockpit.change_with_drafts(|state, drafts| actions::send_prompt(state, drafts, agent, None, PromptDelivery::Steer));
+                                }
+                            },
+                            span { class: "stop-square", aria_hidden: true }
+                            span { class: "send-glyph", aria_hidden: true,
+                                Icon { kind: IconKind::Send, size: 16 }
+                            }
                         }
                     }
                 }
@@ -409,13 +409,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stop_shows_beside_send_while_the_agent_works_or_waits_for_you() {
-        let stop = |status| EndButtons::new(status).stop();
+    fn the_end_button_stops_a_busy_agent_until_a_message_is_written() {
+        let end = |status, empty| EndButton::new(status, empty);
 
-        assert!(stop(AgentStatus::NeedsYou));
-        assert!(stop(AgentStatus::Working));
-        assert!(!stop(AgentStatus::Idle));
-        assert!(!stop(AgentStatus::Exited));
+        assert_eq!(end(AgentStatus::Working, true), EndButton::Stop);
+        assert_eq!(end(AgentStatus::NeedsYou, true), EndButton::Stop);
+        assert_eq!(end(AgentStatus::Working, false), EndButton::SendNow);
+        assert_eq!(end(AgentStatus::NeedsYou, false), EndButton::SendNow);
+        assert_eq!(end(AgentStatus::Idle, true), EndButton::Send);
+        assert_eq!(end(AgentStatus::Idle, false), EndButton::Send);
+        assert_eq!(end(AgentStatus::Exited, false), EndButton::Send);
     }
 
     #[test]

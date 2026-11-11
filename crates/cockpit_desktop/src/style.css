@@ -4289,21 +4289,44 @@ html.reordering * {
   margin-left: 6px;
 }
 
+/* Stop and Send share one cell: the glyph that does not apply fades and shrinks away. */
 .send-button {
   width: 36px;
   height: 36px;
   margin-left: 4px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  display: inline-grid;
+  place-items: center;
   border-radius: 10px;
   border: 0;
   background: var(--text);
   color: var(--bg);
+  transition:
+    background-color var(--motion-hover) var(--ease),
+    color var(--motion-hover) var(--ease),
+    box-shadow var(--motion-hover) var(--ease),
+    transform var(--motion-hover) var(--ease);
+}
+
+.send-button > .stop-square,
+.send-button > .send-glyph {
+  grid-area: 1 / 1;
+  transition:
+    opacity var(--motion-in) var(--ease-out),
+    transform var(--motion-in) var(--ease-out);
+}
+
+.send-button > .send-glyph {
+  display: inline-flex;
+}
+
+.send-button:not(.stop) > .stop-square,
+.send-button.stop > .send-glyph {
+  opacity: 0;
+  transform: scale(0.5);
 }
 
 /* The square takes 14 of the button's 36 pixels, 11 on each side, to read as Stop at a glance. */
-.send-button.stop .stop-square {
+.send-button .stop-square {
   width: 14px;
   height: 14px;
   border-radius: 3px;
