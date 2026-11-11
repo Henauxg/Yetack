@@ -12,17 +12,19 @@ use std::ffi::OsStr;
 /// The variable that turns accelerated compositing off before the web view exists.
 const COMPOSITING_VAR: &str = "WEBKIT_DISABLE_COMPOSITING_MODE";
 
-/// Sets the variable, unless the user set it, to keep compositing on with `0` for example.
+/// Sets the variable, unless the user set it: their value wins.
 ///
-/// Must run before the program starts any thread: `main` calls it first.
-pub fn turn_off_accelerated_compositing() {
+/// Safe code cannot do it: WebKitGTK reads the variable from the process's environment, and a
+/// restart of the app with the variable set would be the only other way.
+///
+/// # Safety
+///
+/// No other thread may run: it would read or write the environment while this writes it.
+pub unsafe fn turn_off_accelerated_compositing() {
     if !needs_setting(std::env::var_os(COMPOSITING_VAR).as_deref()) {
         return;
     }
-    // SAFETY: `main` calls this before it starts any thread, so nothing reads or writes the
-    // environment at the same time. Safe code cannot do it: WebKitGTK reads the variable from the
-    // process's environment, and a restart of the app with the variable set would be the only
-    // other way.
+    // SAFETY: the caller guarantees that no other thread runs.
     unsafe { std::env::set_var(COMPOSITING_VAR, "1") };
 }
 

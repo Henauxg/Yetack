@@ -62,9 +62,12 @@ fn main() -> anyhow::Result<ExitCode> {
     if let Some(state_dir) = service::requested(&std::env::args_os().skip(1).collect::<Vec<_>>()) {
         return Ok(service::run(state_dir));
     }
-    // First, while no other thread runs.
+    // SAFETY: no other thread runs yet: nothing above starts one, and the signal watcher, the
+    // daemon's threads and the window start below.
     #[cfg(target_os = "linux")]
-    webview_settings::turn_off_accelerated_compositing();
+    unsafe {
+        webview_settings::turn_off_accelerated_compositing()
+    };
     let environment = Environment::from_process();
     logging::init(&environment);
     let arguments: Vec<String> = std::env::args().skip(1).collect();
