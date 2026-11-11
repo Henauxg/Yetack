@@ -4,7 +4,9 @@
 //!
 //! 1. the project it was moved to by hand, from its row's menu or by a drag, if that project
 //!    still exists;
-//! 2. the first kept project with a rule that holds its folder: its repository, or a folder;
+//! 2. the kept project with the most precise rule that holds its folder: a folder, then its
+//!    repository, then a folder that ends with `*`, the longest first, and the first project
+//!    in the list between equal rules;
 //! 3. a temporary project of its repository, which the app makes up and never saves: it goes
 //!    away with its last agent;
 //! 4. no project.
@@ -119,12 +121,7 @@ pub fn project_of(state: &AppState, entry: &AgentEntry) -> ProjectKey {
         return chosen;
     }
     let summary = &entry.summary;
-    let kept = state.prefs.projects.list.iter().find(|project| {
-        project
-            .rules
-            .iter()
-            .any(|rule| holds(rule, &summary.folder, summary.repository.as_ref()))
-    });
+    let kept = claiming(state, &summary.folder, summary.repository.as_ref());
     match (kept, &summary.repository) {
         (Some(project), _) => ProjectKey::Kept(project.id),
         (None, Some(repository)) => ProjectKey::Repository(repository.clone()),
@@ -141,12 +138,7 @@ pub fn for_new_agent(state: &AppState, machine: MachineId, folder: &Path) -> Opt
         .values()
         .filter(|entry| MachineId::of(entry.id()) == machine && entry.summary.folder == folder)
         .find_map(|entry| entry.summary.repository.as_ref());
-    let kept = state.prefs.projects.list.iter().find(|project| {
-        project
-            .rules
-            .iter()
-            .any(|rule| holds(rule, folder, repository))
-    });
+    let kept = claiming(state, folder, repository);
     match (kept, repository) {
         (Some(project), _) => Some(ProjectKey::Kept(project.id)),
         (None, Some(repository)) => Some(ProjectKey::Repository(repository.clone())),
@@ -169,15 +161,58 @@ fn moved_to(state: &AppState, agent: AgentId) -> Option<ProjectKey> {
     }
 }
 
-fn holds(rule: &ProjectRule, folder: &Path, repository: Option<&Repository>) -> bool {
+/// How precisely a rule holds a folder, the least precise first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Precision {
+    /// A folder rule that ends with `*`, by the length of its start.
+    Wildcard(usize),
+    Repository,
+    /// A folder rule, by the length of its path.
+    Folder(usize),
+}
+
+/// The kept project whose rule holds the folder most precisely. Between equal rules, the first
+/// project in the list wins.
+fn claiming<'state>(
+    state: &'state AppState,
+    folder: &Path,
+    repository: Option<&Repository>,
+) -> Option<&'state Project> {
+    let mut best: Option<(Precision, &Project)> = None;
+    for project in &state.prefs.projects.list {
+        let precision = project
+            .rules
+            .iter()
+            .filter_map(|rule| precision(rule, folder, repository))
+            .max();
+        if let Some(precision) = precision
+            && best.is_none_or(|(found, _)| precision > found)
+        {
+            best = Some((precision, project));
+        }
+    }
+    best.map(|(_, project)| project)
+}
+
+fn precision(
+    rule: &ProjectRule,
+    folder: &Path,
+    repository: Option<&Repository>,
+) -> Option<Precision> {
     match rule {
-        ProjectRule::Repository(wanted) => repository == Some(wanted),
+        ProjectRule::Repository(wanted) => {
+            (repository == Some(wanted)).then_some(Precision::Repository)
+        }
         ProjectRule::Folder(wanted) => {
             let text = folder.to_string_lossy();
             let style = PathStyle::of(folder);
             match wanted.strip_suffix(WILDCARD) {
-                Some(start) => style.starts_with_text(&text, start),
-                None => style.strip_prefix(&text, wanted).is_some(),
+                Some(start) => style
+                    .starts_with_text(&text, start)
+                    .then_some(Precision::Wildcard(start.len())),
+                None => style
+                    .strip_prefix(&text, wanted)
+                    .map(|_| Precision::Folder(wanted.len())),
             }
         }
     }
@@ -718,6 +753,35 @@ mod tests {
 
         assert_eq!(project(&state, 4), ProjectKey::Kept(id));
         assert_eq!(project(&state, 3), ProjectKey::Kept(other));
+    }
+
+    #[test]
+    fn the_most_precise_rule_wins_whatever_the_order_of_the_projects() {
+        let mut state = agents();
+        let short = create(&mut state, "All work");
+        add_rule(&mut state, short, ProjectRule::Folder("/work/*".to_owned()));
+        let wildcard = create(&mut state, "Projects");
+        add_rule(
+            &mut state,
+            wildcard,
+            ProjectRule::Folder("/work/project-*".to_owned()),
+        );
+        let folder = create(&mut state, "One folder");
+        add_rule(
+            &mut state,
+            folder,
+            ProjectRule::Folder("/work/project-1".to_owned()),
+        );
+        let billing = create(&mut state, "Billing");
+        add_rule(&mut state, billing, ProjectRule::Repository(repo(BILLING)));
+
+        assert_eq!(project(&state, 1), ProjectKey::Kept(folder));
+        assert_eq!(project(&state, 2), ProjectKey::Kept(billing));
+        assert_eq!(project(&state, 3), ProjectKey::Kept(wildcard));
+        assert_eq!(
+            for_new_agent(&state, MachineId::THIS, Path::new("/work/other")),
+            Some(ProjectKey::Kept(short))
+        );
     }
 
     #[test]

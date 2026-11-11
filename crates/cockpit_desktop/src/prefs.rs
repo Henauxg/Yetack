@@ -138,7 +138,7 @@ pub struct Project {
     pub id: ProjectId,
     pub name: String,
     pub color: AccountColor,
-    /// An agent belongs to the first project with a rule that holds its folder.
+    /// An agent belongs to the project with the most precise rule that holds its folder.
     #[serde(default, deserialize_with = "known_rules")]
     pub rules: Vec<ProjectRule>,
 }

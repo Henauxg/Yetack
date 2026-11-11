@@ -114,7 +114,7 @@ pub fn ProjectsTab(view: SettingsView) -> Element {
     rsx! {
         div { class: "dialog-body",
             p { class: "setting-help projects-intro",
-                "An agent joins the first project whose rules hold its folder: its repository, or a folder. A repository no project claims gets a temporary project, which goes away with its last agent unless you keep it."
+                "An agent joins the project whose rule holds its folder most precisely: a folder, then its repository, then a folder that ends with *, the longest first. A repository no project claims gets a temporary project, which goes away with its last agent unless you keep it."
             }
             if group_by != GroupBy::Project {
                 div { class: "projects-grouping",
