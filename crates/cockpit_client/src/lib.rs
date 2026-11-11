@@ -14,7 +14,7 @@ mod session;
 mod test_daemon;
 mod transport;
 
-pub use connection::Connection;
+pub use connection::{Connection, Welcome};
 pub use error::{CloseError, ConnectError, RequestError};
 pub use requester::Requester;
 pub use session::{Backoff, Session, SessionError, SessionUpdate};

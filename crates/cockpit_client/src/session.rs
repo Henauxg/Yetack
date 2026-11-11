@@ -5,7 +5,7 @@ use std::time::Duration;
 use cockpit_protocol::{Catchup, EventRecord, Request, ResponseBody, Seq};
 use tokio::sync::mpsc;
 
-use crate::connection::{Connection, EVENT_QUEUE};
+use crate::connection::{Connection, EVENT_QUEUE, Welcome};
 use crate::error::{CloseError, ConnectError, RequestError};
 use crate::lossy_channel;
 use crate::lossy_channel::{LossyReceiver, LossySender, Received, Sent};
@@ -37,7 +37,7 @@ pub enum SessionUpdate {
     },
     /// Connected. With `Catchup::Snapshot`, replace the whole state. With `Catchup::Replay`, keep
     /// it: the missed events follow as `Event`s.
-    Connected(Catchup),
+    Connected(Welcome),
     /// The attempt failed, or the connection dropped. Requests in flight failed with
     /// `RequestError::Disconnected`; until the next connection they fail with
     /// `RequestError::NotConnected`.
@@ -137,13 +137,13 @@ async fn run(
             return;
         };
         let error = match connected {
-            Ok((connection, catchup)) => {
+            Ok((connection, welcome)) => {
                 attempt = 0;
                 delay = backoff.initial;
-                if let Catchup::Snapshot(snapshot) = &catchup {
+                if let Catchup::Snapshot(snapshot) = &welcome.catchup {
                     last_seq = snapshot.last_seq;
                 }
-                let served = serve(connection, catchup, &mut commands, &updates, &mut last_seq);
+                let served = serve(connection, welcome, &mut commands, &updates, &mut last_seq);
                 let Some(error) = served.await else {
                     return;
                 };
@@ -221,13 +221,13 @@ async fn meanwhile<F: Future>(
 /// `None` when the `Session` is dropped.
 async fn serve(
     mut connection: Connection,
-    catchup: Catchup,
+    welcome: Welcome,
     commands: &mut mpsc::UnboundedReceiver<Command>,
     updates: &LossySender<SessionUpdate>,
     last_seq: &mut Option<Seq>,
 ) -> Option<CloseError> {
     let requester = connection.requester().clone();
-    let connected = updates.send(SessionUpdate::Connected(catchup));
+    let connected = updates.send(SessionUpdate::Connected(welcome));
     let forward = |command| requester.forward(command);
     meanwhile(connected, commands, updates, forward)
         .await?
@@ -298,7 +298,11 @@ mod tests {
             .accept_and_welcome(Catchup::Snapshot(test_daemon::snapshot(Some(10))))
             .await;
         assert_eq!(last_seq, None);
-        let SessionUpdate::Connected(Catchup::Snapshot(received)) = next(&mut session).await else {
+        let SessionUpdate::Connected(Welcome {
+            catchup: Catchup::Snapshot(received),
+            ..
+        }) = next(&mut session).await
+        else {
             panic!("expected a snapshot");
         };
         assert_eq!(received, test_daemon::snapshot(Some(10)));
@@ -321,7 +325,10 @@ mod tests {
         assert_eq!(last_seq, Some(Seq::new(10)));
         assert!(matches!(
             next(&mut session).await,
-            SessionUpdate::Connected(Catchup::Replay)
+            SessionUpdate::Connected(Welcome {
+                catchup: Catchup::Replay,
+                ..
+            })
         ));
         peer.event(11, removed(1)).await;
         let SessionUpdate::Event(record) = next(&mut session).await else {
@@ -456,7 +463,11 @@ mod tests {
             "{connecting:?}"
         );
         assert_eq!(last_seq, None);
-        let SessionUpdate::Connected(Catchup::Snapshot(snapshot)) = connected else {
+        let SessionUpdate::Connected(Welcome {
+            catchup: Catchup::Snapshot(snapshot),
+            ..
+        }) = connected
+        else {
             panic!("expected a snapshot, got {connected:?}");
         };
         assert_eq!(snapshot, test_daemon::snapshot(Some(flood)));

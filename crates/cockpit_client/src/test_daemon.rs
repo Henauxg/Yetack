@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use cockpit_protocol::{
     Catchup, ClientMessage, Event, EventRecord, Frame, FrameReader, PROTOCOL_VERSION, PlanUsage,
-    Request, RequestId, ResponseBody, ResponseResult, Seq, ServerMessage, Settings, Snapshot,
+    ReleaseVersion, Request, RequestId, ResponseBody, ResponseResult, Seq, ServerMessage, Settings,
+    Snapshot,
 };
 use tempfile::TempDir;
 use tokio::io::BufReader;
@@ -37,6 +38,10 @@ pub(crate) async fn in_time<F: Future>(future: F) -> F::Output {
     tokio::time::timeout(Duration::from_secs(5), future)
         .await
         .expect("done within 5 seconds")
+}
+
+pub(crate) fn daemon_version() -> ReleaseVersion {
+    ReleaseVersion::new("0.4.2".to_owned())
 }
 
 pub(crate) fn snapshot(last_seq: Option<u64>) -> Snapshot {
@@ -88,6 +93,7 @@ impl TestDaemon {
         let last_seq = peer.hello().await;
         peer.send(&ServerMessage::Welcome {
             protocol_version: PROTOCOL_VERSION,
+            daemon_version: daemon_version(),
             catchup,
         })
         .await;

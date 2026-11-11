@@ -67,7 +67,9 @@ pub use response::{
     Completeness, DirEntry, DirListing, EntryKind, EntryLink, ErrorBody, ErrorCode, GitIgnore,
     HistoryPage, OlderItems, PastSession, ResponseBody, ResponseResult,
 };
-pub use session::{Catchup, ClientMessage, PROTOCOL_VERSION, ServerMessage, Snapshot};
+pub use session::{
+    Catchup, ClientMessage, PROTOCOL_VERSION, ReleaseVersion, ServerMessage, Snapshot,
+};
 pub use settings::Settings;
 pub use stored_bool::{FromStoredBool, enum_or_stored_bool};
 pub use time::Timestamp;

@@ -6,8 +6,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_protocol::{
     Account, AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, AnswerState, FileEdit,
-    Image, ItemBody, ItemId, PastSession, PlanUsage, Settings, Timestamp, ToolCallStatus,
-    TranscriptItem, WaitingPrompt, list_order,
+    Image, ItemBody, ItemId, PastSession, PlanUsage, ReleaseVersion, Settings, Timestamp,
+    ToolCallStatus, TranscriptItem, WaitingPrompt, list_order,
 };
 use strum::VariantArray;
 
@@ -289,6 +289,8 @@ impl AgentEntry {
 pub struct MachineState {
     pub daemon: DaemonLabel,
     pub connection: ConnectionState,
+    /// The release the daemon said it runs, at its last connection.
+    pub daemon_version: Option<ReleaseVersion>,
     /// The default account's plan usage.
     pub plan_usage: PlanUsage,
     pub settings: Settings,
@@ -315,6 +317,7 @@ impl MachineState {
         Self {
             daemon,
             connection: ConnectionState::Connecting { attempt: 1 },
+            daemon_version: None,
             plan_usage: PlanUsage::default(),
             settings: Settings::default(),
             accounts: Vec::new(),
@@ -589,9 +592,10 @@ impl AppState {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use cockpit_client::{SessionUpdate, Welcome};
     use cockpit_protocol::{
-        AnswerState, Approval, ApprovalAnswer, ApprovalDecision, CostUsd, EffortSource, Mark,
-        PendingId, PermissionMode, Position, SignInWait,
+        AnswerState, Approval, ApprovalAnswer, ApprovalDecision, Catchup, CostUsd, EffortSource,
+        Mark, PendingId, PermissionMode, Position, SignInWait,
     };
 
     use super::*;
@@ -631,6 +635,14 @@ pub(crate) mod tests {
             state.agents.insert(summary.id, AgentEntry::new(summary));
         }
         state
+    }
+
+    /// A daemon of release 0.4.2 accepted the connection with `catchup`.
+    pub(crate) fn connected(catchup: Catchup) -> SessionUpdate {
+        SessionUpdate::Connected(Welcome {
+            daemon_version: ReleaseVersion::new("0.4.2".to_owned()),
+            catchup,
+        })
     }
 
     pub(crate) fn ids(entries: &[&AgentEntry]) -> Vec<u32> {

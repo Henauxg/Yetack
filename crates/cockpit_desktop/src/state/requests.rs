@@ -825,7 +825,6 @@ impl Failure {
 mod tests {
     use std::time::Instant;
 
-    use cockpit_client::SessionUpdate;
     use cockpit_protocol::{
         AgentStatus, Catchup, Completeness, DirListing, ErrorBody, ErrorCode, HistoryPage,
         ItemBody, OlderItems, TranscriptItem,
@@ -1085,7 +1084,7 @@ mod tests {
         crate::state::apply::apply_update(
             &mut state,
             &mut Drafts::default(),
-            SessionUpdate::Connected(Catchup::Replay),
+            crate::state::connected(Catchup::Replay),
             Instant::now(),
             MachineId::THIS,
         );

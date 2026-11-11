@@ -172,8 +172,9 @@ A reader refuses a line longer than a fixed maximum (16 MiB) instead of bufferin
 ### Session
 
 1. The client sends `Hello { protocol_version, last_seq }`.
-   The version is 5. An app and a daemon of different versions refuse each other.
-2. The daemon answers `Welcome { protocol_version, catchup }`, or `Refused { reason }` when the versions differ.
+   The version is 6. An app and a daemon of different versions refuse each other.
+2. The daemon answers `Welcome { protocol_version, daemon_version, catchup }`, or `Refused { reason }` when the versions differ.
+   `daemon_version` is the daemon's release, its Cargo version ("0.1.0"). The Machines dialog shows it on each machine's row, and the app's own version in its note.
 3. `catchup` is `Replay` when `last_seq` was given and the logs still hold every event after it: the daemon then sends those events, then live events.
    Otherwise it is `Snapshot(snapshot)`: the client replaces its state with it, and live events follow.
    A welcome never carries both, so no event is applied twice.

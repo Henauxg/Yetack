@@ -52,4 +52,4 @@ pub use ui_state::{
 pub use utf16_offset::Utf16Offset;
 
 #[cfg(test)]
-pub(crate) use app_state::tests::{state_with, summary};
+pub(crate) use app_state::tests::{connected, state_with, summary};

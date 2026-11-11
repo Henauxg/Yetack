@@ -256,7 +256,8 @@ impl Setup {
         let transport = Transport::Local {
             socket: self.socket(),
         };
-        let (connection, catchup) = Connection::connect(&transport, last_seq).await.unwrap();
+        let (connection, welcome) = Connection::connect(&transport, last_seq).await.unwrap();
+        let catchup = welcome.catchup;
         let last_seq = match &catchup {
             Catchup::Snapshot(snapshot) => snapshot.last_seq,
             Catchup::Replay => last_seq,

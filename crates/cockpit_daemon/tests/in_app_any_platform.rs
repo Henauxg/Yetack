@@ -28,10 +28,11 @@ async fn start(config: &DaemonConfig) -> (InAppDaemon, Transport) {
 }
 
 async fn connect(transport: &Transport) -> (Connection, Catchup) {
-    tokio::time::timeout(WAIT, Connection::connect(transport, None))
+    let (connection, welcome) = tokio::time::timeout(WAIT, Connection::connect(transport, None))
         .await
         .expect("a welcome in time")
-        .unwrap()
+        .unwrap();
+    (connection, welcome.catchup)
 }
 
 /// Stops the daemon as the app does as it closes, from a thread outside any runtime.

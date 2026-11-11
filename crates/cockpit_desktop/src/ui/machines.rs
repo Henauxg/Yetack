@@ -11,6 +11,7 @@ use crate::state::daemon_update::{self, UpdateLine};
 use crate::state::machines::{self, MachineChange};
 use crate::state::{AppState, ConnectionState, MachinesView};
 use crate::ui::icons::{Icon, IconKind};
+use crate::update_script::APP_VERSION;
 
 /// What the sidebar and the dialogs call this computer, unless its daemon runs over SSH.
 pub const THIS_COMPUTER: &str = "This computer";
@@ -84,6 +85,10 @@ fn rows(state: &AppState) -> Vec<MachineRow> {
                 DaemonPlace::Socket => "Agents run in the daemon on this computer.",
                 DaemonPlace::Ssh => "Over SSH",
             };
+            let detail = match &known.daemon_version {
+                Some(version) => format!("{detail} · version {version}"),
+                None => detail.to_owned(),
+            };
             let trouble = match &known.connection {
                 ConnectionState::Disconnected { error, .. } => Some(error.clone()),
                 ConnectionState::Connecting { .. }
@@ -98,7 +103,7 @@ fn rows(state: &AppState) -> Vec<MachineRow> {
             MachineRow {
                 machine,
                 name,
-                detail: detail.to_owned(),
+                detail,
                 trouble,
                 update: daemon_update::update_line(known),
                 agents,
@@ -139,7 +144,7 @@ pub fn MachinesDialog(view: MachinesView) -> Element {
             }
             div { class: "dialog-body",
                 span { class: "dialog-note",
-                    "The app reaches each machine at once. Its agents show in a panel of their own in the sidebar."
+                    "The app reaches each machine at once. Its agents show in a panel of their own in the sidebar. This app is version {APP_VERSION}."
                 }
                 div { class: "machine-rows",
                     for row in rows {
@@ -248,6 +253,8 @@ fn MachineRowView(row: MachineRow) -> Element {
 
 #[cfg(test)]
 mod tests {
+    use cockpit_protocol::ReleaseVersion;
+
     use super::*;
     use crate::daemon_label::DaemonLabel;
     use crate::state::MachineState;
@@ -278,6 +285,24 @@ mod tests {
             [
                 ("build-box".to_owned(), IconKind::Server),
                 ("devbox".to_owned(), IconKind::Server),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_row_shows_the_version_its_daemon_said_it_runs() {
+        let mut state = AppState::new(DaemonLabel::in_app());
+        let mut devbox = MachineState::new(DaemonLabel::ssh("devbox".to_owned()));
+        devbox.daemon_version = Some(ReleaseVersion::new("0.4.2".to_owned()));
+        state.machines.others.insert(MachineId::new(1), devbox);
+
+        let details: Vec<String> = rows(&state).into_iter().map(|row| row.detail).collect();
+
+        assert_eq!(
+            details,
+            [
+                "Agents run in this app. They stop when it closes.",
+                "Over SSH · version 0.4.2",
             ]
         );
     }

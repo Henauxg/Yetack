@@ -163,10 +163,11 @@ fn ends(pid: i32) -> bool {
 }
 
 async fn connect(transport: &Transport) -> (Connection, Catchup) {
-    tokio::time::timeout(WAIT, Connection::connect(transport, None))
+    let (connection, welcome) = tokio::time::timeout(WAIT, Connection::connect(transport, None))
         .await
         .expect("a welcome in time")
-        .unwrap()
+        .unwrap();
+    (connection, welcome.catchup)
 }
 
 async fn summary_with(
