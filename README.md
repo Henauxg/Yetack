@@ -4,15 +4,15 @@ Run Claude Code agents on your computer and on your servers, and watch and steer
 
 ![The app with agents on two machines: the sidebar lists them, the middle shows one agent's conversation, the right column its tasks, messages and subagents](docs/images/app.png)
 
-- **Several machines.** This computer and any number of servers over SSH, each with its own panel in the sidebar.
-- **Several Claude accounts.** A personal and a work subscription side by side, with an account picked for each agent and the plan usage of each.
-- **Sessions that persist on remote machines.** The agents run in a daemon on the server, so they keep working when the app closes, the laptop sleeps or the connection drops. The app catches up when it comes back.
-- **Steer while they work.** Answer approvals, questions and plans from the app, and send a message that Claude reads at its next step.
-- **Reply to a passage.** Select text in the chat to quote it, with a comment beside it. Paste images into a message.
-- **See what they do.** Subagents and background tasks in a map, the files each agent changed or read, and their diffs.
-- **Notifications** when an agent needs you or finishes.
+- **Several machines.** The app connects to this computer and to any number of servers over SSH. Each machine has its own panel in the sidebar.
+- **Several Claude accounts.** A personal and a work subscription work side by side. You pick the account of each agent, and the app shows the plan usage of each account.
+- **Sessions that persist on remote machines.** The agents run in a daemon on the server, so they keep working when the app closes, the laptop sleeps or the connection drops. When the app reconnects, it shows what the agents did meanwhile.
+- **Steer while they work.** Answer approvals, questions and plans from the app. A message you send while an agent works reaches Claude at its next step.
+- **Reply to a passage.** Select text in the chat to quote it, and write a comment beside it. Paste images into a message.
+- **See what they do.** A map shows the subagents and background tasks. The files pane shows the files each agent changed or read, with their diffs.
+- **Notifications.** The app tells you when an agent needs you or finishes.
 
-Claude Code runs unmodified, signed in with your own account, and the app never sees your credentials. The app reaches a server with your SSH key, and the daemon opens no network port.
+Claude Code runs unmodified, signed in with your own account. The app never sees your credentials. It reaches a server with your SSH key, and the daemon opens no network port.
 
 ## Install
 

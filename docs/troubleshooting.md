@@ -27,7 +27,7 @@ systemctl --user restart agents-cockpit
 
 ## The agents stop when you log out of the server
 
-Linger is off, so systemd stops your services when your last session on the server ends. On the server, run `loginctl enable-linger "$USER"` (some servers want `sudo` before it).
+Linger is off, so systemd stops your services when your last session on the server ends. On the server, run `loginctl enable-linger "$USER"`. On some servers, it needs `sudo`.
 
 ## A machine's row says "Runs an older version" or "Runs a newer version"
 

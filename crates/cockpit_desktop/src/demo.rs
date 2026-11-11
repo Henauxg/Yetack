@@ -93,8 +93,7 @@ const SERVER: MachineId = MachineId::new(1);
 const SERVER_HOST: &str = "devbox";
 const SERVER_FOLDER: &str = "/home/dev/services/invoices";
 
-/// The selected agent's answer that the demo's draft quotes, the passage it quotes and the
-/// comment beside it.
+/// The selected agent's answer that the demo's draft quotes.
 const LOOKUP_ITEM: u32 = 20;
 const QUOTED_PASSAGE: &str = "The old cache.rs:10 is gone.";
 const QUOTE_COMMENT: &str = "Then drop its import in lib.rs too.";
@@ -724,11 +723,12 @@ fn add_server(state: &mut AppState, now: SystemTime) {
             ],
         ),
     ];
-    let count = u32::try_from(agents.len()).unwrap_or(u32::MAX);
-    for (place, (parts, bodies)) in (0..count).rev().zip(agents) {
+    // The bottom agent first: positions grow towards the top.
+    let bottom_first = (1_u32..).zip(agents.into_iter().rev());
+    for (step, (parts, bodies)) in bottom_first {
         let mut summary = summary(parts, now);
         summary.id = SERVER.app_agent(summary.id);
-        summary.position = Position::new((place + 1) * POSITION_STEP);
+        summary.position = Position::new(step * POSITION_STEP);
         let mut items: Vec<TranscriptItem> = (1..)
             .zip(bodies)
             .map(|(id, body)| item(id, None, body))
@@ -748,10 +748,9 @@ fn add_server(state: &mut AppState, now: SystemTime) {
 /// last answer with a comment beside it.
 pub fn drafts() -> Drafts {
     let mut drafts = Drafts::default();
-    let Some(start) = LOOKUP_ANSWER.find(QUOTED_PASSAGE) else {
+    let Some((before, _)) = LOOKUP_ANSWER.split_once(QUOTED_PASSAGE) else {
         return drafts;
     };
-    let before = LOOKUP_ANSWER.get(..start).unwrap_or_default();
     let passage = quotes::Passage {
         anchor: quotes::QuoteAnchor {
             item: ItemId::new(LOOKUP_ITEM),
@@ -1282,7 +1281,7 @@ fn list_folders(state: &AppState, path: &Path) -> Result<ResponseBody, RequestEr
             &format!("the folder {} is not absolute", path.display()),
         ));
     }
-    // The demo lists this computer's folders: a server's are its own.
+    // The dialog browses this computer, so it leaves out the server's agents' folders.
     let agents = state
         .agents
         .values()
