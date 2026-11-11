@@ -3544,6 +3544,34 @@ html.reordering * {
   overscroll-behavior: contain;
 }
 
+/* The Messages card's list scrolls. In a short window the card shrinks to the room the other cards
+   leave, down to its head, and its list keeps its latest rows in sight. */
+.block-card.shrinks,
+.message-list {
+  --message-row: 46px;
+}
+
+.block-card.shrinks {
+  flex: 0 1 auto;
+  /* The head, the body's bottom padding, and the rows the app keeps. */
+  min-height: calc(40px + 12px + var(--kept-rows, 0) * var(--message-row));
+  overflow: hidden;
+}
+
+.block-card.shrinks > .block-head-row {
+  flex: none;
+}
+
+.block-card.shrinks > .block-body,
+.block-card.shrinks .message-list {
+  flex: 0 1 auto;
+  min-height: 0;
+}
+
+.block-card.shrinks .message-list {
+  min-height: calc(var(--kept-rows, 0) * var(--message-row));
+}
+
 .message-row {
   position: relative;
   flex: none;
@@ -3595,6 +3623,7 @@ html.reordering * {
   flex-direction: column;
   gap: 1px;
   width: 100%;
+  height: var(--message-row);
   padding: 5px 6px;
   border: 0;
   border-radius: 7px;

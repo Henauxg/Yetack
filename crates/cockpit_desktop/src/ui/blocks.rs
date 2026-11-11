@@ -42,6 +42,9 @@ fn block_head_id(block: Block) -> String {
     format!("{}-head", block_id(block))
 }
 
+/// The rows the Messages list keeps in sight when a short window shrinks its card.
+const KEPT_ROWS: usize = 2;
+
 #[component]
 pub fn FloatingBlocks(in_view: Signal<Option<InView>>) -> Element {
     let cockpit: Cockpit = use_context();
@@ -179,6 +182,7 @@ pub fn FloatingBlocks(in_view: Signal<Option<InView>>) -> Element {
                     wide: false,
                     shown: cards.clone(),
                     head_action: rsx! { LastMessageToggle {} },
+                    kept_rows: messages_open.then(|| (sent + waiting.len()).min(KEPT_ROWS)),
                     MessagesBody { agent, folder: folder.clone(), waiting: waiting.clone(), in_view }
                 }
             }
@@ -313,6 +317,9 @@ fn BlockCard(
     head_action: Option<Element>,
     /// The blocks this agent shows, in order, which Alt+Up and Alt+Down move past.
     shown: Vec<Block>,
+    /// A card whose list scrolls: in a short window it shrinks before the column has to scroll,
+    /// down to this many rows of its list.
+    kept_rows: Option<usize>,
     children: Element,
 ) -> Element {
     let cockpit: Cockpit = use_context();
@@ -323,8 +330,15 @@ fn BlockCard(
     if running {
         class.push("running-block");
     }
+    if kept_rows.is_some() {
+        class.push("shrinks");
+    }
     rsx! {
-        section { id: block_id(block), class: class.join(" "), aria_label: "{title}",
+        section {
+            id: block_id(block),
+            class: class.join(" "),
+            style: kept_rows.map(|rows| format!("--kept-rows: {rows}")),
+            aria_label: "{title}",
             div { class: if open { "block-head-row open" } else { "block-head-row" },
                 button {
                     id: block_head_id(block),
