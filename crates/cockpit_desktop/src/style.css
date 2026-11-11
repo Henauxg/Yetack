@@ -3902,8 +3902,8 @@ html.reordering * {
   display: flex;
   align-items: center;
   gap: 8px;
-  /* The body's 8px gap above it, and the 8px from the edge the rows have inside the list's -6px
-     margin. */
+  /* The body's 8px gap spaces it from the list. The 2px side padding puts its text where the rows'
+     text is, 8px in from the list's -6px margin. */
   padding: 0 2px;
   font-size: 12px;
   color: var(--dim);
