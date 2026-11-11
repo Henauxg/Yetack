@@ -73,10 +73,9 @@ pub fn MessagesBody(
         let view = in_view()?;
         let state = cockpit.state.read();
         let entry = state.selected().filter(|entry| entry.id() == view.agent)?;
-        let scrolled_up = state.ui.chat_scrolled_up.contains_key(&view.agent);
         entry
             .transcript
-            .message_read(view.top, view.bottom, scrolled_up)
+            .message_read(view.top, view.bottom, !view.at_bottom)
     });
     let marked = marked();
     let rows = rows()

@@ -72,6 +72,10 @@ const gapBelow = () => column.getBoundingClientRect().bottom - box.getBoundingCl
 // An entry's wrapper has padding past the entry: its last element shows the entry, after the
 // "New" divider when it has one.
 const shown = (entry) => entry.lastElementChild;
+// WebKit skips the layout of an entry out of view and gives it a placeholder height, which its
+// content overflows, over the entries below: the wrapper ends where the entry ends on screen.
+const bottomOf = (entry, element) =>
+  Math.min(element.getBoundingClientRect().bottom, entry.getBoundingClientRect().bottom);
 // The first entry whose bottom is lower than `below` pixels under the view's top.
 const firstInView = (below = 0) => {
   const entries = column.getElementsByClassName(settings.entry_class);
@@ -81,7 +85,7 @@ const firstInView = (below = 0) => {
   while (low < high) {
     const middle = (low + high) >> 1;
     const element = shown(entries[middle]);
-    if (element !== null && element.getBoundingClientRect().bottom <= top + below) {
+    if (element !== null && bottomOf(entries[middle], element) <= top + below) {
       low = middle + 1;
     } else {
       high = middle;
@@ -111,7 +115,7 @@ const lastInView = () => {
 // An entry's id ends with its item's: see `entry_id`.
 const itemOf = (entry) => entry === null ? null : Number(entry.id.slice(entry.id.lastIndexOf("-") + 1));
 const report = () => {
-  if (agent === null) {
+  if (agent === null || box === null) {
     return;
   }
   const now = `${agent} ${following}`;
@@ -119,14 +123,13 @@ const report = () => {
     reported = now;
     dioxus.send({ type: "at_bottom", agent: Number(agent), at_bottom: following });
   }
-  // A revealed entry's top lands `reveal_top_px` under the view's top: the entry above it, whose
-  // bottom shows in that gap, is not the one in view.
+  // An entry with no more than `reveal_top_px` pixels in view at the top does not count.
   const top = itemOf(firstInView(settings.reveal_top_px));
   const bottom = itemOf(lastInView());
-  const view = `${agent} ${top} ${bottom}`;
+  const view = `${agent} ${following} ${top} ${bottom}`;
   if (view !== reportedView) {
     reportedView = view;
-    dioxus.send({ type: "in_view", agent: Number(agent), top, bottom });
+    dioxus.send({ type: "in_view", agent: Number(agent), at_bottom: following, top, bottom });
   }
 };
 // After a scroll by the user: where the view now is.
@@ -249,7 +252,9 @@ const reveal = (entryId, place) => {
   pinned = null;
   following = gapBelow() <= settings.bottom_threshold_px;
   anchor = following ? null : { id: entry.id, top: element.getBoundingClientRect().top - boxTop() };
-  report();
+  // The entries above that come into view are laid out at the next frame. Measured before, one
+  // of them overlaps the view's top and would be reported as the first in view.
+  requestAnimationFrame(() => requestAnimationFrame(report));
   element.classList.remove(settings.revealed_class);
   // Restarts the animation when the same entry is revealed again.
   void element.offsetWidth;
@@ -344,6 +349,7 @@ enum ScrollMessage {
     /// The first and the last entry in view, `None` when no entry is.
     InView {
         agent: u32,
+        at_bottom: bool,
         top: Option<u32>,
         bottom: Option<u32>,
     },
@@ -353,6 +359,9 @@ enum ScrollMessage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InView {
     pub agent: AgentId,
+    /// As `ScrollMessage::AtBottom` says, but in the same message as the entries, so the two never
+    /// disagree for a frame.
+    pub at_bottom: bool,
     pub top: ItemId,
     pub bottom: ItemId,
 }
@@ -427,9 +436,15 @@ pub fn use_chat_scroll(cockpit: Cockpit, mut in_view: Signal<Option<InView>>) {
                         let agent = AgentId::new(agent);
                         cockpit.update(|state| actions::chat_at_bottom(state, agent, at_bottom));
                     }
-                    Ok(ScrollMessage::InView { agent, top, bottom }) => {
+                    Ok(ScrollMessage::InView {
+                        agent,
+                        at_bottom,
+                        top,
+                        bottom,
+                    }) => {
                         in_view.set(top.zip(bottom).map(|(top, bottom)| InView {
                             agent: AgentId::new(agent),
+                            at_bottom,
                             top: ItemId::new(top),
                             bottom: ItemId::new(bottom),
                         }));
@@ -526,7 +541,7 @@ mod tests {
         assert_eq!(entry_id(AgentId::new(3), ItemId::new(12)), "entry-3-12");
         let in_view = |top: Value, bottom: Value| -> ScrollMessage {
             serde_json::from_value(
-                json!({ "type": "in_view", "agent": 7, "top": top, "bottom": bottom }),
+                json!({ "type": "in_view", "agent": 7, "at_bottom": false, "top": top, "bottom": bottom }),
             )
             .unwrap()
         };
@@ -534,6 +549,7 @@ mod tests {
             in_view(json!(12), json!(15)),
             ScrollMessage::InView {
                 agent: 7,
+                at_bottom: false,
                 top: Some(12),
                 bottom: Some(15)
             }
@@ -542,6 +558,7 @@ mod tests {
             in_view(Value::Null, Value::Null),
             ScrollMessage::InView {
                 agent: 7,
+                at_bottom: false,
                 top: None,
                 bottom: None
             }
