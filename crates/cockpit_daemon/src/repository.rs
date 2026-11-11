@@ -172,10 +172,10 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let entry_fifo = temp.path().join("notes");
         fs::create_dir_all(&entry_fifo).unwrap();
-        mkfifoat(CWD, &entry_fifo.join(".git"), Mode::RUSR).unwrap();
+        mkfifoat(CWD, entry_fifo.join(".git"), Mode::RUSR).unwrap();
         let config_fifo = temp.path().join("billing");
         fs::create_dir_all(config_fifo.join(".git")).unwrap();
-        mkfifoat(CWD, &config_fifo.join(".git/config"), Mode::RUSR).unwrap();
+        mkfifoat(CWD, config_fifo.join(".git/config"), Mode::RUSR).unwrap();
         let (sender, receiver) = mpsc::channel();
 
         // Opening a FIFO waits for a writer: the reads run in a thread the test can leave behind.
