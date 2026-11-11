@@ -34,7 +34,7 @@ use crate::state::daemon_update::{
 use crate::state::no_daemon::{self, Absence};
 use crate::state::{
     AgentEntry, AppState, ConnectionState, Dialog, Drafts, Loadable, MachineState, Utf16Offset,
-    file_edits, quotes, sending,
+    file_edits, file_tree, quotes, sending,
 };
 use crate::update_script::APP_VERSION;
 
@@ -58,6 +58,8 @@ const SHOWCASE_LEFT_OUT: [u32; 3] = [SIGN_IN_AGENT, MAP_AGENT, PLAN_AGENT];
 const APPROVAL_AGENT: u32 = 3;
 /// The agent that waits for its plan to be approved.
 const PLAN_AGENT: u32 = 4;
+/// The agent that finished its benchmark while the user looked elsewhere.
+const BENCHMARK_AGENT: u32 = 5;
 
 const UPDATE_MACHINE: &str = "build-box";
 /// A made-up commit.
@@ -92,7 +94,7 @@ const RUNNING_CALLS_FOR: Duration = Duration::from_secs(48);
 /// A second Claude account, which the service's agents and the platform's past sessions use.
 const WORK_ACCOUNT: u32 = 1;
 /// The agents of the work account.
-const WORK_AGENTS: [u32; 2] = [4, 5];
+const WORK_AGENTS: [u32; 2] = [PLAN_AGENT, BENCHMARK_AGENT];
 /// An account that bills the daemon's API key, which the map's agent uses.
 const LAB_ACCOUNT: u32 = 2;
 /// An account no one signed in to yet, whose agent waits for the sign-in.
@@ -108,10 +110,41 @@ const SERVER: MachineId = MachineId::new(1);
 const SERVER_HOST: &str = "devbox";
 const SERVER_FOLDER: &str = "/home/dev/services/invoices";
 
-/// The selected agent's answer that the demo's draft quotes.
+/// The selected agent's explanation of the failing test, and its last answer.
+const COUNT_ITEM: u32 = 15;
+const COUNT_ANSWER: &str = "The test expects the column to count from 1, and the lexer counts from 0. See `tests/columns.rs:6`. I am fixing the lexer.";
 const LOOKUP_ITEM: u32 = 20;
-const QUOTED_PASSAGE: &str = "The old cache.rs:10 is gone.";
-const QUOTE_COMMENT: &str = "Then drop its import in lib.rs too.";
+
+/// A passage of the selected agent's answers that the demo's draft quotes, with its comment.
+struct DemoQuote {
+    item: u32,
+    /// The text of the answer the passage is in.
+    answer: &'static str,
+    passage: &'static str,
+    comment: &'static str,
+}
+
+/// The demo draft's quotes, in the chat's order.
+const DEMO_QUOTES: [DemoQuote; 3] = [
+    DemoQuote {
+        item: COUNT_ITEM,
+        answer: COUNT_ANSWER,
+        passage: "the lexer counts from 0",
+        comment: "Keep 0 inside the lexer, and add 1 where errors are built.",
+    },
+    DemoQuote {
+        item: LOOKUP_ITEM,
+        answer: LOOKUP_ANSWER,
+        passage: "the column math is in position.rs:12-20",
+        comment: "Does it count a tab as one column?",
+    },
+    DemoQuote {
+        item: LOOKUP_ITEM,
+        answer: LOOKUP_ANSWER,
+        passage: "The old cache.rs:10 is gone.",
+        comment: "Then drop its import in lib.rs too.",
+    },
+];
 
 /// How often the live agent adds or finishes an entry.
 pub const LIVE_TICK: Duration = Duration::from_millis(1500);
@@ -458,7 +491,7 @@ const SIDEBAR_ORDER: [u32; 9] = [
     LIVE_AGENT,
     PLAN_AGENT,
     2,
-    5,
+    BENCHMARK_AGENT,
     APPROVAL_AGENT,
     6,
 ];
@@ -683,7 +716,7 @@ pub fn state(daemon: DaemonLabel) -> AppState {
     state.machines.this.other_plan_usage =
         BTreeMap::from([(AccountId::new(WORK_ACCOUNT), work_plan_usage(now))]);
     state.ui.selected = Some(AgentId::new(1));
-    state.ui.unread.insert(AgentId::new(5));
+    state.ui.unread.insert(AgentId::new(BENCHMARK_AGENT));
     add_server(&mut state, now);
     state
 }
@@ -866,28 +899,36 @@ pub fn showcase(state: &mut AppState) {
         ),
     ];
     insert_server(state, SystemTime::now(), GPU_SERVER, GPU_HOST, agents);
+    // Finished and unread, with nothing left running in the background.
+    if let Some(entry) = state.agents.get_mut(&AgentId::new(BENCHMARK_AGENT)) {
+        entry.summary.background_running = 0;
+    }
+    // As the header's changes chip does: on the files the agent changed.
+    file_tree::toggle_from_changes(state, AgentId::new(1));
 }
 
-/// The demo's drafts: a reply under way to the selected agent, which quotes a passage of its
-/// last answer with a comment beside it.
+/// The demo's drafts: a reply under way to the selected agent, which quotes passages of its
+/// answers with a comment beside each.
 pub fn drafts() -> Drafts {
     let mut drafts = Drafts::default();
-    let Some((before, _)) = LOOKUP_ANSWER.split_once(QUOTED_PASSAGE) else {
-        return drafts;
-    };
-    let passage = quotes::Passage {
-        anchor: quotes::QuoteAnchor {
-            item: ItemId::new(LOOKUP_ITEM),
-            start: Utf16Offset::end_of(before),
-            end: Utf16Offset::end_of(&format!("{before}{QUOTED_PASSAGE}")),
-        },
-        raw: QUOTED_PASSAGE.to_owned(),
-        text: QUOTED_PASSAGE.to_owned(),
-        code: false,
-    };
-    quotes::start(&mut drafts, AgentId::new(1), passage);
-    quotes::type_comment(&mut drafts, QUOTE_COMMENT.to_owned());
-    quotes::commit(&mut drafts, CommentPlacement::Beside);
+    for quote in DEMO_QUOTES {
+        let Some((before, _)) = quote.answer.split_once(quote.passage) else {
+            continue;
+        };
+        let passage = quotes::Passage {
+            anchor: quotes::QuoteAnchor {
+                item: ItemId::new(quote.item),
+                start: Utf16Offset::end_of(before),
+                end: Utf16Offset::end_of(&format!("{before}{}", quote.passage)),
+            },
+            raw: quote.passage.to_owned(),
+            text: quote.passage.to_owned(),
+            code: false,
+        };
+        quotes::start(&mut drafts, AgentId::new(1), passage);
+        quotes::type_comment(&mut drafts, quote.comment.to_owned());
+        quotes::commit(&mut drafts, CommentPlacement::Beside);
+    }
     drafts
 }
 
@@ -2077,13 +2118,7 @@ fn parser_agent(now: SystemTime) -> Sample {
                 FAILING_TEST_PNG,
             ),
         ),
-        item(
-            15,
-            None,
-            text(
-                "The test expects the column to count from 1, and the lexer counts from 0. See `tests/columns.rs:6`. I am fixing the lexer.",
-            ),
-        ),
+        item(COUNT_ITEM, None, text(COUNT_ANSWER)),
         item(
             16,
             None,
@@ -2375,7 +2410,7 @@ fn plan_agent(now: SystemTime) -> Sample {
 fn benchmark_agent(now: SystemTime) -> Sample {
     let mut summary = summary(
         SummaryParts {
-            id: 5,
+            id: BENCHMARK_AGENT,
             title: "⏱\u{fe0f} Benchmark in CI",
             folder: SERVICE_FOLDER,
             status: AgentStatus::Idle,
@@ -3885,21 +3920,35 @@ pub struct ParseError {
     }
 
     #[test]
-    fn the_draft_quotes_a_passage_of_the_lookup_answer_with_a_comment() {
+    fn the_draft_quotes_each_passage_of_the_answers_with_its_comment() {
         let drafts = drafts();
 
         let draft = drafts.draft(AgentId::new(1)).unwrap();
-        let [quote] = draft.quotes.as_slice() else {
-            panic!("one quote, not {:?}", draft.quotes);
-        };
-        let anchor = quote.passage.anchor;
-        let quoted = LOOKUP_ANSWER
-            .get(anchor.start.byte_offset(LOOKUP_ANSWER)..anchor.end.byte_offset(LOOKUP_ANSWER));
+        let shown: Vec<(ItemId, Option<&str>, &str)> = draft
+            .quotes
+            .iter()
+            .zip(DEMO_QUOTES)
+            .map(|(quote, demo)| {
+                let anchor = quote.passage.anchor;
+                let quoted = demo.answer.get(
+                    anchor.start.byte_offset(demo.answer)..anchor.end.byte_offset(demo.answer),
+                );
+                (anchor.item, quoted, quote.comment.as_str())
+            })
+            .collect();
+        let expected: Vec<(ItemId, Option<&str>, &str)> = DEMO_QUOTES
+            .iter()
+            .map(|demo| (ItemId::new(demo.item), Some(demo.passage), demo.comment))
+            .collect();
 
-        assert_eq!(anchor.item, ItemId::new(LOOKUP_ITEM));
-        assert_eq!(quoted, Some(QUOTED_PASSAGE));
-        assert_eq!(quote.comment, QUOTE_COMMENT);
-        assert_eq!(quote.placement, CommentPlacement::Beside);
+        assert_eq!(draft.quotes.len(), DEMO_QUOTES.len());
+        assert_eq!(shown, expected);
+        assert!(
+            draft
+                .quotes
+                .iter()
+                .all(|quote| quote.placement == CommentPlacement::Beside)
+        );
         assert!(drafts.quote_editor.is_none());
     }
 
