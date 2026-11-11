@@ -12,7 +12,7 @@ use dioxus::html::point_interaction::InteractionLocation;
 use dioxus::prelude::*;
 use rfd::AsyncFileDialog;
 
-use crate::bridge::{self, COMPOSER_ID, FOLDER_FIELD_ID, HIGHLIGHTED_CLASS};
+use crate::bridge::{self, COMPOSER_ID, FOLDER_FIELD_ID, HIGHLIGHTED_CLASS, HighlightedList};
 use crate::connection::{Clock, Cockpit};
 use crate::daemon_label::DaemonPlace;
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
@@ -390,11 +390,11 @@ fn SwitcherDialog() -> Element {
                     onkeydown: move |event: KeyboardEvent| match event.key() {
                         Key::ArrowDown => {
                             cockpit.with_drafts(|state, drafts| actions::switcher_move(state, drafts, Direction::Down));
-                            bridge::scroll_to_highlighted();
+                            bridge::scroll_to_highlighted(HighlightedList::Dialog);
                         }
                         Key::ArrowUp => {
                             cockpit.with_drafts(|state, drafts| actions::switcher_move(state, drafts, Direction::Up));
-                            bridge::scroll_to_highlighted();
+                            bridge::scroll_to_highlighted(HighlightedList::Dialog);
                         }
                         Key::Enter => cockpit.update_with_drafts(|state, drafts| actions::switcher_pick(state, drafts, None)),
                         _ => {}
@@ -1127,7 +1127,7 @@ fn folder_key(cockpit: Cockpit, event: &KeyboardEvent) {
         cockpit.update_with_drafts(|state, drafts| folder_field::follow(state, drafts));
     } else {
         cockpit.with_drafts(|state, drafts| folder_field::move_highlight(state, drafts, direction));
-        bridge::scroll_to_highlighted();
+        bridge::scroll_to_highlighted(HighlightedList::Dialog);
     }
 }
 
@@ -1328,11 +1328,11 @@ fn ResumeList(starting: bool) -> Element {
                         onkeydown: move |event: KeyboardEvent| match event.key() {
                             Key::ArrowDown => {
                                 cockpit.with_drafts(|state, drafts| actions::session_move(state, drafts, Direction::Down));
-                                bridge::scroll_to_highlighted();
+                                bridge::scroll_to_highlighted(HighlightedList::Dialog);
                             }
                             Key::ArrowUp => {
                                 cockpit.with_drafts(|state, drafts| actions::session_move(state, drafts, Direction::Up));
-                                bridge::scroll_to_highlighted();
+                                bridge::scroll_to_highlighted(HighlightedList::Dialog);
                             }
                             Key::Enter => cockpit.change_with_drafts(|state, drafts| actions::session_pick(state, drafts, None)),
                             _ => {}

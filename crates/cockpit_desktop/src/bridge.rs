@@ -14,7 +14,7 @@ use crate::state::{
     ANSWER_KEYS, AppState, Dialog, KeyPress, PAGE_RELOAD_KEY, PaletteOrigin, Popover, Utf16Offset,
     WaitingKind, accounts, actions, agent_map, file_reread, handle_key, sidebar_keys,
 };
-use crate::ui::sidebar_item_id;
+use crate::ui::{FILES_PANE_ID, sidebar_item_id};
 
 /// The composer's text area, whose keys the script treats apart.
 pub const COMPOSER_ID: &str = "composer";
@@ -79,6 +79,17 @@ const sidebarItem = (element) => {
 })();
 window.addEventListener("focus", () => send({ type: "focus", focused: true }));
 window.addEventListener("blur", () => send({ type: "focus", focused: false }));
+// A menu that takes the focus remembers where it took it from, for Esc to give it back. A menu
+// opened from another keeps the first one's.
+document.addEventListener("focusin", (event) => {
+  if (!(event.target instanceof Element) || !event.target.matches('[role="menu"][data-own-keys]')) {
+    return;
+  }
+  const from = event.relatedTarget;
+  if (!(from instanceof Element) || from.closest('[role="menu"]') === null) {
+    window[settings.menu_focus_key] = from;
+  }
+});
 // Undo and redo in text fields. WebKitGTK binds no key to its own, which also goes out of step
 // when the app writes a field's text, so the script keeps a history per field.
 const textInputTypes = ["text", "search", "url", "email"];
@@ -395,11 +406,47 @@ document.getElementById(element_id)?.scrollIntoView({ block: "nearest" });
 /// window's own loss of focus when that caused the blur.
 const WINDOW_FOCUSED_SCRIPT: &str = "return document.hasFocus();";
 
-/// Brings into view a dialog's row that has the class it receives.
+/// Brings into view the row the selector it receives finds.
 const SCROLL_TO_HIGHLIGHTED_SCRIPT: &str = r#"
-const class_name = await dioxus.recv();
-document.querySelector(`.dialog .${class_name}`)?.scrollIntoView({ block: "nearest" });
+const selector = await dioxus.recv();
+document.querySelector(selector)?.scrollIntoView({ block: "nearest" });
 "#;
+
+/// Gives the focus to the element whose id it receives, or with no id, to the element the last
+/// menu took it from. An element gone or inert keeps nothing.
+const FOCUS_BACK_SCRIPT: &str = r#"
+const { menu_focus_key, element_id } = await dioxus.recv();
+const element = element_id === null ? window[menu_focus_key] : document.getElementById(element_id);
+if (element instanceof HTMLElement && element.isConnected && element.closest("[inert]") === null) {
+  element.focus({ preventScroll: true });
+}
+"#;
+
+/// The page's global that keeps the element a menu took the focus from.
+const MENU_FOCUS_KEY: &str = "cockpitFocusBeforeMenu";
+
+#[derive(Debug, Serialize)]
+struct FocusBack {
+    menu_focus_key: &'static str,
+    element_id: Option<&'static str>,
+}
+
+/// A list whose highlighted row the keys keep in view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HighlightedList {
+    Dialog,
+    FilesPane,
+}
+
+impl HighlightedList {
+    /// Finds the list's highlighted row on the page.
+    fn selector(self) -> String {
+        match self {
+            Self::Dialog => format!(".dialog .{HIGHLIGHTED_CLASS}"),
+            Self::FilesPane => format!("#{FILES_PANE_ID} .{HIGHLIGHTED_CLASS}"),
+        }
+    }
+}
 
 #[derive(Debug, Serialize)]
 struct FieldText {
@@ -429,6 +476,8 @@ struct Settings {
     /// The key that would reload the page.
     page_reload_key: &'static str,
     records_keys_attribute: &'static str,
+    /// The page's global that keeps the element a menu took the focus from.
+    menu_focus_key: &'static str,
 }
 
 /// A command's shortcut, and where the script takes it.
@@ -543,6 +592,7 @@ pub fn use_bridge(cockpit: Cockpit) {
             answer_keys: ANSWER_KEYS,
             page_reload_key: PAGE_RELOAD_KEY,
             records_keys_attribute: RECORDS_KEYS_ATTRIBUTE,
+            menu_focus_key: MENU_FOCUS_KEY,
         }) {
             tracing::warn!("cannot start the page's script: {error}");
         }
@@ -732,23 +782,52 @@ pub fn save_on_blur(save: impl FnOnce() + 'static, keep: impl FnOnce() + 'static
 
 /// For a list moved by the keyboard: its highlighted row may sit below the scrolled view. Call it
 /// from the event handler that moved the highlight.
-pub fn scroll_to_highlighted() {
+pub fn scroll_to_highlighted(list: HighlightedList) {
     // The render's changes reach the page through a websocket, often after a script sent now,
     // which would scroll to the row highlighted before. Dioxus runs effects once the page has
     // applied them. An effect runs outside any component, so the document is looked up here.
     let page = document::document();
-    queue_effect(move || {
-        let script = page.eval(SCROLL_TO_HIGHLIGHTED_SCRIPT.to_owned());
-        if let Err(error) = script.send(HIGHLIGHTED_CLASS) {
-            tracing::warn!("cannot scroll the highlighted row into view: {error}");
-        }
-    });
+    queue_effect(move || send_scroll(page.as_ref(), list));
+}
+
+/// As `scroll_to_highlighted`, from an effect, which runs once the page holds the row.
+pub fn scroll_to_highlighted_now(list: HighlightedList) {
+    send_scroll(document::document().as_ref(), list);
+}
+
+fn send_scroll(page: &dyn document::Document, list: HighlightedList) {
+    let script = page.eval(SCROLL_TO_HIGHLIGHTED_SCRIPT.to_owned());
+    if let Err(error) = script.send(list.selector()) {
+        tracing::warn!("cannot scroll the highlighted row into view: {error}");
+    }
+}
+
+/// Gives the focus to the element `element_id`, or with `None`, to the element the last menu took
+/// it from.
+pub fn give_focus_back(element_id: Option<&'static str>) {
+    let script = document::eval(FOCUS_BACK_SCRIPT);
+    let message = FocusBack {
+        menu_focus_key: MENU_FOCUS_KEY,
+        element_id,
+    };
+    if let Err(error) = script.send(message) {
+        tracing::warn!("cannot give the focus back: {error}");
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::machine::MachineId;
+
+    #[test]
+    fn the_files_pane_scrolls_its_own_highlighted_row() {
+        assert_eq!(
+            HighlightedList::FilesPane.selector(),
+            "#files-pane .highlighted"
+        );
+        assert_eq!(HighlightedList::Dialog.selector(), ".dialog .highlighted");
+    }
 
     #[test]
     fn media_types_follow_the_protocol() {
@@ -819,6 +898,7 @@ mod tests {
             answer_keys: ANSWER_KEYS,
             page_reload_key: PAGE_RELOAD_KEY,
             records_keys_attribute: RECORDS_KEYS_ATTRIBUTE,
+            menu_focus_key: MENU_FOCUS_KEY,
         };
         let mode = KeyMode {
             answer_letters: true,
@@ -855,6 +935,7 @@ mod tests {
                 "answer_keys": ["y", "n"],
                 "page_reload_key": "F5",
                 "records_keys_attribute": "data-records-keys",
+                "menu_focus_key": "cockpitFocusBeforeMenu",
             })
         );
         assert_eq!(
@@ -878,6 +959,14 @@ mod tests {
         assert_eq!(
             serde_json::to_value(field_text).unwrap(),
             json!({ "field_id": "composer", "text": "Run the tests", "caret": 4 })
+        );
+        assert_eq!(
+            serde_json::to_value(FocusBack {
+                menu_focus_key: MENU_FOCUS_KEY,
+                element_id: None,
+            })
+            .unwrap(),
+            json!({ "menu_focus_key": "cockpitFocusBeforeMenu", "element_id": null })
         );
         assert!(matches!(
             serde_json::from_str::<BridgeMessage>(input).unwrap(),

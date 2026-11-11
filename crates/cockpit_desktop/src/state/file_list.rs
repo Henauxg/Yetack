@@ -10,7 +10,8 @@ use cockpit_protocol::AgentId;
 use super::actions::{self, Direction};
 use super::app_state::AppState;
 use super::drafts::{Drafts, FileListDraft};
-use super::ui_state::Popover;
+use super::tab_menu;
+use super::ui_state::{Popover, TabMenuOrigin};
 use crate::path_style::PathStyle;
 
 /// The open files the filter leaves, in the order of the tabs. The filter matches the path as the
@@ -94,14 +95,41 @@ pub fn close(state: &mut AppState, drafts: &mut Drafts, agent: AgentId, index: O
         return;
     };
     actions::close_tab(state, agent, &path);
+    after_close(state, drafts, agent, &path);
+}
+
+/// After a close: the list stays open while the file view holds a file. The highlight goes to
+/// `path`'s row while it is there, else it stays on the same row, or the last one.
+pub fn after_close(state: &mut AppState, drafts: &mut Drafts, agent: AgentId, path: &Path) {
     if state.ui.file_view(agent).is_none() {
         state.ui.popover = None;
         return;
     }
     // Closing the shown file shows another one, which closes popovers.
     state.ui.popover = Some(Popover::FileList);
-    let last = rows(state, drafts, agent).len().saturating_sub(1);
-    drafts.file_list.highlighted = drafts.file_list.highlighted.min(last);
+    let rows = rows(state, drafts, agent);
+    let last = rows.len().saturating_sub(1);
+    drafts.file_list.highlighted = rows
+        .iter()
+        .position(|row| row == path)
+        .unwrap_or(drafts.file_list.highlighted.min(last));
+}
+
+/// Opens the menu of the row at `index`, at `x`, `y` in the window's pixels. The row takes the
+/// highlight.
+pub fn open_menu(
+    state: &mut AppState,
+    drafts: &mut Drafts,
+    agent: AgentId,
+    index: usize,
+    x: i32,
+    y: i32,
+) {
+    let Some(path) = rows(state, drafts, agent).into_iter().nth(index) else {
+        return;
+    };
+    drafts.file_list.highlighted = index;
+    tab_menu::open(state, agent, &path, x, y, TabMenuOrigin::List);
 }
 
 /// The shown file's row, when the filter leaves it.

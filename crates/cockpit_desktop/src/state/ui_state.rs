@@ -73,17 +73,28 @@ pub enum Popover {
         x: i32,
         y: i32,
     },
-    /// A file view tab's menu, opened by a right-click at `x`, `y` in the window's pixels. The file
-    /// view holds the tab.
+    /// A file view tab's menu, opened by a right-click at `x`, `y` in the window's pixels, on the
+    /// tab or on its row in the list of open files. The file view holds the tab.
     TabMenu {
         agent: AgentId,
         x: i32,
         y: i32,
+        origin: TabMenuOrigin,
     },
     /// The selected agent's notification levels, from its header tag.
     AgentNotifications,
     /// The app's notification levels, from the sidebar's bell.
     AppNotifications,
+}
+
+/// Where a tab's menu opened, which names its groups and decides what it closes to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TabMenuOrigin {
+    /// The tabs: the menu closes to nothing, and closes the tabs on the left or the right.
+    Tabs,
+    /// A row of the list of open files: the menu closes back to the list, and closes the rows
+    /// above or below.
+    List,
 }
 
 /// How the command palette opened, which decides when it closes.
@@ -700,7 +711,8 @@ impl UiState {
     }
 
     /// Closes every popover and the dialog, or only the start tab's menu or folder list when one
-    /// is open, and cancels a title edit. Returns whether anything was open.
+    /// is open, or only a tab menu opened from the list of open files, and cancels a title edit.
+    /// Returns whether anything was open.
     pub fn close_overlays(&mut self) -> bool {
         if let Some(Dialog::NewAgent(form)) = &mut self.dialog
             && form.tab == NewAgentTab::Start
@@ -709,6 +721,16 @@ impl UiState {
             if form.menu.take().is_none() {
                 form.folders = None;
             }
+            return true;
+        }
+        if matches!(
+            self.popover,
+            Some(Popover::TabMenu {
+                origin: TabMenuOrigin::List,
+                ..
+            })
+        ) {
+            self.close_popover();
             return true;
         }
         let open = self.popover.is_some()
@@ -727,6 +749,18 @@ impl UiState {
     pub fn popover_closes_on_click(&self) -> bool {
         self.popover
             .is_some_and(|popover| popover != Popover::Palette(PaletteOrigin::Typed))
+    }
+
+    /// Closes the open popover. A tab menu opened from the list of open files goes back to the
+    /// list.
+    pub fn close_popover(&mut self) {
+        self.popover = match self.popover {
+            Some(Popover::TabMenu {
+                origin: TabMenuOrigin::List,
+                ..
+            }) => Some(Popover::FileList),
+            _ => None,
+        };
     }
 
     pub fn toggle_popover(&mut self, popover: Popover) {

@@ -7,7 +7,7 @@ use std::time::Duration;
 use cockpit_protocol::{Completeness, DirEntry, EntryKind, EntryLink};
 use dioxus::prelude::*;
 
-use crate::bridge::{self, HIGHLIGHTED_CLASS, OPEN_FILE_FIELD_ID};
+use crate::bridge::{self, HIGHLIGHTED_CLASS, HighlightedList, OPEN_FILE_FIELD_ID};
 use crate::connection::Cockpit;
 use crate::format;
 use crate::keymap::Command;
@@ -284,14 +284,14 @@ fn field_key(cockpit: Cockpit, event: &KeyboardEvent) {
             cockpit.with_drafts(|state, drafts| {
                 open_file::move_highlight(state, drafts, Direction::Down)
             });
-            bridge::scroll_to_highlighted();
+            bridge::scroll_to_highlighted(HighlightedList::Dialog);
         }
         Key::ArrowUp => {
             event.prevent_default();
             cockpit.with_drafts(|state, drafts| {
                 open_file::move_highlight(state, drafts, Direction::Up)
             });
-            bridge::scroll_to_highlighted();
+            bridge::scroll_to_highlighted(HighlightedList::Dialog);
         }
         Key::Tab => {
             event.prevent_default();

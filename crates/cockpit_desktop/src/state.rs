@@ -17,6 +17,7 @@ pub mod file_tree;
 pub mod folder_field;
 pub mod machine_load;
 pub mod machines;
+pub mod menu_keys;
 pub mod no_daemon;
 pub mod notification_levels;
 pub mod open_file;
@@ -47,8 +48,8 @@ pub use transcript::{HistoryState, WaitingKind, awaiting_approval};
 pub use ui_state::{
     Block, Dialog, FileSearch, FolderAction, FolderList, FormMenu, ImageView, MachinesView,
     McpView, NewAgentForm, NewAgentTab, NoteKind, OpenFileView, PaletteOrigin, Popover,
-    RefusedChord, RevealPlace, SettingsTab, SettingsView, TitleEdit, TitlePlace, ToolFilter,
-    ViewMode, WorkingFolderForm, is_markdown,
+    RefusedChord, RevealPlace, SettingsTab, SettingsView, TabMenuOrigin, TitleEdit, TitlePlace,
+    ToolFilter, ViewMode, WorkingFolderForm, is_markdown,
 };
 pub use utf16_offset::Utf16Offset;
 
