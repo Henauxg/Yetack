@@ -892,29 +892,30 @@ fn UserBubble(agent: AgentId, folder: PathBuf, message: UserMessage) -> Element 
     let mut unfolded = use_signal(|| false);
     let open = unfolded();
     let state = if open { " unfolded" } else { "" };
+    let UserMessage { text, images } = message;
     rsx! {
         div { class: "user-message",
-            for (index, image) in message.images.iter().enumerate() {
+            for (index, image) in images.into_iter().map(Arc::new).enumerate() {
                 button {
                     key: "{index}",
                     class: "message-image-button",
                     title: "Show the image",
                     onclick: {
-                        let image = image.clone();
+                        let image = Arc::clone(&image);
                         move |_| {
-                            let image = Arc::new(image.clone());
+                            let image = Arc::clone(&image);
                             cockpit.update(|state| chat_images::open_attached_image(state, agent, image));
                         }
                     },
-                    img { class: "message-image", src: bridge::image_url(image), alt: "Attached image" }
+                    img { class: "message-image", src: bridge::image_url(&image), alt: "Attached image" }
                 }
             }
-            if !message.text.is_empty() {
+            if !text.is_empty() {
                 div {
                     class: "{USER_BUBBLE_CLASS} {MESSAGE_ROW_CLASS}{state}",
                     style: "{FOLD_LINES_PROPERTY}: {MESSAGE_FOLD_LINES}",
                     div { class: MESSAGE_CLIP_CLASS,
-                        MarkdownView { agent, folder, markdown: message.text }
+                        MarkdownView { agent, folder, markdown: text }
                     }
                     button {
                         class: FOLD_BUTTON_CLASS,

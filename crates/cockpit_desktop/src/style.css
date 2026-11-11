@@ -2161,7 +2161,7 @@ html.reordering * {
 
 /* An attached image opens over the whole window, as an image file a message shows does. */
 .message-image-button {
-  display: block;
+  display: flex;
   padding: 0;
   border: 0;
   background: transparent;
