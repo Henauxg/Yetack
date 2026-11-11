@@ -779,7 +779,14 @@ impl AgentView {
             }
             SystemEvent::SessionStateChanged(changed) => match changed.state {
                 OpenWord::Known(SessionState::Running) => self.begin_work(now),
-                OpenWord::Known(SessionState::Idle) => self.end_work(),
+                OpenWord::Known(SessionState::Idle) => {
+                    self.end_work();
+                    // As at a turn's end: Claude Code starts the next turn with a prompt Claude has
+                    // not read.
+                    if self.has_unread_prompts() {
+                        self.working = true;
+                    }
+                }
                 OpenWord::Known(SessionState::RequiresAction) | OpenWord::Unknown(_) => {}
             },
             SystemEvent::ApiRetry(retry) => {
@@ -2953,6 +2960,22 @@ mod tests {
 
         assert_eq!(view.summary().status, AgentStatus::Idle);
         assert_eq!(user_texts(&view), ["First", "Second"]);
+    }
+
+    #[test]
+    fn an_unread_prompt_keeps_the_agent_working_past_an_idle_state() {
+        let mut view = view();
+        view.add_prompt(&prompt("First"), now());
+        view.add_waiting_prompt(&prompt("Second"), WaitingState::Sent);
+
+        apply(
+            &mut view,
+            json!({"type": "system", "subtype": "session_state_changed", "state": "idle"}),
+        );
+        view.take_events();
+
+        assert_eq!(view.summary().status, AgentStatus::Working);
+        assert!(view.is_busy());
     }
 
     #[test]
