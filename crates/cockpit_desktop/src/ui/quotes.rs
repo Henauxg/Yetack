@@ -166,7 +166,19 @@ const rangeOf = (key, anchor, raw) => {
   }
   return range;
 };
-const lineRects = (range) => Array.from(range.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0);
+// The range's lines that show: a folded row, or a folded message scrolled down, hides some.
+const lineRects = (range) => {
+  let rects = Array.from(range.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0);
+  const box = chat();
+  const common = range.commonAncestorContainer;
+  for (let element = common instanceof Element ? common : common.parentElement; element !== null && element !== box; element = element.parentElement) {
+    if (element.scrollHeight > element.clientHeight && getComputedStyle(element).overflowY !== "visible") {
+      const edges = element.getBoundingClientRect();
+      rects = rects.filter((rect) => rect.bottom > edges.top && rect.top < edges.bottom);
+    }
+  }
+  return rects;
+};
 const codeSelector = "pre, code, .code-block, .code-lines, .io-text, .diff-box";
 // The chat's selection, when it lies in one entry of the shown agent.
 const selected = () => {
