@@ -1,4 +1,5 @@
-//! The "to handle" mark: a reminder you put on an agent, from its row's menu or Ctrl+Shift+H.
+//! The "to handle" mark: a reminder you put on an agent, from its row's menu or its shortcut
+//! (Ctrl+H by default).
 //! The daemon keeps it, and clears it when you send the agent a prompt.
 
 use cockpit_protocol::{AgentId, Mark, MarkParams, Request};
@@ -27,7 +28,7 @@ pub fn toggled(mark: Mark) -> Mark {
     }
 }
 
-/// Ctrl+Shift+H: marks the selected agent, or clears its mark.
+/// The mark's shortcut: marks the selected agent, or clears its mark.
 pub fn toggle_selected(state: &mut AppState) -> Vec<Outgoing> {
     let Some(entry) = state.selected() else {
         return Vec::new();
