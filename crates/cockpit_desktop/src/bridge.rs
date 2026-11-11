@@ -752,6 +752,7 @@ pub fn scroll_to_highlighted() {
 mod tests {
     use super::*;
     use crate::machine::MachineId;
+    use crate::state::projects::ProjectKey;
 
     #[test]
     fn media_types_follow_the_protocol() {
@@ -774,9 +775,12 @@ mod tests {
         let row = r#"{"type":"sidebar_key","key":"ArrowDown","focused":{"kind":"agent","id":3}}"#;
         let head =
             r#"{"type":"sidebar_key","key":"ArrowLeft","focused":{"kind":"machine","id":1}}"#;
+        let project =
+            r#"{"type":"sidebar_key","key":"ArrowLeft","focused":{"kind":"project","id":"none"}}"#;
 
         let row: BridgeMessage = serde_json::from_str(row).unwrap();
         let head: BridgeMessage = serde_json::from_str(head).unwrap();
+        let project: BridgeMessage = serde_json::from_str(project).unwrap();
 
         assert!(matches!(
             row,
@@ -787,6 +791,13 @@ mod tests {
             head,
             BridgeMessage::SidebarKey { focused: SidebarItem::Machine(machine), .. }
                 if machine == MachineId::new(1)
+        ));
+        assert!(matches!(
+            project,
+            BridgeMessage::SidebarKey {
+                focused: SidebarItem::Project(ProjectKey::None),
+                ..
+            }
         ));
     }
 

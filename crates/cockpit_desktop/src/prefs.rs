@@ -1210,6 +1210,19 @@ mod tests {
     }
 
     #[test]
+    fn the_group_by_words_are_pinned_and_an_unknown_one_reads_as_machine() {
+        let words: Vec<&str> = GroupBy::VARIANTS
+            .iter()
+            .map(|&group_by| group_by.into())
+            .collect();
+        let unknown: Prefs =
+            serde_json::from_str(r#"{"sidebar": {"group_by": "folder"}}"#).unwrap();
+
+        assert_eq!(words, ["machine", "project", "none"]);
+        assert_eq!(unknown.sidebar.group_by, GroupBy::Machine);
+    }
+
+    #[test]
     fn the_notification_words_are_pinned_and_an_unknown_one_reads_as_all() {
         let words: Vec<&str> = NotificationLevel::VARIANTS
             .iter()
