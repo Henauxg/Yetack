@@ -80,3 +80,25 @@ update-server host binary="":
         binary="$(ssh '{{ host }}' 'echo "$HOME"')/.local/bin/agents-cockpit"
     fi
     exec ssh '{{ host }}' sh -s -- --commit "$(git rev-parse HEAD)" --binary "$binary" <contrib/update-daemon.sh
+
+# The tree must be committed: the files are built from HEAD, in an Ubuntu 22.04 container.
+
+# Builds the Linux release files in dist/: the static daemon, the app's .deb and SHA256SUMS.
+[unix]
+release:
+    #!/usr/bin/env sh
+    set -eu
+    if [ -n "$(git status --porcelain)" ]; then
+        echo "commit or stash your changes first: the release builds HEAD" >&2
+        exit 1
+    fi
+    docker build -q -t agents-cockpit-release contrib/release >/dev/null
+    rm -rf dist
+    mkdir dist
+    git archive --format=tar HEAD | docker run --rm -i \
+        -e AGENTS_COCKPIT_COMMIT="$(git rev-parse HEAD)" -e OWNER="$(id -u):$(id -g)" \
+        -v "$PWD/dist:/out" \
+        -v agents-cockpit-release-registry:/opt/cargo/registry \
+        -v agents-cockpit-release-target:/src/target \
+        agents-cockpit-release sh -c 'tar -x && exec sh contrib/release/build.sh'
+    ls -l dist
