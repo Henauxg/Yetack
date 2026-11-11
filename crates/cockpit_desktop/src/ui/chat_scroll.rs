@@ -72,7 +72,6 @@ const places = new Map();
 // The user scrolled while the chat drew its rows, naming no agent yet: once it names its agent,
 // that scroll holds, in place of the agent's place from before.
 let scrolledWhileDrawing = false;
-// When the user last turned the wheel up.
 let wheeledUpAt = -Infinity;
 const boxTop = () => box.getBoundingClientRect().top;
 const gapBelow = () => column.getBoundingClientRect().bottom - box.getBoundingClientRect().bottom;

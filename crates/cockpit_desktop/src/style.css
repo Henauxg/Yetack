@@ -3369,6 +3369,8 @@ html.reordering * {
 }
 
 .block-card {
+  --block-head-height: 40px;
+  --block-padding: 12px;
   flex: none;
   display: flex;
   flex-direction: column;
@@ -3387,7 +3389,7 @@ html.reordering * {
   align-items: center;
   gap: 8px;
   width: 100%;
-  min-height: 40px;
+  min-height: var(--block-head-height);
   padding: 0 12px;
   border: 0;
   background: transparent;
@@ -3429,7 +3431,7 @@ html.reordering * {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 0 12px 12px;
+  padding: 0 var(--block-padding) var(--block-padding);
 }
 
 .block-note {
@@ -3548,13 +3550,14 @@ html.reordering * {
    leave, down to its head, and its list keeps its latest rows in sight. */
 .block-card.shrinks,
 .message-list {
+  /* A row's content (two lines of text, their gap and the padding) takes 45px. */
   --message-row: 46px;
 }
 
 .block-card.shrinks {
   flex: 0 1 auto;
-  /* The head, the body's bottom padding, and the rows the app keeps. */
-  min-height: calc(40px + 12px + var(--kept-rows, 0) * var(--message-row));
+  min-height: calc(var(--block-head-height) + var(--block-padding)
+    + var(--kept-rows, 0) * var(--message-row));
   overflow: hidden;
 }
 
