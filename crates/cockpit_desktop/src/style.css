@@ -2914,6 +2914,7 @@ html.reordering * {
 /* The fold script marks `data-end` a folded message scrolled to its end: no line is cut there. */
 .message-fold[data-tall]:not(.unfolded) .message-clip[data-end]::after {
   opacity: 0;
+  transition: opacity var(--motion-out) var(--ease-in);
 }
 
 /* The clip cuts what goes past its edge, a focus ring drawn outside included. */
