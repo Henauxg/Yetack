@@ -2156,6 +2156,24 @@ html.reordering * {
   max-height: 160px;
   border-radius: 8px;
   border: 1px solid var(--line-strong);
+  transition: border-color var(--motion-hover) var(--ease);
+}
+
+/* A click on an image attached to a message shows it over the whole window. */
+.message-image-button {
+  display: flex;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-in;
+}
+
+.message-image-button:hover > .message-image {
+  border-color: var(--line-control);
+}
+
+.message-image-button:active {
+  transform: scale(var(--press-scale));
 }
 
 /* An image file a message shows. Its fixed height keeps the text below in place while it loads. */

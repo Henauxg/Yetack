@@ -121,8 +121,17 @@ pub(super) fn answered(
     }
 }
 
-/// Shows the image over the whole window, from a message or the file view.
+/// Shows the image file over the whole window, from a message or the file view.
 pub fn open_full_view(state: &mut AppState, agent: AgentId, path: PathBuf, image: Arc<Image>) {
+    open(state, agent, Some(path), image);
+}
+
+/// Shows an image attached to a message over the whole window.
+pub fn open_attached_image(state: &mut AppState, agent: AgentId, image: Arc<Image>) {
+    open(state, agent, None, image);
+}
+
+fn open(state: &mut AppState, agent: AgentId, path: Option<PathBuf>, image: Arc<Image>) {
     state.ui.popover = None;
     state.ui.dialog = Some(Dialog::ImageView(ImageView { agent, path, image }));
 }
@@ -134,6 +143,22 @@ mod tests {
     use super::*;
     use crate::state::Popover;
     use crate::state::app_state::tests::{state_with, summary};
+
+    #[test]
+    fn an_attached_image_opens_the_full_view_without_a_file() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+
+        open_attached_image(&mut state, agent(), Arc::new(png()));
+
+        assert_eq!(
+            state.ui.dialog,
+            Some(Dialog::ImageView(ImageView {
+                agent: agent(),
+                path: None,
+                image: Arc::new(png()),
+            }))
+        );
+    }
 
     #[test]
     fn the_full_view_opens_over_a_popover_and_esc_closes_it() {
@@ -150,7 +175,7 @@ mod tests {
             opened,
             Some(Dialog::ImageView(ImageView {
                 agent: agent(),
-                path,
+                path: Some(path),
                 image: Arc::new(png()),
             }))
         );

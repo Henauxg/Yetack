@@ -1315,6 +1315,20 @@ fn user(text: &str) -> ItemBody {
     })
 }
 
+/// A message with a screenshot attached: the app's icon.
+fn user_with_image(text: &str) -> ItemBody {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD as BASE64;
+
+    ItemBody::UserMessage(UserMessage {
+        text: text.to_owned(),
+        images: vec![Image {
+            media_type: ImageMediaType::Png,
+            data: BASE64.encode(crate::ICON_PNG),
+        }],
+    })
+}
+
 fn text(markdown: &str) -> ItemBody {
     ItemBody::AssistantText {
         markdown: markdown.to_owned(),
@@ -1890,7 +1904,11 @@ fn approval_agent(now: SystemTime) -> Sample {
         now,
     );
     let items = vec![
-        item(1, None, user("Fix the broken links and push a preview.")),
+        item(
+            1,
+            None,
+            user_with_image("Fix the broken links and push a preview. Here is what I see:"),
+        ),
         item(
             2,
             None,

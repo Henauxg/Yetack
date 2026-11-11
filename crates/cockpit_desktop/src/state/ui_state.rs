@@ -127,7 +127,8 @@ pub struct RefusedChord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageView {
     pub agent: AgentId,
-    pub path: PathBuf,
+    /// The file it comes from. `None` for an image attached to a message.
+    pub path: Option<PathBuf>,
     pub image: Arc<Image>,
 }
 

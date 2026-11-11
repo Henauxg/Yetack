@@ -4,6 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use cockpit_protocol::{
@@ -17,7 +18,9 @@ use serde_json::Value;
 use crate::connection::{Clock, Cockpit};
 use crate::keymap::Command;
 use crate::render::{self, Diff, Found, Language, OutputPart, SearchTool, diff_lines};
-use crate::state::{self, AgentEntry, HistoryState, TurnStart, accounts, actions, file_edits};
+use crate::state::{
+    self, AgentEntry, HistoryState, TurnStart, accounts, actions, chat_images, file_edits,
+};
 use crate::ui::accounts::SignInCard;
 use crate::ui::cards::{ApprovalCard, PlanCard, QuestionCard};
 use crate::ui::chat_scroll::{
@@ -881,23 +884,39 @@ pub fn ItemView(
 }
 
 /// The user's message. Its text renders as Markdown, as the agent's text does. A long one keeps
-/// its first screen lines until "Show more", as a command's output does.
+/// its first screen lines until "Show more", as a command's output does. A click on an attached
+/// image shows it over the whole window.
 #[component]
 fn UserBubble(agent: AgentId, folder: PathBuf, message: UserMessage) -> Element {
+    let cockpit: Cockpit = use_context();
     let mut unfolded = use_signal(|| false);
     let open = unfolded();
     let state = if open { " unfolded" } else { "" };
+    let UserMessage { text, images } = message;
+    let images = images.into_iter().map(Arc::new);
     rsx! {
         div { class: "user-message",
-            for (index, image) in message.images.iter().enumerate() {
-                img { key: "{index}", class: "message-image", src: bridge::image_url(image), alt: "Attached image" }
+            for (index, image) in images.enumerate() {
+                button {
+                    key: "{index}",
+                    class: "message-image-button",
+                    title: "Show the image",
+                    onclick: {
+                        let image = Arc::clone(&image);
+                        move |_| {
+                            let image = Arc::clone(&image);
+                            cockpit.update(|state| chat_images::open_attached_image(state, agent, image));
+                        }
+                    },
+                    img { class: "message-image", src: bridge::image_url(&image), alt: "Attached image" }
+                }
             }
-            if !message.text.is_empty() {
+            if !text.is_empty() {
                 div {
                     class: "{USER_BUBBLE_CLASS} {MESSAGE_ROW_CLASS}{state}",
                     style: "{FOLD_LINES_PROPERTY}: {MESSAGE_FOLD_LINES}",
                     div { class: MESSAGE_CLIP_CLASS,
-                        MarkdownView { agent, folder, markdown: message.text }
+                        MarkdownView { agent, folder, markdown: text }
                     }
                     button {
                         class: FOLD_BUTTON_CLASS,
