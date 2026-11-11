@@ -243,6 +243,12 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   - The Plan chip and card show the selected agent's account and every account's plan.
   - An agent whose account is not signed in needs you, with a card in the chat that says how to sign in.
   - Not in scope: moving an agent to another account, and a filter by account in the sidebar.
+- Decided with the projects mockups, and built: the sidebar groups agents by machine, by project, or not at all.
+  - There is no grouping by account, since an account belongs to one machine.
+  - Projects belong to the app, on each desktop: a name, a color, and rules, each a repository or a folder. An agent joins the first project whose rules hold its folder.
+  - An agent in a repository no project claims gets a temporary project, shown dashed, which goes away with its last agent unless the user keeps it or moves an agent into it.
+  - An agent moves to another project from its row's menu, by drag and drop, or from the new agent dialog's Project menu. Kept projects are reordered by dragging their headers.
+  - The Settings dialog's Projects tab edits the projects, with a card per project as the Accounts dialog has.
 - It starts `ssh <server> /absolute/path/to/agents-cockpit bridge` and speaks the daemon API over the process's stdin and stdout.
   Use an absolute path: a non-interactive SSH command does not load your interactive shell setup, so `~/.cargo/bin` may be missing from `PATH`.
 - It reconnects after an SSH drop and sends its last sequence number.
