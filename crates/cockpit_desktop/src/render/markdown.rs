@@ -34,6 +34,36 @@ const WEB_URL_STARTS: [&str; 2] = ["http://", "https://"];
 /// What both of [`WEB_URL_STARTS`] start with.
 const WEB_URL_PREFIX: &str = "http";
 
+/// File names that a code span may hold alone, as in `Makefile`: names without an extension,
+/// and names whose extension is too often a field's to count alone.
+const FILE_NAMES: [&str; 16] = [
+    "Makefile",
+    "Dockerfile",
+    "Containerfile",
+    "Justfile",
+    "LICENSE",
+    "README",
+    "CHANGELOG",
+    ".env",
+    ".envrc",
+    ".gitignore",
+    ".gitattributes",
+    ".dockerignore",
+    ".editorconfig",
+    "Cargo.lock",
+    "flake.lock",
+    "yarn.lock",
+];
+
+/// The extensions of a file name a code span holds without a folder, as in `Cargo.toml`. With a
+/// folder, as in `src/lexer.rs`, any extension is a file's. Extensions that are also common
+/// fields, as `log` in `console.log` or `env` in `process.env`, count only with a folder.
+const FILE_EXTENSIONS: [&str; 36] = [
+    "rs", "toml", "md", "txt", "json", "jsonl", "yaml", "yml", "ini", "sh", "bash", "zsh", "nix",
+    "py", "mjs", "tsx", "jsx", "go", "java", "kt", "cpp", "hpp", "cs", "rb", "php", "sql", "proto",
+    "html", "css", "scss", "xml", "csv", "png", "jpg", "jpeg", "pdf",
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Block {
     Heading {
@@ -437,13 +467,61 @@ fn heading_number(level: HeadingLevel) -> u8 {
     }
 }
 
-/// A code span that holds only a `path:line` reference opens the file view.
+/// A code span that holds only a `path:line` reference, or only a file's path, opens the file
+/// view.
 fn code_span(code: &str, style: PathStyle) -> Inline {
     let trimmed = code.trim();
     match find_file_refs(trimmed, style).as_slice() {
         [TextPiece::File(file)] => Inline::File(file.clone()),
+        _ if is_bare_file(trimmed, style) => Inline::File(FileRef {
+            text: trimmed.to_owned(),
+            path: trimmed.to_owned(),
+            line: None,
+        }),
         _ => Inline::Code(code.to_owned()),
     }
+}
+
+/// Whether `code` is a file's path alone, written as agents write one: in a folder with an
+/// extension (`src/lexer.rs`, `/tmp/shot.png`), with a known extension (`Cargo.toml`), or with a
+/// known name (`Makefile`, `.env`). A relative path whose first name holds a dot, as in
+/// `github.com/a/b.rs`, is a web address. The daemon still decides whether it sends the file.
+fn is_bare_file(code: &str, style: PathStyle) -> bool {
+    let after_drive = code.get(style.drive_len(code)..).unwrap_or_default();
+    if after_drive.is_empty()
+        || !after_drive.bytes().all(|byte| is_path_byte(byte, style))
+        || !is_file_target(code, style)
+    {
+        return false;
+    }
+    let Some(name) = style.file_name(code) else {
+        return false;
+    };
+    if code.ends_with(|character| style.is_separator(character)) {
+        return false;
+    }
+    if FILE_NAMES.contains(&name) {
+        return true;
+    }
+    let Some((stem, extension)) = name.rsplit_once('.') else {
+        return false;
+    };
+    let is_extension = !stem.is_empty()
+        && !extension.is_empty()
+        && extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        && !extension.bytes().all(|byte| byte.is_ascii_digit());
+    let in_folder = code.contains(|character| style.is_separator(character));
+    let domain = in_folder
+        && !style.is_absolute(code)
+        && style
+            .first_name(code)
+            .is_some_and(|first| first.get(1..).is_some_and(|rest| rest.contains('.')));
+    is_extension
+        && !domain
+        && (in_folder
+            || FILE_EXTENSIONS
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(extension)))
 }
 
 /// An image file the message shows, by the same rule as a link to a file. A web image is not
@@ -513,6 +591,9 @@ fn unlinked(content: Vec<Inline>) -> Vec<Inline> {
     for inline in content {
         match inline {
             Inline::Link { content, .. } => flat.extend(unlinked(content)),
+            // A file without a line here comes from a code span: a link's text cannot hold
+            // another link.
+            Inline::File(file) if file.line.is_none() => flat.push(Inline::Code(file.text)),
             Inline::File(file) => flat.push(Inline::Text(file.text)),
             Inline::Image { alt, .. } => flat.push(Inline::Text(alt)),
             Inline::Strong(content) => flat.push(Inline::Strong(unlinked(content))),
@@ -1059,14 +1140,14 @@ mod tests {
 
     #[test]
     fn tables_split_head_and_rows() {
-        let blocks = parse("| Name | Size |\n| --- | --- |\n| `a.txt` | 3 |\n| b | **4** |");
+        let blocks = parse("| Name | Size |\n| --- | --- |\n| `alpha` | 3 |\n| b | **4** |");
 
         assert_eq!(
             blocks,
             vec![Block::Table {
                 head: vec![vec![text("Name")], vec![text("Size")]],
                 rows: vec![
-                    vec![vec![Inline::Code("a.txt".to_owned())], vec![text("3")]],
+                    vec![vec![Inline::Code("alpha".to_owned())], vec![text("3")]],
                     vec![vec![text("b")], vec![Inline::Strong(vec![text("4")])]],
                 ],
             }]
@@ -1235,6 +1316,87 @@ mod tests {
                 Inline::Code("run a.rs:3 now".to_owned()),
                 text("."),
             ]
+        );
+    }
+
+    #[test]
+    fn a_code_span_holding_only_a_files_path_becomes_a_file_link() {
+        let linked = |code: &str| {
+            let inlines = paragraph(&format!("See `{code}`."));
+            matches!(
+                inlines.as_slice(),
+                [_, Inline::File(FileRef { path, line: None, .. }), _] if path == code
+            )
+        };
+
+        for code in [
+            "src/lexer.rs",
+            "/tmp/mockup/bubble-on.png",
+            "docs/plan.md",
+            "Cargo.toml",
+            "README.md",
+            "Makefile",
+            ".env",
+            "crates/app/.gitignore",
+            "scripts/build.v2",
+            "Cargo.lock",
+            "logs/build.log",
+            "src/main.c",
+            ".github/workflows/ci.yml",
+        ] {
+            assert!(linked(code), "{code}");
+        }
+        for code in [
+            "cargo test",
+            "self.items",
+            "main",
+            "--release",
+            "v1.2",
+            "src/",
+            "src/v1.2",
+            "~/notes.md",
+            "../secret.md",
+            "Option<String>",
+            "std::fs",
+            "a.rs b.rs",
+            "console.log",
+            "process.env",
+            "self.lock",
+            "node.js",
+            "rect.h",
+            "github.com/owner/repo/blob/main/src/lib.rs",
+            "example.com/index.html",
+        ] {
+            assert!(!linked(code), "{code}");
+        }
+    }
+
+    #[test]
+    fn a_files_path_on_windows_links_with_its_drive() {
+        let linked = |code: &str| {
+            let blocks = parse_markdown(&format!("See `{code}`."), Path::new(r"C:\work"));
+            matches!(
+                blocks.as_slice(),
+                [Block::Paragraph(inlines)]
+                    if matches!(inlines.as_slice(), [_, Inline::File(file), _] if file.path == code)
+            )
+        };
+
+        assert!(linked(r"C:\work\a.rs"));
+        assert!(linked(r"src\lib.rs"));
+        assert!(!linked(r"C:\work\"));
+        assert!(!linked(r"\\server\share\a.rs"));
+        assert!(!linked(r"C:\..\a.rs"));
+    }
+
+    #[test]
+    fn a_files_code_span_in_a_web_link_stays_code() {
+        assert_eq!(
+            paragraph("[`src/lib.rs`](https://example.org/src/lib.rs)"),
+            vec![Inline::Link {
+                url: "https://example.org/src/lib.rs".to_owned(),
+                content: vec![Inline::Code("src/lib.rs".to_owned())],
+            }]
         );
     }
 
