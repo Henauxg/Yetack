@@ -3,15 +3,25 @@
 
 use std::fmt;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// The separators of a remote's path: `/`, and `\` in a local Windows path.
 const SEPARATORS: [char; 2] = ['/', '\\'];
 
-/// A git repository by its remote, as [`Repository::from_remote`] writes it.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+/// A git repository by its remote, as [`Repository::from_remote`] writes it. It is saved and
+/// sent as that text.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(transparent)]
 pub struct Repository(String);
+
+/// Text read back goes through the normalizer too, so that a remote written by hand in a
+/// preferences file still names its repository.
+impl<'de> Deserialize<'de> for Repository {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        Ok(Self::from_remote(&text))
+    }
+}
 
 impl Repository {
     /// The repository of a remote's URL, in any of its forms. The URL of a repository written
@@ -157,5 +167,17 @@ mod tests {
             );
         }
         assert_eq!(normalized("/srv/git/billing/.git"), "/srv/git/billing");
+    }
+
+    #[test]
+    fn a_repository_reads_back_normalized_and_writes_as_its_text() {
+        let read: Repository =
+            serde_json::from_str(r#""git@github.com:acme/billing.git""#).unwrap();
+
+        assert_eq!(read.as_str(), "github.com/acme/billing");
+        assert_eq!(
+            serde_json::to_string(&read).unwrap(),
+            r#""github.com/acme/billing""#
+        );
     }
 }
