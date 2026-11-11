@@ -210,6 +210,18 @@ const changed = () => {
 };
 const mutations = new MutationObserver(changed);
 const resizes = new ResizeObserver(changed);
+// A wheel turned up over `target` scrolls a box inside the chat, such as a folded message, until
+// that box reaches its top.
+const scrollsInside = (target) => {
+  let element = target;
+  while (element instanceof Element && element !== box) {
+    if (element.scrollTop > 0 && ["auto", "scroll"].includes(getComputedStyle(element).overflowY)) {
+      return true;
+    }
+    element = element.parentElement;
+  }
+  return false;
+};
 // The chat's box comes and goes with the selected agent.
 const attach = () => {
   const found = document.getElementById(settings.chat_scroll_id);
@@ -226,7 +238,7 @@ const attach = () => {
   }
   box.addEventListener("scroll", record, { passive: true });
   box.addEventListener("wheel", (event) => {
-    if (event.deltaY < 0) {
+    if (event.deltaY < 0 && !scrollsInside(event.target)) {
       wheeledUpAt = performance.now();
       // Before the first scroll of the notch, a change of the content would take the chat back down.
       if (following && box.scrollHeight > box.clientHeight) {
