@@ -73,6 +73,13 @@ pub enum Popover {
         x: i32,
         y: i32,
     },
+    /// A file view tab's menu, opened by a right-click at `x`, `y` in the window's pixels. The file
+    /// view holds the tab.
+    TabMenu {
+        agent: AgentId,
+        x: i32,
+        y: i32,
+    },
     /// The selected agent's notification levels, from its header tag.
     AgentNotifications,
     /// The app's notification levels, from the sidebar's bell.
@@ -377,6 +384,8 @@ pub struct FileView {
     pub opened: Vec<PathBuf>,
     /// Changed files whose tab the user closed. Opening one again brings its tab back.
     pub closed: BTreeSet<PathBuf>,
+    /// The tab whose menu is open.
+    pub menu: Option<PathBuf>,
 }
 
 impl FileView {
@@ -387,6 +396,7 @@ impl FileView {
             mode,
             opened: Vec::new(),
             closed: BTreeSet::new(),
+            menu: None,
         }
     }
 

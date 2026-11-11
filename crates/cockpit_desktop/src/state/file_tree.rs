@@ -912,6 +912,20 @@ pub fn mention(state: &mut AppState, drafts: &mut Drafts, agent: AgentId, path: 
     state.ui.popover = None;
 }
 
+/// Shows `path` in the file view, then opens the agent's files pane on it. A file already shown
+/// stays as it is: opening it again would read it again and reset its mode and its scroll.
+pub fn show_in_pane(state: &mut AppState, agent: AgentId, path: &Path) {
+    if state
+        .ui
+        .file_view(agent)
+        .is_none_or(|view| view.path != path)
+    {
+        actions::open_file(state, agent, path.to_owned(), None);
+    }
+    set_pane(state, agent, PaneState::Open);
+    reveal(state, agent);
+}
+
 /// Shows the file view's file in the tree: its folders open and its row highlighted. A file the
 /// filter hides shows under "All".
 pub fn reveal(state: &mut AppState, agent: AgentId) {
