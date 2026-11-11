@@ -252,8 +252,7 @@ const reveal = (entryId, place) => {
   pinned = null;
   following = gapBelow() <= settings.bottom_threshold_px;
   anchor = following ? null : { id: entry.id, top: element.getBoundingClientRect().top - boxTop() };
-  // The entries above that come into view are laid out at the next frame. Measured before, one
-  // of them overlaps the view's top and would be reported as the first in view.
+  // An entry that comes into view overlaps the others until the next frame lays it out.
   requestAnimationFrame(() => requestAnimationFrame(report));
   element.classList.remove(settings.revealed_class);
   // Restarts the animation when the same entry is revealed again.
@@ -540,9 +539,13 @@ mod tests {
         ));
         assert_eq!(entry_id(AgentId::new(3), ItemId::new(12)), "entry-3-12");
         let in_view = |top: Value, bottom: Value| -> ScrollMessage {
-            serde_json::from_value(
-                json!({ "type": "in_view", "agent": 7, "at_bottom": false, "top": top, "bottom": bottom }),
-            )
+            serde_json::from_value(json!({
+                "type": "in_view",
+                "agent": 7,
+                "at_bottom": false,
+                "top": top,
+                "bottom": bottom,
+            }))
             .unwrap()
         };
         assert!(matches!(

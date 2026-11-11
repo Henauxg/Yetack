@@ -1,7 +1,8 @@
 //! The Messages block: the messages the user sent to the agent, oldest first with their times,
 //! then the prompts Claude has not read yet. The block marks the message being read: at the chat's
-//! bottom the latest one on screen, scrolled up the one whose answer shows at the top. A click on a sent message scrolls the chat to it. The eye in the
-//! block's head shows or hides the last message over the chat.
+//! bottom the latest one on screen, scrolled up the one whose answer shows at the top. A click on a
+//! sent message scrolls the chat to it. The eye in the block's head shows or hides the last message
+//! over the chat.
 
 use std::path::PathBuf;
 
