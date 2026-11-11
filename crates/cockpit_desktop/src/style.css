@@ -2159,7 +2159,7 @@ html.reordering * {
   transition: border-color var(--motion-hover) var(--ease);
 }
 
-/* An attached image opens over the whole window, as an image file a message shows does. */
+/* A click on an image attached to a message shows it over the whole window. */
 .message-image-button {
   display: flex;
   padding: 0;

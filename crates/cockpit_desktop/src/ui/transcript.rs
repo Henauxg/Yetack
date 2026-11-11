@@ -893,9 +893,10 @@ fn UserBubble(agent: AgentId, folder: PathBuf, message: UserMessage) -> Element 
     let open = unfolded();
     let state = if open { " unfolded" } else { "" };
     let UserMessage { text, images } = message;
+    let images = images.into_iter().map(Arc::new);
     rsx! {
         div { class: "user-message",
-            for (index, image) in images.into_iter().map(Arc::new).enumerate() {
+            for (index, image) in images.enumerate() {
                 button {
                     key: "{index}",
                     class: "message-image-button",

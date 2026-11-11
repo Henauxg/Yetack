@@ -1311,15 +1311,16 @@ const ATTACHED_IMAGE: &str = "Attached image";
 fn ImageViewDialog(view: ImageView) -> Element {
     let cockpit: Cockpit = use_context();
     let ImageView { agent, path, image } = view;
-    let full = path
-        .as_ref()
-        .map(|path| path.to_string_lossy().into_owned());
-    let name = match (&path, &full) {
-        (Some(path), Some(full)) => PathStyle::of(path)
-            .file_name(full)
-            .unwrap_or(full)
-            .to_owned(),
-        _ => ATTACHED_IMAGE.to_owned(),
+    let (full, name) = match &path {
+        Some(path) => {
+            let full = path.to_string_lossy().into_owned();
+            let name = PathStyle::of(path)
+                .file_name(&full)
+                .unwrap_or(&full)
+                .to_owned();
+            (Some(full), name)
+        }
+        None => (None, ATTACHED_IMAGE.to_owned()),
     };
     rsx! {
         div {
@@ -1330,7 +1331,7 @@ fn ImageViewDialog(view: ImageView) -> Element {
             onmousedown: move |event| event.stop_propagation(),
             onmounted: move |_| bridge::focus_field(IMAGE_VIEW_FRAME_ID),
             div { class: "dialog-head",
-                h2 { class: "image-view-name", title: full.clone(), "{name}" }
+                h2 { class: "image-view-name", title: full, "{name}" }
                 span { class: "key-hint", "Ctrl+wheel zooms" }
                 if let Some(path) = path {
                     button {
