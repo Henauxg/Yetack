@@ -12,7 +12,7 @@ use dioxus::html::point_interaction::InteractionLocation;
 use dioxus::prelude::*;
 use rfd::AsyncFileDialog;
 
-use crate::bridge::{self, FOLDER_FIELD_ID, HIGHLIGHTED_CLASS};
+use crate::bridge::{self, COMPOSER_ID, FOLDER_FIELD_ID, HIGHLIGHTED_CLASS};
 use crate::connection::{Clock, Cockpit};
 use crate::daemon_label::DaemonPlace;
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
@@ -252,15 +252,25 @@ fn StopAgentDialog(agent: AgentId) -> Element {
             role: "alertdialog",
             aria_label: "Stop the agent",
             // The dialog, not its Stop, takes the focus: a user who goes on typing after a stray Esc
-            // presses Space, which would press a focused button. Enter stops.
+            // presses Space, which would press a focused button.
             tabindex: "-1",
             onmounted: move |event| async move {
                 // The dialog may have closed already: nothing to focus then.
                 let _ = event.data().set_focus(true).await;
             },
             onkeydown: move |event| {
-                if event.key() == Key::Enter {
-                    stop();
+                let modifiers = event.modifiers();
+                let command = modifiers.intersects(Modifiers::CONTROL | Modifiers::META);
+                match event.key() {
+                    Key::Enter if modifiers.is_empty() && !event.is_auto_repeating() => stop(),
+                    // A letter means the user goes on typing: the agent keeps working.
+                    Key::Character(_) if !command => {
+                        cockpit.update(|state| state.ui.dialog = None);
+                        bridge::focus_field(COMPOSER_ID);
+                    }
+                    // The page's script closes the dialog on Esc.
+                    Key::Escape => bridge::focus_field(COMPOSER_ID),
+                    _ => {}
                 }
             },
             onclick: move |event| event.stop_propagation(),
@@ -288,7 +298,10 @@ fn StopAgentDialog(agent: AgentId) -> Element {
                 onkeydown: move |event| event.stop_propagation(),
                 button {
                     class: "button",
-                    onclick: move |_| cockpit.update(|state| state.ui.dialog = None),
+                    onclick: move |_| {
+                        cockpit.update(|state| state.ui.dialog = None);
+                        bridge::focus_field(COMPOSER_ID);
+                    },
                     "Keep working"
                 }
                 button {

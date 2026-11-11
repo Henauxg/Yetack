@@ -6188,7 +6188,7 @@ html.splitting * {
   width: 440px;
 }
 
-/* It takes the focus so that Enter stops: the key hint in its head says so, not a ring. */
+/* The dialog takes the focus so that Enter stops: the key hint in its head says so, not a ring. */
 .dialog.stop-agent:focus {
   outline: none;
 }

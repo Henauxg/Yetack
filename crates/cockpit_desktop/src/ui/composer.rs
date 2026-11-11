@@ -93,8 +93,8 @@ pub fn Composer() -> Element {
     let Clock(now) = use_context::<Clock>();
     // The agent the button sent to in the last `STOP_AFTER_SEND`, and the number of that send, so
     // that the timer of an earlier send does not cut a later send's second short.
-    let mut just_sent = use_signal(|| None::<(AgentId, u64)>);
-    let mut sends = use_signal(|| 0_u64);
+    let mut just_sent = use_signal(|| None::<(AgentId, u32)>);
+    let mut sends = use_signal(|| 0_u32);
     // The text area is not bound to the draft, whose renders can lag behind typing: it takes the
     // draft's text only when another agent opens or the app changes the draft.
     let shown = use_memo(move || {
