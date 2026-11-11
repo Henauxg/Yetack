@@ -334,6 +334,11 @@ const place = () => {
     const first = item.rects[0];
     const last = item.rects[item.rects.length - 1];
     const inView = first !== undefined && last.bottom > view.top && first.top < view.bottom;
+    // The field is measured in the strip's width. As a card it is wider, so its text takes fewer
+    // lines: measured there, it would fit, move back, grow, and fall back again on every round.
+    if (editing) {
+      delete editor.dataset.fallback;
+    }
     const height = note.offsetHeight;
     const top = inView ? Math.max(first.top - 10, floor, below + 8) : 0;
     if (!inView || top + height > view.bottom - 8) {
@@ -343,9 +348,6 @@ const place = () => {
         away(note);
       }
       continue;
-    }
-    if (editing) {
-      delete editor.dataset.fallback;
     }
     below = top + height;
     at(note, null, top - area.top);
