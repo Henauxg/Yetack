@@ -1,50 +1,53 @@
 # agents-cockpit
 
-Run Claude Code agents on your computer and on your servers, and watch and steer them all from one desktop app.
+Run Claude Code agents on your computer and on your servers, and watch and steer all of the agents from one desktop app.
 
-![The app with agents on three machines: the sidebar lists them by machine, the middle shows one agent's conversation with a reply under way, the right column its tasks, subagents and messages](docs/images/app.png)
+![The app with agents on three machines: the sidebar lists the agents by machine, the middle shows one agent's conversation with a reply under way, and the right column shows the agent's tasks, subagents and messages](docs/images/app.png)
 
 - **Several machines.** The app connects to this computer and to any number of servers over SSH. Each machine has its own panel in the sidebar.
-- **Several Claude accounts.** A personal and a work subscription work side by side. You pick the account of each agent, and the app shows the plan usage of each account.
-- **Sessions that persist on remote machines.** The agents run in a daemon on the server, so they keep working when the app closes, the laptop sleeps or the connection drops. When the app reconnects, it shows what the agents did meanwhile.
-- **Steer while they work.** Answer approvals, questions and plans from the app. A message you send while an agent works reaches Claude at its next step.
-- **Reply to a passage.** Select text in the chat to quote it, and write a comment beside it. Paste images into a message.
-- **See what they do.** A map shows the subagents, and a block beside the chat shows the background tasks. The files pane shows the files each agent changed or read, with their diffs.
-- **Notifications.** The app tells you when an agent needs you or finishes.
+- **Several Claude accounts.** A personal subscription and a work subscription work side by side. You pick the account of each agent, and the app shows the plan usage of each account.
+- **Sessions that persist on remote machines.** The agents run in a daemon on the server. The agents keep working when the app closes, when the laptop sleeps, or when the connection drops. When the app connects again, the app shows what the agents did meanwhile.
+- **Steer while they work.** Answer approvals, questions and plans from the app. Claude reads a message that you send to a working agent at its next step.
+- **Reply to a passage.** Select text in the chat to quote the text, and write a comment beside the quote. Paste images into a message.
+- **See what they do.** A map shows the subagents, and a block beside the chat shows the background tasks. The files pane shows the files that each agent changed or read, with their diffs.
+- **Notifications.** The app tells you when an agent needs you, and when an agent finishes.
 
-Claude Code runs unmodified, signed in with your own account. The app never sees your credentials. It reaches a server with your SSH key, and the daemon opens no network port.
+Claude Code runs unmodified and signs in with your own account. The app never sees your credentials. The app reaches a server with your SSH key, and the daemon opens no network port.
 
 ## Install
 
 Download the files from the [releases page](https://github.com/Henauxg/agents-cockpit/releases).
 
-| Your computer | File | How |
+| Your computer | File | Command |
 | --- | --- | --- |
 | Ubuntu 22.04 or newer, Debian 12 | `agents-cockpit_<version>_amd64.deb` | `sudo apt install ./agents-cockpit_<version>_amd64.deb` |
-| Windows 10 or 11 | `agents-cockpit-desktop-<version>-windows-x64.zip`, when the release has one | Unzip it anywhere and run `agents-cockpit-desktop.exe` |
-| NixOS, or Linux with Nix | | `nix profile install github:Henauxg/agents-cockpit` |
-| Anything else | | Build it: [docs/install-from-source.md](docs/install-from-source.md) |
+| Windows 10 or 11 | `agents-cockpit-desktop-<version>-windows-x64.zip`, if the release has one | Unzip the file and run `agents-cockpit-desktop.exe` |
+| NixOS, or Linux with Nix | None | `nix profile install 'git+ssh://git@github.com/Henauxg/agents-cockpit?ref=refs/tags/v<version>'` |
+| Any other system | None | Build the app: [docs/install-from-source.md](docs/install-from-source.md) |
 
-The `.deb` installs the app (`agents-cockpit-desktop`) and the daemon and command line (`agents-cockpit`).
+- The `.deb` installs the app (`agents-cockpit-desktop`) and the daemon with its command line (`agents-cockpit`).
+- The Nix command builds the app from the release's source on your computer, then adds the app, its menu entry and its icon to your profile. The build takes a few minutes. Nix fetches the source with your SSH key, as `git clone` does.
 
-You also need Claude Code on each machine where agents run. Install [Claude Code](https://claude.com/claude-code), then run `claude` once and sign in.
+Each machine that runs agents also needs Claude Code. Install [Claude Code](https://claude.com/claude-code), then run `claude` once and sign in.
 
 ## Local or remote agents
 
 ### On this computer
 
-Start the app. The first time, it shows "Where should agents run?":
+Start the app. At the first start, the app asks "Where should agents run?":
 
-- **Run agents in this app**: the agents stop when the app closes, and come back the next time it runs them. This is the only choice on Windows.
+- **Run agents in this app**: the agents stop when the app closes, and come back at the next start. On Windows, this choice is the only one.
 - **Start the background service here** (Linux): the agents keep running after the app closes.
 
-"Use this every time" is ticked, so the app keeps your choice. Untick it to be asked again at the next start.
+The box "Use this every time" is ticked, so the app keeps your choice. To get the question again at the next start, untick the box.
 
 ### On a server over SSH
 
-The server needs Linux on x86_64 (for another CPU, build the daemon: [docs/install-from-source.md](docs/install-from-source.md)), SSH access with a key, and Claude Code signed in. You need two files from the release page: `agents-cockpit-<version>-x86_64-linux` and `agents-cockpit.service`. On Linux, the `.deb` also put the daemon at `/usr/bin/agents-cockpit`.
+The server needs Linux on x86_64, SSH access with a key, and Claude Code signed in. For another CPU, build the daemon as [docs/install-from-source.md](docs/install-from-source.md) says.
 
-1. From your computer, copy them to the server. Replace `devbox` with the server's name in your SSH config:
+From the releases page, download `agents-cockpit-<version>-x86_64-linux` and `agents-cockpit.service`. On Ubuntu and Debian, the `.deb` also put the daemon at `/usr/bin/agents-cockpit`.
+
+1. On your computer, copy the two files to the server. Replace `devbox` with the server's name in your SSH config:
 
    ```sh
    ssh devbox 'mkdir -p ~/.local/bin ~/.config/systemd/user'
@@ -53,7 +56,7 @@ The server needs Linux on x86_64 (for another CPU, build the daemon: [docs/insta
    ssh devbox 'chmod +x ~/.local/bin/agents-cockpit'
    ```
 
-2. On the server, start the daemon as a service, and let it run after you log out:
+2. On the server, start the daemon as a service, and let the service run after you log out:
 
    ```sh
    systemctl --user daemon-reload
@@ -62,31 +65,37 @@ The server needs Linux on x86_64 (for another CPU, build the daemon: [docs/insta
    systemctl --user status agents-cockpit
    ```
 
-   Without linger, systemd stops your services when your last session on the server ends, and the agents stop with them. On some servers `loginctl enable-linger` needs `sudo`.
+   Without linger, systemd stops your services when your last session on the server ends, and the agents stop with the services. On some servers, `loginctl enable-linger` needs `sudo`.
 
-3. In the app, open **Machines** (bottom left), and add the server:
-   - **SSH host**: `devbox`, as you would type it after `ssh`.
+3. In the app, open **Machines** at the bottom left, and add the server:
+   - **SSH host**: `devbox`, as you type it after `ssh`.
    - **Path of agents-cockpit on the server**: `/home/<you>/.local/bin/agents-cockpit`.
 
-The server's agents show in a panel of their own in the sidebar.
+The server's agents show in their own panel in the sidebar.
 
 ### Update a server
 
-The app and the daemon must speak the same protocol. When they don't, the server's row says "Runs an older version".
+The app and the daemon must speak the same protocol. If the protocols differ, the server's row in the sidebar says "Runs an older version".
 
-Update it by copying the new daemon over the old one, then restarting the service. The restart stops the agents, and the daemon resumes them when it starts again, so do it while they are idle:
+To update the daemon, copy the new daemon over the old one, then restart the service. The restart stops the agents, and the daemon resumes the agents when the daemon starts again. Restart while the agents are idle:
 
 ```sh
 scp agents-cockpit-<version>-x86_64-linux devbox:.local/bin/agents-cockpit.new
 ssh devbox 'chmod +x ~/.local/bin/agents-cockpit.new && mv ~/.local/bin/agents-cockpit.new ~/.local/bin/agents-cockpit && systemctl --user restart agents-cockpit'
 ```
 
-The app's "Update" button builds the daemon from source on the server, so it works only on a server with Rust and a checkout of this repository: [docs/development.md](docs/development.md).
+The app's "Update" button builds the daemon from source on the server. The button works only on a server with Rust and a checkout of this repository, as [docs/development.md](docs/development.md) says.
 
 ## When something goes wrong
 
-[docs/troubleshooting.md](docs/troubleshooting.md) covers an app that cannot reach a server, a service that does not start, a `claude` the daemon cannot find, agents that stop when you log out, and a server that runs another version.
+[docs/troubleshooting.md](docs/troubleshooting.md) covers these problems:
+
+- The app cannot reach a server.
+- The service does not start.
+- The daemon cannot find `claude`.
+- The agents stop when you log out.
+- A server runs another version.
 
 ## License
 
-agents-cockpit is licensed under the [Mozilla Public License 2.0](LICENSE). [CONTRIBUTING.md](CONTRIBUTING.md) says how contributions are licensed. To build it or work on it, read [docs/development.md](docs/development.md).
+agents-cockpit is under the [Mozilla Public License 2.0](LICENSE). [CONTRIBUTING.md](CONTRIBUTING.md) says how contributions are licensed. To build agents-cockpit or work on it, read [docs/development.md](docs/development.md).

@@ -35,7 +35,7 @@ install -Dm644 contrib/agents-cockpit-desktop.desktop ~/.local/share/application
 install -Dm644 crates/cockpit_desktop/assets/agents-cockpit.svg ~/.local/share/icons/hicolor/scalable/apps/agents-cockpit.svg
 ```
 
-With Nix, `nix profile install github:Henauxg/agents-cockpit` does all of this.
+With Nix, `nix profile install 'git+ssh://git@github.com/Henauxg/agents-cockpit'` does all of these steps. The command builds the latest code. Add `?ref=refs/tags/v0.1.0` to the address to build a release.
 
 ### Windows
 
@@ -49,7 +49,7 @@ The app is `target\release\agents-cockpit-desktop.exe`. It needs the WebView2 ru
 
 ### macOS
 
-The app has not been tested on macOS. `cargo build --release --locked -p cockpit_desktop` may work, and reports are welcome.
+Nobody has tested the app on macOS yet. `cargo build --release --locked -p cockpit_desktop` can work there, and reports are welcome.
 
 ## The daemon, for a server
 
