@@ -548,7 +548,10 @@ fn kept_mut(state: &mut AppState, id: ProjectId) -> Option<&mut Project> {
 mod tests {
     use std::path::PathBuf;
 
-    use cockpit_protocol::{AgentStatus, Event, EventRecord, Method, ResponseBody, Seq};
+    use cockpit_protocol::{
+        AgentStatus, AgentSummary, Catchup, Event, EventRecord, Method, PlanUsage, ResponseBody,
+        Seq, Settings, Snapshot,
+    };
 
     use super::*;
     use crate::prefs::GroupBy;
@@ -703,35 +706,48 @@ mod tests {
         );
     }
 
+    /// Agent 9, in the billing repository.
+    fn started_summary() -> AgentSummary {
+        let mut agent = summary(9, AgentStatus::Idle);
+        agent.repository = Some(repo(BILLING));
+        agent
+    }
+
+    /// The start's answer for agent 9, with `picked` from the dialog.
+    fn answer_start(state: &mut AppState, picked: ProjectKey) {
+        requests::apply_response(
+            state,
+            &mut Drafts::default(),
+            Method::AgentStart,
+            Purpose::Start {
+                project: Some(picked),
+            },
+            Ok(ResponseBody::AgentStarted {
+                agent: AgentId::new(9),
+            }),
+            MachineId::THIS,
+        );
+    }
+
+    fn add_started(state: &mut AppState) {
+        let added = EventRecord {
+            seq: Seq::new(1),
+            event: Event::AgentAdded(started_summary()),
+        };
+        apply::apply(state, &mut Drafts::default(), added, MachineId::THIS);
+    }
+
     /// Starts agent 9 in the billing repository with `picked` from the dialog, its start's
     /// answer arriving before its summary or after it.
     fn start_with_pick(picked: &str, answer_first: bool) -> AppState {
         let mut state = agents();
-        let started = AgentId::new(9);
-        let mut agent = summary(9, AgentStatus::Idle);
-        agent.repository = Some(repo(BILLING));
-        let added = EventRecord {
-            seq: Seq::new(1),
-            event: Event::AgentAdded(agent),
-        };
-        let answer = |state: &mut AppState| {
-            requests::apply_response(
-                state,
-                &mut Drafts::default(),
-                Method::AgentStart,
-                Purpose::Start {
-                    project: Some(ProjectKey::Repository(repo(picked))),
-                },
-                Ok(ResponseBody::AgentStarted { agent: started }),
-                MachineId::THIS,
-            );
-        };
+        let picked = ProjectKey::Repository(repo(picked));
         if answer_first {
-            answer(&mut state);
+            answer_start(&mut state, picked.clone());
         }
-        apply::apply(&mut state, &mut Drafts::default(), added, MachineId::THIS);
+        add_started(&mut state);
         if !answer_first {
-            answer(&mut state);
+            answer_start(&mut state, picked);
         }
         state
     }
@@ -760,6 +776,49 @@ mod tests {
             );
             assert!(state.prefs.projects.agents.is_empty(), "{answer_first}");
         }
+    }
+
+    #[test]
+    fn a_dialog_pick_applies_when_a_snapshot_brings_the_agent_s_summary() {
+        let mut state = agents();
+        answer_start(&mut state, ProjectKey::Repository(repo(GATEWAY)));
+        let mut listed: Vec<AgentSummary> = state
+            .agents
+            .values()
+            .map(|entry| entry.summary.clone())
+            .collect();
+        listed.push(started_summary());
+
+        apply::apply_catchup(
+            &mut state,
+            &mut Drafts::default(),
+            Catchup::Snapshot(Snapshot {
+                agents: listed,
+                plan_usage: PlanUsage::default(),
+                settings: Settings::default(),
+                last_seq: None,
+                accounts: Vec::new(),
+                other_plan_usage: Vec::new(),
+            }),
+            MachineId::THIS,
+        );
+
+        let gateway = keep(&mut state, &repo(GATEWAY));
+        assert_eq!(project(&state, 9), ProjectKey::Kept(gateway));
+        assert!(state.ui.picked_projects.is_empty());
+    }
+
+    #[test]
+    fn a_dialog_pick_of_a_project_deleted_before_the_summary_keeps_no_choice() {
+        let mut state = agents();
+        let work = create(&mut state, "Work");
+        answer_start(&mut state, ProjectKey::Kept(work));
+        delete(&mut state, work);
+
+        add_started(&mut state);
+
+        assert_eq!(project(&state, 9), ProjectKey::Repository(repo(BILLING)));
+        assert!(state.prefs.projects.agents.is_empty());
     }
 
     #[test]
