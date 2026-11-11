@@ -1,6 +1,6 @@
 //! The window: sidebar, center pane, file view, files pane and dialogs.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use cockpit_protocol::AgentId;
 use dioxus::prelude::*;
@@ -8,7 +8,7 @@ use dioxus::prelude::*;
 use crate::bridge::use_bridge;
 use crate::connection::{Cockpit, Startup, use_clock, use_cockpit};
 use crate::prefs::use_prefs_saver;
-use crate::state::{ConnectionState, NoteKind, actions, file_tree};
+use crate::state::{ConnectionState, NoteKind, actions, file_tree, sending};
 use crate::ui::blocks::FloatingBlocks;
 use crate::ui::chat_scroll::InView;
 use crate::ui::composer::Composer;
@@ -40,6 +40,7 @@ pub fn App() -> Element {
     use_quotes(cockpit);
     use_splitter(cockpit);
     use_reorder(cockpit);
+    use_held_release(cockpit);
     // The entries in the chat's view: the bubble and the Messages block follow them.
     let in_view = use_signal(|| None::<InView>);
     let state = cockpit.state.read();
@@ -174,6 +175,24 @@ fn use_switching(cockpit: Cockpit, selected: Option<AgentId>) -> bool {
     let mut drawn = use_signal(|| selected);
     use_effect(move || drawn.set(shown()));
     drawn() != selected
+}
+
+/// How often the app looks for a held message that is due.
+const HELD_CHECK: Duration = Duration::from_millis(200);
+
+/// Sends each held message once its hold ends, for the window's life: a message leaves whichever
+/// agent shows. A look costs a read of the state, and no render.
+fn use_held_release(cockpit: Cockpit) {
+    use_future(move || async move {
+        loop {
+            tokio::time::sleep(HELD_CHECK).await;
+            let due = sending::next_release(&cockpit.state.peek())
+                .is_some_and(|due| due <= Instant::now());
+            if due {
+                cockpit.change(|state| sending::release_due(state, Instant::now()));
+            }
+        }
+    });
 }
 
 /// How long the note of a closed agent offers it back.

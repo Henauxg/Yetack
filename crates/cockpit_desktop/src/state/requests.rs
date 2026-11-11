@@ -668,11 +668,8 @@ pub fn apply_response(
                 if let Some(entry) = state.agents.get_mut(&agent) {
                     sending::failed(entry, sent);
                 }
-                let current = drafts.draft_mut(agent);
-                if current.is_empty() {
-                    *current = draft;
-                    drafts.draft_written(agent);
-                }
+                // A held message took seconds to leave: the composer may hold new text by now.
+                sending::restore_draft(drafts, agent, draft);
                 state
                     .ui
                     .report(format!("The message was not sent: {}", failure.message));

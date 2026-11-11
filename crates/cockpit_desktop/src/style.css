@@ -4134,6 +4134,17 @@ html.reordering * {
   opacity: 0.6;
 }
 
+/* A message the app still holds: its buttons can stop it, so it stays bright. */
+.waiting-row.sending.held {
+  opacity: 1;
+}
+
+.waiting-row.held .waiting-state {
+  color: var(--amber);
+  background: rgba(245, 165, 36, 0.12);
+  font-variant-numeric: tabular-nums;
+}
+
 .waiting-text {
   flex: 1;
   min-width: 0;

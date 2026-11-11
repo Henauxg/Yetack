@@ -4,6 +4,7 @@
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use cockpit_client::RequestError;
 use cockpit_protocol::{
@@ -1122,8 +1123,9 @@ pub fn send_prompt(
         text: quotes::message(&draft.quotes, &draft.text),
         images: draft.images.clone(),
     };
-    // Shown at once: the daemon's echo takes a round trip, long to a server.
-    let Some(sent) = sending::start(state, agent, &prompt) else {
+    // Shown at once: the daemon's echo takes a round trip, long to a server. A message steered to
+    // a busy agent waits in the app first, and leaves later.
+    let Some(sent) = sending::start(state, agent, &prompt, delivery, &draft, Instant::now()) else {
         return Vec::new();
     };
     vec![Outgoing {

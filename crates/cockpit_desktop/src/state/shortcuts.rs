@@ -992,7 +992,13 @@ mod tests {
                 composer_text: "Also the docs".to_owned(),
                 ..press(KEY_ENTER, KeyTarget::Composer)
             };
-            match handle_key(state, drafts, &press).first() {
+            let mut sent = handle_key(state, drafts, &press);
+            // A steered message waits in the app first.
+            if sent.is_empty() {
+                let later = std::time::Instant::now() + crate::state::sending::HOLD;
+                sent = crate::state::sending::release_due(state, later);
+            }
+            match sent.first() {
                 Some(Outgoing {
                     request: Request::AgentPrompt(params),
                     ..

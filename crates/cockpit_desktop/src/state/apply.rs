@@ -1,6 +1,7 @@
 //! How the daemon's events and the connection's changes update the state. Pure: the caller shows
 //! the returned alerts.
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::time::{Duration, Instant};
 
@@ -13,6 +14,7 @@ use cockpit_protocol::{
 use super::accounts::{self, SignIns};
 use super::app_state::{AgentEntry, AppState, ConnectionState, Loadable};
 use super::drafts::Drafts;
+use super::sending::Sending;
 use super::transcript::KEPT_ITEMS_AWAY;
 use super::{actions, daemon_update, file_reread, file_tree, notification_levels, sending};
 use crate::machine::MachineId;
@@ -132,14 +134,23 @@ pub fn apply_catchup(
         accounts,
         other_plan_usage,
     } = snapshot;
+    // The messages the app still holds have not left: they stay with their agent.
+    let held: BTreeMap<AgentId, Sending> = state
+        .agents
+        .iter()
+        .filter(|(agent, _)| MachineId::of(**agent) == machine)
+        .map(|(agent, entry)| (*agent, sending::keep_held(&entry.sending)))
+        .collect();
     state
         .agents
         .retain(|agent, _| MachineId::of(*agent) != machine);
-    state.agents.extend(
-        agents
-            .into_iter()
-            .map(|summary| (summary.id, AgentEntry::new(summary))),
-    );
+    state.agents.extend(agents.into_iter().map(|summary| {
+        let mut entry = AgentEntry::new(summary);
+        if let Some(kept) = held.get(&entry.id()) {
+            entry.sending = kept.clone();
+        }
+        (entry.id(), entry)
+    }));
     if let Some(known) = state.machines.get_mut(machine) {
         known.plan_usage = plan_usage;
         known.settings = settings;
