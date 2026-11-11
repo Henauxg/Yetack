@@ -2895,6 +2895,26 @@ html.reordering * {
    kept line ends. */
 .message-fold[data-tall] .message-clip::after {
   background: linear-gradient(to bottom, transparent, var(--hover));
+  /* Sticks to the bottom of what shows, while the folded message scrolls under it. */
+  position: sticky;
+  display: block;
+  inset: auto 0 0;
+  margin-top: -1.2em;
+}
+
+/* A folded message scrolls with the wheel, without "Show more". The wheel goes on to the chat once
+   the message reaches its end. Unfolded, its height grows to its text's, so the scroll goes back
+   to 0. */
+.message-fold[data-tall]:not(.unfolded) .message-clip {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #3e3e3e transparent;
+}
+
+/* The fold script marks `data-end` a folded message scrolled to its end: no line is cut there. */
+.message-fold[data-tall]:not(.unfolded) .message-clip[data-end]::after {
+  opacity: 0;
+  transition: opacity var(--motion-out) var(--ease-in);
 }
 
 /* The clip cuts what goes past its edge, a focus ring drawn outside included. */

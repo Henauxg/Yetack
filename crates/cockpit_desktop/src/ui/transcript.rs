@@ -77,6 +77,18 @@ const FOLD_SCRIPT: &str = r#"
 const classes = await dioxus.recv();
 if (!window.agentsCockpitFolds) {
   window.agentsCockpitFolds = true;
+  // A folded message scrolled to its end cuts no line: it shows no fade there. A fold, an unfold
+  // or a new width moves the end without a scroll event.
+  const isMessageClip = (element) => element instanceof Element && element.matches(`.${classes.message_clip}`);
+  const markEnd = (clip) => {
+    clip.toggleAttribute("data-end", clip.scrollTop + clip.clientHeight >= clip.scrollHeight - 1);
+  };
+  document.addEventListener("scroll", (event) => {
+    if (isMessageClip(event.target)) {
+      markEnd(event.target);
+    }
+  }, { capture: true, passive: true });
+  const ends = new ResizeObserver((entries) => entries.forEach((entry) => markEnd(entry.target)));
   const textSelector = `.${classes.clip} > pre, .${classes.message_clip} > .${classes.markdown}`;
   // Where each screen line of the text ends, from the text's top. A table row's cells overlap
   // and count as one line.
@@ -183,6 +195,7 @@ if (!window.agentsCockpitFolds) {
     }
     void document.body.offsetHeight;
     clips.forEach((clip) => clip.style.removeProperty("transition"));
+    clips.filter(isMessageClip).forEach(markEnd);
   });
   const watch = (node, added) => {
     if (!(node instanceof Element)) {
@@ -190,10 +203,16 @@ if (!window.agentsCockpitFolds) {
     }
     const texts = node.matches(textSelector) ? [node] : node.querySelectorAll(textSelector);
     for (const text of texts) {
+      const clip = text.parentElement;
       if (added) {
         sizes.observe(text);
       } else {
         sizes.unobserve(text);
+      }
+      if (added && isMessageClip(clip)) {
+        ends.observe(clip);
+      } else if (isMessageClip(clip)) {
+        ends.unobserve(clip);
       }
     }
   };
