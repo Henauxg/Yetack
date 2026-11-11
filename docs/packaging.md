@@ -9,7 +9,7 @@ These were settled with the user on 2026-11-11.
 
 | Question | Decision |
 | --- | --- |
-| License | MPL-2.0 (proposed, waiting for the user's OK) |
+| License | MPL-2.0, with contributions also licensed under MIT OR Apache-2.0, so the project can move to those later |
 | Versions | A version tag per release. The app and the daemon match on the protocol version, and an update is offered on the release version, not the commit. |
 | Linux daemon | One static binary built for musl, x86_64 |
 | Linux app | A `.deb`, built in an Ubuntu container. No AppImage for now. |
@@ -24,6 +24,7 @@ These were settled with the user on 2026-11-11.
 
 - Add `LICENSE` with the MPL-2.0 text, and set `license = "MPL-2.0"` in the root `Cargo.toml`.
 - Every dependency is MIT, Apache-2.0 or similar, which MPL-2.0 code may use. Run `cargo deny check licenses` once to confirm.
+- The copyright holder can release later versions under MIT or Apache-2.0. Versions already released stay available under MPL-2.0. Code from other contributors needs their agreement, so `CONTRIBUTING.md` says that a contribution is licensed under MPL-2.0 and also under MIT OR Apache-2.0.
 
 ### 1.2 Versions
 
@@ -128,6 +129,6 @@ The daemon reads Claude Code's JSON output, whose format can change between vers
 
 ## Open questions
 
-1. The license: MPL-2.0, or another one?
-2. Do any colleagues run servers on ARM (aarch64)?
-3. Which is the oldest distro a colleague's laptop or server runs? It decides the container image for the `.deb`.
+1. Do any colleagues run servers on ARM (aarch64)?
+
+The colleagues' distros are recent, so the `.deb` builds in `ubuntu:22.04`. That covers Ubuntu 22.04 and newer, and Debian 12.
