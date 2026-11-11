@@ -34,7 +34,7 @@ Start the app. The first time, it shows "Where should agents run?":
 - **Run agents in this app**: the agents stop when the app closes, and come back the next time it runs them. This is the only choice on Windows.
 - **Start the background service here** (Linux): the agents keep running after the app closes.
 
-Tick "Use this every time" to skip the question at the next start.
+"Use this every time" is ticked, so the app keeps your choice. Untick it to be asked again at the next start.
 
 ### A server over SSH
 
@@ -74,7 +74,7 @@ Update it by copying the new daemon over the old one, then restarting the servic
 
 ```sh
 scp agents-cockpit-<version>-x86_64-linux devbox:.local/bin/agents-cockpit.new
-ssh devbox 'mv ~/.local/bin/agents-cockpit.new ~/.local/bin/agents-cockpit && systemctl --user restart agents-cockpit'
+ssh devbox 'chmod +x ~/.local/bin/agents-cockpit.new && mv ~/.local/bin/agents-cockpit.new ~/.local/bin/agents-cockpit && systemctl --user restart agents-cockpit'
 ```
 
 The app's "Update" button builds the daemon from source on the server, so it works only on a server with Rust and a checkout of this repository: [docs/development.md](docs/development.md).

@@ -50,7 +50,7 @@ On the Linux machine, with the tag checked out:
 nix develop -c just release
 ```
 
-The recipe refuses a tree with uncommitted changes. It builds `HEAD` inside an Ubuntu 22.04 container ([contrib/release/Dockerfile](../contrib/release/Dockerfile), [contrib/release/build.sh](../contrib/release/build.sh)), writes the Linux files to `dist/`, and writes `SHA256SUMS` for every file there, the Windows zip included. It replaces the Linux files of an earlier run and keeps the zip.
+The recipe refuses a tree with uncommitted changes. It builds `HEAD` inside an Ubuntu 22.04 container ([contrib/release/Dockerfile](../contrib/release/Dockerfile), [contrib/release/build.sh](../contrib/release/build.sh)), writes the Linux files to `dist/`, and writes `SHA256SUMS` for every file there, the Windows zip included. It replaces the Linux files of an earlier run, keeps this version's zip, and refuses to run while `dist/` holds any other file, such as an older zip.
 
 The first run takes about ten minutes. Later runs reuse two Docker volumes, `agents-cockpit-release-registry` and `agents-cockpit-release-target`, and still rebuild every crate of the repository.
 
@@ -67,5 +67,8 @@ The app inside the `.deb` knows the commit it was built from, so its "Update" bu
 Write the release notes in a file outside the repository: what changed, and the Claude Code version the release was tested with (`claude --version`). Then, from the checkout's root:
 
 ```sh
-gh release create v0.1.0 dist/* --title "agents-cockpit 0.1.0" --notes-file <notes file>
+version=0.1.0
+gh release create "v$version" --title "agents-cockpit $version" --notes-file <notes file> \
+    "dist/agents-cockpit-$version-x86_64-linux" "dist/agents-cockpit_${version}_amd64.deb" \
+    "dist/agents-cockpit-desktop-$version-windows-x64.zip" dist/agents-cockpit.service dist/SHA256SUMS
 ```

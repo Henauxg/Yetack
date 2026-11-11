@@ -15,7 +15,7 @@ just check    # the tests, clippy and shellcheck
 
 Without Nix, install stable Rust and the WebKitGTK 4.1 and GTK 3 development packages (on Ubuntu: `libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev`), then `cargo run --release -p cockpit_desktop`.
 
-The daemon and command line build with `cargo install --path crates/agents_cockpit`, which puts `agents-cockpit` in `~/.cargo/bin`.
+The daemon and command line install with `cargo install --path crates/agents_cockpit --root ~/.local`, which puts `agents-cockpit` in `~/.local/bin`, where [contrib/agents-cockpit.service](../contrib/agents-cockpit.service) looks for it.
 
 Releases are built as [releasing.md](./releasing.md) says.
 

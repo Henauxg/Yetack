@@ -41,6 +41,7 @@ These were settled with the user on 2026-11-11.
 | `agents-cockpit-0.1.0-x86_64-linux` | The daemon and CLI, one static binary | `cargo build --release --target x86_64-unknown-linux-musl -p agents_cockpit` inside an `ubuntu:22.04` container |
 | `agents-cockpit_0.1.0_amd64.deb` | The app, the static daemon, the `.desktop` file and the icons | `cargo deb` in the same container |
 | `agents-cockpit-desktop-0.1.0-windows-x64.zip` | `agents-cockpit-desktop.exe` | `cargo build --release -p cockpit_desktop` on the user's Windows laptop |
+| `agents-cockpit.service` | The systemd user service, for a server | copied from [contrib/agents-cockpit.service](contrib/agents-cockpit.service) |
 | `SHA256SUMS` | The checksum of each file | `sha256sum` |
 
 Why musl for the daemon:

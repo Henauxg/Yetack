@@ -93,9 +93,22 @@ release:
         exit 1
     fi
     docker build -q -t agents-cockpit-release contrib/release >/dev/null
-    # A Windows zip copied into dist/ stays, and goes into SHA256SUMS.
+    # This version's Windows zip stays in dist/ and goes into SHA256SUMS. Any other file would be
+    # published with the release, so the recipe refuses it.
+    version=$(cargo pkgid --locked -p agents_cockpit | sed 's/.*[#@]//')
+    : "${version:?could not read the version from Cargo.lock}"
     mkdir -p dist
-    rm -f dist/agents-cockpit-*-x86_64-linux dist/agents-cockpit_*_amd64.deb dist/agents-cockpit.service dist/SHA256SUMS
+    for file in dist/*; do
+        [ -e "$file" ] || continue
+        case "${file#dist/}" in
+            "agents-cockpit-desktop-$version-windows-x64.zip") ;;
+            agents-cockpit-*-x86_64-linux | agents-cockpit_*_amd64.deb | agents-cockpit.service | SHA256SUMS)
+                rm -f "$file" ;;
+            *)
+                echo "$file is not a file of release $version: move it out of dist/ first" >&2
+                exit 1 ;;
+        esac
+    done
     # tar -m dates every file now: with the commit's dates, cargo would reuse the cached builds
     # of a later commit.
     git archive --format=tar HEAD | docker run --rm -i \
