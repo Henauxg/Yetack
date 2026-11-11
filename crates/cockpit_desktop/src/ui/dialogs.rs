@@ -1302,14 +1302,25 @@ fn ResumeList(starting: bool) -> Element {
 /// The full view's frame, which takes the focus so that Ctrl+0 and Ctrl+= reach it.
 const IMAGE_VIEW_FRAME_ID: &str = "image-view-frame";
 
-/// An image over the whole window. Esc, the close button or a click beside it closes it.
+/// What the full view calls an image attached to a message, which has no file.
+const ATTACHED_IMAGE: &str = "Attached image";
+
+/// An image over the whole window. Esc, the close button or a click beside it closes it. An
+/// image file also opens in the file view from there.
 #[component]
 fn ImageViewDialog(view: ImageView) -> Element {
     let cockpit: Cockpit = use_context();
     let ImageView { agent, path, image } = view;
-    let style = PathStyle::of(&path);
-    let full = path.to_string_lossy().into_owned();
-    let name = style.file_name(&full).unwrap_or(&full).to_owned();
+    let full = path
+        .as_ref()
+        .map(|path| path.to_string_lossy().into_owned());
+    let name = match (&path, &full) {
+        (Some(path), Some(full)) => PathStyle::of(path)
+            .file_name(full)
+            .unwrap_or(full)
+            .to_owned(),
+        _ => ATTACHED_IMAGE.to_owned(),
+    };
     rsx! {
         div {
             class: "dialog image-view",
@@ -1319,18 +1330,20 @@ fn ImageViewDialog(view: ImageView) -> Element {
             onmousedown: move |event| event.stop_propagation(),
             onmounted: move |_| bridge::focus_field(IMAGE_VIEW_FRAME_ID),
             div { class: "dialog-head",
-                h2 { class: "image-view-name", title: "{full}", "{name}" }
+                h2 { class: "image-view-name", title: full.clone(), "{name}" }
                 span { class: "key-hint", "Ctrl+wheel zooms" }
-                button {
-                    class: "button",
-                    onclick: move |_| {
-                        let path = path.clone();
-                        cockpit.update(|state| {
-                            state.ui.close_dialog();
-                            actions::open_file(state, agent, path, None);
-                        });
-                    },
-                    "Open in the file view"
+                if let Some(path) = path {
+                    button {
+                        class: "button",
+                        onclick: move |_| {
+                            let path = path.clone();
+                            cockpit.update(|state| {
+                                state.ui.close_dialog();
+                                actions::open_file(state, agent, path, None);
+                            });
+                        },
+                        "Open in the file view"
+                    }
                 }
                 button {
                     class: "icon-button",
