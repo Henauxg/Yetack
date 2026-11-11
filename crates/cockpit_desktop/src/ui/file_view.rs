@@ -15,7 +15,7 @@ use crate::path_style::PathStyle;
 use crate::render::{self, Diff, Language, MAX_RENDERED_LINES, diff_lines};
 use crate::state::{
     FileFreshness, FileRead, FileUpdate, Loadable, Popover, Reread, ViewMode, actions, chat_images,
-    file_edits, file_reread, file_tree, is_markdown,
+    file_edits, file_reread, file_tree, is_markdown, tab_menu,
 };
 use crate::ui::code::{
     CopyButton, CopyLook, LineMarks, LineNumbers, diff_line, diff_row, lines_not_shown,
@@ -251,6 +251,7 @@ fn FileTab(agent: AgentId, path: PathBuf, label: String, full: String, selected:
         }
     };
     let close_on_middle = close.clone();
+    let menu_path = path.clone();
     use_effect(use_reactive!(|selected| {
         if selected {
             bridge::reveal(SHOWN_TAB_ID);
@@ -268,6 +269,15 @@ fn FileTab(agent: AgentId, path: PathBuf, label: String, full: String, selected:
                     event.prevent_default();
                     close_on_middle();
                 }
+            },
+            oncontextmenu: move |event: MouseEvent| {
+                event.prevent_default();
+                let point = event.client_coordinates();
+                // Whole pixels are enough to place a menu.
+                #[expect(clippy::cast_possible_truncation, reason = "a window's pixels fit in i32")]
+                let (x, y) = (point.x.round() as i32, point.y.round() as i32);
+                let path = menu_path.clone();
+                cockpit.update(|state| tab_menu::open(state, agent, &path, x, y));
             },
             button {
                 class: "file-tab-name",

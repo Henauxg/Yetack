@@ -1493,10 +1493,11 @@ pub fn show_read_file(
 pub fn close_file_view(state: &mut AppState, agent: AgentId) {
     state.ui.file_views.remove(&agent);
     state.ui.badge = None;
-    state
-        .ui
-        .popover
-        .take_if(|popover| *popover == Popover::FileList);
+    state.ui.popover.take_if(|popover| match popover {
+        Popover::FileList => true,
+        Popover::TabMenu { agent: shown, .. } => *shown == agent,
+        _ => false,
+    });
     if let Some(entry) = state.agents.get_mut(&agent) {
         entry.files.clear();
         entry.file_freshness = FileFreshness::default();

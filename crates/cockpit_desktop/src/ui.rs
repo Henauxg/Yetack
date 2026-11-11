@@ -34,6 +34,7 @@ mod row_menu;
 mod settings;
 mod sidebar;
 mod splitter;
+mod tab_menu;
 mod tool_rows;
 mod transcript;
 mod waiting_prompts;

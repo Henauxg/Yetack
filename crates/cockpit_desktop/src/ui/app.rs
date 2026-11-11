@@ -27,6 +27,7 @@ use crate::ui::splitter::{
     APP_ID, FILES_WIDTH_PROPERTY, FilesSplitter, SHARE_PROPERTY, SIDEBAR_WIDTH_PROPERTY,
     SidebarSplitter, Splitter, use_splitter,
 };
+use crate::ui::tab_menu::TabMenu;
 use crate::ui::transcript::TranscriptView;
 
 #[component]
@@ -156,6 +157,7 @@ pub fn App() -> Element {
             }
             RowMenu {}
             TreeMenu {}
+            TabMenu {}
             Dialogs {}
         }
     }
