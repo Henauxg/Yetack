@@ -22,13 +22,36 @@ Download the files from the [releases page](https://github.com/Henauxg/agents-co
 | --- | --- | --- |
 | Ubuntu 22.04 or newer, Debian 12 | `agents-cockpit_<version>_amd64.deb` | `sudo apt install ./agents-cockpit_<version>_amd64.deb` |
 | Windows 10 or 11 | `agents-cockpit-desktop-<version>-windows-x64.zip`, if the release has one | Unzip the file and run `agents-cockpit-desktop.exe` |
-| NixOS, or Linux with Nix | None | `nix profile install 'git+ssh://git@github.com/Henauxg/agents-cockpit?ref=refs/tags/v<version>'` |
+| NixOS, or Linux with Nix | None | See [With Nix](#with-nix) |
 | Any other system | None | Build the app: [docs/install-from-source.md](docs/install-from-source.md) |
 
-- The `.deb` installs the app (`agents-cockpit-desktop`) and the daemon with its command line (`agents-cockpit`).
-- The Nix command builds the app from the release's source on your computer, then adds the app, its menu entry and its icon to your profile. The build takes a few minutes. Nix fetches the source with your SSH key, as `git clone` does.
+The `.deb` installs the app (`agents-cockpit-desktop`) and the daemon with its command line (`agents-cockpit`).
 
 Each machine that runs agents also needs Claude Code. Install [Claude Code](https://claude.com/claude-code), then run `claude` once and sign in.
+
+### With Nix
+
+The repository is a Nix flake. Nix builds the app from the release's source on your computer, which takes a few minutes. Nix fetches the source with your SSH key, as `git clone` does. The app, its menu entry and its icon then come with your Nix setup.
+
+To try the app, add it to your user profile. If your Nix does not know `nix profile add`, write `install` in place of `add`.
+
+```sh
+nix profile add 'git+ssh://git@github.com/Henauxg/agents-cockpit?ref=refs/tags/v<version>'
+```
+
+The profile keeps the version you added. For a new release, remove the app with `nix profile remove agents-cockpit`, then add the new version.
+
+To install the app with the rest of your NixOS configuration, add the flake as an input of your system's flake:
+
+```nix
+# In your system's flake.nix
+inputs.agents-cockpit.url = "git+ssh://git@github.com/Henauxg/agents-cockpit?ref=refs/tags/v<version>";
+
+# In your NixOS configuration
+environment.systemPackages = [ inputs.agents-cockpit.packages.${pkgs.system}.default ];
+```
+
+For a new release, change the version in the input, run `nix flake update agents-cockpit`, and rebuild your system. A home-manager configuration takes the same package in `home.packages`.
 
 ## Local or remote agents
 

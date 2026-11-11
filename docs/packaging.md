@@ -99,6 +99,15 @@ The app carries the daemon for Linux x86_64 beside itself (in the `.deb`, under 
 
 An update sends the new binary the same way, to a new file beside the old one. It then runs the waiting and restart half of [contrib/update-daemon.sh](contrib/update-daemon.sh): refuse while agents work, swap, restart, roll back if the new daemon does not start. The build half of the script is only used by machines that build from source. Its exit codes stay as they are.
 
+### Installs that a package manager owns
+
+Nix keeps the app and the daemon in `/nix/store`, which is read-only, and the system's configuration decides their version. The `.deb` puts them in `/usr/bin`, which `apt` owns. The app must never replace a binary that a package manager owns.
+
+1. Each build records how it was installed. The flake sets a value at build time, as it already sets `AGENTS_COCKPIT_COMMIT`. The `.deb` sets another value. A build from source sets none.
+2. A Nix or `.deb` install of the app never updates itself. When a newer release exists, the app says so and gives the command: change the version in the system's flake, `nix profile remove` then `nix profile add`, or `apt install` of the new `.deb`.
+3. The app updates only the installs that the app owns: the Windows zip, a build from source, and a server's daemon in `~/.local/bin`.
+4. Before the app offers "Update" for a server, the app checks where the daemon's binary is. A daemon in `/nix/store` gets "This daemon comes from Nix: update it with your system's configuration" in place of "Update". Today the update script fails on such a daemon at the install, with exit code 4.
+
 ### First-run screen
 
 When no config file exists, the app asks "Where do your agents run?" with two answers: "This computer" and "A server". For a server it runs the steps above, showing each one with its result. This screen gets an HTML mockup first, as every new screen does.
