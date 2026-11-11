@@ -53,7 +53,8 @@ fn app_label(level: NotificationLevel) -> &'static str {
     }
 }
 
-/// The level's bell: crossed out when off, with an amber dot for "needs you" only.
+/// The level's bell: crossed out when off, with a grey "?" for "needs you" only. Neither has a
+/// color, so that a quieter level does not look like a notification that waits.
 #[component]
 pub fn LevelIcon(level: NotificationLevel, size: u16) -> Element {
     match level {
@@ -61,10 +62,10 @@ pub fn LevelIcon(level: NotificationLevel, size: u16) -> Element {
             Icon { kind: IconKind::BellOff, size }
         },
         NotificationLevel::All | NotificationLevel::NeedsYou => rsx! {
-            span { class: "level-bell",
+            span { class: "level-bell", style: "font-size: {size}px",
                 Icon { kind: IconKind::Bell, size }
                 if level == NotificationLevel::NeedsYou {
-                    span { class: "bell-dot", aria_hidden: true }
+                    span { class: "bell-mark", aria_hidden: true, "?" }
                 }
             }
         },

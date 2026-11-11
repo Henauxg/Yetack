@@ -769,6 +769,8 @@ button:disabled {
   flex: none;
   display: inline-flex;
   width: 0;
+  /* Room above the bell for its "?", which `overflow` would cut. */
+  padding-block: 3px;
   overflow: hidden;
   opacity: 0;
   color: var(--dim);
@@ -778,27 +780,24 @@ button:disabled {
 }
 
 .row-bell.on {
-  width: 13px;
+  width: 16px;
   opacity: 1;
   transition:
     width var(--motion-in) var(--ease-out),
     opacity var(--motion-in) var(--ease-out);
 }
 
-/* A bell with an amber dot: notifications only when an agent needs you. */
+/* A bell with a "?": notifications only when an agent needs you. Rust sets the font size to the
+   icon's, so that the mark scales with it. */
 .level-bell {
-  position: relative;
   display: inline-flex;
 }
 
-.bell-dot {
-  position: absolute;
-  top: 0;
-  right: 0;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--amber);
+/* Tucked against the bell's top right, and no smaller than a readable 10px. */
+.bell-mark {
+  align-self: flex-start;
+  margin: -0.25em 0 0 -0.12em;
+  font: 700 max(0.6em, 10px)/1 var(--sans);
 }
 
 /* Narrower than elsewhere, so that the name and three buttons fit the default sidebar. */
@@ -815,14 +814,9 @@ button:disabled {
   display: inline-flex;
 }
 
-.app-bell.off {
-  background: color-mix(in srgb, var(--amber) 14%, transparent);
-  color: var(--amber);
-}
-
-.app-bell.off:hover {
-  background: color-mix(in srgb, var(--amber) 22%, transparent);
-  color: var(--amber);
+/* Grey, so that a muted app does not draw the eye. */
+.app-bell.off:not(:hover, .active) {
+  color: var(--dim);
 }
 
 /* Under the control that opens it. `.popover.menu` would put it above. */
