@@ -112,7 +112,7 @@ pub fn move_in_app_order(state: &mut AppState, agent: AgentId, before: Option<Ag
     keys.insert(at, moved);
     // Agents of a machine the app does not reach now keep their places: the others take the
     // places the order gave them, in their new order.
-    let mut placed = keys.clone().into_iter();
+    let mut placed = keys.iter().cloned();
     let mut order: Vec<AgentKey> = state
         .prefs
         .agent_order

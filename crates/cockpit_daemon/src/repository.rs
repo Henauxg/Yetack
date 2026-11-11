@@ -23,13 +23,19 @@ pub(crate) fn of_folder(folder: &Path) -> Option<String> {
         .find(|ancestor| ancestor.join(GIT_ENTRY).symlink_metadata().is_ok())?;
     let git_dir = git_dir(&checkout.join(GIT_ENTRY))?;
     let config = read_regular(&common_dir(&git_dir).join(CONFIG_FILE))?;
-    let remotes = remote_urls(&config);
-    let url = remotes
+    let remotes = remotes(&config);
+    let remote = remotes
         .iter()
-        .find(|(name, _)| name == ORIGIN)
-        .or_else(|| remotes.first())
-        .map(|(_, url)| url)?;
-    Some(normalized_repository(url))
+        .find(|remote| remote.name == ORIGIN)
+        .or_else(|| remotes.first())?;
+    Some(normalized_repository(&remote.url))
+}
+
+/// A `[remote "<name>"]` section of a git config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Remote {
+    name: String,
+    url: String,
 }
 
 /// The git folder: `.git` itself, or the folder a worktree's `.git` file names.
@@ -71,9 +77,9 @@ fn read_regular(path: &Path) -> Option<String> {
     fs::read_to_string(path).ok()
 }
 
-/// Each `[remote "<name>"]` section's name and `url`, in the file's order.
-fn remote_urls(config: &str) -> Vec<(String, String)> {
-    let mut remotes = Vec::new();
+/// Each remote with a `url`, in the file's order.
+fn remotes(config: &str) -> Vec<Remote> {
+    let mut remotes: Vec<Remote> = Vec::new();
     let mut section: Option<String> = None;
     for line in config.lines() {
         let line = line.trim();
@@ -95,8 +101,12 @@ fn remote_urls(config: &str) -> Vec<(String, String)> {
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
-        if key.trim().eq_ignore_ascii_case("url") && !remotes.iter().any(|(kept, _)| kept == name) {
-            remotes.push((name.clone(), value.trim().to_owned()));
+        if key.trim().eq_ignore_ascii_case("url") && !remotes.iter().any(|kept| kept.name == *name)
+        {
+            remotes.push(Remote {
+                name: name.clone(),
+                url: value.trim().to_owned(),
+            });
         }
     }
     remotes
@@ -148,11 +158,11 @@ mod tests {
         let only_upstream = "[remote \"upstream\"]\n\turl = https://github.com/upstream/billing\n";
 
         assert_eq!(
-            remote_urls(only_upstream),
-            [(
-                "upstream".to_owned(),
-                "https://github.com/upstream/billing".to_owned()
-            )]
+            remotes(only_upstream),
+            [Remote {
+                name: "upstream".to_owned(),
+                url: "https://github.com/upstream/billing".to_owned(),
+            }]
         );
         let temp = tempfile::tempdir().unwrap();
         fs::create_dir_all(temp.path().join(".git")).unwrap();

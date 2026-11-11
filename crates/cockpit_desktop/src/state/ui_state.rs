@@ -717,7 +717,8 @@ impl UiState {
     }
 
     /// Closes every popover and the dialog, or only the start tab's menu or folder list, or the
-    /// Projects tab's rule field, when one is open, and cancels a title edit. Returns whether anything was open.
+    /// Projects tab's rule field, when one is open, and cancels a title edit. Returns whether
+    /// anything was open.
     pub fn close_overlays(&mut self) -> bool {
         if let Some(Dialog::NewAgent(form)) = &mut self.dialog
             && form.tab == NewAgentTab::Start

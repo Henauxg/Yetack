@@ -26,8 +26,8 @@ pub enum SidebarItem {
     Project(ProjectKey),
 }
 
-impl SidebarItem {
-    fn of_group(group: GroupKey) -> Self {
+impl From<GroupKey> for SidebarItem {
+    fn from(group: GroupKey) -> Self {
         match group {
             GroupKey::Machine(machine) => Self::Machine(machine),
             GroupKey::Project(project) => Self::Project(project),
@@ -66,7 +66,7 @@ fn items(state: &AppState) -> Vec<SidebarItem> {
     let mut items = Vec::new();
     for group in groups {
         let folded = grouping::is_folded(state, &group.key);
-        items.push(SidebarItem::of_group(group.key));
+        items.push(SidebarItem::from(group.key));
         if !folded {
             items.extend(
                 group
@@ -104,7 +104,7 @@ fn set_folded(state: &mut AppState, focused: &SidebarItem, fold: bool) -> Option
         SidebarItem::Project(project) => GroupKey::Project(project.clone()),
     };
     grouping::set_folded(state, &group, fold);
-    (fold && matches!(focused, SidebarItem::Agent(_))).then(|| SidebarItem::of_group(group))
+    (fold && matches!(focused, SidebarItem::Agent(_))).then(|| SidebarItem::from(group))
 }
 
 #[cfg(test)]
