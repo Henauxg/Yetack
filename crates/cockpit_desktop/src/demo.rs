@@ -53,9 +53,11 @@ const GPU_HOST: &str = "gpu-box";
 const GPU_FOLDER: &str = "/home/dev/ml/ranking";
 
 /// The agents of this computer the showcase leaves out: the sign-in, the map and the plan.
-const SHOWCASE_LEFT_OUT: [u32; 3] = [SIGN_IN_AGENT, MAP_AGENT, 4];
+const SHOWCASE_LEFT_OUT: [u32; 3] = [SIGN_IN_AGENT, MAP_AGENT, PLAN_AGENT];
 /// The agent that waits for an approval, which the showcase moves to the server.
 const APPROVAL_AGENT: u32 = 3;
+/// The agent that waits for its plan to be approved.
+const PLAN_AGENT: u32 = 4;
 
 const UPDATE_MACHINE: &str = "build-box";
 /// A made-up commit.
@@ -449,7 +451,17 @@ const PLAN_TEXT: &str = "## Add a result cache
 4. Add a test that evaluates the same expression twice.";
 
 /// The sidebar's order, top first, as a user arranged it: neither by id nor by status.
-const SIDEBAR_ORDER: [u32; 9] = [1, SIGN_IN_AGENT, MAP_AGENT, LIVE_AGENT, 4, 2, 5, 3, 6];
+const SIDEBAR_ORDER: [u32; 9] = [
+    1,
+    SIGN_IN_AGENT,
+    MAP_AGENT,
+    LIVE_AGENT,
+    PLAN_AGENT,
+    2,
+    5,
+    APPROVAL_AGENT,
+    6,
+];
 
 /// The room between two agents' positions, as the daemon leaves it.
 const POSITION_STEP: u32 = 1024;
@@ -2325,7 +2337,7 @@ fn approval_agent(now: SystemTime) -> Sample {
 fn plan_agent(now: SystemTime) -> Sample {
     let mut summary = summary(
         SummaryParts {
-            id: 4,
+            id: PLAN_AGENT,
             title: "🧭 Cache layer plan",
             folder: SERVICE_FOLDER,
             status: AgentStatus::NeedsYou,
@@ -3977,10 +3989,8 @@ pub struct ParseError {
 
     #[test]
     fn the_showcase_needs_the_demo() {
-        let arguments = |list: &[&str]| {
-            list.iter()
-                .map(|&argument| argument.to_owned())
-                .collect::<Vec<_>>()
+        let arguments = |list: &[&str]| -> Vec<String> {
+            list.iter().map(|&argument| argument.to_owned()).collect()
         };
 
         assert!(showcase_requested(&arguments(&[DEMO_FLAG, SHOWCASE_FLAG])));
@@ -4018,6 +4028,9 @@ pub struct ParseError {
         assert_eq!(state.machines.this.accounts.len(), 2);
         assert!(titles_start_with_a_letter);
         assert_eq!(no_two_sessions.len(), state.agents.len());
-        assert!(state.agents.contains_key(&AgentId::new(1)));
+        assert!(
+            state.agents.contains_key(&AgentId::new(1)),
+            "the showcase keeps agent 1, which the demo selects and its draft quotes"
+        );
     }
 }

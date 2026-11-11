@@ -24,7 +24,7 @@ test:
 clippy:
     cargo clippy -q --workspace --all-targets -- -D warnings
 
-# Checks the update script and the example start script.
+# Checks the shell scripts in contrib/.
 [unix]
 shellcheck:
     shellcheck -s sh contrib/update-daemon.sh contrib/start-daemon contrib/release/build.sh contrib/readme-screenshot.sh
