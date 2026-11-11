@@ -203,7 +203,7 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   - The sidebar row shows the task progress ("3/5").
   - Subagent tool calls fold under the call that started them.
   - `file:line` references and links to files in agent text open the file view at that line; agent text renders as markdown (headings, lists, tables); bare web addresses are links, and an image of a file shows in the message.
-  - "/" opens a palette of commands and skills, filtered as you type.
+  - "/" opens a palette of commands and skills, filtered as you type: names that start with the text first, then names with a word that starts with it (`/arch` finds `workdocs-archive`), then names that hold it, then descriptions that hold it from the start of a word. A "/" word in the middle of a message, which may be a path, matches only names that start with it.
   - Pasted screenshots show as thumbnails in the composer and in the sent message.
   - Messages Claude has not read yet show in a list pinned above the composer: "Next step" for a sent one, "After this turn" for a queued one, which has Send now and Cancel.
   - Command output collapses after 5 lines, and a message you sent after 8; a failed command has a red dot and its exit code.

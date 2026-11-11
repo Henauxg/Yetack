@@ -317,9 +317,10 @@ fn commands_request(state: &mut AppState, agent: AgentId) -> Option<Outgoing> {
 /// How the palette's query picks commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandMatch {
-    /// The name or the description holds the query.
+    /// The name holds the query, or the description has it from the start of a word.
     Anywhere,
-    /// The name starts with the query: for a "/" word inside a message, which may be a path.
+    /// The name starts with the query: for a "/" word inside a message, which may be a path that
+    /// Enter would otherwise turn into a command.
     NameStart,
 }
 
@@ -331,28 +332,69 @@ pub fn command_match(palette: &Palette) -> CommandMatch {
     }
 }
 
-/// Commands whose name starts with the query come first, then those that contain it in their
-/// name or description.
+/// How well a command matches the query, the best first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum CommandRank {
+    /// `/rev` for `review`.
+    NameStart,
+    /// `/arch` for `workdocs-archive`.
+    NameWordStart,
+    /// `/view` for `review`.
+    InName,
+    /// `/branch` or `the branch` for a command described as "Review the branch".
+    DescriptionWordStart,
+}
+
+/// Whether `query` is in `text` from the start of a word, as `arch` is in `workdocs-archive` and
+/// `review-arch` in `plugin:review-architecture`. The query may run past the word, as `the branch` in "Review the branch".
+fn from_a_word_start(text: &str, query: &str) -> bool {
+    let mut previous: Option<char> = None;
+    for (at, character) in text.char_indices() {
+        let word_start = character.is_alphanumeric()
+            && previous.is_none_or(|previous| !previous.is_alphanumeric());
+        if word_start && text.get(at..).is_some_and(|rest| rest.starts_with(query)) {
+            return true;
+        }
+        previous = Some(character);
+    }
+    false
+}
+
+fn command_rank(command: &SlashCommand, query: &str, how: CommandMatch) -> Option<CommandRank> {
+    let name = command.name.to_lowercase();
+    if name.starts_with(query) {
+        return Some(CommandRank::NameStart);
+    }
+    if how == CommandMatch::NameStart {
+        return None;
+    }
+    if from_a_word_start(&name, query) {
+        return Some(CommandRank::NameWordStart);
+    }
+    if name.contains(query) {
+        return Some(CommandRank::InName);
+    }
+    from_a_word_start(&command.description.to_lowercase(), query)
+        .then_some(CommandRank::DescriptionWordStart)
+}
+
+/// The commands that match the query, the best matches first, each rank in the list's order. A
+/// query inside a description's word, as "arch" in "search", is no match.
 pub fn filtered_commands<'command>(
     commands: &'command [SlashCommand],
     query: &str,
     how: CommandMatch,
 ) -> Vec<&'command SlashCommand> {
-    let query = query.trim_start_matches(COMMAND_PREFIX).to_lowercase();
-    let mut matching: Vec<&SlashCommand> = commands
+    let query = query
+        .trim_start_matches(COMMAND_PREFIX)
+        .trim()
+        .to_lowercase();
+    let mut matching: Vec<(CommandRank, &SlashCommand)> = commands
         .iter()
-        .filter(|command| {
-            let name = command.name.to_lowercase();
-            match how {
-                CommandMatch::Anywhere => {
-                    name.contains(&query) || command.description.to_lowercase().contains(&query)
-                }
-                CommandMatch::NameStart => name.starts_with(&query),
-            }
-        })
+        .filter_map(|command| Some((command_rank(command, &query, how)?, command)))
         .collect();
-    matching.sort_by_key(|command| !command.name.to_lowercase().starts_with(&query));
-    matching
+    matching.sort_by_key(|(rank, _)| *rank);
+    matching.into_iter().map(|(_, command)| command).collect()
 }
 
 fn agent_commands(state: &AppState, agent: AgentId) -> &[SlashCommand] {
@@ -2777,6 +2819,54 @@ mod tests {
         assert_eq!(names("/con", CommandMatch::NameStart), ["context"]);
         assert_eq!(names("/branch", CommandMatch::Anywhere), ["review"]);
         assert!(names("/branch", CommandMatch::NameStart).is_empty());
+    }
+
+    #[test]
+    fn a_word_of_the_name_matches_before_the_description() {
+        let commands = vec![
+            command("deep-research", "Research a topic"),
+            command("find-notes", "Search the notes"),
+            command("plugin:review-architecture", "Evaluate a crate"),
+            command("workdocs-archive", "Copy the docs into the store"),
+            command("archive", "Archive the session"),
+            command("plugin:search", "Find a plugin"),
+        ];
+        let names = |query: &str, how: CommandMatch| -> Vec<&str> {
+            filtered_commands(&commands, query, how)
+                .iter()
+                .map(|command| command.name.as_str())
+                .collect()
+        };
+
+        assert_eq!(
+            names("/arch", CommandMatch::Anywhere),
+            [
+                "archive",
+                "plugin:review-architecture",
+                "workdocs-archive",
+                "deep-research",
+                "plugin:search"
+            ]
+        );
+        assert_eq!(names("/arch", CommandMatch::NameStart), ["archive"]);
+        assert_eq!(names("/ARCH", CommandMatch::Anywhere).len(), 5);
+        assert_eq!(
+            names("/docs-arch", CommandMatch::Anywhere),
+            ["workdocs-archive"]
+        );
+        assert_eq!(
+            names(" the docs ", CommandMatch::Anywhere),
+            ["workdocs-archive"]
+        );
+        assert_eq!(names("/", CommandMatch::Anywhere).len(), commands.len());
+        assert_eq!(
+            names("/review-arch", CommandMatch::Anywhere),
+            ["plugin:review-architecture"]
+        );
+        assert_eq!(
+            names("/sea", CommandMatch::Anywhere),
+            ["plugin:search", "deep-research", "find-notes"]
+        );
     }
 
     #[test]
