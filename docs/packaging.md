@@ -10,7 +10,7 @@ These were settled with the user on 2026-11-11.
 | Question | Decision |
 | --- | --- |
 | License | MPL-2.0, with contributions also licensed under MIT OR Apache-2.0, so the project can move to those later |
-| Versions | A version tag per release. The app and the daemon match on the protocol version, and an update is offered on the release version, not the commit. |
+| Versions | A version tag per release. The daemon always tells the app its release, and the protocol version decides whether they work together. |
 | Linux daemon | One static binary built for musl, x86_64 |
 | Linux app | A `.deb`, built in an Ubuntu container. No AppImage for now. |
 | Windows app | A `.zip`, not signed |
@@ -29,9 +29,10 @@ These were settled with the user on 2026-11-11.
 ### 1.2 Versions
 
 - The workspace version in the root `Cargo.toml` is the release version. A release is a tag `v0.1.0` on `main`.
-- `agents-cockpit --version` already prints it. The app shows it in its About text and in the "No daemon answers" screen.
-- The daemon sends its release version in `Hello`, next to `protocol_version`. The new field is optional, so an older daemon still parses, and the protocol version does not change for it.
-- The app keeps refusing a daemon of another protocol version. It offers "Update" when the daemon's release version is older than its own, instead of comparing commits. A build from source without a tag keeps today's commit comparison ([crates/cockpit_desktop/build.rs](crates/cockpit_desktop/build.rs), [update_script::app_commit](crates/cockpit_desktop/src/update_script.rs)).
+- `agents-cockpit --version` already prints it.
+- The daemon always sends its release version in `Welcome` (`daemon_version`), and the protocol version went from 5 to 6. A daemon of protocol 5 or older refuses the app at `Hello`. The app then offers "Update", as it does for any protocol gap.
+- The Machines dialog shows each daemon's version on its row, and the app's own version in its note.
+- The app offers "Update" only when the protocol versions differ, and the update builds the app's commit ([update_script::app_commit](crates/cockpit_desktop/src/update_script.rs)). Offering an update between two releases of the same protocol comes with step 2, where an update copies a binary.
 
 ### 1.3 Release files
 

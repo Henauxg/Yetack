@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use cockpit_protocol::{
     Catchup, ClientMessage, EventRecord, Frame, FrameError, FrameReader, FrameWriter,
-    PROTOCOL_VERSION, Request, RequestId, ResponseBody, Seq, ServerMessage,
+    PROTOCOL_VERSION, ReleaseVersion, Request, RequestId, ResponseBody, Seq, ServerMessage,
 };
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, BufReader};
 use tokio::sync::{mpsc, oneshot};
@@ -34,6 +34,13 @@ pub struct Connection {
     close: Option<oneshot::Receiver<CloseError>>,
 }
 
+/// What the daemon said when it accepted the connection.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Welcome {
+    pub daemon_version: ReleaseVersion,
+    pub catchup: Catchup,
+}
+
 type Reply = oneshot::Sender<Result<ResponseBody, RequestError>>;
 
 impl Connection {
@@ -45,7 +52,7 @@ impl Connection {
     pub async fn connect(
         transport: &Transport,
         last_seq: Option<Seq>,
-    ) -> Result<(Self, Catchup), ConnectError> {
+    ) -> Result<(Self, Welcome), ConnectError> {
         match transport {
             #[cfg(unix)]
             Transport::Local { socket } => {
@@ -106,7 +113,7 @@ async fn establish<R, W>(
     write: W,
     ssh: Option<SshProcess>,
     last_seq: Option<Seq>,
-) -> Result<(Connection, Catchup), ConnectError>
+) -> Result<(Connection, Welcome), ConnectError>
 where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -114,8 +121,8 @@ where
     let mut reader = FrameReader::new(BufReader::new(read));
     let mut writer = FrameWriter::new(write);
     let handshake = handshake(&mut reader, &mut writer, last_seq);
-    let catchup = match tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake).await {
-        Ok(Ok(catchup)) => catchup,
+    let welcome = match tokio::time::timeout(HANDSHAKE_TIMEOUT, handshake).await {
+        Ok(Ok(welcome)) => welcome,
         Ok(Err(error)) => return Err(explain_with_ssh(error, ssh).await),
         Err(_elapsed) => return Err(ConnectError::Timeout),
     };
@@ -132,14 +139,14 @@ where
         events,
         close: Some(close),
     };
-    Ok((connection, catchup))
+    Ok((connection, welcome))
 }
 
 async fn handshake<R, W>(
     reader: &mut FrameReader<R>,
     writer: &mut FrameWriter<W>,
     last_seq: Option<Seq>,
-) -> Result<Catchup, ConnectError>
+) -> Result<Welcome, ConnectError>
 where
     R: AsyncBufRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -152,10 +159,14 @@ where
     match reader.next_message().await? {
         Some(ServerMessage::Welcome {
             protocol_version,
+            daemon_version,
             catchup,
         }) => {
             if protocol_version == PROTOCOL_VERSION {
-                Ok(catchup)
+                Ok(Welcome {
+                    daemon_version,
+                    catchup,
+                })
             } else {
                 Err(ConnectError::VersionMismatch {
                     daemon: protocol_version,
@@ -364,7 +375,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hello_carries_the_last_seq_and_welcome_gives_the_catchup() {
+    async fn hello_carries_the_last_seq_and_welcome_gives_the_daemons_version_and_catchup() {
         let daemon = TestDaemon::new();
 
         let transport = daemon.transport();
@@ -374,9 +385,15 @@ mod tests {
             daemon.accept_and_welcome(Catchup::Snapshot(test_daemon::snapshot(Some(9)))),
         );
 
-        let (_connection, catchup) = connected.unwrap();
+        let (_connection, welcome) = connected.unwrap();
         assert_eq!(last_seq, Some(Seq::new(5)));
-        assert_eq!(catchup, Catchup::Snapshot(test_daemon::snapshot(Some(9))));
+        assert_eq!(
+            welcome,
+            Welcome {
+                daemon_version: test_daemon::daemon_version(),
+                catchup: Catchup::Snapshot(test_daemon::snapshot(Some(9))),
+            }
+        );
     }
 
     #[tokio::test]
@@ -410,6 +427,7 @@ mod tests {
             peer.hello().await;
             peer.send(&ServerMessage::Welcome {
                 protocol_version: PROTOCOL_VERSION + 1,
+                daemon_version: ReleaseVersion::new("9.0.0".to_owned()),
                 catchup: Catchup::Replay,
             })
             .await;

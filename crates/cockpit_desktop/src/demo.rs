@@ -16,11 +16,11 @@ use cockpit_protocol::{
     ImageMediaType, ItemBody, ItemId, LoadAverage, LoadHistory, MachineLoad, Mark, McpScope,
     McpServer, McpServerStatus, McpTool, McpTransport, OlderItems, PastSession, PendingId,
     PermissionMode, Plan, PlanUsage, Position, ProcessId, Prompt, PromptId, Question,
-    QuestionOption, RateLimitStatus, Request, ResourceUse, ResponseBody, Selection, ServerLoad,
-    ServerPoint, SignIn, SignInWait, SlashCommand, Subagent, SubagentRun, SubagentStatus,
-    SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall,
-    ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt,
-    WaitingState, WindowUsage,
+    QuestionOption, RateLimitStatus, ReleaseVersion, Request, ResourceUse, ResponseBody, Selection,
+    ServerLoad, ServerPoint, SignIn, SignInWait, SlashCommand, Subagent, SubagentRun,
+    SubagentStatus, SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, Timestamp,
+    TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UsageWindow,
+    UserMessage, WaitingPrompt, WaitingState, WindowUsage,
 };
 use serde_json::Value;
 
@@ -34,6 +34,7 @@ use crate::state::no_daemon::{self, Absence};
 use crate::state::{
     AgentEntry, AppState, ConnectionState, Dialog, Loadable, MachineState, file_edits, sending,
 };
+use crate::update_script::APP_VERSION;
 
 /// The command-line flag that starts the demo.
 pub const DEMO_FLAG: &str = "--demo";
@@ -590,6 +591,7 @@ pub fn state(daemon: DaemonLabel) -> AppState {
     let now = SystemTime::now();
     let mut state = AppState::new(daemon);
     state.machines.this.connection = ConnectionState::Connected;
+    state.machines.this.daemon_version = Some(ReleaseVersion::new(APP_VERSION.to_owned()));
     let agents = [
         parser_agent(now),
         question_agent(now),

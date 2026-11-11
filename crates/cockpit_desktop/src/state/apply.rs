@@ -4,7 +4,7 @@
 use std::error::Error;
 use std::time::{Duration, Instant};
 
-use cockpit_client::SessionUpdate;
+use cockpit_client::{SessionUpdate, Welcome};
 use cockpit_protocol::{
     AgentId, AgentStatus, AgentSummary, AnswerState, Catchup, Event, EventRecord, ItemBody,
     SignInWait, Snapshot,
@@ -52,8 +52,12 @@ pub fn apply_update(
             known.connection = ConnectionState::Connecting { attempt };
             Vec::new()
         }
-        SessionUpdate::Connected(catchup) => {
+        SessionUpdate::Connected(Welcome {
+            daemon_version,
+            catchup,
+        }) => {
             known.connection = ConnectionState::Connected;
+            known.daemon_version = Some(daemon_version);
             // The daemon may have been updated.
             known.folders_unknown = false;
             daemon_update::connected(state, machine);
@@ -450,14 +454,17 @@ mod tests {
 
     use cockpit_client::{ConnectError, SessionError};
     use cockpit_protocol::{
-        AgentDetails, CostUsd, Image, ImageMediaType, ItemId, PendingId, PlanUsage, Question, Seq,
-        Settings, TaskProgress, TokenUsage, TranscriptItem, TurnEnd, TurnOutcome,
+        AgentDetails, CostUsd, Image, ImageMediaType, ItemId, PendingId, PlanUsage, Question,
+        ReleaseVersion, Seq, Settings, TaskProgress, TokenUsage, TranscriptItem, TurnEnd,
+        TurnOutcome,
     };
 
     use super::*;
     use crate::daemon_label::DaemonLabel;
     use crate::prefs::StatusFilter;
-    use crate::state::app_state::tests::{placed, state_with, summary};
+    use crate::state::app_state::tests::{
+        DAEMON_VERSION, connected_update, placed, state_with, summary,
+    };
     use crate::state::ui_state::{Block, Dialog, PaletteOrigin, Popover, TitleEdit, TitlePlace};
     use crate::state::{MachineState, agent_map, chat_images};
 
@@ -535,7 +542,7 @@ mod tests {
         apply_update(
             &mut state,
             &mut Drafts::default(),
-            SessionUpdate::Connected(Catchup::Snapshot(Snapshot {
+            connected_update(Catchup::Snapshot(Snapshot {
                 agents: vec![remote],
                 plan_usage: PlanUsage::default(),
                 settings: Settings::default(),
@@ -1433,10 +1440,14 @@ mod tests {
         apply_update(
             &mut state,
             &mut Drafts::default(),
-            SessionUpdate::Connected(Catchup::Replay),
+            connected_update(Catchup::Replay),
             now,
             MachineId::THIS,
         );
         assert!(state.machines.this.is_connected());
+        assert_eq!(
+            state.machines.this.daemon_version,
+            Some(ReleaseVersion::new(DAEMON_VERSION.to_owned()))
+        );
     }
 }

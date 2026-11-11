@@ -103,8 +103,8 @@ pub(crate) async fn run(target: &Target, command: Command) -> anyhow::Result<()>
 }
 
 async fn list(transport: &Transport) -> anyhow::Result<()> {
-    let (_, catchup) = Connection::connect(transport, None).await?;
-    let Catchup::Snapshot(snapshot) = catchup else {
+    let (_, welcome) = Connection::connect(transport, None).await?;
+    let Catchup::Snapshot(snapshot) = welcome.catchup else {
         bail!("the daemon sent no snapshot");
     };
     let header = format!(

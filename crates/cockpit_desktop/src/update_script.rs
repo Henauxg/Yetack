@@ -25,6 +25,9 @@ const OUTPUT_PAUSE: Duration = Duration::from_millis(150);
 /// The most lines shown at once.
 const OUTPUT_BATCH: usize = 256;
 
+/// The release this app was built from.
+pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// The commit this app was built from, when its build knew it. A Nix build of a tree with
 /// uncommitted changes sets it empty.
 pub fn app_commit() -> Option<&'static str> {

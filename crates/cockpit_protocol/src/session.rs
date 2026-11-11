@@ -4,6 +4,8 @@
 //! 2. The daemon answers `Welcome`, or `Refused` when the protocol versions differ.
 //! 3. The client sends `Request`s; the daemon sends `Response`s and `Event`s, in any order.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 use crate::account::Account;
@@ -16,7 +18,31 @@ use crate::settings::Settings;
 use crate::usage::{AccountPlanUsage, PlanUsage};
 
 /// Changes whenever a message changes shape. Client and daemon speak only the same version.
-pub const PROTOCOL_VERSION: u16 = 5;
+pub const PROTOCOL_VERSION: u16 = 6;
+
+/// A program's release, its Cargo version: "0.1.0". Every build between two releases carries the
+/// earlier one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ReleaseVersion(String);
+
+impl ReleaseVersion {
+    #[must_use]
+    pub fn new(raw: String) -> Self {
+        Self(raw)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ReleaseVersion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -37,6 +63,7 @@ pub enum ClientMessage {
 pub enum ServerMessage {
     Welcome {
         protocol_version: u16,
+        daemon_version: ReleaseVersion,
         catchup: Catchup,
     },
     /// The daemon closes the connection after it.

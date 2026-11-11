@@ -5,7 +5,7 @@
 //! This computer is machine 0, whose agents keep the daemon's ids. The connection to each machine
 //! translates the ids of what it sends and receives.
 
-use cockpit_client::SessionUpdate;
+use cockpit_client::{SessionUpdate, Welcome};
 use cockpit_protocol::{AgentId, Catchup, Request, ResponseBody};
 use serde::Deserialize;
 
@@ -64,9 +64,15 @@ impl MachineId {
     pub fn update_to_app(self, update: &mut SessionUpdate) {
         let map = |agent| self.app_agent(agent);
         match update {
-            SessionUpdate::Connected(Catchup::Snapshot(snapshot)) => snapshot.map_agents(map),
+            SessionUpdate::Connected(Welcome {
+                catchup: Catchup::Snapshot(snapshot),
+                ..
+            }) => snapshot.map_agents(map),
             SessionUpdate::Event(record) => record.event.map_agents(map),
-            SessionUpdate::Connected(Catchup::Replay)
+            SessionUpdate::Connected(Welcome {
+                catchup: Catchup::Replay,
+                ..
+            })
             | SessionUpdate::Connecting { .. }
             | SessionUpdate::Disconnected { .. } => {}
         }

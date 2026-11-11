@@ -11,9 +11,13 @@ use crate::state::daemon_update::{self, UpdateLine};
 use crate::state::machines::{self, MachineChange};
 use crate::state::{AppState, ConnectionState, MachinesView};
 use crate::ui::icons::{Icon, IconKind};
+use crate::update_script::APP_VERSION;
 
 /// What the sidebar and the dialogs call this computer, unless its daemon runs over SSH.
 pub const THIS_COMPUTER: &str = "This computer";
+
+/// Between the parts of a machine row's detail line.
+const DETAIL_SEPARATOR: &str = " · ";
 
 /// A machine a dialog offers to pick.
 #[derive(Debug, Clone, PartialEq)]
@@ -84,6 +88,13 @@ fn rows(state: &AppState) -> Vec<MachineRow> {
                 DaemonPlace::Socket => "Agents run in the daemon on this computer.",
                 DaemonPlace::Ssh => "Over SSH",
             };
+            // A version from an earlier connection may no longer be the one the server runs.
+            let detail = match &known.daemon_version {
+                Some(version) if known.is_connected() => {
+                    format!("{detail}{DETAIL_SEPARATOR}version {version}")
+                }
+                Some(_) | None => detail.to_owned(),
+            };
             let trouble = match &known.connection {
                 ConnectionState::Disconnected { error, .. } => Some(error.clone()),
                 ConnectionState::Connecting { .. }
@@ -98,7 +109,7 @@ fn rows(state: &AppState) -> Vec<MachineRow> {
             MachineRow {
                 machine,
                 name,
-                detail: detail.to_owned(),
+                detail,
                 trouble,
                 update: daemon_update::update_line(known),
                 agents,
@@ -139,7 +150,7 @@ pub fn MachinesDialog(view: MachinesView) -> Element {
             }
             div { class: "dialog-body",
                 span { class: "dialog-note",
-                    "The app reaches each machine at once. Its agents show in a panel of their own in the sidebar."
+                    "The app reaches each machine at once. Its agents show in a panel of their own in the sidebar. This app is version {APP_VERSION}."
                 }
                 div { class: "machine-rows",
                     for row in rows {
@@ -213,7 +224,7 @@ fn MachineRowView(row: MachineRow) -> Element {
         div { class: if trouble.is_some() || update.is_some() { "machine-row down" } else { "machine-row" },
             div { class: "machine-row-main",
                 span { class: "machine-row-name", "{name}" }
-                span { class: "machine-row-detail", "{detail} · {agents_text}" }
+                span { class: "machine-row-detail", "{detail}{DETAIL_SEPARATOR}{agents_text}" }
                 if let Some(update) = update {
                     span { class: "machine-row-detail", "{update.text}" }
                 } else if let Some(trouble) = &trouble {
@@ -248,6 +259,10 @@ fn MachineRowView(row: MachineRow) -> Element {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
+    use cockpit_protocol::ReleaseVersion;
+
     use super::*;
     use crate::daemon_label::DaemonLabel;
     use crate::state::MachineState;
@@ -278,6 +293,39 @@ mod tests {
             [
                 ("build-box".to_owned(), IconKind::Server),
                 ("devbox".to_owned(), IconKind::Server),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_row_shows_the_version_of_a_daemon_it_is_connected_to() {
+        let mut state = AppState::new(DaemonLabel::in_app());
+        let machine = |host: &str, connection: ConnectionState| {
+            let mut known = MachineState::new(DaemonLabel::ssh(host.to_owned()));
+            known.daemon_version = Some(ReleaseVersion::new("0.4.2".to_owned()));
+            known.connection = connection;
+            known
+        };
+        let gone = ConnectionState::Disconnected {
+            error: "ssh: connection refused".to_owned(),
+            retry_at: Instant::now(),
+        };
+        let machines = [
+            machine("devbox", ConnectionState::Connected),
+            machine("old-box", gone),
+        ];
+        for (id, known) in (1..).zip(machines) {
+            state.machines.others.insert(MachineId::new(id), known);
+        }
+
+        let details: Vec<String> = rows(&state).into_iter().map(|row| row.detail).collect();
+
+        assert_eq!(
+            details,
+            [
+                "Agents run in this app. They stop when it closes.",
+                "Over SSH · version 0.4.2",
+                "Over SSH",
             ]
         );
     }

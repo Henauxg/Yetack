@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use cockpit_protocol::{
     Catchup, ClientMessage, ErrorBody, ErrorCode, Frame, FrameError, FrameReader, PROTOCOL_VERSION,
-    RequestId, ResponseResult, Seq, ServerMessage,
+    ReleaseVersion, RequestId, ResponseResult, Seq, ServerMessage,
 };
 use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use tokio::sync::{mpsc, oneshot};
@@ -74,6 +74,7 @@ where
     let (frames, replay, catchup) = join(hub, last_seq).await?;
     let welcome = ServerMessage::Welcome {
         protocol_version: PROTOCOL_VERSION,
+        daemon_version: ReleaseVersion::new(env!("CARGO_PKG_VERSION").to_owned()),
         catchup,
     };
     send(writer, &welcome).await?;
