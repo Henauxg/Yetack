@@ -404,9 +404,32 @@ pub fn kept_id(state: &mut AppState, key: &ProjectKey) -> Option<ProjectId> {
     }
 }
 
+/// Puts a started agent in the project picked in the new agent dialog. The rules need its
+/// summary to tell whether the pick is a choice to keep, so a pick for an agent whose summary
+/// has not arrived waits for it (`apply_pick`).
+pub fn pick_for_new_agent(state: &mut AppState, agent: AgentId, project: ProjectKey) {
+    if state.agents.contains_key(&agent) {
+        move_agent(state, agent, &project);
+    } else {
+        state.ui.picked_projects.insert(agent, project);
+    }
+}
+
+/// Applies the dialog's pick for an agent whose summary just arrived.
+pub fn apply_pick(state: &mut AppState, agent: AgentId) {
+    if let Some(project) = state.ui.picked_projects.remove(&agent) {
+        move_agent(state, agent, &project);
+    }
+}
+
 /// Moves the agent to `target`, which keeps a temporary project. When the rules would put the
 /// agent there anyway, no choice is kept, so that a later rule change moves it again.
 pub fn move_agent(state: &mut AppState, agent: AgentId, target: &ProjectKey) {
+    if let ProjectKey::Kept(id) = target
+        && kept(state, *id).is_none()
+    {
+        return;
+    }
     forget_agent(state, agent);
     let Some(key) = grouping::agent_key(state, agent) else {
         return;
@@ -525,14 +548,14 @@ fn kept_mut(state: &mut AppState, id: ProjectId) -> Option<&mut Project> {
 mod tests {
     use std::path::PathBuf;
 
-    use cockpit_protocol::{AgentStatus, Method, ResponseBody};
+    use cockpit_protocol::{AgentStatus, Event, EventRecord, Method, ResponseBody, Seq};
 
     use super::*;
     use crate::prefs::GroupBy;
-    use crate::state::actions;
     use crate::state::app_state::tests::{state_with, summary};
     use crate::state::drafts::Drafts;
     use crate::state::requests::{self, Purpose};
+    use crate::state::{actions, apply};
 
     const BILLING: &str = "github.com/acme/billing";
     const GATEWAY: &str = "github.com/acme/api-gateway";
@@ -680,27 +703,63 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_started_agent_joins_the_project_picked_in_the_dialog() {
+    /// Starts agent 9 in the billing repository with `picked` from the dialog, its start's
+    /// answer arriving before its summary or after it.
+    fn start_with_pick(picked: &str, answer_first: bool) -> AppState {
         let mut state = agents();
         let started = AgentId::new(9);
-
-        requests::apply_response(
-            &mut state,
-            &mut Drafts::default(),
-            Method::AgentStart,
-            Purpose::Start {
-                project: Some(ProjectKey::Repository(repo(GATEWAY))),
-            },
-            Ok(ResponseBody::AgentStarted { agent: started }),
-            MachineId::THIS,
-        );
         let mut agent = summary(9, AgentStatus::Idle);
         agent.repository = Some(repo(BILLING));
-        state.agents.insert(started, AgentEntry::new(agent));
+        let added = EventRecord {
+            seq: Seq::new(1),
+            event: Event::AgentAdded(agent),
+        };
+        let answer = |state: &mut AppState| {
+            requests::apply_response(
+                state,
+                &mut Drafts::default(),
+                Method::AgentStart,
+                Purpose::Start {
+                    project: Some(ProjectKey::Repository(repo(picked))),
+                },
+                Ok(ResponseBody::AgentStarted { agent: started }),
+                MachineId::THIS,
+            );
+        };
+        if answer_first {
+            answer(&mut state);
+        }
+        apply::apply(&mut state, &mut Drafts::default(), added, MachineId::THIS);
+        if !answer_first {
+            answer(&mut state);
+        }
+        state
+    }
 
-        let gateway = keep(&mut state, &repo(GATEWAY));
-        assert_eq!(project(&state, 9), ProjectKey::Kept(gateway));
+    #[test]
+    fn a_started_agent_joins_the_project_picked_in_the_dialog() {
+        for answer_first in [true, false] {
+            let mut state = start_with_pick(GATEWAY, answer_first);
+
+            let gateway = keep(&mut state, &repo(GATEWAY));
+            assert_eq!(project(&state, 9), ProjectKey::Kept(gateway));
+            assert!(state.ui.picked_projects.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_dialog_pick_the_rules_agree_with_is_no_choice_whichever_message_comes_first() {
+        for answer_first in [true, false] {
+            let state = start_with_pick(BILLING, answer_first);
+
+            let billing = state.prefs.projects.list[0].id;
+            assert_eq!(
+                project(&state, 9),
+                ProjectKey::Kept(billing),
+                "{answer_first}"
+            );
+            assert!(state.prefs.projects.agents.is_empty(), "{answer_first}");
+        }
     }
 
     #[test]

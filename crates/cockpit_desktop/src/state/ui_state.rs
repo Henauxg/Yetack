@@ -495,6 +495,9 @@ pub struct UiState {
     pub folded_machines: BTreeSet<MachineId>,
     /// The projects whose agents the sidebar folds under their header.
     pub folded_projects: BTreeSet<ProjectKey>,
+    /// The project picked in the new agent dialog for a started agent whose summary has not
+    /// arrived yet.
+    pub picked_projects: BTreeMap<AgentId, ProjectKey>,
     pub window_focused: bool,
     /// The floating blocks shown unfolded.
     pub open_blocks: BTreeSet<Block>,
@@ -538,6 +541,7 @@ impl Default for UiState {
             unread: BTreeSet::new(),
             folded_machines: BTreeSet::new(),
             folded_projects: BTreeSet::new(),
+            picked_projects: BTreeMap::new(),
             window_focused: true,
             open_blocks: BTreeSet::from([Block::Tasks, Block::Messages, Block::Running]),
             badge: None,

@@ -654,7 +654,7 @@ pub fn apply_response(
         Purpose::Start { project } => match result {
             Ok(ResponseBody::AgentStarted { agent }) => {
                 if let Some(project) = project {
-                    projects::move_agent(state, agent, &project);
+                    projects::pick_for_new_agent(state, agent, project);
                 }
                 actions::select_agent(state, agent);
                 state.ui.new_agent_started();

@@ -199,6 +199,16 @@ pub fn apply_catchup(
         .retain(|agent, _| agents.contains_key(agent));
     drafts.retain_agents(|agent| agents.contains_key(&agent));
     forget_unlisted_agents(state, machine);
+    let arrived: Vec<AgentId> = state
+        .ui
+        .picked_projects
+        .keys()
+        .copied()
+        .filter(|agent| state.agents.contains_key(agent))
+        .collect();
+    for agent in arrived {
+        projects::apply_pick(state, agent);
+    }
     file_tree::keep_listed_panes(state, machine);
     state.fix_selection();
     actions::follow_hidden_title_edit(state, drafts);
@@ -248,7 +258,9 @@ pub fn apply(
     match record.event {
         Event::AgentAdded(summary) if state.ui.closing.contains(&summary.id) => None,
         Event::AgentAdded(summary) => {
-            state.agents.insert(summary.id, AgentEntry::new(summary));
+            let agent = summary.id;
+            state.agents.insert(agent, AgentEntry::new(summary));
+            projects::apply_pick(state, agent);
             if state.ui.selected.is_none() {
                 state.fix_selection();
             }
@@ -266,6 +278,7 @@ pub fn apply(
             file_tree::forget_pane(state, agent);
             grouping::forget(state, agent);
             projects::forget_agent(state, agent);
+            state.ui.picked_projects.remove(&agent);
             state.ui.closing.remove(&agent);
             if state.ui.selected == Some(agent) {
                 state.ui.selected = None;
