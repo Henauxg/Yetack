@@ -952,7 +952,7 @@ fn SubagentDetails(
                             QuestionCard { key: "{waiting_item.id.get()}", agent, item: waiting_item.id, question }
                         },
                         ItemBody::Plan(plan) => rsx! {
-                            PlanCard { key: "{waiting_item.id.get()}", agent, folder: folder.clone(), plan }
+                            PlanCard { key: "{waiting_item.id.get()}", agent, folder: folder.clone(), plan, item: Some(waiting_item.id) }
                         },
                         _ => rsx! {},
                     }

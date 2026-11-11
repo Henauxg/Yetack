@@ -2,11 +2,15 @@
 //! sends a file to the file view (`agent.read_file`), and decides which files it reads. An agent
 //! keeps the images on screen, and its last [`KEPT`] others, so that the chat does not ask again
 //! for those it shows.
+//!
+//! Each message reads its own copy: agents often write a new picture over the same path, such as
+//! a screenshot, and a later message showing that path is about the new one. A message keeps the
+//! copy it first read while it is kept.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use cockpit_protocol::{AgentId, Image, ReadFileParams, Request};
+use cockpit_protocol::{AgentId, Image, ItemId, ReadFileParams, Request};
 
 use super::app_state::{AgentEntry, AppState, Loadable};
 use super::requests::{Outgoing, Purpose};
@@ -16,35 +20,49 @@ use crate::machine::MachineId;
 /// An image is up to 8 MiB: a few dozen would hold hundreds of megabytes.
 const KEPT: usize = 16;
 
+/// An image file as one message shows it: `item` is the chat's message, `None` for text outside
+/// the chat, such as a plan, which shares one copy per path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageKey {
+    item: Option<ItemId>,
+    path: PathBuf,
+}
+
+impl ImageKey {
+    pub fn new(item: Option<ItemId>, path: PathBuf) -> Self {
+        Self { item, path }
+    }
+}
+
 /// An image the agent's messages show. Shared, so that a view can hold it without a copy.
 #[derive(Debug, Clone, PartialEq)]
 pub struct KeptImage {
-    path: PathBuf,
+    key: ImageKey,
     image: Loadable<Arc<Image>>,
     /// The places on screen that show it.
     shown: usize,
 }
 
-/// The image at `path` in the agent's messages, once a message asked for it.
-pub fn image(state: &AppState, agent: AgentId, path: &Path) -> Option<Loadable<Arc<Image>>> {
+/// The image of `key` in the agent's messages, once a message asked for it.
+pub fn image(state: &AppState, agent: AgentId, key: &ImageKey) -> Option<Loadable<Arc<Image>>> {
     let entry = state.agents.get(&agent)?;
     entry
         .images
         .iter()
-        .find(|kept| kept.path == path)
+        .find(|kept| kept.key == *key)
         .map(|kept| kept.image.clone())
 }
 
 /// A place on screen shows the image: the next requests ask the daemon for it, once.
-pub fn show(state: &mut AppState, agent: AgentId, path: &Path) {
+pub fn show(state: &mut AppState, agent: AgentId, key: &ImageKey) {
     let Some(entry) = state.agents.get_mut(&agent) else {
         return;
     };
-    let index = entry.images.iter().position(|kept| kept.path == path);
+    let index = entry.images.iter().position(|kept| kept.key == *key);
     let mut kept = index
         .and_then(|index| entry.images.remove(index))
         .unwrap_or_else(|| KeptImage {
-            path: path.to_owned(),
+            key: key.clone(),
             image: Loadable::NotRequested,
             shown: 0,
         });
@@ -55,11 +73,11 @@ pub fn show(state: &mut AppState, agent: AgentId, path: &Path) {
 
 /// A place on screen no longer shows the image. One that failed goes, so that showing it again
 /// asks again.
-pub fn hide(state: &mut AppState, agent: AgentId, path: &Path) {
+pub fn hide(state: &mut AppState, agent: AgentId, key: &ImageKey) {
     let Some(entry) = state.agents.get_mut(&agent) else {
         return;
     };
-    let Some(index) = entry.images.iter().position(|kept| kept.path == path) else {
+    let Some(index) = entry.images.iter().position(|kept| kept.key == *key) else {
         return;
     };
     let Some(kept) = entry.images.get_mut(index) else {
@@ -89,13 +107,13 @@ pub(super) fn requests(entry: &mut AgentEntry, agent: AgentId, requests: &mut Ve
     for kept in &mut entry.images {
         if kept.image == Loadable::NotRequested {
             kept.image = Loadable::Loading;
-            let path = kept.path.clone();
+            let key = kept.key.clone();
             requests.push(Outgoing {
                 request: Request::AgentReadFile(ReadFileParams {
                     agent,
-                    path: path.clone(),
+                    path: key.path.clone(),
                 }),
-                purpose: Purpose::ChatImage { agent, path },
+                purpose: Purpose::ChatImage { agent, key },
                 to: MachineId::THIS,
             });
         }
@@ -106,13 +124,13 @@ pub(super) fn requests(entry: &mut AgentEntry, agent: AgentId, requests: &mut Ve
 pub(super) fn answered(
     state: &mut AppState,
     agent: AgentId,
-    path: &Path,
+    key: &ImageKey,
     answer: Result<Image, String>,
 ) {
     let held = state
         .agents
         .get_mut(&agent)
-        .and_then(|entry| entry.images.iter_mut().find(|kept| kept.path == path));
+        .and_then(|entry| entry.images.iter_mut().find(|kept| kept.key == *key));
     if let Some(kept) = held {
         kept.image = match answer {
             Ok(image) => Loadable::Loaded(Arc::new(image)),
@@ -138,7 +156,7 @@ fn open(state: &mut AppState, agent: AgentId, path: Option<PathBuf>, image: Arc<
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::{AgentStatus, ImageMediaType};
+    use cockpit_protocol::{AgentStatus, ImageMediaType, ItemId};
 
     use super::*;
     use crate::state::Popover;
@@ -205,12 +223,13 @@ mod tests {
     fn an_image_is_asked_for_once_and_then_shown() {
         let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
         let path = PathBuf::from("/tmp/shots/mockup.png");
+        let key = ImageKey::new(Some(ItemId::new(7)), path.clone());
 
-        show(&mut state, agent(), &path);
-        show(&mut state, agent(), &path);
+        show(&mut state, agent(), &key);
+        show(&mut state, agent(), &key);
         let first = asked(&mut state);
         let second = asked(&mut state);
-        answered(&mut state, agent(), &path, Ok(png()));
+        answered(&mut state, agent(), &key, Ok(png()));
 
         assert!(matches!(
             first.as_slice(),
@@ -221,7 +240,7 @@ mod tests {
         ));
         assert!(second.is_empty());
         assert_eq!(
-            image(&state, agent(), &path),
+            image(&state, agent(), &key),
             Some(Loadable::Loaded(Arc::new(png())))
         );
     }
@@ -230,13 +249,14 @@ mod tests {
     fn a_refused_image_keeps_the_daemons_sentence_and_is_asked_again_once_hidden() {
         let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
         let path = PathBuf::from("/etc/secret.png");
-        show(&mut state, agent(), &path);
+        let key = ImageKey::new(None, path);
+        show(&mut state, agent(), &key);
         asked(&mut state);
 
-        answered(&mut state, agent(), &path, Err("Not readable".to_owned()));
-        let refused = image(&state, agent(), &path);
-        hide(&mut state, agent(), &path);
-        show(&mut state, agent(), &path);
+        answered(&mut state, agent(), &key, Err("Not readable".to_owned()));
+        let refused = image(&state, agent(), &key);
+        hide(&mut state, agent(), &key);
+        show(&mut state, agent(), &key);
 
         assert_eq!(refused, Some(Loadable::Failed("Not readable".to_owned())));
         assert_eq!(asked(&mut state).len(), 1);
@@ -246,7 +266,8 @@ mod tests {
     #[test]
     fn the_images_on_screen_stay_and_only_the_last_others_are_kept() {
         let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
-        let path = |index: usize| PathBuf::from(format!("/tmp/shots/{index}.png"));
+        let path =
+            |index: usize| ImageKey::new(None, PathBuf::from(format!("/tmp/shots/{index}.png")));
 
         for index in 0..=KEPT {
             show(&mut state, agent(), &path(index));
@@ -260,5 +281,35 @@ mod tests {
         assert_eq!(image(&state, agent(), &path(0)), None);
         assert!(image(&state, agent(), &path(1)).is_some());
         assert!(image(&state, agent(), &path(KEPT)).is_some());
+    }
+
+    /// The agent wrote a new screenshot over the same file between two messages.
+    #[test]
+    fn each_message_reads_its_own_copy_of_a_path() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        let path = PathBuf::from("/tmp/shots/screen.png");
+        let first = ImageKey::new(Some(ItemId::new(3)), path.clone());
+        let later = ImageKey::new(Some(ItemId::new(9)), path.clone());
+        let new_png = Image {
+            media_type: ImageMediaType::Png,
+            data: "iVBORw0KGgoAAAA=".to_owned(),
+        };
+        show(&mut state, agent(), &first);
+        asked(&mut state);
+        answered(&mut state, agent(), &first, Ok(png()));
+
+        show(&mut state, agent(), &later);
+        let again = asked(&mut state);
+        answered(&mut state, agent(), &later, Ok(new_png.clone()));
+
+        assert_eq!(again.len(), 1);
+        assert_eq!(
+            image(&state, agent(), &first),
+            Some(Loadable::Loaded(Arc::new(png())))
+        );
+        assert_eq!(
+            image(&state, agent(), &later),
+            Some(Loadable::Loaded(Arc::new(new_png)))
+        );
     }
 }

@@ -881,10 +881,10 @@ pub fn ItemView(
     let id = item.id;
     match item.body {
         ItemBody::UserMessage(message) => rsx! {
-            UserBubble { agent, folder, message }
+            UserBubble { agent, folder, message, item: Some(id) }
         },
         ItemBody::AssistantText { markdown } => rsx! {
-            MarkdownView { agent, folder, markdown }
+            MarkdownView { agent, folder, markdown, item: Some(id) }
         },
         ItemBody::Thinking { text } => rsx! {
             ThinkingView { text }
@@ -905,7 +905,7 @@ pub fn ItemView(
             QuestionCard { agent, item: id, question }
         },
         ItemBody::Plan(plan) => rsx! {
-            PlanCard { agent, folder, plan }
+            PlanCard { agent, folder, plan, item: Some(id) }
         },
         ItemBody::TurnEnd(end) => rsx! {
             TurnEndView { end }
@@ -926,7 +926,13 @@ pub fn ItemView(
 /// its first screen lines until "Show more", as a command's output does. A click on an attached
 /// image shows it over the whole window.
 #[component]
-fn UserBubble(agent: AgentId, folder: PathBuf, message: UserMessage) -> Element {
+fn UserBubble(
+    agent: AgentId,
+    folder: PathBuf,
+    message: UserMessage,
+    /// The message in the chat, `None` for one on its way.
+    item: Option<ItemId>,
+) -> Element {
     let cockpit: Cockpit = use_context();
     let mut unfolded = use_signal(|| false);
     let open = unfolded();
@@ -955,7 +961,7 @@ fn UserBubble(agent: AgentId, folder: PathBuf, message: UserMessage) -> Element 
                     class: "{USER_BUBBLE_CLASS} {MESSAGE_ROW_CLASS}{state}",
                     style: "{FOLD_LINES_PROPERTY}: {MESSAGE_FOLD_LINES}",
                     div { class: MESSAGE_CLIP_CLASS,
-                        MarkdownView { agent, folder, markdown: text }
+                        MarkdownView { agent, folder, markdown: text, item }
                     }
                     button {
                         class: FOLD_BUTTON_CLASS,

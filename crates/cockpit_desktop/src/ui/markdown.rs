@@ -2,16 +2,17 @@
 //! as links into the file view, and Markdown images of files shown in place.
 
 use std::cell::RefCell;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 
-use cockpit_protocol::AgentId;
+use cockpit_protocol::{AgentId, ItemId};
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
 use crate::render::{self, Block, FileRef, Inline, parse_markdown, parse_markdown_file};
-use crate::state::{Loadable, actions, chat_images};
+use crate::state::chat_images::{self, ImageKey};
+use crate::state::{Loadable, actions};
 use crate::ui::code::CodeBlock;
 use crate::ui::icons::{Icon, IconKind};
 use crate::{bridge, browser};
@@ -24,41 +25,52 @@ const SHORT_CELL_CHARS: usize = 30;
 pub const MARKDOWN_CLASS: &str = "markdown";
 
 /// `folder` is the agent's, against which relative paths in the text resolve. `file_folder`,
-/// absolute, holds the markdown file the text comes from, where its relative links start.
+/// absolute, holds the markdown file the text comes from, where its relative links start. `item`
+/// is the chat's message that holds the text: an image of a file it shows is read for that message,
+/// so that a later message showing the same path, which the agent may have written again, reads it
+/// again.
 #[component]
 pub fn MarkdownView(
     agent: AgentId,
     folder: PathBuf,
     markdown: String,
     file_folder: Option<PathBuf>,
+    item: Option<ItemId>,
 ) -> Element {
     let blocks = match &file_folder {
         Some(file_folder) => parse_markdown_file(&markdown, &folder, file_folder),
         None => parse_markdown(&markdown, &folder),
     };
     rsx! {
-        div { class: MARKDOWN_CLASS, {blocks_view(agent, &blocks)} }
+        div { class: MARKDOWN_CLASS, {blocks_view(Source { agent, item }, &blocks)} }
     }
 }
 
-fn blocks_view(agent: AgentId, blocks: &[Block]) -> Element {
+/// Where the rendered text comes from: its agent, and its message in the chat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Source {
+    agent: AgentId,
+    item: Option<ItemId>,
+}
+
+fn blocks_view(source: Source, blocks: &[Block]) -> Element {
     rsx! {
         for block in blocks.iter() {
-            {block_view(agent, block)}
+            {block_view(source, block)}
         }
     }
 }
 
-fn block_view(agent: AgentId, block: &Block) -> Element {
+fn block_view(source: Source, block: &Block) -> Element {
     match block {
         Block::Heading { level, content } => {
             let class = format!("md-heading level-{level}");
             rsx! {
-                h3 { class, {inlines_view(agent, content)} }
+                h3 { class, {inlines_view(source, content)} }
             }
         }
         Block::Paragraph(content) => rsx! {
-            p { {inlines_view(agent, content)} }
+            p { {inlines_view(source, content)} }
         },
         Block::List { start, items } => {
             let markers: Vec<String> = match start {
@@ -86,7 +98,7 @@ fn block_view(agent: AgentId, block: &Block) -> Element {
                             if start.is_some() || !is_task(item) {
                                 span { class: marker_class, aria_hidden: true, "{marker}" }
                             }
-                            div { class: "md-list-body", {blocks_view(agent, item)} }
+                            div { class: "md-list-body", {blocks_view(source, item)} }
                         }
                     }
                 }
@@ -112,7 +124,7 @@ fn block_view(agent: AgentId, block: &Block) -> Element {
                                     for index in 0..columns {
                                         th { class: cell_class(head.get(index).map(Vec::as_slice)),
                                             if let Some(cell) = head.get(index) {
-                                                {inlines_view(agent, cell)}
+                                                {inlines_view(source, cell)}
                                             }
                                         }
                                     }
@@ -125,7 +137,7 @@ fn block_view(agent: AgentId, block: &Block) -> Element {
                                     for index in 0..columns {
                                         td { class: cell_class(row.get(index).map(Vec::as_slice)),
                                             if let Some(cell) = row.get(index) {
-                                                {inlines_view(agent, cell)}
+                                                {inlines_view(source, cell)}
                                             }
                                         }
                                     }
@@ -137,7 +149,7 @@ fn block_view(agent: AgentId, block: &Block) -> Element {
             }
         }
         Block::Quote(blocks) => rsx! {
-            blockquote { class: "md-quote", {blocks_view(agent, blocks)} }
+            blockquote { class: "md-quote", {blocks_view(source, blocks)} }
         },
         Block::Rule => rsx! {
             hr { class: "md-rule" }
@@ -160,37 +172,37 @@ fn cell_class(cell: Option<&[Inline]>) -> &'static str {
     }
 }
 
-fn inlines_view(agent: AgentId, inlines: &[Inline]) -> Element {
+fn inlines_view(source: Source, inlines: &[Inline]) -> Element {
     rsx! {
         for inline in inlines.iter() {
-            {inline_view(agent, inline)}
+            {inline_view(source, inline)}
         }
     }
 }
 
-fn inline_view(agent: AgentId, inline: &Inline) -> Element {
+fn inline_view(source: Source, inline: &Inline) -> Element {
     match inline {
         Inline::Text(text) => rsx! { "{text}" },
         Inline::Code(code) => rsx! {
             code { class: "inline-code", "{code}" }
         },
         Inline::Strong(content) => rsx! {
-            strong { {inlines_view(agent, content)} }
+            strong { {inlines_view(source, content)} }
         },
         Inline::Emphasis(content) => rsx! {
-            em { {inlines_view(agent, content)} }
+            em { {inlines_view(source, content)} }
         },
         Inline::Strikethrough(content) => rsx! {
-            del { {inlines_view(agent, content)} }
+            del { {inlines_view(source, content)} }
         },
         Inline::Link { url, content } => rsx! {
-            WebLink { agent, url: url.clone(), content: content.clone() }
+            WebLink { agent: source.agent, item: source.item, url: url.clone(), content: content.clone() }
         },
         Inline::File(file) => rsx! {
-            FileLink { agent, file: file.clone() }
+            FileLink { agent: source.agent, file: file.clone() }
         },
         Inline::Image { path, alt } => rsx! {
-            ChatImage { agent, path: path.clone(), alt: alt.clone() }
+            ChatImage { agent: source.agent, item: source.item, path: path.clone(), alt: alt.clone() }
         },
         Inline::LineBreak => rsx! {
             br {}
@@ -211,7 +223,7 @@ fn inline_view(agent: AgentId, inline: &Inline) -> Element {
 /// A link to a web address. The app opens it itself: Dioxus would start the browser with the
 /// app's environment and hide a failure.
 #[component]
-fn WebLink(agent: AgentId, url: String, content: Vec<Inline>) -> Element {
+fn WebLink(agent: AgentId, item: Option<ItemId>, url: String, content: Vec<Inline>) -> Element {
     let cockpit: Cockpit = use_context();
     rsx! {
         a {
@@ -228,7 +240,7 @@ fn WebLink(agent: AgentId, url: String, content: Vec<Inline>) -> Element {
                     }
                 });
             },
-            {inlines_view(agent, &content)}
+            {inlines_view(Source { agent, item }, &content)}
         }
     }
 }
@@ -253,35 +265,42 @@ fn FileLink(agent: AgentId, file: FileRef) -> Element {
 /// An image file the message shows, at a fixed height so that the text below does not move when
 /// it arrives. A click opens it over the whole window, or in the file view until it is loaded.
 #[component]
-fn ChatImage(agent: AgentId, path: String, alt: String) -> Element {
+fn ChatImage(agent: AgentId, item: Option<ItemId>, path: String, alt: String) -> Element {
     let cockpit: Cockpit = use_context();
     // The image this place shows, given back when it shows another or leaves the screen.
-    let held = use_hook(|| Rc::new(RefCell::new(None::<(AgentId, PathBuf)>)));
+    let held = use_hook(|| Rc::new(RefCell::new(None::<(AgentId, ImageKey)>)));
     let showing = Rc::clone(&held);
-    use_effect(use_reactive((&agent, &path), move |(agent, path)| {
-        let file = PathBuf::from(path);
-        let before = showing.replace(Some((agent, file.clone())));
-        cockpit.update(|state| {
-            if let Some((agent, path)) = &before {
-                chat_images::hide(state, *agent, path);
-            }
-            chat_images::show(state, agent, &file);
-        });
-    }));
+    use_effect(use_reactive(
+        (&agent, &item, &path),
+        move |(agent, item, path)| {
+            let key = ImageKey::new(item, PathBuf::from(path));
+            let before = showing.replace(Some((agent, key.clone())));
+            cockpit.update(|state| {
+                if let Some((agent, key)) = &before {
+                    chat_images::hide(state, *agent, key);
+                }
+                chat_images::show(state, agent, &key);
+            });
+        },
+    ));
     use_drop(move || {
-        let Some((agent, path)) = held.take() else {
+        let Some((agent, key)) = held.take() else {
             return;
         };
         let mut signal = cockpit.state;
         // The state is gone when the window closes.
         if let Ok(mut state) = signal.try_write() {
-            chat_images::hide(&mut state, agent, &path);
+            chat_images::hide(&mut state, agent, &key);
         }
     });
     // Rendered again only when the image changes, not on every change of the state.
-    let shown = use_memo(use_reactive((&agent, &path), move |(agent, path)| {
-        chat_images::image(&cockpit.state.read(), agent, Path::new(&path))
-    }));
+    let shown = use_memo(use_reactive(
+        (&agent, &item, &path),
+        move |(agent, item, path)| {
+            let key = ImageKey::new(item, PathBuf::from(path));
+            chat_images::image(&cockpit.state.read(), agent, &key)
+        },
+    ));
     let label = if alt.is_empty() {
         path.clone()
     } else {

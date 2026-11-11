@@ -11,6 +11,7 @@ use cockpit_protocol::{
 };
 
 use super::app_state::{AgentEntry, AppState, FileRead, Loadable, MachineState, Reread};
+use super::chat_images::ImageKey;
 use super::drafts::{Draft, Drafts};
 use super::sending::{self, SendingId};
 use super::transcript::HistoryState;
@@ -59,7 +60,7 @@ pub enum Purpose {
     /// An image a message shows.
     ChatImage {
         agent: AgentId,
-        path: PathBuf,
+        key: ImageKey,
     },
     Sessions,
     /// A folder for the "Open file" dialog.
@@ -464,7 +465,7 @@ pub fn apply_response(
                 other => report(state, method, other),
             }
         }
-        Purpose::ChatImage { agent, path } => {
+        Purpose::ChatImage { agent, key } => {
             let answer = match result {
                 Ok(ResponseBody::Image { image, .. }) => Ok(image),
                 Ok(ResponseBody::File { .. }) => Err("This file is not an image.".to_owned()),
@@ -474,7 +475,7 @@ pub fn apply_response(
                 Ok(_) => Err(format!("{method} gave an unexpected answer.")),
                 Err(failure) => Err(failure.message),
             };
-            chat_images::answered(state, agent, &path, answer);
+            chat_images::answered(state, agent, &key, answer);
         }
         Purpose::ReadFile { agent, path } => {
             let now = Timestamp::from_system_time(SystemTime::now());
