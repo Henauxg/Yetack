@@ -98,16 +98,19 @@ pub enum Step {
 }
 
 /// A rename the window left open, which no field shows once another agent is selected, ends
-/// without saving. The map of another agent closes, as it would cover the one selected.
+/// without saving. The map or the stop dialog of another agent closes, as it would cover the one
+/// selected.
 pub fn select_agent(state: &mut AppState, agent: AgentId) {
     state
         .ui
         .title_edit
         .take_if(|edit| edit.kept_open && edit.agent != agent);
-    state
-        .ui
-        .dialog
-        .take_if(|dialog| matches!(dialog, Dialog::AgentMap(view) if view.agent != agent));
+    state.ui.dialog.take_if(|dialog| match dialog {
+        Dialog::AgentMap(view) => view.agent != agent,
+        // Its keys type into the composer, which shows the selected agent's message.
+        Dialog::StopAgent(stopped) => *stopped != agent,
+        _ => false,
+    });
     let back = state.ui.selected != Some(agent);
     state.ui.selected = Some(agent);
     state.ui.chat_new_from.clear();
@@ -5397,6 +5400,22 @@ mod tests {
         };
         assert_eq!(params.before, Some(ItemId::new(50)));
         assert!(load_older(&mut state, agent()).is_empty());
+    }
+
+    #[test]
+    fn selecting_another_agent_closes_the_stop_dialog_of_the_first() {
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::Working),
+            summary(2, AgentStatus::Working),
+        ]);
+        state.ui.dialog = Some(Dialog::StopAgent(agent()));
+
+        select_agent(&mut state, agent());
+        let same_agent = state.ui.dialog.clone();
+        select_agent(&mut state, AgentId::new(2));
+
+        assert_eq!(same_agent, Some(Dialog::StopAgent(agent())));
+        assert_eq!(state.ui.dialog, None);
     }
 
     #[test]

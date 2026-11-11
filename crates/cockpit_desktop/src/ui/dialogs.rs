@@ -274,15 +274,11 @@ fn StopAgentDialog(agent: AgentId) -> Element {
                 match event.key() {
                     Key::Enter if modifiers.is_empty() && !event.is_auto_repeating() => stop(),
                     // A typed character means the user goes on typing: the agent keeps working, and
-                    // the character goes into the message. Lost, it could leave the message empty,
-                    // where Y or N answers an approval.
+                    // the character goes into the message. Without it, the message may stay empty,
+                    // and there Y or N answers an approval.
                     Key::Character(typed) if !chord => {
-                        cockpit.update_with_drafts(|state, drafts| {
-                            state.ui.dialog = None;
-                            drafts.draft_mut(agent).text.push_str(&typed);
-                            drafts.draft_written(agent);
-                        });
-                        bridge::focus_field_at_end(COMPOSER_ID);
+                        cockpit.update(|state| state.ui.dialog = None);
+                        bridge::type_at_end(COMPOSER_ID, typed);
                     }
                     // The page's script closes the dialog on Esc.
                     Key::Escape => bridge::focus_field(COMPOSER_ID),
