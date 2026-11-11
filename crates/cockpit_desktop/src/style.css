@@ -16,6 +16,8 @@
   --line-strong: #353535;
   --line-control: #393939;
   --line-divider: #323232;
+  --scrollbar-thumb: #3e3e3e;
+  --scrollbar-thumb-hover: #4d4d4d;
   --text: #f9f9f9;
   --text-bright: #ffffff;
   --text-soft: #e0e0e0;
@@ -138,7 +140,7 @@ button:disabled {
 .scroll,
 .scroll-x {
   scrollbar-width: thin;
-  scrollbar-color: #3e3e3e transparent;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
 .scroll {
@@ -159,12 +161,12 @@ button:disabled {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #3e3e3e;
+  background: var(--scrollbar-thumb);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #4d4d4d;
+  background: var(--scrollbar-thumb-hover);
 }
 
 ::-webkit-scrollbar-corner {
@@ -2922,7 +2924,7 @@ html.reordering * {
 .message-fold[data-tall]:not(.unfolded) .message-clip {
   overflow-y: auto;
   scrollbar-width: thin;
-  scrollbar-color: #3e3e3e transparent;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
 /* The fold script marks `data-end` a folded message scrolled to its end: no line is cut there. */
@@ -3340,7 +3342,7 @@ html.reordering * {
   /* Room for the cards' shadow, which the scrolling box would cut. */
   padding: 2px 10px 24px;
   scrollbar-width: thin;
-  scrollbar-color: #3e3e3e transparent;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
 .blocks.beside-badges {
