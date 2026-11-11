@@ -23,7 +23,7 @@ These were settled with the user on 2026-11-11.
 ### 1.1 License
 
 - Add `LICENSE` with the MPL-2.0 text, and set `license = "MPL-2.0"` in the root `Cargo.toml`.
-- Every dependency is MIT, Apache-2.0 or similar, which MPL-2.0 code may use. Run `cargo deny check licenses` once to confirm.
+- Every dependency is MIT, Apache-2.0 or similar, which MPL-2.0 code may use. A count of the licenses in `cargo metadata` confirmed it: five dependencies are MPL-2.0, and none requires the GPL.
 - The copyright holder can release later versions under MIT or Apache-2.0. Versions already released stay available under MPL-2.0. Code from other contributors needs their agreement, so `CONTRIBUTING.md` says that a contribution is licensed under MPL-2.0 and also under MIT OR Apache-2.0.
 
 ### 1.2 Versions
