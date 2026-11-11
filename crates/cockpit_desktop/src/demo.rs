@@ -909,7 +909,9 @@ pub fn showcase(state: &mut AppState) {
             details.background_tasks.clear();
         }
     }
-    let selected = AgentId::new(1);
+    let Some(selected) = state.ui.selected else {
+        return;
+    };
     if let Some(entry) = state.agents.get_mut(&selected) {
         trim_for_notes(entry);
         entry
@@ -917,12 +919,13 @@ pub fn showcase(state: &mut AppState) {
             .expanded
             .insert(PathBuf::from(PARSER_FOLDER).join("src"));
     }
+    // Opens the pane, as the header's changes chip does.
     file_tree::toggle_from_changes(state, selected);
     file_tree::set_filter(state, selected, TreeFilter::All);
 }
 
 /// Shortens the selected agent's blocks by a task and a running subagent, so that the third
-/// comment's note fits under them.
+/// comment's note fits under them, and counts the task progress again.
 fn trim_for_notes(entry: &mut AgentEntry) {
     let Loadable::Loaded(details) = &mut entry.details else {
         return;
@@ -930,6 +933,9 @@ fn trim_for_notes(entry: &mut AgentEntry) {
     details
         .background_tasks
         .retain(|task| task.description != FUZZ_TASK);
+    details
+        .subagents
+        .retain(|subagent| subagent.description != FUZZ_TASK);
     if let Some(first_done) = details
         .tasks
         .iter()
