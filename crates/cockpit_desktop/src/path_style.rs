@@ -187,6 +187,25 @@ impl PathStyle {
         }
     }
 
+    /// Whether `path` starts with the text `start`, which may end inside a name: on Windows, `\`
+    /// and `/` match and case does not count, so `c:/work/calc-` starts `C:\work\calc-parser`.
+    pub fn starts_with_text(self, path: &str, start: &str) -> bool {
+        let mut path = path.chars();
+        start.chars().all(|wanted| {
+            path.next()
+                .is_some_and(|found| self.same_character(found, wanted))
+        })
+    }
+
+    fn same_character(self, left: char, right: char) -> bool {
+        match self {
+            Self::Unix => left == right,
+            Self::Windows => {
+                (self.is_separator(left) && self.is_separator(right)) || upper(left) == upper(right)
+            }
+        }
+    }
+
     fn same_root(self, left: &str, right: &str) -> bool {
         let root = |text: &str| {
             let length = self.root_len(text).unwrap_or(0);

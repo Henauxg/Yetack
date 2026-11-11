@@ -174,9 +174,10 @@ fn holds(rule: &ProjectRule, folder: &Path, repository: Option<&str>) -> bool {
         ProjectRule::Repository(wanted) => repository == Some(wanted.as_str()),
         ProjectRule::Folder(wanted) => {
             let text = folder.to_string_lossy();
+            let style = PathStyle::of(folder);
             match wanted.strip_suffix(WILDCARD) {
-                Some(start) => text.starts_with(start),
-                None => PathStyle::of(folder).strip_prefix(&text, wanted).is_some(),
+                Some(start) => style.starts_with_text(&text, start),
+                None => style.strip_prefix(&text, wanted).is_some(),
             }
         }
     }
@@ -494,6 +495,8 @@ fn kept_mut(state: &mut AppState, id: ProjectId) -> Option<&mut Project> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use cockpit_protocol::{AgentStatus, Method, ResponseBody};
 
     use super::*;
@@ -724,6 +727,19 @@ mod tests {
 
         assert_eq!(project(&state, 4), ProjectKey::Kept(id));
         assert_eq!(project(&state, 3), ProjectKey::Kept(other));
+    }
+
+    #[test]
+    fn a_wildcard_on_a_windows_folder_ignores_case_and_the_separator() {
+        let mut state = agents();
+        if let Some(entry) = state.agents.get_mut(&AgentId::new(4)) {
+            entry.summary.folder = PathBuf::from(r"C:\Work\Calc-Parser");
+        }
+        let id = create(&mut state, "Calc");
+        add_rule(&mut state, id, ProjectRule::Folder("c:/work/calc-*".to_owned()));
+
+        assert_eq!(project(&state, 4), ProjectKey::Kept(id));
+        assert_eq!(project(&state, 3), ProjectKey::Repository(GATEWAY.to_owned()));
     }
 
     #[test]
