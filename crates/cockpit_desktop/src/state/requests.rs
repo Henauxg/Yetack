@@ -12,6 +12,7 @@ use cockpit_protocol::{
 
 use super::app_state::{AgentEntry, AppState, FileRead, Loadable, MachineState, Reread};
 use super::drafts::{Draft, Drafts};
+use super::sending::{self, SendingId};
 use super::transcript::HistoryState;
 use super::ui_state::{Dialog, FolderAction, OpenFileView};
 use super::{accounts, actions, chat_images, file_edits, file_tree, working_folder};
@@ -95,6 +96,8 @@ pub enum Purpose {
     Prompt {
         agent: AgentId,
         draft: Draft,
+        /// The message shown on its way, which a refusal takes away.
+        sending: SendingId,
     },
     /// `agent.move`, whose positions the sidebar already shows. They go back when the move
     /// fails, unless an event changed them meanwhile.
@@ -417,10 +420,15 @@ pub fn apply_response(
             let Some(entry) = state.agents.get_mut(&agent) else {
                 return;
             };
-            entry.details = match result {
-                Ok(ResponseBody::Details(details)) => Loadable::Loaded(details),
-                other => Failure::from_result(other).into_loadable(),
-            };
+            // An event that came first holds newer details: the answer, computed before it, is older.
+            if !matches!(entry.details, Loadable::Loaded(_)) {
+                entry.details = match result {
+                    Ok(ResponseBody::Details(details)) => Loadable::Loaded(details),
+                    other => Failure::from_result(other).into_loadable(),
+                };
+            }
+            sending::details_loaded(entry);
+            sending::waiting_changed(entry);
         }
         Purpose::ContextUsage { agent } => {
             if let Some(entry) = state.agents.get_mut(&agent) {
@@ -651,8 +659,15 @@ pub fn apply_response(
                 report(state, method, other);
             }
         },
-        Purpose::Prompt { agent, draft } => {
+        Purpose::Prompt {
+            agent,
+            draft,
+            sending: sent,
+        } => {
             if let Err(failure) = result {
+                if let Some(entry) = state.agents.get_mut(&agent) {
+                    sending::failed(entry, sent);
+                }
                 let current = drafts.draft_mut(agent);
                 if current.is_empty() {
                     *current = draft;
@@ -1244,6 +1259,7 @@ mod tests {
             Purpose::Prompt {
                 agent,
                 draft: draft.clone(),
+                sending: SendingId::first(),
             },
             Err(RequestError::NotConnected),
             MachineId::THIS,
@@ -1274,6 +1290,7 @@ mod tests {
                     images: Vec::new(),
                     quotes: Vec::new(),
                 },
+                sending: SendingId::first(),
             },
             Err(RequestError::NotConnected),
             MachineId::THIS,

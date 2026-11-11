@@ -28,7 +28,9 @@ use super::ui_state::{
     TitleEdit, TitlePlace, ViewMode, is_markdown,
 };
 use super::utf16_offset::Utf16Offset;
-use super::{accounts, export, file_edits, file_reread, file_tree, open_file, quotes, title_emoji};
+use super::{
+    accounts, export, file_edits, file_reread, file_tree, open_file, quotes, sending, title_emoji,
+};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::machine::MachineId;
 use crate::path_style;
@@ -1077,13 +1079,21 @@ pub fn send_prompt(
         text: quotes::message(&draft.quotes, &draft.text),
         images: draft.images.clone(),
     };
+    // Shown at once: the daemon's echo takes a round trip, long to a server.
+    let Some(sent) = sending::start(state, agent, &prompt) else {
+        return Vec::new();
+    };
     vec![Outgoing {
         request: Request::AgentPrompt(PromptParams {
             agent,
             prompt,
             delivery,
         }),
-        purpose: Purpose::Prompt { agent, draft },
+        purpose: Purpose::Prompt {
+            agent,
+            draft,
+            sending: sent,
+        },
         to: MachineId::THIS,
     }]
 }

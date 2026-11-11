@@ -18,6 +18,7 @@ use serde_json::Value;
 use crate::connection::{Clock, Cockpit};
 use crate::keymap::Command;
 use crate::render::{self, Diff, Found, Language, OutputPart, SearchTool, diff_lines};
+use crate::state::sending::{SendingPlace, SendingPrompt};
 use crate::state::{
     self, AgentEntry, HistoryState, TurnStart, accounts, actions, chat_images, file_edits,
 };
@@ -433,6 +434,11 @@ pub fn TranscriptView() -> Element {
         })
         .collect();
     let history = entry.transcript.history().clone();
+    let sending: Vec<SendingPrompt> = entry
+        .sending
+        .in_place(SendingPlace::Chat)
+        .cloned()
+        .collect();
     // A run of new reads counts once, as it shows.
     let waiting = scrolled_up.map_or(0, |last_seen| {
         tool_rows::new_rows(&top_rows, actions::new_entries(entry, last_seen).first)
@@ -464,6 +470,20 @@ pub fn TranscriptView() -> Element {
                 // never takes over the state of this one's (a fold, a typed answer).
                 for TopRow { id, new_above, view, step, older_step } in top {
                     TranscriptRow { key: "{agent.get()}-{id.get()}", agent, folder: folder.clone(), new_above, id, view, step, older_step }
+                }
+                if shown != ShownRows::Skeleton {
+                    for prompt in sending {
+                        div {
+                            key: "{agent.get()}-sending-{prompt.id.get()}",
+                            class: "sending-message",
+                            title: "Sending",
+                            UserBubble {
+                                agent,
+                                folder: folder.clone(),
+                                message: UserMessage { text: prompt.text, images: prompt.images },
+                            }
+                        }
+                    }
                 }
                 if working && shown != ShownRows::Skeleton {
                     WorkingLine { since: turn_start, linked: working_linked }

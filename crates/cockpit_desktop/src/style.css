@@ -2123,6 +2123,16 @@ html.reordering * {
   flex: 1 1 260px;
 }
 
+/* A message on its way, until the daemon's echo replaces it. The wrapper leaves the bubble a
+   flex item of the chat column, so that it keeps to the right. */
+.sending-message {
+  display: contents;
+}
+
+.sending-message > .user-message {
+  opacity: 0.6;
+}
+
 .user-message {
   align-self: flex-end;
   max-width: min(80%, var(--prose-width));
@@ -3925,6 +3935,11 @@ html.reordering * {
 .waiting-row.sent .waiting-state {
   color: var(--teal);
   background: rgba(45, 212, 191, 0.12);
+}
+
+/* A message on its way, until the daemon's echo replaces it. */
+.waiting-row.sending {
+  opacity: 0.6;
 }
 
 .waiting-text {

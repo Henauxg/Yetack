@@ -22,6 +22,7 @@ pub mod notification_levels;
 pub mod open_file;
 pub mod quotes;
 mod requests;
+pub mod sending;
 pub mod settings;
 mod shortcuts;
 pub mod sidebar_keys;

@@ -15,12 +15,12 @@ use cockpit_protocol::{
     EnvironmentCredentials, ErrorBody, ErrorCode, FileEdit, GitIgnore, HistoryPage, Image,
     ImageMediaType, ItemBody, ItemId, LoadAverage, LoadHistory, MachineLoad, Mark, McpScope,
     McpServer, McpServerStatus, McpTool, McpTransport, OlderItems, PastSession, PendingId,
-    PermissionMode, Plan, PlanUsage, Position, ProcessId, PromptId, Question, QuestionOption,
-    RateLimitStatus, Request, ResourceUse, ResponseBody, Selection, ServerLoad, ServerPoint,
-    SignIn, SignInWait, SlashCommand, Subagent, SubagentRun, SubagentStatus, SubagentToolCall,
-    TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus,
-    TranscriptItem, TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt, WaitingState,
-    WindowUsage,
+    PermissionMode, Plan, PlanUsage, Position, ProcessId, Prompt, PromptId, Question,
+    QuestionOption, RateLimitStatus, Request, ResourceUse, ResponseBody, Selection, ServerLoad,
+    ServerPoint, SignIn, SignInWait, SlashCommand, Subagent, SubagentRun, SubagentStatus,
+    SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall,
+    ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt,
+    WaitingState, WindowUsage,
 };
 use serde_json::Value;
 
@@ -32,7 +32,7 @@ use crate::state::daemon_update::{
 };
 use crate::state::no_daemon::{self, Absence};
 use crate::state::{
-    AgentEntry, AppState, ConnectionState, Dialog, Loadable, MachineState, file_edits,
+    AgentEntry, AppState, ConnectionState, Dialog, Loadable, MachineState, file_edits, sending,
 };
 
 /// The command-line flag that starts the demo.
@@ -650,6 +650,8 @@ pub fn latency(request: &Request) -> Duration {
         Request::SessionsList => Duration::from_millis(900),
         Request::AgentContextUsage(_) => Duration::from_millis(700),
         Request::AgentHistory(_) => Duration::from_millis(300),
+        // A daemon on a server: the message shows on its way until this echo.
+        Request::AgentPrompt(_) => Duration::from_millis(400),
         _ => Duration::ZERO,
     }
 }
@@ -679,10 +681,50 @@ pub fn apply(state: &mut AppState, request: &Request) {
         Request::AgentPrompt(params) => {
             if let Some(entry) = state.agents.get_mut(&params.agent) {
                 entry.summary.mark = Mark::Unmarked;
+                echo_prompt(entry, &params.prompt);
             }
         }
         _ => {}
     }
+}
+
+/// The daemon's echo of a sent message: in the chat of an agent between turns, else with the
+/// messages Claude has not read.
+fn echo_prompt(entry: &mut AgentEntry, prompt: &Prompt) {
+    let busy = matches!(
+        entry.summary.status,
+        AgentStatus::Working | AgentStatus::NeedsYou
+    );
+    if busy && let Loadable::Loaded(details) = &mut entry.details {
+        let next = details
+            .waiting_prompts
+            .iter()
+            .map(|waiting| waiting.id.get())
+            .max()
+            .map_or(1, |last| last.saturating_add(1));
+        details.waiting_prompts.push(WaitingPrompt {
+            id: PromptId::new(next),
+            text: prompt.text.clone(),
+            image_count: u32::try_from(prompt.images.len()).unwrap_or(u32::MAX),
+            state: WaitingState::Sent,
+        });
+        sending::waiting_changed(entry);
+        return;
+    }
+    let next = entry
+        .transcript
+        .last_id()
+        .map_or(1, |last| last.get().saturating_add(1));
+    let item = TranscriptItem {
+        id: ItemId::new(next),
+        parent: None,
+        body: ItemBody::UserMessage(UserMessage {
+            text: prompt.text.clone(),
+            images: prompt.images.clone(),
+        }),
+    };
+    sending::item_appended(entry, &item);
+    entry.transcript.append(item);
 }
 
 /// What a daemon holding the sample would answer.

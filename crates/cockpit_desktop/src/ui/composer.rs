@@ -14,6 +14,7 @@ use crate::connection::{Clock, Cockpit};
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::keymap::Command;
 use crate::state::actions::ImageTooLarge;
+use crate::state::sending::{SendingPlace, SendingPrompt};
 use crate::state::{PaletteOrigin, Popover, accounts, actions, agent_map};
 use crate::ui::header::cache_left;
 use crate::ui::icons::{Icon, IconKind};
@@ -137,6 +138,11 @@ pub fn Composer() -> Element {
         None => format!("Agent map ({map_keys})"),
     };
     let waiting = entry.waiting_prompts().to_vec();
+    let sending: Vec<SendingPrompt> = entry
+        .sending
+        .in_place(SendingPlace::Waiting)
+        .cloned()
+        .collect();
     rsx! {
         div { class: "composer-wrap",
             div { class: "composer-column",
@@ -149,7 +155,7 @@ pub fn Composer() -> Element {
                 Presence { open: popover == Some(Popover::Mode),
                     ModeMenu { agent, mode }
                 }
-                WaitingPrompts { agent, prompts: waiting }
+                WaitingPrompts { agent, prompts: waiting, sending }
                 div { class: "composer",
                     if !draft.quotes.is_empty() {
                         QuoteRows { agent, quotes: draft.quotes.clone(), wide: chat_is_wide(&state, agent) }

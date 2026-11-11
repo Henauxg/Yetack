@@ -17,6 +17,7 @@ use super::daemon_update::{DaemonUpdate, VersionGap};
 use super::file_edits;
 use super::file_tree::FileTree;
 use super::no_daemon::NoDaemon;
+use super::sending::Sending;
 use super::transcript::Transcript;
 use super::ui_state::UiState;
 use crate::daemon_label::DaemonLabel;
@@ -164,6 +165,8 @@ pub struct AgentEntry {
     pub images: VecDeque<KeptImage>,
     /// The files pane's tree of its folder.
     pub tree: FileTree,
+    /// The messages sent that the daemon has not echoed yet.
+    pub sending: Sending,
 }
 
 /// When the agent's running turn started.
@@ -228,6 +231,7 @@ impl AgentEntry {
             finish_due: None,
             images: VecDeque::new(),
             tree: FileTree::default(),
+            sending: Sending::default(),
         }
     }
 

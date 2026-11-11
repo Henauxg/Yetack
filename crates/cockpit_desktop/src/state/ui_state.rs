@@ -472,6 +472,8 @@ pub struct UiState {
     pub chat_new_from: BTreeMap<AgentId, ItemId>,
     /// Counts the sends that take the chat to its bottom: the chat's scroll script jumps at each.
     pub chat_jumps: u64,
+    /// The next id of a message on its way, one count for every agent.
+    pub next_sending: u64,
     pub chat_reveal: Option<ChatReveal>,
     /// Agents the app closed and took off its list, until the daemon says they are removed:
     /// their events in between are not applied.
@@ -502,6 +504,7 @@ impl Default for UiState {
             chat_scrolled_up: BTreeMap::new(),
             chat_new_from: BTreeMap::new(),
             chat_jumps: 0,
+            next_sending: 0,
             chat_reveal: None,
             closing: BTreeSet::new(),
             closed: None,
