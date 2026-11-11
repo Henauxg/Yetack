@@ -79,9 +79,17 @@ fn normalized(url: &str) -> String {
     }
 }
 
-fn trimmed(path: &str) -> &str {
-    let path = path.trim_end_matches(['/', '\\']);
-    path.strip_suffix(".git").unwrap_or(path)
+/// `path` without its trailing separators and `.git`, as many as it ends with, so that the text
+/// of a repository gives that repository again.
+fn trimmed(mut path: &str) -> &str {
+    loop {
+        let rest = path.trim_end_matches(['/', '\\']);
+        let rest = rest.strip_suffix(".git").unwrap_or(rest);
+        if rest == path {
+            return path;
+        }
+        path = rest;
+    }
 }
 
 /// Whether `C` and `\repos` are a drive letter and the path after it.
@@ -126,5 +134,25 @@ mod tests {
         assert_eq!(Repository::from_remote(windows.as_str()), windows);
         assert_eq!(normalized(r"C:\repos\billing.git\"), r"C:\repos\billing");
         assert_eq!(normalized("C:/repos/billing"), "C:/repos/billing");
+    }
+
+    #[test]
+    fn a_written_repository_reads_back_the_same() {
+        let remotes = [
+            "/srv/git/billing/.git",
+            r"C:\repos\billing\.git",
+            "/srv/git/billing.git.git/",
+            "git@github.com:acme/billing.git/",
+        ];
+
+        for remote in remotes {
+            let written = Repository::from_remote(remote);
+            assert_eq!(
+                Repository::from_remote(written.as_str()),
+                written,
+                "{remote}"
+            );
+        }
+        assert_eq!(normalized("/srv/git/billing/.git"), "/srv/git/billing");
     }
 }

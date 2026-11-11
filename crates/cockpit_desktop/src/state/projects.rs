@@ -873,6 +873,7 @@ mod tests {
         for key in [
             ProjectKey::Kept(ProjectId::new(3)),
             ProjectKey::Repository(repo(BILLING)),
+            ProjectKey::Repository(repo("/srv/git/billing/.git")),
             ProjectKey::None,
         ] {
             assert_eq!(key.to_string().parse::<ProjectKey>(), Ok(key));
