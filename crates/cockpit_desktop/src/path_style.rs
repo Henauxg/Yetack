@@ -179,6 +179,11 @@ impl PathStyle {
             .filter(|name| *name != PARENT)
     }
 
+    /// How many names follow the root: 2 for `/work/billing/`, as for `/work//billing`.
+    pub fn depth(self, path: &str) -> usize {
+        self.names_at(path).len()
+    }
+
     /// Whether two names are the same name.
     pub fn same_name(self, left: &str, right: &str) -> bool {
         match self {

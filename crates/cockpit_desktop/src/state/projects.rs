@@ -167,7 +167,7 @@ enum Precision {
     /// A folder rule that ends with `*`, by the length of its start.
     Wildcard(usize),
     Repository,
-    /// A folder rule, by the length of its path.
+    /// A folder rule, by the number of names in its path.
     Folder(usize),
 }
 
@@ -212,7 +212,7 @@ fn precision(
                     .then_some(Precision::Wildcard(start.len())),
                 None => style
                     .strip_prefix(&text, wanted)
-                    .map(|_| Precision::Folder(wanted.len())),
+                    .map(|_| Precision::Folder(style.depth(wanted))),
             }
         }
     }
@@ -753,6 +753,25 @@ mod tests {
 
         assert_eq!(project(&state, 4), ProjectKey::Kept(id));
         assert_eq!(project(&state, 3), ProjectKey::Kept(other));
+    }
+
+    #[test]
+    fn one_folder_written_two_ways_goes_to_the_first_project() {
+        let mut state = agents();
+        let first = create(&mut state, "First");
+        add_rule(
+            &mut state,
+            first,
+            ProjectRule::Folder("/work/project-1".to_owned()),
+        );
+        let second = create(&mut state, "Second");
+        add_rule(
+            &mut state,
+            second,
+            ProjectRule::Folder("/work//project-1/".to_owned()),
+        );
+
+        assert_eq!(project(&state, 1), ProjectKey::Kept(first));
     }
 
     #[test]
