@@ -181,12 +181,19 @@ fn ssh_command(host: &str, remote_command: &str) -> Command {
     command
 }
 
-/// `BatchMode` makes a missing key fail at once, instead of waiting for a password the app cannot
-/// show. `ForwardAgent=no` keeps the host from using this machine's keys. `-x` and
-/// `ClearAllForwardings` open no X11 or port forwarding to this machine, even when the user's ssh
-/// config asks for one. `ServerAliveInterval` and `ServerAliveCountMax` end ssh after a minute of
-/// silence, where a dead link would otherwise look alive for many minutes. `--` ends the options,
-/// since ssh reads options after the host too.
+/// The options, which win over the user's ssh config:
+///
+/// - `BatchMode` makes a missing key fail at once, instead of waiting for a password the app
+///   cannot show.
+/// - `ForwardAgent=no` keeps the host from using this machine's keys.
+/// - `-x` and `ClearAllForwardings` open no X11 or port forwarding to this machine, even when the
+///   config asks for one.
+/// - `ControlPath=none` keeps ssh out of connection sharing, as a client and as a master: the app
+///   never joins or hosts a connection shared with the user's own sessions, so neither cuts the
+///   other off. A `ProxyJump` hop runs its own ssh, which these options do not reach.
+/// - `ServerAliveInterval` and `ServerAliveCountMax` end ssh after a minute of silence, where a
+///   dead link would otherwise look alive for many minutes.
+/// - `--` ends the options, since ssh reads options after the host too.
 fn ssh_to(host: &str) -> Command {
     let mut command = Command::new(SSH_PROGRAM);
     command
@@ -199,6 +206,8 @@ fn ssh_to(host: &str) -> Command {
             "ForwardAgent=no",
             "-o",
             "ClearAllForwardings=yes",
+            "-o",
+            "ControlPath=none",
             "-o",
             "ServerAliveInterval=15",
             "-o",
@@ -274,6 +283,8 @@ mod tests {
                 "-o",
                 "ClearAllForwardings=yes",
                 "-o",
+                "ControlPath=none",
+                "-o",
                 "ServerAliveInterval=15",
                 "-o",
                 "ServerAliveCountMax=4",
@@ -286,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn the_bridge_and_a_script_both_send_keepalives() {
+    fn the_bridge_and_a_script_both_send_keepalives_and_share_no_connection() {
         let bridge = ssh_command("build-box", "/opt/agents-cockpit");
         let script = ssh_script_command("build-box", &["--cancel"]).unwrap();
 
@@ -297,10 +308,14 @@ mod tests {
                 .map(|arg| arg.to_str().unwrap())
                 .collect();
             let options = args.split(|&arg| arg == "--").next().unwrap();
-            for keepalive in ["ServerAliveInterval=15", "ServerAliveCountMax=4"] {
+            for option in [
+                "ServerAliveInterval=15",
+                "ServerAliveCountMax=4",
+                "ControlPath=none",
+            ] {
                 assert!(
-                    options.windows(2).any(|pair| pair == ["-o", keepalive]),
-                    "{keepalive}: {args:?}"
+                    options.windows(2).any(|pair| pair == ["-o", option]),
+                    "{option}: {args:?}"
                 );
             }
         }
@@ -359,8 +374,9 @@ mod tests {
             .get_args()
             .map(|arg| arg.to_str().unwrap())
             .collect();
+        let options_end = args.iter().position(|&arg| arg == "--").unwrap();
         assert_eq!(
-            args.get(12..).unwrap(),
+            args.get(options_end..).unwrap(),
             [
                 "--",
                 "build-box",
