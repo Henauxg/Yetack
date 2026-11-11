@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use strum::VariantArray;
 
 use crate::connection::Cockpit;
+use crate::prefs::ProjectId;
+use crate::state::projects::{self, ProjectKey};
 use crate::state::{Block, actions};
 use crate::ui::blocks::{BLOCK_CARD_CLASS, BLOCK_HEAD_CLASS, BLOCKS_LIST_ID};
 
@@ -26,6 +28,18 @@ pub const ROW_CLASS: &str = "agent-row";
 /// A block card's id is this prefix and its place among the blocks' variants.
 pub const BLOCK_ID_PREFIX: &str = "block-";
 
+/// The marker after a project group's last row, which a drop can land above.
+pub const GROUP_END_CLASS: &str = "group-end";
+
+/// The class of a kept project's group, which a drag by its header moves among the projects.
+pub const PROJECT_DRAG_CLASS: &str = "project-drag";
+
+/// A kept project's group id is this prefix and the project's id.
+pub const KEPT_GROUP_ID_PREFIX: &str = "project-group-";
+
+/// A group's header, the only place a press drags the group from.
+pub const GROUP_HEAD_CLASS: &str = "machine-head";
+
 /// How far the pointer moves before a press becomes a drag.
 const THRESHOLD_PX: u32 = 4;
 
@@ -40,9 +54,14 @@ const settings = await dioxus.recv();
 const list = () => document.getElementById(settings.list_id);
 const rowOf = (target) => target instanceof Element ? target.closest("." + settings.row_class) : null;
 const itemOf = (row) => Number(row.id.slice(settings.row_id_prefix.length));
+// A group's end marker, after its last row: a drop there lands at the end of that group.
+const isEnd = (row) => settings.end_class !== null && row.classList.contains(settings.end_class);
 const rows = () => {
   const element = list();
-  return element === null ? [] : Array.from(element.querySelectorAll("." + settings.row_class));
+  const selector = settings.end_class === null
+    ? "." + settings.row_class
+    : `.${settings.row_class}, .${settings.end_class}`;
+  return element === null ? [] : Array.from(element.querySelectorAll(selector));
 };
 // A press on a row: it becomes a drag once the pointer moves far enough.
 let press = null;
@@ -82,7 +101,8 @@ const follow = () => {
   // Where the row already is: no line, and nothing to send.
   const next = all[all.indexOf(drag.row) + 1] ?? null;
   drag.stays = before === next;
-  drag.before = before === null ? null : itemOf(before);
+  drag.before = before === null || isEnd(before) ? null : itemOf(before);
+  drag.end = before !== null && isEnd(before) ? before.dataset.end : null;
   drag.line.style.display = drag.stays ? "none" : "block";
   drag.line.style.top = `${Math.round(edge - 1)}px`;
   drag.line.style.left = `${Math.round(box.left + 4)}px`;
@@ -124,6 +144,7 @@ const start = (event) => {
     startY,
     y: event.clientY,
     before: null,
+    end: null,
     stays: true,
   };
   row.setAttribute(settings.dragged_attribute, "");
@@ -175,10 +196,10 @@ const end = (event, dropped) => {
       drag.y = event.clientY;
       follow();
     }
-    const { row, before, stays } = drag;
+    const { row, before, end: group, stays } = drag;
     stop();
     if (dropped && !stays) {
-      dioxus.send({ item: itemOf(row), before });
+      dioxus.send({ item: itemOf(row), before, end: group });
     }
   }
   if (released === event.pointerId) {
@@ -214,6 +235,9 @@ struct Settings {
     row_id_prefix: &'static str,
     /// The part of a row a drag starts from, or `None` for the whole row.
     handle_class: Option<&'static str>,
+    /// A group's end marker, which a drop can land just above, as above a row: its
+    /// `data-end` names the group. `None` where the list has no groups.
+    end_class: Option<&'static str>,
     /// On the dragged row, which stays in its place, dimmed.
     dragged_attribute: &'static str,
     /// On the lifted copy of the row that follows the pointer.
@@ -227,9 +251,23 @@ struct Settings {
 }
 
 impl Settings {
-    /// The sidebar's agent rows, dragged from anywhere on them.
+    /// The sidebar's agent rows, dragged from anywhere on them, into a project group's end too.
     fn sidebar() -> Self {
-        Self::of(LIST_ID, ROW_CLASS, ROW_ID_PREFIX, None)
+        Self {
+            end_class: Some(GROUP_END_CLASS),
+            ..Self::of(LIST_ID, ROW_CLASS, ROW_ID_PREFIX, None)
+        }
+    }
+
+    /// The groups of the kept projects, dragged by their headers, which change the projects'
+    /// order.
+    fn projects() -> Self {
+        Self::of(
+            LIST_ID,
+            PROJECT_DRAG_CLASS,
+            KEPT_GROUP_ID_PREFIX,
+            Some(GROUP_HEAD_CLASS),
+        )
     }
 
     /// The floating blocks, dragged by their heads: their bodies hold buttons and text.
@@ -253,6 +291,7 @@ impl Settings {
             row_class,
             row_id_prefix,
             handle_class,
+            end_class: None,
             dragged_attribute: "data-dragged",
             ghost_class: "drag-ghost",
             dragging_class: "reordering",
@@ -270,6 +309,9 @@ impl Settings {
 struct Dropped {
     item: u32,
     before: Option<u32>,
+    /// The group whose end the row was dropped at, by its end marker's `data-end`.
+    #[serde(default)]
+    end: Option<String>,
 }
 
 /// The id of the sidebar row that shows `agent`.
@@ -297,7 +339,13 @@ pub fn use_reorder(cockpit: Cockpit) {
         follow_drops(Settings::sidebar(), "sidebar", move |dropped| {
             let agent = AgentId::new(dropped.item);
             let before = dropped.before.map(AgentId::new);
-            cockpit.change(|state| actions::drop_agent(state, agent, before));
+            let end = dropped.end.and_then(|end| end.parse::<ProjectKey>().ok());
+            cockpit.change(|state| actions::drop_agent(state, agent, before, end.as_ref()));
+        });
+        follow_drops(Settings::projects(), "projects", move |dropped| {
+            let project = ProjectId::new(dropped.item);
+            let before = dropped.before.map(ProjectId::new);
+            cockpit.update(|state| projects::reorder(state, project, before));
         });
         follow_drops(Settings::blocks(), "blocks", move |dropped| {
             let Some(block) = block_of(dropped.item) else {
@@ -345,6 +393,7 @@ mod tests {
                 "row_class": "agent-row",
                 "row_id_prefix": "agent-row-",
                 "handle_class": null,
+                "end_class": "group-end",
                 "dragged_attribute": "data-dragged",
                 "ghost_class": "drag-ghost",
                 "dragging_class": "reordering",
@@ -366,9 +415,19 @@ mod tests {
             Dropped {
                 item: 3,
                 before: Some(5),
+                end: None,
             }
         );
         assert_eq!(last.before, None);
+        let projects = serde_json::to_value(Settings::projects()).unwrap();
+        assert_eq!(projects["row_class"], "project-drag");
+        assert_eq!(projects["handle_class"], "machine-head");
+        let at_end: Dropped =
+            serde_json::from_str(r#"{"item":3,"before":null,"end":"kept:2"}"#).unwrap();
+        assert_eq!(
+            at_end.end.and_then(|end| end.parse::<ProjectKey>().ok()),
+            Some(ProjectKey::Kept(ProjectId::new(2)))
+        );
         assert_eq!(row_id(AgentId::new(12)), "agent-row-12");
     }
 

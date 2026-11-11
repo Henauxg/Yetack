@@ -27,7 +27,9 @@ use crate::ui::icons::{Icon, IconKind};
 use crate::ui::machines::THIS_COMPUTER;
 use crate::ui::notification_levels::{self as levels_ui, AppBell, LevelIcon};
 use crate::ui::presence::{Shown, use_presence};
-use crate::ui::reorder::{self, LIST_ID, ROW_CLASS};
+use crate::ui::reorder::{
+    self, GROUP_END_CLASS, KEPT_GROUP_ID_PREFIX, LIST_ID, PROJECT_DRAG_CLASS, ROW_CLASS,
+};
 use crate::ui::splitter::SIDEBAR_ID;
 use crate::{APP_NAME, format};
 
@@ -610,8 +612,18 @@ fn ProjectGroupView(group: ProjectGroup) -> Element {
         .map(|color| format!("--project: {color}"))
         .unwrap_or_default();
     let head = project_head_id(&project);
+    // Only a kept project has a place the user chose: a drag by its header moves it.
+    let (group_id, group_class) = match &project {
+        ProjectKey::Kept(id) => (
+            Some(format!("{KEPT_GROUP_ID_PREFIX}{}", id.get())),
+            format!("machine-group project-group {PROJECT_DRAG_CLASS}"),
+        ),
+        ProjectKey::Repository(_) | ProjectKey::None => {
+            (None, "machine-group project-group".to_owned())
+        }
+    };
     rsx! {
-        div { class: "machine-group project-group",
+        div { id: group_id, class: group_class,
             div { class: "project-head-row",
                 button {
                     id: head,
@@ -656,6 +668,7 @@ fn ProjectGroupView(group: ProjectGroup) -> Element {
                     AgentRowView { key: "{row.id.get()}", row }
                 }
             }
+            div { class: GROUP_END_CLASS, "data-end": "{key}", aria_hidden: true }
         }
     }
 }

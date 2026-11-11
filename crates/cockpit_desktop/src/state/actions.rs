@@ -22,6 +22,7 @@ use strum::VariantArray;
 use super::app_state::{AgentEntry, AppState, FileFreshness, FileRead, Loadable, MachineState};
 use super::apply::forget_agent;
 use super::drafts::{Drafts, NewAgentDraft, Palette, QuestionDraft, SlashWord, SwitcherDraft};
+use super::projects::ProjectKey;
 use super::requests::{Outgoing, Purpose, Shift, history_request};
 use super::transcript::HistoryState;
 use super::ui_state::{
@@ -30,8 +31,8 @@ use super::ui_state::{
 };
 use super::utf16_offset::Utf16Offset;
 use super::{
-    accounts, export, file_edits, file_reread, file_tree, grouping, open_file, quotes, sending,
-    title_emoji,
+    accounts, export, file_edits, file_reread, file_tree, grouping, open_file, projects, quotes,
+    sending, title_emoji,
 };
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::machine::MachineId;
@@ -1814,29 +1815,58 @@ pub fn move_agent(state: &mut AppState, agent: AgentId, before: Option<AgentId>)
     }]
 }
 
-/// Drops a dragged sidebar row just above the row of `before_row`, or below the last row when
-/// it is `None`. Hidden agents keep their places: a drop below the last row lands just under it.
+/// Drops a dragged sidebar row just above the row of `before_row`, or at the end of the project
+/// group `end`, or below the last row when both are `None`. Hidden agents keep their places: a
+/// drop below a last row lands just under it. Grouped by project, a drop in another group moves
+/// the agent to that project.
 pub fn drop_agent(
     state: &mut AppState,
     agent: AgentId,
     before_row: Option<AgentId>,
+    end: Option<&ProjectKey>,
 ) -> Vec<Outgoing> {
+    let by_project = state.prefs.sidebar.group_by == GroupBy::Project;
+    let target = match (end, before_row) {
+        _ if !by_project => None,
+        (Some(end), _) => Some(end.clone()),
+        (None, Some(row)) => state
+            .agents
+            .get(&row)
+            .map(|entry| projects::project_of(state, entry)),
+        (None, None) => None,
+    };
     let before = match before_row {
         Some(row) => Some(row),
         None => {
-            let shown = state.sidebar_agents();
-            let Some(last) = shown
+            let last = state
+                .sidebar_agents()
                 .iter()
                 .rev()
+                .filter(|entry| {
+                    target
+                        .as_ref()
+                        .is_none_or(|target| projects::project_of(state, entry) == *target)
+                })
                 .map(|entry| entry.id())
-                .find(|id| *id != agent)
-            else {
-                return Vec::new();
-            };
-            below_in_order(state, last, agent)
+                .find(|id| *id != agent);
+            match last {
+                Some(last) => below_in_order(state, last, agent),
+                None if target.is_some() => None,
+                None => return Vec::new(),
+            }
         }
     };
-    move_agent(state, agent, before)
+    let outgoing = move_agent(state, agent, before);
+    if let Some(target) = target {
+        let current = state
+            .agents
+            .get(&agent)
+            .map(|entry| projects::project_of(state, entry));
+        if current.as_ref() != Some(&target) {
+            projects::move_agent(state, agent, &target);
+        }
+    }
+    outgoing
 }
 
 /// Folds a machine's rows under its header in the sidebar, or unfolds them.
@@ -4556,7 +4586,7 @@ mod tests {
         let mut state = ordered();
         state.machines.this.connection = ConnectionState::Connecting { attempt: 2 };
 
-        let dropped = drop_agent(&mut state, AgentId::new(1), Some(AgentId::new(3)));
+        let dropped = drop_agent(&mut state, AgentId::new(1), Some(AgentId::new(3)), None);
         let pressed = move_selected(&mut state, Direction::Up);
 
         assert!(dropped.is_empty());
@@ -4624,8 +4654,8 @@ mod tests {
     fn a_row_dropped_below_the_last_one_goes_to_the_bottom() {
         let mut state = ordered();
 
-        let to_bottom = drop_agent(&mut state, AgentId::new(3), None);
-        let to_top = drop_agent(&mut state, AgentId::new(1), Some(AgentId::new(2)));
+        let to_bottom = drop_agent(&mut state, AgentId::new(3), None, None);
+        let to_top = drop_agent(&mut state, AgentId::new(1), Some(AgentId::new(2)), None);
 
         assert_eq!(sent_move(&to_bottom).and_then(|params| params.before), None);
         assert_eq!(
@@ -4690,8 +4720,8 @@ mod tests {
         let first_on_devbox = devbox.app_agent(AgentId::new(2));
         let last_on_devbox = devbox.app_agent(AgentId::new(1));
 
-        let below = drop_agent(&mut state, AgentId::new(3), Some(first_on_devbox));
-        let above = drop_agent(&mut state, last_on_devbox, Some(AgentId::new(1)));
+        let below = drop_agent(&mut state, AgentId::new(3), Some(first_on_devbox), None);
+        let above = drop_agent(&mut state, last_on_devbox, Some(AgentId::new(1)), None);
 
         let moved = |outgoing: &[Outgoing]| match outgoing.first().map(|outgoing| &outgoing.request)
         {
@@ -4934,7 +4964,7 @@ mod tests {
 
         let down = move_selected(&mut state, Direction::Down);
         let after_down = ids(&state.agents_in_order());
-        let dropped = drop_agent(&mut state, AgentId::new(1), None);
+        let dropped = drop_agent(&mut state, AgentId::new(1), None, None);
         state.ui.selected = Some(AgentId::new(2));
         let hidden = move_selected(&mut state, Direction::Up);
 

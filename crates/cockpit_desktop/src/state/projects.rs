@@ -449,6 +449,7 @@ mod tests {
 
     use super::*;
     use crate::prefs::GroupBy;
+    use crate::state::actions;
     use crate::state::app_state::tests::{state_with, summary};
 
     const BILLING: &str = "github.com/acme/billing";
@@ -477,6 +478,53 @@ mod tests {
 
     fn project(state: &AppState, id: u32) -> ProjectKey {
         project_of(state, &state.agents[&AgentId::new(id)])
+    }
+
+    fn order(state: &AppState) -> Vec<AgentId> {
+        state
+            .sidebar_order()
+            .iter()
+            .map(|entry| entry.id())
+            .collect()
+    }
+
+    /// Whether `upper` sits just above `lower` in the sidebar's order.
+    fn just_above(state: &AppState, upper: u32, lower: u32) -> bool {
+        let order = order(state);
+        let at = |id| order.iter().position(|agent| *agent == AgentId::new(id));
+        at(upper).map(|at| at + 1) == at(lower)
+    }
+
+    #[test]
+    fn a_drop_above_a_row_of_another_project_moves_the_agent_into_it() {
+        let mut state = agents();
+
+        actions::drop_agent(&mut state, AgentId::new(4), Some(AgentId::new(1)), None);
+
+        let billing = ProjectKey::Kept(state.prefs.projects.list[0].id);
+        assert_eq!(project(&state, 4), billing);
+        assert!(just_above(&state, 4, 1));
+    }
+
+    #[test]
+    fn a_drop_at_a_group_end_moves_the_agent_to_its_bottom() {
+        let mut state = agents();
+
+        actions::drop_agent(&mut state, AgentId::new(1), None, Some(&ProjectKey::None));
+
+        assert_eq!(project(&state, 1), ProjectKey::None);
+        assert!(just_above(&state, 4, 1));
+    }
+
+    #[test]
+    fn a_drop_in_the_same_group_keeps_no_choice() {
+        let mut state = agents();
+
+        actions::drop_agent(&mut state, AgentId::new(2), Some(AgentId::new(1)), None);
+
+        assert!(state.prefs.projects.agents.is_empty());
+        assert!(state.prefs.projects.list.is_empty());
+        assert!(just_above(&state, 2, 1));
     }
 
     #[test]

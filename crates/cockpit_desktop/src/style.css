@@ -1200,8 +1200,33 @@ button:disabled {
   display: contents;
 }
 
-.block-card[data-dragged] {
+.block-card[data-dragged],
+.project-group[data-dragged] {
   opacity: 0.35;
+}
+
+/* A project group's lifted copy shows its header alone, whatever the group's height. */
+.project-group.drag-ghost {
+  position: fixed;
+  z-index: 50;
+  height: auto !important;
+  overflow: hidden;
+  transform: translateX(24px) scale(1.02);
+  border-radius: 6px;
+  background: var(--raised);
+  box-shadow: var(--shadow);
+  pointer-events: none;
+  transition: none;
+  animation: lift var(--motion-in) var(--ease-out);
+}
+
+.project-group.drag-ghost .agent-row {
+  display: none;
+}
+
+/* The end of a project group, which a dragged row can land above. */
+.group-end {
+  height: 0;
 }
 
 /* A block's lifted copy, out of the blocks' box. */
