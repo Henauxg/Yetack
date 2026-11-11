@@ -9,6 +9,7 @@ use cockpit_protocol::{
     AccountId, AgentId, ClaudeSessionId, DirListing, Effort, Image, ItemId, PermissionMode,
 };
 use serde::Serialize;
+use strum::{EnumString, IntoStaticStr, VariantArray};
 
 use super::accounts::{AccountsView, AddAccountForm};
 use super::agent_map::MapView;
@@ -21,7 +22,23 @@ const MAX_ERRORS: usize = 4;
 
 /// The blocks at the top right of the chat. Each folds to one line, or becomes a badge when the
 /// file view is open.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// Its word names it in the preferences' order of the blocks, and its place in `VARIANTS` names
+/// its card for the drag script.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    EnumString,
+    IntoStaticStr,
+    VariantArray,
+)]
+#[strum(serialize_all = "snake_case")]
 pub enum Block {
     Tasks,
     /// The messages the user sent, and those Claude has not read yet.

@@ -1074,6 +1074,25 @@ button:disabled {
   opacity: 0.35;
 }
 
+/* A card's or a badge's keyed wrapper: the box lays out the card itself. */
+.block-slot {
+  display: contents;
+}
+
+.block-card[data-dragged] {
+  opacity: 0.35;
+}
+
+/* A block's lifted copy, out of the blocks' box. */
+.block-card.drag-ghost {
+  position: fixed;
+  z-index: 50;
+  transform: translateX(-12px) scale(1.02);
+  box-shadow: var(--shadow);
+  pointer-events: none;
+  transition: none;
+}
+
 .agent-row.drag-ghost {
   position: fixed;
   z-index: 50;

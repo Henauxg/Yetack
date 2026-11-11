@@ -1,6 +1,7 @@
 //! The blocks at the top right of the chat: tasks, the messages sent, background work and MCP
 //! servers. Each folds to one line. While the file view is open they become badges on the chat's
-//! right edge, and a click opens one as a popover.
+//! right edge, and a click opens one as a popover. A drag of a block's head, or Alt+Up and Alt+Down
+//! on it, moves it: every agent's blocks and badges follow the order.
 
 use std::cmp::Reverse;
 use std::time::{Duration, SystemTime};
@@ -12,18 +13,34 @@ use cockpit_protocol::{
 use dioxus::prelude::*;
 
 use crate::connection::{Clock, Cockpit};
-use crate::format;
 use crate::keymap::Command;
 use crate::machine::MachineId;
+use crate::state::actions::Direction;
 use crate::state::{Block, actions, agent_map};
 use crate::ui::chat_scroll::InView;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::mcp::{McpPanel, mcp_summary};
 use crate::ui::messages::{LastMessageToggle, MessagesBody};
+use crate::ui::reorder::block_id;
+use crate::{bridge, format};
 
 /// The floating blocks' box. The quotes' notes go below its cards.
 pub const BLOCKS_CLASS: &str = "blocks";
 pub const BLOCK_CARD_CLASS: &str = "block-card";
+
+/// The keyed wrapper of a card or a badge, which leaves the layout to them.
+const BLOCK_SLOT_CLASS: &str = "block-slot";
+
+/// The floating blocks' box, which the drag script finds the cards in.
+pub const BLOCKS_LIST_ID: &str = "floating-blocks";
+
+/// A block's head: a click folds the block, a drag moves it.
+pub const BLOCK_HEAD_CLASS: &str = "block-head";
+
+/// The id of `block`'s head, which keeps the focus as Alt+Up and Alt+Down move the block.
+fn block_head_id(block: Block) -> String {
+    format!("{}-head", block_id(block))
+}
 
 #[component]
 pub fn FloatingBlocks(in_view: Signal<Option<InView>>) -> Element {
@@ -100,14 +117,39 @@ pub fn FloatingBlocks(in_view: Signal<Option<InView>>) -> Element {
     let mcp_open = is_open(Block::Mcp);
     let has_tasks = !tasks.is_empty();
     let has_background = !background.is_empty();
+    let order = state.prefs.blocks.order();
+    // The cards drawn and the badges drawn, in order. Each loop item has one keyed root, so that
+    // a move keeps every card's state.
+    let cards: Vec<Block> = order
+        .iter()
+        .copied()
+        .filter(|block| match block {
+            Block::Tasks => show_tasks,
+            Block::Messages => show_messages,
+            Block::Running => show_running,
+            Block::Mcp => show_mcp,
+        })
+        .collect();
+    let badges: Vec<Block> = order
+        .iter()
+        .copied()
+        .filter(|block| match block {
+            Block::Tasks => has_tasks,
+            Block::Messages => has_messages,
+            Block::Running => has_background,
+            Block::Mcp => true,
+        })
+        .collect();
     let class = if badge_mode {
         format!("{BLOCKS_CLASS} beside-badges")
     } else {
         BLOCKS_CLASS.to_owned()
     };
     rsx! {
-        div { class,
-            if show_tasks {
+        div { id: BLOCKS_LIST_ID, class,
+            for block in cards.clone() {
+            div { key: "{block:?}", class: BLOCK_SLOT_CLASS,
+            if block == Block::Tasks {
                 BlockCard {
                     agent,
                     block: Block::Tasks,
@@ -119,10 +161,11 @@ pub fn FloatingBlocks(in_view: Signal<Option<InView>>) -> Element {
                     open: tasks_open,
                     badge_mode,
                     wide: false,
-                    TasksBody { tasks }
+                    shown: cards.clone(),
+                    TasksBody { tasks: tasks.clone() }
                 }
             }
-            if show_messages {
+            if block == Block::Messages {
                 BlockCard {
                     agent,
                     block: Block::Messages,
@@ -134,11 +177,12 @@ pub fn FloatingBlocks(in_view: Signal<Option<InView>>) -> Element {
                     open: messages_open,
                     badge_mode,
                     wide: false,
+                    shown: cards.clone(),
                     head_action: rsx! { LastMessageToggle {} },
-                    MessagesBody { agent, folder, waiting, in_view }
+                    MessagesBody { agent, folder: folder.clone(), waiting: waiting.clone(), in_view }
                 }
             }
-            if show_running {
+            if block == Block::Running {
                 BlockCard {
                     agent,
                     block: Block::Running,
@@ -150,10 +194,11 @@ pub fn FloatingBlocks(in_view: Signal<Option<InView>>) -> Element {
                     open: running_open,
                     badge_mode,
                     wide: false,
-                    RunningBody { agent, tasks: background, finished_rows, subagent_tasks }
+                    shown: cards.clone(),
+                    RunningBody { agent, tasks: background.clone(), finished_rows, subagent_tasks: subagent_tasks.clone() }
                 }
             }
-            if show_mcp {
+            if block == Block::Mcp {
                 BlockCard {
                     agent,
                     block: Block::Mcp,
@@ -165,22 +210,31 @@ pub fn FloatingBlocks(in_view: Signal<Option<InView>>) -> Element {
                     open: mcp_open,
                     badge_mode,
                     wide: mcp_wide,
-                    McpPanel { agent, alive, servers, hidden, view: mcp_view, machine }
+                    shown: cards.clone(),
+                    McpPanel { agent, alive, servers: servers.clone(), hidden: hidden.clone(), view: mcp_view.clone(), machine: machine.clone() }
                 }
+            }
+            }
             }
         }
         if badge_mode {
             div { class: "badges", role: "toolbar", aria_label: "Agent activity", aria_orientation: "vertical",
-                if has_tasks {
-                    Badge { agent, block: Block::Tasks, pressed: badge == Some(Block::Tasks), icon: IconKind::Tasks, running: false, text: tasks_badge, label: "Tasks, {tasks_summary} done", alert: false }
+                for block in badges {
+                div { key: "{block:?}", class: BLOCK_SLOT_CLASS,
+                if block == Block::Tasks {
+                    Badge { agent, block: Block::Tasks, pressed: badge == Some(Block::Tasks), icon: IconKind::Tasks, running: false, text: tasks_badge.clone(), label: "Tasks, {tasks_summary} done", alert: false }
                 }
-                if has_messages {
+                if block == Block::Messages {
                     Badge { agent, block: Block::Messages, pressed: badge == Some(Block::Messages), icon: IconKind::Message, running: false, text: sent.to_string(), label: "Messages, {messages_label}", alert: false }
                 }
-                if has_background {
-                    Badge { agent, block: Block::Running, pressed: badge == Some(Block::Running), icon: background_head.icon(), running: background_head.running, text: background_head.badge, label: "{background_head.label}, {background_head.summary}", alert: false }
+                if block == Block::Running {
+                    Badge { agent, block: Block::Running, pressed: badge == Some(Block::Running), icon: background_head.icon(), running: background_head.running, text: background_head.badge.clone(), label: "{background_head.label}, {background_head.summary}", alert: false }
                 }
-                Badge { agent, block: Block::Mcp, pressed: badge == Some(Block::Mcp), icon: IconKind::Plug, running: false, text: "MCP", label: "MCP servers, {mcp_text}", alert: mcp_alert }
+                if block == Block::Mcp {
+                    Badge { agent, block: Block::Mcp, pressed: badge == Some(Block::Mcp), icon: IconKind::Plug, running: false, text: "MCP", label: "MCP servers, {mcp_text}", alert: mcp_alert }
+                }
+                }
+                }
             }
         }
     }
@@ -257,6 +311,8 @@ fn BlockCard(
     wide: bool,
     /// A control at the end of the head, beside the button that folds the block.
     head_action: Option<Element>,
+    /// The blocks this agent shows, in order, which Alt+Up and Alt+Down move past.
+    shown: Vec<Block>,
     children: Element,
 ) -> Element {
     let cockpit: Cockpit = use_context();
@@ -268,12 +324,31 @@ fn BlockCard(
         class.push("running-block");
     }
     rsx! {
-        section { class: class.join(" "), aria_label: "{title}",
+        section { id: block_id(block), class: class.join(" "), aria_label: "{title}",
             div { class: if open { "block-head-row open" } else { "block-head-row" },
                 button {
-                    class: "block-head",
+                    id: block_head_id(block),
+                    class: BLOCK_HEAD_CLASS,
                     aria_expanded: open,
+                    title: "Drag, or Alt+Up and Alt+Down, to move the block",
+                    // Alt+Up and Alt+Down move the block here, not the selected agent. A badge's card
+                    // shows alone, with nothing to move past.
+                    "data-own-moves": (!badge_mode).then_some(true),
                     onclick: move |_| cockpit.change(|state| actions::toggle_block(state, agent, block)),
+                    onkeydown: move |event| {
+                        let modifiers = event.modifiers();
+                        if !modifiers.alt() || modifiers.ctrl() || modifiers.shift() || modifiers.meta() {
+                            return;
+                        }
+                        let direction = match event.key() {
+                            Key::ArrowUp => Direction::Up,
+                            Key::ArrowDown => Direction::Down,
+                            _ => return,
+                        };
+                        event.prevent_default();
+                        cockpit.update(|state| actions::step_block(state, block, direction, &shown));
+                        bridge::keep_focus(block_head_id(block));
+                    },
                     span { class: "block-icon", Icon { kind: icon, size: 14 } }
                     span { class: "block-title", "{title}" }
                     if alert {

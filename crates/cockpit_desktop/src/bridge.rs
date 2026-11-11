@@ -206,6 +206,11 @@ document.addEventListener("keydown", (event) => {
   const bound = mode.bindings.find((binding) => binding.key === pressed && binding.ctrl === command
     && binding.alt === event.altKey && binding.shift === event.shiftKey);
   const titleField = target !== null && settings.title_field_ids.includes(target.id);
+  // A block's head moves the block with Alt+Up and Alt+Down, rather than the selected agent.
+  const moves = event.altKey && !command && !event.shiftKey && (key === "ArrowUp" || key === "ArrowDown");
+  if (moves && target !== null && target.closest("[data-own-moves]") !== null) {
+    return;
+  }
   let take = false;
   if (bound !== undefined) {
     take = bound.reach === "everywhere"
@@ -324,6 +329,19 @@ for (let frame = 0; frame < 30; frame++) {
 const FOCUS_SCRIPT: &str = r#"
 const field_id = await dioxus.recv();
 document.getElementById(field_id)?.focus();
+"#;
+
+/// Gives the focus back to the element whose id it receives when it lost it, at each of the next 10
+/// frames, about 160 ms.
+const KEEP_FOCUS_SCRIPT: &str = r#"
+const id = await dioxus.recv();
+for (let frame = 0; frame < 10; frame++) {
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  const element = document.getElementById(id);
+  if (element !== null && document.activeElement !== element) {
+    element.focus();
+  }
+}
 "#;
 
 /// Gives the focus to the field whose id it receives, the caret at the end of its text.
@@ -620,6 +638,15 @@ pub fn focus_element(element_id: String) {
     let script = document::eval(FOCUS_SCRIPT);
     if let Err(error) = script.send(&element_id) {
         tracing::warn!("cannot focus {element_id}: {error}");
+    }
+}
+
+/// Keeps the focus on the element whose id it gets for the next frames: an element a render moves
+/// loses the focus, and the render reaches the page at a time no script knows.
+pub fn keep_focus(element_id: String) {
+    let script = document::eval(KEEP_FOCUS_SCRIPT);
+    if let Err(error) = script.send(&element_id) {
+        tracing::warn!("cannot keep the focus on {element_id}: {error}");
     }
 }
 

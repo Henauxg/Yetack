@@ -1494,6 +1494,44 @@ pub fn reset_sidebar_width(state: &mut AppState) {
     state.prefs.sidebar.width = None;
 }
 
+/// Moves `block` just above `before`, or below the others with `None`. Every agent's blocks and
+/// badges follow the order, which the preferences keep.
+pub fn drop_block(state: &mut AppState, block: Block, before: Option<Block>) {
+    let mut order = state.prefs.blocks.order();
+    order.retain(|other| *other != block);
+    let at = before
+        .and_then(|before| order.iter().position(|other| *other == before))
+        .unwrap_or(order.len());
+    order.insert(at, block);
+    state.prefs.blocks.set_order(&order);
+}
+
+/// Moves `block` past the next block up or down among `shown`, the blocks the agent shows, as
+/// Alt+Up and Alt+Down on its head do. A block the agent does not show keeps its place.
+pub fn step_block(state: &mut AppState, block: Block, direction: Direction, shown: &[Block]) {
+    let Some(at) = shown.iter().position(|other| *other == block) else {
+        return;
+    };
+    let neighbour = match direction {
+        Direction::Up => at.checked_sub(1).and_then(|to| shown.get(to)),
+        Direction::Down => shown.get(at + 1),
+    };
+    let Some(&neighbour) = neighbour else {
+        return;
+    };
+    let mut order = state.prefs.blocks.order();
+    order.retain(|other| *other != block);
+    let Some(next_to) = order.iter().position(|other| *other == neighbour) else {
+        return;
+    };
+    let to = match direction {
+        Direction::Up => next_to,
+        Direction::Down => next_to + 1,
+    };
+    order.insert(to, block);
+    state.prefs.blocks.set_order(&order);
+}
+
 /// Folds or unfolds a floating block, or opens its badge's popover while the file view is open.
 /// Opening the MCP servers asks Claude Code for their status.
 pub fn toggle_block(state: &mut AppState, agent: AgentId, block: Block) -> Vec<Outgoing> {
@@ -2237,6 +2275,49 @@ mod tests {
     use crate::state::ui_state::{ClosedAgent, NoteKind};
 
     const AGENT: u32 = 1;
+
+    #[test]
+    fn the_blocks_keep_the_messages_last_until_one_moves() {
+        use Block::{Mcp, Messages, Running, Tasks};
+        let mut state = state_with(Vec::new());
+        let order = |state: &AppState| state.prefs.blocks.order();
+        assert_eq!(order(&state), [Tasks, Running, Mcp, Messages]);
+
+        drop_block(&mut state, Messages, Some(Tasks));
+        assert_eq!(order(&state), [Messages, Tasks, Running, Mcp]);
+        drop_block(&mut state, Tasks, None);
+        assert_eq!(order(&state), [Messages, Running, Mcp, Tasks]);
+
+        let all = [Messages, Running, Mcp, Tasks];
+        step_block(&mut state, Tasks, Direction::Down, &all);
+        step_block(&mut state, Messages, Direction::Up, &all);
+        assert_eq!(order(&state), [Messages, Running, Mcp, Tasks]);
+        step_block(&mut state, Mcp, Direction::Up, &all);
+        assert_eq!(order(&state), [Messages, Mcp, Running, Tasks]);
+    }
+
+    #[test]
+    fn a_step_passes_the_next_block_shown() {
+        use Block::{Mcp, Messages, Running, Tasks};
+        let mut state = state_with(Vec::new());
+        // Nothing runs in the background: Running does not show.
+        let shown = |state: &AppState| -> Vec<Block> {
+            let mut order = state.prefs.blocks.order();
+            order.retain(|block| *block != Running);
+            order
+        };
+        let step = |state: &mut AppState, block: Block, direction: Direction| {
+            let blocks = shown(state);
+            step_block(state, block, direction, &blocks);
+        };
+
+        step(&mut state, Tasks, Direction::Down);
+        assert_eq!(state.prefs.blocks.order(), [Running, Mcp, Tasks, Messages]);
+        step(&mut state, Tasks, Direction::Up);
+        assert_eq!(state.prefs.blocks.order(), [Running, Tasks, Mcp, Messages]);
+        step(&mut state, Running, Direction::Up);
+        assert_eq!(state.prefs.blocks.order(), [Running, Tasks, Mcp, Messages]);
+    }
 
     /// Agents 3, 2 and 1 from the top, 1024 apart, with agent 2 selected.
     fn ordered() -> AppState {

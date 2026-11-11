@@ -18,6 +18,9 @@
 //!     },
 //!     "width": 280
 //!   },
+//!   "blocks": {
+//!     "order": ["running", "tasks", "mcp", "messages"]
+//!   },
 //!   "accounts": {
 //!     "colors": {
 //!       "build-box": { "1": "violet" }
@@ -58,6 +61,7 @@ use strum::{EnumString, IntoStaticStr, VariantArray};
 use crate::config::Environment;
 use crate::connection::Cockpit;
 use crate::keymap::Keymap;
+use crate::state::Block;
 
 pub const PREFS_FOLDER: &str = "agents-cockpit-desktop";
 const PREFS_FILE: &str = "prefs.json";
@@ -75,6 +79,7 @@ pub struct Prefs {
     pub file_view: FileViewPrefs,
     pub sidebar: SidebarPrefs,
     pub files_pane: FilesPanePrefs,
+    pub blocks: BlocksPrefs,
     pub accounts: AccountPrefs,
     pub notifications: NotificationPrefs,
     pub chat: ChatPrefs,
@@ -336,6 +341,44 @@ impl SidebarPrefs {
     /// The sidebar's width in pixels.
     pub fn width(&self) -> u16 {
         self.width.unwrap_or(DEFAULT_SIDEBAR_WIDTH)
+    }
+}
+
+/// The floating blocks at the chat's top right.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BlocksPrefs {
+    /// Their order, top to bottom, by their words. Empty keeps the default order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub order: Vec<String>,
+}
+
+/// The blocks' order until the user moves one: the messages sent come last.
+pub const DEFAULT_BLOCK_ORDER: [Block; 4] =
+    [Block::Tasks, Block::Running, Block::Mcp, Block::Messages];
+
+impl BlocksPrefs {
+    /// Every block once, top to bottom. A word from another version of the app is skipped, and a
+    /// block the saved order lacks takes its default place after the others.
+    pub fn order(&self) -> Vec<Block> {
+        let mut order: Vec<Block> = Vec::with_capacity(DEFAULT_BLOCK_ORDER.len());
+        let saved = self
+            .order
+            .iter()
+            .filter_map(|word| word.parse::<Block>().ok());
+        for block in saved.chain(DEFAULT_BLOCK_ORDER) {
+            if !order.contains(&block) {
+                order.push(block);
+            }
+        }
+        order
+    }
+
+    pub fn set_order(&mut self, order: &[Block]) {
+        self.order = order
+            .iter()
+            .map(|block| <&str>::from(*block).to_owned())
+            .collect();
     }
 }
 
@@ -703,6 +746,14 @@ mod tests {
     },
     "width": 280
   },
+  "blocks": {
+    "order": [
+      "running",
+      "tasks",
+      "mcp",
+      "messages"
+    ]
+  },
   "accounts": {
     "colors": {
       "build-box": {
@@ -753,6 +804,11 @@ mod tests {
                         BTreeMap::from([(AgentId::new(4), PaneState::Closed)]),
                     )]),
                     width: Some(280),
+                },
+                blocks: BlocksPrefs {
+                    order: ["running", "tasks", "mcp", "messages"]
+                        .map(str::to_owned)
+                        .to_vec(),
                 },
                 accounts: AccountPrefs {
                     colors: BTreeMap::from([(
@@ -944,6 +1000,20 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_block_order_skips_unknown_words_and_ends_with_the_missing_blocks() {
+        let blocks = BlocksPrefs {
+            order: ["mcp", "timeline", "mcp", "messages"]
+                .map(str::to_owned)
+                .to_vec(),
+        };
+
+        assert_eq!(
+            blocks.order(),
+            [Block::Mcp, Block::Messages, Block::Tasks, Block::Running]
+        );
+    }
+
+    #[test]
     fn a_width_out_of_range_is_dropped() {
         let temp = tempfile::tempdir().unwrap();
         let file = temp.path().join(PREFS_FILE);
@@ -980,6 +1050,7 @@ mod tests {
                 agents: BTreeMap::new(),
                 width: Some(300),
             },
+            blocks: BlocksPrefs::default(),
             accounts: AccountPrefs::default(),
             notifications: NotificationPrefs::default(),
             chat: ChatPrefs::default(),
@@ -1021,6 +1092,7 @@ mod tests {
                 agents: BTreeMap::new(),
                 width: Some(300),
             },
+            blocks: BlocksPrefs::default(),
             accounts: AccountPrefs::default(),
             notifications: NotificationPrefs::default(),
             chat: ChatPrefs::default(),
