@@ -72,7 +72,8 @@ const gapBelow = () => column.getBoundingClientRect().bottom - box.getBoundingCl
 // An entry's wrapper has padding past the entry: its last element shows the entry, after the
 // "New" divider when it has one.
 const shown = (entry) => entry.lastElementChild;
-const firstInView = () => {
+// The first entry whose bottom is lower than `below` pixels under the view's top.
+const firstInView = (below = 0) => {
   const entries = column.getElementsByClassName(settings.entry_class);
   const top = boxTop();
   let low = 0;
@@ -80,7 +81,7 @@ const firstInView = () => {
   while (low < high) {
     const middle = (low + high) >> 1;
     const element = shown(entries[middle]);
-    if (element !== null && element.getBoundingClientRect().bottom <= top) {
+    if (element !== null && element.getBoundingClientRect().bottom <= top + below) {
       low = middle + 1;
     } else {
       high = middle;
@@ -118,7 +119,9 @@ const report = () => {
     reported = now;
     dioxus.send({ type: "at_bottom", agent: Number(agent), at_bottom: following });
   }
-  const top = itemOf(firstInView());
+  // A revealed entry's top lands `reveal_top_px` under the view's top: the entry above it, whose
+  // bottom shows in that gap, is not the one in view.
+  const top = itemOf(firstInView(settings.reveal_top_px));
   const bottom = itemOf(lastInView());
   const view = `${agent} ${top} ${bottom}`;
   if (view !== reportedView) {

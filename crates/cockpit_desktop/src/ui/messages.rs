@@ -1,6 +1,6 @@
 //! The Messages block: the messages the user sent to the agent, oldest first with their times,
-//! then the prompts Claude has not read yet. The block marks the latest message on screen, or the
-//! one the screen answers. A click on a sent message scrolls the chat to it. The eye in the
+//! then the prompts Claude has not read yet. The block marks the message being read: at the chat's
+//! bottom the latest one on screen, scrolled up the one whose answer shows at the top. A click on a sent message scrolls the chat to it. The eye in the
 //! block's head shows or hides the last message over the chat.
 
 use std::path::PathBuf;
@@ -69,12 +69,14 @@ pub fn MessagesBody(
     let Clock(now) = use_context::<Clock>();
     let now = now();
     let rows = use_sent_rows(cockpit);
-    // The latest message on screen, or else the one the entries in view answer.
     let marked = use_memo(move || {
         let view = in_view()?;
         let state = cockpit.state.read();
         let entry = state.selected().filter(|entry| entry.id() == view.agent)?;
-        entry.transcript.message_at(view.bottom)
+        let scrolled_up = state.ui.chat_scrolled_up.contains_key(&view.agent);
+        entry
+            .transcript
+            .message_read(view.top, view.bottom, scrolled_up)
     });
     let marked = marked();
     let rows = rows()
