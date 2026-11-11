@@ -2244,8 +2244,8 @@ html.reordering * {
   cursor: default;
 }
 
-/* An image you zoom with Ctrl+wheel. It fits its frame at first, and the frame cuts what the zoom
-   pushes out. */
+/* An image you zoom with Ctrl+wheel. At first a large image fits its frame and a small one keeps
+   its own size. The frame cuts what the zoom pushes out. */
 .zoom-frame {
   flex: 1 1 auto;
   width: 100%;
@@ -2267,7 +2267,7 @@ html.reordering * {
   display: block;
   width: 100%;
   height: 100%;
-  object-fit: contain;
+  object-fit: scale-down;
   user-select: none;
 }
 
@@ -5865,11 +5865,6 @@ html.splitting * {
 
 .file-image .zoom-frame.opens:hover {
   border-color: var(--line-control);
-}
-
-/* A small image keeps its own size in the file view. */
-.file-image .zoom-layer > img {
-  object-fit: scale-down;
 }
 
 .file-note {

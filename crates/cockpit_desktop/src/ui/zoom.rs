@@ -1,6 +1,6 @@
-//! An image you zoom with Ctrl+wheel, around the pointer, and drag once zoomed. A double-click or
-//! Ctrl+0 fits it again. A click on the fitted image runs `on_click`, which the file view uses to
-//! open the full view.
+//! An image you zoom with Ctrl+wheel, around the pointer, and drag once zoomed. At first a large
+//! image fits its frame and a small one keeps its own size: a double-click or Ctrl+0 shows it so
+//! again. A click on it unzoomed runs `on_click`, which the file view uses to open the full view.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -12,7 +12,8 @@ use dioxus::prelude::*;
 
 use crate::bridge;
 
-/// The image fills its frame at 1, and goes no further than 8 times that.
+/// The image's first size is 1: fitted to its frame when large, its own size when small. It goes no
+/// further than 8 times that.
 const MIN_SCALE: f64 = 1.0;
 const MAX_SCALE: f64 = 8.0;
 
@@ -30,7 +31,7 @@ const KEY_ZOOM: f64 = 1.25;
 const DRAG_THRESHOLD: f64 = 4.0;
 
 /// Where the image is in its frame: scaled by `scale` from the frame's top left corner, then
-/// moved by `offset`. It always covers the frame it fills at 1.
+/// moved by `offset`. The layer that holds it always covers the frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Zoom {
     scale: f64,
@@ -119,7 +120,8 @@ impl Press {
     }
 }
 
-/// The image, fitted to its frame, which the style sheet sizes.
+/// The image, fitted to its frame when large, at its own size when small. The style sheet sizes the
+/// frame.
 #[component]
 pub fn ZoomImage(
     image: Arc<Image>,
