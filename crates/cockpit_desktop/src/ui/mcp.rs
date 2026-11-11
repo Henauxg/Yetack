@@ -11,6 +11,7 @@ use dioxus::prelude::*;
 use crate::connection::Cockpit;
 use crate::format;
 use crate::state::{McpView, ToolFilter, actions};
+use crate::ui::blocks::KEPT_ROWS;
 use crate::ui::icons::{Icon, IconKind};
 
 /// The red dot on the folded block or the badge, and the block's one-line summary. A hidden
@@ -106,7 +107,7 @@ fn McpList(servers: Vec<McpServer>, hidden: BTreeSet<String>, show_hidden: bool)
         "No server hidden".to_owned()
     };
     rsx! {
-        div { class: "mcp-list",
+        div { class: "mcp-list", "data-kept-rows": KEPT_ROWS,
             if shown.is_empty() {
                 span { class: "block-note", "Claude Code reports no MCP server." }
             }

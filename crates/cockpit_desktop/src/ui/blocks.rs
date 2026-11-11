@@ -11,6 +11,7 @@ use cockpit_protocol::{
     BackgroundTaskStatus, ItemId, TaskListItem, TaskStatus,
 };
 use dioxus::prelude::*;
+use serde::Serialize;
 
 use crate::connection::{Clock, Cockpit};
 use crate::keymap::Command;
@@ -28,6 +29,75 @@ use crate::{bridge, format};
 pub const BLOCKS_CLASS: &str = "blocks";
 pub const BLOCK_CARD_CLASS: &str = "block-card";
 
+/// The rows of its list a card keeps in sight when a short window shrinks it: its list marked
+/// `data-kept-rows` shrinks and scrolls, and the rest of the card keeps its size.
+pub const KEPT_ROWS: usize = 2;
+
+/// Keeps each marked list at least as tall as its first rows, and its card as tall as the card
+/// with the list at that height. The rows' heights depend on the width and on wrapping, which only
+/// the page knows. Message fields are serde's names for `KeptRowsSettings`.
+const KEPT_ROWS_SCRIPT: &str = r#"
+const settings = await dioxus.recv();
+if (!window.agentsCockpitKeptRows) {
+  window.agentsCockpitKeptRows = true;
+  const selector = `[${settings.attribute}]`;
+  const px = (value) => `${Math.ceil(value)}px`;
+  const measure = (list) => {
+    const card = list.closest(`.${settings.card_class}`);
+    if (card === null) {
+      return;
+    }
+    const count = Number(list.getAttribute(settings.attribute));
+    const rows = Array.from(list.children).slice(0, count);
+    const gap = parseFloat(getComputedStyle(list).rowGap) || 0;
+    const kept = rows.reduce((sum, row) => sum + row.getBoundingClientRect().height, 0)
+      + gap * Math.max(0, rows.length - 1);
+    // The list scrolls on its own: the card's height holds the list's, not its rows'.
+    const listMin = px(kept);
+    const cardMin = px(card.scrollHeight - list.getBoundingClientRect().height + kept);
+    if (list.style.minHeight !== listMin) {
+      list.style.minHeight = listMin;
+    }
+    if (card.style.minHeight !== cardMin) {
+      card.style.minHeight = cardMin;
+    }
+  };
+  const measureAll = () => document.querySelectorAll(selector).forEach(measure);
+  const sizes = new ResizeObserver(measureAll);
+  new MutationObserver(() => {
+    sizes.disconnect();
+    document.querySelectorAll(selector).forEach((list) => {
+      sizes.observe(list);
+      const card = list.closest(`.${settings.card_class}`);
+      if (card !== null) {
+        sizes.observe(card);
+      }
+    });
+    measureAll();
+  }).observe(document.body, { childList: true, subtree: true });
+}
+"#;
+
+#[derive(Serialize)]
+struct KeptRowsSettings {
+    attribute: &'static str,
+    card_class: &'static str,
+}
+
+fn start_kept_rows_script() {
+    let script = document::eval(KEPT_ROWS_SCRIPT);
+    let settings = KeptRowsSettings {
+        attribute: KEPT_ROWS_ATTRIBUTE,
+        card_class: BLOCK_CARD_CLASS,
+    };
+    if let Err(error) = script.send(settings) {
+        tracing::warn!("cannot start the script that keeps the blocks' first rows: {error}");
+    }
+}
+
+/// The attribute that marks a card's list, whose value is how many of its rows the card keeps.
+pub const KEPT_ROWS_ATTRIBUTE: &str = "data-kept-rows";
+
 /// The keyed wrapper of a card or a badge, which leaves the layout to them.
 const BLOCK_SLOT_CLASS: &str = "block-slot";
 
@@ -42,12 +112,10 @@ fn block_head_id(block: Block) -> String {
     format!("{}-head", block_id(block))
 }
 
-/// The rows the Messages list keeps in sight when a short window shrinks its card.
-const KEPT_ROWS: usize = 2;
-
 #[component]
 pub fn FloatingBlocks(in_view: Signal<Option<InView>>) -> Element {
     let cockpit: Cockpit = use_context();
+    use_hook(start_kept_rows_script);
     let state = cockpit.state.read();
     let Some(entry) = state.selected() else {
         return rsx! {};
@@ -182,7 +250,6 @@ pub fn FloatingBlocks(in_view: Signal<Option<InView>>) -> Element {
                     wide: false,
                     shown: cards.clone(),
                     head_action: rsx! { LastMessageToggle {} },
-                    kept_rows: messages_open.then(|| (sent + waiting.len()).min(KEPT_ROWS)),
                     MessagesBody { agent, folder: folder.clone(), waiting: waiting.clone(), in_view }
                 }
             }
@@ -317,9 +384,6 @@ fn BlockCard(
     head_action: Option<Element>,
     /// The blocks this agent shows, in order, which Alt+Up and Alt+Down move past.
     shown: Vec<Block>,
-    /// A card whose list scrolls: in a short window it shrinks before the column has to scroll,
-    /// down to this many rows of its list.
-    kept_rows: Option<usize>,
     children: Element,
 ) -> Element {
     let cockpit: Cockpit = use_context();
@@ -330,15 +394,8 @@ fn BlockCard(
     if running {
         class.push("running-block");
     }
-    if kept_rows.is_some() {
-        class.push("shrinks");
-    }
     rsx! {
-        section {
-            id: block_id(block),
-            class: class.join(" "),
-            style: kept_rows.map(|rows| format!("--kept-rows: {rows}")),
-            aria_label: "{title}",
+        section { id: block_id(block), class: class.join(" "), aria_label: "{title}",
             div { class: if open { "block-head-row open" } else { "block-head-row" },
                 button {
                     id: block_head_id(block),
@@ -421,7 +478,7 @@ fn TasksBody(tasks: Vec<TaskListItem>) -> Element {
     let percent = done * 100 / tasks.len().max(1);
     rsx! {
         div { class: "bar small", div { class: "bar-fill done", style: "width: {percent}%" } }
-        div { class: "task-list", role: "list",
+        div { class: "task-list", role: "list", "data-kept-rows": KEPT_ROWS,
             for (index, task) in tasks.into_iter().enumerate() {
                 {
                     let (class, words) = match task.status {
@@ -555,7 +612,7 @@ fn RunningBody(
     };
     let map_keys = cockpit.state.read().prefs.keys.shown(Command::AgentMap);
     rsx! {
-        div { class: "running-list scroll",
+        div { class: "running-list scroll", "data-kept-rows": KEPT_ROWS,
             for task in tasks {
                 {
                     let meta = task_meta(&task, now);

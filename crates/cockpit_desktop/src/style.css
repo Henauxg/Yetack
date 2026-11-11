@@ -3546,33 +3546,33 @@ html.reordering * {
   overscroll-behavior: contain;
 }
 
-/* The Messages card's list scrolls. In a short window the card shrinks to the room the other cards
-   leave, down to its head, and its list keeps its latest rows in sight. */
-.block-card.shrinks,
-.message-list {
-  /* A row's content (two lines of text, their gap and the padding) takes 45px. */
-  --message-row: 46px;
-}
-
-.block-card.shrinks {
+/* In a short window the open cards with a list share the column's height before it has to scroll:
+   each list shrinks down to its first rows and scrolls, the rest of its card keeps its size. The
+   blocks' script sets the lists' and the cards' least heights from the rows it measures. */
+.blocks .block-card:has([data-kept-rows]) {
   flex: 0 1 auto;
-  min-height: calc(var(--block-head-height) + var(--block-padding)
-    + var(--kept-rows, 0) * var(--message-row));
+  min-height: var(--block-head-height);
   overflow: hidden;
 }
 
-.block-card.shrinks > .block-head-row {
-  flex: none;
-}
-
-.block-card.shrinks > .block-body,
-.block-card.shrinks .message-list {
+.blocks .block-card:has([data-kept-rows]) > .block-body {
   flex: 0 1 auto;
   min-height: 0;
 }
 
-.block-card.shrinks .message-list {
-  min-height: calc(var(--kept-rows, 0) * var(--message-row));
+.blocks .block-card:has([data-kept-rows]) > *,
+.blocks .block-card:has([data-kept-rows]) > .block-body > * {
+  flex: none;
+}
+
+.blocks .block-card:has([data-kept-rows]) > .block-body > [data-kept-rows] {
+  flex: 0 1 auto;
+}
+
+.blocks [data-kept-rows] {
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
 .message-row {
@@ -3626,7 +3626,6 @@ html.reordering * {
   flex-direction: column;
   gap: 1px;
   width: 100%;
-  height: var(--message-row);
   padding: 5px 6px;
   border: 0;
   border-radius: 7px;
