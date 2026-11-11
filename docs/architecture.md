@@ -516,10 +516,11 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
 ## Client (`cockpit_client`)
 
 - `Transport::Local { socket }` connects to the socket.
-- `Transport::Ssh { host, remote_command }` runs `ssh -T -x -o BatchMode=yes -o ForwardAgent=no -o ClearAllForwardings=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -- <host> '<remote_command>' bridge`.
+- `Transport::Ssh { host, remote_command }` runs `ssh -T -x -o BatchMode=yes -o ForwardAgent=no -o ClearAllForwardings=yes -o ControlPath=none -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -- <host> '<remote_command>' bridge`.
   The keepalives end ssh after a minute of silence, so a dead link shows as a lost connection.
   `BatchMode` makes a missing key fail at once instead of waiting for a password the app cannot show.
   `ForwardAgent=no`, `-x` and `ClearAllForwardings=yes` open no agent, X11 or port forwarding to the laptop, even when the user's ssh config asks for one.
+  `ControlPath=none` keeps the app out of ssh connection sharing, even when the user's config sets `ControlMaster`. The app never joins the user's shared connection and never hosts one, so neither cuts the other off, and the user's port forwards never run in the app's ssh process. `ControlMaster=no` would not do: ssh still joins an existing master unless `ControlPath` is `none`. A `ProxyJump` host in the user's config is reached by a second ssh, which these options do not reach: that hop can still share a connection.
   `--` keeps ssh from reading the host or the remote command as an option, and the quotes keep the host's shell from reading anything in the remote command.
 - `Transport::InApp(InAppLink)` reaches a daemon in the same process.
   Each connection opens a `tokio::io::duplex` stream and sends the daemon its other end through the link's channel. A link whose daemon has stopped fails with `ConnectError::InAppStopped`.
