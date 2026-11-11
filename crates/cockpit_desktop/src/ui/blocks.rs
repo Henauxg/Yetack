@@ -40,47 +40,80 @@ const KEPT_ROWS_SCRIPT: &str = r#"
 const settings = await dioxus.recv();
 if (!window.agentsCockpitKeptRows) {
   window.agentsCockpitKeptRows = true;
-  const selector = `[${settings.attribute}]`;
   const px = (value) => `${Math.ceil(value)}px`;
+  const cardOf = (list) => list.closest(`.${settings.card_class}`);
+  const keptRows = (list) => Array.from(list.children).slice(0, Number(list.getAttribute(settings.attribute)));
+  const marked = () => {
+    const blocks = document.getElementById(settings.blocks_id);
+    return blocks === null ? [] : Array.from(blocks.querySelectorAll(`[${settings.attribute}]`))
+      .filter((list) => cardOf(list) !== null);
+  };
+  // The height `parent` takes around `children` stacked in a column, `inner` among them counted
+  // `innerHeight` tall. It adds up the parts: a shrunk card's height and overflow fall short.
+  const columnHeight = (parent, children, inner = null, innerHeight = 0) => {
+    const style = getComputedStyle(parent);
+    const edges = ["paddingTop", "paddingBottom", "borderTopWidth", "borderBottomWidth"]
+      .reduce((sum, edge) => sum + parseFloat(style[edge]), 0);
+    const gap = parseFloat(style.rowGap) || 0;
+    return children.reduce((sum, child) => sum + (child === inner ? innerHeight : child.getBoundingClientRect().height), edges)
+      + gap * Math.max(0, children.length - 1);
+  };
+  // The cards given a least height. A card that folds, or shows no list, loses it.
+  const sized = new Set();
   const measure = (list) => {
-    const card = list.closest(`.${settings.card_class}`);
-    if (card === null) {
-      return;
+    const card = cardOf(list);
+    const kept = Math.ceil(columnHeight(list, keptRows(list)));
+    let height = kept;
+    for (let element = list; element !== card; element = element.parentElement) {
+      const parent = element.parentElement;
+      height = columnHeight(parent, Array.from(parent.children), element, height);
     }
-    const count = Number(list.getAttribute(settings.attribute));
-    const rows = Array.from(list.children).slice(0, count);
-    const gap = parseFloat(getComputedStyle(list).rowGap) || 0;
-    const kept = rows.reduce((sum, row) => sum + row.getBoundingClientRect().height, 0)
-      + gap * Math.max(0, rows.length - 1);
-    // The list scrolls on its own: the card's height holds the list's, not its rows'.
     const listMin = px(kept);
-    const cardMin = px(card.scrollHeight - list.getBoundingClientRect().height + kept);
+    const cardMin = px(height);
     if (list.style.minHeight !== listMin) {
       list.style.minHeight = listMin;
     }
     if (card.style.minHeight !== cardMin) {
       card.style.minHeight = cardMin;
     }
+    sized.add(card);
   };
-  const measureAll = () => document.querySelectorAll(selector).forEach(measure);
-  const sizes = new ResizeObserver(measureAll);
-  new MutationObserver(() => {
-    sizes.disconnect();
-    document.querySelectorAll(selector).forEach((list) => {
-      sizes.observe(list);
-      const card = list.closest(`.${settings.card_class}`);
-      if (card !== null) {
-        sizes.observe(card);
+  const sizes = new ResizeObserver(() => marked().forEach(measure));
+  let watched = [];
+  // The chat changes the page at every streamed word. Observing an element measures it once, so
+  // the script observes the elements again only when they change.
+  const attach = () => {
+    const lists = marked();
+    const cards = lists.map(cardOf);
+    sized.forEach((card) => {
+      if (!cards.includes(card)) {
+        card.style.minHeight = "";
+        sized.delete(card);
       }
     });
-    measureAll();
-  }).observe(document.body, { childList: true, subtree: true });
+    const next = lists.flatMap((list) => {
+      const measured = keptRows(list);
+      for (let element = list; element !== cardOf(list); element = element.parentElement) {
+        measured.push(...element.parentElement.children);
+      }
+      return measured;
+    });
+    if (next.length === watched.length && next.every((element, index) => element === watched[index])) {
+      return;
+    }
+    sizes.disconnect();
+    next.forEach((element) => sizes.observe(element));
+    watched = next;
+  };
+  new MutationObserver(attach).observe(document.body, { childList: true, subtree: true });
+  attach();
 }
 "#;
 
 #[derive(Serialize)]
 struct KeptRowsSettings {
     attribute: &'static str,
+    blocks_id: &'static str,
     card_class: &'static str,
 }
 
@@ -88,6 +121,7 @@ fn start_kept_rows_script() {
     let script = document::eval(KEPT_ROWS_SCRIPT);
     let settings = KeptRowsSettings {
         attribute: KEPT_ROWS_ATTRIBUTE,
+        blocks_id: BLOCKS_LIST_ID,
         card_class: BLOCK_CARD_CLASS,
     };
     if let Err(error) = script.send(settings) {
@@ -696,6 +730,7 @@ fn RunningBody(
 #[cfg(test)]
 mod tests {
     use cockpit_protocol::{BackgroundTaskId, Timestamp};
+    use serde_json::json;
 
     use super::*;
 
@@ -841,5 +876,29 @@ mod tests {
         let head = BackgroundHead::new(&[stopped, done.clone(), done]);
         assert_eq!(head.summary, "2 done, 1 stopped");
         assert_eq!(head.badge, "3");
+    }
+
+    #[test]
+    fn the_kept_rows_script_reads_each_setting_by_its_serde_name() {
+        let settings = KeptRowsSettings {
+            attribute: KEPT_ROWS_ATTRIBUTE,
+            blocks_id: BLOCKS_LIST_ID,
+            card_class: BLOCK_CARD_CLASS,
+        };
+
+        assert_eq!(
+            serde_json::to_value(settings).unwrap(),
+            json!({
+                "attribute": "data-kept-rows",
+                "blocks_id": "floating-blocks",
+                "card_class": "block-card",
+            })
+        );
+        for name in ["attribute", "blocks_id", "card_class"] {
+            assert!(
+                KEPT_ROWS_SCRIPT.contains(&format!("settings.{name}")),
+                "the script does not read {name}"
+            );
+        }
     }
 }

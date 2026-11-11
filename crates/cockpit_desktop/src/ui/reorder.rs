@@ -109,6 +109,8 @@ const start = (event) => {
   ghost.classList.add(settings.ghost_class);
   ghost.style.left = `${Math.round(rect.left)}px`;
   ghost.style.width = `${Math.round(rect.width)}px`;
+  // A block shrunk in a short window would show all its rows.
+  ghost.style.height = `${Math.round(rect.height)}px`;
   const line = document.createElement("div");
   line.className = settings.drop_line_class;
   document.body.append(line, ghost);

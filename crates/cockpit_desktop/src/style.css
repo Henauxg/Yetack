@@ -3549,27 +3549,27 @@ html.reordering * {
 /* In a short window the open cards with a list share the column's height before it has to scroll:
    each list shrinks down to its first rows and scrolls, the rest of its card keeps its size. The
    blocks' script sets the lists' and the cards' least heights from the rows it measures. */
-.blocks .block-card:has([data-kept-rows]) {
+.block-card:has([data-kept-rows]) {
   flex: 0 1 auto;
   min-height: var(--block-head-height);
   overflow: hidden;
 }
 
-.blocks .block-card:has([data-kept-rows]) > .block-body {
+.block-card:has([data-kept-rows]) > .block-body {
   flex: 0 1 auto;
   min-height: 0;
 }
 
-.blocks .block-card:has([data-kept-rows]) > *,
-.blocks .block-card:has([data-kept-rows]) > .block-body > * {
+.block-card:has([data-kept-rows]) > *,
+.block-card:has([data-kept-rows]) > .block-body > * {
   flex: none;
 }
 
-.blocks .block-card:has([data-kept-rows]) > .block-body > [data-kept-rows] {
+.block-card:has([data-kept-rows]) > .block-body > [data-kept-rows] {
   flex: 0 1 auto;
 }
 
-.blocks [data-kept-rows] {
+[data-kept-rows] {
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb) transparent;
