@@ -21,6 +21,9 @@ const PANIC_LOCK_WAIT: Duration = Duration::from_secs(1);
 const PANIC_LOCK_RETRY: Duration = Duration::from_millis(10);
 const START_THREAD: &str = "agents-cockpit-start";
 const SIGNAL_THREAD: &str = "agents-cockpit-signals";
+/// How long the signal thread waits for the window's thread to end the app before it does.
+#[cfg(target_os = "linux")]
+const WINDOW_EXIT_WAIT: Duration = Duration::from_secs(5);
 const PANIC_THREAD: &str = "agents-cockpit-panic";
 /// The thread `main` runs on, which runs the window.
 const MAIN_THREAD: &str = "main";
@@ -250,7 +253,7 @@ pub fn stop_on_signals(host: InAppHost) {
             match received {
                 Ok(status) => {
                     host.shutdown();
-                    std::process::exit(status);
+                    exit_on_window_thread(status);
                 }
                 Err(error) => {
                     tracing::warn!("cannot watch for the signals that stop the app: {error}")
@@ -260,6 +263,24 @@ pub fn stop_on_signals(host: InAppHost) {
     if let Err(error) = watcher {
         tracing::warn!("cannot watch for the signals that stop the app: {error}");
     }
+}
+
+/// Ends the process on the window's thread. `exit` on another thread unloads the graphics libraries
+/// while the window's thread may be drawing with them: WebKitGTK then crashes as it draws, and the
+/// window stays frozen, black, while the core dump is written.
+#[cfg(target_os = "linux")]
+fn exit_on_window_thread(status: i32) -> ! {
+    // An idle callback runs on the thread that runs the default main context: the window's,
+    // between two frames.
+    webkit2gtk::glib::idle_add_once(move || std::process::exit(status));
+    // A window's loop that never gets to it, such as one not started yet, must not keep the app.
+    std::thread::sleep(WINDOW_EXIT_WAIT);
+    std::process::exit(status)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn exit_on_window_thread(status: i32) -> ! {
+    std::process::exit(status)
 }
 
 /// What a panic does once the default hook has reported it.
