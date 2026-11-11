@@ -535,6 +535,45 @@ mod tests {
         at(upper).map(|at| at + 1) == at(lower)
     }
 
+    /// The app's order puts the gateway's agent 3 between the billing agents 1 and 2. On
+    /// screen, the gateway's group comes first: 3, then 1 and 2, then 4.
+    fn interleaved() -> AppState {
+        let mut state = agents();
+        state.prefs.agent_order = [1, 3, 2, 4]
+            .into_iter()
+            .filter_map(|id| grouping::agent_key(&state, AgentId::new(id)))
+            .collect();
+        state
+    }
+
+    fn shown(state: &AppState) -> Vec<AgentId> {
+        state
+            .sidebar_groups()
+            .iter()
+            .flat_map(|group| group.rows.iter().map(|entry| entry.id()))
+            .collect()
+    }
+
+    #[test]
+    fn alt_up_moves_the_agent_above_the_row_above_it_on_screen() {
+        let mut state = interleaved();
+        state.ui.selected = Some(AgentId::new(2));
+
+        actions::move_selected(&mut state, actions::Direction::Up);
+
+        assert_eq!(shown(&state), [3, 2, 1, 4].map(AgentId::new));
+    }
+
+    #[test]
+    fn closing_an_agent_selects_the_row_below_it_on_screen() {
+        let mut state = interleaved();
+        state.ui.selected = Some(AgentId::new(1));
+
+        actions::close_agent(&mut state, &mut Drafts::default(), AgentId::new(1));
+
+        assert_eq!(state.ui.selected, Some(AgentId::new(2)));
+    }
+
     #[test]
     fn a_drop_above_a_row_of_another_project_moves_the_agent_into_it() {
         let mut state = agents();

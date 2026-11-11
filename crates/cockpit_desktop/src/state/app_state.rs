@@ -485,11 +485,19 @@ impl AppState {
             .is_some_and(MachineState::is_connected)
     }
 
-    /// The agents the sidebar shows, in its order: those its status filter keeps.
+    /// The agents the sidebar shows, from top to bottom: those its status filter keeps. Grouped
+    /// by project, the rows follow their groups, whatever the app's order puts between them.
     pub fn sidebar_agents(&self) -> Vec<&AgentEntry> {
         let filter = self.prefs.sidebar.filter;
         let mut agents = self.sidebar_order();
         agents.retain(|entry| filter.admits(&entry.summary));
+        if self.prefs.sidebar.group_by == GroupBy::Project {
+            let groups = projects::shown_projects(self);
+            agents.sort_by_cached_key(|entry| {
+                let project = projects::project_of(self, entry);
+                groups.iter().position(|group| *group == project)
+            });
+        }
         agents
     }
 
