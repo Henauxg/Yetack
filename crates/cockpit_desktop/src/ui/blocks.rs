@@ -1,6 +1,6 @@
-//! The blocks at the top right of the chat: tasks, background work and MCP servers. Each folds to
-//! one line. While the file view is open they become badges on the chat's right edge, and a
-//! click opens one as a popover.
+//! The blocks at the top right of the chat: tasks, the messages sent, background work and MCP
+//! servers. Each folds to one line. While the file view is open they become badges on the chat's
+//! right edge, and a click opens one as a popover.
 
 use std::cmp::Reverse;
 use std::time::{Duration, SystemTime};
@@ -16,15 +16,17 @@ use crate::format;
 use crate::keymap::Command;
 use crate::machine::MachineId;
 use crate::state::{Block, actions, agent_map};
+use crate::ui::chat_scroll::InView;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::mcp::{McpPanel, mcp_summary};
+use crate::ui::messages::{LastMessageToggle, MessagesBody};
 
 /// The floating blocks' box. The quotes' notes go below its cards.
 pub const BLOCKS_CLASS: &str = "blocks";
 pub const BLOCK_CARD_CLASS: &str = "block-card";
 
 #[component]
-pub fn FloatingBlocks() -> Element {
+pub fn FloatingBlocks(in_view: Signal<Option<InView>>) -> Element {
     let cockpit: Cockpit = use_context();
     let state = cockpit.state.read();
     let Some(entry) = state.selected() else {
@@ -61,6 +63,14 @@ pub fn FloatingBlocks() -> Element {
         })
         .collect();
     let servers = details.mcp_servers;
+    let waiting = details.waiting_prompts;
+    let folder = entry.summary.folder.clone();
+    let sent = entry.transcript.sent_messages().count();
+    let messages_summary = format!("{sent} sent");
+    let messages_label = match waiting.len() {
+        0 => messages_summary.clone(),
+        count => format!("{messages_summary}, {count} not read yet"),
+    };
     let done = tasks
         .iter()
         .filter(|task| task.status == TaskStatus::Completed)
@@ -80,6 +90,9 @@ pub fn FloatingBlocks() -> Element {
         |block: Block, has_content: bool| has_content && (!badge_mode || badge == Some(block));
     let mcp_wide = is_open(Block::Mcp) && mcp_view.detail.is_some();
     let show_tasks = is_shown(Block::Tasks, !tasks.is_empty());
+    let has_messages = sent > 0 || !waiting.is_empty();
+    let show_messages = is_shown(Block::Messages, has_messages);
+    let messages_open = is_open(Block::Messages);
     let show_running = is_shown(Block::Running, !background.is_empty());
     let show_mcp = is_shown(Block::Mcp, true);
     let tasks_open = is_open(Block::Tasks);
@@ -107,6 +120,22 @@ pub fn FloatingBlocks() -> Element {
                     badge_mode,
                     wide: false,
                     TasksBody { tasks }
+                }
+            }
+            if show_messages {
+                BlockCard {
+                    agent,
+                    block: Block::Messages,
+                    title: "Messages",
+                    icon: IconKind::Message,
+                    running: false,
+                    summary: messages_summary.clone(),
+                    alert: false,
+                    open: messages_open,
+                    badge_mode,
+                    wide: false,
+                    head_action: rsx! { LastMessageToggle {} },
+                    MessagesBody { agent, folder, waiting, in_view }
                 }
             }
             if show_running {
@@ -144,6 +173,9 @@ pub fn FloatingBlocks() -> Element {
             div { class: "badges", role: "toolbar", aria_label: "Agent activity", aria_orientation: "vertical",
                 if has_tasks {
                     Badge { agent, block: Block::Tasks, pressed: badge == Some(Block::Tasks), icon: IconKind::Tasks, running: false, text: tasks_badge, label: "Tasks, {tasks_summary} done", alert: false }
+                }
+                if has_messages {
+                    Badge { agent, block: Block::Messages, pressed: badge == Some(Block::Messages), icon: IconKind::Message, running: false, text: sent.to_string(), label: "Messages, {messages_label}", alert: false }
                 }
                 if has_background {
                     Badge { agent, block: Block::Running, pressed: badge == Some(Block::Running), icon: background_head.icon(), running: background_head.running, text: background_head.badge, label: "{background_head.label}, {background_head.summary}", alert: false }
@@ -223,6 +255,8 @@ fn BlockCard(
     open: bool,
     badge_mode: bool,
     wide: bool,
+    /// A control at the end of the head, beside the button that folds the block.
+    head_action: Option<Element>,
     children: Element,
 ) -> Element {
     let cockpit: Cockpit = use_context();
@@ -235,21 +269,24 @@ fn BlockCard(
     }
     rsx! {
         section { class: class.join(" "), aria_label: "{title}",
-            button {
-                class: "block-head",
-                aria_expanded: open,
-                onclick: move |_| cockpit.change(|state| actions::toggle_block(state, agent, block)),
-                span { class: "block-icon", Icon { kind: icon, size: 14 } }
-                span { class: "block-title", "{title}" }
-                if alert {
-                    span { class: "alert-dot", aria_hidden: true }
+            div { class: if open { "block-head-row open" } else { "block-head-row" },
+                button {
+                    class: "block-head",
+                    aria_expanded: open,
+                    onclick: move |_| cockpit.change(|state| actions::toggle_block(state, agent, block)),
+                    span { class: "block-icon", Icon { kind: icon, size: 14 } }
+                    span { class: "block-title", "{title}" }
+                    if alert {
+                        span { class: "alert-dot", aria_hidden: true }
+                    }
+                    span { class: "block-summary", "{summary}" }
+                    if badge_mode {
+                        Icon { kind: IconKind::Close, size: 12 }
+                    } else {
+                        span { class: if open { "chevron open" } else { "chevron" }, Icon { kind: IconKind::ChevronRight, size: 12 } }
+                    }
                 }
-                span { class: "block-summary", "{summary}" }
-                if badge_mode {
-                    Icon { kind: IconKind::Close, size: 12 }
-                } else {
-                    span { class: if open { "chevron open" } else { "chevron" }, Icon { kind: IconKind::ChevronRight, size: 12 } }
-                }
+                {head_action}
             }
             if open {
                 div { class: "block-body", {children} }

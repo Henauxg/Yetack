@@ -22,6 +22,7 @@ mod loading;
 mod machines;
 mod markdown;
 mod mcp;
+mod messages;
 mod no_daemon;
 mod notification_levels;
 mod open_file;

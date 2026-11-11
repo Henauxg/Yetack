@@ -9,6 +9,7 @@ use strum::VariantArray;
 
 use crate::ids::{ItemId, PendingId};
 use crate::stored_bool::{FromStoredBool, enum_or_stored_bool};
+use crate::time::Timestamp;
 use crate::usage::{CostUsd, TokenUsage};
 
 /// Titles a skill's instructions, followed by the skill's command.
@@ -62,6 +63,10 @@ pub enum ItemBody {
 pub struct UserMessage {
     pub text: String,
     pub images: Vec<Image>,
+    /// When the user sent it, as the daemon or Claude Code's line says. `None` from an older
+    /// daemon, and in an event log it wrote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

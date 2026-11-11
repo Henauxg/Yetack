@@ -210,8 +210,9 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   - Ctrl+N opens the new agent dialog (recent folders, or resume a past session); Ctrl+K opens the agent switcher; Ctrl+Shift+H, or a right-click on a sidebar row, marks an agent to handle until you send it a message; Esc closes what is open (a menu, a dialog, an edit) and never stops the agent, which only the Stop button does; Y and N answer an approval or a plan.
   - No rewind of file changes in v1.
 - Decided after round 4 (mocked in round 5), replacing the right panel above:
-  - Tasks, background work and MCP servers are floating blocks at the top right of the chat, each folding to one line. They show only when they have content, except MCP servers.
-  - When the file view is open, the blocks become badges on the right edge of the chat (tasks "3/5", running count, MCP); a click opens that block as a popover.
+  - Tasks, the messages sent, background work and MCP servers are floating blocks at the top right of the chat, each folding to one line. They show only when they have content, except MCP servers.
+  - The Messages block lists the messages the user sent, oldest first, each with how long ago it was sent, then the prompts Claude has not read yet. It marks the latest message on screen, and a click on a message scrolls the chat to it. An eye in its head shows or hides the last message over the chat; the preferences keep the choice.
+  - When the file view is open, the blocks become badges on the right edge of the chat (tasks "3/5", messages sent, running count, MCP); a click opens that block as a popover.
   - A failing MCP server shows only as a red dot on the folded block or badge, never as red text in the chat.
   - Each MCP server can be hidden from the view: it keeps running, but leaves the list and the red dot. A "Show them" link lists hidden servers.
   - Clicking a server opens its detail: status, version, command or URL, scope, error, three icon buttons with tooltips on its title row (Reconnect, "Disable for this agent", "Hide from my view"), its tools with read-only or destructive tags, filters and per-agent call counts, and "Remove from the config" for user, project and local scopes.

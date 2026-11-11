@@ -36,6 +36,9 @@ pub struct WaitingPrompt {
     /// The images travel with the prompt only, so that each details change stays small.
     pub image_count: u32,
     pub state: WaitingState,
+    /// When the user sent it. `None` from an older daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_at: Option<Timestamp>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, VariantArray)]

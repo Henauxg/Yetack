@@ -182,6 +182,22 @@ impl Transcript {
             .rev()
             .find_map(|(_, item)| user_message(item).map(|message| (item.id, message)))
     }
+
+    /// The messages the user sent to the agent, oldest first.
+    pub fn sent_messages(&self) -> impl Iterator<Item = (ItemId, &UserMessage)> {
+        self.items
+            .values()
+            .filter_map(|item| user_message(item).map(|message| (item.id, message)))
+    }
+
+    /// The user message that the items from `top` onward answer: `top` itself when it is one,
+    /// else the latest one before it.
+    pub fn message_at(&self, top: ItemId) -> Option<ItemId> {
+        self.items
+            .range(..=top)
+            .rev()
+            .find_map(|(id, item)| user_message(item).map(|_| *id))
+    }
 }
 
 /// A message the user sent to the agent, not one of a subagent's.
@@ -497,6 +513,7 @@ mod tests {
                 ItemBody::UserMessage(UserMessage {
                     text: text.to_owned(),
                     images: Vec::new(),
+                    sent_at: None,
                 }),
             )
         };
@@ -518,6 +535,15 @@ mod tests {
         assert_eq!(before(1), None);
         assert_eq!(before(6), None);
         assert_eq!(before(9), None);
+
+        let sent_ids: Vec<u32> = transcript.sent_messages().map(|(id, _)| id.get()).collect();
+        let at = |top: u32| transcript.message_at(ItemId::new(top)).map(ItemId::get);
+        assert_eq!(sent_ids, [2, 6]);
+        assert_eq!(at(5), Some(2));
+        assert_eq!(at(2), Some(2));
+        assert_eq!(at(6), Some(6));
+        assert_eq!(at(1), None);
+        assert_eq!(at(9), Some(6));
     }
 
     #[test]

@@ -30,7 +30,8 @@
 //!     }
 //!   },
 //!   "chat": {
-//!     "comments": "hidden"
+//!     "comments": "hidden",
+//!     "last_message": "hidden"
 //!   }
 //! }
 //! ```
@@ -86,6 +87,43 @@ pub struct Prefs {
 pub struct ChatPrefs {
     /// Where a new comment on a quote shows while it waits to be sent.
     pub comments: CommentPlacement,
+    /// The bubble over the chat with the user's last message, from the eye in the Messages block.
+    pub last_message: LastMessage,
+}
+
+/// Whether the user's last message shows over the chat once it scrolled out above.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumString, IntoStaticStr, VariantArray,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum LastMessage {
+    #[default]
+    Shown,
+    Hidden,
+}
+
+impl LastMessage {
+    #[must_use]
+    pub fn toggled(self) -> Self {
+        match self {
+            Self::Shown => Self::Hidden,
+            Self::Hidden => Self::Shown,
+        }
+    }
+}
+
+impl Serialize for LastMessage {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.into())
+    }
+}
+
+/// A word this version does not know, from another version of the app, reads as the default.
+impl<'de> Deserialize<'de> for LastMessage {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let word = String::deserialize(deserializer)?;
+        Ok(word.parse().unwrap_or_default())
+    }
 }
 
 /// Where a comment on a quote shows in the chat, from the Settings dialog.
@@ -682,7 +720,8 @@ mod tests {
     }
   },
   "chat": {
-    "comments": "hidden"
+    "comments": "hidden",
+    "last_message": "hidden"
   },
   "keys": {
     "switcher": "Ctrl+j"
@@ -733,6 +772,7 @@ mod tests {
                 },
                 chat: ChatPrefs {
                     comments: CommentPlacement::Hidden,
+                    last_message: LastMessage::Hidden,
                 },
                 keys: switched,
             }
@@ -836,6 +876,24 @@ mod tests {
         assert_eq!(hidden.chat.comments, CommentPlacement::Hidden);
         assert_eq!(unknown.chat.comments, CommentPlacement::Beside);
         assert_eq!(unknown.sidebar.width, Some(300));
+    }
+
+    #[test]
+    fn the_last_message_words_are_pinned_and_it_shows_by_default() {
+        let words: Vec<&str> = LastMessage::VARIANTS
+            .iter()
+            .map(|&shown| shown.into())
+            .collect();
+        let hidden: Prefs =
+            serde_json::from_str(r#"{"chat": {"last_message": "hidden"}}"#).unwrap();
+        let unknown: Prefs =
+            serde_json::from_str(r#"{"chat": {"last_message": "faded"}}"#).unwrap();
+
+        assert_eq!(words, ["shown", "hidden"]);
+        assert_eq!(hidden.chat.last_message, LastMessage::Hidden);
+        assert_eq!(unknown.chat.last_message, LastMessage::Shown);
+        assert_eq!(Prefs::default().chat.last_message, LastMessage::Shown);
+        assert_eq!(LastMessage::Shown.toggled(), LastMessage::Hidden);
     }
 
     #[test]

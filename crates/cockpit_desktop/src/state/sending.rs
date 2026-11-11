@@ -243,6 +243,7 @@ mod tests {
             body: ItemBody::UserMessage(UserMessage {
                 text: text.to_owned(),
                 images,
+                sent_at: None,
             }),
         }
     }
@@ -257,6 +258,7 @@ mod tests {
                     text: (*text).to_owned(),
                     image_count: 0,
                     state: WaitingState::Sent,
+                    sent_at: None,
                 })
                 .collect(),
             ..AgentDetails::default()

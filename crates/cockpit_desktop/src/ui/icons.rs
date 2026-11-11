@@ -67,6 +67,8 @@ pub enum IconKind {
     Undo,
     /// A setting that does not change.
     Lock,
+    /// A speech bubble, for the messages the user sent.
+    Message,
 }
 
 impl IconKind {
@@ -128,6 +130,9 @@ impl IconKind {
             }
             Self::Power => {
                 r#"<path d="M12 3v8"></path><path d="M6.3 7.3a8 8 0 1 0 11.4 0"></path>"#
+            }
+            Self::Message => {
+                r#"<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"></path>"#
             }
             Self::Eye => {
                 r#"<path d="M3 12s4-6 9-6 9 6 9 6-4 6-9 6-9-6-9-6z"></path><circle cx="12" cy="12" r="3"></circle>"#

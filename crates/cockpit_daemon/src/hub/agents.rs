@@ -361,10 +361,14 @@ impl Hub {
             process.write(line);
             record_changed |= record_typed_setting(agent, &prompt.text);
         } else if steers {
-            agent.view.add_waiting_prompt(&prompt, WaitingState::Sent);
+            agent
+                .view
+                .add_waiting_prompt(&prompt, WaitingState::Sent, state::now());
             process.write(line);
         } else {
-            let id = agent.view.add_waiting_prompt(&prompt, WaitingState::Queued);
+            let id = agent
+                .view
+                .add_waiting_prompt(&prompt, WaitingState::Queued, state::now());
             agent.queue.push_back(QueuedPrompt {
                 id: Some(id),
                 line,

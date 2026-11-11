@@ -2021,10 +2021,15 @@ html.reordering * {
 }
 
 .last-instruction-message {
-  max-width: min(80%, 720px);
-  padding: 7px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 220px;
+  max-width: min(70%, 480px);
+  padding: 6px 12px 7px;
   border: 1px solid var(--line-strong);
-  border-radius: 12px;
+  border-left: 3px solid var(--teal);
+  border-radius: 10px;
   background: var(--hover);
   color: var(--text-soft);
   font-size: 13px;
@@ -2039,12 +2044,21 @@ html.reordering * {
   color: var(--text-bright);
 }
 
+.last-instruction-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
 .last-instruction-text {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  min-width: 0;
   overflow: hidden;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .jump-badge {
@@ -3458,6 +3472,143 @@ html.reordering * {
   max-height: 340px;
   margin: 0 -6px;
   overscroll-behavior: contain;
+}
+
+/* The head of a block with a control of its own: the fold button takes the rest of the row. */
+.block-head-row {
+  display: flex;
+  align-items: center;
+}
+
+.block-head-row > .block-head {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Beside a control, the fold button's right corners match the control's. */
+.block-head-row:has(> .block-head-action) > .block-head {
+  border-radius: 12px 7px 7px 12px;
+}
+
+.block-head-row.open:has(> .block-head-action) > .block-head {
+  border-radius: 12px 7px 0 0;
+}
+
+.block-head-action {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin-right: 8px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--faint);
+}
+
+.block-head-action[aria-pressed="true"] {
+  border-color: rgba(45, 212, 191, 0.35);
+  color: var(--teal);
+}
+
+/* The sent messages on a line of dots, the latest at the bottom. About six rows; past them the
+   list scrolls inside the block and opens on its end. */
+.message-list {
+  display: flex;
+  flex-direction: column-reverse;
+  max-height: 300px;
+  margin: 0 -6px;
+  overscroll-behavior: contain;
+}
+
+.message-row {
+  position: relative;
+  flex: none;
+  padding-left: 16px;
+}
+
+.message-row::before {
+  content: "";
+  position: absolute;
+  left: 9px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--line-control);
+}
+
+.message-row:last-child::before {
+  top: 14px;
+}
+
+.message-row:first-child::before {
+  bottom: calc(100% - 14px);
+}
+
+.message-row::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 10px;
+  width: 9px;
+  height: 9px;
+  box-sizing: border-box;
+  border: 2px solid var(--panel);
+  border-radius: 50%;
+  background: var(--faint);
+}
+
+.message-row.in-view::after {
+  background: var(--teal);
+}
+
+.message-row.waiting::after {
+  border: 1.5px dashed var(--faint);
+  background: var(--panel);
+}
+
+.message-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.message-row.in-view .message-entry {
+  background: rgba(45, 212, 191, 0.08);
+  color: var(--text);
+}
+
+.message-row.waiting .message-entry {
+  color: var(--muted);
+}
+
+.message-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.message-row.in-view .message-meta {
+  color: var(--teal);
+}
+
+.message-text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .running-fold {
@@ -7715,6 +7866,7 @@ label.icon-button,
 .palette-item:focus-visible,
 .mcp-row:focus-visible,
 .block-head:focus-visible,
+.message-link:focus-visible,
 .folder-option:focus-visible,
 .session-row:focus-visible,
 .file-list-pick:focus-visible {
@@ -7845,6 +7997,23 @@ label.icon-button,
   background: rgba(255, 255, 255, 0.035);
 }
 
+.block-head-action:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.block-head-action[aria-pressed="true"]:hover {
+  color: var(--teal);
+}
+
+.message-link:hover {
+  background: var(--hover);
+}
+
+.message-row.in-view .message-link:hover {
+  background: rgba(45, 212, 191, 0.14);
+}
+
 .block-head:hover .chevron,
 .fold-button:hover .chevron {
   color: var(--text);
@@ -7968,6 +8137,7 @@ label.icon-button,
 .menu-button:active,
 .send-button:not(:disabled):active,
 .badge:active,
+.block-head-action:active,
 .stop-button:active,
 .effort:active,
 .segment:active,
@@ -8000,6 +8170,10 @@ label.icon-button,
 
 .block-head:active {
   background: rgba(255, 255, 255, 0.06);
+}
+
+.message-link:active {
+  background: var(--pressed);
 }
 
 .chevron {
@@ -8251,6 +8425,10 @@ html.splitting .sidebar {
 }
 
 .connection-trouble.leaving {
+  animation: fade-out var(--motion-out) var(--ease-in) forwards;
+}
+
+.last-instruction.leaving .last-instruction-message {
   animation: fade-out var(--motion-out) var(--ease-in) forwards;
 }
 

@@ -1676,6 +1676,7 @@ mod tests {
         ItemBody::UserMessage(UserMessage {
             text: text.to_owned(),
             images: Vec::new(),
+            sent_at: None,
         })
     }
 
@@ -1723,6 +1724,7 @@ mod tests {
                 message: Some(UserMessage {
                     text: "Export the invoices".to_owned(),
                     images: Vec::new(),
+                    sent_at: None,
                 }),
             })
         );

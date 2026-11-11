@@ -2441,6 +2441,7 @@ mod tests {
             ItemBody::UserMessage(UserMessage {
                 text: "Also the docs".to_owned(),
                 images: Vec::new(),
+                sent_at: None,
             }),
         );
         append(

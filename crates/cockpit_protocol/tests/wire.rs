@@ -223,6 +223,7 @@ fn bodies() -> Vec<ItemBody> {
         ItemBody::UserMessage(UserMessage {
             text: prompt().text,
             images: vec![image()],
+            sent_at: Some(at(1_700_000_000_000)),
         }),
         ItemBody::AssistantText {
             markdown: "The regex rejects `+` in the local part.".to_owned(),
@@ -437,12 +438,14 @@ fn details() -> AgentDetails {
                 text: "Also check the signup form".to_owned(),
                 image_count: 1,
                 state: WaitingState::Sent,
+                sent_at: Some(at(1_700_000_100_000)),
             },
             WaitingPrompt {
                 id: PromptId::new(5),
                 text: "Then run the tests".to_owned(),
                 image_count: 0,
                 state: WaitingState::Queued,
+                sent_at: None,
             },
         ],
     }
@@ -1341,7 +1344,13 @@ fn waiting_prompts_and_their_requests_on_the_wire() {
 
     assert_wire(
         &sent,
-        json!({"id": 4, "text": "Also check the signup form", "image_count": 1, "state": "sent"}),
+        json!({
+            "id": 4,
+            "text": "Also check the signup form",
+            "image_count": 1,
+            "state": "sent",
+            "sent_at": 1_700_000_100_000_u64,
+        }),
     );
     assert_wire(
         &send,
@@ -2236,6 +2245,7 @@ fn fields_saved_as_bools_still_load() {
     let hello = ItemBody::UserMessage(UserMessage {
         text: "hello".to_owned(),
         images: Vec::new(),
+        sent_at: None,
     });
     let selection = |multi_select: bool| {
         let question = format!(
@@ -2294,6 +2304,7 @@ fn transcript_pages_and_mcp_toggles_on_the_wire() {
             body: ItemBody::UserMessage(UserMessage {
                 text: "Run the tests".to_owned(),
                 images: Vec::new(),
+                sent_at: Some(at(1_700_000_000_000)),
             }),
         }],
         older_items: OlderItems::None,
@@ -2315,6 +2326,7 @@ fn transcript_pages_and_mcp_toggles_on_the_wire() {
                     "type": "user_message",
                     "text": "Run the tests",
                     "images": [],
+                    "sent_at": 1_700_000_000_000_u64,
                 },
             }],
             "older_items": "none",

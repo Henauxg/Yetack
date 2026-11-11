@@ -10,6 +10,7 @@ use crate::connection::{Cockpit, Startup, use_clock, use_cockpit};
 use crate::prefs::use_prefs_saver;
 use crate::state::{ConnectionState, NoteKind, actions, file_tree};
 use crate::ui::blocks::FloatingBlocks;
+use crate::ui::chat_scroll::InView;
 use crate::ui::composer::Composer;
 use crate::ui::dialogs::Dialogs;
 use crate::ui::file_view::FileViewPanel;
@@ -39,6 +40,8 @@ pub fn App() -> Element {
     use_quotes(cockpit);
     use_splitter(cockpit);
     use_reorder(cockpit);
+    // The entries in the chat's view: the bubble and the Messages block follow them.
+    let in_view = use_signal(|| None::<InView>);
     let state = cockpit.state.read();
     let selected = state.ui.selected;
     let switching = use_switching(cockpit, selected);
@@ -118,9 +121,9 @@ pub fn App() -> Element {
                     }
                 }
                 div { class: "chat-area",
-                    TranscriptView {}
+                    TranscriptView { in_view }
                     QuoteLayer {}
-                    FloatingBlocks {}
+                    FloatingBlocks { in_view }
                     ErrorNotes {}
                 }
                 Composer {}

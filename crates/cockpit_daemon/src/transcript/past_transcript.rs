@@ -178,6 +178,7 @@ mod tests {
             ItemBody::UserMessage(UserMessage {
                 text: text.to_owned(),
                 images: Vec::new(),
+                sent_at: None,
             })
         };
         let notice = |text: &str| ItemBody::Notice {

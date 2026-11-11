@@ -601,7 +601,8 @@ pub fn state(daemon: DaemonLabel) -> AppState {
         map_agent(now),
         sign_in_agent(now),
     ];
-    for sample in agents {
+    for mut sample in agents {
+        date_messages(&mut sample.items, now);
         let mut entry = AgentEntry::new(sample.summary);
         if entry.id() != AgentId::new(LIVE_AGENT) {
             // The running calls started a little before the window opened, so their timers show.
@@ -707,6 +708,7 @@ fn echo_prompt(entry: &mut AgentEntry, prompt: &Prompt) {
             text: prompt.text.clone(),
             image_count: u32::try_from(prompt.images.len()).unwrap_or(u32::MAX),
             state: WaitingState::Sent,
+            sent_at: Some(at(SystemTime::now(), 0)),
         });
         sending::waiting_changed(entry);
         return;
@@ -721,6 +723,7 @@ fn echo_prompt(entry: &mut AgentEntry, prompt: &Prompt) {
         body: ItemBody::UserMessage(UserMessage {
             text: prompt.text.clone(),
             images: prompt.images.clone(),
+            sent_at: Some(at(SystemTime::now(), 0)),
         }),
     };
     sending::item_appended(entry, &item);
@@ -1350,10 +1353,25 @@ fn item(id: u32, parent: Option<u32>, body: ItemBody) -> TranscriptItem {
     }
 }
 
+/// The demo's messages were sent minutes apart, the last one 3 minutes ago.
+fn date_messages(items: &mut [TranscriptItem], now: SystemTime) {
+    let messages = items
+        .iter_mut()
+        .rev()
+        .filter_map(|item| match &mut item.body {
+            ItemBody::UserMessage(message) => Some(message),
+            _ => None,
+        });
+    for (message, minutes_ago) in messages.zip((3..).step_by(7)) {
+        message.sent_at = Some(at(now, minutes_ago * 60));
+    }
+}
+
 fn user(text: &str) -> ItemBody {
     ItemBody::UserMessage(UserMessage {
         text: text.to_owned(),
         images: Vec::new(),
+        sent_at: None,
     })
 }
 
@@ -1368,6 +1386,7 @@ fn user_with_image(text: &str) -> ItemBody {
             media_type: ImageMediaType::Png,
             data: BASE64.encode(crate::ICON_PNG),
         }],
+        sent_at: None,
     })
 }
 
@@ -1749,20 +1768,30 @@ fn parser_agent(now: SystemTime) -> Sample {
         item(
             14,
             None,
+            user("Fix the count in the lexer, not in the parser."),
+        ),
+        item(
+            15,
+            None,
             text(
                 "The test expects the column to count from 1, and the lexer counts from 0. See `tests/columns.rs:6`. I am fixing the lexer.",
             ),
         ),
         item(
-            15,
+            16,
             None,
             edit_call("Edit", LEXER_FILE, LEXER_LINE_BEFORE, LEXER_LINE_AFTER),
         ),
-        item(16, None, text(FIX_ANSWER)),
-        item(17, None, ItemBody::ToolCall(position_read)),
-        item(18, None, text(LOOKUP_ANSWER)),
+        item(17, None, text(FIX_ANSWER)),
         item(
-            19,
+            18,
+            None,
+            user("Is the column math the same in the columns worktree?"),
+        ),
+        item(19, None, ItemBody::ToolCall(position_read)),
+        item(20, None, text(LOOKUP_ANSWER)),
+        item(
+            21,
             None,
             ItemBody::ToolCall(bash(
                 "Run the parser tests again",
@@ -1793,6 +1822,7 @@ fn parser_agent(now: SystemTime) -> Sample {
                 text: "Also cover a token at the end of the input.".to_owned(),
                 image_count: 0,
                 state: WaitingState::Sent,
+                sent_at: Some(at(now, 120)),
             },
             WaitingPrompt {
                 id: PromptId::new(2),
@@ -1801,6 +1831,7 @@ fn parser_agent(now: SystemTime) -> Sample {
                         .to_owned(),
                 image_count: 1,
                 state: WaitingState::Queued,
+                sent_at: Some(at(now, 60)),
             },
         ],
         changed_files: vec![

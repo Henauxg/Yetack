@@ -1158,6 +1158,7 @@ mod tests {
             ItemBody::UserMessage(UserMessage {
                 text: "Export the invoices".to_owned(),
                 images: Vec::new(),
+                sent_at: None,
             }),
             ItemBody::TurnEnd(TurnEnd {
                 duration: Duration::from_millis(900),

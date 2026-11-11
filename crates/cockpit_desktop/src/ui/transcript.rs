@@ -25,7 +25,7 @@ use crate::state::{
 use crate::ui::accounts::SignInCard;
 use crate::ui::cards::{ApprovalCard, PlanCard, QuestionCard};
 use crate::ui::chat_scroll::{
-    self, CHAT_SCROLL_ID, ENTRY_CLASS, FOLD_BUTTON_CLASS, JumpToLatest, NewDivider,
+    self, CHAT_SCROLL_ID, ENTRY_CLASS, FOLD_BUTTON_CLASS, InView, JumpToLatest, NewDivider,
 };
 use crate::ui::code::{LineMarks, LineNumbers, diff_row};
 use crate::ui::icons::{Icon, IconKind};
@@ -337,10 +337,10 @@ impl ShownRows {
 }
 
 #[component]
-pub fn TranscriptView() -> Element {
+pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
     use_hook(start_fold_script);
     let cockpit: Cockpit = use_context();
-    let top_entry = chat_scroll::use_chat_scroll(cockpit);
+    chat_scroll::use_chat_scroll(cockpit, in_view);
     // The agent whose conversation the chat opened, once its first page came or failed. A
     // failure shows above all the rows.
     let opened = use_memo(move || {
@@ -499,7 +499,7 @@ pub fn TranscriptView() -> Element {
                             UserBubble {
                                 agent,
                                 folder: folder.clone(),
-                                message: UserMessage { text: prompt.text, images: prompt.images },
+                                message: UserMessage { text: prompt.text, images: prompt.images, sent_at: None },
                             }
                         }
                     }
@@ -509,7 +509,7 @@ pub fn TranscriptView() -> Element {
                 }
             }
         }
-        LastInstruction { top_entry }
+        LastInstruction { in_view }
         JumpToLatest { shown: scrolled_up.is_some(), count: waiting }
     }
 }
@@ -931,7 +931,7 @@ fn UserBubble(agent: AgentId, folder: PathBuf, message: UserMessage) -> Element 
     let mut unfolded = use_signal(|| false);
     let open = unfolded();
     let state = if open { " unfolded" } else { "" };
-    let UserMessage { text, images } = message;
+    let UserMessage { text, images, .. } = message;
     let images = images.into_iter().map(Arc::new);
     rsx! {
         div { class: "user-message",
@@ -2202,6 +2202,7 @@ mod tests {
         let message = ItemBody::UserMessage(UserMessage {
             text: "Run the tests".to_owned(),
             images: Vec::new(),
+            sent_at: None,
         });
 
         assert_eq!(

@@ -54,7 +54,7 @@ let agent = null;
 let following = true;
 let anchor = null;
 let reported = "";
-let reportedTop = "";
+let reportedView = "";
 // The scroll position the script set last. Its own scroll leaves the anchor as it was: measured
 // again, the anchor would drift by the rounding of each correction.
 let corrected = null;
@@ -90,6 +90,25 @@ const firstInView = () => {
   const element = entry === undefined ? null : shown(entry);
   return element === null ? null : { id: entry.id, top: element.getBoundingClientRect().top - top };
 };
+// The last entry whose top is above the view's bottom.
+const lastInView = () => {
+  const entries = column.getElementsByClassName(settings.entry_class);
+  const bottom = box.getBoundingClientRect().bottom;
+  let low = 0;
+  let high = entries.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    const element = shown(entries[middle]);
+    if (element !== null && element.getBoundingClientRect().top < bottom) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  return low === 0 ? null : entries[low - 1];
+};
+// An entry's id ends with its item's: see `entry_id`.
+const itemOf = (entry) => entry === null ? null : Number(entry.id.slice(entry.id.lastIndexOf("-") + 1));
 const report = () => {
   if (agent === null) {
     return;
@@ -99,13 +118,12 @@ const report = () => {
     reported = now;
     dioxus.send({ type: "at_bottom", agent: Number(agent), at_bottom: following });
   }
-  const first = firstInView();
-  // An entry's id ends with its item's: see `entry_id`.
-  const item = first === null ? null : Number(first.id.slice(first.id.lastIndexOf("-") + 1));
-  const top = `${agent} ${item}`;
-  if (top !== reportedTop) {
-    reportedTop = top;
-    dioxus.send({ type: "top_entry", agent: Number(agent), item });
+  const top = itemOf(firstInView());
+  const bottom = itemOf(lastInView());
+  const view = `${agent} ${top} ${bottom}`;
+  if (view !== reportedView) {
+    reportedView = view;
+    dioxus.send({ type: "in_view", agent: Number(agent), top, bottom });
   }
 };
 // After a scroll by the user: where the view now is.
@@ -320,18 +338,20 @@ enum ScrollMessage {
         agent: u32,
         at_bottom: bool,
     },
-    /// `item` is `None` when no entry is in view.
-    TopEntry {
+    /// The first and the last entry in view, `None` when no entry is.
+    InView {
         agent: u32,
-        item: Option<u32>,
+        top: Option<u32>,
+        bottom: Option<u32>,
     },
 }
 
-/// The entry at the top of the chat's view, as the script last said.
+/// The first and the last entry in the chat's view, as the script last said.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TopEntry {
+pub struct InView {
     pub agent: AgentId,
-    pub item: ItemId,
+    pub top: ItemId,
+    pub bottom: ItemId,
 }
 
 /// The id of an entry's wrapper. The script reads the item back from its end.
@@ -377,10 +397,10 @@ pub fn NewDivider() -> Element {
     }
 }
 
-/// Runs the script for the window's life. The entry at the top of the view is a signal of its
-/// own: it changes while the user scrolls, and only the view that reads it renders again.
-pub fn use_chat_scroll(cockpit: Cockpit) -> Signal<Option<TopEntry>> {
-    let mut top = use_signal(|| None);
+/// Runs the script for the window's life, and keeps `in_view` on the entries in view. `in_view` is
+/// a signal of its own: it changes while the user scrolls, and only the views that read it render
+/// again.
+pub fn use_chat_scroll(cockpit: Cockpit, mut in_view: Signal<Option<InView>>) {
     let script = use_hook(|| {
         let mut script = document::eval(SCRIPT);
         let settings = Settings {
@@ -404,10 +424,11 @@ pub fn use_chat_scroll(cockpit: Cockpit) -> Signal<Option<TopEntry>> {
                         let agent = AgentId::new(agent);
                         cockpit.update(|state| actions::chat_at_bottom(state, agent, at_bottom));
                     }
-                    Ok(ScrollMessage::TopEntry { agent, item }) => {
-                        top.set(item.map(|item| TopEntry {
+                    Ok(ScrollMessage::InView { agent, top, bottom }) => {
+                        in_view.set(top.zip(bottom).map(|(top, bottom)| InView {
                             agent: AgentId::new(agent),
-                            item: ItemId::new(item),
+                            top: ItemId::new(top),
+                            bottom: ItemId::new(bottom),
                         }));
                     }
                     Err(error) => {
@@ -451,7 +472,6 @@ pub fn use_chat_scroll(cockpit: Cockpit) -> Signal<Option<TopEntry>> {
             tracing::warn!("cannot scroll the chat to an entry: {error}");
         }
     });
-    top
 }
 
 #[cfg(test)]
@@ -501,22 +521,26 @@ mod tests {
             }
         ));
         assert_eq!(entry_id(AgentId::new(3), ItemId::new(12)), "entry-3-12");
-        let top = |item: Value| -> ScrollMessage {
-            serde_json::from_value(json!({ "type": "top_entry", "agent": 7, "item": item }))
-                .unwrap()
+        let in_view = |top: Value, bottom: Value| -> ScrollMessage {
+            serde_json::from_value(
+                json!({ "type": "in_view", "agent": 7, "top": top, "bottom": bottom }),
+            )
+            .unwrap()
         };
         assert!(matches!(
-            top(json!(12)),
-            ScrollMessage::TopEntry {
+            in_view(json!(12), json!(15)),
+            ScrollMessage::InView {
                 agent: 7,
-                item: Some(12)
+                top: Some(12),
+                bottom: Some(15)
             }
         ));
         assert!(matches!(
-            top(Value::Null),
-            ScrollMessage::TopEntry {
+            in_view(Value::Null, Value::Null),
+            ScrollMessage::InView {
                 agent: 7,
-                item: None
+                top: None,
+                bottom: None
             }
         ));
         assert_eq!(

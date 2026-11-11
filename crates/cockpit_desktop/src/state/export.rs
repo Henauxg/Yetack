@@ -295,6 +295,7 @@ mod tests {
         ItemBody::UserMessage(UserMessage {
             text: text.to_owned(),
             images: vec![image; images],
+            sent_at: None,
         })
     }
 

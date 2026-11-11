@@ -24,6 +24,8 @@ const MAX_ERRORS: usize = 4;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Block {
     Tasks,
+    /// The messages the user sent, and those Claude has not read yet.
+    Messages,
     Running,
     Mcp,
 }
@@ -491,7 +493,7 @@ impl Default for UiState {
             unread: BTreeSet::new(),
             folded_machines: BTreeSet::new(),
             window_focused: true,
-            open_blocks: BTreeSet::from([Block::Tasks, Block::Running]),
+            open_blocks: BTreeSet::from([Block::Tasks, Block::Messages, Block::Running]),
             badge: None,
             finished_tasks_unfolded: BTreeSet::new(),
             popover: None,

@@ -58,6 +58,9 @@ pub struct UserMessage {
     pub tool_use_result: Option<Value>,
     pub session_id: Option<SessionId>,
     pub uuid: Option<MessageUuid>,
+    /// When Claude Code wrote the line, as [`crate::line_time_millis`] reads it.
+    #[serde(default)]
+    pub timestamp: Option<String>,
 }
 
 /// The `origin` of a `user` line.
