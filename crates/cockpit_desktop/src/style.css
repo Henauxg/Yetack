@@ -5462,8 +5462,13 @@ html.splitting * {
   color: var(--teal);
 }
 
+/* A name too long for the row ends with an ellipsis, once its folders have given up their space. */
 .file-list-name {
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   font-size: 12.5px;
 }
 
@@ -5474,7 +5479,7 @@ html.splitting * {
 
 /* Cut at its start, as the file's path is: the folders nearest the file tell it apart. */
 .file-list-folders {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
@@ -5485,19 +5490,31 @@ html.splitting * {
   font-size: 11.5px;
 }
 
-/* Shown on the highlighted row, which the pointer's row is. */
+/* Shown on the highlighted row, which the pointer's row is. It takes the row's height and reaches
+   its right edge, so a click near the cross closes the file instead of showing it. */
 .file-list-close {
   flex: none;
-  width: 20px;
-  height: 20px;
+  align-self: stretch;
+  width: 32px;
+  margin-right: -6px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 5px;
+  border-radius: 6px;
   background: transparent;
   color: var(--dim);
   visibility: hidden;
+}
+
+/* The square that lights up around the cross stays small. */
+.file-list-close .icon {
+  width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  transition: background-color var(--motion-hover) var(--ease);
 }
 
 .file-list-row.highlighted .file-list-close,
@@ -5506,8 +5523,11 @@ html.splitting * {
 }
 
 .file-list-close:hover {
-  background: var(--line-strong);
   color: var(--text);
+}
+
+.file-list-close:hover .icon {
+  background: var(--line-strong);
 }
 
 /* Focused by a click, for Ctrl+W and the scrolling keys, without a ring around the view. */
@@ -7928,7 +7948,8 @@ label.icon-button,
 .message-link:focus-visible,
 .folder-option:focus-visible,
 .session-row:focus-visible,
-.file-list-pick:focus-visible {
+.file-list-pick:focus-visible,
+.file-list-close:focus-visible {
   outline-offset: -2px;
 }
 
