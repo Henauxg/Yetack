@@ -189,7 +189,7 @@ pub fn MachinesDialog(view: MachinesView) -> Element {
                             class: "text-input mono",
                             r#type: "text",
                             spellcheck: false,
-                            placeholder: "/home/you/.cargo/bin/agents-cockpit",
+                            placeholder: "/home/you/.local/bin/agents-cockpit",
                             value: "{view.remote_command}",
                             oninput: type_into(|view| &mut view.remote_command),
                         }

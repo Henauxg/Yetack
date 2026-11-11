@@ -14,7 +14,7 @@ use crate::ui::daemon_update::DaemonUpdateScreens;
 const NOTHING_RUNS_LEAD: &str = if SOCKET_REACHABLE {
     "No daemon runs on this machine yet. Pick one way to run your agents."
 } else {
-    "On Windows, agents run inside this app. To use a server instead, name it in the config file."
+    "On Windows, agents run inside this app. To use a server instead, add it in Machines."
 };
 
 pub(super) const IN_APP_DETAIL: &str =

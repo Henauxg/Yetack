@@ -33,7 +33,7 @@
           toolchain = pkgs.rust-bin.stable.latest.minimal;
           rustPlatform = pkgs.makeRustPlatform { cargo = toolchain; rustc = toolchain; };
           common = {
-            version = "0.1.0";
+            version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
             # The tests run in the dev shell: some start processes the build sandbox forbids.
@@ -55,22 +55,13 @@
             # The commit this app is built from, which the daemon's update builds on a server.
             # Empty for a tree with uncommitted changes: the app then offers no update.
             AGENTS_COCKPIT_COMMIT = self.rev or "";
-            nativeBuildInputs = [ pkgs.pkg-config pkgs.wrapGAppsHook3 pkgs.copyDesktopItems ];
+            nativeBuildInputs = [ pkgs.pkg-config pkgs.wrapGAppsHook3 ];
             buildInputs = desktopLibraries pkgs;
-            # GTK names the window after the binary, so a Wayland desktop finds this entry, and
-            # its icon, by the binary's name.
-            desktopItems = [
-              (pkgs.makeDesktopItem {
-                name = "agents-cockpit-desktop";
-                desktopName = "Agents Cockpit";
-                comment = "Watch and steer Claude Code agents";
-                exec = "agents-cockpit-desktop";
-                icon = "agents-cockpit";
-                categories = [ "Development" ];
-                startupWMClass = "agents-cockpit-desktop";
-              })
-            ];
+            # GTK names the window after the binary, so a Wayland desktop finds the entry, and its
+            # icon, by the binary's name.
             postInstall = ''
+              install -Dm644 contrib/agents-cockpit-desktop.desktop \
+                $out/share/applications/agents-cockpit-desktop.desktop
               install -Dm644 crates/cockpit_desktop/assets/agents-cockpit.svg \
                 $out/share/icons/hicolor/scalable/apps/agents-cockpit.svg
               install -Dm644 crates/cockpit_desktop/assets/agents-cockpit-256.png \

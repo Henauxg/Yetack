@@ -5,7 +5,7 @@
 //! [daemon]
 //! transport = "ssh"
 //! host = "build-box"
-//! remote_command = "/home/me/.cargo/bin/agents-cockpit"
+//! remote_command = "/home/me/.local/bin/agents-cockpit"
 //! # Where the daemon's update builds from, by default ~/agents-cockpit:
 //! # source_dir = "/home/me/src/agents-cockpit"
 //!

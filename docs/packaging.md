@@ -38,9 +38,10 @@ These were settled with the user on 2026-11-11.
 
 | File | What it holds | How it is built |
 | --- | --- | --- |
-| `agents-cockpit-0.1.0-x86_64-linux` | The daemon and CLI, one static binary | `cargo build --release --target x86_64-unknown-linux-musl -p agents_cockpit` |
-| `agents-cockpit-desktop_0.1.0_amd64.deb` | The app, the daemon binary, the `.desktop` file and the icons | `cargo deb` inside an `ubuntu:22.04` container |
+| `agents-cockpit-0.1.0-x86_64-linux` | The daemon and CLI, one static binary | `cargo build --release --target x86_64-unknown-linux-musl -p agents_cockpit` inside an `ubuntu:22.04` container |
+| `agents-cockpit_0.1.0_amd64.deb` | The app, the static daemon, the `.desktop` file and the icons | `cargo deb` in the same container |
 | `agents-cockpit-desktop-0.1.0-windows-x64.zip` | `agents-cockpit-desktop.exe` | `cargo build --release -p cockpit_desktop` on the user's Windows laptop |
+| `agents-cockpit.service` | The systemd user service, for a server | copied from [contrib/agents-cockpit.service](contrib/agents-cockpit.service) |
 | `SHA256SUMS` | The checksum of each file | `sha256sum` |
 
 Why musl for the daemon:
@@ -58,12 +59,7 @@ Why a `.deb` and not an AppImage:
 - The container build (Ubuntu 22.04) links against an old enough glibc for Ubuntu 22.04 and newer, and Debian 12.
 - NixOS users already have `nix build` from [flake.nix](flake.nix). An AppImage or an `.rpm` comes when a colleague needs one.
 
-A `just release` recipe builds the Linux files and the checksums. `docs/releasing.md` lists the steps:
-
-1. Set the version in `Cargo.toml`, commit, tag.
-2. `just release` on Linux.
-3. Build the Windows zip on the laptop.
-4. `gh release create v0.1.0 <files> --notes-file <notes>`.
+`just release` builds the Linux files and the checksums from the committed tree, in one container ([contrib/release/Dockerfile](contrib/release/Dockerfile)). [docs/releasing.md](docs/releasing.md) lists every step of a release, the Windows zip and `gh release create` included. Both files were checked: the daemon runs in bare Ubuntu 22.04, Debian 12 and Alpine containers, and the `.deb` installs in clean Ubuntu 22.04 and Debian 12 containers, where the app starts and draws.
 
 ### 1.4 README for users
 
