@@ -1,7 +1,7 @@
 //! How the daemon's events and the connection's changes update the state. Pure: the caller shows
 //! the returned alerts.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::time::{Duration, Instant};
 
@@ -198,10 +198,45 @@ pub fn apply_catchup(
         .chat_new_from
         .retain(|agent, _| agents.contains_key(agent));
     drafts.retain_agents(|agent| agents.contains_key(&agent));
+    forget_unlisted_agents(state, machine);
     file_tree::keep_listed_panes(state, machine);
     state.fix_selection();
     actions::follow_hidden_title_edit(state, drafts);
     actions::follow_stop_dialog(state);
+}
+
+/// Drops what the preferences keep for an agent of `machine` its snapshot no longer lists: the
+/// agent was removed while the app was away, so no `AgentRemoved` dropped it.
+fn forget_unlisted_agents(state: &mut AppState, machine: MachineId) {
+    let Some(name) = state
+        .machines
+        .get(machine)
+        .map(|known| known.daemon.machine.clone())
+    else {
+        return;
+    };
+    let listed: BTreeSet<AgentId> = state
+        .agents
+        .keys()
+        .filter(|agent| MachineId::of(**agent) == machine)
+        .map(|agent| MachineId::daemon_agent(*agent))
+        .collect();
+    let prefs = &mut state.prefs;
+    prefs
+        .agent_order
+        .retain(|key| key.machine != name || listed.contains(&key.agent));
+    if let Some(chosen) = prefs.projects.agents.get_mut(&name) {
+        chosen.retain(|agent, _| listed.contains(agent));
+        if chosen.is_empty() {
+            prefs.projects.agents.remove(&name);
+        }
+    }
+    if let Some(levels) = prefs.notifications.agents.get_mut(&name) {
+        levels.retain(|agent, _| listed.contains(agent));
+        if levels.is_empty() {
+            prefs.notifications.agents.remove(&name);
+        }
+    }
 }
 
 pub fn apply(
@@ -479,10 +514,11 @@ mod tests {
 
     use super::*;
     use crate::daemon_label::DaemonLabel;
-    use crate::prefs::StatusFilter;
+    use crate::prefs::{GroupBy, NotificationLevel, StatusFilter};
     use crate::state::app_state::tests::{
         DAEMON_VERSION, connected_update, placed, state_with, summary,
     };
+    use crate::state::projects::ProjectKey;
     use crate::state::ui_state::{Block, Dialog, PaletteOrigin, Popover, TitleEdit, TitlePlace};
     use crate::state::{MachineState, agent_map, chat_images};
 
@@ -506,6 +542,46 @@ mod tests {
         );
 
         assert_eq!(state.ui.dialog, None);
+    }
+
+    #[test]
+    fn a_snapshot_drops_the_saved_choices_of_agents_the_daemon_no_longer_has() {
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::Idle),
+            summary(2, AgentStatus::Idle),
+        ]);
+        state.prefs.sidebar.group_by = GroupBy::None;
+        actions::move_agent(&mut state, AgentId::new(2), Some(AgentId::new(1)));
+        let work = ProjectKey::Kept(projects::create(&mut state, "Work"));
+        for agent in [AgentId::new(1), AgentId::new(2)] {
+            projects::move_agent(&mut state, agent, &work);
+            notification_levels::set_agent(&mut state, agent, NotificationLevel::Off);
+        }
+
+        apply_catchup(
+            &mut state,
+            &mut Drafts::default(),
+            Catchup::Snapshot(Snapshot {
+                agents: vec![summary(1, AgentStatus::Idle)],
+                plan_usage: PlanUsage::default(),
+                settings: Settings::default(),
+                last_seq: None,
+                accounts: Vec::new(),
+                other_plan_usage: Vec::new(),
+            }),
+            MachineId::THIS,
+        );
+
+        let prefs = &state.prefs;
+        let ordered: Vec<AgentId> = prefs.agent_order.iter().map(|key| key.agent).collect();
+        let chosen: Vec<AgentId> = prefs.projects.agents["build-box"].keys().copied().collect();
+        let levels: Vec<AgentId> = prefs.notifications.agents["build-box"]
+            .keys()
+            .copied()
+            .collect();
+        assert_eq!(ordered, [AgentId::new(1)]);
+        assert_eq!(chosen, [AgentId::new(1)]);
+        assert_eq!(levels, [AgentId::new(1)]);
     }
 
     #[test]
