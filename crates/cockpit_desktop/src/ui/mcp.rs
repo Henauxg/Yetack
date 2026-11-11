@@ -144,14 +144,15 @@ fn McpList(servers: Vec<McpServer>, hidden: BTreeSet<String>, show_hidden: bool)
                     }
                 }
             }
-            div { class: "mcp-foot",
-                span { class: "spacer", "{hidden_text}" }
-                if hidden_count > 0 {
-                    button {
-                        class: "link-button",
-                        onclick: move |_| cockpit.update(|state| state.ui.mcp.show_hidden = !state.ui.mcp.show_hidden),
-                        if show_hidden { "Hide them" } else { "Show them" }
-                    }
+        }
+        // Beside the list, which scrolls in a short window: the foot stays in sight.
+        div { class: "mcp-foot",
+            span { class: "spacer", "{hidden_text}" }
+            if hidden_count > 0 {
+                button {
+                    class: "link-button",
+                    onclick: move |_| cockpit.update(|state| state.ui.mcp.show_hidden = !state.ui.mcp.show_hidden),
+                    if show_hidden { "Hide them" } else { "Show them" }
                 }
             }
         }
