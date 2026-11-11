@@ -16,11 +16,13 @@ use crate::keymap::{Command, Keymap};
 use crate::path_style;
 use crate::prefs::{AccountColor, NotificationLevel};
 use crate::state::actions::Direction;
+use crate::state::menu_keys::{self, MenuKey};
 use crate::state::{
     AgentEntry, AppState, FolderAction, Popover, actions, notification_levels, projects, settings,
     to_handle, unread, working_folder,
 };
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::menu::KeyedMenu;
 use crate::ui::presence::{Presence, use_presence};
 use crate::ui::{notification_levels as levels_ui, projects_tab};
 
@@ -227,48 +229,6 @@ impl RowMenuShown {
     }
 }
 
-/// A key the menu takes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum MenuKey {
-    Up,
-    Down,
-    Right,
-    Left,
-    Enter,
-    Char(char),
-}
-
-impl MenuKey {
-    /// Digits come from the key's place, since some layouts (AZERTY) need Shift to type them.
-    fn from_event(key: &Key, code: Code) -> Option<Self> {
-        let digit = match code {
-            Code::Digit1 | Code::Numpad1 => Some('1'),
-            Code::Digit2 | Code::Numpad2 => Some('2'),
-            Code::Digit3 | Code::Numpad3 => Some('3'),
-            _ => None,
-        };
-        if let Some(digit) = digit {
-            return Some(Self::Char(digit));
-        }
-        match key {
-            Key::ArrowUp => Some(Self::Up),
-            Key::ArrowDown => Some(Self::Down),
-            Key::ArrowRight => Some(Self::Right),
-            Key::ArrowLeft => Some(Self::Left),
-            Key::Enter => Some(Self::Enter),
-            Key::Character(text) if text == " " => Some(Self::Enter),
-            Key::Character(text) => {
-                let mut chars = text.chars();
-                match (chars.next(), chars.next()) {
-                    (Some(letter), None) => Some(Self::Char(letter.to_ascii_lowercase())),
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
-    }
-}
-
 /// Where the highlight is, and which submenu is open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct Cursor {
@@ -292,11 +252,11 @@ impl Cursor {
                 };
                 let moved = match in_submenu {
                     Some((submenu, at)) => Self {
-                        sub: next(&enabled(&shown.rows(submenu)), Some(at), direction),
+                        sub: menu_keys::next(&enabled(&shown.rows(submenu)), Some(at), direction),
                         ..self
                     },
                     None => Self {
-                        item: next(&[true; ITEMS.len()], self.item, direction),
+                        item: menu_keys::next(&[true; ITEMS.len()], self.item, direction),
                         open: None,
                         sub: None,
                     },
@@ -352,7 +312,7 @@ impl Cursor {
         match submenu {
             Some(submenu) => Self {
                 open: Some(submenu),
-                sub: next(&enabled(&shown.rows(submenu)), None, Direction::Down),
+                sub: menu_keys::next(&enabled(&shown.rows(submenu)), None, Direction::Down),
                 ..self
             },
             None => self,
@@ -400,21 +360,6 @@ impl Cursor {
 
 fn enabled(rows: &[SubRow]) -> Vec<bool> {
     rows.iter().map(|row| row.enabled).collect()
-}
-
-/// The next row that can run after `from`: with none highlighted, the first or the last. The
-/// highlight stays at the ends.
-fn next(enabled: &[bool], from: Option<usize>, direction: Direction) -> Option<usize> {
-    let mut runnable = enabled
-        .iter()
-        .enumerate()
-        .filter(|&(_, &can_run)| can_run)
-        .map(|(index, _)| index);
-    let found = match direction {
-        Direction::Down => runnable.find(|&index| from.is_none_or(|from| index > from)),
-        Direction::Up => runnable.rfind(|&index| from.is_none_or(|from| index < from)),
-    };
-    found.or(from)
 }
 
 /// The tooltip of a row whose action also has a shortcut outside the menu.
@@ -681,30 +626,11 @@ fn MenuBody(shown: RowMenuShown) -> Element {
         }
     };
     rsx! {
-        div {
-            class: "popover menu row-menu agent-menu",
-            role: "menu",
-            tabindex: -1,
-            "data-own-keys": true,
-            style: "--menu-x: {x}px; --menu-y: {y}px",
-            onmounted: move |event| async move {
-                // The menu may have closed already: nothing to focus then.
-                let _ = event.data().set_focus(true).await;
-            },
-            onkeydown: move |event: KeyboardEvent| {
-                let modifiers = event.modifiers();
-                if modifiers.ctrl() || modifiers.alt() || modifiers.meta() || event.is_composing() {
-                    return;
-                }
-                // The menu keeps the focus while it is open, or its keys would stop working.
-                if event.key() == Key::Tab {
-                    event.prevent_default();
-                    return;
-                }
-                let Some(key) = MenuKey::from_event(&event.key(), event.code()) else {
-                    return;
-                };
-                event.prevent_default();
+        KeyedMenu {
+            x,
+            y,
+            focus_back: None,
+            on_key: move |key: MenuKey| {
                 cancel_delay();
                 let (moved, pick) = cursor.peek().after_key(&key, &shown_for_keys);
                 if moved != *cursor.peek() {
@@ -1004,35 +930,5 @@ mod tests {
         assert_eq!(on_move.sub, Some(1));
         assert_eq!(on_blocked_fork.sub, None);
         assert_eq!(crossing.followed().open, None);
-    }
-
-    #[test]
-    fn a_key_reads_as_its_lower_case_letter() {
-        assert_eq!(
-            MenuKey::from_event(&Key::Character("W".to_owned()), Code::KeyZ),
-            Some(MenuKey::Char('w'))
-        );
-        assert_eq!(
-            MenuKey::from_event(&Key::Character(" ".to_owned()), Code::Space),
-            Some(MenuKey::Enter)
-        );
-        assert_eq!(MenuKey::from_event(&Key::Tab, Code::Tab), None);
-    }
-
-    #[test]
-    fn a_digit_key_reads_as_its_digit_on_a_layout_that_needs_shift_for_digits() {
-        // An AZERTY keyboard gives "&" and "é" on the keys of 1 and 2 without Shift.
-        assert_eq!(
-            MenuKey::from_event(&Key::Character("&".to_owned()), Code::Digit1),
-            Some(MenuKey::Char('1'))
-        );
-        assert_eq!(
-            MenuKey::from_event(&Key::Character("é".to_owned()), Code::Digit2),
-            Some(MenuKey::Char('2'))
-        );
-        assert_eq!(
-            MenuKey::from_event(&Key::Character("3".to_owned()), Code::Numpad3),
-            Some(MenuKey::Char('3'))
-        );
     }
 }

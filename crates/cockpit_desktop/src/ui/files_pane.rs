@@ -7,14 +7,15 @@ use std::time::Duration;
 use cockpit_protocol::AgentId;
 use dioxus::prelude::*;
 
-use crate::bridge::{self, COMPOSER_ID, HIGHLIGHTED_CLASS};
+use crate::bridge::{self, COMPOSER_ID, HIGHLIGHTED_CLASS, HighlightedList};
 use crate::connection::Cockpit;
 use crate::keymap::Command;
 use crate::path_style::{self, PathStyle};
 use crate::state::actions::Direction;
-use crate::state::file_tree::{self, RowKind, Sideways, TreeFilter, TreeRow};
+use crate::state::file_tree::{self, RowKind, Sideways, TreeFilter, TreeMenuItem, TreeRow};
 use crate::state::{AppState, Popover, file_edits};
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::menu::{FlatMenu, FlatRow};
 use crate::ui::presence::use_presence;
 use crate::ui::splitter::FILES_PANE_ID;
 
@@ -63,6 +64,11 @@ pub fn FilesPane() -> Element {
         .map_or_else(|| full_folder.clone(), str::to_owned);
     let any_open = file_tree::can_collapse(&entry.tree, &folder, &footprint);
     let key_rows = rows.clone();
+    let can_reveal = state
+        .ui
+        .file_view(agent)
+        .is_some_and(|view| file_tree::can_show(&state, agent, &view.path));
+    let reveal_due = file_tree::reveal_due(&entry.tree, &rows);
     let pane_keys = state.prefs.keys.shown(Command::FilesPane);
     rsx! {
         aside { id: FILES_PANE_ID, class: "files-pane", aria_label: "Files",
@@ -71,12 +77,9 @@ pub fn FilesPane() -> Element {
                 button {
                     class: "icon-button tiny",
                     aria_label: "Show the file view's file",
-                    title: "Show the file view's file",
-                    disabled: shown_file.is_none(),
-                    onclick: move |_| {
-                        cockpit.update(|state| file_tree::reveal(state, agent));
-                        bridge::scroll_to_highlighted();
-                    },
+                    title: if can_reveal || shown_file.is_none() { "Show the file view's file" } else { "The tree does not hold the file view's file" },
+                    disabled: !can_reveal,
+                    onclick: move |_| cockpit.update(|state| file_tree::reveal(state, agent)),
                     Icon { kind: IconKind::Target, size: 14 }
                 }
                 button {
@@ -133,8 +136,23 @@ pub fn FilesPane() -> Element {
                 span { "{changed} changed, {read} read" }
                 span { "{pane_keys}" }
             }
+            RevealScroll { agent, due: reveal_due }
         }
     }
+}
+
+/// Scrolls the tree to the row `file_tree::reveal` highlighted, once the row shows: its folder
+/// may need a listing first, and the pane may open in the same change.
+#[component]
+fn RevealScroll(agent: AgentId, due: bool) -> Element {
+    let cockpit: Cockpit = use_context();
+    use_effect(use_reactive!(|agent, due| {
+        if due {
+            bridge::scroll_to_highlighted_now(HighlightedList::FilesPane);
+            cockpit.update(|state| file_tree::revealed(state, agent));
+        }
+    }));
+    rsx! {}
 }
 
 fn tree_key(cockpit: Cockpit, agent: AgentId, rows: &[TreeRow], event: &KeyboardEvent) {
@@ -148,22 +166,22 @@ fn tree_key(cockpit: Cockpit, agent: AgentId, rows: &[TreeRow], event: &Keyboard
         Key::ArrowDown if !alt => {
             event.prevent_default();
             cockpit.update(|state| file_tree::move_highlight(state, agent, Direction::Down));
-            bridge::scroll_to_highlighted();
+            bridge::scroll_to_highlighted(HighlightedList::FilesPane);
         }
         Key::ArrowUp if !alt => {
             event.prevent_default();
             cockpit.update(|state| file_tree::move_highlight(state, agent, Direction::Up));
-            bridge::scroll_to_highlighted();
+            bridge::scroll_to_highlighted(HighlightedList::FilesPane);
         }
         Key::ArrowRight if !alt => {
             event.prevent_default();
             cockpit.update(|state| file_tree::step_sideways(state, agent, Sideways::Right));
-            bridge::scroll_to_highlighted();
+            bridge::scroll_to_highlighted(HighlightedList::FilesPane);
         }
         Key::ArrowLeft if !alt => {
             event.prevent_default();
             cockpit.update(|state| file_tree::step_sideways(state, agent, Sideways::Left));
-            bridge::scroll_to_highlighted();
+            bridge::scroll_to_highlighted(HighlightedList::FilesPane);
         }
         Key::Enter => {
             let highlighted = cockpit
@@ -375,81 +393,88 @@ pub fn TreeMenu() -> Element {
         return rsx! {};
     };
     let target = shown.value.clone();
-    let MenuTarget {
-        agent,
-        x,
-        y,
-        ref row,
-        changed,
-        ref relative,
-    } = target;
-    let full = path_style::shown(&row.path);
-    let is_file = row.kind == RowKind::File;
-    let close = |state: &mut AppState| state.ui.popover = None;
-    let open_row = row.clone();
-    let diff_path = row.path.clone();
-    let mention_path = row.path.clone();
-    let relative = relative.clone();
+    // A menu opened on another row starts with nothing highlighted.
+    let key = format!(
+        "{}-{}-{}-{}",
+        shown.opening,
+        target.agent.get(),
+        target.x,
+        target.y
+    );
+    let folder_open = matches!(target.row.kind, RowKind::Folder { open: true, .. });
+    let rows: Vec<FlatRow> = target
+        .items
+        .iter()
+        .map(|&item| {
+            let (label, title) = match item {
+                TreeMenuItem::Open => (
+                    if folder_open { "Close" } else { "Open" },
+                    "Enter in the tree does this",
+                ),
+                TreeMenuItem::OpenDiff => ("Open on its diff", ""),
+                TreeMenuItem::Mention => {
+                    ("Mention in the message", "Alt+Enter in the tree does this")
+                }
+                TreeMenuItem::CopyPath => ("Copy the path", ""),
+                TreeMenuItem::CopyRelativePath => ("Copy the relative path", ""),
+            };
+            FlatRow {
+                label,
+                key: item.key(),
+                enabled: true,
+                title: title.to_owned(),
+                divided: item == TreeMenuItem::CopyPath,
+            }
+        })
+        .collect();
     rsx! {
         div {
             class: if shown.leaving { "presence leaving" } else { "presence" },
             inert: shown.leaving.then_some(true),
-            div {
-                class: "popover menu row-menu",
-                role: "menu",
-                style: "--menu-x: {x}px; --menu-y: {y}px",
-                button {
-                    class: "menu-item",
-                    role: "menuitem",
-                    onclick: move |_| cockpit.update(|state| {
-                        close(state);
-                        file_tree::activate(state, agent, &open_row);
-                    }),
-                    span { class: "menu-label",
-                        if matches!(open_row.kind, RowKind::Folder { open: true, .. }) { "Close" } else { "Open" }
-                    }
-                    span { class: "menu-hint", "Enter" }
-                }
-                if is_file && changed {
-                    button {
-                        class: "menu-item",
-                        role: "menuitem",
-                        onclick: move |_| cockpit.update(|state| {
-                            close(state);
-                            file_tree::open_diff(state, agent, &diff_path);
-                        }),
-                        span { class: "menu-label", "Open on its diff" }
-                    }
-                }
-                button {
-                    class: "menu-item",
-                    role: "menuitem",
-                    onclick: move |_| mention(cockpit, agent, &mention_path),
-                    span { class: "menu-label", "Mention in the message" }
-                    span { class: "menu-hint", "Alt+Enter" }
-                }
-                div { class: "menu-divider" }
-                button {
-                    class: "menu-item",
-                    role: "menuitem",
-                    onclick: move |_| {
-                        bridge::copy_to_clipboard(full.clone());
-                        cockpit.update(close);
+            for key in [key] {
+                FlatMenu {
+                    key: "{key}",
+                    x: target.x,
+                    y: target.y,
+                    rows: rows.clone(),
+                    focus_back: None,
+                    on_pick: {
+                        let target = target.clone();
+                        move |index: usize| {
+                            if let Some(&item) = target.items.get(index) {
+                                run_menu_item(cockpit, &target, item);
+                            }
+                        }
                     },
-                    span { class: "menu-label", "Copy the path" }
-                }
-                if let Some(relative) = relative {
-                    button {
-                        class: "menu-item",
-                        role: "menuitem",
-                        onclick: move |_| {
-                            bridge::copy_to_clipboard(relative.clone());
-                            cockpit.update(close);
-                        },
-                        span { class: "menu-label", "Copy the relative path" }
-                    }
                 }
             }
+        }
+    }
+}
+
+fn run_menu_item(cockpit: Cockpit, target: &MenuTarget, item: TreeMenuItem) {
+    let agent = target.agent;
+    let row = &target.row;
+    let close = |state: &mut AppState| state.ui.popover = None;
+    match item {
+        TreeMenuItem::Open => cockpit.update(|state| {
+            close(state);
+            file_tree::activate(state, agent, row);
+        }),
+        TreeMenuItem::OpenDiff => cockpit.update(|state| {
+            close(state);
+            file_tree::open_diff(state, agent, &row.path);
+        }),
+        TreeMenuItem::Mention => mention(cockpit, agent, &row.path),
+        TreeMenuItem::CopyPath => {
+            bridge::copy_to_clipboard(path_style::shown(&row.path));
+            cockpit.update(close);
+        }
+        TreeMenuItem::CopyRelativePath => {
+            if let Some(relative) = &target.relative {
+                bridge::copy_to_clipboard(relative.clone());
+            }
+            cockpit.update(close);
         }
     }
 }
@@ -461,10 +486,9 @@ struct MenuTarget {
     x: i32,
     y: i32,
     row: TreeRow,
-    /// The agent changed the file.
-    changed: bool,
     /// The path from the agent's folder, for an entry inside it.
     relative: Option<String>,
+    items: Vec<TreeMenuItem>,
 }
 
 fn menu_target(state: &AppState, agent: AgentId, x: i32, y: i32) -> Option<MenuTarget> {
@@ -475,14 +499,14 @@ fn menu_target(state: &AppState, agent: AgentId, x: i32, y: i32) -> Option<MenuT
         .find(|row| &row.path == path && row.kind.is_entry())?;
     let folder = &entry.summary.folder;
     let relative = file_edits::shown_path(folder, path);
-    let inside = !PathStyle::of(folder).is_absolute(&relative);
+    let relative = (!PathStyle::of(folder).is_absolute(&relative)).then_some(relative);
     Some(MenuTarget {
         agent,
         x,
         y,
-        changed: row.marks.change.is_some(),
+        items: file_tree::menu_items(&row, relative.is_some()),
         row,
-        relative: inside.then_some(relative),
+        relative,
     })
 }
 

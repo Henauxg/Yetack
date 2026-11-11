@@ -12,7 +12,7 @@ use cockpit_protocol::{
 use dioxus::prelude::*;
 use serde_json::Value;
 
-use crate::bridge::{self, HIGHLIGHTED_CLASS};
+use crate::bridge::{self, HIGHLIGHTED_CLASS, HighlightedList};
 use crate::connection::{Clock, Cockpit};
 use crate::format;
 use crate::keymap::Command;
@@ -296,7 +296,7 @@ pub fn AgentMapDialog(view: MapView) -> Element {
     let mut scrolled_to = use_hook(|| CopyValue::new(None::<MapRow>));
     if scrolled_to() != Some(view.selected) {
         scrolled_to.set(Some(view.selected));
-        bridge::scroll_to_highlighted();
+        bridge::scroll_to_highlighted(HighlightedList::Dialog);
     }
     let state = cockpit.state.read();
     let Some(entry) = state.agents.get(&view.agent) else {

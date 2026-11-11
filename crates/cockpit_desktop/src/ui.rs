@@ -23,6 +23,7 @@ mod loading;
 mod machines;
 mod markdown;
 mod mcp;
+mod menu;
 mod messages;
 mod no_daemon;
 mod notification_levels;
@@ -44,3 +45,4 @@ mod zoom;
 
 pub use app::App;
 pub use sidebar::item_id as sidebar_item_id;
+pub use splitter::FILES_PANE_ID;

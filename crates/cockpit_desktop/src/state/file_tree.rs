@@ -48,6 +48,8 @@ pub struct FileTree {
     pub filter: TreeFilter,
     /// The row the keys and the pointer moved to.
     pub highlighted: Option<PathBuf>,
+    /// The row `reveal` highlighted, until the pane scrolls to it. It may wait for a listing.
+    pub reveal: Option<PathBuf>,
     /// The text of the search field, with the files found.
     pub search: Option<FileSearch>,
     /// The row whose menu is open.
@@ -240,6 +242,57 @@ fn outside_roots(folder: &Path, footprint: &Footprint) -> Vec<PathBuf> {
     roots.into_iter().collect()
 }
 
+/// The daemon refused to list `root`, a folder outside every checkout: the tree shows only the
+/// files the agent touched in it.
+fn refused(tree: &FileTree, root: &Path) -> bool {
+    matches!(
+        tree.listings.get(root).map(|listing| &listing.entries),
+        Some(Loadable::Failed(_))
+    )
+}
+
+/// The folder at the top level of "All" that shows `full`, an absolute path: the agent's folder,
+/// or a folder outside it that holds a file the agent changed or read. None for a path the tree
+/// never shows: one outside these folders, or one the agent did not touch in a folder the daemon
+/// refuses to list.
+fn root_showing(
+    tree: &FileTree,
+    folder: &Path,
+    footprint: &Footprint,
+    full: &Path,
+) -> Option<PathBuf> {
+    let style = PathStyle::of(folder);
+    let full_text = full.to_string_lossy();
+    let holds = |root: &Path| {
+        style
+            .strip_prefix(&full_text, &root.to_string_lossy())
+            .is_some()
+    };
+    if holds(folder) {
+        return Some(folder.to_owned());
+    }
+    let root = outside_roots(folder, footprint)
+        .into_iter()
+        .find(|root| holds(root))?;
+    let touched = footprint
+        .changed
+        .keys()
+        .chain(&footprint.read)
+        .any(|touched| style.same_path(&touched.to_string_lossy(), &full_text));
+    (touched || !refused(tree, &root)).then_some(root)
+}
+
+/// Whether the agent's tree can show `path`, a path of the file view: "Show in the files pane"
+/// needs it.
+pub fn can_show(state: &AppState, agent: AgentId, path: &Path) -> bool {
+    let Some(entry) = state.agents.get(&agent) else {
+        return false;
+    };
+    let folder = &entry.summary.folder;
+    let full = PathStyle::of(folder).resolve(&folder.to_string_lossy(), &path.to_string_lossy());
+    root_showing(&entry.tree, folder, &footprint(entry), Path::new(&full)).is_some()
+}
+
 struct Builder<'tree> {
     tree: &'tree FileTree,
     footprint: &'tree Footprint,
@@ -357,11 +410,7 @@ impl Builder<'_> {
         if !open {
             return;
         }
-        let refused = matches!(
-            self.tree.listings.get(root).map(|listing| &listing.entries),
-            Some(Loadable::Failed(_))
-        );
-        if !refused {
+        if !refused(self.tree, root) {
             self.listed_rows(root, 1, false, rows);
             return;
         }
@@ -895,6 +944,45 @@ pub fn open_menu(state: &mut AppState, agent: AgentId, path: &Path, x: i32, y: i
     state.ui.popover = Some(Popover::TreeMenu { agent, x, y });
 }
 
+/// A row of the menu of a tree row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeMenuItem {
+    /// Opens a file, or opens or closes a folder.
+    Open,
+    OpenDiff,
+    Mention,
+    CopyPath,
+    CopyRelativePath,
+}
+
+impl TreeMenuItem {
+    /// The letter that picks it while the menu is open.
+    pub fn key(self) -> char {
+        match self {
+            Self::Open => 'o',
+            Self::OpenDiff => 'd',
+            Self::Mention => 'm',
+            Self::CopyPath => 'c',
+            Self::CopyRelativePath => 'e',
+        }
+    }
+}
+
+/// The menu's rows for `row`: a file the agent changed also opens on its diff, and an entry in the
+/// agent's folder also copies its path from that folder.
+pub fn menu_items(row: &TreeRow, in_folder: bool) -> Vec<TreeMenuItem> {
+    let diff = row.kind == RowKind::File && row.marks.change.is_some();
+    let mut items = vec![TreeMenuItem::Open];
+    if diff {
+        items.push(TreeMenuItem::OpenDiff);
+    }
+    items.extend([TreeMenuItem::Mention, TreeMenuItem::CopyPath]);
+    if in_folder {
+        items.push(TreeMenuItem::CopyRelativePath);
+    }
+    items
+}
+
 /// Adds `path` at the end of the agent's message, apart from the text before it: from the
 /// agent's folder when the file is in it.
 pub fn mention(state: &mut AppState, drafts: &mut Drafts, agent: AgentId, path: &Path) {
@@ -926,8 +1014,9 @@ pub fn show_in_pane(state: &mut AppState, agent: AgentId, path: &Path) {
     reveal(state, agent);
 }
 
-/// Shows the file view's file in the tree: its folders open and its row highlighted. A file the
-/// filter hides shows under "All".
+/// Shows the file view's file in the tree: its folders open and its row highlighted, for the pane
+/// to scroll to once it shows. A file the filter hides shows under "All". A file the tree never
+/// shows changes nothing.
 pub fn reveal(state: &mut AppState, agent: AgentId) {
     let Some(shown) = state.ui.file_view(agent).map(|view| view.path.clone()) else {
         return;
@@ -939,6 +1028,9 @@ pub fn reveal(state: &mut AppState, agent: AgentId) {
     let style = PathStyle::of(&folder);
     let full = PathBuf::from(style.resolve(&folder.to_string_lossy(), &shown.to_string_lossy()));
     let marks = footprint(entry);
+    let Some(root) = root_showing(&entry.tree, &folder, &marks, &full) else {
+        return;
+    };
     let kept = match entry.tree.filter {
         TreeFilter::All => true,
         TreeFilter::Changed => marks.changed.contains_key(&full),
@@ -949,14 +1041,6 @@ pub fn reveal(state: &mut AppState, agent: AgentId) {
     }
     entry.tree.search = None;
     let full_text = full.to_string_lossy().into_owned();
-    let root = outside_roots(&folder, &marks)
-        .into_iter()
-        .find(|root| {
-            style
-                .strip_prefix(&full_text, &root.to_string_lossy())
-                .is_some()
-        })
-        .unwrap_or(folder);
     let mut above = style.parent(&full_text).map(str::to_owned);
     while let Some(parent) = above {
         if style
@@ -975,7 +1059,26 @@ pub fn reveal(state: &mut AppState, agent: AgentId) {
             .filter(|next| *next != parent)
             .map(str::to_owned);
     }
-    entry.tree.highlighted = Some(full);
+    entry.tree.highlighted = Some(full.clone());
+    entry.tree.reveal = Some(full);
+}
+
+/// Whether the pane scrolls to the row `reveal` highlighted: it is still highlighted, and shows
+/// among `rows` now.
+pub fn reveal_due(tree: &FileTree, rows: &[TreeRow]) -> bool {
+    tree.reveal.as_ref().is_some_and(|revealed| {
+        tree.highlighted.as_ref() == Some(revealed)
+            && rows
+                .iter()
+                .any(|row| &row.path == revealed && row.kind.is_entry())
+    })
+}
+
+/// The pane scrolled to the row `reveal` highlighted.
+pub fn revealed(state: &mut AppState, agent: AgentId) {
+    if let Some(entry) = state.agents.get_mut(&agent) {
+        entry.tree.reveal = None;
+    }
 }
 
 /// Keeps the pane's width, in pixels, where its splitter left it.
@@ -2006,5 +2109,177 @@ mod tests {
                 "    · limits.toml",
             ]
         );
+    }
+
+    /// `listed_agent`, having changed `/work/other/notes/a.md`, outside its folder.
+    fn agent_beside_other() -> (AppState, AgentId) {
+        let (mut state, agent) = listed_agent();
+        state.agents.get_mut(&agent).unwrap().details = Loadable::Loaded(AgentDetails {
+            changed_files: vec![ChangedFile {
+                path: PathBuf::from("/work/other/notes/a.md"),
+                lines_added: 1,
+                lines_removed: 0,
+            }],
+            ..AgentDetails::default()
+        });
+        (state, agent)
+    }
+
+    #[test]
+    fn the_tree_shows_the_agents_folder_and_the_files_it_touched_outside() {
+        let (mut state, agent) = agent_beside_other();
+        let can = |state: &AppState, path: &str| can_show(state, agent, Path::new(path));
+
+        let inside = can(&state, "src/lib.rs");
+        let inside_unlisted = can(&state, "/work/project-1/docs/guide.md");
+        let touched = can(&state, "/work/other/notes/a.md");
+        let beside_touched = can(&state, "/work/other/notes/b.md");
+        let elsewhere = can(&state, "/opt/tools/config.toml");
+        state.agents.get_mut(&agent).unwrap().tree.listings.insert(
+            PathBuf::from("/work/other"),
+            Listing {
+                entries: Loadable::Failed("outside every checkout".to_owned()),
+                stale: false,
+                reading: false,
+            },
+        );
+
+        assert!(inside);
+        assert!(inside_unlisted);
+        assert!(touched);
+        assert!(beside_touched, "the daemon may list the folder");
+        assert!(!elsewhere);
+        assert!(can(&state, "/work/other/notes/a.md"));
+        assert!(
+            !can(&state, "/work/other/notes/b.md"),
+            "the daemon refused to list the folder"
+        );
+    }
+
+    #[test]
+    fn showing_a_file_the_tree_never_shows_changes_nothing() {
+        let (mut state, agent) = changed_agent();
+        actions::open_file(
+            &mut state,
+            agent,
+            PathBuf::from("/opt/tools/config.toml"),
+            None,
+        );
+
+        reveal(&mut state, agent);
+
+        let tree = &state.agents[&agent].tree;
+        assert_eq!(tree.filter, TreeFilter::Changed);
+        assert_eq!(tree.highlighted, None);
+        assert_eq!(tree.reveal, None);
+    }
+
+    #[test]
+    fn the_pane_scrolls_to_a_revealed_file_once_its_folder_is_listed() {
+        let (mut state, agent) = listed_agent();
+        let src = PathBuf::from("/work/project-1/src");
+        let src_listing = state
+            .agents
+            .get_mut(&agent)
+            .unwrap()
+            .tree
+            .listings
+            .remove(&src)
+            .unwrap();
+        let due =
+            |state: &AppState| reveal_due(&state.agents[&agent].tree, &shown_rows(state, agent));
+        actions::open_file(&mut state, agent, PathBuf::from("src/lib.rs"), None);
+
+        reveal(&mut state, agent);
+        let before_listing = due(&state);
+        state
+            .agents
+            .get_mut(&agent)
+            .unwrap()
+            .tree
+            .listings
+            .insert(src, src_listing);
+        let listed = due(&state);
+        revealed(&mut state, agent);
+        let after_scroll = due(&state);
+
+        assert!(!before_listing, "the row waits for its folder's listing");
+        assert!(listed);
+        assert!(!after_scroll, "the pane scrolls once");
+    }
+
+    #[test]
+    fn the_pane_does_not_scroll_to_a_revealed_row_the_highlight_left() {
+        let (mut state, agent) = listed_agent();
+        actions::open_file(&mut state, agent, PathBuf::from("src/lib.rs"), None);
+
+        reveal(&mut state, agent);
+        highlight(&mut state, agent, Path::new("/work/project-1/README.md"));
+
+        assert!(!reveal_due(
+            &state.agents[&agent].tree,
+            &shown_rows(&state, agent)
+        ));
+    }
+
+    #[test]
+    fn a_rows_menu_opens_a_changed_file_on_its_diff_and_copies_a_relative_path_inside() {
+        let (state, agent) = changed_agent();
+        let rows = shown_rows(&state, agent);
+        let row = |name: &str| rows.iter().find(|row| row.name == name).unwrap();
+
+        let changed_file = menu_items(row("lib.rs"), true);
+        let folder_outside = menu_items(row("src"), false);
+
+        assert_eq!(
+            changed_file,
+            [
+                TreeMenuItem::Open,
+                TreeMenuItem::OpenDiff,
+                TreeMenuItem::Mention,
+                TreeMenuItem::CopyPath,
+                TreeMenuItem::CopyRelativePath,
+            ]
+        );
+        assert_eq!(
+            folder_outside,
+            [
+                TreeMenuItem::Open,
+                TreeMenuItem::Mention,
+                TreeMenuItem::CopyPath,
+            ]
+        );
+        let mut letters: Vec<char> = changed_file.iter().map(|item| item.key()).collect();
+        letters.sort_unstable();
+        letters.dedup();
+        assert_eq!(
+            letters.len(),
+            changed_file.len(),
+            "each row has its own letter"
+        );
+    }
+
+    #[test]
+    fn on_windows_a_touched_file_in_a_refused_folder_shows_whatever_its_case() {
+        let folder = Path::new(r"C:\work\app");
+        let footprint = Footprint {
+            changed: [changed("c:/WORK/other/a.md", 1, 0)].into_iter().collect(),
+            read: BTreeSet::new(),
+        };
+        let mut tree = FileTree::default();
+        for root in outside_roots(folder, &footprint) {
+            tree.listings.insert(
+                root,
+                Listing {
+                    entries: Loadable::Failed("outside every checkout".to_owned()),
+                    stale: false,
+                    reading: false,
+                },
+            );
+        }
+
+        let root = root_showing(&tree, folder, &footprint, Path::new(r"C:\work\other\a.md"));
+
+        assert!(root.is_some());
     }
 }

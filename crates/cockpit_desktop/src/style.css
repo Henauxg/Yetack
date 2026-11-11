@@ -1020,47 +1020,47 @@ button:disabled {
   margin: 4px 8px;
 }
 
-/* The agent menu has one highlight, which the pointer and the keys move: no hover of its own, and
-   no ring, since the menu keeps the focus. */
-.agent-menu:focus,
-.agent-menu .menu-item:focus-visible {
+/* A menu that takes the keys has one highlight, which the pointer and the keys move: no hover of
+   its own, and no ring, since the menu keeps the focus. */
+.keyed-menu:focus,
+.keyed-menu .menu-item:focus-visible {
   outline: none;
 }
 
-.agent-menu .menu-item {
+.keyed-menu .menu-item {
   gap: 8px;
   transition: none;
 }
 
-.agent-menu .menu-item:hover {
+.keyed-menu .menu-item:hover {
   background: transparent;
 }
 
-.agent-menu .menu-item.highlighted {
+.keyed-menu .menu-item.highlighted {
   background: var(--selected);
 }
 
-.agent-menu .menu-item:enabled:active {
+.keyed-menu .menu-item:enabled:active {
   background: var(--pressed);
 }
 
-.agent-menu .menu-label {
+.keyed-menu .menu-label {
   flex: 1 1 auto;
 }
 
 /* The hints, the chevrons and the current value end in one column. */
-.agent-menu .menu-hint {
+.keyed-menu .menu-hint {
   min-width: 14px;
   margin-left: 16px;
   text-align: center;
 }
 
-.agent-menu .menu-item > .icon {
+.keyed-menu .menu-item > .icon {
   margin-left: 16px;
   color: var(--dim);
 }
 
-.agent-menu .menu-item > .menu-value + .icon {
+.keyed-menu .menu-item > .menu-value + .icon {
   margin-left: 0;
 }
 
@@ -1070,7 +1070,7 @@ button:disabled {
   color: var(--dim);
 }
 
-.agent-menu .menu-item.danger {
+.keyed-menu .menu-item.danger {
   color: var(--red);
 }
 
@@ -5594,6 +5594,11 @@ html.splitting * {
   display: flex;
   flex-direction: column;
   border-color: var(--line-control);
+}
+
+/* While a row's menu is open, a click on the list closes the menu and goes back to the list. */
+.file-list.covered {
+  pointer-events: none;
 }
 
 .file-list-rows {

@@ -16,10 +16,10 @@ use crate::ui::icons::{Icon, IconKind};
 use crate::ui::presence::Presence;
 
 /// The list's filter, which takes the focus when the list opens and gets it back after a close.
-const FILTER_ID: &str = "file-list-filter";
+pub const FILTER_ID: &str = "file-list-filter";
 
 #[component]
-pub fn FileListButton(agent: AgentId, count: usize, open: bool) -> Element {
+pub fn FileListButton(agent: AgentId, count: usize, open: bool, covered: bool) -> Element {
     let cockpit: Cockpit = use_context();
     rsx! {
         div { class: "file-list-anchor",
@@ -32,7 +32,7 @@ pub fn FileListButton(agent: AgentId, count: usize, open: bool) -> Element {
                 span { class: "file-list-count", "{count}" }
                 Icon { kind: IconKind::ChevronDown, size: 12 }
             }
-            Presence { open, FileList { agent } }
+            Presence { open, FileList { agent, open, covered } }
         }
     }
 }
@@ -89,12 +89,18 @@ fn rows(folder: &Path, shown: &Path, paths: Vec<PathBuf>) -> Vec<Row> {
 }
 
 #[component]
-fn FileList(agent: AgentId) -> Element {
+fn FileList(agent: AgentId, open: bool, covered: bool) -> Element {
     let cockpit: Cockpit = use_context();
     let highlighted = use_memo(move || cockpit.drafts.read().file_list.highlighted);
     let moves = use_pointer_moves();
     let mut pointed = use_hook(|| CopyValue::new(None));
     use_context_provider(|| ListPointer { moves, pointed });
+    // A row's menu took the focus: the keys go back to the filter once it closes to the list.
+    use_effect(use_reactive!(|open, covered| {
+        if open && !covered {
+            bridge::focus_field(FILTER_ID);
+        }
+    }));
     use_effect(move || {
         let index = highlighted();
         if pointed.replace(None) != Some(index) {
@@ -113,7 +119,10 @@ fn FileList(agent: AgentId) -> Element {
     };
     let highlighted = highlighted();
     rsx! {
-        div { class: "popover file-list", role: "dialog", aria_label: "Open files",
+        div {
+            class: if covered { "popover file-list covered" } else { "popover file-list" },
+            role: "dialog",
+            aria_label: "Open files",
             div { class: "palette-head",
                 Icon { kind: IconKind::Search, size: 14 }
                 Filter { agent }
@@ -203,6 +212,14 @@ fn FileRow(agent: AgentId, index: usize, row: Row, highlighted: bool) -> Element
             aria_selected: row.shown,
             title: "{row.full}",
             onmousemove: move |event: MouseEvent| pointer.point(cockpit, agent, index, &event),
+            oncontextmenu: move |event: MouseEvent| {
+                event.prevent_default();
+                let point = event.client_coordinates();
+                // Whole pixels are enough to place a menu.
+                #[expect(clippy::cast_possible_truncation, reason = "a window's pixels fit in i32")]
+                let (x, y) = (point.x.round() as i32, point.y.round() as i32);
+                cockpit.update_with_drafts(|state, drafts| file_list::open_menu(state, drafts, agent, index, x, y));
+            },
             button {
                 class: "file-list-pick",
                 onclick: move |_| cockpit.update_with_drafts(|state, drafts| file_list::pick(state, drafts, agent, Some(index))),

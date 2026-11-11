@@ -14,8 +14,8 @@ use crate::keymap::Command;
 use crate::path_style::PathStyle;
 use crate::render::{self, Diff, Language, MAX_RENDERED_LINES, diff_lines};
 use crate::state::{
-    FileFreshness, FileRead, FileUpdate, Loadable, Popover, Reread, ViewMode, actions, chat_images,
-    file_edits, file_reread, file_tree, is_markdown, tab_menu,
+    FileFreshness, FileRead, FileUpdate, Loadable, Popover, Reread, TabMenuOrigin, ViewMode,
+    actions, chat_images, file_edits, file_reread, file_tree, is_markdown, tab_menu,
 };
 use crate::ui::code::{
     CopyButton, CopyLook, LineMarks, LineNumbers, diff_line, diff_row, lines_not_shown,
@@ -57,7 +57,14 @@ pub fn FileViewPanel() -> Element {
     let changed_paths = entry.changed_paths();
     let tabs = view.tabs(&changed_paths);
     let tab_count = tabs.len();
-    let list_open = state.ui.popover == Some(Popover::FileList);
+    let list_menu = matches!(
+        state.ui.popover,
+        Some(Popover::TabMenu {
+            origin: TabMenuOrigin::List,
+            ..
+        })
+    );
+    let list_open = state.ui.popover == Some(Popover::FileList) || list_menu;
     let text = entry.files.get(&view.path).cloned().unwrap_or_default();
     let freshness = entry.file_freshness.clone();
     let update = freshness.update.clone();
@@ -130,7 +137,7 @@ pub fn FileViewPanel() -> Element {
                         }
                     }
                 }
-                FileListButton { agent, count: tab_count, open: list_open }
+                FileListButton { agent, count: tab_count, open: list_open, covered: list_menu }
                 button {
                     class: "icon-button",
                     aria_label: "Close the file view",
@@ -277,7 +284,7 @@ fn FileTab(agent: AgentId, path: PathBuf, label: String, full: String, selected:
                 #[expect(clippy::cast_possible_truncation, reason = "a window's pixels fit in i32")]
                 let (x, y) = (point.x.round() as i32, point.y.round() as i32);
                 let path = menu_path.clone();
-                cockpit.update(|state| tab_menu::open(state, agent, &path, x, y));
+                cockpit.update(|state| tab_menu::open(state, agent, &path, x, y, TabMenuOrigin::Tabs));
             },
             button {
                 class: "file-tab-name",
