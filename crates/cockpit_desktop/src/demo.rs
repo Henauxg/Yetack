@@ -874,6 +874,12 @@ pub fn answer_from(
             sessions: Vec::new(),
         }),
         Request::FoldersList(params) => list_folders(state, machine, &params.path),
+        // The server's demo agents run nothing: its load is the machine's alone.
+        Request::MachineLoad => {
+            let mut load = machine_load(SystemTime::now());
+            load.agents.clear();
+            Ok(ResponseBody::MachineLoad(load))
+        }
         Request::AccountsList => Ok(ResponseBody::Accounts {
             accounts: state
                 .machines
@@ -1319,8 +1325,8 @@ const OTHER_FOLDERS: [&str; 5] = [
 
 /// As the daemon lists the folders in `path` for the new agent dialog: the folders of the sample's
 /// agents, past sessions and files, the folders above them, and a few others.
-/// The folders under `path` on `machine`: its agents' folders, and on this computer the past
-/// sessions' folders and the sample's.
+/// The folders under `path` on `machine`: its home and its agents' folders, and on this computer
+/// the past sessions' folders and the sample's.
 fn list_folders(
     state: &AppState,
     machine: MachineId,
@@ -1337,6 +1343,7 @@ fn list_folders(
         .values()
         .filter(|entry| MachineId::of(entry.id()) == machine)
         .map(|entry| entry.summary.folder.clone())
+        .chain([PathBuf::from(DEMO_HOME)])
         .collect();
     if machine == MachineId::THIS {
         let past = sessions(SystemTime::now())
@@ -3809,6 +3816,44 @@ pub struct ParseError {
         };
         assert_eq!(accounts.len(), 1);
         assert!(file.is_err());
+    }
+
+    #[test]
+    fn a_server_shows_no_agent_of_this_computer_in_its_load() {
+        let state = state(label());
+
+        let load = answer_from(&state, SERVER, &Request::MachineLoad);
+
+        let Ok(ResponseBody::MachineLoad(load)) = load else {
+            panic!("the load, not {load:?}");
+        };
+        assert!(load.agents.is_empty());
+    }
+
+    #[test]
+    fn a_machine_without_agents_still_lists_its_home() {
+        let state = state(label());
+        let empty = MachineId::new(2);
+        let names = |path: &str| {
+            let listed = answer_from(
+                &state,
+                empty,
+                &Request::FoldersList(FoldersListParams {
+                    path: PathBuf::from(path),
+                }),
+            );
+            let Ok(ResponseBody::Directory(listing)) = listed else {
+                panic!("a listing of {path}, not {listed:?}");
+            };
+            listing
+                .entries
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect::<Vec<String>>()
+        };
+
+        assert_eq!(names("/"), ["home"]);
+        assert_eq!(names("/home"), ["dev"]);
     }
 
     #[test]
