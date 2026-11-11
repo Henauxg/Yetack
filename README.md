@@ -33,3 +33,7 @@ just          # lists the recipes
 just run      # builds and runs the app
 just check    # what CI runs
 ```
+
+## License
+
+agents-cockpit is licensed under the [Mozilla Public License 2.0](LICENSE). [CONTRIBUTING.md](CONTRIBUTING.md) says how contributions are licensed.
