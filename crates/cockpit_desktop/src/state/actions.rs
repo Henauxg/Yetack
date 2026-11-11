@@ -346,7 +346,8 @@ enum CommandRank {
 }
 
 /// Whether `query` is in `text` from the start of a word, as `arch` is in `workdocs-archive` and
-/// `review-arch` in `plugin:review-architecture`. The query may run past the word, as `the branch` in "Review the branch".
+/// `review-arch` in `plugin:review-architecture`. The query may run past the word, as
+/// `the branch` in "Review the branch".
 fn from_a_word_start(text: &str, query: &str) -> bool {
     let mut previous: Option<char> = None;
     for (at, character) in text.char_indices() {
