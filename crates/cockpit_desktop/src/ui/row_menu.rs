@@ -16,7 +16,7 @@ use crate::keymap::{Command, Keymap};
 use crate::path_style;
 use crate::prefs::NotificationLevel;
 use crate::state::actions::Direction;
-use crate::state::menu_keys::{MenuKey, next};
+use crate::state::menu_keys::{self, MenuKey};
 use crate::state::{
     AppState, FolderAction, Popover, actions, notification_levels, to_handle, unread,
     working_folder,
@@ -198,11 +198,11 @@ impl Cursor {
                 };
                 let moved = match in_submenu {
                     Some((submenu, at)) => Self {
-                        sub: next(&enabled(&shown.rows(submenu)), Some(at), direction),
+                        sub: menu_keys::next(&enabled(&shown.rows(submenu)), Some(at), direction),
                         ..self
                     },
                     None => Self {
-                        item: next(&[true; ITEMS.len()], self.item, direction),
+                        item: menu_keys::next(&[true; ITEMS.len()], self.item, direction),
                         open: None,
                         sub: None,
                     },
@@ -258,7 +258,7 @@ impl Cursor {
         match submenu {
             Some(submenu) => Self {
                 open: Some(submenu),
-                sub: next(&enabled(&shown.rows(submenu)), None, Direction::Down),
+                sub: menu_keys::next(&enabled(&shown.rows(submenu)), None, Direction::Down),
                 ..self
             },
             None => self,

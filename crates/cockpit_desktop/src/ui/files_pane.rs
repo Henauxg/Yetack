@@ -407,8 +407,10 @@ pub fn TreeMenu() -> Element {
         .iter()
         .map(|&item| {
             let (label, title) = match item {
-                TreeMenuItem::Open if folder_open => ("Close", "Enter in the tree does this"),
-                TreeMenuItem::Open => ("Open", "Enter in the tree does this"),
+                TreeMenuItem::Open => (
+                    if folder_open { "Close" } else { "Open" },
+                    "Enter in the tree does this",
+                ),
                 TreeMenuItem::OpenDiff => ("Open on its diff", ""),
                 TreeMenuItem::Mention => {
                     ("Mention in the message", "Alt+Enter in the tree does this")
