@@ -58,6 +58,7 @@ use std::time::Duration;
 
 use cockpit_protocol::{AccountId, AgentId, AgentStatus, AgentSummary, Mark};
 use dioxus::prelude::*;
+use serde::de::IgnoredAny;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
@@ -138,8 +139,27 @@ pub struct Project {
     pub name: String,
     pub color: AccountColor,
     /// An agent belongs to the first project with a rule that holds its folder.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "known_rules")]
     pub rules: Vec<ProjectRule>,
+}
+
+/// The rules this version knows: a kind from another version of the app is left out, rather
+/// than costing the whole file.
+fn known_rules<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<ProjectRule>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Read {
+        Known(ProjectRule),
+        Unknown(IgnoredAny),
+    }
+    let rules = Vec::<Read>::deserialize(deserializer)?;
+    Ok(rules
+        .into_iter()
+        .filter_map(|rule| match rule {
+            Read::Known(rule) => Some(rule),
+            Read::Unknown(_) => None,
+        })
+        .collect())
 }
 
 /// What a project holds.
@@ -1131,6 +1151,28 @@ mod tests {
         assert_eq!(prefs.file_view.width_share, None);
         assert!(prefs.file_view.wrap);
         assert_eq!(prefs.sidebar.filter, StatusFilter::All);
+    }
+
+    #[test]
+    fn a_rule_of_an_unknown_kind_is_left_out_and_the_file_still_reads() {
+        let prefs: Prefs = serde_json::from_str(
+            r#"{
+                "chat": {"comments": "hidden"},
+                "projects": {"list": [{
+                    "id": 0,
+                    "name": "billing",
+                    "color": "violet",
+                    "rules": [{"branch": "main"}, {"folder": "/work/billing"}]
+                }]}
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(prefs.chat.comments, CommentPlacement::Hidden);
+        assert_eq!(
+            prefs.projects.list[0].rules,
+            [ProjectRule::Folder("/work/billing".to_owned())]
+        );
     }
 
     #[test]
