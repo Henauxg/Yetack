@@ -798,7 +798,6 @@ button:disabled {
   align-self: flex-start;
   margin: -0.25em 0 0 -0.12em;
   font: 700 max(0.6em, 10px)/1 var(--sans);
-  color: var(--dim);
 }
 
 /* Narrower than elsewhere, so that the name and three buttons fit the default sidebar. */
