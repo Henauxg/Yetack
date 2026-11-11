@@ -275,7 +275,13 @@ pub fn use_cockpit(startup: Startup) -> Cockpit {
         prefs_file: _,
     } = startup;
     let state = use_signal(move || initial);
-    let drafts = use_signal(Drafts::default);
+    let drafts = use_signal(move || {
+        if demo {
+            demo::drafts()
+        } else {
+            Drafts::default()
+        }
+    });
     let load = use_signal(ShownLoad::default);
     let daemon = use_coroutine(move |requests: UnboundedReceiver<ToDaemon>| {
         let live = Live {

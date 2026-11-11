@@ -27,12 +27,14 @@ use serde_json::Value;
 use crate::daemon_label::DaemonLabel;
 use crate::machine::MachineId;
 use crate::path_style::PathStyle;
+use crate::prefs::CommentPlacement;
 use crate::state::daemon_update::{
     self, OutputLine, OutputStream, ProtocolGap, UpdateFailure, UpdatePlan, VersionGap,
 };
 use crate::state::no_daemon::{self, Absence};
 use crate::state::{
-    AgentEntry, AppState, ConnectionState, Dialog, Loadable, MachineState, file_edits, sending,
+    AgentEntry, AppState, ConnectionState, Dialog, Drafts, Loadable, MachineState, Utf16Offset,
+    file_edits, quotes, sending,
 };
 use crate::update_script::APP_VERSION;
 
@@ -82,6 +84,20 @@ const LAB_ACCOUNT: u32 = 2;
 const CLIENT_ACCOUNT: u32 = 3;
 const SIGN_IN_AGENT: u32 = 9;
 const SIGN_IN_FOLDER: &str = "/home/dev/projects/billing";
+
+/// The screenshot of the failing test, in a message of the selected agent.
+const FAILING_TEST_PNG: &[u8] = include_bytes!("../assets/demo-failing-test.png");
+
+/// The second machine: a server with agents of its own.
+const SERVER: MachineId = MachineId::new(1);
+const SERVER_HOST: &str = "devbox";
+const SERVER_FOLDER: &str = "/home/dev/services/invoices";
+
+/// The selected agent's answer that the demo's draft quotes, the passage it quotes and the
+/// comment beside it.
+const LOOKUP_ITEM: u32 = 20;
+const QUOTED_PASSAGE: &str = "The old cache.rs:10 is gone.";
+const QUOTE_COMMENT: &str = "Then drop its import in lib.rs too.";
 
 /// How often the live agent adds or finishes an entry.
 pub const LIVE_TICK: Duration = Duration::from_millis(1500);
@@ -643,7 +659,113 @@ pub fn state(daemon: DaemonLabel) -> AppState {
         BTreeMap::from([(AccountId::new(WORK_ACCOUNT), work_plan_usage(now))]);
     state.ui.selected = Some(AgentId::new(1));
     state.ui.unread.insert(AgentId::new(5));
+    add_server(&mut state, now);
     state
+}
+
+/// A server with three agents of its own, which show in a second panel of the sidebar.
+fn add_server(state: &mut AppState, now: SystemTime) {
+    let mut server = MachineState::new(DaemonLabel::ssh(SERVER_HOST.to_owned()));
+    server.connection = ConnectionState::Connected;
+    server.daemon_version = Some(ReleaseVersion::new(APP_VERSION.to_owned()));
+    server.plan_usage = plan_usage(now);
+    server.accounts = accounts().into_iter().take(1).collect();
+    state.machines.others.insert(SERVER, server);
+    let parts = |id, title, status, activity, since| SummaryParts {
+        id,
+        title,
+        folder: SERVER_FOLDER,
+        status,
+        activity,
+        pending: 0,
+        since,
+    };
+    // Top first.
+    let agents = [
+        (
+            parts(
+                1,
+                "Migrate the invoices",
+                AgentStatus::Working,
+                Some("Running the migration tests"),
+                Duration::from_secs(95),
+            ),
+            [
+                user("Move the invoices to the new schema, one table at a time."),
+                text("I start with `invoice_lines`, which no other service writes to."),
+            ],
+        ),
+        (
+            parts(
+                2,
+                "Find the slow invoice query",
+                AgentStatus::Idle,
+                None,
+                Duration::from_secs(12 * 60),
+            ),
+            [
+                user("The invoice list takes 4 s to load. Find out why."),
+                text(
+                    "The list sorts on `issued_at`, which has no index. Adding one brings it to 40 ms.",
+                ),
+            ],
+        ),
+        (
+            parts(
+                3,
+                "Renew the staging certificates",
+                AgentStatus::Idle,
+                None,
+                Duration::from_secs(5 * 3600),
+            ),
+            [
+                user("Renew the staging certificates before Friday."),
+                text("Renewed. They now expire on 9 February."),
+            ],
+        ),
+    ];
+    let count = u32::try_from(agents.len()).unwrap_or(u32::MAX);
+    for (place, (parts, bodies)) in (0..count).rev().zip(agents) {
+        let mut summary = summary(parts, now);
+        summary.id = SERVER.app_agent(summary.id);
+        summary.position = Position::new((place + 1) * POSITION_STEP);
+        let mut items: Vec<TranscriptItem> = (1..)
+            .zip(bodies)
+            .map(|(id, body)| item(id, None, body))
+            .collect();
+        date_messages(&mut items, now);
+        let mut entry = AgentEntry::new(summary);
+        entry.transcript.merge_page(HistoryPage {
+            items,
+            older_items: OlderItems::None,
+        });
+        entry.details = Loadable::Loaded(details());
+        state.agents.insert(entry.id(), entry);
+    }
+}
+
+/// The demo's drafts: a reply under way to the selected agent, which quotes a passage of its
+/// last answer with a comment beside it.
+pub fn drafts() -> Drafts {
+    let mut drafts = Drafts::default();
+    let Some(start) = LOOKUP_ANSWER.find(QUOTED_PASSAGE) else {
+        return drafts;
+    };
+    let before = LOOKUP_ANSWER.get(..start).unwrap_or_default();
+    let passage = quotes::Passage {
+        anchor: quotes::QuoteAnchor {
+            item: ItemId::new(LOOKUP_ITEM),
+            start: Utf16Offset::end_of(before),
+            end: Utf16Offset::end_of(&format!("{before}{QUOTED_PASSAGE}")),
+        },
+        raw: QUOTED_PASSAGE.to_owned(),
+        text: QUOTED_PASSAGE.to_owned(),
+        code: false,
+    };
+    quotes::start(&mut drafts, AgentId::new(1), passage);
+    quotes::type_comment(&mut drafts, QUOTE_COMMENT.to_owned());
+    quotes::commit(&mut drafts, CommentPlacement::Beside);
+    drafts
 }
 
 /// How long the demo takes to answer, as a daemon would for the past sessions, the context usage
@@ -1160,9 +1282,11 @@ fn list_folders(state: &AppState, path: &Path) -> Result<ResponseBody, RequestEr
             &format!("the folder {} is not absolute", path.display()),
         ));
     }
+    // The demo lists this computer's folders: a server's are its own.
     let agents = state
         .agents
         .values()
+        .filter(|entry| MachineId::of(entry.id()) == MachineId::THIS)
         .map(|entry| entry.summary.folder.clone());
     let past = sessions(SystemTime::now())
         .into_iter()
@@ -1377,8 +1501,8 @@ fn user(text: &str) -> ItemBody {
     })
 }
 
-/// A message with a screenshot attached: the app's icon.
-fn user_with_image(text: &str) -> ItemBody {
+/// A message with a PNG screenshot attached.
+fn user_with_image(text: &str, png: &[u8]) -> ItemBody {
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD as BASE64;
 
@@ -1386,7 +1510,7 @@ fn user_with_image(text: &str) -> ItemBody {
         text: text.to_owned(),
         images: vec![Image {
             media_type: ImageMediaType::Png,
-            data: BASE64.encode(crate::ICON_PNG),
+            data: BASE64.encode(png),
         }],
         sent_at: None,
     })
@@ -1770,7 +1894,10 @@ fn parser_agent(now: SystemTime) -> Sample {
         item(
             14,
             None,
-            user("Fix the count in the lexer, not in the parser."),
+            user_with_image(
+                "Fix the count in the lexer, not in the parser. The test says:",
+                FAILING_TEST_PNG,
+            ),
         ),
         item(
             15,
@@ -1791,7 +1918,7 @@ fn parser_agent(now: SystemTime) -> Sample {
             user("Is the column math the same in the columns worktree?"),
         ),
         item(19, None, ItemBody::ToolCall(position_read)),
-        item(20, None, text(LOOKUP_ANSWER)),
+        item(LOOKUP_ITEM, None, text(LOOKUP_ANSWER)),
         item(
             21,
             None,
@@ -1982,7 +2109,10 @@ fn approval_agent(now: SystemTime) -> Sample {
         item(
             1,
             None,
-            user_with_image("Fix the broken links and push a preview. Here is what I see:"),
+            user_with_image(
+                "Fix the broken links and push a preview. Here is what I see:",
+                crate::ICON_PNG,
+            ),
         ),
         item(
             2,
@@ -3420,6 +3550,10 @@ pub struct ParseError {
                 Some(WaitingKind::Approval),
                 // Its account waits for a sign-in: no answer is asked.
                 None,
+                // The server's agents ask nothing.
+                None,
+                None,
+                None,
             ]
         );
         let sign_in = state.agents.get(&AgentId::new(SIGN_IN_AGENT)).unwrap();
@@ -3521,6 +3655,7 @@ pub struct ParseError {
         let order: Vec<u32> = state
             .agents_in_order()
             .iter()
+            .filter(|entry| MachineId::of(entry.id()) == MachineId::THIS)
             .map(|entry| entry.id().get())
             .collect();
 
@@ -3545,5 +3680,48 @@ pub struct ParseError {
             file_edits::original_text(&text, &edits).as_deref(),
             Some(ERROR_BEFORE)
         );
+    }
+
+    #[test]
+    fn a_server_shows_its_own_agents_in_order() {
+        let state = state(label());
+
+        let server = state.machines.others.get(&SERVER).unwrap();
+        let titles: Vec<&str> = state
+            .agents_in_order()
+            .into_iter()
+            .filter(|entry| MachineId::of(entry.id()) == SERVER)
+            .map(|entry| entry.summary.title.as_str())
+            .collect();
+
+        assert!(server.is_connected());
+        assert_eq!(server.daemon.machine, SERVER_HOST);
+        assert_eq!(
+            titles,
+            [
+                "Migrate the invoices",
+                "Find the slow invoice query",
+                "Renew the staging certificates",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_draft_quotes_a_passage_of_the_lookup_answer_with_a_comment() {
+        let drafts = drafts();
+
+        let draft = drafts.draft(AgentId::new(1)).unwrap();
+        let [quote] = draft.quotes.as_slice() else {
+            panic!("one quote, not {:?}", draft.quotes);
+        };
+        let anchor = quote.passage.anchor;
+        let quoted = LOOKUP_ANSWER
+            .get(anchor.start.byte_offset(LOOKUP_ANSWER)..anchor.end.byte_offset(LOOKUP_ANSWER));
+
+        assert_eq!(anchor.item, ItemId::new(LOOKUP_ITEM));
+        assert_eq!(quoted, Some(QUOTED_PASSAGE));
+        assert_eq!(quote.comment, QUOTE_COMMENT);
+        assert_eq!(quote.placement, CommentPlacement::Beside);
+        assert!(drafts.quote_editor.is_none());
     }
 }
