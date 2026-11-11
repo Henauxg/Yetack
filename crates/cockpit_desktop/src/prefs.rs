@@ -143,8 +143,8 @@ pub struct Project {
     pub rules: Vec<ProjectRule>,
 }
 
-/// The rules this version knows: a kind from another version of the app is left out, rather
-/// than costing the whole file.
+/// The rules this version knows. A rule of a kind from another version of the app is left out,
+/// so that the rest of the file still reads.
 fn known_rules<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<ProjectRule>, D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]
@@ -152,7 +152,7 @@ fn known_rules<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Project
         Known(ProjectRule),
         Unknown(IgnoredAny),
     }
-    let rules = Vec::<Read>::deserialize(deserializer)?;
+    let rules: Vec<Read> = Vec::deserialize(deserializer)?;
     Ok(rules
         .into_iter()
         .filter_map(|rule| match rule {

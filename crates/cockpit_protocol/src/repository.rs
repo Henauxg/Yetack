@@ -5,6 +5,9 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+/// The separators of a remote's path: `/`, and `\` in a local Windows path.
+const SEPARATORS: [char; 2] = ['/', '\\'];
+
 /// A git repository by its remote, as [`Repository::from_remote`] writes it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -83,7 +86,7 @@ fn normalized(url: &str) -> String {
 /// of a repository gives that repository again.
 fn trimmed(mut path: &str) -> &str {
     loop {
-        let rest = path.trim_end_matches(['/', '\\']);
+        let rest = path.trim_end_matches(SEPARATORS);
         let rest = rest.strip_suffix(".git").unwrap_or(rest);
         if rest == path {
             return path;
@@ -99,7 +102,7 @@ fn is_drive(authority: &str, path: &str) -> bool {
         .next()
         .is_some_and(|letter| letter.is_ascii_alphabetic())
         && letters.next().is_none();
-    one_letter && path.starts_with(['/', '\\'])
+    one_letter && path.starts_with(SEPARATORS)
 }
 
 #[cfg(test)]
