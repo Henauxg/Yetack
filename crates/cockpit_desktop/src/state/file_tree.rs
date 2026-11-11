@@ -274,7 +274,11 @@ fn root_showing(
     let root = outside_roots(folder, footprint)
         .into_iter()
         .find(|root| holds(root))?;
-    let touched = footprint.changed.contains_key(full) || footprint.read.contains(full);
+    let touched = footprint
+        .changed
+        .keys()
+        .chain(&footprint.read)
+        .any(|touched| style.same_path(&touched.to_string_lossy(), &full_text));
     (touched || !refused(tree, &root)).then_some(root)
 }
 
@@ -2253,5 +2257,29 @@ mod tests {
             changed_file.len(),
             "each row has its own letter"
         );
+    }
+
+    #[test]
+    fn on_windows_a_touched_file_in_a_refused_folder_shows_whatever_its_case() {
+        let folder = Path::new(r"C:\work\app");
+        let footprint = Footprint {
+            changed: [changed("c:/WORK/other/a.md", 1, 0)].into_iter().collect(),
+            read: BTreeSet::new(),
+        };
+        let mut tree = FileTree::default();
+        for root in outside_roots(folder, &footprint) {
+            tree.listings.insert(
+                root,
+                Listing {
+                    entries: Loadable::Failed("outside every checkout".to_owned()),
+                    stale: false,
+                    reading: false,
+                },
+            );
+        }
+
+        let root = root_showing(&tree, folder, &footprint, Path::new(r"C:\work\other\a.md"));
+
+        assert!(root.is_some());
     }
 }
