@@ -500,7 +500,12 @@ fn NewAgentDialog(form: NewAgentForm) -> Element {
 #[component]
 fn NewAgentTarget(form: NewAgentForm) -> Element {
     let cockpit: Cockpit = use_context();
-    let typed_folder = cockpit.drafts.read().new_agent.folder.clone();
+    // A resumed session's own folder gives its project, not the folder field.
+    let typed_folder = if form.tab == NewAgentTab::Start {
+        cockpit.drafts.read().new_agent.folder.clone()
+    } else {
+        String::new()
+    };
     let (machine_choices, account, projects) = {
         let state = cockpit.state.read();
         let account = accounts::shows_labels(&state, form.machine)
@@ -576,7 +581,7 @@ fn NewAgentTarget(form: NewAgentForm) -> Element {
                             Icon { kind: IconKind::ChevronDown, size: 12 }
                         }
                         Presence { open: project_open,
-                            FormProjectMenu { projects: projects.clone(), machine: form.machine }
+                            FormProjectMenu { projects: projects.clone() }
                         }
                     }
                 }
@@ -1378,7 +1383,7 @@ fn ProjectSwatch(project: FormProject) -> Element {
 
 /// The form's project menu: "Automatic", then the projects the agent can join.
 #[component]
-fn FormProjectMenu(projects: FormProjects, machine: MachineId) -> Element {
+fn FormProjectMenu(projects: FormProjects) -> Element {
     let cockpit: Cockpit = use_context();
     let automatic = projects.picked.is_none();
     let automatic_note = projects.automatic.as_ref().map_or_else(
@@ -1411,22 +1416,13 @@ fn FormProjectMenu(projects: FormProjects, machine: MachineId) -> Element {
                             class: if chosen { "menu-item chosen" } else { "menu-item" },
                             aria_pressed: chosen,
                             onclick: move |_| {
-                                let key = key.clone();
-                                // The field takes the project's latest folder, unless it names one of its own.
-                                let folder = cockpit.with_drafts(|state, drafts| {
-                                    let typed = &drafts.new_agent.folder;
-                                    let folder = projects::folder_for_pick(state, machine, typed, &key)?;
-                                    let shown = path_style::shown(&folder);
-                                    drafts.new_agent.folder.clone_from(&shown);
-                                    Some(shown)
+                                let mut new_text = None;
+                                cockpit.update_with_drafts(|state, drafts| {
+                                    new_text = actions::pick_new_agent_project(state, drafts, key.clone());
                                 });
-                                if let Some(folder) = folder {
-                                    bridge::set_field_text(FOLDER_FIELD_ID, folder);
+                                if let Some(text) = new_text {
+                                    bridge::set_field_text(FOLDER_FIELD_ID, text);
                                 }
-                                change_form(cockpit, move |form| {
-                                    form.project = Some(key);
-                                    form.menu = None;
-                                });
                             },
                             ProjectSwatch { project: project.clone() }
                             span { class: "menu-label", "{project.name}" }

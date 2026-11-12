@@ -31,8 +31,8 @@ use super::ui_state::{
 };
 use super::utf16_offset::Utf16Offset;
 use super::{
-    accounts, export, file_edits, file_reread, file_tree, grouping, open_file, projects, quotes,
-    sending, title_emoji,
+    accounts, export, file_edits, file_reread, file_tree, folder_field, grouping, open_file,
+    projects, quotes, sending, title_emoji,
 };
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::machine::MachineId;
@@ -2351,6 +2351,30 @@ pub fn pick_new_agent_machine(
         }
         known.sign_ins.refresh();
     }
+    new_folder
+}
+
+/// Picks the new agent's project. The folder field takes the project's latest recent folder,
+/// unless it already names one of its folders, and the list under the field then closes, as on
+/// a click on a recent folder. Returns the field's new text.
+pub fn pick_new_agent_project(
+    state: &mut AppState,
+    drafts: &mut Drafts,
+    project: ProjectKey,
+) -> Option<String> {
+    let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
+        return None;
+    };
+    let new_folder =
+        projects::folder_for_pick(state, form.machine, &drafts.new_agent.folder, &project)
+            .map(|folder| path_style::shown(&folder));
+    if let Some(text) = &new_folder {
+        folder_field::pick(state, drafts, text.clone());
+    }
+    with_new_agent_form(state, |form| {
+        form.project = Some(project);
+        form.menu = None;
+    });
     new_folder
 }
 

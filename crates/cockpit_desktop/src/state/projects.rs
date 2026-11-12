@@ -25,7 +25,7 @@ use strum::VariantArray;
 use super::app_state::{AgentEntry, AppState, RecentFolder};
 use super::{grouping, project_menu};
 use crate::machine::MachineId;
-use crate::path_style::PathStyle;
+use crate::path_style::{self, PathStyle};
 use crate::prefs::{AccountColor, Project, ProjectId, ProjectRule};
 
 /// The words of a project key as the page names a group's header: `kept:3`, `repo:<remote>` and
@@ -133,17 +133,29 @@ pub fn project_of(state: &AppState, entry: &AgentEntry) -> ProjectKey {
 /// before it starts: from a kept project's folder rule, or from the repository of an agent
 /// already in that folder. `None` when only the new agent's repository can tell.
 pub fn for_new_agent(state: &AppState, machine: MachineId, folder: &Path) -> Option<ProjectKey> {
-    let repository = state
-        .agents
-        .values()
-        .filter(|entry| MachineId::of(entry.id()) == machine && entry.summary.folder == folder)
-        .find_map(|entry| entry.summary.repository.as_ref());
+    let repository =
+        agents_in(state, machine, folder).find_map(|entry| entry.summary.repository.as_ref());
     let kept = claiming(state, folder, repository);
     match (kept, repository) {
         (Some(project), _) => Some(ProjectKey::Kept(project.id)),
         (None, Some(repository)) => Some(ProjectKey::Repository(repository.clone())),
         (None, None) => None,
     }
+}
+
+/// The agents on `machine` in `folder`, compared as the recent folders compare paths: a Windows
+/// folder matches its verbatim form and its other cases.
+fn agents_in<'state>(
+    state: &'state AppState,
+    machine: MachineId,
+    folder: &Path,
+) -> impl Iterator<Item = &'state AgentEntry> {
+    let text = path_style::shown(folder);
+    let style = PathStyle::of_text(&text);
+    state.agents.values().filter(move |entry| {
+        MachineId::of(entry.id()) == machine
+            && style.same_path(&path_style::shown(&entry.summary.folder), &text)
+    })
 }
 
 /// A recent folder of the new agent dialog, with the project an agent started there joins.
@@ -167,8 +179,31 @@ pub fn recent_folders(
             project: for_new_agent(state, machine, &recent.folder).unwrap_or(ProjectKey::None),
             recent,
         })
-        .filter(|folder| picked.is_none_or(|picked| folder.project == *picked))
+        .filter(|folder| {
+            picked.is_none_or(|picked| {
+                lists(
+                    state,
+                    machine,
+                    picked,
+                    &folder.recent.folder,
+                    &folder.project,
+                )
+            })
+        })
         .collect()
+}
+
+/// Whether the picked project lists `folder`: an agent started there joins it by itself
+/// (`automatic`), or one of its agents runs there, such as one moved to it by hand.
+fn lists(
+    state: &AppState,
+    machine: MachineId,
+    picked: &ProjectKey,
+    folder: &Path,
+    automatic: &ProjectKey,
+) -> bool {
+    automatic == picked
+        || agents_in(state, machine, folder).any(|entry| project_of(state, entry) == *picked)
 }
 
 /// The folder that a pick of `project` puts in the new agent dialog's field: the project's latest
@@ -180,10 +215,12 @@ pub fn folder_for_pick(
     typed: &str,
     project: &ProjectKey,
 ) -> Option<PathBuf> {
-    let typed = typed.trim();
-    let typed_project = for_new_agent(state, machine, Path::new(typed)).unwrap_or(ProjectKey::None);
-    if !typed.is_empty() && typed_project == *project {
-        return None;
+    let typed = Path::new(typed.trim());
+    if !typed.as_os_str().is_empty() {
+        let automatic = for_new_agent(state, machine, typed).unwrap_or(ProjectKey::None);
+        if lists(state, machine, project, typed, &automatic) {
+            return None;
+        }
     }
     recent_folders(state, machine, Some(project))
         .into_iter()
@@ -604,7 +641,7 @@ mod tests {
     use crate::state::app_state::tests::{state_with, summary};
     use crate::state::drafts::Drafts;
     use crate::state::requests::{self, Purpose};
-    use crate::state::{Dialog, actions, apply};
+    use crate::state::{Dialog, actions, apply, folder_field};
 
     const BILLING: &str = "github.com/acme/billing";
     const GATEWAY: &str = "github.com/acme/api-gateway";
@@ -828,6 +865,68 @@ mod tests {
 
         assert_eq!(before, None);
         assert_eq!(after, Some(ProjectKey::Kept(work)));
+    }
+
+    /// "Work" has no rule: agent 4 is in it because it was moved there by hand.
+    #[test]
+    fn a_project_picked_lists_the_folders_of_its_agents_moved_by_hand() {
+        let mut state = agents();
+        let work = ProjectKey::Kept(create(&mut state, "Work"));
+        move_agent(&mut state, AgentId::new(4), &work);
+
+        let listed: Vec<PathBuf> = recent_folders(&state, MachineId::THIS, Some(&work))
+            .into_iter()
+            .map(|folder| folder.recent.folder)
+            .collect();
+        let kept_field = folder_for_pick(&state, MachineId::THIS, "/work/project-4", &work);
+        let filled_field = folder_for_pick(&state, MachineId::THIS, "", &work);
+
+        assert_eq!(listed, [PathBuf::from("/work/project-4")]);
+        assert_eq!(kept_field, None);
+        assert_eq!(filled_field, Some(PathBuf::from("/work/project-4")));
+    }
+
+    /// The daemon may report a Windows folder in its verbatim form, which the recent folders show
+    /// without the `\\?\` prefix.
+    #[test]
+    fn a_windows_recent_folder_finds_the_repository_of_its_verbatim_agent() {
+        let mut agent = summary(1, AgentStatus::Idle);
+        agent.folder = PathBuf::from(r"\\?\D:\Work\Billing");
+        agent.repository = Some(repo(BILLING));
+        let state = state_with(vec![agent]);
+
+        let folders = recent_folders(&state, MachineId::THIS, None);
+        let other_case = for_new_agent(&state, MachineId::THIS, Path::new(r"d:\work\billing"));
+
+        let billing = ProjectKey::Repository(repo(BILLING));
+        assert_eq!(folders.len(), 1);
+        assert_eq!(folders[0].project, billing);
+        assert_eq!(other_case, Some(billing));
+    }
+
+    /// The field lists the folders in `/work/`, with the first one highlighted, when the pick
+    /// comes.
+    #[test]
+    fn a_project_pick_that_fills_the_field_closes_the_list_under_it() {
+        let mut state = agents();
+        let mut drafts = Drafts::default();
+        let billing = ProjectKey::Repository(repo(BILLING));
+        actions::open_new_agent(&mut state, &mut drafts);
+        drafts.new_agent.folder = "/work/".to_owned();
+        drafts.new_agent.folder_highlighted = Some(0);
+        folder_field::follow(&mut state, &drafts);
+
+        let text = actions::pick_new_agent_project(&mut state, &mut drafts, billing.clone());
+
+        let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
+            panic!("the dialog closed");
+        };
+        assert_eq!(text.as_deref(), Some("/work/project-2"));
+        assert_eq!(drafts.new_agent.folder, "/work/project-2");
+        assert_eq!(drafts.new_agent.folder_highlighted, None);
+        assert_eq!(form.folders, None);
+        assert_eq!(form.project, Some(billing));
+        assert_eq!(form.menu, None);
     }
 
     /// Agent 9, in the billing repository.
