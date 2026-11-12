@@ -73,8 +73,16 @@ const places = new Map();
 // that scroll holds, in place of the agent's place from before.
 let scrolledWhileDrawing = false;
 let wheeledUpAt = -Infinity;
-// The distance to the bottom after the last scroll or correction.
+// The distance to the bottom at the last scroll `record` saw, moved by the corrections since.
 let gapSeen = 0;
+// The last distance to the bottom the script saw. Another one at a change of the content is a
+// scroll whose event has not come yet.
+let gapKnown = 0;
+// Takes the distance to the bottom as it is, without a scroll by the user.
+const knowGap = () => {
+  gapSeen = gapBelow();
+  gapKnown = gapSeen;
+};
 const boxTop = () => box.getBoundingClientRect().top;
 const gapBelow = () => column.getBoundingClientRect().bottom - box.getBoundingClientRect().bottom;
 // An entry's wrapper has padding past the entry: its last element shows the entry, after the
@@ -103,9 +111,10 @@ const firstInView = (below = 0) => {
   const element = entry === undefined ? null : shown(entry);
   return element === null ? null : { id: entry.id, top: element.getBoundingClientRect().top - top };
 };
-// The entry the view keeps in place: the first one whose top is in view, else the one that fills
-// the view. The chat keeps its distance from the bottom, so a row that changes height moves only
-// the rows above it. A row cut by the view's top folds as it comes into view, and must not count.
+// The entry the view keeps in place: the first one whose top is below the view's top, even past
+// its bottom when one row fills the view. The chat keeps its distance from the bottom, so a row
+// that changes height moves only the rows above it. A row cut by the view's top folds as it comes
+// into view, and must not count.
 const anchorInView = () => {
   const entries = column.getElementsByClassName(settings.entry_class);
   const top = boxTop();
@@ -122,8 +131,7 @@ const anchorInView = () => {
   }
   const entry = entries[low];
   const element = entry === undefined ? null : shown(entry);
-  const at = element === null ? Infinity : element.getBoundingClientRect().top - top;
-  return at < box.clientHeight ? { id: entry.id, top: at } : firstInView();
+  return element === null ? firstInView() : { id: entry.id, top: element.getBoundingClientRect().top - top };
 };
 // The last entry whose top is above the view's bottom.
 const lastInView = () => {
@@ -174,8 +182,10 @@ const record = () => {
   const gap = gapBelow();
   // A scroll up leaves the bottom, however short: an arrow key or the scrollbar sends no wheel.
   const leaving = gap > gapSeen + 0.5;
+  const nearing = gap < gapSeen - 0.5;
   gapSeen = gap;
-  following = !wheelingUp && !leaving && gap <= settings.bottom_threshold_px;
+  gapKnown = gap;
+  following = !leaving && (nearing || !wheelingUp) && gap <= settings.bottom_threshold_px;
   anchor = following ? null : anchorInView();
   if (agent === null) {
     scrolledWhileDrawing = true;
@@ -185,7 +195,24 @@ const record = () => {
 // After the content changed: back to the bottom, or the pinned button or the anchor back at its
 // height.
 const settle = () => {
-  let delta = gapBelow();
+  // The user scrolled, and its event has not come yet: the correction keeps that scroll. `record`
+  // decides from `gapSeen` once the event comes.
+  const gap = gapBelow();
+  const scrolled = gap - gapKnown;
+  if (Math.abs(scrolled) > 0.5) {
+    pinned = null;
+    if (following && scrolled > 0) {
+      following = false;
+      anchor = anchorInView();
+      gapKnown = gap;
+      return;
+    }
+    // A scroll up moves the anchor down by as much.
+    if (anchor !== null) {
+      anchor = { id: anchor.id, top: anchor.top + scrolled };
+    }
+  }
+  let delta = gap;
   if (pinned !== null && !pinned.element.isConnected) {
     pinned = null;
   }
@@ -207,7 +234,9 @@ const settle = () => {
   if (!following && pinned !== null) {
     anchor = anchorInView();
   }
-  gapSeen = gapBelow();
+  const after = gapBelow();
+  gapSeen += after - gap;
+  gapKnown = after;
 };
 // Another agent's entries replace the chat's: keep the place of the one that leaves, and go back
 // to the place of the one that comes, or to its bottom. A chat that draws only some of its
@@ -224,6 +253,7 @@ const changed = () => {
       places.set(agent, { following, anchor });
     }
     agent = shownAgent;
+    knowGap();
     if (!scrolledMeanwhile) {
       pinned = null;
       const place = places.get(agent);
@@ -276,11 +306,19 @@ const attach = () => {
     } else if (event.deltaY > 0) {
       // A wheel turned down can take the chat back to its bottom, where it follows again.
       wheeledUpAt = -Infinity;
+      // At the bottom already, the wheel scrolls nothing, and no scroll event comes.
+      if (!following && gapBelow() <= 1) {
+        following = true;
+        pinned = null;
+        anchor = null;
+        report();
+      }
     }
   }, { passive: true });
   mutations.observe(box, { childList: true, subtree: true, characterData: true });
   resizes.observe(column);
   resizes.observe(box);
+  knowGap();
   changed();
 };
 new MutationObserver(attach).observe(document.body, { childList: true, subtree: true });
@@ -289,6 +327,7 @@ const jump = () => {
   if (box === null) {
     return;
   }
+  knowGap();
   following = true;
   pinned = null;
   anchor = null;
@@ -310,6 +349,7 @@ const reveal = (entryId, place) => {
     : Math.max(settings.reveal_top_px, (box.clientHeight - height) / 2);
   box.scrollTop += element.getBoundingClientRect().top - boxTop() - above;
   corrected = box.scrollTop;
+  knowGap();
   pinned = null;
   following = gapBelow() <= settings.bottom_threshold_px;
   anchor = following ? null : { id: entry.id, top: element.getBoundingClientRect().top - boxTop() };

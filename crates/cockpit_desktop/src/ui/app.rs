@@ -34,6 +34,8 @@ use crate::ui::transcript::TranscriptView;
 #[component]
 pub fn App() -> Element {
     let startup: Startup = use_hook(consume_context);
+    #[cfg(target_os = "linux")]
+    use_hook(crate::webview_settings::turn_off_smooth_scrolling);
     let prefs_file = startup.prefs_file.clone();
     let cockpit = use_cockpit(startup);
     use_prefs_saver(cockpit, prefs_file);
