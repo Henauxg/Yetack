@@ -2,7 +2,7 @@
 
 Orchestrator to control multiple agents over multiple machines and accounts.
 
-| ![The app with agents on three machines: the sidebar lists the agents by machine, the middle shows one agent's conversation with three replies under way, each with its comment beside the text, and the right column shows the agent's tasks, subagents and messages](docs/images/machines.png) | ![The app with the agents grouped by project: one agent asks three questions, the file view shows the changelog that the agent edited, and the files pane lists the agent's folder](docs/images/projects.png) |
+| ![The app with agents on three machines: the sidebar lists the agents by machine, the middle shows one agent's conversation with a reply under way that quotes three passages, each with its comment beside the text, and the right column shows the agent's tasks, subagents and messages](docs/images/machines.png) | ![The app with the agents grouped by project: one agent asks three questions, the file view shows the changelog that the agent edited, and the files pane lists the agent's folder](docs/images/projects.png) |
 | --- | --- |
 
 Main features are:
