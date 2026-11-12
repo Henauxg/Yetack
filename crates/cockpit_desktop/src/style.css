@@ -3534,13 +3534,17 @@ html.reordering * {
   --card-head: var(--muted);
 }
 
+/* A card that waits for an answer: amber only on its left edge, its icon and its pill, as the
+   sidebar's "needs you". */
 .card.waiting {
-  border-color: #825c21;
-  --card-head: var(--amber);
+  border-color: var(--line-strong);
+  border-left: 2px solid rgba(245, 165, 36, 0.55);
+  --card-head: var(--text);
 }
 
-.approval-card {
-  background: #211e18;
+.card.waiting > .card-head > .icon,
+.question-head > .icon {
+  color: #d9a24a;
 }
 
 .card-head {
@@ -3627,22 +3631,12 @@ html.reordering * {
   outline: none;
 }
 
-/* A waiting question: amber only on its left edge and its pill, as the sidebar's "needs you". */
-.question-card.waiting {
-  border-color: var(--line-strong);
-  border-left: 2px solid rgba(245, 165, 36, 0.55);
-}
-
 .question-head {
   display: flex;
   align-items: center;
   gap: 8px;
   font-weight: 600;
   color: var(--text);
-}
-
-.question-head > .icon {
-  color: #d9a24a;
 }
 
 .waiting-pill {
@@ -3663,6 +3657,10 @@ html.reordering * {
   height: 6px;
   border-radius: 50%;
   background: var(--amber);
+}
+
+.presence.leaving > .waiting-pill {
+  animation: fade-out var(--motion-out) var(--ease-in) forwards;
 }
 
 .question-count {

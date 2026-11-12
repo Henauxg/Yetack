@@ -14,12 +14,23 @@ use crate::state::{actions, file_edits};
 use crate::ui::code::{LineMarks, LineNumbers, diff_row, lines_not_shown};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::markdown::MarkdownView;
+use crate::ui::presence::Presence;
 
 /// The tool whose approval reads "run a command".
 const COMMAND_TOOL: &str = "Bash";
 
 /// The input field of a command, which the daemon's one-line summary cuts after its first line.
 const COMMAND_FIELD: &str = "command";
+
+/// The amber "Waiting for you" pill of a card's head, which fades out once answered.
+#[component]
+fn WaitingPill(waiting: bool) -> Element {
+    rsx! {
+        Presence { open: waiting,
+            span { class: "waiting-pill", "Waiting for you" }
+        }
+    }
+}
 
 fn card_class(waiting: bool, kind: &str) -> String {
     if waiting {
@@ -84,6 +95,7 @@ pub fn ApprovalCard(agent: AgentId, folder: PathBuf, approval: Approval) -> Elem
             div { class: "card-head",
                 Icon { kind: IconKind::Warning, size: 16 }
                 span { "{heading}" }
+                WaitingPill { waiting }
             }
             if approval.edit.is_none() && !asked.is_empty() {
                 code { class: "approval-command mono", "{asked}" }
@@ -187,6 +199,7 @@ pub fn PlanCard(agent: AgentId, folder: PathBuf, plan: Plan, item: Option<ItemId
             div { class: "card-head",
                 Icon { kind: IconKind::List, size: 16 }
                 span { "Claude proposes a plan" }
+                WaitingPill { waiting }
             }
             MarkdownView { agent, folder, markdown: plan.markdown.clone(), item }
             if waiting {
