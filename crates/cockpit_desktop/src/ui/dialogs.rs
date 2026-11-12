@@ -342,6 +342,8 @@ struct SwitcherRow {
     id: AgentId,
     title: String,
     status: AgentStatus,
+    /// Its dot's classes, which say the background work of an idle agent too.
+    status_class: String,
     folder: String,
     unread: bool,
 }
@@ -364,6 +366,7 @@ fn SwitcherDialog() -> Element {
                 id: entry.id(),
                 title: entry.summary.title.clone(),
                 status: entry.summary.status,
+                status_class: format::agent_status_class(&entry.summary),
                 folder: path_style::shown(&entry.summary.folder),
                 unread: state.is_unread(entry.id()),
             })
@@ -417,7 +420,7 @@ fn SwitcherDialog() -> Element {
                 for (index, row) in rows.into_iter().enumerate() {
                     button {
                         key: "{row.id.get()}",
-                        class: if index == highlighted { "switcher-row {HIGHLIGHTED_CLASS} {format::status_class(row.status)}" } else { "switcher-row {format::status_class(row.status)}" },
+                        class: if index == highlighted { "switcher-row {HIGHLIGHTED_CLASS} {row.status_class}" } else { "switcher-row {row.status_class}" },
                         onmousemove: move |event: MouseEvent| {
                             // Writing the drafts renders their readers: only a new row does.
                             if pointer.moved(&event) && cockpit.drafts.peek().switcher.highlighted != index {
