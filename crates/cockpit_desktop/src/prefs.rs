@@ -248,9 +248,9 @@ impl Serialize for ProjectSplit {
 #[strum(serialize_all = "snake_case")]
 pub enum FirstMark {
     /// Stays until you clear it.
-    #[default]
     Kept,
     /// Stays until you clear it or send the agent a message.
+    #[default]
     UntilMessage,
 }
 
@@ -274,7 +274,7 @@ impl Serialize for FirstMark {
     }
 }
 
-/// A word this version does not know reads as `Kept`, rather than costing the whole file.
+/// A word this version does not know reads as `UntilMessage`, rather than costing the whole file.
 impl<'de> Deserialize<'de> for FirstMark {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let word = String::deserialize(deserializer)?;
@@ -1045,7 +1045,7 @@ mod tests {
     "width": 300,
     "group_by": "project",
     "project_split": "by_machine",
-    "first_mark": "until_message"
+    "first_mark": "kept"
   },
   "files_pane": {
     "new_agents": "open",
@@ -1140,7 +1140,7 @@ mod tests {
                     width: Some(300),
                     group_by: GroupBy::Project,
                     project_split: ProjectSplit::ByMachine,
-                    first_mark: FirstMark::UntilMessage,
+                    first_mark: FirstMark::Kept,
                 },
                 files_pane: FilesPanePrefs {
                     new_agents: PaneState::Open,
@@ -1473,7 +1473,7 @@ mod tests {
     }
 
     #[test]
-    fn the_first_mark_words_are_pinned_and_an_unknown_one_reads_as_kept() {
+    fn the_first_mark_words_are_pinned_and_an_unknown_one_reads_as_until_message() {
         let words: Vec<&str> = FirstMark::VARIANTS
             .iter()
             .map(|&first| first.into())
@@ -1482,7 +1482,7 @@ mod tests {
             serde_json::from_str(r#"{"sidebar": {"first_mark": "forever"}}"#).unwrap();
 
         assert_eq!(words, ["kept", "until_message"]);
-        assert_eq!(unknown.sidebar.first_mark, FirstMark::Kept);
+        assert_eq!(unknown.sidebar.first_mark, FirstMark::UntilMessage);
     }
 
     #[test]

@@ -105,6 +105,22 @@ mod tests {
     }
 
     #[test]
+    fn the_first_press_gives_a_mark_until_a_message_by_default() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        state.ui.selected = Some(AgentId::new(1));
+
+        let asked = marks(&cycle_selected(&mut state));
+
+        assert_eq!(
+            asked,
+            [MarkParams {
+                agent: AgentId::new(1),
+                mark: Mark::ToHandle,
+            }]
+        );
+    }
+
+    #[test]
     fn the_menu_opens_on_a_known_agent_and_closes_on_a_pick() {
         let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
 
