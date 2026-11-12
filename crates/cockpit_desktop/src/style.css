@@ -6212,11 +6212,12 @@ html.reordering * {
   touch-action: none;
 }
 
-/* A wider grip than the line it draws. */
+/* A wider grip than the line it draws, on its right side alone: the pane on its left ends with its
+   scrollbar, which a grip over it would take. */
 .splitter::before {
   content: "";
   position: absolute;
-  inset: 0 -4px;
+  inset: 0 -8px 0 0;
 }
 
 .splitter:hover,
