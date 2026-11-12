@@ -214,6 +214,40 @@ impl<'de> Deserialize<'de> for GroupBy {
     }
 }
 
+/// Grouped by project, how a project's panel lists agents that run on several machines. A later
+/// version may split further, by machine then account.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumString, IntoStaticStr, VariantArray,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum ProjectSplit {
+    /// One list, where each row names its machine.
+    #[default]
+    OneList,
+    /// A line per machine, with that machine's agents under it.
+    ByMachine,
+}
+
+impl ProjectSplit {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+impl Serialize for ProjectSplit {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.into())
+    }
+}
+
+/// A word this version does not know reads as `OneList`, rather than costing the whole file.
+impl<'de> Deserialize<'de> for ProjectSplit {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let word = String::deserialize(deserializer)?;
+        Ok(word.parse().unwrap_or_default())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ChatPrefs {
@@ -531,6 +565,8 @@ pub struct SidebarPrefs {
     pub width: Option<u16>,
     #[serde(skip_serializing_if = "GroupBy::is_default")]
     pub group_by: GroupBy,
+    #[serde(skip_serializing_if = "ProjectSplit::is_default")]
+    pub project_split: ProjectSplit,
 }
 
 /// The sidebar's width, in pixels, until it is moved.
@@ -938,7 +974,8 @@ mod tests {
   "sidebar": {
     "filter": "needs_you",
     "width": 300,
-    "group_by": "project"
+    "group_by": "project",
+    "project_split": "by_machine"
   },
   "files_pane": {
     "new_agents": "open",
@@ -1032,6 +1069,7 @@ mod tests {
                     filter: StatusFilter::NeedsYou,
                     width: Some(300),
                     group_by: GroupBy::Project,
+                    project_split: ProjectSplit::ByMachine,
                 },
                 files_pane: FilesPanePrefs {
                     new_agents: PaneState::Open,
@@ -1267,6 +1305,19 @@ mod tests {
     }
 
     #[test]
+    fn the_project_split_words_are_pinned_and_an_unknown_one_reads_as_one_list() {
+        let words: Vec<&str> = ProjectSplit::VARIANTS
+            .iter()
+            .map(|&split| split.into())
+            .collect();
+        let unknown: Prefs =
+            serde_json::from_str(r#"{"sidebar": {"project_split": "by_account"}}"#).unwrap();
+
+        assert_eq!(words, ["one_list", "by_machine"]);
+        assert_eq!(unknown.sidebar.project_split, ProjectSplit::OneList);
+    }
+
+    #[test]
     fn the_notification_words_are_pinned_and_an_unknown_one_reads_as_all() {
         let words: Vec<&str> = NotificationLevel::VARIANTS
             .iter()
@@ -1359,6 +1410,7 @@ mod tests {
                 filter: StatusFilter::Exited,
                 width: Some(220),
                 group_by: GroupBy::None,
+                project_split: ProjectSplit::OneList,
             },
             files_pane: FilesPanePrefs {
                 new_agents: PaneState::Open,
@@ -1404,6 +1456,7 @@ mod tests {
                 filter: StatusFilter::Exited,
                 width: Some(220),
                 group_by: GroupBy::None,
+                project_split: ProjectSplit::OneList,
             },
             files_pane: FilesPanePrefs {
                 new_agents: PaneState::Open,
