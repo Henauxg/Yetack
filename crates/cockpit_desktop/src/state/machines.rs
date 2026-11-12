@@ -408,6 +408,10 @@ pub fn forget(state: &mut AppState, drafts: &mut Drafts, machine: MachineId) {
         .ui
         .dialog
         .take_if(|dialog| matches!(dialog, Dialog::DaemonUpdate(shown) if *shown == machine));
+    with_view(state, |view| {
+        view.menu.take_if(|menu| menu.machine == machine);
+        view.editing.take_if(|edit| edit.machine == machine);
+    });
     state.fix_selection();
 }
 
@@ -890,5 +894,20 @@ mod tests {
 
         assert_eq!(add(&mut state), None);
         assert!(error(&state).is_some());
+    }
+
+    #[test]
+    fn a_removed_server_takes_its_menu_and_its_form_with_it() {
+        let mut state = dialog_state(Instant::now());
+        open_machines(&mut state);
+        start_edit(&mut state, MachineId::new(2));
+        toggle_menu(&mut state, MachineId::new(2), 600, 360);
+
+        forget(&mut state, &mut Drafts::default(), MachineId::new(2));
+
+        assert!(matches!(
+            &state.ui.dialog,
+            Some(Dialog::Machines(view)) if view.menu.is_none() && view.editing.is_none()
+        ));
     }
 }
