@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use cockpit_protocol::{
     AgentId, AgentStatus, AnswerState, ItemBody, ItemId, SignInWait, ToolCall, ToolCallStatus,
@@ -341,6 +341,8 @@ impl ShownRows {
 pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
     use_hook(start_fold_script);
     let cockpit: Cockpit = use_context();
+    // Read without a subscription: a message's time changes its words only at midnight.
+    let Clock(clock) = use_context::<Clock>();
     chat_scroll::use_chat_scroll(cockpit, in_view);
     // The agent whose conversation the chat opened, once its first page came or failed. A
     // failure shows above all the rows.
@@ -433,6 +435,7 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
     let row_ids: Vec<ItemId> = firsts.iter().map(|item| item.id).collect();
     let shown = ShownRows::of(agent, drawn(), &row_ids, scrolled_up.is_some());
     rows.set((Some(agent), row_ids));
+    let grouped = grouped_times(&firsts, *clock.peek());
     let first = shown.first(top_rows.len());
     let top: Vec<TopRow> = top_rows
         .iter()
@@ -442,6 +445,7 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
         .skip(first)
         .map(|(((row, state), links), older_step)| TopRow {
             id: row.first().id,
+            hides_time: grouped.contains(&row.first().id),
             new_above: divider
                 .is_some_and(|divider| row.items().iter().any(|item| item.id == divider)),
             view: RowView::of(row, &children, &awaiting, sign_in_end),
@@ -484,8 +488,8 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
                 }
                 // Item ids repeat across agents: with the agent in the key, another agent's item
                 // never takes over the state of this one's (a fold, a typed answer).
-                for TopRow { id, new_above, view, step, older_step } in top {
-                    TranscriptRow { key: "{agent.get()}-{id.get()}", agent, folder: folder.clone(), new_above, id, view, step, older_step }
+                for TopRow { id, hides_time, new_above, view, step, older_step } in top {
+                    TranscriptRow { key: "{agent.get()}-{id.get()}", agent, folder: folder.clone(), new_above, id, hides_time, view, step, older_step }
                 }
                 if shown != ShownRows::Skeleton {
                     for prompt in sending {
@@ -549,6 +553,8 @@ fn history_note(history: HistoryState, cockpit: Cockpit, agent: AgentId) -> Elem
 struct TopRow {
     /// The row's first item, which names its entry.
     id: ItemId,
+    /// A message whose time the next one, sent at the same minute, shows.
+    hides_time: bool,
     /// The "New" divider goes above the row: it holds the first new item.
     new_above: bool,
     view: RowView,
@@ -836,6 +842,8 @@ fn TranscriptRow(
     new_above: bool,
     /// The row's first item, which names its entry.
     id: ItemId,
+    /// A message whose time the next one shows.
+    hides_time: bool,
     view: RowView,
     step: Option<Step>,
     /// The item starts a run whose step sits in older messages the window has not loaded.
@@ -855,7 +863,7 @@ fn TranscriptRow(
             awaits_approval,
             ..
         } => rsx! {
-            ItemView { agent, folder, item, nested, awaits_approval }
+            ItemView { agent, folder, item, nested, awaits_approval, hides_time }
         },
         RowView::Skill {
             item:
@@ -905,11 +913,14 @@ pub fn ItemView(
     nested: Vec<TranscriptItem>,
     /// Whether the item is a running tool call whose approval card waits for an answer.
     awaits_approval: bool,
+    /// A message whose time the next one, sent at the same minute, shows.
+    #[props(default)]
+    hides_time: bool,
 ) -> Element {
     let id = item.id;
     match item.body {
         ItemBody::UserMessage(message) => rsx! {
-            UserBubble { agent, folder, message, item: Some(id) }
+            UserBubble { agent, folder, message, item: Some(id), hides_time }
         },
         ItemBody::AssistantText { markdown } => rsx! {
             MarkdownView { agent, folder, markdown, item: Some(id) }
@@ -952,7 +963,8 @@ pub fn ItemView(
 
 /// The user's message. Its text renders as Markdown, as the agent's text does. A long one keeps
 /// its first screen lines until "Show more", as a command's output does. A click on an attached
-/// image shows it over the whole window.
+/// image shows it over the whole window. Its time shows under it, faint, unless the next message
+/// was sent at the same minute and shows it.
 #[component]
 fn UserBubble(
     agent: AgentId,
@@ -960,12 +972,22 @@ fn UserBubble(
     message: UserMessage,
     /// The message in the chat, `None` for one on its way.
     item: Option<ItemId>,
+    #[props(default)] hides_time: bool,
 ) -> Element {
     let cockpit: Cockpit = use_context();
+    let Clock(clock) = use_context::<Clock>();
     let mut unfolded = use_signal(|| false);
     let open = unfolded();
     let state = if open { " unfolded" } else { "" };
-    let UserMessage { text, images, .. } = message;
+    let UserMessage {
+        text,
+        images,
+        sent_at,
+    } = message;
+    let time = sent_at.filter(|_| !hides_time).and_then(|sent_at| {
+        let shown = format::message_time(sent_at, *clock.peek())?;
+        Some((shown, format::full_time(sent_at).unwrap_or_default()))
+    });
     let images = images.into_iter().map(Arc::new);
     rsx! {
         div { class: "user-message",
@@ -1000,8 +1022,32 @@ fn UserBubble(
                     }
                 }
             }
+            if let Some((shown, full)) = time {
+                span { class: "message-time", title: "{full}", "{shown}" }
+            }
         }
     }
+}
+
+/// The messages whose time the next row shows: a message right before another one sent at the
+/// same minute. A run of messages sent together then reads as one, with its time under the last.
+fn grouped_times(firsts: &[&TranscriptItem], now: SystemTime) -> BTreeSet<ItemId> {
+    let time = |item: &TranscriptItem| match &item.body {
+        ItemBody::UserMessage(message) => message
+            .sent_at
+            .and_then(|sent_at| format::message_time(sent_at, now)),
+        _ => None,
+    };
+    firsts
+        .windows(2)
+        .filter_map(|pair| {
+            let [this, next] = pair else {
+                return None;
+            };
+            let shown = time(this)?;
+            (time(next) == Some(shown)).then_some(this.id)
+        })
+        .collect()
 }
 
 /// A notice that unfolds to the Markdown it titles, such as a skill's instructions, folded as
@@ -1813,7 +1859,11 @@ fn TurnEndView(end: TurnEnd) -> Element {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::{Approval, ApprovalAnswer, ApprovalDecision, FileEdit, PendingId};
+    use std::time::UNIX_EPOCH;
+
+    use cockpit_protocol::{
+        Approval, ApprovalAnswer, ApprovalDecision, FileEdit, PendingId, Timestamp,
+    };
 
     use super::*;
 
@@ -2082,6 +2132,45 @@ mod tests {
             parent: parent.map(ItemId::new),
             body,
         }
+    }
+
+    /// Messages 1 and 2 went within one minute, 3 five minutes later. Message 5 shares 3's minute
+    /// but a reply stands between them.
+    #[test]
+    fn a_run_of_messages_sent_at_one_minute_shows_its_time_under_the_last() {
+        // A whole minute, in every time zone with whole-minute offsets.
+        let minute = 1_794_480_000_000_u64;
+        let sent = |id: u32, millis: u64| {
+            item(
+                id,
+                None,
+                ItemBody::UserMessage(UserMessage {
+                    text: format!("Message {id}"),
+                    images: Vec::new(),
+                    sent_at: Some(Timestamp::from_unix_millis(minute + millis)),
+                }),
+            )
+        };
+        let reply = item(
+            4,
+            None,
+            ItemBody::AssistantText {
+                markdown: "Done.".to_owned(),
+            },
+        );
+        let items = [
+            sent(1, 5_000),
+            sent(2, 40_000),
+            sent(3, 300_000),
+            reply,
+            sent(5, 310_000),
+        ];
+        let firsts: Vec<&TranscriptItem> = items.iter().collect();
+        let now = UNIX_EPOCH + Duration::from_millis(minute + 3_600_000);
+
+        let grouped = grouped_times(&firsts, now);
+
+        assert_eq!(grouped, BTreeSet::from([ItemId::new(1)]));
     }
 
     #[test]

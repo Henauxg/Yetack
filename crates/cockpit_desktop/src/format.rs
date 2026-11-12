@@ -448,6 +448,46 @@ pub fn time_of_day(moment: Timestamp) -> Option<String> {
     Some(local(moment)?.format("%H:%M:%S").to_string())
 }
 
+/// When a message was sent, under it in the chat: "13:38" today, "Yesterday 17:05", "8 Nov 09:12"
+/// this year, "8 Nov 2025 09:12" before.
+pub fn message_time(moment: Timestamp, now: SystemTime) -> Option<String> {
+    Some(message_time_between(local(moment)?, local_now(now)))
+}
+
+fn message_time_between(moment: NaiveDateTime, now: NaiveDateTime) -> String {
+    use chrono::Datelike;
+
+    let time = moment.format("%H:%M");
+    match (now.date() - moment.date()).num_days() {
+        0 => time.to_string(),
+        1 => format!("Yesterday {time}"),
+        _ if moment.year() == now.year() => {
+            format!("{} {} {time}", moment.day(), moment.format(SHORT_MONTH))
+        }
+        _ => format!(
+            "{} {} {} {time}",
+            moment.day(),
+            moment.format(SHORT_MONTH),
+            moment.year()
+        ),
+    }
+}
+
+/// The whole moment, for a tooltip: "Wednesday 12 Nov 2026, 13:38:05".
+pub fn full_time(moment: Timestamp) -> Option<String> {
+    use chrono::Datelike;
+
+    let moment = local(moment)?;
+    Some(format!(
+        "{} {} {} {}, {}",
+        moment.format("%A"),
+        moment.day(),
+        moment.format(SHORT_MONTH),
+        moment.year(),
+        moment.format("%H:%M:%S")
+    ))
+}
+
 /// When a plan window resets: "at 16:00, in 3 h 12 min" today, "Monday at 09:00" within a week.
 pub fn reset_time(moment: Timestamp, now: SystemTime) -> Option<String> {
     let when = clock_time(local(moment)?, local_now(now));
@@ -642,6 +682,19 @@ mod tests {
 
         assert_eq!(minutes_until(soon, now), Some(2));
         assert_eq!(minutes_until(past, now), None);
+    }
+
+    #[test]
+    fn a_message_time_names_the_day_only_when_it_is_not_today() {
+        let now = at(12, 13, 40);
+        let last_year = NaiveDate::from_ymd_opt(2025, 11, 8)
+            .and_then(|date| date.and_hms_opt(9, 12, 0))
+            .unwrap();
+
+        assert_eq!(message_time_between(at(12, 13, 38), now), "13:38");
+        assert_eq!(message_time_between(at(11, 17, 5), now), "Yesterday 17:05");
+        assert_eq!(message_time_between(at(8, 9, 12), now), "8 Nov 09:12");
+        assert_eq!(message_time_between(last_year, now), "8 Nov 2025 09:12");
     }
 
     #[test]

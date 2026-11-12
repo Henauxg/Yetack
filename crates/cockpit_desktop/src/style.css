@@ -2507,6 +2507,19 @@ html.reordering * {
   gap: 8px;
 }
 
+/* When the message was sent, faint until the pointer is over the message. */
+.message-time {
+  margin-top: -3px;
+  font-size: 11px;
+  color: #5e5e5e;
+  white-space: nowrap;
+  transition: color var(--motion-hover) var(--ease);
+}
+
+.user-message:hover .message-time {
+  color: var(--muted);
+}
+
 /* The bubble's own color is the inline code's elsewhere. */
 .user-bubble .inline-code {
   background: var(--code-bg);
