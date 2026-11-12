@@ -5134,6 +5134,17 @@ html.reordering * {
   white-space: nowrap;
 }
 
+.about-icon {
+  flex: none;
+  width: 32px;
+  height: 32px;
+}
+
+.setting-row .copy-button {
+  position: static;
+  flex: none;
+}
+
 /* The Keyboard tab: every shortcut, by group. A command's keys are a button that records new
    ones; a fixed shortcut shows its keys with a lock. */
 .keyboard-tab {

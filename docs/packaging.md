@@ -31,7 +31,7 @@ These were settled with the user on 2026-11-11.
 - The workspace version in the root `Cargo.toml` is the release version. A release is a tag `v0.1.0` on `main`.
 - `agents-cockpit --version` already prints it.
 - The daemon always sends its release version in `Welcome` (`daemon_version`), and the protocol version went from 5 to 6. A daemon of protocol 5 or older refuses the app at `Hello`. The app then offers "Update", as it does for any protocol gap.
-- The Machines dialog shows each daemon's version on its row, and the app's own version in its note.
+- The Machines dialog shows each daemon's version on its row, and the About section at the end of the Settings dialog's General tab shows the app's own version.
 - The app offers "Update" only when the protocol versions differ, and the update builds the app's commit ([update_script::app_commit](crates/cockpit_desktop/src/update_script.rs)). Offering an update between two releases of the same protocol comes with step 2, where an update copies a binary.
 
 ### 1.3 Release files

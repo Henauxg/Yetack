@@ -11,7 +11,6 @@ use crate::state::daemon_update::{self, UpdateLine};
 use crate::state::machines::{self, MachineChange};
 use crate::state::{AppState, ConnectionState, MachinesView};
 use crate::ui::icons::{Icon, IconKind};
-use crate::update_script::APP_VERSION;
 
 /// What the sidebar and the dialogs call this computer, unless its daemon runs over SSH.
 pub const THIS_COMPUTER: &str = "This computer";
@@ -150,7 +149,7 @@ pub fn MachinesDialog(view: MachinesView) -> Element {
             }
             div { class: "dialog-body",
                 span { class: "dialog-note",
-                    "The app reaches each machine at once. Its agents show in a panel of their own in the sidebar. This app is version {APP_VERSION}."
+                    "The app reaches each machine at once. Its agents show in a panel of their own in the sidebar."
                 }
                 div { class: "machine-rows",
                     for row in rows {
