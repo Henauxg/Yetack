@@ -16,7 +16,7 @@ Update it when you hand over.
 
 The branch `feat/machine-updates` is pushed and not merged into `main`. Work in a worktree of it: `git worktree add ../agents-cockpit-machine-updates feat/machine-updates`.
 
-The user approved the design after three rounds of HTML mockups. The approved round is on the user's Windows machine only, in `%TEMP%\cockpit-mockup\`: `gen_round3.py` writes it, and `service\r3-*.png` are its screenshots. Ask the user if you cannot reach them.
+The user approved the design after three rounds of HTML mockups. The approved screens and the script that writes them are in [mockups/machine-updates](mockups/machine-updates/README.md).
 
 Done:
 
