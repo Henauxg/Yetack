@@ -35,6 +35,7 @@ use crate::state::daemon_update::{
 };
 use crate::state::file_tree::TreeFilter;
 use crate::state::no_daemon::{self, Absence};
+use crate::state::projects::ProjectKey;
 use crate::state::{
     AgentEntry, AppState, ConnectionState, Dialog, Drafts, Loadable, MachineState, Utf16Offset,
     ViewMode, actions, file_edits, file_tree, projects, quotes, sending,
@@ -1097,8 +1098,8 @@ fn show_project_files(state: &mut AppState) {
     let repositories: Vec<Repository> = projects::shown_projects(state)
         .into_iter()
         .filter_map(|key| match key {
-            projects::ProjectKey::Repository(repository) => Some(repository),
-            projects::ProjectKey::Kept(_) | projects::ProjectKey::None => None,
+            ProjectKey::Repository(repository) => Some(repository),
+            ProjectKey::Kept(_) | ProjectKey::None => None,
         })
         .collect();
     for (name, names) in SHOWCASE_PROJECTS {
@@ -4504,10 +4505,7 @@ pub struct ParseError {
         let shown: Vec<(String, usize)> = projects::shown_projects(&state)
             .iter()
             .map(|key| {
-                assert!(
-                    matches!(key, projects::ProjectKey::Kept(_)),
-                    "{key} is kept"
-                );
+                assert!(matches!(key, ProjectKey::Kept(_)), "{key} is kept");
                 let agents = state
                     .agents
                     .values()
