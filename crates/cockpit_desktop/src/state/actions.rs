@@ -5114,10 +5114,14 @@ mod tests {
     }
 
     /// "No project" starts the agent where you say: the field stays, and every folder lists.
+    /// Devbox's `/srv/shop` is in billing, so another pick would leave it.
     #[test]
     fn picking_no_project_leaves_the_folder_and_the_list() {
         let (mut state, devbox) = two_machines();
         devbox_started_last(&mut state, devbox);
+        if let Some(entry) = state.agents.get_mut(&devbox.app_agent(AgentId::new(2))) {
+            entry.summary.repository = Some(Repository::from_remote("github.com/acme/billing"));
+        }
         let mut drafts = Drafts::default();
         open_new_agent(&mut state, &mut drafts);
         let every = projects::recent_folders(&state, devbox, None).len();
