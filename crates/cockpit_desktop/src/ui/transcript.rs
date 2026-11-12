@@ -918,6 +918,8 @@ pub fn ItemView(
     hides_time: bool,
 ) -> Element {
     let id = item.id;
+    // A message under a subagent is the prompt the agent wrote for it: it shows no time.
+    let hides_time = hides_time || item.parent.is_some();
     match item.body {
         ItemBody::UserMessage(message) => rsx! {
             UserBubble { agent, folder, message, item: Some(id), hides_time }
@@ -1034,7 +1036,7 @@ fn UserBubble(
 /// last.
 fn grouped_times(firsts: &[&TranscriptItem], today: NaiveDate) -> BTreeSet<ItemId> {
     let time = |item: &TranscriptItem| match &item.body {
-        ItemBody::UserMessage(message) => message
+        ItemBody::UserMessage(message) if item.parent.is_none() => message
             .sent_at
             .and_then(|sent_at| format::message_time(sent_at, today)),
         _ => None,
@@ -2172,6 +2174,31 @@ mod tests {
         let grouped = grouped_times(&firsts, today);
 
         assert_eq!(grouped, BTreeSet::from([ItemId::new(1)]));
+    }
+
+    /// A subagent whose call is in older messages shows its prompt at the top, after the user's
+    /// message of the same minute. The prompt shows no time, so the message keeps its own.
+    #[test]
+    fn a_subagents_prompt_takes_no_time_from_the_message_before() {
+        let minute = 1_794_480_000_000_u64;
+        let message = |id: u32, parent: Option<u32>, millis: u64| {
+            item(
+                id,
+                parent,
+                ItemBody::UserMessage(UserMessage {
+                    text: format!("Message {id}"),
+                    images: Vec::new(),
+                    sent_at: Some(Timestamp::from_unix_millis(minute + millis)),
+                }),
+            )
+        };
+        let items = [message(2, None, 5_000), message(3, Some(1), 30_000)];
+        let firsts: Vec<&TranscriptItem> = items.iter().collect();
+        let today = format::local_day(UNIX_EPOCH + Duration::from_millis(minute));
+
+        let grouped = grouped_times(&firsts, today);
+
+        assert_eq!(grouped, BTreeSet::new());
     }
 
     #[test]
