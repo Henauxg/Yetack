@@ -1,11 +1,13 @@
 //! The composer: attachments, the prompt, the slash button, the prompt cache timer, the model,
 //! effort and permission mode menus, and Send and Stop.
 
+use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use cockpit_protocol::{
-    AgentId, AgentStatus, Effort, Image, ImageMediaType, PermissionMode, PromptDelivery,
+    AgentId, AgentStatus, Effort, Image, ImageMediaType, PermissionMode, PromptDelivery, PromptId,
     SubagentStatus,
 };
 use dioxus::html::FileData;
@@ -17,7 +19,7 @@ use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::keymap::Command;
 use crate::state::actions::ImageTooLarge;
 use crate::state::sending::{SendingPlace, SendingPrompt};
-use crate::state::{Draft, PaletteOrigin, Popover, accounts, actions, agent_map};
+use crate::state::{Draft, PaletteOrigin, Popover, accounts, actions, agent_map, chat_images};
 use crate::ui::header::cache_left;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::palette::Palette;
@@ -163,6 +165,13 @@ pub fn Composer() -> Element {
     };
     let waiting = entry.waiting_prompts().to_vec();
     let hold = entry.message_hold();
+    let waiting_images: BTreeMap<PromptId, Vec<Arc<Image>>> = waiting
+        .iter()
+        .filter_map(|prompt| {
+            let images = entry.sending.waiting_images(prompt.id)?;
+            Some((prompt.id, images.to_vec()))
+        })
+        .collect();
     let sending: Vec<SendingPrompt> = entry
         .sending
         .in_place(SendingPlace::Waiting)
@@ -180,7 +189,7 @@ pub fn Composer() -> Element {
                 Presence { open: popover == Some(Popover::Mode),
                     ModeMenu { agent, mode }
                 }
-                WaitingPrompts { agent, prompts: waiting, sending, hold }
+                WaitingPrompts { agent, prompts: waiting, sending, hold, images: waiting_images }
                 div { class: "composer",
                     if !draft.quotes.is_empty() {
                         QuoteRows { agent, quotes: draft.quotes.clone(), wide: chat_is_wide(&state, agent) }
@@ -189,7 +198,20 @@ pub fn Composer() -> Element {
                         div { class: "attachments",
                             for (index, image) in draft.images.iter().enumerate() {
                                 span { key: "{index}", class: "attachment",
-                                    img { class: "attachment-thumb", src: bridge::image_url(image), alt: "" }
+                                    button {
+                                        class: "attachment-open",
+                                        title: "Show the image",
+                                        aria_label: "Show image {index + 1}",
+                                        // The image is copied at the click alone: the composer
+                                        // renders each second.
+                                        onclick: move |_| cockpit.update_with_drafts(|state, drafts| {
+                                            let image = drafts.draft(agent).and_then(|draft| draft.images.get(index)).cloned();
+                                            if let Some(image) = image {
+                                                chat_images::open_attached_image(state, agent, Arc::new(image));
+                                            }
+                                        }),
+                                        img { class: "attachment-thumb", src: bridge::image_url(image), alt: "" }
+                                    }
                                     span { class: "mono", "Image {index + 1}" }
                                     button {
                                         class: "icon-button tiny",

@@ -1,25 +1,29 @@
 //! The prompts Claude has not read yet, pinned above the composer so they stay in view.
 
+use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use cockpit_protocol::{AgentId, COMMAND_PREFIX, WaitingPrompt, WaitingState};
+use cockpit_protocol::{AgentId, COMMAND_PREFIX, Image, PromptId, WaitingPrompt, WaitingState};
 use dioxus::prelude::*;
 
 use crate::connection::{Clock, Cockpit};
-use crate::format;
 use crate::state::sending::{self, SendingPrompt};
-use crate::state::{MessageHold, RevealPlace, actions};
+use crate::state::{MessageHold, RevealPlace, actions, chat_images};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::transcript;
+use crate::{bridge, format};
 
 /// `sending` are the messages on their way that the daemon will most likely add here.
-/// `hold` is what a message Claude has waits for.
+/// `hold` is what a message Claude has waits for. `images` are the images of the waiting messages
+/// this window sent.
 #[component]
 pub fn WaitingPrompts(
     agent: AgentId,
     prompts: Vec<WaitingPrompt>,
     sending: Vec<SendingPrompt>,
     hold: Option<MessageHold>,
+    images: BTreeMap<PromptId, Vec<Arc<Image>>>,
 ) -> Element {
     if prompts.is_empty() && sending.is_empty() {
         return rsx! {};
@@ -27,7 +31,7 @@ pub fn WaitingPrompts(
     rsx! {
         div { class: "waiting-prompts", role: "list", aria_label: "Messages Claude has not read yet",
             for prompt in prompts {
-                WaitingRow { key: "{prompt.id.get()}", agent, prompt, hold: hold.clone() }
+                WaitingRow { key: "{prompt.id.get()}", agent, images: images.get(&prompt.id).cloned(), prompt, hold: hold.clone() }
             }
             for prompt in sending {
                 SendingRow { key: "sending-{prompt.id.get()}", agent, prompt }
@@ -41,8 +45,7 @@ pub fn WaitingPrompts(
 fn SendingRow(agent: AgentId, prompt: SendingPrompt) -> Element {
     let cockpit: Cockpit = use_context();
     let clock: Clock = use_context();
-    let images = (!prompt.images.is_empty())
-        .then(|| format!("+{}", format::count(prompt.images.len(), "image", "images")));
+    let images: Vec<Arc<Image>> = prompt.images.iter().cloned().map(Arc::new).collect();
     // The countdown follows the clock's tick, once a second.
     let left = prompt.held_until().map(|until| {
         let _ = (clock.0)();
@@ -58,8 +61,8 @@ fn SendingRow(agent: AgentId, prompt: SendingPrompt) -> Element {
                 span { class: "waiting-state", title: "On its way to the agent", "Sending" }
             }
             span { class: "waiting-text", title: "{prompt.text}", "{prompt.text}" }
-            if let Some(images) = images {
-                span { class: "waiting-images", "{images}" }
+            if !images.is_empty() {
+                Thumbnails { agent, images }
             }
             if left.is_some() {
                 button {
@@ -82,7 +85,13 @@ fn SendingRow(agent: AgentId, prompt: SendingPrompt) -> Element {
 }
 
 #[component]
-fn WaitingRow(agent: AgentId, prompt: WaitingPrompt, hold: Option<MessageHold>) -> Element {
+fn WaitingRow(
+    agent: AgentId,
+    prompt: WaitingPrompt,
+    hold: Option<MessageHold>,
+    /// The message's images, when this window sent it. Else the row shows their count.
+    images: Option<Vec<Arc<Image>>>,
+) -> Element {
     let cockpit: Cockpit = use_context();
     let Clock(now) = use_context::<Clock>();
     let id = prompt.id;
@@ -128,7 +137,7 @@ fn WaitingRow(agent: AgentId, prompt: WaitingPrompt, hold: Option<MessageHold>) 
             (call.item, name, elapsed)
         }
     });
-    let images = (prompt.image_count > 0).then(|| {
+    let count = (prompt.image_count > 0).then(|| {
         let count = usize::try_from(prompt.image_count).unwrap_or(usize::MAX);
         format!("+{}", format::count(count, "image", "images"))
     });
@@ -152,8 +161,14 @@ fn WaitingRow(agent: AgentId, prompt: WaitingPrompt, hold: Option<MessageHold>) 
                 }
             }
             span { class: "waiting-text", title: "{prompt.text}", "{prompt.text}" }
-            if let Some(images) = images {
-                span { class: "waiting-images", "{images}" }
+            match (images, count) {
+                (Some(images), _) if !images.is_empty() => rsx! {
+                    Thumbnails { agent, images }
+                },
+                (_, Some(count)) => rsx! {
+                    span { class: "waiting-images", title: "This window does not have the images: the daemon sends only their count", "{count}" }
+                },
+                _ => rsx! {},
             }
             // A slash command waits for the turn's end: the daemon refuses to send it sooner.
             if prompt.state == WaitingState::Queued && !prompt.text.starts_with(COMMAND_PREFIX) {
@@ -173,6 +188,39 @@ fn WaitingRow(agent: AgentId, prompt: WaitingPrompt, hold: Option<MessageHold>) 
                     onclick: move |_| cockpit.change(|_| actions::cancel_queued(agent, id)),
                     Icon { kind: IconKind::Close, size: 13 }
                 }
+            }
+        }
+    }
+}
+
+/// The most images a row shows. The others show as their count.
+const SHOWN_THUMBNAILS: usize = 3;
+
+/// A message's images as small buttons, each showing its image over the whole window.
+#[component]
+fn Thumbnails(agent: AgentId, images: Vec<Arc<Image>>) -> Element {
+    let cockpit: Cockpit = use_context();
+    let more = images.len().saturating_sub(SHOWN_THUMBNAILS);
+    rsx! {
+        span { class: "waiting-thumbs",
+            for (index, image) in images.into_iter().enumerate().take(SHOWN_THUMBNAILS) {
+                button {
+                    key: "{index}",
+                    class: "waiting-thumb",
+                    title: "Show the image",
+                    aria_label: "Show image {index + 1}",
+                    onclick: {
+                        let image = Arc::clone(&image);
+                        move |_| {
+                            let image = Arc::clone(&image);
+                            cockpit.update(|state| chat_images::open_attached_image(state, agent, image));
+                        }
+                    },
+                    img { src: bridge::image_url(&image), alt: "" }
+                }
+            }
+            if more > 0 {
+                span { class: "waiting-images", "+{more}" }
             }
         }
     }

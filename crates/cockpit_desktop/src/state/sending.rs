@@ -16,7 +16,8 @@
 //!   preferences' `SteerHold` says, so that Cancel can still stop it: once sent, Claude Code holds
 //!   it, and no request takes it back. A reconnect's snapshot keeps the held messages.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use cockpit_protocol::{
@@ -100,6 +101,9 @@ pub struct Sending {
     prompts: Vec<SendingPrompt>,
     /// The waiting messages that ended a wait, until they leave: none ends a second one.
     claimed: BTreeSet<PromptId>,
+    /// The images of the waiting messages this window sent, until they leave the list. The
+    /// daemon sends a waiting message's image count alone.
+    images: BTreeMap<PromptId, Vec<Arc<Image>>>,
 }
 
 impl Sending {
@@ -107,6 +111,11 @@ impl Sending {
         self.prompts
             .iter()
             .filter(move |prompt| prompt.place == place)
+    }
+
+    /// The images of a waiting message, when this window sent it.
+    pub fn waiting_images(&self, id: PromptId) -> Option<&[Arc<Image>]> {
+        self.images.get(&id).map(Vec::as_slice)
     }
 }
 
@@ -331,6 +340,7 @@ pub fn keep_held(before: &Sending) -> Sending {
             .cloned()
             .collect(),
         claimed: BTreeSet::new(),
+        images: BTreeMap::new(),
     }
 }
 
@@ -385,11 +395,28 @@ pub fn details_loaded(entry: &mut AgentEntry) {
 pub fn waiting_changed(entry: &mut AgentEntry) {
     let waiting = entry.waiting_prompts().to_vec();
     let sending = &mut entry.sending;
-    sending
-        .claimed
-        .retain(|id| waiting.iter().any(|prompt| prompt.id == *id));
+    let still_waits = |id: &PromptId| waiting.iter().any(|prompt| prompt.id == *id);
+    sending.claimed.retain(still_waits);
+    sending.images.retain(|id, _| still_waits(id));
     let claimed = &mut sending.claimed;
+    let images = &mut sending.images;
+    // An echo names its message by text and image count alone: two messages that hold the same
+    // ones could swap images, so neither keeps them.
+    let alike = |prompt: &SendingPrompt, prompts: &[SendingPrompt]| {
+        prompts
+            .iter()
+            .filter(|other| other.holds(&prompt.text, prompt.images.len()))
+            .count()
+            > 1
+    };
+    let shared: Vec<bool> = sending
+        .prompts
+        .iter()
+        .map(|prompt| alike(prompt, &sending.prompts))
+        .collect();
+    let mut shared = shared.into_iter();
     sending.prompts.retain(|prompt| {
+        let shared = shared.next().unwrap_or(true);
         // A held message has not left: nothing is its echo yet.
         if prompt.held.is_some() {
             return true;
@@ -405,6 +432,11 @@ pub fn waiting_changed(entry: &mut AgentEntry) {
         match echo {
             Some(echo) => {
                 claimed.insert(echo.id);
+                if !prompt.images.is_empty() && !shared {
+                    let kept: Vec<Arc<Image>> =
+                        prompt.images.iter().cloned().map(Arc::new).collect();
+                    images.insert(echo.id, kept);
+                }
                 false
             }
             None => true,
@@ -564,6 +596,92 @@ mod tests {
         );
 
         assert_eq!(texts(&mut state, SendingPlace::Chat), ["Look at this"]);
+    }
+
+    /// A message with one image, sent to the busy agent.
+    fn sent_with_image(state: &mut AppState, data: &str) {
+        start(
+            state,
+            agent(),
+            &Prompt {
+                text: "Look at this".to_owned(),
+                images: vec![Image {
+                    media_type: ImageMediaType::Png,
+                    data: data.to_owned(),
+                }],
+            },
+            PromptDelivery::Queue,
+            &Draft::default(),
+            HOLD,
+            Instant::now(),
+        );
+    }
+
+    /// The echo of `sent_with_image`.
+    fn echo_with_image(id: u32) -> AgentDetails {
+        let mut echo = waiting(&[(id, "Look at this")]);
+        if let Some(prompt) = echo.waiting_prompts.first_mut() {
+            prompt.image_count = 1;
+        }
+        echo
+    }
+
+    #[test]
+    fn two_alike_messages_keep_no_images_they_could_swap() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Working)]);
+        entry(&mut state).details = Loadable::Loaded(waiting(&[]));
+        sent_with_image(&mut state, "first");
+        sent_with_image(&mut state, "second");
+
+        entry(&mut state).details = Loadable::Loaded(echo_with_image(1));
+        waiting_changed(entry(&mut state));
+
+        assert!(
+            entry(&mut state)
+                .sending
+                .waiting_images(PromptId::new(1))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_waiting_message_keeps_the_images_it_left_with_until_it_leaves() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Working)]);
+        entry(&mut state).details = Loadable::Loaded(waiting(&[]));
+        let image = Image {
+            media_type: ImageMediaType::Png,
+            data: "iVBORw0KGgo=".to_owned(),
+        };
+        start(
+            &mut state,
+            agent(),
+            &Prompt {
+                text: "Look at this".to_owned(),
+                images: vec![image.clone()],
+            },
+            PromptDelivery::Queue,
+            &Draft::default(),
+            HOLD,
+            Instant::now(),
+        );
+        let mut echo = waiting(&[(1, "Look at this")]);
+        if let Some(prompt) = echo.waiting_prompts.first_mut() {
+            prompt.image_count = 1;
+        }
+        let kept = |state: &mut AppState| {
+            entry(state)
+                .sending
+                .waiting_images(PromptId::new(1))
+                .map(<[Arc<Image>]>::to_vec)
+        };
+
+        entry(&mut state).details = Loadable::Loaded(echo);
+        waiting_changed(entry(&mut state));
+        assert_eq!(kept(&mut state), Some(vec![Arc::new(image)]));
+
+        entry(&mut state).details = Loadable::Loaded(waiting(&[]));
+        waiting_changed(entry(&mut state));
+        assert_eq!(kept(&mut state), None);
     }
 
     #[test]
