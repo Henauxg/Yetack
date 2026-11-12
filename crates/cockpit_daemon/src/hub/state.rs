@@ -454,9 +454,109 @@ pub(super) fn now() -> Timestamp {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::{PromptId, TaskListItem, TaskStatus, WaitingState};
+    use cockpit_protocol::{
+        Mark, Position, PromptId, Settings, TaskListItem, TaskStatus, WaitingState,
+    };
+
+    use crate::store::{ResumeAs, for_each_event};
 
     use super::*;
+
+    /// A state folder at `folder` with one stopped agent, 1.
+    fn state_with_agent(folder: &std::path::Path) -> AgentId {
+        let state = StateDir::create(folder).unwrap();
+        let agent = AgentId::new(1);
+        AgentsFile {
+            next_agent: AgentId::new(2),
+            replay_floor: None,
+            agents: vec![AgentRecord {
+                id: agent,
+                title: "Fix the cart".to_owned(),
+                folder: folder.join("work"),
+                session: None,
+                model: None,
+                effort: None,
+                mode: None,
+                running: false,
+                started_at: Timestamp::from_unix_millis(0),
+                past: None,
+                position: Position::default(),
+                process: None,
+                account: AccountId::DEFAULT,
+                mark: Mark::Unmarked,
+                resume_as: ResumeAs::Same,
+            }],
+        }
+        .save(&state.agents_file())
+        .unwrap();
+        agent
+    }
+
+    /// The seq and first task of each details frame a replay after `after` sends.
+    fn replayed_details(hub: &mut Hub, after: u64) -> Vec<(u64, String)> {
+        let Joined::Replay { details, .. } = hub.register(Some(Seq::new(after))).joined else {
+            panic!("expected a replay");
+        };
+        details
+            .into_iter()
+            .map(|(seq, frame)| {
+                let Ok(ServerMessage::Event(EventRecord {
+                    event: Event::DetailsChanged { details, .. },
+                    ..
+                })) = serde_json::from_slice(&frame)
+                else {
+                    panic!("expected a details frame");
+                };
+                (seq.get(), details.tasks[0].content.clone())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn details_stay_out_of_the_log_and_a_replay_or_a_restart_gets_the_latest() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join("state");
+        let agent = state_with_agent(&folder);
+        let mut hub = Hub::for_tests(&folder);
+        let details = |task: &str| Event::DetailsChanged {
+            agent,
+            details: with_task(task),
+        };
+
+        hub.emit(LogName::Agent(agent), details("one"));
+        hub.emit(LogName::Daemon, Event::SettingsChanged(Settings::default()));
+        hub.emit(LogName::Agent(agent), details("two"));
+        let live = replayed_details(&mut hub, 0);
+        let mut logged = Vec::new();
+        for_each_event(&hub.logs.path(LogName::Agent(agent)), |record| {
+            logged.push(record.seq.get());
+        })
+        .unwrap();
+        let mut restarted = Hub::for_tests(&folder);
+
+        assert_eq!(live, [(3, "two".to_owned())]);
+        assert!(logged.is_empty(), "the log holds details: {logged:?}");
+        assert_eq!(restarted.last_seq, Some(Seq::new(3)));
+        assert_eq!(replayed_details(&mut restarted, 2), [(3, "two".to_owned())]);
+        assert!(replayed_details(&mut restarted, 3).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_held_details_change_goes_out_when_it_is_due() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join("state");
+        let agent = state_with_agent(&folder);
+        let (mut hub, mut inputs) = Hub::for_tests_with_inputs(&folder);
+
+        let first = hub.space_details(agent, with_task("one"));
+        let second = hub.space_details(agent, with_task("two"));
+        let due = inputs.recv().await.unwrap();
+        hub.handle(due);
+
+        assert_eq!(first, Some(with_task("one")));
+        assert_eq!(second, None);
+        assert_eq!(replayed_details(&mut hub, 0), [(1, "two".to_owned())]);
+    }
 
     fn with_task(task: &str) -> AgentDetails {
         AgentDetails {
