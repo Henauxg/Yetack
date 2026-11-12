@@ -7,7 +7,6 @@
 
 use std::sync::LazyLock;
 
-use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use dioxus::prelude::*;
 use strum::VariantArray;
@@ -28,6 +27,8 @@ use crate::update_script::APP_VERSION;
 use crate::{APP_NAME, format};
 
 static APP_ICON: LazyLock<String> = LazyLock::new(|| {
+    use base64::Engine;
+
     let svg = include_bytes!("../../assets/agents-cockpit.svg");
     format!("data:image/svg+xml;base64,{}", BASE64.encode(svg))
 });
