@@ -1,13 +1,20 @@
-//! Turns off WebKitGTK's accelerated compositing. With it on, WebKitGTK 2.54 draws an animation's
-//! first frame once more after its last, at random: a popover, a dialog or a card flashes as it
-//! opens or closes. Without it, the page draws on the main thread, and the window's animations,
-//! short and small, still run at the screen's rate.
+//! The WebKitGTK settings the app changes.
 //!
-//! It goes through the environment, which WebKitGTK reads as it creates the web view. The web
-//! view's hardware acceleration setting, changed once the view exists, stops the view's drawing at
-//! its first resize to full screen: the window stays blank until the app restarts.
+//! - Accelerated compositing is off. With it on, WebKitGTK 2.54 draws an animation's first frame
+//!   once more after its last, at random: a popover, a dialog or a card flashes as it opens or
+//!   closes. Without it, the page draws on the main thread, and the window's animations, short
+//!   and small, still run at the screen's rate.
+//!
+//!   It goes through the environment, which WebKitGTK reads as it creates the web view. The web
+//!   view's hardware acceleration setting, changed once the view exists, stops the view's drawing
+//!   at its first resize to full screen: the window stays blank until the app restarts.
+//! - Smooth scrolling is off. It spreads a wheel notch over several frames, so the chat's scroll
+//!   script sees the first frames of a notch still at the bottom, and a notch feels slow.
 
 use std::ffi::OsStr;
+
+use dioxus::desktop::wry::WebViewExtUnix as _;
+use webkit2gtk::{SettingsExt as _, WebViewExt as _};
 
 /// The variable that turns accelerated compositing off before the web view exists.
 const COMPOSITING_VAR: &str = "WEBKIT_DISABLE_COMPOSITING_MODE";
@@ -26,6 +33,15 @@ pub unsafe fn turn_off_accelerated_compositing() {
     }
     // SAFETY: the caller guarantees that no other thread runs.
     unsafe { std::env::set_var(COMPOSITING_VAR, "1") };
+}
+
+/// Turns off smooth scrolling in the window's web view, which must exist.
+pub fn turn_off_smooth_scrolling() {
+    let window = dioxus::desktop::window();
+    match window.webview.webview().settings() {
+        Some(settings) => settings.set_enable_smooth_scrolling(false),
+        None => tracing::warn!("cannot turn off smooth scrolling: the web view has no settings"),
+    }
 }
 
 /// Whether the app sets the variable, given its value at the start.
