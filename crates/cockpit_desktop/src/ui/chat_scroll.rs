@@ -40,8 +40,9 @@ const BOTTOM_THRESHOLD_PX: u16 = 40;
 const REVEAL_TOP_PX: u16 = 12;
 
 /// How long after a wheel turned up the chat does not follow new entries, even at its bottom.
-/// WebKit spreads a notch over a few frames, and the first ones can leave the view within a pixel
-/// of the bottom. A change of the content there would scroll back down and stop the notch.
+/// A smooth scroll spreads a notch over a few frames, and the first ones can leave the view within
+/// a pixel of the bottom. A change of the content there would scroll back down and stop the notch.
+/// Linux turns smooth scrolling off, but WebView2 on Windows keeps it.
 const WHEEL_UP_MS: u16 = 600;
 
 /// The most new entries the jump button's badge counts; past it, it shows "99+".
@@ -78,8 +79,11 @@ let gapSeen = 0;
 // The last distance to the bottom the script saw. Another one at a change of the content is a
 // scroll whose event has not come yet.
 let gapKnown = 0;
+// A user scroll that `settle` saw before its event came.
+let scrollPending = false;
 // Takes the distance to the bottom as it is, without a scroll by the user.
 const knowGap = () => {
+  scrollPending = false;
   gapSeen = gapBelow();
   gapKnown = gapSeen;
 };
@@ -180,6 +184,9 @@ const record = () => {
   pinned = null;
   const wheelingUp = performance.now() - wheeledUpAt < settings.wheel_up_ms;
   const gap = gapBelow();
+  // A scroll event that moved nothing comes from the browser, such as a clamp to a shorter chat.
+  const moved = scrollPending || Math.abs(gap - gapKnown) > 0.5;
+  scrollPending = false;
   // A scroll up leaves the bottom, however short: an arrow key or the scrollbar sends no wheel.
   const leaving = gap > gapSeen + 0.5;
   const nearing = gap < gapSeen - 0.5;
@@ -187,7 +194,7 @@ const record = () => {
   gapKnown = gap;
   following = !leaving && (nearing || !wheelingUp) && gap <= settings.bottom_threshold_px;
   anchor = following ? null : anchorInView();
-  if (agent === null) {
+  if (agent === null && moved) {
     scrolledWhileDrawing = true;
   }
   report();
@@ -200,6 +207,7 @@ const settle = () => {
   const gap = gapBelow();
   const scrolled = gap - gapKnown;
   if (Math.abs(scrolled) > 0.5) {
+    scrollPending = true;
     pinned = null;
     if (following && scrolled > 0) {
       following = false;
@@ -223,13 +231,15 @@ const settle = () => {
     const element = entry === null ? null : shown(entry);
     if (element === null) {
       anchor = anchorInView();
+      gapKnown = gap;
       return;
     }
     delta = element.getBoundingClientRect().top - boxTop() - anchor.top;
   }
   if (Math.abs(delta) >= 1) {
     box.scrollTop += delta;
-    corrected = box.scrollTop;
+    // The user's scroll event comes with this one, as a single event: `record` must see it.
+    corrected = scrollPending ? null : box.scrollTop;
   }
   if (!following && pinned !== null) {
     anchor = anchorInView();
