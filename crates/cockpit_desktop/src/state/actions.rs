@@ -1236,8 +1236,9 @@ fn question_draft<'drafts>(
     draft
 }
 
-/// Picks an option. In a single-choice question it replaces the pick, or clears it when picked
-/// again, and a new pick shows the next question. In a multiple-choice question it toggles.
+/// Picks an option. In a single-choice question, a pick replaces the previous one, and picking the
+/// same option again clears it. A new pick shows the next question. In a multiple-choice question,
+/// a pick toggles.
 pub fn pick_option(drafts: &mut Drafts, question: &Question, asked: usize, option: usize) {
     let Some(selection) = question.questions.get(asked).map(|asked| asked.selection) else {
         return;
@@ -1289,14 +1290,14 @@ pub fn show_question(drafts: &mut Drafts, question: &Question, asked: usize) {
     }
 }
 
-/// The first question after the one on screen still without an answer, going round to the first
-/// question after the last.
+/// The next question without an answer after the one on screen. After the last question, the
+/// search goes on from the first.
 pub fn next_unanswered(question: &Question, draft: Option<&QuestionDraft>) -> Option<usize> {
     let count = question.questions.len();
     let shown = shown_question(question, draft);
     (1..count)
         .map(|step| (shown + step) % count)
-        .find(|&asked| !draft.is_some_and(|draft| draft.answers(asked)))
+        .find(|&asked| !draft.is_some_and(|draft| draft.has_answer(asked)))
 }
 
 /// One answer per question, or `None` while a question has neither a pick nor an "Other" text.
@@ -1362,29 +1363,24 @@ pub fn submit_question(
 }
 
 /// Enter on a question card: sends the answers once every question has one, else shows the next
-/// question without an answer.
+/// question without an answer. `None` when there is neither.
 pub fn enter_on_question(
     state: &AppState,
     drafts: &mut Drafts,
     agent: AgentId,
     item: ItemId,
-) -> Vec<Outgoing> {
-    let Some(question) = state
+) -> Option<Vec<Outgoing>> {
+    let question = state
         .agents
         .get(&agent)
-        .and_then(|entry| waiting_question(entry, item))
-    else {
-        return Vec::new();
-    };
+        .and_then(|entry| waiting_question(entry, item))?;
     let draft = drafts.questions.get(&question.pending);
     if question_answers(question, draft).is_some() {
-        return submit_question(state, drafts, agent, item);
+        return Some(submit_question(state, drafts, agent, item));
     }
-    if let Some(next) = next_unanswered(question, draft) {
-        let question = question.clone();
-        show_question(drafts, &question, next);
-    }
-    Vec::new()
+    let next = next_unanswered(question, draft)?;
+    show_question(drafts, question, next);
+    Some(Vec::new())
 }
 
 /// Left and Right: shows the question before or after the one on screen.
@@ -1393,24 +1389,22 @@ pub fn step_question(
     drafts: &mut Drafts,
     agent: AgentId,
     item: ItemId,
-    forward: bool,
+    step: Step,
 ) {
     let Some(question) = state
         .agents
         .get(&agent)
         .and_then(|entry| waiting_question(entry, item))
-        .cloned()
     else {
         return;
     };
-    let shown = shown_question(&question, drafts.questions.get(&question.pending));
-    let next = if forward {
-        shown.checked_add(1)
-    } else {
-        shown.checked_sub(1)
+    let shown = shown_question(question, drafts.questions.get(&question.pending));
+    let next = match step {
+        Step::Next => shown.checked_add(1),
+        Step::Previous => shown.checked_sub(1),
     };
     if let Some(next) = next {
-        show_question(drafts, &question, next);
+        show_question(drafts, question, next);
     }
 }
 
@@ -1426,18 +1420,17 @@ pub fn pick_by_number(
         .agents
         .get(&agent)
         .and_then(|entry| waiting_question(entry, item))
-        .cloned()
     else {
         return;
     };
-    let asked = shown_question(&question, drafts.questions.get(&question.pending));
+    let asked = shown_question(question, drafts.questions.get(&question.pending));
     if let Some(option) = number.checked_sub(1) {
         let exists = question
             .questions
             .get(asked)
             .is_some_and(|asked| option < asked.options.len());
         if exists {
-            pick_option(drafts, &question, asked, option);
+            pick_option(drafts, question, asked, option);
         }
     }
 }
@@ -4257,12 +4250,15 @@ mod tests {
         pick_option(&mut drafts, &question, 1, 0);
 
         // From "Notes", the next question without an answer is "Fixtures", round the end.
-        assert!(enter_on_question(&state, &mut drafts, agent(), item).is_empty());
+        assert_eq!(
+            enter_on_question(&state, &mut drafts, agent(), item),
+            Some(Vec::new())
+        );
         assert_eq!(shown(&drafts, &question), 0);
 
         pick_option(&mut drafts, &question, 0, 0);
         pick_option(&mut drafts, &question, 2, 0);
-        let sent = enter_on_question(&state, &mut drafts, agent(), item);
+        let sent = enter_on_question(&state, &mut drafts, agent(), item).unwrap_or_default();
 
         assert!(matches!(
             sent.as_slice(),
@@ -4280,13 +4276,13 @@ mod tests {
         let question = three_questions();
         let item = with_question(&mut state, question.clone());
 
-        step_question(&state, &mut drafts, agent(), item, false);
+        step_question(&state, &mut drafts, agent(), item, Step::Previous);
         assert_eq!(shown(&drafts, &question), 0);
         for _ in 0..3 {
-            step_question(&state, &mut drafts, agent(), item, true);
+            step_question(&state, &mut drafts, agent(), item, Step::Next);
         }
         assert_eq!(shown(&drafts, &question), 2);
-        step_question(&state, &mut drafts, agent(), item, false);
+        step_question(&state, &mut drafts, agent(), item, Step::Previous);
         assert_eq!(shown(&drafts, &question), 1);
     }
 

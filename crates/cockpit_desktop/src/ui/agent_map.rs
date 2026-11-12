@@ -21,7 +21,7 @@ use crate::state::{self, HistoryState, actions};
 use crate::ui::cards::{ApprovalCard, PlanCard};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::markdown::MarkdownView;
-use crate::ui::question_card::QuestionCard;
+use crate::ui::question_card::{CardPlace, QuestionCard};
 use crate::ui::transcript::{self, CallStage, CompactItem, ItemView};
 
 /// The input field of an `Agent` call that holds its prompt.
@@ -956,7 +956,7 @@ fn SubagentDetails(
                             ApprovalCard { key: "{waiting_item.id.get()}", agent, folder: folder.clone(), approval }
                         },
                         ItemBody::Question(question) => rsx! {
-                            QuestionCard { key: "{waiting_item.id.get()}", agent, item: waiting_item.id, question }
+                            QuestionCard { key: "{waiting_item.id.get()}", agent, item: waiting_item.id, question, place: CardPlace::Map }
                         },
                         ItemBody::Plan(plan) => rsx! {
                             PlanCard { key: "{waiting_item.id.get()}", agent, folder: folder.clone(), plan, item: Some(waiting_item.id) }

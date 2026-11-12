@@ -1,24 +1,59 @@
 //! The card of a question Claude asks. While it waits, it shows one question at a time behind
-//! tabs. Once answered or withdrawn, it folds to one line that opens on the full questions.
+//! tabs. Once answered or withdrawn, it folds to one line, and a click on the line shows every
+//! question with its answer.
 
 use cockpit_protocol::{
-    AgentId, AnswerState, AskedQuestion, ItemId, Question, QuestionAnswer, Selection,
+    AgentId, AnswerState, AskedQuestion, ItemId, Question, QuestionAnswer, QuestionOption,
+    Selection,
 };
 use dioxus::prelude::*;
 
+use crate::bridge;
 use crate::connection::Cockpit;
 use crate::state::{QuestionDraft, actions};
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::presence::use_presence;
 
-#[component]
-pub fn QuestionCard(agent: AgentId, item: ItemId, question: Question) -> Element {
-    if question.answer == AnswerState::Waiting {
-        rsx! {
-            WaitingQuestion { agent, item, question }
+/// Where a question card shows. The agent map takes the arrows and Enter for itself, so its
+/// cards show no key hints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardPlace {
+    Chat,
+    Map,
+}
+
+impl CardPlace {
+    fn id_prefix(self) -> &'static str {
+        match self {
+            Self::Chat => "chat",
+            Self::Map => "map",
         }
-    } else {
-        rsx! {
-            EndedQuestion { question }
+    }
+}
+
+/// The waiting card folds shut as the answered line folds open in its place.
+#[component]
+pub fn QuestionCard(agent: AgentId, item: ItemId, question: Question, place: CardPlace) -> Element {
+    let waiting = question.answer == AnswerState::Waiting;
+    // Only a card answered while on screen folds open: a card drawn answered shows at once.
+    let drawn_waiting = use_hook(|| waiting);
+    let shown_waiting = use_presence(waiting.then(|| question.clone()));
+    rsx! {
+        if let Some(shown) = shown_waiting {
+            div {
+                class: if shown.leaving { "question-fold leaving" } else { "question-fold" },
+                inert: shown.leaving.then_some(true),
+                div { class: "question-fold-clip",
+                    WaitingQuestion { agent, item, question: shown.value, place }
+                }
+            }
+        }
+        if !waiting {
+            div { class: if drawn_waiting { "question-fold arriving" } else { "question-fold" },
+                div { class: "question-fold-clip",
+                    EndedQuestion { question }
+                }
+            }
         }
     }
 }
@@ -33,8 +68,14 @@ fn tab_label(asked: &AskedQuestion, index: usize) -> String {
 }
 
 #[component]
-fn WaitingQuestion(agent: AgentId, item: ItemId, question: Question) -> Element {
+fn WaitingQuestion(agent: AgentId, item: ItemId, question: Question, place: CardPlace) -> Element {
     let cockpit: Cockpit = use_context();
+    let card_id = format!(
+        "{}-question-{}-{}",
+        place.id_prefix(),
+        agent.get(),
+        item.get()
+    );
     // Only this question's draft: typing in the composer leaves the card alone.
     let draft = use_memo(use_reactive((&question.pending,), move |(pending,)| {
         let drafts = cockpit.drafts.read();
@@ -45,8 +86,18 @@ fn WaitingQuestion(agent: AgentId, item: ItemId, question: Question) -> Element 
     let other_seeds = use_hook(|| draft.other.clone());
     let count = question.questions.len();
     let shown = actions::shown_question(&question, Some(&draft));
+    // Showing another question makes the focused element inert when it was in the hidden one.
+    // The card takes the focus then, so the keys still answer it, and Enter presses no row.
+    let mut last_shown = use_hook(|| CopyValue::new(shown));
+    let focus_card = card_id.clone();
+    use_effect(use_reactive((&shown,), move |(shown,)| {
+        if *last_shown.peek() != shown {
+            last_shown.set(shown);
+            bridge::focus_out_of_inert(focus_card.clone());
+        }
+    }));
     let ready = actions::question_answers(&question, Some(&draft)).is_some();
-    let answered = (0..count).filter(|&asked| draft.answers(asked)).count();
+    let answered = (0..count).filter(|&asked| draft.has_answer(asked)).count();
     let title = if count == 1 {
         "Claude asks a question".to_owned()
     } else {
@@ -60,7 +111,13 @@ fn WaitingQuestion(agent: AgentId, item: ItemId, question: Question) -> Element 
         .questions
         .get(shown)
         .map_or(0, |asked| asked.options.len().min(9));
-    let enter_word = if ready || count == 1 { "send" } else { "next" };
+    let enter_word = if ready {
+        Some("send")
+    } else if actions::next_unanswered(&question, Some(&draft)).is_some() {
+        Some("next")
+    } else {
+        None
+    };
     let send_label = if count == 1 {
         "Send the answer"
     } else {
@@ -68,7 +125,7 @@ fn WaitingQuestion(agent: AgentId, item: ItemId, question: Question) -> Element 
     };
     let next_question = question.clone();
     rsx! {
-        div { class: "card question-card waiting",
+        div { id: card_id, class: "card question-card waiting", tabindex: -1,
             div { class: "question-head",
                 Icon { kind: IconKind::Question, size: 16 }
                 span { class: "question-title", "{title}" }
@@ -83,7 +140,7 @@ fn WaitingQuestion(agent: AgentId, item: ItemId, question: Question) -> Element 
                         {
                             let question = question.clone();
                             let current = asked_index == shown;
-                            let done = draft.answers(asked_index);
+                            let done = draft.has_answer(asked_index);
                             let label = tab_label(asked, asked_index);
                             rsx! {
                                 button {
@@ -113,6 +170,7 @@ fn WaitingQuestion(agent: AgentId, item: ItemId, question: Question) -> Element 
                         key: "{asked_index}",
                         agent,
                         item,
+                        place,
                         question: question.clone(),
                         asked_index,
                         current: asked_index == shown,
@@ -138,32 +196,43 @@ fn WaitingQuestion(agent: AgentId, item: ItemId, question: Question) -> Element 
                     onclick: move |_| cockpit.change_with_drafts(|state, drafts| actions::submit_question(state, drafts, agent, item)),
                     "{send_label}"
                 }
-                span { class: "question-keys",
-                    if options > 0 {
-                        span { class: "key-hint", "1" }
-                        "–"
-                        span { class: "key-hint", "{options}" }
-                        " pick · "
+                if place == CardPlace::Chat {
+                    span { class: "question-keys",
+                        if options > 0 {
+                            span { class: "key-hint", "1" }
+                            "–"
+                            span { class: "key-hint", "{options}" }
+                            " pick"
+                        }
+                        if count > 1 {
+                            if options > 0 {
+                                " · "
+                            }
+                            span { class: "key-hint", "←" }
+                            span { class: "key-hint", "→" }
+                            " question"
+                        }
+                        if let Some(word) = enter_word {
+                            if options > 0 || count > 1 {
+                                " · "
+                            }
+                            span { class: "key-hint", "Enter" }
+                            " {word}"
+                        }
                     }
-                    if count > 1 {
-                        span { class: "key-hint", "←" }
-                        span { class: "key-hint", "→" }
-                        " question · "
-                    }
-                    span { class: "key-hint", "Enter" }
-                    " {enter_word}"
                 }
             }
         }
     }
 }
 
-/// One question of a waiting card. Every panel stays in the card, the hidden ones invisible, so
-/// the card keeps the height of its tallest question.
+/// One question of a waiting card. Every panel stays in the card, and the hidden ones are
+/// invisible. The card keeps the height of its tallest question.
 #[component]
 fn QuestionPanel(
     agent: AgentId,
     item: ItemId,
+    place: CardPlace,
     question: Question,
     asked_index: usize,
     current: bool,
@@ -171,17 +240,17 @@ fn QuestionPanel(
     other_seed: String,
 ) -> Element {
     let cockpit: Cockpit = use_context();
-    let Some(asked) = question.questions.get(asked_index).cloned() else {
+    let Some(asked) = question.questions.get(asked_index) else {
         return rsx! {};
     };
     let multiple = asked.selection == Selection::Multiple;
-    let picks = draft.picks.get(asked_index).cloned().unwrap_or_default();
+    let picks = draft.picks.get(asked_index);
     let typed = draft
         .other
         .get(asked_index)
         .is_some_and(|text| !text.trim().is_empty());
     // A pick replaces the "Other" text of a single-choice question.
-    let other_on = typed && (multiple || picks.is_empty());
+    let other_on = typed && (multiple || picks.is_none_or(|picks| picks.is_empty()));
     let mark = if multiple {
         "option-mark box"
     } else {
@@ -204,7 +273,7 @@ fn QuestionPanel(
             div { class: "option-list", role: if multiple { "group" } else { "radiogroup" },
                 for (option_index, option) in asked.options.iter().enumerate() {
                     {
-                        let picked = picks.contains(&option_index);
+                        let picked = picks.is_some_and(|picks| picks.contains(&option_index));
                         let question = question.clone();
                         let number = option_index + 1;
                         rsx! {
@@ -214,7 +283,6 @@ fn QuestionPanel(
                                 role,
                                 aria_checked: picked,
                                 onclick: move |_| {
-                                    let question = question.clone();
                                     cockpit.with_drafts(|_, drafts| actions::pick_option(drafts, &question, asked_index, option_index));
                                 },
                                 span { class: mark }
@@ -239,15 +307,19 @@ fn QuestionPanel(
                         aria_label: "Other answer",
                         placeholder: "Other: type your own…",
                         initial_value: "{other_seed}",
-                        oninput: move |event: FormEvent| {
+                        oninput: {
                             let question = other_question.clone();
-                            cockpit.with_drafts(|_, drafts| {
-                                actions::set_other_answer(drafts, &question, asked_index, event.value());
-                            });
+                            move |event: FormEvent| {
+                                cockpit.with_drafts(|_, drafts| {
+                                    actions::set_other_answer(drafts, &question, asked_index, event.value());
+                                });
+                            }
                         },
                         onkeydown: move |event: KeyboardEvent| {
                             if event.key() == Key::Enter {
-                                cockpit.change_with_drafts(|state, drafts| actions::enter_on_question(state, drafts, agent, item));
+                                cockpit.change_with_drafts(|state, drafts| {
+                                    actions::enter_on_question(state, drafts, agent, item).unwrap_or_default()
+                                });
                             }
                         },
                     }
@@ -266,7 +338,7 @@ fn answer_words(answer: &QuestionAnswer) -> String {
     words.join(", ")
 }
 
-/// A question once answered or withdrawn: one line, which opens on every question in full.
+/// A question once answered or withdrawn: one line, and a click on it shows every question.
 #[component]
 fn EndedQuestion(question: Question) -> Element {
     let mut open = use_signal(|| false);
@@ -331,33 +403,24 @@ fn EndedQuestion(question: Question) -> Element {
 /// One question in an opened ended card: its text, the answer, and the options left out.
 #[component]
 fn EndedPart(asked: AskedQuestion, index: usize, answer: Option<QuestionAnswer>) -> Element {
-    let picked: Vec<(String, String)> = asked
-        .options
-        .iter()
-        .filter(|option| {
-            answer
-                .as_ref()
-                .is_some_and(|answer| answer.selected.contains(&option.label))
-        })
-        .map(|option| (option.label.clone(), option.description.clone()))
-        .collect();
-    let rest: Vec<String> = asked
-        .options
-        .iter()
-        .filter(|option| {
-            !answer
-                .as_ref()
-                .is_some_and(|answer| answer.selected.contains(&option.label))
-        })
-        .map(|option| option.label.clone())
-        .collect();
+    let chosen = |option: &&QuestionOption| {
+        answer
+            .as_ref()
+            .is_some_and(|answer| answer.selected.contains(&option.label))
+    };
+    let (picked, rest): (Vec<&QuestionOption>, Vec<&QuestionOption>) =
+        asked.options.iter().partition(chosen);
     let rest_label = if answer.is_some() {
         "Not picked"
     } else {
         "Options"
     };
-    let other = answer.and_then(|answer| answer.other);
-    let rest_text = rest.join(" · ");
+    let rest_text = rest
+        .iter()
+        .map(|option| option.label.as_str())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let other = answer.as_ref().and_then(|answer| answer.other.as_deref());
     rsx! {
         div { class: "ended-question",
             span { class: "question-tag", "{tab_label(&asked, index)}" }
@@ -368,12 +431,12 @@ fn EndedPart(asked: AskedQuestion, index: usize, answer: Option<QuestionAnswer>)
                         span { class: "question-kind", "Pick any" }
                     }
                 }
-                for (label, description) in picked {
-                    div { key: "{label}", class: "ended-answer",
+                for option in picked {
+                    div { key: "{option.label}", class: "ended-answer",
                         Icon { kind: IconKind::Check, size: 14 }
-                        span { class: "option-label", "{label}" }
-                        if !description.is_empty() {
-                            span { class: "option-description", "{description}" }
+                        span { class: "option-label", "{option.label}" }
+                        if !option.description.is_empty() {
+                            span { class: "option-description", "{option.description}" }
                         }
                     }
                 }

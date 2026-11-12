@@ -1021,6 +1021,20 @@ pub fn apply(state: &mut AppState, request: &Request) {
                 entry.summary.folder.clone_from(&params.folder);
             }
         }
+        Request::AgentAnswer(params) => {
+            let entry = state.agents.get_mut(&params.agent);
+            if let (Answer::Question { answers }, Some(entry)) = (&params.answer, entry) {
+                let asked = entry.transcript.items().find(|item| {
+                    matches!(&item.body, ItemBody::Question(question) if question.pending == params.pending)
+                });
+                if let Some(mut item) = asked.cloned() {
+                    if let ItemBody::Question(question) = &mut item.body {
+                        question.answer = AnswerState::Answered(answers.clone());
+                    }
+                    entry.transcript.change(item);
+                }
+            }
+        }
         // The demo's server comes back.
         Request::AgentMcpReconnect(params) => {
             let details = state

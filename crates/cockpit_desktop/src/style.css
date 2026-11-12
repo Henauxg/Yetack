@@ -3517,6 +3517,46 @@ html.reordering * {
   overflow-wrap: anywhere;
 }
 
+/* A question card that changes from waiting to answered folds by its height, so the transcript
+   under it moves with it. */
+.question-fold {
+  display: grid;
+  grid-template-rows: 1fr;
+}
+
+.question-fold-clip {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.question-fold.arriving {
+  animation: question-fold-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.question-fold.leaving {
+  animation: question-fold-out var(--motion-out) var(--ease-in) forwards;
+}
+
+@keyframes question-fold-in {
+  from {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+}
+
+@keyframes question-fold-out {
+  to {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+}
+
+/* The card takes the focus only when the focused option went hidden: a ring around it all says
+   nothing. */
+.question-card:focus {
+  outline: none;
+}
+
 /* A waiting question: amber only on its left edge and its pill, as the sidebar's "needs you". */
 .question-card.waiting {
   border-color: var(--line-strong);
@@ -3593,6 +3633,7 @@ html.reordering * {
 .tab-done {
   display: inline-flex;
   color: var(--green);
+  animation: fade-in var(--motion-in) var(--ease-out) backwards;
 }
 
 .tab-open {

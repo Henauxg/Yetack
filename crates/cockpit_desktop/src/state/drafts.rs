@@ -36,8 +36,8 @@ pub struct QuestionDraft {
 }
 
 impl QuestionDraft {
-    /// The question has a pick or an "Other" text.
-    pub fn answers(&self, asked: usize) -> bool {
+    /// Whether question `asked` has a pick or an "Other" text.
+    pub fn has_answer(&self, asked: usize) -> bool {
         let picked = self.picks.get(asked).is_some_and(|picks| !picks.is_empty());
         let typed = self
             .other
