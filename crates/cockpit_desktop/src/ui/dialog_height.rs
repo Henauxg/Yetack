@@ -21,17 +21,33 @@ if (!window.agentsCockpitDialogHeight) {
     return value.endsWith("ms") ? number : number * 1000;
   };
   const watches = new Map();
+  const scrolls = (element) => ["auto", "scroll"].includes(getComputedStyle(element).overflowY);
   // A dialog's parts whose height is their content's: its children, and the children of a child
   // that scrolls, since the dialog's own height shrinks that one.
   const parts = (dialog) => Array.from(dialog.children).flatMap((child) => {
-    const scrolls = ["auto", "scroll"].includes(getComputedStyle(child).overflowY);
-    return scrolls ? Array.from(child.children) : [child];
+    return scrolls(child) ? Array.from(child.children) : [child];
   });
+  const stop = (watch) => {
+    watch.running?.cancel();
+    watch.running = null;
+    for (const child of watch.squeezed) {
+      child.style.scrollbarWidth = "";
+    }
+    watch.squeezed = [];
+  };
   const play = (watch, from, to, elapsed = 0) => {
     const grows = to > from;
     const duration = millis(grows ? settings.grow_duration : settings.shrink_duration);
     if (duration <= 0) {
       return;
+    }
+    // While the dialog grows, its height squeezes a child that scrolls. A child whose content
+    // fits at the new height hides its scrollbar meanwhile, so its content keeps its width.
+    for (const child of watch.dialog.children) {
+      if (scrolls(child) && child.scrollHeight <= child.clientHeight) {
+        child.style.scrollbarWidth = "none";
+        watch.squeezed.push(child);
+      }
     }
     const animation = watch.dialog.animate(
       [{ height: `${from}px` }, { height: `${to}px` }],
@@ -40,7 +56,7 @@ if (!window.agentsCockpitDialogHeight) {
     animation.currentTime = elapsed;
     animation.onfinish = () => {
       if (watch.running === animation) {
-        watch.running = null;
+        stop(watch);
       }
     };
     watch.running = animation;
@@ -50,13 +66,12 @@ if (!window.agentsCockpitDialogHeight) {
     const dialog = watch.dialog;
     let from = watch.height;
     const running = watch.running;
-    // Read before the cancel, which clears it.
+    // Read before the stop, which clears it.
     const elapsed = running?.currentTime ?? 0;
     if (running !== null) {
       from = dialog.offsetHeight;
-      running.cancel();
-      watch.running = null;
     }
+    stop(watch);
     const to = dialog.offsetHeight;
     if (Math.abs(to - watch.height) < 1) {
       // The content kept its height: a running animation goes on where it was.
@@ -92,6 +107,7 @@ if (!window.agentsCockpitDialogHeight) {
       height: dialog.offsetHeight,
       from: dialog.offsetHeight,
       running: null,
+      squeezed: [],
       parts: new Set(),
     };
     entry.resize = new ResizeObserver(() => changed(entry));
