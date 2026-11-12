@@ -37,9 +37,9 @@ use crate::ui::machines::{MachinesDialog, machine_choices};
 use crate::ui::no_daemon::NoDaemonCard;
 use crate::ui::open_file::{self as open_file_view, OpenFileDialog, UP_ROW};
 use crate::ui::presence::{Presence, Shown, use_presence};
-use crate::ui::projects_tab;
 use crate::ui::settings::SettingsDialog;
 use crate::ui::zoom::ZoomImage;
+use crate::ui::{dialog_height, projects_tab};
 
 /// Recent folders the new agent dialog offers.
 const RECENT_FOLDERS: usize = 6;
@@ -84,6 +84,7 @@ impl PointerMoves {
 #[component]
 pub fn Dialogs() -> Element {
     let cockpit: Cockpit = use_context();
+    use_hook(dialog_height::start);
     // A click beside the dialog closes it only when its press reached the overlay. The full view
     // of an image stops its presses, since a drag of the image may end beside it.
     let mut pressed_beside = use_signal(|| false);
