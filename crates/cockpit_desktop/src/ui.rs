@@ -9,6 +9,7 @@ mod chat_scroll;
 mod code;
 mod composer;
 mod daemon_update;
+mod dialog_height;
 mod dialogs;
 mod emoji_picker;
 mod file_list;
