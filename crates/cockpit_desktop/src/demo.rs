@@ -993,7 +993,7 @@ pub fn showcase_scene(arguments: &[String]) -> Option<Scene> {
         .iter()
         .position(|argument| argument == SHOWCASE_FLAG)?;
     match arguments.get(flag + 1) {
-        Some(name) if !name.starts_with("--") => name.parse().ok(),
+        Some(name) if !name.starts_with("--") => name.parse::<Scene>().ok(),
         Some(_) | None => Some(Scene::Machines),
     }
 }
