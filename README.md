@@ -2,7 +2,7 @@
 
 Run Claude Code agents on your computer and on your servers, and watch and steer all of the agents from one desktop app.
 
-![The app with agents on three machines: the sidebar lists the agents by machine, the middle shows one agent's conversation with a reply under way, and the right column shows the agent's tasks, subagents and messages](docs/images/app.png)
+![The app with agents on three machines: the sidebar lists the agents by machine, the middle shows one agent's conversation with three replies under way, each with its comment beside the text, and the right column shows the agent's tasks, subagents and messages](docs/images/machines.png)
 
 - **Several machines.** The app connects to this computer and to any number of servers over SSH. Each machine has its own panel in the sidebar.
 - **Several Claude accounts.** A personal subscription and a work subscription work side by side. You pick the account of each agent, and the app shows the plan usage of each account.
@@ -11,6 +11,10 @@ Run Claude Code agents on your computer and on your servers, and watch and steer
 - **Reply to a passage.** Select text in the chat to quote the text, and write a comment beside the quote. Paste images into a message.
 - **See what they do.** A map shows the subagents, and a block beside the chat shows the background tasks. The files pane shows the files that each agent changed or read, with their diffs.
 - **Notifications.** The app tells you when an agent needs you, and when an agent finishes.
+
+![The app with the agents grouped by project: one agent asks a question with three answers to pick from, the file view shows a markdown file of the agent's folder, and the files pane lists that folder](docs/images/projects.png)
+
+*The agents grouped by project, a question that waits for your answer, the file view and the files pane.*
 
 Claude Code runs unmodified and signs in with your own account. The app never sees your credentials. The app reaches a server with your SSH key, and the daemon opens no network port.
 

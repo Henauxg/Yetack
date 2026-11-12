@@ -23,11 +23,12 @@ use cockpit_protocol::{
     UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
 };
 use serde_json::Value;
+use strum::{EnumString, IntoStaticStr, VariantArray};
 
 use crate::daemon_label::DaemonLabel;
 use crate::machine::MachineId;
 use crate::path_style::PathStyle;
-use crate::prefs::CommentPlacement;
+use crate::prefs::{CommentPlacement, GroupBy};
 use crate::state::daemon_update::{
     self, OutputLine, OutputStream, ProtocolGap, UpdateFailure, UpdatePlan, VersionGap,
 };
@@ -35,7 +36,7 @@ use crate::state::file_tree::TreeFilter;
 use crate::state::no_daemon::{self, Absence};
 use crate::state::{
     AgentEntry, AppState, ConnectionState, Dialog, Drafts, Loadable, MachineState, Utf16Offset,
-    file_edits, file_tree, quotes, sending,
+    ViewMode, actions, file_edits, file_tree, quotes, sending,
 };
 use crate::update_script::APP_VERSION;
 
@@ -45,8 +46,22 @@ pub const DEMO_FLAG: &str = "--demo";
 /// With the demo, opens one of the screens of a daemon's update: `--demo-update older`.
 const UPDATE_SCREEN_FLAG: &str = "--demo-update";
 
-/// With the demo, trims it for the README's picture.
+/// With the demo, trims it for one of the README's pictures: `--demo-showcase projects`.
 const SHOWCASE_FLAG: &str = "--demo-showcase";
+
+/// The README's pictures, each a scene of the showcase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, EnumString, IntoStaticStr, VariantArray)]
+#[strum(serialize_all = "snake_case")]
+pub enum Scene {
+    /// The agents by machine, and a chat with replies under way.
+    #[default]
+    Machines,
+    /// The agents by project, a question waiting, the files pane and the file view.
+    Projects,
+}
+
+/// Wide enough for the showcase's titles to show whole.
+const SHOWCASE_SIDEBAR_WIDTH: u16 = 430;
 
 /// The showcase's third machine.
 const GPU_SERVER: MachineId = MachineId::new(3);
@@ -55,6 +70,8 @@ const GPU_FOLDER: &str = "/home/dev/ml/ranking";
 
 /// The agents of this computer the showcase leaves out: the sign-in, the map and the plan.
 const SHOWCASE_LEFT_OUT: [u32; 3] = [SIGN_IN_AGENT, MAP_AGENT, PLAN_AGENT];
+/// The agent that asks which changes go in the release notes.
+const QUESTION_AGENT: u32 = 2;
 /// The agent that waits for an approval, which the showcase moves to the server.
 const APPROVAL_AGENT: u32 = 3;
 /// The agent that waits for its plan to be approved.
@@ -828,14 +845,25 @@ fn server_session(machine: MachineId, agent: AgentId) -> ClaudeSessionId {
     ClaudeSessionId::new(format!("demo-session-{}-{}", machine.get(), agent.get()))
 }
 
-/// Whether the arguments ask for the showcase: `--demo --demo-showcase`.
-pub fn showcase_requested(arguments: &[String]) -> bool {
-    is_requested(arguments) && arguments.iter().any(|argument| argument == SHOWCASE_FLAG)
+/// The scene the arguments ask for: `--demo --demo-showcase`, then the scene's name, or
+/// `machines` when no name follows. An unknown name asks for no showcase.
+pub fn showcase_scene(arguments: &[String]) -> Option<Scene> {
+    if !is_requested(arguments) {
+        return None;
+    }
+    let flag = arguments
+        .iter()
+        .position(|argument| argument == SHOWCASE_FLAG)?;
+    match arguments.get(flag + 1) {
+        Some(name) if !name.starts_with("--") => name.parse().ok(),
+        Some(_) | None => Some(Scene::Machines),
+    }
 }
 
-/// Trims the demo for the README's picture: two accounts, one agent waiting on this computer, no
-/// emoji in titles, an approval on the server, and a third machine.
-pub fn showcase(state: &mut AppState) {
+/// Trims the demo for one of the README's pictures: two accounts, one agent waiting on this
+/// computer, no emoji in titles, an approval on the server, and a third machine. `scene` then
+/// arranges the window.
+pub fn showcase(state: &mut AppState, scene: Scene) {
     for agent in SHOWCASE_LEFT_OUT {
         state.agents.remove(&AgentId::new(agent));
     }
@@ -913,19 +941,33 @@ pub fn showcase(state: &mut AppState) {
             details.background_tasks.clear();
         }
     }
-    let Some(selected) = state.ui.selected else {
-        return;
-    };
-    if let Some(entry) = state.agents.get_mut(&selected) {
+    if let Some(entry) = state.agents.get_mut(&AgentId::new(1)) {
         trim_for_notes(entry);
+    }
+    state.prefs.sidebar.width = Some(SHOWCASE_SIDEBAR_WIDTH);
+    match scene {
+        Scene::Machines => {}
+        Scene::Projects => show_project_files(state),
+    }
+}
+
+/// The question agent, grouped by project, with its folder in the files pane and its notes file
+/// in the file view.
+fn show_project_files(state: &mut AppState) {
+    let agent = AgentId::new(QUESTION_AGENT);
+    state.prefs.sidebar.group_by = GroupBy::Project;
+    state.ui.selected = Some(agent);
+    if let Some(entry) = state.agents.get_mut(&agent) {
         entry
             .tree
             .expanded
             .insert(PathBuf::from(PARSER_FOLDER).join("src"));
     }
-    // Opens the pane, as the header's changes chip does.
-    file_tree::toggle_from_changes(state, selected);
-    file_tree::set_filter(state, selected, TreeFilter::All);
+    // Opens the pane, as the header's files chip does.
+    file_tree::toggle_from_changes(state, agent);
+    file_tree::set_filter(state, agent, TreeFilter::All);
+    actions::open_file(state, agent, in_folder(PARSER_FOLDER, NOTES_FILE), None);
+    actions::set_view_mode(state, agent, ViewMode::Preview);
 }
 
 /// Shortens the selected agent's blocks by a task and a running subagent, so that the third
@@ -2327,7 +2369,7 @@ fn parser_agent(now: SystemTime) -> Sample {
 fn question_agent(now: SystemTime) -> Sample {
     let summary = summary(
         SummaryParts {
-            id: 2,
+            id: QUESTION_AGENT,
             title: "📝 Release notes",
             folder: PARSER_FOLDER,
             status: AgentStatus::NeedsYou,
@@ -4117,20 +4159,49 @@ pub struct ParseError {
     }
 
     #[test]
-    fn the_showcase_needs_the_demo() {
-        let arguments = |list: &[&str]| -> Vec<String> {
-            list.iter().map(|&argument| argument.to_owned()).collect()
+    fn the_showcase_needs_the_demo_and_takes_a_scene_by_name() {
+        let scene = |list: &[&str]| {
+            let arguments: Vec<String> = list.iter().map(|&argument| argument.to_owned()).collect();
+            showcase_scene(&arguments)
         };
+        let names: Vec<&str> = Scene::VARIANTS.iter().map(|&scene| scene.into()).collect();
 
-        assert!(showcase_requested(&arguments(&[DEMO_FLAG, SHOWCASE_FLAG])));
-        assert!(!showcase_requested(&arguments(&[SHOWCASE_FLAG])));
+        assert_eq!(names, ["machines", "projects"]);
+        assert_eq!(scene(&[DEMO_FLAG, SHOWCASE_FLAG]), Some(Scene::Machines));
+        assert_eq!(
+            scene(&[DEMO_FLAG, SHOWCASE_FLAG, "projects"]),
+            Some(Scene::Projects)
+        );
+        assert_eq!(
+            scene(&[SHOWCASE_FLAG, DEMO_FLAG]),
+            Some(Scene::Machines),
+            "the demo's flag may come after"
+        );
+        assert_eq!(scene(&[DEMO_FLAG, SHOWCASE_FLAG, "gallery"]), None);
+        assert_eq!(scene(&[SHOWCASE_FLAG, "projects"]), None);
+    }
+
+    #[test]
+    fn the_projects_scene_shows_the_question_agent_by_project_with_its_files() {
+        let mut state = state(label());
+
+        showcase(&mut state, Scene::Projects);
+
+        let agent = AgentId::new(QUESTION_AGENT);
+        assert_eq!(state.ui.selected, Some(agent));
+        assert_eq!(state.prefs.sidebar.group_by, GroupBy::Project);
+        assert!(file_tree::pane_open(&state, agent));
+        assert_eq!(
+            state.ui.file_view(agent).map(|view| view.path.clone()),
+            Some(PathBuf::from(NOTES_FILE))
+        );
     }
 
     #[test]
     fn the_showcase_waits_on_one_agent_per_machine_with_two_accounts() {
         let mut state = state(label());
 
-        showcase(&mut state);
+        showcase(&mut state, Scene::Machines);
 
         let waiting_on = |machine: MachineId| {
             state
