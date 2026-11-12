@@ -56,8 +56,8 @@ struct RowView {
     row: MapRow,
     depth: u16,
     folded: Option<bool>,
-    /// The status class of the row's dot; `None` for a row without one.
-    status: Option<&'static str>,
+    /// The status classes of the row's dot; `None` for a row without one.
+    status: Option<String>,
     title: String,
     agent_type: Option<String>,
     tags: Vec<String>,
@@ -163,6 +163,8 @@ fn agent_line(status: AgentStatus, turn: u32, running: usize) -> String {
 struct AgentFacts<'facts> {
     title: &'facts str,
     status: AgentStatus,
+    /// Its dot's classes, which say the background work of an idle agent too.
+    status_class: String,
     turn: u32,
     turn_time: Option<Duration>,
 }
@@ -201,7 +203,7 @@ fn row_views(
             };
             match row.kind {
                 RowKind::Agent => RowView {
-                    status: Some(format::status_class(agent.status)),
+                    status: Some(agent.status_class.clone()),
                     title: agent.title.to_owned(),
                     tags: vec!["this agent".to_owned()],
                     second: Some(SecondLine::Plain(agent_line(
@@ -224,7 +226,7 @@ fn row_views(
                         tags.push(format!("turn {}", subagent.turn));
                     }
                     RowView {
-                        status: Some(format::subagent_status_class(subagent.status)),
+                        status: Some(format::subagent_status_class(subagent.status).to_owned()),
                         title: subagent.description.clone(),
                         agent_type: subagent.agent_type.clone(),
                         tags,
@@ -311,6 +313,7 @@ pub fn AgentMapDialog(view: MapView) -> Element {
     let facts = AgentFacts {
         title: &entry.summary.title,
         status: entry.summary.status,
+        status_class: format::agent_status_class(&entry.summary),
         turn: agent_map::current_turn(&entry.summary),
         turn_time: entry.turn_start().map(|start| start.elapsed(now)),
     };
@@ -348,7 +351,8 @@ pub fn AgentMapDialog(view: MapView) -> Element {
     let earlier = subagents.len().saturating_sub(in_turn.len());
     let root = RootSummary {
         title: title.clone(),
-        status: facts.status,
+        status_label: format::agent_status_label(&entry.summary),
+        status_class: facts.status_class.clone(),
         turn: facts.turn,
         counts: counts.iter().map(|count| count.text.clone()).collect(),
         started: in_turn.len(),
@@ -440,7 +444,7 @@ fn OutlineRowView(row: RowView, selected: bool) -> Element {
     let cockpit: Cockpit = use_context();
     let target = row.row;
     let mut class = vec!["map-row"];
-    if let Some(status) = row.status {
+    if let Some(status) = &row.status {
         class.push(status);
     }
     if row.status.is_none() {
@@ -550,7 +554,9 @@ fn SecondLineView(second: SecondLine) -> Element {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RootSummary {
     title: String,
-    status: AgentStatus,
+    /// "Idle, 1 running in the background" for an idle agent with background work.
+    status_label: String,
+    status_class: String,
     turn: u32,
     counts: Vec<String>,
     /// The subagents of the current turn.
@@ -561,8 +567,8 @@ struct RootSummary {
 
 #[component]
 fn RootDetails(summary: RootSummary) -> Element {
-    let status_class = format::status_class(summary.status);
-    let label = format::status_label(summary.status);
+    let status_class = &summary.status_class;
+    let label = &summary.status_label;
     let started = if summary.started == 0 {
         "This turn started no subagent.".to_owned()
     } else {
