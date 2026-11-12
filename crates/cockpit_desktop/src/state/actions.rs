@@ -31,8 +31,8 @@ use super::ui_state::{
 };
 use super::utf16_offset::Utf16Offset;
 use super::{
-    accounts, export, file_edits, file_reread, file_tree, grouping, open_file, projects, quotes,
-    sending, title_emoji,
+    accounts, export, file_edits, file_reread, file_tree, folder_field, grouping, open_file,
+    projects, quotes, sending, title_emoji,
 };
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::machine::MachineId;
@@ -2207,6 +2207,10 @@ pub fn open_new_agent(state: &mut AppState, drafts: &mut Drafts) {
         })
         .unwrap_or(MachineId::THIS);
     let folder = last_folder(state, machine);
+    // A project picked by hand, which the folder alone would not give again.
+    let project = last
+        .filter(|summary| MachineId::of(summary.id) == machine)
+        .and_then(|summary| projects::moved_to(state, summary.id));
     let model = last
         .and_then(|summary| summary.model.as_deref())
         .and_then(format::model_alias)
@@ -2231,6 +2235,7 @@ pub fn open_new_agent(state: &mut AppState, drafts: &mut Drafts) {
         model: Some(model),
         effort,
         mode: Some(mode),
+        project,
         ..NewAgentForm::default()
     }));
     drafts.new_agent = NewAgentDraft {
@@ -2327,9 +2332,19 @@ pub fn pick_new_agent_machine(
     if previous == machine {
         return None;
     }
+    // A picked project puts its latest folder on each machine, as its pick did.
+    let project = form.project.clone();
+    let project_folder = |state: &AppState, machine: MachineId| {
+        let project = project.as_ref()?;
+        let folder = projects::folder_for_pick(state, machine, "", project)?;
+        Some(path_style::shown(&folder))
+    };
     let folder = &drafts.new_agent.folder;
-    let follows = folder.trim().is_empty() || *folder == last_folder(state, previous);
-    let new_folder = follows.then(|| last_folder(state, machine));
+    let follows = folder.trim().is_empty()
+        || *folder == last_folder(state, previous)
+        || project_folder(state, previous).is_some_and(|picked| picked == *folder);
+    let new_folder = follows
+        .then(|| project_folder(state, machine).unwrap_or_else(|| last_folder(state, machine)));
     if let Some(text) = &new_folder {
         drafts.new_agent.folder.clone_from(text);
         drafts.new_agent.folder_highlighted = None;
@@ -2346,6 +2361,30 @@ pub fn pick_new_agent_machine(
         }
         known.sign_ins.refresh();
     }
+    new_folder
+}
+
+/// Picks the new agent's project. The folder field takes the project's latest recent folder,
+/// unless it already names one of its folders, and the list under the field then closes, as on
+/// a click on a recent folder. Returns the field's new text.
+pub fn pick_new_agent_project(
+    state: &mut AppState,
+    drafts: &mut Drafts,
+    project: ProjectKey,
+) -> Option<String> {
+    let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
+        return None;
+    };
+    let new_folder =
+        projects::folder_for_pick(state, form.machine, &drafts.new_agent.folder, &project)
+            .map(|folder| path_style::shown(&folder));
+    if let Some(text) = &new_folder {
+        folder_field::pick(state, drafts, text.clone());
+    }
+    with_new_agent_form(state, |form| {
+        form.project = Some(project);
+        form.menu = None;
+    });
     new_folder
 }
 
@@ -2466,8 +2505,8 @@ mod tests {
     use cockpit_protocol::{
         Account, AgentDetails, AskedQuestion, ChangedFile, CommandKind, CredentialSource,
         ErrorBody, ErrorCode, FileEdit, HistoryPage, ImageMediaType, Method, OlderItems, Position,
-        QuestionOption, ResponseBody, Timestamp, ToolCall, ToolCallStatus, TranscriptItem,
-        UserMessage,
+        QuestionOption, Repository, ResponseBody, Timestamp, ToolCall, ToolCallStatus,
+        TranscriptItem, UserMessage,
     };
 
     use super::*;
@@ -5047,6 +5086,54 @@ mod tests {
         assert_eq!(back.as_deref(), Some("/srv/shop"));
         assert_eq!(typed, None);
         assert_eq!(drafts.new_agent.folder, "/srv/typed");
+    }
+
+    /// This computer's agent 1 runs in billing's `/work/project-1`, devbox's in `/srv/billing`.
+    #[test]
+    fn a_machine_switch_puts_the_picked_project_s_folder_on_the_new_machine() {
+        let (mut state, devbox) = two_machines();
+        devbox_started_last(&mut state, devbox);
+        let billing = Repository::from_remote("github.com/acme/billing");
+        for agent in [AgentId::new(1), devbox.app_agent(AgentId::new(1))] {
+            if let Some(entry) = state.agents.get_mut(&agent) {
+                entry.summary.repository = Some(billing.clone());
+            }
+        }
+        if let Some(entry) = state.agents.get_mut(&devbox.app_agent(AgentId::new(1))) {
+            entry.summary.folder = PathBuf::from("/srv/billing");
+        }
+        let mut drafts = Drafts::default();
+        open_new_agent(&mut state, &mut drafts);
+
+        let picked =
+            pick_new_agent_project(&mut state, &mut drafts, ProjectKey::Repository(billing));
+        let switched = pick_new_agent_machine(&mut state, &mut drafts, MachineId::THIS);
+
+        assert_eq!(picked.as_deref(), Some("/srv/billing"));
+        assert_eq!(switched.as_deref(), Some("/work/project-1"));
+    }
+
+    /// "No project" starts the agent where you say: the field stays, and every folder lists.
+    /// Devbox's `/srv/shop` is in billing, so another pick would leave it.
+    #[test]
+    fn picking_no_project_leaves_the_folder_and_the_list() {
+        let (mut state, devbox) = two_machines();
+        devbox_started_last(&mut state, devbox);
+        if let Some(entry) = state.agents.get_mut(&devbox.app_agent(AgentId::new(2))) {
+            entry.summary.repository = Some(Repository::from_remote("github.com/acme/billing"));
+        }
+        let mut drafts = Drafts::default();
+        open_new_agent(&mut state, &mut drafts);
+        let every = projects::recent_folders(&state, devbox, None).len();
+
+        let picked = pick_new_agent_project(&mut state, &mut drafts, ProjectKey::None);
+
+        assert_eq!(picked, None);
+        assert_eq!(drafts.new_agent.folder, "/srv/shop");
+        assert_eq!(
+            projects::recent_folders(&state, devbox, Some(&ProjectKey::None)).len(),
+            every
+        );
     }
 
     #[test]

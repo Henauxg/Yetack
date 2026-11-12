@@ -7869,8 +7869,13 @@ button.map-toggle:hover {
   padding: 4px 20px 14px;
 }
 
-.new-agent-target .acct-button {
+.new-agent-target .acct-button,
+.new-agent-target .project-button {
   border: 1px solid var(--line-control);
+}
+
+.project-button {
+  gap: 6px;
 }
 
 .new-agent-target .form-menu {
@@ -7997,6 +8002,20 @@ button.map-toggle:hover {
   font-size: 12px;
   color: var(--dim);
   white-space: nowrap;
+}
+
+/* The project an agent started in the folder joins. */
+.folder-project {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 160px;
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 /* The first message, in the composer's box. */
