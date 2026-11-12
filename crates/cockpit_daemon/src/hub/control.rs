@@ -114,8 +114,8 @@ impl Hub {
                 agents::respond(reply, result);
             }
             ControlPurpose::Interrupt(reply) => {
-                // A sent prompt Claude Code does not hold any more keeps no turn coming: without
-                // this, a prompt the daemon missed in an echo would keep the agent working.
+                // When Claude Code holds no prompt, no turn reads a sent prompt the daemon missed
+                // in an echo. Releasing it lets the agent go idle.
                 let holds_none = result.as_ref().is_ok_and(|body| {
                     body.get("still_queued")
                         .and_then(Value::as_array)

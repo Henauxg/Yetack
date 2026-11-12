@@ -1612,7 +1612,10 @@ impl AgentView {
         self.details_changed = true;
         for prompt in sent {
             let read = self.items.iter().any(|item| {
-                matches!(&item.body, ItemBody::UserMessage(message) if holds_lines(&message.text, &prompt.text))
+                let ItemBody::UserMessage(message) = &item.body else {
+                    return false;
+                };
+                holds_lines(&message.text, &prompt.text)
             });
             if !read {
                 self.push_item(
