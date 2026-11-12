@@ -404,7 +404,7 @@ fn ModelMenu(agent: AgentId, model: Option<String>, effort: Option<Effort>) -> E
         .map(format::model_label)
         .unwrap_or_default();
     rsx! {
-        div { class: "popover menu model-menu",
+        div { class: "popover menu compact-menu model-menu",
             span { class: "menu-title", "Model" }
             for choice in MODEL_CHOICES {
                 {
@@ -420,7 +420,7 @@ fn ModelMenu(agent: AgentId, model: Option<String>, effort: Option<Effort>) -> E
                                     actions::set_model(agent, choice.alias.to_owned())
                                 });
                             },
-                            "{choice.label}"
+                            span { class: "menu-label", "{choice.label}" }
                             if chosen {
                                 Icon { kind: IconKind::Check, size: 14 }
                             }
@@ -454,7 +454,7 @@ fn ModeMenu(agent: AgentId, mode: PermissionMode) -> Element {
         modes.push(mode);
     }
     rsx! {
-        div { class: "popover menu mode-menu",
+        div { class: "popover menu compact-menu mode-menu",
             for choice in modes {
                 button {
                     key: "{format::mode_label(choice)}",
@@ -464,8 +464,8 @@ fn ModeMenu(agent: AgentId, mode: PermissionMode) -> Element {
                         state.ui.popover = None;
                         actions::set_mode(agent, choice)
                     }),
-                    span { "{format::mode_label(choice)}" }
-                    span { class: "muted small", "{format::mode_description(choice)}" }
+                    span { class: "menu-label", "{format::mode_label(choice)}" }
+                    span { class: "menu-sub", "{format::mode_description(choice)}" }
                 }
             }
         }

@@ -1,17 +1,178 @@
-//! The "Machines" dialog: the servers the app reaches beside this computer, which it adds,
-//! edits and removes in the config.
+//! The machines as the interface names them, and the "Machines" dialog: a row per machine, and
+//! the servers the app reaches beside this computer, which it adds, edits and removes in the
+//! config.
 
-use cockpit_protocol::AgentId;
+use std::time::Instant;
 
-use super::app_state::{AppState, MachineState};
+use cockpit_protocol::{AgentId, ReleaseVersion};
+
+use super::app_state::{AppState, ConnectionState, MachineState};
 use super::apply::forget_agent;
 use super::daemon_update::{self, DaemonUpdate};
 use super::drafts::Drafts;
 use super::file_tree;
-use super::ui_state::{Dialog, MachineEdit, MachinesView};
+use super::machine_status::{self, MachineStatus, StatusAction, Tone};
+use super::ui_state::{Dialog, MachineEdit, MachineMenu, MachinesView};
 use crate::config::MachineConfig;
-use crate::daemon_label::DaemonLabel;
+use crate::daemon_label::{DaemonLabel, DaemonPlace};
+use crate::format;
 use crate::machine::MachineId;
+
+/// What the interface calls this computer, unless its daemon runs over SSH.
+pub const THIS_COMPUTER: &str = "Local";
+
+/// A machine as the interface names it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MachineName {
+    pub name: String,
+    /// This computer, which shows a laptop where the others show a server.
+    pub local: bool,
+}
+
+impl MachineName {
+    pub fn new(machine: MachineId, known: &MachineState) -> Self {
+        let local = machine == MachineId::THIS && known.daemon.place != DaemonPlace::Ssh;
+        let name = if local {
+            THIS_COMPUTER.to_owned()
+        } else {
+            known.daemon.machine.clone()
+        };
+        Self { name, local }
+    }
+
+    /// The name of `machine`, empty for a machine the app does not know.
+    pub fn of(state: &AppState, machine: MachineId) -> Self {
+        state
+            .machines
+            .get(machine)
+            .map(|known| Self::new(machine, known))
+            .unwrap_or_default()
+    }
+}
+
+/// A machine's row in the Machines dialog.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MachineRow {
+    pub machine: MachineId,
+    pub name: MachineName,
+    /// Where its daemon runs: "Background service", "SSH dev@devbox".
+    pub place: String,
+    pub agents: usize,
+    /// A line under the place: when the app tries again, or that the agents stop with the app.
+    pub note: Option<RowNote>,
+    pub tone: Tone,
+    pub chip: &'static str,
+    /// The error, as the chip's tooltip.
+    pub error: Option<String>,
+    /// The release its daemon runs, while it is connected: an earlier connection's may no longer
+    /// be the one it runs.
+    pub version: Option<ReleaseVersion>,
+    /// Its button: the first link of its line in the sidebar.
+    pub action: Option<StatusAction>,
+    /// A server the config names, which its ⋯ menu edits, copies and removes.
+    pub server: Option<ServerRow>,
+}
+
+/// What a server's ⋯ menu acts on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerRow {
+    /// The SSH host, which the menu copies.
+    pub host: String,
+    /// Whether its form can open (`can_edit`).
+    pub editable: bool,
+}
+
+/// The dialog's rows, this computer first.
+pub fn rows(state: &AppState) -> Vec<MachineRow> {
+    state
+        .machines
+        .all()
+        .map(|(machine, known)| {
+            let MachineStatus { tone, chip, line } = machine_status::status(known);
+            let agents = state
+                .agents
+                .keys()
+                .filter(|agent| MachineId::of(**agent) == machine)
+                .count();
+            let (error, action) = match line {
+                Some(line) => (line.error, line.actions.first().copied()),
+                None => (None, None),
+            };
+            MachineRow {
+                machine,
+                name: MachineName::new(machine, known),
+                place: place(known),
+                agents,
+                note: RowNote::of(known),
+                tone,
+                chip,
+                error,
+                version: known
+                    .daemon_version
+                    .clone()
+                    .filter(|_| known.is_connected()),
+                action,
+                server: known.server.as_ref().map(|config| ServerRow {
+                    host: config.host.clone(),
+                    editable: can_edit(known),
+                }),
+            }
+        })
+        .collect()
+}
+
+fn place(known: &MachineState) -> String {
+    match known.daemon.place {
+        DaemonPlace::InApp => "In this app".to_owned(),
+        DaemonPlace::Service => "Background service".to_owned(),
+        DaemonPlace::Socket => "Local daemon".to_owned(),
+        DaemonPlace::Ssh => {
+            let host = known
+                .server
+                .as_ref()
+                .map_or(&known.daemon.machine, |config| &config.host);
+            format!("SSH {host}")
+        }
+    }
+}
+
+/// The line under a row's place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowNote {
+    /// The app tries the machine again then.
+    RetryAt(Instant),
+    /// The app has tried this many times since the machine last answered.
+    Attempt(u32),
+    /// The daemon runs in the app, and its agents with it.
+    StopsWithApp,
+}
+
+impl RowNote {
+    fn of(known: &MachineState) -> Option<Self> {
+        match &known.connection {
+            ConnectionState::Disconnected { retry_at, .. } => Some(Self::RetryAt(*retry_at)),
+            ConnectionState::Connecting { attempt } if *attempt > 1 => {
+                Some(Self::Attempt(*attempt))
+            }
+            ConnectionState::Connected => {
+                (known.daemon.place == DaemonPlace::InApp).then_some(Self::StopsWithApp)
+            }
+            ConnectionState::Connecting { .. } | ConnectionState::NoDaemon(_) => None,
+        }
+    }
+
+    /// Its text at `now`, which a countdown needs.
+    pub fn text(self, now: Instant) -> String {
+        match self {
+            Self::RetryAt(retry_at) => format!(
+                "Retrying in {}.",
+                format::duration(retry_at.saturating_duration_since(now))
+            ),
+            Self::Attempt(attempt) => format!("Attempt {attempt}."),
+            Self::StopsWithApp => "Its agents stop when the app closes.".to_owned(),
+        }
+    }
+}
 
 /// A change to the machines, which the connection task carries out and writes to the config.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +195,38 @@ pub fn with_view(state: &mut AppState, change: impl FnOnce(&mut MachinesView)) {
     if let Some(Dialog::Machines(view)) = &mut state.ui.dialog {
         change(view);
     }
+}
+
+/// Shows the form for a new server, from "Add a server".
+pub fn open_add_form(state: &mut AppState) {
+    with_view(state, |view| {
+        view.adding = true;
+        view.menu = None;
+    });
+}
+
+/// Closes the form for a new server, and empties it.
+pub fn close_add_form(state: &mut AppState) {
+    with_view(state, |view| {
+        *view = MachinesView {
+            editing: view.editing.take(),
+            ..MachinesView::default()
+        };
+    });
+}
+
+/// Opens a server's ⋯ menu at `x`, `y`, or closes it when it is open already.
+pub fn toggle_menu(state: &mut AppState, machine: MachineId, x: i32, y: i32) {
+    with_view(state, |view| {
+        view.menu = match view.menu {
+            Some(open) if open.machine == machine => None,
+            Some(_) | None => Some(MachineMenu { machine, x, y }),
+        };
+    });
+}
+
+pub fn close_menu(state: &mut AppState) {
+    with_view(state, |view| view.menu = None);
 }
 
 /// The server the form names, once it holds what the app needs to reach it. Otherwise the form
@@ -80,6 +273,7 @@ pub fn start_edit(state: &mut AppState, machine: MachineId) {
         return;
     };
     with_view(state, |view| {
+        view.menu = None;
         view.editing = Some(MachineEdit {
             machine,
             name: config.name,
@@ -178,9 +372,11 @@ fn check(
     if !remote_command.starts_with('/') {
         return Err("Give the absolute path of agents-cockpit on the server.");
     }
-    let taken = std::iter::once((MachineId::THIS, &state.machines.this))
-        .chain(state.machines.others.iter().map(|(id, known)| (*id, known)))
-        .any(|(machine, known)| Some(machine) != editing && known.daemon.machine == name);
+    // A name keys the preferences, and the interface shows another one for this computer.
+    let taken = state.machines.all().any(|(machine, known)| {
+        Some(machine) != editing
+            && (known.daemon.machine == name || MachineName::new(machine, known).name == name)
+    });
     if taken {
         return Err("Another machine has this name.");
     }
@@ -542,5 +738,157 @@ mod tests {
             "no undo brings back an agent of a removed server"
         );
         assert_eq!(drafts.draft(remote.id), None);
+    }
+
+    /// Local in the app with agent 1, devbox connected with agent 1 of its own, and gpu-box not
+    /// connected, trying again in 8 seconds.
+    fn dialog_state(now: Instant) -> AppState {
+        let mut state = AppState::new(DaemonLabel::in_app());
+        state.machines.this.connection = ConnectionState::Connected;
+        state.machines.this.daemon_version = Some(ReleaseVersion::new("0.2.0".to_owned()));
+        state.agents.insert(
+            AgentId::new(1),
+            AgentEntry::new(summary(1, AgentStatus::Idle)),
+        );
+        server(&mut state, 1, "devbox");
+        server(&mut state, 2, "gpu-box");
+        let devbox = MachineId::new(1);
+        if let Some(known) = state.machines.others.get_mut(&devbox) {
+            known.connection = ConnectionState::Connected;
+            known.daemon_version = Some(ReleaseVersion::new("0.2.0".to_owned()));
+        }
+        if let Some(known) = state.machines.others.get_mut(&MachineId::new(2)) {
+            known.connection = ConnectionState::Disconnected {
+                error: "ssh: connection refused".to_owned(),
+                retry_at: now + std::time::Duration::from_secs(8),
+            };
+            known.daemon_version = Some(ReleaseVersion::new("0.1.0".to_owned()));
+        }
+        let mut remote = summary(1, AgentStatus::Working);
+        remote.id = devbox.app_agent(AgentId::new(1));
+        state.agents.insert(remote.id, AgentEntry::new(remote));
+        state
+    }
+
+    #[test]
+    fn a_row_says_where_the_daemon_runs_and_how_many_agents_it_has() {
+        let now = Instant::now();
+        let state = dialog_state(now);
+
+        let shown: Vec<(String, bool, String, usize)> = rows(&state)
+            .into_iter()
+            .map(|row| (row.name.name, row.name.local, row.place, row.agents))
+            .collect();
+
+        assert_eq!(
+            shown,
+            [
+                ("Local".to_owned(), true, "In this app".to_owned(), 1),
+                ("devbox".to_owned(), false, "SSH dev@devbox".to_owned(), 1),
+                ("gpu-box".to_owned(), false, "SSH dev@gpu-box".to_owned(), 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_row_shows_its_status_its_version_while_connected_and_the_action_its_line_offers() {
+        let now = Instant::now();
+        let state = dialog_state(now);
+
+        let rows = rows(&state);
+
+        let chips: Vec<&str> = rows.iter().map(|row| row.chip).collect();
+        let versions: Vec<Option<String>> = rows
+            .iter()
+            .map(|row| row.version.as_ref().map(ToString::to_string))
+            .collect();
+        let actions: Vec<Option<StatusAction>> = rows.iter().map(|row| row.action).collect();
+        let notes: Vec<Option<String>> = rows
+            .iter()
+            .map(|row| row.note.map(|note| note.text(now)))
+            .collect();
+        assert_eq!(chips, ["Connected", "Connected", "Not connected"]);
+        assert_eq!(
+            versions,
+            [Some("0.2.0".to_owned()), Some("0.2.0".to_owned()), None]
+        );
+        assert_eq!(actions, [None, None, Some(StatusAction::Retry)]);
+        assert_eq!(
+            notes,
+            [
+                Some("Its agents stop when the app closes.".to_owned()),
+                None,
+                Some("Retrying in 8 s.".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn only_a_server_has_a_menu_and_it_copies_its_ssh_host() {
+        let now = Instant::now();
+        let mut state = dialog_state(now);
+        state.machines.this = MachineState::new(DaemonLabel::ssh("build-box".to_owned()));
+
+        let menus: Vec<Option<String>> = rows(&state)
+            .into_iter()
+            .map(|row| row.server.map(|server| server.host))
+            .collect();
+
+        assert_eq!(
+            menus,
+            [
+                None,
+                Some("dev@devbox".to_owned()),
+                Some("dev@gpu-box".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn a_menu_opens_on_one_server_at_a_time_and_its_edit_closes_it() {
+        let mut state = dialog_state(Instant::now());
+        open_machines(&mut state);
+        let menu = |state: &AppState| match &state.ui.dialog {
+            Some(Dialog::Machines(view)) => view.menu.map(|menu| menu.machine),
+            _ => None,
+        };
+
+        toggle_menu(&mut state, MachineId::new(1), 600, 300);
+        let first = menu(&state);
+        toggle_menu(&mut state, MachineId::new(2), 600, 360);
+        let second = menu(&state);
+        start_edit(&mut state, MachineId::new(2));
+
+        assert_eq!(first, Some(MachineId::new(1)));
+        assert_eq!(second, Some(MachineId::new(2)));
+        assert_eq!(menu(&state), None);
+        assert!(state.ui.close_overlays(), "Esc closes the form");
+        assert!(matches!(&state.ui.dialog, Some(Dialog::Machines(_))));
+    }
+
+    #[test]
+    fn the_add_form_opens_from_its_button_and_esc_closes_it_before_the_dialog() {
+        let mut state = state_with(Vec::new());
+        typed(&mut state, "lab", "dev@lab", "");
+        open_add_form(&mut state);
+        let adding = matches!(&state.ui.dialog, Some(Dialog::Machines(view)) if view.adding);
+
+        let first_escape = state.ui.close_overlays();
+
+        assert!(adding);
+        assert!(first_escape);
+        assert!(matches!(&state.ui.dialog, Some(Dialog::Machines(view)) if !view.adding));
+        state.ui.close_overlays();
+        assert_eq!(state.ui.dialog, None);
+    }
+
+    #[test]
+    fn a_server_cannot_take_the_name_the_interface_gives_this_computer() {
+        let mut state = AppState::new(DaemonLabel::in_app());
+
+        typed(&mut state, THIS_COMPUTER, "dev@lab", "/opt/agents-cockpit");
+
+        assert_eq!(add(&mut state), None);
+        assert!(error(&state).is_some());
     }
 }

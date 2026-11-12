@@ -236,12 +236,12 @@ mod tests {
     }
 
     #[test]
-    fn with_this_computer_alone_left_folds_nothing() {
+    fn with_this_computer_alone_left_folds_its_panel() {
         let mut state = state_with(vec![placed(1, AgentStatus::Idle, 1024)]);
 
         let focus = press(&mut state, &agent(1), KEY_LEFT);
 
-        assert_eq!(focus, None);
-        assert!(state.ui.folded_machines.is_empty());
+        assert_eq!(focus, Some(SidebarItem::Machine(MachineId::THIS)));
+        assert!(state.ui.folded_machines.contains(&MachineId::THIS));
     }
 }

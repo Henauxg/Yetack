@@ -424,6 +424,7 @@ pub fn TreeMenu() -> Element {
                 enabled: true,
                 title: title.to_owned(),
                 divided: item == TreeMenuItem::CopyPath,
+                danger: false,
             }
         })
         .collect();
