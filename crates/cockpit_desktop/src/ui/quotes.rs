@@ -790,6 +790,40 @@ struct Settings {
     beside: &'static str,
 }
 
+impl Settings {
+    fn new() -> Self {
+        Self {
+            chat_scroll_id: CHAT_SCROLL_ID,
+            entry_class: ENTRY_CLASS,
+            layer_id: LAYER_ID,
+            reply_button_id: REPLY_BUTTON_ID,
+            links_id: LINKS_ID,
+            replied_host_id: REPLIED_HOST_ID,
+            comment_field_id: COMMENT_FIELD_ID,
+            revealed_class: REVEALED_CLASS,
+            reply_key: REPLY_KEY,
+            records_keys_attribute: bridge::RECORDS_KEYS_ATTRIBUTE,
+            flash_ms: 1200,
+            hide_ms: 250,
+            you_replied: "You replied",
+            show_message: "Show your message",
+            show_passage: SHOW_PASSAGE,
+            new_field: NEW_FIELD,
+            pin_group_class: PIN_GROUP_CLASS,
+            note_class: NOTE_CLASS,
+            field_class: FIELD_CLASS,
+            comment_text_class: COMMENT_TEXT_CLASS,
+            leaving_class: LEAVING_CLASS,
+            blocks_class: BLOCKS_CLASS,
+            block_card_class: BLOCK_CARD_CLASS,
+            user_bubble_class: USER_BUBBLE_CLASS,
+            markdown_class: MARKDOWN_CLASS,
+            note_form: FieldForm::Note.into(),
+            beside: CommentPlacement::Beside.into(),
+        }
+    }
+}
+
 /// What the app tells the script.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -850,35 +884,7 @@ impl QuoteScript {
 pub fn use_quotes(cockpit: Cockpit) {
     let script = use_hook(|| {
         let mut script = document::eval(SCRIPT);
-        if let Err(error) = script.send(Settings {
-            chat_scroll_id: CHAT_SCROLL_ID,
-            entry_class: ENTRY_CLASS,
-            layer_id: LAYER_ID,
-            reply_button_id: REPLY_BUTTON_ID,
-            links_id: LINKS_ID,
-            replied_host_id: REPLIED_HOST_ID,
-            comment_field_id: COMMENT_FIELD_ID,
-            revealed_class: REVEALED_CLASS,
-            reply_key: REPLY_KEY,
-            records_keys_attribute: bridge::RECORDS_KEYS_ATTRIBUTE,
-            flash_ms: 1200,
-            hide_ms: 250,
-            you_replied: "You replied",
-            show_message: "Show your message",
-            show_passage: SHOW_PASSAGE,
-            new_field: NEW_FIELD,
-            pin_group_class: PIN_GROUP_CLASS,
-            note_class: NOTE_CLASS,
-            field_class: FIELD_CLASS,
-            comment_text_class: COMMENT_TEXT_CLASS,
-            leaving_class: LEAVING_CLASS,
-            blocks_class: BLOCKS_CLASS,
-            block_card_class: BLOCK_CARD_CLASS,
-            user_bubble_class: USER_BUBBLE_CLASS,
-            markdown_class: MARKDOWN_CLASS,
-            note_form: FieldForm::Note.into(),
-            beside: CommentPlacement::Beside.into(),
-        }) {
+        if let Err(error) = script.send(Settings::new()) {
             tracing::warn!("cannot start the quotes' script: {error}");
         }
         spawn(async move {
@@ -1312,6 +1318,8 @@ pub fn QuoteRows(agent: AgentId, quotes: Vec<Quote>, wide: bool) -> Element {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use cockpit_protocol::{AgentStatus, ItemId};
 
     use super::*;
@@ -1340,6 +1348,30 @@ mod tests {
             .collect();
 
         assert_eq!(words, ["note", "card"]);
+    }
+
+    /// The script reads each setting by its serde name, and a name it reads that the app does not
+    /// send is `undefined` there, with no error.
+    #[test]
+    fn the_script_reads_the_settings_the_app_sends() {
+        let sent: BTreeSet<String> = serde_json::to_value(Settings::new())
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        let read: BTreeSet<String> = SCRIPT
+            .split("settings.")
+            .skip(1)
+            .map(|rest| {
+                rest.chars()
+                    .take_while(|character| character.is_ascii_lowercase() || *character == '_')
+                    .collect()
+            })
+            .collect();
+
+        assert_eq!(read, sent);
     }
 
     #[test]
