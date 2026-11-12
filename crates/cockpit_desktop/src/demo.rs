@@ -4309,6 +4309,26 @@ pub struct ParseError {
     }
 
     #[test]
+    fn the_changelog_undoes_to_its_unreleased_heading() {
+        let state = state(label());
+        let request = Request::AgentReadFile(ReadFileParams {
+            agent: AgentId::new(QUESTION_AGENT),
+            path: PathBuf::from(CHANGELOG_FILE),
+        });
+
+        let Ok(ResponseBody::File { text, edits, .. }) = answer(&state, &request) else {
+            panic!("the demo answers with the file");
+        };
+        let edits: Vec<&FileEdit> = edits.iter().flatten().collect();
+
+        assert_eq!(edits.len(), 1);
+        assert_eq!(
+            file_edits::original_text(&text, &edits),
+            Some(CHANGELOG_TEXT.replacen(CHANGELOG_HEADING_AFTER, CHANGELOG_HEADING_BEFORE, 1))
+        );
+    }
+
+    #[test]
     fn a_server_shows_its_own_agents_in_order() {
         let state = state(label());
 
@@ -4506,9 +4526,13 @@ pub struct ParseError {
         );
         assert!(file_tree::pane_open(&state, agent));
         assert_eq!(
-            state.ui.file_view(agent).map(|view| view.path.clone()),
-            Some(PathBuf::from(CHANGELOG_FILE))
+            state
+                .ui
+                .file_view(agent)
+                .map(|view| (view.path.clone(), view.mode)),
+            Some((PathBuf::from(CHANGELOG_FILE), ViewMode::Preview))
         );
+        assert!(crate::prefs::is_sidebar_width(SHOWCASE_SIDEBAR_WIDTH));
     }
 
     #[test]
