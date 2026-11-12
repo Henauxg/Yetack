@@ -156,7 +156,7 @@ pub fn MachinesDialog(view: MachinesView) -> Element {
                 }
                 div { class: "machine-rows",
                     for row in rows {
-                        match view.editing.clone().filter(|edit| edit.machine == row.machine) {
+                        match view.editing.as_ref().filter(|edit| edit.machine == row.machine).cloned() {
                             Some(edit) => rsx! {
                                 MachineEditView { key: "{row.machine.get()}", name: row.name.clone(), agents: row.agents, edit }
                             },

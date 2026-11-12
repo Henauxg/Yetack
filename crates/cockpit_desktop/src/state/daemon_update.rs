@@ -396,7 +396,8 @@ pub fn follow_config(known: &mut MachineState, config: &MachineConfig) {
         Some(DaemonUpdate::Failed(failed)) => Some(&mut failed.plan),
         Some(DaemonUpdate::Running(_) | DaemonUpdate::Reconnecting(_)) | None => None,
     };
-    for plan in gap_plan.into_iter().chain(failed_plan) {
+    let plans = gap_plan.into_iter().chain(failed_plan);
+    for plan in plans {
         config.host.clone_into(&mut plan.host);
         config.remote_command.clone_into(&mut plan.remote_command);
         plan.source_dir.clone_from(&config.source_dir);

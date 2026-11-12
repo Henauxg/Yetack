@@ -111,14 +111,16 @@ pub fn save_edit(state: &mut AppState) -> Option<MachineChange> {
         .machines
         .others
         .get(&machine)
-        .and_then(|known| known.server.clone());
+        .and_then(|known| known.server.as_ref());
+    let change = checked
+        .map(|config| (before != Some(&config)).then_some(MachineChange::Edit(machine, config)));
     let Some(Dialog::Machines(view)) = &mut state.ui.dialog else {
         return None;
     };
-    match checked {
-        Ok(config) => {
+    match change {
+        Ok(change) => {
             view.editing = None;
-            (before.as_ref() != Some(&config)).then_some(MachineChange::Edit(machine, config))
+            change
         }
         Err(error) => {
             if let Some(edit) = &mut view.editing {

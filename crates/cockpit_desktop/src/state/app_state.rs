@@ -361,7 +361,7 @@ pub struct MachineState {
     pub version_gap: Option<VersionGap>,
     /// The update of this machine's daemon, under way or failed.
     pub update: Option<DaemonUpdate>,
-    /// How the config reaches a server, which the Machines dialog edits. `None` for this
+    /// The server's entry in the config, which the Machines dialog edits. `None` for this
     /// computer.
     pub server: Option<MachineConfig>,
 }
