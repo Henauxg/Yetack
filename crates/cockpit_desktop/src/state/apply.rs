@@ -17,8 +17,8 @@ use super::drafts::Drafts;
 use super::sending::Sending;
 use super::transcript::KEPT_ITEMS_AWAY;
 use super::{
-    actions, daemon_update, file_reread, file_tree, grouping, notification_levels, projects,
-    sending,
+    actions, daemon_update, file_reread, file_tree, grouping, notification_levels, project_menu,
+    projects, sending,
 };
 use crate::machine::MachineId;
 
@@ -43,6 +43,19 @@ pub enum AlertKind {
 
 /// Applies an update from `machine`'s daemon, whose agent ids are already the app's.
 pub fn apply_update(
+    state: &mut AppState,
+    drafts: &mut Drafts,
+    update: SessionUpdate,
+    now: Instant,
+    machine: MachineId,
+) -> Vec<Alert> {
+    let alerts = apply_session_update(state, drafts, update, now, machine);
+    // An agent may have changed project: its folder moved, or its repository arrived.
+    project_menu::prune(state);
+    alerts
+}
+
+fn apply_session_update(
     state: &mut AppState,
     drafts: &mut Drafts,
     update: SessionUpdate,
@@ -384,6 +397,7 @@ pub fn forget_agent(
     state.ui.chat_new_from.remove(&agent);
     drafts.retain_agents(|kept| kept != agent);
     state.ui.title_edit.take_if(|edit| edit.agent == agent);
+    project_menu::prune(state);
     state
         .ui
         .dialog

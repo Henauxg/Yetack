@@ -2,7 +2,7 @@
 //! prevented only in the page, so the script decides which key presses to take, from the mode
 //! Rust sends it, and passes them on with the window's focus and pasted images.
 
-use cockpit_protocol::{AgentId, Image, ImageMediaType};
+use cockpit_protocol::{AgentId, Image, ImageMediaType, ItemBody};
 use dioxus::dioxus_core::{queue_effect, spawn_forever};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -59,7 +59,7 @@ const PASTED_IMAGE: &str = "The pasted image";
 /// `BridgeMessage`, `KeyPress`, `KeyTarget` and `KeyMode`.
 const SCRIPT: &str = r#"
 const settings = await dioxus.recv();
-let mode = { answer_letters: false, answer_numbers: false, palette: false, dialog: false, bindings: [] };
+let mode = { answer_letters: false, answer_numbers: false, question_tabs: false, palette: false, dialog: false, bindings: [] };
 const send = (message) => dioxus.send(message);
 // The sidebar row or machine header that has the focus, as the app names it.
 const sidebarItem = (element) => {
@@ -204,8 +204,13 @@ document.addEventListener("keydown", (event) => {
     undo(target, letter === "y" || event.shiftKey);
     return;
   }
+  // Left and Right switch questions from the composer, the page itself or the question card.
+  // Elsewhere they scroll what has the focus.
+  const questionArrow = mode.question_tabs && !event.shiftKey && (key === "ArrowLeft" || key === "ArrowRight")
+    && (composer || target === null || target === document.body || target.closest(".question-card") !== null);
   const answers = (mode.answer_letters && settings.answer_keys.includes(letter))
-    || (mode.answer_numbers && (/^[1-9]$/.test(key) || key === "Enter"));
+    || (mode.answer_numbers && (/^[1-9]$/.test(key) || key === "Enter"))
+    || questionArrow;
   // The arrows on a sidebar row or machine header move the selection and fold the machines.
   const focused = sidebarItem(target);
   if (focused !== null && plain && !event.shiftKey && !mode.dialog && settings.sidebar_keys.includes(key)) {
@@ -245,7 +250,7 @@ document.addEventListener("keydown", (event) => {
     // one of its buttons still presses the button.
     const mapKey = settings.map_keys.includes(key) || (mode.answer_letters && settings.answer_keys.includes(letter));
     take = where !== "field" && plain && !event.shiftKey && mapKey
-      && !(key === "Enter" && target !== null && target.tagName === "BUTTON");
+      && !(key === "Enter" && target !== null && target.matches('button, [role="button"]'));
   } else if (where === "composer" && event.altKey && !command && !event.shiftKey && key === "Enter") {
     // Alt+Enter queues the message until the turn ends.
     take = true;
@@ -257,7 +262,7 @@ document.addEventListener("keydown", (event) => {
     // A tree or a menu takes its own keys: Enter or a digit there acts on it, and answers nothing.
     && !(target !== null && target.closest("[data-own-keys]") !== null)
     && (answers || (mode.send_again && key === "Enter" && !event.shiftKey))) {
-    take = !(key === "Enter" && target !== null && target.tagName === "BUTTON");
+    take = !(key === "Enter" && target !== null && target.matches('button, [role="button"]'));
   }
   if (!take) {
     return;
@@ -355,6 +360,18 @@ for (let frame = 0; frame < 10; frame++) {
   if (element !== null && document.activeElement !== element) {
     element.focus();
   }
+}
+"#;
+
+/// Gives the focus to the element whose id it receives when the focus is in an inert part of it,
+/// once the page shows the render.
+const FOCUS_OUT_OF_INERT_SCRIPT: &str = r#"
+const id = await dioxus.recv();
+await new Promise((resolve) => requestAnimationFrame(resolve));
+const element = document.getElementById(id);
+const active = document.activeElement;
+if (element !== null && active !== null && element.contains(active) && active.closest("[inert]") !== null) {
+  element.focus({ preventScroll: true });
 }
 "#;
 
@@ -501,6 +518,8 @@ struct KeyMode {
     answer_letters: bool,
     /// 1 to 9 and Enter answer a question.
     answer_numbers: bool,
+    /// Left and Right show another question of a card with several.
+    question_tabs: bool,
     /// Up, Down, Enter and Tab move in the command palette opened by typing `/`. The one the
     /// slash button opens takes them in its own filter field.
     palette: bool,
@@ -523,10 +542,20 @@ impl KeyMode {
                 .selected()
                 .and_then(|entry| entry.transcript.waiting())
         };
+        let question_tabs = !map
+            && waiting.as_ref().is_some_and(|waiting| {
+                state
+                    .selected()
+                    .and_then(|entry| entry.transcript.get(waiting.item))
+                    .is_some_and(|item| {
+                        matches!(&item.body, ItemBody::Question(question) if question.questions.len() > 1)
+                    })
+            });
         let waiting = waiting.map(|waiting| waiting.kind);
         Self {
             answer_letters: matches!(waiting, Some(WaitingKind::Approval | WaitingKind::Plan)),
             answer_numbers: !map && waiting == Some(WaitingKind::Question),
+            question_tabs,
             palette: state.ui.popover == Some(Popover::Palette(PaletteOrigin::Typed)),
             dialog: state.ui.dialog.is_some(),
             map,
@@ -720,6 +749,15 @@ pub fn keep_focus(element_id: String) {
     }
 }
 
+/// Gives the focus to the element `element_id` when a render made the focused element inside it
+/// inert.
+pub fn focus_out_of_inert(element_id: String) {
+    let script = document::eval(FOCUS_OUT_OF_INERT_SCRIPT);
+    if let Err(error) = script.send(&element_id) {
+        tracing::warn!("cannot give the focus to {element_id}: {error}");
+    }
+}
+
 pub fn focus_field_at_end(field_id: &'static str) {
     let script = document::eval(FOCUS_AT_END_SCRIPT);
     if let Err(error) = script.send(field_id) {
@@ -820,9 +858,15 @@ pub fn give_focus_back(element_id: Option<&'static str>) {
 
 #[cfg(test)]
 mod tests {
+    use cockpit_protocol::{
+        AgentStatus, AnswerState, AskedQuestion, ItemId, PendingId, Question, Selection,
+        TranscriptItem,
+    };
+
     use super::*;
     use crate::machine::MachineId;
     use crate::state::projects::ProjectKey;
+    use crate::state::{state_with, summary};
 
     #[test]
     fn the_files_pane_scrolls_its_own_highlighted_row() {
@@ -838,6 +882,38 @@ mod tests {
         assert_eq!(image_media_type("image/png"), Some(ImageMediaType::Png));
         assert_eq!(image_media_type("image/tiff"), None);
         assert_eq!(mime_type(ImageMediaType::Webp), "image/webp");
+    }
+
+    #[test]
+    fn the_arrows_switch_questions_only_on_a_card_with_several_outside_the_map() {
+        let with_questions = |count: usize| {
+            let mut state = state_with(vec![summary(1, AgentStatus::NeedsYou)]);
+            state.ui.selected = Some(AgentId::new(1));
+            let asked = AskedQuestion {
+                header: "Scope".to_owned(),
+                text: "Which tests?".to_owned(),
+                options: Vec::new(),
+                selection: Selection::Single,
+            };
+            if let Some(entry) = state.agents.get_mut(&AgentId::new(1)) {
+                entry.transcript.append(TranscriptItem {
+                    id: ItemId::new(3),
+                    parent: None,
+                    body: ItemBody::Question(Question {
+                        pending: PendingId::new("request-3".to_owned()),
+                        questions: vec![asked; count],
+                        answer: AnswerState::Waiting,
+                    }),
+                });
+            }
+            state
+        };
+        let mut mapped = with_questions(2);
+        agent_map::toggle(&mut mapped);
+
+        assert!(KeyMode::new(&with_questions(2)).question_tabs);
+        assert!(!KeyMode::new(&with_questions(1)).question_tabs);
+        assert!(!KeyMode::new(&mapped).question_tabs);
     }
 
     #[test]
@@ -917,6 +993,7 @@ mod tests {
         let mode = KeyMode {
             answer_letters: true,
             answer_numbers: false,
+            question_tabs: false,
             palette: true,
             dialog: false,
             map: false,
@@ -957,6 +1034,7 @@ mod tests {
             json!({
                 "answer_letters": true,
                 "answer_numbers": false,
+                "question_tabs": false,
                 "palette": true,
                 "dialog": false,
                 "map": false,

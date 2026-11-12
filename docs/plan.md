@@ -198,17 +198,18 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
 - Decided after round 3 (mocked in round 4):
   - An agent that finished while you looked elsewhere stays unread: bold title and a white dot until you open it.
   - Desktop notifications when an agent starts waiting for you, and when it finishes while you look elsewhere.
-  - Questions (`AskUserQuestion`) show as option buttons plus an "Other" field; plans show as a card with "Yes, accept edits", "Yes, ask before edits" and "No, keep planning".
+  - Questions (`AskUserQuestion`) show one at a time behind tabs, with their options as a list and an "Other" row. 1 to 9 pick an option of the question on screen, Left and Right switch questions, and Enter goes to the next unanswered one, then sends. An answered question folds to one line. A click on the line shows every question, its answer and the options not picked.
+  - Plans show as a card with "Yes, accept edits", "Yes, ask before edits" and "No, keep planning".
   - When the file view is closed, a right panel shows three blocks: the task list (`TodoWrite`), what runs in the background (subagents and commands, each with Stop) and the MCP servers (a failed one has Retry).
   - The sidebar row shows the task progress ("3/5").
   - Subagent tool calls fold under the call that started them.
   - `file:line` references and links to files in agent text open the file view at that line; agent text renders as markdown (headings, lists, tables); bare web addresses are links, and an image of a file shows in the message.
   - "/" opens a palette of commands and skills, filtered as you type: names that start with the text first, then names with a word that starts with it (`/arch` finds `workdocs-archive`), then names that hold it, then descriptions that hold it from the start of a word. A "/" word in the middle of a message, which may be a path, matches only names that start with it.
-  - Pasted screenshots show as thumbnails in the composer and in the sent message.
-  - Messages Claude has not read yet show in a list pinned above the composer: "After this turn" for a queued one, which has Send now and Cancel, and "Sent" for one `claude` has. Claude reads a sent one once its running calls end, so its row says "Sent · waits for Bash ↑ · 2 min 36 s", and a click on "Bash ↑" shows the call. While an approval, a question or a plan waits, it says "Sent · waits for your answer ↑", and with nothing running "Sent · read at the next step".
+  - Pasted screenshots show as thumbnails in the composer and in the sent message. A click on one shows it over the whole window.
+  - Messages Claude has not read yet show in a list pinned above the composer: "After this turn" for a queued one, which has Send now and Cancel, and "Sent" for one `claude` has. Claude reads a sent one once its running calls end, so its row says "Sent · waits for Bash ↑ · 2 min 36 s", and a click on "Bash ↑" shows the call. While an approval, a question or a plan waits, it says "Sent · waits for your answer ↑", and with nothing running "Sent · read at the next step". A message this window sent shows its images as thumbnails that open them over the window; one sent from another window shows their count, since the daemon sends only that.
   - A running call that has a task (a command, even in the foreground) has a Stop button after its time: Claude gets the call as stopped, goes on, and reads the messages it has.
   - Command output collapses after 5 lines, and a message you sent after 8; a failed command has a red dot and its exit code.
-  - Ctrl+N opens the new agent dialog (recent folders, or resume a past session); Ctrl+K opens the agent switcher; Ctrl+H, or a right-click on a sidebar row, marks an agent to handle until you send it a message; Esc closes what is open (a menu, a dialog, an edit), and with nothing left open it stops a busy agent after a dialog, which Settings can turn off; Y and N answer an approval or a plan.
+  - Ctrl+N opens the new agent dialog (recent folders, or resume a past session); Ctrl+K opens the agent switcher; Ctrl+H, or a right-click on a sidebar row, marks an agent to handle, until you clear the mark or until you send it a message; Esc closes what is open (a menu, a dialog, an edit), and with nothing left open it stops a busy agent after a dialog, which Settings can turn off; Y and N answer an approval or a plan.
   - No rewind of file changes in v1.
 - Decided after round 4 (mocked in round 5), replacing the right panel above:
   - Tasks, the messages sent, background work and MCP servers are floating blocks at the top right of the chat, each folding to one line. They show only when they have content, except MCP servers.
@@ -249,6 +250,7 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   - Projects belong to the app, on each desktop: a name, a color, and rules, each a repository or a folder. An agent joins the project whose rule holds its folder most precisely: a folder, then its repository, then a folder that ends with `*`.
   - An agent in a repository no project claims gets a temporary project, shown dashed, which goes away with its last agent unless the user keeps it or moves an agent into it.
   - An agent moves to another project from its row's menu, by drag and drop, or from the new agent dialog's Project menu. Kept projects are reordered by dragging their headers.
+  - A right-click on a project's header opens its menu: Keep (a temporary project), Rename (the name turns into a field in the header), the six colors (digits 1 to 6), Edit the rules (its card in Settings), Fold, and Delete, which asks for a second pick. A rename, a color or the rules keep a temporary project first.
   - The Settings dialog's Projects tab edits the projects, with a card per project as the Accounts dialog has.
 - It starts `ssh <server> /absolute/path/to/agents-cockpit bridge` and speaks the daemon API over the process's stdin and stdout.
   Use an absolute path: a non-interactive SSH command does not load your interactive shell setup, so `~/.cargo/bin` may be missing from `PATH`.

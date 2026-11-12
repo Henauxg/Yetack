@@ -182,11 +182,29 @@ mod tests {
 
     use super::*;
 
-    fn program_in(folder: &Path, mode: u32) -> PathBuf {
+    /// Writes `text` as an executable script in `folder`, and returns once it runs.
+    ///
+    /// A process another test forks while the script is written keeps it open for writing until
+    /// it runs its own program, and running the script fails with "Text file busy" until then.
+    /// Once the script ran, no process can hold it open for writing again.
+    fn script_in(folder: &Path, text: &str) -> PathBuf {
         std::fs::create_dir_all(folder).unwrap();
         let program = folder.join("agents-cockpit");
-        std::fs::write(&program, "#!/bin/sh\n").unwrap();
-        std::fs::set_permissions(&program, Permissions::from_mode(mode)).unwrap();
+        std::fs::write(&program, text).unwrap();
+        std::fs::set_permissions(&program, Permissions::from_mode(0o755)).unwrap();
+        for _ in 0..200 {
+            let run = std::process::Command::new(&program)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            match run {
+                Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Ok(_) | Err(_) => break,
+            }
+        }
         program
     }
 
@@ -210,12 +228,10 @@ mod tests {
     #[tokio::test]
     async fn a_service_that_stops_at_once_says_why() {
         let temp = tempfile::tempdir().unwrap();
-        let program = program_in(&temp.path().join("bin"), 0o755);
-        std::fs::write(
-            &program,
+        let program = script_in(
+            &temp.path().join("bin"),
             "#!/bin/sh\necho \"agents-cockpit: another daemon already runs on $2/serve.lock\" >&2\nexit 1\n",
-        )
-        .unwrap();
+        );
         let state = temp.path().join("state");
         let log = temp.path().join("app").join(LOG_FILE);
 
@@ -235,8 +251,7 @@ mod tests {
     #[tokio::test]
     async fn a_silent_service_does_not_quote_an_earlier_run() {
         let temp = tempfile::tempdir().unwrap();
-        let program = program_in(&temp.path().join("bin"), 0o755);
-        std::fs::write(&program, "#!/bin/sh\nexit 1\n").unwrap();
+        let program = script_in(&temp.path().join("bin"), "#!/bin/sh\nexit 1\n");
         let log = temp.path().join("app").join(LOG_FILE);
         std::fs::create_dir_all(log.parent().unwrap()).unwrap();
         std::fs::write(&log, "agents-cockpit: an earlier run stopped\n").unwrap();

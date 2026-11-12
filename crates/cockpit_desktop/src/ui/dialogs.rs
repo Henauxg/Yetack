@@ -342,6 +342,8 @@ struct SwitcherRow {
     id: AgentId,
     title: String,
     status: AgentStatus,
+    /// Its dot's classes, which say the background work of an idle agent too.
+    status_class: String,
     folder: String,
     unread: bool,
 }
@@ -364,6 +366,7 @@ fn SwitcherDialog() -> Element {
                 id: entry.id(),
                 title: entry.summary.title.clone(),
                 status: entry.summary.status,
+                status_class: format::agent_status_class(&entry.summary),
                 folder: path_style::shown(&entry.summary.folder),
                 unread: state.is_unread(entry.id()),
             })
@@ -417,7 +420,7 @@ fn SwitcherDialog() -> Element {
                 for (index, row) in rows.into_iter().enumerate() {
                     button {
                         key: "{row.id.get()}",
-                        class: if index == highlighted { "switcher-row {HIGHLIGHTED_CLASS} {format::status_class(row.status)}" } else { "switcher-row {format::status_class(row.status)}" },
+                        class: if index == highlighted { "switcher-row {HIGHLIGHTED_CLASS} {row.status_class}" } else { "switcher-row {row.status_class}" },
                         onmousemove: move |event: MouseEvent| {
                             // Writing the drafts renders their readers: only a new row does.
                             if pointer.moved(&event) && cockpit.drafts.peek().switcher.highlighted != index {
@@ -492,20 +495,37 @@ fn NewAgentDialog(form: NewAgentForm) -> Element {
     }
 }
 
-/// The machine and the account, which both tabs use. Each shows once there is a choice.
+/// The machine, the account and the project, which both tabs use. Each shows once there is a
+/// choice.
 #[component]
 fn NewAgentTarget(form: NewAgentForm) -> Element {
     let cockpit: Cockpit = use_context();
-    let (machine_choices, account) = {
+    // A resumed session's own folder gives its project, not the folder field.
+    let typed_folder = if form.tab == NewAgentTab::Start {
+        cockpit.drafts.read().new_agent.folder.clone()
+    } else {
+        String::new()
+    };
+    let (machine_choices, account, projects) = {
         let state = cockpit.state.read();
         let account = accounts::shows_labels(&state, form.machine)
             .then(|| accounts::new_agent_account(&state, &form));
-        (machine_choices(&state, form.machine), account)
+        let projects = FormProjects::new(&state, &form, typed_folder.trim());
+        (machine_choices(&state, form.machine), account, projects)
     };
-    if machine_choices.is_empty() && account.is_none() {
+    let has_projects = !projects.targets.is_empty();
+    if machine_choices.is_empty() && account.is_none() && !has_projects {
         return rsx! {};
     }
     let account_open = form.menu == Some(FormMenu::Account);
+    let project_open = form.menu == Some(FormMenu::Project);
+    let project_button = projects.button();
+    let toggle_project = move |event: MouseEvent| {
+        event.stop_propagation();
+        change_form(cockpit, |form| {
+            form.menu = (form.menu != Some(FormMenu::Project)).then_some(FormMenu::Project);
+        });
+    };
     rsx! {
         div { class: "new-agent-target",
             if !machine_choices.is_empty() {
@@ -537,6 +557,33 @@ fn NewAgentTarget(form: NewAgentForm) -> Element {
                 div { class: "field-group",
                     span { class: "field-label", "Account" }
                     AccountPicker { account, open: account_open }
+                }
+            }
+            if has_projects {
+                div { class: "field-group",
+                    span { class: "field-label", "Project" }
+                    div { class: "menu-anchor",
+                        button {
+                            class: if project_open { "menu-button project-button open" } else { "menu-button project-button" },
+                            aria_haspopup: "menu",
+                            aria_expanded: project_open,
+                            title: if project_open { "" } else { "The project the sidebar shows the agent under. Picking one lists its folders." },
+                            onclick: toggle_project,
+                            if projects.picked.is_some() {
+                                ProjectSwatch { project: project_button.clone() }
+                                "{project_button.name}"
+                            } else {
+                                "Automatic"
+                                if let Some(automatic) = &projects.automatic {
+                                    span { class: "muted", "{automatic.name}" }
+                                }
+                            }
+                            Icon { kind: IconKind::ChevronDown, size: 12 }
+                        }
+                        Presence { open: project_open,
+                            FormProjectMenu { projects: projects.clone() }
+                        }
+                    }
                 }
             }
         }
@@ -611,16 +658,19 @@ fn StartForm(form: NewAgentForm) -> Element {
     let focus = use_hook(|| actions::start_focus(&cockpit.drafts.peek().new_agent));
     // The recent folder under the pointer, the one row lit. The field's folder is only marked.
     let mut pointed = use_signal(|| None::<PathBuf>);
-    let (folders, machine, local, sessions_loading, folders_unknown, project) = {
+    let (folders, machine, local, sessions_loading, folders_unknown, picked_project) = {
         let state = cockpit.state.read();
-        let project = FormProjects::new(&state, &form, typed_folder.trim());
+        let picked = form.project.as_ref();
         let chosen = state.machines.get(form.machine);
-        let mut folders: Vec<(PathBuf, Timestamp, Option<AccountLabel>)> = state
-            .recent_folders(form.machine)
+        let mut folders: Vec<RecentRow> = projects::recent_folders(&state, form.machine, picked)
             .into_iter()
-            .map(|recent| {
-                let label = accounts::label(&state, form.machine, recent.account);
-                (recent.folder, recent.used, label)
+            .map(|folder| RecentRow {
+                account: accounts::label(&state, form.machine, folder.recent.account),
+                // Once a project is picked, every row is its own.
+                project: (picked.is_none() && folder.project != ProjectKey::None)
+                    .then(|| FormProject::new(&state, folder.project)),
+                folder: folder.recent.folder,
+                used: folder.recent.used,
             })
             .collect();
         folders.truncate(RECENT_FOLDERS);
@@ -637,7 +687,10 @@ fn StartForm(form: NewAgentForm) -> Element {
             local,
             loading,
             chosen.is_some_and(|known| known.folders_unknown),
-            project,
+            // "No project" lists every folder, under the usual label.
+            picked
+                .filter(|key| **key != ProjectKey::None)
+                .map(|key| projects::look(&state, key).name),
         )
     };
     // The past sessions bring more recent folders: rows stand for them until they arrive, so the
@@ -684,8 +737,6 @@ fn StartForm(form: NewAgentForm) -> Element {
     let mode_icon = mode_icon(form.mode.unwrap_or_default());
     let model_open = form.menu == Some(FormMenu::Model);
     let mode_open = form.menu == Some(FormMenu::Mode);
-    let project_open = form.menu == Some(FormMenu::Project);
-    let project_button = project.button();
     rsx! {
         div { class: "dialog-body",
             div { class: "field-group",
@@ -738,7 +789,11 @@ fn StartForm(form: NewAgentForm) -> Element {
             } else if !folders.is_empty() || placeholders > 0 {
                 div { class: "field-group",
                     span { class: "field-label loading-note",
-                        "Recent folders"
+                        if let Some(name) = &picked_project {
+                            "Recent folders in {name}"
+                        } else {
+                            "Recent folders"
+                        }
                         if sessions_loading {
                             span { class: "spinner", role: "status", aria_label: "Loading the recent folders" }
                         }
@@ -748,7 +803,7 @@ fn StartForm(form: NewAgentForm) -> Element {
                         role: "radiogroup",
                         aria_label: "Recent folders",
                         onmouseleave: move |_| pointed.set(None),
-                        for (folder, used, label) in folders {
+                        for RecentRow { folder, used, account, project } in folders {
                             {
                                 let shown = path_style::shown(&folder);
                                 let checked = typed_folder == shown;
@@ -785,7 +840,13 @@ fn StartForm(form: NewAgentForm) -> Element {
                                         },
                                         span { class: "folder-icon", Icon { kind: IconKind::Folder, size: 14 } }
                                         FolderPath { folder }
-                                        if let Some(label) = label {
+                                        if let Some(project) = project {
+                                            span { class: "folder-project", title: "An agent started here joins {project.name}",
+                                                ProjectSwatch { project: project.clone() }
+                                                "{project.name}"
+                                            }
+                                        }
+                                        if let Some(label) = account {
                                             AccountMini { label }
                                         }
                                         span { class: "folder-used", "{used}" }
@@ -802,6 +863,11 @@ fn StartForm(form: NewAgentForm) -> Element {
                             }
                         }
                     }
+                }
+            } else if let Some(name) = picked_project {
+                div { class: "field-group",
+                    span { class: "field-label", "Recent folders in {name}" }
+                    span { class: "dialog-note", "No recent folder of {name} on {machine}. Type its folder above." }
                 }
             }
         }
@@ -838,24 +904,6 @@ fn StartForm(form: NewAgentForm) -> Element {
                         }
                         Presence { open: model_open,
                             FormModelMenu { model: form.model.clone(), effort: form.effort }
-                        }
-                    }
-                    div { class: "menu-anchor",
-                        button {
-                            class: if project_open { "menu-button open" } else { "menu-button" },
-                            aria_haspopup: "menu",
-                            aria_expanded: project_open,
-                            title: "The project the sidebar shows the agent under",
-                            onclick: toggle_menu(FormMenu::Project),
-                            ProjectSwatch { project: project_button.clone() }
-                            "{project_button.name}"
-                            if project.picked.is_none() {
-                                span { class: "muted", "auto" }
-                            }
-                            Icon { kind: IconKind::ChevronDown, size: 12 }
-                        }
-                        Presence { open: project_open,
-                            FormProjectMenu { projects: project.clone() }
                         }
                     }
                     span { class: "spacer" }
@@ -1252,6 +1300,14 @@ fn FormModelMenu(model: Option<String>, effort: Option<Effort>) -> Element {
     }
 }
 
+/// A recent folder of the new agent dialog. Its project shows only while none is picked.
+struct RecentRow {
+    folder: PathBuf,
+    used: Timestamp,
+    account: Option<AccountLabel>,
+    project: Option<FormProject>,
+}
+
 /// A project as the new agent dialog shows it.
 #[derive(Debug, Clone, PartialEq)]
 struct FormProject {
@@ -1363,11 +1419,13 @@ fn FormProjectMenu(projects: FormProjects) -> Element {
                             class: if chosen { "menu-item chosen" } else { "menu-item" },
                             aria_pressed: chosen,
                             onclick: move |_| {
-                                let key = key.clone();
-                                change_form(cockpit, move |form| {
-                                    form.project = Some(key);
-                                    form.menu = None;
+                                let mut new_text = None;
+                                cockpit.update_with_drafts(|state, drafts| {
+                                    new_text = actions::pick_new_agent_project(state, drafts, key.clone());
                                 });
+                                if let Some(text) = new_text {
+                                    bridge::set_field_text(FOLDER_FIELD_ID, text);
+                                }
                             },
                             ProjectSwatch { project: project.clone() }
                             span { class: "menu-label", "{project.name}" }

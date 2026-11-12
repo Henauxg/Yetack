@@ -16,11 +16,11 @@ use cockpit_protocol::{
     ImageMediaType, ItemBody, ItemId, LoadAverage, LoadHistory, MachineLoad, Mark, McpScope,
     McpServer, McpServerStatus, McpTool, McpTransport, OlderItems, PastSession, PendingId,
     PermissionMode, Plan, PlanUsage, Position, ProcessId, Prompt, PromptId, Question,
-    QuestionOption, RateLimitStatus, ReleaseVersion, Repository, Request, ResourceUse,
-    ResponseBody, Selection, ServerLoad, ServerPoint, SignIn, SignInWait, SlashCommand, Subagent,
-    SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem, TaskProgress, TaskStatus,
-    Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome,
-    UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
+    QuestionAnswer, QuestionOption, RateLimitStatus, ReleaseVersion, Repository, Request,
+    ResourceUse, ResponseBody, Selection, ServerLoad, ServerPoint, SignIn, SignInWait,
+    SlashCommand, Subagent, SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem,
+    TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem,
+    TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
 };
 use serde_json::Value;
 use strum::{EnumString, IntoStaticStr, VariantArray};
@@ -1041,8 +1041,9 @@ pub fn latency(request: &Request) -> Duration {
 }
 
 /// What the daemon's events would change after a request it accepts: a rename shows in the
-/// title, a mark on the row, which a prompt clears, an answered approval and a stopped task show
-/// in the agent map, a reconnected MCP server connects, and the accounts change.
+/// title, a mark on the row, which a prompt clears unless it is kept, an answered approval and a
+/// stopped task show in the agent map, a reconnected MCP server connects, and the accounts
+/// change.
 pub fn apply(state: &mut AppState, request: &Request) {
     apply_map_request(state, request);
     apply_account_request(state, request);
@@ -1060,6 +1061,20 @@ pub fn apply(state: &mut AppState, request: &Request) {
         Request::AgentChangeFolder(params) => {
             if let Some(entry) = state.agents.get_mut(&params.agent) {
                 entry.summary.folder.clone_from(&params.folder);
+            }
+        }
+        Request::AgentAnswer(params) => {
+            let entry = state.agents.get_mut(&params.agent);
+            if let (Answer::Question { answers }, Some(entry)) = (&params.answer, entry) {
+                let asked = entry.transcript.items().find(|item| {
+                    matches!(&item.body, ItemBody::Question(question) if question.pending == params.pending)
+                });
+                if let Some(mut item) = asked.cloned() {
+                    if let ItemBody::Question(question) = &mut item.body {
+                        question.answer = AnswerState::Answered(answers.clone());
+                    }
+                    entry.transcript.change(item);
+                }
             }
         }
         // The demo's server comes back.
@@ -1080,7 +1095,7 @@ pub fn apply(state: &mut AppState, request: &Request) {
         }
         Request::AgentPrompt(params) => {
             if let Some(entry) = state.agents.get_mut(&params.agent) {
-                entry.summary.mark = Mark::Unmarked;
+                entry.summary.mark = entry.summary.mark.after_prompt();
                 echo_prompt(entry, &params.prompt);
             }
         }
@@ -2403,17 +2418,59 @@ fn question_agent(now: SystemTime) -> Sample {
             3,
             None,
             ItemBody::Question(Question {
-                pending: PendingId::new("demo-question".to_owned()),
+                pending: PendingId::new("demo-version".to_owned()),
                 questions: vec![AskedQuestion {
-                    header: "Scope".to_owned(),
-                    text: "Which changes should the notes cover?".to_owned(),
+                    header: "Version".to_owned(),
+                    text: "Which version do these notes announce?".to_owned(),
                     options: vec![
-                        option("User-facing only", "Leave out refactors and test changes"),
-                        option("Everything", "List every merged change"),
-                        option("Breaking changes first", "Start with what needs action"),
+                        option("0.4.0", "A minor release: new features, nothing breaks"),
+                        option("1.0.0", "The first stable release"),
                     ],
                     selection: Selection::Single,
                 }],
+                answer: AnswerState::Answered(vec![QuestionAnswer {
+                    selected: vec!["0.4.0".to_owned()],
+                    other: None,
+                }]),
+            }),
+        ),
+        item(
+            4,
+            None,
+            ItemBody::Question(Question {
+                pending: PendingId::new("demo-question".to_owned()),
+                questions: vec![
+                    AskedQuestion {
+                        header: "Scope".to_owned(),
+                        text: "Which changes should the notes cover?".to_owned(),
+                        options: vec![
+                            option("User-facing only", "Leave out refactors and test changes"),
+                            option("Everything", "List every merged change"),
+                            option("Breaking changes first", "Start with what needs action"),
+                        ],
+                        selection: Selection::Single,
+                    },
+                    AskedQuestion {
+                        header: "Sections".to_owned(),
+                        text: "Which sections should the notes have?".to_owned(),
+                        options: vec![
+                            option("Features", "New things you can do"),
+                            option("Fixes", "Bugs that are gone"),
+                            option("Performance", "What got faster"),
+                            option("Upgrade notes", "Steps to take before updating"),
+                        ],
+                        selection: Selection::Multiple,
+                    },
+                    AskedQuestion {
+                        header: "Tone".to_owned(),
+                        text: "How should the notes read?".to_owned(),
+                        options: vec![
+                            option("Neutral", "Plain statements of what changed"),
+                            option("Friendly", "Short and warm, with a thank-you"),
+                        ],
+                        selection: Selection::Single,
+                    },
+                ],
                 answer: AnswerState::Waiting,
             }),
         ),
@@ -3692,7 +3749,10 @@ fn sessions(now: SystemTime) -> Vec<PastSession> {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::{FoldersListParams, HistoryParams, ReadFileParams, RenameParams};
+    use cockpit_protocol::{
+        FoldersListParams, HistoryParams, MarkParams, PromptDelivery, PromptParams, ReadFileParams,
+        RenameParams,
+    };
 
     use super::*;
     use crate::state::{HistoryState, WaitingKind};
@@ -3782,6 +3842,33 @@ mod tests {
         apply(&mut state, &rename);
 
         assert_eq!(state.agents[&agent].summary.title, "🚀 Stream the input");
+    }
+
+    #[test]
+    fn a_demo_prompt_clears_only_a_mark_until_a_message() {
+        let mut state = state(label());
+        let agent = AgentId::new(LIVE_AGENT);
+        let mark_then_prompt = |state: &mut AppState, mark: Mark| {
+            apply(state, &Request::AgentMark(MarkParams { agent, mark }));
+            apply(
+                state,
+                &Request::AgentPrompt(PromptParams {
+                    agent,
+                    prompt: Prompt {
+                        text: "go on".to_owned(),
+                        images: Vec::new(),
+                    },
+                    delivery: PromptDelivery::Steer,
+                }),
+            );
+            state.agents[&agent].summary.mark
+        };
+
+        let until_message = mark_then_prompt(&mut state, Mark::ToHandle);
+        let kept = mark_then_prompt(&mut state, Mark::ToHandleKept);
+
+        assert_eq!(until_message, Mark::Unmarked);
+        assert_eq!(kept, Mark::ToHandleKept);
     }
 
     #[test]

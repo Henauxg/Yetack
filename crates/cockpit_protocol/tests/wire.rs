@@ -1256,7 +1256,7 @@ fn words_are_pinned() {
     assert_eq!(words::<EnvironmentCredentials>(), ["set", "unset"]);
     assert_eq!(words::<EffortSource>(), ["chosen", "claude_code_default"]);
     assert_eq!(words::<SignInWait>(), ["not_waiting", "waiting"]);
-    assert_eq!(words::<Mark>(), ["unmarked", "to_handle"]);
+    assert_eq!(words::<Mark>(), ["unmarked", "to_handle", "to_handle_kept"]);
     assert_eq!(words::<Selection>(), ["single", "multiple"]);
     assert_eq!(
         words::<TurnOutcome>(),

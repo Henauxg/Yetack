@@ -31,8 +31,8 @@ use super::ui_state::{
 };
 use super::utf16_offset::Utf16Offset;
 use super::{
-    accounts, export, file_edits, file_reread, file_tree, grouping, open_file, projects, quotes,
-    sending, title_emoji,
+    accounts, export, file_edits, file_reread, file_tree, folder_field, grouping, open_file,
+    projects, quotes, sending, title_emoji,
 };
 use crate::format::{self, MODE_CHOICES, MODEL_CHOICES};
 use crate::machine::MachineId;
@@ -1236,8 +1236,9 @@ fn question_draft<'drafts>(
     draft
 }
 
-/// Picks an option. In a single-choice question it replaces the pick, or clears it when picked
-/// again; in a multiple-choice question it toggles.
+/// Picks an option. In a single-choice question, a pick replaces the previous one, and picking the
+/// same option again clears it. A new pick shows the next question. In a multiple-choice question,
+/// a pick toggles.
 pub fn pick_option(drafts: &mut Drafts, question: &Question, asked: usize, option: usize) {
     let Some(selection) = question.questions.get(asked).map(|asked| asked.selection) else {
         return;
@@ -1253,15 +1254,54 @@ pub fn pick_option(drafts: &mut Drafts, question: &Question, asked: usize, optio
         picks.clear();
     }
     picks.insert(option);
+    if selection == Selection::Single && asked + 1 < question.questions.len() {
+        draft.shown = asked + 1;
+    }
 }
 
+/// Sets an "Other" text. In a single-choice question, a text replaces the pick.
 pub fn set_other_answer(drafts: &mut Drafts, question: &Question, asked: usize, text: String) {
-    if let Some(other) = question_draft(drafts, question).other.get_mut(asked) {
+    let single = question
+        .questions
+        .get(asked)
+        .is_some_and(|asked| asked.selection == Selection::Single);
+    let draft = question_draft(drafts, question);
+    if single
+        && !text.trim().is_empty()
+        && let Some(picks) = draft.picks.get_mut(asked)
+    {
+        picks.clear();
+    }
+    if let Some(other) = draft.other.get_mut(asked) {
         *other = text;
     }
 }
 
+/// The question on screen: the draft's, within the card's questions.
+pub fn shown_question(question: &Question, draft: Option<&QuestionDraft>) -> usize {
+    let shown = draft.map_or(0, |draft| draft.shown);
+    shown.min(question.questions.len().saturating_sub(1))
+}
+
+/// Shows the question at `asked`, as a click on its tab does.
+pub fn show_question(drafts: &mut Drafts, question: &Question, asked: usize) {
+    if asked < question.questions.len() {
+        question_draft(drafts, question).shown = asked;
+    }
+}
+
+/// The next question without an answer after the one on screen. After the last question, the
+/// search goes on from the first.
+pub fn next_unanswered(question: &Question, draft: Option<&QuestionDraft>) -> Option<usize> {
+    let count = question.questions.len();
+    let shown = shown_question(question, draft);
+    (1..count)
+        .map(|step| (shown + step) % count)
+        .find(|&asked| !draft.is_some_and(|draft| draft.has_answer(asked)))
+}
+
 /// One answer per question, or `None` while a question has neither a pick nor an "Other" text.
+/// A single-choice question with a pick sends the pick alone.
 pub fn question_answers(
     question: &Question,
     draft: Option<&QuestionDraft>,
@@ -1277,11 +1317,12 @@ pub fn question_answers(
             .filter(|(option, _)| picks.is_some_and(|picks| picks.contains(option)))
             .map(|(_, option)| option.label.clone())
             .collect();
+        let replaced = asked.selection == Selection::Single && !selected.is_empty();
         let other = draft
             .other
             .get(index)
             .map(|text| text.trim())
-            .filter(|text| !text.is_empty())
+            .filter(|text| !text.is_empty() && !replaced)
             .map(str::to_owned);
         if selected.is_empty() && other.is_none() {
             return None;
@@ -1321,8 +1362,53 @@ pub fn submit_question(
     )
 }
 
-/// The 1 to 9 keys: picks an option of the first question still without an answer, or of the
-/// last one.
+/// Enter on a question card: sends the answers once every question has one, else shows the next
+/// question without an answer. `None` when there is neither.
+pub fn enter_on_question(
+    state: &AppState,
+    drafts: &mut Drafts,
+    agent: AgentId,
+    item: ItemId,
+) -> Option<Vec<Outgoing>> {
+    let question = state
+        .agents
+        .get(&agent)
+        .and_then(|entry| waiting_question(entry, item))?;
+    let draft = drafts.questions.get(&question.pending);
+    if question_answers(question, draft).is_some() {
+        return Some(submit_question(state, drafts, agent, item));
+    }
+    let next = next_unanswered(question, draft)?;
+    show_question(drafts, question, next);
+    Some(Vec::new())
+}
+
+/// Left and Right: shows the question before or after the one on screen.
+pub fn step_question(
+    state: &AppState,
+    drafts: &mut Drafts,
+    agent: AgentId,
+    item: ItemId,
+    step: Step,
+) {
+    let Some(question) = state
+        .agents
+        .get(&agent)
+        .and_then(|entry| waiting_question(entry, item))
+    else {
+        return;
+    };
+    let shown = shown_question(question, drafts.questions.get(&question.pending));
+    let next = match step {
+        Step::Next => shown.checked_add(1),
+        Step::Previous => shown.checked_sub(1),
+    };
+    if let Some(next) = next {
+        show_question(drafts, question, next);
+    }
+}
+
+/// The 1 to 9 keys: picks an option of the question on screen.
 pub fn pick_by_number(
     state: &AppState,
     drafts: &mut Drafts,
@@ -1334,25 +1420,17 @@ pub fn pick_by_number(
         .agents
         .get(&agent)
         .and_then(|entry| waiting_question(entry, item))
-        .cloned()
     else {
         return;
     };
-    let draft = drafts.questions.get(&question.pending);
-    let unanswered = (0..question.questions.len()).find(|&index| {
-        let picked = draft
-            .and_then(|draft| draft.picks.get(index))
-            .is_some_and(|picks| !picks.is_empty());
-        !picked
-    });
-    let asked = unanswered.unwrap_or(question.questions.len().saturating_sub(1));
+    let asked = shown_question(question, drafts.questions.get(&question.pending));
     if let Some(option) = number.checked_sub(1) {
         let exists = question
             .questions
             .get(asked)
             .is_some_and(|asked| option < asked.options.len());
         if exists {
-            pick_option(drafts, &question, asked, option);
+            pick_option(drafts, question, asked, option);
         }
     }
 }
@@ -2129,6 +2207,10 @@ pub fn open_new_agent(state: &mut AppState, drafts: &mut Drafts) {
         })
         .unwrap_or(MachineId::THIS);
     let folder = last_folder(state, machine);
+    // A project picked by hand, which the folder alone would not give again.
+    let project = last
+        .filter(|summary| MachineId::of(summary.id) == machine)
+        .and_then(|summary| projects::moved_to(state, summary.id));
     let model = last
         .and_then(|summary| summary.model.as_deref())
         .and_then(format::model_alias)
@@ -2153,6 +2235,7 @@ pub fn open_new_agent(state: &mut AppState, drafts: &mut Drafts) {
         model: Some(model),
         effort,
         mode: Some(mode),
+        project,
         ..NewAgentForm::default()
     }));
     drafts.new_agent = NewAgentDraft {
@@ -2249,9 +2332,19 @@ pub fn pick_new_agent_machine(
     if previous == machine {
         return None;
     }
+    // A picked project puts its latest folder on each machine, as its pick did.
+    let project = form.project.clone();
+    let project_folder = |state: &AppState, machine: MachineId| {
+        let project = project.as_ref()?;
+        let folder = projects::folder_for_pick(state, machine, "", project)?;
+        Some(path_style::shown(&folder))
+    };
     let folder = &drafts.new_agent.folder;
-    let follows = folder.trim().is_empty() || *folder == last_folder(state, previous);
-    let new_folder = follows.then(|| last_folder(state, machine));
+    let follows = folder.trim().is_empty()
+        || *folder == last_folder(state, previous)
+        || project_folder(state, previous).is_some_and(|picked| picked == *folder);
+    let new_folder = follows
+        .then(|| project_folder(state, machine).unwrap_or_else(|| last_folder(state, machine)));
     if let Some(text) = &new_folder {
         drafts.new_agent.folder.clone_from(text);
         drafts.new_agent.folder_highlighted = None;
@@ -2268,6 +2361,30 @@ pub fn pick_new_agent_machine(
         }
         known.sign_ins.refresh();
     }
+    new_folder
+}
+
+/// Picks the new agent's project. The folder field takes the project's latest recent folder,
+/// unless it already names one of its folders, and the list under the field then closes, as on
+/// a click on a recent folder. Returns the field's new text.
+pub fn pick_new_agent_project(
+    state: &mut AppState,
+    drafts: &mut Drafts,
+    project: ProjectKey,
+) -> Option<String> {
+    let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
+        return None;
+    };
+    let new_folder =
+        projects::folder_for_pick(state, form.machine, &drafts.new_agent.folder, &project)
+            .map(|folder| path_style::shown(&folder));
+    if let Some(text) = &new_folder {
+        folder_field::pick(state, drafts, text.clone());
+    }
+    with_new_agent_form(state, |form| {
+        form.project = Some(project);
+        form.menu = None;
+    });
     new_folder
 }
 
@@ -2388,8 +2505,8 @@ mod tests {
     use cockpit_protocol::{
         Account, AgentDetails, AskedQuestion, ChangedFile, CommandKind, CredentialSource,
         ErrorBody, ErrorCode, FileEdit, HistoryPage, ImageMediaType, Method, OlderItems, Position,
-        QuestionOption, ResponseBody, Timestamp, ToolCall, ToolCallStatus, TranscriptItem,
-        UserMessage,
+        QuestionOption, Repository, ResponseBody, Timestamp, ToolCall, ToolCallStatus,
+        TranscriptItem, UserMessage,
     };
 
     use super::*;
@@ -4114,6 +4231,129 @@ mod tests {
         assert!(submit_question(&state, &drafts, agent(), item).is_empty());
     }
 
+    /// Three questions: "Fixtures" and "Tests", one choice each, then "Notes", any choice.
+    fn three_questions() -> Question {
+        let mut question = question(Selection::Single);
+        let mut tests = question.questions[0].clone();
+        tests.header = "Tests".to_owned();
+        let mut notes = question.questions[0].clone();
+        notes.header = "Notes".to_owned();
+        notes.selection = Selection::Multiple;
+        question.questions.extend([tests, notes]);
+        question
+    }
+
+    fn shown(drafts: &Drafts, question: &Question) -> usize {
+        shown_question(question, drafts.questions.get(&question.pending))
+    }
+
+    #[test]
+    fn a_single_choice_pick_shows_the_next_question_and_the_numbers_follow_it() {
+        let mut state = state(AgentStatus::NeedsYou);
+        let mut drafts = Drafts::default();
+        let question = three_questions();
+        let item = with_question(&mut state, question.clone());
+
+        pick_by_number(&state, &mut drafts, agent(), item, 1);
+        assert_eq!(shown(&drafts, &question), 1);
+        pick_by_number(&state, &mut drafts, agent(), item, 2);
+        assert_eq!(shown(&drafts, &question), 2);
+        // A multiple-choice pick stays on its question.
+        pick_by_number(&state, &mut drafts, agent(), item, 3);
+        pick_by_number(&state, &mut drafts, agent(), item, 1);
+        assert_eq!(shown(&drafts, &question), 2);
+
+        let answers = question_answers(&question, drafts.questions.get(&question.pending));
+        let picked: Vec<Vec<String>> = answers
+            .unwrap()
+            .into_iter()
+            .map(|answer| answer.selected)
+            .collect();
+        assert_eq!(
+            picked,
+            [
+                vec!["Keep".to_owned()],
+                vec!["Rewrite".to_owned()],
+                vec!["Keep".to_owned(), "Drop".to_owned()],
+            ]
+        );
+    }
+
+    #[test]
+    fn enter_shows_the_next_question_without_an_answer_then_sends() {
+        let mut state = state(AgentStatus::NeedsYou);
+        let mut drafts = Drafts::default();
+        let question = three_questions();
+        let item = with_question(&mut state, question.clone());
+        show_question(&mut drafts, &question, 1);
+        pick_option(&mut drafts, &question, 1, 0);
+
+        // From "Notes", the next question without an answer is "Fixtures", round the end.
+        assert_eq!(
+            enter_on_question(&state, &mut drafts, agent(), item),
+            Some(Vec::new())
+        );
+        assert_eq!(shown(&drafts, &question), 0);
+
+        pick_option(&mut drafts, &question, 0, 0);
+        pick_option(&mut drafts, &question, 2, 0);
+        let sent = enter_on_question(&state, &mut drafts, agent(), item);
+
+        assert!(matches!(
+            sent.as_deref(),
+            Some([Outgoing {
+                request: Request::AgentAnswer(_),
+                ..
+            }])
+        ));
+    }
+
+    #[test]
+    fn left_and_right_move_between_questions_and_stop_at_the_ends() {
+        let mut state = state(AgentStatus::NeedsYou);
+        let mut drafts = Drafts::default();
+        let question = three_questions();
+        let item = with_question(&mut state, question.clone());
+
+        step_question(&state, &mut drafts, agent(), item, Step::Previous);
+        assert_eq!(shown(&drafts, &question), 0);
+        for _ in 0..3 {
+            step_question(&state, &mut drafts, agent(), item, Step::Next);
+        }
+        assert_eq!(shown(&drafts, &question), 2);
+        step_question(&state, &mut drafts, agent(), item, Step::Previous);
+        assert_eq!(shown(&drafts, &question), 1);
+    }
+
+    #[test]
+    fn a_single_choice_question_sends_either_its_pick_or_its_other_text() {
+        let mut drafts = Drafts::default();
+        let question = question(Selection::Single);
+        let sent = |drafts: &Drafts| {
+            question_answers(&question, drafts.questions.get(&question.pending))
+                .and_then(|answers| answers.into_iter().next())
+        };
+
+        pick_option(&mut drafts, &question, 0, 1);
+        set_other_answer(&mut drafts, &question, 0, "Ask the owner".to_owned());
+        assert_eq!(
+            sent(&drafts),
+            Some(QuestionAnswer {
+                selected: Vec::new(),
+                other: Some("Ask the owner".to_owned()),
+            })
+        );
+
+        pick_option(&mut drafts, &question, 0, 2);
+        assert_eq!(
+            sent(&drafts),
+            Some(QuestionAnswer {
+                selected: vec!["Drop".to_owned()],
+                other: None,
+            })
+        );
+    }
+
     #[test]
     fn opening_a_link_shows_the_whole_file_at_its_line() {
         let mut state = state(AgentStatus::Idle);
@@ -4846,6 +5086,54 @@ mod tests {
         assert_eq!(back.as_deref(), Some("/srv/shop"));
         assert_eq!(typed, None);
         assert_eq!(drafts.new_agent.folder, "/srv/typed");
+    }
+
+    /// This computer's agent 1 runs in billing's `/work/project-1`, devbox's in `/srv/billing`.
+    #[test]
+    fn a_machine_switch_puts_the_picked_project_s_folder_on_the_new_machine() {
+        let (mut state, devbox) = two_machines();
+        devbox_started_last(&mut state, devbox);
+        let billing = Repository::from_remote("github.com/acme/billing");
+        for agent in [AgentId::new(1), devbox.app_agent(AgentId::new(1))] {
+            if let Some(entry) = state.agents.get_mut(&agent) {
+                entry.summary.repository = Some(billing.clone());
+            }
+        }
+        if let Some(entry) = state.agents.get_mut(&devbox.app_agent(AgentId::new(1))) {
+            entry.summary.folder = PathBuf::from("/srv/billing");
+        }
+        let mut drafts = Drafts::default();
+        open_new_agent(&mut state, &mut drafts);
+
+        let picked =
+            pick_new_agent_project(&mut state, &mut drafts, ProjectKey::Repository(billing));
+        let switched = pick_new_agent_machine(&mut state, &mut drafts, MachineId::THIS);
+
+        assert_eq!(picked.as_deref(), Some("/srv/billing"));
+        assert_eq!(switched.as_deref(), Some("/work/project-1"));
+    }
+
+    /// "No project" starts the agent where you say: the field stays, and every folder lists.
+    /// Devbox's `/srv/shop` is in billing, so another pick would leave it.
+    #[test]
+    fn picking_no_project_leaves_the_folder_and_the_list() {
+        let (mut state, devbox) = two_machines();
+        devbox_started_last(&mut state, devbox);
+        if let Some(entry) = state.agents.get_mut(&devbox.app_agent(AgentId::new(2))) {
+            entry.summary.repository = Some(Repository::from_remote("github.com/acme/billing"));
+        }
+        let mut drafts = Drafts::default();
+        open_new_agent(&mut state, &mut drafts);
+        let every = projects::recent_folders(&state, devbox, None).len();
+
+        let picked = pick_new_agent_project(&mut state, &mut drafts, ProjectKey::None);
+
+        assert_eq!(picked, None);
+        assert_eq!(drafts.new_agent.folder, "/srv/shop");
+        assert_eq!(
+            projects::recent_folders(&state, devbox, Some(&ProjectKey::None)).len(),
+            every
+        );
     }
 
     #[test]

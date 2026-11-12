@@ -121,11 +121,18 @@ fn settle(state: &mut AppState, command: Command, chord: Chord, result: Result<(
 /// Opens the dialog on the Projects tab, with the card of `project` open and its name field
 /// focused.
 pub fn open_project(state: &mut AppState, project: ProjectId) {
+    show_project(state, project);
+    if let Some(view) = view_mut(state) {
+        view.created = Some(project);
+    }
+}
+
+/// Opens the dialog on the Projects tab, with the card of `project` open.
+pub fn show_project(state: &mut AppState, project: ProjectId) {
     state.ui.popover = None;
     state.ui.dialog = Some(Dialog::Settings(SettingsView {
         tab: SettingsTab::Projects,
         project: Some(ProjectKey::Kept(project)),
-        created: Some(project),
         ..SettingsView::default()
     }));
 }

@@ -4,7 +4,7 @@
 use cockpit_protocol::{AgentId, ApprovalDecision, PlanDecision, PromptDelivery};
 use serde::Deserialize;
 
-use super::actions::{self, Direction};
+use super::actions::{self, Direction, Step};
 use super::app_state::{AgentEntry, AppState};
 use super::drafts::Drafts;
 use super::requests::Outgoing;
@@ -87,7 +87,7 @@ fn run(
                 (Some(_), _) | (None, None) => Vec::new(),
             };
         }
-        Command::MarkToHandle if no_dialog => return to_handle::toggle_selected(state),
+        Command::MarkToHandle if no_dialog => return to_handle::cycle_selected(state),
         Command::Rename if no_dialog => actions::rename_key(state, drafts),
         Command::ReloadFile => {
             if let Some(agent) = state.ui.selected {
@@ -189,7 +189,7 @@ fn page_key(state: &mut AppState, drafts: &mut Drafts, agent: AgentId, key: &str
     if !waits && key == KEY_ENTER {
         return accounts::send_again(state, agent);
     }
-    card_key(state, drafts, agent, key)
+    card_key(state, drafts, agent, key).unwrap_or_default()
 }
 
 fn composer_key(
@@ -230,9 +230,10 @@ fn composer_key(
         }
     }
     if press.composer_text.is_empty() {
-        let answered = card_key(state, drafts, agent, &press.key);
-        if !answered.is_empty() || press.key != KEY_ENTER {
-            return answered;
+        match card_key(state, drafts, agent, &press.key) {
+            Some(answered) => return answered,
+            None if press.key != KEY_ENTER => return Vec::new(),
+            None => {}
         }
     }
     if press.key == KEY_ENTER && !press.shift {
@@ -256,39 +257,59 @@ fn sync_composer_text(state: &mut AppState, drafts: &mut Drafts, agent: AgentId,
     }
 }
 
-/// Y and N answer an approval or a plan; 1 to 9 pick an answer to a question, Enter sends it.
-fn card_key(state: &AppState, drafts: &mut Drafts, agent: AgentId, key: &str) -> Vec<Outgoing> {
-    let Some(waiting) = state
+/// Y and N answer an approval or a plan. 1 to 9 pick an option of the question on screen, Left
+/// and Right show another question, and Enter sends the answers or shows the next question.
+/// `None` when the key does nothing to the waiting card.
+fn card_key(
+    state: &AppState,
+    drafts: &mut Drafts,
+    agent: AgentId,
+    key: &str,
+) -> Option<Vec<Outgoing>> {
+    let waiting = state
         .agents
         .get(&agent)
-        .and_then(|entry| entry.transcript.waiting())
-    else {
-        return Vec::new();
-    };
+        .and_then(|entry| entry.transcript.waiting())?;
     let letter = key.to_lowercase();
     match (waiting.kind, letter.as_str()) {
-        (WaitingKind::Approval, KEY_YES) => {
-            actions::answer_approval(agent, waiting.pending, ApprovalDecision::Allow)
-        }
-        (WaitingKind::Approval, KEY_NO) => {
-            actions::answer_approval(agent, waiting.pending, ApprovalDecision::Deny)
-        }
-        (WaitingKind::Plan, KEY_YES) => {
-            actions::answer_plan(agent, waiting.pending, PlanDecision::AcceptEdits)
-        }
-        (WaitingKind::Plan, KEY_NO) => {
-            actions::answer_plan(agent, waiting.pending, PlanDecision::KeepPlanning)
-        }
+        (WaitingKind::Approval, KEY_YES) => Some(actions::answer_approval(
+            agent,
+            waiting.pending,
+            ApprovalDecision::Allow,
+        )),
+        (WaitingKind::Approval, KEY_NO) => Some(actions::answer_approval(
+            agent,
+            waiting.pending,
+            ApprovalDecision::Deny,
+        )),
+        (WaitingKind::Plan, KEY_YES) => Some(actions::answer_plan(
+            agent,
+            waiting.pending,
+            PlanDecision::AcceptEdits,
+        )),
+        (WaitingKind::Plan, KEY_NO) => Some(actions::answer_plan(
+            agent,
+            waiting.pending,
+            PlanDecision::KeepPlanning,
+        )),
         (WaitingKind::Question, _) if key == KEY_ENTER => {
-            actions::submit_question(state, drafts, agent, waiting.item)
+            actions::enter_on_question(state, drafts, agent, waiting.item)
+        }
+        (WaitingKind::Question, _) if key == KEY_LEFT || key == KEY_RIGHT => {
+            let step = if key == KEY_RIGHT {
+                Step::Next
+            } else {
+                Step::Previous
+            };
+            actions::step_question(state, drafts, agent, waiting.item, step);
+            Some(Vec::new())
         }
         (WaitingKind::Question, digit) => {
-            if let Ok(number) = digit.parse::<usize>() {
-                actions::pick_by_number(state, drafts, agent, waiting.item, number);
-            }
-            Vec::new()
+            let number = digit.parse::<usize>().ok()?;
+            actions::pick_by_number(state, drafts, agent, waiting.item, number);
+            Some(Vec::new())
         }
-        _ => Vec::new(),
+        _ => None,
     }
 }
 
@@ -296,8 +317,8 @@ fn card_key(state: &AppState, drafts: &mut Drafts, agent: AgentId, key: &str) ->
 mod tests {
     use cockpit_protocol::{
         AgentDetails, AgentStatus, Answer, AnswerState, Approval, AskedQuestion, CommandKind,
-        ItemBody, ItemId, Method, PendingId, Question, QuestionOption, Request, Selection,
-        SignInWait, SlashCommand, TranscriptItem,
+        Image, ImageMediaType, ItemBody, ItemId, Method, PendingId, Question, QuestionOption,
+        Request, Selection, SignInWait, SlashCommand, TranscriptItem,
     };
     use serde_json::Value;
 
@@ -353,23 +374,29 @@ mod tests {
     }
 
     fn question() -> ItemBody {
+        questions(1)
+    }
+
+    /// A card of `count` one-choice questions, each with the options "Unit" and "All".
+    fn questions(count: usize) -> ItemBody {
+        let asked = AskedQuestion {
+            header: "Scope".to_owned(),
+            text: "Which tests?".to_owned(),
+            options: vec![
+                QuestionOption {
+                    label: "Unit".to_owned(),
+                    description: String::new(),
+                },
+                QuestionOption {
+                    label: "All".to_owned(),
+                    description: String::new(),
+                },
+            ],
+            selection: Selection::Single,
+        };
         ItemBody::Question(Question {
             pending: PendingId::new("request-3".to_owned()),
-            questions: vec![AskedQuestion {
-                header: "Scope".to_owned(),
-                text: "Which tests?".to_owned(),
-                options: vec![
-                    QuestionOption {
-                        label: "Unit".to_owned(),
-                        description: String::new(),
-                    },
-                    QuestionOption {
-                        label: "All".to_owned(),
-                        description: String::new(),
-                    },
-                ],
-                selection: Selection::Single,
-            }],
+            questions: vec![asked; count],
             answer: AnswerState::Waiting,
         })
     }
@@ -1017,6 +1044,27 @@ mod tests {
             sent_answer(&requests),
             Some(Answer::Question { answers }) if answers.first().is_some_and(|answer| answer.selected == ["All"])
         ));
+    }
+
+    #[test]
+    fn enter_that_shows_the_next_question_sends_nothing_from_the_composer() {
+        let mut drafts = Drafts::default();
+        let mut state = state(AgentStatus::NeedsYou, Some(questions(2)));
+        let image = Image {
+            media_type: ImageMediaType::Png,
+            data: "iVBORw0KGgo=".to_owned(),
+        };
+        actions::add_image(&mut drafts, AgentId::new(1), image).unwrap();
+
+        let sent = handle_key(
+            &mut state,
+            &mut drafts,
+            &press(KEY_ENTER, KeyTarget::Composer),
+        );
+
+        assert!(sent.is_empty());
+        let shown = drafts.questions.values().next().map(|draft| draft.shown);
+        assert_eq!(shown, Some(1));
     }
 
     #[test]

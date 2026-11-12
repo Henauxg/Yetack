@@ -20,7 +20,7 @@ use crate::state::projects::ProjectKey;
 use crate::state::sidebar_keys::SidebarItem;
 use crate::state::{
     AgentEntry, AppState, ConnectionState, Dialog, TitleEdit, TitlePlace, actions, daemon_update,
-    grouping, machines, notification_levels, projects, settings, to_handle,
+    grouping, machines, notification_levels, project_menu, projects, settings, to_handle,
 };
 use crate::ui::accounts::{AccountLetter, AccountsButton};
 use crate::ui::grouping::GroupSwitch;
@@ -28,6 +28,7 @@ use crate::ui::icons::{Icon, IconKind};
 use crate::ui::machines::THIS_COMPUTER;
 use crate::ui::notification_levels::{self as levels_ui, AppBell, LevelIcon};
 use crate::ui::presence::{Shown, use_presence};
+use crate::ui::project_menu::ProjectNameField;
 use crate::ui::projects_tab;
 use crate::ui::reorder::{
     self, GROUP_END_CLASS, GROUP_HEAD_CLASS, KEPT_GROUP_ID_PREFIX, LIST_ID, PROJECT_DRAG_CLASS,
@@ -54,8 +55,8 @@ struct AgentRow {
     account: Option<AccountLabel>,
     /// The activity says the account is not signed in.
     warns: bool,
-    /// You marked the agent as one to handle.
-    to_handle: bool,
+    /// The "to handle" mark you put on the agent.
+    mark: Mark,
     /// The machine the agent runs on, when nothing above the row says it.
     machine: Option<RowMachine>,
     notifications: NotificationLevel,
@@ -81,7 +82,7 @@ impl AgentRow {
                 .task_progress
                 .map(|progress| format!("{}/{}", progress.done, progress.total)),
             time: row_time(summary),
-            to_handle: summary.mark == Mark::ToHandle,
+            mark: summary.mark,
             machine: grouping::machine_shown_on_row(state, entry.id())
                 .and_then(|machine| RowMachine::new(state, machine)),
             notifications: notification_levels::agent_level(state, entry.id()),
@@ -210,8 +211,17 @@ fn chip_class(filter: StatusFilter) -> &'static str {
     }
 }
 
-/// The mark's name, in the filter and the row's tooltip.
+/// The mark's name, in the filter.
 const TO_HANDLE: &str = "To handle";
+
+/// The row's flag, as its tooltip says it.
+fn mark_label(mark: Mark) -> &'static str {
+    match mark {
+        Mark::Unmarked => "",
+        Mark::ToHandle => "To handle, until you send it a message",
+        Mark::ToHandleKept => "To handle, until you clear the mark",
+    }
+}
 
 const TO_HANDLE_CLASS: &str = "to-handle";
 
@@ -435,7 +445,7 @@ impl MachineGroup {
         for entry in agents {
             count += 1;
             needs_you += usize::from(entry.summary.status == AgentStatus::NeedsYou);
-            to_handle += usize::from(entry.summary.mark == Mark::ToHandle);
+            to_handle += usize::from(entry.summary.mark.is_to_handle());
         }
         let trouble = known.and_then(|known| {
             if let Some(line) = daemon_update::update_line(known) {
@@ -614,7 +624,7 @@ impl ProjectGroup {
             if projects::project_of(state, entry) == project {
                 count += 1;
                 needs_you += usize::from(entry.summary.status == AgentStatus::NeedsYou);
-                to_handle += usize::from(entry.summary.mark == Mark::ToHandle);
+                to_handle += usize::from(entry.summary.mark.is_to_handle());
                 *on_machine.entry(MachineId::of(entry.id())).or_default() += 1;
             }
         }
@@ -687,6 +697,13 @@ fn ProjectGroupView(group: ProjectGroup) -> Element {
     };
     let swatch_style = projects_tab::swatch_style(color);
     let head = project_head_id(&project);
+    let renaming = match &project {
+        ProjectKey::Kept(id) => {
+            (cockpit.state.read().ui.project_rename == Some(*id)).then_some(*id)
+        }
+        ProjectKey::Repository(_) | ProjectKey::None => None,
+    };
+    let menu_project = project.clone();
     // Only a kept project has a place the user chose: a drag by its header moves it.
     let (group_id, group_class) = match &project {
         ProjectKey::Kept(id) => (
@@ -700,35 +717,53 @@ fn ProjectGroupView(group: ProjectGroup) -> Element {
     rsx! {
         div { id: group_id, class: group_class,
             div { class: "project-head-row",
-                button {
-                    id: head,
-                    class: GROUP_HEAD_CLASS,
-                    "data-head-project": "{key}",
-                    aria_expanded: !folded,
-                    title: "{fold_label}",
-                    onclick: move |_| cockpit.update(|state| grouping::toggle_folded(state, &toggled)),
-                    Icon {
-                        kind: if folded { IconKind::ChevronRight } else { IconKind::ChevronDown },
-                        size: 13,
+                if let Some(id) = renaming {
+                    // A div: a button would take the field's Space and Enter. Without the header's
+                    // class, which a drag starts from.
+                    div { class: "project-head-field",
+                        span { class: swatch_class, style: swatch_style.clone(), aria_hidden: true }
+                        ProjectNameField { id, name: name.clone() }
                     }
-                    span { class: swatch_class, style: swatch_style, aria_hidden: true }
-                    span { class: if temporary { "machine-name temporary" } else { "machine-name" }, "{name}" }
-                    if let Some(machine) = &machine {
-                        span { class: "head-machine", title: "Its agents run on {machine.name}",
-                            Icon { kind: IconKind::Server, size: 11 }
-                            "{machine.tag}"
+                } else {
+                    button {
+                        id: head,
+                        class: GROUP_HEAD_CLASS,
+                        "data-head-project": "{key}",
+                        aria_expanded: !folded,
+                        title: "{fold_label} (right-click for the project's menu)",
+                        onclick: move |_| cockpit.update(|state| grouping::toggle_folded(state, &toggled)),
+                        oncontextmenu: move |event: MouseEvent| {
+                            event.prevent_default();
+                            let point = event.client_coordinates();
+                            // Whole pixels are enough to place a menu.
+                            #[expect(clippy::cast_possible_truncation, reason = "a window's pixels fit in i32")]
+                            let (x, y) = (point.x.round() as i32, point.y.round() as i32);
+                            let project = menu_project.clone();
+                            cockpit.update(|state| project_menu::open(state, project, x, y));
+                        },
+                        Icon {
+                            kind: if folded { IconKind::ChevronRight } else { IconKind::ChevronDown },
+                            size: 13,
                         }
-                    }
-                    if folded && needs_you > 0 {
-                        span { class: "machine-needs-you", title: "Agents that wait for you", "{needs_you}" }
-                    }
-                    if folded && to_handle > 0 {
-                        span { class: "machine-to-handle", title: "Agents marked to handle",
-                            Icon { kind: IconKind::Flag, size: 11 }
-                            "{to_handle}"
+                        span { class: swatch_class, style: swatch_style, aria_hidden: true }
+                        span { class: if temporary { "machine-name temporary" } else { "machine-name" }, "{name}" }
+                        if let Some(machine) = &machine {
+                            span { class: "head-machine", title: "Its agents run on {machine.name}",
+                                Icon { kind: IconKind::Server, size: 11 }
+                                "{machine.tag}"
+                            }
                         }
+                        if folded && needs_you > 0 {
+                            span { class: "machine-needs-you", title: "Agents that wait for you", "{needs_you}" }
+                        }
+                        if folded && to_handle > 0 {
+                            span { class: "machine-to-handle", title: "Agents marked to handle",
+                                Icon { kind: IconKind::Flag, size: 11 }
+                                "{to_handle}"
+                            }
+                        }
+                        span { class: "machine-count", "{count}" }
                     }
-                    span { class: "machine-count", "{count}" }
                 }
                 if let ProjectKey::Repository(repository) = project {
                     button {
@@ -811,7 +846,7 @@ fn AgentRowView(row: AgentRow) -> Element {
     if row.unread {
         classes.push("unread");
     }
-    if row.to_handle {
+    if row.mark.is_to_handle() {
         classes.push(TO_HANDLE_CLASS);
     }
     if let Some(TitleEdit {
@@ -913,12 +948,12 @@ fn AgentRowButton(row: AgentRow, class: String) -> Element {
                 }
                 // Always there, so that the style sheet can grow it in and shrink it out.
                 span {
-                    class: "row-flag",
-                    title: if row.to_handle { TO_HANDLE } else { "" },
-                    aria_hidden: !row.to_handle,
+                    class: if row.mark == Mark::ToHandleKept { "row-flag kept" } else { "row-flag" },
+                    title: mark_label(row.mark),
+                    aria_hidden: !row.mark.is_to_handle(),
                     Icon { kind: IconKind::Flag, size: 12 }
-                    if row.to_handle {
-                        span { class: "visually-hidden", "{TO_HANDLE}" }
+                    if row.mark.is_to_handle() {
+                        span { class: "visually-hidden", {mark_label(row.mark)} }
                     }
                 }
                 RowBell { level: row.notifications }

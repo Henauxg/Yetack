@@ -42,6 +42,8 @@ const NEW_FIELD: &str = "new";
 const PIN_GROUP_CLASS: &str = "quote-pin-group";
 const NOTE_CLASS: &str = "quote-note";
 const FIELD_CLASS: &str = "quote-editor";
+/// A comment's text that opens the field on a click, with the caret where the click fell.
+const COMMENT_TEXT_CLASS: &str = "quote-comment";
 /// A field that closes and plays its exit, which the script leaves where it is.
 const LEAVING_CLASS: &str = "leaving";
 
@@ -96,6 +98,8 @@ const highlight = (name, ranges) => {
   }
 };
 let layout = { agent: null, quotes: [], editor: null };
+// Where a click on a comment's text fell, for the caret of the field it opens.
+let caretClick = null;
 const chat = () => document.getElementById(settings.chat_scroll_id);
 const layer = () => document.getElementById(settings.layer_id);
 // An entry's wrapper ends with the element that shows its row (see the chat's scroll script).
@@ -310,6 +314,7 @@ const place = () => {
     if (group === null) {
       continue;
     }
+    group.toggleAttribute("data-editing", editor !== null && editor.dataset.quote === item.id);
     const last = item.rects[item.rects.length - 1];
     const middle = last === undefined ? 0 : last.top + last.height / 2;
     if (last === undefined || middle < view.top + 9 || middle > view.bottom - 9) {
@@ -375,19 +380,33 @@ const place = () => {
     }
   }
   drawLinks(paths);
-  // The comment field as a card under its passage: in a narrow chat, for a hidden comment, or
-  // when the strip has no room.
+  // The comment field as a card: in a narrow chat, for a hidden comment, or when the strip has no
+  // room. A quote's field takes its number's card place, a new quote's goes under its passage.
   if (editor !== null && (editor.dataset.form !== settings.note_form || editor.dataset.fallback !== undefined)) {
     const item = found.find((candidate) => candidate.id === editor.dataset.quote);
     const first = item?.rects[0];
     const last = item?.rects[item.rects.length - 1];
     const width = editor.offsetWidth;
     const height = editor.offsetHeight;
-    let x = first === undefined ? view.left + 20 : first.left;
-    x = Math.min(Math.max(x, area.left + 8), textRight - width);
-    let y = last === undefined ? view.bottom - height - 8 : last.bottom + 8;
-    if (y + height > view.bottom - 8 && first !== undefined) {
-      y = first.top - height - 8;
+    let x;
+    let y;
+    if (editor.dataset.quote !== settings.new_field && last !== undefined) {
+      // Where the number is, placed or not: the field stays in its column while the chat scrolls,
+      // and on the side it opened on, so it never jumps.
+      const numberTop = last.top + last.height / 2 - 9;
+      if (editor.dataset.sideOf !== editor.dataset.quote) {
+        editor.dataset.sideOf = editor.dataset.quote;
+        editor.dataset.side = last.top > view.top + view.height / 2 ? "up" : "down";
+      }
+      x = Math.min(Math.max(textRight + 24 - width, area.left + 8), area.right - width - 8);
+      y = editor.dataset.side === "up" ? numberTop - 8 - height : numberTop + 26;
+    } else {
+      x = first === undefined ? view.left + 20 : first.left;
+      x = Math.min(Math.max(x, area.left + 8), textRight - width);
+      y = last === undefined ? view.bottom - height - 8 : last.bottom + 8;
+      if (y + height > view.bottom - 8 && first !== undefined) {
+        y = first.top - height - 8;
+      }
     }
     y = Math.min(Math.max(y, view.top + 8), view.bottom - height - 8);
     at(editor, x - area.left, y - area.top);
@@ -396,8 +415,13 @@ const place = () => {
   if (editor !== null && editor.dataset.placed !== undefined && editor.dataset.focused === undefined) {
     editor.dataset.focused = "";
     const field = editor.querySelector("textarea");
-    field?.focus();
-    field?.setSelectionRange(field.value.length, field.value.length);
+    if (field !== null) {
+      const clicked = caretClick !== null && caretClick.quote === editor.dataset.quote ? caretClick.offset : field.value.length;
+      const caret = Math.min(clicked, field.value.length);
+      field.focus();
+      field.setSelectionRange(caret, caret);
+    }
+    caretClick = null;
   }
 };
 // After a send: each quote of a message you sent underlines its passage in an earlier entry.
@@ -665,7 +689,16 @@ const revealSent = (quote) => {
   }
 };
 document.addEventListener("click", (event) => {
+  caretClick = null;
   if (!(event.target instanceof Element)) {
+    return;
+  }
+  const comment = event.target.closest(`.${settings.comment_text_class}[data-quote]`);
+  if (comment !== null) {
+    const point = document.caretRangeFromPoint(event.clientX, event.clientY);
+    if (point !== null && comment.contains(point.startContainer)) {
+      caretClick = { quote: comment.dataset.quote, offset: point.startOffset };
+    }
     return;
   }
   if (event.target.closest(`#${settings.reply_button_id}`) !== null) {
@@ -745,6 +778,7 @@ struct Settings {
     pin_group_class: &'static str,
     note_class: &'static str,
     field_class: &'static str,
+    comment_text_class: &'static str,
     leaving_class: &'static str,
     blocks_class: &'static str,
     block_card_class: &'static str,
@@ -754,6 +788,40 @@ struct Settings {
     note_form: &'static str,
     /// The placement of a note that shows.
     beside: &'static str,
+}
+
+impl Settings {
+    fn new() -> Self {
+        Self {
+            chat_scroll_id: CHAT_SCROLL_ID,
+            entry_class: ENTRY_CLASS,
+            layer_id: LAYER_ID,
+            reply_button_id: REPLY_BUTTON_ID,
+            links_id: LINKS_ID,
+            replied_host_id: REPLIED_HOST_ID,
+            comment_field_id: COMMENT_FIELD_ID,
+            revealed_class: REVEALED_CLASS,
+            reply_key: REPLY_KEY,
+            records_keys_attribute: bridge::RECORDS_KEYS_ATTRIBUTE,
+            flash_ms: 1200,
+            hide_ms: 250,
+            you_replied: "You replied",
+            show_message: "Show your message",
+            show_passage: SHOW_PASSAGE,
+            new_field: NEW_FIELD,
+            pin_group_class: PIN_GROUP_CLASS,
+            note_class: NOTE_CLASS,
+            field_class: FIELD_CLASS,
+            comment_text_class: COMMENT_TEXT_CLASS,
+            leaving_class: LEAVING_CLASS,
+            blocks_class: BLOCKS_CLASS,
+            block_card_class: BLOCK_CARD_CLASS,
+            user_bubble_class: USER_BUBBLE_CLASS,
+            markdown_class: MARKDOWN_CLASS,
+            note_form: FieldForm::Note.into(),
+            beside: CommentPlacement::Beside.into(),
+        }
+    }
 }
 
 /// What the app tells the script.
@@ -816,34 +884,7 @@ impl QuoteScript {
 pub fn use_quotes(cockpit: Cockpit) {
     let script = use_hook(|| {
         let mut script = document::eval(SCRIPT);
-        if let Err(error) = script.send(Settings {
-            chat_scroll_id: CHAT_SCROLL_ID,
-            entry_class: ENTRY_CLASS,
-            layer_id: LAYER_ID,
-            reply_button_id: REPLY_BUTTON_ID,
-            links_id: LINKS_ID,
-            replied_host_id: REPLIED_HOST_ID,
-            comment_field_id: COMMENT_FIELD_ID,
-            revealed_class: REVEALED_CLASS,
-            reply_key: REPLY_KEY,
-            records_keys_attribute: bridge::RECORDS_KEYS_ATTRIBUTE,
-            flash_ms: 1200,
-            hide_ms: 250,
-            you_replied: "You replied",
-            show_message: "Show your message",
-            show_passage: SHOW_PASSAGE,
-            new_field: NEW_FIELD,
-            pin_group_class: PIN_GROUP_CLASS,
-            note_class: NOTE_CLASS,
-            field_class: FIELD_CLASS,
-            leaving_class: LEAVING_CLASS,
-            blocks_class: BLOCKS_CLASS,
-            block_card_class: BLOCK_CARD_CLASS,
-            user_bubble_class: USER_BUBBLE_CLASS,
-            markdown_class: MARKDOWN_CLASS,
-            note_form: FieldForm::Note.into(),
-            beside: CommentPlacement::Beside.into(),
-        }) {
+        if let Err(error) = script.send(Settings::new()) {
             tracing::warn!("cannot start the quotes' script: {error}");
         }
         spawn(async move {
@@ -1051,11 +1092,7 @@ fn QuotePin(agent: AgentId, number: usize, quote: Quote, wide: bool) -> Element 
             button { class: "quote-pin", aria_label: "{label}", "{number}" }
             div { class: "popover quote-pin-card",
                 p { class: "quote-passage", "{quote.passage.text}" }
-                if comment.is_empty() {
-                    p { class: "quote-comment dim", "No comment" }
-                } else {
-                    p { class: "quote-comment", "{comment}" }
-                }
+                CommentText { agent, id, comment }
                 div { class: "quote-tools",
                     // A comment set to show beside the text that has no room there shows here.
                     if wide && quote.placement == CommentPlacement::Hidden {
@@ -1100,10 +1137,36 @@ fn QuoteNote(agent: AgentId, number: usize, quote: Quote) -> Element {
                 }
                 RemoveButton { agent, id }
             }
-            if quote.comment.is_empty() {
-                p { class: "quote-comment dim", "No comment" }
+            CommentText { agent, id, comment: quote.comment }
+        }
+    }
+}
+
+/// A quote's comment, which a click, Enter or Space opens in the comment field, in its place.
+#[component]
+fn CommentText(agent: AgentId, id: QuoteId, comment: String) -> Element {
+    let cockpit: Cockpit = use_context();
+    let edit = move || cockpit.with_drafts(|_, drafts| quotes::edit(drafts, agent, id));
+    let empty = comment.is_empty();
+    rsx! {
+        p {
+            class: "{COMMENT_TEXT_CLASS}",
+            class: if empty { "dim" },
+            role: "button",
+            tabindex: "0",
+            title: "Edit the comment",
+            "data-quote": "{id.get()}",
+            onclick: move |_| edit(),
+            onkeydown: move |event: KeyboardEvent| {
+                if event.key() == Key::Enter || event.key() == Key::Character(" ".to_owned()) {
+                    event.prevent_default();
+                    edit();
+                }
+            },
+            if empty {
+                "No comment"
             } else {
-                p { class: "quote-comment", "{quote.comment}" }
+                "{comment}"
             }
         }
     }
@@ -1255,6 +1318,8 @@ pub fn QuoteRows(agent: AgentId, quotes: Vec<Quote>, wide: bool) -> Element {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use cockpit_protocol::{AgentStatus, ItemId};
 
     use super::*;
@@ -1283,6 +1348,30 @@ mod tests {
             .collect();
 
         assert_eq!(words, ["note", "card"]);
+    }
+
+    /// The script reads each setting by its serde name, and a name it reads that the app does not
+    /// send is `undefined` there, with no error.
+    #[test]
+    fn the_script_reads_the_settings_the_app_sends() {
+        let sent: BTreeSet<String> = serde_json::to_value(Settings::new())
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        let read: BTreeSet<String> = SCRIPT
+            .split("settings.")
+            .skip(1)
+            .map(|rest| {
+                rest.chars()
+                    .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
+                    .collect()
+            })
+            .collect();
+
+        assert_eq!(read, sent);
     }
 
     #[test]

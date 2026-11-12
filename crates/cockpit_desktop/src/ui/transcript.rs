@@ -23,7 +23,7 @@ use crate::state::{
     self, AgentEntry, AppState, HistoryState, TurnStart, accounts, actions, chat_images, file_edits,
 };
 use crate::ui::accounts::SignInCard;
-use crate::ui::cards::{ApprovalCard, PlanCard, QuestionCard};
+use crate::ui::cards::{ApprovalCard, PlanCard};
 use crate::ui::chat_scroll::{
     self, CHAT_SCROLL_ID, ENTRY_CLASS, FOLD_BUTTON_CLASS, InView, JumpToLatest, NewDivider,
 };
@@ -32,6 +32,7 @@ use crate::ui::icons::{Icon, IconKind};
 use crate::ui::last_instruction::LastInstruction;
 use crate::ui::loading::TranscriptSkeleton;
 use crate::ui::markdown::{MARKDOWN_CLASS, MarkdownView};
+use crate::ui::question_card::{CardPlace, QuestionCard};
 use crate::ui::tool_rows::{self, ExploredView, Row, SkillView};
 use crate::{bridge, format};
 
@@ -929,7 +930,7 @@ pub fn ItemView(
             ApprovalCard { agent, folder, approval }
         },
         ItemBody::Question(question) => rsx! {
-            QuestionCard { agent, item: id, question }
+            QuestionCard { agent, item: id, question, place: CardPlace::Chat }
         },
         ItemBody::Plan(plan) => rsx! {
             PlanCard { agent, folder, plan, item: Some(id) }

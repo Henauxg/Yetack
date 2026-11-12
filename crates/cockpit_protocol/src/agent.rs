@@ -182,7 +182,7 @@ impl FromStoredBool for SignInWait {
     }
 }
 
-/// A reminder you put on an agent. It stays until you clear it or send the agent a prompt.
+/// A reminder you put on an agent.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, VariantArray,
 )]
@@ -190,5 +190,25 @@ impl FromStoredBool for SignInWait {
 pub enum Mark {
     #[default]
     Unmarked,
+    /// Stays until you clear it or send the agent a prompt.
     ToHandle,
+    /// Stays until you clear it.
+    ToHandleKept,
+}
+
+impl Mark {
+    /// Whether the agent is marked to handle, of either kind.
+    #[must_use]
+    pub fn is_to_handle(self) -> bool {
+        self != Self::Unmarked
+    }
+
+    /// The mark once the agent gets a prompt.
+    #[must_use]
+    pub fn after_prompt(self) -> Self {
+        match self {
+            Self::ToHandle => Self::Unmarked,
+            Self::Unmarked | Self::ToHandleKept => self,
+        }
+    }
 }

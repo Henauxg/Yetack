@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use cockpit_protocol::AgentId;
 
 use super::app_state::{AgentEntry, AppState};
+use super::project_menu;
 use super::projects::{self, ProjectKey};
 use super::ui_state::Popover;
 use crate::machine::MachineId;
@@ -141,6 +142,7 @@ pub fn set_group_by(state: &mut AppState, group_by: GroupBy) {
         state.ui.popover = None;
     }
     state.prefs.sidebar.group_by = group_by;
+    project_menu::prune(state);
 }
 
 pub fn set_project_split(state: &mut AppState, split: ProjectSplit) {
