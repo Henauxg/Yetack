@@ -5,8 +5,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
+use chrono::NaiveDate;
 use cockpit_protocol::{
     AgentId, AgentStatus, AnswerState, ItemBody, ItemId, SignInWait, ToolCall, ToolCallStatus,
     TranscriptItem, TurnEnd, TurnOutcome, UserMessage,
@@ -15,7 +16,7 @@ use dioxus::prelude::*;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::connection::{Clock, Cockpit};
+use crate::connection::{Clock, Cockpit, Today};
 use crate::keymap::Command;
 use crate::render::{self, Diff, Found, Language, OutputPart, SearchTool, diff_lines};
 use crate::state::sending::{SendingPlace, SendingPrompt};
@@ -341,8 +342,7 @@ impl ShownRows {
 pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
     use_hook(start_fold_script);
     let cockpit: Cockpit = use_context();
-    // Read without a subscription: a message's time changes its words only at midnight.
-    let Clock(clock) = use_context::<Clock>();
+    let Today(today) = use_context::<Today>();
     chat_scroll::use_chat_scroll(cockpit, in_view);
     // The agent whose conversation the chat opened, once its first page came or failed. A
     // failure shows above all the rows.
@@ -435,7 +435,7 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
     let row_ids: Vec<ItemId> = firsts.iter().map(|item| item.id).collect();
     let shown = ShownRows::of(agent, drawn(), &row_ids, scrolled_up.is_some());
     rows.set((Some(agent), row_ids));
-    let grouped = grouped_times(&firsts, *clock.peek());
+    let grouped = grouped_times(&firsts, today());
     let first = shown.first(top_rows.len());
     let top: Vec<TopRow> = top_rows
         .iter()
@@ -975,7 +975,7 @@ fn UserBubble(
     #[props(default)] hides_time: bool,
 ) -> Element {
     let cockpit: Cockpit = use_context();
-    let Clock(clock) = use_context::<Clock>();
+    let Today(today) = use_context::<Today>();
     let mut unfolded = use_signal(|| false);
     let open = unfolded();
     let state = if open { " unfolded" } else { "" };
@@ -985,7 +985,7 @@ fn UserBubble(
         sent_at,
     } = message;
     let time = sent_at.filter(|_| !hides_time).and_then(|sent_at| {
-        let shown = format::message_time(sent_at, *clock.peek())?;
+        let shown = format::message_time(sent_at, today())?;
         Some((shown, format::full_time(sent_at).unwrap_or_default()))
     });
     let images = images.into_iter().map(Arc::new);
@@ -1029,13 +1029,14 @@ fn UserBubble(
     }
 }
 
-/// The messages whose time the next row shows: a message right before another one sent at the
-/// same minute. A run of messages sent together then reads as one, with its time under the last.
-fn grouped_times(firsts: &[&TranscriptItem], now: SystemTime) -> BTreeSet<ItemId> {
+/// The user's messages whose time the next row shows: a message right before another one sent at
+/// the same minute. A run of messages sent together then reads as one, with its time under the
+/// last.
+fn grouped_times(firsts: &[&TranscriptItem], today: NaiveDate) -> BTreeSet<ItemId> {
     let time = |item: &TranscriptItem| match &item.body {
         ItemBody::UserMessage(message) => message
             .sent_at
-            .and_then(|sent_at| format::message_time(sent_at, now)),
+            .and_then(|sent_at| format::message_time(sent_at, today)),
         _ => None,
     };
     firsts
@@ -2166,9 +2167,9 @@ mod tests {
             sent(5, 310_000),
         ];
         let firsts: Vec<&TranscriptItem> = items.iter().collect();
-        let now = UNIX_EPOCH + Duration::from_millis(minute + 3_600_000);
+        let today = format::local_day(UNIX_EPOCH + Duration::from_millis(minute));
 
-        let grouped = grouped_times(&firsts, now);
+        let grouped = grouped_times(&firsts, today);
 
         assert_eq!(grouped, BTreeSet::from([ItemId::new(1)]));
     }
