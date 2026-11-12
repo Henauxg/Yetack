@@ -15,14 +15,14 @@
 //! Only then can it be renamed, colored, or given more rules.
 
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use cockpit_protocol::{AgentId, Repository};
 use serde::{Deserialize, Deserializer};
 use strum::VariantArray;
 
-use super::app_state::{AgentEntry, AppState};
+use super::app_state::{AgentEntry, AppState, RecentFolder};
 use super::{grouping, project_menu};
 use crate::machine::MachineId;
 use crate::path_style::PathStyle;
@@ -146,8 +146,53 @@ pub fn for_new_agent(state: &AppState, machine: MachineId, folder: &Path) -> Opt
     }
 }
 
+/// A recent folder of the new agent dialog, with the project an agent started there joins.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProjectFolder {
+    pub recent: RecentFolder,
+    pub project: ProjectKey,
+}
+
+/// The machine's recent folders, the latest first, each with the project an agent started there
+/// joins. With `picked`, only that project's folders.
+pub fn recent_folders(
+    state: &AppState,
+    machine: MachineId,
+    picked: Option<&ProjectKey>,
+) -> Vec<ProjectFolder> {
+    state
+        .recent_folders(machine)
+        .into_iter()
+        .map(|recent| ProjectFolder {
+            project: for_new_agent(state, machine, &recent.folder).unwrap_or(ProjectKey::None),
+            recent,
+        })
+        .filter(|folder| picked.is_none_or(|picked| folder.project == *picked))
+        .collect()
+}
+
+/// The folder that a pick of `project` puts in the new agent dialog's field: the project's latest
+/// recent folder. `None` leaves the field as it is: it already names one of the project's
+/// folders, or the project has no recent folder on the machine.
+pub fn folder_for_pick(
+    state: &AppState,
+    machine: MachineId,
+    typed: &str,
+    project: &ProjectKey,
+) -> Option<PathBuf> {
+    let typed = typed.trim();
+    let typed_project = for_new_agent(state, machine, Path::new(typed)).unwrap_or(ProjectKey::None);
+    if !typed.is_empty() && typed_project == *project {
+        return None;
+    }
+    recent_folders(state, machine, Some(project))
+        .into_iter()
+        .next()
+        .map(|folder| folder.recent.folder)
+}
+
 /// The project the agent was moved to by hand, while that project exists.
-fn moved_to(state: &AppState, agent: AgentId) -> Option<ProjectKey> {
+pub fn moved_to(state: &AppState, agent: AgentId) -> Option<ProjectKey> {
     let key = grouping::agent_key(state, agent)?;
     let chosen = *state
         .prefs
@@ -559,7 +604,7 @@ mod tests {
     use crate::state::app_state::tests::{state_with, summary};
     use crate::state::drafts::Drafts;
     use crate::state::requests::{self, Purpose};
-    use crate::state::{actions, apply};
+    use crate::state::{Dialog, actions, apply};
 
     const BILLING: &str = "github.com/acme/billing";
     const GATEWAY: &str = "github.com/acme/api-gateway";
@@ -705,6 +750,84 @@ mod tests {
             for_new_agent(&state, MachineId::new(1), Path::new("/work/project-1")),
             None
         );
+    }
+
+    /// Agent 2 started after agent 1: its folder comes first.
+    #[test]
+    fn the_dialog_s_recent_folders_say_their_project_and_a_pick_keeps_its_own() {
+        let state = agents();
+        let billing = ProjectKey::Repository(repo(BILLING));
+        let folders = |picked: Option<&ProjectKey>| -> Vec<(PathBuf, ProjectKey)> {
+            recent_folders(&state, MachineId::THIS, picked)
+                .into_iter()
+                .map(|folder| (folder.recent.folder, folder.project))
+                .collect()
+        };
+
+        let all = folders(None);
+        let picked = folders(Some(&billing));
+
+        assert_eq!(
+            all,
+            [
+                (PathBuf::from("/work/project-4"), ProjectKey::None),
+                (
+                    PathBuf::from("/work/project-3"),
+                    ProjectKey::Repository(repo(GATEWAY))
+                ),
+                (PathBuf::from("/work/project-2"), billing.clone()),
+                (PathBuf::from("/work/project-1"), billing.clone()),
+            ]
+        );
+        assert_eq!(
+            picked,
+            [
+                (PathBuf::from("/work/project-2"), billing.clone()),
+                (PathBuf::from("/work/project-1"), billing.clone()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_project_pick_puts_its_latest_folder_unless_the_field_names_one_of_its_own() {
+        let state = agents();
+        let billing = ProjectKey::Repository(repo(BILLING));
+        let pick = |typed: &str, project: &ProjectKey| {
+            folder_for_pick(&state, MachineId::THIS, typed, project)
+        };
+        let nowhere = ProjectKey::Kept(ProjectId::new(9));
+
+        assert_eq!(
+            pick("/work/project-3", &billing),
+            Some(PathBuf::from("/work/project-2"))
+        );
+        assert_eq!(pick("", &billing), Some(PathBuf::from("/work/project-2")));
+        assert_eq!(pick("/work/project-1", &billing), None);
+        assert_eq!(pick("/work/project-3", &nowhere), None);
+    }
+
+    /// Agent 4 started last, and was moved by hand to a project its folder would not give.
+    #[test]
+    fn the_new_agent_dialog_opens_on_the_last_agent_s_project_picked_by_hand() {
+        let mut state = agents();
+        let mut drafts = Drafts::default();
+        let work = create(&mut state, "Work");
+        let automatic = |state: &mut AppState, drafts: &mut Drafts| {
+            actions::open_new_agent(state, drafts);
+            let project = match &state.ui.dialog {
+                Some(Dialog::NewAgent(form)) => form.project.clone(),
+                _ => None,
+            };
+            state.ui.close_dialog();
+            project
+        };
+
+        let before = automatic(&mut state, &mut drafts);
+        move_agent(&mut state, AgentId::new(4), &ProjectKey::Kept(work));
+        let after = automatic(&mut state, &mut drafts);
+
+        assert_eq!(before, None);
+        assert_eq!(after, Some(ProjectKey::Kept(work)));
     }
 
     /// Agent 9, in the billing repository.

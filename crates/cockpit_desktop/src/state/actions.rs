@@ -2207,6 +2207,10 @@ pub fn open_new_agent(state: &mut AppState, drafts: &mut Drafts) {
         })
         .unwrap_or(MachineId::THIS);
     let folder = last_folder(state, machine);
+    // A project picked by hand, which the folder alone would not give again.
+    let project = last
+        .filter(|summary| MachineId::of(summary.id) == machine)
+        .and_then(|summary| projects::moved_to(state, summary.id));
     let model = last
         .and_then(|summary| summary.model.as_deref())
         .and_then(format::model_alias)
@@ -2231,6 +2235,7 @@ pub fn open_new_agent(state: &mut AppState, drafts: &mut Drafts) {
         model: Some(model),
         effort,
         mode: Some(mode),
+        project,
         ..NewAgentForm::default()
     }));
     drafts.new_agent = NewAgentDraft {
