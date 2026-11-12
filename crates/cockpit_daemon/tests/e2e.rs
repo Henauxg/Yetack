@@ -1634,6 +1634,7 @@ async fn claude_keeps_the_users_umask_and_the_state_stays_private() {
     let expected = [
         "agents-cockpit.sock",
         "agents.json",
+        "details/1.json",
         "events/1.jsonl",
         "events/daemon.jsonl",
         "raw/1.jsonl",

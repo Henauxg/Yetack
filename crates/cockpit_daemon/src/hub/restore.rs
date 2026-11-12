@@ -1,4 +1,5 @@
-//! The state a restarted daemon reads back: `agents.json`, `settings.json`, and the event logs.
+//! The state a restarted daemon reads back: `agents.json`, `settings.json`, the event logs and the
+//! agents' latest details.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -9,9 +10,10 @@ use cockpit_protocol::{
 };
 
 use crate::hub::agents::initial_summary;
+use crate::hub::errors;
 use crate::store::{
-    AgentRecord, AgentsFile, DaemonSettings, EventLogs, LogName, StateDir, StoreError,
-    for_each_event,
+    AgentRecord, AgentsFile, DaemonSettings, EventLogs, LatestDetails, LogName, StateDir,
+    StoreError, details_path, for_each_event, move_details_out, read_latest_details,
 };
 use crate::transcript::AgentView;
 use crate::{repository, sessions};
@@ -23,15 +25,19 @@ pub(crate) struct Restored {
     pub(crate) settings: DaemonSettings,
     /// Each account's plan usage, once one of its agents reported it.
     pub(crate) plan_usage: BTreeMap<AccountId, PlanUsage>,
-    /// The last sequence number in the logs or the replay floor, which numbering continues from.
+    /// The last sequence number in the logs, the details or the replay floor, which numbering
+    /// continues from.
     pub(crate) last_seq: Option<Seq>,
+    /// Each agent's latest details, which a replay sends in place of the older ones.
+    pub(crate) details: BTreeMap<AgentId, LatestDetails>,
 }
 
 /// What one agent's log says, once its events are applied in order.
 #[derive(Default)]
 struct LoggedAgent {
     summary: Option<AgentSummary>,
-    details: AgentDetails,
+    /// The details a log still holds, when moving them out failed, with their sequence number.
+    details: Option<(Seq, AgentDetails)>,
     commands: Vec<SlashCommand>,
     items: BTreeMap<ItemId, TranscriptItem>,
 }
@@ -44,7 +50,16 @@ pub(crate) fn restore(state: &StateDir, default_folder: &Path) -> Result<Restore
     let mut last_seq: Option<Seq> = None;
     let mut plan_usage: BTreeMap<AccountId, PlanUsage> = BTreeMap::new();
     let mut logged: HashMap<AgentId, LoggedAgent> = HashMap::new();
-    for (log, path) in EventLogs::new(state.events()).list()? {
+    let logs = EventLogs::new(state.events(), state.details()).list()?;
+    // An older daemon logged every details change: they move out of the logs once.
+    for (log, path) in &logs {
+        if let LogName::Agent(agent) = log
+            && let Err(error) = move_details_out(path, &details_path(&state.details(), *agent))
+        {
+            tracing::warn!(error = %errors::chain(&error), "cannot move the details out of a log");
+        }
+    }
+    for (log, path) in logs {
         for_each_event(&path, |record| {
             last_seq = last_seq.max(Some(record.seq));
             match log {
@@ -57,9 +72,17 @@ pub(crate) fn restore(state: &StateDir, default_folder: &Path) -> Result<Restore
                     }
                     _ => {}
                 },
-                LogName::Agent(agent) => logged.entry(agent).or_default().apply(record.event),
+                LogName::Agent(agent) => logged
+                    .entry(agent)
+                    .or_default()
+                    .apply(record.seq, record.event),
             }
         })?;
+    }
+    let mut details: BTreeMap<AgentId, LatestDetails> = BTreeMap::new();
+    for (agent, latest) in read_latest_details(&state.details())? {
+        last_seq = last_seq.max(Some(latest.seq));
+        details.insert(agent, latest);
     }
     let ttl = settings.prompt_cache_ttl();
     let agents: Vec<(AgentRecord, AgentView)> = file
@@ -76,7 +99,14 @@ pub(crate) fn restore(state: &StateDir, default_folder: &Path) -> Result<Restore
             summary.account = record.account;
             summary.mark = record.mark;
             let items: Vec<TranscriptItem> = logged.items.into_values().collect();
-            let mut view = AgentView::restore(summary, logged.details, logged.commands, items, ttl);
+            let saved = details.get(&record.id);
+            let agent_details = match (logged.details, saved) {
+                (Some((seq, logged)), Some(saved)) if seq > saved.seq => logged,
+                (_, Some(saved)) => saved.details.clone(),
+                (Some((_, logged)), None) => logged,
+                (None, None) => AgentDetails::default(),
+            };
+            let mut view = AgentView::restore(summary, agent_details, logged.commands, items, ttl);
             let account = settings.accounts.get(record.account, default_folder);
             if let (Some(file), Some(account)) = (&record.past, account) {
                 view.show_past(sessions::past_items(&account.folder, &record.folder, file));
@@ -92,11 +122,12 @@ pub(crate) fn restore(state: &StateDir, default_folder: &Path) -> Result<Restore
         plan_usage,
         // The floor may name an event clients saw but no log holds.
         last_seq: last_seq.max(file.replay_floor),
+        details,
     })
 }
 
 impl LoggedAgent {
-    fn apply(&mut self, event: Event) {
+    fn apply(&mut self, seq: Seq, event: Event) {
         match event {
             Event::AgentAdded(summary) | Event::AgentUpdated(summary) => {
                 self.summary = Some(summary);
@@ -104,7 +135,7 @@ impl LoggedAgent {
             Event::TranscriptAppended { item, .. } | Event::TranscriptChanged { item, .. } => {
                 self.items.insert(item.id, item);
             }
-            Event::DetailsChanged { details, .. } => self.details = details,
+            Event::DetailsChanged { details, .. } => self.details = Some((seq, details)),
             Event::CommandsChanged { commands, .. } => self.commands = commands,
             Event::AgentRemoved { .. }
             | Event::PlanUsageChanged(_)
@@ -179,7 +210,7 @@ mod tests {
         }
         .save(&state.agents_file())
         .unwrap();
-        let mut logs = EventLogs::new(state.events());
+        let mut logs = EventLogs::new(state.events(), state.details());
         let agent = LogName::Agent(AgentId::new(1));
         let mut summary = initial_summary(&record(1));
         summary.turns = 4;
@@ -228,6 +259,62 @@ mod tests {
         assert!(second.items().is_empty());
     }
 
+    #[test]
+    fn an_older_log_gives_its_last_details_to_the_details_file_and_the_numbering_follows_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = StateDir::create(temp.path()).unwrap();
+        AgentsFile {
+            next_agent: AgentId::new(2),
+            replay_floor: None,
+            agents: vec![record(1)],
+        }
+        .save(&state.agents_file())
+        .unwrap();
+        let mut logs = EventLogs::new(state.events(), state.details());
+        let agent = LogName::Agent(AgentId::new(1));
+        let details = |task: &str| Event::DetailsChanged {
+            agent: AgentId::new(1),
+            details: AgentDetails {
+                tasks: vec![cockpit_protocol::TaskListItem {
+                    content: task.to_owned(),
+                    status: cockpit_protocol::TaskStatus::Pending,
+                    active_form: String::new(),
+                }],
+                ..AgentDetails::default()
+            },
+        };
+        log(
+            &mut logs,
+            agent,
+            1,
+            Event::AgentAdded(initial_summary(&record(1))),
+        );
+        log(&mut logs, agent, 2, details("Read the code"));
+        log(&mut logs, agent, 3, details("Fix the bug"));
+
+        let restored = restore(&state, &temp.path().join("claude")).unwrap();
+
+        let (_, view) = &restored.agents[0];
+        let tasks: Vec<&str> = view
+            .details()
+            .tasks
+            .iter()
+            .map(|task| task.content.as_str())
+            .collect();
+        assert_eq!(tasks, ["Fix the bug"]);
+        assert_eq!(restored.last_seq, Some(Seq::new(3)));
+        assert_eq!(
+            restored
+                .details
+                .get(&AgentId::new(1))
+                .map(|latest| latest.seq),
+            Some(Seq::new(3))
+        );
+        let mut kept = Vec::new();
+        for_each_event(&logs.path(agent), |record| kept.push(record.seq.get())).unwrap();
+        assert_eq!(kept, [1], "the details left the log");
+    }
+
     /// The saved mark wins over the one the agent's last logged summary carries.
     #[test]
     fn the_mark_comes_back_from_the_agents_file() {
@@ -244,7 +331,7 @@ mod tests {
         }
         .save(&state.agents_file())
         .unwrap();
-        let mut logs = EventLogs::new(state.events());
+        let mut logs = EventLogs::new(state.events(), state.details());
         let mut cleared = initial_summary(&marked);
         cleared.mark = Mark::Unmarked;
         log(
@@ -290,7 +377,7 @@ mod tests {
         }
         .save(&state.agents_file())
         .unwrap();
-        let mut logs = EventLogs::new(state.events());
+        let mut logs = EventLogs::new(state.events(), state.details());
         let (first, second) = (AgentId::new(1), AgentId::new(2));
         let mut summary = initial_summary(&record(1));
         let details = AgentDetails {
@@ -382,7 +469,7 @@ mod tests {
         }
         .save(&state.agents_file())
         .unwrap();
-        let mut logs = EventLogs::new(state.events());
+        let mut logs = EventLogs::new(state.events(), state.details());
         log(
             &mut logs,
             LogName::Daemon,
@@ -422,7 +509,7 @@ mod tests {
         }
         .save(&state.agents_file())
         .unwrap();
-        let mut logs = EventLogs::new(state.events());
+        let mut logs = EventLogs::new(state.events(), state.details());
         let name = LogName::Agent(AgentId::new(1));
         log(
             &mut logs,
@@ -469,7 +556,7 @@ mod tests {
             )]),
         };
         let work = AccountId::new(2);
-        let mut logs = EventLogs::new(state.events());
+        let mut logs = EventLogs::new(state.events(), state.details());
         let events = [
             Event::PlanUsageChanged(usage(0.1)),
             Event::AccountPlanUsageChanged(AccountPlanUsage {

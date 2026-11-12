@@ -12,7 +12,10 @@ pub(crate) use agents_file::{
     AgentRecord, AgentsFile, BootId, PastFile, RecordedProcess, ResumeAs,
 };
 pub(crate) use daemon_settings::DaemonSettings;
-pub(crate) use event_log::{EventLogs, LogName, ReplayRead, for_each_event, read_replay};
+pub(crate) use event_log::{
+    EventLogs, LatestDetails, LogName, ReplayRead, details_path, for_each_event, move_details_out,
+    read_latest_details, read_replay,
+};
 pub(crate) use raw_log::{Direction, RawLog};
 pub(crate) use state_dir::{ServeLock, StateDir};
 pub use state_dir::{default_state_dir, socket_path};

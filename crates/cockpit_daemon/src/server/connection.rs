@@ -120,7 +120,7 @@ async fn join(
     last_seq: Option<Seq>,
 ) -> Result<(mpsc::Receiver<Frame>, Vec<Vec<u8>>, Catchup), End> {
     let Registration { joined, frames } = register(hub, last_seq).await?;
-    let (after, upto, events) = match joined {
+    let (after, upto, events, details) = match joined {
         Joined::Snapshot(snapshot) => {
             return Ok((frames, Vec::new(), Catchup::Snapshot(*snapshot)));
         }
@@ -128,11 +128,13 @@ async fn join(
             after,
             upto,
             events,
-        } => (after, upto, events),
+            details,
+        } => (after, upto, events, details),
     };
-    let read =
-        tokio::task::spawn_blocking(move || read_replay(&events, after, upto, MAX_REPLAY_BYTES))
-            .await;
+    let read = tokio::task::spawn_blocking(move || {
+        read_replay(&events, after, upto, details, MAX_REPLAY_BYTES)
+    })
+    .await;
     match read {
         Ok(Ok(ReplayRead::Frames(replay))) => return Ok((frames, replay, Catchup::Replay)),
         Ok(Ok(ReplayRead::TooLarge)) => tracing::info!("a replay is too large: sending a snapshot"),

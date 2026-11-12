@@ -2,12 +2,12 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use claude_protocol::InputLine;
 use cockpit_protocol::{
-    AccountId, AccountPlanUsage, AgentId, Event, EventRecord, Frame, PlanUsage, Prompt, PromptId,
-    Seq, ServerMessage, SignIn, Snapshot, Timestamp,
+    AccountId, AccountPlanUsage, AgentDetails, AgentId, Event, EventRecord, Frame, PlanUsage,
+    Prompt, PromptId, Seq, ServerMessage, SignIn, Snapshot, Timestamp, WaitingPrompt,
 };
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
@@ -28,6 +28,10 @@ const CLIENT_QUEUE: usize = 4096;
 /// How often the hub checks whether each account signed in or out: a file's metadata per
 /// account.
 const SIGN_IN_CHECK: Duration = Duration::from_secs(3);
+
+/// The least time between two details events of one agent. A subagent's burst of tool calls
+/// changes the details many times a second, and each event carries them whole.
+const DETAILS_SPACING: Duration = Duration::from_millis(200);
 
 /// Owns every agent and the daemon's state. Only its task touches them.
 pub(crate) struct Hub {
@@ -64,6 +68,66 @@ pub(super) struct Agent {
     pub(super) queue: VecDeque<QueuedPrompt>,
     /// The folder `agent.change_folder` moves the agent to once its process exits.
     pub(super) moving: Option<PendingMove>,
+    pub(super) details_out: DetailsOut,
+}
+
+/// How an agent's details go out.
+#[derive(Default)]
+pub(super) struct DetailsOut {
+    /// The last `DetailsChanged` frame and its sequence number, which a replay sends in place of
+    /// the older ones.
+    latest: Option<(Seq, Vec<u8>)>,
+    /// When the last details event went out.
+    sent_at: Option<Instant>,
+    /// The waiting prompts of the last details event.
+    sent_waiting: Vec<WaitingPrompt>,
+    /// A change that waits for [`DETAILS_SPACING`] to pass since the last one. A later change
+    /// replaces it.
+    held: Option<AgentDetails>,
+}
+
+/// What becomes of a details change.
+#[derive(Debug, PartialEq)]
+enum Spaced {
+    Send(AgentDetails),
+    /// It waits. The first change held asks to be woken in `wake_in`; a later one replaces it.
+    Held {
+        wake_in: Option<Duration>,
+    },
+}
+
+impl DetailsOut {
+    /// Sends a change at once, unless the last one went out less than [`DETAILS_SPACING`] before
+    /// `now`. A change of the waiting prompts goes out at once, in its place among the transcript
+    /// events: a client matches the two to show a message once.
+    fn space(&mut self, details: AgentDetails, now: Instant) -> Spaced {
+        let waiting_changed = details.waiting_prompts != self.sent_waiting;
+        let wait = self
+            .sent_at
+            .map(|sent| DETAILS_SPACING.saturating_sub(now.saturating_duration_since(sent)))
+            .filter(|wait| !wait.is_zero() && !waiting_changed);
+        let Some(wait) = wait else {
+            self.sent(&details, now);
+            return Spaced::Send(details);
+        };
+        let first = self.held.replace(details).is_none();
+        Spaced::Held {
+            wake_in: first.then_some(wait),
+        }
+    }
+
+    /// The change held, which goes out at `now`.
+    fn take_held(&mut self, now: Instant) -> Option<AgentDetails> {
+        let details = self.held.take()?;
+        self.sent(&details, now);
+        Some(details)
+    }
+
+    fn sent(&mut self, details: &AgentDetails, now: Instant) {
+        self.sent_at = Some(now);
+        self.held = None;
+        self.sent_waiting.clone_from(&details.waiting_prompts);
+    }
 }
 
 pub(super) struct QueuedPrompt {
@@ -80,11 +144,15 @@ impl Hub {
         restored: Restored,
         inputs: mpsc::Sender<HubInput>,
     ) -> Self {
-        let logs = EventLogs::new(state.events());
+        let logs = EventLogs::new(state.events(), state.details());
+        let mut details = restored.details;
         let agents: BTreeMap<AgentId, Agent> = restored
             .agents
             .into_iter()
             .map(|(record, view)| {
+                let latest = details
+                    .remove(&record.id)
+                    .map(|latest| (latest.seq, latest.frame));
                 let agent = Agent {
                     record,
                     view,
@@ -92,6 +160,10 @@ impl Hub {
                     generation: 0,
                     queue: VecDeque::new(),
                     moving: None,
+                    details_out: DetailsOut {
+                        latest,
+                        ..DetailsOut::default()
+                    },
                 };
                 (agent.record.id, agent)
             })
@@ -164,6 +236,7 @@ impl Hub {
                 generation,
                 cost,
             } => self.restored_cost(agent, generation, cost),
+            HubInput::DetailsDue { agent } => self.send_held_details(agent),
         }
     }
 
@@ -174,6 +247,12 @@ impl Hub {
                 after,
                 upto: self.last_seq,
                 events: self.logs.folder().to_owned(),
+                details: self
+                    .agents
+                    .values()
+                    .filter_map(|agent| agent.details_out.latest.clone())
+                    .filter(|(seq, _)| *seq > after)
+                    .collect(),
             },
             Some(_) | None => Joined::Snapshot(Box::new(self.snapshot())),
         };
@@ -220,8 +299,13 @@ impl Hub {
         }
     }
 
-    /// Numbers an event, logs it, and sends it to every client.
+    /// Numbers an event, logs it, and sends it to every client. An agent's details go to its
+    /// details file instead of its log.
     pub(super) fn emit(&mut self, log: LogName, event: Event) {
+        let details_of = match (log, &event) {
+            (LogName::Agent(agent), Event::DetailsChanged { .. }) => Some(agent),
+            _ => None,
+        };
         let seq = match self.last_seq {
             Some(last) => last.next(),
             None => Some(Seq::new(1)),
@@ -238,7 +322,16 @@ impl Hub {
             }
         };
         self.last_seq = Some(seq);
-        if let Err(error) = self.logs.append(log, &frame) {
+        let stored = match details_of {
+            Some(agent) => {
+                if let Some(found) = self.agents.get_mut(&agent) {
+                    found.details_out.latest = Some((seq, frame.as_bytes().to_vec()));
+                }
+                self.logs.save_details(agent, &frame)
+            }
+            None => self.logs.append(log, &frame),
+        };
+        if let Err(error) = stored {
             tracing::error!(error = %crate::hub::errors::chain(&error), "cannot log an event");
             // A client that saw less can no longer replay from the logs.
             self.replay_floor = Some(seq);
@@ -253,15 +346,64 @@ impl Hub {
         });
     }
 
-    /// Emits what changed in an agent's view.
+    /// Emits what changed in an agent's view. A details change waits when the last one went out
+    /// less than [`DETAILS_SPACING`] ago.
     pub(super) fn publish(&mut self, agent: AgentId) {
         let Some(found) = self.agents.get_mut(&agent) else {
             return;
         };
         let events = found.view.take_events();
         for event in events {
+            let event = match event {
+                Event::DetailsChanged { agent, details } => {
+                    match self.space_details(agent, details) {
+                        Some(details) => Event::DetailsChanged { agent, details },
+                        None => continue,
+                    }
+                }
+                event => event,
+            };
             self.emit(LogName::Agent(agent), event);
         }
+    }
+
+    /// The details to send now, or `None` when they wait for [`DETAILS_SPACING`] to pass since the
+    /// last ones. Waiting details replace those that waited before.
+    fn space_details(&mut self, agent: AgentId, details: AgentDetails) -> Option<AgentDetails> {
+        let found = self.agents.get_mut(&agent)?;
+        // Without a runtime, as in some tests, nothing would send them later.
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            found.details_out.sent(&details, Instant::now());
+            return Some(details);
+        };
+        match found.details_out.space(details, Instant::now()) {
+            Spaced::Send(details) => Some(details),
+            Spaced::Held { wake_in } => {
+                if let Some(wait) = wake_in {
+                    let inputs = self.inputs.clone();
+                    runtime.spawn(async move {
+                        tokio::time::sleep(wait).await;
+                        // The hub may have stopped meanwhile.
+                        let _ = inputs.send(HubInput::DetailsDue { agent }).await;
+                    });
+                }
+                None
+            }
+        }
+    }
+
+    /// Sends the details change that waited, if any.
+    fn send_held_details(&mut self, agent: AgentId) {
+        let Some(found) = self.agents.get_mut(&agent) else {
+            return;
+        };
+        let Some(details) = found.details_out.take_held(Instant::now()) else {
+            return;
+        };
+        self.emit(
+            LogName::Agent(agent),
+            Event::DetailsChanged { agent, details },
+        );
     }
 
     pub(super) fn save_agents(&self) {
@@ -308,4 +450,66 @@ impl Hub {
 
 pub(super) fn now() -> Timestamp {
     Timestamp::from_system_time(SystemTime::now()).unwrap_or(Timestamp::from_unix_millis(0))
+}
+
+#[cfg(test)]
+mod tests {
+    use cockpit_protocol::{PromptId, TaskListItem, TaskStatus, WaitingState};
+
+    use super::*;
+
+    fn with_task(task: &str) -> AgentDetails {
+        AgentDetails {
+            tasks: vec![TaskListItem {
+                content: task.to_owned(),
+                status: TaskStatus::Pending,
+                active_form: String::new(),
+            }],
+            ..AgentDetails::default()
+        }
+    }
+
+    #[test]
+    fn changes_close_together_wait_and_the_last_one_goes_out() {
+        let start = Instant::now();
+        let mut out = DetailsOut::default();
+
+        let first = out.space(with_task("one"), start);
+        let second = out.space(with_task("two"), start + Duration::from_millis(50));
+        let third = out.space(with_task("three"), start + Duration::from_millis(80));
+        let held = out.take_held(start + DETAILS_SPACING);
+        let later = out.space(with_task("four"), start + DETAILS_SPACING + DETAILS_SPACING);
+
+        assert_eq!(first, Spaced::Send(with_task("one")));
+        assert_eq!(
+            second,
+            Spaced::Held {
+                wake_in: Some(Duration::from_millis(150))
+            }
+        );
+        assert_eq!(third, Spaced::Held { wake_in: None });
+        assert_eq!(held, Some(with_task("three")));
+        assert_eq!(later, Spaced::Send(with_task("four")));
+    }
+
+    #[test]
+    fn a_change_of_the_waiting_prompts_goes_out_at_once() {
+        let start = Instant::now();
+        let mut out = DetailsOut::default();
+        let waiting = AgentDetails {
+            waiting_prompts: vec![WaitingPrompt {
+                id: PromptId::new(1),
+                text: "Then run the tests".to_owned(),
+                image_count: 0,
+                state: WaitingState::Sent,
+                sent_at: None,
+            }],
+            ..AgentDetails::default()
+        };
+
+        out.space(AgentDetails::default(), start);
+        let changed = out.space(waiting.clone(), start + Duration::from_millis(10));
+
+        assert_eq!(changed, Spaced::Send(waiting));
+    }
 }

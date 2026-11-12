@@ -25,6 +25,7 @@ const AGENTS_FILE: &str = "agents.json";
 const SETTINGS_FILE: &str = "settings.json";
 const EVENTS_FOLDER: &str = "events";
 const RAW_FOLDER: &str = "raw";
+const DETAILS_FOLDER: &str = "details";
 const RAW_LOG_EXTENSION: &str = "jsonl";
 
 /// Only the owner may enter the folders.
@@ -73,7 +74,12 @@ impl StateDir {
         let state = Self {
             root: root.to_owned(),
         };
-        for folder in [state.root.clone(), state.events(), state.raw()] {
+        for folder in [
+            state.root.clone(),
+            state.events(),
+            state.raw(),
+            state.details(),
+        ] {
             create_private_folder(&folder)?;
         }
         Ok(state)
@@ -117,6 +123,11 @@ impl StateDir {
 
     pub(crate) fn raw(&self) -> PathBuf {
         self.root.join(RAW_FOLDER)
+    }
+
+    /// `details/`: each agent's latest details, which the event logs leave out.
+    pub(crate) fn details(&self) -> PathBuf {
+        self.root.join(DETAILS_FOLDER)
     }
 
     /// `raw/<agent-id>.jsonl`.
@@ -243,7 +254,7 @@ mod tests {
         DaemonSettings::default()
             .save(&state.settings_file())
             .unwrap();
-        let mut logs = EventLogs::new(state.events());
+        let mut logs = EventLogs::new(state.events(), state.details());
         let event = ServerMessage::Event(EventRecord {
             seq: Seq::new(1),
             event: Event::SettingsChanged(Settings::default()),

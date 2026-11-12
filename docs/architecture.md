@@ -182,7 +182,7 @@ A reader refuses a line longer than a fixed maximum (16 MiB) instead of bufferin
    The version is 6. An app and a daemon of different versions refuse each other.
 2. The daemon answers `Welcome { protocol_version, daemon_version, catchup }`, or `Refused { reason }` when the versions differ.
    `daemon_version` is the daemon's release, its Cargo version ("0.1.0"). The Machines dialog shows it on each machine's row, and the About section at the end of the Settings dialog's General tab shows the app's own version.
-3. `catchup` is `Replay` when `last_seq` was given and the logs still hold every event after it: the daemon then sends those events, then live events.
+3. `catchup` is `Replay` when `last_seq` was given and the logs still hold every event after it: the daemon then sends those events, with each agent's latest details in place of the older ones, then live events.
    Otherwise it is `Snapshot(snapshot)`: the client replaces its state with it, and live events follow.
    A welcome never carries both, so no event is applied twice.
 4. The client sends `Request { id, request }`; the daemon answers `Response { id, result }`.
@@ -242,7 +242,7 @@ Older daemons send it as it is, so a test pins it.
 `AgentAdded`, `AgentUpdated(AgentSummary)`, `AgentRemoved`, `TranscriptAppended { agent, item }`, `TranscriptChanged { agent, item }`, `DetailsChanged { agent, details }`, `CommandsChanged { agent, commands }` (the slash commands and skills, which change only when `claude` starts or reloads, so they travel apart from the details), `PlanUsageChanged` (the default account's), `SettingsChanged`, `AccountPlanUsageChanged { account, usage }` (another account's), `AccountsChanged { accounts }`.
 Each carries its `Seq`.
 
-`DetailsChanged` carries the whole details, so it goes out only when something they hold changes: a subagent's text or a streamed delta sends none, its tool calls and its task events do.
+`DetailsChanged` carries the whole details, so it goes out only when something they hold changes: a subagent's text or a streamed delta sends none, its tool calls and its task events do. During a burst, a change waits until 200 ms passed since the last one, and a later change replaces it. A change of the waiting prompts goes out at once, since the app matches them against the transcript events.
 
 ## Daemon (`cockpit_daemon`)
 
@@ -345,7 +345,8 @@ Everything lives in `$XDG_STATE_HOME/agents-cockpit/` (default `~/.local/state/a
 - `serve.lock`: held while a daemon runs, the background service or the app's own, so a second daemon refuses to start and a leftover socket is safe to delete;
 - `agents.json`: one entry per agent (id, title, folder, account, Claude session id, model, effort, mode, position in the list, for an agent made from a past session the part of the session file it shows, and while its `claude` runs, that process's id, start time and, on Linux, boot), written atomically (write to a temporary file, then rename);
 - `settings.json`: the hidden MCP servers, the accounts (the default account's name and credentials, the added accounts, the next account id), and other daemon-side settings;
-- `events/<agent-id>.jsonl`: the agent's cockpit events, each with its `Seq`, appended;
+- `events/<agent-id>.jsonl`: the agent's cockpit events, each with its `Seq`, appended, but its details;
+- `details/<agent-id>.json`: the frame of the agent's latest `DetailsChanged`, replaced at each change. Each change replaced the last one, and logging them all made a busy agent's log grow by tens of kilobytes per change. A log from an older daemon gives its details to this file at start, once;
 - `raw/<agent-id>.jsonl`: every line exchanged with `claude`, for debugging.
 
 The daemon leaves the umask alone, since `claude` and the agents' commands inherit it.

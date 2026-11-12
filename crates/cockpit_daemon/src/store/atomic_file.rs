@@ -41,6 +41,21 @@ pub(crate) fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), Sto
     })
 }
 
+/// Writes `bytes` so that a reader sees the old content or the new one, without waiting for the
+/// disk: a crash of the machine, not of the daemon, may leave the old content.
+pub(crate) fn write_bytes_unsynced(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+
+    let temporary = temporary_path(path);
+    let mut file = state_dir::owner_only()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&temporary)?;
+    file.write_all(bytes)?;
+    std::fs::rename(&temporary, path)
+}
+
 /// Writes a temporary file beside `path`, syncs it, then renames it over `path`.
 fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     use std::io::Write;

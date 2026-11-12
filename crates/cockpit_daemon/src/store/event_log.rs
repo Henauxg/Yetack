@@ -1,6 +1,10 @@
 //! The event logs: `events/<agent-id>.jsonl` for an agent's events, `events/daemon.jsonl` for the
 //! others. Each line is the frame the daemon sent to its clients, so a replay copies lines as
 //! they are.
+//!
+//! An agent's `DetailsChanged` events stay out of its log: each one replaces the last, and each
+//! is tens of kilobytes. `details/<agent-id>.json` holds the latest one's frame instead, and a
+//! replay sends it in its place.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -9,14 +13,19 @@ use std::io;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
-use cockpit_protocol::{AgentId, EventRecord, Frame, Seq, ServerMessage};
+use cockpit_protocol::{AgentDetails, AgentId, Event, EventRecord, Frame, Seq, ServerMessage};
 use serde::Deserialize;
 
-use crate::store::state_dir;
 use crate::store::store_error::StoreError;
+use crate::store::{atomic_file, state_dir};
 
 const DAEMON_LOG: &str = "daemon";
 const LOG_SUFFIX: &str = ".jsonl";
+const DETAILS_SUFFIX: &str = ".json";
+/// The temporary copy of a log that loses its details.
+const COMPACTING_EXTENSION: &str = "compacting";
+/// The event type of `DetailsChanged` in a frame.
+const DETAILS_EVENT: &str = "details_changed";
 const NEWLINE: u8 = b'\n';
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -26,11 +35,21 @@ pub(crate) enum LogName {
     Daemon,
 }
 
-/// The open log files. Only the hub writes them.
+/// The open log files, and the folder of the agents' latest details. Only the hub writes them.
 #[derive(Debug)]
 pub(crate) struct EventLogs {
     folder: PathBuf,
+    details: PathBuf,
     open: HashMap<LogName, File>,
+}
+
+/// An agent's latest details, as `details/<agent-id>.json` holds them.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LatestDetails {
+    pub(crate) seq: Seq,
+    /// The `DetailsChanged` frame, with its `\n`, which a replay sends as it is.
+    pub(crate) frame: Vec<u8>,
+    pub(crate) details: AgentDetails,
 }
 
 /// What a replay read found.
@@ -45,6 +64,19 @@ pub(crate) enum ReplayRead {
 #[derive(Deserialize)]
 struct SeqProbe {
     seq: Seq,
+}
+
+/// A log line's sequence number and event type, read without the rest of the event.
+#[derive(Deserialize)]
+struct KindProbe {
+    seq: Seq,
+    event: EventKind,
+}
+
+#[derive(Deserialize)]
+struct EventKind {
+    #[serde(rename = "type")]
+    kind: String,
 }
 
 impl LogName {
@@ -65,11 +97,20 @@ impl LogName {
 }
 
 impl EventLogs {
-    pub(crate) fn new(folder: PathBuf) -> Self {
+    /// `folder` holds the logs, and `details` the agents' latest details.
+    pub(crate) fn new(folder: PathBuf, details: PathBuf) -> Self {
         Self {
             folder,
+            details,
             open: HashMap::new(),
         }
+    }
+
+    /// Replaces an agent's latest details with `frame`, its `DetailsChanged` event.
+    pub(crate) fn save_details(&self, agent: AgentId, frame: &Frame) -> Result<(), StoreError> {
+        let path = details_path(&self.details, agent);
+        atomic_file::write_bytes_unsynced(&path, frame.as_bytes())
+            .map_err(|source| StoreError::Write { path, source })
     }
 
     pub(crate) fn folder(&self) -> &Path {
@@ -101,15 +142,14 @@ impl EventLogs {
         written.map_err(error)
     }
 
-    /// Deletes a log, as when its agent is removed.
+    /// Deletes a log, and an agent's latest details with it, as when the agent is removed.
     pub(crate) fn remove(&mut self, log: LogName) -> Result<(), StoreError> {
         self.open.remove(&log);
-        let path = self.path(log);
-        match std::fs::remove_file(&path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(source) => Err(StoreError::Write { path, source }),
+        remove_if_present(&self.path(log))?;
+        if let LogName::Agent(agent) = log {
+            remove_if_present(&details_path(&self.details, agent))?;
         }
+        Ok(())
     }
 
     /// Every log in the folder.
@@ -132,6 +172,142 @@ fn list_logs(folder: &Path) -> Result<Vec<(LogName, PathBuf)>, StoreError> {
         }
     }
     Ok(logs)
+}
+
+fn remove_if_present(path: &Path) -> Result<(), StoreError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(StoreError::Write {
+            path: path.to_owned(),
+            source,
+        }),
+    }
+}
+
+/// `details/<agent-id>.json`.
+pub(crate) fn details_path(folder: &Path, agent: AgentId) -> PathBuf {
+    folder.join(format!("{}{DETAILS_SUFFIX}", agent.get()))
+}
+
+/// Each agent's latest details in `folder`. A file that does not hold a `DetailsChanged` frame is
+/// skipped.
+pub(crate) fn read_latest_details(
+    folder: &Path,
+) -> Result<Vec<(AgentId, LatestDetails)>, StoreError> {
+    let error = |source| StoreError::Read {
+        path: folder.to_owned(),
+        source,
+    };
+    let entries = match std::fs::read_dir(folder) {
+        Ok(entries) => entries,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => return Err(error(source)),
+    };
+    let mut found = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(error)?;
+        let name = entry.file_name();
+        let Some(agent) = name
+            .to_str()
+            .and_then(|name| name.strip_suffix(DETAILS_SUFFIX))
+            .and_then(|stem| stem.parse().ok())
+            .map(AgentId::new)
+        else {
+            continue;
+        };
+        let path = entry.path();
+        let frame = std::fs::read(&path).map_err(|source| StoreError::Read {
+            path: path.clone(),
+            source,
+        })?;
+        match latest_details(frame) {
+            Some(latest) => found.push((agent, latest)),
+            None => tracing::warn!(path = %path.display(), "skipped details that do not decode"),
+        }
+    }
+    Ok(found)
+}
+
+/// The details a `DetailsChanged` frame holds.
+fn latest_details(frame: Vec<u8>) -> Option<LatestDetails> {
+    let Ok(ServerMessage::Event(EventRecord {
+        seq,
+        event: Event::DetailsChanged { details, .. },
+    })) = serde_json::from_slice(&frame)
+    else {
+        return None;
+    };
+    let mut frame = frame;
+    if frame.last() != Some(&NEWLINE) {
+        frame.push(NEWLINE);
+    }
+    Some(LatestDetails {
+        seq,
+        frame,
+        details,
+    })
+}
+
+/// Takes the `DetailsChanged` events out of an agent's log, as a daemon logged them before the
+/// details file. The last one becomes the details file at `details`, unless that file holds later
+/// details. A log without details stays as it is.
+pub(crate) fn move_details_out(log: &Path, details: &Path) -> Result<(), StoreError> {
+    use std::io::Write;
+
+    let compacting = log.with_extension(COMPACTING_EXTENSION);
+    let write_error = |source| StoreError::Write {
+        path: compacting.clone(),
+        source,
+    };
+    let mut kept = io::BufWriter::new(
+        state_dir::owner_only()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&compacting)
+            .map_err(write_error)?,
+    );
+    let mut last: Option<(Seq, Vec<u8>)> = None;
+    let mut written = Ok(());
+    for_each_line(log, |line| {
+        match serde_json::from_slice::<KindProbe>(line) {
+            Ok(probe) if probe.event.kind == DETAILS_EVENT => {
+                last = Some((probe.seq, line.to_vec()));
+            }
+            Ok(_) | Err(_) => {
+                written = kept
+                    .write_all(line)
+                    .and_then(|()| kept.write_all(&[NEWLINE]));
+            }
+        }
+        written.is_ok()
+    })?;
+    written.map_err(write_error)?;
+    let Some((seq, frame)) = last else {
+        drop(kept);
+        return remove_if_present(&compacting);
+    };
+    let file = kept
+        .into_inner()
+        .map_err(|error| write_error(error.into_error()))?;
+    file.sync_all().map_err(write_error)?;
+    let newer_saved = std::fs::read(details)
+        .ok()
+        .and_then(latest_details)
+        .is_some_and(|saved| saved.seq >= seq);
+    if !newer_saved {
+        let mut frame = frame;
+        frame.push(NEWLINE);
+        atomic_file::write_bytes_unsynced(details, &frame).map_err(|source| StoreError::Write {
+            path: details.to_owned(),
+            source,
+        })?;
+    }
+    std::fs::rename(&compacting, log).map_err(|source| StoreError::Write {
+        path: log.to_owned(),
+        source,
+    })
 }
 
 /// Opens a log for appending. A last line cut by a crash gets its `\n`, so the next line starts
@@ -190,18 +366,26 @@ pub(crate) fn for_each_event(
     })
 }
 
-/// The frames of every event after `after`, up to `upto`, from all the logs in `folder`.
+/// The frames of every event after `after`, up to `upto`, from all the logs in `folder`, with the
+/// agents' latest `details` frames in their places.
 pub(crate) fn read_replay(
     folder: &Path,
     after: Seq,
     upto: Option<Seq>,
+    details: Vec<(Seq, Vec<u8>)>,
     max_bytes: usize,
 ) -> Result<ReplayRead, StoreError> {
     let Some(upto) = upto else {
         return Ok(ReplayRead::Frames(Vec::new()));
     };
-    let mut frames: Vec<(Seq, Vec<u8>)> = Vec::new();
-    let mut total_bytes: usize = 0;
+    let mut frames: Vec<(Seq, Vec<u8>)> = details
+        .into_iter()
+        .filter(|(seq, _)| *seq > after && *seq <= upto)
+        .collect();
+    let mut total_bytes: usize = frames.iter().map(|(_, frame)| frame.len()).sum();
+    if total_bytes > max_bytes {
+        return Ok(ReplayRead::TooLarge);
+    }
     for (_, path) in list_logs(folder)? {
         let mut too_large = false;
         for_each_line(&path, |line| {
@@ -306,7 +490,7 @@ mod tests {
     #[test]
     fn appends_and_reads_back() {
         let temp = tempfile::tempdir().unwrap();
-        let mut logs = EventLogs::new(temp.path().to_owned());
+        let mut logs = EventLogs::new(temp.path().to_owned(), temp.path().join("details"));
         let log = LogName::Agent(AgentId::new(1));
 
         logs.append(log, &frame(1, removed(7))).unwrap();
@@ -360,7 +544,7 @@ mod tests {
         first.extend_from_slice(b"{\"type\":\"event\",\"seq\":2,\"ev");
         std::fs::write(&path, first).unwrap();
 
-        let mut logs = EventLogs::new(temp.path().to_owned());
+        let mut logs = EventLogs::new(temp.path().to_owned(), temp.path().join("details"));
         logs.append(log, &frame(3, removed(9))).unwrap();
 
         assert_eq!(seqs(&path), [1, 3]);
@@ -373,7 +557,7 @@ mod tests {
 
         let temp = tempfile::tempdir().unwrap();
         let log = LogName::Daemon;
-        let mut logs = EventLogs::new(temp.path().to_owned());
+        let mut logs = EventLogs::new(temp.path().to_owned(), temp.path().join("details"));
         logs.append(log, &frame(1, removed(7))).unwrap();
         let path = logs.path(log);
         let mut cut = OpenOptions::new().append(true).open(&path).unwrap();
@@ -392,7 +576,7 @@ mod tests {
     #[test]
     fn a_replay_merges_the_logs_in_seq_order_within_the_range() {
         let temp = tempfile::tempdir().unwrap();
-        let mut logs = EventLogs::new(temp.path().to_owned());
+        let mut logs = EventLogs::new(temp.path().to_owned(), temp.path().join("details"));
         let agent = LogName::Agent(AgentId::new(1));
         logs.append(agent, &frame(1, removed(1))).unwrap();
         logs.append(
@@ -408,7 +592,14 @@ mod tests {
         .unwrap();
         logs.append(agent, &frame(5, removed(5))).unwrap();
 
-        let read = read_replay(temp.path(), Seq::new(1), Some(Seq::new(4)), 1 << 20).unwrap();
+        let read = read_replay(
+            temp.path(),
+            Seq::new(1),
+            Some(Seq::new(4)),
+            Vec::new(),
+            1 << 20,
+        )
+        .unwrap();
 
         let ReplayRead::Frames(frames) = read else {
             panic!("expected frames, got {read:?}");
@@ -424,13 +615,20 @@ mod tests {
     #[test]
     fn a_replay_over_the_budget_is_too_large() {
         let temp = tempfile::tempdir().unwrap();
-        let mut logs = EventLogs::new(temp.path().to_owned());
+        let mut logs = EventLogs::new(temp.path().to_owned(), temp.path().join("details"));
         for seq in 1..=10 {
             logs.append(LogName::Daemon, &frame(seq, removed(1)))
                 .unwrap();
         }
 
-        let read = read_replay(temp.path(), Seq::new(0), Some(Seq::new(10)), 100).unwrap();
+        let read = read_replay(
+            temp.path(),
+            Seq::new(0),
+            Some(Seq::new(10)),
+            Vec::new(),
+            100,
+        )
+        .unwrap();
 
         assert_eq!(read, ReplayRead::TooLarge);
     }
@@ -438,7 +636,7 @@ mod tests {
     #[test]
     fn removing_a_log_deletes_its_file() {
         let temp = tempfile::tempdir().unwrap();
-        let mut logs = EventLogs::new(temp.path().to_owned());
+        let mut logs = EventLogs::new(temp.path().to_owned(), temp.path().join("details"));
         let log = LogName::Agent(AgentId::new(4));
         logs.append(log, &frame(1, removed(1))).unwrap();
 
@@ -446,5 +644,116 @@ mod tests {
 
         assert!(!logs.path(log).exists());
         assert!(logs.list().unwrap().is_empty());
+    }
+
+    fn details_changed(agent: u32, files: u32) -> Event {
+        Event::DetailsChanged {
+            agent: AgentId::new(agent),
+            details: AgentDetails {
+                changed_files: (0..files)
+                    .map(|index| cockpit_protocol::ChangedFile {
+                        path: PathBuf::from(format!("src/file_{index}.rs")),
+                        lines_added: 1,
+                        lines_removed: 0,
+                    })
+                    .collect(),
+                ..AgentDetails::default()
+            },
+        }
+    }
+
+    fn seq_of(frame: &[u8]) -> u64 {
+        serde_json::from_slice::<SeqProbe>(frame).unwrap().seq.get()
+    }
+
+    #[test]
+    fn moving_the_details_out_keeps_the_other_lines_and_the_last_details() {
+        let temp = tempfile::tempdir().unwrap();
+        let details = temp.path().join("details");
+        std::fs::create_dir(&details).unwrap();
+        let mut logs = EventLogs::new(temp.path().to_owned(), details.clone());
+        let log = LogName::Agent(AgentId::new(1));
+        logs.append(log, &frame(1, removed(7))).unwrap();
+        logs.append(log, &frame(2, details_changed(1, 1))).unwrap();
+        logs.append(log, &frame(3, removed(8))).unwrap();
+        logs.append(log, &frame(4, details_changed(1, 2))).unwrap();
+        let saved = details_path(&details, AgentId::new(1));
+
+        move_details_out(&logs.path(log), &saved).unwrap();
+
+        assert_eq!(seqs(&logs.path(log)), [1, 3]);
+        let latest = read_latest_details(&details).unwrap();
+        assert_eq!(latest.len(), 1);
+        assert_eq!(latest[0].1.seq, Seq::new(4));
+        assert_eq!(latest[0].1.details.changed_files.len(), 2);
+        // A second start finds nothing to move.
+        move_details_out(&logs.path(log), &saved).unwrap();
+        assert_eq!(seqs(&logs.path(log)), [1, 3]);
+    }
+
+    #[test]
+    fn a_details_file_later_than_the_log_stays() {
+        let temp = tempfile::tempdir().unwrap();
+        let details = temp.path().join("details");
+        std::fs::create_dir(&details).unwrap();
+        let mut logs = EventLogs::new(temp.path().to_owned(), details.clone());
+        let log = LogName::Agent(AgentId::new(1));
+        logs.append(log, &frame(4, details_changed(1, 1))).unwrap();
+        logs.save_details(AgentId::new(1), &frame(9, details_changed(1, 3)))
+            .unwrap();
+
+        move_details_out(&logs.path(log), &details_path(&details, AgentId::new(1))).unwrap();
+
+        let latest = read_latest_details(&details).unwrap();
+        assert_eq!(latest[0].1.seq, Seq::new(9));
+        assert!(seqs(&logs.path(log)).is_empty());
+    }
+
+    #[test]
+    fn a_replay_puts_the_latest_details_in_their_place() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut logs = EventLogs::new(temp.path().to_owned(), temp.path().join("details"));
+        let agent = LogName::Agent(AgentId::new(1));
+        logs.append(agent, &frame(1, removed(1))).unwrap();
+        logs.append(agent, &frame(3, removed(3))).unwrap();
+        let details = vec![
+            (
+                Seq::new(2),
+                frame(2, details_changed(1, 1)).as_bytes().to_vec(),
+            ),
+            (
+                Seq::new(1),
+                frame(1, details_changed(2, 1)).as_bytes().to_vec(),
+            ),
+        ];
+
+        let read = read_replay(
+            temp.path(),
+            Seq::new(0),
+            Some(Seq::new(3)),
+            details,
+            1 << 20,
+        )
+        .unwrap();
+
+        let ReplayRead::Frames(frames) = read else {
+            panic!("expected frames, got {read:?}");
+        };
+        let seqs: Vec<u64> = frames.iter().map(|frame| seq_of(frame)).collect();
+        assert_eq!(seqs, [1, 1, 2, 3]);
+    }
+
+    #[test]
+    fn removing_an_agents_log_deletes_its_details() {
+        let temp = tempfile::tempdir().unwrap();
+        let details = temp.path().join("details");
+        std::fs::create_dir(&details).unwrap();
+        let mut logs = EventLogs::new(temp.path().to_owned(), details.clone());
+        logs.save_details(AgentId::new(4), &frame(1, details_changed(4, 1)))
+            .unwrap();
+
+        logs.remove(LogName::Agent(AgentId::new(4))).unwrap();
+
+        assert!(read_latest_details(&details).unwrap().is_empty());
     }
 }

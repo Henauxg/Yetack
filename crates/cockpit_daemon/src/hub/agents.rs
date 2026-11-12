@@ -15,7 +15,7 @@ use cockpit_protocol::{
 
 use crate::accounts::ClaudeEnv;
 use crate::hub::input::{ControlPurpose, HubInput, Reply};
-use crate::hub::state::{Agent, Hub, QueuedPrompt};
+use crate::hub::state::{Agent, DetailsOut, Hub, QueuedPrompt};
 use crate::hub::{errors, state};
 use crate::process::{ClaudeCommand, InterruptedTurn, ProcessEvent};
 use crate::sessions::FoundSession;
@@ -104,6 +104,7 @@ impl Hub {
                 generation: 0,
                 queue: VecDeque::new(),
                 moving: None,
+                details_out: DetailsOut::default(),
             },
         );
         if let Err(error) = self.start_process(id, InterruptedTurn::Leave) {

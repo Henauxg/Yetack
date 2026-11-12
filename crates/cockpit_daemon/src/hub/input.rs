@@ -66,6 +66,10 @@ pub(crate) enum HubInput {
         generation: u32,
         cost: CostUsd,
     },
+    /// An agent's details change that waited for its turn may go out.
+    DetailsDue {
+        agent: AgentId,
+    },
 }
 
 /// Whether each account is signed in, and when its login was written.
@@ -90,11 +94,13 @@ pub(crate) struct Registration {
 
 /// How the client catches up.
 pub(crate) enum Joined {
-    /// The logs in `events` hold every event after `after`, up to `upto`.
+    /// The logs in `events` hold every event after `after`, up to `upto`, but the details:
+    /// `details` holds each agent's latest `DetailsChanged` frame and its sequence number.
     Replay {
         after: Seq,
         upto: Option<Seq>,
         events: PathBuf,
+        details: Vec<(Seq, Vec<u8>)>,
     },
     Snapshot(Box<Snapshot>),
 }
