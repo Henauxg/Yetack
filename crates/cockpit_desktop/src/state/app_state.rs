@@ -536,15 +536,18 @@ impl AppState {
 
     /// The agents the sidebar shows, from top to bottom: those its status filter keeps. Grouped
     /// by project, the rows follow their groups, whatever the app's order puts between them.
+    /// Split by machine, they follow their machines inside each group: this computer first.
     pub fn sidebar_agents(&self) -> Vec<&AgentEntry> {
         let filter = self.prefs.sidebar.filter;
         let mut agents = self.sidebar_order();
         agents.retain(|entry| filter.admits(&entry.summary));
         if self.prefs.sidebar.group_by == GroupBy::Project {
             let groups = projects::shown_projects(self);
+            let split = grouping::splits_by_machine(self);
             agents.sort_by_cached_key(|entry| {
                 let project = projects::project_of(self, entry);
-                groups.iter().position(|group| *group == project)
+                let machine = split.then(|| MachineId::of(entry.id()));
+                (groups.iter().position(|group| *group == project), machine)
             });
         }
         agents

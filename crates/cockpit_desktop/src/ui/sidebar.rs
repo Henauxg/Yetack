@@ -1,6 +1,7 @@
 //! The agent list: a status filter, compact two-line rows in the order the user sets, and the
 //! connection's state.
 
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_protocol::{AgentId, AgentStatus, AgentSummary, MAX_TITLE_CHARS, Mark, Timestamp};
@@ -55,8 +56,8 @@ struct AgentRow {
     warns: bool,
     /// You marked the agent as one to handle.
     to_handle: bool,
-    /// The machine the agent runs on, when no panel says it.
-    machine: Option<String>,
+    /// The machine the agent runs on, when nothing above the row says it.
+    machine: Option<RowMachine>,
     notifications: NotificationLevel,
     /// The shortcut that closes the selected agent, for the close button's tooltip.
     close_keys: String,
@@ -81,11 +82,28 @@ impl AgentRow {
                 .map(|progress| format!("{}/{}", progress.done, progress.total)),
             time: row_time(summary),
             to_handle: summary.mark == Mark::ToHandle,
-            machine: grouping::machine_shown_on_row(state, entry.id()).map(str::to_owned),
+            machine: grouping::machine_shown_on_row(state, entry.id())
+                .and_then(|machine| RowMachine::new(state, machine)),
             notifications: notification_levels::agent_level(state, entry.id()),
             close_keys: state.prefs.keys.shown(Command::CloseAgent),
             edit,
         }
+    }
+}
+
+/// A machine on a row or a project's header: its short tag, the whole name on hover.
+#[derive(Debug, Clone, PartialEq)]
+struct RowMachine {
+    name: String,
+    tag: String,
+}
+
+impl RowMachine {
+    fn new(state: &AppState, machine: MachineId) -> Option<Self> {
+        Some(Self {
+            name: state.machines.get(machine)?.daemon.machine.clone(),
+            tag: grouping::machine_tag(state, machine)?,
+        })
     }
 }
 
@@ -379,17 +397,24 @@ struct MachineTrouble {
     update_link: Option<&'static str>,
 }
 
+/// The machine as a header or a machine line names it: "This computer" with a laptop, or its name
+/// with a server.
+fn machine_look(state: &AppState, machine: MachineId) -> (String, IconKind) {
+    let label = state.machines.get(machine).map(|known| &known.daemon);
+    let this_computer =
+        machine == MachineId::THIS && label.is_none_or(|label| label.place != DaemonPlace::Ssh);
+    if this_computer {
+        (THIS_COMPUTER.to_owned(), IconKind::Laptop)
+    } else {
+        let name = label.map_or_else(String::new, |label| label.machine.clone());
+        (name, IconKind::Server)
+    }
+}
+
 impl MachineGroup {
     fn new(state: &AppState, machine: MachineId, rows: Vec<AgentRow>) -> Self {
         let known = state.machines.get(machine);
-        let label = known.map(|known| &known.daemon);
-        let this_computer =
-            machine == MachineId::THIS && label.is_none_or(|label| label.place != DaemonPlace::Ssh);
-        let name = if this_computer {
-            THIS_COMPUTER.to_owned()
-        } else {
-            label.map_or_else(String::new, |label| label.machine.clone())
-        };
+        let (name, icon) = machine_look(state, machine);
         let agents = state
             .agents
             .values()
@@ -439,11 +464,7 @@ impl MachineGroup {
             machine,
             key: format!("{machine:?}"),
             name,
-            icon: if this_computer {
-                IconKind::Laptop
-            } else {
-                IconKind::Server
-            },
+            icon,
             folded: state.ui.folded_machines.contains(&machine),
             count,
             needs_you,
@@ -550,23 +571,64 @@ struct ProjectGroup {
     count: usize,
     needs_you: usize,
     to_handle: usize,
-    rows: Vec<AgentRow>,
+    /// The machine all its agents run on, when the header names it.
+    machine: Option<RowMachine>,
+    items: Vec<ProjectItem>,
+}
+
+/// What a project's panel lists under its header.
+#[derive(Debug, Clone, PartialEq)]
+enum ProjectItem {
+    /// Split by machine: the line above that machine's rows.
+    Machine(MachineLine),
+    Row(Box<AgentRow>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct MachineLine {
+    machine: MachineId,
+    name: String,
+    icon: IconKind,
+    /// The project's agents on the machine, whatever the filter shows.
+    count: usize,
 }
 
 impl ProjectGroup {
     fn new(state: &AppState, project: ProjectKey, rows: Vec<AgentRow>) -> Self {
         let look = projects::look(state, &project);
         let (mut count, mut needs_you, mut to_handle) = (0, 0, 0);
+        let mut on_machine: BTreeMap<MachineId, usize> = BTreeMap::new();
         for entry in state.agents.values() {
             if projects::project_of(state, entry) == project {
                 count += 1;
                 needs_you += usize::from(entry.summary.status == AgentStatus::NeedsYou);
                 to_handle += usize::from(entry.summary.mark == Mark::ToHandle);
+                *on_machine.entry(MachineId::of(entry.id())).or_default() += 1;
             }
+        }
+        let split = grouping::splits_by_machine(state) && on_machine.len() > 1;
+        let mut items = Vec::with_capacity(rows.len());
+        let mut last_machine = None;
+        // The rows come sorted by machine, so that each machine's line shows once.
+        for row in rows {
+            let machine = MachineId::of(row.id);
+            if split && last_machine != Some(machine) {
+                last_machine = Some(machine);
+                let (name, icon) = machine_look(state, machine);
+                items.push(ProjectItem::Machine(MachineLine {
+                    machine,
+                    name,
+                    icon,
+                    count: on_machine.get(&machine).copied().unwrap_or_default(),
+                }));
+            }
+            items.push(ProjectItem::Row(Box::new(row)));
         }
         Self {
             key: project.to_string(),
             folded: state.ui.folded_projects.contains(&project),
+            machine: grouping::machine_on_project_head(state, &project)
+                .and_then(|machine| RowMachine::new(state, machine)),
             project,
             name: look.name,
             color: look.color.map(AccountColor::css),
@@ -574,7 +636,7 @@ impl ProjectGroup {
             count,
             needs_you,
             to_handle,
-            rows,
+            items,
         }
     }
 }
@@ -597,7 +659,8 @@ fn ProjectGroupView(group: ProjectGroup) -> Element {
         count,
         needs_you,
         to_handle,
-        rows,
+        machine,
+        items,
     } = group;
     let fold_label = if folded {
         format!("Show the agents of {name}")
@@ -638,6 +701,12 @@ fn ProjectGroupView(group: ProjectGroup) -> Element {
                     }
                     span { class: swatch_class, style: swatch_style, aria_hidden: true }
                     span { class: if temporary { "machine-name temporary" } else { "machine-name" }, "{name}" }
+                    if let Some(machine) = &machine {
+                        span { class: "head-machine", title: "Its agents run on {machine.name}",
+                            Icon { kind: IconKind::Server, size: 11 }
+                            "{machine.tag}"
+                        }
+                    }
                     if folded && needs_you > 0 {
                         span { class: "machine-needs-you", title: "Agents that wait for you", "{needs_you}" }
                     }
@@ -664,8 +733,21 @@ fn ProjectGroupView(group: ProjectGroup) -> Element {
                 }
             }
             if !folded {
-                for row in rows {
-                    AgentRowView { key: "{row.id.get()}", row }
+                for item in items {
+                    match item {
+                        ProjectItem::Machine(line) => rsx! {
+                            div {
+                                key: "machine-{line.machine.get()}",
+                                class: "machine-line",
+                                Icon { kind: line.icon, size: 12 }
+                                span { class: "machine-line-name", "{line.name}" }
+                                span { class: "machine-line-count", "{line.count}" }
+                            }
+                        },
+                        ProjectItem::Row(row) => rsx! {
+                            AgentRowView { key: "{row.id.get()}", row: *row }
+                        },
+                    }
                 }
             }
             div { class: GROUP_END_CLASS, "data-end": "{key}", aria_hidden: true }
@@ -794,7 +876,19 @@ fn AgentRowButton(row: AgentRow, class: String) -> Element {
             },
             span { class: "row-line",
                 span { class: "status-dot", aria_hidden: true }
-                if let Some(label) = row.account.clone() {
+                if let Some(machine) = &row.machine {
+                    // The account and the machine share one chip.
+                    span { class: "row-chip",
+                        if let Some(label) = row.account.clone() {
+                            AccountLetter { label }
+                        }
+                        span { class: "row-machine", title: "Runs on {machine.name}",
+                            Icon { kind: IconKind::Server, size: 10 }
+                            span { aria_hidden: true, "{machine.tag}" }
+                            span { class: "visually-hidden", "on {machine.name}" }
+                        }
+                    }
+                } else if let Some(label) = row.account.clone() {
                     AccountLetter { label }
                 }
                 span {
@@ -804,12 +898,6 @@ fn AgentRowButton(row: AgentRow, class: String) -> Element {
                         Vec::new()
                     }),
                     "{row.title}"
-                }
-                if let Some(machine) = &row.machine {
-                    span { class: "row-machine", title: "Runs on {machine}",
-                        Icon { kind: IconKind::Server, size: 11 }
-                        span { class: "visually-hidden", "on {machine}" }
-                    }
                 }
                 // Always there, so that the style sheet can grow it in and shrink it out.
                 span {

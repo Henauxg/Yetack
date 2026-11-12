@@ -11,7 +11,7 @@ use super::app_state::{AgentEntry, AppState};
 use super::projects::{self, ProjectKey};
 use super::ui_state::Popover;
 use crate::machine::MachineId;
-use crate::prefs::{AgentKey, GroupBy};
+use crate::prefs::{AgentKey, GroupBy, ProjectSplit};
 
 /// A header of the sidebar: a machine's, or a project's.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,17 +143,83 @@ pub fn set_group_by(state: &mut AppState, group_by: GroupBy) {
     state.prefs.sidebar.group_by = group_by;
 }
 
-/// The machine a row names, when no panel says it: grouped by project or not at all, with
-/// several machines, for an agent that does not run on this computer. `None` otherwise.
-pub fn machine_shown_on_row(state: &AppState, agent: AgentId) -> Option<&str> {
-    let one_list = state.prefs.sidebar.group_by != GroupBy::Machine;
-    let several = !state.machines.others.is_empty();
-    let elsewhere = MachineId::of(agent) != MachineId::THIS;
-    if one_list && several && elsewhere {
-        state.daemon_machine(agent)
-    } else {
-        None
+pub fn set_project_split(state: &mut AppState, split: ProjectSplit) {
+    if state.ui.popover == Some(Popover::GroupBy) {
+        state.ui.popover = None;
     }
+    state.prefs.sidebar.project_split = split;
+}
+
+/// Whether a project's panel shows a line per machine above that machine's agents: grouped by
+/// project and split by machine, with several machines. A project on one machine has no lines.
+pub fn splits_by_machine(state: &AppState) -> bool {
+    state.prefs.sidebar.group_by == GroupBy::Project
+        && state.prefs.sidebar.project_split == ProjectSplit::ByMachine
+        && !state.machines.others.is_empty()
+}
+
+/// The machine all the project's agents run on. `None` when they run on several, or when the
+/// project has none.
+pub fn project_machine(state: &AppState, project: &ProjectKey) -> Option<MachineId> {
+    let mut machines = state
+        .agents
+        .values()
+        .filter(|entry| projects::project_of(state, entry) == *project)
+        .map(|entry| MachineId::of(entry.id()));
+    let first = machines.next()?;
+    machines.all(|machine| machine == first).then_some(first)
+}
+
+/// The machine a project's header names: the one all its agents run on, with several machines,
+/// when it is not this computer. Its rows then name none.
+pub fn machine_on_project_head(state: &AppState, project: &ProjectKey) -> Option<MachineId> {
+    if state.machines.others.is_empty() {
+        return None;
+    }
+    project_machine(state, project).filter(|&machine| machine != MachineId::THIS)
+}
+
+/// The machine a row names, when nothing above it says it: with several machines, for an agent
+/// that does not run on this computer, in one list or in a project of several machines that has
+/// no line per machine. `None` otherwise.
+pub fn machine_shown_on_row(state: &AppState, agent: AgentId) -> Option<MachineId> {
+    let machine = MachineId::of(agent);
+    if state.machines.others.is_empty() || machine == MachineId::THIS {
+        return None;
+    }
+    let shown = match state.prefs.sidebar.group_by {
+        GroupBy::Machine => false,
+        GroupBy::None => true,
+        GroupBy::Project => {
+            !splits_by_machine(state)
+                && state.agents.get(&agent).is_some_and(|entry| {
+                    project_machine(state, &projects::project_of(state, entry)).is_none()
+                })
+        }
+    };
+    shown.then_some(machine)
+}
+
+/// A machine's tag is at least this many letters of its name.
+const TAG_MIN_CHARS: usize = 3;
+
+/// The machine's short tag on a row: the start of its name, as many letters as tell it apart
+/// from the other machines' names, and at least [`TAG_MIN_CHARS`]. With machines "devbox" and
+/// "devops", the tags are "devb" and "devo". `None` for a machine the app does not know.
+pub fn machine_tag(state: &AppState, machine: MachineId) -> Option<String> {
+    let name = state.machines.get(machine)?.daemon.machine.as_str();
+    let others: Vec<&str> = state
+        .machines
+        .others
+        .iter()
+        .filter(|&(&other, _)| other != machine)
+        .map(|(_, other)| other.daemon.machine.as_str())
+        .collect();
+    let tag = (TAG_MIN_CHARS..name.chars().count())
+        .map(|length| name.chars().take(length).collect::<String>())
+        .find(|tag| others.iter().all(|other| !other.starts_with(tag.as_str())))
+        .unwrap_or_else(|| name.to_owned());
+    Some(tag)
 }
 
 #[cfg(test)]
@@ -249,11 +315,106 @@ mod tests {
         let mut state = two_machines();
         let remote = devbox().app_agent(AgentId::new(1));
 
-        let by_machine = machine_shown_on_row(&state, remote).map(str::to_owned);
+        let by_machine = machine_shown_on_row(&state, remote);
         set_group_by(&mut state, GroupBy::None);
 
         assert_eq!(by_machine, None);
-        assert_eq!(machine_shown_on_row(&state, remote), Some("devbox"));
+        assert_eq!(machine_shown_on_row(&state, remote), Some(devbox()));
         assert_eq!(machine_shown_on_row(&state, AgentId::new(1)), None);
+    }
+
+    /// The three agents have no project: they share the "No project" panel, on two machines.
+    #[test]
+    fn a_project_of_several_machines_names_them_on_its_rows_or_on_its_lines() {
+        let mut state = two_machines();
+        let remote = devbox().app_agent(AgentId::new(1));
+        set_group_by(&mut state, GroupBy::Project);
+
+        let one_list = machine_shown_on_row(&state, remote);
+        let head = machine_on_project_head(&state, &ProjectKey::None);
+        set_project_split(&mut state, ProjectSplit::ByMachine);
+
+        assert_eq!(one_list, Some(devbox()));
+        assert_eq!(head, None);
+        assert!(splits_by_machine(&state));
+        assert_eq!(machine_shown_on_row(&state, remote), None);
+    }
+
+    #[test]
+    fn split_by_machine_the_rows_follow_their_machines_and_keep_their_order_on_each() {
+        let mut state = two_machines();
+        let remote = devbox().app_agent(AgentId::new(1));
+        set_group_by(&mut state, GroupBy::Project);
+        move_in_app_order(&mut state, remote, Some(AgentId::new(1)));
+        move_in_app_order(&mut state, AgentId::new(2), Some(AgentId::new(1)));
+
+        let one_list = ids(&state.sidebar_agents());
+        set_project_split(&mut state, ProjectSplit::ByMachine);
+
+        assert_eq!(one_list, [remote, AgentId::new(2), AgentId::new(1)]);
+        assert_eq!(
+            ids(&state.sidebar_agents()),
+            [AgentId::new(2), AgentId::new(1), remote]
+        );
+    }
+
+    #[test]
+    fn a_project_on_one_other_machine_names_it_on_its_header_alone() {
+        let mut state = two_machines();
+        let remote = devbox().app_agent(AgentId::new(1));
+        state.agents.retain(|&agent, _| agent == remote);
+        set_group_by(&mut state, GroupBy::Project);
+
+        assert_eq!(project_machine(&state, &ProjectKey::None), Some(devbox()));
+        assert_eq!(
+            machine_on_project_head(&state, &ProjectKey::None),
+            Some(devbox())
+        );
+        assert_eq!(machine_shown_on_row(&state, remote), None);
+    }
+
+    #[test]
+    fn a_project_on_this_computer_alone_names_no_machine() {
+        let mut state = two_machines();
+        state
+            .agents
+            .retain(|&agent, _| MachineId::of(agent) == MachineId::THIS);
+        set_group_by(&mut state, GroupBy::Project);
+
+        assert_eq!(
+            project_machine(&state, &ProjectKey::None),
+            Some(MachineId::THIS)
+        );
+        assert_eq!(machine_on_project_head(&state, &ProjectKey::None), None);
+    }
+
+    #[test]
+    fn a_tag_takes_as_many_letters_as_tell_the_machines_apart() {
+        let mut state = two_machines();
+        let named = |name: &str| MachineState::new(DaemonLabel::ssh(name.to_owned()));
+        state
+            .machines
+            .others
+            .insert(MachineId::new(2), named("devops"));
+        state
+            .machines
+            .others
+            .insert(MachineId::new(3), named("gpu"));
+        state.machines.others.insert(MachineId::new(4), named("ci"));
+
+        let tags: Vec<Option<String>> = (1..=4)
+            .map(|machine| machine_tag(&state, MachineId::new(machine)))
+            .collect();
+
+        assert_eq!(
+            tags,
+            [
+                Some("devb".to_owned()),
+                Some("devo".to_owned()),
+                Some("gpu".to_owned()),
+                Some("ci".to_owned()),
+            ]
+        );
+        assert_eq!(machine_tag(&state, MachineId::new(9)), None);
     }
 }

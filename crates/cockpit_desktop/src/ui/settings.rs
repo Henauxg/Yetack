@@ -9,11 +9,13 @@ use strum::VariantArray;
 use crate::connection::Cockpit;
 use crate::format;
 use crate::keymap::{self, Chord, Command, FixedShortcut, Group, Keymap, Refusal};
-use crate::prefs::{CommentPlacement, EscStop, GroupBy, NotificationLevel, PaneState, SteerHold};
+use crate::prefs::{
+    CommentPlacement, EscStop, GroupBy, NotificationLevel, PaneState, ProjectSplit, SteerHold,
+};
 use crate::state::{
     RefusedChord, SettingsTab, SettingsView, grouping, notification_levels, settings,
 };
-use crate::ui::grouping::group_by_label;
+use crate::ui::grouping::{group_by_label, project_split_label};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::notification_levels as levels_ui;
 use crate::ui::presence::{Presence, Shown, use_presence};
@@ -25,6 +27,7 @@ const STEER_HOLD_LABEL_ID: &str = "setting-steer-hold";
 const ESC_STOP_LABEL_ID: &str = "setting-esc-stop";
 const FILES_PANE_LABEL_ID: &str = "setting-files-pane";
 const GROUP_BY_LABEL_ID: &str = "setting-group-by";
+const PROJECT_SPLIT_LABEL_ID: &str = "setting-project-split";
 
 fn pane_label(pane: PaneState) -> &'static str {
     match pane {
@@ -108,10 +111,20 @@ pub fn SettingsDialog(view: SettingsView) -> Element {
 #[component]
 fn GeneralTab() -> Element {
     let cockpit: Cockpit = use_context();
-    let (group_by, notifications, comments, steer_hold, esc_stop, new_pane, pane_keys) = {
+    let (
+        group_by,
+        project_split,
+        notifications,
+        comments,
+        steer_hold,
+        esc_stop,
+        new_pane,
+        pane_keys,
+    ) = {
         let state = cockpit.state.read();
         (
             state.prefs.sidebar.group_by,
+            state.prefs.sidebar.project_split,
             notification_levels::app_level(&state),
             state.prefs.chat.comments,
             state.prefs.chat.steer_hold,
@@ -136,6 +149,25 @@ fn GeneralTab() -> Element {
                             aria_pressed: choice == group_by,
                             onclick: move |_| cockpit.update(|state| grouping::set_group_by(state, choice)),
                             "{group_by_label(choice)}"
+                        }
+                    }
+                }
+            }
+            div { class: "setting-row",
+                div { class: "setting-text",
+                    span { id: PROJECT_SPLIT_LABEL_ID, class: "setting-label", "A project's agents on several machines" }
+                    span { class: "setting-help",
+                        "Grouped by project: one list where each row names its machine, or a line per machine above its agents."
+                    }
+                }
+                div { class: "segmented", role: "group", aria_labelledby: PROJECT_SPLIT_LABEL_ID,
+                    for &choice in ProjectSplit::VARIANTS {
+                        button {
+                            key: "{project_split_label(choice)}",
+                            class: if choice == project_split { "segment chosen" } else { "segment" },
+                            aria_pressed: choice == project_split,
+                            onclick: move |_| cockpit.update(|state| grouping::set_project_split(state, choice)),
+                            "{project_split_label(choice)}"
                         }
                     }
                 }
