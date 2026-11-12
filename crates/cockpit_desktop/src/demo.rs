@@ -376,6 +376,126 @@ Notes for agents working in this repository.
 - [ ] Add a benchmark for deep nesting, in `benches/`
 ";
 
+/// The release notes agent's file, which it reads and then edits: its heading names the version.
+const CHANGELOG_FILE: &str = "CHANGELOG.md";
+
+const CHANGELOG_HEADING_BEFORE: &str = "## Unreleased\n";
+
+const CHANGELOG_HEADING_AFTER: &str =
+    "## 0.4.0\n\nThe columns release: every error says where it is.\n";
+
+const CHANGELOG_TEXT: &str = "# Changelog
+
+Every change that a user of calc-parser can notice, newest first.
+
+## 0.4.0
+
+The columns release: every error says where it is.
+
+### Features
+
+- Errors carry the line and the column of the token they are about.
+- `calc --repl` keeps the last 100 expressions, and the up arrow brings them back.
+- Two new functions, `pow` and `sqrt`:
+
+```text
+> pow(2, 10)
+1024
+> sqrt(2)
+1.4142135623730951
+```
+
+### Fixes
+
+- A missing `)` at the end of the input reports its column instead of 0.
+- `1e309` gives an overflow error instead of `inf`.
+
+### Performance
+
+| Benchmark | 0.3.0 | 0.4.0 |
+| --- | --- | --- |
+| eval, 1 kB input | 41 µs | 28 µs |
+| eval, 1 MB input | 46 ms | 30 ms |
+| 500 nested parentheses | 3.1 ms | 0.9 ms |
+
+### Before you update
+
+`ParseError::position` is now a `Span`. Replace `error.position` with `error.span.start`.
+
+### Release checklist
+
+- [x] Bump the version in `Cargo.toml`
+- [x] Run the benchmarks on the release build
+- [ ] Tag `v0.4.0`
+- [ ] Publish the crate
+
+## 0.3.0
+
+- Variables: `let x = 2`, then `x * 3`.
+- Integer division with `//`.
+";
+
+const LICENSE_TEXT: &str = "MIT License
+
+Copyright (c) the calc-parser authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software.
+";
+
+const GRAMMAR_TEXT: &str = "# Grammar
+
+    expr   = term (('+' | '-') term)*
+    term   = factor (('*' | '/' | '//') factor)*
+    factor = number | name | call | '(' expr ')'
+";
+
+const ERRORS_DOC_TEXT: &str = "# Errors
+
+Each error names the line and the column of the token it is about, counted from 1.
+";
+
+const REPL_TEXT: &str = "use calc_parser::eval;
+
+fn main() {
+    for line in std::io::stdin().lines().map_while(Result::ok) {
+        println!(\"{:?}\", eval(&line));
+    }
+}
+";
+
+const EVAL_TEXT: &str = "use crate::parser::Expr;
+
+/// Evaluates a parsed expression.
+pub fn eval(expr: &Expr) -> f64 {
+    expr.value()
+}
+";
+
+const SPAN_TEXT: &str =
+    "/// Where a token starts and ends, as editors count: lines and columns from 1.
+pub struct Span {
+    pub start: (u32, u32),
+    pub end: (u32, u32),
+}
+";
+
+const ERRORS_TEST_TEXT: &str = "use calc_parser::parse;
+
+#[test]
+fn a_missing_parenthesis_reports_its_column() {
+    let error = parse(\"2 * (3\").unwrap_err();
+    assert_eq!(error.span.start, (1, 7));
+}
+";
+
+const EVAL_TEST_TEXT: &str = "use calc_parser::eval_str;
+
+#[test]
+fn pow_raises_to_a_power() {
+    assert_eq!(eval_str(\"pow(2, 10)\"), Ok(1024.0));
+}
+";
+
 /// The parser agent's running command, and its call, which the command's task names.
 const PARSER_TESTS_COMMAND: &str = "cargo test parser";
 const PARSER_TESTS_CALL: u32 = 21;
@@ -951,22 +1071,24 @@ pub fn showcase(state: &mut AppState, scene: Scene) {
     }
 }
 
-/// The question agent, grouped by project, with its folder in the files pane and its notes file
-/// in the file view.
+/// The question agent, grouped by project, with its folder in the files pane and the changelog it
+/// edits in the file view.
 fn show_project_files(state: &mut AppState) {
     let agent = AgentId::new(QUESTION_AGENT);
     state.prefs.sidebar.group_by = GroupBy::Project;
     state.ui.selected = Some(agent);
     if let Some(entry) = state.agents.get_mut(&agent) {
-        entry
-            .tree
-            .expanded
-            .insert(PathBuf::from(PARSER_FOLDER).join("src"));
+        for folder in ["docs", "src", "tests"] {
+            entry
+                .tree
+                .expanded
+                .insert(PathBuf::from(PARSER_FOLDER).join(folder));
+        }
     }
     // Opens the pane, as the header's files chip does.
     file_tree::toggle_from_changes(state, agent);
     file_tree::set_filter(state, agent, TreeFilter::All);
-    actions::open_file(state, agent, in_folder(PARSER_FOLDER, NOTES_FILE), None);
+    actions::open_file(state, agent, in_folder(PARSER_FOLDER, CHANGELOG_FILE), None);
     actions::set_view_mode(state, agent, ViewMode::Preview);
 }
 
@@ -1502,7 +1624,7 @@ fn in_folder(folder: &str, path: impl AsRef<Path>) -> PathBuf {
 }
 
 /// The sample's files, absolute, with their text.
-fn files() -> [(PathBuf, &'static str); 17] {
+fn files() -> [(PathBuf, &'static str); 26] {
     [
         (in_folder(PARSER_FOLDER, "Cargo.toml"), CARGO_TEXT),
         (in_folder(PARSER_FOLDER, "README.md"), README_TEXT),
@@ -1520,6 +1642,18 @@ fn files() -> [(PathBuf, &'static str); 17] {
         (in_folder(PARSER_FOLDER, LEXER_FILE), LEXER_TEXT),
         (in_folder(PARSER_FOLDER, NOTES_FILE), NOTES_TEXT),
         (in_folder(PARSER_FOLDER, LIB_FILE), LIB_TEXT),
+        (in_folder(PARSER_FOLDER, CHANGELOG_FILE), CHANGELOG_TEXT),
+        (in_folder(PARSER_FOLDER, "LICENSE"), LICENSE_TEXT),
+        (in_folder(PARSER_FOLDER, "docs/grammar.md"), GRAMMAR_TEXT),
+        (in_folder(PARSER_FOLDER, "docs/errors.md"), ERRORS_DOC_TEXT),
+        (in_folder(PARSER_FOLDER, "examples/repl.rs"), REPL_TEXT),
+        (in_folder(PARSER_FOLDER, "src/eval.rs"), EVAL_TEXT),
+        (in_folder(PARSER_FOLDER, "src/span.rs"), SPAN_TEXT),
+        (
+            in_folder(PARSER_FOLDER, "tests/errors.rs"),
+            ERRORS_TEST_TEXT,
+        ),
+        (in_folder(PARSER_FOLDER, "tests/eval.rs"), EVAL_TEST_TEXT),
         (in_folder(PARSER_COLUMNS_WORKTREE, TOKEN_FILE), TOKEN_TEXT),
         (
             in_folder(PARSER_COLUMNS_WORKTREE, POSITION_FILE),
@@ -2417,13 +2551,18 @@ fn question_agent(now: SystemTime) -> Sample {
         item(
             3,
             None,
+            ItemBody::ToolCall(read_call(&in_folder(PARSER_FOLDER, CHANGELOG_FILE))),
+        ),
+        item(
+            4,
+            None,
             ItemBody::Question(Question {
                 pending: PendingId::new("demo-version".to_owned()),
                 questions: vec![AskedQuestion {
                     header: "Version".to_owned(),
                     text: "Which version do these notes announce?".to_owned(),
                     options: vec![
-                        option("0.4.0", "A minor release: new features, nothing breaks"),
+                        option("0.4.0", "A minor release: new features and fixes"),
                         option("1.0.0", "The first stable release"),
                     ],
                     selection: Selection::Single,
@@ -2435,7 +2574,17 @@ fn question_agent(now: SystemTime) -> Sample {
             }),
         ),
         item(
-            4,
+            5,
+            None,
+            edit_call(
+                "Edit",
+                CHANGELOG_FILE,
+                CHANGELOG_HEADING_BEFORE,
+                CHANGELOG_HEADING_AFTER,
+            ),
+        ),
+        item(
+            6,
             None,
             ItemBody::Question(Question {
                 pending: PendingId::new("demo-question".to_owned()),
@@ -2478,7 +2627,14 @@ fn question_agent(now: SystemTime) -> Sample {
     Sample {
         summary,
         items,
-        details: details(),
+        details: AgentDetails {
+            changed_files: vec![ChangedFile {
+                path: in_folder(PARSER_FOLDER, CHANGELOG_FILE),
+                lines_added: 3,
+                lines_removed: 1,
+            }],
+            ..details()
+        },
     }
 }
 
@@ -4000,12 +4156,16 @@ pub struct ParseError {
             names(""),
             [
                 "benches",
+                "docs",
+                "examples",
                 "src",
                 "target",
                 "tests",
                 ".gitignore",
                 "AGENTS.md",
                 "Cargo.toml",
+                "CHANGELOG.md",
+                "LICENSE",
                 "README.md"
             ]
         );
@@ -4280,7 +4440,7 @@ pub struct ParseError {
         assert!(file_tree::pane_open(&state, agent));
         assert_eq!(
             state.ui.file_view(agent).map(|view| view.path.clone()),
-            Some(PathBuf::from(NOTES_FILE))
+            Some(PathBuf::from(CHANGELOG_FILE))
         );
     }
 
