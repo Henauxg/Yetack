@@ -1103,12 +1103,13 @@ fn show_project_files(state: &mut AppState) {
         })
         .collect();
     for (name, names) in SHOWCASE_PROJECTS {
-        let mut project = None;
-        for repository in names.iter().filter_map(|wanted| {
+        let found = names.iter().filter_map(|wanted| {
             repositories
                 .iter()
                 .find(|repository| repository.name() == *wanted)
-        }) {
+        });
+        let mut project = None;
+        for repository in found {
             match project {
                 None => {
                     let id = projects::keep(state, repository);
