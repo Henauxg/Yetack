@@ -3539,6 +3539,8 @@ html.reordering * {
 .card.waiting {
   border-color: var(--line-strong);
   border-left: 2px solid rgba(245, 165, 36, 0.55);
+  /* One pixel less than `.card`, for the wider edge: the content stays in place once answered. */
+  padding-left: 13px;
   --card-head: var(--text);
 }
 
