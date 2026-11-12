@@ -1,25 +1,36 @@
 //! The Settings dialog, from the gear in the sidebar's foot. Its General tab holds the app's
 //! notifications, as the sidebar's bell sets them, where comments on quotes show, how long a message
-//! sent to a working agent can still be cancelled, and whether a new agent's files pane shows. It
-//! ends with the app's version. Its Keyboard tab lists every shortcut and records new ones for the
-//! commands. Its Projects tab edits the projects the sidebar can group agents by.
+//! sent to a working agent can still be cancelled, and whether a new agent's files pane shows. Its
+//! last section, About, gives the app's version with a button that copies it. Its Keyboard tab
+//! lists every shortcut and records new ones for the commands. Its Projects tab edits the projects
+//! the sidebar can group agents by.
 
+use std::sync::LazyLock;
+
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use dioxus::prelude::*;
 use strum::VariantArray;
 
 use crate::connection::Cockpit;
-use crate::format;
 use crate::keymap::{self, Chord, Command, FixedShortcut, Group, Keymap, Refusal};
 use crate::prefs::{CommentPlacement, EscStop, GroupBy, NotificationLevel, PaneState, SteerHold};
 use crate::state::{
     RefusedChord, SettingsTab, SettingsView, grouping, notification_levels, settings,
 };
+use crate::ui::code::{CopyButton, CopyLook};
 use crate::ui::grouping::group_by_label;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::notification_levels as levels_ui;
 use crate::ui::presence::{Presence, Shown, use_presence};
 use crate::ui::projects_tab::ProjectsTab;
 use crate::update_script::APP_VERSION;
+use crate::{APP_NAME, format};
+
+static APP_ICON: LazyLock<String> = LazyLock::new(|| {
+    let svg = include_bytes!("../../assets/agents-cockpit.svg");
+    format!("data:image/svg+xml;base64,{}", BASE64.encode(svg))
+});
 
 const NOTIFICATIONS_LABEL_ID: &str = "setting-notifications";
 const COMMENTS_LABEL_ID: &str = "setting-comments";
@@ -240,7 +251,22 @@ fn GeneralTab() -> Element {
                     }
                 }
             }
-            p { class: "settings-version", "agents-cockpit {APP_VERSION}" }
+            h3 { class: "settings-title", "About" }
+            div { class: "setting-row",
+                img { class: "about-icon", src: APP_ICON.as_str(), alt: "" }
+                div { class: "setting-text",
+                    span { class: "setting-label", "{APP_NAME}" }
+                    span { class: "setting-help",
+                        "Version "
+                        span { class: "mono", "{APP_VERSION}" }
+                    }
+                }
+                CopyButton {
+                    text: format!("{APP_NAME} {APP_VERSION}"),
+                    label: "Copy the app's version",
+                    look: CopyLook::Worded,
+                }
+            }
         }
     }
 }

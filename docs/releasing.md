@@ -58,7 +58,7 @@ The app inside the `.deb` knows the commit it was built from, so its "Update" bu
 
 ## 4. Check the files
 
-1. Install the `.deb` on Ubuntu or Debian (`sudo apt install ./dist/agents-cockpit_0.1.0_amd64.deb`), start the app, and open Settings: the General tab ends with "agents-cockpit 0.1.0".
+1. Install the `.deb` on Ubuntu or Debian (`sudo apt install ./dist/agents-cockpit_0.1.0_amd64.deb`), start the app, and open Settings: the About section, at the end of the General tab, says "Version 0.1.0".
 2. Copy `dist/agents-cockpit-0.1.0-x86_64-linux` to a server and run it with `--version`.
 3. If there is a Windows zip, unzip it on Windows and start the app.
 
