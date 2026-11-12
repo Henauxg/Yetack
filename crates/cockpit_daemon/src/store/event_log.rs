@@ -257,12 +257,26 @@ fn latest_details(frame: Vec<u8>) -> Option<LatestDetails> {
     })
 }
 
+/// Whether a log holds a `DetailsChanged` event. Reading stops at the first one.
+fn holds_details(log: &Path) -> Result<bool, StoreError> {
+    let mut found = false;
+    for_each_line(log, |line| {
+        found = serde_json::from_slice::<KindProbe>(line)
+            .is_ok_and(|probe| probe.event.kind == DETAILS_EVENT);
+        !found
+    })?;
+    Ok(found)
+}
+
 /// Takes the `DetailsChanged` events out of an agent's log, as a daemon logged them before the
 /// details file. The last one becomes the details file at `details`, unless that file holds later
-/// details. A log without details stays as it is.
+/// details. A log without details stays as it is, and is only read.
 pub(crate) fn move_details_out(log: &Path, details: &Path) -> Result<(), StoreError> {
     use std::io::Write;
 
+    if !holds_details(log)? {
+        return Ok(());
+    }
     let compacting = log.with_extension(COMPACTING_EXTENSION);
     let write_error = |source| StoreError::Write {
         path: compacting.clone(),
