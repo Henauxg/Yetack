@@ -877,7 +877,7 @@ fn update_plan(host: &str, remote_command: &str, source_dir: Option<String>) -> 
         host: host.to_owned(),
         remote_command: remote_command.to_owned(),
         source_dir,
-        commit: update_script::app_commit()?.to_owned(),
+        commit: update_script::app_commit()?,
     })
 }
 

@@ -9,9 +9,9 @@ use cockpit_client::RequestError;
 use cockpit_protocol::{
     Account, AccountId, AccountState, AgentDetails, AgentHistory, AgentId, AgentLoad, AgentStatus,
     AgentSummary, Answer, AnswerState, Approval, AskedQuestion, BackgroundTask, BackgroundTaskId,
-    BackgroundTaskKind, BackgroundTaskStatus, ChangedFile, ClaudeRoute, ClaudeSessionId,
-    CommandKind, CommandLoad, Completeness, ContextCategory, ContextUsage, Cores, CostUsd,
-    CredentialSource, DirEntry, DirListing, Effort, EffortSource, EntryKind, EntryLink,
+    BackgroundTaskKind, BackgroundTaskStatus, BuildCommit, ChangedFile, ClaudeRoute,
+    ClaudeSessionId, CommandKind, CommandLoad, Completeness, ContextCategory, ContextUsage, Cores,
+    CostUsd, CredentialSource, DirEntry, DirListing, Effort, EffortSource, EntryKind, EntryLink,
     EnvironmentCredentials, ErrorBody, ErrorCode, FileEdit, GitIgnore, HistoryPage, Image,
     ImageMediaType, ItemBody, ItemId, LoadAverage, LoadHistory, MachineLoad, Mark, McpScope,
     McpServer, McpServerStatus, McpTool, McpTransport, OlderItems, PastSession, PendingId,
@@ -40,7 +40,7 @@ use crate::state::{
     AgentEntry, AppState, ConnectionState, Dialog, Drafts, Loadable, MachineState, Utf16Offset,
     ViewMode, actions, file_edits, file_tree, projects, quotes, sending,
 };
-use crate::update_script::APP_VERSION;
+use crate::update_script::{APP_VERSION, app_commit};
 
 /// The command-line flag that starts the demo.
 pub const DEMO_FLAG: &str = "--demo";
@@ -700,7 +700,7 @@ fn update_plan() -> UpdatePlan {
         host: UPDATE_MACHINE.to_owned(),
         remote_command: "/opt/agents-cockpit/bin/agents-cockpit".to_owned(),
         source_dir: None,
-        commit: UPDATE_COMMIT.to_owned(),
+        commit: BuildCommit::new(UPDATE_COMMIT.to_owned()),
     }
 }
 
@@ -822,6 +822,7 @@ pub fn state(daemon: DaemonLabel) -> AppState {
     let mut state = AppState::new(daemon);
     state.machines.this.connection = ConnectionState::Connected;
     state.machines.this.daemon_version = Some(ReleaseVersion::new(APP_VERSION.to_owned()));
+    state.machines.this.daemon_commit = app_commit();
     let agents = [
         parser_agent(now),
         question_agent(now),
@@ -947,6 +948,7 @@ fn insert_server<const N: usize>(
     let mut server = MachineState::new(DaemonLabel::ssh(host.to_owned()));
     server.connection = ConnectionState::Connected;
     server.daemon_version = Some(ReleaseVersion::new(APP_VERSION.to_owned()));
+    server.daemon_commit = app_commit();
     server.plan_usage = plan_usage(now);
     server.accounts = accounts().into_iter().take(1).collect();
     server.server = Some(MachineConfig {

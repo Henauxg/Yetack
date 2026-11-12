@@ -6,11 +6,13 @@
 
 mod accounts;
 mod browse;
+mod build_commit;
 mod daemon;
 mod daemon_config;
 mod error_chain;
 mod hub;
 mod in_app_daemon;
+mod lock_holder;
 mod machine_load;
 mod mcp_remove;
 mod process;
@@ -30,11 +32,16 @@ mod windows_files;
 mod windows_path;
 
 pub use accounts::{API_KEY_ENV, AUTH_TOKEN_ENV, ENVIRONMENT_CREDENTIALS_ENV};
+pub use build_commit::build_commit;
 pub use daemon_config::{
     CLAUDE_CONFIG_DIR_ENV, CLAUDE_HOME_FOLDER, CLAUDE_PROGRAM_ENV, DaemonConfig, HOME_ENV,
     SERVE_SUBCOMMAND, STATE_DIR_FLAG,
 };
 pub use in_app_daemon::InAppDaemon;
+#[cfg(unix)]
+pub use lock_holder::{
+    LockHolder, LockHolderError, StopLockHolderError, lock_holder, stop_lock_holder,
+};
 pub use process::ProcessError;
 #[cfg(unix)]
 pub use serve::serve;

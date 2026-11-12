@@ -70,7 +70,7 @@ pub use response::{
     HistoryPage, OlderItems, PastSession, ResponseBody, ResponseResult,
 };
 pub use session::{
-    Catchup, ClientMessage, PROTOCOL_VERSION, ReleaseVersion, ServerMessage, Snapshot,
+    BuildCommit, Catchup, ClientMessage, PROTOCOL_VERSION, ReleaseVersion, ServerMessage, Snapshot,
 };
 pub use settings::Settings;
 pub use stored_bool::{FromStoredBool, enum_or_stored_bool};

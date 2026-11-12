@@ -179,9 +179,12 @@ A reader refuses a line longer than a fixed maximum (16 MiB) instead of bufferin
 ### Session
 
 1. The client sends `Hello { protocol_version, last_seq }`.
-   The version is 8. An app and a daemon of different versions refuse each other.
-2. The daemon answers `Welcome { protocol_version, daemon_version, catchup }`, or `Refused { reason }` when the versions differ.
+   The version is 9. An app and a daemon of different versions refuse each other.
+2. The daemon answers `Welcome { protocol_version, daemon_version, daemon_commit, catchup }`, or `Refused { reason }` when the versions differ.
    `daemon_version` is the daemon's release, its Cargo version ("0.1.0"). The Machines dialog shows it on each machine's row, and the About section at the end of the Settings dialog's General tab shows the app's own version.
+   `daemon_commit` is the full git commit of the program that runs the daemon (`BuildCommit`), or `null` when its build did not know it. Two builds of one release can differ, so the commit tells the app whether a daemon runs its own code.
+   `cockpit_daemon`'s `build.rs` sets it when the crate builds, from `AGENTS_COCKPIT_COMMIT` or git's `HEAD` (see "Updating a server's daemon" under [Desktop app](#desktop-app-cockpit_desktop)). `agents-cockpit` and the app each build the daemon from their own tree, so it is their commit too.
+   The app keeps it in `MachineState.daemon_commit`, beside `daemon_version`.
 3. `catchup` is `Replay` when `last_seq` was given and the logs still hold every event after it: the daemon then sends those events, with each agent's latest details in place of the older ones, then live events.
    Otherwise it is `Snapshot(snapshot)`: the client replaces its state with it, and live events follow.
    A welcome never carries both, so no event is applied twice.
@@ -250,7 +253,7 @@ Each carries its `Seq`.
 
 The daemon starts the same way behind a socket and inside the app (module `daemon`):
 
-1. `Daemon::prepare` creates the state folder, takes `serve.lock`, and reads `agents.json`, the settings and the event logs back.
+1. `Daemon::prepare` creates the state folder, takes `serve.lock` and writes its process into it (see [Store](#store)), and reads `agents.json`, the settings and the event logs back.
 2. `PreparedDaemon::start` starts the hub, which resumes the agents that were running.
 
 `serve` (`agents-cockpit serve`) binds the socket between the two steps, so a failed bind starts no agent, then runs the server with its peer checks until its shutdown future completes.
@@ -342,7 +345,7 @@ The hub turns Claude Code messages into transcript items and status changes (mod
 Everything lives in `$XDG_STATE_HOME/agents-cockpit/` (default `~/.local/state/agents-cockpit/`), mode 700:
 
 - `agents-cockpit.sock`: the socket, mode 600;
-- `serve.lock`: held while a daemon runs, the background service or the app's own, so a second daemon refuses to start and a leftover socket is safe to delete;
+- `serve.lock`: held while a daemon runs, the background service or the app's own, so a second daemon refuses to start and a leftover socket is safe to delete. It names the daemon that holds it (see [The holder of `serve.lock`](#the-holder-of-servelock));
 - `agents.json`: one entry per agent (id, title, folder, account, Claude session id, model, effort, mode, position in the list, for an agent made from a past session the part of the session file it shows, and while its `claude` runs, that process's id, start time and, on Linux, boot), written atomically (write to a temporary file, then rename);
 - `settings.json`: the hidden MCP servers, the accounts (the default account's name and credentials, the added accounts, the next account id), and other daemon-side settings;
 - `events/<agent-id>.jsonl`: the agent's cockpit events, each with its `Seq`, appended, but its details;
@@ -352,6 +355,25 @@ Everything lives in `$XDG_STATE_HOME/agents-cockpit/` (default `~/.local/state/a
 The daemon leaves the umask alone, since `claude` and the agents' commands inherit it.
 It creates each folder with mode 700 and each file with mode 600.
 The socket gets mode 600 right after the bind; until then, the 700 folder keeps other users away from it.
+
+#### The holder of `serve.lock`
+
+Once it holds `serve.lock`, the daemon writes its process into the file (module `lock_holder`).
+It empties the file as it lets the lock go, so the file never names a process that no longer holds the lock.
+The file holds one line of JSON, with the fields of a process in `agents.json`: `{"pid":4242,"started":987654,"boot":"6e1f0c2a-3b4d-4e5f-8a9b-0c1d2e3f4a5b"}`.
+A system that cannot tell a start time writes the pid alone, `{"pid":4242}`.
+A daemon older than the record writes nothing, so its lock's file is empty, or holds what a killed daemon left.
+
+On Unix, the app finds and stops the daemon of a state folder with three functions of `cockpit_daemon`:
+
+1. `lock_holder(state_dir)` tries the lock. When it gets it, it lets it go at once and answers `None`. Otherwise it reads the file, and fails with `LockHolderError::Unnamed` when the file names no process.
+2. `LockHolder::runs` checks that a process of this boot runs with the recorded pid and start time, as the check of the leftover `claude` processes does. A record without a start time never passes.
+3. `stop_lock_holder(state_dir)` reads the holder and refuses one that is the calling process: the daemon runs in the app. It opens a pidfd on the recorded pid, checks the process, then sends SIGTERM through the pidfd, so a process that gets the pid after the check gets no signal. It then looks at the lock every 100 ms, for up to 10 seconds, until the lock is free. It blocks.
+   It fails with `StopLockHolderError`: `NoDaemon`, `ThisProcess`, `Unverified` (the process ended, or may be a later one with its pid), `Signal`, `StillRunning`, or the read's own error.
+
+`serve` stops on SIGTERM as on a service's stop: it leaves its agents marked as running, so the next daemon resumes them.
+The read takes a free lock for a moment, so a daemon that starts at that moment refuses to start.
+On Windows, the lock keeps every other process from reading the file, so only Unix reads it.
 
 On start the daemon reads `agents.json`, finds the last `Seq` in the logs, and resumes each agent that was running with `--resume`.
 
@@ -581,7 +603,7 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
 - **Updating a server's daemon** (`state/daemon_update.rs`, `update_script.rs`, `ui/daemon_update.rs`): when a first connection is refused for its protocol, `ConnectError::daemon_protocol` gives the daemon's version, from `VersionMismatch` or from the text of an older daemon's `Refused`.
   An older daemon reached over SSH gets the "runs an older version" card in place of the "No daemon answers" screen, with "Update <machine>" first. Any other daemon of an older protocol keeps that screen. A newer daemon gets the "runs a newer version" card, with no update.
   A `[[machines]]` server shows "Runs an older version." on its sidebar line, with `Update` and `Retry now` links: `Update` (`Details` when the app knows no commit) opens the same screens as a dialog (`Dialog::DaemonUpdate`), and the other machines keep working.
-  - `build.rs` writes the commit the app was built from into `AGENTS_COCKPIT_COMMIT`, from the environment when it is set (the Nix build sets it to the flake's revision, empty for a tree with uncommitted changes) and else from `git rev-parse HEAD`. It tells cargo to rerun when `HEAD` or the ref it points to moves, in a linked worktree too. Without a commit the older-version card offers no update and says so.
+  - `cockpit_daemon`'s `build.rs` writes the commit the tree was built from into `AGENTS_COCKPIT_COMMIT`, from the environment when it is set (the Nix build sets it to the flake's revision, empty for a tree with uncommitted changes) and else from `git rev-parse HEAD`. It tells cargo to rerun when `HEAD` or the ref it points to moves, in a linked worktree too. `cockpit_daemon::build_commit` reads it: the daemon sends it in `Welcome`, and the app takes it as its own commit (`update_script::app_commit`), since the app builds the daemon from its own tree. So each new commit rebuilds `cockpit_daemon` and both programs. Without a commit the older-version card offers no update and says so.
   - The update runs beside the connection, in a task of its own: the embedded `contrib/update-daemon.sh` goes on the stdin of `ssh <host> sh -s -- --commit <sha> --binary <remote_command> [--source-dir <dir>]`, with the same ssh options as the bridge. It uses plain SSH because an old daemon refuses the app's protocol. Its output streams into the screen's "Build output", and the steps follow its lines (`update-daemon: building`, `restarting the daemon`, `the daemon runs`).
   - The update's state (`MachineState.update`) lives per machine and outlives the connection's attempts, which an old daemon keeps refusing while the build runs: the screen shows it until the first connection after success, which the app tries at once.
   - The script's exit status picks the failure screen: 3 is the agents' refusal, with their list and how to stop one; 1 says the machine still runs its old version, and that the update was cancelled when "Cancel the update" reached the server; 4 says the daemon may not have come back; 5 says the new version did not start and the machine runs its old version again, with the script's message; 6 says another update is already running on the machine, which the running screen invites by letting the user close the app. Any other status, such as ssh losing the connection, says the app cannot tell how it went. The sidebar says "Was not updated." for 1, 3 and 5, "Update failed during the restart." for 4, "An update is already running." for 6, and "Update status unknown." otherwise. "Update again" reruns, and "Back" returns to the older-version card. A daemon that is now newer than the app ends the failure's screen: "Update again" would move it backwards.

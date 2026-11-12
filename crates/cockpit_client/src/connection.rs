@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use cockpit_protocol::{
-    Catchup, ClientMessage, EventRecord, Frame, FrameError, FrameReader, FrameWriter,
+    BuildCommit, Catchup, ClientMessage, EventRecord, Frame, FrameError, FrameReader, FrameWriter,
     PROTOCOL_VERSION, ReleaseVersion, Request, RequestId, ResponseBody, Seq, ServerMessage,
 };
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, BufReader};
@@ -38,6 +38,8 @@ pub struct Connection {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Welcome {
     pub daemon_version: ReleaseVersion,
+    /// The commit of the program that runs the daemon, when its build knew it.
+    pub daemon_commit: Option<BuildCommit>,
     pub catchup: Catchup,
 }
 
@@ -160,11 +162,13 @@ where
         Some(ServerMessage::Welcome {
             protocol_version,
             daemon_version,
+            daemon_commit,
             catchup,
         }) => {
             if protocol_version == PROTOCOL_VERSION {
                 Ok(Welcome {
                     daemon_version,
+                    daemon_commit,
                     catchup,
                 })
             } else {
@@ -375,7 +379,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hello_carries_the_last_seq_and_welcome_gives_the_daemons_version_and_catchup() {
+    async fn hello_carries_the_last_seq_and_welcome_gives_the_daemons_build_and_catchup() {
         let daemon = TestDaemon::new();
 
         let transport = daemon.transport();
@@ -391,6 +395,7 @@ mod tests {
             welcome,
             Welcome {
                 daemon_version: test_daemon::daemon_version(),
+                daemon_commit: Some(test_daemon::daemon_commit()),
                 catchup: Catchup::Snapshot(test_daemon::snapshot(Some(9))),
             }
         );
@@ -428,6 +433,7 @@ mod tests {
             peer.send(&ServerMessage::Welcome {
                 protocol_version: PROTOCOL_VERSION + 1,
                 daemon_version: ReleaseVersion::new("9.0.0".to_owned()),
+                daemon_commit: None,
                 catchup: Catchup::Replay,
             })
             .await;

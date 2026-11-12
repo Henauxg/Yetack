@@ -6,7 +6,7 @@ use std::cmp::Ordering;
 use std::collections::VecDeque;
 
 use cockpit_client::{ConnectError, SessionError};
-use cockpit_protocol::PROTOCOL_VERSION;
+use cockpit_protocol::{BuildCommit, PROTOCOL_VERSION};
 
 use super::app_state::{AppState, MachineState};
 use super::ui_state::Dialog;
@@ -25,8 +25,6 @@ const OUTPUT_LINES: usize = 500;
 /// How many of the last lines a failure shows.
 const FAILURE_LINES: usize = 30;
 
-const SHORT_COMMIT_LENGTH: usize = 7;
-
 /// How a daemon's protocol compares with this app's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProtocolGap {
@@ -42,15 +40,7 @@ pub struct UpdatePlan {
     pub remote_command: String,
     pub source_dir: Option<String>,
     /// The commit this app was built from.
-    pub commit: String,
-}
-
-impl UpdatePlan {
-    pub fn short_commit(&self) -> &str {
-        self.commit
-            .get(..SHORT_COMMIT_LENGTH)
-            .unwrap_or(&self.commit)
-    }
+    pub commit: BuildCommit,
 }
 
 /// A daemon that refused the app for its version.
@@ -512,7 +502,7 @@ mod tests {
             host: "build-box".to_owned(),
             remote_command: "/opt/agents-cockpit".to_owned(),
             source_dir: None,
-            commit: "3f9c2e1a7b4d5c6e".to_owned(),
+            commit: BuildCommit::new("3f9c2e1a7b4d5c6e".to_owned()),
         }
     }
 

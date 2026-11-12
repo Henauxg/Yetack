@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use cockpit_protocol::{
-    Catchup, ClientMessage, Event, EventRecord, Frame, FrameReader, PROTOCOL_VERSION, PlanUsage,
-    ReleaseVersion, Request, RequestId, ResponseBody, ResponseResult, Seq, ServerMessage, Settings,
-    Snapshot,
+    BuildCommit, Catchup, ClientMessage, Event, EventRecord, Frame, FrameReader, PROTOCOL_VERSION,
+    PlanUsage, ReleaseVersion, Request, RequestId, ResponseBody, ResponseResult, Seq,
+    ServerMessage, Settings, Snapshot,
 };
 use tempfile::TempDir;
 use tokio::io::BufReader;
@@ -42,6 +42,10 @@ pub(crate) async fn in_time<F: Future>(future: F) -> F::Output {
 
 pub(crate) fn daemon_version() -> ReleaseVersion {
     ReleaseVersion::new("0.4.2".to_owned())
+}
+
+pub(crate) fn daemon_commit() -> BuildCommit {
+    BuildCommit::new("3f9c2e1a7b4d5c6e8f9a0b1c2d3e4f5a6b7c8d9e".to_owned())
 }
 
 pub(crate) fn snapshot(last_seq: Option<u64>) -> Snapshot {
@@ -94,6 +98,7 @@ impl TestDaemon {
         peer.send(&ServerMessage::Welcome {
             protocol_version: PROTOCOL_VERSION,
             daemon_version: daemon_version(),
+            daemon_commit: Some(daemon_commit()),
             catchup,
         })
         .await;

@@ -6,9 +6,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_protocol::{
     Account, AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, AnswerState,
-    BackgroundTask, BackgroundTaskStatus, FileEdit, Image, ItemBody, ItemId, PastSession,
-    PlanUsage, ReleaseVersion, Settings, SlashCommand, Timestamp, ToolCallStatus, TranscriptItem,
-    WaitingPrompt, list_order,
+    BackgroundTask, BackgroundTaskStatus, BuildCommit, FileEdit, Image, ItemBody, ItemId,
+    PastSession, PlanUsage, ReleaseVersion, Settings, SlashCommand, Timestamp, ToolCallStatus,
+    TranscriptItem, WaitingPrompt, list_order,
 };
 use strum::VariantArray;
 
@@ -342,6 +342,9 @@ pub struct MachineState {
     pub connection: ConnectionState,
     /// The release the daemon said it runs, at its last connection.
     pub daemon_version: Option<ReleaseVersion>,
+    /// The commit the daemon said its program was built from, at its last connection. `None`
+    /// when that build did not know it.
+    pub daemon_commit: Option<BuildCommit>,
     /// The default account's plan usage.
     pub plan_usage: PlanUsage,
     pub settings: Settings,
@@ -372,6 +375,7 @@ impl MachineState {
             daemon,
             connection: ConnectionState::Connecting { attempt: 1 },
             daemon_version: None,
+            daemon_commit: None,
             plan_usage: PlanUsage::default(),
             settings: Settings::default(),
             accounts: Vec::new(),
@@ -730,11 +734,15 @@ pub(crate) mod tests {
 
     /// The release of the daemon in `connected_update`.
     pub(crate) const DAEMON_VERSION: &str = "0.4.2";
+    /// The commit of the daemon in `connected_update`.
+    pub(crate) const DAEMON_COMMIT: &str = "3f9c2e1a7b4d5c6e8f9a0b1c2d3e4f5a6b7c8d9e";
 
-    /// A daemon of release `DAEMON_VERSION` accepted the connection with `catchup`.
+    /// A daemon of release `DAEMON_VERSION`, built from `DAEMON_COMMIT`, accepted the connection
+    /// with `catchup`.
     pub(crate) fn connected_update(catchup: Catchup) -> SessionUpdate {
         SessionUpdate::Connected(Welcome {
             daemon_version: ReleaseVersion::new(DAEMON_VERSION.to_owned()),
+            daemon_commit: Some(BuildCommit::new(DAEMON_COMMIT.to_owned())),
             catchup,
         })
     }

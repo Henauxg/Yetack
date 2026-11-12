@@ -2436,3 +2436,35 @@ async fn a_sign_in_ends_the_wait_and_tells_the_clients_without_a_check() {
         Some(AgentStatus::Idle)
     );
 }
+
+/// The app restarts this computer's background service with its own program this way: the daemon
+/// names itself in its lock, and stops when asked, so that another daemon can take the folder.
+#[tokio::test]
+async fn the_daemon_names_itself_in_its_lock_and_stops_when_asked() {
+    let mut setup = Setup::new();
+    let pid = ProcessId::new(setup.daemon.as_ref().unwrap().id());
+    let transport = Transport::Local {
+        socket: setup.socket(),
+    };
+    let (connection, welcome) = Connection::connect(&transport, None).await.unwrap();
+    drop(connection);
+
+    let holder = cockpit_daemon::lock_holder(&setup.state())
+        .unwrap()
+        .unwrap();
+    let ran = holder.runs();
+    let state = setup.state();
+    let stopped = tokio::task::spawn_blocking(move || cockpit_daemon::stop_lock_holder(&state))
+        .await
+        .unwrap();
+
+    let status = setup.daemon.take().unwrap().wait().unwrap();
+    assert_eq!(welcome.daemon_commit, cockpit_daemon::build_commit());
+    assert_eq!(holder.pid(), pid);
+    assert!(ran, "the daemon is the recorded process");
+    assert!(!holder.runs(), "it ended");
+    assert!(stopped.is_ok(), "{stopped:?}");
+    assert!(status.success(), "{status:?}");
+    assert_eq!(cockpit_daemon::lock_holder(&setup.state()).unwrap(), None);
+    setup.start();
+}

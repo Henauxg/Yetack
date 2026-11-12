@@ -7,6 +7,7 @@ use std::process::ExitStatus;
 use std::time::Duration;
 
 use cockpit_client::ssh_script_command;
+use cockpit_protocol::BuildCommit;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -28,14 +29,10 @@ const OUTPUT_BATCH: usize = 256;
 /// The release this app was built from.
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// The commit this app was built from, when its build knew it. A Nix build of a tree with
-/// uncommitted changes sets it empty.
-pub fn app_commit() -> Option<&'static str> {
-    known_commit(option_env!("AGENTS_COCKPIT_COMMIT"))
-}
-
-fn known_commit(built_with: Option<&'static str>) -> Option<&'static str> {
-    built_with.filter(|commit| !commit.is_empty())
+/// The commit this app was built from, when its build knew it. The app builds the daemon from its
+/// own tree, so the daemon in the app tells the same commit.
+pub fn app_commit() -> Option<BuildCommit> {
+    cockpit_daemon::build_commit()
 }
 
 /// Runs the update on its server, streaming the lines to `on_lines`, and returns the script's exit
@@ -154,15 +151,8 @@ mod tests {
             host: "build-box".to_owned(),
             remote_command: "/opt/agents-cockpit".to_owned(),
             source_dir: source_dir.map(str::to_owned),
-            commit: "3f9c2e1".to_owned(),
+            commit: BuildCommit::new("3f9c2e1".to_owned()),
         }
-    }
-
-    #[test]
-    fn an_empty_commit_is_no_commit() {
-        assert_eq!(known_commit(None), None);
-        assert_eq!(known_commit(Some("")), None);
-        assert_eq!(known_commit(Some("3f9c2e1")), Some("3f9c2e1"));
     }
 
     #[test]

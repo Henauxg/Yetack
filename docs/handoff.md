@@ -10,7 +10,7 @@ Update it when you hand over.
 - All work is on the branch `ccr-8be27d05-6ge2s2`, pushed. `main` has not moved: the branch is about 150 commits ahead of it, and no pull request exists yet. Ask the user before opening one or merging.
 - CI (`.github/workflows/ci.yml`) runs on Linux and Windows, only when started: `gh workflow run ci.yml --ref <branch>`, or from the Actions tab. Ask the user before you start it. The Windows job is the only real Windows test, and it caught several failures that no Linux run showed.
 - CI is green on both platforms from `b57f7cd` on, the Windows job's tests of every crate included. Before it, the Windows job failed from the accounts commits on, on four account tests whose home folder was a Unix path.
-- The protocol version is 8. An app and a daemon of different versions refuse each other at `Hello`, so they are rebuilt together.
+- The protocol version is 9: `Welcome` carries the daemon's commit (`daemon_commit`). An app and a daemon of different versions refuse each other at `Hello`, so they are rebuilt together.
 
 ## What the branch added
 

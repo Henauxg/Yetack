@@ -221,7 +221,7 @@ mod tests {
     use crate::state::app_state::tests::{state_with, summary};
     use crate::state::daemon_update::{ProtocolGap, UpdatePlan, VersionGap};
     use crate::state::{AgentEntry, MachineState};
-    use cockpit_protocol::{AccountId, AgentStatus};
+    use cockpit_protocol::{AccountId, AgentStatus, BuildCommit};
 
     fn typed(state: &mut AppState, name: &str, host: &str, remote_command: &str) {
         open_machines(state);
@@ -390,7 +390,7 @@ mod tests {
                     host: "dev@devbox".to_owned(),
                     remote_command: "/opt/agents-cockpit".to_owned(),
                     source_dir: None,
-                    commit: "3f9c2e1a7b4d5c6e".to_owned(),
+                    commit: BuildCommit::new("3f9c2e1a7b4d5c6e".to_owned()),
                 }),
             });
         }
@@ -425,7 +425,7 @@ mod tests {
             host: "dev@devbox".to_owned(),
             remote_command: "/opt/agents-cockpit".to_owned(),
             source_dir: None,
-            commit: "3f9c2e1a7b4d5c6e".to_owned(),
+            commit: BuildCommit::new("3f9c2e1a7b4d5c6e".to_owned()),
         };
         if let Some(known) = state.machines.others.get_mut(&devbox) {
             known.version_gap = Some(VersionGap {

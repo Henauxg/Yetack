@@ -1,5 +1,7 @@
-//! Tells the app which commit it is built from, as `AGENTS_COCKPIT_COMMIT`: the variable when the
-//! environment sets it, as the Nix build does, and otherwise git's `HEAD`.
+//! Tells the daemon which commit it is built from, as `AGENTS_COCKPIT_COMMIT`: the variable when
+//! the environment sets it, as the Nix build does, and otherwise git's `HEAD`. Each program that
+//! runs the daemon, `agents-cockpit` and the app, is built with it from the same tree, so this is
+//! their commit too.
 
 use std::path::Path;
 use std::process::Command;

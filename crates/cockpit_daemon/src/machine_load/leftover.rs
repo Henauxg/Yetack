@@ -66,6 +66,13 @@ fn same_boot(recorded: Option<&BootId>, current: Option<&BootId>) -> bool {
     }
 }
 
+/// Whether `recorded` still runs: a process of this boot with its id and start time.
+#[cfg(unix)]
+pub(crate) fn still_runs(recorded: &RecordedProcess) -> bool {
+    same_boot(recorded.boot.as_ref(), boot().as_ref())
+        && started(recorded.pid) == Some(recorded.started)
+}
+
 /// When `pid` started, unless it has ended.
 #[cfg(unix)]
 fn started(pid: ProcessId) -> Option<u64> {

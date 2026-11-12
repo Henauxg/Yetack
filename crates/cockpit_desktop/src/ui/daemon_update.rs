@@ -97,7 +97,7 @@ fn OlderCard(machine: MachineId, name: String, subject: String, gap: VersionGap)
                     title: format!("Update {name}"),
                     detail: format!(
                         "Builds this app's version ({}) on the server and restarts its daemon. Agents resume after the restart.",
-                        plan.short_commit()
+                        plan.commit.short()
                     ),
                     onclick: move |()| cockpit.update_daemon(machine),
                 }
@@ -210,7 +210,7 @@ fn ProgressCard(machine: MachineId, name: String, progress: UpdateProgress) -> E
         }
         ol { class: "update-steps",
             for shown in UpdateStep::ALL {
-                StepRow { key: "{shown:?}", shown, current: *step, short_commit: plan.short_commit().to_owned() }
+                StepRow { key: "{shown:?}", shown, current: *step, short_commit: plan.commit.short().to_owned() }
             }
         }
         details { class: "no-daemon-details", open: true,

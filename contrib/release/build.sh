@@ -5,8 +5,8 @@
 #   agents-cockpit_<version>_amd64.deb      the app, with the daemon beside it
 #   agents-cockpit.service                  the systemd user service, for a server
 #   SHA256SUMS                              with a Windows zip already in /out, if any
-# AGENTS_COCKPIT_COMMIT is the commit the tree comes from, which the app's "Update" builds on a
-# server. OWNER is the uid:gid the files in /out get.
+# AGENTS_COCKPIT_COMMIT is the commit the tree comes from, which the daemon tells the app and the
+# app's "Update" builds on a server. OWNER is the uid:gid the files in /out get.
 set -eu
 : "${AGENTS_COCKPIT_COMMIT:?}" "${OWNER:?}"
 
