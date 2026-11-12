@@ -52,11 +52,10 @@ const UPDATE_SCREEN_FLAG: &str = "--demo-update";
 const SHOWCASE_FLAG: &str = "--demo-showcase";
 
 /// The README's pictures, each a scene of the showcase.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, EnumString, IntoStaticStr, VariantArray)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr, VariantArray)]
 #[strum(serialize_all = "snake_case")]
 pub enum Scene {
     /// The agents by machine, and a chat with replies under way.
-    #[default]
     Machines,
     /// The agents by project, a question waiting, the files pane and the file view.
     Projects,
