@@ -45,6 +45,11 @@ const REVEAL_TOP_PX: u16 = 12;
 /// Linux turns smooth scrolling off, but WebView2 on Windows keeps it.
 const WHEEL_UP_MS: u16 = 600;
 
+/// The largest change of the distance to the bottom, in pixels, that the browser makes alone and
+/// the script does not count as a scroll. WebKitGTK scales the page by the screen's DPI, and at
+/// 100 or 106 DPI a row that grows at the bottom moves the scroll by 1 px.
+const ROUNDING_PX: f32 = 1.5;
+
 /// The most new entries the jump button's badge counts; past it, it shows "99+".
 const MAX_BADGE_COUNT: usize = 99;
 
@@ -185,11 +190,11 @@ const record = () => {
   const wheelingUp = performance.now() - wheeledUpAt < settings.wheel_up_ms;
   const gap = gapBelow();
   // A scroll event that moved nothing comes from the browser, such as a clamp to a shorter chat.
-  const moved = scrollPending || Math.abs(gap - gapKnown) > 0.5;
+  const moved = scrollPending || Math.abs(gap - gapKnown) > settings.rounding_px;
   scrollPending = false;
   // A scroll up leaves the bottom, however short: an arrow key or the scrollbar sends no wheel.
-  const leaving = gap > gapSeen + 0.5;
-  const nearing = gap < gapSeen - 0.5;
+  const leaving = gap > gapSeen + settings.rounding_px;
+  const nearing = gap < gapSeen - settings.rounding_px;
   gapSeen = gap;
   gapKnown = gap;
   following = !leaving && (nearing || !wheelingUp) && gap <= settings.bottom_threshold_px;
@@ -206,7 +211,7 @@ const settle = () => {
   // decides from `gapSeen` once the event comes.
   const gap = gapBelow();
   const scrolled = gap - gapKnown;
-  if (Math.abs(scrolled) > 0.5) {
+  if (Math.abs(scrolled) > settings.rounding_px) {
     scrollPending = true;
     pinned = null;
     if (following && scrolled > 0) {
@@ -432,6 +437,7 @@ struct Settings {
     /// The room an entry the chat scrolls to keeps above it.
     reveal_top_px: u16,
     wheel_up_ms: u16,
+    rounding_px: f32,
 }
 
 /// What the app tells the script once it runs.
@@ -537,6 +543,7 @@ pub fn use_chat_scroll(cockpit: Cockpit, mut in_view: Signal<Option<InView>>) {
             bottom_threshold_px: BOTTOM_THRESHOLD_PX,
             reveal_top_px: REVEAL_TOP_PX,
             wheel_up_ms: WHEEL_UP_MS,
+            rounding_px: ROUNDING_PX,
         };
         if let Err(error) = script.send(settings) {
             tracing::warn!("cannot start the chat's scroll script: {error}");
@@ -625,6 +632,7 @@ mod tests {
             bottom_threshold_px: BOTTOM_THRESHOLD_PX,
             reveal_top_px: REVEAL_TOP_PX,
             wheel_up_ms: WHEEL_UP_MS,
+            rounding_px: ROUNDING_PX,
         };
         let message: ScrollMessage =
             serde_json::from_value(json!({ "type": "at_bottom", "agent": 7, "at_bottom": false }))
@@ -643,6 +651,7 @@ mod tests {
                 "bottom_threshold_px": 40,
                 "reveal_top_px": 12,
                 "wheel_up_ms": 600,
+                "rounding_px": 1.5,
             })
         );
         assert!(matches!(
