@@ -1,6 +1,6 @@
 //! A server's reconnect, as the server's page in the MCP block shows it. The daemon answers once
 //! Claude Code tried, with no word on the outcome: the app then asks for the servers' status, and
-//! says what the server's says.
+//! shows the server's status.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -21,12 +21,17 @@ const RECONNECTED_SHOWS: Duration = Duration::from_secs(5);
 pub enum Reconnect {
     /// Claude Code tries.
     Running,
-    /// Claude Code tried: the app asks for the server's status. `asked` once the request left.
+    /// Claude Code tried: the app asks for the server's status. `asked` is true once the request
+    /// left.
     Checking { asked: bool },
     /// Claude Code, or the daemon, refused the reconnect, for the reason given.
     Refused(String),
     /// The server is connected again, since `at`.
     Reconnected { at: Instant },
+    /// The app could not read the server's status after the reconnect, for the reason given.
+    CheckFailed(String),
+    /// Claude Code's servers after the reconnect no longer include this one.
+    Unlisted,
     /// The server did not connect: its status, and its error if it gives one.
     NotConnected {
         status: McpServerStatus,
@@ -112,7 +117,7 @@ pub fn checked(
         return;
     };
     *reconnect = match servers {
-        Err(reason) => Reconnect::Refused(reason),
+        Err(reason) => Reconnect::CheckFailed(reason),
         Ok(servers) => match servers.iter().find(|listed| listed.name == server) {
             Some(listed) if listed.status == McpServerStatus::Connected => {
                 Reconnect::Reconnected { at: now }
@@ -121,7 +126,7 @@ pub fn checked(
                 status: listed.status,
                 error: listed.error.clone(),
             },
-            None => Reconnect::Refused("Claude Code no longer lists this server.".to_owned()),
+            None => Reconnect::Unlisted,
         },
     };
 }
@@ -165,10 +170,12 @@ pub fn forget_ended(state: &mut AppState, agent: AgentId) {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::AgentStatus;
+    use cockpit_client::RequestError;
+    use cockpit_protocol::{AgentDetails, AgentStatus, ErrorBody, ErrorCode, Method, ResponseBody};
 
     use super::*;
-    use crate::state::{state_with, summary};
+    use crate::state::drafts::Drafts;
+    use crate::state::{Loadable, apply_response, state_with, summary};
 
     const SERVER: &str = "search";
 
@@ -190,6 +197,129 @@ mod tests {
 
     fn now_shown(state: &AppState, now: Instant) -> Option<Reconnect> {
         shown(state, agent(), SERVER, now)
+    }
+
+    fn answer(
+        state: &mut AppState,
+        method: Method,
+        purpose: Purpose,
+        result: Result<ResponseBody, RequestError>,
+    ) {
+        apply_response(
+            state,
+            &mut Drafts::default(),
+            method,
+            purpose,
+            result,
+            MachineId::THIS,
+        );
+    }
+
+    fn checking() -> Purpose {
+        Purpose::McpReconnected {
+            agent: agent(),
+            server: SERVER.to_owned(),
+        }
+    }
+
+    #[test]
+    fn the_daemons_error_to_the_reconnect_shows_as_a_refusal() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        start(&mut state, agent(), SERVER);
+
+        answer(
+            &mut state,
+            Method::AgentMcpReconnect,
+            Purpose::McpReconnect {
+                agent: agent(),
+                server: SERVER.to_owned(),
+            },
+            Err(RequestError::Failed(ErrorBody::new(
+                ErrorCode::NotFound,
+                "No such server.".to_owned(),
+            ))),
+        );
+
+        assert_eq!(
+            now_shown(&state, Instant::now()),
+            Some(Reconnect::Refused("No such server.".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_server_missing_from_the_status_ends_as_unlisted() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        start(&mut state, agent(), SERVER);
+        answered(&mut state, agent(), SERVER, None);
+        status_requests(&mut state);
+
+        checked(&mut state, agent(), SERVER, Ok(&[]), Instant::now());
+
+        assert_eq!(now_shown(&state, Instant::now()), Some(Reconnect::Unlisted));
+    }
+
+    #[test]
+    fn a_status_check_that_fails_ends_as_check_failed() {
+        let mut failed = state_with(vec![summary(1, AgentStatus::Idle)]);
+        let mut odd = state_with(vec![summary(1, AgentStatus::Idle)]);
+        for state in [&mut failed, &mut odd] {
+            start(state, agent(), SERVER);
+            answered(state, agent(), SERVER, None);
+            status_requests(state);
+        }
+
+        answer(
+            &mut failed,
+            Method::AgentMcpStatus,
+            checking(),
+            Err(RequestError::Failed(ErrorBody::new(
+                ErrorCode::Internal,
+                "The agent exited.".to_owned(),
+            ))),
+        );
+        answer(
+            &mut odd,
+            Method::AgentMcpStatus,
+            checking(),
+            Ok(ResponseBody::Done),
+        );
+
+        assert_eq!(
+            now_shown(&failed, Instant::now()),
+            Some(Reconnect::CheckFailed("The agent exited.".to_owned()))
+        );
+        assert!(matches!(
+            now_shown(&odd, Instant::now()),
+            Some(Reconnect::CheckFailed(_))
+        ));
+    }
+
+    #[test]
+    fn the_status_check_updates_the_servers_listed() {
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        state.agents.get_mut(&agent()).unwrap().details = Loadable::Loaded(AgentDetails {
+            mcp_servers: vec![server(McpServerStatus::Failed, Some("refused"))],
+            ..AgentDetails::default()
+        });
+        start(&mut state, agent(), SERVER);
+        answered(&mut state, agent(), SERVER, None);
+        status_requests(&mut state);
+
+        answer(
+            &mut state,
+            Method::AgentMcpStatus,
+            checking(),
+            Ok(ResponseBody::McpServers {
+                servers: vec![server(McpServerStatus::Connected, None)],
+            }),
+        );
+
+        let details = state.agents[&agent()].details.loaded().unwrap();
+        assert_eq!(details.mcp_servers[0].status, McpServerStatus::Connected);
+        assert!(matches!(
+            now_shown(&state, Instant::now()),
+            Some(Reconnect::Reconnected { .. })
+        ));
     }
 
     #[test]
@@ -278,11 +408,10 @@ mod tests {
     fn an_outcome_leaves_once_the_servers_status_says_otherwise() {
         let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
         let now = Instant::now();
-        state.agents.get_mut(&agent()).unwrap().details =
-            crate::state::Loadable::Loaded(cockpit_protocol::AgentDetails {
-                mcp_servers: vec![server(McpServerStatus::Failed, Some("refused"))],
-                ..cockpit_protocol::AgentDetails::default()
-            });
+        state.agents.get_mut(&agent()).unwrap().details = Loadable::Loaded(AgentDetails {
+            mcp_servers: vec![server(McpServerStatus::Failed, Some("refused"))],
+            ..AgentDetails::default()
+        });
         start(&mut state, agent(), SERVER);
         answered(&mut state, agent(), SERVER, None);
         let servers = [server(McpServerStatus::Failed, Some("refused"))];

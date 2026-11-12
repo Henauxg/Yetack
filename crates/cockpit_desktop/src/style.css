@@ -4132,18 +4132,42 @@ html.reordering * {
   display: block;
 }
 
-/* How the last reconnect went, under the server's name. */
-/* A reconnect running: its spinner shows in full, though the button waits. */
 .icon-button.framed[aria-busy="true"] {
-  opacity: 1;
+  cursor: progress;
 }
 
+/* How the last reconnect went, under the server's name. It folds open and shut by its height,
+   so the facts under it move with it. */
 .mcp-reconnect-note {
+  display: grid;
+  grid-template-rows: 1fr;
   margin: 2px 0 0;
+  animation: note-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.mcp-reconnect-text {
+  min-height: 0;
+  margin: 0;
+  overflow: hidden;
   font-size: 12px;
   line-height: 1.4;
   overflow-wrap: anywhere;
-  animation: fade-in var(--motion-in) var(--ease-out) backwards;
+}
+
+@keyframes note-in {
+  from {
+    grid-template-rows: 0fr;
+    margin-top: 0;
+    opacity: 0;
+  }
+}
+
+@keyframes note-out {
+  to {
+    grid-template-rows: 0fr;
+    margin-top: 0;
+    opacity: 0;
+  }
 }
 
 .mcp-reconnect-note.done {
@@ -4155,7 +4179,7 @@ html.reordering * {
 }
 
 .mcp-reconnect-note.leaving {
-  animation: fade-out var(--motion-out) var(--ease-in) forwards;
+  animation: note-out var(--motion-out) var(--ease-in) forwards;
 }
 
 .mcp-facts {
@@ -8339,7 +8363,7 @@ label.icon-button,
   background: var(--raised-hover);
 }
 
-.icon-button.framed:hover {
+.icon-button.framed:not(:where([aria-busy="true"])):hover {
   border-color: #525252;
   color: var(--text);
 }
@@ -8536,7 +8560,7 @@ label.icon-button,
 /* Press: small controls sink, rows darken. */
 
 .button:not(:disabled):active,
-.icon-button:active,
+.icon-button:not(:where([aria-busy="true"])):active,
 .binding:not(.recording):active,
 .foot-accounts:active,
 .quote-reply:active,

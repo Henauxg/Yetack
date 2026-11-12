@@ -179,6 +179,10 @@ pub fn apply_catchup(
     state.ui.unread.retain(|agent| agents.contains_key(agent));
     state
         .ui
+        .mcp_reconnects
+        .retain(|(agent, _), _| agents.contains_key(agent));
+    state
+        .ui
         .title_edit
         .take_if(|edit| !agents.contains_key(&edit.agent));
     state
@@ -537,7 +541,7 @@ mod tests {
     };
     use crate::state::projects::ProjectKey;
     use crate::state::ui_state::{Block, Dialog, PaletteOrigin, Popover, TitleEdit, TitlePlace};
-    use crate::state::{MachineState, agent_map, chat_images};
+    use crate::state::{MachineState, agent_map, chat_images, mcp_reconnect};
 
     #[test]
     fn a_snapshot_closes_the_stop_dialog_of_a_turn_that_ended_meanwhile() {
@@ -559,6 +563,65 @@ mod tests {
         );
 
         assert_eq!(state.ui.dialog, None);
+    }
+
+    #[test]
+    fn a_snapshot_forgets_the_reconnects_of_the_agents_it_no_longer_lists() {
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::Idle),
+            summary(2, AgentStatus::Idle),
+        ]);
+        mcp_reconnect::start(&mut state, AgentId::new(1), "search");
+        mcp_reconnect::start(&mut state, AgentId::new(2), "search");
+
+        apply_catchup(
+            &mut state,
+            &mut Drafts::default(),
+            Catchup::Snapshot(Snapshot {
+                agents: vec![summary(2, AgentStatus::Idle)],
+                plan_usage: PlanUsage::default(),
+                settings: Settings::default(),
+                last_seq: Some(Seq::new(40)),
+                accounts: Vec::new(),
+                other_plan_usage: Vec::new(),
+            }),
+            MachineId::THIS,
+        );
+
+        let kept: Vec<AgentId> = state
+            .ui
+            .mcp_reconnects
+            .keys()
+            .map(|(agent, _)| *agent)
+            .collect();
+        assert_eq!(kept, [AgentId::new(2)]);
+    }
+
+    #[test]
+    fn a_removed_agent_forgets_its_reconnects() {
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::Idle),
+            summary(2, AgentStatus::Idle),
+        ]);
+        mcp_reconnect::start(&mut state, AgentId::new(1), "search");
+        mcp_reconnect::start(&mut state, AgentId::new(2), "search");
+
+        apply(
+            &mut state,
+            &mut Drafts::default(),
+            record(Event::AgentRemoved {
+                agent: AgentId::new(1),
+            }),
+            MachineId::THIS,
+        );
+
+        let kept: Vec<AgentId> = state
+            .ui
+            .mcp_reconnects
+            .keys()
+            .map(|(agent, _)| *agent)
+            .collect();
+        assert_eq!(kept, [AgentId::new(2)]);
     }
 
     #[test]

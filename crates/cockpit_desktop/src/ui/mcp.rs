@@ -162,6 +162,57 @@ fn McpList(servers: Vec<McpServer>, hidden: BTreeSet<String>, show_hidden: bool)
     }
 }
 
+/// The line under a server's name that says how its last reconnect went.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReconnectNote {
+    outcome: NoteOutcome,
+    text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoteOutcome {
+    Done,
+    Failed,
+}
+
+impl ReconnectNote {
+    /// The note of an ended reconnect. A running one shows its spinner instead.
+    fn of(reconnect: &Reconnect) -> Option<Self> {
+        let failed = |text| {
+            Some(Self {
+                outcome: NoteOutcome::Failed,
+                text,
+            })
+        };
+        match reconnect {
+            Reconnect::Running | Reconnect::Checking { .. } => None,
+            Reconnect::Reconnected { .. } => Some(Self {
+                outcome: NoteOutcome::Done,
+                text: "Reconnected.".to_owned(),
+            }),
+            Reconnect::Refused(reason) => failed(format!("Reconnect failed: {reason}")),
+            Reconnect::CheckFailed(reason) => {
+                failed(format!("Could not read the server's status: {reason}"))
+            }
+            Reconnect::Unlisted => failed("Claude Code no longer lists this server.".to_owned()),
+            Reconnect::NotConnected { status, error } => {
+                let state = format::mcp_status_label(*status);
+                failed(match error {
+                    Some(error) => format!("Not connected: {state}. {error}"),
+                    None => format!("Not connected: {state}."),
+                })
+            }
+        }
+    }
+
+    fn class(&self) -> &'static str {
+        match self.outcome {
+            NoteOutcome::Done => "mcp-reconnect-note done",
+            NoteOutcome::Failed => "mcp-reconnect-note failed",
+        }
+    }
+}
+
 #[component]
 fn McpDetail(
     agent: AgentId,
@@ -181,26 +232,8 @@ fn McpDetail(
         let _ = (clock.0)();
     }
     let busy = reconnect.as_ref().is_some_and(Reconnect::is_busy);
-    let reconnect_note = match &reconnect {
-        Some(Reconnect::Refused(reason)) => Some((
-            "mcp-reconnect-note failed",
-            format!("Reconnect failed: {reason}"),
-        )),
-        Some(Reconnect::Reconnected { .. }) => {
-            Some(("mcp-reconnect-note done", "Reconnected.".to_owned()))
-        }
-        Some(Reconnect::NotConnected { status, error }) => {
-            let state = format::mcp_status_label(*status);
-            let text = match error {
-                Some(error) => format!("Not connected: {state}. {error}"),
-                None => format!("Not connected: {state}."),
-            };
-            Some(("mcp-reconnect-note failed", text))
-        }
-        Some(Reconnect::Running | Reconnect::Checking { .. }) | None => None,
-    };
-    // The note fades out as it leaves.
-    let note = use_presence(reconnect_note);
+    // The note folds shut as it leaves.
+    let note = use_presence(reconnect.as_ref().and_then(ReconnectNote::of));
     let disabled = status == McpServerStatus::Disabled;
     let run_line = match &server.transport {
         Some(McpTransport::Stdio { command }) => Some(format!("Runs {command}")),
@@ -280,7 +313,9 @@ fn McpDetail(
                         class: "icon-button framed",
                         aria_label: if busy { "Reconnecting" } else { "Reconnect" },
                         aria_busy: busy,
-                        disabled: busy,
+                        // Not `disabled`, which would take the focus away: a press while busy
+                        // does nothing.
+                        aria_disabled: busy,
                         onclick: move |_| cockpit.change(|state| mcp_reconnect::start(state, agent, &reconnect_name)),
                         if busy {
                             span { class: "spinner", aria_hidden: true }
@@ -316,11 +351,11 @@ fn McpDetail(
                 }
             }
             if let Some(shown) = note {
-                p {
-                    class: if shown.leaving { "{shown.value.0} leaving" } else { "{shown.value.0}" },
+                div {
+                    class: if shown.leaving { "{shown.value.class()} leaving" } else { "{shown.value.class()}" },
                     role: "status",
                     inert: shown.leaving.then_some(true),
-                    "{shown.value.1}"
+                    p { class: "mcp-reconnect-text", "{shown.value.text}" }
                 }
             }
             div { class: "mcp-facts",
