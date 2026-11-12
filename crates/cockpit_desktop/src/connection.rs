@@ -363,6 +363,11 @@ async fn route(
                 servers.save(state, &config_file);
                 continue;
             }
+            ToDaemon::Machines(MachineChange::Edit(machine, remote)) => {
+                servers.restart(state, drafts, load, notify, *machine, remote.clone());
+                servers.save(state, &config_file);
+                continue;
+            }
             ToDaemon::Machines(MachineChange::Remove(machine)) => {
                 let machine = *machine;
                 // Its task ends with its requests.
@@ -421,7 +426,43 @@ impl Servers {
             .machines
             .others
             .entry(machine)
-            .or_insert_with(|| MachineState::new(label));
+            .or_insert_with(|| MachineState::new(label))
+            .server = Some(remote.clone());
+        self.spawn_task(state, drafts, load, notify, machine, remote.clone());
+        self.configs.push((machine, remote));
+        self.next = self.next.max(machine.get().saturating_add(1));
+    }
+
+    /// Reaches the server with its new config: its task ends with its requests, and a new one
+    /// connects. A new name takes the preferences the old one had.
+    fn restart(
+        &mut self,
+        mut state: Signal<AppState>,
+        drafts: Signal<Drafts>,
+        load: Signal<ShownLoad>,
+        notify: bool,
+        machine: MachineId,
+        remote: MachineConfig,
+    ) {
+        let Some((_, config)) = self.configs.iter_mut().find(|(id, _)| *id == machine) else {
+            return;
+        };
+        config.clone_from(&remote);
+        self.tasks.remove(&machine);
+        machines::apply_edit(&mut state.write(), machine, &remote);
+        self.spawn_task(state, drafts, load, notify, machine, remote);
+    }
+
+    /// Starts the task that connects to the server and carries its requests.
+    fn spawn_task(
+        &mut self,
+        state: Signal<AppState>,
+        drafts: Signal<Drafts>,
+        load: Signal<ShownLoad>,
+        notify: bool,
+        machine: MachineId,
+        remote: MachineConfig,
+    ) {
         let (sender, requests) = mpsc::unbounded_channel();
         spawn(run_remote(
             state,
@@ -432,12 +473,10 @@ impl Servers {
                 notify,
                 router: self.router.clone(),
             },
-            remote.clone(),
+            remote,
             requests,
         ));
         self.tasks.insert(machine, sender);
-        self.configs.push((machine, remote));
-        self.next = self.next.max(machine.get().saturating_add(1));
     }
 
     /// Runs an update or a cancel next to the machine's connection task.
@@ -636,6 +675,10 @@ async fn run_demo(
                     Some(ToDaemon::Send(outgoing)) => outgoing,
                     Some(ToDaemon::Update(UpdateCommand::Start(machine, _))) => {
                         spawn(play_demo_update(state, machine));
+                        continue;
+                    }
+                    Some(ToDaemon::Machines(MachineChange::Edit(machine, config))) => {
+                        machines::apply_edit(&mut state.write(), machine, &config);
                         continue;
                     }
                     Some(

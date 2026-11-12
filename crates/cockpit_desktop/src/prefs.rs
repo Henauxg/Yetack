@@ -857,6 +857,23 @@ pub fn file(environment: &Environment) -> Option<PathBuf> {
 }
 
 impl Prefs {
+    /// Moves what the preferences keep under a server's name to its new name: its account
+    /// colors, its agents' notification levels, projects and files panes.
+    pub fn rename_machine(&mut self, old: &str, new: &str) {
+        fn moved<V>(map: &mut BTreeMap<String, V>, old: &str, new: &str) {
+            if let Some(value) = map.remove(old) {
+                map.insert(new.to_owned(), value);
+            }
+        }
+        if old == new {
+            return;
+        }
+        moved(&mut self.accounts.colors, old, new);
+        moved(&mut self.notifications.agents, old, new);
+        moved(&mut self.projects.agents, old, new);
+        moved(&mut self.files_pane.agents, old, new);
+    }
+
     /// Reads `file`. A missing file, or one that does not read or parse, gives the defaults: a
     /// preference never stops the app.
     pub fn load(file: &Path) -> Self {
@@ -1284,6 +1301,43 @@ mod tests {
         );
         assert_eq!(unknown.sidebar.filter, StatusFilter::All);
         assert_eq!(unknown.file_view.width_share, Some(0.3));
+    }
+
+    #[test]
+    fn a_renamed_server_keeps_its_colors_notifications_projects_and_panes() {
+        let mut prefs = Prefs::default();
+        let agents = |level| BTreeMap::from([(AgentId::new(4), level)]);
+        prefs.accounts.colors.insert(
+            "devbox".to_owned(),
+            BTreeMap::from([(AccountId::new(1), AccountColor::Pink)]),
+        );
+        prefs
+            .notifications
+            .agents
+            .insert("devbox".to_owned(), agents(NotificationLevel::Off));
+        prefs.projects.agents.insert(
+            "devbox".to_owned(),
+            BTreeMap::from([(AgentId::new(4), None)]),
+        );
+        prefs.files_pane.agents.insert(
+            "devbox".to_owned(),
+            BTreeMap::from([(AgentId::new(4), PaneState::Open)]),
+        );
+
+        prefs.rename_machine("devbox", "lab");
+
+        assert_eq!(
+            prefs.accounts.color("lab", AccountId::new(1)),
+            AccountColor::Pink
+        );
+        assert_eq!(
+            prefs.notifications.agent("lab", AgentId::new(4)),
+            NotificationLevel::Off
+        );
+        assert!(prefs.projects.agents.contains_key("lab"));
+        assert!(prefs.files_pane.agents.contains_key("lab"));
+        assert!(!prefs.accounts.colors.contains_key("devbox"));
+        assert!(!prefs.notifications.agents.contains_key("devbox"));
     }
 
     #[test]

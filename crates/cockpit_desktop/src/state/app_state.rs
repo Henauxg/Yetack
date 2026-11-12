@@ -22,6 +22,7 @@ use super::sending::Sending;
 use super::transcript::Transcript;
 use super::ui_state::UiState;
 use super::{file_edits, grouping, projects};
+use crate::config::MachineConfig;
 use crate::daemon_label::DaemonLabel;
 use crate::format;
 use crate::machine::MachineId;
@@ -360,6 +361,9 @@ pub struct MachineState {
     pub version_gap: Option<VersionGap>,
     /// The update of this machine's daemon, under way or failed.
     pub update: Option<DaemonUpdate>,
+    /// How the config reaches a server, which the Machines dialog edits. `None` for this
+    /// computer.
+    pub server: Option<MachineConfig>,
 }
 
 impl MachineState {
@@ -377,6 +381,7 @@ impl MachineState {
             folders_unknown: false,
             version_gap: None,
             update: None,
+            server: None,
         }
     }
 

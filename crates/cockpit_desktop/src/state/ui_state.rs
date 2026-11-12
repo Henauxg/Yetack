@@ -227,6 +227,20 @@ pub struct MachinesView {
     pub host: String,
     pub remote_command: String,
     pub error: Option<String>,
+    /// The server whose row shows its form, from its Edit button.
+    pub editing: Option<MachineEdit>,
+}
+
+/// A server's form in the Machines dialog, filled from its config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineEdit {
+    pub machine: MachineId,
+    pub name: String,
+    pub host: String,
+    pub remote_command: String,
+    /// Empty for the update script's default.
+    pub source_dir: String,
+    pub error: Option<String>,
 }
 
 /// The "Open file" dialog's data: the folder its path field names, with what the daemon listed

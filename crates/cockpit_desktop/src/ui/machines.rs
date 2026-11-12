@@ -1,5 +1,5 @@
 //! The "Machines" dialog: this computer and the servers the app reaches, with a form that adds
-//! a server and a button that removes one.
+//! a server, and on each server's row a form that edits it and a button that removes it.
 
 use dioxus::prelude::*;
 
@@ -9,7 +9,7 @@ use crate::format;
 use crate::machine::MachineId;
 use crate::state::daemon_update::{self, UpdateLine};
 use crate::state::machines::{self, MachineChange};
-use crate::state::{AppState, ConnectionState, MachinesView};
+use crate::state::{AppState, ConnectionState, MachineEdit, MachinesView};
 use crate::ui::icons::{Icon, IconKind};
 
 /// What the sidebar and the dialogs call this computer, unless its daemon runs over SSH.
@@ -68,6 +68,8 @@ struct MachineRow {
     /// What it says of a daemon of another version, which replaces `trouble`.
     update: Option<UpdateLine>,
     agents: usize,
+    /// A server the config names, which its Edit button edits.
+    editable: bool,
 }
 
 fn rows(state: &AppState) -> Vec<MachineRow> {
@@ -112,6 +114,7 @@ fn rows(state: &AppState) -> Vec<MachineRow> {
                 trouble,
                 update: daemon_update::update_line(known),
                 agents,
+                editable: known.server.is_some(),
             }
         })
         .collect()
@@ -153,7 +156,14 @@ pub fn MachinesDialog(view: MachinesView) -> Element {
                 }
                 div { class: "machine-rows",
                     for row in rows {
-                        MachineRowView { key: "{row.name}", row }
+                        match view.editing.clone().filter(|edit| edit.machine == row.machine) {
+                            Some(edit) => rsx! {
+                                MachineEditView { key: "{row.machine.get()}", name: row.name.clone(), agents: row.agents, edit }
+                            },
+                            None => rsx! {
+                                MachineRowView { key: "{row.machine.get()}", row }
+                            },
+                        }
                     }
                 }
                 div { class: "machine-add",
@@ -216,6 +226,7 @@ fn MachineRowView(row: MachineRow) -> Element {
         trouble,
         update,
         agents,
+        editable,
     } = row;
     let removable = machine != MachineId::THIS;
     let agents_text = format::count(agents, "agent", "agents");
@@ -244,12 +255,118 @@ fn MachineRowView(row: MachineRow) -> Element {
                     "Retry now"
                 }
             }
+            if editable {
+                button {
+                    class: "button small",
+                    title: "Change how the app reaches the server, or its name",
+                    onclick: move |_| cockpit.update(|state| machines::start_edit(state, machine)),
+                    "Edit"
+                }
+            }
             if removable {
                 button {
                     class: "button small",
                     title: "Forget the server. Its agents keep running there.",
                     onclick: move |_| cockpit.change_machines(MachineChange::Remove(machine)),
                     "Remove"
+                }
+            }
+        }
+    }
+}
+
+/// A server's row as its form, filled from its config. Save checks it as Add does and reconnects
+/// to the server, Cancel leaves it as it was.
+#[component]
+fn MachineEditView(name: String, agents: usize, edit: MachineEdit) -> Element {
+    let cockpit: Cockpit = use_context();
+    let type_into = move |field: fn(&mut MachineEdit) -> &mut String| {
+        move |event: FormEvent| {
+            let typed = event.value();
+            cockpit.update(|state| {
+                machines::with_view(state, |view| {
+                    if let Some(edit) = &mut view.editing {
+                        *field(edit) = typed;
+                    }
+                });
+            });
+        }
+    };
+    let save = move |_| {
+        let mut change = None;
+        cockpit.update(|state| change = machines::save_edit(state));
+        if let Some(change) = change {
+            cockpit.change_machines(change);
+        }
+    };
+    let agents_text = format::count(agents, "agent", "agents");
+    rsx! {
+        div { class: "machine-edit", role: "group", aria_label: "Edit {name}",
+            div { class: "machine-edit-head",
+                span { class: "machine-row-name", "{name}" }
+                span { class: "machine-row-detail", "Over SSH{DETAIL_SEPARATOR}{agents_text}" }
+            }
+            div { class: "form-row",
+                div { class: "field-group",
+                    label { class: "field-label", "SSH host" }
+                    input {
+                        class: "text-input mono",
+                        r#type: "text",
+                        spellcheck: false,
+                        placeholder: "devbox, or dev@devbox",
+                        initial_value: "{edit.host}",
+                        onmounted: move |event| async move {
+                            // The form may have closed already: nothing to focus then.
+                            let _ = event.data().set_focus(true).await;
+                        },
+                        oninput: type_into(|edit| &mut edit.host),
+                    }
+                }
+                div { class: "field-group",
+                    label { class: "field-label", "Name in the app" }
+                    input {
+                        class: "text-input",
+                        r#type: "text",
+                        spellcheck: false,
+                        placeholder: "The host",
+                        initial_value: "{edit.name}",
+                        oninput: type_into(|edit| &mut edit.name),
+                    }
+                }
+            }
+            div { class: "field-group",
+                label { class: "field-label", "Path of agents-cockpit on the server" }
+                input {
+                    class: "text-input mono",
+                    r#type: "text",
+                    spellcheck: false,
+                    placeholder: "/home/you/.local/bin/agents-cockpit",
+                    initial_value: "{edit.remote_command}",
+                    oninput: type_into(|edit| &mut edit.remote_command),
+                }
+            }
+            div { class: "field-group",
+                label { class: "field-label",
+                    "Source checkout for updates "
+                    span { class: "field-optional", "(optional)" }
+                }
+                input {
+                    class: "text-input mono",
+                    r#type: "text",
+                    spellcheck: false,
+                    placeholder: "The update script's default",
+                    initial_value: "{edit.source_dir}",
+                    oninput: type_into(|edit| &mut edit.source_dir),
+                }
+            }
+            if let Some(error) = &edit.error {
+                span { class: "form-error", role: "alert", "{error}" }
+            }
+            div { class: "machine-add-actions",
+                span { class: "hint", "Saving reconnects to the server. Its agents keep running there, and keep their colors and notifications under a new name." }
+                div { class: "machine-edit-actions",
+                    button { class: "button small", onclick: move |_| cockpit.update(machines::cancel_edit), "Cancel" }
+                    button { class: "button primary small", onclick: save, "Save" }
                 }
             }
         }
