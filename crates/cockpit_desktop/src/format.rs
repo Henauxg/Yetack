@@ -3,7 +3,7 @@
 
 use std::time::{Duration, SystemTime};
 
-use chrono::{DateTime, Local, NaiveDateTime};
+use chrono::{DateTime, Local, NaiveDate, NaiveDateTime};
 use cockpit_protocol::{
     AgentStatus, AgentSummary, ClaudeRoute, Cores, CostUsd, Effort, McpScope, McpServerStatus,
     PermissionMode, SubagentStatus, Timestamp, UsageWindow,
@@ -55,6 +55,15 @@ const DATE_PART_LENGTH: usize = 8;
 
 /// chrono's format for a month's short name, as in "8 Nov".
 const SHORT_MONTH: &str = "%b";
+
+/// chrono's format for a weekday's name, as in "Monday".
+const WEEKDAY: &str = "%A";
+
+/// chrono's format for a time to the minute, as in "09:05".
+const TIME_TO_MINUTE: &str = "%H:%M";
+
+/// chrono's format for a time to the second, as in "09:05:42".
+const TIME_TO_SECOND: &str = "%H:%M:%S";
 
 /// The class of an idle agent whose background tasks still run.
 const BACKGROUND_WORK_CLASS: &str = "background-work";
@@ -445,7 +454,52 @@ fn local_now(now: SystemTime) -> NaiveDateTime {
 
 /// The local time of day, to the second: "14:07:11".
 pub fn time_of_day(moment: Timestamp) -> Option<String> {
-    Some(local(moment)?.format("%H:%M:%S").to_string())
+    Some(local(moment)?.format(TIME_TO_SECOND).to_string())
+}
+
+/// The day `now` falls on, in this computer's time zone.
+pub fn local_day(now: SystemTime) -> NaiveDate {
+    local_now(now).date()
+}
+
+/// When a message was sent, under it in the chat: "13:38" today, "Yesterday 17:05", "8 Nov 09:12"
+/// this year, "8 Nov 2025 09:12" before.
+pub fn message_time(moment: Timestamp, today: NaiveDate) -> Option<String> {
+    Some(message_time_on(local(moment)?, today))
+}
+
+fn message_time_on(moment: NaiveDateTime, today: NaiveDate) -> String {
+    use chrono::Datelike;
+
+    let time = moment.format(TIME_TO_MINUTE);
+    match (today - moment.date()).num_days() {
+        0 => time.to_string(),
+        1 => format!("Yesterday {time}"),
+        _ if moment.year() == today.year() => {
+            format!("{} {} {time}", moment.day(), moment.format(SHORT_MONTH))
+        }
+        _ => format!(
+            "{} {} {} {time}",
+            moment.day(),
+            moment.format(SHORT_MONTH),
+            moment.year()
+        ),
+    }
+}
+
+/// The whole moment, for a tooltip: "Wednesday 12 Nov 2026, 13:38:05".
+pub fn full_time(moment: Timestamp) -> Option<String> {
+    use chrono::Datelike;
+
+    let moment = local(moment)?;
+    Some(format!(
+        "{} {} {} {}, {}",
+        moment.format(WEEKDAY),
+        moment.day(),
+        moment.format(SHORT_MONTH),
+        moment.year(),
+        moment.format(TIME_TO_SECOND)
+    ))
 }
 
 /// When a plan window resets: "at 16:00, in 3 h 12 min" today, "Monday at 09:00" within a week.
@@ -465,11 +519,11 @@ pub fn reset_time(moment: Timestamp, now: SystemTime) -> Option<String> {
 fn clock_time(moment: NaiveDateTime, now: NaiveDateTime) -> String {
     use chrono::Datelike;
 
-    let time = moment.format("%H:%M");
+    let time = moment.format(TIME_TO_MINUTE);
     let days = (moment.date() - now.date()).num_days();
     match days {
         0 => format!("at {time}"),
-        1..=6 => format!("{} at {time}", moment.format("%A")),
+        1..=6 => format!("{} at {time}", moment.format(WEEKDAY)),
         _ => format!("{} {} at {time}", moment.day(), moment.format(SHORT_MONTH)),
     }
 }
@@ -507,7 +561,7 @@ fn ago_between(then: NaiveDateTime, now: NaiveDateTime, elapsed: Duration) -> St
 
 #[cfg(test)]
 mod tests {
-    use chrono::{NaiveDate, Utc};
+    use chrono::Utc;
 
     use super::*;
 
@@ -642,6 +696,19 @@ mod tests {
 
         assert_eq!(minutes_until(soon, now), Some(2));
         assert_eq!(minutes_until(past, now), None);
+    }
+
+    #[test]
+    fn a_message_time_names_the_day_only_when_it_is_not_today() {
+        let today = at(12, 13, 40).date();
+        let last_year = NaiveDate::from_ymd_opt(2025, 11, 8)
+            .and_then(|date| date.and_hms_opt(9, 12, 0))
+            .unwrap();
+
+        assert_eq!(message_time_on(at(12, 13, 38), today), "13:38");
+        assert_eq!(message_time_on(at(11, 17, 5), today), "Yesterday 17:05");
+        assert_eq!(message_time_on(at(8, 9, 12), today), "8 Nov 09:12");
+        assert_eq!(message_time_on(last_year, today), "8 Nov 2025 09:12");
     }
 
     #[test]

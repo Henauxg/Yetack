@@ -18,11 +18,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_protocol::{
     AgentId, AgentStatus, COMMAND_PREFIX, Image, ItemBody, Prompt, PromptDelivery, PromptId,
-    PromptParams, Request, TranscriptItem, WaitingPrompt,
+    PromptParams, Request, Timestamp, TranscriptItem, WaitingPrompt,
 };
 
 use super::accounts;
@@ -64,6 +64,8 @@ pub struct SendingPrompt {
     pub text: String,
     pub images: Vec<Image>,
     pub place: SendingPlace,
+    /// When the user sent it, which its bubble shows until the echo brings the daemon's time.
+    pub sent_at: Option<Timestamp>,
     /// The waiting messages the app knew as it left, which cannot be its echo. `None` while the
     /// agent's details had not loaded: the first ones to load are those.
     known: Option<BTreeSet<PromptId>>,
@@ -174,6 +176,7 @@ pub fn start(
         text: prompt.text.clone(),
         images: prompt.images.clone(),
         place,
+        sent_at: Timestamp::from_system_time(SystemTime::now()),
         known: known_waiting(entry),
         held,
     });
@@ -531,6 +534,23 @@ mod tests {
                 .collect(),
             ..AgentDetails::default()
         }
+    }
+
+    #[test]
+    fn a_message_on_its_way_keeps_the_time_it_was_sent() {
+        let mut state = idle_agent();
+        let before = Timestamp::from_system_time(SystemTime::now());
+
+        queued(&mut state, "Run the tests");
+        let after = Timestamp::from_system_time(SystemTime::now());
+
+        let sent_at = entry(&mut state)
+            .sending
+            .in_place(SendingPlace::Chat)
+            .map(|prompt| prompt.sent_at)
+            .next()
+            .flatten();
+        assert!(before <= sent_at && sent_at <= after, "{sent_at:?}");
     }
 
     #[test]
