@@ -103,7 +103,7 @@ An update sends the new binary the same way, to a new file beside the old one. I
 
 Nix keeps the app and the daemon in `/nix/store`, which is read-only, and the system's configuration decides their version. The `.deb` puts them in `/usr/bin`, which `apt` owns. The app must never replace a binary that a package manager owns.
 
-1. Each build records how it was installed. The flake sets a value at build time, as it already sets `AGENTS_COCKPIT_COMMIT`. The `.deb` sets another value. A build from source sets none.
+1. Each build records how it was installed. The flake sets a value at build time, as it already sets `AGENTS_COCKPIT_SOURCE_COMMIT`. The `.deb` sets another value. A build from source sets none.
 2. A Nix or `.deb` install of the app never updates itself. When a newer release exists, the app says so and gives the command: change the version in the system's flake, `nix profile remove` then `nix profile add`, or `apt install` of the new `.deb`.
 3. The app updates only the installs that the app owns: the Windows zip, a build from source, and a server's daemon in `~/.local/bin`.
 4. Before the app offers "Update" for a server, the app checks where the daemon's binary is. A daemon in `/nix/store` gets "This daemon comes from Nix: update it with your system's configuration" in place of "Update". Today the update script fails on such a daemon at the install, with exit code 4.

@@ -41,7 +41,7 @@
             # The commit the tree comes from, which the daemon tells the app, and which the app's
             # update builds on a server. Empty for a tree with uncommitted changes: the app then
             # offers no update. The sandbox has no git to ask.
-            AGENTS_COCKPIT_COMMIT = self.rev or "";
+            AGENTS_COCKPIT_SOURCE_COMMIT = self.rev or "";
           };
         in
         rec {
