@@ -159,7 +159,7 @@ fn agents_in<'state>(
 }
 
 /// A recent folder of the new agent dialog, with the project an agent started there joins.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub struct ProjectFolder {
     pub recent: RecentFolder,
     pub project: ProjectKey,
