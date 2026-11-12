@@ -351,9 +351,11 @@ impl Hub {
         };
         let line = prompts::prompt_line(&prompt)
             .ok_or_else(|| errors::internal("cannot encode the prompt".to_owned()))?;
-        // The prompt is the input the mark was waiting for.
-        let mut record_changed = std::mem::take(&mut agent.record.mark) == Mark::ToHandle;
-        agent.view.set_mark(Mark::Unmarked);
+        // The prompt is the input a mark until the next prompt was waiting for.
+        let mark = agent.record.mark.after_prompt();
+        let mut record_changed = mark != agent.record.mark;
+        agent.record.mark = mark;
+        agent.view.set_mark(mark);
         let busy = agent.view.is_busy() || !agent.queue.is_empty();
         let steers = delivery == PromptDelivery::Steer && !is_slash_command(&prompt.text);
         if !busy {
@@ -1106,5 +1108,42 @@ mod tests {
         assert_eq!(hub.agents[&agent].view.summary().mark, Mark::Unmarked);
         assert!(!saved(&hub));
         assert_eq!(unknown.code, ErrorCode::NotFound);
+    }
+
+    /// A mark kept until you clear it stays through a prompt.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_kept_mark_stays_through_a_prompt() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut hub = Hub::for_tests(&temp.path().join("state"));
+        let claude = temp.path().join("claude");
+        test_script::write_script(&claude, "#!/bin/sh\nexec cat >/dev/null\n");
+        hub.config.claude_program = claude;
+        let start = StartParams {
+            folder: temp.path().to_owned(),
+            title: None,
+            model: None,
+            effort: None,
+            mode: None,
+            prompt: None,
+            account: AccountId::DEFAULT,
+        };
+        let Ok(ResponseBody::AgentStarted { agent }) = hub.start_agent(start) else {
+            panic!("the agent did not start");
+        };
+        hub.mark(MarkParams {
+            agent,
+            mark: Mark::ToHandleKept,
+        })
+        .unwrap();
+        let prompt = Prompt {
+            text: "go on".to_owned(),
+            images: Vec::new(),
+        };
+
+        hub.prompt(agent, prompt, PromptDelivery::Steer).unwrap();
+
+        assert_eq!(hub.agents[&agent].view.summary().mark, Mark::ToHandleKept);
+        assert_eq!(hub.agents[&agent].record.mark, Mark::ToHandleKept);
     }
 }

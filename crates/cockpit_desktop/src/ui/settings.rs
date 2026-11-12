@@ -14,7 +14,8 @@ use strum::VariantArray;
 use crate::connection::Cockpit;
 use crate::keymap::{self, Chord, Command, FixedShortcut, Group, Keymap, Refusal};
 use crate::prefs::{
-    CommentPlacement, EscStop, GroupBy, NotificationLevel, PaneState, ProjectSplit, SteerHold,
+    CommentPlacement, EscStop, FirstMark, GroupBy, NotificationLevel, PaneState, ProjectSplit,
+    SteerHold,
 };
 use crate::state::{
     RefusedChord, SettingsTab, SettingsView, grouping, notification_levels, settings,
@@ -42,6 +43,14 @@ const ESC_STOP_LABEL_ID: &str = "setting-esc-stop";
 const FILES_PANE_LABEL_ID: &str = "setting-files-pane";
 const GROUP_BY_LABEL_ID: &str = "setting-group-by";
 const PROJECT_SPLIT_LABEL_ID: &str = "setting-project-split";
+const FIRST_MARK_LABEL_ID: &str = "setting-first-mark";
+
+fn first_mark_label(first: FirstMark) -> &'static str {
+    match first {
+        FirstMark::Kept => "Until you clear it",
+        FirstMark::UntilMessage => "Until a message",
+    }
+}
 
 fn pane_label(pane: PaneState) -> &'static str {
     match pane {
@@ -147,6 +156,13 @@ fn GeneralTab() -> Element {
             state.prefs.keys.shown(Command::FilesPane),
         )
     };
+    let (first_mark, mark_keys) = {
+        let state = cockpit.state.read();
+        (
+            state.prefs.sidebar.first_mark,
+            state.prefs.keys.shown(Command::MarkToHandle),
+        )
+    };
     rsx! {
         div { class: "dialog-body",
             h3 { class: "settings-title", "Sidebar" }
@@ -182,6 +198,25 @@ fn GeneralTab() -> Element {
                             aria_pressed: choice == project_split,
                             onclick: move |_| cockpit.update(|state| grouping::set_project_split(state, choice)),
                             "{project_split_label(choice)}"
+                        }
+                    }
+                }
+            }
+            div { class: "setting-row",
+                div { class: "setting-text",
+                    span { id: FIRST_MARK_LABEL_ID, class: "setting-label", "Mark to handle" }
+                    span { class: "setting-help",
+                        "The mark {mark_keys} and the row's menu give first. Pressing again gives the other kind, then clears the mark."
+                    }
+                }
+                div { class: "segmented", role: "group", aria_labelledby: FIRST_MARK_LABEL_ID,
+                    for &choice in FirstMark::VARIANTS {
+                        button {
+                            key: "{first_mark_label(choice)}",
+                            class: if choice == first_mark { "segment chosen" } else { "segment" },
+                            aria_pressed: choice == first_mark,
+                            onclick: move |_| cockpit.update(|state| state.prefs.sidebar.first_mark = choice),
+                            "{first_mark_label(choice)}"
                         }
                     }
                 }

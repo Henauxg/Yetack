@@ -985,6 +985,11 @@ button:disabled {
     opacity var(--motion-in) var(--ease-out);
 }
 
+/* A mark that stays until you clear it, filled. */
+.row-flag.kept svg {
+  fill: currentColor;
+}
+
 /* An agent's notification level beside its row's time, when it is not "All". It grows in and
    shrinks out as the flag does. */
 .row-bell {

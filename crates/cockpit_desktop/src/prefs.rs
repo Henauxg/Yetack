@@ -240,6 +240,48 @@ impl Serialize for ProjectSplit {
     }
 }
 
+/// The "to handle" mark the shortcut, or the row's menu, puts on an agent without one. The next
+/// press gives the other kind, and the one after clears it.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumString, IntoStaticStr, VariantArray,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum FirstMark {
+    /// Stays until you clear it.
+    #[default]
+    Kept,
+    /// Stays until you clear it or send the agent a message.
+    UntilMessage,
+}
+
+impl FirstMark {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The mark it gives first, then the other one.
+    pub fn order(self) -> [Mark; 2] {
+        match self {
+            Self::Kept => [Mark::ToHandleKept, Mark::ToHandle],
+            Self::UntilMessage => [Mark::ToHandle, Mark::ToHandleKept],
+        }
+    }
+}
+
+impl Serialize for FirstMark {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.into())
+    }
+}
+
+/// A word this version does not know reads as `Kept`, rather than costing the whole file.
+impl<'de> Deserialize<'de> for FirstMark {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let word = String::deserialize(deserializer)?;
+        Ok(word.parse().unwrap_or_default())
+    }
+}
+
 /// A word this version does not know reads as `OneList`, rather than costing the whole file.
 impl<'de> Deserialize<'de> for ProjectSplit {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -567,6 +609,8 @@ pub struct SidebarPrefs {
     pub group_by: GroupBy,
     #[serde(skip_serializing_if = "ProjectSplit::is_default")]
     pub project_split: ProjectSplit,
+    #[serde(skip_serializing_if = "FirstMark::is_default")]
+    pub first_mark: FirstMark,
 }
 
 /// The sidebar's width, in pixels, until it is moved.
@@ -755,7 +799,7 @@ impl StatusFilter {
 
     pub fn admits(self, summary: &AgentSummary) -> bool {
         match self {
-            Self::ToHandle => summary.mark == Mark::ToHandle,
+            Self::ToHandle => summary.mark.is_to_handle(),
             _ => self.status().is_none_or(|kept| kept == summary.status),
         }
     }
@@ -975,7 +1019,8 @@ mod tests {
     "filter": "needs_you",
     "width": 300,
     "group_by": "project",
-    "project_split": "by_machine"
+    "project_split": "by_machine",
+    "first_mark": "until_message"
   },
   "files_pane": {
     "new_agents": "open",
@@ -1070,6 +1115,7 @@ mod tests {
                     width: Some(300),
                     group_by: GroupBy::Project,
                     project_split: ProjectSplit::ByMachine,
+                    first_mark: FirstMark::UntilMessage,
                 },
                 files_pane: FilesPanePrefs {
                     new_agents: PaneState::Open,
@@ -1318,6 +1364,19 @@ mod tests {
     }
 
     #[test]
+    fn the_first_mark_words_are_pinned_and_an_unknown_one_reads_as_kept() {
+        let words: Vec<&str> = FirstMark::VARIANTS
+            .iter()
+            .map(|&first| first.into())
+            .collect();
+        let unknown: Prefs =
+            serde_json::from_str(r#"{"sidebar": {"first_mark": "forever"}}"#).unwrap();
+
+        assert_eq!(words, ["kept", "until_message"]);
+        assert_eq!(unknown.sidebar.first_mark, FirstMark::Kept);
+    }
+
+    #[test]
     fn the_notification_words_are_pinned_and_an_unknown_one_reads_as_all() {
         let words: Vec<&str> = NotificationLevel::VARIANTS
             .iter()
@@ -1411,6 +1470,7 @@ mod tests {
                 width: Some(220),
                 group_by: GroupBy::None,
                 project_split: ProjectSplit::OneList,
+                first_mark: FirstMark::Kept,
             },
             files_pane: FilesPanePrefs {
                 new_agents: PaneState::Open,
@@ -1457,6 +1517,7 @@ mod tests {
                 width: Some(220),
                 group_by: GroupBy::None,
                 project_split: ProjectSplit::OneList,
+                first_mark: FirstMark::Kept,
             },
             files_pane: FilesPanePrefs {
                 new_agents: PaneState::Open,

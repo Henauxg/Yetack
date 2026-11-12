@@ -87,7 +87,7 @@ fn run(
                 (Some(_), _) | (None, None) => Vec::new(),
             };
         }
-        Command::MarkToHandle if no_dialog => return to_handle::toggle_selected(state),
+        Command::MarkToHandle if no_dialog => return to_handle::cycle_selected(state),
         Command::Rename if no_dialog => actions::rename_key(state, drafts),
         Command::ReloadFile => {
             if let Some(agent) = state.ui.selected {
