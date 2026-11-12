@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
+use chrono::NaiveDate;
 use cockpit_client::{
     Backoff, RequestError, Requester, Session, SessionError, SessionUpdate, Transport,
 };
@@ -28,7 +29,7 @@ use crate::state::{
     self, AgentEntry, AppState, ConnectionState, Dialog, Drafts, MachineState, Outgoing, Purpose,
     TitlePlace, Utf16Offset, actions, notification_levels,
 };
-use crate::{bridge, demo, update_script};
+use crate::{bridge, demo, format, update_script};
 
 /// What the window was started with.
 #[derive(Debug, Clone, PartialEq)]
@@ -259,7 +260,18 @@ pub fn use_clock() -> Clock {
             now.set(SystemTime::now());
         }
     });
+    use_today(now);
     use_context_provider(|| Clock(now))
+}
+
+/// The local day, which changes at midnight. A component that reads it renders again at midnight,
+/// and not on each tick of the clock.
+#[derive(Clone, Copy)]
+pub struct Today(pub Memo<NaiveDate>);
+
+fn use_today(now: Signal<SystemTime>) -> Today {
+    let today = use_memo(move || format::local_day(now()));
+    use_context_provider(|| Today(today))
 }
 
 /// Starts the connection, and provides the `Cockpit` to every component.
@@ -1132,6 +1144,7 @@ fn focus_window() {
 #[cfg(test)]
 mod tests {
     use std::cell::{Cell, RefCell};
+    use std::time::UNIX_EPOCH;
 
     use cockpit_protocol::{AgentStatus, Method};
     use dioxus::dioxus_core::NoOpMutations;
@@ -1347,6 +1360,51 @@ mod tests {
                 .all(|mut outgoing| outgoing.machine() == devbox),
             "only devbox's requests leave this computer's task"
         );
+    }
+
+    thread_local! {
+        static CLOCK: RefCell<Option<Signal<SystemTime>>> = const { RefCell::new(None) };
+        static DAY_RENDERS: Cell<u32> = const { Cell::new(0) };
+    }
+
+    /// A clock the test sets, and the day it gives.
+    #[component]
+    fn Clocked() -> Element {
+        let now = use_signal(|| UNIX_EPOCH + Duration::from_secs(1_794_480_000));
+        use_today(now);
+        CLOCK.with(|slot| slot.replace(Some(now)));
+        rsx! {
+            Day {}
+        }
+    }
+
+    /// Reads the day, and counts its renders.
+    #[component]
+    fn Day() -> Element {
+        let Today(today) = use_context::<Today>();
+        let _today = today();
+        DAY_RENDERS.with(|renders| renders.set(renders.get() + 1));
+        rsx! {}
+    }
+
+    #[test]
+    fn a_tick_of_the_clock_renders_what_shows_the_day_only_when_the_day_changes() {
+        let mut dom = VirtualDom::new(Clocked);
+        dom.rebuild_in_place();
+        let mut now = CLOCK
+            .with(|slot| *slot.borrow())
+            .expect("the component provides the clock");
+        let renders = || DAY_RENDERS.with(Cell::get);
+        let opened = renders();
+
+        dom.in_runtime(|| now.with_mut(|now| *now += Duration::from_secs(1)));
+        dom.render_immediate(&mut NoOpMutations);
+        let after_a_tick = renders();
+        dom.in_runtime(|| now.with_mut(|now| *now += Duration::from_secs(24 * 3600)));
+        dom.render_immediate(&mut NoOpMutations);
+
+        assert_eq!(after_a_tick, opened);
+        assert_eq!(renders(), opened + 1);
     }
 
     #[test]
