@@ -54,8 +54,8 @@ struct AgentRow {
     account: Option<AccountLabel>,
     /// The activity says the account is not signed in.
     warns: bool,
-    /// You marked the agent as one to handle.
-    to_handle: bool,
+    /// The "to handle" mark you put on the agent.
+    mark: Mark,
     /// The machine the agent runs on, when nothing above the row says it.
     machine: Option<RowMachine>,
     notifications: NotificationLevel,
@@ -81,7 +81,7 @@ impl AgentRow {
                 .task_progress
                 .map(|progress| format!("{}/{}", progress.done, progress.total)),
             time: row_time(summary),
-            to_handle: summary.mark == Mark::ToHandle,
+            mark: summary.mark,
             machine: grouping::machine_shown_on_row(state, entry.id())
                 .and_then(|machine| RowMachine::new(state, machine)),
             notifications: notification_levels::agent_level(state, entry.id()),
@@ -210,8 +210,17 @@ fn chip_class(filter: StatusFilter) -> &'static str {
     }
 }
 
-/// The mark's name, in the filter and the row's tooltip.
+/// The mark's name, in the filter.
 const TO_HANDLE: &str = "To handle";
+
+/// The row's flag, as its tooltip says it.
+fn mark_label(mark: Mark) -> &'static str {
+    match mark {
+        Mark::Unmarked => "",
+        Mark::ToHandle => "To handle, until you send it a message",
+        Mark::ToHandleKept => "To handle, until you clear the mark",
+    }
+}
 
 const TO_HANDLE_CLASS: &str = "to-handle";
 
@@ -435,7 +444,7 @@ impl MachineGroup {
         for entry in agents {
             count += 1;
             needs_you += usize::from(entry.summary.status == AgentStatus::NeedsYou);
-            to_handle += usize::from(entry.summary.mark == Mark::ToHandle);
+            to_handle += usize::from(entry.summary.mark.is_to_handle());
         }
         let trouble = known.and_then(|known| {
             if let Some(line) = daemon_update::update_line(known) {
@@ -614,7 +623,7 @@ impl ProjectGroup {
             if projects::project_of(state, entry) == project {
                 count += 1;
                 needs_you += usize::from(entry.summary.status == AgentStatus::NeedsYou);
-                to_handle += usize::from(entry.summary.mark == Mark::ToHandle);
+                to_handle += usize::from(entry.summary.mark.is_to_handle());
                 *on_machine.entry(MachineId::of(entry.id())).or_default() += 1;
             }
         }
@@ -811,7 +820,7 @@ fn AgentRowView(row: AgentRow) -> Element {
     if row.unread {
         classes.push("unread");
     }
-    if row.to_handle {
+    if row.mark.is_to_handle() {
         classes.push(TO_HANDLE_CLASS);
     }
     if let Some(TitleEdit {
@@ -913,12 +922,12 @@ fn AgentRowButton(row: AgentRow, class: String) -> Element {
                 }
                 // Always there, so that the style sheet can grow it in and shrink it out.
                 span {
-                    class: "row-flag",
-                    title: if row.to_handle { TO_HANDLE } else { "" },
-                    aria_hidden: !row.to_handle,
+                    class: if row.mark == Mark::ToHandleKept { "row-flag kept" } else { "row-flag" },
+                    title: mark_label(row.mark),
+                    aria_hidden: !row.mark.is_to_handle(),
                     Icon { kind: IconKind::Flag, size: 12 }
-                    if row.to_handle {
-                        span { class: "visually-hidden", "{TO_HANDLE}" }
+                    if row.mark.is_to_handle() {
+                        span { class: "visually-hidden", {mark_label(row.mark)} }
                     }
                 }
                 RowBell { level: row.notifications }

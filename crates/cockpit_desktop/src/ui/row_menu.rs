@@ -183,6 +183,8 @@ struct RowMenuShown {
     x: i32,
     y: i32,
     mark: Mark,
+    /// The mark the menu's mark row gives, as the shortcut would.
+    next_mark: Mark,
     unread: bool,
     /// The agent's project, and the ones it can move to.
     project: String,
@@ -387,6 +389,7 @@ pub fn RowMenu() -> Element {
                     x,
                     y,
                     mark: entry.summary.mark,
+                    next_mark: to_handle::next(entry.summary.mark, state.prefs.sidebar.first_mark),
                     unread: state.is_unread(agent),
                     project: projects::look(&state, &projects::project_of(&state, entry)).name,
                     projects: project_choices(&state, entry),
@@ -433,6 +436,7 @@ fn MenuBody(shown: RowMenuShown) -> Element {
         x,
         y,
         mark,
+        next_mark,
         unread,
         ref project,
         ref projects,
@@ -443,7 +447,7 @@ fn MenuBody(shown: RowMenuShown) -> Element {
     } = shown;
     let folder = folder.clone();
     let projects = projects.clone();
-    let act = move |pick: Pick| run(cockpit, agent, mark, unread, pick);
+    let act = move |pick: Pick| run(cockpit, agent, next_mark, unread, pick);
     let keys = cockpit.state.read().prefs.keys.clone();
     let mut cancel_delay = move || {
         let next = moves.peek().wrapping_add(1);
@@ -640,7 +644,7 @@ fn MenuBody(shown: RowMenuShown) -> Element {
                     act(pick);
                 }
             },
-            {action_row(Item::Mark, if mark == Mark::ToHandle { "Done handling" } else { "Mark to handle" }, "")}
+            {action_row(Item::Mark, mark_action_label(mark, next_mark), "")}
             {action_row(Item::Unread, if unread { "Mark as read" } else { "Mark as unread" }, "")}
             {action_row(Item::Rename, "Rename", "")}
             div { class: "menu-divider" }
@@ -703,14 +707,23 @@ fn MenuBody(shown: RowMenuShown) -> Element {
     }
 }
 
-/// Runs what the menu picked, on the menu's agent. `mark` and `unread` are what the menu
-/// showed: a toggle does what its label said, even if the agent changed since.
-fn run(cockpit: Cockpit, agent: AgentId, mark: Mark, unread: bool, pick: Pick) {
+/// The mark row's label, from the agent's mark and the one the row gives.
+fn mark_action_label(mark: Mark, next: Mark) -> &'static str {
+    match (mark, next) {
+        (_, Mark::Unmarked) => "Done handling",
+        (Mark::Unmarked, Mark::ToHandleKept) => "Mark to handle",
+        (Mark::Unmarked, Mark::ToHandle) => "Mark to handle until a message",
+        (_, Mark::ToHandleKept) => "Keep the mark after a message",
+        (_, Mark::ToHandle) => "Clear the mark at the next message",
+    }
+}
+
+/// Runs what the menu picked, on the menu's agent. `next_mark` and `unread` come from what the
+/// menu showed: a row does what its label said, even if the agent changed since.
+fn run(cockpit: Cockpit, agent: AgentId, next_mark: Mark, unread: bool, pick: Pick) {
     let close_menu = |state: &mut AppState| state.ui.popover = None;
     match pick {
-        Pick::Mark => {
-            cockpit.change(|state| to_handle::set(state, agent, to_handle::toggled(mark)))
-        }
+        Pick::Mark => cockpit.change(|state| to_handle::set(state, agent, next_mark)),
         Pick::Unread if unread => cockpit.update(|state| unread::mark_read(state, agent)),
         Pick::Unread => cockpit.update(|state| unread::mark_unread(state, agent)),
         Pick::Rename => cockpit.change_with_drafts(|state, drafts| {
@@ -745,12 +758,38 @@ fn run(cockpit: Cockpit, agent: AgentId, mark: Mark, unread: bool, pick: Pick) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_mark_row_says_what_its_pick_does() {
+        let labels: Vec<&str> = [
+            (Mark::Unmarked, Mark::ToHandleKept),
+            (Mark::Unmarked, Mark::ToHandle),
+            (Mark::ToHandle, Mark::ToHandleKept),
+            (Mark::ToHandleKept, Mark::ToHandle),
+            (Mark::ToHandleKept, Mark::Unmarked),
+        ]
+        .into_iter()
+        .map(|(mark, next)| mark_action_label(mark, next))
+        .collect();
+
+        assert_eq!(
+            labels,
+            [
+                "Mark to handle",
+                "Mark to handle until a message",
+                "Keep the mark after a message",
+                "Clear the mark at the next message",
+                "Done handling",
+            ]
+        );
+    }
+
     fn shown() -> RowMenuShown {
         RowMenuShown {
             agent: AgentId::new(1),
             x: 10,
             y: 20,
             mark: Mark::Unmarked,
+            next_mark: Mark::ToHandleKept,
             unread: false,
             project: "billing".to_owned(),
             projects: Vec::new(),

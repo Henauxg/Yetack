@@ -999,8 +999,9 @@ pub fn latency(request: &Request) -> Duration {
 }
 
 /// What the daemon's events would change after a request it accepts: a rename shows in the
-/// title, a mark on the row, which a prompt clears, an answered approval and a stopped task show
-/// in the agent map, a reconnected MCP server connects, and the accounts change.
+/// title, a mark on the row, which a prompt clears unless it is kept, an answered approval and a
+/// stopped task show in the agent map, a reconnected MCP server connects, and the accounts
+/// change.
 pub fn apply(state: &mut AppState, request: &Request) {
     apply_map_request(state, request);
     apply_account_request(state, request);
@@ -1038,7 +1039,7 @@ pub fn apply(state: &mut AppState, request: &Request) {
         }
         Request::AgentPrompt(params) => {
             if let Some(entry) = state.agents.get_mut(&params.agent) {
-                entry.summary.mark = Mark::Unmarked;
+                entry.summary.mark = entry.summary.mark.after_prompt();
                 echo_prompt(entry, &params.prompt);
             }
         }
@@ -3650,7 +3651,10 @@ fn sessions(now: SystemTime) -> Vec<PastSession> {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::{FoldersListParams, HistoryParams, ReadFileParams, RenameParams};
+    use cockpit_protocol::{
+        FoldersListParams, HistoryParams, MarkParams, PromptDelivery, PromptParams, ReadFileParams,
+        RenameParams,
+    };
 
     use super::*;
     use crate::state::{HistoryState, WaitingKind};
@@ -3740,6 +3744,33 @@ mod tests {
         apply(&mut state, &rename);
 
         assert_eq!(state.agents[&agent].summary.title, "🚀 Stream the input");
+    }
+
+    #[test]
+    fn a_demo_prompt_clears_only_a_mark_until_a_message() {
+        let mut state = state(label());
+        let agent = AgentId::new(LIVE_AGENT);
+        let mark_then_prompt = |state: &mut AppState, mark: Mark| {
+            apply(state, &Request::AgentMark(MarkParams { agent, mark }));
+            apply(
+                state,
+                &Request::AgentPrompt(PromptParams {
+                    agent,
+                    prompt: Prompt {
+                        text: "go on".to_owned(),
+                        images: Vec::new(),
+                    },
+                    delivery: PromptDelivery::Steer,
+                }),
+            );
+            state.agents[&agent].summary.mark
+        };
+
+        let until_message = mark_then_prompt(&mut state, Mark::ToHandle);
+        let kept = mark_then_prompt(&mut state, Mark::ToHandleKept);
+
+        assert_eq!(until_message, Mark::Unmarked);
+        assert_eq!(kept, Mark::ToHandleKept);
     }
 
     #[test]
