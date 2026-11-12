@@ -1565,21 +1565,67 @@ impl AgentView {
             .find(|task| &task.id == id)
     }
 
-    /// Removes the sent prompt an echo shows: the one with its text, else the oldest, since
-    /// Claude Code echoes each prompt in the order it got them. Returns when the user sent it.
+    /// Removes the sent prompts an echo shows: the one with its text, else the oldest ones whose
+    /// texts it joins, else the oldest, since Claude Code echoes the prompts in the order it got
+    /// them. Returns when the user sent the first one.
     fn take_unread_prompt(&mut self, text: &str) -> Option<Timestamp> {
         let prompts = &mut self.details.waiting_prompts;
-        let index = prompts
+        let exact = prompts
             .iter()
-            .position(|prompt| prompt.state == WaitingState::Sent && prompt.text == text)
-            .or_else(|| {
+            .position(|prompt| prompt.state == WaitingState::Sent && prompt.text == text);
+        let taken = match exact {
+            Some(index) => vec![index],
+            None => joined_prompts(prompts, text).or_else(|| {
                 prompts
                     .iter()
                     .position(|prompt| prompt.state == WaitingState::Sent)
-            });
-        let index = index?;
+                    .map(|index| vec![index])
+            })?,
+        };
         self.details_changed = true;
-        Some(prompts.remove(index)).and_then(|prompt| prompt.sent_at)
+        let sent_at = taken
+            .first()
+            .and_then(|&first| prompts.get(first))
+            .and_then(|prompt| prompt.sent_at);
+        for &index in taken.iter().rev() {
+            prompts.remove(index);
+        }
+        sent_at
+    }
+
+    /// Claude Code answers a stop with the prompts it still holds. With none and no turn running,
+    /// no turn will read the sent prompts, so they leave. One an earlier message of the
+    /// transcript holds went with it. Any other becomes a "Message not sent" notice. A running
+    /// turn still reads a prompt sent during it, after the stop.
+    pub(crate) fn release_unheld_prompts(&mut self) {
+        if self.summary.turn_started_at.is_some() {
+            return;
+        }
+        let (sent, kept): (Vec<WaitingPrompt>, Vec<WaitingPrompt>) =
+            std::mem::take(&mut self.details.waiting_prompts)
+                .into_iter()
+                .partition(|prompt| prompt.state == WaitingState::Sent);
+        self.details.waiting_prompts = kept;
+        if sent.is_empty() {
+            return;
+        }
+        self.details_changed = true;
+        for prompt in sent {
+            let read = self.items.iter().any(|item| {
+                matches!(&item.body, ItemBody::UserMessage(message) if message.text.contains(&prompt.text))
+            });
+            if !read {
+                self.push_item(
+                    None,
+                    ItemBody::Notice {
+                        text: UNREAD_PROMPT_NOTICE.to_owned(),
+                        detail: Some(prompt.text),
+                    },
+                );
+            }
+        }
+        self.working = false;
+        self.refresh_status();
     }
 
     fn take_echo(&mut self, text: &str) -> bool {
@@ -1688,6 +1734,28 @@ fn find_item(items: &[TranscriptItem], id: ItemId) -> Option<&TranscriptItem> {
 /// arguments, so `/greet  world` comes back as `/greet world`.
 fn same_words(sent: &str, echo: &str) -> bool {
     sent.split_whitespace().eq(echo.split_whitespace())
+}
+
+/// The indexes of the oldest sent prompts an echo joins, when it holds two or more. Claude Code
+/// reads the prompts it holds at a step as one, their texts on separate lines.
+fn joined_prompts(prompts: &[WaitingPrompt], echo: &str) -> Option<Vec<usize>> {
+    let mut rest = echo;
+    let mut taken = Vec::new();
+    let sent = prompts
+        .iter()
+        .enumerate()
+        .filter(|(_, prompt)| prompt.state == WaitingState::Sent);
+    for (index, prompt) in sent {
+        let Some(after) = rest.strip_prefix(prompt.text.as_str()) else {
+            break;
+        };
+        taken.push(index);
+        if after.is_empty() {
+            return (taken.len() > 1).then_some(taken);
+        }
+        rest = after.strip_prefix('\n')?;
+    }
+    None
 }
 
 fn user_message(text: String, images: Vec<Image>, sent_at: Option<Timestamp>) -> ItemBody {
@@ -3046,6 +3114,66 @@ mod tests {
 
         assert_eq!(view.summary().status, AgentStatus::Idle);
         assert_eq!(user_texts(&view), ["First", "Second"]);
+    }
+
+    #[test]
+    fn an_echo_that_joins_two_sent_prompts_reads_both() {
+        let mut view = view();
+        view.add_prompt(&prompt("First"), now());
+        view.add_waiting_prompt(&prompt("The title is fine"), WaitingState::Sent, now());
+        view.add_waiting_prompt(&prompt("2.\nPost the review"), WaitingState::Sent, now());
+
+        apply(&mut view, result(0.1));
+        apply(&mut view, echo("The title is fine\n2.\nPost the review"));
+        apply(&mut view, result(0.2));
+        view.take_events();
+
+        assert_eq!(view.summary().status, AgentStatus::Idle);
+        assert!(view.details().waiting_prompts.is_empty());
+        assert_eq!(
+            user_texts(&view),
+            ["First", "The title is fine\n2.\nPost the review"]
+        );
+    }
+
+    #[test]
+    fn a_stop_releases_the_sent_prompts_claude_code_no_longer_holds() {
+        let mut view = view();
+        view.add_prompt(&prompt("First"), now());
+        view.add_waiting_prompt(&prompt("First"), WaitingState::Sent, now());
+        view.add_waiting_prompt(&prompt("Lost on the way"), WaitingState::Sent, now());
+        apply(&mut view, result(0.1));
+        view.take_events();
+        assert_eq!(view.summary().status, AgentStatus::Working);
+
+        view.release_unheld_prompts();
+        view.take_events();
+
+        assert_eq!(view.summary().status, AgentStatus::Idle);
+        assert!(view.details().waiting_prompts.is_empty());
+        // "First" is in the transcript already: only the other one says it was not sent.
+        let notices: Vec<Option<&str>> = view
+            .items()
+            .iter()
+            .filter_map(|item| match &item.body {
+                ItemBody::Notice { text, detail } if text == UNREAD_PROMPT_NOTICE => {
+                    Some(detail.as_deref())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notices, [Some("Lost on the way")]);
+    }
+
+    #[test]
+    fn a_stop_during_a_turn_keeps_the_prompt_sent_during_it() {
+        let mut view = view();
+        view.add_prompt(&prompt("First"), now());
+        view.add_waiting_prompt(&prompt("Steered"), WaitingState::Sent, now());
+
+        view.release_unheld_prompts();
+
+        assert_eq!(view.details().waiting_prompts.len(), 1);
     }
 
     #[test]

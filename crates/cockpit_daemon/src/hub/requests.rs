@@ -50,7 +50,7 @@ impl Hub {
             Request::AgentInterrupt(params) => self.control(
                 params.agent,
                 ControlRequest::Interrupt,
-                ControlPurpose::Done(reply),
+                ControlPurpose::Interrupt(reply),
             ),
             Request::AgentStop(params) => agents::respond(reply, self.stop(params.agent)),
             Request::AgentResume(params) => agents::respond(reply, self.resume(params.agent)),

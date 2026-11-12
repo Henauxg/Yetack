@@ -20,6 +20,7 @@ impl ControlPurpose {
     pub(super) fn fail(self, error: ErrorBody) {
         match self {
             Self::Done(reply)
+            | Self::Interrupt(reply)
             | Self::SetModel { reply, .. }
             | Self::ContextUsage(reply)
             | Self::McpChanged(reply)
@@ -106,6 +107,22 @@ impl Hub {
                 }
             },
             ControlPurpose::Done(reply) => {
+                let result = result
+                    .map(|_| ResponseBody::Done)
+                    .map_err(|failure| errors::control_failed(id, failure));
+                agents::respond(reply, result);
+            }
+            ControlPurpose::Interrupt(reply) => {
+                // A sent prompt Claude Code does not hold any more keeps no turn coming: without
+                // this, a prompt the daemon missed in an echo would keep the agent working.
+                let holds_none = result.as_ref().is_ok_and(|body| {
+                    body.get("still_queued")
+                        .and_then(Value::as_array)
+                        .is_some_and(Vec::is_empty)
+                });
+                if holds_none {
+                    view.release_unheld_prompts();
+                }
                 let result = result
                     .map(|_| ResponseBody::Done)
                     .map_err(|failure| errors::control_failed(id, failure));

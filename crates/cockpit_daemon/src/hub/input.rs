@@ -110,6 +110,8 @@ pub(crate) enum ControlPurpose {
     DefaultEffort,
     /// A request answered by `Done`.
     Done(Reply),
+    /// The user's stop, answered by `Done`. Its answer lists the prompts Claude Code still holds.
+    Interrupt(Reply),
     SetModel {
         model: String,
         reply: Reply,
