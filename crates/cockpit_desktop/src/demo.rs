@@ -63,6 +63,17 @@ pub enum Scene {
 /// Wide enough for the showcase's titles to show whole.
 const SHOWCASE_SIDEBAR_WIDTH: u16 = 430;
 
+/// The name the showcase gives the project of each repository, as a user would rename it.
+const SHOWCASE_PROJECT_NAMES: [(&str, &str); 7] = [
+    ("calc-parser", "Calc parser"),
+    ("calc-service", "Calc service"),
+    ("calc-stream", "Calc stream"),
+    ("docs-site", "Docs site"),
+    ("invoices", "Invoices"),
+    ("legacy-db", "Legacy DB"),
+    ("ranking", "Ranking"),
+];
+
 /// The showcase's third machine.
 const GPU_SERVER: MachineId = MachineId::new(3);
 const GPU_HOST: &str = "gpu-box";
@@ -1078,7 +1089,13 @@ fn show_project_files(state: &mut AppState) {
     state.prefs.sidebar.group_by = GroupBy::Project;
     for key in projects::shown_projects(state) {
         if let projects::ProjectKey::Repository(repository) = key {
-            projects::keep(state, &repository);
+            let id = projects::keep(state, &repository);
+            let renamed = SHOWCASE_PROJECT_NAMES
+                .iter()
+                .find(|(repository_name, _)| *repository_name == repository.name());
+            if let Some((_, name)) = renamed {
+                projects::rename(state, id, name);
+            }
         }
     }
     state.ui.selected = Some(agent);
@@ -4449,6 +4466,15 @@ pub struct ParseError {
                 .iter()
                 .all(|key| matches!(key, projects::ProjectKey::Kept(_)))
         );
+        let names: Vec<String> = shown
+            .iter()
+            .map(|key| projects::look(&state, key).name)
+            .collect();
+        let showcase_names: Vec<String> = SHOWCASE_PROJECT_NAMES
+            .iter()
+            .map(|(_, name)| (*name).to_owned())
+            .collect();
+        assert_eq!(names, showcase_names);
         assert!(file_tree::pane_open(&state, agent));
         assert_eq!(
             state.ui.file_view(agent).map(|view| view.path.clone()),
