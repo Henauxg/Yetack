@@ -36,7 +36,7 @@ use crate::state::file_tree::TreeFilter;
 use crate::state::no_daemon::{self, Absence};
 use crate::state::{
     AgentEntry, AppState, ConnectionState, Dialog, Drafts, Loadable, MachineState, Utf16Offset,
-    ViewMode, actions, file_edits, file_tree, quotes, sending,
+    ViewMode, actions, file_edits, file_tree, projects, quotes, sending,
 };
 use crate::update_script::APP_VERSION;
 
@@ -1072,10 +1072,15 @@ pub fn showcase(state: &mut AppState, scene: Scene) {
 }
 
 /// The question agent, grouped by project, with its folder in the files pane and the changelog it
-/// edits in the file view.
+/// edits in the file view. Every project is kept, so that no header offers to keep it.
 fn show_project_files(state: &mut AppState) {
     let agent = AgentId::new(QUESTION_AGENT);
     state.prefs.sidebar.group_by = GroupBy::Project;
+    for key in projects::shown_projects(state) {
+        if let projects::ProjectKey::Repository(repository) = key {
+            projects::keep(state, &repository);
+        }
+    }
     state.ui.selected = Some(agent);
     if let Some(entry) = state.agents.get_mut(&agent) {
         for folder in ["docs", "src", "tests"] {
@@ -4437,6 +4442,13 @@ pub struct ParseError {
         let agent = AgentId::new(QUESTION_AGENT);
         assert_eq!(state.ui.selected, Some(agent));
         assert_eq!(state.prefs.sidebar.group_by, GroupBy::Project);
+        let shown = projects::shown_projects(&state);
+        assert!(shown.len() > 1);
+        assert!(
+            shown
+                .iter()
+                .all(|key| matches!(key, projects::ProjectKey::Kept(_)))
+        );
         assert!(file_tree::pane_open(&state, agent));
         assert_eq!(
             state.ui.file_view(agent).map(|view| view.path.clone()),
