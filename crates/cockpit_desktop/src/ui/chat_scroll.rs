@@ -39,9 +39,9 @@ const BOTTOM_THRESHOLD_PX: u16 = 40;
 /// The room, in pixels, above an entry the chat scrolls to.
 const REVEAL_TOP_PX: u16 = 12;
 
-/// How long after a wheel turned up the chat follows new entries only from its very bottom. WebKit
-/// spreads a notch over a few frames, and a frame can land within `BOTTOM_THRESHOLD_PX` of the
-/// bottom.
+/// How long after a wheel turned up the chat does not follow new entries, even at its bottom.
+/// WebKit spreads a notch over a few frames, and the first ones can leave the view within a pixel
+/// of the bottom. A change of the content there would scroll back down and stop the notch.
 const WHEEL_UP_MS: u16 = 600;
 
 /// The most new entries the jump button's badge counts; past it, it shows "99+".
@@ -54,8 +54,8 @@ const settings = await dioxus.recv();
 let box = null;
 let column = null;
 let agent = null;
-// At the bottom, the view follows new entries; scrolled up, it keeps the first entry in view,
-// `anchor`, at the same height.
+// At the bottom, the view follows new entries; scrolled up, it keeps the first entry whose top is
+// in view, `anchor`, at the same height.
 let following = true;
 let anchor = null;
 let reported = "";
@@ -73,6 +73,8 @@ const places = new Map();
 // that scroll holds, in place of the agent's place from before.
 let scrolledWhileDrawing = false;
 let wheeledUpAt = -Infinity;
+// The distance to the bottom after the last scroll or correction.
+let gapSeen = 0;
 const boxTop = () => box.getBoundingClientRect().top;
 const gapBelow = () => column.getBoundingClientRect().bottom - box.getBoundingClientRect().bottom;
 // An entry's wrapper has padding past the entry: its last element shows the entry, after the
@@ -100,6 +102,28 @@ const firstInView = (below = 0) => {
   const entry = entries[low];
   const element = entry === undefined ? null : shown(entry);
   return element === null ? null : { id: entry.id, top: element.getBoundingClientRect().top - top };
+};
+// The entry the view keeps in place: the first one whose top is in view, else the one that fills
+// the view. The chat keeps its distance from the bottom, so a row that changes height moves only
+// the rows above it. A row cut by the view's top folds as it comes into view, and must not count.
+const anchorInView = () => {
+  const entries = column.getElementsByClassName(settings.entry_class);
+  const top = boxTop();
+  let low = 0;
+  let high = entries.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    const element = shown(entries[middle]);
+    if (element !== null && element.getBoundingClientRect().top < top) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  const entry = entries[low];
+  const element = entry === undefined ? null : shown(entry);
+  const at = element === null ? Infinity : element.getBoundingClientRect().top - top;
+  return at < box.clientHeight ? { id: entry.id, top: at } : firstInView();
 };
 // The last entry whose top is above the view's bottom.
 const lastInView = () => {
@@ -147,8 +171,12 @@ const record = () => {
   corrected = null;
   pinned = null;
   const wheelingUp = performance.now() - wheeledUpAt < settings.wheel_up_ms;
-  following = gapBelow() <= (wheelingUp ? 1 : settings.bottom_threshold_px);
-  anchor = following ? null : firstInView();
+  const gap = gapBelow();
+  // A scroll up leaves the bottom, however short: an arrow key or the scrollbar sends no wheel.
+  const leaving = gap > gapSeen + 0.5;
+  gapSeen = gap;
+  following = !wheelingUp && !leaving && gap <= settings.bottom_threshold_px;
+  anchor = following ? null : anchorInView();
   if (agent === null) {
     scrolledWhileDrawing = true;
   }
@@ -167,7 +195,7 @@ const settle = () => {
     const entry = anchor === null ? null : document.getElementById(anchor.id);
     const element = entry === null ? null : shown(entry);
     if (element === null) {
-      anchor = firstInView();
+      anchor = anchorInView();
       return;
     }
     delta = element.getBoundingClientRect().top - boxTop() - anchor.top;
@@ -177,8 +205,9 @@ const settle = () => {
     corrected = box.scrollTop;
   }
   if (!following && pinned !== null) {
-    anchor = firstInView();
+    anchor = anchorInView();
   }
+  gapSeen = gapBelow();
 };
 // Another agent's entries replace the chat's: keep the place of the one that leaves, and go back
 // to the place of the one that comes, or to its bottom. A chat that draws only some of its
@@ -242,8 +271,11 @@ const attach = () => {
       // Before the first scroll of the notch, a change of the content would take the chat back down.
       if (following && box.scrollHeight > box.clientHeight) {
         following = false;
-        anchor = firstInView();
+        anchor = anchorInView();
       }
+    } else if (event.deltaY > 0) {
+      // A wheel turned down can take the chat back to its bottom, where it follows again.
+      wheeledUpAt = -Infinity;
     }
   }, { passive: true });
   mutations.observe(box, { childList: true, subtree: true, characterData: true });
