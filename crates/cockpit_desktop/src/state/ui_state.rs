@@ -227,6 +227,20 @@ pub struct MachinesView {
     pub host: String,
     pub remote_command: String,
     pub error: Option<String>,
+    /// The server whose row shows its form, from its Edit button.
+    pub editing: Option<MachineEdit>,
+}
+
+/// A server's form in the Machines dialog, filled from its config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineEdit {
+    pub machine: MachineId,
+    pub name: String,
+    pub host: String,
+    pub remote_command: String,
+    /// Empty for the update script's default.
+    pub source_dir: String,
+    pub error: Option<String>,
 }
 
 /// The "Open file" dialog's data: the folder its path field names, with what the daemon listed
@@ -751,8 +765,9 @@ impl UiState {
     }
 
     /// Closes every popover and the dialog, or only one of these when it is open: the start tab's
-    /// menu or folder list, the Projects tab's rule field, or a tab menu opened from the list of
-    /// open files. Also cancels a title edit. Returns whether anything was open.
+    /// menu or folder list, the Projects tab's rule field, a server's form in the Machines dialog,
+    /// or a tab menu opened from the list of open files. Also cancels a title edit. Returns whether
+    /// anything was open.
     pub fn close_overlays(&mut self) -> bool {
         if let Some(Dialog::NewAgent(form)) = &mut self.dialog
             && form.tab == NewAgentTab::Start
@@ -765,6 +780,11 @@ impl UiState {
         }
         if let Some(Dialog::Settings(view)) = &mut self.dialog
             && view.adding_rule.take().is_some()
+        {
+            return true;
+        }
+        if let Some(Dialog::Machines(view)) = &mut self.dialog
+            && view.editing.take().is_some()
         {
             return true;
         }
@@ -860,6 +880,30 @@ mod tests {
 
         assert!(ui.close_overlays());
         assert!(matches!(&ui.dialog, Some(Dialog::NewAgent(form)) if form.menu.is_none()));
+
+        assert!(ui.close_overlays());
+        assert_eq!(ui.dialog, None);
+    }
+
+    #[test]
+    fn escape_closes_a_servers_form_before_the_machines_dialog() {
+        let mut ui = UiState {
+            dialog: Some(Dialog::Machines(MachinesView {
+                editing: Some(MachineEdit {
+                    machine: MachineId::new(1),
+                    name: "devbox".to_owned(),
+                    host: "dev@devbox".to_owned(),
+                    remote_command: "/opt/agents-cockpit".to_owned(),
+                    source_dir: String::new(),
+                    error: None,
+                }),
+                ..MachinesView::default()
+            })),
+            ..UiState::default()
+        };
+
+        assert!(ui.close_overlays());
+        assert!(matches!(&ui.dialog, Some(Dialog::Machines(view)) if view.editing.is_none()));
 
         assert!(ui.close_overlays());
         assert_eq!(ui.dialog, None);

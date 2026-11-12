@@ -10,6 +10,7 @@ use cockpit_protocol::PROTOCOL_VERSION;
 
 use super::app_state::{AppState, MachineState};
 use super::ui_state::Dialog;
+use crate::config::MachineConfig;
 use crate::daemon_label::DaemonPlace;
 use crate::machine::MachineId;
 
@@ -384,6 +385,22 @@ pub fn cancel_failed(state: &mut AppState, machine: MachineId, error: String) {
     if let Some(progress) = running_mut(state, machine) {
         progress.cancel_asked = false;
         progress.output.push_back(error);
+    }
+}
+
+/// The server's config changed: the next update runs with it. An update under way keeps its
+/// plan, since its cancel must reach the server it runs on.
+pub fn follow_config(known: &mut MachineState, config: &MachineConfig) {
+    let gap_plan = known.version_gap.as_mut().and_then(|gap| gap.plan.as_mut());
+    let failed_plan = match &mut known.update {
+        Some(DaemonUpdate::Failed(failed)) => Some(&mut failed.plan),
+        Some(DaemonUpdate::Running(_) | DaemonUpdate::Reconnecting(_)) | None => None,
+    };
+    let plans = gap_plan.into_iter().chain(failed_plan);
+    for plan in plans {
+        config.host.clone_into(&mut plan.host);
+        config.remote_command.clone_into(&mut plan.remote_command);
+        plan.source_dir.clone_from(&config.source_dir);
     }
 }
 

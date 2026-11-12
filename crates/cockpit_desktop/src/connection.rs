@@ -322,6 +322,7 @@ async fn route(
     let notify = live.notify;
     let config_file = live.places.config_file.clone();
     let (router, mut rerouted) = mpsc::unbounded_channel();
+    let (retries, mut retried) = mpsc::unbounded_channel();
     let (this, this_requests) = mpsc::unbounded_channel();
     spawn(run(
         state,
@@ -336,6 +337,7 @@ async fn route(
         configs: Vec::new(),
         next: 1,
         router,
+        retries,
     };
     for (machine, remote) in machines {
         servers.start(state, drafts, load, notify, machine, remote);
@@ -347,6 +349,7 @@ async fn route(
                 None => return,
             },
             Some(outgoing) = rerouted.recv() => ToDaemon::Send(outgoing),
+            Some(retry) = retried.recv() => retry,
         };
         let machine = match &mut message {
             ToDaemon::Send(outgoing) => outgoing.machine(),
@@ -360,6 +363,11 @@ async fn route(
                     continue;
                 };
                 servers.start(state, drafts, load, notify, machine, remote.clone());
+                servers.save(state, &config_file);
+                continue;
+            }
+            ToDaemon::Machines(MachineChange::Edit(machine, remote)) => {
+                servers.restart(state, drafts, load, notify, *machine, remote.clone());
                 servers.save(state, &config_file);
                 continue;
             }
@@ -384,10 +392,7 @@ async fn route(
                 continue;
             }
         };
-        if let Some(task) = servers.tasks.get(&machine) {
-            // A task that ended takes no more requests.
-            let _ = task.send(message);
-        }
+        servers.forward(machine, message);
     }
 }
 
@@ -398,6 +403,9 @@ struct Servers {
     /// The number the next server takes. A removed server's number is not taken again.
     next: u16,
     router: Router,
+    /// Takes an update's retry to the task the machine has when the update ends, which an edit
+    /// may have replaced.
+    retries: mpsc::UnboundedSender<ToDaemon>,
 }
 
 impl Servers {
@@ -421,7 +429,43 @@ impl Servers {
             .machines
             .others
             .entry(machine)
-            .or_insert_with(|| MachineState::new(label));
+            .or_insert_with(|| MachineState::new(label))
+            .server = Some(remote.clone());
+        self.spawn_task(state, drafts, load, notify, machine, remote.clone());
+        self.configs.push((machine, remote));
+        self.next = self.next.max(machine.get().saturating_add(1));
+    }
+
+    /// Reaches the server with its new config: its task ends with its requests, and a new one
+    /// connects. A new name takes the preferences the old one had.
+    fn restart(
+        &mut self,
+        mut state: Signal<AppState>,
+        drafts: Signal<Drafts>,
+        load: Signal<ShownLoad>,
+        notify: bool,
+        machine: MachineId,
+        remote: MachineConfig,
+    ) {
+        let Some((_, config)) = self.configs.iter_mut().find(|(id, _)| *id == machine) else {
+            return;
+        };
+        config.clone_from(&remote);
+        self.tasks.remove(&machine);
+        machines::apply_edit(&mut state.write(), machine, &remote);
+        self.spawn_task(state, drafts, load, notify, machine, remote);
+    }
+
+    /// Starts the task that connects to the server and carries its requests.
+    fn spawn_task(
+        &mut self,
+        state: Signal<AppState>,
+        drafts: Signal<Drafts>,
+        load: Signal<ShownLoad>,
+        notify: bool,
+        machine: MachineId,
+        remote: MachineConfig,
+    ) {
         let (sender, requests) = mpsc::unbounded_channel();
         spawn(run_remote(
             state,
@@ -432,35 +476,33 @@ impl Servers {
                 notify,
                 router: self.router.clone(),
             },
-            remote.clone(),
+            remote,
             requests,
         ));
         self.tasks.insert(machine, sender);
-        self.configs.push((machine, remote));
-        self.next = self.next.max(machine.get().saturating_add(1));
+    }
+
+    /// Hands `message` to the machine's task.
+    fn forward(&self, machine: MachineId, message: ToDaemon) {
+        if let Some(task) = self.tasks.get(&machine) {
+            // A task that ended takes no more requests.
+            let _ = task.send(message);
+        }
     }
 
     /// Runs an update or a cancel next to the machine's connection task.
     fn start_update_command(&self, state: Signal<AppState>, command: UpdateCommand) {
         match command {
             UpdateCommand::Start(machine, plan) => {
-                let Some(task) = self.update_task(machine) else {
+                if !self.tasks.contains_key(&machine) {
                     return;
-                };
-                spawn(run_update(state, machine, plan, task));
+                }
+                spawn(run_update(state, machine, plan, self.retries.clone()));
             }
             UpdateCommand::Cancel(machine, plan) => {
                 spawn(cancel_update(state, machine, plan));
             }
         }
-    }
-
-    /// The machine's connection task, for an update to ask for a retry when it ends. The update
-    /// does not keep the task alive: removing the server ends the task at once.
-    fn update_task(&self, machine: MachineId) -> Option<mpsc::WeakUnboundedSender<ToDaemon>> {
-        self.tasks
-            .get(&machine)
-            .map(mpsc::UnboundedSender::downgrade)
     }
 
     /// Writes the servers to the config. A config the app cannot write keeps them for this run.
@@ -494,7 +536,7 @@ async fn run_update(
     mut state: Signal<AppState>,
     machine: MachineId,
     plan: UpdatePlan,
-    task: mpsc::WeakUnboundedSender<ToDaemon>,
+    retries: mpsc::UnboundedSender<ToDaemon>,
 ) {
     let code = update_script::update(&plan, |lines| {
         daemon_update::output(&mut state.write(), machine, lines);
@@ -504,9 +546,9 @@ async fn run_update(
         return;
     }
     let retry = retry_message(&mut state.write(), machine);
-    if let (Some(retry), Some(task)) = (retry, task.upgrade()) {
-        // A task that ended takes no more requests.
-        let _ = task.send(retry);
+    if let Some(retry) = retry {
+        // The window closed: nothing tries the machine again.
+        let _ = retries.send(retry);
     }
 }
 
@@ -636,6 +678,10 @@ async fn run_demo(
                     Some(ToDaemon::Send(outgoing)) => outgoing,
                     Some(ToDaemon::Update(UpdateCommand::Start(machine, _))) => {
                         spawn(play_demo_update(state, machine));
+                        continue;
+                    }
+                    Some(ToDaemon::Machines(MachineChange::Edit(machine, config))) => {
+                        machines::apply_edit(&mut state.write(), machine, &config);
                         continue;
                     }
                     Some(
@@ -1198,19 +1244,30 @@ mod tests {
         assert_eq!(plan_for_daemon(&DaemonConfig::InApp), None);
     }
 
-    #[test]
-    fn an_update_under_way_lets_a_removed_servers_connection_task_end() {
-        let devbox = MachineId::new(1);
+    /// Servers with a task for `devbox`, and the receiver of the updates' retries.
+    fn servers_with(
+        devbox: MachineId,
+        task: mpsc::UnboundedSender<ToDaemon>,
+    ) -> (Servers, mpsc::UnboundedReceiver<ToDaemon>) {
         let (router, _rerouted) = mpsc::unbounded_channel();
-        let (task, mut requests) = mpsc::unbounded_channel();
-        let mut servers = Servers {
+        let (retries, retried) = mpsc::unbounded_channel();
+        let servers = Servers {
             tasks: BTreeMap::from([(devbox, task)]),
             configs: Vec::new(),
             next: 2,
             router,
+            retries,
         };
+        (servers, retried)
+    }
 
-        let _held_by_the_update = servers.update_task(devbox).unwrap();
+    #[test]
+    fn an_update_under_way_lets_a_removed_servers_connection_task_end() {
+        let devbox = MachineId::new(1);
+        let (task, mut requests) = mpsc::unbounded_channel();
+        let (mut servers, _retried) = servers_with(devbox, task);
+
+        let _held_by_the_update = servers.retries.clone();
         servers.tasks.remove(&devbox);
 
         assert_eq!(
@@ -1220,13 +1277,39 @@ mod tests {
     }
 
     #[test]
+    fn an_updates_retry_reaches_the_task_an_edit_started() {
+        let devbox = MachineId::new(1);
+        let (old_task, mut old_requests) = mpsc::unbounded_channel();
+        let (mut servers, mut retried) = servers_with(devbox, old_task);
+        let held_by_the_update = servers.retries.clone();
+        let (new_task, mut new_requests) = mpsc::unbounded_channel();
+
+        // What an edit does to the tasks.
+        servers.tasks.insert(devbox, new_task);
+        let retry = ToDaemon::Machines(MachineChange::Retry(devbox));
+        held_by_the_update.send(retry).unwrap();
+        servers.forward(devbox, retried.try_recv().unwrap());
+
+        assert!(matches!(
+            new_requests.try_recv(),
+            Ok(ToDaemon::Machines(MachineChange::Retry(machine))) if machine == devbox
+        ));
+        assert_eq!(
+            old_requests.try_recv().err(),
+            Some(mpsc::error::TryRecvError::Disconnected)
+        );
+    }
+
+    #[test]
     fn a_server_past_the_last_number_an_app_id_holds_is_refused() {
         let (router, _rerouted) = mpsc::unbounded_channel();
+        let (retries, _retried) = mpsc::unbounded_channel();
         let mut servers = Servers {
             tasks: BTreeMap::new(),
             configs: Vec::new(),
             next: MachineId::LAST.get(),
             router,
+            retries,
         };
 
         let last = servers.next_machine();

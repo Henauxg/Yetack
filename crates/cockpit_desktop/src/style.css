@@ -890,6 +890,35 @@ button:disabled {
   gap: 12px;
 }
 
+/* A server's row as its form, from its Edit button. */
+.machine-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(45, 212, 191, 0.45);
+  animation: unfold var(--motion-in) var(--ease-out) backwards;
+}
+
+.machine-edit-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.machine-edit-actions {
+  flex: none;
+  display: flex;
+  gap: 8px;
+}
+
+.field-optional {
+  color: var(--dim);
+  font-weight: 400;
+}
+
 .sidebar-empty {
   margin: 8px 10px;
   color: var(--dim);
