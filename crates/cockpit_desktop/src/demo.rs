@@ -25,6 +25,7 @@ use cockpit_protocol::{
 use serde_json::Value;
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
+use crate::config::MachineConfig;
 use crate::daemon_label::DaemonLabel;
 use crate::machine::MachineId;
 use crate::path_style::PathStyle;
@@ -947,6 +948,12 @@ fn insert_server<const N: usize>(
     server.daemon_version = Some(ReleaseVersion::new(APP_VERSION.to_owned()));
     server.plan_usage = plan_usage(now);
     server.accounts = accounts().into_iter().take(1).collect();
+    server.server = Some(MachineConfig {
+        name: host.to_owned(),
+        host: format!("dev@{host}"),
+        remote_command: "/home/dev/.local/bin/agents-cockpit".to_owned(),
+        source_dir: None,
+    });
     state.machines.others.insert(machine, server);
     // The bottom agent first: positions grow towards the top.
     let bottom_first = (1_u32..).zip(agents.into_iter().rev());

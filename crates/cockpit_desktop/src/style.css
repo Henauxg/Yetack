@@ -892,6 +892,35 @@ button:disabled {
   gap: 12px;
 }
 
+/* A server's row as its form, from its Edit button. */
+.machine-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(45, 212, 191, 0.45);
+  animation: unfold var(--motion-in) var(--ease-out) backwards;
+}
+
+.machine-edit-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.machine-edit-actions {
+  flex: none;
+  display: flex;
+  gap: 8px;
+}
+
+.field-optional {
+  color: var(--dim);
+  font-weight: 400;
+}
+
 .sidebar-empty {
   margin: 8px 10px;
   color: var(--dim);
@@ -3507,13 +3536,19 @@ html.reordering * {
   --card-head: var(--muted);
 }
 
+/* A card that waits for an answer: amber only on its left edge, its icon and its pill, as the
+   sidebar's "needs you". */
 .card.waiting {
-  border-color: #825c21;
-  --card-head: var(--amber);
+  border-color: var(--line-strong);
+  border-left: 2px solid rgba(245, 165, 36, 0.55);
+  /* One pixel less than `.card`, for the wider edge: the content stays in place once answered. */
+  padding-left: 13px;
+  --card-head: var(--text);
 }
 
-.approval-card {
-  background: #211e18;
+.card.waiting > .card-head > .icon,
+.question-head > .icon {
+  color: #d9a24a;
 }
 
 .card-head {
@@ -3600,22 +3635,12 @@ html.reordering * {
   outline: none;
 }
 
-/* A waiting question: amber only on its left edge and its pill, as the sidebar's "needs you". */
-.question-card.waiting {
-  border-color: var(--line-strong);
-  border-left: 2px solid rgba(245, 165, 36, 0.55);
-}
-
 .question-head {
   display: flex;
   align-items: center;
   gap: 8px;
   font-weight: 600;
   color: var(--text);
-}
-
-.question-head > .icon {
-  color: #d9a24a;
 }
 
 .waiting-pill {
@@ -3636,6 +3661,10 @@ html.reordering * {
   height: 6px;
   border-radius: 50%;
   background: var(--amber);
+}
+
+.presence.leaving > .waiting-pill {
+  animation: fade-out var(--motion-out) var(--ease-in) forwards;
 }
 
 .question-count {
@@ -8857,10 +8886,6 @@ button.map-toggle:hover {
 
 .chip-full .acct-dot {
   margin-right: 2px;
-}
-
-.card.signin-card {
-  background: #211e18;
 }
 
 .signin-card .card-note b {

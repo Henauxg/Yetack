@@ -248,9 +248,9 @@ impl Serialize for ProjectSplit {
 #[strum(serialize_all = "snake_case")]
 pub enum FirstMark {
     /// Stays until you clear it.
-    #[default]
     Kept,
     /// Stays until you clear it or send the agent a message.
+    #[default]
     UntilMessage,
 }
 
@@ -274,7 +274,7 @@ impl Serialize for FirstMark {
     }
 }
 
-/// A word this version does not know reads as `Kept`, rather than costing the whole file.
+/// A word this version does not know reads as `UntilMessage`, rather than costing the whole file.
 impl<'de> Deserialize<'de> for FirstMark {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let word = String::deserialize(deserializer)?;
@@ -857,6 +857,31 @@ pub fn file(environment: &Environment) -> Option<PathBuf> {
 }
 
 impl Prefs {
+    /// Moves what the preferences keep under a server's name to its new name: its account
+    /// colors, its agents' notification levels, projects, files panes and places in the sidebar.
+    /// What the new name held, left by a server removed earlier, goes.
+    pub fn rename_machine(&mut self, old: &str, new: &str) {
+        fn moved<V>(map: &mut BTreeMap<String, V>, old: &str, new: &str) {
+            map.remove(new);
+            if let Some(value) = map.remove(old) {
+                map.insert(new.to_owned(), value);
+            }
+        }
+        if old == new {
+            return;
+        }
+        moved(&mut self.accounts.colors, old, new);
+        moved(&mut self.notifications.agents, old, new);
+        moved(&mut self.projects.agents, old, new);
+        moved(&mut self.files_pane.agents, old, new);
+        self.agent_order.retain(|key| key.machine != new);
+        for key in &mut self.agent_order {
+            if key.machine == old {
+                new.clone_into(&mut key.machine);
+            }
+        }
+    }
+
     /// Reads `file`. A missing file, or one that does not read or parse, gives the defaults: a
     /// preference never stops the app.
     pub fn load(file: &Path) -> Self {
@@ -1020,7 +1045,7 @@ mod tests {
     "width": 300,
     "group_by": "project",
     "project_split": "by_machine",
-    "first_mark": "until_message"
+    "first_mark": "kept"
   },
   "files_pane": {
     "new_agents": "open",
@@ -1115,7 +1140,7 @@ mod tests {
                     width: Some(300),
                     group_by: GroupBy::Project,
                     project_split: ProjectSplit::ByMachine,
-                    first_mark: FirstMark::UntilMessage,
+                    first_mark: FirstMark::Kept,
                 },
                 files_pane: FilesPanePrefs {
                     new_agents: PaneState::Open,
@@ -1287,6 +1312,90 @@ mod tests {
     }
 
     #[test]
+    fn a_renamed_server_keeps_its_colors_notifications_projects_and_panes() {
+        let mut prefs = Prefs::default();
+        let agents = |level| BTreeMap::from([(AgentId::new(4), level)]);
+        prefs.accounts.colors.insert(
+            "devbox".to_owned(),
+            BTreeMap::from([(AccountId::new(1), AccountColor::Pink)]),
+        );
+        prefs
+            .notifications
+            .agents
+            .insert("devbox".to_owned(), agents(NotificationLevel::Off));
+        prefs.projects.agents.insert(
+            "devbox".to_owned(),
+            BTreeMap::from([(AgentId::new(4), None)]),
+        );
+        prefs.files_pane.agents.insert(
+            "devbox".to_owned(),
+            BTreeMap::from([(AgentId::new(4), PaneState::Open)]),
+        );
+
+        prefs.rename_machine("devbox", "lab");
+
+        assert_eq!(
+            prefs.accounts.color("lab", AccountId::new(1)),
+            AccountColor::Pink
+        );
+        assert_eq!(
+            prefs.notifications.agent("lab", AgentId::new(4)),
+            NotificationLevel::Off
+        );
+        assert!(prefs.projects.agents.contains_key("lab"));
+        assert!(prefs.files_pane.agents.contains_key("lab"));
+        assert!(!prefs.accounts.colors.contains_key("devbox"));
+        assert!(!prefs.notifications.agents.contains_key("devbox"));
+    }
+
+    #[test]
+    fn a_renamed_server_keeps_its_agents_place_in_the_sidebar() {
+        let key = |machine: &str, agent| AgentKey {
+            machine: machine.to_owned(),
+            agent: AgentId::new(agent),
+        };
+        let mut prefs = Prefs {
+            agent_order: vec![key("this", 1), key("devbox", 4), key("this", 2)],
+            ..Prefs::default()
+        };
+
+        prefs.rename_machine("devbox", "lab");
+
+        assert_eq!(
+            prefs.agent_order,
+            vec![key("this", 1), key("lab", 4), key("this", 2)]
+        );
+    }
+
+    #[test]
+    fn a_renamed_server_drops_what_a_removed_server_left_under_its_new_name() {
+        let mut prefs = Prefs {
+            agent_order: vec![AgentKey {
+                machine: "lab".to_owned(),
+                agent: AgentId::new(4),
+            }],
+            ..Prefs::default()
+        };
+        prefs.notifications.agents.insert(
+            "lab".to_owned(),
+            BTreeMap::from([(AgentId::new(4), NotificationLevel::Off)]),
+        );
+        prefs.accounts.colors.insert(
+            "lab".to_owned(),
+            BTreeMap::from([(AccountId::new(1), AccountColor::Pink)]),
+        );
+
+        prefs.rename_machine("devbox", "lab");
+
+        assert_eq!(
+            prefs.notifications.agent("lab", AgentId::new(4)),
+            NotificationLevel::All
+        );
+        assert!(!prefs.accounts.colors.contains_key("lab"));
+        assert!(prefs.agent_order.is_empty());
+    }
+
+    #[test]
     fn the_comment_placements_are_pinned_and_an_unknown_one_reads_as_beside() {
         let words: Vec<&str> = CommentPlacement::VARIANTS
             .iter()
@@ -1364,7 +1473,7 @@ mod tests {
     }
 
     #[test]
-    fn the_first_mark_words_are_pinned_and_an_unknown_one_reads_as_kept() {
+    fn the_first_mark_words_are_pinned_and_an_unknown_one_reads_as_until_message() {
         let words: Vec<&str> = FirstMark::VARIANTS
             .iter()
             .map(|&first| first.into())
@@ -1373,7 +1482,7 @@ mod tests {
             serde_json::from_str(r#"{"sidebar": {"first_mark": "forever"}}"#).unwrap();
 
         assert_eq!(words, ["kept", "until_message"]);
-        assert_eq!(unknown.sidebar.first_mark, FirstMark::Kept);
+        assert_eq!(unknown.sidebar.first_mark, FirstMark::UntilMessage);
     }
 
     #[test]

@@ -1,20 +1,25 @@
-//! The "Machines" dialog: the servers the app reaches beside this computer, which it adds and
-//! removes in the config.
+//! The "Machines" dialog: the servers the app reaches beside this computer, which it adds,
+//! edits and removes in the config.
 
 use cockpit_protocol::AgentId;
 
-use super::app_state::AppState;
+use super::app_state::{AppState, MachineState};
 use super::apply::forget_agent;
+use super::daemon_update::{self, DaemonUpdate};
 use super::drafts::Drafts;
 use super::file_tree;
-use super::ui_state::{Dialog, MachinesView};
+use super::ui_state::{Dialog, MachineEdit, MachinesView};
 use crate::config::MachineConfig;
+use crate::daemon_label::DaemonLabel;
 use crate::machine::MachineId;
 
 /// A change to the machines, which the connection task carries out and writes to the config.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MachineChange {
     Add(MachineConfig),
+    /// The server reaches its daemon otherwise, or takes another name: its connection starts
+    /// again.
+    Edit(MachineId, MachineConfig),
     Remove(MachineId),
     /// Tries a machine that does not answer again now.
     Retry(MachineId),
@@ -37,7 +42,7 @@ pub fn add(state: &mut AppState) -> Option<MachineChange> {
     let Some(Dialog::Machines(view)) = &state.ui.dialog else {
         return None;
     };
-    let checked = check(state, view);
+    let checked = check(state, &view.name, &view.host, &view.remote_command, None);
     let Some(Dialog::Machines(view)) = &mut state.ui.dialog else {
         return None;
     };
@@ -53,10 +58,116 @@ pub fn add(state: &mut AppState) -> Option<MachineChange> {
     }
 }
 
-fn check(state: &AppState, view: &MachinesView) -> Result<MachineConfig, &'static str> {
-    let host = view.host.trim();
-    let remote_command = view.remote_command.trim();
-    let name = match view.name.trim() {
+/// Whether the server's Edit button shows: a server the config names, whose update is not under
+/// way. An update runs with the config it started with, and its cancel must reach that server.
+pub fn can_edit(known: &MachineState) -> bool {
+    let updating = matches!(
+        known.update,
+        Some(DaemonUpdate::Running(_) | DaemonUpdate::Reconnecting(_))
+    );
+    known.server.is_some() && !updating
+}
+
+/// Opens the server's form in its row, filled from its config.
+pub fn start_edit(state: &mut AppState, machine: MachineId) {
+    let Some(config) = state
+        .machines
+        .others
+        .get(&machine)
+        .filter(|known| can_edit(known))
+        .and_then(|known| known.server.clone())
+    else {
+        return;
+    };
+    with_view(state, |view| {
+        view.editing = Some(MachineEdit {
+            machine,
+            name: config.name,
+            host: config.host,
+            remote_command: config.remote_command,
+            source_dir: config.source_dir.unwrap_or_default(),
+            error: None,
+        });
+    });
+}
+
+pub fn cancel_edit(state: &mut AppState) {
+    with_view(state, |view| view.editing = None);
+}
+
+/// The server as its form now names it, checked as a new one is. A form that changes nothing
+/// closes without a change, so the server keeps its connection.
+pub fn save_edit(state: &mut AppState) -> Option<MachineChange> {
+    let Some(Dialog::Machines(view)) = &state.ui.dialog else {
+        return None;
+    };
+    let edit = view.editing.as_ref()?;
+    let machine = edit.machine;
+    let source_dir = edit.source_dir.trim();
+    let checked = if source_dir.is_empty() || source_dir.starts_with('/') {
+        check(
+            state,
+            &edit.name,
+            &edit.host,
+            &edit.remote_command,
+            Some(machine),
+        )
+        .map(|config| MachineConfig {
+            source_dir: (!source_dir.is_empty()).then(|| source_dir.to_owned()),
+            ..config
+        })
+    } else {
+        Err("Give the absolute path of the checkout on the server, or leave it empty.")
+    };
+    let before = state
+        .machines
+        .others
+        .get(&machine)
+        .and_then(|known| known.server.as_ref());
+    let change = checked
+        .map(|config| (before != Some(&config)).then_some(MachineChange::Edit(machine, config)));
+    let Some(Dialog::Machines(view)) = &mut state.ui.dialog else {
+        return None;
+    };
+    match change {
+        Ok(change) => {
+            view.editing = None;
+            change
+        }
+        Err(error) => {
+            if let Some(edit) = &mut view.editing {
+                edit.error = Some(error.to_owned());
+            }
+            None
+        }
+    }
+}
+
+/// What a saved edit changes in the window: the server's name and config, the plan of its next
+/// update, and the preferences its old name held.
+pub fn apply_edit(state: &mut AppState, machine: MachineId, config: &MachineConfig) {
+    let Some(known) = state.machines.others.get_mut(&machine) else {
+        return;
+    };
+    let old = known.daemon.machine.clone();
+    known.daemon = DaemonLabel::ssh(config.name.clone());
+    known.server = Some(config.clone());
+    daemon_update::follow_config(known, config);
+    state.prefs.rename_machine(&old, &config.name);
+}
+
+/// A server's config from a form's fields, or why the app could not reach it. `editing` is the
+/// server the form edits, whose own name is free.
+fn check(
+    state: &AppState,
+    name: &str,
+    host: &str,
+    remote_command: &str,
+    editing: Option<MachineId>,
+) -> Result<MachineConfig, &'static str> {
+    let host = host.trim();
+    let remote_command = remote_command.trim();
+    let name = match name.trim() {
         "" => host,
         name => name,
     };
@@ -67,9 +178,9 @@ fn check(state: &AppState, view: &MachinesView) -> Result<MachineConfig, &'stati
     if !remote_command.starts_with('/') {
         return Err("Give the absolute path of agents-cockpit on the server.");
     }
-    let taken = std::iter::once(&state.machines.this)
-        .chain(state.machines.others.values())
-        .any(|known| known.daemon.machine == name);
+    let taken = std::iter::once((MachineId::THIS, &state.machines.this))
+        .chain(state.machines.others.iter().map(|(id, known)| (*id, known)))
+        .any(|(machine, known)| Some(machine) != editing && known.daemon.machine == name);
     if taken {
         return Err("Another machine has this name.");
     }
@@ -107,8 +218,8 @@ pub fn forget(state: &mut AppState, drafts: &mut Drafts, machine: MachineId) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::daemon_label::DaemonLabel;
     use crate::state::app_state::tests::{state_with, summary};
+    use crate::state::daemon_update::{ProtocolGap, UpdatePlan, VersionGap};
     use crate::state::{AgentEntry, MachineState};
     use cockpit_protocol::{AccountId, AgentStatus};
 
@@ -156,6 +267,194 @@ mod tests {
             error(&state),
             None,
             "the form empties once the server is added"
+        );
+    }
+
+    /// A server known as `name`, with its config.
+    fn server(state: &mut AppState, machine: u16, name: &str) {
+        let mut known = MachineState::new(DaemonLabel::ssh(name.to_owned()));
+        known.server = Some(MachineConfig {
+            name: name.to_owned(),
+            host: format!("dev@{name}"),
+            remote_command: "/opt/agents-cockpit".to_owned(),
+            source_dir: None,
+        });
+        state.machines.others.insert(MachineId::new(machine), known);
+    }
+
+    fn edit(state: &mut AppState, change: impl FnOnce(&mut MachineEdit)) {
+        with_view(state, |view| {
+            if let Some(edit) = &mut view.editing {
+                change(edit);
+            }
+        });
+    }
+
+    fn edit_error(state: &AppState) -> Option<String> {
+        match &state.ui.dialog {
+            Some(Dialog::Machines(view)) => {
+                view.editing.as_ref().and_then(|edit| edit.error.clone())
+            }
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn an_edit_starts_from_the_config_and_saves_only_a_change() {
+        let mut state = state_with(Vec::new());
+        server(&mut state, 1, "devbox");
+        open_machines(&mut state);
+
+        start_edit(&mut state, MachineId::new(1));
+        assert_eq!(save_edit(&mut state), None, "nothing changed");
+
+        start_edit(&mut state, MachineId::new(1));
+        edit(&mut state, |edit| {
+            edit.name = "lab".to_owned();
+            edit.source_dir = " /src/agents-cockpit ".to_owned();
+        });
+        assert_eq!(
+            save_edit(&mut state),
+            Some(MachineChange::Edit(
+                MachineId::new(1),
+                MachineConfig {
+                    name: "lab".to_owned(),
+                    host: "dev@devbox".to_owned(),
+                    remote_command: "/opt/agents-cockpit".to_owned(),
+                    source_dir: Some("/src/agents-cockpit".to_owned()),
+                }
+            ))
+        );
+        assert!(matches!(&state.ui.dialog, Some(Dialog::Machines(view)) if view.editing.is_none()));
+    }
+
+    #[test]
+    fn an_edit_keeps_its_own_name_but_not_another_machines() {
+        let mut state = state_with(Vec::new());
+        server(&mut state, 1, "devbox");
+        server(&mut state, 2, "lab");
+        open_machines(&mut state);
+
+        start_edit(&mut state, MachineId::new(1));
+        edit(&mut state, |edit| edit.host = "dev@devbox2".to_owned());
+        assert!(save_edit(&mut state).is_some(), "its own name is free");
+
+        start_edit(&mut state, MachineId::new(1));
+        edit(&mut state, |edit| edit.name = "lab".to_owned());
+        assert_eq!(save_edit(&mut state), None);
+        assert!(edit_error(&state).is_some());
+
+        edit(&mut state, |edit| {
+            edit.name = "devbox".to_owned();
+            edit.source_dir = "src/agents-cockpit".to_owned();
+        });
+        assert_eq!(save_edit(&mut state), None, "a relative checkout");
+        assert!(edit_error(&state).is_some());
+    }
+
+    #[test]
+    fn a_saved_edit_renames_the_server_and_moves_its_preferences() {
+        let mut state = state_with(Vec::new());
+        server(&mut state, 1, "devbox");
+        state
+            .prefs
+            .notifications
+            .agents
+            .insert("devbox".to_owned(), Default::default());
+        let config = MachineConfig {
+            name: "lab".to_owned(),
+            host: "dev@lab".to_owned(),
+            remote_command: "/opt/agents-cockpit".to_owned(),
+            source_dir: None,
+        };
+
+        apply_edit(&mut state, MachineId::new(1), &config);
+
+        let known = &state.machines.others[&MachineId::new(1)];
+        assert_eq!(known.daemon.machine, "lab");
+        assert_eq!(known.server.as_ref(), Some(&config));
+        assert!(state.prefs.notifications.agents.contains_key("lab"));
+        assert!(!state.prefs.notifications.agents.contains_key("devbox"));
+    }
+
+    #[test]
+    fn a_server_whose_update_runs_cannot_be_edited() {
+        let mut state = state_with(Vec::new());
+        server(&mut state, 1, "devbox");
+        let devbox = MachineId::new(1);
+        if let Some(known) = state.machines.others.get_mut(&devbox) {
+            known.version_gap = Some(VersionGap {
+                kind: ProtocolGap::Older,
+                details: "protocol 3, the app speaks 4".to_owned(),
+                plan: Some(UpdatePlan {
+                    host: "dev@devbox".to_owned(),
+                    remote_command: "/opt/agents-cockpit".to_owned(),
+                    source_dir: None,
+                    commit: "3f9c2e1a7b4d5c6e".to_owned(),
+                }),
+            });
+        }
+        assert!(can_edit(&state.machines.others[&devbox]));
+
+        daemon_update::start(&mut state, devbox);
+        open_machines(&mut state);
+        start_edit(&mut state, devbox);
+
+        assert!(!can_edit(&state.machines.others[&devbox]));
+        assert!(matches!(&state.ui.dialog, Some(Dialog::Machines(view)) if view.editing.is_none()));
+        daemon_update::finished(&mut state, devbox, Some(1));
+        assert!(
+            can_edit(&state.machines.others[&devbox]),
+            "a failed update allows an edit"
+        );
+
+        daemon_update::start(&mut state, devbox);
+        daemon_update::finished(&mut state, devbox, Some(0));
+        assert!(
+            !can_edit(&state.machines.others[&devbox]),
+            "an update that waits for the new daemon still holds its config"
+        );
+    }
+
+    #[test]
+    fn update_again_after_an_edit_runs_with_the_new_checkout() {
+        let mut state = state_with(Vec::new());
+        server(&mut state, 1, "devbox");
+        let devbox = MachineId::new(1);
+        let old_plan = UpdatePlan {
+            host: "dev@devbox".to_owned(),
+            remote_command: "/opt/agents-cockpit".to_owned(),
+            source_dir: None,
+            commit: "3f9c2e1a7b4d5c6e".to_owned(),
+        };
+        if let Some(known) = state.machines.others.get_mut(&devbox) {
+            known.version_gap = Some(VersionGap {
+                kind: ProtocolGap::Older,
+                details: "protocol 3, the app speaks 4".to_owned(),
+                plan: Some(old_plan.clone()),
+            });
+        }
+        assert_eq!(daemon_update::start(&mut state, devbox), Some(old_plan));
+        daemon_update::finished(&mut state, devbox, Some(1));
+        let config = MachineConfig {
+            source_dir: Some("/src/agents-cockpit".to_owned()),
+            ..state.machines.others[&devbox].server.clone().unwrap()
+        };
+
+        apply_edit(&mut state, devbox, &config);
+
+        let again = daemon_update::start(&mut state, devbox);
+        assert_eq!(
+            again.and_then(|plan| plan.source_dir),
+            Some("/src/agents-cockpit".to_owned())
+        );
+        let gap_plan = state.machines.others[&devbox]
+            .version_gap
+            .as_ref()
+            .and_then(|gap| gap.plan.clone());
+        assert_eq!(
+            gap_plan.and_then(|plan| plan.source_dir),
+            Some("/src/agents-cockpit".to_owned())
         );
     }
 
