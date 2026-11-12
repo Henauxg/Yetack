@@ -386,7 +386,7 @@ impl Hub {
     /// Sends the queued prompts up to the first one the transcript shows, which starts a turn.
     /// While `claude` holds a prompt Claude has not read, that prompt starts the next turn, and
     /// the queue waits for its end.
-    fn send_next_queued(&mut self, id: AgentId) {
+    pub(super) fn send_next_queued(&mut self, id: AgentId) {
         let Some(agent) = self.agents.get_mut(&id) else {
             return;
         };
@@ -1144,5 +1144,65 @@ mod tests {
 
         assert_eq!(hub.agents[&agent].view.summary().mark, Mark::ToHandleKept);
         assert_eq!(hub.agents[&agent].record.mark, Mark::ToHandleKept);
+    }
+
+    /// A queued prompt waits for the sent ones. Once a stop releases them, it starts a turn.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stop_that_releases_the_sent_prompts_starts_the_queued_one() {
+        use cockpit_protocol::ItemBody;
+        use serde_json::json;
+        use tokio::sync::oneshot;
+
+        let temp = tempfile::tempdir().unwrap();
+        let mut hub = Hub::for_tests(&temp.path().join("state"));
+        let claude = temp.path().join("claude");
+        test_script::write_script(&claude, "#!/bin/sh\nexec cat >/dev/null\n");
+        hub.config.claude_program = claude;
+        let start = StartParams {
+            folder: temp.path().to_owned(),
+            title: None,
+            model: None,
+            effort: None,
+            mode: None,
+            prompt: None,
+            account: AccountId::DEFAULT,
+        };
+        let Ok(ResponseBody::AgentStarted { agent }) = hub.start_agent(start) else {
+            panic!("the agent did not start");
+        };
+        let prompt = |text: &str| Prompt {
+            text: text.to_owned(),
+            images: Vec::new(),
+        };
+        hub.prompt(agent, prompt("First"), PromptDelivery::Steer)
+            .unwrap();
+        hub.prompt(agent, prompt("Lost"), PromptDelivery::Steer)
+            .unwrap();
+        hub.prompt(agent, prompt("Then this"), PromptDelivery::Queue)
+            .unwrap();
+        let result = json!({
+            "type": "result", "subtype": "success", "is_error": false, "duration_ms": 1500,
+            "num_turns": 1, "total_cost_usd": 0.1,
+            "usage": {"input_tokens": 10, "output_tokens": 20,
+                      "cache_creation_input_tokens": 30, "cache_read_input_tokens": 40}
+        });
+        hub.claude_line(agent, result.to_string().parse().unwrap());
+        let (reply, _answer) = oneshot::channel();
+
+        hub.control_answered(
+            agent,
+            ControlPurpose::Interrupt(reply),
+            Ok(json!({"still_queued": []})),
+        );
+
+        let view = &hub.agents[&agent].view;
+        assert!(hub.agents[&agent].queue.is_empty());
+        assert!(view.details().waiting_prompts.is_empty());
+        assert_eq!(view.summary().status, AgentStatus::Working);
+        assert!(view.items().iter().any(|item| matches!(
+            &item.body,
+            ItemBody::UserMessage(message) if message.text == "Then this"
+        )));
     }
 }

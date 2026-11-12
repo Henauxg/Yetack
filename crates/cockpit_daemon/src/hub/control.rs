@@ -76,6 +76,7 @@ impl Hub {
         let mut refresh_context = false;
         let mut rename_session = false;
         let mut refresh_effort = false;
+        let mut send_queued = false;
         match purpose {
             ControlPurpose::Initialize => {
                 rename_session = view.initialized();
@@ -120,9 +121,7 @@ impl Hub {
                         .and_then(Value::as_array)
                         .is_some_and(Vec::is_empty)
                 });
-                if holds_none {
-                    view.release_unheld_prompts();
-                }
+                send_queued = holds_none && view.release_unheld_prompts();
                 let result = result
                     .map(|_| ResponseBody::Done)
                     .map_err(|failure| errors::control_failed(id, failure));
@@ -187,6 +186,9 @@ impl Hub {
             }
             // A closed agent leaves the hub at once: its answers go to `fail`.
             ControlPurpose::Closing => {}
+        }
+        if send_queued {
+            self.send_next_queued(id);
         }
         if record_changed {
             self.save_agents();

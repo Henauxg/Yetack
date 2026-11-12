@@ -1565,9 +1565,9 @@ impl AgentView {
             .find(|task| &task.id == id)
     }
 
-    /// Removes the sent prompts an echo shows: the one with its text, else the oldest ones whose
-    /// texts it joins, else the oldest, since Claude Code echoes the prompts in the order it got
-    /// them. Returns when the user sent the first one.
+    /// Removes the sent prompts an echo shows: the one with its text, else the ones whose texts it
+    /// joins, else the oldest, since Claude Code echoes the prompts in the order it got them.
+    /// Returns when the user sent the first one.
     fn take_unread_prompt(&mut self, text: &str) -> Option<Timestamp> {
         let prompts = &mut self.details.waiting_prompts;
         let exact = prompts
@@ -1594,12 +1594,12 @@ impl AgentView {
     }
 
     /// Claude Code answers a stop with the prompts it still holds. With none and no turn running,
-    /// no turn will read the sent prompts, so they leave. One an earlier message of the
-    /// transcript holds went with it. Any other becomes a "Message not sent" notice. A running
-    /// turn still reads a prompt sent during it, after the stop.
-    pub(crate) fn release_unheld_prompts(&mut self) {
+    /// no turn will read the sent prompts, so they leave. One whose lines an earlier message of
+    /// the transcript holds went with it. Any other becomes a "Message not sent" notice. A running
+    /// turn still reads a prompt sent during it, after the stop. Returns whether any left.
+    pub(crate) fn release_unheld_prompts(&mut self) -> bool {
         if self.summary.turn_started_at.is_some() {
-            return;
+            return false;
         }
         let (sent, kept): (Vec<WaitingPrompt>, Vec<WaitingPrompt>) =
             std::mem::take(&mut self.details.waiting_prompts)
@@ -1607,12 +1607,12 @@ impl AgentView {
                 .partition(|prompt| prompt.state == WaitingState::Sent);
         self.details.waiting_prompts = kept;
         if sent.is_empty() {
-            return;
+            return false;
         }
         self.details_changed = true;
         for prompt in sent {
             let read = self.items.iter().any(|item| {
-                matches!(&item.body, ItemBody::UserMessage(message) if message.text.contains(&prompt.text))
+                matches!(&item.body, ItemBody::UserMessage(message) if holds_lines(&message.text, &prompt.text))
             });
             if !read {
                 self.push_item(
@@ -1626,6 +1626,7 @@ impl AgentView {
         }
         self.working = false;
         self.refresh_status();
+        true
     }
 
     fn take_echo(&mut self, text: &str) -> bool {
@@ -1736,26 +1737,34 @@ fn same_words(sent: &str, echo: &str) -> bool {
     sent.split_whitespace().eq(echo.split_whitespace())
 }
 
-/// The indexes of the oldest sent prompts an echo joins, when it holds two or more. Claude Code
-/// reads the prompts it holds at a step as one, their texts on separate lines.
+/// The indexes of the sent prompts an echo joins, when it holds two or more, in the list's order.
+/// Claude Code reads the prompts it holds at a step as one, their texts on separate lines. Their
+/// order there is the order it got them, which differs from the list's for a queued prompt sent
+/// with `agent.send_queued`.
 fn joined_prompts(prompts: &[WaitingPrompt], echo: &str) -> Option<Vec<usize>> {
     let mut rest = echo;
     let mut taken = Vec::new();
-    let sent = prompts
-        .iter()
-        .enumerate()
-        .filter(|(_, prompt)| prompt.state == WaitingState::Sent);
-    for (index, prompt) in sent {
-        let Some(after) = rest.strip_prefix(prompt.text.as_str()) else {
-            break;
-        };
+    loop {
+        let (index, after) = prompts
+            .iter()
+            .enumerate()
+            .filter(|(index, prompt)| prompt.state == WaitingState::Sent && !taken.contains(index))
+            .find_map(|(index, prompt)| {
+                let after = rest.strip_prefix(prompt.text.as_str())?;
+                (after.is_empty() || after.starts_with('\n')).then_some((index, after))
+            })?;
         taken.push(index);
         if after.is_empty() {
+            taken.sort_unstable();
             return (taken.len() > 1).then_some(taken);
         }
         rest = after.strip_prefix('\n')?;
     }
-    None
+}
+
+/// Whether `text` holds `lines` as whole lines.
+fn holds_lines(text: &str, lines: &str) -> bool {
+    format!("\n{text}\n").contains(&format!("\n{lines}\n"))
 }
 
 fn user_message(text: String, images: Vec<Image>, sent_at: Option<Timestamp>) -> ItemBody {
@@ -3163,6 +3172,45 @@ mod tests {
             })
             .collect();
         assert_eq!(notices, [Some("Lost on the way")]);
+    }
+
+    #[test]
+    fn an_echo_joins_the_sent_prompts_in_the_order_claude_code_got_them() {
+        let mut view = view();
+        view.add_prompt(&prompt("First"), now());
+        let queued = view.add_waiting_prompt(&prompt("Queued"), WaitingState::Queued, now());
+        view.add_waiting_prompt(&prompt("Steered"), WaitingState::Sent, now());
+        view.queued_prompt_steered(queued);
+
+        apply(&mut view, result(0.1));
+        apply(&mut view, echo("Steered\nQueued"));
+        apply(&mut view, result(0.2));
+        view.take_events();
+
+        assert_eq!(view.summary().status, AgentStatus::Idle);
+        assert!(view.details().waiting_prompts.is_empty());
+    }
+
+    #[test]
+    fn a_stop_counts_a_prompt_read_only_as_whole_lines_of_a_message() {
+        let mut view = view();
+        view.add_prompt(&prompt("Ship it, ok"), now());
+        view.add_waiting_prompt(&prompt("ok"), WaitingState::Sent, now());
+        apply(&mut view, result(0.1));
+
+        view.release_unheld_prompts();
+
+        let notices: Vec<Option<&str>> = view
+            .items()
+            .iter()
+            .filter_map(|item| match &item.body {
+                ItemBody::Notice { text, detail } if text == UNREAD_PROMPT_NOTICE => {
+                    Some(detail.as_deref())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notices, [Some("ok")]);
     }
 
     #[test]
