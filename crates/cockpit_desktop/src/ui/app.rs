@@ -19,6 +19,7 @@ use crate::ui::header::Header;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::no_daemon::NoDaemonScreen;
 use crate::ui::presence::use_presence;
+use crate::ui::project_menu::ProjectMenu;
 use crate::ui::quotes::{QuoteLayer, use_quotes};
 use crate::ui::reorder::use_reorder;
 use crate::ui::row_menu::RowMenu;
@@ -156,6 +157,7 @@ pub fn App() -> Element {
                 }
             }
             RowMenu {}
+            ProjectMenu {}
             TreeMenu {}
             TabMenu {}
             Dialogs {}

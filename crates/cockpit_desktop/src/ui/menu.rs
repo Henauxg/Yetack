@@ -14,6 +14,12 @@ pub fn menu_key(key: &Key, code: Code) -> Option<MenuKey> {
         Code::Digit1 | Code::Numpad1 => Some('1'),
         Code::Digit2 | Code::Numpad2 => Some('2'),
         Code::Digit3 | Code::Numpad3 => Some('3'),
+        Code::Digit4 | Code::Numpad4 => Some('4'),
+        Code::Digit5 | Code::Numpad5 => Some('5'),
+        Code::Digit6 | Code::Numpad6 => Some('6'),
+        Code::Digit7 | Code::Numpad7 => Some('7'),
+        Code::Digit8 | Code::Numpad8 => Some('8'),
+        Code::Digit9 | Code::Numpad9 => Some('9'),
         _ => None,
     };
     if let Some(digit) = digit {
@@ -193,6 +199,10 @@ mod tests {
         assert_eq!(
             menu_key(&Key::Character("3".to_owned()), Code::Numpad3),
             Some(MenuKey::Char('3'))
+        );
+        assert_eq!(
+            menu_key(&Key::Character("'".to_owned()), Code::Digit4),
+            Some(MenuKey::Char('4'))
         );
     }
 }

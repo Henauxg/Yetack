@@ -67,6 +67,12 @@ pub enum Popover {
         x: i32,
         y: i32,
     },
+    /// The menu of a project's header in the sidebar, at `x`, `y`: `UiState::project_menu` names
+    /// the project.
+    ProjectMenu {
+        x: i32,
+        y: i32,
+    },
     /// The file view's list of its open files.
     FileList,
     /// The sidebar's choice of what its panels group, from the line above its list.
@@ -507,6 +513,10 @@ pub struct UiState {
     pub folded_machines: BTreeSet<MachineId>,
     /// The projects whose agents the sidebar folds under their header.
     pub folded_projects: BTreeSet<ProjectKey>,
+    /// The project whose header menu is open, while `popover` is `ProjectMenu`.
+    pub project_menu: Option<ProjectKey>,
+    /// The kept project whose name the sidebar's header holds in a field.
+    pub project_rename: Option<ProjectId>,
     /// The project picked in the new agent dialog for a started agent whose summary has not
     /// arrived yet.
     pub picked_projects: BTreeMap<AgentId, ProjectKey>,
@@ -555,6 +565,8 @@ impl Default for UiState {
             unread: BTreeSet::new(),
             folded_machines: BTreeSet::new(),
             folded_projects: BTreeSet::new(),
+            project_menu: None,
+            project_rename: None,
             picked_projects: BTreeMap::new(),
             window_focused: true,
             open_blocks: BTreeSet::from([Block::Tasks, Block::Messages, Block::Running]),
@@ -769,11 +781,13 @@ impl UiState {
         let open = self.popover.is_some()
             || self.dialog.is_some()
             || self.badge.is_some()
-            || self.title_edit.is_some();
+            || self.title_edit.is_some()
+            || self.project_rename.is_some();
         self.popover = None;
         self.close_dialog();
         self.badge = None;
         self.title_edit = None;
+        self.project_rename = None;
         open
     }
 

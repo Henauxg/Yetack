@@ -250,6 +250,7 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   - Projects belong to the app, on each desktop: a name, a color, and rules, each a repository or a folder. An agent joins the project whose rule holds its folder most precisely: a folder, then its repository, then a folder that ends with `*`.
   - An agent in a repository no project claims gets a temporary project, shown dashed, which goes away with its last agent unless the user keeps it or moves an agent into it.
   - An agent moves to another project from its row's menu, by drag and drop, or from the new agent dialog's Project menu. Kept projects are reordered by dragging their headers.
+  - A right-click on a project's header opens its menu: Keep (a temporary project), Rename (the name turns into a field in the header), the six colors (digits 1 to 6), Edit the rules (its card in Settings), Fold, and Delete, which asks for a second pick. A rename, a color or the rules keep a temporary project first.
   - The Settings dialog's Projects tab edits the projects, with a card per project as the Accounts dialog has.
 - It starts `ssh <server> /absolute/path/to/agents-cockpit bridge` and speaks the daemon API over the process's stdin and stdout.
   Use an absolute path: a non-interactive SSH command does not load your interactive shell setup, so `~/.cargo/bin` may be missing from `PATH`.

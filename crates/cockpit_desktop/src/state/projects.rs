@@ -23,7 +23,7 @@ use serde::{Deserialize, Deserializer};
 use strum::VariantArray;
 
 use super::app_state::{AgentEntry, AppState};
-use super::grouping;
+use super::{grouping, project_menu};
 use crate::machine::MachineId;
 use crate::path_style::PathStyle;
 use crate::prefs::{AccountColor, Project, ProjectId, ProjectRule};
@@ -449,6 +449,7 @@ pub fn move_agent(state: &mut AppState, agent: AgentId, target: &ProjectKey) {
             .or_default()
             .insert(key.agent, chosen);
     }
+    project_menu::prune(state);
 }
 
 /// Renames a kept project. An empty name changes nothing.

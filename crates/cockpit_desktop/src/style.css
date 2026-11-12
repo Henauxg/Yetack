@@ -1174,6 +1174,47 @@ button:disabled {
   color: var(--red);
 }
 
+/* The project menu's head: the project it acts on. */
+.project-menu-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+}
+
+.project-menu-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.menu-swatches {
+  min-height: 30px;
+  gap: 8px;
+  padding: 2px 8px 4px;
+}
+
+.menu-swatches .swatch {
+  width: 18px;
+  height: 18px;
+}
+
+/* The project's name in its header, as a field, where the header's button was. */
+.project-head-field {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 8px;
+}
+
+.project-name-field {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
 /* The check of a submenu's chosen row, in a column of its own so the labels line up. */
 .menu-check {
   display: inline-flex;
@@ -8349,6 +8390,10 @@ button.map-toggle:hover {
   box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--acct);
 }
 
+.swatch:not(.chosen):hover {
+  box-shadow: 0 0 0 2px var(--panel), 0 0 0 3px var(--muted);
+}
+
 .check-row {
   display: flex;
   align-items: flex-start;
@@ -9188,6 +9233,7 @@ label.icon-button,
 .menu-button:active,
 .send-button:not(:disabled, .resting):active,
 .badge:active,
+.swatch:active,
 .waiting-thumb:active,
 .attachment-open:active,
 .call-stop:active,

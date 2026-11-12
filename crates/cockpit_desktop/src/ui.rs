@@ -30,6 +30,7 @@ mod notification_levels;
 mod open_file;
 mod palette;
 mod presence;
+mod project_menu;
 mod projects_tab;
 mod question_card;
 mod quotes;
