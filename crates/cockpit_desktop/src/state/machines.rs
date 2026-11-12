@@ -6,8 +6,8 @@ use cockpit_protocol::AgentId;
 use super::app_state::AppState;
 use super::apply::forget_agent;
 use super::drafts::Drafts;
-use super::file_tree;
 use super::ui_state::{Dialog, MachineEdit, MachinesView};
+use super::{daemon_update, file_tree};
 use crate::config::MachineConfig;
 use crate::daemon_label::DaemonLabel;
 use crate::machine::MachineId;
@@ -129,8 +129,8 @@ pub fn save_edit(state: &mut AppState) -> Option<MachineChange> {
     }
 }
 
-/// What a saved edit changes in the window: the server's name and config, and the preferences
-/// its old name held.
+/// What a saved edit changes in the window: the server's name and config, the plan of its next
+/// update, and the preferences its old name held.
 pub fn apply_edit(state: &mut AppState, machine: MachineId, config: &MachineConfig) {
     let Some(known) = state.machines.others.get_mut(&machine) else {
         return;
@@ -138,6 +138,7 @@ pub fn apply_edit(state: &mut AppState, machine: MachineId, config: &MachineConf
     let old = known.daemon.machine.clone();
     known.daemon = DaemonLabel::ssh(config.name.clone());
     known.server = Some(config.clone());
+    daemon_update::follow_config(known, config);
     state.prefs.rename_machine(&old, &config.name);
 }
 
@@ -204,6 +205,7 @@ pub fn forget(state: &mut AppState, drafts: &mut Drafts, machine: MachineId) {
 mod tests {
     use super::*;
     use crate::state::app_state::tests::{state_with, summary};
+    use crate::state::daemon_update::{ProtocolGap, UpdatePlan, VersionGap};
     use crate::state::{AgentEntry, MachineState};
     use cockpit_protocol::{AccountId, AgentStatus};
 
@@ -359,6 +361,48 @@ mod tests {
         assert_eq!(known.server.as_ref(), Some(&config));
         assert!(state.prefs.notifications.agents.contains_key("lab"));
         assert!(!state.prefs.notifications.agents.contains_key("devbox"));
+    }
+
+    #[test]
+    fn update_again_after_an_edit_runs_with_the_new_checkout() {
+        let mut state = state_with(Vec::new());
+        server(&mut state, 1, "devbox");
+        let devbox = MachineId::new(1);
+        let old_plan = UpdatePlan {
+            host: "dev@devbox".to_owned(),
+            remote_command: "/opt/agents-cockpit".to_owned(),
+            source_dir: None,
+            commit: "3f9c2e1a7b4d5c6e".to_owned(),
+        };
+        if let Some(known) = state.machines.others.get_mut(&devbox) {
+            known.version_gap = Some(VersionGap {
+                kind: ProtocolGap::Older,
+                details: "protocol 3, the app speaks 4".to_owned(),
+                plan: Some(old_plan.clone()),
+            });
+        }
+        assert_eq!(daemon_update::start(&mut state, devbox), Some(old_plan));
+        daemon_update::finished(&mut state, devbox, Some(1));
+        let config = MachineConfig {
+            source_dir: Some("/src/agents-cockpit".to_owned()),
+            ..state.machines.others[&devbox].server.clone().unwrap()
+        };
+
+        apply_edit(&mut state, devbox, &config);
+
+        let again = daemon_update::start(&mut state, devbox);
+        assert_eq!(
+            again.and_then(|plan| plan.source_dir),
+            Some("/src/agents-cockpit".to_owned())
+        );
+        let gap_plan = state.machines.others[&devbox]
+            .version_gap
+            .as_ref()
+            .and_then(|gap| gap.plan.clone());
+        assert_eq!(
+            gap_plan.and_then(|plan| plan.source_dir),
+            Some("/src/agents-cockpit".to_owned())
+        );
     }
 
     #[test]
