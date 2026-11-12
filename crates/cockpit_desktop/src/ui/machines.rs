@@ -114,7 +114,7 @@ fn rows(state: &AppState) -> Vec<MachineRow> {
                 trouble,
                 update: daemon_update::update_line(known),
                 agents,
-                editable: known.server.is_some(),
+                editable: machines::can_edit(known),
             }
         })
         .collect()

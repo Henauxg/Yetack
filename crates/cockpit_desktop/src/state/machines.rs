@@ -3,11 +3,12 @@
 
 use cockpit_protocol::AgentId;
 
-use super::app_state::AppState;
+use super::app_state::{AppState, MachineState};
 use super::apply::forget_agent;
+use super::daemon_update::{self, DaemonUpdate};
 use super::drafts::Drafts;
+use super::file_tree;
 use super::ui_state::{Dialog, MachineEdit, MachinesView};
-use super::{daemon_update, file_tree};
 use crate::config::MachineConfig;
 use crate::daemon_label::DaemonLabel;
 use crate::machine::MachineId;
@@ -57,12 +58,23 @@ pub fn add(state: &mut AppState) -> Option<MachineChange> {
     }
 }
 
+/// Whether the server's Edit button shows: a server the config names, whose update is not under
+/// way. An update runs with the config it started with, and its cancel must reach that server.
+pub fn can_edit(known: &MachineState) -> bool {
+    let updating = matches!(
+        known.update,
+        Some(DaemonUpdate::Running(_) | DaemonUpdate::Reconnecting(_))
+    );
+    known.server.is_some() && !updating
+}
+
 /// Opens the server's form in its row, filled from its config.
 pub fn start_edit(state: &mut AppState, machine: MachineId) {
     let Some(config) = state
         .machines
         .others
         .get(&machine)
+        .filter(|known| can_edit(known))
         .and_then(|known| known.server.clone())
     else {
         return;
@@ -363,6 +375,38 @@ mod tests {
         assert_eq!(known.server.as_ref(), Some(&config));
         assert!(state.prefs.notifications.agents.contains_key("lab"));
         assert!(!state.prefs.notifications.agents.contains_key("devbox"));
+    }
+
+    #[test]
+    fn a_server_whose_update_runs_cannot_be_edited() {
+        let mut state = state_with(Vec::new());
+        server(&mut state, 1, "devbox");
+        let devbox = MachineId::new(1);
+        if let Some(known) = state.machines.others.get_mut(&devbox) {
+            known.version_gap = Some(VersionGap {
+                kind: ProtocolGap::Older,
+                details: "protocol 3, the app speaks 4".to_owned(),
+                plan: Some(UpdatePlan {
+                    host: "dev@devbox".to_owned(),
+                    remote_command: "/opt/agents-cockpit".to_owned(),
+                    source_dir: None,
+                    commit: "3f9c2e1a7b4d5c6e".to_owned(),
+                }),
+            });
+        }
+        assert!(can_edit(&state.machines.others[&devbox]));
+
+        daemon_update::start(&mut state, devbox);
+        open_machines(&mut state);
+        start_edit(&mut state, devbox);
+
+        assert!(!can_edit(&state.machines.others[&devbox]));
+        assert!(matches!(&state.ui.dialog, Some(Dialog::Machines(view)) if view.editing.is_none()));
+        daemon_update::finished(&mut state, devbox, Some(1));
+        assert!(
+            can_edit(&state.machines.others[&devbox]),
+            "a failed update allows an edit"
+        );
     }
 
     #[test]
