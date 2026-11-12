@@ -10,6 +10,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::hub::folders::ForkOf;
 use crate::process::ProcessEvent;
 use crate::sessions::FoundSession;
+use crate::store::DetailsFrame;
 
 /// Where the answer to a client's request goes.
 pub(crate) type Reply = oneshot::Sender<ResponseResult>;
@@ -100,7 +101,7 @@ pub(crate) enum Joined {
         after: Seq,
         upto: Option<Seq>,
         events: PathBuf,
-        details: Vec<(Seq, Vec<u8>)>,
+        details: Vec<DetailsFrame>,
     },
     Snapshot(Box<Snapshot>),
 }

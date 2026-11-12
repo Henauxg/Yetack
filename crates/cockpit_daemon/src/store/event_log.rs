@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::fs::File;
 use std::io;
-use std::io::BufReader;
+use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 
 use cockpit_protocol::{AgentDetails, AgentId, Event, EventRecord, Frame, Seq, ServerMessage};
@@ -50,6 +50,14 @@ pub(crate) struct LatestDetails {
     /// The `DetailsChanged` frame, with its `\n`, which a replay sends as it is.
     pub(crate) frame: Vec<u8>,
     pub(crate) details: AgentDetails,
+}
+
+/// An agent's latest `DetailsChanged` frame, which a replay sends in place of the older ones.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DetailsFrame {
+    pub(crate) seq: Seq,
+    /// With its `\n`.
+    pub(crate) frame: Vec<u8>,
 }
 
 /// What a replay read found.
@@ -260,7 +268,7 @@ pub(crate) fn move_details_out(log: &Path, details: &Path) -> Result<(), StoreEr
         path: compacting.clone(),
         source,
     };
-    let mut kept = io::BufWriter::new(
+    let mut kept = BufWriter::new(
         state_dir::owner_only()
             .create(true)
             .truncate(true)
@@ -372,7 +380,7 @@ pub(crate) fn read_replay(
     folder: &Path,
     after: Seq,
     upto: Option<Seq>,
-    details: Vec<(Seq, Vec<u8>)>,
+    details: Vec<DetailsFrame>,
     max_bytes: usize,
 ) -> Result<ReplayRead, StoreError> {
     let Some(upto) = upto else {
@@ -380,7 +388,8 @@ pub(crate) fn read_replay(
     };
     let mut frames: Vec<(Seq, Vec<u8>)> = details
         .into_iter()
-        .filter(|(seq, _)| *seq > after && *seq <= upto)
+        .filter(|details| details.seq > after && details.seq <= upto)
+        .map(|details| (details.seq, details.frame))
         .collect();
     let mut total_bytes: usize = frames.iter().map(|(_, frame)| frame.len()).sum();
     if total_bytes > max_bytes {
@@ -447,7 +456,7 @@ fn for_each_line(path: &Path, mut visit: impl FnMut(&[u8]) -> bool) -> Result<()
 mod tests {
     use std::fs::OpenOptions;
 
-    use cockpit_protocol::{Event, PlanUsage, Settings};
+    use cockpit_protocol::{ChangedFile, Event, PlanUsage, Settings};
 
     use super::*;
 
@@ -651,7 +660,7 @@ mod tests {
             agent: AgentId::new(agent),
             details: AgentDetails {
                 changed_files: (0..files)
-                    .map(|index| cockpit_protocol::ChangedFile {
+                    .map(|index| ChangedFile {
                         path: PathBuf::from(format!("src/file_{index}.rs")),
                         lines_added: 1,
                         lines_removed: 0,
@@ -717,14 +726,14 @@ mod tests {
         logs.append(agent, &frame(1, removed(1))).unwrap();
         logs.append(agent, &frame(3, removed(3))).unwrap();
         let details = vec![
-            (
-                Seq::new(2),
-                frame(2, details_changed(1, 1)).as_bytes().to_vec(),
-            ),
-            (
-                Seq::new(1),
-                frame(1, details_changed(2, 1)).as_bytes().to_vec(),
-            ),
+            DetailsFrame {
+                seq: Seq::new(2),
+                frame: frame(2, details_changed(1, 1)).as_bytes().to_vec(),
+            },
+            DetailsFrame {
+                seq: Seq::new(1),
+                frame: frame(1, details_changed(2, 1)).as_bytes().to_vec(),
+            },
         ];
 
         let read = read_replay(

@@ -152,7 +152,7 @@ mod tests {
 
     use cockpit_protocol::{
         AgentStatus, ClaudeSessionId, EventRecord, Frame, ItemBody, Mark, Position, ServerMessage,
-        Settings, Timestamp,
+        Settings, TaskListItem, TaskStatus, Timestamp,
     };
 
     use crate::store::{PastFile, ResumeAs};
@@ -275,9 +275,9 @@ mod tests {
         let details = |task: &str| Event::DetailsChanged {
             agent: AgentId::new(1),
             details: AgentDetails {
-                tasks: vec![cockpit_protocol::TaskListItem {
+                tasks: vec![TaskListItem {
                     content: task.to_owned(),
-                    status: cockpit_protocol::TaskStatus::Pending,
+                    status: TaskStatus::Pending,
                     active_form: String::new(),
                 }],
                 ..AgentDetails::default()

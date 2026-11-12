@@ -9,6 +9,7 @@ use cockpit_protocol::{
     AccountId, AccountPlanUsage, AgentDetails, AgentId, Event, EventRecord, Frame, PlanUsage,
     Prompt, PromptId, Seq, ServerMessage, SignIn, Snapshot, Timestamp, WaitingPrompt,
 };
+use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 
@@ -18,7 +19,9 @@ use crate::hub::input::{ControlPurpose, HubInput, Joined, Registration};
 use crate::hub::restore::Restored;
 use crate::machine_load::LoadSampler;
 use crate::process::ProcessHandle;
-use crate::store::{AgentRecord, AgentsFile, DaemonSettings, EventLogs, LogName, StateDir};
+use crate::store::{
+    AgentRecord, AgentsFile, DaemonSettings, DetailsFrame, EventLogs, LogName, StateDir,
+};
 use crate::transcript::AgentView;
 
 /// Live events a client's queue holds. A client this far behind is dropped, and catches up when
@@ -74,9 +77,8 @@ pub(super) struct Agent {
 /// How an agent's details go out.
 #[derive(Default)]
 pub(super) struct DetailsOut {
-    /// The last `DetailsChanged` frame and its sequence number, which a replay sends in place of
-    /// the older ones.
-    latest: Option<(Seq, Vec<u8>)>,
+    /// The last `DetailsChanged` frame, which a replay sends in place of the older ones.
+    latest: Option<DetailsFrame>,
     /// When the last details event went out.
     sent_at: Option<Instant>,
     /// The waiting prompts of the last details event.
@@ -150,9 +152,10 @@ impl Hub {
             .agents
             .into_iter()
             .map(|(record, view)| {
-                let latest = details
-                    .remove(&record.id)
-                    .map(|latest| (latest.seq, latest.frame));
+                let latest = details.remove(&record.id).map(|latest| DetailsFrame {
+                    seq: latest.seq,
+                    frame: latest.frame,
+                });
                 let agent = Agent {
                     record,
                     view,
@@ -251,7 +254,7 @@ impl Hub {
                     .agents
                     .values()
                     .filter_map(|agent| agent.details_out.latest.clone())
-                    .filter(|(seq, _)| *seq > after)
+                    .filter(|latest| latest.seq > after)
                     .collect(),
             },
             Some(_) | None => Joined::Snapshot(Box::new(self.snapshot())),
@@ -325,7 +328,10 @@ impl Hub {
         let stored = match details_of {
             Some(agent) => {
                 if let Some(found) = self.agents.get_mut(&agent) {
-                    found.details_out.latest = Some((seq, frame.as_bytes().to_vec()));
+                    found.details_out.latest = Some(DetailsFrame {
+                        seq,
+                        frame: frame.as_bytes().to_vec(),
+                    });
                 }
                 self.logs.save_details(agent, &frame)
             }
@@ -372,7 +378,7 @@ impl Hub {
     fn space_details(&mut self, agent: AgentId, details: AgentDetails) -> Option<AgentDetails> {
         let found = self.agents.get_mut(&agent)?;
         // Without a runtime, as in some tests, nothing would send them later.
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        let Ok(runtime) = Handle::try_current() else {
             found.details_out.sent(&details, Instant::now());
             return Some(details);
         };
@@ -454,6 +460,8 @@ pub(super) fn now() -> Timestamp {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use cockpit_protocol::{
         Mark, Position, PromptId, Settings, TaskListItem, TaskStatus, WaitingState,
     };
@@ -463,7 +471,7 @@ mod tests {
     use super::*;
 
     /// A state folder at `folder` with one stopped agent, 1.
-    fn state_with_agent(folder: &std::path::Path) -> AgentId {
+    fn state_with_agent(folder: &Path) -> AgentId {
         let state = StateDir::create(folder).unwrap();
         let agent = AgentId::new(1);
         AgentsFile {
@@ -499,15 +507,15 @@ mod tests {
         };
         details
             .into_iter()
-            .map(|(seq, frame)| {
+            .map(|latest| {
                 let Ok(ServerMessage::Event(EventRecord {
                     event: Event::DetailsChanged { details, .. },
                     ..
-                })) = serde_json::from_slice(&frame)
+                })) = serde_json::from_slice(&latest.frame)
                 else {
                     panic!("expected a details frame");
                 };
-                (seq.get(), details.tasks[0].content.clone())
+                (latest.seq.get(), details.tasks[0].content.clone())
             })
             .collect()
     }
