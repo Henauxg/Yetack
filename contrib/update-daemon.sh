@@ -1,18 +1,21 @@
 #!/bin/sh
 # Updates this machine's agents-cockpit daemon to one commit and restarts it. Linux only.
 #
-#   ssh HOST sh -s -- --commit HASH --binary PATH [--source-dir DIR] < contrib/update-daemon.sh
+#   ssh HOST sh -s -- --commit HASH --binary PATH [--source-dir DIR] [--even-if-busy] < contrib/update-daemon.sh
 #   ssh HOST sh -s -- --cancel < contrib/update-daemon.sh
 #
-#   --commit      a commit or ref that the source checkout can fetch from origin
-#   --binary      the absolute path of the agents-cockpit binary to replace
-#   --source-dir  a git checkout of the repository, by default ~/agents-cockpit
-#   --cancel      makes the running update stop before it installs: its build runs on
+#   --commit        a commit or ref that the source checkout can fetch from origin
+#   --binary        the absolute path of the agents-cockpit binary to replace
+#   --source-dir    a git checkout of the repository, by default ~/agents-cockpit
+#   --even-if-busy  restarts even while agents are busy or may hold a scheduled job: the restart
+#                   ends their turns, which the new daemon resumes, and loses their jobs
+#   --cancel        makes the running update stop before it installs: its build runs on
 #
 # It builds outside the checkout, which stays as it is. It restarts the daemon with
 # $XDG_CONFIG_HOME/agents-cockpit/start-daemon when that file exists (a script that starts the
 # daemon in the background and returns), and otherwise with the agents-cockpit systemd user
-# service. It refuses while an agent works, waits for an answer or may hold a scheduled job.
+# service. Without --even-if-busy, it refuses while an agent works, waits for an answer or may
+# hold a scheduled job.
 # Once started it finishes even when the connection is lost: build.log, in its folder under
 # $XDG_CACHE_HOME/agents-cockpit/update, keeps the build's output.
 #
@@ -53,7 +56,13 @@ parse_arguments() {
     commit=
     binary=
     source_dir=$HOME/agents-cockpit
+    even_if_busy=
     while [ "$#" -gt 0 ]; do
+        if [ "$1" = --even-if-busy ]; then
+            even_if_busy=yes
+            shift
+            continue
+        fi
         [ "$#" -ge 2 ] || die "$1 needs a value"
         case $1 in
             --commit) commit=$2 ;;
@@ -166,6 +175,7 @@ check_agents() {
             die "cannot read the agents from the daemon: $listing_error"
         fi
     fi
+    [ -z "$even_if_busy" ] || return 0
     busy=$(printf '%s\n' "$listing" | awk 'NR > 1 && $2 != "idle" && $2 != "exited"')
     [ -z "$busy" ] || refuse "not restarting the daemon, these agents are busy:
 $busy"

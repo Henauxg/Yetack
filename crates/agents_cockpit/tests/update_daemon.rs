@@ -323,6 +323,14 @@ printf '%s' '{mark}' >>"$2/release/agents-cockpit"
         self.update_command(commit).output().unwrap()
     }
 
+    /// The update the app runs for "Update now", which ends the busy agents' turns.
+    fn update_even_if_busy(&self, commit: &str) -> Output {
+        self.update_command(commit)
+            .arg("--even-if-busy")
+            .output()
+            .unwrap()
+    }
+
     /// Asks the update that runs to stop, as the app does over a second connection.
     fn cancel(&self) -> Output {
         self.command("sh")
@@ -711,6 +719,117 @@ fn a_job_from_before_the_daemon_started_is_gone() {
     machine.log_tool_call(&id, "CronCreate", 1_000);
 
     assert_succeeded(&machine.update("origin/main"));
+}
+
+#[test]
+fn even_if_busy_restarts_while_an_agent_works() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let id = machine.working_agent();
+    let before = machine.daemon_pid();
+
+    let output = machine.update_even_if_busy("origin/main");
+
+    assert_succeeded(&output);
+    assert!(machine.installed_is_the_new_build());
+    assert_ne!(machine.daemon_pid(), before);
+    assert!(
+        machine
+            .ok(&["list"])
+            .lines()
+            .any(|row| row.starts_with(&id)),
+        "the new daemon has the agent"
+    );
+}
+
+#[test]
+fn even_if_busy_restarts_with_a_scheduled_job() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let id = machine.idle_agent();
+    machine.log_tool_call(&id, "CronCreate", now_ms());
+    let before = machine.daemon_pid();
+
+    let output = machine.update_even_if_busy("origin/main");
+
+    assert_succeeded(&output);
+    assert!(machine.installed_is_the_new_build());
+    assert_ne!(machine.daemon_pid(), before);
+}
+
+#[test]
+fn even_if_busy_may_come_before_the_other_options() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    machine.working_agent();
+
+    let output = machine
+        .command("sh")
+        .args(["-s", "--", "--even-if-busy", "--commit", "origin/main"])
+        .arg("--binary")
+        .arg(machine.installed())
+        .arg("--source-dir")
+        .arg(machine.path("source"))
+        .stdin(Stdio::from(File::open(SCRIPT).unwrap()))
+        .output()
+        .unwrap();
+
+    assert_succeeded(&output);
+    assert!(machine.installed_is_the_new_build());
+}
+
+#[test]
+fn even_if_busy_still_refuses_when_it_cannot_look_for_the_daemon() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    machine.working_agent();
+    let before = machine.daemon_pid();
+    machine.write_program("bin/find", "#!/bin/sh\nexit 1\n");
+
+    let output = machine.update_even_if_busy("origin/main");
+
+    assert_refused(&machine, &output, 1, "cannot tell", &before);
+    assert!(!machine.built(), "it refuses before the build");
+}
+
+#[test]
+fn even_if_busy_still_reads_the_agents() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let before = machine.daemon_pid();
+    machine.leave_the_old_daemon_behind_a_new_binary();
+    fs::remove_file(machine.previous()).unwrap();
+    machine.write_program(
+        "install/agents-cockpit.previous",
+        "#!/bin/sh\necho 'made-up failure' >&2\nexit 1\n",
+    );
+
+    let output = machine.update_even_if_busy("origin/main");
+
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("cannot read the agents from the daemon"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!machine.built(), "it refuses before the build");
+    assert_eq!(machine.daemon_pid(), before);
+}
+
+#[test]
+fn even_if_busy_still_refuses_a_second_update() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    machine.working_agent();
+    let before = machine.daemon_pid();
+    let pid = std::process::id();
+    machine.write_lock(pid, &start_time(pid));
+
+    let output = machine.update_even_if_busy("origin/main");
+
+    assert_eq!(output.status.code(), Some(6), "{}", stderr(&output));
+    assert!(!machine.built());
+    assert_eq!(machine.daemon_pid(), before);
 }
 
 #[test]
