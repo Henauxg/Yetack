@@ -15,16 +15,19 @@ use dioxus::prelude::*;
 use tokio::sync::mpsc;
 
 use crate::config::{DaemonConfig, MachineConfig, save_machines};
-use crate::daemon_label::DaemonLabel;
+use crate::daemon_label::{DaemonLabel, DaemonPlace};
 use crate::in_app_host::InAppHost;
 use crate::machine::MachineId;
 use crate::notifications::Notifier;
 use crate::prefs::NotificationLevel;
 use crate::reach::{self, Places, Reached, Unreached};
-use crate::state::daemon_update::{self, OutputLine, OutputStream, UpdatePlan, VersionGap};
+use crate::service_update::{self, SystemService};
+use crate::state::daemon_update::{self, OutputLine, OutputStream};
 use crate::state::machine_load::{LOAD_POLL, LoadView, ShownLoad};
 use crate::state::machines::{self, MachineChange};
-use crate::state::no_daemon::{self, Absence, Chosen, DaemonChoice};
+use crate::state::no_daemon::{self, Absence, Chosen, DaemonChoice, SERVICE_OFFERED};
+use crate::state::update_offer::{self, VersionGap};
+use crate::state::update_plan::{ServerPlan, ServicePlan, UpdatePlan, UpdateRun, UpdateStep};
 use crate::state::{
     self, AgentEntry, AppState, ConnectionState, Dialog, Drafts, MachineState, Outgoing, Purpose,
     TitlePlace, Utf16Offset, actions, notification_levels,
@@ -67,8 +70,8 @@ pub enum ToDaemon {
     Choose(Chosen),
     /// A server added or removed in the "Machines" dialog, or tried again.
     Machines(MachineChange),
-    /// Runs or cancels the update of a daemon that refuses the app. Plain SSH, beside the
-    /// connection, which keeps being refused meanwhile.
+    /// Runs or cancels the update of a machine's daemon, beside its connection: a daemon of an
+    /// older protocol keeps refusing the app meanwhile.
     Update(UpdateCommand),
     /// The notification levels changed: each machine's notifier closes what they no longer let
     /// through.
@@ -77,8 +80,9 @@ pub enum ToDaemon {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateCommand {
-    Start(MachineId, UpdatePlan),
-    Cancel(MachineId, UpdatePlan),
+    Start(MachineId, UpdateRun),
+    /// Asks a server's running script to stop before it installs.
+    Cancel(MachineId, ServerPlan),
 }
 
 /// What components hold to read and change the state and to reach the daemon. The drafts are a
@@ -114,13 +118,34 @@ impl Cockpit {
         self.daemon.send(ToDaemon::Machines(change));
     }
 
-    /// Starts the update of `machine`'s daemon, from the older-version card or "Update again".
+    /// Starts the update of `machine`'s daemon, from a card or "Update again". Busy agents open
+    /// the confirmation first.
     pub fn update_daemon(&self, machine: MachineId) {
+        self.begin_update(machine, |state| daemon_update::start(state, machine));
+    }
+
+    /// "Update when they are idle", on the confirmation.
+    pub fn update_daemon_when_idle(&self, machine: MachineId) {
+        self.begin_update(machine, |state| {
+            daemon_update::wait_for_idle(state, machine)
+        });
+    }
+
+    /// "Update now": the restart ends the busy agents' turns.
+    pub fn update_daemon_now(&self, machine: MachineId) {
+        self.begin_update(machine, |state| daemon_update::start_now(state, machine));
+    }
+
+    fn begin_update(
+        &self,
+        machine: MachineId,
+        begin: impl FnOnce(&mut AppState) -> Option<UpdateRun>,
+    ) {
         let mut signal = self.state;
-        let plan = daemon_update::start(&mut signal.write(), machine);
-        if let Some(plan) = plan {
+        let run = begin(&mut signal.write());
+        if let Some(run) = run {
             self.daemon
-                .send(ToDaemon::Update(UpdateCommand::Start(machine, plan)));
+                .send(ToDaemon::Update(UpdateCommand::Start(machine, run)));
         }
     }
 
@@ -336,14 +361,13 @@ async fn route(
     let (router, mut rerouted) = mpsc::unbounded_channel();
     let (retries, mut retried) = mpsc::unbounded_channel();
     let (this, this_requests) = mpsc::unbounded_channel();
-    spawn(run(
-        state,
-        drafts,
-        load,
-        live,
-        this_requests,
-        router.clone(),
-    ));
+    let this_task = Task {
+        machine: MachineId::THIS,
+        notify,
+        router: router.clone(),
+        updates: retries.clone(),
+    };
+    spawn(run(state, drafts, load, live, this_requests, this_task));
     let mut servers = Servers {
         tasks: BTreeMap::from([(MachineId::THIS, this)]),
         configs: Vec::new(),
@@ -416,7 +440,7 @@ struct Servers {
     next: u16,
     router: Router,
     /// Takes an update's retry to the task the machine has when the update ends, which an edit
-    /// may have replaced.
+    /// may have replaced, and an update a task starts once its agents are idle.
     retries: mpsc::UnboundedSender<ToDaemon>,
 }
 
@@ -487,6 +511,7 @@ impl Servers {
                 machine,
                 notify,
                 router: self.router.clone(),
+                updates: self.retries.clone(),
             },
             remote,
             requests,
@@ -505,11 +530,11 @@ impl Servers {
     /// Runs an update or a cancel next to the machine's connection task.
     fn start_update_command(&self, state: Signal<AppState>, command: UpdateCommand) {
         match command {
-            UpdateCommand::Start(machine, plan) => {
+            UpdateCommand::Start(machine, run) => {
                 if !self.tasks.contains_key(&machine) {
                     return;
                 }
-                spawn(run_update(state, machine, plan, self.retries.clone()));
+                spawn(run_update(state, machine, run, self.retries.clone()));
             }
             UpdateCommand::Cancel(machine, plan) => {
                 spawn(cancel_update(state, machine, plan));
@@ -539,22 +564,37 @@ struct Task {
     machine: MachineId,
     notify: bool,
     router: Router,
+    /// Starts the machine's waiting update beside the task, once its agents are idle.
+    updates: mpsc::UnboundedSender<ToDaemon>,
 }
 
 /// Runs the update and reports it to the machine's state, which outlives the connection's
-/// attempts. Once it succeeds, the machine's connection task tries again at once. The window's
-/// closing kills ssh, and the update goes on on the server.
+/// attempts. Once it succeeds, the machine's connection task tries again at once. On a server,
+/// the window's closing kills ssh, and the update goes on there.
 async fn run_update(
     mut state: Signal<AppState>,
     machine: MachineId,
-    plan: UpdatePlan,
+    run: UpdateRun,
     retries: mpsc::UnboundedSender<ToDaemon>,
 ) {
-    let code = update_script::update(&plan, |lines| {
-        daemon_update::output(&mut state.write(), machine, lines);
-    })
-    .await;
-    if !daemon_update::finished(&mut state.write(), machine, code) {
+    let UpdateRun { plan, busy } = run;
+    let retry_now = match plan {
+        UpdatePlan::Server(plan) => {
+            let code = update_script::update(&plan, busy, |lines| {
+                daemon_update::output(&mut state.write(), machine, lines);
+            })
+            .await;
+            daemon_update::finished(&mut state.write(), machine, code)
+        }
+        UpdatePlan::Service(plan) => {
+            let restarted = service_update::restart(&SystemService, &plan, |step| {
+                daemon_update::step_started(&mut state.write(), machine, step);
+            })
+            .await;
+            daemon_update::restart_ended(&mut state.write(), machine, restarted)
+        }
+    };
+    if !retry_now {
         return;
     }
     let retry = retry_message(&mut state.write(), machine);
@@ -564,7 +604,7 @@ async fn run_update(
     }
 }
 
-async fn cancel_update(mut state: Signal<AppState>, machine: MachineId, plan: UpdatePlan) {
+async fn cancel_update(mut state: Signal<AppState>, machine: MachineId, plan: ServerPlan) {
     if let Err(error) = update_script::cancel(&plan).await {
         let said = format!("Could not cancel the update: {error}");
         daemon_update::cancel_failed(&mut state.write(), machine, said);
@@ -585,6 +625,7 @@ async fn run_remote(
     loop {
         if let Some(known) = state.write().machines.get_mut(machine) {
             known.connection = ConnectionState::Connecting { attempt: 1 };
+            known.update_plan = plan_for_machine(&remote);
         }
         let reached = Reached {
             transport: Transport::Ssh {
@@ -605,7 +646,7 @@ async fn run_remote(
             if let Some(known) = state.machines.get_mut(machine) {
                 known.connection = ConnectionState::Disconnected { error, retry_at };
             }
-            daemon_update::attempt_failed(&mut state, machine, gap, plan_for_machine(&remote));
+            daemon_update::attempt_failed(&mut state, machine, gap);
         }
         let waited = refuse_requests(
             state,
@@ -688,8 +729,8 @@ async fn run_demo(
             outgoing = requests.next() => {
                 let outgoing = match outgoing {
                     Some(ToDaemon::Send(outgoing)) => outgoing,
-                    Some(ToDaemon::Update(UpdateCommand::Start(machine, _))) => {
-                        spawn(play_demo_update(state, machine));
+                    Some(ToDaemon::Update(UpdateCommand::Start(machine, run))) => {
+                        spawn(play_demo_update(state, machine, run.plan));
                         continue;
                     }
                     Some(ToDaemon::Machines(MachineChange::Edit(machine, config))) => {
@@ -739,17 +780,29 @@ async fn run_demo(
     }
 }
 
-/// Plays a successful update on the demo's screens: the script's lines, then the first connection.
-async fn play_demo_update(mut state: Signal<AppState>, machine: MachineId) {
-    for line in demo::UPDATE_OUTPUT {
-        tokio::time::sleep(demo::UPDATE_LINE_PAUSE).await;
-        let line = OutputLine {
-            stream: OutputStream::Stdout,
-            text: (*line).to_owned(),
-        };
-        daemon_update::output(&mut state.write(), machine, vec![line]);
-    }
-    if daemon_update::finished(&mut state.write(), machine, Some(0)) {
+/// Plays a successful update on the demo's screens: the script's lines or the service's steps,
+/// then the first connection.
+async fn play_demo_update(mut state: Signal<AppState>, machine: MachineId, plan: UpdatePlan) {
+    let reconnects = match plan {
+        UpdatePlan::Server(_) => {
+            for line in demo::UPDATE_OUTPUT {
+                tokio::time::sleep(demo::UPDATE_LINE_PAUSE).await;
+                let line = OutputLine {
+                    stream: OutputStream::Stdout,
+                    text: (*line).to_owned(),
+                };
+                daemon_update::output(&mut state.write(), machine, vec![line]);
+            }
+            daemon_update::finished(&mut state.write(), machine, Some(0))
+        }
+        UpdatePlan::Service(_) => {
+            tokio::time::sleep(demo::UPDATE_LINE_PAUSE).await;
+            daemon_update::step_started(&mut state.write(), machine, UpdateStep::Start);
+            tokio::time::sleep(demo::UPDATE_LINE_PAUSE).await;
+            daemon_update::restart_ended(&mut state.write(), machine, Ok(()))
+        }
+    };
+    if reconnects {
         tokio::time::sleep(demo::UPDATE_LINE_PAUSE).await;
         demo::finish_update(&mut state.write(), machine);
     }
@@ -784,13 +837,13 @@ async fn run(
     load: Signal<ShownLoad>,
     live: Live,
     mut requests: Requests,
-    router: Router,
+    task: Task,
 ) {
     let Live {
         mut configured,
         places,
         in_app,
-        notify,
+        notify: _,
     } = live;
     let mut daemon = configured.clone();
     // The tick of the last choice on the screen.
@@ -801,6 +854,8 @@ async fn run(
                 {
                     let mut state = state.write();
                     state.machines.this.daemon = reached.label.clone();
+                    state.machines.this.update_plan =
+                        plan_for_this(&daemon, reached.label.place, &places);
                     state.machines.this.connection = ConnectionState::Connecting { attempt: 1 };
                     // An update under way keeps its screen until the new daemon answers.
                     if state.machines.this.update.is_none() {
@@ -813,12 +868,7 @@ async fn run(
                         state.ui.inform(note.to_owned());
                     }
                 }
-                let task = Task {
-                    machine: MachineId::THIS,
-                    notify,
-                    router: router.clone(),
-                };
-                let served = serve(state, drafts, load, reached, task, &mut requests);
+                let served = serve(state, drafts, load, reached, task.clone(), &mut requests);
                 match served.await {
                     Served::Closed => return,
                     Served::NoAnswer {
@@ -830,13 +880,13 @@ async fn run(
             }
             Err(unreached) => (unreached, Absence::Failed, None),
         };
+        let plan = plan_for_this(&daemon, unreached.label.place, &places);
         show_no_daemon(state, unreached, absence, every_time);
-        daemon_update::attempt_failed(
-            &mut state.write(),
-            MachineId::THIS,
-            gap,
-            plan_for_daemon(&daemon),
-        );
+        {
+            let mut state = state.write();
+            state.machines.this.update_plan = plan;
+            daemon_update::attempt_failed(&mut state, MachineId::THIS, gap);
+        }
         let Some(chosen) = next_choice(state, drafts, &mut requests).await else {
             return;
         };
@@ -852,33 +902,53 @@ async fn run(
     }
 }
 
-/// What an update of `daemon` would run: over SSH only, and when the app knows its commit.
-fn plan_for_daemon(daemon: &DaemonConfig) -> Option<UpdatePlan> {
-    match daemon {
-        DaemonConfig::Ssh {
-            host,
-            remote_command,
-            source_dir,
-        } => update_plan(host, remote_command, source_dir.clone()),
-        DaemonConfig::Local { .. } | DaemonConfig::InApp => None,
+/// How an update of this computer's daemon runs, which the app reached at `place` for `daemon`:
+/// the script over SSH, when the app knows its commit, or a restart of the background service,
+/// where the app runs it. That covers another daemon at the socket of a state folder, and the one
+/// the daemon in the app gave way to. The daemon in the app needs none: it runs this app's code.
+fn plan_for_this(daemon: &DaemonConfig, place: DaemonPlace, places: &Places) -> Option<UpdatePlan> {
+    match place {
+        DaemonPlace::Ssh => match daemon {
+            DaemonConfig::Ssh {
+                host,
+                remote_command,
+                source_dir,
+            } => server_plan(host, remote_command, source_dir.clone()),
+            DaemonConfig::Local { .. } | DaemonConfig::InApp => None,
+        },
+        DaemonPlace::Service | DaemonPlace::Socket if SERVICE_OFFERED => {
+            let state_dir = match daemon {
+                DaemonConfig::Local { socket, .. } => {
+                    reach::service_state_dir(socket.as_deref(), places)?
+                }
+                DaemonConfig::InApp => places.daemon_state.clone(),
+                DaemonConfig::Ssh { .. } => return None,
+            };
+            Some(UpdatePlan::Service(ServicePlan {
+                state_dir,
+                log_folder: places.app_state.clone(),
+            }))
+        }
+        DaemonPlace::Service | DaemonPlace::Socket | DaemonPlace::InApp => None,
     }
 }
 
 fn plan_for_machine(remote: &MachineConfig) -> Option<UpdatePlan> {
-    update_plan(
+    server_plan(
         &remote.host,
         &remote.remote_command,
         remote.source_dir.clone(),
     )
 }
 
-fn update_plan(host: &str, remote_command: &str, source_dir: Option<String>) -> Option<UpdatePlan> {
-    Some(UpdatePlan {
+/// The script's plan on a server, when the app knows the commit it was built from.
+fn server_plan(host: &str, remote_command: &str, source_dir: Option<String>) -> Option<UpdatePlan> {
+    Some(UpdatePlan::Server(ServerPlan {
         host: host.to_owned(),
         remote_command: remote_command.to_owned(),
         source_dir,
         commit: update_script::app_commit()?,
-    })
+    }))
 }
 
 fn show_no_daemon(
@@ -995,7 +1065,7 @@ async fn serve(
                     {
                         return Served::NoAnswer {
                             absence: no_daemon::absence(label.place, error),
-                            gap: daemon_update::protocol_gap(label.place, error),
+                            gap: update_offer::protocol_gap(label.place, error),
                             unreached: Unreached {
                                 label,
                                 error: state::error_chain(error),
@@ -1006,13 +1076,18 @@ async fn serve(
                     | SessionUpdate::Disconnected { .. }
                     | SessionUpdate::Event(_) => {}
                 }
-                let (alerts, follow_up) = {
+                let (alerts, follow_up, idle_update) = {
                     let mut state = state.write();
                     let mut drafts = drafts.write();
                     let alerts =
                         state::apply_update(&mut state, &mut drafts, update, Instant::now(), machine);
-                    (alerts, state::needed_requests(&mut state))
+                    let idle_update = daemon_update::start_when_idle(&mut state, machine);
+                    (alerts, state::needed_requests(&mut state), idle_update)
                 };
+                if let Some(run) = idle_update {
+                    // The window closed: nothing runs the update.
+                    let _ = task.updates.send(ToDaemon::Update(UpdateCommand::Start(machine, run)));
+                }
                 send_all(state, drafts, &requester, &task, follow_up);
                 if let Some(notifier) = &mut notifier {
                     notifier.update(alerts, &state.peek());
@@ -1246,15 +1321,76 @@ mod tests {
         ));
     }
 
+    /// Absolute on every platform.
+    fn places() -> Places {
+        let home = std::env::temp_dir().join("made-up-home");
+        Places {
+            config_file: home.join("config.toml"),
+            daemon_state: home.join("state").join("agents-cockpit"),
+            app_state: home.join("state").join("agents-cockpit-desktop"),
+        }
+    }
+
     #[test]
-    fn only_a_daemon_over_ssh_gets_a_plan() {
-        let local = DaemonConfig::Local {
+    fn this_computer_updates_over_ssh_or_by_restarting_its_service() {
+        let places = places();
+        let ssh = DaemonConfig::Ssh {
+            host: "build-box".to_owned(),
+            remote_command: "/opt/agents-cockpit".to_owned(),
+            source_dir: None,
+        };
+        let service = DaemonConfig::Local {
             socket: None,
             start_service: true,
         };
+        let socket = DaemonConfig::Local {
+            socket: None,
+            start_service: false,
+        };
+        let restart = SERVICE_OFFERED.then(|| {
+            UpdatePlan::Service(ServicePlan {
+                state_dir: places.daemon_state.clone(),
+                log_folder: places.app_state.clone(),
+            })
+        });
 
-        assert_eq!(plan_for_daemon(&local), None);
-        assert_eq!(plan_for_daemon(&DaemonConfig::InApp), None);
+        assert_eq!(
+            plan_for_this(&ssh, DaemonPlace::Ssh, &places).is_some(),
+            update_script::app_commit().is_some(),
+            "the script needs the app's commit"
+        );
+        assert_eq!(
+            plan_for_this(&service, DaemonPlace::Service, &places),
+            restart
+        );
+        assert_eq!(
+            plan_for_this(&socket, DaemonPlace::Socket, &places),
+            restart
+        );
+        assert_eq!(
+            plan_for_this(&DaemonConfig::InApp, DaemonPlace::Socket, &places),
+            restart,
+            "the daemon the app gave way to"
+        );
+        assert_eq!(
+            plan_for_this(&DaemonConfig::InApp, DaemonPlace::InApp, &places),
+            None,
+            "the app's own code"
+        );
+    }
+
+    #[test]
+    fn a_socket_outside_a_state_folder_has_no_service_to_restart() {
+        let places = places();
+        let elsewhere = DaemonConfig::Local {
+            socket: Some(places.daemon_state.join("cockpit.sock")),
+            start_service: false,
+        };
+
+        assert_eq!(
+            plan_for_this(&elsewhere, DaemonPlace::Socket, &places),
+            None
+        );
     }
 
     /// Servers with a task for `devbox`, and the receiver of the updates' retries.

@@ -208,10 +208,9 @@ pub fn forget(state: &mut AppState, drafts: &mut Drafts, machine: MachineId) {
     state.ui.closing.retain(|agent| !on_machine(agent));
     state.ui.closed.take_if(|closed| on_machine(&closed.agent));
     state.ui.folded_machines.remove(&machine);
-    state
-        .ui
-        .dialog
-        .take_if(|dialog| matches!(dialog, Dialog::DaemonUpdate(shown) if *shown == machine));
+    state.ui.dialog.take_if(|dialog| {
+        matches!(dialog, Dialog::DaemonUpdate(shown) | Dialog::ConfirmUpdate(shown) if *shown == machine)
+    });
     state.fix_selection();
 }
 
@@ -219,7 +218,8 @@ pub fn forget(state: &mut AppState, drafts: &mut Drafts, machine: MachineId) {
 mod tests {
     use super::*;
     use crate::state::app_state::tests::{state_with, summary};
-    use crate::state::daemon_update::{ProtocolGap, UpdatePlan, VersionGap};
+    use crate::state::update_offer::{GapKind, VersionGap};
+    use crate::state::update_plan::{ServerPlan, UpdatePlan};
     use crate::state::{AgentEntry, MachineState};
     use cockpit_protocol::{AccountId, AgentStatus, BuildCommit};
 
@@ -377,23 +377,32 @@ mod tests {
         assert!(!state.prefs.notifications.agents.contains_key("devbox"));
     }
 
+    fn devbox_plan() -> ServerPlan {
+        ServerPlan {
+            host: "dev@devbox".to_owned(),
+            remote_command: "/opt/agents-cockpit".to_owned(),
+            source_dir: None,
+            commit: BuildCommit::new("3f9c2e1a7b4d5c6e".to_owned()),
+        }
+    }
+
+    /// Makes the server at `devbox` refuse the app for an older protocol.
+    fn refuses_as_older(state: &mut AppState, devbox: MachineId) {
+        if let Some(known) = state.machines.others.get_mut(&devbox) {
+            known.version_gap = Some(VersionGap {
+                kind: GapKind::OlderProtocol,
+                details: "protocol 3, the app speaks 4".to_owned(),
+            });
+            known.update_plan = Some(UpdatePlan::Server(devbox_plan()));
+        }
+    }
+
     #[test]
     fn a_server_whose_update_runs_cannot_be_edited() {
         let mut state = state_with(Vec::new());
         server(&mut state, 1, "devbox");
         let devbox = MachineId::new(1);
-        if let Some(known) = state.machines.others.get_mut(&devbox) {
-            known.version_gap = Some(VersionGap {
-                kind: ProtocolGap::Older,
-                details: "protocol 3, the app speaks 4".to_owned(),
-                plan: Some(UpdatePlan {
-                    host: "dev@devbox".to_owned(),
-                    remote_command: "/opt/agents-cockpit".to_owned(),
-                    source_dir: None,
-                    commit: BuildCommit::new("3f9c2e1a7b4d5c6e".to_owned()),
-                }),
-            });
-        }
+        refuses_as_older(&mut state, devbox);
         assert!(can_edit(&state.machines.others[&devbox]));
 
         daemon_update::start(&mut state, devbox);
@@ -421,20 +430,15 @@ mod tests {
         let mut state = state_with(Vec::new());
         server(&mut state, 1, "devbox");
         let devbox = MachineId::new(1);
-        let old_plan = UpdatePlan {
-            host: "dev@devbox".to_owned(),
-            remote_command: "/opt/agents-cockpit".to_owned(),
-            source_dir: None,
-            commit: BuildCommit::new("3f9c2e1a7b4d5c6e".to_owned()),
+        refuses_as_older(&mut state, devbox);
+        let source_dir = |plan: Option<UpdatePlan>| match plan {
+            Some(UpdatePlan::Server(plan)) => plan.source_dir,
+            other => panic!("expected a server's plan, got {other:?}"),
         };
-        if let Some(known) = state.machines.others.get_mut(&devbox) {
-            known.version_gap = Some(VersionGap {
-                kind: ProtocolGap::Older,
-                details: "protocol 3, the app speaks 4".to_owned(),
-                plan: Some(old_plan.clone()),
-            });
-        }
-        assert_eq!(daemon_update::start(&mut state, devbox), Some(old_plan));
+        assert_eq!(
+            daemon_update::start(&mut state, devbox).map(|run| run.plan),
+            Some(UpdatePlan::Server(devbox_plan()))
+        );
         daemon_update::finished(&mut state, devbox, Some(1));
         let config = MachineConfig {
             source_dir: Some("/src/agents-cockpit".to_owned()),
@@ -445,15 +449,11 @@ mod tests {
 
         let again = daemon_update::start(&mut state, devbox);
         assert_eq!(
-            again.and_then(|plan| plan.source_dir),
+            source_dir(again.map(|run| run.plan)),
             Some("/src/agents-cockpit".to_owned())
         );
-        let gap_plan = state.machines.others[&devbox]
-            .version_gap
-            .as_ref()
-            .and_then(|gap| gap.plan.clone());
         assert_eq!(
-            gap_plan.and_then(|plan| plan.source_dir),
+            source_dir(state.machines.others[&devbox].update_plan.clone()),
             Some("/src/agents-cockpit".to_owned())
         );
     }

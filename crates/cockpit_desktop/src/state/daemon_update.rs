@@ -1,112 +1,23 @@
-//! Updating a server's daemon from the app: how a daemon's protocol compares with the app's,
-//! where an update stands, and what its screens show. The connection task runs the script and
-//! reports here.
+//! Updating a machine's daemon from the app: where an update stands, what its screens say, and
+//! how it ends. The connection task runs the update, the script on a server or the restart of
+//! this computer's background service, and reports here.
 
-use std::cmp::Ordering;
 use std::collections::VecDeque;
 
-use cockpit_client::{ConnectError, SessionError};
-use cockpit_protocol::{BuildCommit, PROTOCOL_VERSION};
+use cockpit_protocol::ProcessId;
 
 use super::app_state::{AppState, MachineState};
 use super::ui_state::Dialog;
+use super::update_offer::{self, GapKind, ProgramBuild, VersionGap};
+use super::update_plan::{BusyAgents, ServerPlan, UpdatePlan, UpdateRun, UpdateStep};
 use crate::config::MachineConfig;
-use crate::daemon_label::DaemonPlace;
 use crate::machine::MachineId;
-
-/// The script's lines that move the steps on, as `say` in `contrib/update-daemon.sh` prints them.
-pub const BUILDING_LINE: &str = "update-daemon: building";
-pub const RESTARTING_LINE: &str = "update-daemon: restarting the daemon";
-pub const DAEMON_RUNS_LINE: &str = "update-daemon: the daemon runs";
 
 /// The most lines of output kept. A build prints a line per crate.
 const OUTPUT_LINES: usize = 500;
 
 /// How many of the last lines a failure shows.
 const FAILURE_LINES: usize = 30;
-
-/// How a daemon's protocol compares with this app's.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProtocolGap {
-    Older,
-    Newer,
-}
-
-/// What an update runs on its server.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UpdatePlan {
-    pub host: String,
-    /// The absolute path of `agents-cockpit` on the host.
-    pub remote_command: String,
-    pub source_dir: Option<String>,
-    /// The commit this app was built from.
-    pub commit: BuildCommit,
-}
-
-/// A daemon that refused the app for its version.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VersionGap {
-    pub kind: ProtocolGap,
-    /// The refusal, as the daemon or the client worded it.
-    pub details: String,
-    /// `None` for a newer daemon, and when the app does not know the commit it was built from.
-    pub plan: Option<UpdatePlan>,
-}
-
-/// The daemon's protocol, from a first connection that failed, when it differs from the app's. An
-/// older daemon counts only over SSH, since the app updates no other: any other daemon keeps the
-/// "No daemon answers" screen. `plan` stays `None` until the caller knows it.
-pub fn protocol_gap(place: DaemonPlace, error: &SessionError) -> Option<VersionGap> {
-    let SessionError::Connect(connect) = error else {
-        return None;
-    };
-    let kind = match connect.daemon_protocol()?.cmp(&PROTOCOL_VERSION) {
-        Ordering::Less if place == DaemonPlace::Ssh => ProtocolGap::Older,
-        Ordering::Greater => ProtocolGap::Newer,
-        Ordering::Less | Ordering::Equal => return None,
-    };
-    let details = match connect {
-        ConnectError::Refused { reason } => reason.clone(),
-        other => other.to_string(),
-    };
-    Some(VersionGap {
-        kind,
-        details,
-        plan: None,
-    })
-}
-
-/// The steps the running update's screen lists, in order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum UpdateStep {
-    GetVersion,
-    Build,
-    Restart,
-    Reconnect,
-}
-
-impl UpdateStep {
-    /// Every step, as the screen lists them.
-    pub const ALL: [Self; 4] = [
-        Self::GetVersion,
-        Self::Build,
-        Self::Restart,
-        Self::Reconnect,
-    ];
-
-    /// The step a line of the script's output starts, when it starts one.
-    fn from_line(line: &str) -> Option<Self> {
-        if line.starts_with(BUILDING_LINE) {
-            Some(Self::Build)
-        } else if line.starts_with(RESTARTING_LINE) {
-            Some(Self::Restart)
-        } else if line.starts_with(DAEMON_RUNS_LINE) {
-            Some(Self::Reconnect)
-        } else {
-            None
-        }
-    }
-}
 
 /// Which of the script's streams a line came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +37,8 @@ pub struct OutputLine {
 pub struct UpdateProgress {
     pub plan: UpdatePlan,
     pub step: UpdateStep,
+    /// The daemon's build when the update started, while the app was connected to it.
+    pub replaces: Option<ProgramBuild>,
     /// The script's output, the oldest lines dropped.
     pub output: VecDeque<String>,
     /// What the script wrote to stderr, which says why it stopped, the oldest lines dropped.
@@ -135,19 +48,24 @@ pub struct UpdateProgress {
 }
 
 impl UpdateProgress {
-    fn new(plan: UpdatePlan) -> Self {
+    fn new(plan: UpdatePlan, replaces: Option<ProgramBuild>) -> Self {
         Self {
+            step: plan.first_step(),
             plan,
-            step: UpdateStep::GetVersion,
+            replaces,
             output: VecDeque::new(),
             errors: Vec::new(),
             cancel_asked: false,
         }
     }
 
-    /// Cancelling stops the update before it installs, which it does right before the restart.
+    /// A server's update stops before it installs, which it does right before the restart. The
+    /// restart of this computer's service has nothing to cancel.
     pub fn offers_cancel(&self) -> bool {
-        self.step < UpdateStep::Restart
+        match self.plan {
+            UpdatePlan::Server(_) => self.step < UpdateStep::Restart,
+            UpdatePlan::Service(_) => false,
+        }
     }
 }
 
@@ -169,10 +87,18 @@ pub enum UpdateFailure {
     /// ssh lost the connection, or the exit status means nothing to the script: the app cannot
     /// tell how the update went.
     Unknown,
+    /// The daemon that holds this computer's state folder did not stop: it runs on.
+    NotStopped { by_hand: Option<HandStop> },
+    /// The daemon stopped, and the service did not start: no daemon runs.
+    NotStarted,
+    /// The service started, and the daemon that answers runs another build: another program
+    /// restarted the old one, such as a systemd unit that restarts it whenever it stops.
+    OtherBuildAnswers,
 }
 
 impl UpdateFailure {
-    /// The failure an exit status means, `None` for success. See the script's header.
+    /// The failure an exit status of the script means, `None` for success. See the script's
+    /// header.
     pub fn from_exit_code(code: Option<i32>) -> Option<Self> {
         match code {
             Some(0) => None,
@@ -188,12 +114,49 @@ impl UpdateFailure {
     /// What the sidebar says of a machine whose update ended this way.
     fn sidebar_text(self) -> &'static str {
         match self {
-            Self::Refused | Self::Failed | Self::Cancelled | Self::RolledBack => "Was not updated.",
-            Self::InstallFailed => "Update failed during the restart.",
+            Self::Refused
+            | Self::Failed
+            | Self::Cancelled
+            | Self::RolledBack
+            | Self::NotStopped { .. }
+            | Self::OtherBuildAnswers => "Was not updated.",
+            Self::InstallFailed | Self::NotStarted => "Update failed during the restart.",
             Self::AlreadyRunning => "An update is already running.",
             Self::Unknown => "Update status unknown.",
         }
     }
+}
+
+/// What the user stops by hand before a retry, when the app could not stop the daemon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandStop {
+    /// The daemon's process, which did not stop or took no signal.
+    Process(ProcessId),
+    /// A daemon older than the record of its process holds the state folder, so the app cannot
+    /// tell which process it is. Once it is gone, the next daemon records its own.
+    Unrecorded,
+    /// The record names a process that no longer runs, or may be a later one with its pid: the
+    /// app signals no process it cannot tell is the daemon.
+    Unverified,
+}
+
+/// Why the daemon that holds this computer's state folder did not stop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StopFailure {
+    /// The error, as the daemon's code words it.
+    pub reason: String,
+    pub by_hand: Option<HandStop>,
+}
+
+/// How the restart of this computer's background service failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RestartFailure {
+    NotStopped(StopFailure),
+    NotStarted {
+        error: String,
+        /// The lines the service wrote to its log as it failed to start.
+        log: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -215,73 +178,204 @@ impl FailedUpdate {
                 .then_some(first)
         })
     }
+
+    /// Whether the screen offers "Update now": the server's script refused for busy agents.
+    pub fn offers_update_now(&self) -> bool {
+        self.failure == UpdateFailure::Refused
+    }
 }
 
 /// An update and where it stands. It lives in the machine's state, so it outlasts the connection's
 /// attempts, which an old daemon keeps refusing while it runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonUpdate {
+    /// "Update when they are idle": the update starts once none of the machine's agents is busy.
+    Waiting,
     Running(UpdateProgress),
-    /// The script ended well: the app connects to the new daemon.
+    /// The update ended well: the app connects to the new daemon.
     Reconnecting(UpdateProgress),
     Failed(FailedUpdate),
 }
 
+impl DaemonUpdate {
+    /// Whether the update waits for idle agents, which leaves the machine in use meanwhile.
+    pub fn is_waiting(&self) -> bool {
+        matches!(self, Self::Waiting)
+    }
+}
+
 /// A failed attempt to connect. The gap, if any, replaces the last one. An attempt that fails once
-/// the update is done ends its screen, so the machine's own one says why. A daemon that is now
-/// newer ends a failure's screen, whose "Update again" would move the server backwards.
-pub fn attempt_failed(
-    state: &mut AppState,
-    machine: MachineId,
-    gap: Option<VersionGap>,
-    plan: Option<UpdatePlan>,
-) {
+/// a restart is done ends the update's screen, so the machine's own one says why, unless this
+/// computer's restarted service is refused for an older protocol: another program restarted the
+/// old daemon. A daemon that is now newer ends a failure's screen, whose "Update again" would move
+/// it backwards, and a wait for idle agents.
+pub fn attempt_failed(state: &mut AppState, machine: MachineId, gap: Option<VersionGap>) {
     let Some(known) = state.machines.get_mut(machine) else {
         return;
     };
-    known.version_gap = gap.map(|mut gap| {
-        if gap.kind == ProtocolGap::Older {
-            gap.plan = plan;
+    known.version_gap = gap;
+    known.update = match (known.update.take(), known.version_gap.as_ref()) {
+        (Some(DaemonUpdate::Reconnecting(progress)), Some(gap)) => after_restart(progress, gap),
+        (Some(DaemonUpdate::Reconnecting(_)), None) => None,
+        (Some(DaemonUpdate::Failed(_) | DaemonUpdate::Waiting), Some(gap))
+            if gap.kind.is_newer() =>
+        {
+            None
         }
-        gap
-    });
-    let newer = known
-        .version_gap
-        .as_ref()
-        .is_some_and(|gap| gap.kind == ProtocolGap::Newer);
-    known.update.take_if(|update| match update {
-        DaemonUpdate::Running(_) => false,
-        DaemonUpdate::Reconnecting(_) => true,
-        DaemonUpdate::Failed(_) => newer,
-    });
+        (kept, _) => kept,
+    };
     close_empty_dialog(state, machine);
 }
 
-/// The first connection to the new daemon, or to one that was updated another way: the update's
-/// screen closes.
+/// The first connection to `machine`'s daemon after a refusal or a drop. Its build, already in the
+/// machine's state, tells whether it still needs an update.
+///
+/// A daemon of this app's build ends any update: a wait, a failure, or one under way, which
+/// reached its end or was overtaken. Otherwise a server's update runs on until its script ends,
+/// since the app may have reconnected to the old daemon. Once this computer's service stopped, the
+/// daemon that answers is a new one: of another build, another program restarted the old daemon.
 pub fn connected(state: &mut AppState, machine: MachineId) {
-    if let Some(known) = state.machines.get_mut(machine) {
-        known.update = None;
-        known.version_gap = None;
+    let app = state.app_build.clone();
+    let Some(known) = state.machines.get_mut(machine) else {
+        return;
+    };
+    known.version_gap = known.daemon_version.clone().and_then(|version| {
+        let daemon = ProgramBuild {
+            version,
+            commit: known.daemon_commit.clone(),
+        };
+        update_offer::build_gap(&daemon, &app)
+    });
+    known.update = match (known.update.take(), known.version_gap.as_ref()) {
+        (None, _) | (Some(_), None) => None,
+        (Some(DaemonUpdate::Waiting), Some(gap)) => {
+            (gap.kind == GapKind::OtherBuild).then_some(DaemonUpdate::Waiting)
+        }
+        (Some(DaemonUpdate::Running(progress)), Some(gap)) => match progress.plan {
+            UpdatePlan::Service(_) if progress.step >= UpdateStep::Start => {
+                after_restart(progress, gap)
+            }
+            UpdatePlan::Server(_) | UpdatePlan::Service(_) => Some(DaemonUpdate::Running(progress)),
+        },
+        (Some(DaemonUpdate::Reconnecting(progress)), Some(gap)) => after_restart(progress, gap),
+        (Some(DaemonUpdate::Failed(_)), Some(_)) => None,
+    };
+    if machine == MachineId::THIS {
+        state
+            .ui
+            .dialog
+            .take_if(|dialog| matches!(dialog, Dialog::NoDaemon));
     }
-    state
-        .ui
-        .dialog
-        .take_if(|dialog| shows_machine(dialog, machine));
+    close_empty_dialog(state, machine);
 }
 
-/// Starts an update from the older-version card or a failure's "Update again". Returns what to
-/// run, `None` when one runs already or the app has nothing to run.
-pub fn start(state: &mut AppState, machine: MachineId) -> Option<UpdatePlan> {
+/// What follows a restart once the daemon that answers is not of this app's build. A server's
+/// update is over: its script said so. This computer's service runs this app's own program, so a
+/// daemon of another, older build is another program's.
+fn after_restart(progress: UpdateProgress, gap: &VersionGap) -> Option<DaemonUpdate> {
+    match progress.plan {
+        UpdatePlan::Service(_) if !gap.kind.is_newer() => {
+            Some(DaemonUpdate::Failed(FailedUpdate {
+                plan: progress.plan,
+                failure: UpdateFailure::OtherBuildAnswers,
+                message: gap.details.clone(),
+            }))
+        }
+        UpdatePlan::Server(_) | UpdatePlan::Service(_) => None,
+    }
+}
+
+/// "Update" on a card, or "Update again" on a failure. Returns the update to run: `None` when one
+/// waits or runs already, when the app has none to run, or when busy agents of a machine the app
+/// is connected to need the user's answer first, which the confirmation asks. A machine the app
+/// does not reach shows no agents to ask about: a server's script checks them itself.
+pub fn start(state: &mut AppState, machine: MachineId) -> Option<UpdateRun> {
+    let known = state.machines.get(machine)?;
+    plan_to_run(known)?;
+    if known.is_connected() && !update_offer::busy_agents(state, machine).is_empty() {
+        state.ui.popover = None;
+        state.ui.dialog = Some(Dialog::ConfirmUpdate(machine));
+        return None;
+    }
+    begin(state, machine, BusyAgents::Refuse)
+}
+
+/// "Update when they are idle", on the confirmation. Returns the update to run when none of the
+/// machine's agents is busy any more.
+pub fn wait_for_idle(state: &mut AppState, machine: MachineId) -> Option<UpdateRun> {
     let known = state.machines.get_mut(machine)?;
-    let plan = match (&known.update, &known.version_gap) {
-        (Some(DaemonUpdate::Running(_) | DaemonUpdate::Reconnecting(_)), _) => return None,
-        (Some(DaemonUpdate::Failed(failed)), _) => failed.plan.clone(),
-        (None, Some(gap)) => gap.plan.clone()?,
-        (None, None) => return None,
+    plan_to_run(known)?;
+    known.update = Some(DaemonUpdate::Waiting);
+    show_progress(state, machine);
+    start_when_idle(state, machine)
+}
+
+/// Starts a waiting update once none of the machine's agents is busy. The app sees them only while
+/// it is connected: a machine it does not reach keeps waiting.
+pub fn start_when_idle(state: &mut AppState, machine: MachineId) -> Option<UpdateRun> {
+    let known = state.machines.get(machine)?;
+    let idle = known.update.as_ref().is_some_and(DaemonUpdate::is_waiting)
+        && known.is_connected()
+        && update_offer::busy_agents(state, machine).is_empty();
+    if !idle {
+        return None;
+    }
+    state.machines.get_mut(machine)?.update = None;
+    begin(state, machine, BusyAgents::Refuse)
+}
+
+/// "Update now", on the confirmation, a waiting update, or a server's refusal for busy agents: the
+/// restart ends their turns, which the new daemon resumes.
+pub fn start_now(state: &mut AppState, machine: MachineId) -> Option<UpdateRun> {
+    let known = state.machines.get_mut(machine)?;
+    known.update.take_if(|update| update.is_waiting());
+    begin(state, machine, BusyAgents::Interrupt)
+}
+
+/// "Cancel" on a waiting update: nothing starts.
+pub fn cancel_wait(state: &mut AppState, machine: MachineId) {
+    if let Some(known) = state.machines.get_mut(machine) {
+        known.update.take_if(|update| update.is_waiting());
+    }
+    close_empty_dialog(state, machine);
+}
+
+/// The plan an update of `known` runs now: `None` when one waits or runs already, when the daemon
+/// needs none or is newer, or when the app knows no way to update it.
+fn plan_to_run(known: &MachineState) -> Option<UpdatePlan> {
+    let gap = known.version_gap.as_ref().map(|gap| gap.kind);
+    let wanted = match &known.update {
+        Some(DaemonUpdate::Waiting | DaemonUpdate::Running(_) | DaemonUpdate::Reconnecting(_)) => {
+            false
+        }
+        Some(DaemonUpdate::Failed(_)) => !gap.is_some_and(GapKind::is_newer),
+        None => matches!(gap, Some(GapKind::OlderProtocol | GapKind::OtherBuild)),
     };
-    known.update = Some(DaemonUpdate::Running(UpdateProgress::new(plan.clone())));
-    Some(plan)
+    if wanted {
+        known.update_plan.clone()
+    } else {
+        None
+    }
+}
+
+/// Starts the update `machine` calls for.
+fn begin(state: &mut AppState, machine: MachineId, busy: BusyAgents) -> Option<UpdateRun> {
+    let known = state.machines.get_mut(machine)?;
+    let plan = plan_to_run(known)?;
+    let replaces = ProgramBuild::daemon_of(known);
+    known.update = Some(DaemonUpdate::Running(UpdateProgress::new(
+        plan.clone(),
+        replaces,
+    )));
+    show_progress(state, machine);
+    Some(UpdateRun { plan, busy })
+}
+
+/// The confirmation gives way to the machine's update screens, which show the wait or the run.
+fn show_progress(state: &mut AppState, machine: MachineId) {
+    if state.ui.dialog == Some(Dialog::ConfirmUpdate(machine)) {
+        state.ui.dialog = Some(Dialog::DaemonUpdate(machine));
+    }
 }
 
 /// Adds lines the script wrote, and moves the steps on.
@@ -305,7 +399,15 @@ pub fn output(state: &mut AppState, machine: MachineId, lines: Vec<OutputLine>) 
     progress.errors.drain(..dropped);
 }
 
-/// The script ended. Returns whether the app should try the machine again at once.
+/// The restart of this computer's service reached `step`.
+pub fn step_started(state: &mut AppState, machine: MachineId, step: UpdateStep) {
+    if let Some(progress) = running_mut(state, machine) {
+        progress.step = progress.step.max(step);
+    }
+}
+
+/// The script ended with `code`, `None` when ssh lost it. Returns whether the app should try the
+/// machine again at once.
 pub fn finished(state: &mut AppState, machine: MachineId, code: Option<i32>) -> bool {
     let Some(known) = state.machines.get_mut(machine) else {
         return false;
@@ -317,6 +419,11 @@ pub fn finished(state: &mut AppState, machine: MachineId, code: Option<i32>) -> 
         return false;
     };
     match UpdateFailure::from_exit_code(code) {
+        // The script waits for the new daemon to answer: a connection the app has now reaches it.
+        None if known.is_connected() => {
+            close_empty_dialog(state, machine);
+            false
+        }
         None => {
             progress.step = UpdateStep::Reconnect;
             known.update = Some(DaemonUpdate::Reconnecting(progress));
@@ -324,6 +431,36 @@ pub fn finished(state: &mut AppState, machine: MachineId, code: Option<i32>) -> 
         }
         Some(failure) => {
             known.update = Some(DaemonUpdate::Failed(failure_of(progress, failure)));
+            false
+        }
+    }
+}
+
+/// The restart of this computer's service ended. Returns whether the app should try the machine
+/// again at once. A connection the app still has is the stopped daemon's, which it has not seen
+/// end yet: the next one reaches the daemon that runs now.
+pub fn restart_ended(
+    state: &mut AppState,
+    machine: MachineId,
+    restarted: Result<(), RestartFailure>,
+) -> bool {
+    let Some(known) = state.machines.get_mut(machine) else {
+        return false;
+    };
+    let Some(DaemonUpdate::Running(mut progress)) = known
+        .update
+        .take_if(|update| matches!(update, DaemonUpdate::Running(_)))
+    else {
+        return false;
+    };
+    match restarted {
+        Ok(()) => {
+            progress.step = UpdateStep::Reconnect;
+            known.update = Some(DaemonUpdate::Reconnecting(progress));
+            true
+        }
+        Err(failure) => {
+            known.update = Some(DaemonUpdate::Failed(restart_failure(progress, failure)));
             false
         }
     }
@@ -342,7 +479,10 @@ fn failure_of(progress: UpdateProgress, failure: UpdateFailure) -> FailedUpdate 
         UpdateFailure::Failed
         | UpdateFailure::Cancelled
         | UpdateFailure::InstallFailed
-        | UpdateFailure::Unknown => {
+        | UpdateFailure::Unknown
+        | UpdateFailure::NotStopped { .. }
+        | UpdateFailure::NotStarted
+        | UpdateFailure::OtherBuildAnswers => {
             let tail = progress.output.len().saturating_sub(FAILURE_LINES);
             let last: Vec<&str> = progress
                 .output
@@ -360,14 +500,37 @@ fn failure_of(progress: UpdateProgress, failure: UpdateFailure) -> FailedUpdate 
     }
 }
 
+/// The error, and for a service that did not start, the end of its log.
+fn restart_failure(progress: UpdateProgress, failure: RestartFailure) -> FailedUpdate {
+    let (failure, message) = match failure {
+        RestartFailure::NotStopped(StopFailure { reason, by_hand }) => {
+            (UpdateFailure::NotStopped { by_hand }, reason)
+        }
+        RestartFailure::NotStarted { error, log: None } => (UpdateFailure::NotStarted, error),
+        RestartFailure::NotStarted {
+            error,
+            log: Some(log),
+        } => (UpdateFailure::NotStarted, format!("{error}\n\n{log}")),
+    };
+    FailedUpdate {
+        plan: progress.plan,
+        failure,
+        message,
+    }
+}
+
 /// "Cancel the update". Returns what to ask the server, once.
-pub fn ask_cancel(state: &mut AppState, machine: MachineId) -> Option<UpdatePlan> {
+pub fn ask_cancel(state: &mut AppState, machine: MachineId) -> Option<ServerPlan> {
     let progress = running_mut(state, machine)?;
     if progress.cancel_asked || !progress.offers_cancel() {
         return None;
     }
+    let UpdatePlan::Server(plan) = &progress.plan else {
+        return None;
+    };
+    let plan = plan.clone();
     progress.cancel_asked = true;
-    Some(progress.plan.clone())
+    Some(plan)
 }
 
 /// The server could not be asked to cancel: the button comes back, and the output says why.
@@ -381,20 +544,22 @@ pub fn cancel_failed(state: &mut AppState, machine: MachineId, error: String) {
 /// The server's config changed: the next update runs with it. An update under way keeps its
 /// plan, since its cancel must reach the server it runs on.
 pub fn follow_config(known: &mut MachineState, config: &MachineConfig) {
-    let gap_plan = known.version_gap.as_mut().and_then(|gap| gap.plan.as_mut());
     let failed_plan = match &mut known.update {
         Some(DaemonUpdate::Failed(failed)) => Some(&mut failed.plan),
-        Some(DaemonUpdate::Running(_) | DaemonUpdate::Reconnecting(_)) | None => None,
+        Some(DaemonUpdate::Waiting | DaemonUpdate::Running(_) | DaemonUpdate::Reconnecting(_))
+        | None => None,
     };
-    let plans = gap_plan.into_iter().chain(failed_plan);
+    let plans = known.update_plan.as_mut().into_iter().chain(failed_plan);
     for plan in plans {
-        config.host.clone_into(&mut plan.host);
-        config.remote_command.clone_into(&mut plan.remote_command);
-        plan.source_dir.clone_from(&config.source_dir);
+        if let UpdatePlan::Server(plan) = plan {
+            config.host.clone_into(&mut plan.host);
+            config.remote_command.clone_into(&mut plan.remote_command);
+            plan.source_dir.clone_from(&config.source_dir);
+        }
     }
 }
 
-/// "Back" on a failure: the card that offers the update again, if the daemon still refuses.
+/// "Back" on a failure: the card that offers the update again, if the daemon still needs one.
 pub fn back(state: &mut AppState, machine: MachineId) {
     if let Some(known) = state.machines.get_mut(machine)
         && matches!(known.update, Some(DaemonUpdate::Failed(_)))
@@ -407,52 +572,40 @@ pub fn back(state: &mut AppState, machine: MachineId) {
 fn running_mut(state: &mut AppState, machine: MachineId) -> Option<&mut UpdateProgress> {
     match &mut state.machines.get_mut(machine)?.update {
         Some(DaemonUpdate::Running(progress)) => Some(progress),
-        Some(DaemonUpdate::Reconnecting(_) | DaemonUpdate::Failed(_)) | None => None,
+        Some(DaemonUpdate::Waiting | DaemonUpdate::Reconnecting(_) | DaemonUpdate::Failed(_))
+        | None => None,
     }
 }
 
-/// Whether a dialog shows `machine`'s update screens.
-fn shows_machine(dialog: &Dialog, machine: MachineId) -> bool {
-    match dialog {
-        Dialog::DaemonUpdate(shown) => *shown == machine,
-        Dialog::NoDaemon => machine == MachineId::THIS,
-        Dialog::Switcher
-        | Dialog::NewAgent(_)
-        | Dialog::OpenFile(_)
-        | Dialog::CloseAgent(_)
-        | Dialog::StopAgent(_)
-        | Dialog::AgentMap(_)
-        | Dialog::Accounts(_)
-        | Dialog::AddAccount(_)
-        | Dialog::Machines(_)
-        | Dialog::ImageView(_)
-        | Dialog::WorkingFolder(_)
-        | Dialog::Settings(_) => false,
-    }
-}
-
-/// A server's dialog with nothing left to show, once the daemon no longer refuses the app.
+/// Closes `machine`'s update dialogs once they have nothing left to show: its daemon runs this
+/// app's build, and no update waits, runs or failed.
 fn close_empty_dialog(state: &mut AppState, machine: MachineId) {
     let nothing_to_show = state
         .machines
         .get(machine)
         .is_none_or(|known| known.update.is_none() && known.version_gap.is_none());
     if nothing_to_show {
-        state
-            .ui
-            .dialog
-            .take_if(|dialog| matches!(dialog, Dialog::DaemonUpdate(shown) if *shown == machine));
+        state.ui.dialog.take_if(|dialog| {
+            matches!(dialog, Dialog::DaemonUpdate(shown) | Dialog::ConfirmUpdate(shown) if *shown == machine)
+        });
     }
 }
 
-/// Opens a machine's update screens: the question about this computer, or a server's dialog.
+/// Whether this computer's update screens take the place of the window's panes, while the app
+/// reaches no server: an update runs or failed, and the app cannot use the daemon meanwhile. A
+/// wait for idle agents, or a daemon that still answers, leaves the panes in use.
+pub fn takes_the_window(known: &MachineState) -> bool {
+    known
+        .update
+        .as_ref()
+        .is_some_and(|update| !update.is_waiting())
+        && !known.is_connected()
+}
+
+/// Opens a machine's update screens, this computer's as any server's.
 pub fn open(state: &mut AppState, machine: MachineId) {
     state.ui.popover = None;
-    state.ui.dialog = Some(if machine == MachineId::THIS {
-        Dialog::NoDaemon
-    } else {
-        Dialog::DaemonUpdate(machine)
-    });
+    state.ui.dialog = Some(Dialog::DaemonUpdate(machine));
 }
 
 /// What the sidebar says of a machine with an update to show.
@@ -472,37 +625,158 @@ pub fn update_line(known: &MachineState) -> Option<UpdateLine> {
         (Some(DaemonUpdate::Running(_) | DaemonUpdate::Reconnecting(_)), _) => {
             Some(line("Updating…", "Show", false))
         }
-        (Some(DaemonUpdate::Failed(failed)), _) => {
-            Some(line(failed.failure.sidebar_text(), "Show", true))
+        (Some(DaemonUpdate::Waiting), _) => {
+            Some(line("Updates once its agents are idle.", "Show", false))
         }
-        (None, Some(gap)) => Some(match (gap.kind, &gap.plan) {
-            (ProtocolGap::Older, Some(_)) => line("Runs an older version.", "Update", true),
-            (ProtocolGap::Older, None) => line("Runs an older version.", "Details", true),
-            (ProtocolGap::Newer, _) => line("Runs a newer version.", "Details", true),
-        }),
+        (Some(DaemonUpdate::Failed(failed)), _) => Some(line(
+            failed.failure.sidebar_text(),
+            "Show",
+            !known.is_connected(),
+        )),
+        (None, Some(gap)) => match (gap.kind, &known.update_plan) {
+            (GapKind::OlderProtocol, Some(_)) => {
+                Some(line("Runs an older version.", "Update", true))
+            }
+            (GapKind::OlderProtocol, None) => Some(line("Runs an older version.", "Details", true)),
+            (GapKind::NewerProtocol, _) => Some(line("Runs a newer version.", "Details", true)),
+            (GapKind::OtherBuild, Some(_)) => Some(line("Update available.", "Update", false)),
+            (GapKind::OtherBuild, None) => None,
+            (GapKind::NewerRelease, _) => Some(line("Runs a newer version.", "Details", false)),
+        },
         (None, None) => None,
+    }
+}
+
+/// What a failure's screen says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailureText {
+    pub title: String,
+    pub lead: String,
+    /// What the user does before a retry, when the app cannot do it.
+    pub hint: Option<String>,
+}
+
+/// The texts of `failed`'s screen, for the machine the screens call `name`.
+pub fn failure_text(failed: &FailedUpdate, name: &str) -> FailureText {
+    let not_updated = format!("{name} was not updated");
+    let text = |title: String, lead: String| FailureText {
+        title,
+        lead,
+        hint: None,
+    };
+    let state_dir = match &failed.plan {
+        UpdatePlan::Service(plan) => plan.state_dir.display().to_string(),
+        UpdatePlan::Server(_) => String::new(),
+    };
+    match failed.failure {
+        UpdateFailure::Refused => text(
+            not_updated,
+            "These agents are busy, and a restart would interrupt them. Let them finish, then update again.".to_owned(),
+        ),
+        UpdateFailure::Failed => text(
+            not_updated,
+            format!("The update failed, so {name} still runs its old version."),
+        ),
+        UpdateFailure::Cancelled => text(
+            not_updated,
+            format!("The update was cancelled, so {name} still runs its old version."),
+        ),
+        UpdateFailure::InstallFailed => text(
+            not_updated,
+            format!("The update failed during the install or the restart, so the daemon on {name} may not have come back. Check the server."),
+        ),
+        UpdateFailure::RolledBack => text(
+            not_updated,
+            format!("The new version did not start, so {name} runs its old version again."),
+        ),
+        UpdateFailure::AlreadyRunning => text(
+            format!("An update is already running on {name}"),
+            "Try again in a few minutes.".to_owned(),
+        ),
+        UpdateFailure::Unknown => text(
+            "The app lost track of the update".to_owned(),
+            format!("The app cannot tell how the update of {name} went. If it started, it goes on on the server: try again in a few minutes."),
+        ),
+        UpdateFailure::NotStopped { by_hand } => {
+            let (lead, hint) = match by_hand {
+                Some(HandStop::Process(pid)) => (
+                    format!("The app could not stop the daemon, so {name} still runs its old version."),
+                    Some(format!("Stop process {} yourself, then retry.", pid.get())),
+                ),
+                Some(HandStop::Unrecorded) => (
+                    "The daemon that runs now comes from an older version, which does not record its process, so the app cannot tell which process to stop.".to_owned(),
+                    Some(format!("Stop the agents-cockpit serve of {state_dir} yourself, once, then retry. From then on, the app stops the daemon itself.")),
+                ),
+                Some(HandStop::Unverified) => (
+                    "The app could not tell which process runs the daemon, so it stopped none.".to_owned(),
+                    Some(format!("Stop the agents-cockpit serve of {state_dir} yourself, then retry.")),
+                ),
+                None => (
+                    format!("The app could not stop the daemon, so {name} still runs its old version."),
+                    None,
+                ),
+            };
+            FailureText {
+                title: not_updated,
+                lead,
+                hint,
+            }
+        }
+        UpdateFailure::NotStarted => text(
+            "The new daemon did not start".to_owned(),
+            format!("The app stopped the old daemon on {name}, but the new one did not start, so no daemon runs there. The error and the end of the service's log are below."),
+        ),
+        UpdateFailure::OtherBuildAnswers => FailureText {
+            title: not_updated,
+            lead: "The app started this app's version, but the daemon that answers still runs another build: another program restarted the old one, such as a systemd unit that restarts it whenever it stops.".to_owned(),
+            hint: Some("Stop that program, or point it at this app's version, then retry.".to_owned()),
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io;
+    use std::path::PathBuf;
+    use std::time::Instant;
+
+    use cockpit_client::{ConnectError, SessionError};
+    use cockpit_protocol::{AgentId, AgentStatus, BuildCommit, PROTOCOL_VERSION, ReleaseVersion};
 
     use super::*;
-    use crate::daemon_label::DaemonLabel;
-    use crate::state::app_state::tests::state_with;
-    use crate::state::{ConnectionState, Drafts, MachineState, machines};
+    use crate::daemon_label::{DaemonLabel, DaemonPlace};
+    use crate::state::app_state::tests::{state_with, summary};
+    use crate::state::update_offer::{offer, protocol_gap};
+    use crate::state::update_plan::ServicePlan;
+    use crate::state::{AgentEntry, ConnectionState, Drafts, MachineState, machines};
 
     fn build_box() -> MachineId {
         MachineId::new(1)
     }
 
-    fn plan() -> UpdatePlan {
-        UpdatePlan {
+    fn server_plan() -> ServerPlan {
+        ServerPlan {
             host: "build-box".to_owned(),
             remote_command: "/opt/agents-cockpit".to_owned(),
             source_dir: None,
             commit: BuildCommit::new("3f9c2e1a7b4d5c6e".to_owned()),
+        }
+    }
+
+    fn plan() -> UpdatePlan {
+        UpdatePlan::Server(server_plan())
+    }
+
+    fn service_plan() -> UpdatePlan {
+        UpdatePlan::Service(ServicePlan {
+            state_dir: PathBuf::from("/home/someone/.local/state/agents-cockpit"),
+            log_folder: PathBuf::from("/home/someone/.local/state/agents-cockpit-desktop"),
+        })
+    }
+
+    fn run(plan: UpdatePlan) -> UpdateRun {
+        UpdateRun {
+            plan,
+            busy: BusyAgents::Refuse,
         }
     }
 
@@ -516,31 +790,35 @@ mod tests {
         protocol_gap(DaemonPlace::Ssh, &refused(reason))
     }
 
+    fn newer_over_ssh() -> Option<VersionGap> {
+        gap_over_ssh(&format!(
+            "the daemon speaks protocol {}, the client {PROTOCOL_VERSION}",
+            PROTOCOL_VERSION + 1
+        ))
+    }
+
     fn older() -> VersionGap {
         VersionGap {
-            kind: ProtocolGap::Older,
+            kind: GapKind::OlderProtocol,
             details: "the daemon speaks protocol 1, the client 4".to_owned(),
-            plan: Some(plan()),
         }
     }
 
     fn with_server() -> AppState {
         let mut state = state_with(Vec::new());
-        state.machines.others.insert(
-            build_box(),
-            MachineState::new(DaemonLabel::ssh("build-box".to_owned())),
-        );
+        let mut known = MachineState::new(DaemonLabel::ssh("build-box".to_owned()));
+        known.update_plan = Some(plan());
+        state.machines.others.insert(build_box(), known);
         state
+    }
+
+    fn known_mut(state: &mut AppState) -> &mut MachineState {
+        state.machines.others.get_mut(&build_box()).unwrap()
     }
 
     fn with_older_server() -> AppState {
         let mut state = with_server();
-        state
-            .machines
-            .others
-            .get_mut(&build_box())
-            .unwrap()
-            .version_gap = Some(older());
+        known_mut(&mut state).version_gap = Some(older());
         state
     }
 
@@ -572,77 +850,72 @@ mod tests {
         output(state, build_box(), vec![line(OutputStream::Stdout, text)]);
     }
 
-    #[test]
-    fn an_older_daemon_over_ssh_is_older_and_a_newer_one_is_newer() {
-        let older = gap_over_ssh("the daemon speaks protocol 1, the client 4").unwrap();
-        let newer = gap_over_ssh(&format!(
-            "the daemon speaks protocol {}, the client {PROTOCOL_VERSION}",
-            PROTOCOL_VERSION + 1
-        ))
-        .unwrap();
-
-        assert_eq!(older.kind, ProtocolGap::Older);
-        assert_eq!(older.details, "the daemon speaks protocol 1, the client 4");
-        assert_eq!(newer.kind, ProtocolGap::Newer);
+    /// The build the app has in these tests, from `state_with`.
+    fn app_build(state: &AppState) -> ProgramBuild {
+        state.app_build.clone()
     }
 
-    #[test]
-    fn a_version_mismatch_counts_the_same_way() {
-        let mismatch = SessionError::Connect(ConnectError::VersionMismatch {
-            daemon: PROTOCOL_VERSION + 1,
-        });
-
-        let gap = protocol_gap(DaemonPlace::Ssh, &mismatch).unwrap();
-
-        assert_eq!(gap.kind, ProtocolGap::Newer);
-        assert_eq!(
-            gap.details,
-            format!(
-                "the daemon speaks protocol {}, this client {PROTOCOL_VERSION}",
-                PROTOCOL_VERSION + 1
-            )
-        );
-    }
-
-    #[test]
-    fn only_a_daemon_over_ssh_is_offered_an_update() {
-        let older_daemon = refused("the daemon speaks protocol 1, the client 4");
-        let newer_daemon = refused(&format!(
-            "the daemon speaks protocol {}, the client {PROTOCOL_VERSION}",
-            PROTOCOL_VERSION + 1
-        ));
-
-        for place in [
-            DaemonPlace::Socket,
-            DaemonPlace::Service,
-            DaemonPlace::InApp,
-        ] {
-            assert_eq!(protocol_gap(place, &older_daemon), None, "{place:?}");
-            assert_eq!(
-                protocol_gap(place, &newer_daemon).map(|gap| gap.kind),
-                Some(ProtocolGap::Newer),
-                "{place:?}"
-            );
+    fn other_build() -> ProgramBuild {
+        ProgramBuild {
+            version: ReleaseVersion::new("0.4.2".to_owned()),
+            commit: Some(BuildCommit::new(
+                "9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c".to_owned(),
+            )),
         }
     }
 
-    #[test]
-    fn a_daemon_of_the_same_or_an_unknown_protocol_keeps_todays_screen() {
-        let same = refused(&format!(
-            "the daemon speaks protocol {PROTOCOL_VERSION}, the client {PROTOCOL_VERSION}"
-        ));
-        let other_error = SessionError::Connect(ConnectError::Ssh {
-            stderr: "Connection timed out".to_owned(),
-        });
-        let socket_error = SessionError::Connect(ConnectError::Socket {
-            path: "/run/agents-cockpit.sock".into(),
-            source: io::Error::from(io::ErrorKind::NotFound),
-        });
+    fn newer_build() -> ProgramBuild {
+        ProgramBuild {
+            version: ReleaseVersion::new("9.0.0".to_owned()),
+            commit: None,
+        }
+    }
 
-        assert_eq!(protocol_gap(DaemonPlace::Ssh, &same), None);
-        assert_eq!(gap_over_ssh("the first message must be a hello"), None);
-        assert_eq!(protocol_gap(DaemonPlace::Ssh, &other_error), None);
-        assert_eq!(protocol_gap(DaemonPlace::Socket, &socket_error), None);
+    /// The app connects to `machine`'s daemon, which runs `daemon`.
+    fn connect(state: &mut AppState, machine: MachineId, daemon: &ProgramBuild) {
+        let known = state.machines.get_mut(machine).unwrap();
+        known.connection = ConnectionState::Connected;
+        known.daemon_version = Some(daemon.version.clone());
+        known.daemon_commit.clone_from(&daemon.commit);
+        connected(state, machine);
+    }
+
+    /// The machine's connection drops.
+    fn drop_connection(state: &mut AppState, machine: MachineId) {
+        state.machines.get_mut(machine).unwrap().connection = ConnectionState::Disconnected {
+            error: "connection reset".to_owned(),
+            retry_at: Instant::now(),
+        };
+    }
+
+    /// A server the app is connected to, whose daemon runs another build.
+    fn with_server_of_another_build(agents: &[AgentStatus]) -> AppState {
+        let mut state = with_server();
+        for (number, status) in (1..).zip(agents) {
+            let mut agent = summary(number, *status);
+            agent.id = build_box().app_agent(AgentId::new(number));
+            state.agents.insert(agent.id, AgentEntry::new(agent));
+        }
+        connect(&mut state, build_box(), &other_build());
+        state
+    }
+
+    /// This computer, connected to its background service, which runs another build.
+    fn with_local_service(agents: &[AgentStatus]) -> AppState {
+        let summaries = (1..).zip(agents).map(|(id, status)| summary(id, *status));
+        let mut state = state_with(summaries.collect());
+        state.machines.this.daemon = DaemonLabel::service();
+        state.machines.this.update_plan = Some(service_plan());
+        connect(&mut state, MachineId::THIS, &other_build());
+        state
+    }
+
+    fn this_update(state: &AppState) -> Option<&DaemonUpdate> {
+        state.machines.this.update.as_ref()
+    }
+
+    fn set_status(state: &mut AppState, agent: AgentId, status: AgentStatus) {
+        state.agents.get_mut(&agent).unwrap().summary.status = status;
     }
 
     #[test]
@@ -706,13 +979,8 @@ mod tests {
         let shown = update(&state).cloned();
 
         for _ in 0..3 {
-            state
-                .machines
-                .others
-                .get_mut(&build_box())
-                .unwrap()
-                .connection = ConnectionState::Connecting { attempt: 1 };
-            attempt_failed(&mut state, build_box(), Some(older()), Some(plan()));
+            known_mut(&mut state).connection = ConnectionState::Connecting { attempt: 1 };
+            attempt_failed(&mut state, build_box(), Some(older()));
         }
 
         assert_eq!(update(&state).cloned(), shown);
@@ -725,7 +993,7 @@ mod tests {
         start(&mut state, build_box()).unwrap();
         stdout(&mut state, "update-daemon: restarting the daemon");
 
-        attempt_failed(&mut state, build_box(), None, Some(plan()));
+        attempt_failed(&mut state, build_box(), None);
 
         assert_eq!(progress(&state).step, UpdateStep::Restart);
         assert_eq!(known(&state).version_gap, None);
@@ -740,7 +1008,7 @@ mod tests {
         assert!(finished(&mut state, build_box(), Some(0)));
         assert_eq!(progress(&state).step, UpdateStep::Reconnect);
 
-        attempt_failed(&mut state, build_box(), None, Some(plan()));
+        attempt_failed(&mut state, build_box(), None);
 
         assert_eq!(update(&state), None);
         assert_eq!(state.ui.dialog, None, "nothing is left to show");
@@ -752,7 +1020,7 @@ mod tests {
         start(&mut state, build_box()).unwrap();
         assert!(finished(&mut state, build_box(), Some(0)));
 
-        attempt_failed(&mut state, build_box(), Some(older()), Some(plan()));
+        attempt_failed(&mut state, build_box(), Some(older()));
 
         assert_eq!(update(&state), None);
         assert_eq!(known(&state).version_gap, Some(older()));
@@ -763,12 +1031,8 @@ mod tests {
         let mut state = with_older_server();
         start(&mut state, build_box()).unwrap();
         finished(&mut state, build_box(), Some(1));
-        let newer = gap_over_ssh(&format!(
-            "the daemon speaks protocol {}, the client {PROTOCOL_VERSION}",
-            PROTOCOL_VERSION + 1
-        ));
 
-        attempt_failed(&mut state, build_box(), newer, Some(plan()));
+        attempt_failed(&mut state, build_box(), newer_over_ssh());
 
         assert_eq!(update(&state), None);
         assert_eq!(
@@ -801,6 +1065,18 @@ mod tests {
 
         assert_eq!(state.ui.dialog, Some(Dialog::DaemonUpdate(build_box())));
         assert_eq!(known(&state).version_gap, Some(older()));
+    }
+
+    #[test]
+    fn a_connection_to_this_computer_answers_its_question() {
+        let mut state = with_server();
+        state.ui.dialog = Some(Dialog::NoDaemon);
+
+        connected(&mut state, build_box());
+        assert_eq!(state.ui.dialog, Some(Dialog::NoDaemon));
+
+        connected(&mut state, MachineId::THIS);
+        assert_eq!(state.ui.dialog, None);
     }
 
     #[test]
@@ -871,7 +1147,7 @@ mod tests {
         start(&mut state, build_box()).unwrap();
         finished(&mut state, build_box(), Some(1));
 
-        assert_eq!(start(&mut state, build_box()), Some(plan()));
+        assert_eq!(start(&mut state, build_box()), Some(run(plan())));
         assert!(matches!(update(&state), Some(DaemonUpdate::Running(_))));
 
         finished(&mut state, build_box(), Some(1));
@@ -887,7 +1163,7 @@ mod tests {
         state.ui.dialog = Some(Dialog::DaemonUpdate(build_box()));
         start(&mut state, build_box()).unwrap();
         finished(&mut state, build_box(), Some(4));
-        attempt_failed(&mut state, build_box(), None, Some(plan()));
+        attempt_failed(&mut state, build_box(), None);
 
         back(&mut state, build_box());
 
@@ -897,11 +1173,11 @@ mod tests {
     #[test]
     fn with_no_commit_known_nothing_starts() {
         let mut state = with_server();
+        known_mut(&mut state).update_plan = None;
         attempt_failed(
             &mut state,
             build_box(),
             gap_over_ssh("the daemon speaks protocol 1, the client 4"),
-            None,
         );
 
         assert_eq!(start(&mut state, build_box()), None);
@@ -911,11 +1187,11 @@ mod tests {
     #[test]
     fn with_no_commit_known_the_sidebar_offers_no_update() {
         let mut state = with_server();
+        known_mut(&mut state).update_plan = None;
         attempt_failed(
             &mut state,
             build_box(),
             gap_over_ssh("the daemon speaks protocol 1, the client 4"),
-            None,
         );
 
         let shown = update_line(known(&state)).unwrap();
@@ -944,6 +1220,7 @@ mod tests {
         let mut state = with_older_server();
         let mut second = MachineState::new(DaemonLabel::ssh("gpu-box".to_owned()));
         second.version_gap = Some(older());
+        second.update_plan = Some(plan());
         state.machines.others.insert(gpu_box, second);
         state.ui.dialog = Some(Dialog::DaemonUpdate(gpu_box));
         start(&mut state, build_box()).unwrap();
@@ -953,7 +1230,7 @@ mod tests {
         stdout(&mut state, "update-daemon: building 3f9c2e1");
         ask_cancel(&mut state, build_box()).unwrap();
         cancel_failed(&mut state, build_box(), "ssh: connect failed".to_owned());
-        attempt_failed(&mut state, build_box(), None, Some(plan()));
+        attempt_failed(&mut state, build_box(), None);
         finished(&mut state, build_box(), Some(1));
         back(&mut state, build_box());
         connected(&mut state, build_box());
@@ -979,6 +1256,19 @@ mod tests {
             "nothing to try again"
         );
         assert!(state.machines.get(build_box()).is_none());
+    }
+
+    #[test]
+    fn a_machine_removed_while_its_busy_agents_are_asked_about_closes_the_question() {
+        let mut state = with_server_of_another_build(&[AgentStatus::Working]);
+        start(&mut state, build_box());
+        assert_eq!(state.ui.dialog, Some(Dialog::ConfirmUpdate(build_box())));
+
+        machines::forget(&mut state, &mut Drafts::default(), build_box());
+
+        assert_eq!(state.ui.dialog, None);
+        assert_eq!(wait_for_idle(&mut state, build_box()), None);
+        assert_eq!(start_now(&mut state, build_box()), None);
     }
 
     #[test]
@@ -1030,27 +1320,19 @@ mod tests {
     fn a_run_keeps_its_screen_when_the_daemon_is_newer() {
         let mut state = with_older_server();
         start(&mut state, build_box()).unwrap();
-        let newer = gap_over_ssh(&format!(
-            "the daemon speaks protocol {}, the client {PROTOCOL_VERSION}",
-            PROTOCOL_VERSION + 1
-        ));
 
-        attempt_failed(&mut state, build_box(), newer, Some(plan()));
+        attempt_failed(&mut state, build_box(), newer_over_ssh());
 
         assert!(matches!(update(&state), Some(DaemonUpdate::Running(_))));
     }
 
     #[test]
-    fn a_newer_daemon_never_holds_a_plan() {
+    fn a_newer_daemon_is_offered_no_plan() {
         let mut state = with_server();
-        let newer = gap_over_ssh(&format!(
-            "the daemon speaks protocol {}, the client {PROTOCOL_VERSION}",
-            PROTOCOL_VERSION + 1
-        ));
 
-        attempt_failed(&mut state, build_box(), newer, Some(plan()));
+        attempt_failed(&mut state, build_box(), newer_over_ssh());
 
-        assert_eq!(known(&state).version_gap.as_ref().unwrap().plan, None);
+        assert_eq!(offer(&state, build_box()).unwrap().plan, None);
         assert_eq!(start(&mut state, build_box()), None);
     }
 
@@ -1060,7 +1342,7 @@ mod tests {
         start(&mut state, build_box()).unwrap();
         stdout(&mut state, "update-daemon: building 3f9c2e1");
 
-        assert_eq!(ask_cancel(&mut state, build_box()), Some(plan()));
+        assert_eq!(ask_cancel(&mut state, build_box()), Some(server_plan()));
         assert_eq!(ask_cancel(&mut state, build_box()), None);
 
         cancel_failed(&mut state, build_box(), "ssh: connect failed".to_owned());
@@ -1188,25 +1470,14 @@ mod tests {
         finished(&mut state, build_box(), Some(1));
         assert_eq!(text(&state), Some(("Was not updated.", "Show")));
 
-        state.machines.others.get_mut(&build_box()).unwrap().update = None;
-        state
-            .machines
-            .others
-            .get_mut(&build_box())
-            .unwrap()
-            .version_gap = Some(VersionGap {
-            kind: ProtocolGap::Newer,
+        known_mut(&mut state).update = None;
+        known_mut(&mut state).version_gap = Some(VersionGap {
+            kind: GapKind::NewerProtocol,
             details: String::new(),
-            plan: None,
         });
         assert_eq!(text(&state), Some(("Runs a newer version.", "Details")));
 
-        state
-            .machines
-            .others
-            .get_mut(&build_box())
-            .unwrap()
-            .version_gap = None;
+        known_mut(&mut state).version_gap = None;
         assert_eq!(text(&state), None);
     }
 
@@ -1234,13 +1505,614 @@ mod tests {
     }
 
     #[test]
-    fn this_computers_screen_opens_as_its_question() {
+    fn a_connected_machine_of_another_build_offers_an_update_and_stays_in_use() {
+        let mut state = with_server_of_another_build(&[]);
+
+        let shown = update_line(known(&state)).unwrap();
+
+        assert_eq!(
+            (shown.text, shown.link, shown.down),
+            ("Update available.", "Update", false)
+        );
+        assert_eq!(start(&mut state, build_box()), Some(run(plan())));
+        assert_eq!(progress(&state).replaces, Some(other_build()));
+    }
+
+    #[test]
+    fn a_connected_machine_of_a_newer_release_suggests_updating_the_app() {
+        let mut state = with_server();
+        connect(&mut state, build_box(), &newer_build());
+
+        let shown = update_line(known(&state)).unwrap();
+
+        assert_eq!(
+            (shown.text, shown.link, shown.down),
+            ("Runs a newer version.", "Details", false)
+        );
+        assert_eq!(start(&mut state, build_box()), None);
+    }
+
+    #[test]
+    fn a_connected_machine_of_this_apps_build_shows_nothing() {
+        let mut state = with_server();
+        let app = app_build(&state);
+
+        connect(&mut state, build_box(), &app);
+
+        assert_eq!(known(&state).version_gap, None);
+        assert_eq!(update_line(known(&state)), None);
+        assert_eq!(start(&mut state, build_box()), None);
+    }
+
+    #[test]
+    fn another_build_the_app_knows_no_way_to_update_shows_nothing() {
+        let mut state = with_server_of_another_build(&[]);
+        known_mut(&mut state).update_plan = None;
+
+        assert_eq!(update_line(known(&state)), None);
+        assert_eq!(start(&mut state, build_box()), None);
+    }
+
+    #[test]
+    fn busy_agents_of_a_connected_machine_are_asked_about_first() {
+        let mut state = with_server_of_another_build(&[AgentStatus::Working, AgentStatus::Idle]);
+        state.ui.dialog = Some(Dialog::DaemonUpdate(build_box()));
+
+        assert_eq!(start(&mut state, build_box()), None);
+
+        assert_eq!(state.ui.dialog, Some(Dialog::ConfirmUpdate(build_box())));
+        assert_eq!(update(&state), None, "nothing starts before the answer");
+    }
+
+    #[test]
+    fn an_agent_that_waits_for_an_answer_is_busy_too() {
+        let mut state = with_server_of_another_build(&[AgentStatus::NeedsYou]);
+
+        assert_eq!(start(&mut state, build_box()), None);
+
+        assert_eq!(state.ui.dialog, Some(Dialog::ConfirmUpdate(build_box())));
+    }
+
+    #[test]
+    fn idle_and_exited_agents_let_the_update_start_at_once() {
+        let mut state = with_server_of_another_build(&[AgentStatus::Idle, AgentStatus::Exited]);
+
+        assert_eq!(start(&mut state, build_box()), Some(run(plan())));
+    }
+
+    #[test]
+    fn a_machine_the_app_does_not_reach_updates_at_once_and_its_script_checks() {
+        let mut state = with_server_of_another_build(&[AgentStatus::Working]);
+        drop_connection(&mut state, build_box());
+        known_mut(&mut state).version_gap = Some(older());
+
+        assert_eq!(start(&mut state, build_box()), Some(run(plan())));
+    }
+
+    #[test]
+    fn update_now_ends_the_busy_agents_turns_and_shows_the_run() {
+        let mut state = with_server_of_another_build(&[AgentStatus::Working]);
+        start(&mut state, build_box());
+
+        let now = start_now(&mut state, build_box());
+
+        assert_eq!(
+            now,
+            Some(UpdateRun {
+                plan: plan(),
+                busy: BusyAgents::Interrupt
+            })
+        );
+        assert!(matches!(update(&state), Some(DaemonUpdate::Running(_))));
+        assert_eq!(state.ui.dialog, Some(Dialog::DaemonUpdate(build_box())));
+    }
+
+    #[test]
+    fn update_when_idle_waits_then_starts_once_the_last_busy_agent_is_idle() {
+        let mut state =
+            with_server_of_another_build(&[AgentStatus::Working, AgentStatus::NeedsYou]);
+        start(&mut state, build_box());
+        let (first, second) = (
+            build_box().app_agent(AgentId::new(1)),
+            build_box().app_agent(AgentId::new(2)),
+        );
+
+        assert_eq!(wait_for_idle(&mut state, build_box()), None);
+        assert_eq!(update(&state), Some(&DaemonUpdate::Waiting));
+        assert_eq!(state.ui.dialog, Some(Dialog::DaemonUpdate(build_box())));
+        let shown = update_line(known(&state)).unwrap();
+        assert_eq!(
+            (shown.text, shown.link, shown.down),
+            ("Updates once its agents are idle.", "Show", false)
+        );
+
+        set_status(&mut state, first, AgentStatus::Idle);
+        assert_eq!(start_when_idle(&mut state, build_box()), None);
+        set_status(&mut state, second, AgentStatus::Idle);
+        assert_eq!(start_when_idle(&mut state, build_box()), Some(run(plan())));
+        assert!(matches!(update(&state), Some(DaemonUpdate::Running(_))));
+        assert_eq!(start_when_idle(&mut state, build_box()), None, "once");
+    }
+
+    #[test]
+    fn update_when_idle_with_no_busy_agent_left_starts_at_once() {
+        let mut state = with_server_of_another_build(&[AgentStatus::Working]);
+        start(&mut state, build_box());
+        set_status(
+            &mut state,
+            build_box().app_agent(AgentId::new(1)),
+            AgentStatus::Idle,
+        );
+
+        assert_eq!(wait_for_idle(&mut state, build_box()), Some(run(plan())));
+    }
+
+    #[test]
+    fn a_wait_holds_while_the_app_does_not_see_the_agents() {
+        let mut state = with_server_of_another_build(&[AgentStatus::Working]);
+        start(&mut state, build_box());
+        wait_for_idle(&mut state, build_box());
+        drop_connection(&mut state, build_box());
+        set_status(
+            &mut state,
+            build_box().app_agent(AgentId::new(1)),
+            AgentStatus::Idle,
+        );
+
+        assert_eq!(start_when_idle(&mut state, build_box()), None);
+        assert_eq!(update(&state), Some(&DaemonUpdate::Waiting));
+
+        connect(&mut state, build_box(), &other_build());
+        assert_eq!(update(&state), Some(&DaemonUpdate::Waiting));
+        assert_eq!(start_when_idle(&mut state, build_box()), Some(run(plan())));
+    }
+
+    #[test]
+    fn a_daemon_updated_another_way_ends_the_wait() {
+        let mut state = with_server_of_another_build(&[AgentStatus::Working]);
+        start(&mut state, build_box());
+        wait_for_idle(&mut state, build_box());
+        let app = app_build(&state);
+
+        connect(&mut state, build_box(), &app);
+
+        assert_eq!(update(&state), None);
+        assert_eq!(state.ui.dialog, None);
+    }
+
+    #[test]
+    fn a_wait_ends_for_a_daemon_that_is_now_newer() {
+        let mut state = with_server_of_another_build(&[AgentStatus::Working]);
+        start(&mut state, build_box());
+        wait_for_idle(&mut state, build_box());
+
+        attempt_failed(&mut state, build_box(), newer_over_ssh());
+
+        assert_eq!(update(&state), None);
+    }
+
+    #[test]
+    fn cancel_ends_the_wait_and_update_now_skips_it() {
+        let mut state = with_server_of_another_build(&[AgentStatus::Working]);
+        start(&mut state, build_box());
+        wait_for_idle(&mut state, build_box());
+
+        cancel_wait(&mut state, build_box());
+        assert_eq!(update(&state), None);
+        assert_eq!(
+            state.ui.dialog,
+            Some(Dialog::DaemonUpdate(build_box())),
+            "the offer stays"
+        );
+
+        start(&mut state, build_box());
+        wait_for_idle(&mut state, build_box());
+        assert!(start_now(&mut state, build_box()).is_some());
+        assert!(matches!(update(&state), Some(DaemonUpdate::Running(_))));
+    }
+
+    #[test]
+    fn a_waiting_or_running_update_cannot_start_again() {
+        let mut state = with_server_of_another_build(&[AgentStatus::Working]);
+        start(&mut state, build_box());
+        wait_for_idle(&mut state, build_box());
+
+        assert_eq!(start(&mut state, build_box()), None);
+        assert_eq!(wait_for_idle(&mut state, build_box()), None);
+
+        start_now(&mut state, build_box()).unwrap();
+        assert_eq!(start_now(&mut state, build_box()), None);
+        assert_eq!(wait_for_idle(&mut state, build_box()), None);
+    }
+
+    #[test]
+    fn a_servers_refusal_for_busy_agents_offers_update_now() {
+        let mut state = with_older_server();
+        start(&mut state, build_box()).unwrap();
+        finished(&mut state, build_box(), Some(3));
+        let Some(DaemonUpdate::Failed(refused)) = update(&state).cloned() else {
+            panic!("expected a failure");
+        };
+        assert!(refused.offers_update_now());
+
+        let now = start_now(&mut state, build_box()).unwrap();
+
+        assert_eq!(now.busy, BusyAgents::Interrupt);
+        finished(&mut state, build_box(), Some(1));
+        let Some(DaemonUpdate::Failed(failed)) = update(&state) else {
+            panic!("expected a failure");
+        };
+        assert!(!failed.offers_update_now());
+    }
+
+    #[test]
+    fn a_servers_run_survives_a_reconnection_to_its_old_daemon() {
+        let mut state = with_server_of_another_build(&[]);
+        start(&mut state, build_box()).unwrap();
+        stdout(&mut state, "update-daemon: building 3f9c2e1");
+        drop_connection(&mut state, build_box());
+
+        connect(&mut state, build_box(), &other_build());
+
+        assert_eq!(progress(&state).step, UpdateStep::Build);
+    }
+
+    #[test]
+    fn a_script_that_ends_once_the_new_daemon_answers_needs_no_retry() {
+        let mut state = with_server_of_another_build(&[]);
+        state.ui.dialog = Some(Dialog::DaemonUpdate(build_box()));
+        start(&mut state, build_box()).unwrap();
+        stdout(&mut state, "update-daemon: restarting the daemon");
+        drop_connection(&mut state, build_box());
+        connect(&mut state, build_box(), &other_build());
+
+        assert!(!finished(&mut state, build_box(), Some(0)));
+
+        assert_eq!(update(&state), None);
+        assert_eq!(
+            update_line(known(&state)).map(|line| line.text),
+            Some("Update available."),
+            "the build still differs"
+        );
+    }
+
+    #[test]
+    fn the_services_restart_steps_through_stop_start_and_reconnect() {
+        let mut state = with_local_service(&[]);
+
+        let started = start(&mut state, MachineId::THIS).unwrap();
+
+        assert_eq!(started, run(service_plan()));
+        let step = |state: &AppState| match this_update(state) {
+            Some(DaemonUpdate::Running(progress) | DaemonUpdate::Reconnecting(progress)) => {
+                (progress.step, progress.offers_cancel())
+            }
+            other => panic!("expected an update under way, got {other:?}"),
+        };
+        assert_eq!(step(&state), (UpdateStep::Stop, false));
+        assert_eq!(ask_cancel(&mut state, MachineId::THIS), None);
+
+        step_started(&mut state, MachineId::THIS, UpdateStep::Start);
+        assert_eq!(step(&state), (UpdateStep::Start, false));
+
+        assert!(restart_ended(&mut state, MachineId::THIS, Ok(())));
+        assert!(matches!(
+            this_update(&state),
+            Some(DaemonUpdate::Reconnecting(_))
+        ));
+        assert_eq!(step(&state), (UpdateStep::Reconnect, false));
+    }
+
+    #[test]
+    fn the_restarted_service_of_this_apps_build_ends_the_update() {
+        let mut state = with_local_service(&[]);
+        state.ui.dialog = Some(Dialog::DaemonUpdate(MachineId::THIS));
+        start(&mut state, MachineId::THIS).unwrap();
+        restart_ended(&mut state, MachineId::THIS, Ok(()));
+        drop_connection(&mut state, MachineId::THIS);
+        let app = app_build(&state);
+
+        connect(&mut state, MachineId::THIS, &app);
+
+        assert_eq!(this_update(&state), None);
+        assert_eq!(state.machines.this.version_gap, None);
+        assert_eq!(state.ui.dialog, None);
+    }
+
+    #[test]
+    fn a_service_another_program_restarted_is_another_build_that_answers() {
+        let mut state = with_local_service(&[]);
+        start(&mut state, MachineId::THIS).unwrap();
+        restart_ended(&mut state, MachineId::THIS, Ok(()));
+        drop_connection(&mut state, MachineId::THIS);
+
+        connect(&mut state, MachineId::THIS, &other_build());
+
+        let Some(DaemonUpdate::Failed(failed)) = this_update(&state) else {
+            panic!("expected a failure, got {:?}", this_update(&state));
+        };
+        assert_eq!(failed.failure, UpdateFailure::OtherBuildAnswers);
+        assert!(failed.message.contains("9d8c7b6"), "{}", failed.message);
+        assert_eq!(
+            update_line(&state.machines.this).map(|line| (line.text, line.down)),
+            Some(("Was not updated.", false))
+        );
+    }
+
+    #[test]
+    fn a_connection_once_the_daemon_stopped_is_judged_before_the_start_ends() {
+        let mut state = with_local_service(&[]);
+        start(&mut state, MachineId::THIS).unwrap();
+        step_started(&mut state, MachineId::THIS, UpdateStep::Start);
+        drop_connection(&mut state, MachineId::THIS);
+
+        connect(&mut state, MachineId::THIS, &other_build());
+
+        assert!(matches!(
+            this_update(&state),
+            Some(DaemonUpdate::Failed(FailedUpdate {
+                failure: UpdateFailure::OtherBuildAnswers,
+                ..
+            }))
+        ));
+        assert!(
+            !restart_ended(&mut state, MachineId::THIS, Ok(())),
+            "the failure stays"
+        );
+    }
+
+    #[test]
+    fn a_connection_before_the_stop_reaches_the_old_daemon() {
+        let mut state = with_local_service(&[]);
+        start(&mut state, MachineId::THIS).unwrap();
+        drop_connection(&mut state, MachineId::THIS);
+
+        connect(&mut state, MachineId::THIS, &other_build());
+
+        assert!(matches!(
+            this_update(&state),
+            Some(DaemonUpdate::Running(UpdateProgress {
+                step: UpdateStep::Stop,
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn a_daemon_of_an_older_protocol_after_the_services_restart_is_another_programs() {
+        let mut state = with_local_service(&[]);
+        start(&mut state, MachineId::THIS).unwrap();
+        restart_ended(&mut state, MachineId::THIS, Ok(()));
+
+        attempt_failed(&mut state, MachineId::THIS, Some(older()));
+
+        assert!(matches!(
+            this_update(&state),
+            Some(DaemonUpdate::Failed(FailedUpdate {
+                failure: UpdateFailure::OtherBuildAnswers,
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn a_stop_that_failed_says_why_and_which_process_to_stop() {
+        let mut state = with_local_service(&[]);
+        start(&mut state, MachineId::THIS).unwrap();
+        let reason = "the daemon, process 4242, did not stop within 10 seconds".to_owned();
+
+        let ended = restart_ended(
+            &mut state,
+            MachineId::THIS,
+            Err(RestartFailure::NotStopped(StopFailure {
+                reason: reason.clone(),
+                by_hand: Some(HandStop::Process(ProcessId::new(4242))),
+            })),
+        );
+
+        assert!(!ended);
+        let Some(DaemonUpdate::Failed(failed)) = this_update(&state).cloned() else {
+            panic!("expected a failure");
+        };
+        assert_eq!(failed.message, reason);
+        let text = failure_text(&failed, "This computer");
+        assert_eq!(
+            text.hint.as_deref(),
+            Some("Stop process 4242 yourself, then retry.")
+        );
+        assert_eq!(
+            start(&mut state, MachineId::THIS),
+            Some(run(service_plan())),
+            "retry"
+        );
+    }
+
+    #[test]
+    fn a_service_too_old_to_record_its_process_is_stopped_by_hand_once() {
+        let failed = FailedUpdate {
+            plan: service_plan(),
+            failure: UpdateFailure::NotStopped {
+                by_hand: Some(HandStop::Unrecorded),
+            },
+            message: "/home/someone/.local/state/agents-cockpit/serve.lock names no process"
+                .to_owned(),
+        };
+
+        let text = failure_text(&failed, "This computer");
+
+        assert_eq!(
+            text.hint.as_deref(),
+            Some(
+                "Stop the agents-cockpit serve of /home/someone/.local/state/agents-cockpit yourself, once, then retry. From then on, the app stops the daemon itself."
+            )
+        );
+    }
+
+    #[test]
+    fn a_start_that_failed_shows_the_error_and_the_end_of_the_log() {
+        let mut state = with_local_service(&[]);
+        start(&mut state, MachineId::THIS).unwrap();
+        step_started(&mut state, MachineId::THIS, UpdateStep::Start);
+
+        restart_ended(
+            &mut state,
+            MachineId::THIS,
+            Err(RestartFailure::NotStarted {
+                error: "the service stopped as it started (exit status: 1): made-up".to_owned(),
+                log: Some("agents-cockpit: made-up".to_owned()),
+            }),
+        );
+
+        let Some(DaemonUpdate::Failed(failed)) = this_update(&state) else {
+            panic!("expected a failure");
+        };
+        assert_eq!(failed.failure, UpdateFailure::NotStarted);
+        assert_eq!(
+            failed.message,
+            "the service stopped as it started (exit status: 1): made-up\n\nagents-cockpit: made-up"
+        );
+        assert_eq!(
+            update_line(&state.machines.this).map(|line| line.text),
+            Some("Update failed during the restart.")
+        );
+    }
+
+    #[test]
+    fn this_computers_update_takes_the_window_only_while_its_daemon_cannot_be_used() {
+        let mut state = with_local_service(&[AgentStatus::Working]);
+        let takes = |state: &AppState| takes_the_window(&state.machines.this);
+
+        start(&mut state, MachineId::THIS);
+        wait_for_idle(&mut state, MachineId::THIS);
+        assert!(!takes(&state), "a wait leaves the agents in use");
+
+        start_now(&mut state, MachineId::THIS).unwrap();
+        assert!(!takes(&state), "the old daemon still answers");
+        drop_connection(&mut state, MachineId::THIS);
+        assert!(takes(&state));
+
+        restart_ended(
+            &mut state,
+            MachineId::THIS,
+            Err(RestartFailure::NotStarted {
+                error: "made-up".to_owned(),
+                log: None,
+            }),
+        );
+        assert!(takes(&state), "the failure says no daemon runs");
+        back(&mut state, MachineId::THIS);
+        assert!(!takes(&state));
+    }
+
+    #[test]
+    fn this_computers_screens_open_as_any_servers() {
         let mut state = with_server();
 
         open(&mut state, MachineId::THIS);
-        assert_eq!(state.ui.dialog, Some(Dialog::NoDaemon));
+        assert_eq!(state.ui.dialog, Some(Dialog::DaemonUpdate(MachineId::THIS)));
 
         open(&mut state, build_box());
         assert_eq!(state.ui.dialog, Some(Dialog::DaemonUpdate(build_box())));
+    }
+
+    #[test]
+    fn a_follow_up_edit_moves_the_plan_and_the_failed_one_but_not_a_run() {
+        let mut state = with_older_server();
+        start(&mut state, build_box()).unwrap();
+        let config = MachineConfig {
+            name: "lab".to_owned(),
+            host: "dev@lab".to_owned(),
+            remote_command: "/srv/agents-cockpit".to_owned(),
+            source_dir: Some("/src/agents-cockpit".to_owned()),
+        };
+
+        follow_config(known_mut(&mut state), &config);
+        assert_eq!(progress(&state).plan, plan(), "the run keeps its server");
+
+        finished(&mut state, build_box(), Some(1));
+        follow_config(known_mut(&mut state), &config);
+        let moved = UpdatePlan::Server(ServerPlan {
+            host: "dev@lab".to_owned(),
+            remote_command: "/srv/agents-cockpit".to_owned(),
+            source_dir: Some("/src/agents-cockpit".to_owned()),
+            commit: server_plan().commit,
+        });
+        assert_eq!(known(&state).update_plan, Some(moved.clone()));
+        let Some(DaemonUpdate::Failed(failed)) = update(&state) else {
+            panic!("expected a failure");
+        };
+        assert_eq!(failed.plan, moved);
+    }
+
+    fn failed_with(failure: UpdateFailure) -> FailedUpdate {
+        FailedUpdate {
+            plan: plan(),
+            failure,
+            message: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_cancel_the_user_asked_for_reads_as_one() {
+        let lead = |failure| failure_text(&failed_with(failure), "build-box").lead;
+
+        assert_eq!(
+            lead(UpdateFailure::Cancelled),
+            "The update was cancelled, so build-box still runs its old version."
+        );
+        assert_eq!(
+            lead(UpdateFailure::Failed),
+            "The update failed, so build-box still runs its old version."
+        );
+    }
+
+    #[test]
+    fn a_rollback_and_another_update_have_their_own_words() {
+        let text = |failure| {
+            let text = failure_text(&failed_with(failure), "build-box");
+            (text.title, text.lead)
+        };
+
+        assert_eq!(
+            text(UpdateFailure::RolledBack),
+            (
+                "build-box was not updated".to_owned(),
+                "The new version did not start, so build-box runs its old version again."
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            text(UpdateFailure::AlreadyRunning),
+            (
+                "An update is already running on build-box".to_owned(),
+                "Try again in a few minutes.".to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn every_failure_of_the_service_says_what_to_do() {
+        for failure in [
+            UpdateFailure::NotStopped {
+                by_hand: Some(HandStop::Process(ProcessId::new(4242))),
+            },
+            UpdateFailure::NotStopped {
+                by_hand: Some(HandStop::Unrecorded),
+            },
+            UpdateFailure::NotStopped {
+                by_hand: Some(HandStop::Unverified),
+            },
+            UpdateFailure::OtherBuildAnswers,
+        ] {
+            let failed = FailedUpdate {
+                plan: service_plan(),
+                failure,
+                message: String::new(),
+            };
+
+            let text = failure_text(&failed, "This computer");
+
+            assert!(text.hint.is_some(), "{failure:?}");
+        }
     }
 }

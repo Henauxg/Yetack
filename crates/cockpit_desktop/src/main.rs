@@ -23,6 +23,7 @@ mod reach;
 mod render;
 #[cfg(unix)]
 mod service;
+mod service_update;
 mod state;
 mod ui;
 mod update_script;

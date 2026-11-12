@@ -31,11 +31,13 @@ use crate::machine::MachineId;
 use crate::path_style::PathStyle;
 use crate::prefs::{CommentPlacement, GroupBy, ProjectRule};
 use crate::state::daemon_update::{
-    self, OutputLine, OutputStream, ProtocolGap, UpdateFailure, UpdatePlan, VersionGap,
+    self, HandStop, OutputLine, OutputStream, RestartFailure, StopFailure, UpdateFailure,
 };
 use crate::state::file_tree::TreeFilter;
 use crate::state::no_daemon::{self, Absence};
 use crate::state::projects::ProjectKey;
+use crate::state::update_offer::{GapKind, VersionGap};
+use crate::state::update_plan::{ServerPlan, ServicePlan, UpdatePlan, UpdateStep};
 use crate::state::{
     AgentEntry, AppState, ConnectionState, Dialog, Drafts, Loadable, MachineState, Utf16Offset,
     ViewMode, actions, file_edits, file_tree, projects, quotes, sending,
@@ -97,6 +99,11 @@ const UPDATE_MACHINE: &str = "build-box";
 /// A made-up commit.
 const UPDATE_COMMIT: &str = "3f9c2e17ab54c90d1e2f3a4b5c6d7e8f90a1b2c3";
 const REFUSED_FOR_OLDER: &str = "the daemon speaks protocol 1, the client 4";
+/// The release of this computer's service on the update screens: older than any of the app's.
+const LOCAL_OLDER_RELEASE: &str = "0.0.1";
+/// This computer's state folder and the app's, made up.
+const LOCAL_STATE: &str = "/home/dev/.local/state/agents-cockpit";
+const LOCAL_APP_STATE: &str = "/home/dev/.local/state/agents-cockpit-desktop";
 
 /// How long the demo's update waits before each line of its output.
 pub const UPDATE_LINE_PAUSE: Duration = Duration::from_millis(700);
@@ -670,11 +677,11 @@ pub fn update_screen(arguments: &[String]) -> Option<&str> {
 /// the demo does not know opens nothing.
 pub fn show_update_screen(state: &mut AppState, screen: &str) {
     match screen {
-        "older" => this_computer_refused(state, older_gap(Some(update_plan()))),
-        "no-commit" => this_computer_refused(state, older_gap(None)),
-        "newer" => this_computer_refused(state, newer_gap()),
+        "older" => this_computer_refused(state, older_gap(), Some(update_plan())),
+        "no-commit" => this_computer_refused(state, older_gap(), None),
+        "newer" => this_computer_refused(state, newer_gap(), None),
         "running" => {
-            this_computer_refused(state, older_gap(Some(update_plan())));
+            this_computer_refused(state, older_gap(), Some(update_plan()));
             start_demo_update(state, MachineId::THIS);
         }
         "refused" => failed_update(state, UpdateFailure::Refused, Some(3)),
@@ -691,37 +698,89 @@ pub fn show_update_screen(state: &mut AppState, screen: &str) {
             let machine = server_refused(state);
             state.ui.dialog = Some(Dialog::DaemonUpdate(machine));
         }
+        "local-available" => {
+            local_service_of_another_build(state);
+            state.ui.dialog = Some(Dialog::DaemonUpdate(MachineId::THIS));
+        }
+        "local-confirm" => {
+            local_service_of_another_build(state);
+            daemon_update::start(state, MachineId::THIS);
+        }
+        "local-waiting" => {
+            local_service_of_another_build(state);
+            daemon_update::start(state, MachineId::THIS);
+            daemon_update::wait_for_idle(state, MachineId::THIS);
+        }
+        "local-running" => {
+            local_service_of_another_build(state);
+            state.ui.dialog = Some(Dialog::DaemonUpdate(MachineId::THIS));
+            daemon_update::start_now(state, MachineId::THIS);
+            daemon_update::step_started(state, MachineId::THIS, UpdateStep::Start);
+        }
+        "local-not-stopped" => failed_restart(
+            state,
+            RestartFailure::NotStopped(StopFailure {
+                reason: "the daemon, process 4242, did not stop within 10 seconds".to_owned(),
+                by_hand: Some(HandStop::Process(ProcessId::new(4242))),
+            }),
+        ),
+        "local-unrecorded" => failed_restart(
+            state,
+            RestartFailure::NotStopped(StopFailure {
+                reason: format!("{LOCAL_STATE}/serve.lock names no process"),
+                by_hand: Some(HandStop::Unrecorded),
+            }),
+        ),
+        "local-unverified" => failed_restart(
+            state,
+            RestartFailure::NotStopped(StopFailure {
+                reason: "cannot tell that process 4242 is the daemon".to_owned(),
+                by_hand: Some(HandStop::Unverified),
+            }),
+        ),
+        "local-not-started" => failed_restart(
+            state,
+            RestartFailure::NotStarted {
+                error: "the service stopped as it started (exit status: 1): agents-cockpit: cannot bind the socket".to_owned(),
+                log: Some("INFO reading the state folder\nagents-cockpit: cannot bind the socket".to_owned()),
+            },
+        ),
+        "local-other-build" => {
+            local_service_of_another_build(state);
+            state.ui.dialog = Some(Dialog::DaemonUpdate(MachineId::THIS));
+            daemon_update::start_now(state, MachineId::THIS);
+            daemon_update::restart_ended(state, MachineId::THIS, Ok(()));
+            daemon_update::connected(state, MachineId::THIS);
+        }
         _ => {}
     }
 }
 
 fn update_plan() -> UpdatePlan {
-    UpdatePlan {
+    UpdatePlan::Server(ServerPlan {
         host: UPDATE_MACHINE.to_owned(),
         remote_command: "/opt/agents-cockpit/bin/agents-cockpit".to_owned(),
         source_dir: None,
         commit: BuildCommit::new(UPDATE_COMMIT.to_owned()),
-    }
+    })
 }
 
-fn older_gap(plan: Option<UpdatePlan>) -> VersionGap {
+fn older_gap() -> VersionGap {
     VersionGap {
-        kind: ProtocolGap::Older,
+        kind: GapKind::OlderProtocol,
         details: REFUSED_FOR_OLDER.to_owned(),
-        plan,
     }
 }
 
 fn newer_gap() -> VersionGap {
     VersionGap {
-        kind: ProtocolGap::Newer,
+        kind: GapKind::NewerProtocol,
         details: "the daemon speaks protocol 5, the client 4".to_owned(),
-        plan: None,
     }
 }
 
 /// This computer's daemon, over SSH, refuses the app: the window shows the update screens alone.
-fn this_computer_refused(state: &mut AppState, gap: VersionGap) {
+fn this_computer_refused(state: &mut AppState, gap: VersionGap, plan: Option<UpdatePlan>) {
     let label = DaemonLabel::ssh(UPDATE_MACHINE.to_owned());
     no_daemon::show(
         state,
@@ -732,6 +791,7 @@ fn this_computer_refused(state: &mut AppState, gap: VersionGap) {
     );
     state.machines.this.daemon = label;
     state.machines.this.version_gap = Some(gap);
+    state.machines.this.update_plan = plan;
 }
 
 /// A server beside this computer that refuses the app, the demo's agents staying in use.
@@ -743,9 +803,35 @@ fn server_refused(state: &mut AppState) -> MachineId {
         error: format!("the daemon refused the connection: {REFUSED_FOR_OLDER}"),
         retry_at: Instant::now() + Duration::from_secs(10),
     };
-    server.version_gap = Some(older_gap(Some(update_plan())));
+    server.version_gap = Some(older_gap());
+    server.update_plan = Some(update_plan());
     state.machines.others.insert(machine, server);
     machine
+}
+
+/// This computer's agents run in its background service, which runs another build than the app:
+/// the demo's agents stay in use, and some of them are busy.
+fn local_service_of_another_build(state: &mut AppState) {
+    let this = &mut state.machines.this;
+    this.daemon = DaemonLabel::service();
+    this.daemon_version = Some(ReleaseVersion::new(LOCAL_OLDER_RELEASE.to_owned()));
+    this.daemon_commit = Some(BuildCommit::new(UPDATE_COMMIT.to_owned()));
+    this.update_plan = Some(UpdatePlan::Service(ServicePlan {
+        state_dir: PathBuf::from(LOCAL_STATE),
+        log_folder: PathBuf::from(LOCAL_APP_STATE),
+    }));
+    daemon_update::connected(state, MachineId::THIS);
+}
+
+/// The restart of this computer's service ended on `failure`.
+fn failed_restart(state: &mut AppState, failure: RestartFailure) {
+    local_service_of_another_build(state);
+    state.ui.dialog = Some(Dialog::DaemonUpdate(MachineId::THIS));
+    daemon_update::start_now(state, MachineId::THIS);
+    if matches!(failure, RestartFailure::NotStarted { .. }) {
+        daemon_update::step_started(state, MachineId::THIS, UpdateStep::Start);
+    }
+    daemon_update::restart_ended(state, MachineId::THIS, Err(failure));
 }
 
 /// Starts the update and takes it partway through the build.
@@ -766,7 +852,7 @@ fn start_demo_update(state: &mut AppState, machine: MachineId) {
 
 /// The update ended on `code`, with what the script said on such a failure.
 fn failed_update(state: &mut AppState, failure: UpdateFailure, code: Option<i32>) {
-    this_computer_refused(state, older_gap(Some(update_plan())));
+    this_computer_refused(state, older_gap(), Some(update_plan()));
     let machine = MachineId::THIS;
     if daemon_update::start(state, machine).is_none() {
         return;
@@ -799,15 +885,22 @@ fn failed_update(state: &mut AppState, failure: UpdateFailure, code: Option<i32>
         )],
         UpdateFailure::AlreadyRunning => vec![stderr("update-daemon: another update is running")],
         UpdateFailure::Unknown => vec![stderr("Connection to build-box closed by remote host.")],
+        // The restart of this computer's service ends otherwise: `failed_restart`.
+        UpdateFailure::NotStopped { .. }
+        | UpdateFailure::NotStarted
+        | UpdateFailure::OtherBuildAnswers => Vec::new(),
     };
     daemon_update::output(state, machine, lines);
     daemon_update::finished(state, machine, code);
 }
 
-/// Ends the demo's update as its first connection does.
+/// Ends the demo's update as its first connection does: the new daemon runs the app's build.
 pub fn finish_update(state: &mut AppState, machine: MachineId) {
+    let app = state.app_build.clone();
     if let Some(known) = state.machines.get_mut(machine) {
         known.connection = ConnectionState::Connected;
+        known.daemon_version = Some(app.version);
+        known.daemon_commit = app.commit;
     }
     daemon_update::connected(state, machine);
 }

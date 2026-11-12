@@ -480,6 +480,7 @@ pub fn toggle(state: &mut AppState) {
             | Dialog::Accounts(_)
             | Dialog::NoDaemon
             | Dialog::DaemonUpdate(_)
+            | Dialog::ConfirmUpdate(_)
             | Dialog::ImageView(_)
             | Dialog::Settings(_),
         )

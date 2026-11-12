@@ -14,13 +14,15 @@ use strum::VariantArray;
 
 use super::accounts::SignIns;
 use super::chat_images::KeptImage;
-use super::daemon_update::{DaemonUpdate, VersionGap};
+use super::daemon_update::DaemonUpdate;
 use super::file_tree::FileTree;
 use super::grouping::GroupKey;
 use super::no_daemon::NoDaemon;
 use super::sending::Sending;
 use super::transcript::Transcript;
 use super::ui_state::UiState;
+use super::update_offer::{ProgramBuild, VersionGap};
+use super::update_plan::UpdatePlan;
 use super::{file_edits, grouping, projects};
 use crate::config::MachineConfig;
 use crate::daemon_label::DaemonLabel;
@@ -360,9 +362,13 @@ pub struct MachineState {
     /// The daemon is older than `folders.list`: the folder field lists nothing until the app
     /// connects again.
     pub folders_unknown: bool,
-    /// The daemon refused the last attempt to connect for its protocol.
+    /// How the daemon stands against this app, when it does not run this app's build: from the
+    /// protocol of a refusal, or from the build a connection told.
     pub version_gap: Option<VersionGap>,
-    /// The update of this machine's daemon, under way or failed.
+    /// How an update of this machine's daemon runs, `None` when the app cannot update it. The
+    /// connection task sets it from the daemon it reaches.
+    pub update_plan: Option<UpdatePlan>,
+    /// The update of this machine's daemon: waiting for idle agents, under way, or failed.
     pub update: Option<DaemonUpdate>,
     /// The server's entry in the config, which the Machines dialog edits. `None` for this
     /// computer.
@@ -384,6 +390,7 @@ impl MachineState {
             sessions: Loadable::NotRequested,
             folders_unknown: false,
             version_gap: None,
+            update_plan: None,
             update: None,
             server: None,
         }
@@ -436,6 +443,8 @@ pub struct AppState {
     /// The app's notification level from the config file, until the window saves one. Never
     /// saved.
     pub config_notifications: NotificationLevel,
+    /// This app's release and commit, which the daemons' builds compare with.
+    pub app_build: ProgramBuild,
 }
 
 /// Agents that wait for you come first, then working, idle and exited ones.
@@ -459,6 +468,7 @@ impl AppState {
             ui: UiState::default(),
             prefs: Prefs::default(),
             config_notifications: NotificationLevel::All,
+            app_build: ProgramBuild::this_program(),
         }
     }
 
@@ -724,8 +734,14 @@ pub(crate) mod tests {
         }
     }
 
+    /// The app with `summaries`, built as the daemon of `connected_update`, so that a connection
+    /// finds nothing to update.
     pub(crate) fn state_with(summaries: Vec<AgentSummary>) -> AppState {
         let mut state = AppState::new(DaemonLabel::ssh("build-box".to_owned()));
+        state.app_build = ProgramBuild {
+            version: ReleaseVersion::new(DAEMON_VERSION.to_owned()),
+            commit: Some(BuildCommit::new(DAEMON_COMMIT.to_owned())),
+        };
         for summary in summaries {
             state.agents.insert(summary.id, AgentEntry::new(summary));
         }

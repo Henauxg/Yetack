@@ -138,8 +138,10 @@ pub enum Dialog {
     Machines(MachinesView),
     /// "Where should agents run?" for this computer, while servers are in use.
     NoDaemon,
-    /// The update screens of a server whose daemon refuses the app.
+    /// The update screens of a machine whose daemon does not run this app's build.
     DaemonUpdate(MachineId),
+    /// Names the machine's busy agents before its update, whose restart would end their turns.
+    ConfirmUpdate(MachineId),
     /// An image over the whole window, from a message or the file view.
     ImageView(ImageView),
     /// Forks or moves an agent's conversation to another working folder, from its row's menu.
@@ -291,6 +293,7 @@ impl Dialog {
             | Self::Machines(_)
             | Self::NoDaemon
             | Self::DaemonUpdate(_)
+            | Self::ConfirmUpdate(_)
             | Self::Settings(_) => None,
         }
     }
