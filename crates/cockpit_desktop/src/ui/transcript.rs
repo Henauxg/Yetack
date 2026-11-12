@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use chrono::NaiveDate;
 use cockpit_protocol::{
-    AgentId, AgentStatus, AnswerState, ItemBody, ItemId, SignInWait, Timestamp, ToolCall,
-    ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UserMessage,
+    AgentId, AgentStatus, AnswerState, ItemBody, ItemId, SignInWait, ToolCall, ToolCallStatus,
+    TranscriptItem, TurnEnd, TurnOutcome, UserMessage,
 };
 use dioxus::prelude::*;
 use serde::Serialize;
@@ -343,7 +343,6 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
     use_hook(start_fold_script);
     let cockpit: Cockpit = use_context();
     let Today(today) = use_context::<Today>();
-    let Clock(clock) = use_context::<Clock>();
     chat_scroll::use_chat_scroll(cockpit, in_view);
     // The agent whose conversation the chat opened, once its first page came or failed. A
     // failure shows above all the rows.
@@ -501,11 +500,11 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
                             UserBubble {
                                 agent,
                                 folder: folder.clone(),
-                                // The time it leaves, which the daemon's copy keeps: the bubble keeps its height.
+                                // The daemon's copy shows a time too: the bubble keeps its height.
                                 message: UserMessage {
                                     text: prompt.text,
                                     images: prompt.images,
-                                    sent_at: Timestamp::from_system_time(*clock.peek()),
+                                    sent_at: prompt.sent_at,
                                 },
                             }
                         }
