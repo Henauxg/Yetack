@@ -231,6 +231,7 @@ button:disabled {
 .status-idle.background-work {
   --status: var(--teal);
   --status-ring: var(--teal);
+  --status-ring-width: 2px;
 }
 
 /* Dashed, so that it stays apart from an idle ring of nearly the same grey. */
