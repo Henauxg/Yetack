@@ -205,7 +205,7 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   const answers = (mode.answer_letters && settings.answer_keys.includes(letter))
-    || (mode.answer_numbers && (/^[1-9]$/.test(key) || key === "Enter"));
+    || (mode.answer_numbers && (/^[1-9]$/.test(key) || ["Enter", "ArrowLeft", "ArrowRight"].includes(key)));
   // The arrows on a sidebar row or machine header move the selection and fold the machines.
   const focused = sidebarItem(target);
   if (focused !== null && plain && !event.shiftKey && !mode.dialog && settings.sidebar_keys.includes(key)) {
@@ -499,7 +499,7 @@ struct Binding {
 struct KeyMode {
     /// Y and N answer an approval or a plan: in the agent map, the selected subagent's.
     answer_letters: bool,
-    /// 1 to 9 and Enter answer a question.
+    /// 1 to 9, Enter, Left and Right answer a question.
     answer_numbers: bool,
     /// Up, Down, Enter and Tab move in the command palette opened by typing `/`. The one the
     /// slash button opens takes them in its own filter field.

@@ -1,10 +1,10 @@
-//! The cards that wait for your answer: an approval, a question, a plan.
+//! The cards that wait for your answer: an approval and a plan. A question has its own card, in
+//! `question_card`.
 
 use std::path::PathBuf;
 
 use cockpit_protocol::{
-    AgentId, AnswerState, Approval, ApprovalDecision, ItemId, Plan, PlanDecision, Question,
-    QuestionAnswer,
+    AgentId, AnswerState, Approval, ApprovalDecision, ItemId, Plan, PlanDecision,
 };
 use dioxus::prelude::*;
 
@@ -153,140 +153,6 @@ fn approval_input(approval: &Approval) -> Option<String> {
         return None;
     }
     serde_json::to_string_pretty(&approval.input).ok()
-}
-
-#[component]
-pub fn QuestionCard(agent: AgentId, item: ItemId, question: Question) -> Element {
-    let cockpit: Cockpit = use_context();
-    // Only this question's draft: typing in the composer leaves the card alone.
-    let draft = use_memo(use_reactive((&question.pending,), move |(pending,)| {
-        let drafts = cockpit.drafts.read();
-        drafts.questions.get(&pending).cloned().unwrap_or_default()
-    }))();
-    // The "Other" fields start from the draft, then follow the keyboard alone: a render that lags
-    // behind typing would put an older text back.
-    let other_seeds = use_hook(|| draft.other.clone());
-    let waiting = question.answer == AnswerState::Waiting;
-    let ready = actions::question_answers(&question, Some(&draft)).is_some();
-    let outcome = match &question.answer {
-        AnswerState::Waiting => None,
-        AnswerState::Answered(answers) => Some(format!("You answered: {}", answers_text(answers))),
-        AnswerState::Cancelled => Some("Withdrawn before an answer.".to_owned()),
-    };
-    let most_options = question
-        .questions
-        .iter()
-        .map(|asked| asked.options.len())
-        .max()
-        .unwrap_or(0)
-        .min(9);
-    let hint = if most_options > 0 {
-        format!("Press 1 to {most_options} to pick, Enter to send")
-    } else {
-        "Enter to send".to_owned()
-    };
-    rsx! {
-        div { class: card_class(waiting, "question-card"),
-            for (asked_index, asked) in question.questions.iter().enumerate() {
-                div { key: "{asked_index}", class: "question",
-                    div { class: "card-head",
-                        Icon { kind: IconKind::Question, size: 16 }
-                        span { "Claude asks a question" }
-                        if !asked.header.is_empty() {
-                            span { class: "question-chip", "{asked.header}" }
-                        }
-                    }
-                    span { class: "question-text", "{asked.text}" }
-                    if waiting {
-                        div { class: "question-options",
-                            for (option_index, option) in asked.options.iter().enumerate() {
-                                {
-                                    let picked = draft
-                                        .picks
-                                        .get(asked_index)
-                                        .is_some_and(|picks| picks.contains(&option_index));
-                                    let number = option_index + 1;
-                                    let question = question.clone();
-                                    rsx! {
-                                        button {
-                                            key: "{option_index}",
-                                            class: if picked { "option picked" } else { "option" },
-                                            aria_pressed: picked,
-                                            onclick: move |_| {
-                                                let question = question.clone();
-                                                cockpit.with_drafts(|_, drafts| {
-                                                    actions::pick_option(drafts, &question, asked_index, option_index);
-                                                });
-                                            },
-                                            span { class: "option-key mono", "{number}" }
-                                            span { class: "option-text",
-                                                span { class: "option-label", "{option.label}" }
-                                                if !option.description.is_empty() {
-                                                    span { class: "option-description", "{option.description}" }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            {
-                                let question = question.clone();
-                                let other = other_seeds.get(asked_index).cloned().unwrap_or_default();
-                                rsx! {
-                                    input {
-                                        class: "text-field",
-                                        r#type: "text",
-                                        aria_label: "Other answer",
-                                        placeholder: "Other answer: type your own",
-                                        initial_value: "{other}",
-                                        oninput: move |event: FormEvent| {
-                                            let question = question.clone();
-                                            cockpit.with_drafts(|_, drafts| {
-                                                actions::set_other_answer(drafts, &question, asked_index, event.value());
-                                            });
-                                        },
-                                        onkeydown: move |event: KeyboardEvent| {
-                                            if event.key() == Key::Enter {
-                                                cockpit.change_with_drafts(|state, drafts| actions::submit_question(state, drafts, agent, item));
-                                            }
-                                        },
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if waiting {
-                div { class: "card-actions",
-                    button {
-                        class: if ready { "button primary" } else { "button disabled" },
-                        disabled: !ready,
-                        onclick: move |_| cockpit.change_with_drafts(|state, drafts| actions::submit_question(state, drafts, agent, item)),
-                        "Send the answer"
-                    }
-                    span { class: "card-note", "{hint}" }
-                }
-            }
-            if let Some(outcome) = outcome {
-                span { class: "card-note", "{outcome}" }
-            }
-        }
-    }
-}
-
-fn answers_text(answers: &[QuestionAnswer]) -> String {
-    let parts: Vec<String> = answers
-        .iter()
-        .map(|answer| {
-            let mut words: Vec<String> = answer.selected.clone();
-            if let Some(other) = &answer.other {
-                words.push(other.clone());
-            }
-            words.join(", ")
-        })
-        .collect();
-    parts.join("; ")
 }
 
 #[component]

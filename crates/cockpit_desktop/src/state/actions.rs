@@ -1237,7 +1237,7 @@ fn question_draft<'drafts>(
 }
 
 /// Picks an option. In a single-choice question it replaces the pick, or clears it when picked
-/// again; in a multiple-choice question it toggles.
+/// again, and a new pick shows the next question. In a multiple-choice question it toggles.
 pub fn pick_option(drafts: &mut Drafts, question: &Question, asked: usize, option: usize) {
     let Some(selection) = question.questions.get(asked).map(|asked| asked.selection) else {
         return;
@@ -1253,15 +1253,54 @@ pub fn pick_option(drafts: &mut Drafts, question: &Question, asked: usize, optio
         picks.clear();
     }
     picks.insert(option);
+    if selection == Selection::Single && asked + 1 < question.questions.len() {
+        draft.shown = asked + 1;
+    }
 }
 
+/// Sets an "Other" text. In a single-choice question, a text replaces the pick.
 pub fn set_other_answer(drafts: &mut Drafts, question: &Question, asked: usize, text: String) {
-    if let Some(other) = question_draft(drafts, question).other.get_mut(asked) {
+    let single = question
+        .questions
+        .get(asked)
+        .is_some_and(|asked| asked.selection == Selection::Single);
+    let draft = question_draft(drafts, question);
+    if single
+        && !text.trim().is_empty()
+        && let Some(picks) = draft.picks.get_mut(asked)
+    {
+        picks.clear();
+    }
+    if let Some(other) = draft.other.get_mut(asked) {
         *other = text;
     }
 }
 
+/// The question on screen: the draft's, within the card's questions.
+pub fn shown_question(question: &Question, draft: Option<&QuestionDraft>) -> usize {
+    let shown = draft.map_or(0, |draft| draft.shown);
+    shown.min(question.questions.len().saturating_sub(1))
+}
+
+/// Shows the question at `asked`, as a click on its tab does.
+pub fn show_question(drafts: &mut Drafts, question: &Question, asked: usize) {
+    if asked < question.questions.len() {
+        question_draft(drafts, question).shown = asked;
+    }
+}
+
+/// The first question after the one on screen still without an answer, going round to the first
+/// question after the last.
+pub fn next_unanswered(question: &Question, draft: Option<&QuestionDraft>) -> Option<usize> {
+    let count = question.questions.len();
+    let shown = shown_question(question, draft);
+    (1..count)
+        .map(|step| (shown + step) % count)
+        .find(|&asked| !draft.is_some_and(|draft| draft.answers(asked)))
+}
+
 /// One answer per question, or `None` while a question has neither a pick nor an "Other" text.
+/// A single-choice question with a pick sends the pick alone.
 pub fn question_answers(
     question: &Question,
     draft: Option<&QuestionDraft>,
@@ -1277,11 +1316,12 @@ pub fn question_answers(
             .filter(|(option, _)| picks.is_some_and(|picks| picks.contains(option)))
             .map(|(_, option)| option.label.clone())
             .collect();
+        let replaced = asked.selection == Selection::Single && !selected.is_empty();
         let other = draft
             .other
             .get(index)
             .map(|text| text.trim())
-            .filter(|text| !text.is_empty())
+            .filter(|text| !text.is_empty() && !replaced)
             .map(str::to_owned);
         if selected.is_empty() && other.is_none() {
             return None;
@@ -1321,8 +1361,60 @@ pub fn submit_question(
     )
 }
 
-/// The 1 to 9 keys: picks an option of the first question still without an answer, or of the
-/// last one.
+/// Enter on a question card: sends the answers once every question has one, else shows the next
+/// question without an answer.
+pub fn enter_on_question(
+    state: &AppState,
+    drafts: &mut Drafts,
+    agent: AgentId,
+    item: ItemId,
+) -> Vec<Outgoing> {
+    let Some(question) = state
+        .agents
+        .get(&agent)
+        .and_then(|entry| waiting_question(entry, item))
+    else {
+        return Vec::new();
+    };
+    let draft = drafts.questions.get(&question.pending);
+    if question_answers(question, draft).is_some() {
+        return submit_question(state, drafts, agent, item);
+    }
+    if let Some(next) = next_unanswered(question, draft) {
+        let question = question.clone();
+        show_question(drafts, &question, next);
+    }
+    Vec::new()
+}
+
+/// Left and Right: shows the question before or after the one on screen.
+pub fn step_question(
+    state: &AppState,
+    drafts: &mut Drafts,
+    agent: AgentId,
+    item: ItemId,
+    forward: bool,
+) {
+    let Some(question) = state
+        .agents
+        .get(&agent)
+        .and_then(|entry| waiting_question(entry, item))
+        .cloned()
+    else {
+        return;
+    };
+    let shown = shown_question(&question, drafts.questions.get(&question.pending));
+    let next = if forward {
+        shown.checked_add(1)
+    } else {
+        shown.checked_sub(1)
+    };
+    if let Some(next) = next {
+        show_question(drafts, &question, next);
+    }
+}
+
+/// The 1 to 9 keys: picks an option of the question on screen.
 pub fn pick_by_number(
     state: &AppState,
     drafts: &mut Drafts,
@@ -1338,14 +1430,7 @@ pub fn pick_by_number(
     else {
         return;
     };
-    let draft = drafts.questions.get(&question.pending);
-    let unanswered = (0..question.questions.len()).find(|&index| {
-        let picked = draft
-            .and_then(|draft| draft.picks.get(index))
-            .is_some_and(|picks| !picks.is_empty());
-        !picked
-    });
-    let asked = unanswered.unwrap_or(question.questions.len().saturating_sub(1));
+    let asked = shown_question(&question, drafts.questions.get(&question.pending));
     if let Some(option) = number.checked_sub(1) {
         let exists = question
             .questions
@@ -4112,6 +4197,126 @@ mod tests {
         pick_by_number(&state, &mut drafts, agent(), item, 9);
 
         assert!(submit_question(&state, &drafts, agent(), item).is_empty());
+    }
+
+    /// Three questions: "Fixtures" and "Tests", one choice each, then "Notes", any choice.
+    fn three_questions() -> Question {
+        let mut question = question(Selection::Single);
+        let mut tests = question.questions[0].clone();
+        tests.header = "Tests".to_owned();
+        let mut notes = question.questions[0].clone();
+        notes.header = "Notes".to_owned();
+        notes.selection = Selection::Multiple;
+        question.questions.extend([tests, notes]);
+        question
+    }
+
+    fn shown(drafts: &Drafts, question: &Question) -> usize {
+        shown_question(question, drafts.questions.get(&question.pending))
+    }
+
+    #[test]
+    fn a_single_choice_pick_shows_the_next_question_and_the_numbers_follow_it() {
+        let mut state = state(AgentStatus::NeedsYou);
+        let mut drafts = Drafts::default();
+        let question = three_questions();
+        let item = with_question(&mut state, question.clone());
+
+        pick_by_number(&state, &mut drafts, agent(), item, 1);
+        assert_eq!(shown(&drafts, &question), 1);
+        pick_by_number(&state, &mut drafts, agent(), item, 2);
+        assert_eq!(shown(&drafts, &question), 2);
+        // A multiple-choice pick stays on its question.
+        pick_by_number(&state, &mut drafts, agent(), item, 3);
+        pick_by_number(&state, &mut drafts, agent(), item, 1);
+        assert_eq!(shown(&drafts, &question), 2);
+
+        let answers = question_answers(&question, drafts.questions.get(&question.pending));
+        let picked: Vec<Vec<String>> = answers
+            .unwrap()
+            .into_iter()
+            .map(|answer| answer.selected)
+            .collect();
+        assert_eq!(
+            picked,
+            [
+                vec!["Keep".to_owned()],
+                vec!["Rewrite".to_owned()],
+                vec!["Keep".to_owned(), "Drop".to_owned()],
+            ]
+        );
+    }
+
+    #[test]
+    fn enter_shows_the_next_question_without_an_answer_then_sends() {
+        let mut state = state(AgentStatus::NeedsYou);
+        let mut drafts = Drafts::default();
+        let question = three_questions();
+        let item = with_question(&mut state, question.clone());
+        show_question(&mut drafts, &question, 1);
+        pick_option(&mut drafts, &question, 1, 0);
+
+        // From "Notes", the next question without an answer is "Fixtures", round the end.
+        assert!(enter_on_question(&state, &mut drafts, agent(), item).is_empty());
+        assert_eq!(shown(&drafts, &question), 0);
+
+        pick_option(&mut drafts, &question, 0, 0);
+        pick_option(&mut drafts, &question, 2, 0);
+        let sent = enter_on_question(&state, &mut drafts, agent(), item);
+
+        assert!(matches!(
+            sent.as_slice(),
+            [Outgoing {
+                request: Request::AgentAnswer(_),
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn left_and_right_move_between_questions_and_stop_at_the_ends() {
+        let mut state = state(AgentStatus::NeedsYou);
+        let mut drafts = Drafts::default();
+        let question = three_questions();
+        let item = with_question(&mut state, question.clone());
+
+        step_question(&state, &mut drafts, agent(), item, false);
+        assert_eq!(shown(&drafts, &question), 0);
+        for _ in 0..3 {
+            step_question(&state, &mut drafts, agent(), item, true);
+        }
+        assert_eq!(shown(&drafts, &question), 2);
+        step_question(&state, &mut drafts, agent(), item, false);
+        assert_eq!(shown(&drafts, &question), 1);
+    }
+
+    #[test]
+    fn a_single_choice_question_sends_either_its_pick_or_its_other_text() {
+        let mut drafts = Drafts::default();
+        let question = question(Selection::Single);
+        let sent = |drafts: &Drafts| {
+            question_answers(&question, drafts.questions.get(&question.pending))
+                .and_then(|answers| answers.into_iter().next())
+        };
+
+        pick_option(&mut drafts, &question, 0, 1);
+        set_other_answer(&mut drafts, &question, 0, "Ask the owner".to_owned());
+        assert_eq!(
+            sent(&drafts),
+            Some(QuestionAnswer {
+                selected: Vec::new(),
+                other: Some("Ask the owner".to_owned()),
+            })
+        );
+
+        pick_option(&mut drafts, &question, 0, 2);
+        assert_eq!(
+            sent(&drafts),
+            Some(QuestionAnswer {
+                selected: vec!["Drop".to_owned()],
+                other: None,
+            })
+        );
     }
 
     #[test]

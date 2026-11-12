@@ -31,6 +31,20 @@ pub struct QuestionDraft {
     pub picks: Vec<BTreeSet<usize>>,
     /// The "Other" fields.
     pub other: Vec<String>,
+    /// The index of the question on screen, which the number keys answer.
+    pub shown: usize,
+}
+
+impl QuestionDraft {
+    /// The question has a pick or an "Other" text.
+    pub fn answers(&self, asked: usize) -> bool {
+        let picked = self.picks.get(asked).is_some_and(|picks| !picks.is_empty());
+        let typed = self
+            .other
+            .get(asked)
+            .is_some_and(|text| !text.trim().is_empty());
+        picked || typed
+    }
 }
 
 /// A "/" word in the composer's draft, as byte offsets: from its "/" to its end.

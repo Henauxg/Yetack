@@ -16,11 +16,11 @@ use cockpit_protocol::{
     ImageMediaType, ItemBody, ItemId, LoadAverage, LoadHistory, MachineLoad, Mark, McpScope,
     McpServer, McpServerStatus, McpTool, McpTransport, OlderItems, PastSession, PendingId,
     PermissionMode, Plan, PlanUsage, Position, ProcessId, Prompt, PromptId, Question,
-    QuestionOption, RateLimitStatus, ReleaseVersion, Repository, Request, ResourceUse,
-    ResponseBody, Selection, ServerLoad, ServerPoint, SignIn, SignInWait, SlashCommand, Subagent,
-    SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem, TaskProgress, TaskStatus,
-    Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome,
-    UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
+    QuestionAnswer, QuestionOption, RateLimitStatus, ReleaseVersion, Repository, Request,
+    ResourceUse, ResponseBody, Selection, ServerLoad, ServerPoint, SignIn, SignInWait,
+    SlashCommand, Subagent, SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem,
+    TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem,
+    TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
 };
 use serde_json::Value;
 
@@ -2362,17 +2362,59 @@ fn question_agent(now: SystemTime) -> Sample {
             3,
             None,
             ItemBody::Question(Question {
-                pending: PendingId::new("demo-question".to_owned()),
+                pending: PendingId::new("demo-version".to_owned()),
                 questions: vec![AskedQuestion {
-                    header: "Scope".to_owned(),
-                    text: "Which changes should the notes cover?".to_owned(),
+                    header: "Version".to_owned(),
+                    text: "Which version do these notes announce?".to_owned(),
                     options: vec![
-                        option("User-facing only", "Leave out refactors and test changes"),
-                        option("Everything", "List every merged change"),
-                        option("Breaking changes first", "Start with what needs action"),
+                        option("0.4.0", "A minor release: new features, nothing breaks"),
+                        option("1.0.0", "The first stable release"),
                     ],
                     selection: Selection::Single,
                 }],
+                answer: AnswerState::Answered(vec![QuestionAnswer {
+                    selected: vec!["0.4.0".to_owned()],
+                    other: None,
+                }]),
+            }),
+        ),
+        item(
+            4,
+            None,
+            ItemBody::Question(Question {
+                pending: PendingId::new("demo-question".to_owned()),
+                questions: vec![
+                    AskedQuestion {
+                        header: "Scope".to_owned(),
+                        text: "Which changes should the notes cover?".to_owned(),
+                        options: vec![
+                            option("User-facing only", "Leave out refactors and test changes"),
+                            option("Everything", "List every merged change"),
+                            option("Breaking changes first", "Start with what needs action"),
+                        ],
+                        selection: Selection::Single,
+                    },
+                    AskedQuestion {
+                        header: "Sections".to_owned(),
+                        text: "Which sections should the notes have?".to_owned(),
+                        options: vec![
+                            option("Features", "New things you can do"),
+                            option("Fixes", "Bugs that are gone"),
+                            option("Performance", "What got faster"),
+                            option("Upgrade notes", "Steps to take before updating"),
+                        ],
+                        selection: Selection::Multiple,
+                    },
+                    AskedQuestion {
+                        header: "Tone".to_owned(),
+                        text: "How should the notes read?".to_owned(),
+                        options: vec![
+                            option("Neutral", "Plain statements of what changed"),
+                            option("Friendly", "Short and warm, with a thank-you"),
+                        ],
+                        selection: Selection::Single,
+                    },
+                ],
                 answer: AnswerState::Waiting,
             }),
         ),

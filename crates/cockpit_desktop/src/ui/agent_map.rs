@@ -18,9 +18,10 @@ use crate::format;
 use crate::keymap::Command;
 use crate::state::agent_map::{self, MapRow, MapTab, MapView, OutlineRow, RowKind, StopKind};
 use crate::state::{self, HistoryState, actions};
-use crate::ui::cards::{ApprovalCard, PlanCard, QuestionCard};
+use crate::ui::cards::{ApprovalCard, PlanCard};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::markdown::MarkdownView;
+use crate::ui::question_card::QuestionCard;
 use crate::ui::transcript::{self, CallStage, CompactItem, ItemView};
 
 /// The input field of an `Agent` call that holds its prompt.

@@ -256,7 +256,8 @@ fn sync_composer_text(state: &mut AppState, drafts: &mut Drafts, agent: AgentId,
     }
 }
 
-/// Y and N answer an approval or a plan; 1 to 9 pick an answer to a question, Enter sends it.
+/// Y and N answer an approval or a plan. 1 to 9 pick an answer to the question on screen, Left
+/// and Right show another question, and Enter sends the answers or shows the next question.
 fn card_key(state: &AppState, drafts: &mut Drafts, agent: AgentId, key: &str) -> Vec<Outgoing> {
     let Some(waiting) = state
         .agents
@@ -280,7 +281,11 @@ fn card_key(state: &AppState, drafts: &mut Drafts, agent: AgentId, key: &str) ->
             actions::answer_plan(agent, waiting.pending, PlanDecision::KeepPlanning)
         }
         (WaitingKind::Question, _) if key == KEY_ENTER => {
-            actions::submit_question(state, drafts, agent, waiting.item)
+            actions::enter_on_question(state, drafts, agent, waiting.item)
+        }
+        (WaitingKind::Question, _) if key == KEY_LEFT || key == KEY_RIGHT => {
+            actions::step_question(state, drafts, agent, waiting.item, key == KEY_RIGHT);
+            Vec::new()
         }
         (WaitingKind::Question, digit) => {
             if let Ok(number) = digit.parse::<usize>() {

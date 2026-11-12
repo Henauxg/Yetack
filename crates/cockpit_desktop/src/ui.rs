@@ -31,6 +31,7 @@ mod open_file;
 mod palette;
 mod presence;
 mod projects_tab;
+mod question_card;
 mod quotes;
 mod reorder;
 mod row_menu;
