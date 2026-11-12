@@ -351,7 +351,7 @@ pub fn AgentMapDialog(view: MapView) -> Element {
     let earlier = subagents.len().saturating_sub(in_turn.len());
     let root = RootSummary {
         title: title.clone(),
-        status: facts.status,
+        status_label: format::agent_status_label(&entry.summary),
         status_class: facts.status_class.clone(),
         turn: facts.turn,
         counts: counts.iter().map(|count| count.text.clone()).collect(),
@@ -554,7 +554,8 @@ fn SecondLineView(second: SecondLine) -> Element {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RootSummary {
     title: String,
-    status: AgentStatus,
+    /// "Idle, 1 running in the background" for an idle agent with background work.
+    status_label: String,
     status_class: String,
     turn: u32,
     counts: Vec<String>,
@@ -567,7 +568,7 @@ struct RootSummary {
 #[component]
 fn RootDetails(summary: RootSummary) -> Element {
     let status_class = &summary.status_class;
-    let label = format::status_label(summary.status);
+    let label = &summary.status_label;
     let started = if summary.started == 0 {
         "This turn started no subagent.".to_owned()
     } else {
