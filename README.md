@@ -1,18 +1,23 @@
-# agents-cockpit
+# Agents Cockpit
 
-Run Claude Code agents on your computer and on your servers, and watch and steer all of the agents from one desktop app.
+Orchestrator to control multiple agents over multiple machines and accounts.
 
-![The app with agents on three machines: the sidebar lists the agents by machine, the middle shows one agent's conversation with a reply under way, and the right column shows the agent's tasks, subagents and messages](docs/images/app.png)
+| ![The app with agents on three machines: the sidebar lists the agents by machine, the middle shows one agent's conversation with a reply under way that quotes three passages, each with its comment beside the text, and the right column shows the agent's tasks, subagents and messages](docs/images/machines.png) | ![The app with the agents grouped by project: one agent asks three questions, the file view shows the changelog that the agent edited, and the files pane lists the agent's folder](docs/images/projects.png) |
+| --- | --- |
 
-- **Several machines.** The app connects to this computer and to any number of servers over SSH. Each machine has its own panel in the sidebar.
-- **Several Claude accounts.** A personal subscription and a work subscription work side by side. You pick the account of each agent, and the app shows the plan usage of each account.
-- **Sessions that persist on remote machines.** The agents run in a daemon on the server. The agents keep working when the app closes, when the laptop sleeps, or when the connection drops. When the app connects again, the app shows what the agents did meanwhile.
-- **Steer while they work.** Answer approvals, questions and plans from the app. Claude reads a message that you send to a working agent at its next step.
-- **Reply to a passage.** Select text in the chat to quote the text, and write a comment beside the quote. Paste images into a message.
-- **See what they do.** A map shows the subagents, and a block beside the chat shows the background tasks. The files pane shows the files that each agent changed or read, with their diffs.
-- **Notifications.** The app tells you when an agent needs you, and when an agent finishes.
+Main features are:
 
-Claude Code runs unmodified and signs in with your own account. The app never sees your credentials. The app reaches a server with your SSH key, and the daemon opens no network port.
+- Multiple machines (local & remotes)
+- Multiple accounts (work, personal, ...)
+- Persistent sessions via daemons
+
+On top of that, all the basics and some:
+
+- Steering, questions, plans, MCPs, notifications, ...
+- File browsing, diffs, ...
+- Quote & reply intuitively
+- Messages timeline navigation
+- Subagents views
 
 ## Install
 
@@ -111,13 +116,15 @@ The app's "Update" button builds the daemon from source on the server. The butto
 
 ## When something goes wrong
 
-[docs/troubleshooting.md](docs/troubleshooting.md) covers these problems:
+See [docs/troubleshooting.md](docs/troubleshooting.md).
 
-- The app cannot reach a server.
-- The service does not start.
-- The daemon cannot find `claude`.
-- The agents stop when you log out.
-- A server runs another version.
+## How it works
+
+### Claude Code
+
+The daemon runs the official `claude` program without its terminal interface: the daemon writes JSON messages to the program's standard input and reads JSON messages from its standard output. Claude Code runs unmodified and signs in with your own account. The app never sees your credentials.
+
+The app reaches a server with your SSH key, and the daemon opens no network port.
 
 ## License
 

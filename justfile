@@ -121,7 +121,7 @@ release:
 
 # Needs Xvfb, openbox, wmctrl, xdotool and ImageMagick: see the script.
 
-# Retakes the README's picture, docs/images/app.png, from the demo's showcase.
+# Retakes the README's pictures, docs/images/<scene>.png, from the scenes of the demo's showcase.
 [unix]
 readme-screenshot:
     cargo build -q --release -p cockpit_desktop

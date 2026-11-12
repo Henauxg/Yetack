@@ -50,6 +50,8 @@ body {
   font-family: var(--sans);
   font-size: 14px;
   line-height: 1.45;
+  /* JetBrains Mono draws `->` and `-<` as arrows: code shows the characters as typed. */
+  font-variant-ligatures: none;
   overflow: hidden;
 }
 
