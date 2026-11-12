@@ -3957,6 +3957,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::prefs;
     use crate::state::{HistoryState, WaitingKind};
 
     #[test]
@@ -4531,7 +4532,7 @@ pub struct ParseError {
                 .map(|view| (view.path.clone(), view.mode)),
             Some((PathBuf::from(CHANGELOG_FILE), ViewMode::Preview))
         );
-        assert!(crate::prefs::is_sidebar_width(SHOWCASE_SIDEBAR_WIDTH));
+        assert!(prefs::is_sidebar_width(SHOWCASE_SIDEBAR_WIDTH));
     }
 
     #[test]
