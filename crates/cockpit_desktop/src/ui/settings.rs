@@ -1,6 +1,7 @@
 //! The Settings dialog, from the gear in the sidebar's foot. Its General tab holds the app's
 //! notifications, as the sidebar's bell sets them, where comments on quotes show, how long a message
-//! sent to a working agent can still be cancelled, and whether a new agent's files pane shows. Its Keyboard tab lists every shortcut and records new ones for the
+//! sent to a working agent can still be cancelled, and whether a new agent's files pane shows. It
+//! ends with the app's version. Its Keyboard tab lists every shortcut and records new ones for the
 //! commands. Its Projects tab edits the projects the sidebar can group agents by.
 
 use dioxus::prelude::*;
@@ -18,6 +19,7 @@ use crate::ui::icons::{Icon, IconKind};
 use crate::ui::notification_levels as levels_ui;
 use crate::ui::presence::{Presence, Shown, use_presence};
 use crate::ui::projects_tab::ProjectsTab;
+use crate::update_script::APP_VERSION;
 
 const NOTIFICATIONS_LABEL_ID: &str = "setting-notifications";
 const COMMENTS_LABEL_ID: &str = "setting-comments";
@@ -238,6 +240,7 @@ fn GeneralTab() -> Element {
                     }
                 }
             }
+            p { class: "settings-version", "agents-cockpit {APP_VERSION}" }
         }
     }
 }
