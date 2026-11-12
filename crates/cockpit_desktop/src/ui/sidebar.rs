@@ -399,22 +399,34 @@ struct MachineTrouble {
 
 /// The machine as a header or a machine line names it: "This computer" with a laptop, or its name
 /// with a server.
-fn machine_look(state: &AppState, machine: MachineId) -> (String, IconKind) {
-    let label = state.machines.get(machine).map(|known| &known.daemon);
-    let this_computer =
-        machine == MachineId::THIS && label.is_none_or(|label| label.place != DaemonPlace::Ssh);
-    if this_computer {
-        (THIS_COMPUTER.to_owned(), IconKind::Laptop)
-    } else {
-        let name = label.map_or_else(String::new, |label| label.machine.clone());
-        (name, IconKind::Server)
+struct MachineLook {
+    name: String,
+    icon: IconKind,
+}
+
+impl MachineLook {
+    fn new(state: &AppState, machine: MachineId) -> Self {
+        let label = state.machines.get(machine).map(|known| &known.daemon);
+        let this_computer =
+            machine == MachineId::THIS && label.is_none_or(|label| label.place != DaemonPlace::Ssh);
+        if this_computer {
+            Self {
+                name: THIS_COMPUTER.to_owned(),
+                icon: IconKind::Laptop,
+            }
+        } else {
+            Self {
+                name: label.map_or_else(String::new, |label| label.machine.clone()),
+                icon: IconKind::Server,
+            }
+        }
     }
 }
 
 impl MachineGroup {
     fn new(state: &AppState, machine: MachineId, rows: Vec<AgentRow>) -> Self {
         let known = state.machines.get(machine);
-        let (name, icon) = machine_look(state, machine);
+        let MachineLook { name, icon } = MachineLook::new(state, machine);
         let agents = state
             .agents
             .values()
@@ -614,7 +626,7 @@ impl ProjectGroup {
             let machine = MachineId::of(row.id);
             if split && last_machine != Some(machine) {
                 last_machine = Some(machine);
-                let (name, icon) = machine_look(state, machine);
+                let MachineLook { name, icon } = MachineLook::new(state, machine);
                 items.push(ProjectItem::Machine(MachineLine {
                     machine,
                     name,

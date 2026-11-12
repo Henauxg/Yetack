@@ -2394,7 +2394,7 @@ mod tests {
 
     use super::*;
     use crate::daemon_label::DaemonLabel;
-    use crate::prefs::CommentPlacement;
+    use crate::prefs::{CommentPlacement, ProjectSplit};
     use crate::state::app_state::ConnectionState;
     use crate::state::app_state::tests::{ids, placed, state_with, summary};
     use crate::state::grouping::GroupKey;
@@ -4752,7 +4752,7 @@ mod tests {
     fn split_by_machine() -> (AppState, [AgentId; 5]) {
         let (mut state, devbox) = two_machines();
         state.prefs.sidebar.group_by = GroupBy::Project;
-        state.prefs.sidebar.project_split = prefs::ProjectSplit::ByMachine;
+        state.prefs.sidebar.project_split = ProjectSplit::ByMachine;
         let there = |id| devbox.app_agent(AgentId::new(id));
         let here = AgentId::new;
         for agent in [here(1), there(1), here(2), there(2), here(3)] {
