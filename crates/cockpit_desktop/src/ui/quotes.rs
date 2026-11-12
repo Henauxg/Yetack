@@ -1366,7 +1366,7 @@ mod tests {
             .skip(1)
             .map(|rest| {
                 rest.chars()
-                    .take_while(|character| character.is_ascii_lowercase() || *character == '_')
+                    .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
                     .collect()
             })
             .collect();
