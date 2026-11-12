@@ -111,13 +111,7 @@ The app's "Update" button builds the daemon from source on the server. The butto
 
 ## When something goes wrong
 
-[docs/troubleshooting.md](docs/troubleshooting.md) covers these problems:
-
-- The app cannot reach a server.
-- The service does not start.
-- The daemon cannot find `claude`.
-- The agents stop when you log out.
-- A server runs another version.
+See [docs/troubleshooting.md](docs/troubleshooting.md).
 
 ## License
 
