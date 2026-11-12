@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::account::Account;
 use crate::agent::AgentSummary;
-use crate::details::AgentDetails;
+use crate::details::{AgentDetails, SlashCommand};
 use crate::ids::{AgentId, Seq};
 use crate::settings::Settings;
 use crate::transcript::TranscriptItem;
@@ -32,6 +32,11 @@ pub enum Event {
     DetailsChanged {
         agent: AgentId,
         details: AgentDetails,
+    },
+    /// Replaces the agent's slash commands and skills, for the palette.
+    CommandsChanged {
+        agent: AgentId,
+        commands: Vec<SlashCommand>,
     },
     /// The default account's plan usage changed. An app that predates accounts reads this one
     /// alone.

@@ -554,14 +554,12 @@ mod tests {
             let mut drafts = Drafts::default();
             let mut state = state(AgentStatus::Idle, None);
             if let Some(entry) = state.agents.get_mut(&agent) {
-                entry.details = Loadable::Loaded(AgentDetails {
-                    commands: vec![SlashCommand {
-                        name: "review".to_owned(),
-                        description: "Review the changes on the branch".to_owned(),
-                        kind: CommandKind::Skill,
-                    }],
-                    ..AgentDetails::default()
-                });
+                entry.details = Loadable::Loaded(AgentDetails::default());
+                entry.commands = vec![SlashCommand {
+                    name: "review".to_owned(),
+                    description: "Review the changes on the branch".to_owned(),
+                    kind: CommandKind::Skill,
+                }];
             }
             let typed = actions::composer_input(
                 &state,
@@ -601,10 +599,8 @@ mod tests {
             let mut drafts = Drafts::default();
             let mut state = state(AgentStatus::Idle, None);
             if let Some(entry) = state.agents.get_mut(&agent) {
-                entry.details = Loadable::Loaded(AgentDetails {
-                    commands: vec![command("review"), command("rename-branch")],
-                    ..AgentDetails::default()
-                });
+                entry.details = Loadable::Loaded(AgentDetails::default());
+                entry.commands = vec![command("review"), command("rename-branch")];
             }
             let typed = actions::composer_input(
                 &state,
@@ -677,21 +673,19 @@ mod tests {
             kind,
         };
         if let Some(entry) = state.agents.get_mut(&AgentId::new(1)) {
-            entry.details = Loadable::Loaded(AgentDetails {
-                commands: vec![
-                    command(
-                        "review",
-                        "Review the changes on the branch",
-                        CommandKind::Skill,
-                    ),
-                    command(
-                        "mcp",
-                        "Manage MCP servers, tools, etc.",
-                        CommandKind::Command,
-                    ),
-                ],
-                ..AgentDetails::default()
-            });
+            entry.details = Loadable::Loaded(AgentDetails::default());
+            entry.commands = vec![
+                command(
+                    "review",
+                    "Review the changes on the branch",
+                    CommandKind::Skill,
+                ),
+                command(
+                    "mcp",
+                    "Manage MCP servers, tools, etc.",
+                    CommandKind::Command,
+                ),
+            ];
         }
     }
 

@@ -239,7 +239,7 @@ Older daemons send it as it is, so a test pins it.
 
 ### Events
 
-`AgentAdded`, `AgentUpdated(AgentSummary)`, `AgentRemoved`, `TranscriptAppended { agent, item }`, `TranscriptChanged { agent, item }`, `DetailsChanged { agent, details }`, `PlanUsageChanged` (the default account's), `SettingsChanged`, `AccountPlanUsageChanged { account, usage }` (another account's), `AccountsChanged { accounts }`.
+`AgentAdded`, `AgentUpdated(AgentSummary)`, `AgentRemoved`, `TranscriptAppended { agent, item }`, `TranscriptChanged { agent, item }`, `DetailsChanged { agent, details }`, `CommandsChanged { agent, commands }` (the slash commands and skills, which change only when `claude` starts or reloads, so they travel apart from the details), `PlanUsageChanged` (the default account's), `SettingsChanged`, `AccountPlanUsageChanged { account, usage }` (another account's), `AccountsChanged { accounts }`.
 Each carries its `Seq`.
 
 `DetailsChanged` carries the whole details, so it goes out only when something they hold changes: a subagent's text or a streamed delta sends none, its tool calls and its task events do.

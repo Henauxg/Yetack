@@ -18,7 +18,7 @@ use crate::settings::Settings;
 use crate::usage::{AccountPlanUsage, PlanUsage};
 
 /// Changes whenever a message changes shape. Client and daemon speak only the same version.
-pub const PROTOCOL_VERSION: u16 = 7;
+pub const PROTOCOL_VERSION: u16 = 8;
 
 /// A program's release, its Cargo version: "0.1.0". Every build between two releases carries the
 /// earlier one.

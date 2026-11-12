@@ -47,10 +47,7 @@ enum Row {
 
 /// The palette's rows. The one the slash button opens puts a title over each section.
 fn rows(entry: &AgentEntry, query: &str, how: CommandMatch, origin: PaletteOrigin) -> Vec<Row> {
-    let commands = entry
-        .details
-        .loaded()
-        .map_or(&[][..], |details| details.commands.as_slice());
+    let commands = entry.commands.as_slice();
     let exited = entry.summary.status == AgentStatus::Exited;
     let entries = actions::palette_entries(commands, query, how, origin);
     let mut rows = Vec::with_capacity(entries.len() + 3);
@@ -406,14 +403,12 @@ mod tests {
     #[test]
     fn only_the_menu_has_sections_and_loading_rows_come_last() {
         let mut entry = AgentEntry::new(summary(1, AgentStatus::Idle));
-        entry.details = Loadable::Loaded(AgentDetails {
-            commands: vec![SlashCommand {
-                name: "review".to_owned(),
-                description: "Review the changes on the branch".to_owned(),
-                kind: CommandKind::Skill,
-            }],
-            ..AgentDetails::default()
-        });
+        entry.details = Loadable::Loaded(AgentDetails::default());
+        entry.commands = vec![SlashCommand {
+            name: "review".to_owned(),
+            description: "Review the changes on the branch".to_owned(),
+            kind: CommandKind::Skill,
+        }];
         let sections = |rows: &[Row]| -> Vec<MenuSection> {
             rows.iter()
                 .filter_map(|row| match row {

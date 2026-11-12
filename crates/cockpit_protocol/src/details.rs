@@ -1,5 +1,6 @@
 //! What the floating blocks and the agent map show about an agent: tasks, background work,
-//! subagents, changed files, context usage, MCP servers and slash commands.
+//! subagents, changed files, context usage and MCP servers. The slash commands travel apart, in
+//! `CommandsChanged`, since they change only when `claude` starts or reloads.
 
 use std::path::PathBuf;
 
@@ -18,7 +19,6 @@ pub struct AgentDetails {
     /// The last context usage Claude Code reported.
     pub context: Option<ContextUsage>,
     pub mcp_servers: Vec<McpServer>,
-    pub commands: Vec<SlashCommand>,
     /// Every subagent the agent started, at any depth, in the order they started. Empty when
     /// missing, so details from an older daemon still load.
     #[serde(default)]

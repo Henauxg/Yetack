@@ -850,6 +850,7 @@ pub fn state(daemon: DaemonLabel) -> AppState {
             });
         }
         entry.details = Loadable::Loaded(sample.details);
+        entry.commands = commands();
         state.agents.insert(entry.id(), entry);
     }
     // The bottom agent first: positions grow towards the top.
@@ -974,6 +975,7 @@ fn insert_server<const N: usize>(
             older_items: OlderItems::None,
         });
         entry.details = Loadable::Loaded(details());
+        entry.commands = commands();
         state.agents.insert(entry.id(), entry);
     }
 }
@@ -1373,8 +1375,8 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
             })
         }
         Request::AgentCommands(params) => {
-            agent_details(params.agent).map(|details| ResponseBody::Commands {
-                commands: details.commands,
+            agent_details(params.agent).map(|_| ResponseBody::Commands {
+                commands: commands(),
             })
         }
         Request::AgentContextUsage(params) => agent_details(params.agent)?
@@ -2256,7 +2258,6 @@ fn commands() -> Vec<SlashCommand> {
 fn details() -> AgentDetails {
     AgentDetails {
         mcp_servers: mcp_servers(),
-        commands: commands(),
         ..AgentDetails::default()
     }
 }

@@ -7,8 +7,8 @@ use std::time::{Duration, Instant, SystemTime};
 use cockpit_protocol::{
     Account, AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, AnswerState,
     BackgroundTask, BackgroundTaskStatus, FileEdit, Image, ItemBody, ItemId, PastSession,
-    PlanUsage, ReleaseVersion, Settings, Timestamp, ToolCallStatus, TranscriptItem, WaitingPrompt,
-    list_order,
+    PlanUsage, ReleaseVersion, Settings, SlashCommand, Timestamp, ToolCallStatus, TranscriptItem,
+    WaitingPrompt, list_order,
 };
 use strum::VariantArray;
 
@@ -153,6 +153,9 @@ pub struct AgentEntry {
     /// When the app saw each running tool call start, for the timer on its card. A call already
     /// running when the app connected has none.
     pub calls_running_since: BTreeMap<ItemId, Instant>,
+    /// The slash commands and skills, for the palette: from `CommandsChanged`, or asked with
+    /// `agent.commands` when the palette opens on none.
+    pub commands: Vec<SlashCommand>,
     /// An `agent.commands` request is on its way.
     pub commands_requested: bool,
     /// When the app saw the agent's current turn start, for a daemon that does not send
@@ -276,6 +279,7 @@ impl AgentEntry {
             files: BTreeMap::new(),
             file_freshness: FileFreshness::default(),
             calls_running_since: BTreeMap::new(),
+            commands: Vec::new(),
             commands_requested: false,
             turn_started: None,
             sent_again: None,
@@ -313,13 +317,9 @@ impl AgentEntry {
             .map_or(&[], |details| details.waiting_prompts.as_slice())
     }
 
-    /// Whether the commands and skills are on their way, with the details or on their own.
+    /// Whether the commands and skills are on their way.
     pub fn commands_loading(&self) -> bool {
-        match &self.details {
-            Loadable::NotRequested | Loadable::Loading => true,
-            Loadable::Loaded(_) => self.commands_requested,
-            Loadable::Failed(_) => false,
-        }
+        self.commands_requested
     }
 
     pub fn id(&self) -> AgentId {

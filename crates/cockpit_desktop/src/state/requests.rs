@@ -491,8 +491,8 @@ pub fn apply_response(
             }
             match result {
                 Ok(ResponseBody::Commands { commands }) => {
-                    if let Some(details) = loaded_details(state, agent) {
-                        details.commands = commands;
+                    if let Some(entry) = state.agents.get_mut(&agent) {
+                        entry.commands = commands;
                     }
                 }
                 other => report(state, method, other),

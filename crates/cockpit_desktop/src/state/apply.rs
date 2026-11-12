@@ -342,6 +342,12 @@ pub fn apply(
             }
             None
         }
+        Event::CommandsChanged { agent, commands } => {
+            if let Some(entry) = state.agents.get_mut(&agent) {
+                entry.commands = commands;
+            }
+            None
+        }
         Event::PlanUsageChanged(plan_usage) => {
             if let Some(known) = state.machines.get_mut(machine) {
                 known.plan_usage = plan_usage;

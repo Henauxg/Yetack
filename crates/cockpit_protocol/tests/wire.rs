@@ -434,7 +434,6 @@ fn details() -> AgentDetails {
         }],
         context: Some(context_usage()),
         mcp_servers: mcp_servers(),
-        commands: commands(),
         subagents: subagents(),
         waiting_prompts: vec![
             WaitingPrompt {
@@ -873,6 +872,10 @@ fn events() -> Vec<Event> {
             agent: agent(),
             details: AgentDetails::default(),
         },
+        Event::CommandsChanged {
+            agent: agent(),
+            commands: commands(),
+        },
         Event::PlanUsageChanged(plan_usage()),
         Event::SettingsChanged(settings()),
         Event::AccountPlanUsageChanged(AccountPlanUsage {
@@ -1116,6 +1119,7 @@ fn message_and_body_tags_are_pinned() {
             "transcript_appended",
             "transcript_changed",
             "details_changed",
+            "commands_changed",
             "plan_usage_changed",
             "settings_changed",
             "account_plan_usage_changed",

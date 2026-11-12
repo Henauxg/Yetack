@@ -17,8 +17,8 @@ use cockpit_protocol::{
     AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, Answer, AnswerState, Approval,
     BackgroundTask, BackgroundTaskId, BackgroundTaskStatus, ClaudeSessionId, ContextUsage, CostUsd,
     Effort, EffortSource, Event, Image, ItemBody, ItemId, Mark, McpServer, PendingId,
-    PermissionMode, Plan, Position, Prompt, PromptId, Question, SignInWait, SubagentRun,
-    SubagentStatus, SubagentToolCall, Timestamp, TokenUsage, ToolCall, ToolCallStatus,
+    PermissionMode, Plan, Position, Prompt, PromptId, Question, SignInWait, SlashCommand,
+    SubagentRun, SubagentStatus, SubagentToolCall, Timestamp, TokenUsage, ToolCall, ToolCallStatus,
     TranscriptItem, TurnEnd, TurnOutcome, UserMessage, WaitingPrompt, WaitingState,
 };
 use serde_json::{Map, Value};
@@ -148,6 +148,9 @@ pub(crate) struct AgentView {
     published: Option<AgentSummary>,
     details: AgentDetails,
     details_changed: bool,
+    /// The slash commands and skills, which go out apart from the details.
+    commands: Vec<SlashCommand>,
+    commands_changed: bool,
     items: Vec<TranscriptItem>,
     next_item: ItemId,
     changes: Vec<ItemChange>,
@@ -193,6 +196,8 @@ impl AgentView {
             published: None,
             details: AgentDetails::default(),
             details_changed: false,
+            commands: Vec::new(),
+            commands_changed: false,
             items: Vec::new(),
             next_item: ItemId::new(1),
             changes: Vec::new(),
@@ -221,6 +226,7 @@ impl AgentView {
     pub(crate) fn restore(
         summary: AgentSummary,
         details: AgentDetails,
+        commands: Vec<SlashCommand>,
         items: Vec<TranscriptItem>,
         prompt_cache_ttl: Duration,
     ) -> Self {
@@ -231,6 +237,7 @@ impl AgentView {
         let mut view = Self::new(summary.clone(), prompt_cache_ttl);
         view.published = Some(summary);
         view.details = details;
+        view.commands = commands;
         view.items = items;
         view.next_item = next_item;
         view.exited = true;
@@ -363,6 +370,10 @@ impl AgentView {
         &self.details
     }
 
+    pub(crate) fn commands(&self) -> &[SlashCommand] {
+        &self.commands
+    }
+
     pub(crate) fn items(&self) -> &[TranscriptItem] {
         &self.items
     }
@@ -415,6 +426,13 @@ impl AgentView {
             events.push(Event::DetailsChanged {
                 agent,
                 details: self.details.clone(),
+            });
+        }
+        if self.commands_changed {
+            self.commands_changed = false;
+            events.push(Event::CommandsChanged {
+                agent,
+                commands: self.commands.clone(),
             });
         }
         if self.published.as_ref() != Some(&self.summary) {
@@ -717,8 +735,8 @@ impl AgentView {
     }
 
     pub(crate) fn set_commands(&mut self, response: &InitializeResponse) {
-        self.details.commands = details::commands(response, &self.skills);
-        self.details_changed = true;
+        self.commands = details::commands(response, &self.skills);
+        self.commands_changed = true;
     }
 
     pub(crate) fn set_context(&mut self, usage: &ClaudeContextUsage) -> ContextUsage {
@@ -876,17 +894,19 @@ impl AgentView {
         if let Some(OpenWord::Known(mode)) = init.permission_mode {
             self.summary.mode = words::mode_to_cockpit(mode);
         }
-        let commands_before = self.details.commands.clone();
+        let commands_before = self.commands.clone();
         let servers_before = self.details.mcp_servers.clone();
         self.skills = init.skills.into_iter().collect();
-        if self.details.commands.is_empty() {
-            self.details.commands =
-                details::commands_from_names(&init.slash_commands, &self.skills);
+        if self.commands.is_empty() {
+            self.commands = details::commands_from_names(&init.slash_commands, &self.skills);
         } else {
-            details::mark_skills(&mut self.details.commands, &self.skills);
+            details::mark_skills(&mut self.commands, &self.skills);
         }
         details::merge_init_servers(&mut self.details.mcp_servers, &init.mcp_servers);
-        if commands_before != self.details.commands || servers_before != self.details.mcp_servers {
+        if commands_before != self.commands {
+            self.commands_changed = true;
+        }
+        if servers_before != self.details.mcp_servers {
             self.details_changed = true;
         }
     }
@@ -2087,11 +2107,15 @@ mod tests {
                 Event::TranscriptAppended { .. } => "appended",
                 Event::TranscriptChanged { .. } => "changed",
                 Event::DetailsChanged { .. } => "details",
+                Event::CommandsChanged { .. } => "commands",
                 Event::AgentUpdated(_) => "updated",
                 _ => "other",
             })
             .collect();
-        assert_eq!(kinds, ["appended", "appended", "details", "updated"]);
+        assert_eq!(
+            kinds,
+            ["appended", "appended", "details", "commands", "updated"]
+        );
     }
 
     #[test]
@@ -2100,9 +2124,8 @@ mod tests {
 
         apply(&mut view, init());
 
-        let details = view.details();
-        let commands: Vec<(&str, CommandKind)> = details
-            .commands
+        let commands: Vec<(&str, CommandKind)> = view
+            .commands()
             .iter()
             .map(|command| (command.name.as_str(), command.kind))
             .collect();
@@ -2113,6 +2136,7 @@ mod tests {
                 ("tidy", CommandKind::Skill)
             ]
         );
+        let details = view.details();
         assert_eq!(details.mcp_servers.len(), 1);
         assert_eq!(details.mcp_servers[0].status, McpServerStatus::Connected);
     }
@@ -3530,6 +3554,7 @@ mod tests {
         let mut restored = AgentView::restore(
             live.summary().clone(),
             live.details().clone(),
+            live.commands().to_vec(),
             live.items().to_vec(),
             Duration::from_secs(60),
         );
@@ -4187,7 +4212,13 @@ mod tests {
             ..view().summary().clone()
         };
         let restore = |summary: AgentSummary| {
-            AgentView::restore(summary, AgentDetails::default(), Vec::new(), Duration::ZERO)
+            AgentView::restore(
+                summary,
+                AgentDetails::default(),
+                Vec::new(),
+                Vec::new(),
+                Duration::ZERO,
+            )
         };
 
         // A turn that started after the last activity, or one that waited for you since.

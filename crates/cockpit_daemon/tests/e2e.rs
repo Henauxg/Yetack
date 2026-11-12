@@ -543,8 +543,13 @@ async fn an_agent_answers_a_prompt_and_reports_its_state() {
     else {
         panic!("expected details");
     };
-    let commands: Vec<(&str, CommandKind)> = details
-        .commands
+    let ResponseBody::Commands { commands } = client
+        .ok(Request::AgentCommands(AgentParams { agent }))
+        .await
+    else {
+        panic!("expected commands");
+    };
+    let commands: Vec<(&str, CommandKind)> = commands
         .iter()
         .map(|command| (command.name.as_str(), command.kind))
         .collect();

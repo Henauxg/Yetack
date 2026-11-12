@@ -240,7 +240,8 @@ fn event_agent(event: &Event) -> Option<AgentId> {
         Event::AgentRemoved { agent }
         | Event::TranscriptAppended { agent, .. }
         | Event::TranscriptChanged { agent, .. }
-        | Event::DetailsChanged { agent, .. } => Some(*agent),
+        | Event::DetailsChanged { agent, .. }
+        | Event::CommandsChanged { agent, .. } => Some(*agent),
         Event::PlanUsageChanged(_)
         | Event::SettingsChanged(_)
         | Event::AccountPlanUsageChanged(_)

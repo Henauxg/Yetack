@@ -98,7 +98,8 @@ impl Event {
             Self::AgentRemoved { agent }
             | Self::TranscriptAppended { agent, .. }
             | Self::TranscriptChanged { agent, .. }
-            | Self::DetailsChanged { agent, .. } => *agent = map(*agent),
+            | Self::DetailsChanged { agent, .. }
+            | Self::CommandsChanged { agent, .. } => *agent = map(*agent),
             Self::PlanUsageChanged(_)
             | Self::SettingsChanged(_)
             | Self::AccountPlanUsageChanged(_)

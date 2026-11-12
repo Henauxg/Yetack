@@ -4,7 +4,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use cockpit_protocol::{
-    AccountId, AgentDetails, AgentId, AgentSummary, Event, ItemId, PlanUsage, Seq, TranscriptItem,
+    AccountId, AgentDetails, AgentId, AgentSummary, Event, ItemId, PlanUsage, Seq, SlashCommand,
+    TranscriptItem,
 };
 
 use crate::hub::agents::initial_summary;
@@ -31,6 +32,7 @@ pub(crate) struct Restored {
 struct LoggedAgent {
     summary: Option<AgentSummary>,
     details: AgentDetails,
+    commands: Vec<SlashCommand>,
     items: BTreeMap<ItemId, TranscriptItem>,
 }
 
@@ -74,7 +76,7 @@ pub(crate) fn restore(state: &StateDir, default_folder: &Path) -> Result<Restore
             summary.account = record.account;
             summary.mark = record.mark;
             let items: Vec<TranscriptItem> = logged.items.into_values().collect();
-            let mut view = AgentView::restore(summary, logged.details, items, ttl);
+            let mut view = AgentView::restore(summary, logged.details, logged.commands, items, ttl);
             let account = settings.accounts.get(record.account, default_folder);
             if let (Some(file), Some(account)) = (&record.past, account) {
                 view.show_past(sessions::past_items(&account.folder, &record.folder, file));
@@ -103,6 +105,7 @@ impl LoggedAgent {
                 self.items.insert(item.id, item);
             }
             Event::DetailsChanged { details, .. } => self.details = details,
+            Event::CommandsChanged { commands, .. } => self.commands = commands,
             Event::AgentRemoved { .. }
             | Event::PlanUsageChanged(_)
             | Event::SettingsChanged(_)

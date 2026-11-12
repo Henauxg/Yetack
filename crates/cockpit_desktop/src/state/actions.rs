@@ -305,11 +305,10 @@ fn open_palette(state: &mut AppState, agent: AgentId, origin: PaletteOrigin) -> 
     commands_request(state, agent).into_iter().collect()
 }
 
-/// The details carry the commands; an agent that reported none yet is asked directly.
+/// An agent whose commands the app has not seen yet is asked for them.
 fn commands_request(state: &mut AppState, agent: AgentId) -> Option<Outgoing> {
     let entry = state.agents.get_mut(&agent)?;
-    let details = entry.details.loaded()?;
-    if !details.commands.is_empty() || entry.commands_requested {
+    if !entry.commands.is_empty() || entry.commands_requested {
         return None;
     }
     entry.commands_requested = true;
@@ -408,8 +407,7 @@ fn agent_commands(state: &AppState, agent: AgentId) -> &[SlashCommand] {
     state
         .agents
         .get(&agent)
-        .and_then(|entry| entry.details.loaded())
-        .map_or(&[], |details| details.commands.as_slice())
+        .map_or(&[], |entry| entry.commands.as_slice())
 }
 
 /// An entry of the palette opened by the slash button, other than a command.
@@ -2607,10 +2605,8 @@ mod tests {
 
     fn with_commands(state: &mut AppState, commands: Vec<SlashCommand>) {
         if let Some(entry) = state.agents.get_mut(&agent()) {
-            entry.details = Loadable::Loaded(AgentDetails {
-                commands,
-                ..AgentDetails::default()
-            });
+            entry.details = Loadable::Loaded(AgentDetails::default());
+            entry.commands = commands;
         }
     }
 
@@ -2678,11 +2674,10 @@ mod tests {
     }
 
     #[test]
-    fn the_commands_load_until_the_details_or_their_own_request_answer() {
+    fn the_commands_load_while_their_request_is_on_its_way() {
         let mut state = state(AgentStatus::Idle);
         let mut drafts = Drafts::default();
         let loading = |state: &AppState| state.agents[&agent()].commands_loading();
-        let before_the_details = loading(&state);
         with_commands(&mut state, Vec::new());
         let with_no_commands = loading(&state);
 
@@ -2702,13 +2697,8 @@ mod tests {
         );
 
         assert_eq!(
-            (
-                before_the_details,
-                with_no_commands,
-                while_asked,
-                loading(&state)
-            ),
-            (true, false, true, false)
+            (with_no_commands, while_asked, loading(&state)),
+            (false, true, false)
         );
         // The palette opened again while the request was on its way asks nothing more.
         assert_eq!((first.len(), second.len()), (1, 0));

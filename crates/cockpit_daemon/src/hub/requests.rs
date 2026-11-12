@@ -108,7 +108,7 @@ impl Hub {
                 let commands = self
                     .agent(params.agent)
                     .map(|agent| ResponseBody::Commands {
-                        commands: agent.view.details().commands.clone(),
+                        commands: agent.view.commands().to_vec(),
                     });
                 agents::respond(reply, commands);
             }
