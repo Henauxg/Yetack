@@ -2509,11 +2509,31 @@ html.reordering * {
 
 /* When the message was sent, faint until the pointer is over the message. */
 .message-time {
+  max-height: 16px;
   margin-top: -3px;
   font-size: 11px;
-  color: #5e5e5e;
+  line-height: 16px;
+  color: var(--faint);
   white-space: nowrap;
-  transition: color var(--motion-hover) var(--ease);
+  overflow: hidden;
+  transition:
+    color var(--motion-hover) var(--ease),
+    max-height var(--motion-in) var(--ease-out),
+    margin-top var(--motion-in) var(--ease-out),
+    opacity var(--motion-in) var(--ease-out);
+}
+
+/* The next message, sent at the same minute, shows the time: this one folds away, its margin
+   taking back the message's 6px gap. */
+.message-time.folded {
+  max-height: 0;
+  margin-top: -6px;
+  opacity: 0;
+  transition:
+    color var(--motion-hover) var(--ease),
+    max-height var(--motion-out) var(--ease-in),
+    margin-top var(--motion-out) var(--ease-in),
+    opacity var(--motion-out) var(--ease-in);
 }
 
 .user-message:hover .message-time {

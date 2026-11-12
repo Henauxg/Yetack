@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use chrono::NaiveDate;
 use cockpit_protocol::{
-    AgentId, AgentStatus, AnswerState, ItemBody, ItemId, SignInWait, ToolCall, ToolCallStatus,
-    TranscriptItem, TurnEnd, TurnOutcome, UserMessage,
+    AgentId, AgentStatus, AnswerState, ItemBody, ItemId, SignInWait, Timestamp, ToolCall,
+    ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UserMessage,
 };
 use dioxus::prelude::*;
 use serde::Serialize;
@@ -343,6 +343,7 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
     use_hook(start_fold_script);
     let cockpit: Cockpit = use_context();
     let Today(today) = use_context::<Today>();
+    let Clock(clock) = use_context::<Clock>();
     chat_scroll::use_chat_scroll(cockpit, in_view);
     // The agent whose conversation the chat opened, once its first page came or failed. A
     // failure shows above all the rows.
@@ -500,7 +501,12 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
                             UserBubble {
                                 agent,
                                 folder: folder.clone(),
-                                message: UserMessage { text: prompt.text, images: prompt.images, sent_at: None },
+                                // The time it leaves, which the daemon's copy keeps: the bubble keeps its height.
+                                message: UserMessage {
+                                    text: prompt.text,
+                                    images: prompt.images,
+                                    sent_at: Timestamp::from_system_time(*clock.peek()),
+                                },
                             }
                         }
                     }
@@ -919,10 +925,10 @@ pub fn ItemView(
 ) -> Element {
     let id = item.id;
     // A message under a subagent is the prompt the agent wrote for it: it shows no time.
-    let hides_time = hides_time || item.parent.is_some();
+    let untimed = item.parent.is_some();
     match item.body {
         ItemBody::UserMessage(message) => rsx! {
-            UserBubble { agent, folder, message, item: Some(id), hides_time }
+            UserBubble { agent, folder, message, item: Some(id), hides_time, untimed }
         },
         ItemBody::AssistantText { markdown } => rsx! {
             MarkdownView { agent, folder, markdown, item: Some(id) }
@@ -965,8 +971,8 @@ pub fn ItemView(
 
 /// The user's message. Its text renders as Markdown, as the agent's text does. A long one keeps
 /// its first screen lines until "Show more", as a command's output does. A click on an attached
-/// image shows it over the whole window. Its time shows under it, faint, unless the next message
-/// was sent at the same minute and shows it.
+/// image shows it over the whole window. Its time shows under it, faint. It folds away once the
+/// next message, sent at the same minute, shows it.
 #[component]
 fn UserBubble(
     agent: AgentId,
@@ -975,6 +981,9 @@ fn UserBubble(
     /// The message in the chat, `None` for one on its way.
     item: Option<ItemId>,
     #[props(default)] hides_time: bool,
+    /// A subagent's prompt, which the agent wrote: no time line at all.
+    #[props(default)]
+    untimed: bool,
 ) -> Element {
     let cockpit: Cockpit = use_context();
     let Today(today) = use_context::<Today>();
@@ -986,7 +995,7 @@ fn UserBubble(
         images,
         sent_at,
     } = message;
-    let time = sent_at.filter(|_| !hides_time).and_then(|sent_at| {
+    let time = sent_at.filter(|_| !untimed).and_then(|sent_at| {
         let shown = format::message_time(sent_at, today())?;
         Some((shown, format::full_time(sent_at).unwrap_or_default()))
     });
@@ -1025,7 +1034,12 @@ fn UserBubble(
                 }
             }
             if let Some((shown, full)) = time {
-                span { class: "message-time", title: "{full}", "{shown}" }
+                span {
+                    class: if hides_time { "message-time folded" } else { "message-time" },
+                    title: "{full}",
+                    aria_hidden: hides_time,
+                    "{shown}"
+                }
             }
         }
     }
