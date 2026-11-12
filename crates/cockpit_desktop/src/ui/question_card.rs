@@ -44,7 +44,7 @@ pub fn QuestionCard(agent: AgentId, item: ItemId, question: Question, place: Car
                 class: if shown.leaving { "question-fold leaving" } else { "question-fold" },
                 inert: shown.leaving.then_some(true),
                 div { class: "question-fold-clip",
-                    WaitingQuestion { agent, item, question: shown.value, place }
+                    WaitingQuestion { agent, item, question: shown.value, place, leaving: shown.leaving }
                 }
             }
         }
@@ -67,8 +67,15 @@ fn tab_label(asked: &AskedQuestion, index: usize) -> String {
     }
 }
 
+/// A question that waits for an answer. `leaving` is true while it folds shut after the answer.
 #[component]
-fn WaitingQuestion(agent: AgentId, item: ItemId, question: Question, place: CardPlace) -> Element {
+fn WaitingQuestion(
+    agent: AgentId,
+    item: ItemId,
+    question: Question,
+    place: CardPlace,
+    leaving: bool,
+) -> Element {
     let cockpit: Cockpit = use_context();
     let card_id = format!(
         "{}-question-{}-{}",
@@ -77,10 +84,18 @@ fn WaitingQuestion(agent: AgentId, item: ItemId, question: Question, place: Card
         item.get()
     );
     // Only this question's draft: typing in the composer leaves the card alone.
-    let draft = use_memo(use_reactive((&question.pending,), move |(pending,)| {
+    let live_draft = use_memo(use_reactive((&question.pending,), move |(pending,)| {
         let drafts = cockpit.drafts.read();
         drafts.questions.get(&pending).cloned().unwrap_or_default()
     }))();
+    // The answer removes the draft: the card folds shut with the picks it last showed.
+    let mut last_draft = use_hook(|| CopyValue::new(live_draft.clone()));
+    let draft = if leaving {
+        last_draft.peek().clone()
+    } else {
+        last_draft.set(live_draft.clone());
+        live_draft
+    };
     // The "Other" fields start from the draft, then follow the keyboard alone: a render that lags
     // behind typing would put an older text back.
     let other_seeds = use_hook(|| draft.other.clone());
@@ -118,6 +133,7 @@ fn WaitingQuestion(agent: AgentId, item: ItemId, question: Question, place: Card
     } else {
         None
     };
+    let enter_text = enter_word.unwrap_or("next");
     let send_label = if count == 1 {
         "Send the answer"
     } else {
@@ -153,10 +169,10 @@ fn WaitingQuestion(agent: AgentId, item: ItemId, question: Question, place: Card
                                         cockpit.with_drafts(|_, drafts| actions::show_question(drafts, &question, asked_index));
                                     },
                                     "{label}"
-                                    if done {
+                                    // Both marks stay, so the change from one to the other fades.
+                                    span { class: if done { "tab-mark done" } else { "tab-mark" }, aria_hidden: true,
+                                        span { class: "tab-open" }
                                         span { class: "tab-done", Icon { kind: IconKind::Check, size: 12 } }
-                                    } else {
-                                        span { class: "tab-open", aria_hidden: true }
                                     }
                                 }
                             }
@@ -212,12 +228,14 @@ fn WaitingQuestion(agent: AgentId, item: ItemId, question: Question, place: Card
                             span { class: "key-hint", "→" }
                             " question"
                         }
-                        if let Some(word) = enter_word {
+                        // The hint keeps its place, faded out, when Enter does nothing, so it can
+                        // fade back in.
+                        span { class: if enter_word.is_some() { "question-enter" } else { "question-enter off" }, aria_hidden: enter_word.is_none(),
                             if options > 0 || count > 1 {
-                                " · "
+                                "· "
                             }
                             span { class: "key-hint", "Enter" }
-                            " {word}"
+                            " {enter_text}"
                         }
                     }
                 }

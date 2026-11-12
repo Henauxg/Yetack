@@ -364,15 +364,13 @@ for (let frame = 0; frame < 10; frame++) {
 "#;
 
 /// Gives the focus to the element whose id it receives when the focus is in an inert part of it,
-/// or nowhere, once the page shows the render.
+/// once the page shows the render.
 const FOCUS_OUT_OF_INERT_SCRIPT: &str = r#"
 const id = await dioxus.recv();
 await new Promise((resolve) => requestAnimationFrame(resolve));
 const element = document.getElementById(id);
 const active = document.activeElement;
-const lost = active === null || active === document.body
-  || (element !== null && element.contains(active) && active.closest("[inert]") !== null);
-if (element !== null && lost) {
+if (element !== null && active !== null && element.contains(active) && active.closest("[inert]") !== null) {
   element.focus({ preventScroll: true });
 }
 "#;
@@ -752,7 +750,7 @@ pub fn keep_focus(element_id: String) {
 }
 
 /// Gives the focus to the element `element_id` when a render made the focused element inside it
-/// inert, or left the focus nowhere.
+/// inert.
 pub fn focus_out_of_inert(element_id: String) {
     let script = document::eval(FOCUS_OUT_OF_INERT_SCRIPT);
     if let Err(error) = script.send(&element_id) {
@@ -860,9 +858,15 @@ pub fn give_focus_back(element_id: Option<&'static str>) {
 
 #[cfg(test)]
 mod tests {
+    use cockpit_protocol::{
+        AgentStatus, AnswerState, AskedQuestion, ItemId, PendingId, Question, Selection,
+        TranscriptItem,
+    };
+
     use super::*;
     use crate::machine::MachineId;
     use crate::state::projects::ProjectKey;
+    use crate::state::{state_with, summary};
 
     #[test]
     fn the_files_pane_scrolls_its_own_highlighted_row() {
@@ -878,6 +882,38 @@ mod tests {
         assert_eq!(image_media_type("image/png"), Some(ImageMediaType::Png));
         assert_eq!(image_media_type("image/tiff"), None);
         assert_eq!(mime_type(ImageMediaType::Webp), "image/webp");
+    }
+
+    #[test]
+    fn the_arrows_switch_questions_only_on_a_card_with_several_outside_the_map() {
+        let with_questions = |count: usize| {
+            let mut state = state_with(vec![summary(1, AgentStatus::NeedsYou)]);
+            state.ui.selected = Some(AgentId::new(1));
+            let asked = AskedQuestion {
+                header: "Scope".to_owned(),
+                text: "Which tests?".to_owned(),
+                options: Vec::new(),
+                selection: Selection::Single,
+            };
+            if let Some(entry) = state.agents.get_mut(&AgentId::new(1)) {
+                entry.transcript.append(TranscriptItem {
+                    id: ItemId::new(3),
+                    parent: None,
+                    body: ItemBody::Question(Question {
+                        pending: PendingId::new("request-3".to_owned()),
+                        questions: vec![asked; count],
+                        answer: AnswerState::Waiting,
+                    }),
+                });
+            }
+            state
+        };
+        let mut mapped = with_questions(2);
+        agent_map::toggle(&mut mapped);
+
+        assert!(KeyMode::new(&with_questions(2)).question_tabs);
+        assert!(!KeyMode::new(&with_questions(1)).question_tabs);
+        assert!(!KeyMode::new(&mapped).question_tabs);
     }
 
     #[test]

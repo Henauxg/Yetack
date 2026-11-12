@@ -4258,14 +4258,14 @@ mod tests {
 
         pick_option(&mut drafts, &question, 0, 0);
         pick_option(&mut drafts, &question, 2, 0);
-        let sent = enter_on_question(&state, &mut drafts, agent(), item).unwrap_or_default();
+        let sent = enter_on_question(&state, &mut drafts, agent(), item);
 
         assert!(matches!(
-            sent.as_slice(),
-            [Outgoing {
+            sent.as_deref(),
+            Some([Outgoing {
                 request: Request::AgentAnswer(_),
                 ..
-            }]
+            }])
         ));
     }
 
