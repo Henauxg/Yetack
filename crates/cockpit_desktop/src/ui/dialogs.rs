@@ -41,6 +41,10 @@ use crate::ui::settings::SettingsDialog;
 use crate::ui::zoom::ZoomImage;
 use crate::ui::{dialog_height, projects_tab};
 
+/// The class of the box over the window that holds the open dialog. `dialog_height` finds the
+/// dialogs in it.
+pub const OVERLAY_CLASS: &str = "overlay";
+
 /// Recent folders the new agent dialog offers.
 const RECENT_FOLDERS: usize = 6;
 
@@ -97,7 +101,7 @@ pub fn Dialogs() -> Element {
     else {
         return rsx! {};
     };
-    let mut overlay_class = vec!["overlay"];
+    let mut overlay_class = vec![OVERLAY_CLASS];
     if matches!(dialog, Dialog::AgentMap(_) | Dialog::ImageView(_)) {
         overlay_class.push("tall-overlay");
     }

@@ -5,6 +5,8 @@
 use dioxus::prelude::*;
 use serde::Serialize;
 
+use crate::ui::dialogs::OVERLAY_CLASS;
+
 /// Waits for its settings, then watches every dialog. Field names are serde's names for
 /// `Settings`.
 const SCRIPT: &str = r#"
@@ -177,7 +179,7 @@ struct Settings {
 
 const SETTINGS: Settings = Settings {
     dialog_class: "dialog",
-    overlay_class: "overlay",
+    overlay_class: OVERLAY_CLASS,
     grow_duration: "--motion-in",
     grow_easing: "--ease-out",
     shrink_duration: "--motion-out",
