@@ -905,6 +905,125 @@ pub fn finish_update(state: &mut AppState, machine: MachineId) {
     daemon_update::connected(state, machine);
 }
 
+/// With the demo, puts its machines in one of the states the sidebar and the Machines dialog
+/// show: `--demo-machines trouble`.
+const MACHINES_FLAG: &str = "--demo-machines";
+
+/// The states of the demo's machines that `--demo-machines` names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr, VariantArray)]
+#[strum(serialize_all = "kebab-case")]
+pub enum MachinesScene {
+    /// Local alone, without the server.
+    Alone,
+    /// Two more servers: one that does not answer, one that runs an older version.
+    Trouble,
+    /// Local's daemon stopped answering, and the app tries again.
+    LocalDown,
+    /// Local's daemon has not answered three attempts yet.
+    LocalConnecting,
+    /// Local has no daemon yet, beside the server.
+    LocalNoDaemon,
+}
+
+/// The server that does not answer, in `MachinesScene::Trouble`.
+const DOWN_SERVER: MachineId = MachineId::new(4);
+const DOWN_HOST: &str = "gpu-box";
+/// The server of an older version, in `MachinesScene::Trouble`.
+const OLDER_SERVER: MachineId = MachineId::new(5);
+const OLDER_HOST: &str = "lab";
+/// How long the demo's machines that do not answer wait before the app tries them again.
+const DEMO_RETRY: Duration = Duration::from_secs(40);
+
+/// The state `--demo-machines` names, which only the demo takes.
+pub fn machines_scene(arguments: &[String]) -> Option<MachinesScene> {
+    if !is_requested(arguments) {
+        return None;
+    }
+    let flag = arguments
+        .iter()
+        .position(|argument| argument == MACHINES_FLAG)?;
+    arguments.get(flag + 1)?.parse().ok()
+}
+
+pub fn show_machines(state: &mut AppState, scene: MachinesScene) {
+    let not_answering = |error: &str| ConnectionState::Disconnected {
+        error: error.to_owned(),
+        retry_at: Instant::now() + DEMO_RETRY,
+    };
+    match scene {
+        MachinesScene::Alone => {
+            state.machines.others.clear();
+            state
+                .agents
+                .retain(|&agent, _| MachineId::of(agent) == MachineId::THIS);
+        }
+        MachinesScene::Trouble => {
+            let parts = |id, title, status, since| SummaryParts {
+                id,
+                title,
+                folder: GPU_FOLDER,
+                status,
+                activity: None,
+                pending: 0,
+                since,
+            };
+            let agents = [(
+                parts(
+                    1,
+                    "Train the ranking model",
+                    AgentStatus::Exited,
+                    Duration::from_secs(2 * 3600),
+                ),
+                [
+                    user("Train the ranking model on last week's clicks."),
+                    text("Training runs on both GPUs."),
+                ],
+            )];
+            insert_server(state, SystemTime::now(), DOWN_SERVER, DOWN_HOST, agents);
+            let agents = [(
+                parts(
+                    1,
+                    "Profile the data loader",
+                    AgentStatus::Exited,
+                    Duration::from_secs(24 * 3600),
+                ),
+                [
+                    user("Why does the data loader use only one core?"),
+                    text("It reads the shards one at a time."),
+                ],
+            )];
+            insert_server(state, SystemTime::now(), OLDER_SERVER, OLDER_HOST, agents);
+            if let Some(server) = state.machines.others.get_mut(&DOWN_SERVER) {
+                server.connection =
+                    not_answering("ssh: connect to host gpu-box port 22: Connection refused");
+            }
+            if let Some(server) = state.machines.others.get_mut(&OLDER_SERVER) {
+                server.connection = not_answering(&format!(
+                    "the daemon refused the connection: {REFUSED_FOR_OLDER}"
+                ));
+                server.version_gap = Some(older_gap());
+                server.update_plan = Some(update_plan());
+            }
+        }
+        MachinesScene::LocalDown => {
+            state.machines.this.connection = not_answering("the daemon stopped answering");
+        }
+        MachinesScene::LocalConnecting => {
+            state.machines.this.connection = ConnectionState::Connecting { attempt: 3 };
+        }
+        MachinesScene::LocalNoDaemon => {
+            let label = state.machines.this.daemon.clone();
+            no_daemon::show(
+                state,
+                &label,
+                "no daemon listens on its socket".to_owned(),
+                Absence::NothingRuns,
+                None,
+            );
+        }
+    }
+}
+
 pub fn is_requested(arguments: &[String]) -> bool {
     arguments.iter().any(|argument| argument == DEMO_FLAG)
 }
@@ -4567,6 +4686,49 @@ pub struct ParseError {
         assert_eq!(sessions.len(), state.agents.len());
     }
 
+    #[test]
+    fn the_machines_scene_needs_the_demo_and_takes_its_name() {
+        let scene = |list: &[&str]| {
+            let arguments: Vec<String> = list.iter().map(|&argument| argument.to_owned()).collect();
+            machines_scene(&arguments)
+        };
+        let names: Vec<&str> = MachinesScene::VARIANTS
+            .iter()
+            .map(|&scene| scene.into())
+            .collect();
+
+        assert_eq!(
+            names,
+            [
+                "alone",
+                "trouble",
+                "local-down",
+                "local-connecting",
+                "local-no-daemon"
+            ]
+        );
+        assert_eq!(
+            scene(&[DEMO_FLAG, MACHINES_FLAG, "trouble"]),
+            Some(MachinesScene::Trouble)
+        );
+        assert_eq!(scene(&[MACHINES_FLAG, "trouble"]), None);
+        assert_eq!(scene(&[DEMO_FLAG, MACHINES_FLAG]), None);
+    }
+
+    #[test]
+    fn the_trouble_scene_adds_a_server_that_does_not_answer_and_an_older_one() {
+        let mut state = state(DaemonLabel::in_app());
+
+        show_machines(&mut state, MachinesScene::Trouble);
+
+        let lines: Vec<&str> = [DOWN_SERVER, OLDER_SERVER]
+            .into_iter()
+            .filter_map(|machine| state.machines.get(machine))
+            .filter_map(|known| crate::state::machine_status::status(known).line)
+            .map(|line| line.text)
+            .collect();
+        assert_eq!(lines, ["Not connected.", "Runs an older version."]);
+    }
     #[test]
     fn the_showcase_needs_the_demo_and_takes_a_scene_by_name() {
         let scene = |list: &[&str]| {

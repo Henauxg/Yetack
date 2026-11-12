@@ -11,12 +11,12 @@ use crate::machine::MachineId;
 use crate::state::daemon_update::{
     self, DaemonUpdate, FailedUpdate, UpdateFailure, UpdateProgress,
 };
+use crate::state::machines::MachineName;
 use crate::state::no_daemon::DaemonChoice;
 use crate::state::update_offer::{self, GapKind, ProgramBuild, UpdateOffer};
 use crate::state::update_plan::{UpdatePlan, UpdateStep};
 use crate::state::{AppState, ConnectionState};
 use crate::ui::icons::{Icon, IconKind};
-use crate::ui::machines::THIS_COMPUTER;
 use crate::ui::no_daemon::{Details, EveryTimeTick, IN_APP_DETAIL};
 
 const TITLE_ID: &str = "no-daemon-title";
@@ -24,12 +24,7 @@ const TITLE_ID: &str = "no-daemon-title";
 /// How the update screens name `machine`.
 fn machine_name(state: &AppState, machine: MachineId) -> Option<String> {
     let known = state.machines.get(machine)?;
-    let this_computer = machine == MachineId::THIS && known.daemon.place != DaemonPlace::Ssh;
-    Some(if this_computer {
-        THIS_COMPUTER.to_owned()
-    } else {
-        known.daemon.machine.clone()
-    })
+    Some(MachineName::new(machine, known).name)
 }
 
 /// The screen `machine`'s state calls for: a card that offers the update, the update waiting or

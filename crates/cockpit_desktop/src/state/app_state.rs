@@ -424,6 +424,12 @@ impl Machines {
             self.others.get_mut(&machine)
         }
     }
+
+    /// Every machine, this computer first, then the others in the config's order.
+    pub fn all(&self) -> impl Iterator<Item = (MachineId, &MachineState)> {
+        let others = self.others.iter().map(|(machine, known)| (*machine, known));
+        std::iter::once((MachineId::THIS, &self.this)).chain(others)
+    }
 }
 
 /// A header in the sidebar, a machine's or a project's, and the rows under it.
@@ -492,27 +498,24 @@ impl AppState {
     }
 
     /// The headers the sidebar shows, with the rows under each. Grouped by machine: this computer
-    /// first, then the others in the config's order, and none while the app reaches this computer
-    /// alone. Grouped by project: the projects that have agents. Not grouped: none.
+    /// first, then the others in the config's order, this computer alone included. Grouped by
+    /// project: the projects that have agents. Not grouped: none.
     pub fn sidebar_groups(&self) -> Vec<SidebarGroup<'_>> {
         let shown = self.sidebar_agents();
         match self.prefs.sidebar.group_by {
             GroupBy::None => Vec::new(),
-            GroupBy::Machine if self.machines.others.is_empty() => Vec::new(),
-            GroupBy::Machine => {
-                let machines =
-                    std::iter::once(MachineId::THIS).chain(self.machines.others.keys().copied());
-                machines
-                    .map(|machine| SidebarGroup {
-                        key: GroupKey::Machine(machine),
-                        rows: shown
-                            .iter()
-                            .copied()
-                            .filter(|entry| MachineId::of(entry.id()) == machine)
-                            .collect(),
-                    })
-                    .collect()
-            }
+            GroupBy::Machine => self
+                .machines
+                .all()
+                .map(|(machine, _)| SidebarGroup {
+                    key: GroupKey::Machine(machine),
+                    rows: shown
+                        .iter()
+                        .copied()
+                        .filter(|entry| MachineId::of(entry.id()) == machine)
+                        .collect(),
+                })
+                .collect(),
             GroupBy::Project => projects::shown_projects(self)
                 .into_iter()
                 .map(|project| SidebarGroup {

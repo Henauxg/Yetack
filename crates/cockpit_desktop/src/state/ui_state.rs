@@ -225,12 +225,24 @@ pub struct FolderField<'dialog> {
 /// The "Machines" dialog's form for a new server, and why the last one was refused.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MachinesView {
+    /// The form for a new server shows, from "Add a server".
+    pub adding: bool,
     pub name: String,
     pub host: String,
     pub remote_command: String,
     pub error: Option<String>,
-    /// The server whose row shows its form, from its Edit button.
+    /// The server whose row shows its form, from its menu's Edit.
     pub editing: Option<MachineEdit>,
+    /// The server whose ⋯ menu is open.
+    pub menu: Option<MachineMenu>,
+}
+
+/// A server's ⋯ menu in the Machines dialog, at `x`, `y` in the window's pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MachineMenu {
+    pub machine: MachineId,
+    pub x: i32,
+    pub y: i32,
 }
 
 /// A server's form in the Machines dialog, filled from its config.
@@ -768,9 +780,9 @@ impl UiState {
     }
 
     /// Closes every popover and the dialog, or only one of these when it is open: the start tab's
-    /// menu or folder list, the Projects tab's rule field, a server's form in the Machines dialog,
-    /// or a tab menu opened from the list of open files. Also cancels a title edit. Returns whether
-    /// anything was open.
+    /// menu or folder list, the Projects tab's rule field, a server's menu or form in the Machines
+    /// dialog, the form for a new server, or a tab menu opened from the list of open files. Also
+    /// cancels a title edit. Returns whether anything was open.
     pub fn close_overlays(&mut self) -> bool {
         if let Some(Dialog::NewAgent(form)) = &mut self.dialog
             && form.tab == NewAgentTab::Start
@@ -787,7 +799,9 @@ impl UiState {
             return true;
         }
         if let Some(Dialog::Machines(view)) = &mut self.dialog
-            && view.editing.take().is_some()
+            && (view.menu.take().is_some()
+                || view.editing.take().is_some()
+                || std::mem::take(&mut view.adding))
         {
             return true;
         }

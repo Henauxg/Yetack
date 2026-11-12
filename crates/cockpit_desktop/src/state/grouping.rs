@@ -54,9 +54,7 @@ pub fn toggle_folded(state: &mut AppState, group: &GroupKey) {
 pub fn group_of(state: &AppState, agent: AgentId) -> Option<GroupKey> {
     match state.prefs.sidebar.group_by {
         GroupBy::None => None,
-        GroupBy::Machine => {
-            (!state.machines.others.is_empty()).then(|| GroupKey::Machine(MachineId::of(agent)))
-        }
+        GroupBy::Machine => Some(GroupKey::Machine(MachineId::of(agent))),
         GroupBy::Project => state
             .agents
             .get(&agent)

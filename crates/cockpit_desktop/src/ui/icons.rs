@@ -49,6 +49,8 @@ pub enum IconKind {
     Server,
     /// This computer, in the sidebar's machine headers.
     Laptop,
+    /// More actions, in a menu.
+    Dots,
     /// An agent marked to handle.
     Flag,
     /// Long lines wrapped, for the file view's wrap toggle.
@@ -159,6 +161,9 @@ impl IconKind {
             }
             Self::Server => {
                 r#"<rect x="3" y="4" width="18" height="7" rx="2"></rect><rect x="3" y="13" width="18" height="7" rx="2"></rect><path d="M7 7.5h.01M7 16.5h.01"></path>"#
+            }
+            Self::Dots => {
+                r#"<circle cx="5" cy="12" r="1.2"></circle><circle cx="12" cy="12" r="1.2"></circle><circle cx="19" cy="12" r="1.2"></circle>"#
             }
             Self::Laptop => {
                 r#"<rect x="4" y="5" width="16" height="11" rx="2"></rect><path d="M2 19h20"></path>"#
