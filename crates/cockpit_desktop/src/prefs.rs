@@ -274,7 +274,7 @@ impl Serialize for FirstMark {
     }
 }
 
-/// A word this version does not know reads as `Kept`, rather than costing the whole file.
+/// A word this version does not know reads as `UntilMessage`, rather than costing the whole file.
 impl<'de> Deserialize<'de> for FirstMark {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let word = String::deserialize(deserializer)?;
