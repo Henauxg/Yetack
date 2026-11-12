@@ -1,8 +1,8 @@
 //! The "to handle" mark: a reminder you put on an agent, from its row's menu or its shortcut
 //! (Ctrl+H by default).
-//! The daemon keeps it. A mark of the kind "until a message" goes when you send the agent a
-//! prompt, a kept one only when you clear it. The shortcut gives the kind the settings put first,
-//! then the other kind, then clears it.
+//! The daemon keeps it. A prompt clears a mark until the next message. A kept mark goes only when
+//! you clear it. The shortcut gives the kind the settings put first, then the other kind, then
+//! clears the mark.
 
 use cockpit_protocol::{AgentId, Mark, MarkParams, Request};
 
@@ -25,8 +25,8 @@ pub fn set(state: &mut AppState, agent: AgentId, mark: Mark) -> Vec<Outgoing> {
 
 /// The mark after `mark`, as the shortcut and the row's menu go: the first kind, the other kind,
 /// then none.
-pub fn next(mark: Mark, first: FirstMark) -> Mark {
-    let [first, second] = first.order();
+pub fn next(mark: Mark, first_mark: FirstMark) -> Mark {
+    let [first, second] = first_mark.order();
     match mark {
         Mark::Unmarked => first,
         mark if mark == first => second,

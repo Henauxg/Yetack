@@ -351,7 +351,6 @@ impl Hub {
         };
         let line = prompts::prompt_line(&prompt)
             .ok_or_else(|| errors::internal("cannot encode the prompt".to_owned()))?;
-        // The prompt is the input a mark until the next prompt was waiting for.
         let mark = agent.record.mark.after_prompt();
         let mut record_changed = mark != agent.record.mark;
         agent.record.mark = mark;

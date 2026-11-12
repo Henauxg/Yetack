@@ -206,7 +206,7 @@ fn GeneralTab() -> Element {
                 div { class: "setting-text",
                     span { id: FIRST_MARK_LABEL_ID, class: "setting-label", "Mark to handle" }
                     span { class: "setting-help",
-                        "The mark {mark_keys} and the row's menu give first. Pressing again gives the other kind, then clears the mark."
+                        "The kind of mark that {mark_keys} and the row's menu put on an agent first. The second time puts the other kind, and the third clears the mark."
                     }
                 }
                 div { class: "segmented", role: "group", aria_labelledby: FIRST_MARK_LABEL_ID,
