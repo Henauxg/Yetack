@@ -41,7 +41,7 @@ pub mod working_folder;
 
 pub use app_state::{
     AgentEntry, AppState, ConnectionState, FileFreshness, FileRead, FileUpdate, Loadable,
-    MachineState, Reread, TurnStart,
+    MachineState, MessageHold, Reread, TurnStart,
 };
 pub use apply::{Alert, AlertKind, apply_update, error_chain, next_finish_due, release_finishes};
 pub use drafts::{Draft, Drafts};

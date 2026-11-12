@@ -1,22 +1,25 @@
 //! The prompts Claude has not read yet, pinned above the composer so they stay in view.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use cockpit_protocol::{AgentId, COMMAND_PREFIX, WaitingPrompt, WaitingState};
 use dioxus::prelude::*;
 
 use crate::connection::{Clock, Cockpit};
 use crate::format;
-use crate::state::actions;
 use crate::state::sending::{self, SendingPrompt};
+use crate::state::{MessageHold, RevealPlace, actions};
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::transcript;
 
 /// `sending` are the messages on their way that the daemon will most likely add here.
+/// `hold` is what a message Claude has waits for.
 #[component]
 pub fn WaitingPrompts(
     agent: AgentId,
     prompts: Vec<WaitingPrompt>,
     sending: Vec<SendingPrompt>,
+    hold: Option<MessageHold>,
 ) -> Element {
     if prompts.is_empty() && sending.is_empty() {
         return rsx! {};
@@ -24,7 +27,7 @@ pub fn WaitingPrompts(
     rsx! {
         div { class: "waiting-prompts", role: "list", aria_label: "Messages Claude has not read yet",
             for prompt in prompts {
-                WaitingRow { key: "{prompt.id.get()}", agent, prompt }
+                WaitingRow { key: "{prompt.id.get()}", agent, prompt, hold: hold.clone() }
             }
             for prompt in sending {
                 SendingRow { key: "sending-{prompt.id.get()}", agent, prompt }
@@ -79,28 +82,75 @@ fn SendingRow(agent: AgentId, prompt: SendingPrompt) -> Element {
 }
 
 #[component]
-fn WaitingRow(agent: AgentId, prompt: WaitingPrompt) -> Element {
+fn WaitingRow(agent: AgentId, prompt: WaitingPrompt, hold: Option<MessageHold>) -> Element {
     let cockpit: Cockpit = use_context();
+    let Clock(now) = use_context::<Clock>();
     let id = prompt.id;
-    let (class, label, title) = match prompt.state {
-        WaitingState::Sent => (
-            "waiting-row sent",
-            "Next step",
-            "Claude has it, and reads it at its next step",
+    let hold = hold.filter(|_| prompt.state == WaitingState::Sent);
+    let (class, label, title) = match (prompt.state, &hold) {
+        (WaitingState::Sent, Some(MessageHold::Answer { .. })) => (
+            "waiting-row sent blocked",
+            "Sent · waits for ",
+            "Claude has it, and reads it once you answer".to_owned(),
         ),
-        WaitingState::Queued => (
+        (WaitingState::Sent, Some(MessageHold::Calls(call))) => (
+            "waiting-row sent blocked",
+            "Sent · waits for ",
+            match call.others {
+                0 => "Claude has it, and reads it when this call ends. Stop the call in the chat to have it read now.".to_owned(),
+                others => format!("Claude has it, and reads it when its {} running calls end", others + 1),
+            },
+        ),
+        (WaitingState::Sent, None) => (
+            "waiting-row sent",
+            "Sent · read at the next step",
+            "Claude has it, and reads it at its next step".to_owned(),
+        ),
+        (WaitingState::Queued, _) => (
             "waiting-row queued",
             "After this turn",
-            "Sent when the turn ends",
+            "Sent when the turn ends".to_owned(),
         ),
     };
+    // What the label's link shows in the chat, its name, and the call's time.
+    let held_by = hold.map(|hold| match hold {
+        MessageHold::Answer { item } => (item, "your answer".to_owned(), None),
+        MessageHold::Calls(call) => {
+            // The time follows the clock's tick, once a second.
+            let _ = now();
+            let elapsed = call
+                .since
+                .map(|since| format::duration(Duration::from_secs(since.elapsed().as_secs())));
+            let name = match call.others {
+                0 => transcript::call_name(&call.tool),
+                others => format!("{} +{others}", transcript::call_name(&call.tool)),
+            };
+            (call.item, name, elapsed)
+        }
+    });
     let images = (prompt.image_count > 0).then(|| {
         let count = usize::try_from(prompt.image_count).unwrap_or(usize::MAX);
         format!("+{}", format::count(count, "image", "images"))
     });
     rsx! {
         div { class, role: "listitem",
-            span { class: "waiting-state", title, "{label}" }
+            span { class: "waiting-state", title,
+                "{label}"
+                if let Some((item, name, elapsed)) = held_by {
+                    button {
+                        class: "waiting-call",
+                        title: "Show it in the chat",
+                        onclick: move |_| cockpit.update(|state| {
+                            let entry = transcript::entry_item(state, agent, item);
+                            state.ui.reveal_in_chat(agent, entry, RevealPlace::Middle);
+                        }),
+                        "{name} ↑"
+                    }
+                    if let Some(elapsed) = elapsed {
+                        " · {elapsed}"
+                    }
+                }
+            }
             span { class: "waiting-text", title: "{prompt.text}", "{prompt.text}" }
             if let Some(images) = images {
                 span { class: "waiting-images", "{images}" }

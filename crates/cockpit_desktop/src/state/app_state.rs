@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_protocol::{
-    Account, AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, AnswerState, FileEdit,
-    Image, ItemBody, ItemId, PastSession, PlanUsage, ReleaseVersion, Settings, Timestamp,
-    ToolCallStatus, TranscriptItem, WaitingPrompt, list_order,
+    Account, AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, AnswerState,
+    BackgroundTask, BackgroundTaskStatus, FileEdit, Image, ItemBody, ItemId, PastSession,
+    PlanUsage, ReleaseVersion, Settings, Timestamp, ToolCallStatus, TranscriptItem, WaitingPrompt,
+    list_order,
 };
 use strum::VariantArray;
 
@@ -189,15 +190,63 @@ impl TurnStart {
     }
 }
 
+/// What holds a message Claude has: Claude reads it at its next step, once these end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessageHold {
+    /// An approval, a question or a plan waits for the user's answer.
+    Answer { item: ItemId },
+    /// The agent's own calls run.
+    Calls(BlockingCall),
+}
+
+/// The running call of the agent's own that started first in its step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockingCall {
+    pub item: ItemId,
+    /// Claude Code's tool name, such as `Bash`.
+    pub tool: String,
+    /// When the app saw it start, `None` for a call already running when the app connected.
+    pub since: Option<Instant>,
+    /// The step's other running calls.
+    pub others: usize,
+}
+
 impl AgentEntry {
+    /// What Claude's next step waits for, `None` when nothing does.
+    pub fn message_hold(&self) -> Option<MessageHold> {
+        let running: Vec<_> = self.transcript.running_calls().collect();
+        let calls: Vec<ItemId> = running.iter().map(|(item, _)| *item).collect();
+        if let Some(waiting) = self.transcript.waiting_in_step(&calls) {
+            return Some(MessageHold::Answer { item: waiting.item });
+        }
+        let (others, (item, call)) = (running.len().checked_sub(1)?, running.last()?);
+        Some(MessageHold::Calls(BlockingCall {
+            item: *item,
+            tool: call.tool.clone(),
+            since: self.calls_running_since.get(item).copied(),
+            others,
+        }))
+    }
+
+    /// The running task that a running call started: stopping the task stops the call.
+    pub fn call_task(&self, item: ItemId) -> Option<&BackgroundTask> {
+        self.details
+            .loaded()?
+            .background_tasks
+            .iter()
+            .find(|task| task.call == Some(item) && task.status == BackgroundTaskStatus::Running)
+    }
+
     /// Keeps when a tool call started running, as the app saw it at `now`, and forgets it once the
     /// call ends. A call that waits for approval has not started: it starts at the answer.
     pub fn note_call(&mut self, item: &TranscriptItem, now: Instant) {
         match &item.body {
-            ItemBody::ToolCall(call) if call.status == ToolCallStatus::Running => {
+            ItemBody::ToolCall(call) | ItemBody::Subagent(call)
+                if call.status == ToolCallStatus::Running =>
+            {
                 self.calls_running_since.entry(item.id).or_insert(now);
             }
-            ItemBody::ToolCall(_) => {
+            ItemBody::ToolCall(_) | ItemBody::Subagent(_) => {
                 self.calls_running_since.remove(&item.id);
             }
             ItemBody::Approval(approval) => {
@@ -626,8 +675,9 @@ impl AppState {
 pub(crate) mod tests {
     use cockpit_client::{SessionUpdate, Welcome};
     use cockpit_protocol::{
-        AnswerState, Approval, ApprovalAnswer, ApprovalDecision, Catchup, CostUsd, EffortSource,
-        Mark, PendingId, PermissionMode, Position, SignInWait,
+        AnswerState, Approval, ApprovalAnswer, ApprovalDecision, BackgroundTaskId,
+        BackgroundTaskKind, Catchup, CostUsd, EffortSource, Mark, PendingId, PermissionMode,
+        Position, SignInWait,
     };
 
     use super::*;
@@ -726,6 +776,59 @@ pub(crate) mod tests {
                 tool_call: Some(ItemId::new(CALL)),
             }),
         }
+    }
+
+    #[test]
+    fn a_message_waits_for_the_running_call_and_its_task_stops_it() {
+        let mut entry = AgentEntry::new(summary(1, AgentStatus::Working));
+        let start = Instant::now();
+        let task = |call: Option<u32>, status| BackgroundTask {
+            id: BackgroundTaskId::new(format!("task-{status:?}")),
+            kind: BackgroundTaskKind::Command,
+            description: "cargo build".to_owned(),
+            status,
+            started_at: Timestamp::from_unix_millis(0),
+            ended_at: None,
+            tool_calls: 0,
+            call: call.map(ItemId::new),
+        };
+        entry.details = Loadable::Loaded(AgentDetails {
+            background_tasks: vec![
+                task(Some(CALL), BackgroundTaskStatus::Stopped),
+                task(Some(CALL), BackgroundTaskStatus::Running),
+                task(None, BackgroundTaskStatus::Done),
+            ],
+            ..AgentDetails::default()
+        });
+        assert_eq!(entry.message_hold(), None);
+
+        entry.transcript.append(bash_call(ToolCallStatus::Running));
+        entry.note_call(&bash_call(ToolCallStatus::Running), start);
+
+        assert_eq!(
+            entry.message_hold(),
+            Some(MessageHold::Calls(BlockingCall {
+                item: ItemId::new(CALL),
+                tool: "Bash".to_owned(),
+                since: Some(start),
+                others: 0,
+            }))
+        );
+        assert_eq!(
+            entry.call_task(ItemId::new(CALL)).map(|task| task.status),
+            Some(BackgroundTaskStatus::Running)
+        );
+        assert!(entry.call_task(ItemId::new(CALL + 1)).is_none());
+
+        entry
+            .transcript
+            .append(approval_of_the_call(AnswerState::Waiting));
+        assert_eq!(
+            entry.message_hold(),
+            Some(MessageHold::Answer {
+                item: ItemId::new(CALL + 1)
+            })
+        );
     }
 
     #[test]

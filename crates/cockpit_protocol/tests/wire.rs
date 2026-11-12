@@ -414,6 +414,7 @@ fn details() -> AgentDetails {
                 started_at: at(1_700_000_100_000),
                 ended_at: None,
                 tool_calls: 0,
+                call: Some(ItemId::new(3)),
             },
             BackgroundTask {
                 id: BackgroundTaskId::new("task-2".to_owned()),
@@ -423,6 +424,7 @@ fn details() -> AgentDetails {
                 started_at: at(1_700_000_100_000),
                 ended_at: Some(at(1_700_000_160_000)),
                 tool_calls: 12,
+                call: None,
             },
         ],
         changed_files: vec![ChangedFile {
@@ -1898,6 +1900,27 @@ fn a_summary_without_its_background_count_reads_none_running() {
 
     assert_eq!(read.background_running, 0);
     assert_eq!(read.mark, Mark::Unmarked);
+}
+
+/// A task names the call that started it, and a task without one leaves the field out.
+#[test]
+fn a_background_task_on_the_wire() {
+    let [running, done] = details().background_tasks.try_into().unwrap();
+
+    assert_wire(
+        &running,
+        json!({
+            "id": "task-1",
+            "kind": "command",
+            "description": "cargo watch",
+            "status": "running",
+            "started_at": 1_700_000_100_000_u64,
+            "ended_at": null,
+            "tool_calls": 0,
+            "call": 3,
+        }),
+    );
+    assert!(serde_json::to_value(&done).unwrap().get("call").is_none());
 }
 
 #[test]

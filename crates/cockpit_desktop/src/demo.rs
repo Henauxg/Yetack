@@ -359,6 +359,10 @@ Notes for agents working in this repository.
 - [ ] Add a benchmark for deep nesting, in `benches/`
 ";
 
+/// The parser agent's running command, and its call, which the command's task names.
+const PARSER_TESTS_COMMAND: &str = "cargo test parser";
+const PARSER_TESTS_CALL: u32 = 21;
+
 /// Markdown links to files of the agent's folder: relative, at a line, and absolute.
 const FIX_ANSWER: &str = "Fixed in [the lexer](src/lexer.rs#L17): columns now count from 1, as [AGENTS.md](AGENTS.md) asks. The [error type](/home/dev/projects/calc-parser/src/error.rs) stays as it is. Running the tests again.";
 
@@ -2044,7 +2048,7 @@ fn parser_background_tasks(now: SystemTime) -> Vec<BackgroundTask> {
         (Command, "cargo doc --no-deps", Done, 420, Some(380), 0),
         (Agent, "Check the docs for column examples", Done, 300, Some(150), 7),
         (Agent, "Summarize the error type review", Done, 200, Some(90), 4),
-        (Command, "cargo test parser", Running, 12, None, 0),
+        (Command, PARSER_TESTS_COMMAND, Running, 12, None, 0),
     ];
     (1_u32..)
         .zip(tasks)
@@ -2057,6 +2061,7 @@ fn parser_background_tasks(now: SystemTime) -> Vec<BackgroundTask> {
                 started_at: at(now, started),
                 ended_at: ended.map(|ended| at(now, ended)),
                 tool_calls,
+                call: (description == PARSER_TESTS_COMMAND).then(|| ItemId::new(PARSER_TESTS_CALL)),
             },
         )
         .collect()
@@ -2206,11 +2211,11 @@ fn parser_agent(now: SystemTime) -> Sample {
         item(19, None, ItemBody::ToolCall(position_read)),
         item(LOOKUP_ITEM, None, text(LOOKUP_ANSWER)),
         item(
-            21,
+            PARSER_TESTS_CALL,
             None,
             ItemBody::ToolCall(bash(
                 "Run the parser tests again",
-                "cargo test parser",
+                PARSER_TESTS_COMMAND,
                 ToolCallStatus::Running,
                 None,
             )),
@@ -2566,6 +2571,7 @@ fn benchmark_agent(now: SystemTime) -> Sample {
             started_at: at(now, 900),
             ended_at: None,
             tool_calls: 0,
+            call: None,
         }],
         ..details()
     };
@@ -3233,6 +3239,7 @@ fn map_agent(now: SystemTime) -> Sample {
                 started_at: at(now, started),
                 ended_at: ended.map(|ended| at(now, ended)),
                 tool_calls,
+                call: None,
             }
         };
     let details = AgentDetails {

@@ -20,7 +20,7 @@ use crate::keymap::Command;
 use crate::render::{self, Diff, Found, Language, OutputPart, SearchTool, diff_lines};
 use crate::state::sending::{SendingPlace, SendingPrompt};
 use crate::state::{
-    self, AgentEntry, HistoryState, TurnStart, accounts, actions, chat_images, file_edits,
+    self, AgentEntry, AppState, HistoryState, TurnStart, accounts, actions, chat_images, file_edits,
 };
 use crate::ui::accounts::SignInCard;
 use crate::ui::cards::{ApprovalCard, PlanCard, QuestionCard};
@@ -401,11 +401,7 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
     let sign_in_notice = sign_in.as_ref().and_then(|turn| turn.notice);
     let sign_in_end = sign_in.as_ref().map(|turn| turn.turn_end);
     let waits_for_sign_in = entry.summary.sign_in_wait == SignInWait::Waiting;
-    let top_items: Vec<&TranscriptItem> = items
-        .iter()
-        .copied()
-        .filter(|item| shows_at_top(item, &loaded) && Some(item.id) != sign_in_notice)
-        .collect();
+    let top_items = top_items(&items, &loaded, sign_in_notice);
     let divider = actions::new_divider(&state, agent);
     let top_rows = tool_rows::rows(&top_items, &awaiting, divider);
     let states: Vec<Option<StepState>> = top_rows
@@ -736,6 +732,37 @@ fn WorkingLine(since: Option<TurnStart>, linked: bool) -> Element {
             "{text}"
         }
     }
+}
+
+/// The items the chat shows at its top level, in order.
+fn top_items<'item>(
+    items: &[&'item TranscriptItem],
+    loaded: &BTreeSet<ItemId>,
+    sign_in_notice: Option<ItemId>,
+) -> Vec<&'item TranscriptItem> {
+    items
+        .iter()
+        .copied()
+        .filter(|item| shows_at_top(item, loaded) && Some(item.id) != sign_in_notice)
+        .collect()
+}
+
+/// The item whose entry shows `item` in the chat: a read or a search in a run of them shows in
+/// the run's row, which the run's first item names.
+pub(crate) fn entry_item(state: &AppState, agent: AgentId, item: ItemId) -> ItemId {
+    let Some(entry) = state.agents.get(&agent) else {
+        return item;
+    };
+    let items: Vec<&TranscriptItem> = entry.transcript.items().collect();
+    let loaded: BTreeSet<ItemId> = items.iter().map(|item| item.id).collect();
+    let awaiting = state::awaiting_approval(&items);
+    let sign_in_notice = accounts::sign_in_turn(entry).and_then(|turn| turn.notice);
+    let top = top_items(&items, &loaded, sign_in_notice);
+    let divider = actions::new_divider(state, agent);
+    tool_rows::rows(&top, &awaiting, divider)
+        .iter()
+        .find(|row| row.items().iter().any(|shown| shown.id == item))
+        .map_or(item, |row| row.first().id)
 }
 
 /// Top-level items, the cards still waiting for an answer, even a subagent's, which a folded
@@ -1080,8 +1107,7 @@ enum ToolShape {
 
 impl ToolShape {
     fn new(call: &ToolCall) -> Self {
-        if let Some(name) = call.tool.strip_prefix(MCP_TOOL_PREFIX) {
-            let (server, tool) = name.split_once(MCP_TOOL_SEPARATOR).unwrap_or((name, ""));
+        if let Some((server, tool)) = mcp_parts(&call.tool) {
             let input = match &call.input {
                 Value::Object(fields) if !fields.is_empty() => {
                     serde_json::to_string_pretty(&call.input).ok()
@@ -1387,6 +1413,12 @@ pub(crate) fn RunningMeta(agent: AgentId, item: ItemId) -> Element {
     let Clock(now) = use_context();
     // Read for its tick alone: the time counts from an `Instant`.
     let _ = now();
+    // The task comes and goes with the agent's details, apart from the tick.
+    let task = use_memo(use_reactive((&agent, &item), move |(agent, item)| {
+        let state = cockpit.state.read();
+        let entry = state.agents.get(&agent)?;
+        entry.call_task(item).map(|task| task.id.clone())
+    }));
     let since = cockpit
         .state
         .peek()
@@ -1402,7 +1434,33 @@ pub(crate) fn RunningMeta(agent: AgentId, item: ItemId) -> Element {
     };
     rsx! {
         span { class: "tool-meta", "{text}" }
+        if let Some(task) = task() {
+            button {
+                class: "call-stop",
+                aria_label: "Stop this call",
+                title: "Stop this call: Claude gets it as stopped, goes on, and reads the messages it has",
+                onclick: move |event| {
+                    event.stop_propagation();
+                    let task = task.clone();
+                    cockpit.change(|_| actions::stop_task(agent, task));
+                },
+                span { class: "stop-square", aria_hidden: true }
+                "Stop"
+            }
+        }
     }
+}
+
+/// A call's name as a message's row says it: `Bash`, or an MCP tool's server, as `Tickets`.
+pub(crate) fn call_name(tool: &str) -> String {
+    mcp_parts(tool).map_or_else(|| tool.to_owned(), |(server, _)| capitalized(server))
+}
+
+/// The server and the tool of an MCP tool's name, as `tickets` and `list` in
+/// `mcp__tickets__list`.
+fn mcp_parts(tool: &str) -> Option<(&str, &str)> {
+    let name = tool.strip_prefix(MCP_TOOL_PREFIX)?;
+    Some(name.split_once(MCP_TOOL_SEPARATOR).unwrap_or((name, "")))
 }
 
 pub(crate) fn tool_meta(call: &ToolCall, stage: CallStage) -> String {
@@ -1757,6 +1815,13 @@ mod tests {
     use cockpit_protocol::{Approval, ApprovalAnswer, ApprovalDecision, FileEdit, PendingId};
 
     use super::*;
+
+    #[test]
+    fn a_call_is_named_by_its_tool_or_its_mcp_server() {
+        assert_eq!(call_name("Bash"), "Bash");
+        assert_eq!(call_name("mcp__tickets__list_tickets"), "Tickets");
+        assert_eq!(call_name("mcp__notes"), "Notes");
+    }
 
     #[test]
     fn a_long_chat_draws_older_rows_in_chunks_up_to_all() {

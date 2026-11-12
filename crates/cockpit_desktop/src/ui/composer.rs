@@ -162,6 +162,7 @@ pub fn Composer() -> Element {
         None => format!("Agent map ({map_keys})"),
     };
     let waiting = entry.waiting_prompts().to_vec();
+    let hold = entry.message_hold();
     let sending: Vec<SendingPrompt> = entry
         .sending
         .in_place(SendingPlace::Waiting)
@@ -179,7 +180,7 @@ pub fn Composer() -> Element {
                 Presence { open: popover == Some(Popover::Mode),
                     ModeMenu { agent, mode }
                 }
-                WaitingPrompts { agent, prompts: waiting, sending }
+                WaitingPrompts { agent, prompts: waiting, sending, hold }
                 div { class: "composer",
                     if !draft.quotes.is_empty() {
                         QuoteRows { agent, quotes: draft.quotes.clone(), wide: chat_is_wide(&state, agent) }

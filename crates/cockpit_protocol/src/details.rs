@@ -66,7 +66,8 @@ pub enum TaskStatus {
     Completed,
 }
 
-/// A subagent or a command running in the background.
+/// A subagent or a command that Claude Code runs as a task, in the background or in the
+/// foreground.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BackgroundTask {
     pub id: BackgroundTaskId,
@@ -77,6 +78,10 @@ pub struct BackgroundTask {
     pub started_at: Timestamp,
     pub ended_at: Option<Timestamp>,
     pub tool_calls: u32,
+    /// The tool call that started it, which `AgentStopTask` stops with it. Claude Code gives a
+    /// task to a command that runs in the foreground too. `None` from an older daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<ItemId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, VariantArray)]

@@ -743,6 +743,7 @@ mod tests {
             started_at: Timestamp::from_unix_millis(1_000_000),
             ended_at: None,
             tool_calls: 5,
+            call: None,
         }
     }
 

@@ -1373,11 +1373,11 @@ impl AgentView {
 
     fn task_started(&mut self, task: TaskStarted, now: Timestamp) {
         let id = BackgroundTaskId::new(task.task_id.as_str().to_owned());
-        let subagent = task
+        let call = task
             .tool_use_id
             .as_ref()
-            .and_then(|call| self.tool_calls.get(call).copied())
-            .and_then(|item| subagents::find_mut(&mut self.details.subagents, item));
+            .and_then(|call| self.tool_calls.get(call).copied());
+        let subagent = call.and_then(|item| subagents::find_mut(&mut self.details.subagents, item));
         if let Some(subagent) = subagent {
             subagent.task = Some(id.clone());
         }
@@ -1392,6 +1392,7 @@ impl AgentView {
             started_at: now,
             ended_at: None,
             tool_calls: 0,
+            call,
         });
         details::prune_background_tasks(&mut self.details.background_tasks);
         self.details_changed = true;
@@ -2954,6 +2955,36 @@ mod tests {
         let ended = &view.details().background_tasks[0];
         assert_eq!(ended.status, BackgroundTaskStatus::Failed);
         assert_eq!(ended.ended_at, Some(now()));
+    }
+
+    #[test]
+    fn a_task_names_the_call_that_started_it() {
+        let mut view = view();
+        apply(
+            &mut view,
+            tool_use("t1", "Bash", json!({"command": "cargo build"})),
+        );
+        let call = view.items().last().map(|item| item.id);
+
+        apply(
+            &mut view,
+            json!({"type": "system", "subtype": "task_started", "task_id": "fg-1",
+                   "description": "Build", "task_type": "local_bash", "tool_use_id": "t1",
+                   "is_backgrounded": false}),
+        );
+        apply(
+            &mut view,
+            json!({"type": "system", "subtype": "task_started", "task_id": "bg-2",
+                   "description": "Watch", "task_type": "local_bash", "tool_use_id": "t9"}),
+        );
+
+        let calls: Vec<Option<ItemId>> = view
+            .details()
+            .background_tasks
+            .iter()
+            .map(|task| task.call)
+            .collect();
+        assert_eq!(calls, [call, None]);
     }
 
     fn user_texts(view: &AgentView) -> Vec<&str> {

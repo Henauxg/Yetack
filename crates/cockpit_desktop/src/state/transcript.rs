@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use cockpit_protocol::{
-    AnswerState, HistoryPage, ItemBody, ItemId, OlderItems, PendingId, ToolCallStatus,
+    AnswerState, HistoryPage, ItemBody, ItemId, OlderItems, PendingId, ToolCall, ToolCallStatus,
     TranscriptItem, UserMessage,
 };
 
@@ -160,6 +160,16 @@ impl Transcript {
         self.items.values().rev().find_map(Waiting::new)
     }
 
+    /// The newest approval, question or plan that waits for an answer and holds the agent's next
+    /// step: the agent's own, or that of a subagent whose call is one of `running`.
+    pub fn waiting_in_step(&self, running: &[ItemId]) -> Option<Waiting> {
+        self.items
+            .values()
+            .rev()
+            .filter(|item| item.parent.is_none_or(|parent| running.contains(&parent)))
+            .find_map(Waiting::new)
+    }
+
     /// The newest approval, question or plan of the subagent of item `parent` that waits for an
     /// answer.
     pub fn waiting_under(&self, parent: ItemId) -> Option<Waiting> {
@@ -181,6 +191,26 @@ impl Transcript {
             .range(..top)
             .rev()
             .find_map(|(_, item)| user_message(item).map(|message| (item.id, message)))
+    }
+
+    /// The agent's own calls that run in its current step, the latest first. Claude reads a
+    /// message sent meanwhile once they end. A subagent's calls run under its own call.
+    pub fn running_calls(&self) -> impl Iterator<Item = (ItemId, &ToolCall)> {
+        self.items
+            .values()
+            .rev()
+            .take_while(|item| {
+                !matches!(item.body, ItemBody::TurnEnd(_)) && user_message(item).is_none()
+            })
+            .filter(|item| item.parent.is_none())
+            .filter_map(|item| match &item.body {
+                ItemBody::ToolCall(call) | ItemBody::Subagent(call)
+                    if call.status == ToolCallStatus::Running =>
+                {
+                    Some((item.id, call))
+                }
+                _ => None,
+            })
     }
 
     /// The messages the user sent to the agent, oldest first.
@@ -580,6 +610,64 @@ mod tests {
 
         assert_eq!(read(true), Some(2));
         assert_eq!(read(false), Some(6));
+    }
+
+    #[test]
+    fn the_running_calls_are_the_agents_own_since_the_last_message() {
+        let running = |tool: &str| ItemBody::ToolCall(call(tool, "", ToolCallStatus::Running));
+        let mut transcript = Transcript::default();
+        transcript.append(item(1, None, running("Bash")));
+        transcript.append(item(
+            2,
+            None,
+            ItemBody::UserMessage(UserMessage {
+                text: "Go on".to_owned(),
+                images: Vec::new(),
+                sent_at: None,
+            }),
+        ));
+        transcript.append(item(3, None, running("Bash")));
+        transcript.append(item(
+            4,
+            None,
+            ItemBody::ToolCall(call("Read", "a.rs", ToolCallStatus::Done)),
+        ));
+        transcript.append(item(
+            5,
+            None,
+            ItemBody::Subagent(call("Agent", "Survey", ToolCallStatus::Running)),
+        ));
+        transcript.append(item(6, Some(5), running("Grep")));
+        transcript.append(text(7, "Waiting for the build"));
+
+        let ids: Vec<u32> = transcript.running_calls().map(|(id, _)| id.get()).collect();
+
+        assert_eq!(ids, [5, 3]);
+    }
+
+    #[test]
+    fn only_a_card_of_the_step_holds_it() {
+        let subagent = |status| ItemBody::Subagent(call("Agent", "Survey", status));
+        let waiting = || approval("Bash", "rm -r build", AnswerState::Waiting);
+        let mut transcript = Transcript::default();
+        transcript.append(item(1, None, subagent(ToolCallStatus::Done)));
+        transcript.append(item(2, Some(1), waiting()));
+        transcript.append(item(3, None, subagent(ToolCallStatus::Running)));
+        let held = |transcript: &Transcript, running: &[u32]| {
+            let running: Vec<ItemId> = running.iter().copied().map(ItemId::new).collect();
+            transcript
+                .waiting_in_step(&running)
+                .map(|waiting| waiting.item.get())
+        };
+
+        assert_eq!(held(&transcript, &[3]), None);
+
+        transcript.append(item(4, Some(3), waiting()));
+        assert_eq!(held(&transcript, &[3]), Some(4));
+        assert_eq!(held(&transcript, &[]), None);
+
+        transcript.append(item(5, None, waiting()));
+        assert_eq!(held(&transcript, &[]), Some(5));
     }
 
     #[test]

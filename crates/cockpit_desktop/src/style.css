@@ -3911,6 +3911,40 @@ html.reordering * {
   color: var(--red);
 }
 
+/* A running call's own stop, after its time. */
+.call-stop {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  margin-left: 8px;
+  padding: 0 7px;
+  border: 1px solid var(--line-control);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 11.5px;
+  vertical-align: 1px;
+}
+
+.call-stop,
+.waiting-call {
+  animation: fade-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.call-stop .stop-square {
+  width: 7px;
+  height: 7px;
+}
+
+.call-stop:hover,
+.call-stop:focus-visible {
+  border-color: #713b37;
+  background: rgba(244, 112, 103, 0.16);
+  color: var(--red);
+}
+
 .badges {
   position: absolute;
   top: 12px;
@@ -4355,6 +4389,30 @@ html.reordering * {
 .waiting-row.sent .waiting-state {
   color: var(--teal);
   background: rgba(45, 212, 191, 0.12);
+}
+
+/* Claude has the message but a running call holds it. */
+.waiting-row.blocked .waiting-state {
+  color: var(--amber);
+  background: rgba(245, 165, 36, 0.12);
+  font-variant-numeric: tabular-nums;
+}
+
+.waiting-call {
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-soft);
+  font: inherit;
+  text-decoration: underline;
+  text-decoration-color: rgba(255, 255, 255, 0.3);
+  text-underline-offset: 2px;
+}
+
+.waiting-call:hover {
+  color: var(--text-bright);
+  text-decoration-color: currentColor;
 }
 
 /* A message on its way, until the daemon's echo replaces it. */
@@ -8570,6 +8628,8 @@ label.icon-button,
 .menu-button:active,
 .send-button:not(:disabled, .resting):active,
 .badge:active,
+.call-stop:active,
+.waiting-call:active,
 .block-head-action:active,
 .stop-button:active,
 .effort:active,

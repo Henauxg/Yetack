@@ -301,6 +301,7 @@ mod tests {
             started_at: Timestamp::from_unix_millis(0),
             ended_at: Some(Timestamp::from_unix_millis(1)),
             tool_calls: 0,
+            call: None,
         }
     }
 

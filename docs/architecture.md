@@ -138,7 +138,9 @@ The kinds of item:
 An answer state is `Waiting`, `Answered`, or `Cancelled` (Claude Code withdraws a pending request when the turn is interrupted).
 
 `AgentDetails` holds what the side blocks and the agent map show: the task list (from `TodoWrite`), background tasks (`task_started`, `task_notification`), the subagents, changed files, and the last context usage.
+A background task names its `call`, the tool call that started it. Claude Code gives a task to a command that runs in the foreground too (`is_backgrounded: false`), so `agent.stop_task` stops one running command: Claude gets the call as stopped (exit code 137) and goes on with its turn.
 It also holds `waiting_prompts`: the prompts Claude has not read yet, each `queued` (the daemon holds it) or `sent` (`claude` has it), with its text and image count.
+Claude Code reads a sent prompt at its next step, so only once the step's running calls end. Its row says what it waits for (`AgentEntry::message_hold`): an approval, a question or a plan that waits for the user, or else the step's running calls (`Transcript::running_calls`), named by the one that started first. That call's row has a Stop button when it has a task.
 
 ### Subagents
 
