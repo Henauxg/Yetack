@@ -407,6 +407,13 @@ mod tests {
             can_edit(&state.machines.others[&devbox]),
             "a failed update allows an edit"
         );
+
+        daemon_update::start(&mut state, devbox);
+        daemon_update::finished(&mut state, devbox, Some(0));
+        assert!(
+            !can_edit(&state.machines.others[&devbox]),
+            "an update that waits for the new daemon still holds its config"
+        );
     }
 
     #[test]
