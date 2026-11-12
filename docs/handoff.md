@@ -7,10 +7,41 @@ Update it when you hand over.
 
 ## Where the work is
 
-- All work is on the branch `ccr-8be27d05-6ge2s2`, pushed. `main` has not moved: the branch is about 150 commits ahead of it, and no pull request exists yet. Ask the user before opening one or merging.
+- Work goes on short branches, each in its own worktree (see AGENTS.md), and is merged into `main` once the user agrees. The open one is in "In progress: updating any machine's daemon" below.
 - CI (`.github/workflows/ci.yml`) runs on Linux and Windows, only when started: `gh workflow run ci.yml --ref <branch>`, or from the Actions tab. Ask the user before you start it. The Windows job is the only real Windows test, and it caught several failures that no Linux run showed.
 - CI is green on both platforms from `b57f7cd` on, the Windows job's tests of every crate included. Before it, the Windows job failed from the accounts commits on, on four account tests whose home folder was a Unix path.
 - The protocol version is 9: `Welcome` carries the daemon's commit (`daemon_commit`). An app and a daemon of different versions refuse each other at `Hello`, so they are rebuilt together.
+
+## In progress: updating any machine's daemon
+
+The branch `feat/machine-updates` is pushed and not merged into `main`. Work in a worktree of it: `git worktree add ../agents-cockpit-machine-updates feat/machine-updates`.
+
+The user approved the design after three rounds of HTML mockups. The approved round is on the user's Windows machine only, in `%TEMP%\cockpit-mockup\`: `gen_round3.py` writes it, and `service\r3-*.png` are its screenshots. Ask the user if you cannot reach them.
+
+Done:
+
+- The daemon sends its commit in `Welcome` and writes its process into `serve.lock`. On Unix, `cockpit_daemon::stop_lock_holder` stops that process and no other.
+- The update's state and flow, the same for every machine (`state/update_offer.rs`, `state/update_plan.rs`, `state/daemon_update.rs`, `service_update.rs`). A server runs `contrib/update-daemon.sh`. Local's background service is stopped, then started again with the app's own program. When agents are busy, a confirmation offers "Update when they are idle" and "Update now", which gives the script `--even-if-busy`.
+- Machine panels even when Local is alone, "Local" for this computer, a strip of machine troubles when agents are grouped by project, the Machines dialog as a grid, and compact menus in the composer (`state/machine_status.rs`).
+
+Left, in order:
+
+1. The update screens, from the mockups:
+   - the update states in `machine_status.rs`: panel lines, the strip and the dialog's chips. An older daemon's line offers only "Update", and its dialog row has no "Retrying in N s." note;
+   - the "0.1.0 → 0.2.0" version column;
+   - the update card, the progress card and the failure card (`failure_text`);
+   - the confirmation (`Dialog::ConfirmUpdate`);
+   - when Local's update fills the window (`takes_the_window`).
+
+   The demo shows each state with `--demo-update <state>` and `--demo-machines <scene>`.
+2. An idle agent with running background tasks counts as busy: the user decided so.
+   - `AgentSummary` needs its count of running background tasks. Protocol 9 is not released yet, so it needs no new version.
+   - `busy_agents` in `state/update_offer.rs` uses the count, and the confirmation says "runs N background tasks".
+   - `agents-cockpit list` and the script's busy check count the agent too, unless `--even-if-busy`.
+3. `/review fix`, then `/review-standard fix`.
+4. Ask the user before merging into `main`.
+
+To check Unix code without CI, cross-build the daemon crates for `x86_64-unknown-linux-musl`, with `rust-lld` as the linker, and run their test binaries in WSL. The tests embed Windows paths through `env!`, so give them absolute paths for the run, and don't commit that change. The `update_daemon` tests fail in about 4 of 10 full runs there, on `main` too: rerun a failing test alone.
 
 ## What the branch added
 
