@@ -8886,10 +8886,6 @@ button.map-toggle:hover {
   margin-right: 2px;
 }
 
-.card.signin-card {
-  background: #211e18;
-}
-
 .signin-card .card-note b {
   color: var(--text-soft);
   font-weight: 500;
