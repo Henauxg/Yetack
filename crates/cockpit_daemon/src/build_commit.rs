@@ -1,6 +1,10 @@
-//! The commit this program was built from, which the build script sets.
+//! The release and the commit this program was built from, which Cargo and the build script set.
 
 use cockpit_protocol::BuildCommit;
+
+/// The release this program was built from, its Cargo version. The daemon sends it in `Welcome`,
+/// and the app compares it with its own, which is this same constant.
+pub const RELEASE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The commit this program was built from, when its build knew it: `agents-cockpit` or the app,
 /// whichever runs this code. A Nix build of a tree with uncommitted changes sets it empty.

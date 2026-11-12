@@ -32,7 +32,7 @@ mod windows_files;
 mod windows_path;
 
 pub use accounts::{API_KEY_ENV, AUTH_TOKEN_ENV, ENVIRONMENT_CREDENTIALS_ENV};
-pub use build_commit::build_commit;
+pub use build_commit::{RELEASE_VERSION, build_commit};
 pub use daemon_config::{
     CLAUDE_CONFIG_DIR_ENV, CLAUDE_HOME_FOLDER, CLAUDE_PROGRAM_ENV, DaemonConfig, HOME_ENV,
     SERVE_SUBCOMMAND, STATE_DIR_FLAG,

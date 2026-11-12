@@ -12,7 +12,7 @@ use tokio::io::{AsyncRead, AsyncWrite, BufReader};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 
-use crate::build_commit::build_commit;
+use crate::build_commit::{RELEASE_VERSION, build_commit};
 use crate::hub::{HubInput, Joined, Registration};
 use crate::store::{ReplayRead, read_replay};
 
@@ -75,7 +75,7 @@ where
     let (frames, replay, catchup) = join(hub, last_seq).await?;
     let welcome = ServerMessage::Welcome {
         protocol_version: PROTOCOL_VERSION,
-        daemon_version: ReleaseVersion::new(env!("CARGO_PKG_VERSION").to_owned()),
+        daemon_version: ReleaseVersion::new(RELEASE_VERSION.to_owned()),
         daemon_commit: build_commit(),
         catchup,
     };
