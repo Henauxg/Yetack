@@ -4873,7 +4873,7 @@ html.reordering * {
   bottom: -10px;
 }
 
-.quote-pin-group:is(:hover, :focus-within):not([data-note-visible]) .quote-pin-card {
+.quote-pin-group:is(:hover, :focus-within):not([data-note-visible], [data-editing]) .quote-pin-card {
   visibility: visible;
   opacity: 1;
   transition-duration: var(--motion-in), 0s;
@@ -4907,11 +4907,19 @@ html.reordering * {
   color: var(--dim);
 }
 
+/* The padding gives the hover background room around the text, and the negative margin keeps the
+   text in line with the note's head. */
 .quote-comment {
-  margin: 0;
+  margin: 0 -4px;
+  padding: 2px 4px;
+  border-radius: 6px;
   font-size: 13px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  cursor: text;
+  transition-property: background-color;
+  transition-duration: var(--motion-hover);
+  transition-timing-function: var(--ease);
 }
 
 .quote-comment.dim {
@@ -8490,6 +8498,10 @@ label.icon-button,
 }
 
 .quote-row-main:hover {
+  background: var(--raised-hover);
+}
+
+.quote-comment:hover {
   background: var(--raised-hover);
 }
 
