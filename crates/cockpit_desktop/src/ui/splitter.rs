@@ -335,7 +335,7 @@ pub fn SidebarSplitter(width: u16) -> Element {
     rsx! {
         div {
             id: Pane::Sidebar.splitter_id(),
-            class: "splitter",
+            class: "splitter sidebar-splitter",
             role: "separator",
             tabindex: 0,
             aria_orientation: "vertical",

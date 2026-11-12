@@ -6212,12 +6212,18 @@ html.reordering * {
   touch-action: none;
 }
 
-/* A wider grip than the line it draws, on its right side alone: the pane on its left ends with its
-   scrollbar, which a grip over it would take. */
+/* A wider grip than the line it draws, on its right side alone: the chat and the file view end with
+   their scrollbar, which a grip over it would take. */
 .splitter::before {
   content: "";
   position: absolute;
   inset: 0 -8px 0 0;
+}
+
+/* The sidebar's list scrolls inside the sidebar's padding, so this grip also reaches left. Its
+   right side lies under the chat's header, which sits above the splitter. */
+.sidebar-splitter::before {
+  inset: 0 -4px;
 }
 
 .splitter:hover,
