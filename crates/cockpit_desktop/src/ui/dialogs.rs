@@ -687,7 +687,10 @@ fn StartForm(form: NewAgentForm) -> Element {
             local,
             loading,
             chosen.is_some_and(|known| known.folders_unknown),
-            picked.map(|key| projects::look(&state, key).name),
+            // "No project" lists every folder, under the usual label.
+            picked
+                .filter(|key| **key != ProjectKey::None)
+                .map(|key| projects::look(&state, key).name),
         )
     };
     // The past sessions bring more recent folders: rows stand for them until they arrive, so the

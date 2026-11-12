@@ -166,7 +166,8 @@ pub struct ProjectFolder {
 }
 
 /// The machine's recent folders, the latest first, each with the project an agent started there
-/// joins. With `picked`, only that project's folders.
+/// joins. With `picked`, only that project's folders. "No project" picked lists them all: it
+/// starts the agent where you say, without grouping it.
 pub fn recent_folders(
     state: &AppState,
     machine: MachineId,
@@ -181,13 +182,14 @@ pub fn recent_folders(
         })
         .filter(|folder| {
             picked.is_none_or(|picked| {
-                lists(
-                    state,
-                    machine,
-                    picked,
-                    &folder.recent.folder,
-                    &folder.project,
-                )
+                *picked == ProjectKey::None
+                    || lists(
+                        state,
+                        machine,
+                        picked,
+                        &folder.recent.folder,
+                        &folder.project,
+                    )
             })
         })
         .collect()
@@ -208,13 +210,16 @@ fn lists(
 
 /// The folder that a pick of `project` puts in the new agent dialog's field: the project's latest
 /// recent folder. `None` leaves the field as it is: it already names one of the project's
-/// folders, or the project has no recent folder on the machine.
+/// folders, the project has no recent folder on the machine, or it is "No project".
 pub fn folder_for_pick(
     state: &AppState,
     machine: MachineId,
     typed: &str,
     project: &ProjectKey,
 ) -> Option<PathBuf> {
+    if *project == ProjectKey::None {
+        return None;
+    }
     let typed = Path::new(typed.trim());
     if !typed.as_os_str().is_empty() {
         let automatic = for_new_agent(state, machine, typed).unwrap_or(ProjectKey::None);
