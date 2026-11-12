@@ -28,7 +28,7 @@ use strum::{EnumString, IntoStaticStr, VariantArray};
 use crate::daemon_label::DaemonLabel;
 use crate::machine::MachineId;
 use crate::path_style::PathStyle;
-use crate::prefs::{CommentPlacement, GroupBy};
+use crate::prefs::{CommentPlacement, GroupBy, ProjectRule};
 use crate::state::daemon_update::{
     self, OutputLine, OutputStream, ProtocolGap, UpdateFailure, UpdatePlan, VersionGap,
 };
@@ -63,15 +63,15 @@ pub enum Scene {
 /// Wide enough for the showcase's titles to show whole.
 const SHOWCASE_SIDEBAR_WIDTH: u16 = 430;
 
-/// The name the showcase gives the project of each repository, as a user would rename it.
-const SHOWCASE_PROJECT_NAMES: [(&str, &str); 7] = [
-    ("calc-parser", "Calc parser"),
-    ("calc-service", "Calc service"),
-    ("calc-stream", "Calc stream"),
-    ("docs-site", "Docs site"),
-    ("invoices", "Invoices"),
-    ("legacy-db", "Legacy DB"),
-    ("ranking", "Ranking"),
+/// The projects the showcase keeps, as a user would name them, each with the repositories it
+/// holds. The project takes the first repository's color.
+const SHOWCASE_PROJECTS: [(&str, &[&str]); 3] = [
+    (
+        "Calc parser",
+        &["calc-parser", "calc-service", "calc-stream"],
+    ),
+    ("Billing", &["invoices", "legacy-db", "docs-site"]),
+    ("Ranking", &["ranking"]),
 ];
 
 /// The showcase's third machine.
@@ -1087,14 +1087,29 @@ pub fn showcase(state: &mut AppState, scene: Scene) {
 fn show_project_files(state: &mut AppState) {
     let agent = AgentId::new(QUESTION_AGENT);
     state.prefs.sidebar.group_by = GroupBy::Project;
-    for key in projects::shown_projects(state) {
-        if let projects::ProjectKey::Repository(repository) = key {
-            let id = projects::keep(state, &repository);
-            let renamed = SHOWCASE_PROJECT_NAMES
+    let repositories: Vec<Repository> = projects::shown_projects(state)
+        .into_iter()
+        .filter_map(|key| match key {
+            projects::ProjectKey::Repository(repository) => Some(repository),
+            projects::ProjectKey::Kept(_) | projects::ProjectKey::None => None,
+        })
+        .collect();
+    for (name, names) in SHOWCASE_PROJECTS {
+        let mut project = None;
+        for repository in names.iter().filter_map(|wanted| {
+            repositories
                 .iter()
-                .find(|(repository_name, _)| *repository_name == repository.name());
-            if let Some((_, name)) = renamed {
-                projects::rename(state, id, name);
+                .find(|repository| repository.name() == *wanted)
+        }) {
+            match project {
+                None => {
+                    let id = projects::keep(state, repository);
+                    projects::rename(state, id, name);
+                    project = Some(id);
+                }
+                Some(id) => {
+                    projects::add_rule(state, id, ProjectRule::Repository(repository.clone()));
+                }
             }
         }
     }
@@ -4459,22 +4474,29 @@ pub struct ParseError {
         let agent = AgentId::new(QUESTION_AGENT);
         assert_eq!(state.ui.selected, Some(agent));
         assert_eq!(state.prefs.sidebar.group_by, GroupBy::Project);
-        let shown = projects::shown_projects(&state);
-        assert!(shown.len() > 1);
-        assert!(
-            shown
-                .iter()
-                .all(|key| matches!(key, projects::ProjectKey::Kept(_)))
+        let shown: Vec<(String, usize)> = projects::shown_projects(&state)
+            .iter()
+            .map(|key| {
+                assert!(
+                    matches!(key, projects::ProjectKey::Kept(_)),
+                    "{key} is kept"
+                );
+                let agents = state
+                    .agents
+                    .values()
+                    .filter(|entry| projects::project_of(&state, entry) == *key)
+                    .count();
+                (projects::look(&state, key).name, agents)
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("Calc parser".to_owned(), 4),
+                ("Billing".to_owned(), 5),
+                ("Ranking".to_owned(), 2)
+            ]
         );
-        let names: Vec<String> = shown
-            .iter()
-            .map(|key| projects::look(&state, key).name)
-            .collect();
-        let showcase_names: Vec<String> = SHOWCASE_PROJECT_NAMES
-            .iter()
-            .map(|(_, name)| (*name).to_owned())
-            .collect();
-        assert_eq!(names, showcase_names);
         assert!(file_tree::pane_open(&state, agent));
         assert_eq!(
             state.ui.file_view(agent).map(|view| view.path.clone()),
