@@ -1813,6 +1813,10 @@ pub fn move_agent(state: &mut AppState, agent: AgentId, before: Option<AgentId>)
 /// group `end`, or below the last row when both are `None`. Hidden agents keep their places: a
 /// drop below a last row lands just under it. Grouped by project, a drop in another group moves
 /// the agent to that project.
+///
+/// Split by machine, the row stays among its machine's rows:
+/// - a drop on the rows of a machine listed above lands at the top of them;
+/// - a drop on the rows of a machine listed below, or at the group's end, lands at the bottom.
 pub fn drop_agent(
     state: &mut AppState,
     agent: AgentId,
@@ -1829,20 +1833,30 @@ pub fn drop_agent(
             .map(|entry| projects::project_of(state, entry)),
         (None, None) => None,
     };
+    let split = grouping::splits_by_machine(state);
+    let machine = MachineId::of(agent);
+    // The rows the agent can land among, from top to bottom, the agent left out.
+    let among: Vec<AgentId> = state
+        .sidebar_agents()
+        .iter()
+        .filter(|entry| {
+            target
+                .as_ref()
+                .is_none_or(|target| projects::project_of(state, entry) == *target)
+        })
+        .map(|entry| entry.id())
+        .filter(|id| *id != agent && (!split || MachineId::of(*id) == machine))
+        .collect();
+    let before_row = match (before_row, among.first()) {
+        (Some(row), Some(&first)) if split && MachineId::of(row) != machine => {
+            (MachineId::of(row) < machine).then_some(first)
+        }
+        (before_row, _) => before_row,
+    };
     let before = match before_row {
         Some(row) => Some(row),
         None => {
-            let last = state
-                .sidebar_agents()
-                .iter()
-                .rev()
-                .filter(|entry| {
-                    target
-                        .as_ref()
-                        .is_none_or(|target| projects::project_of(state, entry) == *target)
-                })
-                .map(|entry| entry.id())
-                .find(|id| *id != agent);
+            let last = among.last().copied();
             match last {
                 Some(last) => below_in_order(state, last, agent),
                 None if target.is_some() => None,
@@ -4731,6 +4745,57 @@ mod tests {
             Some(Some(first_on_devbox)),
             "above devbox's first row"
         );
+    }
+
+    /// Split by machine, in the app's order this computer's agents 1, 2 and 3 alternate with
+    /// devbox's 1 and 2. The sidebar lists this computer's 1, 2 and 3, then devbox's 1 and 2.
+    fn split_by_machine() -> (AppState, [AgentId; 5]) {
+        let (mut state, devbox) = two_machines();
+        state.prefs.sidebar.group_by = GroupBy::Project;
+        state.prefs.sidebar.project_split = prefs::ProjectSplit::ByMachine;
+        let there = |id| devbox.app_agent(AgentId::new(id));
+        let here = AgentId::new;
+        for agent in [here(1), there(1), here(2), there(2), here(3)] {
+            grouping::move_in_app_order(&mut state, agent, None);
+        }
+        let rows = [here(1), here(2), here(3), there(1), there(2)];
+        assert_eq!(shown_ids(&state), rows);
+        (state, rows)
+    }
+
+    fn shown_ids(state: &AppState) -> Vec<AgentId> {
+        state
+            .sidebar_agents()
+            .iter()
+            .map(|entry| entry.id())
+            .collect()
+    }
+
+    #[test]
+    fn split_by_machine_a_drop_on_a_machine_below_puts_the_row_at_its_machines_bottom() {
+        let (mut state, [a1, a2, a3, d1, d2]) = split_by_machine();
+
+        drop_agent(&mut state, a1, Some(d2), None);
+
+        assert_eq!(shown_ids(&state), [a2, a3, a1, d1, d2]);
+    }
+
+    #[test]
+    fn split_by_machine_a_drop_on_a_machine_above_puts_the_row_at_its_machines_top() {
+        let (mut state, [a1, a2, a3, d1, d2]) = split_by_machine();
+
+        drop_agent(&mut state, d2, Some(a3), None);
+
+        assert_eq!(shown_ids(&state), [a1, a2, a3, d2, d1]);
+    }
+
+    #[test]
+    fn split_by_machine_a_drop_at_the_groups_end_puts_the_row_at_its_machines_bottom() {
+        let (mut state, [a1, a2, a3, d1, d2]) = split_by_machine();
+
+        drop_agent(&mut state, a1, None, Some(&ProjectKey::None));
+
+        assert_eq!(shown_ids(&state), [a2, a3, a1, d1, d2]);
     }
 
     /// Makes devbox's agent 2 the last agent started, in `/srv/shop`.

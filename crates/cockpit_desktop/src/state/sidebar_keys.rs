@@ -113,6 +113,7 @@ mod tests {
 
     use super::*;
     use crate::daemon_label::DaemonLabel;
+    use crate::prefs::{GroupBy, ProjectSplit};
     use crate::state::app_state::tests::{placed, state_with};
     use crate::state::{AgentEntry, MachineState};
 
@@ -160,6 +161,31 @@ mod tests {
         assert_eq!(selected_down, Some(remote_agent(1)));
         assert_eq!(up, Some(agent(2)));
         assert_eq!(state.ui.selected, Some(AgentId::new(2)));
+    }
+
+    /// The app's order puts devbox's agent 1 between this computer's: the split shows the
+    /// machines apart, and the keys follow the screen.
+    #[test]
+    fn split_by_machine_up_and_down_follow_the_rows_on_screen() {
+        let mut state = two_machines();
+        state.prefs.sidebar.group_by = GroupBy::Project;
+        state.prefs.sidebar.project_split = ProjectSplit::ByMachine;
+        for agent in [
+            AgentId::new(2),
+            remote_agent(1),
+            AgentId::new(1),
+            remote_agent(2),
+        ] {
+            grouping::move_in_app_order(&mut state, agent, None);
+        }
+
+        let down = press(&mut state, &agent(2), KEY_DOWN);
+        let down_again = press(&mut state, &agent(1), KEY_DOWN);
+        let up = press(&mut state, &SidebarItem::Agent(remote_agent(1)), KEY_UP);
+
+        assert_eq!(down, Some(agent(1)));
+        assert_eq!(down_again, Some(SidebarItem::Agent(remote_agent(1))));
+        assert_eq!(up, Some(agent(1)));
     }
 
     #[test]
