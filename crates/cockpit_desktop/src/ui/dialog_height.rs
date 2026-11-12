@@ -120,6 +120,14 @@ if (!window.agentsCockpitDialogHeight) {
     watches.set(dialog, entry);
     observe(entry);
   };
+  // A new window size changes a dialog's fixed or largest height, and no part may report it. The
+  // dialog takes its new height without an animation, and the next change animates from there.
+  window.addEventListener("resize", () => {
+    for (const entry of watches.values()) {
+      stop(entry);
+      entry.height = entry.dialog.offsetHeight;
+    }
+  });
   const forget = () => {
     for (const [dialog, entry] of watches) {
       if (!dialog.isConnected) {
