@@ -56,6 +56,15 @@ const DATE_PART_LENGTH: usize = 8;
 /// chrono's format for a month's short name, as in "8 Nov".
 const SHORT_MONTH: &str = "%b";
 
+/// chrono's format for a weekday's name, as in "Monday".
+const WEEKDAY: &str = "%A";
+
+/// chrono's format for a time to the minute, as in "09:05".
+const TIME_TO_MINUTE: &str = "%H:%M";
+
+/// chrono's format for a time to the second, as in "09:05:42".
+const TIME_TO_SECOND: &str = "%H:%M:%S";
+
 /// The class of an idle agent whose background tasks still run.
 const BACKGROUND_WORK_CLASS: &str = "background-work";
 
@@ -445,10 +454,10 @@ fn local_now(now: SystemTime) -> NaiveDateTime {
 
 /// The local time of day, to the second: "14:07:11".
 pub fn time_of_day(moment: Timestamp) -> Option<String> {
-    Some(local(moment)?.format("%H:%M:%S").to_string())
+    Some(local(moment)?.format(TIME_TO_SECOND).to_string())
 }
 
-/// The local day of `now`.
+/// The day `now` falls on, in this computer's time zone.
 pub fn local_day(now: SystemTime) -> NaiveDate {
     local_now(now).date()
 }
@@ -462,7 +471,7 @@ pub fn message_time(moment: Timestamp, today: NaiveDate) -> Option<String> {
 fn message_time_on(moment: NaiveDateTime, today: NaiveDate) -> String {
     use chrono::Datelike;
 
-    let time = moment.format("%H:%M");
+    let time = moment.format(TIME_TO_MINUTE);
     match (today - moment.date()).num_days() {
         0 => time.to_string(),
         1 => format!("Yesterday {time}"),
@@ -485,11 +494,11 @@ pub fn full_time(moment: Timestamp) -> Option<String> {
     let moment = local(moment)?;
     Some(format!(
         "{} {} {} {}, {}",
-        moment.format("%A"),
+        moment.format(WEEKDAY),
         moment.day(),
         moment.format(SHORT_MONTH),
         moment.year(),
-        moment.format("%H:%M:%S")
+        moment.format(TIME_TO_SECOND)
     ))
 }
 
@@ -510,11 +519,11 @@ pub fn reset_time(moment: Timestamp, now: SystemTime) -> Option<String> {
 fn clock_time(moment: NaiveDateTime, now: NaiveDateTime) -> String {
     use chrono::Datelike;
 
-    let time = moment.format("%H:%M");
+    let time = moment.format(TIME_TO_MINUTE);
     let days = (moment.date() - now.date()).num_days();
     match days {
         0 => format!("at {time}"),
-        1..=6 => format!("{} at {time}", moment.format("%A")),
+        1..=6 => format!("{} at {time}", moment.format(WEEKDAY)),
         _ => format!("{} {} at {time}", moment.day(), moment.format(SHORT_MONTH)),
     }
 }
