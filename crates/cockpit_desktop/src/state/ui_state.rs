@@ -14,6 +14,7 @@ use strum::{EnumString, IntoStaticStr, VariantArray};
 use super::accounts::{AccountsView, AddAccountForm};
 use super::agent_map::MapView;
 use super::app_state::Loadable;
+use super::mcp_reconnect::Reconnects;
 use super::projects::{ProjectKey, RuleKind};
 use crate::keymap::{Chord, Command, Refusal};
 use crate::machine::MachineId;
@@ -520,6 +521,8 @@ pub struct UiState {
     pub dialog: Option<Dialog>,
     pub file_views: BTreeMap<AgentId, FileView>,
     pub mcp: McpView,
+    /// The MCP reconnects running, and the outcomes their servers' pages show.
+    pub mcp_reconnects: Reconnects,
     /// The agent title the header or a sidebar row shows as a text field.
     pub title_edit: Option<TitleEdit>,
     /// The notes at the bottom left: errors, and what an action did.
@@ -561,6 +564,7 @@ impl Default for UiState {
             dialog: None,
             file_views: BTreeMap::new(),
             mcp: McpView::default(),
+            mcp_reconnects: Reconnects::new(),
             title_edit: None,
             errors: Vec::new(),
             next_error: 0,
@@ -658,6 +662,9 @@ impl UiState {
         self.badge = None;
         self.mcp.detail = None;
         self.mcp.filter = ToolFilter::All;
+        // The server pages close: their outcomes go, the reconnects still running stay.
+        self.mcp_reconnects
+            .retain(|_, reconnect| reconnect.is_busy());
     }
 
     /// Closes the dialog. The "Accounts" and "Add an account" dialogs go back to the new agent

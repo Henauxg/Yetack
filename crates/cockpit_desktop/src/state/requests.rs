@@ -1,7 +1,7 @@
 //! The requests the app sends, and how each answer updates the state.
 
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use cockpit_client::RequestError;
 use cockpit_protocol::{
@@ -17,7 +17,7 @@ use super::projects::{self, ProjectKey};
 use super::sending::{self, SendingId};
 use super::transcript::HistoryState;
 use super::ui_state::{Dialog, FolderAction, OpenFileView};
-use super::{accounts, actions, chat_images, file_edits, file_tree, working_folder};
+use super::{accounts, actions, chat_images, file_edits, file_tree, mcp_reconnect, working_folder};
 use crate::machine::MachineId;
 use crate::path_style;
 use crate::prefs::AccountColor;
@@ -50,6 +50,16 @@ pub enum Purpose {
     },
     McpStatus {
         agent: AgentId,
+    },
+    /// `agent.mcp_reconnect` from a server's page, which shows how it goes.
+    McpReconnect {
+        agent: AgentId,
+        server: String,
+    },
+    /// The servers' status once Claude Code tried to reconnect `server`.
+    McpReconnected {
+        agent: AgentId,
+        server: String,
     },
     Commands {
         agent: AgentId,
@@ -161,6 +171,7 @@ impl Outgoing {
 /// agent dialog is open.
 pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
     let mut requests = Vec::new();
+    requests.extend(mcp_reconnect::status_requests(state));
     if let Some(reopening) = &state.ui.reopening {
         let back = state
             .agents
@@ -454,6 +465,25 @@ pub fn apply_response(
                 }
             }
             other => report(state, method, other),
+        },
+        Purpose::McpReconnect { agent, server } => {
+            let refusal = result.err().map(|failure| failure.message);
+            mcp_reconnect::answered(state, agent, &server, refusal);
+        }
+        Purpose::McpReconnected { agent, server } => match result {
+            Ok(ResponseBody::McpServers { servers }) => {
+                mcp_reconnect::checked(state, agent, &server, Ok(&servers), Instant::now());
+                if let Some(details) = loaded_details(state, agent) {
+                    details.mcp_servers = servers;
+                }
+            }
+            Ok(_) => {
+                let unexpected = format!("{method} gave an unexpected answer.");
+                mcp_reconnect::checked(state, agent, &server, Err(unexpected), Instant::now());
+            }
+            Err(failure) => {
+                mcp_reconnect::checked(state, agent, &server, Err(failure.message), Instant::now());
+            }
         },
         Purpose::Commands { agent } => {
             if let Some(entry) = state.agents.get_mut(&agent) {

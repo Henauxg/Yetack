@@ -4132,6 +4132,32 @@ html.reordering * {
   display: block;
 }
 
+/* How the last reconnect went, under the server's name. */
+/* A reconnect running: its spinner shows in full, though the button waits. */
+.icon-button.framed[aria-busy="true"] {
+  opacity: 1;
+}
+
+.mcp-reconnect-note {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  animation: fade-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.mcp-reconnect-note.done {
+  color: var(--green);
+}
+
+.mcp-reconnect-note.failed {
+  color: var(--red);
+}
+
+.mcp-reconnect-note.leaving {
+  animation: fade-out var(--motion-out) var(--ease-in) forwards;
+}
+
 .mcp-facts {
   display: flex;
   flex-direction: column;

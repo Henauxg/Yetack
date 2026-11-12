@@ -370,6 +370,10 @@ pub fn forget_agent(
         }
     }
     state.ui.unread.remove(&agent);
+    state
+        .ui
+        .mcp_reconnects
+        .retain(|(owner, _), _| *owner != agent);
     state.ui.file_views.remove(&agent);
     state.ui.finished_tasks_unfolded.remove(&agent);
     state.ui.chat_scrolled_up.remove(&agent);

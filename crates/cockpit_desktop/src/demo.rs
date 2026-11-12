@@ -988,13 +988,15 @@ pub fn latency(request: &Request) -> Duration {
         Request::AgentHistory(_) => Duration::from_millis(300),
         // A daemon on a server: the message shows on its way until this echo.
         Request::AgentPrompt(_) => Duration::from_millis(400),
+        // Claude Code tries the server for a moment.
+        Request::AgentMcpReconnect(_) => Duration::from_millis(600),
         _ => Duration::ZERO,
     }
 }
 
 /// What the daemon's events would change after a request it accepts: a rename shows in the
 /// title, a mark on the row, which a prompt clears, an answered approval and a stopped task show
-/// in the agent map, and the accounts change.
+/// in the agent map, a reconnected MCP server connects, and the accounts change.
 pub fn apply(state: &mut AppState, request: &Request) {
     apply_map_request(state, request);
     apply_account_request(state, request);
@@ -1012,6 +1014,22 @@ pub fn apply(state: &mut AppState, request: &Request) {
         Request::AgentChangeFolder(params) => {
             if let Some(entry) = state.agents.get_mut(&params.agent) {
                 entry.summary.folder.clone_from(&params.folder);
+            }
+        }
+        // The demo's server comes back.
+        Request::AgentMcpReconnect(params) => {
+            let details = state
+                .agents
+                .get_mut(&params.agent)
+                .and_then(|entry| entry.details.loaded_mut());
+            if let Some(server) = details.and_then(|details| {
+                details
+                    .mcp_servers
+                    .iter_mut()
+                    .find(|server| server.name == params.server)
+            }) {
+                server.status = McpServerStatus::Connected;
+                server.error = None;
             }
         }
         Request::AgentPrompt(params) => {

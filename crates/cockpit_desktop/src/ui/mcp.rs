@@ -2,17 +2,20 @@
 //! server's detail with its actions, tools and removal.
 
 use std::collections::BTreeSet;
+use std::time::Instant;
 
 use cockpit_protocol::{
     AgentId, McpScope, McpServer, McpServerStatus, McpToggleAction, McpTool, McpTransport,
 };
 use dioxus::prelude::*;
 
-use crate::connection::Cockpit;
+use crate::connection::{Clock, Cockpit};
 use crate::format;
+use crate::state::mcp_reconnect::{self, Reconnect};
 use crate::state::{McpView, ToolFilter, actions};
 use crate::ui::blocks::KEPT_ROWS;
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::presence::use_presence;
 
 /// The red dot on the folded block or the badge, and the block's one-line summary. A hidden
 /// server counts for neither.
@@ -171,6 +174,33 @@ fn McpDetail(
     let mut confirming = use_signal(|| false);
     let name = server.name.clone();
     let status = server.status;
+    let clock: Clock = use_context();
+    let reconnect = mcp_reconnect::shown(&cockpit.state.read(), agent, &name, Instant::now());
+    // "Reconnected" leaves after a few seconds: the clock's tick renders the page again.
+    if matches!(reconnect, Some(Reconnect::Reconnected { .. })) {
+        let _ = (clock.0)();
+    }
+    let busy = reconnect.as_ref().is_some_and(Reconnect::is_busy);
+    let reconnect_note = match &reconnect {
+        Some(Reconnect::Refused(reason)) => Some((
+            "mcp-reconnect-note failed",
+            format!("Reconnect failed: {reason}"),
+        )),
+        Some(Reconnect::Reconnected { .. }) => {
+            Some(("mcp-reconnect-note done", "Reconnected.".to_owned()))
+        }
+        Some(Reconnect::NotConnected { status, error }) => {
+            let state = format::mcp_status_label(*status);
+            let text = match error {
+                Some(error) => format!("Not connected: {state}. {error}"),
+                None => format!("Not connected: {state}."),
+            };
+            Some(("mcp-reconnect-note failed", text))
+        }
+        Some(Reconnect::Running | Reconnect::Checking { .. }) | None => None,
+    };
+    // The note fades out as it leaves.
+    let note = use_presence(reconnect_note);
     let disabled = status == McpServerStatus::Disabled;
     let run_line = match &server.transport {
         Some(McpTransport::Stdio { command }) => Some(format!("Runs {command}")),
@@ -208,8 +238,17 @@ fn McpDetail(
         "Claude Code lists the tools once the server connects."
     };
     let removable_scope = server.scope.filter(|scope| format::removable_scope(*scope));
-    let status_class = format::mcp_status_class(status);
-    let status_label = format::mcp_status_label(status);
+    let (status_class, status_label) = if busy {
+        (
+            format::mcp_status_class(McpServerStatus::Pending),
+            "Reconnecting…",
+        )
+    } else {
+        (
+            format::mcp_status_class(status),
+            format::mcp_status_label(status),
+        )
+    };
     let (toggle, toggle_label) = if disabled {
         (McpToggleAction::Enable, "Enable for this agent")
     } else {
@@ -226,7 +265,10 @@ fn McpDetail(
         div { class: "mcp-detail-view",
             button {
                 class: "back-button",
-                onclick: move |_| cockpit.update(|state| state.ui.mcp.detail = None),
+                onclick: move |_| cockpit.update(|state| {
+                    state.ui.mcp.detail = None;
+                    mcp_reconnect::forget_ended(state, agent);
+                }),
                 Icon { kind: IconKind::ChevronLeft, size: 12 }
                 "All servers"
             }
@@ -236,11 +278,17 @@ fn McpDetail(
                 span { class: "tooltip-anchor",
                     button {
                         class: "icon-button framed",
-                        aria_label: "Reconnect",
-                        onclick: move |_| cockpit.change(|_| actions::mcp_reconnect(agent, reconnect_name.clone())),
-                        Icon { kind: IconKind::Reconnect, size: 14 }
+                        aria_label: if busy { "Reconnecting" } else { "Reconnect" },
+                        aria_busy: busy,
+                        disabled: busy,
+                        onclick: move |_| cockpit.change(|state| mcp_reconnect::start(state, agent, &reconnect_name)),
+                        if busy {
+                            span { class: "spinner", aria_hidden: true }
+                        } else {
+                            Icon { kind: IconKind::Reconnect, size: 14 }
+                        }
                     }
-                    span { class: "tooltip", role: "tooltip", "Reconnect" }
+                    span { class: "tooltip", role: "tooltip", if busy { "Reconnecting…" } else { "Reconnect" } }
                 }
                 span { class: "tooltip-anchor",
                     button {
@@ -265,6 +313,14 @@ fn McpDetail(
                         }
                     }
                     span { class: "tooltip", role: "tooltip", "{hide_label}" }
+                }
+            }
+            if let Some(shown) = note {
+                p {
+                    class: if shown.leaving { "{shown.value.0} leaving" } else { "{shown.value.0}" },
+                    role: "status",
+                    inert: shown.leaving.then_some(true),
+                    "{shown.value.1}"
                 }
             }
             div { class: "mcp-facts",

@@ -18,6 +18,7 @@ pub mod folder_field;
 pub mod grouping;
 pub mod machine_load;
 pub mod machines;
+pub mod mcp_reconnect;
 pub mod menu_keys;
 pub mod no_daemon;
 pub mod notification_levels;

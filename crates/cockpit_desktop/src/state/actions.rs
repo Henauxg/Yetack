@@ -10,12 +10,12 @@ use cockpit_client::RequestError;
 use cockpit_protocol::{
     AccountId, AgentId, AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState,
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, COMMAND_PREFIX, ClaudeSessionId, Effort,
-    EffortSource, Image, ItemBody, ItemId, McpRemoveParams, McpScope, McpServerParams,
-    McpToggleAction, McpToggleParams, MoveParams, PastSession, PendingId, PermissionMode, Placed,
-    PlanAnswer, PlanDecision, Prompt, PromptDelivery, PromptId, PromptParams, Question,
-    QuestionAnswer, QueuedPromptParams, RenameParams, Request, Selection, SessionResumeParams,
-    SetEffortParams, SetModeParams, SetModelParams, SlashCommand, StartParams, StopTaskParams,
-    Timestamp, TranscriptItem,
+    EffortSource, Image, ItemBody, ItemId, McpRemoveParams, McpScope, McpToggleAction,
+    McpToggleParams, MoveParams, PastSession, PendingId, PermissionMode, Placed, PlanAnswer,
+    PlanDecision, Prompt, PromptDelivery, PromptId, PromptParams, Question, QuestionAnswer,
+    QueuedPromptParams, RenameParams, Request, Selection, SessionResumeParams, SetEffortParams,
+    SetModeParams, SetModelParams, SlashCommand, StartParams, StopTaskParams, Timestamp,
+    TranscriptItem,
 };
 use strum::VariantArray;
 
@@ -1664,12 +1664,6 @@ pub fn stop_task(agent: AgentId, task: BackgroundTaskId) -> Vec<Outgoing> {
         agent,
         task,
     }))]
-}
-
-pub fn mcp_reconnect(agent: AgentId, server: String) -> Vec<Outgoing> {
-    vec![Outgoing::action(Request::AgentMcpReconnect(
-        McpServerParams { agent, server },
-    ))]
 }
 
 pub fn mcp_toggle(agent: AgentId, server: String, action: McpToggleAction) -> Vec<Outgoing> {
