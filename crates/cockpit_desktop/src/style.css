@@ -8505,6 +8505,10 @@ label.icon-button,
   background: var(--raised-hover);
 }
 
+.quote-comment:active {
+  background: var(--pressed);
+}
+
 .user-bubble blockquote[data-quote-link]:hover {
   border-left-color: var(--teal);
   background: rgba(255, 255, 255, 0.04);

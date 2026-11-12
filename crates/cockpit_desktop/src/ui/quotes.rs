@@ -388,13 +388,18 @@ const place = () => {
     const last = item?.rects[item.rects.length - 1];
     const width = editor.offsetWidth;
     const height = editor.offsetHeight;
-    const pin = document.querySelector(`#${settings.layer_id} .${settings.pin_group_class}[data-quote="${editor.dataset.quote}"][data-placed]`);
     let x;
     let y;
-    if (pin !== null) {
-      const number = pin.getBoundingClientRect();
-      x = Math.min(Math.max(number.right + 4 - width, area.left + 8), area.right - width - 8);
-      y = pin.hasAttribute("data-up") ? number.top - 8 - height : number.bottom + 8;
+    if (editor.dataset.quote !== settings.new_field && last !== undefined) {
+      // Where the number is, placed or not: the field stays in its column while the chat scrolls,
+      // and on the side it opened on, so it never jumps.
+      const numberTop = last.top + last.height / 2 - 9;
+      if (editor.dataset.sideOf !== editor.dataset.quote) {
+        editor.dataset.sideOf = editor.dataset.quote;
+        editor.dataset.side = last.top > view.top + view.height / 2 ? "up" : "down";
+      }
+      x = Math.min(Math.max(textRight + 24 - width, area.left + 8), area.right - width - 8);
+      y = editor.dataset.side === "up" ? numberTop - 8 - height : numberTop + 26;
     } else {
       x = first === undefined ? view.left + 20 : first.left;
       x = Math.min(Math.max(x, area.left + 8), textRight - width);

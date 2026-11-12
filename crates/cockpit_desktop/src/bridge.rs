@@ -245,7 +245,7 @@ document.addEventListener("keydown", (event) => {
     // one of its buttons still presses the button.
     const mapKey = settings.map_keys.includes(key) || (mode.answer_letters && settings.answer_keys.includes(letter));
     take = where !== "field" && plain && !event.shiftKey && mapKey
-      && !(key === "Enter" && target !== null && target.tagName === "BUTTON");
+      && !(key === "Enter" && target !== null && target.matches('button, [role="button"]'));
   } else if (where === "composer" && event.altKey && !command && !event.shiftKey && key === "Enter") {
     // Alt+Enter queues the message until the turn ends.
     take = true;
@@ -257,7 +257,7 @@ document.addEventListener("keydown", (event) => {
     // A tree or a menu takes its own keys: Enter or a digit there acts on it, and answers nothing.
     && !(target !== null && target.closest("[data-own-keys]") !== null)
     && (answers || (mode.send_again && key === "Enter" && !event.shiftKey))) {
-    take = !(key === "Enter" && target !== null && target.tagName === "BUTTON");
+    take = !(key === "Enter" && target !== null && target.matches('button, [role="button"]'));
   }
   if (!take) {
     return;
