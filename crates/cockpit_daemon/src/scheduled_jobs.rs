@@ -10,11 +10,17 @@ use std::time::SystemTime;
 
 use claude_protocol::{ContentBlock, OutputLine};
 use cockpit_protocol::{AgentId, Timestamp};
+use strum::{EnumString, IntoStaticStr, VariantArray};
 
 use crate::store::{self, Direction, LoggedLine};
 
-const CREATE_TOOL: &str = "CronCreate";
-const DELETE_TOOL: &str = "CronDelete";
+/// The tools that create and delete a scheduled job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr, VariantArray)]
+enum CronTool {
+    CronCreate,
+    CronDelete,
+}
+
 /// Both tools' names start with it: a line without it calls neither, and is not parsed.
 const TOOLS_PREFIX: &str = "Cron";
 
@@ -54,10 +60,10 @@ pub fn may_hold_scheduled_job(
         };
         for block in &message.message.content {
             if let ContentBlock::ToolUse(call) = block {
-                match call.name.as_str() {
-                    CREATE_TOOL => held = held.saturating_add(1),
-                    DELETE_TOOL => held = held.saturating_sub(1),
-                    _ => {}
+                match call.name.parse::<CronTool>() {
+                    Ok(CronTool::CronCreate) => held = held.saturating_add(1),
+                    Ok(CronTool::CronDelete) => held = held.saturating_sub(1),
+                    Err(_) => {}
                 }
             }
         }
@@ -110,19 +116,19 @@ mod tests {
     #[test]
     fn a_job_created_and_not_deleted_may_be_held() {
         let mut logged = Logged::new();
-        logged.call(1_000, Direction::FromClaude, CREATE_TOOL);
+        logged.call(1_000, Direction::FromClaude, "CronCreate");
         assert!(logged.holds_since(0));
 
-        logged.call(2_000, Direction::FromClaude, DELETE_TOOL);
+        logged.call(2_000, Direction::FromClaude, "CronDelete");
         assert!(!logged.holds_since(0));
     }
 
     #[test]
     fn a_job_from_before_the_daemon_started_is_gone() {
         let mut logged = Logged::new();
-        logged.call(1_000, Direction::FromClaude, CREATE_TOOL);
-        logged.call(5_000, Direction::FromClaude, CREATE_TOOL);
-        logged.call(6_000, Direction::FromClaude, DELETE_TOOL);
+        logged.call(1_000, Direction::FromClaude, "CronCreate");
+        logged.call(5_000, Direction::FromClaude, "CronCreate");
+        logged.call(6_000, Direction::FromClaude, "CronDelete");
 
         assert!(!logged.holds_since(5_000));
         assert!(logged.holds_since(0));
@@ -131,8 +137,8 @@ mod tests {
     #[test]
     fn only_claudes_own_calls_count() {
         let mut logged = Logged::new();
-        logged.call(1_000, Direction::ToClaude, CREATE_TOOL);
-        logged.call(1_000, Direction::Stderr, CREATE_TOOL);
+        logged.call(1_000, Direction::ToClaude, "CronCreate");
+        logged.call(1_000, Direction::Stderr, "CronCreate");
         logged.call(1_000, Direction::FromClaude, "CronList");
         logged.log.append(
             Timestamp::from_unix_millis(1_000),
@@ -146,7 +152,7 @@ mod tests {
     #[test]
     fn a_line_cut_short_is_skipped() {
         let mut logged = Logged::new();
-        logged.call(1_000, Direction::FromClaude, CREATE_TOOL);
+        logged.call(1_000, Direction::FromClaude, "CronCreate");
         let path = store::raw_log_path(logged.temp.path(), agent());
         let mut text = std::fs::read(&path).unwrap();
         text.extend_from_slice(br#"{"at":2000,"direction":"from_claude","line":"{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"CronDel"#);
@@ -162,5 +168,13 @@ mod tests {
         let held = may_hold_scheduled_job(temp.path(), agent(), SystemTime::UNIX_EPOCH);
 
         assert!(!held.unwrap());
+    }
+
+    #[test]
+    fn cron_tools_are_pinned() {
+        let tools: Vec<&str> = CronTool::VARIANTS.iter().map(|&tool| tool.into()).collect();
+
+        assert_eq!(tools, ["CronCreate", "CronDelete"]);
+        assert!(tools.iter().all(|tool| tool.starts_with(TOOLS_PREFIX)));
     }
 }
