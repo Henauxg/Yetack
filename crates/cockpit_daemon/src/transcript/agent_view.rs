@@ -94,7 +94,8 @@ const NOT_SIGNED_IN_ERROR: &str = "The account is not signed in";
 /// front of it, refused the request with a 403. No sign-in fixes that: the login is fine.
 const REFUSED_STATUS: &str = "API Error: 403";
 /// The notice of a refused request, with Claude Code's text as its detail.
-const REFUSED_NOTICE: &str = "Anthropic's network refused the request (HTTP 403). The login is fine: send the message again.";
+const REFUSED_NOTICE: &str =
+    "The API refused the request (HTTP 403). No sign-in fixes it: send the message again.";
 const COMPACTED_NOTICE: &str = "Conversation compacted";
 const SUMMARY_TITLE: &str = "Conversation summary";
 /// Titles context Claude Code adds that no line before it explains.
