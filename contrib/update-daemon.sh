@@ -176,18 +176,28 @@ check_agents() {
         fi
     fi
     [ -z "$even_if_busy" ] || return 0
-    # An idle agent whose background tasks still run is busy too. The TASKS column is found by
-    # its header: the listing of an older binary has none.
-    busy=$(printf '%s\n' "$listing" | awk '
-        NR == 1 { for (i = 1; i <= NF; i++) if ($i == "TASKS") tasks = i; next }
-        ($2 != "idle" && $2 != "exited") || ($2 == "idle" && tasks && $tasks > 0)')
+    # A resting agent runs no turn: it is idle, or it waits only for its account's sign-in, with
+    # nothing to answer. The columns are found by their headers: the listing of an older binary
+    # has no TASKS, and without WAIT every agent that needs you counts as busy.
+    # shellcheck disable=SC2016
+    resting='NR == 1 {
+            for (i = 1; i <= NF; i++) {
+                if ($i == "WAIT") wait_column = i
+                if ($i == "TASKS") tasks_column = i
+            }
+            next
+        }
+        { resting = $2 == "idle" || ($2 == "needs_you" && wait_column && $wait_column == 0) }'
+    # A resting agent whose background tasks still run is busy too.
+    busy=$(printf '%s\n' "$listing" | awk "$resting"'
+        $2 != "exited" && (!resting || (tasks_column && $tasks_column > 0))')
     [ -z "$busy" ] || refuse "not restarting the daemon, these agents are busy:
 $busy"
     # A scheduled job lives in its claude process, so none outlasts the daemon's last start. `ps`
     # counts whole seconds, so the start is taken a little early.
     started_at=$((($(date +%s) - $(ps -o etimes= -p "$daemon") - 2) * 1000))
     holding=
-    for id in $(printf '%s\n' "$listing" | awk 'NR > 1 && $2 == "idle" { print $1 }'); do
+    for id in $(printf '%s\n' "$listing" | awk "$resting"' resting { print $1 }'); do
         log=$state_dir/raw/$id.jsonl
         [ -f "$log" ] || continue
         created=$(count_calls "$log" "$started_at" CronCreate)

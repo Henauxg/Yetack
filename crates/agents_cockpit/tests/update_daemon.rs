@@ -272,6 +272,37 @@ printf '%s' '{mark}' >>"$2/release/agents-cockpit"
         }
     }
 
+    /// Starts an agent whose first turn fails for a missing login, and waits for it to wait for
+    /// its sign-in. `before` runs in its claude before the turn.
+    fn agent_waiting_for_its_sign_in(&self, before: &str) -> String {
+        self.write_program(
+            "echo-claude",
+            &format!(
+                "#!/bin/sh\n{before}\nread -r _\necho '{{\"type\":\"assistant\",\"error\":\"authentication_failed\",\"message\":{{\"model\":\"<synthetic>\",\"content\":[{{\"type\":\"text\",\"text\":\"Not logged in\"}}]}}}}'\necho '{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"num_turns\":1}}'\nexec cat\n"
+            ),
+        );
+        let work = self.path("work");
+        let id = self
+            .ok(&["start", work.to_str().unwrap(), "Fix the parser"])
+            .trim()
+            .to_owned();
+        self.wait_for_status(&id, "needs_you");
+        self.wait_for_column(&id, "WAIT", "0");
+        id
+    }
+
+    /// Installs a binary whose `list` prints `listing`, as an older binary would, and that runs
+    /// the real one otherwise. The daemon that runs keeps its own binary.
+    fn list_as(&self, listing: &str) {
+        fs::remove_file(self.installed()).unwrap();
+        self.write_program(
+            "install/agents-cockpit",
+            &format!(
+                "#!/bin/sh\nif [ \"$1\" = list ]; then printf '%s' '{listing}'; exit 0; fi\nexec '{BINARY}' \"$@\"\n"
+            ),
+        );
+    }
+
     /// Waits until the `list` row of agent `id` shows `value` in the column headed `column`.
     fn wait_for_column(&self, id: &str, column: &str, value: &str) {
         let deadline = Instant::now() + WAIT;
@@ -679,6 +710,95 @@ fn refuses_while_an_idle_agent_runs_background_tasks() {
         stderr(&output)
     );
 }
+
+/// A background command that Claude reports as it starts.
+const BACKGROUND_TASK: &str = "echo '{\"type\":\"system\",\"subtype\":\"task_started\",\"task_id\":\"bg-1\",\"description\":\"Watch the build\",\"task_type\":\"local_bash\"}'";
+
+#[test]
+fn an_agent_that_waits_only_for_its_sign_in_runs_no_turn_to_interrupt() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    machine.agent_waiting_for_its_sign_in("");
+
+    let output = machine.update("origin/main");
+
+    assert_succeeded(&output);
+    assert!(machine.installed_is_the_new_build());
+}
+
+#[test]
+fn refuses_while_an_agent_that_waits_for_its_sign_in_runs_background_tasks() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let id = machine.agent_waiting_for_its_sign_in(BACKGROUND_TASK);
+    machine.wait_for_column(&id, "TASKS", "1");
+    let before = machine.daemon_pid();
+
+    let output = machine.update("origin/main");
+
+    assert_refused(&machine, &output, 3, "these agents are busy", &before);
+    assert!(
+        stderr(&output).contains(&format!("\n{id} ")),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn refuses_a_scheduled_job_of_an_agent_that_waits_for_its_sign_in() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let id = machine.agent_waiting_for_its_sign_in("");
+    machine.log_tool_call(&id, "CronCreate", now_ms());
+    let before = machine.daemon_pid();
+
+    let output = machine.update("origin/main");
+
+    assert_refused(&machine, &output, 3, "scheduled jobs", &before);
+}
+
+#[test]
+fn an_older_listing_without_tasks_lets_a_sign_in_wait_through() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    machine.list_as(
+        "ID   STATUS    WAIT TURNS TITLE     FOLDER\n7    needs_you 0    1     Sign in   /made/up/work\n8    idle      0    2     Done      /made/up/work\n",
+    );
+
+    let output = machine.update("origin/main");
+
+    assert_succeeded(&output);
+    assert!(machine.installed_is_the_new_build());
+}
+
+#[test]
+fn a_listing_without_wait_counts_every_agent_that_needs_you_as_busy() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    machine.list_as(
+        "ID   STATUS    TURNS TITLE     FOLDER\n7    needs_you 1     Sign in   /made/up/work\n",
+    );
+    let before = machine.daemon_pid();
+
+    let output = machine.update("origin/main");
+
+    assert_refused(&machine, &output, 3, "\n7    needs_you", &before);
+}
+
+#[test]
+fn refuses_an_agent_that_needs_you_with_a_question_to_answer() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    machine.list_as(
+        "ID   STATUS    WAIT TURNS TASKS TITLE     FOLDER\n7    needs_you 1    1     0     Approve   /made/up/work\n",
+    );
+    let before = machine.daemon_pid();
+
+    let output = machine.update("origin/main");
+
+    assert_refused(&machine, &output, 3, "\n7    needs_you", &before);
+}
+
 #[test]
 fn refuses_while_an_agent_works_under_a_daemon_of_another_name() {
     let machine = Machine::new();
