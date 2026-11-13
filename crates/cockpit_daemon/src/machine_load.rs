@@ -47,9 +47,9 @@ pub(crate) use agent_root::AgentRoot;
 use job_reading::LoadError;
 #[cfg(windows)]
 use job_sampler::Sampler;
-#[cfg(unix)]
-pub(crate) use leftover::still_runs;
 pub(crate) use leftover::{record_process, stop_leftovers};
+#[cfg(unix)]
+pub(crate) use leftover::{running_for, still_runs};
 pub(crate) use load_sampler::LoadSampler;
 #[cfg(unix)]
 pub(crate) use proc_files::{PROC_ROOT, STAT_FILE};

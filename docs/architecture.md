@@ -376,7 +376,11 @@ The update of this computer's background service stops its daemon this way (see 
 
 Before it does, the app asks which resting agents may hold a scheduled job, which lives in their `claude` and ends with it:
 
-- `lock_held_since(state_dir)` answers a moment no later than the holder's start: the last write to the lock's file, which the daemon makes as it takes the lock, before it starts any agent. For a daemon older than the record, which writes nothing, the moment is earlier, so the count below reads more lines, never fewer. It needs no start time, so it works where the record has none.
+- `lock_held_since(state_dir)` answers a moment no later than the holder's start, the earlier of two:
+  - the last write to the lock's file, which the daemon makes as it takes the lock, before it starts any agent. For a daemon older than the record, which writes nothing, the moment is earlier, so the count below reads more lines, never fewer;
+  - now less the time the recorded process has run, when it runs: `/proc/uptime` less its recorded start, in clock ticks. Both count from the boot, so a clock set back since the start moves this moment back too. For example, a daemon starts while the clock is an hour ahead, and the system syncs the clock a minute later: the file's time stays an hour late, and a `CronCreate` of the next hour would count as older than the daemon.
+
+  Without a recorded start, or when the recorded process does not run, the file's time alone answers.
 - `may_hold_scheduled_job(state_dir, agent, since)` follows the rule of `contrib/update-daemon.sh`: Claude called `CronCreate` more times than `CronDelete` in the agent's raw log since that moment. It parses only the lines that name a `Cron` tool, as `claude` lines (`OutputLine::Assistant`). A job that runs once ends with no `CronDelete`, so the answer is only "may".
 `serve` stops on SIGTERM as on a service's stop: it leaves its agents marked as running, so the next daemon resumes them.
 The read takes a free lock for a moment, so a daemon that starts at that moment refuses to start.

@@ -94,6 +94,15 @@ impl LockHolder {
             })
         })
     }
+
+    /// When the recorded process started, by the clock as it is now. `None` unless it runs.
+    fn started_at(&self) -> Option<SystemTime> {
+        if !self.runs() {
+            return None;
+        }
+        let ran = machine_load::running_for(self.started?)?;
+        SystemTime::now().checked_sub(ran)
+    }
 }
 
 /// Why the holder of `serve.lock` cannot be read.
@@ -165,26 +174,36 @@ pub fn lock_holder(state_dir: &Path) -> Result<Option<LockHolder>, LockHolderErr
 }
 
 /// A moment no later than the start of the daemon that holds the lock of `state_dir`, or `None`
-/// when no daemon holds it. It is the last write to the lock's file: a daemon writes its record
-/// there as it takes the lock, before it starts any agent. A daemon older than the record writes
-/// nothing, so the moment is earlier then.
+/// when no daemon holds it. It is the earlier of two moments:
+/// - the last write to the lock's file: a daemon writes its record there as it takes the lock,
+///   before it starts any agent. A daemon older than the record writes nothing, so the moment is
+///   earlier then;
+/// - now, less the time the recorded process has run, when it runs. A clock set back since the
+///   start, such as one that was ahead until the system synced it, moves this one back too.
 ///
 /// It takes a free lock for a moment, as [`lock_holder`] does.
 #[cfg(unix)]
 pub fn lock_held_since(state_dir: &Path) -> Result<Option<SystemTime>, LockHolderError> {
+    use std::io::Read;
+
     let path = store::lock_path(state_dir);
     let read_error = |source| LockHolderError::Read {
         path: path.clone(),
         source,
     };
-    let Some(file) = held_lock(&path).map_err(read_error)? else {
+    let Some(mut file) = held_lock(&path).map_err(read_error)? else {
         return Ok(None);
     };
     let written = file
         .metadata()
         .and_then(|metadata| metadata.modified())
         .map_err(read_error)?;
-    Ok(Some(written))
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(read_error)?;
+    let started = LockHolder::decode(&bytes).and_then(|holder| holder.started_at());
+    Ok(Some(
+        started.map_or(written, |started| started.min(written)),
+    ))
 }
 
 /// Stops the daemon that holds the lock of `state_dir` as systemd stops the background service,
@@ -402,12 +421,40 @@ mod tests {
             let before = SystemTime::now() - Duration::from_secs(1);
             let missing = lock_held_since(temp.path());
             let _lock = state.lock().unwrap();
+            // A record without a start time leaves the write alone to tell.
+            write_record(
+                temp.path(),
+                &LockHolder {
+                    pid: ProcessId::new(std::process::id()),
+                    started: None,
+                    boot: None,
+                },
+            );
 
             let since = lock_held_since(temp.path()).unwrap().unwrap();
 
             assert_eq!(missing.unwrap(), None);
             assert!(since >= before, "{since:?} is before {before:?}");
             assert!(since <= SystemTime::now());
+        }
+
+        /// The clock was an hour ahead as the daemon took the lock, and was set back since.
+        #[test]
+        fn a_clock_set_back_since_the_daemon_started_moves_its_start_back_too() {
+            let temp = tempfile::tempdir().unwrap();
+            let state = StateDir::create(temp.path()).unwrap();
+            let _lock = state.lock().unwrap();
+            let ahead = SystemTime::now() + Duration::from_secs(3_600);
+            File::options()
+                .write(true)
+                .open(store::lock_path(temp.path()))
+                .unwrap()
+                .set_modified(ahead)
+                .unwrap();
+
+            let since = lock_held_since(temp.path()).unwrap().unwrap();
+
+            assert!(since <= SystemTime::now(), "{since:?} is after now");
         }
 
         #[test]
