@@ -176,8 +176,8 @@ pub fn lock_holder(state_dir: &Path) -> Result<Option<LockHolder>, LockHolderErr
 /// A moment no later than the start of the daemon that holds the lock of `state_dir`, or `None`
 /// when no daemon holds it. It is the earlier of two moments:
 /// - the last write to the lock's file: a daemon writes its record there as it takes the lock,
-///   before it starts any agent. A daemon older than the record writes nothing, so the moment is
-///   earlier then;
+///   before it starts any agent. A daemon of a build without the record writes nothing there, so
+///   the last write is older than its start;
 /// - now, less the time the recorded process has run, when it runs. A clock set back since the
 ///   start, such as one that was ahead until the system synced it, moves this one back too.
 ///
