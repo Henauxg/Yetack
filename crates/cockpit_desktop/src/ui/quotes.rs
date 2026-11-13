@@ -41,6 +41,12 @@ const SHOW_PASSAGE: &str = "Show the passage";
 const NEW_FIELD: &str = "new";
 const PIN_GROUP_CLASS: &str = "quote-pin-group";
 const NOTE_CLASS: &str = "quote-note";
+/// The line under the notes that counts the ones with no room, with their numbers.
+const MORE_ID: &str = "quote-more";
+const MORE_ITEM_CLASS: &str = "quote-more-item";
+const MORE_COUNT_CLASS: &str = "quote-more-count";
+/// A note on one line that shows in full.
+const OPEN_NOTE: &str = "[data-open], :focus-within";
 const FIELD_CLASS: &str = "quote-editor";
 /// A comment's text that opens the field on a click, with the caret where the click fell.
 const COMMENT_TEXT_CLASS: &str = "quote-comment";
@@ -330,11 +336,15 @@ const place = () => {
     at(group, pinX, y);
     group.toggleAttribute("data-up", last.top > view.top + view.height / 2);
   }
-  // Notes go in the strip, below the cards, in the chat's order, each below the one above.
+  // Notes go in the strip, below the cards, in the chat's order, each below the one above. When
+  // they do not all fit, every note takes one line; the ones with no room even then show their
+  // numbers in the "+N" line under the others.
   const cards = document.querySelectorAll(`.${settings.blocks_class} .${settings.block_card_class}`);
   const floor = cards.length > 0 ? cards[cards.length - 1].getBoundingClientRect().bottom + 10 : view.top + 8;
-  let below = -Infinity;
-  const paths = [];
+  const bottom = view.bottom - 8;
+  const strip = layer();
+  const more = document.getElementById(settings.more_id);
+  const shown = [];
   for (const item of found) {
     const group = document.querySelector(`#${settings.layer_id} .${settings.pin_group_class}[data-quote="${item.id}"]`);
     const own = document.querySelector(`#${settings.layer_id} .${settings.note_class}[data-quote="${item.id}"]`);
@@ -350,15 +360,12 @@ const place = () => {
     }
     const first = item.rects[0];
     const last = item.rects[item.rects.length - 1];
-    const inView = first !== undefined && last.bottom > view.top && first.top < view.bottom;
     // The field is measured in the strip's width. As a card it is wider, so its text takes fewer
     // lines: measured there, it would fit, move back, grow, and fall back again on every round.
     if (editing) {
       delete editor.dataset.fallback;
     }
-    const height = note.offsetHeight;
-    const top = inView ? Math.max(first.top - 10, floor, below + 8) : 0;
-    if (!inView || top + height > view.bottom - 8) {
+    if (first === undefined || !(last.bottom > view.top && first.top < view.bottom)) {
       if (editing) {
         editor.dataset.fallback = "";
       } else {
@@ -366,7 +373,79 @@ const place = () => {
       }
       continue;
     }
-    below = top + height;
+    shown.push({ id: item.id, group, note, editing, first, last });
+  }
+  // The tops of the notes, each below the one above, and how many fit above `limit`.
+  const stack = (heights, limit) => {
+    const tops = [];
+    let below = -Infinity;
+    let fitting = 0;
+    for (const [index, entry] of shown.entries()) {
+      const top = Math.max(entry.first.top - 10, floor, below + 8);
+      tops.push(top);
+      below = top + heights[index];
+      if (below <= limit && fitting === index) {
+        fitting = index + 1;
+      }
+    }
+    return { tops, fitting };
+  };
+  // Full size first. A note on one line is measured by a copy out of the strip, which keeps its
+  // form: leaving it would restart the animation of an opened note on every round.
+  const fullHeight = (note) => {
+    if (!strip.hasAttribute("data-compact") || !note.classList.contains(settings.note_class)) {
+      return note.offsetHeight;
+    }
+    const host = document.createElement("div");
+    host.className = settings.measure_class;
+    const copy = note.cloneNode(true);
+    delete copy.dataset.open;
+    host.appendChild(copy);
+    strip.appendChild(host);
+    const height = copy.offsetHeight;
+    host.remove();
+    return height;
+  };
+  const full = shown.map((entry) => fullHeight(entry.note));
+  const compact = stack(full, bottom).fitting < shown.length;
+  if (compact) {
+    strip.setAttribute("data-compact", "");
+  } else {
+    strip.removeAttribute("data-compact");
+    shown.forEach((entry) => delete entry.note.dataset.open);
+  }
+  // An opened line shows over the lines below, which keep the place of a line.
+  const lineHeight = shown.find((entry) => !entry.editing && !entry.note.matches(settings.open_note))?.note.offsetHeight ?? 30;
+  const heights = shown.map((entry, index) => {
+    if (!compact) {
+      return full[index];
+    }
+    return !entry.editing && entry.note.matches(settings.open_note) ? lineHeight : entry.note.offsetHeight;
+  });
+  let placed = stack(heights, bottom);
+  let rest = [];
+  if (compact && placed.fitting < shown.length && more !== null) {
+    placed = stack(heights, bottom - more.offsetHeight - 8);
+    rest = shown.slice(placed.fitting);
+  }
+  const paths = [];
+  let below = -Infinity;
+  for (const [index, entry] of shown.entries()) {
+    const { note, editing, group, last } = entry;
+    if (index >= placed.fitting) {
+      if (editing) {
+        editor.dataset.fallback = "";
+      } else {
+        away(note);
+        delete note.dataset.open;
+      }
+      continue;
+    }
+    const slot = placed.tops[index];
+    const top = compact && !editing && note.matches(settings.open_note)
+      ? Math.max(Math.min(slot, bottom - note.offsetHeight), floor)
+      : slot;
+    below = slot + heights[index];
     at(note, null, top - area.top);
     const left = note.getBoundingClientRect().left;
     group?.setAttribute("data-note-visible", "");
@@ -374,9 +453,24 @@ const place = () => {
     const y1 = last.top + last.height / 2 - area.top;
     const x2 = left - area.left;
     const middle = x2 - 12;
-    const y2 = top - area.top + 17;
+    const y2 = slot - area.top + (compact && !editing ? lineHeight / 2 : 17);
     if (x2 > x1) {
       paths.push(`M${x1} ${y1} H${middle} V${y2} H${x2}`);
+    }
+  }
+  if (more !== null) {
+    const hidden = new Set(rest.filter((entry) => !entry.editing).map((entry) => entry.id));
+    for (const item of more.querySelectorAll(`.${settings.more_item_class}`)) {
+      item.toggleAttribute("data-shown", hidden.has(item.dataset.quote));
+    }
+    const count = more.querySelector(`.${settings.more_count_class}`);
+    if (count !== null) {
+      count.textContent = `+${hidden.size} more`;
+    }
+    if (hidden.size > 0) {
+      at(more, null, Math.max(below + 8, floor) - area.top);
+    } else {
+      away(more);
     }
   }
   drawLinks(paths);
@@ -688,6 +782,43 @@ const revealSent = (quote) => {
     revealRange(hit.range);
   }
 };
+const openNotes = () => document.querySelectorAll(`#${settings.layer_id} .${settings.note_class}[data-open]`);
+const foldNotes = (except) => {
+  let folded = false;
+  for (const note of openNotes()) {
+    if (note !== except) {
+      delete note.dataset.open;
+      folded = true;
+    }
+  }
+  if (folded) {
+    schedule();
+  }
+};
+document.addEventListener("click", (event) => {
+  if (!(event.target instanceof Element)) {
+    return;
+  }
+  const note = event.target.closest(`#${settings.layer_id}[data-compact] .${settings.note_class}`);
+  foldNotes(note);
+  // On one line, a click opens the note; its buttons still act at once.
+  if (note !== null && note.dataset.open === undefined && event.target.closest("button") === null) {
+    event.preventDefault();
+    event.stopPropagation();
+    note.dataset.open = "";
+    schedule();
+  }
+}, true);
+document.addEventListener("mouseout", (event) => {
+  if (!(event.target instanceof Element)) {
+    return;
+  }
+  const note = event.target.closest(`.${settings.note_class}[data-open]`);
+  if (note !== null && !(event.relatedTarget instanceof Node && note.contains(event.relatedTarget))) {
+    delete note.dataset.open;
+    schedule();
+  }
+});
 document.addEventListener("click", (event) => {
   caretClick = null;
   if (!(event.target instanceof Element)) {
@@ -729,6 +860,9 @@ document.addEventListener("keydown", (event) => {
   }
   if (command || event.altKey) {
     return;
+  }
+  if (event.key === "Escape") {
+    foldNotes(null);
   }
   if (target instanceof HTMLTextAreaElement && target.id === settings.comment_field_id && event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
@@ -777,6 +911,13 @@ struct Settings {
     new_field: &'static str,
     pin_group_class: &'static str,
     note_class: &'static str,
+    more_id: &'static str,
+    more_item_class: &'static str,
+    more_count_class: &'static str,
+    /// Matches a note on one line that shows in full: opened by a click, or holding the focus.
+    open_note: &'static str,
+    /// Holds the copy of a note the script measures at full size.
+    measure_class: &'static str,
     field_class: &'static str,
     comment_text_class: &'static str,
     leaving_class: &'static str,
@@ -811,6 +952,11 @@ impl Settings {
             new_field: NEW_FIELD,
             pin_group_class: PIN_GROUP_CLASS,
             note_class: NOTE_CLASS,
+            more_id: MORE_ID,
+            more_item_class: MORE_ITEM_CLASS,
+            more_count_class: MORE_COUNT_CLASS,
+            open_note: OPEN_NOTE,
+            measure_class: "quote-measure",
             field_class: FIELD_CLASS,
             comment_text_class: COMMENT_TEXT_CLASS,
             leaving_class: LEAVING_CLASS,
@@ -1060,6 +1206,20 @@ pub fn QuoteLayer() -> Element {
             for (index, quote) in quotes.into_iter().enumerate() {
                 QuotePin { key: "{quote.id.get()}", agent, number: quotes::number(index), quote, wide }
             }
+            if !notes.is_empty() {
+                div { id: MORE_ID, class: "quote-more",
+                    span { class: MORE_COUNT_CLASS }
+                    span { class: "spacer" }
+                    for (number, id, quote) in notes.iter().map(|(number, quote)| (*number, quote.id, quote.clone())) {
+                        div { key: "{id.get()}", class: MORE_ITEM_CLASS, "data-quote": "{id.get()}",
+                            button { class: "quote-pin", aria_label: "Quote {number}", "{number}" }
+                            div { class: "popover quote-pin-card",
+                                QuoteCard { agent, number, quote, wide }
+                            }
+                        }
+                    }
+                }
+            }
             for (number, quote) in notes {
                 QuoteNote { key: "{quote.id.get()}", agent, number, quote }
             }
@@ -1079,7 +1239,6 @@ pub fn QuoteLayer() -> Element {
 /// shows the passage and the comment.
 #[component]
 fn QuotePin(agent: AgentId, number: usize, quote: Quote, wide: bool) -> Element {
-    let cockpit: Cockpit = use_context();
     let id = quote.id;
     let comment = quote.comment.clone();
     let label = if comment.is_empty() {
@@ -1091,24 +1250,38 @@ fn QuotePin(agent: AgentId, number: usize, quote: Quote, wide: bool) -> Element 
         div { class: PIN_GROUP_CLASS, "data-quote": "{id.get()}",
             button { class: "quote-pin", aria_label: "{label}", "{number}" }
             div { class: "popover quote-pin-card",
-                p { class: "quote-passage", "{quote.passage.text}" }
-                CommentText { agent, id, comment }
-                div { class: "quote-tools",
-                    // A comment set to show beside the text that has no room there shows here.
-                    if wide && quote.placement == CommentPlacement::Hidden {
-                        button {
-                            class: "icon-button tiny",
-                            title: "Show beside the text",
-                            aria_label: "Show the comment beside the text",
-                            onclick: move |_| cockpit.with_drafts(|_, drafts| quotes::set_placement(drafts, agent, id, CommentPlacement::Beside)),
-                            Icon { kind: IconKind::Eye, size: 13 }
-                        }
-                    }
-                    EditButton { agent, id }
-                    RemoveButton { agent, id }
-                }
+                QuoteCard { agent, number, quote, wide }
             }
         }
+    }
+}
+
+/// The card of a quote whose note does not show: its number and its buttons, its passage and its
+/// comment.
+#[component]
+fn QuoteCard(agent: AgentId, number: usize, quote: Quote, wide: bool) -> Element {
+    let cockpit: Cockpit = use_context();
+    let id = quote.id;
+    rsx! {
+        div { class: "quote-note-head",
+            span { class: "quote-number", "{number}" }
+            span { class: "quote-note-state", "Not sent yet" }
+            span { class: "spacer" }
+            // A comment set to show beside the text that has no room there shows here.
+            if wide && quote.placement == CommentPlacement::Hidden {
+                button {
+                    class: "icon-button tiny",
+                    title: "Show beside the text",
+                    aria_label: "Show the comment beside the text",
+                    onclick: move |_| cockpit.with_drafts(|_, drafts| quotes::set_placement(drafts, agent, id, CommentPlacement::Beside)),
+                    Icon { kind: IconKind::Eye, size: 13 }
+                }
+            }
+            EditButton { agent, id }
+            RemoveButton { agent, id }
+        }
+        p { class: "quote-passage", "{quote.passage.text}" }
+        CommentText { agent, id, comment: quote.comment }
     }
 }
 
@@ -1137,6 +1310,7 @@ fn QuoteNote(agent: AgentId, number: usize, quote: Quote) -> Element {
                 }
                 RemoveButton { agent, id }
             }
+            p { class: "quote-passage", "{quote.passage.text}" }
             CommentText { agent, id, comment: quote.comment }
         }
     }

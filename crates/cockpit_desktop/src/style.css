@@ -5634,6 +5634,7 @@ html.reordering * {
 .quote-reply-place,
 .quote-pin-group,
 .quote-note,
+.quote-more,
 .quote-editor {
   position: absolute;
   top: 0;
@@ -5647,7 +5648,7 @@ html.reordering * {
   transition-delay: 0s, var(--motion-out);
 }
 
-:is(.quote-reply-place, .quote-pin-group, .quote-note, .quote-editor)[data-placed] {
+:is(.quote-reply-place, .quote-pin-group, .quote-note, .quote-more, .quote-editor)[data-placed] {
   visibility: visible;
   opacity: 1;
   transition-duration: var(--motion-in), 0s;
@@ -5805,10 +5806,126 @@ html.reordering * {
   overflow-wrap: anywhere;
 }
 
-.quote-tools {
+/* A note's copy the script measures at full size, out of sight. */
+.quote-measure {
+  position: absolute;
+  top: 0;
+  left: -10000px;
+  visibility: hidden;
+}
+
+.quote-measure > .quote-note {
+  position: static;
+}
+
+/* A note's passage shows only while a note on one line opens. */
+.quote-note > .quote-passage {
+  display: none;
+}
+
+/* While the notes do not all fit, each takes one line: its number, its comment's start, and its
+   buttons under the pointer. The note's head lends its parts to the line. */
+.quote-layer[data-compact] > .quote-note:not([data-open], :focus-within) {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 6px 0 8px;
+  border-radius: 9px;
+  cursor: pointer;
+}
+
+.quote-layer[data-compact] > .quote-note:not([data-open], :focus-within) .quote-note-head {
+  display: contents;
+}
+
+.quote-layer[data-compact] > .quote-note:not([data-open], :focus-within) :is(.quote-note-state, .spacer) {
+  display: none;
+}
+
+.quote-layer[data-compact] > .quote-note:not([data-open], :focus-within) .quote-note-head .icon-button {
+  order: 2;
+  display: none;
+}
+
+.quote-layer[data-compact] > .quote-note:not([data-open], :focus-within):hover .quote-note-head .icon-button {
+  display: inline-flex;
+}
+
+.quote-layer[data-compact] > .quote-note:not([data-open], :focus-within) .quote-comment {
+  order: 1;
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12.5px;
+  background: transparent;
+  pointer-events: none;
+}
+
+/* Opened, a line shows in full over the lines below, which keep their places. */
+.quote-layer[data-compact] > .quote-note:is([data-open], :focus-within) {
+  z-index: 1;
+  outline: 1px solid var(--line-strong);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.6);
+  animation: unfold var(--motion-in) var(--ease-out) backwards;
+}
+
+.quote-layer[data-compact] > .quote-note:is([data-open], :focus-within) > .quote-passage {
+  display: -webkit-box;
+}
+
+/* The notes with no room even on one line: their count, then their numbers, each of which opens
+   its card above the line. */
+.quote-more {
+  left: auto;
+  right: 16px;
+  width: 272px;
+  height: 30px;
   display: flex;
-  justify-content: flex-end;
-  gap: 2px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-radius: 9px;
+  background: var(--panel);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.quote-more-item {
+  position: relative;
+  display: none;
+}
+
+.quote-more-item[data-shown] {
+  display: inline-flex;
+}
+
+.quote-more-item .quote-pin-card {
+  top: auto;
+  bottom: 26px;
+}
+
+.quote-more-item .quote-pin-card::before {
+  top: auto;
+  bottom: -10px;
+}
+
+.quote-more-item:is(:hover, :focus-within) .quote-pin-card {
+  visibility: visible;
+  opacity: 1;
+  transition-duration: var(--motion-in), 0s;
+  transition-timing-function: var(--ease-out), linear;
+  transition-delay: 0s;
+}
+
+/* The number whose card is open stays marked. */
+.quote-more-item:is(:hover, :focus-within) .quote-pin {
+  box-shadow: 0 0 0 3px rgba(45, 212, 191, 0.3);
 }
 
 .quote-editor {
@@ -9393,6 +9510,10 @@ label.icon-button,
 }
 
 .quote-comment:hover {
+  background: var(--raised-hover);
+}
+
+.quote-layer[data-compact] > .quote-note:not([data-open], :focus-within):hover {
   background: var(--raised-hover);
 }
 
