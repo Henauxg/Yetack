@@ -90,6 +90,12 @@ const AUTHENTICATION_FAILED: &str = "authentication_failed";
 /// The error of a turn that found no valid login, in place of Claude Code's advice to run
 /// `/login`, which a cockpit agent cannot.
 const NOT_SIGNED_IN_ERROR: &str = "The account is not signed in";
+/// What Claude Code writes in an `authentication_failed` message when the API, or Cloudflare in
+/// front of it, refused the request with a 403. No sign-in fixes that: the login is fine.
+const REFUSED_STATUS: &str = "API Error: 403";
+/// The notice of a refused request, with Claude Code's text as its detail.
+const REFUSED_NOTICE: &str =
+    "The API refused the request (HTTP 403). No sign-in fixes it: send the message again.";
 const COMPACTED_NOTICE: &str = "Conversation compacted";
 const SUMMARY_TITLE: &str = "Conversation summary";
 /// Titles context Claude Code adds that no line before it explains.
@@ -448,7 +454,7 @@ impl AgentView {
         match line {
             OutputLine::System(event) => self.apply_system(event, now),
             OutputLine::Assistant(message) => {
-                let sign_in_failed = message.error.as_deref() == Some(AUTHENTICATION_FAILED);
+                let sign_in_failed = auth_failure(&message) == Some(AuthFailure::NotSignedIn);
                 if sign_in_failed && !self.sign_in_failed {
                     follow_ups.push(FollowUp::SignInNeeded);
                 }
@@ -921,11 +927,21 @@ impl AgentView {
                 self.summary.cache_expires_at = Some(add(now, self.prompt_cache_ttl));
             }
         }
-        // The notice the hub adds for a failed login takes the place of Claude Code's text.
-        let sign_in_failed = message.error.as_deref() == Some(AUTHENTICATION_FAILED);
+        // The notice the hub adds for a failed login takes the place of Claude Code's text, and a
+        // refused request's notice says what happened, Claude Code's text below it.
+        let failure = auth_failure(&message);
         for block in message.message.content {
             match block {
-                ContentBlock::Text(_) if sign_in_failed => {}
+                ContentBlock::Text(_) if failure == Some(AuthFailure::NotSignedIn) => {}
+                ContentBlock::Text(text) if failure == Some(AuthFailure::Refused) => {
+                    self.push_item(
+                        parent,
+                        ItemBody::Notice {
+                            text: REFUSED_NOTICE.to_owned(),
+                            detail: Some(text.text),
+                        },
+                    );
+                }
                 ContentBlock::Text(text) if synthetic && !text.text.trim().is_empty() => {
                     self.push_item(
                         parent,
@@ -1880,6 +1896,30 @@ fn token_usage(usage: Option<Usage>) -> TokenUsage {
 }
 
 /// Why the turn failed; `None` when it succeeded or the user stopped it.
+/// How an API call failed to authenticate, as Claude Code reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthFailure {
+    /// The login is missing or expired: the agent waits for a sign-in.
+    NotSignedIn,
+    /// The API or Cloudflare refused the request (403), as it can for a while for one session.
+    /// Claude Code still marks it `authentication_failed`, but the login is fine.
+    Refused,
+}
+
+fn auth_failure(message: &AssistantMessage) -> Option<AuthFailure> {
+    if message.error.as_deref() != Some(AUTHENTICATION_FAILED) {
+        return None;
+    }
+    let refused = message.message.content.iter().any(
+        |block| matches!(block, ContentBlock::Text(text) if text.text.contains(REFUSED_STATUS)),
+    );
+    Some(if refused {
+        AuthFailure::Refused
+    } else {
+        AuthFailure::NotSignedIn
+    })
+}
+
 fn turn_error(result: &ResultMessage, interrupted: bool) -> Option<String> {
     if interrupted || !result.is_error {
         return None;
@@ -2570,6 +2610,47 @@ mod tests {
             panic!("expected a turn end");
         };
         assert_eq!(end.error.as_deref(), Some(NOT_SIGNED_IN_ERROR));
+    }
+
+    /// A 403, as Cloudflare's block page in front of the API gives, is no missing login: the turn
+    /// fails with Claude Code's text kept, and nothing waits for a sign-in.
+    #[test]
+    fn a_refused_request_is_no_missing_login() {
+        let mut view = view();
+        view.add_prompt(&prompt("Hello"), now());
+        let refused = "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare";
+
+        let follow_ups = apply(
+            &mut view,
+            json!({
+                "type": "assistant", "error": "authentication_failed",
+                "message": {"model": "<synthetic>", "content": [{"type": "text", "text": refused}]}
+            }),
+        );
+        apply(
+            &mut view,
+            json!({
+                "type": "result", "subtype": "success", "is_error": true, "num_turns": 1,
+                "result": refused
+            }),
+        );
+
+        assert!(follow_ups.is_empty(), "{follow_ups:?}");
+        assert_eq!(view.summary().sign_in_wait, SignInWait::NotWaiting);
+        let notices: Vec<(&str, Option<&str>)> = view
+            .items()
+            .iter()
+            .filter_map(|item| match &item.body {
+                ItemBody::Notice { text, detail } => Some((text.as_str(), detail.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notices, [(REFUSED_NOTICE, Some(refused))]);
+        let Some(ItemBody::TurnEnd(end)) = view.items().last().map(|item| &item.body) else {
+            panic!("expected a turn end");
+        };
+        assert_eq!(end.outcome, TurnOutcome::Failed);
+        assert_eq!(end.error.as_deref(), Some(refused));
     }
 
     /// The agent's account needs you: it waits until a message goes to Claude, or until the
