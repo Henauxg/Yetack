@@ -353,17 +353,21 @@ pub fn credentials_refused(state: &AppState, machine: MachineId, id: AccountId) 
             .is_some_and(|account| account.credentials == CredentialSource::Environment)
 }
 
-/// Whether "Send the message again" sends: the account signed in or no check can end the wait,
-/// the app holds the message, and the card has not sent it yet. No check ends the wait when the
-/// daemon cannot see the sign-in (a login in the macOS Keychain), or when the account's
-/// credentials come from the environment.
+/// Whether "Send the message again" sends: the account signed in, a check found its login, or no
+/// check can end the wait; the app holds the message, and the card has not sent it yet. No check
+/// ends the wait when the daemon cannot see the sign-in (a login in the macOS Keychain), or when
+/// the account's credentials come from the environment. A login the check finds from before the
+/// failure does not end the wait, but it may well work again: a refusal can pass.
 pub fn can_send_again(state: &AppState, entry: &AgentEntry, turn: &SignInTurn) -> bool {
     let id = entry.summary.account;
     let machine = MachineId::of(entry.id());
-    let cannot_tell = known(state, machine).sign_ins.sign_in(id) == Some(SignIn::Unknown)
+    let checked = known(state, machine).sign_ins.sign_in(id);
+    let cannot_tell = checked == Some(SignIn::Unknown)
         || account(state, machine, id)
             .is_some_and(|account| account.credentials == CredentialSource::Environment);
-    let signed_in = entry.summary.sign_in_wait == SignInWait::NotWaiting || cannot_tell;
+    let signed_in = entry.summary.sign_in_wait == SignInWait::NotWaiting
+        || cannot_tell
+        || checked == Some(SignIn::SignedIn);
     signed_in && turn.message.is_some() && entry.sent_again != Some(turn.turn_end)
 }
 
@@ -1810,6 +1814,34 @@ mod tests {
             [Outgoing { request: Request::AgentPrompt(PromptParams { prompt, .. }), .. }] if prompt.text == "Export the invoices"
         ));
         assert_eq!(second, [], "the card sends the message once");
+    }
+
+    /// A check that finds the login, written before the failed turn, does not end the wait: the
+    /// card still lets the message go again, since a refusal can pass.
+    #[test]
+    fn the_message_goes_again_while_waiting_when_a_check_finds_the_login() {
+        let mut waiting = in_folder(1, "/work/app", work());
+        waiting.sign_in_wait = SignInWait::Waiting;
+        waiting.status = AgentStatus::NeedsYou;
+        let mut state = state_with(vec![waiting]);
+        three_accounts(&mut state);
+        let agent = AgentId::new(1);
+        let entry = state.agents.get_mut(&agent).unwrap();
+        entry.transcript.merge_page(HistoryPage {
+            items: vec![
+                transcript_item(1, message("Export the invoices")),
+                transcript_item(2, failed_turn(TurnOutcome::NotSignedIn)),
+            ],
+            older_items: OlderItems::None,
+        });
+
+        signed(&mut state, work(), SignIn::NotSignedIn);
+        let not_found = sends_again(&state, agent);
+        signed(&mut state, work(), SignIn::SignedIn);
+        let found = sends_again(&state, agent);
+
+        assert!(!not_found);
+        assert!(found);
     }
 
     #[test]
