@@ -84,7 +84,8 @@ impl UpdateProgress {
 /// How an update that did not succeed ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateFailure {
-    /// Agents are busy or may hold a scheduled job: nothing changed.
+    /// Agents are busy, or on a server may hold a scheduled job: nothing changed. On this
+    /// computer, an agent started to run something since the update began.
     Refused,
     /// The update failed before it changed anything.
     Failed,
@@ -167,6 +168,8 @@ pub struct StopFailure {
 /// How the restart of this computer's background service failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RestartFailure {
+    /// An agent started to run something since the update began: nothing was stopped.
+    Busy,
     /// These resting agents may hold scheduled jobs: nothing was stopped.
     HoldsJobs(Vec<AgentId>),
     NotStopped(StopFailure),
@@ -195,6 +198,13 @@ impl FailedUpdate {
                 .all(|character| character.is_ascii_digit())
                 .then_some(first)
         })
+    }
+
+    /// The agent that the hint under a server's refusal tells how to stop, `<id>` when the
+    /// listing names none. A refusal on this computer lists its agents instead.
+    pub fn stop_hint(&self) -> Option<&str> {
+        (self.failure == UpdateFailure::Refused && matches!(self.plan, UpdatePlan::Server(_)))
+            .then(|| self.first_agent().unwrap_or("<id>"))
     }
 
     /// Whether the screen offers "Update now": the update refused for busy agents or scheduled
@@ -610,6 +620,7 @@ fn failure_of(progress: UpdateProgress, failure: UpdateFailure) -> FailedUpdate 
 /// scheduled jobs show in a list of their own.
 fn restart_failure(progress: UpdateProgress, failure: RestartFailure) -> FailedUpdate {
     let (failure, message) = match failure {
+        RestartFailure::Busy => (UpdateFailure::Refused, String::new()),
         RestartFailure::HoldsJobs(_) => (UpdateFailure::HoldsJobs, String::new()),
         RestartFailure::NotStopped(StopFailure { reason, by_hand }) => {
             (UpdateFailure::NotStopped { by_hand }, reason)
@@ -853,20 +864,27 @@ pub fn confirmation(state: &AppState, machine: MachineId, name: &str) -> Option<
     })
 }
 
-/// The agents a failure's screen lists: for `HoldsJobs`, those that may hold a scheduled job.
+/// The agents a failure's screen lists: for `HoldsJobs`, those that may hold a scheduled job; for
+/// a refusal on this computer, those that run something. A server's script lists its own.
 pub fn failure_agents(state: &AppState, machine: MachineId, failed: &FailedUpdate) -> Vec<AgentId> {
-    match failed.failure {
-        UpdateFailure::HoldsJobs => update_offer::job_holding_agents(state, machine),
-        UpdateFailure::Refused
-        | UpdateFailure::Failed
-        | UpdateFailure::Cancelled
-        | UpdateFailure::InstallFailed
-        | UpdateFailure::RolledBack
-        | UpdateFailure::AlreadyRunning
-        | UpdateFailure::Unknown
-        | UpdateFailure::NotStopped { .. }
-        | UpdateFailure::NotStarted
-        | UpdateFailure::OtherBuildAnswers => Vec::new(),
+    match (failed.failure, &failed.plan) {
+        (UpdateFailure::HoldsJobs, _) => update_offer::job_holding_agents(state, machine),
+        (UpdateFailure::Refused, UpdatePlan::Service(_)) => {
+            update_offer::running_agents(state, machine)
+        }
+        (
+            UpdateFailure::Refused
+            | UpdateFailure::Failed
+            | UpdateFailure::Cancelled
+            | UpdateFailure::InstallFailed
+            | UpdateFailure::RolledBack
+            | UpdateFailure::AlreadyRunning
+            | UpdateFailure::Unknown
+            | UpdateFailure::NotStopped { .. }
+            | UpdateFailure::NotStarted
+            | UpdateFailure::OtherBuildAnswers,
+            _,
+        ) => Vec::new(),
     }
 }
 
@@ -2506,6 +2524,38 @@ mod tests {
             "the restart reads the jobs again"
         );
         assert_eq!(state.machines.this.job_holders, [], "a run starts afresh");
+    }
+
+    /// An agent started a turn while the restart read the raw logs.
+    #[test]
+    fn a_restart_refused_for_an_agent_that_started_to_work_lists_it_without_the_servers_hint() {
+        let mut state = with_local_service(&[AgentStatus::Idle, AgentStatus::Idle]);
+        state.ui.dialog = Some(Dialog::DaemonUpdate(MachineId::THIS));
+        start(&mut state, MachineId::THIS).unwrap();
+        set_status(&mut state, AgentId::new(2), AgentStatus::Working);
+
+        restart_ended(&mut state, MachineId::THIS, Err(RestartFailure::Busy));
+
+        let Some(DaemonUpdate::Failed(failed)) = this_update(&state).cloned() else {
+            panic!("expected a failure, got {:?}", this_update(&state));
+        };
+        assert_eq!(failed.failure, UpdateFailure::Refused);
+        assert_eq!(
+            failure_agents(&state, MachineId::THIS, &failed),
+            [AgentId::new(2)]
+        );
+        assert_eq!(
+            failed.stop_hint(),
+            None,
+            "the hint runs a command on a server"
+        );
+        assert!(failed.offers_update_now());
+        let server = FailedUpdate {
+            plan: plan(),
+            ..failed
+        };
+        assert_eq!(server.stop_hint(), Some("<id>"));
+        assert_eq!(failure_agents(&state, MachineId::THIS, &server), []);
     }
 
     #[test]

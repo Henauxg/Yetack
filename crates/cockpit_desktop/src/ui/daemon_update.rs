@@ -13,9 +13,7 @@ use crate::connection::Cockpit;
 use crate::daemon_label::DaemonPlace;
 use crate::format;
 use crate::machine::MachineId;
-use crate::state::daemon_update::{
-    self, DaemonUpdate, FailedUpdate, UpdateFailure, UpdateProgress,
-};
+use crate::state::daemon_update::{self, DaemonUpdate, FailedUpdate, UpdateProgress};
 use crate::state::machines::MachineName;
 use crate::state::no_daemon::DaemonChoice;
 use crate::state::update_offer::{self, GapKind, ProgramBuild, UpdateOffer};
@@ -665,8 +663,7 @@ fn StepRow(shown: UpdateStep, current: UpdateStep, label: String) -> Element {
 fn FailedCard(machine: MachineId, name: String, local: bool, failed: FailedUpdate) -> Element {
     let cockpit: Cockpit = use_context();
     let text = daemon_update::failure_text(&failed, &name);
-    let stop_hint = (failed.failure == UpdateFailure::Refused)
-        .then(|| failed.first_agent().unwrap_or("<id>").to_owned());
+    let stop_hint = failed.stop_hint().map(str::to_owned);
     let listed = {
         let state = cockpit.state.read();
         busy_rows(

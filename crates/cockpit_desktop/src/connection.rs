@@ -21,7 +21,7 @@ use crate::machine::MachineId;
 use crate::notifications::Notifier;
 use crate::prefs::NotificationLevel;
 use crate::reach::{self, Places, Reached, Unreached};
-use crate::service_update::{self, SystemService};
+use crate::service_update::{self, BusyCheck, SystemService};
 use crate::state::daemon_update::{self, OutputLine, OutputStream};
 use crate::state::machine_load::{LOAD_POLL, LoadView, ShownLoad};
 use crate::state::machines::{self, MachineChange};
@@ -606,11 +606,16 @@ async fn run_update(
             daemon_update::finished(&mut state.write(), machine, code)
         }
         UpdatePlan::Service(plan) => {
-            let keep_jobs = match busy {
-                BusyAgents::Refuse => Some(update_offer::resting_agents(&state.peek(), machine)),
+            let check = match busy {
+                BusyAgents::Refuse => Some(BusyCheck {
+                    resting: update_offer::resting_agents(&state.peek(), machine),
+                    runs_something: Box::new(move || {
+                        !update_offer::running_agents(&state.peek(), machine).is_empty()
+                    }),
+                }),
                 BusyAgents::Interrupt => None,
             };
-            let restarted = service_update::restart(&SystemService, &plan, keep_jobs, |step| {
+            let restarted = service_update::restart(&SystemService, &plan, check, |step| {
                 daemon_update::step_started(&mut state.write(), machine, step);
             })
             .await;

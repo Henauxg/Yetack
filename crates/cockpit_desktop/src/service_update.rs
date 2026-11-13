@@ -55,19 +55,35 @@ pub async fn read_job_holders(
     read.await.unwrap_or(agents)
 }
 
+/// What a restart that refuses busy agents checks before the stop (`BusyAgents::Refuse`).
+pub struct BusyCheck<'state> {
+    /// The resting agents, whose raw logs it reads.
+    pub resting: Vec<AgentId>,
+    /// Whether an agent runs something now. The read takes a while, and an agent may start a
+    /// turn meanwhile, so the restart asks once the read ended.
+    pub runs_something: Box<dyn FnOnce() -> bool + 'state>,
+}
+
 /// Stops the daemon, then starts the service with this app's program, and tells `steps` each step
 /// as it starts. Once it returns `Ok`, the app connects to the new daemon.
 ///
-/// With `keep_jobs`, the resting agents, it first reads their raw logs again, and restarts nothing
-/// when one may hold a scheduled job, as the script refuses on a server.
+/// With `check`, it first reads the resting agents' raw logs again, then restarts nothing when an
+/// agent runs something or may hold a scheduled job, as the script refuses on a server.
 pub async fn restart(
     control: &impl ServiceControl,
     plan: &ServicePlan,
-    keep_jobs: Option<Vec<AgentId>>,
+    check: Option<BusyCheck<'_>>,
     mut steps: impl FnMut(UpdateStep),
 ) -> Result<(), RestartFailure> {
-    if let Some(resting) = keep_jobs {
+    if let Some(BusyCheck {
+        resting,
+        runs_something,
+    }) = check
+    {
         let holders = read_job_holders(control, plan, resting).await;
+        if runs_something() {
+            return Err(RestartFailure::Busy);
+        }
         if !holders.is_empty() {
             return Err(RestartFailure::HoldsJobs(holders));
         }
@@ -305,14 +321,48 @@ mod tests {
         restarted_keeping(fake, plan, None).await
     }
 
+    /// A restart with `BusyAgents::Refuse` when `resting` is given, while no agent runs anything.
     async fn restarted_keeping(
         fake: &Fake,
         plan: &ServicePlan,
-        keep_jobs: Option<Vec<AgentId>>,
+        resting: Option<Vec<AgentId>>,
+    ) -> (Result<(), RestartFailure>, Vec<UpdateStep>) {
+        let check = resting.map(|resting| BusyCheck {
+            resting,
+            runs_something: Box::new(|| false),
+        });
+        restarted_checking(fake, plan, check).await
+    }
+
+    async fn restarted_checking(
+        fake: &Fake,
+        plan: &ServicePlan,
+        check: Option<BusyCheck<'_>>,
     ) -> (Result<(), RestartFailure>, Vec<UpdateStep>) {
         let mut steps = Vec::new();
-        let result = restart(fake, plan, keep_jobs, |step| steps.push(step)).await;
+        let result = restart(fake, plan, check, |step| steps.push(step)).await;
         (result, steps)
+    }
+
+    /// The user sends a prompt while the restart reads the logs.
+    #[tokio::test]
+    async fn an_agent_that_runs_something_once_the_read_ends_stops_the_restart_before_the_stop() {
+        let fake = Fake::new();
+        let read_first = fake.clone();
+        let check = BusyCheck {
+            resting: vec![AgentId::new(1)],
+            runs_something: Box::new(move || {
+                assert_eq!(read_first.calls().len(), 1, "asked once the read ended");
+                true
+            }),
+        };
+
+        let (result, steps) =
+            restarted_checking(&fake, &plan(Path::new("/made-up")), check.into()).await;
+
+        assert_eq!(result, Err(RestartFailure::Busy));
+        assert_eq!(steps, [], "nothing stopped");
+        assert_eq!(fake.calls().len(), 1, "the read alone: {:?}", fake.calls());
     }
 
     #[tokio::test]
