@@ -78,7 +78,7 @@ fn summary() -> AgentSummary {
         cost: CostUsd::new(1.25),
         started_at: at(1_700_000_000_000),
         last_activity_at: Some(at(1_700_000_250_000)),
-        last_output_at: None,
+        last_output_at: Some(at(1_700_000_240_000)),
         turn_started_at: Some(at(1_700_000_200_000)),
         session: Some(session_id()),
         position: Position::new(2048),
@@ -1882,6 +1882,7 @@ fn an_agent_update_on_the_wire() {
                 "cost": 1.25,
                 "started_at": 1_700_000_000_000_u64,
                 "last_activity_at": 1_700_000_250_000_u64,
+                "last_output_at": 1_700_000_240_000_u64,
                 "turn_started_at": 1_700_000_200_000_u64,
                 "session": "0b7e1c2a-3d4f-4a5b-8c6d-7e8f9a0b1c2d",
                 "position": 2048,
@@ -1895,17 +1896,19 @@ fn an_agent_update_on_the_wire() {
 }
 
 /// A summary from a daemon that predates the count has nothing running in the background, and
-/// one that predates the mark is not to handle.
+/// one that predates the mark is not to handle. One that predates the last output has none.
 #[test]
 fn a_summary_without_its_background_count_reads_none_running() {
     let mut older = serde_json::to_value(summary()).unwrap();
     older.as_object_mut().unwrap().remove("background_running");
     older.as_object_mut().unwrap().remove("mark");
+    older.as_object_mut().unwrap().remove("last_output_at");
 
     let read: AgentSummary = serde_json::from_value(older).unwrap();
 
     assert_eq!(read.background_running, 0);
     assert_eq!(read.mark, Mark::Unmarked);
+    assert_eq!(read.last_output_at, None);
 }
 
 /// A task names the call that started it, and a task without one leaves the field out.
