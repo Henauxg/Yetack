@@ -30,6 +30,10 @@ const OUTPUT_PAUSE: Duration = Duration::from_millis(150);
 /// The most lines shown at once.
 const OUTPUT_BATCH: usize = 256;
 
+/// The longest line kept, in bytes: the rest of a longer line is dropped, so that a server that
+/// never ends its line cannot fill the app's memory.
+const MAX_LINE_BYTES: usize = 64 * 1024;
+
 /// The release this app was built from. The app builds the daemon from its own tree, so the daemon
 /// in the app tells the same release.
 pub const APP_VERSION: &str = cockpit_daemon::RELEASE_VERSION;
@@ -129,7 +133,8 @@ async fn run(
     child.wait().await
 }
 
-/// Sends each line of `stream` to `sender`, until `stream` ends.
+/// Sends each line of `stream` to `sender`, until `stream` ends. A line keeps its first
+/// `MAX_LINE_BYTES` bytes.
 async fn read_lines(
     stream: impl AsyncRead + Unpin,
     output: OutputStream,
@@ -138,19 +143,34 @@ async fn read_lines(
     let mut reader = BufReader::new(stream);
     let mut bytes = Vec::new();
     loop {
-        bytes.clear();
-        match reader.read_until(b'\n', &mut bytes).await {
-            Ok(0) | Err(_) => return,
-            Ok(_) => {
-                let line = OutputLine {
-                    stream: output,
-                    text: String::from_utf8_lossy(&bytes).trim_end().to_owned(),
-                };
-                if sender.send(line).is_err() {
-                    return;
-                }
+        let Ok(chunk) = reader.fill_buf().await else {
+            return;
+        };
+        if chunk.is_empty() {
+            if !bytes.is_empty() {
+                let _ = sender.send(output_line(output, &bytes));
             }
+            return;
         }
+        let newline = chunk.iter().position(|&byte| byte == b'\n');
+        let part = newline.map_or(chunk, |at| chunk.get(..at).unwrap_or(chunk));
+        let room = MAX_LINE_BYTES.saturating_sub(bytes.len());
+        bytes.extend_from_slice(part.get(..room).unwrap_or(part));
+        let consumed = newline.map_or(chunk.len(), |at| at + 1);
+        reader.consume(consumed);
+        if newline.is_some() {
+            if sender.send(output_line(output, &bytes)).is_err() {
+                return;
+            }
+            bytes.clear();
+        }
+    }
+}
+
+fn output_line(stream: OutputStream, bytes: &[u8]) -> OutputLine {
+    OutputLine {
+        stream,
+        text: String::from_utf8_lossy(bytes).trim_end().to_owned(),
     }
 }
 
@@ -261,5 +281,20 @@ mod tests {
         };
         assert_eq!(text(OutputStream::Stdout), ["out", "no newline"]);
         assert_eq!(text(OutputStream::Stderr), ["err"]);
+    }
+
+    #[tokio::test]
+    async fn a_long_line_keeps_its_start_and_the_next_line_comes_whole() {
+        let long = "a".repeat(3 * MAX_LINE_BYTES);
+        let output = format!("{long}\nnext\n{long}");
+        let (sender, mut received) = mpsc::unbounded_channel();
+
+        read_lines(output.as_bytes(), OutputStream::Stdout, sender).await;
+
+        let mut lines = Vec::new();
+        received.recv_many(&mut lines, 10).await;
+        let texts: Vec<&str> = lines.iter().map(|line| line.text.as_str()).collect();
+        let kept = "a".repeat(MAX_LINE_BYTES);
+        assert_eq!(texts, [kept.as_str(), "next", kept.as_str()]);
     }
 }
