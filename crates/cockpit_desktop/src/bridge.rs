@@ -28,6 +28,10 @@ pub const OPEN_FILE_FIELD_ID: &str = "open-file-path";
 /// Marks the element that records a new shortcut: the script leaves its keys to it.
 pub const RECORDS_KEYS_ATTRIBUTE: &str = "data-records-keys";
 
+/// Marks an element that Esc closes by itself, such as an opened quote note: while one is on the
+/// page, the script leaves Esc to it, so that Esc closes nothing else and never stops an agent.
+pub const TAKES_ESCAPE_ATTRIBUTE: &str = "data-takes-escape";
+
 /// The hidden file input the composer's attach button opens.
 pub const ATTACH_INPUT_ID: &str = "attach-input";
 
@@ -243,7 +247,7 @@ document.addEventListener("keydown", (event) => {
       return;
     }
   } else if (key === "Escape") {
-    take = true;
+    take = document.querySelector(`[${settings.takes_escape_attribute}]`) === null;
   } else if (key === settings.page_reload_key) {
     // Taken everywhere, whatever its shortcut runs: it never reloads the page.
     take = true;
@@ -498,6 +502,7 @@ struct Settings {
     /// The key that would reload the page.
     page_reload_key: &'static str,
     records_keys_attribute: &'static str,
+    takes_escape_attribute: &'static str,
     /// The page's global that keeps the element a menu took the focus from.
     menu_focus_key: &'static str,
 }
@@ -626,6 +631,7 @@ pub fn use_bridge(cockpit: Cockpit) {
             answer_keys: ANSWER_KEYS,
             page_reload_key: PAGE_RELOAD_KEY,
             records_keys_attribute: RECORDS_KEYS_ATTRIBUTE,
+            takes_escape_attribute: TAKES_ESCAPE_ATTRIBUTE,
             menu_focus_key: MENU_FOCUS_KEY,
         }) {
             tracing::warn!("cannot start the page's script: {error}");
@@ -990,6 +996,7 @@ mod tests {
             answer_keys: ANSWER_KEYS,
             page_reload_key: PAGE_RELOAD_KEY,
             records_keys_attribute: RECORDS_KEYS_ATTRIBUTE,
+            takes_escape_attribute: TAKES_ESCAPE_ATTRIBUTE,
             menu_focus_key: MENU_FOCUS_KEY,
         };
         let mode = KeyMode {
@@ -1028,6 +1035,7 @@ mod tests {
                 "answer_keys": ["y", "n"],
                 "page_reload_key": "F5",
                 "records_keys_attribute": "data-records-keys",
+                "takes_escape_attribute": "data-takes-escape",
                 "menu_focus_key": "cockpitFocusBeforeMenu",
             })
         );

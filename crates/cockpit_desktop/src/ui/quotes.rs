@@ -375,44 +375,57 @@ const place = () => {
     }
     shown.push({ id: item.id, group, note, editing, first, last });
   }
-  // The tops of the notes, each below the one above, and how many fit above `limit`.
+  // The tops of the notes, each below the one above, and which fit above `limit`. The notes keep
+  // the chat's order: once one has no room, none after it shows. A field with no room shows as a
+  // card instead, and leaves its place to the notes after it.
   const stack = (heights, limit) => {
     const tops = [];
+    const fits = [];
     let below = -Infinity;
-    let fitting = 0;
+    let blocked = false;
     for (const [index, entry] of shown.entries()) {
       const top = Math.max(entry.first.top - 10, floor, below + 8);
+      const fit = !blocked && top + heights[index] <= limit;
       tops.push(top);
-      below = top + heights[index];
-      if (below <= limit && fitting === index) {
-        fitting = index + 1;
+      fits.push(fit);
+      if (fit) {
+        below = top + heights[index];
+      } else if (!entry.editing) {
+        blocked = true;
       }
     }
-    return { tops, fitting };
+    return { tops, fits, below };
   };
-  // Full size first. A note on one line is measured by a copy out of the strip, which keeps its
+  const noteLeft = (placed) => shown.some((entry, index) => !entry.editing && !placed.fits[index]);
+  // Full size first. Notes on one line are measured by copies out of the strip, which keeps its
   // form: leaving it would restart the animation of an opened note on every round.
-  const fullHeight = (note) => {
-    if (!strip.hasAttribute("data-compact") || !note.classList.contains(settings.note_class)) {
-      return note.offsetHeight;
+  const fullHeights = () => {
+    if (!strip.hasAttribute("data-compact")) {
+      return shown.map((entry) => entry.note.offsetHeight);
     }
     const host = document.createElement("div");
     host.className = settings.measure_class;
-    const copy = note.cloneNode(true);
-    delete copy.dataset.open;
-    host.appendChild(copy);
+    const copies = shown.map((entry) => {
+      if (entry.editing) {
+        return null;
+      }
+      const copy = entry.note.cloneNode(true);
+      delete copy.dataset.open;
+      host.appendChild(copy);
+      return copy;
+    });
     strip.appendChild(host);
-    const height = copy.offsetHeight;
+    const heights = shown.map((entry, index) => copies[index]?.offsetHeight ?? entry.note.offsetHeight);
     host.remove();
-    return height;
+    return heights;
   };
-  const full = shown.map((entry) => fullHeight(entry.note));
-  const compact = stack(full, bottom).fitting < shown.length;
+  const full = fullHeights();
+  const compact = noteLeft(stack(full, bottom));
   if (compact) {
     strip.setAttribute("data-compact", "");
   } else {
     strip.removeAttribute("data-compact");
-    shown.forEach((entry) => delete entry.note.dataset.open);
+    shown.forEach((entry) => foldNote(entry.note));
   }
   // An opened line shows over the lines below, which keep the place of a line.
   const lineHeight = shown.find((entry) => !entry.editing && !entry.note.matches(settings.open_note))?.note.offsetHeight ?? 30;
@@ -423,21 +436,39 @@ const place = () => {
     return !entry.editing && entry.note.matches(settings.open_note) ? lineHeight : entry.note.offsetHeight;
   });
   let placed = stack(heights, bottom);
-  let rest = [];
-  if (compact && placed.fitting < shown.length && more !== null) {
-    placed = stack(heights, bottom - more.offsetHeight - 8);
-    rest = shown.slice(placed.fitting);
+  const hidden = new Set();
+  // The "+N" line takes the last place, as tall as its numbers make it, which more notes going
+  // there can make taller: a few rounds settle it.
+  if (compact && noteLeft(placed) && more !== null) {
+    let reserved = 0;
+    for (let round = 0; round < 4; round++) {
+      hidden.clear();
+      shown.forEach((entry, index) => {
+        if (!entry.editing && !placed.fits[index]) {
+          hidden.add(entry.id);
+        }
+      });
+      for (const item of more.querySelectorAll(`.${settings.more_item_class}`)) {
+        item.toggleAttribute("data-shown", hidden.has(item.dataset.quote));
+      }
+      const height = more.offsetHeight;
+      if (height <= reserved) {
+        break;
+      }
+      reserved = height;
+      placed = stack(heights, bottom - reserved - 8);
+    }
   }
   const paths = [];
   let below = -Infinity;
   for (const [index, entry] of shown.entries()) {
     const { note, editing, group, last } = entry;
-    if (index >= placed.fitting) {
+    if (!placed.fits[index]) {
       if (editing) {
         editor.dataset.fallback = "";
       } else {
         away(note);
-        delete note.dataset.open;
+        foldNote(note);
       }
       continue;
     }
@@ -459,7 +490,6 @@ const place = () => {
     }
   }
   if (more !== null) {
-    const hidden = new Set(rest.filter((entry) => !entry.editing).map((entry) => entry.id));
     for (const item of more.querySelectorAll(`.${settings.more_item_class}`)) {
       item.toggleAttribute("data-shown", hidden.has(item.dataset.quote));
     }
@@ -783,17 +813,27 @@ const revealSent = (quote) => {
   }
 };
 const openNotes = () => document.querySelectorAll(`#${settings.layer_id} .${settings.note_class}[data-open]`);
+const openNote = (note) => {
+  note.dataset.open = "";
+  note.setAttribute(settings.takes_escape_attribute, "");
+  schedule();
+};
+const foldNote = (note) => {
+  delete note.dataset.open;
+  note.removeAttribute(settings.takes_escape_attribute);
+};
 const foldNotes = (except) => {
   let folded = false;
   for (const note of openNotes()) {
     if (note !== except) {
-      delete note.dataset.open;
+      foldNote(note);
       folded = true;
     }
   }
   if (folded) {
     schedule();
   }
+  return folded;
 };
 document.addEventListener("click", (event) => {
   if (!(event.target instanceof Element)) {
@@ -802,20 +842,30 @@ document.addEventListener("click", (event) => {
   const note = event.target.closest(`#${settings.layer_id}[data-compact] .${settings.note_class}`);
   foldNotes(note);
   // On one line, a click opens the note; its buttons still act at once.
-  if (note !== null && note.dataset.open === undefined && event.target.closest("button") === null) {
+  if (note !== null && !note.matches(settings.open_note) && event.target.closest("button") === null) {
     event.preventDefault();
     event.stopPropagation();
-    note.dataset.open = "";
-    schedule();
+    openNote(note);
   }
 }, true);
+// A note on one line shows in full while it holds the focus: its place follows.
+document.addEventListener("focusin", (event) => {
+  if (event.target instanceof Element && event.target.closest(`#${settings.layer_id}`) !== null) {
+    schedule();
+  }
+});
+document.addEventListener("focusout", (event) => {
+  if (event.target instanceof Element && event.target.closest(`#${settings.layer_id}`) !== null) {
+    schedule();
+  }
+});
 document.addEventListener("mouseout", (event) => {
   if (!(event.target instanceof Element)) {
     return;
   }
   const note = event.target.closest(`.${settings.note_class}[data-open]`);
   if (note !== null && !(event.relatedTarget instanceof Node && note.contains(event.relatedTarget))) {
-    delete note.dataset.open;
+    foldNote(note);
     schedule();
   }
 });
@@ -861,8 +911,10 @@ document.addEventListener("keydown", (event) => {
   if (command || event.altKey) {
     return;
   }
-  if (event.key === "Escape") {
-    foldNotes(null);
+  // An Esc that folds a note does nothing else: the page's key script leaves it alone.
+  if (event.key === "Escape" && foldNotes(null)) {
+    event.preventDefault();
+    return;
   }
   if (target instanceof HTMLTextAreaElement && target.id === settings.comment_field_id && event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
@@ -916,8 +968,10 @@ struct Settings {
     more_count_class: &'static str,
     /// Matches a note on one line that shows in full: opened by a click, or holding the focus.
     open_note: &'static str,
-    /// Holds the copy of a note the script measures at full size.
+    /// Holds the copies of the notes the script measures at full size.
     measure_class: &'static str,
+    /// Marks an opened note, which Esc folds, for the page's key script.
+    takes_escape_attribute: &'static str,
     field_class: &'static str,
     comment_text_class: &'static str,
     leaving_class: &'static str,
@@ -957,6 +1011,7 @@ impl Settings {
             more_count_class: MORE_COUNT_CLASS,
             open_note: OPEN_NOTE,
             measure_class: "quote-measure",
+            takes_escape_attribute: bridge::TAKES_ESCAPE_ATTRIBUTE,
             field_class: FIELD_CLASS,
             comment_text_class: COMMENT_TEXT_CLASS,
             leaving_class: LEAVING_CLASS,

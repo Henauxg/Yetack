@@ -5884,11 +5884,13 @@ html.reordering * {
   left: auto;
   right: 16px;
   width: 272px;
-  height: 30px;
+  min-height: 30px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  padding: 0 8px;
+  padding: 6px 8px;
+  box-sizing: border-box;
   border-radius: 9px;
   background: var(--panel);
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
