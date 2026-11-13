@@ -197,7 +197,7 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   - The center header stays on one line: the title shortens first, then the usage and files chips shrink to icons.
 - Decided after round 3 (mocked in round 4):
   - An agent that finished while you looked elsewhere stays unread: bold title and a white dot until you open it.
-  - Desktop notifications when an agent starts waiting for you, and when it finishes while you look elsewhere.
+  - Desktop notifications when an agent starts waiting for you, and when it finishes, while you work in another window.
   - Questions (`AskUserQuestion`) show one at a time behind tabs, with their options as a list and an "Other" row. 1 to 9 pick an option of the question on screen, Left and Right switch questions, and Enter goes to the next unanswered one, then sends. An answered question folds to one line. A click on the line shows every question, its answer and the options not picked.
   - Plans show as a card with "Yes, accept edits", "Yes, ask before edits" and "No, keep planning".
   - When the file view is closed, a right panel shows three blocks: the task list (`TodoWrite`), what runs in the background (subagents and commands, each with Stop) and the MCP servers (a failed one has Retry).

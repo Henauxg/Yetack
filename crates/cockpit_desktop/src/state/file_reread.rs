@@ -75,6 +75,9 @@ pub fn item_finished(state: &mut AppState, agent: AgentId, item: &TranscriptItem
 pub fn window_focused(state: &mut AppState, focused: bool) {
     let back = focused && !state.ui.window_focused;
     state.ui.window_focused = focused;
+    if back {
+        state.ui.focus_returns = state.ui.focus_returns.wrapping_add(1);
+    }
     if back && let Some(agent) = state.ui.selected {
         reread(state, agent);
     }

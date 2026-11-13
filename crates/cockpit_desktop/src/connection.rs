@@ -27,7 +27,7 @@ use crate::state::machines::{self, MachineChange};
 use crate::state::no_daemon::{self, Absence, Chosen, DaemonChoice};
 use crate::state::{
     self, AgentEntry, AppState, ConnectionState, Dialog, Drafts, MachineState, Outgoing, Purpose,
-    TitlePlace, Utf16Offset, actions, notification_levels,
+    TitlePlace, Utf16Offset, actions, file_reread, notification_levels,
 };
 use crate::{bridge, demo, format, update_script};
 
@@ -70,9 +70,9 @@ pub enum ToDaemon {
     /// Runs or cancels the update of a daemon that refuses the app. Plain SSH, beside the
     /// connection, which keeps being refused meanwhile.
     Update(UpdateCommand),
-    /// The notification levels changed: each machine's notifier closes what they no longer let
-    /// through.
-    NotificationLevels,
+    /// The notification levels changed, or the window got the focus back: each machine's notifier
+    /// closes what they no longer let through.
+    Notifications,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,7 +158,15 @@ impl Cockpit {
             Some(agent) => notification_levels::set_agent(&mut signal.write(), agent, level),
             None => notification_levels::set_app(&mut signal.write(), level),
         }
-        self.daemon.send(ToDaemon::NotificationLevels);
+        self.daemon.send(ToDaemon::Notifications);
+    }
+
+    /// The window gained or lost the focus. Back in front, it closes the app's notifications.
+    pub fn set_window_focused(&self, focused: bool) {
+        self.update(|state| file_reread::window_focused(state, focused));
+        if focused {
+            self.daemon.send(ToDaemon::Notifications);
+        }
     }
 
     pub fn update(&self, change: impl FnOnce(&mut AppState)) {
@@ -396,10 +404,10 @@ async fn route(
                 servers.start_update_command(state, command.clone());
                 continue;
             }
-            ToDaemon::NotificationLevels => {
+            ToDaemon::Notifications => {
                 for task in servers.tasks.values() {
                     // A task that ended has no notifier.
-                    let _ = task.send(ToDaemon::NotificationLevels);
+                    let _ = task.send(ToDaemon::Notifications);
                 }
                 continue;
             }
@@ -635,7 +643,7 @@ async fn refuse_requests(
             () = &mut wait => return true,
             message = requests.recv() => match message {
                 Some(ToDaemon::Machines(MachineChange::Retry(_))) => return true,
-                Some(ToDaemon::Machines(_) | ToDaemon::Update(_) | ToDaemon::NotificationLevels) => {}
+                Some(ToDaemon::Machines(_) | ToDaemon::Update(_) | ToDaemon::Notifications) => {}
                 Some(ToDaemon::Send(Outgoing { request, purpose, .. })) => {
                     let mut state = state.write();
                     state::apply_response(
@@ -700,7 +708,7 @@ async fn run_demo(
                         ToDaemon::Choose(_)
                         | ToDaemon::Machines(_)
                         | ToDaemon::Update(UpdateCommand::Cancel(..))
-                        | ToDaemon::NotificationLevels,
+                        | ToDaemon::Notifications,
                     ) => continue,
                     None => return,
                 };
@@ -902,7 +910,7 @@ async fn next_choice(
     loop {
         match requests.recv().await? {
             ToDaemon::Choose(chosen) => return Some(chosen),
-            ToDaemon::Machines(_) | ToDaemon::Update(_) | ToDaemon::NotificationLevels => {}
+            ToDaemon::Machines(_) | ToDaemon::Update(_) | ToDaemon::Notifications => {}
             ToDaemon::Send(Outgoing {
                 request, purpose, ..
             }) => {
@@ -1034,7 +1042,7 @@ async fn serve(
                         requester = session.requester().clone();
                     }
                 }
-                Some(ToDaemon::NotificationLevels) => {
+                Some(ToDaemon::Notifications) => {
                     if let Some(notifier) = &mut notifier {
                         notifier.update(Vec::new(), &state.peek());
                     }
