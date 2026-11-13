@@ -453,7 +453,6 @@ impl AgentView {
 
     /// Reads one line from `claude`.
     pub(crate) fn apply(&mut self, line: OutputLine, now: Timestamp) -> Vec<FollowUp> {
-        self.note_output(now);
         let mut follow_ups = Vec::new();
         match line {
             OutputLine::System(event) => self.apply_system(event, now),
@@ -481,6 +480,10 @@ impl AgentView {
             OutputLine::StreamEvent(_)
             | OutputLine::ControlResponse(_)
             | OutputLine::Unknown(_) => {}
+        }
+        // Only the Working line shows the stamp: between turns, it would only add events.
+        if self.working {
+            self.note_output(now);
         }
         follow_ups
     }
@@ -4171,6 +4174,10 @@ mod tests {
     #[test]
     fn each_line_moves_the_last_output_once_a_second_at_most() {
         let mut view = view();
+        view.add_prompt(
+            &prompt("Fix the cart total"),
+            Timestamp::from_unix_millis(99_000),
+        );
         let thinking = json!({"type": "system", "subtype": "thinking_tokens",
                               "estimated_tokens": 50, "estimated_tokens_delta": 50});
         let at_millis = |view: &mut AgentView, millis: u64| {
@@ -4187,6 +4194,21 @@ mod tests {
         assert_eq!(first, Some(Timestamp::from_unix_millis(100_000)));
         assert_eq!(soon, first);
         assert_eq!(later, Some(Timestamp::from_unix_millis(101_000)));
+    }
+
+    #[test]
+    fn a_line_between_turns_moves_no_last_output() {
+        let mut view = view();
+        view.take_events();
+
+        apply(
+            &mut view,
+            json!({"type": "system", "subtype": "thinking_tokens",
+                   "estimated_tokens": 50, "estimated_tokens_delta": 50}),
+        );
+
+        assert_eq!(view.summary().last_output_at, None);
+        assert_eq!(view.take_events(), Vec::new());
     }
 
     #[test]
