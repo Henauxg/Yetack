@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::machine_load;
 #[cfg(unix)]
-use crate::store::lock_path;
+use crate::store;
 use crate::store::{BootId, RecordedProcess};
 
 /// How long a stop waits for the daemon to let the lock go.
@@ -148,7 +148,7 @@ pub enum StopLockHolderError {
 pub fn lock_holder(state_dir: &Path) -> Result<Option<LockHolder>, LockHolderError> {
     use std::io::Read;
 
-    let path = lock_path(state_dir);
+    let path = store::lock_path(state_dir);
     let read_error = |source| LockHolderError::Read {
         path: path.clone(),
         source,
@@ -214,7 +214,7 @@ fn stop_within(state_dir: &Path, wait: Duration) -> Result<(), StopLockHolderErr
         pid = pid.get(),
         "stopping the daemon that holds the state folder"
     );
-    let path = lock_path(state_dir);
+    let path = store::lock_path(state_dir);
     let deadline = Instant::now() + wait;
     loop {
         let held = held_lock(&path).map_err(|source| LockHolderError::Read {
@@ -325,7 +325,7 @@ mod tests {
 
         /// Replaces the record of the lock the test holds, as another daemon would have written it.
         fn write_record(state_dir: &Path, holder: &LockHolder) {
-            std::fs::write(lock_path(state_dir), holder.encode().unwrap()).unwrap();
+            std::fs::write(store::lock_path(state_dir), holder.encode().unwrap()).unwrap();
         }
 
         #[test]
@@ -362,7 +362,7 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let state = StateDir::create(temp.path()).unwrap();
             let _lock = state.lock().unwrap();
-            std::fs::write(lock_path(temp.path()), b"").unwrap();
+            std::fs::write(store::lock_path(temp.path()), b"").unwrap();
 
             let read = lock_holder(temp.path());
 
