@@ -2037,8 +2037,8 @@ mod tests {
         let second = next_drawn(agent, first, &rows, false);
         let third = next_drawn(agent, second, &rows, false);
 
-        // The opening frame drew the latest 25: rows 75 on.
-        assert_eq!(first, Some(Drawn::From(agent, row(35))));
+        // The opening frame drew the latest 40, rows 60 on, and the next one adds 40.
+        assert_eq!(first, Some(Drawn::From(agent, row(20))));
         assert_eq!(second, Some(Drawn::All(agent)));
         assert_eq!(third, None, "all drawn: nothing more to do");
         assert_eq!(
