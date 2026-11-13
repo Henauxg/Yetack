@@ -46,6 +46,9 @@ pub struct UpdateProgress {
     errors: Vec<String>,
     /// "Cancel the update" was pressed.
     pub cancel_asked: bool,
+    /// The machine's count of connections (`MachineState::connections`) as the stop of this
+    /// computer's daemon started.
+    connections_at_stop: Option<u64>,
 }
 
 impl UpdateProgress {
@@ -57,7 +60,15 @@ impl UpdateProgress {
             output: VecDeque::new(),
             errors: Vec::new(),
             cancel_asked: false,
+            connections_at_stop: None,
         }
+    }
+
+    /// Whether the app connected after the stop of this computer's daemon started, `connections`
+    /// being the machine's count now. Such a connection reaches a daemon that started since.
+    fn connected_since_the_stop(&self, connections: u64) -> bool {
+        self.connections_at_stop
+            .is_some_and(|at_stop| connections > at_stop)
     }
 
     /// A server's update stops before it installs, which it does right before the restart. The
@@ -245,11 +256,13 @@ pub fn attempt_failed(state: &mut AppState, machine: MachineId, gap: Option<Vers
 /// reached its end or was overtaken. Otherwise a server's update runs on until its script ends,
 /// since the app may have reconnected to the old daemon. Once this computer's service stopped, the
 /// daemon that answers is a new one: of another build, another program restarted the old daemon.
+/// A connection made during the stop is judged once the restart ends ([`restart_ended`]).
 pub fn connected(state: &mut AppState, machine: MachineId) {
     let app = state.app_build.clone();
     let Some(known) = state.machines.get_mut(machine) else {
         return;
     };
+    known.connections = known.connections.saturating_add(1);
     known.version_gap = known.daemon_version.clone().and_then(|version| {
         let daemon = ProgramBuild {
             version,
@@ -466,9 +479,17 @@ pub fn output(state: &mut AppState, machine: MachineId, lines: Vec<OutputLine>) 
 
 /// The restart of this computer's service reached `step`.
 pub fn step_started(state: &mut AppState, machine: MachineId, step: UpdateStep) {
-    if let Some(progress) = running_mut(state, machine) {
-        progress.step = progress.step.max(step);
+    let Some(known) = state.machines.get_mut(machine) else {
+        return;
+    };
+    let connections = known.connections;
+    let Some(DaemonUpdate::Running(progress)) = &mut known.update else {
+        return;
+    };
+    if step == UpdateStep::Stop {
+        progress.connections_at_stop.get_or_insert(connections);
     }
+    progress.step = progress.step.max(step);
 }
 
 /// The script ended with `code`, `None` when ssh lost it. Returns whether the app should try the
@@ -502,8 +523,12 @@ pub fn finished(state: &mut AppState, machine: MachineId, code: Option<i32>) -> 
 }
 
 /// The restart of this computer's service ended. Returns whether the app should try the machine
-/// again at once. A connection the app still has is the stopped daemon's, which it has not seen
-/// end yet: the next one reaches the daemon that runs now.
+/// again at once.
+///
+/// A connection the app made before the stop is the stopped daemon's, which it has not seen end
+/// yet: the next one reaches the daemon that runs now. A connection made since the stop started
+/// reaches a daemon that started since, such as the old one another program restarted at once:
+/// it is judged now, since no later connection comes.
 pub fn restart_ended(
     state: &mut AppState,
     machine: MachineId,
@@ -519,6 +544,16 @@ pub fn restart_ended(
         return false;
     };
     match restarted {
+        Ok(()) if known.is_connected() && progress.connected_since_the_stop(known.connections) => {
+            progress.step = UpdateStep::Reconnect;
+            // A daemon of this app's build would have ended the update as it connected.
+            known.update = known
+                .version_gap
+                .as_ref()
+                .and_then(|gap| after_restart(progress, gap));
+            close_empty_dialog(state, machine);
+            false
+        }
         Ok(()) => {
             progress.step = UpdateStep::Reconnect;
             known.update = Some(DaemonUpdate::Reconnecting(progress));
@@ -2008,6 +2043,77 @@ mod tests {
                 step: UpdateStep::Stop,
                 ..
             }))
+        ));
+    }
+
+    /// Another program, such as a systemd unit with `Restart=always`, restarts the old daemon
+    /// within the stop's 100 ms: the app reconnects to it during the stop, then the start finds
+    /// a daemon that answers.
+    #[test]
+    fn an_old_daemon_restarted_during_the_stop_fails_the_update_once_the_restart_ends() {
+        let mut state = with_local_service(&[]);
+        state.ui.dialog = Some(Dialog::DaemonUpdate(MachineId::THIS));
+        start(&mut state, MachineId::THIS).unwrap();
+        step_started(&mut state, MachineId::THIS, UpdateStep::Stop);
+        drop_connection(&mut state, MachineId::THIS);
+        connect(&mut state, MachineId::THIS, &other_build());
+        assert!(
+            matches!(this_update(&state), Some(DaemonUpdate::Running(_))),
+            "the stop has not ended yet"
+        );
+        step_started(&mut state, MachineId::THIS, UpdateStep::Start);
+
+        let retry = restart_ended(&mut state, MachineId::THIS, Ok(()));
+
+        assert!(!retry, "the connection the app has is the daemon to judge");
+        let Some(DaemonUpdate::Failed(failed)) = this_update(&state) else {
+            panic!("expected a failure, got {:?}", this_update(&state));
+        };
+        assert_eq!(failed.failure, UpdateFailure::OtherBuildAnswers);
+        assert_eq!(
+            state.ui.dialog,
+            Some(Dialog::DaemonUpdate(MachineId::THIS)),
+            "the failure shows"
+        );
+        assert_eq!(
+            start(&mut state, MachineId::THIS),
+            Some(run(service_plan())),
+            "Retry runs again"
+        );
+    }
+
+    #[test]
+    fn this_apps_build_reached_during_the_stop_ends_the_update() {
+        let mut state = with_local_service(&[]);
+        state.ui.dialog = Some(Dialog::DaemonUpdate(MachineId::THIS));
+        start(&mut state, MachineId::THIS).unwrap();
+        step_started(&mut state, MachineId::THIS, UpdateStep::Stop);
+        drop_connection(&mut state, MachineId::THIS);
+        let app = app_build(&state);
+        connect(&mut state, MachineId::THIS, &app);
+
+        let retry = restart_ended(&mut state, MachineId::THIS, Ok(()));
+
+        assert!(!retry);
+        assert_eq!(this_update(&state), None);
+        assert_eq!(state.ui.dialog, None);
+    }
+
+    #[test]
+    fn a_connection_made_before_the_stop_waits_for_the_next_one() {
+        let mut state = with_local_service(&[]);
+        start(&mut state, MachineId::THIS).unwrap();
+        drop_connection(&mut state, MachineId::THIS);
+        connect(&mut state, MachineId::THIS, &other_build());
+        step_started(&mut state, MachineId::THIS, UpdateStep::Stop);
+        step_started(&mut state, MachineId::THIS, UpdateStep::Start);
+
+        let retry = restart_ended(&mut state, MachineId::THIS, Ok(()));
+
+        assert!(retry);
+        assert!(matches!(
+            this_update(&state),
+            Some(DaemonUpdate::Reconnecting(_))
         ));
     }
 
