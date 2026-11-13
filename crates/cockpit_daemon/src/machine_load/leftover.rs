@@ -78,11 +78,11 @@ pub(crate) fn still_runs(recorded: &RecordedProcess) -> bool {
 /// as it is.
 #[cfg(unix)]
 pub(crate) fn running_for(started: u64) -> Option<Duration> {
-    use crate::machine_load::proc_files::{UPTIME_PATH, parse_uptime_ticks};
+    use crate::machine_load::proc_files::{self, UPTIME_PATH};
 
     let ticks_per_second = rustix::param::clock_ticks_per_second();
     let text = std::fs::read_to_string(UPTIME_PATH).ok()?;
-    let uptime = parse_uptime_ticks(&text, ticks_per_second)?;
+    let uptime = proc_files::parse_uptime_ticks(&text, ticks_per_second)?;
     ticks_duration(uptime.checked_sub(started)?, ticks_per_second)
 }
 
