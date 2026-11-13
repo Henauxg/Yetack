@@ -468,7 +468,11 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
             new_above: divider
                 .is_some_and(|divider| row.items().iter().any(|item| item.id == divider)),
             view: RowView::of(row, &children, &awaiting, sign_in_end),
-            step: state.map(|state| Step { state, links }),
+            step: state.map(|state| Step {
+                state,
+                links,
+                call: matches!(row.first().body, ItemBody::ToolCall(_)),
+            }),
             older_step,
         })
         .collect();
@@ -712,11 +716,17 @@ struct StepLinks {
 struct Step {
     state: StepState,
     links: StepLinks,
+    /// A tool call's row: one call, an edit, a run of reads or a skill. It shows smaller and
+    /// dimmer than the agent's text, which it serves.
+    call: bool,
 }
 
 impl Step {
     fn class(self) -> String {
         let mut class = format!("step {}", self.state.class());
+        if self.call {
+            class.push_str(" step-call");
+        }
         if self.links.above {
             class.push_str(" linked-above");
         }
