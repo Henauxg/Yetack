@@ -716,8 +716,7 @@ struct StepLinks {
 struct Step {
     state: StepState,
     links: StepLinks,
-    /// A tool call's row: one call, an edit, a run of reads or a skill. It shows smaller and
-    /// dimmer than the agent's text, which it serves.
+    /// The row shows a tool call ([`is_call`]): smaller and dimmer than the agent's text.
     call: bool,
 }
 
