@@ -625,7 +625,8 @@ pub struct UpdateLine {
     pub retry: bool,
 }
 
-/// The sidebar's line for `known`, when it has an update to show.
+/// The sidebar's line for `known`, when it has an update to show. A machine that stays in use
+/// during its wait or with another build shows its lost connection instead.
 pub fn update_line(known: &MachineState) -> Option<UpdateLine> {
     let line = |text, link, down| UpdateLine {
         text,
@@ -633,18 +634,18 @@ pub fn update_line(known: &MachineState) -> Option<UpdateLine> {
         down,
         retry: down,
     };
+    let connected = known.is_connected();
     match (&known.update, &known.version_gap) {
         (Some(DaemonUpdate::Running(_) | DaemonUpdate::Reconnecting(_)), _) => {
             Some(line("Updating…", "Show", false))
         }
+        (Some(DaemonUpdate::Waiting), _) if !connected => None,
         (Some(DaemonUpdate::Waiting), _) => {
             Some(line("Updates once its agents are idle.", "Show", false))
         }
-        (Some(DaemonUpdate::Failed(failed)), _) => Some(line(
-            failed.failure.sidebar_text(),
-            "Show",
-            !known.is_connected(),
-        )),
+        (Some(DaemonUpdate::Failed(failed)), _) => {
+            Some(line(failed.failure.sidebar_text(), "Show", !connected))
+        }
         (None, Some(gap)) => match (gap.kind, &known.update_plan) {
             (GapKind::OlderProtocol, Some(_)) => Some(UpdateLine {
                 retry: false,
@@ -652,6 +653,7 @@ pub fn update_line(known: &MachineState) -> Option<UpdateLine> {
             }),
             (GapKind::OlderProtocol, None) => Some(line("Runs an older version.", "Details", true)),
             (GapKind::NewerProtocol, _) => Some(line("Runs a newer version.", "Details", true)),
+            (GapKind::OtherBuild | GapKind::NewerRelease, _) if !connected => None,
             (GapKind::OtherBuild, Some(_)) => Some(line("Update available.", "Update", false)),
             (GapKind::OtherBuild, None) => None,
             (GapKind::NewerRelease, _) => Some(line("Runs a newer version.", "Details", false)),

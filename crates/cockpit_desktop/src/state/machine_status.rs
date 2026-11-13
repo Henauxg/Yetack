@@ -402,6 +402,35 @@ mod tests {
     }
 
     #[test]
+    fn a_machine_in_use_that_lost_its_connection_says_so_before_its_version() {
+        let mut state = four_machines();
+        let devbox = MachineId::new(1);
+        let known = state.machines.others.get_mut(&devbox).unwrap();
+        known.update_plan = Some(lab_plan());
+        known.connection = down("connection reset");
+        let mut shown = Vec::new();
+        for (kind, update) in [
+            (GapKind::OtherBuild, None),
+            (GapKind::NewerRelease, None),
+            (GapKind::OtherBuild, Some(DaemonUpdate::Waiting)),
+        ] {
+            let known = state.machines.others.get_mut(&devbox).unwrap();
+            known.version_gap = Some(VersionGap {
+                kind,
+                details: String::new(),
+                daemon: None,
+                protocol: PROTOCOL_VERSION,
+            });
+            known.update = update;
+            let status = status(&state.machines.others[&devbox]);
+            shown.push((status.tone, status.chip, status.line.map(|line| line.text)));
+        }
+
+        let not_connected = (Tone::Down, "Not connected", Some("Not connected."));
+        assert_eq!(shown, [not_connected; 3]);
+    }
+
+    #[test]
     fn the_strip_shows_only_without_machine_panels_and_only_the_machines_in_trouble() {
         let mut state = four_machines();
         let by_machine = strip_lines(&state);
