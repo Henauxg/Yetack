@@ -12,7 +12,7 @@ use crate::keymap::{Command, Reach};
 use crate::state::sidebar_keys::SidebarItem;
 use crate::state::{
     ANSWER_KEYS, AppState, Dialog, KeyPress, PAGE_RELOAD_KEY, PaletteOrigin, Popover, Utf16Offset,
-    WaitingKind, accounts, actions, agent_map, file_reread, handle_key, sidebar_keys,
+    WaitingKind, accounts, actions, agent_map, handle_key, sidebar_keys,
 };
 use crate::ui::{FILES_PANE_ID, sidebar_item_id};
 
@@ -667,7 +667,7 @@ fn receive(cockpit: Cockpit, message: BridgeMessage) {
             cockpit.type_in_composer(agent, text, caret);
         }
         BridgeMessage::Focus { focused } => {
-            cockpit.update(|state| file_reread::window_focused(state, focused));
+            cockpit.set_window_focused(focused);
         }
         BridgeMessage::Image { media_type, data } => {
             let Some(media_type) = image_media_type(&media_type) else {

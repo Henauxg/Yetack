@@ -10,9 +10,9 @@
 use std::collections::BTreeMap;
 
 use cockpit_protocol::{AgentId, AgentStatus};
-#[cfg(unix)]
-use notify_rust::Urgency;
 use notify_rust::{Notification, NotificationResponse};
+#[cfg(unix)]
+use notify_rust::{Timeout, Urgency};
 use tokio::sync::{mpsc, oneshot};
 
 #[cfg(unix)]
@@ -22,6 +22,12 @@ use crate::state::{Alert, AlertKind, AppState, notification_levels};
 /// The action a click on the notification's body triggers.
 #[cfg(unix)]
 const OPEN_ACTION: &str = "default";
+
+/// How long a notification stays on screen, where the service honors it. GNOME does not, and
+/// hides a normal notification after a few seconds. A critical one would stay until closed, and
+/// pass Do Not Disturb: every notification is normal.
+#[cfg(unix)]
+const ON_SCREEN_MS: u32 = 10_000;
 
 /// The notifications on screen. On Linux each runs as a task that waits on D-Bus, with no thread
 /// of its own. On Windows each waits on a blocking thread while its toast is on screen.
@@ -82,14 +88,13 @@ impl Ledger {
     /// Each alert replaces its agent's notification. A "needs you" notification closes once its
     /// agent no longer needs you; a "finished" one goes away on the service's timeout. Any
     /// notification closes once its agent is gone, or once the levels no longer let it through.
-    /// An alert the levels hold back is dropped, and so is any alert while the window has the
-    /// focus: you are in the app.
+    /// An alert the levels hold back is dropped. While the window has the focus, you are in the
+    /// app: every alert is dropped, and every notification closes.
     fn update(&mut self, alerts: Vec<Alert>, state: &AppState) -> Vec<Command> {
+        let focused = state.ui.window_focused;
         let mut commands = Vec::new();
         for alert in alerts {
-            if !state.ui.window_focused
-                && notification_levels::shows(state, alert.agent, alert.kind)
-            {
+            if !focused && notification_levels::shows(state, alert.agent, alert.kind) {
                 self.shown.insert(alert.agent, alert.kind);
                 commands.push(Command::Show(alert));
             }
@@ -100,6 +105,7 @@ impl Ledger {
             .filter(|&(&agent, &kind)| {
                 let status = state.agents.get(&agent).map(|entry| entry.summary.status);
                 match (kind, status) {
+                    _ if focused => true,
                     (_, None) => true,
                     _ if !notification_levels::shows(state, agent, kind) => true,
                     (AlertKind::NeedsYou, Some(status)) => status != AgentStatus::NeedsYou,
@@ -124,13 +130,10 @@ async fn present(
     close: oneshot::Receiver<()>,
     opened: mpsc::UnboundedSender<AgentId>,
 ) {
-    let urgency = match alert.kind {
-        AlertKind::NeedsYou => Urgency::Critical,
-        AlertKind::Finished => Urgency::Normal,
-    };
     let shown = Notification::new()
         .appname(APP_NAME)
-        .urgency(urgency)
+        .urgency(Urgency::Normal)
+        .timeout(Timeout::Milliseconds(ON_SCREEN_MS))
         .summary(&alert.title)
         .body(&escaped_body(&alert.body))
         .action(OPEN_ACTION, "Open")
@@ -314,16 +317,29 @@ mod tests {
     }
 
     #[test]
-    fn a_notification_shown_away_closes_once_answered_from_the_focused_window() {
-        let mut state = away(vec![summary(1, AgentStatus::NeedsYou)]);
+    fn coming_back_to_the_window_closes_the_notifications() {
+        let mut state = away(vec![
+            summary(1, AgentStatus::NeedsYou),
+            summary(2, AgentStatus::Idle),
+        ]);
         let mut ledger = Ledger::default();
-        ledger.update(vec![alert(1, AlertKind::NeedsYou)], &state);
+        ledger.update(
+            vec![alert(1, AlertKind::NeedsYou), alert(2, AlertKind::Finished)],
+            &state,
+        );
 
         state.ui.window_focused = true;
-        set_status(&mut state, 1, AgentStatus::Working);
-        let answered = ledger.update(Vec::new(), &state);
+        let back = ledger.update(Vec::new(), &state);
+        let again = ledger.update(Vec::new(), &state);
 
-        assert_eq!(answered, [Command::Close(AgentId::new(1))]);
+        assert_eq!(
+            back,
+            [
+                Command::Close(AgentId::new(1)),
+                Command::Close(AgentId::new(2))
+            ]
+        );
+        assert!(again.is_empty());
     }
 
     #[test]
