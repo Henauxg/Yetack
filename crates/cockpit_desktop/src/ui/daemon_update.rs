@@ -403,10 +403,10 @@ struct BusyAgent {
 
 /// `agents`, as the lists show them. An idle agent in such a list runs background tasks, or may
 /// hold a scheduled job.
-fn busy_rows(state: &AppState, agents: Vec<AgentId>) -> Vec<BusyAgent> {
+fn busy_rows(state: &AppState, agents: &[AgentId]) -> Vec<BusyAgent> {
     agents
-        .into_iter()
-        .filter_map(|agent| state.agents.get(&agent))
+        .iter()
+        .filter_map(|agent| state.agents.get(agent))
         .map(|entry| {
             let background = usize::from(entry.summary.background_running);
             let (status, doing) = match accounts::turn_status(&entry.summary) {
@@ -454,7 +454,7 @@ fn WaitingCard(machine: MachineId, name: String, local: bool) -> Element {
     let cockpit: Cockpit = use_context();
     let agents = {
         let state = cockpit.state.read();
-        busy_rows(&state, update_offer::running_agents(&state, machine))
+        busy_rows(&state, &update_offer::running_agents(&state, machine))
     };
     rsx! {
         CardHead {
@@ -492,7 +492,7 @@ pub fn ConfirmUpdateDialog(machine: MachineId) -> Element {
         let Some(confirmation) = daemon_update::confirmation(&state, machine, &name) else {
             return rsx! {};
         };
-        let agents = busy_rows(&state, confirmation.agents.clone());
+        let agents = busy_rows(&state, &confirmation.agents);
         (name, confirmation, agents)
     };
     let daemon_update::Confirmation {
@@ -680,7 +680,7 @@ fn FailedCard(machine: MachineId, name: String, local: bool, failed: FailedUpdat
         let state = cockpit.state.read();
         busy_rows(
             &state,
-            daemon_update::failure_agents(&state, machine, &failed),
+            &daemon_update::failure_agents(&state, machine, &failed),
         )
     };
     let again = match failed.plan {
