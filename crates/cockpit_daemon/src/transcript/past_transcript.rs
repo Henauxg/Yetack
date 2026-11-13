@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use claude_protocol::OutputLine;
-use cockpit_protocol::{ItemBody, ItemId, TranscriptItem};
+use cockpit_protocol::{ItemBody, ItemId, NoticeKind, TranscriptItem};
 
 use crate::transcript::agent_view::AgentView;
 
@@ -58,6 +58,7 @@ impl PastTranscript {
                 body: ItemBody::Notice {
                     text: LEFT_OUT_NOTICE.to_owned(),
                     detail: None,
+                    kind: NoticeKind::Plain,
                 },
             });
         }
@@ -134,7 +135,8 @@ mod tests {
             items[2].body,
             ItemBody::Notice {
                 text: "Stopped".to_owned(),
-                detail: None
+                detail: None,
+                kind: NoticeKind::Plain,
             }
         );
         assert_eq!(
@@ -184,6 +186,7 @@ mod tests {
         let notice = |text: &str| ItemBody::Notice {
             text: text.to_owned(),
             detail: None,
+            kind: NoticeKind::Plain,
         };
         assert_eq!(
             bodies,
@@ -213,7 +216,8 @@ mod tests {
                 parent: None,
                 body: ItemBody::Notice {
                     text: LEFT_OUT_NOTICE.to_owned(),
-                    detail: None
+                    detail: None,
+                    kind: NoticeKind::Plain,
                 },
             }
         );

@@ -875,8 +875,9 @@ mod tests {
 
     use cockpit_client::RequestError;
     use cockpit_protocol::{
-        ClaudeSessionId, CostUsd, Event, EventRecord, HistoryPage, Method, OlderItems, PastSession,
-        PermissionMode, RateLimitStatus, Seq, Timestamp, TokenUsage, TurnEnd, WindowUsage,
+        ClaudeSessionId, CostUsd, Event, EventRecord, HistoryPage, Method, NoticeKind, OlderItems,
+        PastSession, PermissionMode, RateLimitStatus, Seq, Timestamp, TokenUsage, TurnEnd,
+        WindowUsage,
     };
 
     use super::*;
@@ -1694,6 +1695,7 @@ mod tests {
         let notice = ItemBody::Notice {
             text: "The account Work is not signed in.".to_owned(),
             detail: None,
+            kind: NoticeKind::Plain,
         };
         let entry = state.agents.get_mut(&AgentId::new(1)).unwrap();
         entry.transcript.merge_page(HistoryPage {

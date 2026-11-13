@@ -77,7 +77,7 @@ pub use stored_bool::{FromStoredBool, enum_or_stored_bool};
 pub use time::Timestamp;
 pub use transcript::{
     AnswerState, Approval, ApprovalAnswer, ApprovalDecision, AskedQuestion, FileEdit, Image,
-    ImageMediaType, ItemBody, Plan, PlanAnswer, PlanDecision, Question, QuestionAnswer,
+    ImageMediaType, ItemBody, NoticeKind, Plan, PlanAnswer, PlanDecision, Question, QuestionAnswer,
     QuestionOption, Selection, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome,
     UserMessage, skill_instructions_title,
 };

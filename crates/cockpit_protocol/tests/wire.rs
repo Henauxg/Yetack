@@ -25,16 +25,17 @@ use cockpit_protocol::{
     GitIgnore, HistoryPage, HistoryParams, Image, ImageMediaType, ItemBody, ItemId, ListDirParams,
     LoadAverage, LoadHistory, MachineLoad, Mark, MarkParams, McpRemoveParams, McpScope, McpServer,
     McpServerParams, McpServerStatus, McpToggleAction, McpToggleParams, McpTool, McpTransport,
-    Method, MoveParams, OlderItems, PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan,
-    PlanAnswer, PlanDecision, PlanUsage, Position, ProcessId, Prompt, PromptDelivery, PromptId,
-    PromptParams, Question, QuestionAnswer, QuestionOption, QueuedPromptParams, RateLimitStatus,
-    ReadFileParams, ReleaseVersion, RenameParams, Request, RequestId, ResourceUse, ResponseBody,
-    ResponseResult, Selection, Seq, ServerLoad, ServerMessage, ServerPoint, SessionResumeParams,
-    SetEffortParams, SetModeParams, SetModelParams, Settings, SignIn, SignInWait, SlashCommand,
-    Snapshot, StartParams, StopProcessParams, StopTaskParams, Subagent, SubagentRun,
-    SubagentStatus, SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, Timestamp,
-    TokenUsage, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UsageWindow,
-    UserMessage, WaitingPrompt, WaitingState, WindowUsage,
+    Method, MoveParams, NoticeKind, OlderItems, PROTOCOL_VERSION, PastSession, PendingId,
+    PermissionMode, Plan, PlanAnswer, PlanDecision, PlanUsage, Position, ProcessId, Prompt,
+    PromptDelivery, PromptId, PromptParams, Question, QuestionAnswer, QuestionOption,
+    QueuedPromptParams, RateLimitStatus, ReadFileParams, ReleaseVersion, RenameParams, Request,
+    RequestId, ResourceUse, ResponseBody, ResponseResult, Selection, Seq, ServerLoad,
+    ServerMessage, ServerPoint, SessionResumeParams, SetEffortParams, SetModeParams,
+    SetModelParams, Settings, SignIn, SignInWait, SlashCommand, Snapshot, StartParams,
+    StopProcessParams, StopTaskParams, Subagent, SubagentRun, SubagentStatus, SubagentToolCall,
+    TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus,
+    TranscriptItem, TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt, WaitingState,
+    WindowUsage,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -295,10 +296,17 @@ fn bodies() -> Vec<ItemBody> {
         ItemBody::Notice {
             text: "Conversation compacted".to_owned(),
             detail: None,
+            kind: NoticeKind::Plain,
         },
         ItemBody::Notice {
             text: "Skill instructions: /greet".to_owned(),
             detail: Some("# /greet\n\nGreet the person the arguments name.".to_owned()),
+            kind: NoticeKind::Plain,
+        },
+        ItemBody::Notice {
+            text: "The cart test passes now.".to_owned(),
+            detail: Some("The cart test passes now.\n\nNothing is pushed.".to_owned()),
+            kind: NoticeKind::Message,
         },
     ]
 }
@@ -2183,6 +2191,7 @@ fn a_notice_with_its_detail_on_the_wire_and_one_saved_without_it() {
     let notice = ItemBody::Notice {
         text: "Conversation summary".to_owned(),
         detail: Some("The user asked for a parser.".to_owned()),
+        kind: NoticeKind::Plain,
     };
     let saved = r#"{"type":"notice","text":"Conversation compacted"}"#;
 
@@ -2199,7 +2208,35 @@ fn a_notice_with_its_detail_on_the_wire_and_one_saved_without_it() {
         ItemBody::Notice {
             text: "Conversation compacted".to_owned(),
             detail: None,
+            kind: NoticeKind::Plain,
         }
+    );
+}
+
+#[test]
+fn each_notice_kind_on_the_wire() {
+    let wire = |kind: NoticeKind| {
+        serde_json::to_value(ItemBody::Notice {
+            text: "Agent \"Fix the cart\" finished".to_owned(),
+            detail: None,
+            kind,
+        })
+        .unwrap()
+        .get("kind")
+        .cloned()
+    };
+
+    let kinds: Vec<Option<Value>> = NoticeKind::VARIANTS.iter().copied().map(wire).collect();
+
+    assert_eq!(
+        kinds,
+        [
+            None,
+            Some(json!("message")),
+            Some(json!("task_done")),
+            Some(json!("task_failed")),
+            Some(json!("task_stopped")),
+        ]
     );
 }
 

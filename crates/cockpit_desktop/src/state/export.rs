@@ -267,8 +267,8 @@ mod tests {
 
     use cockpit_protocol::{
         AgentStatus, ApprovalAnswer, AskedQuestion, CostUsd, HistoryPage, Image, ImageMediaType,
-        OlderItems, PendingId, PlanAnswer, QuestionAnswer, QuestionOption, Selection, TokenUsage,
-        UserMessage,
+        NoticeKind, OlderItems, PendingId, PlanAnswer, QuestionAnswer, QuestionOption, Selection,
+        TokenUsage, UserMessage,
     };
     use serde_json::Value;
 
@@ -387,6 +387,7 @@ mod tests {
                     ItemBody::Notice {
                         text: "Conversation compacted".to_owned(),
                         detail: None,
+                        kind: NoticeKind::Plain,
                     },
                 ),
                 (None, user("Thanks", 0)),
@@ -483,6 +484,7 @@ Thanks
                     ItemBody::Notice {
                         text: "Context usage\n\n# System prompt: 3k\n```json".to_owned(),
                         detail: None,
+                        kind: NoticeKind::Plain,
                     },
                 ),
                 (

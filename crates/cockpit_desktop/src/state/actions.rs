@@ -2502,9 +2502,9 @@ mod tests {
     use cockpit_client::RequestError;
     use cockpit_protocol::{
         Account, AgentDetails, AskedQuestion, ChangedFile, CommandKind, CredentialSource,
-        ErrorBody, ErrorCode, FileEdit, HistoryPage, ImageMediaType, Method, OlderItems, Position,
-        QuestionOption, Repository, ResponseBody, Timestamp, ToolCall, ToolCallStatus,
-        TranscriptItem, UserMessage,
+        ErrorBody, ErrorCode, FileEdit, HistoryPage, ImageMediaType, Method, NoticeKind,
+        OlderItems, Position, QuestionOption, Repository, ResponseBody, Timestamp, ToolCall,
+        ToolCallStatus, TranscriptItem, UserMessage,
     };
 
     use super::*;
@@ -2714,6 +2714,7 @@ mod tests {
                 body: ItemBody::Notice {
                     text: format!("notice {id}"),
                     detail: None,
+                    kind: NoticeKind::Plain,
                 },
             });
         }
@@ -5766,6 +5767,7 @@ mod tests {
                     body: ItemBody::Notice {
                         text: "compacted".to_owned(),
                         detail: None,
+                        kind: NoticeKind::Plain,
                     },
                 }],
                 older_items: OlderItems::Exist,

@@ -14,8 +14,8 @@ use cockpit_protocol::{
     CredentialSource, DirEntry, DirListing, Effort, EffortSource, EntryKind, EntryLink,
     EnvironmentCredentials, ErrorBody, ErrorCode, FileEdit, GitIgnore, HistoryPage, Image,
     ImageMediaType, ItemBody, ItemId, LoadAverage, LoadHistory, MachineLoad, Mark, McpScope,
-    McpServer, McpServerStatus, McpTool, McpTransport, OlderItems, PastSession, PendingId,
-    PermissionMode, Plan, PlanUsage, Position, ProcessId, Prompt, PromptId, Question,
+    McpServer, McpServerStatus, McpTool, McpTransport, NoticeKind, OlderItems, PastSession,
+    PendingId, PermissionMode, Plan, PlanUsage, Position, ProcessId, Prompt, PromptId, Question,
     QuestionAnswer, QuestionOption, RateLimitStatus, ReleaseVersion, Repository, Request,
     ResourceUse, ResponseBody, Selection, ServerLoad, ServerPoint, SignIn, SignInWait,
     SlashCommand, Subagent, SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem,
@@ -514,6 +514,10 @@ const DEMO_QUIET_SECONDS: u64 = 57;
 /// The parser agent's running command, and its call, which the command's task names.
 const PARSER_TESTS_COMMAND: &str = "cargo test parser";
 const PARSER_TESTS_CALL: u32 = 21;
+/// The body of a report another session sent the selected agent.
+const PEER_REPORT: &str = "The columns worktree builds, and its 31 lexer tests pass.\n\n\
+    - `unexpected_token.rs` counts columns from 1.\n\
+    - Nothing is committed there yet.";
 
 /// Markdown links to files of the agent's folder: relative, at a line, and absolute.
 const FIX_ANSWER: &str = "Fixed in [the lexer](src/lexer.rs#L17): columns now count from 1, as [AGENTS.md](AGENTS.md) asks. The [error type](/home/dev/projects/calc-parser/src/error.rs) stays as it is. Running the tests again.";
@@ -2452,6 +2456,24 @@ fn parser_agent(now: SystemTime) -> Sample {
         item(19, None, ItemBody::ToolCall(position_read)),
         item(LOOKUP_ITEM, None, text(LOOKUP_ANSWER)),
         item(
+            22,
+            None,
+            ItemBody::Notice {
+                text: "Agent \"Benchmark the lexer\" finished".to_owned(),
+                detail: None,
+                kind: NoticeKind::TaskDone,
+            },
+        ),
+        item(
+            23,
+            None,
+            ItemBody::Notice {
+                text: "The columns worktree builds, and its 31 lexer tests pass.".to_owned(),
+                detail: Some(PEER_REPORT.to_owned()),
+                kind: NoticeKind::Message,
+            },
+        ),
+        item(
             PARSER_TESTS_CALL,
             None,
             ItemBody::ToolCall(bash(
@@ -2832,6 +2854,7 @@ fn benchmark_agent(now: SystemTime) -> Sample {
             ItemBody::Notice {
                 text: "Skill instructions: /bench-compare".to_owned(),
                 detail: Some(BENCH_COMPARE_SKILL.to_owned()),
+                kind: NoticeKind::Plain,
             },
         ),
         item(
@@ -2915,6 +2938,7 @@ fn exited_agent(now: SystemTime) -> Sample {
             ItemBody::Notice {
                 text: "claude exited with status 0".to_owned(),
                 detail: None,
+                kind: NoticeKind::Plain,
             },
         ),
     ];
@@ -2955,6 +2979,7 @@ fn sign_in_agent(now: SystemTime) -> Sample {
             ItemBody::Notice {
                 text: "The account Client is not signed in, or its login expired. Run this command in a terminal on the daemon's machine to sign in, then send your message again: CLAUDE_CONFIG_DIR='/home/dev/.claude-client' claude auth login".to_owned(),
                 detail: None,
+                kind: NoticeKind::Plain,
             },
         ),
         item(

@@ -861,7 +861,7 @@ mod tests {
 
     use cockpit_protocol::{
         AgentStatus, Catchup, Completeness, DirListing, ErrorBody, ErrorCode, HistoryPage,
-        ItemBody, OlderItems, TranscriptItem,
+        ItemBody, NoticeKind, OlderItems, TranscriptItem,
     };
 
     use super::*;
@@ -1192,6 +1192,7 @@ mod tests {
                 body: ItemBody::Notice {
                     text: "compacted".to_owned(),
                     detail: None,
+                    kind: NoticeKind::Plain,
                 },
             }],
             older_items: OlderItems::None,

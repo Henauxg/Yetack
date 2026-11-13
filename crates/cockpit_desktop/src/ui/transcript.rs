@@ -9,8 +9,8 @@ use std::time::{Duration, SystemTime};
 
 use chrono::NaiveDate;
 use cockpit_protocol::{
-    AgentId, AgentStatus, AnswerState, ItemBody, ItemId, SignInWait, Timestamp, ToolCall,
-    ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UserMessage,
+    AgentId, AgentStatus, AnswerState, ItemBody, ItemId, NoticeKind, SignInWait, Timestamp,
+    ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UserMessage,
 };
 use dioxus::prelude::*;
 use serde::Serialize;
@@ -1005,11 +1005,27 @@ pub fn ItemView(
         },
         ItemBody::Notice {
             text,
+            detail,
+            kind:
+                kind @ (NoticeKind::Message
+                | NoticeKind::TaskDone
+                | NoticeKind::TaskFailed
+                | NoticeKind::TaskStopped),
+        } => rsx! {
+            NoticeLine { agent, folder, kind, text, detail }
+        },
+        ItemBody::Notice {
+            text,
             detail: Some(detail),
+            kind: NoticeKind::Plain,
         } => rsx! {
             NoticeWithDetail { agent, folder, title: text, markdown: detail }
         },
-        ItemBody::Notice { text, detail: None } => rsx! {
+        ItemBody::Notice {
+            text,
+            detail: None,
+            kind: NoticeKind::Plain,
+        } => rsx! {
             p { class: "notice", "{text}" }
         },
     }
@@ -1134,6 +1150,74 @@ fn NoticeWithDetail(agent: AgentId, folder: PathBuf, title: String, markdown: St
                 }
             }
         }
+    }
+}
+
+/// A message from another session, or a background task that ended, as one line beside the
+/// calls: an icon, a bold label, and the text cut to the line. A message unfolds to its whole
+/// text.
+#[component]
+fn NoticeLine(
+    agent: AgentId,
+    folder: PathBuf,
+    kind: NoticeKind,
+    text: String,
+    detail: Option<String>,
+) -> Element {
+    let mut expanded = use_signal(|| false);
+    let open = expanded();
+    let (icon, tone) = match kind {
+        NoticeKind::Message => (IconKind::Reply, "message"),
+        NoticeKind::TaskFailed => (IconKind::Close, "failed"),
+        NoticeKind::TaskStopped => (IconKind::Close, "stopped"),
+        NoticeKind::TaskDone | NoticeKind::Plain => (IconKind::Check, "done"),
+    };
+    let (label, rest) = match kind {
+        NoticeKind::Message => (Some("Message"), text.as_str()),
+        _ => task_label(&text),
+    };
+    let content = rsx! {
+        span { class: "notice-line-icon {tone}", aria_hidden: true, Icon { kind: icon, size: 12 } }
+        if let Some(label) = label {
+            span { class: "notice-line-label", "{label}" }
+        }
+        span { class: "notice-line-text", title: "{text}", "{rest}" }
+    };
+    let Some(markdown) = detail else {
+        return rsx! {
+            div { class: "notice-line", {content} }
+        };
+    };
+    rsx! {
+        div { class: "notice-line-block",
+            button {
+                class: "notice-line foldable",
+                aria_expanded: open,
+                onclick: move |_| expanded.toggle(),
+                {content}
+                span { class: if open { "chevron open" } else { "chevron" }, Icon { kind: IconKind::ChevronRight, size: 12 } }
+            }
+            if open {
+                div { class: "notice-detail",
+                    MarkdownView { agent, folder, markdown }
+                }
+            }
+        }
+    }
+}
+
+/// A task's summary split into its first word as a label and the rest, when Claude Code wrote it
+/// as `Agent "Fix the cart" finished`. Any other text has no label.
+fn task_label(text: &str) -> (Option<&str>, &str) {
+    match text.split_once(' ') {
+        Some((word, rest))
+            if rest.starts_with('"')
+                && !word.is_empty()
+                && word.chars().all(char::is_alphabetic) =>
+        {
+            (Some(word), rest)
+        }
+        _ => (None, text),
     }
 }
 
@@ -2041,7 +2125,7 @@ mod tests {
     use std::time::UNIX_EPOCH;
 
     use cockpit_protocol::{
-        Approval, ApprovalAnswer, ApprovalDecision, FileEdit, PendingId, Timestamp,
+        Approval, ApprovalAnswer, ApprovalDecision, FileEdit, NoticeKind, PendingId, Timestamp,
     };
 
     use super::*;
@@ -2059,6 +2143,19 @@ mod tests {
             "no output for 0 s",
             "a daemon clock ahead"
         );
+    }
+
+    #[test]
+    fn a_task_summary_gives_its_first_word_as_the_label() {
+        assert_eq!(
+            task_label("Agent \"Fix the cart\" finished"),
+            (Some("Agent"), "\"Fix the cart\" finished")
+        );
+        assert_eq!(
+            task_label("A background task ended"),
+            (None, "A background task ended")
+        );
+        assert_eq!(task_label(" \"Fix\" ended"), (None, " \"Fix\" ended"));
     }
 
     #[test]
@@ -2129,6 +2226,7 @@ mod tests {
             body: ItemBody::Notice {
                 text: String::new(),
                 detail: None,
+                kind: NoticeKind::Plain,
             },
         }
     }
@@ -2663,7 +2761,8 @@ mod tests {
             step(
                 ItemBody::Notice {
                     text: String::new(),
-                    detail: None
+                    detail: None,
+                    kind: NoticeKind::Plain,
                 },
                 false
             ),

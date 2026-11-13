@@ -590,7 +590,7 @@ mod tests {
     use std::fs::OpenOptions;
     use std::time::Duration;
 
-    use cockpit_protocol::ItemBody;
+    use cockpit_protocol::{ItemBody, NoticeKind};
     #[cfg(unix)]
     use rustix::fs::Mode;
     use serde_json::json;
@@ -805,7 +805,7 @@ mod tests {
                 "text: The total is fixed.",
                 "notice: Conversation compacted",
                 "notice: Conversation summary",
-                "notice: peer: Another session asks for the logs",
+                "notice: Another session asks for the logs",
             ]
         );
         let ItemBody::Notice { detail, .. } = &found.past.items[3].body else {
@@ -857,6 +857,7 @@ mod tests {
             &ItemBody::Notice {
                 text: "Skill instructions: /greet".to_owned(),
                 detail: Some(instructions.to_owned()),
+                kind: NoticeKind::Plain,
             }
         );
     }
