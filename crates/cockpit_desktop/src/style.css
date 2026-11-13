@@ -10384,6 +10384,11 @@ html.splitting .sidebar {
   padding: 0 20px 18px;
 }
 
+.dialog.confirm-update .list-note {
+  padding-top: 0;
+  padding-bottom: 8px;
+}
+
 .dialog.confirm-update .dialog-actions {
   flex-wrap: wrap;
   padding: 0 16px 16px;

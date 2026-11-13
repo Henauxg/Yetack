@@ -796,6 +796,77 @@ pub fn update_line(known: &MachineState) -> Option<UpdateLine> {
     }
 }
 
+/// What the confirmation before an update says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Confirmation {
+    pub text: String,
+    /// The line above the list, when the list shows the agents as the app last saw them.
+    pub list_note: Option<&'static str>,
+    /// The agents it lists, in the sidebar's order.
+    pub agents: Vec<AgentId>,
+    /// It offers "Update when they are idle".
+    pub offers_wait: bool,
+}
+
+/// The confirmation before `machine`'s update, for the machine the screens call `name`.
+pub fn confirmation(state: &AppState, machine: MachineId, name: &str) -> Option<Confirmation> {
+    let known = state.machines.get(machine)?;
+    let app = &state.app_build.version;
+    let running = update_offer::running_agents(state, machine);
+    let agents = update_offer::busy_agents(state, machine);
+    let unseen = agents_unseen(known);
+    let effect = if unseen {
+        let why = match known.version_gap.as_ref().map(|gap| gap.kind) {
+            Some(GapKind::OlderProtocol) => "while its daemon refuses the app",
+            Some(GapKind::OtherBuild | GapKind::NewerRelease | GapKind::NewerProtocol) | None => {
+                "while the app is not connected to it"
+            }
+        };
+        format!(
+            "The app cannot list {name}'s agents {why}. The restart interrupts any agent that works, which resumes its conversation after it, and loses every scheduled job."
+        )
+    } else {
+        match (running.is_empty(), agents.len() > running.len()) {
+            (false, true) => "It interrupts the busy agents, which resume their conversations after it, and loses the scheduled jobs the idle ones may hold.".to_owned(),
+            (true, true) => "These agents may hold scheduled jobs, which it loses.".to_owned(),
+            (_, false) => "It interrupts these agents, which resume their conversations after it.".to_owned(),
+        }
+    };
+    let text = match &known.update_plan {
+        Some(UpdatePlan::Server(_)) => format!(
+            "The update builds this app's version, {app}, on {name} and restarts its daemon. {effect}"
+        ),
+        Some(UpdatePlan::Service(_)) | None => format!(
+            "The update restarts the background service with this app's version, {app}. {effect}"
+        ),
+    };
+    Some(Confirmation {
+        text,
+        list_note: (unseen && !agents.is_empty())
+            .then_some("These agents were busy when the app last saw them:"),
+        agents,
+        // The wait ends once no agent runs something: a scheduled job may never end.
+        offers_wait: !unseen && !running.is_empty(),
+    })
+}
+
+/// The agents a failure's screen lists: for `HoldsJobs`, those that may hold a scheduled job.
+pub fn failure_agents(state: &AppState, machine: MachineId, failed: &FailedUpdate) -> Vec<AgentId> {
+    match failed.failure {
+        UpdateFailure::HoldsJobs => update_offer::job_holding_agents(state, machine),
+        UpdateFailure::Refused
+        | UpdateFailure::Failed
+        | UpdateFailure::Cancelled
+        | UpdateFailure::InstallFailed
+        | UpdateFailure::RolledBack
+        | UpdateFailure::AlreadyRunning
+        | UpdateFailure::Unknown
+        | UpdateFailure::NotStopped { .. }
+        | UpdateFailure::NotStarted
+        | UpdateFailure::OtherBuildAnswers => Vec::new(),
+    }
+}
+
 /// What a failure's screen says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FailureText {
@@ -2256,6 +2327,80 @@ mod tests {
                 busy: BusyAgents::Interrupt
             })
         );
+    }
+
+    #[test]
+    fn the_confirmation_for_unseen_agents_says_the_list_is_from_before() {
+        let mut state = with_local_service_that_refuses(&[AgentStatus::Working, AgentStatus::Idle]);
+        start(&mut state, MachineId::THIS);
+
+        let asked = confirmation(&state, MachineId::THIS, "Local").unwrap();
+
+        assert!(
+            asked
+                .text
+                .contains("The app cannot list Local's agents while its daemon refuses the app."),
+            "{}",
+            asked.text
+        );
+        assert_eq!(
+            asked.list_note,
+            Some("These agents were busy when the app last saw them:")
+        );
+        assert_eq!(asked.agents, [AgentId::new(1)]);
+        assert!(!asked.offers_wait);
+    }
+
+    #[test]
+    fn the_confirmation_for_unseen_agents_lists_none_the_app_never_saw() {
+        let mut state = with_local_service_that_refuses(&[]);
+        start(&mut state, MachineId::THIS);
+
+        let asked = confirmation(&state, MachineId::THIS, "Local").unwrap();
+
+        assert_eq!(asked.list_note, None);
+        assert_eq!(asked.agents, []);
+    }
+
+    #[test]
+    fn the_confirmation_of_seen_agents_needs_no_note() {
+        let mut state = with_local_service(&[AgentStatus::Working, AgentStatus::Idle]);
+        jobs_checked(&mut state, MachineId::THIS, vec![AgentId::new(2)]);
+
+        let mut asked = confirmation(&state, MachineId::THIS, "Local").unwrap();
+        asked.agents.sort();
+
+        assert_eq!(asked.list_note, None);
+        assert_eq!(asked.agents, [AgentId::new(1), AgentId::new(2)]);
+        assert!(asked.offers_wait);
+    }
+
+    #[test]
+    fn a_refusal_for_scheduled_jobs_lists_only_the_agents_that_may_hold_one() {
+        let mut state = with_local_service(&[
+            AgentStatus::Working,
+            AgentStatus::NeedsYou,
+            AgentStatus::Idle,
+        ]);
+        start_now(&mut state, MachineId::THIS).unwrap();
+        restart_ended(
+            &mut state,
+            MachineId::THIS,
+            Err(RestartFailure::HoldsJobs(vec![AgentId::new(3)])),
+        );
+        let Some(DaemonUpdate::Failed(failed)) = this_update(&state).cloned() else {
+            panic!("expected a failure, got {:?}", this_update(&state));
+        };
+
+        assert_eq!(
+            failure_agents(&state, MachineId::THIS, &failed),
+            [AgentId::new(3)]
+        );
+        let other = FailedUpdate {
+            failure: UpdateFailure::NotStarted,
+            ..failed
+        };
+        assert_eq!(failure_agents(&state, MachineId::THIS, &other), []);
     }
 
     #[test]

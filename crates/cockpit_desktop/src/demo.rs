@@ -4348,6 +4348,16 @@ mod tests {
                 }
             ))
         ));
+        let Some(daemon_update::DaemonUpdate::Failed(failed)) = &refused.machines.this.update
+        else {
+            panic!("expected a failure");
+        };
+        assert_eq!(
+            daemon_update::failure_agents(&refused, MachineId::THIS, failed),
+            refused.machines.this.job_holders,
+            "the demo's working agents are left out"
+        );
+        assert!(!update_offer::running_agents(&refused, MachineId::THIS).is_empty());
 
         let unseen = shown(UpdateScreen::LocalConfirmUnseen);
         assert_eq!(
@@ -4355,6 +4365,11 @@ mod tests {
             Some(Dialog::ConfirmUpdate(MachineId::THIS))
         );
         assert!(daemon_update::agents_unseen(&unseen.machines.this));
+        let asked = daemon_update::confirmation(&unseen, MachineId::THIS, "Local").unwrap();
+        assert!(
+            asked.list_note.is_some(),
+            "the demo's agents are from before"
+        );
     }
 
     #[test]

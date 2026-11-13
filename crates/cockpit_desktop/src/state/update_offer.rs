@@ -259,13 +259,25 @@ pub fn offer(state: &AppState, machine: MachineId) -> Option<UpdateOffer> {
 /// ([`running_agents`]), and the resting ones that may hold a scheduled job, which it would lose
 /// (`MachineState::job_holders`).
 pub fn busy_agents(state: &AppState, machine: MachineId) -> Vec<AgentId> {
-    let holders = state
-        .machines
-        .get(machine)
-        .map_or(&[][..], |known| known.job_holders.as_slice());
+    let holders = job_holders(state, machine);
     agents_where(state, machine, |entry| {
         runs_something(entry) || (rests(entry) && holders.contains(&entry.id()))
     })
+}
+
+/// The resting agents of `machine` that may hold a scheduled job, in the sidebar's order.
+pub fn job_holding_agents(state: &AppState, machine: MachineId) -> Vec<AgentId> {
+    let holders = job_holders(state, machine);
+    agents_where(state, machine, |entry| {
+        rests(entry) && holders.contains(&entry.id())
+    })
+}
+
+fn job_holders(state: &AppState, machine: MachineId) -> &[AgentId] {
+    state
+        .machines
+        .get(machine)
+        .map_or(&[], |known| known.job_holders.as_slice())
 }
 
 /// The agents of `machine` that a restart would interrupt, in the sidebar's order: those that
@@ -662,6 +674,13 @@ mod tests {
             busy,
             [1, 3, 4].map(AgentId::new),
             "an ended agent holds no job"
+        );
+        let mut holding = job_holding_agents(&state, MachineId::THIS);
+        holding.sort();
+        assert_eq!(
+            holding,
+            [1, 4].map(AgentId::new),
+            "the working one is busy anyway"
         );
         assert_eq!(running_agents(&state, MachineId::THIS), [AgentId::new(3)]);
         assert_eq!(resting, [1, 4, 5].map(AgentId::new));

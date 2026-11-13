@@ -473,44 +473,24 @@ fn WaitingCard(machine: MachineId, name: String, local: bool) -> Element {
 #[component]
 pub fn ConfirmUpdateDialog(machine: MachineId) -> Element {
     let cockpit: Cockpit = use_context();
-    let (name, text, agents, offers_wait) = {
+    let (name, confirmation, agents) = {
         let state = cockpit.state.read();
         let Some(known) = state.machines.get(machine) else {
             return rsx! {};
         };
         let name = MachineName::new(machine, known).name;
-        let app = &state.app_build.version;
-        let running = update_offer::running_agents(&state, machine);
-        let busy = update_offer::busy_agents(&state, machine);
-        let unseen = daemon_update::agents_unseen(known);
-        let effect = if unseen {
-            let why = match known.version_gap.as_ref().map(|gap| gap.kind) {
-                Some(GapKind::OlderProtocol) => "while its daemon refuses the app",
-                Some(GapKind::OtherBuild | GapKind::NewerRelease | GapKind::NewerProtocol)
-                | None => "while the app is not connected to it",
-            };
-            format!(
-                "The app cannot list {name}'s agents {why}. The restart interrupts any agent that works, which resumes its conversation after it, and loses every scheduled job."
-            )
-        } else {
-            match (running.is_empty(), busy.len() > running.len()) {
-                (false, true) => "It interrupts the busy agents, which resume their conversations after it, and loses the scheduled jobs the idle ones may hold.".to_owned(),
-                (true, true) => "These agents may hold scheduled jobs, which it loses.".to_owned(),
-                (_, false) => "It interrupts these agents, which resume their conversations after it.".to_owned(),
-            }
+        let Some(confirmation) = daemon_update::confirmation(&state, machine, &name) else {
+            return rsx! {};
         };
-        let text = match &known.update_plan {
-            Some(UpdatePlan::Server(_)) => format!(
-                "The update builds this app's version, {app}, on {name} and restarts its daemon. {effect}"
-            ),
-            Some(UpdatePlan::Service(_)) | None => format!(
-                "The update restarts the background service with this app's version, {app}. {effect}"
-            ),
-        };
-        // The wait ends once no agent runs something: a scheduled job may never end.
-        let offers_wait = !unseen && !running.is_empty();
-        (name, text, busy_rows(&state, busy), offers_wait)
+        let agents = busy_rows(&state, confirmation.agents.clone());
+        (name, confirmation, agents)
     };
+    let daemon_update::Confirmation {
+        text,
+        list_note,
+        offers_wait,
+        ..
+    } = confirmation;
     let close = move |_| cockpit.update(|state| state.ui.close_dialog());
     let focus = move |event: MountedEvent| async move {
         // The dialog may have closed already: nothing to focus then.
@@ -529,6 +509,9 @@ pub fn ConfirmUpdateDialog(machine: MachineId) -> Element {
                 }
             }
             p { class: "dialog-text", "{text}" }
+            if let Some(note) = list_note {
+                p { class: "dialog-text list-note", "{note}" }
+            }
             if !agents.is_empty() {
                 BusyAgentList { agents }
             }
@@ -684,10 +667,13 @@ fn FailedCard(machine: MachineId, name: String, local: bool, failed: FailedUpdat
     let text = daemon_update::failure_text(&failed, &name);
     let stop_hint = (failed.failure == UpdateFailure::Refused)
         .then(|| failed.first_agent().unwrap_or("<id>").to_owned());
-    let holders = (failed.failure == UpdateFailure::HoldsJobs).then(|| {
+    let listed = {
         let state = cockpit.state.read();
-        busy_rows(&state, update_offer::busy_agents(&state, machine))
-    });
+        busy_rows(
+            &state,
+            daemon_update::failure_agents(&state, machine, &failed),
+        )
+    };
     let again = match failed.plan {
         UpdatePlan::Server(_) => "Update again",
         UpdatePlan::Service(_) => "Retry",
@@ -697,8 +683,8 @@ fn FailedCard(machine: MachineId, name: String, local: bool, failed: FailedUpdat
         if !failed.message.is_empty() {
             ScrolledOutput { text: failed.message.clone() }
         }
-        if let Some(agents) = holders {
-            BusyAgentList { agents }
+        if !listed.is_empty() {
+            BusyAgentList { agents: listed }
         }
         if let Some(agent) = stop_hint {
             p { class: "no-daemon-hint",
