@@ -65,6 +65,10 @@ const MESSAGE_CLIP_CLASS: &str = "message-clip";
 /// The CSS property in which a row tells the fold script how many screen lines it keeps.
 const FOLD_LINES_PROPERTY: &str = "--fold-lines";
 
+/// A call's line that a click folds or unfolds. The fold script keeps a click that selects text
+/// in it from folding.
+const CALL_LINE_CLASS: &str = "foldable";
+
 /// Folds IN and OUT rows, and long messages you sent, by their lines on screen, which only the
 /// page knows: wrapping depends on the width. It marks `data-tall` each row whose text takes more
 /// screen lines than the `--fold-lines` the row sets, and writes on its button how many lines the
@@ -226,6 +230,16 @@ if (!window.agentsCockpitFolds) {
     }
   }).observe(document.body, { childList: true, subtree: true });
   watch(document.body, true);
+  // The click that ends a selection in a call's line selects: it leaves the call as it is. The
+  // app's own listener sits on its root, below the document, so it never sees that click.
+  document.addEventListener("click", (event) => {
+    const line = event.target instanceof Element ? event.target.closest(`.${classes.call_line}`) : null;
+    const own = line === null ? null : event.target.closest("button, a");
+    const selection = document.getSelection();
+    if (line !== null && own === null && selection !== null && !selection.isCollapsed && line.contains(selection.focusNode)) {
+      event.stopPropagation();
+    }
+  }, true);
 }
 "#;
 
@@ -1342,6 +1356,7 @@ struct FoldClasses {
     message_clip: &'static str,
     markdown: &'static str,
     lines_property: &'static str,
+    call_line: &'static str,
 }
 
 const FOLD_CLASSES: FoldClasses = FoldClasses {
@@ -1353,6 +1368,7 @@ const FOLD_CLASSES: FoldClasses = FoldClasses {
     message_clip: MESSAGE_CLIP_CLASS,
     markdown: MARKDOWN_CLASS,
     lines_property: FOLD_LINES_PROPERTY,
+    call_line: CALL_LINE_CLASS,
 };
 
 fn start_fold_script() {
@@ -1660,7 +1676,7 @@ fn ToolView(agent: AgentId, id: ItemId, call: ToolCall, stage: CallStage) -> Ele
     rsx! {
         div { class: stage.class(),
             div {
-                class: if framed { "tool-head foldable" } else { "tool-head" },
+                class: if framed { "tool-head {CALL_LINE_CLASS}" } else { "tool-head" },
                 onclick: move |_| {
                     if framed {
                         decided.set(Some(!open));
@@ -1739,7 +1755,7 @@ fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall, stage: CallStage) -
     rsx! {
         div { class: stage.class(),
             div {
-                class: if foldable { "tool-head foldable" } else { "tool-head" },
+                class: if foldable { "tool-head {CALL_LINE_CLASS}" } else { "tool-head" },
                 onclick: move |_| {
                     if foldable {
                         decided.set(Some(!open));
@@ -2544,6 +2560,7 @@ mod tests {
                 "message_clip": "message-clip",
                 "markdown": "markdown",
                 "lines_property": "--fold-lines",
+                "call_line": "foldable",
             })
         );
     }
