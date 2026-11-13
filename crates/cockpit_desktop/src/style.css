@@ -3080,6 +3080,38 @@ html.reordering * {
   gap: 8px;
 }
 
+/* A call whose input and output a click on its line shows or hides. */
+.tool-head.foldable {
+  margin: -2px -6px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color var(--motion-hover) var(--ease);
+}
+
+.tool-head.foldable:hover {
+  background: var(--hover);
+}
+
+.tool-head.foldable:active {
+  background: var(--pressed);
+}
+
+.call-fold {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dim);
+}
+
+.tool-head.foldable:hover .call-fold {
+  color: var(--text);
+}
+
 .tool-dot {
   flex: none;
   width: 7px;
@@ -9574,6 +9606,8 @@ html.splitting .sidebar {
 .block-body,
 .subagent-body,
 .compact-search > .tool-io,
+.tool-io.unfolded,
+.diff-box.unfolded,
 .thinking-text,
 .notice-detail,
 .mcp-detail-view {

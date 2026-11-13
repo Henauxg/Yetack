@@ -15,7 +15,7 @@ use crate::connection::Cockpit;
 use crate::keymap::{self, Chord, Command, FixedShortcut, Group, Keymap, Refusal};
 use crate::prefs::{
     CommentPlacement, EscStop, FirstMark, GroupBy, NotificationLevel, PaneState, ProjectSplit,
-    SteerHold,
+    SteerHold, ToolCallDetail,
 };
 use crate::state::{
     RefusedChord, SettingsTab, SettingsView, grouping, notification_levels, settings,
@@ -40,6 +40,7 @@ const NOTIFICATIONS_LABEL_ID: &str = "setting-notifications";
 const COMMENTS_LABEL_ID: &str = "setting-comments";
 const STEER_HOLD_LABEL_ID: &str = "setting-steer-hold";
 const ESC_STOP_LABEL_ID: &str = "setting-esc-stop";
+const TOOL_CALLS_LABEL_ID: &str = "setting-tool-calls";
 const FILES_PANE_LABEL_ID: &str = "setting-files-pane";
 const GROUP_BY_LABEL_ID: &str = "setting-group-by";
 const PROJECT_SPLIT_LABEL_ID: &str = "setting-project-split";
@@ -65,6 +66,13 @@ fn hold_label(hold: SteerHold) -> &'static str {
         SteerHold::ThreeSeconds => "3 s",
         SteerHold::FiveSeconds => "5 s",
         SteerHold::TenSeconds => "10 s",
+    }
+}
+
+fn tool_calls_label(detail: ToolCallDetail) -> &'static str {
+    match detail {
+        ToolCallDetail::OneLine => "One line",
+        ToolCallDetail::Full => "In full",
     }
 }
 
@@ -139,6 +147,7 @@ fn GeneralTab() -> Element {
         project_split,
         notifications,
         comments,
+        tool_calls,
         steer_hold,
         esc_stop,
         new_pane,
@@ -150,6 +159,7 @@ fn GeneralTab() -> Element {
             state.prefs.sidebar.project_split,
             notification_levels::app_level(&state),
             state.prefs.chat.comments,
+            state.prefs.chat.tool_calls,
             state.prefs.chat.steer_hold,
             state.prefs.chat.esc_stop,
             state.prefs.files_pane.new_agents,
@@ -242,6 +252,25 @@ fn GeneralTab() -> Element {
                 }
             }
             h3 { class: "settings-title", "Chat" }
+            div { class: "setting-row",
+                div { class: "setting-text",
+                    span { id: TOOL_CALLS_LABEL_ID, class: "setting-label", "Tool calls" }
+                    span { class: "setting-help",
+                        "One line per call, which a click unfolds to its input and output, or every call in full."
+                    }
+                }
+                div { class: "segmented", role: "group", aria_labelledby: TOOL_CALLS_LABEL_ID,
+                    for &detail in ToolCallDetail::VARIANTS {
+                        button {
+                            key: "{tool_calls_label(detail)}",
+                            class: if detail == tool_calls { "segment chosen" } else { "segment" },
+                            aria_pressed: detail == tool_calls,
+                            onclick: move |_| cockpit.update(|state| settings::set_tool_calls(state, detail)),
+                            "{tool_calls_label(detail)}"
+                        }
+                    }
+                }
+            }
             div { class: "setting-row",
                 div { class: "setting-text",
                     span { id: COMMENTS_LABEL_ID, class: "setting-label", "Comments on quotes" }

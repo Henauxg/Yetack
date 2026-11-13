@@ -7,7 +7,7 @@ use super::app_state::AppState;
 use super::projects::{self, NEW_PROJECT_NAME, ProjectKey, RuleKind};
 use super::ui_state::{Dialog, RefusedChord, SettingsTab, SettingsView};
 use crate::keymap::{Chord, Command, Refusal};
-use crate::prefs::{CommentPlacement, EscStop, PaneState, ProjectId, SteerHold};
+use crate::prefs::{CommentPlacement, EscStop, PaneState, ProjectId, SteerHold, ToolCallDetail};
 
 /// Opens the dialog, from the gear in the sidebar's foot.
 pub fn open(state: &mut AppState) {
@@ -18,6 +18,11 @@ pub fn open(state: &mut AppState) {
 /// Where new comments on quotes show. The comments already written keep their place.
 pub fn set_comment_placement(state: &mut AppState, placement: CommentPlacement) {
     state.prefs.chat.comments = placement;
+}
+
+/// How much of each tool call the chat shows. A call unfolded or folded by a click keeps it.
+pub fn set_tool_calls(state: &mut AppState, detail: ToolCallDetail) {
+    state.prefs.chat.tool_calls = detail;
 }
 
 /// How long a message steered to a busy agent waits in the app. The messages already held keep

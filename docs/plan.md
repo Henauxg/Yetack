@@ -202,6 +202,7 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   - Plans show as a card with "Yes, accept edits", "Yes, ask before edits" and "No, keep planning".
   - When the file view is closed, a right panel shows three blocks: the task list (`TodoWrite`), what runs in the background (subagents and commands, each with Stop) and the MCP servers (a failed one has Retry).
   - The sidebar row shows the task progress ("3/5").
+  - Each tool call shows one line by default: its tool, its description or file, and its result in a word (a line count, `exit 1`, `+3 -1`). A click on the line, or its chevron, shows its input and output; Settings → Chat → Tool calls shows every call in full instead.
   - Subagent tool calls fold under the call that started them.
   - `file:line` references and links to files in agent text open the file view at that line; agent text renders as markdown (headings, lists, tables); bare web addresses are links, and an image of a file shows in the message.
   - "/" opens a palette of commands and skills, filtered as you type: names that start with the text first, then names with a word that starts with it (`/arch` finds `workdocs-archive`), then names that hold it, then descriptions that hold it from the start of a word. A "/" word in the middle of a message, which may be a path, matches only names that start with it.

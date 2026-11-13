@@ -18,6 +18,7 @@ use serde_json::Value;
 
 use crate::connection::{Clock, Cockpit, Today};
 use crate::keymap::Command;
+use crate::prefs::ToolCallDetail;
 use crate::render::{self, Diff, Found, Language, OutputPart, SearchTool, diff_lines};
 use crate::state::sending::{SendingPlace, SendingPrompt};
 use crate::state::{
@@ -1288,7 +1289,9 @@ fn FileLink(agent: AgentId, path: PathBuf, line: Option<u32>, text: String) -> E
         button {
             class: "tool-summary path-link",
             title: "Open the file",
-            onclick: move |_| {
+            // A click on the link opens the file and leaves the call's fold as it is.
+            onclick: move |event| {
+                event.stop_propagation();
                 let path = path.clone();
                 cockpit.update(|state| actions::open_file(state, agent, path, line));
             },
@@ -1606,8 +1609,44 @@ impl EditMeta {
     }
 }
 
+/// Whether a call's input and output show, and the toggle a click on its line or its chevron
+/// gives. A call shows them as the preferences say until a click decides for it.
+fn use_call_fold(cockpit: Cockpit) -> (bool, Signal<Option<bool>>) {
+    // A memo, so that a row renders again when the preference changes and not at every change of
+    // the state.
+    let full = use_memo(move || cockpit.state.read().prefs.chat.tool_calls == ToolCallDetail::Full);
+    let decided = use_signal(|| None::<bool>);
+    (decided().unwrap_or(full()), decided)
+}
+
+/// The chevron at the end of a call's line, which shows or hides its input and output.
+#[component]
+fn CallFold(open: bool, decided: Signal<Option<bool>>) -> Element {
+    let mut decided = decided;
+    let label = if open {
+        "Hide the input and output"
+    } else {
+        "Show the input and output"
+    };
+    rsx! {
+        button {
+            class: "call-fold",
+            aria_expanded: open,
+            aria_label: label,
+            title: label,
+            onclick: move |event| {
+                event.stop_propagation();
+                decided.set(Some(!open));
+            },
+            span { class: if open { "chevron open" } else { "chevron" }, Icon { kind: IconKind::ChevronRight, size: 12 } }
+        }
+    }
+}
+
 #[component]
 fn ToolView(agent: AgentId, id: ItemId, call: ToolCall, stage: CallStage) -> Element {
+    let cockpit: Cockpit = use_context();
+    let (open, mut decided) = use_call_fold(cockpit);
     let shape = ToolShape::new(&call);
     let meta = tool_meta(&call, stage);
     let input = shape.input().map(str::to_owned);
@@ -1620,16 +1659,25 @@ fn ToolView(agent: AgentId, id: ItemId, call: ToolCall, stage: CallStage) -> Ele
     let framed = input.is_some() || output.is_some();
     rsx! {
         div { class: stage.class(),
-            div { class: "tool-head",
+            div {
+                class: if framed { "tool-head foldable" } else { "tool-head" },
+                onclick: move |_| {
+                    if framed {
+                        decided.set(Some(!open));
+                    }
+                },
                 {tool_title(agent, &call, &shape, TitleLayout::Full)}
                 if stage == CallStage::Running {
                     RunningMeta { agent, item: id }
                 } else if !meta.is_empty() {
                     span { class: "tool-meta", "{meta}" }
                 }
+                if framed {
+                    CallFold { open, decided }
+                }
             }
-            if framed {
-                div { class: "tool-io",
+            if framed && open {
+                div { class: if decided().is_some() { "tool-io unfolded" } else { "tool-io" },
                     if let Some(input) = input {
                         IoRow { kind: IoKind::In, text: input, fold: FoldEnd::First }
                     }
@@ -1645,6 +1693,7 @@ fn ToolView(agent: AgentId, id: ItemId, call: ToolCall, stage: CallStage) -> Ele
 #[component]
 fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall, stage: CallStage) -> Element {
     let cockpit: Cockpit = use_context();
+    let (open, mut decided) = use_call_fold(cockpit);
     let Some(edit) = call.edit.clone() else {
         return rsx! {};
     };
@@ -1669,21 +1718,35 @@ fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall, stage: CallStage) -
     };
     let shown_path = file_edits::shown_path(&folder, &edit.path);
     let path = edit.path.clone();
-    let open = move |_: MouseEvent| {
+    // A click on the path opens the file and leaves the call's fold as it is.
+    let open_file = move |event: MouseEvent| {
+        event.stop_propagation();
         let path = path.clone();
         cockpit.update(|state| actions::open_file(state, agent, path, None));
     };
-    let open_more = open.clone();
+    let open_more = open_file.clone();
     let more_text = format!(
         "{} more, open in the file view",
         format::count(more, "line", "lines")
     );
     let meta = EditMeta::new(&call, stage, added, removed);
+    let failure = call
+        .output
+        .clone()
+        .filter(|_| call.status == ToolCallStatus::Failed);
+    let foldable = !preview.is_empty() || failure.is_some();
+    let unfolded = if decided().is_some() { " unfolded" } else { "" };
     rsx! {
         div { class: stage.class(),
-            div { class: "tool-head",
+            div {
+                class: if foldable { "tool-head foldable" } else { "tool-head" },
+                onclick: move |_| {
+                    if foldable {
+                        decided.set(Some(!open));
+                    }
+                },
                 span { class: "tool-name", "{call.tool}" }
-                button { class: "path-link mono", onclick: open, "{shown_path}" }
+                button { class: "path-link mono", onclick: open_file, "{shown_path}" }
                 match meta {
                     EditMeta::Stage(words) => rsx! {
                         span { class: "tool-meta", "{words}" }
@@ -1702,9 +1765,12 @@ fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall, stage: CallStage) -
                         }
                     },
                 }
+                if foldable {
+                    CallFold { open, decided }
+                }
             }
-            if !preview.is_empty() {
-                div { class: "diff-box inline-diff scroll-x",
+            if open && !preview.is_empty() {
+                div { class: "diff-box inline-diff scroll-x{unfolded}",
                     div { class: "diff-rows",
                         for row in preview.iter() {
                             {diff_row(row, numbers, LineMarks::marked(None))}
@@ -1715,9 +1781,9 @@ fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall, stage: CallStage) -
                     }
                 }
             }
-            if call.status == ToolCallStatus::Failed {
-                if let Some(output) = call.output.clone() {
-                    div { class: "tool-io",
+            if open {
+                if let Some(output) = failure {
+                    div { class: "tool-io{unfolded}",
                         IoRow { kind: IoKind::Out, text: output, fold: FoldEnd::First }
                     }
                 }
