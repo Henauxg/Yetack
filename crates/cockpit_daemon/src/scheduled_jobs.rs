@@ -69,6 +69,8 @@ pub fn may_hold_scheduled_job(
 mod tests {
     use std::time::Duration;
 
+    use tempfile::TempDir;
+
     use super::*;
     use crate::store::RawLog;
 
@@ -78,7 +80,7 @@ mod tests {
 
     /// A state folder with `agent()`'s raw log.
     struct Logged {
-        temp: tempfile::TempDir,
+        temp: TempDir,
         log: RawLog,
     }
 
