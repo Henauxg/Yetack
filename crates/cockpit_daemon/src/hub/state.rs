@@ -31,6 +31,8 @@ const CLIENT_QUEUE: usize = 4096;
 /// How often the hub checks whether each account signed in or out: a file's metadata per
 /// account.
 const SIGN_IN_CHECK: Duration = Duration::from_secs(3);
+/// How often the hub looks for working agents that turned quiet.
+const QUIET_CHECK: Duration = Duration::from_secs(1);
 
 /// The least time between two details events of one agent. A subagent's burst of tool calls
 /// changes the details many times a second, and each event carries them whole.
@@ -195,6 +197,8 @@ impl Hub {
         self.start_restored_agents();
         let mut checks = tokio::time::interval(SIGN_IN_CHECK);
         checks.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut quiet = tokio::time::interval(QUIET_CHECK);
+        quiet.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 input = inputs.recv() => match input {
@@ -202,7 +206,21 @@ impl Hub {
                     None => return,
                 },
                 _ = checks.tick() => self.check_sign_ins(),
+                _ = quiet.tick() => self.check_quiet(),
             }
+        }
+    }
+
+    /// Marks the working agents that turned quiet, and publishes each one that did.
+    fn check_quiet(&mut self) {
+        let now = now();
+        let quiet: Vec<AgentId> = self
+            .agents
+            .iter_mut()
+            .filter_map(|(id, agent)| agent.view.check_quiet(now).then_some(*id))
+            .collect();
+        for agent in quiet {
+            self.publish(agent);
         }
     }
 

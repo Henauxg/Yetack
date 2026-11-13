@@ -414,7 +414,7 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
     let status = entry.summary.status;
     let working = status == AgentStatus::Working;
     let turn_start = entry.turn_start();
-    let last_output = entry.summary.last_output_at;
+    let quiet_since = entry.summary.quiet_since;
     let items: Vec<&TranscriptItem> = entry.transcript.items().collect();
     let loaded: BTreeSet<ItemId> = items.iter().map(|item| item.id).collect();
     let children = children_by_parent(&items);
@@ -531,7 +531,7 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
                     }
                 }
                 if working && shown != ShownRows::Skeleton {
-                    WorkingLine { since: turn_start, last_output, linked: working_linked }
+                    WorkingLine { since: turn_start, quiet_since, linked: working_linked }
                 }
             }
         }
@@ -747,21 +747,17 @@ fn step_links(is_step: &[bool], working: bool) -> Vec<StepLinks> {
     links
 }
 
-/// How long `claude` stays quiet before the Working line says so: below it, the line would
-/// change at every line Claude Code writes.
-const QUIET_SHOWN_FROM: Duration = Duration::from_secs(5);
-
 /// The last step of a running turn: a spinner on the steps' line, the time since the turn
-/// started, and how long ago `claude` last wrote, once it has been quiet a while.
+/// started, and how long the agent has written nothing, once the daemon says it is quiet.
 #[component]
-fn WorkingLine(since: Option<TurnStart>, last_output: Option<Timestamp>, linked: bool) -> Element {
+fn WorkingLine(since: Option<TurnStart>, quiet_since: Option<Timestamp>, linked: bool) -> Element {
     let Clock(now) = use_context::<Clock>();
     let now = now();
     let text = match since {
         Some(start) => format!("Working, {}", format::duration(start.elapsed(now))),
         None => "Working".to_owned(),
     };
-    let quiet = quiet_text(last_output, since, now);
+    let quiet = quiet_since.map(|quiet_since| quiet_text(quiet_since, now));
     rsx! {
         div { class: if linked { "step working linked-above" } else { "step working" },
             span { class: "step-marker",
@@ -775,20 +771,12 @@ fn WorkingLine(since: Option<TurnStart>, last_output: Option<Timestamp>, linked:
     }
 }
 
-/// "last output 57 s ago", once `claude` has been quiet for `QUIET_SHOWN_FROM` in the running
-/// turn: a line of an earlier turn counts as written when this one started. A daemon whose clock
-/// runs ahead of this one's reads as just written.
-fn quiet_text(
-    last_output: Option<Timestamp>,
-    turn_start: Option<TurnStart>,
-    now: SystemTime,
-) -> Option<String> {
-    let since_output = format::since(last_output?, now);
-    let quiet = turn_start.map_or(since_output, |start| since_output.min(start.elapsed(now)));
-    (quiet >= QUIET_SHOWN_FROM).then(|| {
-        let quiet = format::duration(Duration::from_secs(quiet.as_secs()));
-        format!("last output {quiet} ago")
-    })
+/// "no output for 57 s", from the time the daemon says the agent last wrote.
+fn quiet_text(quiet_since: Timestamp, now: SystemTime) -> String {
+    let quiet = format::duration(Duration::from_secs(
+        format::since(quiet_since, now).as_secs(),
+    ));
+    format!("no output for {quiet}")
 }
 
 /// The items the chat shows at its top level, in order.
@@ -2045,38 +2033,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_working_line_names_the_quiet_once_it_lasts() {
+    fn the_working_line_says_how_long_the_agent_has_been_quiet() {
         let now = UNIX_EPOCH + Duration::from_secs(1_000);
-        let at = |seconds: u64| Some(Timestamp::from_unix_millis(seconds * 1_000));
-        let turn = Some(TurnStart::Daemon(Timestamp::from_unix_millis(900_000)));
 
-        assert_eq!(quiet_text(at(996), turn, now), None, "4 s of quiet");
         assert_eq!(
-            quiet_text(at(943), turn, now).as_deref(),
-            Some("last output 57 s ago")
+            quiet_text(Timestamp::from_unix_millis(943_000), now),
+            "no output for 57 s"
         );
         assert_eq!(
-            quiet_text(at(1_010), turn, now),
-            None,
+            quiet_text(Timestamp::from_unix_millis(1_010_000), now),
+            "no output for 0 s",
             "a daemon clock ahead"
-        );
-        assert_eq!(quiet_text(None, turn, now), None);
-    }
-
-    #[test]
-    fn the_quiet_counts_from_the_turn_start_after_an_earlier_turns_output() {
-        let now = UNIX_EPOCH + Duration::from_secs(10_000);
-        let earlier_turn = Some(Timestamp::from_unix_millis(6_400_000));
-        let started = |seconds: u64| {
-            Some(TurnStart::Daemon(Timestamp::from_unix_millis(
-                seconds * 1_000,
-            )))
-        };
-
-        assert_eq!(quiet_text(earlier_turn, started(9_999), now), None);
-        assert_eq!(
-            quiet_text(earlier_turn, started(9_980), now).as_deref(),
-            Some("last output 20 s ago")
         );
     }
 

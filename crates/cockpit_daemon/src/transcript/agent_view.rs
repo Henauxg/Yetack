@@ -96,8 +96,8 @@ const REFUSED_STATUS: &str = "API Error: 403";
 /// The notice of a refused request, with Claude Code's text as its detail.
 const REFUSED_NOTICE: &str =
     "The API refused the request (HTTP 403). No sign-in fixes it: send the message again.";
-/// How often `last_output_at` moves while `claude` writes.
-const OUTPUT_STAMP_EVERY: Duration = Duration::from_secs(1);
+/// How long `claude` writes nothing during a turn before the summary says the agent is quiet.
+const QUIET_AFTER: Duration = Duration::from_secs(5);
 const COMPACTED_NOTICE: &str = "Conversation compacted";
 const SUMMARY_TITLE: &str = "Conversation summary";
 /// Titles context Claude Code adds that no line before it explains.
@@ -180,6 +180,9 @@ pub(crate) struct AgentView {
     /// Claude Code restates the session's saved name as it starts, before it answers
     /// `initialize`: that name must not replace one the agent got while it was stopped.
     takes_session_titles: bool,
+    /// When `claude` last wrote a line in the running turn, or the turn started, or an answer
+    /// went to it: `quiet_since` takes it once the agent stays quiet.
+    last_line_at: Option<Timestamp>,
     /// Set by a `Skill` call's result or a compaction, for the synthetic `user` line after it.
     expected_context: Option<ExpectedContext>,
     /// The current turn found no valid login.
@@ -213,6 +216,7 @@ impl AgentView {
             pending: HashMap::new(),
             working: false,
             exited: false,
+            last_line_at: None,
             process_cost: 0.0,
             cost_before_process: 0.0,
             awaits_restored_cost: false,
@@ -294,7 +298,7 @@ impl AgentView {
             cost: CostUsd::new(0.0),
             started_at: Timestamp::from_unix_millis(0),
             last_activity_at: None,
-            last_output_at: None,
+            quiet_since: None,
             turn_started_at: None,
             session: None,
             position: Position::default(),
@@ -1710,16 +1714,35 @@ impl AgentView {
         self.items.get_mut(index)
     }
 
-    /// `claude` wrote a line. The stamp moves once a second at most, so that a fast stream of lines
-    /// publishes the summary that often at most.
+    /// `claude` wrote a line in the running turn: the agent is not quiet.
     fn note_output(&mut self, now: Timestamp) {
-        let due = self
-            .summary
-            .last_output_at
-            .is_none_or(|last| now >= add(last, OUTPUT_STAMP_EVERY));
-        if due {
-            self.summary.last_output_at = Some(now);
+        self.last_line_at = Some(now);
+        self.summary.quiet_since = None;
+    }
+
+    /// An answer to an approval, a question or a plan went to `claude`: the wait for it was the
+    /// user's, not the agent's quiet.
+    pub(crate) fn note_answer(&mut self, now: Timestamp) {
+        if self.working {
+            self.note_output(now);
         }
+    }
+
+    /// Marks the agent quiet once it wrote nothing for [`QUIET_AFTER`] in the running turn, while
+    /// nothing waits for the user. Returns whether the summary changed, which then needs a
+    /// publish.
+    pub(crate) fn check_quiet(&mut self, now: Timestamp) -> bool {
+        let Some(last) = self
+            .last_line_at
+            .filter(|_| self.working && self.pending.is_empty())
+        else {
+            return false;
+        };
+        if self.summary.quiet_since.is_some() || now < add(last, QUIET_AFTER) {
+            return false;
+        }
+        self.summary.quiet_since = Some(last);
+        true
     }
 
     /// A prompt went to `claude`: a new turn starts now, even when the last one had not ended.
@@ -1728,6 +1751,7 @@ impl AgentView {
         self.summary.sign_in_wait = SignInWait::NotWaiting;
         self.summary.turn_started_at = Some(now);
         self.summary.last_activity_at = Some(now);
+        self.note_output(now);
     }
 
     /// A line shows that a turn runs, which may be one Claude Code started without a prompt.
@@ -1741,6 +1765,8 @@ impl AgentView {
     fn end_work(&mut self) {
         self.working = false;
         self.summary.turn_started_at = None;
+        self.summary.quiet_since = None;
+        self.last_line_at = None;
     }
 
     fn refresh_status(&mut self) {
@@ -1992,7 +2018,7 @@ mod tests {
             cost: CostUsd::new(0.0),
             started_at: Timestamp::from_unix_millis(0),
             last_activity_at: None,
-            last_output_at: None,
+            quiet_since: None,
             turn_started_at: None,
             session: None,
             position: Position::default(),
@@ -4173,32 +4199,33 @@ mod tests {
     }
 
     #[test]
-    fn each_line_moves_the_last_output_once_a_second_at_most() {
+    fn the_agent_turns_quiet_after_a_few_seconds_without_a_line() {
         let mut view = view();
-        view.add_prompt(
-            &prompt("Fix the cart total"),
-            Timestamp::from_unix_millis(99_000),
-        );
+        let at = |millis: u64| Timestamp::from_unix_millis(millis);
+        view.add_prompt(&prompt("Fix the cart total"), at(100_000));
         let thinking = json!({"type": "system", "subtype": "thinking_tokens",
                               "estimated_tokens": 50, "estimated_tokens_delta": 50});
-        let at_millis = |view: &mut AgentView, millis: u64| {
+        let line = |view: &mut AgentView, millis: u64| {
             let parsed: OutputLine = thinking.to_string().parse().unwrap();
-            view.apply(parsed, Timestamp::from_unix_millis(millis));
-            view.summary().last_output_at
+            view.apply(parsed, at(millis));
         };
-        assert_eq!(view.summary().last_output_at, None);
 
-        let first = at_millis(&mut view, 100_000);
-        let soon = at_millis(&mut view, 100_600);
-        let later = at_millis(&mut view, 101_000);
+        line(&mut view, 102_000);
+        let early = view.check_quiet(at(106_000));
+        let quiet = view.check_quiet(at(107_000));
+        let again = view.check_quiet(at(108_000));
+        assert_eq!((early, quiet, again), (false, true, false));
+        assert_eq!(view.summary().quiet_since, Some(at(102_000)));
 
-        assert_eq!(first, Some(Timestamp::from_unix_millis(100_000)));
-        assert_eq!(soon, first);
-        assert_eq!(later, Some(Timestamp::from_unix_millis(101_000)));
+        line(&mut view, 109_000);
+        assert_eq!(view.summary().quiet_since, None);
+
+        view.note_answer(at(120_000));
+        assert!(!view.check_quiet(at(124_000)), "an answer counts as a line");
     }
 
     #[test]
-    fn a_line_between_turns_moves_no_last_output() {
+    fn an_agent_between_turns_is_never_quiet() {
         let mut view = view();
         view.take_events();
 
@@ -4208,7 +4235,8 @@ mod tests {
                    "estimated_tokens": 50, "estimated_tokens_delta": 50}),
         );
 
-        assert_eq!(view.summary().last_output_at, None);
+        assert!(!view.check_quiet(Timestamp::from_unix_millis(u64::MAX / 2)));
+        assert_eq!(view.summary().quiet_since, None);
         assert_eq!(view.take_events(), Vec::new());
     }
 
@@ -4349,7 +4377,7 @@ mod tests {
         let logged = |last: u64, turn: u64| AgentSummary {
             status: AgentStatus::Working,
             last_activity_at: Some(at(last)),
-            last_output_at: None,
+            quiet_since: None,
             turn_started_at: Some(at(turn)),
             ..view().summary().clone()
         };

@@ -1990,7 +1990,7 @@ fn summary(parts: SummaryParts<'_>, now: SystemTime) -> AgentSummary {
         cost: CostUsd::new(1.84),
         started_at: at(now, since + 3600),
         last_activity_at: Some(at(now, last_activity)),
-        last_output_at: turn_started.map(|_| at(now, DEMO_QUIET_SECONDS)),
+        quiet_since: turn_started.map(|_| at(now, DEMO_QUIET_SECONDS)),
         turn_started_at: turn_started.map(|seconds| at(now, seconds)),
         session: Some(ClaudeSessionId::new(format!("demo-session-{}", parts.id))),
         position: Position::default(),
