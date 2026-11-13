@@ -37,7 +37,8 @@ pub fn may_hold_scheduled_job(
     let since = Timestamp::from_system_time(since).unwrap_or(Timestamp::from_unix_millis(0));
     let mut held: i64 = 0;
     for line in BufReader::new(file).split(b'\n') {
-        let line = String::from_utf8_lossy(&line?).into_owned();
+        let bytes = line?;
+        let line = String::from_utf8_lossy(&bytes);
         if !line.contains(TOOLS_PREFIX) {
             continue;
         }
