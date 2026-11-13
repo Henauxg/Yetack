@@ -37,7 +37,7 @@ use dioxus::desktop::tao::event::Event;
 use dioxus::desktop::tao::window::Icon;
 use dioxus::desktop::{LogicalSize, WindowBuilder};
 
-use crate::config::{Config, ConfigError, Environment, MachineConfig};
+use crate::config::{Config, ConfigError, DaemonConfig, Environment, MachineConfig};
 use crate::connection::Startup;
 use crate::daemon_label::DaemonLabel;
 use crate::in_app_host::InAppHost;
@@ -77,7 +77,7 @@ fn main() -> anyhow::Result<ExitCode> {
     let log = |error: &ConfigError| tracing::error!("{}", state::error_chain(error));
     let config = Config::load(&environment).inspect_err(log)?;
     let places = Places::new(&environment).inspect_err(log)?;
-    let label = reach::label(&config.daemon.clone().unwrap_or_default());
+    let label = reach::label(config.daemon.as_ref().unwrap_or(&DaemonConfig::default()));
     let mut state = if demo {
         demo::state(label)
     } else {

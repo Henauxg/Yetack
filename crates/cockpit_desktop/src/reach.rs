@@ -500,7 +500,7 @@ mod tests {
         no_daemon::choose(state, DaemonChoice::InApp).is_some_and(|chosen| chosen.every_time)
     }
 
-    /// A first start's state, with the config file `file`.
+    /// The state at a start with the config file `file`, which may not exist yet.
     fn started_with(file: &Path) -> AppState {
         let mut state = AppState::new(DaemonLabel::socket());
         let text = std::fs::read_to_string(file).unwrap_or_default();
