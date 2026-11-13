@@ -28,10 +28,7 @@ What it does:
 - The script's stop signals no process that got the daemon's pid since the script found it: it compares the start time from `/proc/<pid>/stat` right before `kill`.
 - Fixes from `/review fix` on these changes. A second click on "Update Local" during the read of the logs does nothing, and the button says "Checking jobs…". The restart refuses when an agent started a turn during its read. A clock that was ahead when the daemon started no longer hides a scheduled job.
 - The app's stop (`stop_lock_holder`) waits for the daemon's process to end, through its pidfd, not for the lock to be free. A program that starts the old daemon again at once, such as a systemd unit with `RestartSec=0`, no longer makes it fail with "did not stop".
-
-Known gaps in the update's stop, left as they are:
-
-- The script's `stop_daemon` finds the daemon as the first process in `/proc` that holds `serve.lock`, in the order of the folder names (`1000` comes before `999`). While the daemon starts an agent, its child holds the lock too, for the moment between fork and exec. The script can pick that child and send it SIGTERM first: the daemon then gets its own signal one second later.
+- The script finds the daemon in `/proc/locks`, as the process that holds the lock on `serve.lock`. A process that only has the file open, such as the daemon's child between fork and exec, gets no signal, and the stop does not wait for it.
 
 To check Unix code without CI, cross-build the daemon crates for `x86_64-unknown-linux-musl`, with `rust-lld` as the linker, and run their test binaries in WSL. The tests embed Windows paths through `env!`, so give them absolute paths for the run, and don't commit that change. The `update_daemon` tests fail in about 4 of 10 full runs there, on `main` too: rerun a failing test alone.
 
