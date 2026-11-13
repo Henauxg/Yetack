@@ -125,9 +125,11 @@ impl Cockpit {
 
     /// Starts the update of `machine`'s daemon, from a card, "Update again" or "Retry". Busy
     /// agents open the confirmation first. Before a restart of this computer's service, the app
-    /// reads which agents may hold a scheduled job, beside the window.
+    /// reads which agents may hold a scheduled job, beside the window. A click during that read does
+    /// nothing.
     pub fn update_daemon(&self, machine: MachineId) {
-        let check = daemon_update::jobs_to_check(&self.state.peek(), machine);
+        let mut signal = self.state;
+        let check = daemon_update::jobs_to_check(&mut signal.write(), machine);
         match check {
             Some(check) => {
                 self.daemon
@@ -541,10 +543,11 @@ impl Servers {
     }
 
     /// Runs an update or a cancel next to the machine's connection task.
-    fn start_update_command(&self, state: Signal<AppState>, command: UpdateCommand) {
+    fn start_update_command(&self, mut state: Signal<AppState>, command: UpdateCommand) {
         match command {
             UpdateCommand::CheckJobs(machine, check) => {
                 if !self.tasks.contains_key(&machine) {
+                    daemon_update::job_check_dropped(&mut state.write(), machine);
                     return;
                 }
                 spawn(check_jobs(state, machine, check, self.retries.clone()));

@@ -374,6 +374,9 @@ pub struct MachineState {
     /// read their raw logs. Only an update of this computer's background service reads them: a
     /// server's script checks its own.
     pub job_holders: Vec<AgentId>,
+    /// The app reads the raw logs of this computer's resting agents before it restarts its
+    /// service: the update's buttons and the machine's line show it as under way.
+    pub checking_jobs: bool,
     /// How many times the app connected to the daemon in this run. An update of this computer's
     /// service compares it with its count at the stop, to tell a connection to the daemon that
     /// started since from one to the stopped daemon.
@@ -401,6 +404,7 @@ impl MachineState {
             update_plan: None,
             update: None,
             job_holders: Vec::new(),
+            checking_jobs: false,
             connections: 0,
             server: None,
         }

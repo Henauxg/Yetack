@@ -320,8 +320,8 @@ fn after_restart(progress: UpdateProgress, gap: &VersionGap) -> Option<DaemonUpd
 }
 
 /// "Update" on a card, or "Update again" or "Retry" on a failure. Returns the update to run:
-/// `None` when one waits or runs already, when the app has none to run, or when the user answers
-/// first, which the confirmation asks:
+/// `None` when one waits or runs already, when the app reads the jobs first or has no update to
+/// run, or when the user answers first, which the confirmation asks:
 /// - a machine the app is connected to has busy agents;
 /// - this computer's service runs a daemon the app cannot list the agents of ([`agents_unseen`]).
 ///
@@ -330,6 +330,9 @@ fn after_restart(progress: UpdateProgress, gap: &VersionGap) -> Option<DaemonUpd
 /// reads the raw logs ([`jobs_to_check`]), then calls [`jobs_checked`], which calls this.
 pub fn start(state: &mut AppState, machine: MachineId) -> Option<UpdateRun> {
     let known = state.machines.get(machine)?;
+    if known.checking_jobs {
+        return None;
+    }
     plan_to_run(known)?;
     let ask = if known.is_connected() {
         !update_offer::busy_agents(state, machine).is_empty()
@@ -354,31 +357,42 @@ pub fn agents_unseen(known: &MachineState) -> bool {
 }
 
 /// The raw logs to read before [`start`] restarts this computer's service, while the app is
-/// connected to it: its resting agents may hold scheduled jobs. `None` when `start` needs no
-/// read.
-pub fn jobs_to_check(state: &AppState, machine: MachineId) -> Option<JobCheck> {
+/// connected to it: its resting agents may hold scheduled jobs. The machine shows the read as
+/// under way until [`jobs_checked`] or [`job_check_dropped`]. `None` when `start` needs no read,
+/// or when a read runs already: `start` then does nothing.
+pub fn jobs_to_check(state: &mut AppState, machine: MachineId) -> Option<JobCheck> {
     let known = state.machines.get(machine)?;
+    if known.checking_jobs || !known.is_connected() {
+        return None;
+    }
     let UpdatePlan::Service(plan) = plan_to_run(known)? else {
         return None;
     };
-    known.is_connected().then(|| JobCheck {
-        plan,
-        agents: update_offer::resting_agents(state, machine),
-    })
+    let agents = update_offer::resting_agents(state, machine);
+    state.machines.get_mut(machine)?.checking_jobs = true;
+    Some(JobCheck { plan, agents })
 }
 
 /// The raw logs of [`jobs_to_check`] were read: `holders` may hold scheduled jobs, so they count
 /// as busy. Returns what [`start`] returns. A read that ends once an update waits or runs, such as
-/// one an earlier read started, changes nothing.
+/// one "Update now" started meanwhile, changes nothing.
 pub fn jobs_checked(
     state: &mut AppState,
     machine: MachineId,
     holders: Vec<AgentId>,
 ) -> Option<UpdateRun> {
     let known = state.machines.get_mut(machine)?;
+    known.checking_jobs = false;
     plan_to_run(known)?;
     known.job_holders = holders;
     start(state, machine)
+}
+
+/// The read of [`jobs_to_check`] will not run, as when the machine's connection task has ended.
+pub fn job_check_dropped(state: &mut AppState, machine: MachineId) {
+    if let Some(known) = state.machines.get_mut(machine) {
+        known.checking_jobs = false;
+    }
 }
 
 /// "Update when they are idle", on the confirmation. Returns the update to run when none of the
@@ -771,6 +785,9 @@ pub fn update_line(known: &MachineState) -> Option<UpdateLine> {
         retry: down,
     };
     let connected = known.is_connected();
+    if known.checking_jobs {
+        return Some(line("Checking scheduled jobs…", UpdateLink::Show, false));
+    }
     match (&known.update, &known.version_gap) {
         (Some(DaemonUpdate::Running(_) | DaemonUpdate::Reconnecting(_)), _) => {
             Some(line("Updating…", UpdateLink::Show, false))
@@ -2329,7 +2346,7 @@ mod tests {
         );
 
         assert_eq!(
-            jobs_to_check(&state, MachineId::THIS),
+            jobs_to_check(&mut state, MachineId::THIS),
             None,
             "no log to read first"
         );
@@ -2454,21 +2471,46 @@ mod tests {
 
     #[test]
     fn a_connected_service_reads_the_jobs_of_its_resting_agents_first() {
-        let state =
+        let mut state =
             with_local_service(&[AgentStatus::Working, AgentStatus::Idle, AgentStatus::Exited]);
 
-        let check = jobs_to_check(&state, MachineId::THIS).unwrap();
+        let check = jobs_to_check(&mut state, MachineId::THIS).unwrap();
 
         assert_eq!(check.agents, [AgentId::new(2)]);
         assert_eq!(UpdatePlan::Service(check.plan), service_plan());
         assert_eq!(
             jobs_to_check(
-                &with_server_of_another_build(&[AgentStatus::Idle]),
+                &mut with_server_of_another_build(&[AgentStatus::Idle]),
                 build_box()
             ),
             None,
             "a server's script reads its own"
         );
+    }
+
+    /// A second click on "Update Local" while the first one's read runs.
+    #[test]
+    fn a_second_click_during_the_read_of_the_jobs_starts_nothing() {
+        let mut state = with_local_service(&[AgentStatus::Idle]);
+        assert!(jobs_to_check(&mut state, MachineId::THIS).is_some());
+
+        let again = jobs_to_check(&mut state, MachineId::THIS);
+        let started = start(&mut state, MachineId::THIS);
+
+        assert_eq!(again, None);
+        assert_eq!(started, None);
+        assert_eq!(this_update(&state), None);
+        let line = update_line(&state.machines.this).unwrap();
+        assert_eq!(
+            (line.text, line.link, line.down),
+            ("Checking scheduled jobs…", UpdateLink::Show, false)
+        );
+        assert_eq!(
+            jobs_checked(&mut state, MachineId::THIS, Vec::new()),
+            Some(run(service_plan())),
+            "the first read starts the update"
+        );
+        assert!(!state.machines.this.checking_jobs);
     }
 
     #[test]

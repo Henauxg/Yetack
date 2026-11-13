@@ -153,9 +153,12 @@ fn connection_status(known: &MachineState) -> MachineStatus {
     }
 }
 
-/// The chip of a machine whose daemon does not run the app's build, or whose update waits, runs
-/// or failed.
+/// The chip of a machine whose daemon does not run the app's build, or whose update reads the
+/// scheduled jobs first, waits, runs or failed.
 fn update_chip(known: &MachineState) -> Option<&'static str> {
+    if known.checking_jobs {
+        return Some("Checking");
+    }
     match (&known.update, &known.version_gap) {
         (Some(DaemonUpdate::Running(_) | DaemonUpdate::Reconnecting(_)), _) => Some("Updating"),
         (Some(DaemonUpdate::Waiting), _) => Some("Waiting"),

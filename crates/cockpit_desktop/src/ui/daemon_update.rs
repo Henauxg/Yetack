@@ -262,12 +262,7 @@ fn OlderCard(machine: MachineId, name: String, local: bool, offer: UpdateOffer) 
             }
             RetryButton { machine, primary: offer.plan.is_none(), busy }
             if offer.plan.is_some() {
-                button {
-                    class: "button primary",
-                    disabled: waiting,
-                    onclick: move |_| cockpit.update_daemon(machine),
-                    "Update {name}"
-                }
+                UpdateButton { machine, label: format!("Update {name}"), disabled: waiting }
             }
         }
         if on_this_computer {
@@ -317,11 +312,7 @@ fn AvailableCard(machine: MachineId, name: String, local: bool, offer: UpdateOff
                 onclick: move |_| cockpit.update(|state| state.ui.close_dialog()),
                 "Not now"
             }
-            button {
-                class: "button primary",
-                onclick: move |_| cockpit.update_daemon(machine),
-                "Update {name}"
-            }
+            UpdateButton { machine, label: format!("Update {name}"), disabled: false }
         }
     }
 }
@@ -343,6 +334,27 @@ fn NewerReleaseCard(name: String, local: bool, offer: UpdateOffer) -> Element {
                 onclick: move |_| cockpit.update(|state| state.ui.close_dialog()),
                 "Close"
             }
+        }
+    }
+}
+
+/// The button that starts `machine`'s update. On this computer the app reads the agents' raw logs
+/// first, and the button says so meanwhile.
+#[component]
+fn UpdateButton(machine: MachineId, label: String, disabled: bool) -> Element {
+    let cockpit: Cockpit = use_context();
+    let checking = cockpit
+        .state
+        .read()
+        .machines
+        .get(machine)
+        .is_some_and(|known| known.checking_jobs);
+    rsx! {
+        button {
+            class: "button primary",
+            disabled: disabled || checking,
+            onclick: move |_| cockpit.update_daemon(machine),
+            if checking { "Checking jobs…" } else { "{label}" }
         }
     }
 }
@@ -706,11 +718,7 @@ fn FailedCard(machine: MachineId, name: String, local: bool, failed: FailedUpdat
                     "Update now"
                 }
             }
-            button {
-                class: "button primary",
-                onclick: move |_| cockpit.update_daemon(machine),
-                "{again}"
-            }
+            UpdateButton { machine, label: again.to_owned(), disabled: false }
         }
     }
 }
