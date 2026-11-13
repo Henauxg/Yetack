@@ -609,7 +609,7 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
   The file rotates by size: once `app.log` would pass 10 MiB, it becomes `app.1.log`, `app.1.log` becomes `app.2.log`, and so on, and the oldest of the 5 files goes (50 MiB at most). A line is never split, and a new run appends to `app.log`, so the rotation carries on across runs. A rotation that fails, as when another program holds a file, leaves the log in the file it has and is tried again 10 MiB later, so no line is lost.
   An older version's `app.previous.log` becomes `app.1.log`, which is the run before the current `app.log`, unless `app.1.log` exists already: then it is deleted. When that file can be neither moved nor deleted, the log still starts, and its first line says why.
 - **Notifications** (module `notifications`): at most one per agent, for an agent that needs you or finished, and a click on one brings the window up and opens its agent.
-  None shows while the window has the focus: the sidebar shows the agent already. The page reports the focus as it starts and at each change (`window_focused`).
+  None shows while the window has the focus, even for an agent the sidebar hides. The page reports the focus as it starts and at each change (`window_focused`).
   An agent finishes once its turn has ended and none of its background tasks still runs (`background_running`).
   Until then, its sidebar row and the header say "Idle, N running in the background", with the status dot's ring in the working color.
   When the last background task of an idle agent ends, the app waits 10 s (`FINISH_HOLD` in `state/apply.rs`) before it announces the finish, and drops it if the agent works again meanwhile: Claude Code usually starts a turn to read the task's result, and that turn's end is the finish.
@@ -692,7 +692,7 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
 - **Status filter**: chips at the top of the sidebar (All, Needs you, Working, Idle, Exited, each with its count) hide the other agents' rows and never change the order.
   A status's chip shows only while an agent has that status, and the chosen chip stays even at 0, so the last agent leaving it does not take the filter away.
   All shows beside the other chips, and the filter hides when All would be its only chip (no agents, with All chosen).
-  An agent the filter hides still raises its notifications.
+  An agent the filter hides still raises its notifications while the window is in the background.
   When the filter hides the selected agent, the center keeps showing it and the sidebar says so, with a link that shows all agents.
   Alt+Up, Alt+Down and a drop move an agent among the rows the sidebar shows, and the hidden agents keep their places.
   The Ctrl+K switcher lists every agent, the ones that wait for you first: it finds an agent, and Ctrl+K then Enter opens the one that needs you.

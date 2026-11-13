@@ -83,7 +83,7 @@ impl Ledger {
     /// agent no longer needs you; a "finished" one goes away on the service's timeout. Any
     /// notification closes once its agent is gone, or once the levels no longer let it through.
     /// An alert the levels hold back is dropped, and so is any alert while the window has the
-    /// focus: the sidebar shows it already.
+    /// focus: you are in the app.
     fn update(&mut self, alerts: Vec<Alert>, state: &AppState) -> Vec<Command> {
         let mut commands = Vec::new();
         for alert in alerts {
@@ -311,6 +311,19 @@ mod tests {
 
         assert!(focused.is_empty());
         assert_eq!(away, [Command::Show(alert(2, AlertKind::Finished))]);
+    }
+
+    #[test]
+    fn a_notification_shown_away_closes_once_answered_from_the_focused_window() {
+        let mut state = away(vec![summary(1, AgentStatus::NeedsYou)]);
+        let mut ledger = Ledger::default();
+        ledger.update(vec![alert(1, AlertKind::NeedsYou)], &state);
+
+        state.ui.window_focused = true;
+        set_status(&mut state, 1, AgentStatus::Working);
+        let answered = ledger.update(Vec::new(), &state);
+
+        assert_eq!(answered, [Command::Close(AgentId::new(1))]);
     }
 
     #[test]
