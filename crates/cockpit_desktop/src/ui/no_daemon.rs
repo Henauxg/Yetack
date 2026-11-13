@@ -7,6 +7,7 @@ use crate::machine::MachineId;
 use crate::state::no_daemon::{self, Absence, DaemonChoice, NoDaemon};
 use crate::state::{ConnectionState, settings};
 use crate::ui::daemon_update::DaemonUpdateScreens;
+use crate::ui::presence::use_presence;
 
 /// What the screen says when nothing runs on this machine, where the background service runs.
 const NOTHING_RUNS_LEAD: &str =
@@ -42,7 +43,7 @@ pub fn NoDaemonCard() -> Element {
             DaemonUpdateScreens { machine: MachineId::THIS }
         };
     }
-    let (screen, service_offered) = {
+    let (screen, every_time, service_offered) = {
         let state = cockpit.state.read();
         let screen = match &state.machines.this.connection {
             ConnectionState::NoDaemon(screen) => screen.clone(),
@@ -50,7 +51,11 @@ pub fn NoDaemonCard() -> Element {
             | ConnectionState::Connected
             | ConnectionState::Disconnected { .. } => return rsx! {},
         };
-        (screen, state.machines.service_offered)
+        (
+            screen,
+            no_daemon::every_time(&state),
+            state.machines.service_offered,
+        )
     };
     let nothing_runs_lead = if service_offered {
         NOTHING_RUNS_LEAD
@@ -62,7 +67,7 @@ pub fn NoDaemonCard() -> Element {
         subject,
         error,
         absence,
-        every_time,
+        tick: _,
         failed_tries,
         busy,
     } = screen;
@@ -168,12 +173,12 @@ pub fn NoDaemonCard() -> Element {
     }
 }
 
-/// "Use this every time", for a choice about this computer's daemon, and where to change it
-/// later where the Settings dialog offers a choice.
+/// "Use this every time", for a choice about this computer's daemon, and while it is ticked,
+/// where to change it later where the Settings dialog offers a choice.
 #[component]
 pub(super) fn EveryTimeTick(every_time: bool, waiting: bool) -> Element {
     let cockpit: Cockpit = use_context();
-    let change_later = settings::change_later(&cockpit.state.read());
+    let change_later = use_presence(settings::change_later(&cockpit.state.read()));
     rsx! {
         label { class: if waiting { "no-daemon-every-time disabled" } else { "no-daemon-every-time" },
             input {
@@ -185,7 +190,13 @@ pub(super) fn EveryTimeTick(every_time: bool, waiting: bool) -> Element {
             span { "Use this every time" }
         }
         if let Some(hint) = change_later {
-            p { class: "no-daemon-hint", "{hint}" }
+            div {
+                class: if hint.leaving { "no-daemon-hint-fold leaving" } else { "no-daemon-hint-fold" },
+                inert: hint.leaving.then_some(true),
+                div { class: "no-daemon-hint-clip",
+                    p { class: "no-daemon-hint", "{hint.value}" }
+                }
+            }
         }
     }
 }

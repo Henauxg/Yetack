@@ -420,8 +420,10 @@ impl MachineState {
 pub struct Machines {
     pub this: MachineState,
     pub others: BTreeMap<MachineId, MachineState>,
-    /// This computer's daemon as the config names it, which the next start reaches.
-    pub configured: DaemonConfig,
+    /// This computer's daemon as the config file's `[daemon]` section names it, which the next
+    /// start reaches. `None` until the file has the section: the next start where nothing runs
+    /// is then a first start.
+    pub configured: Option<DaemonConfig>,
     /// This computer runs the background service and reaches a daemon's socket, as
     /// [`SERVICE_OFFERED`] says. The demo shows Unix's choices on any platform.
     pub service_offered: bool,
@@ -488,7 +490,7 @@ impl AppState {
             machines: Machines {
                 this: MachineState::new(daemon),
                 others: BTreeMap::new(),
-                configured: DaemonConfig::default(),
+                configured: None,
                 service_offered: SERVICE_OFFERED,
             },
             agents: BTreeMap::new(),

@@ -66,8 +66,9 @@ const DEFAULT_STATE_HOME: &str = r"AppData\Local";
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    /// This computer's daemon.
-    pub daemon: DaemonConfig,
+    /// This computer's daemon, from the `[daemon]` section. Without one, the app reaches
+    /// `DaemonConfig::default()`.
+    pub daemon: Option<DaemonConfig>,
     /// The other machines, each reached over SSH, in the order the sidebar shows them.
     pub machines: Vec<MachineConfig>,
     pub notifications: NotificationsConfig,
@@ -415,16 +416,18 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn an_empty_file_means_the_local_daemon_with_notifications() {
+    fn an_empty_file_names_no_daemon_and_turns_notifications_on() {
         let config: Config = "".parse().unwrap();
 
         assert_eq!(config, Config::default());
+        assert_eq!(config.daemon, None);
         assert_eq!(
-            config.daemon,
+            DaemonConfig::default(),
             DaemonConfig::Local {
                 socket: None,
                 start_service: false
-            }
+            },
+            "the daemon the app reaches without a [daemon] section"
         );
         assert!(config.notifications.enabled);
     }
@@ -445,11 +448,11 @@ pub(crate) mod tests {
 
         assert_eq!(
             config.daemon,
-            DaemonConfig::Ssh {
+            Some(DaemonConfig::Ssh {
                 host: "build-box".to_owned(),
                 remote_command: "/opt/agents-cockpit/bin/agents-cockpit".to_owned(),
                 source_dir: None,
-            }
+            })
         );
         assert!(!config.notifications.enabled);
     }
@@ -462,10 +465,10 @@ pub(crate) mod tests {
 
         assert_eq!(
             config.daemon,
-            DaemonConfig::Local {
+            Some(DaemonConfig::Local {
                 socket: Some(PathBuf::from("/run/cockpit.sock")),
                 start_service: false
-            }
+            })
         );
     }
 
@@ -476,13 +479,13 @@ pub(crate) mod tests {
             .parse()
             .unwrap();
 
-        assert_eq!(in_app.daemon, DaemonConfig::InApp);
+        assert_eq!(in_app.daemon, Some(DaemonConfig::InApp));
         assert_eq!(
             service.daemon,
-            DaemonConfig::Local {
+            Some(DaemonConfig::Local {
                 socket: None,
                 start_service: true
-            }
+            })
         );
     }
 
@@ -491,7 +494,7 @@ pub(crate) mod tests {
         let text = "[daemon]\ntransport = \"in_app\"\n\n[[machines]]\nname = \"devbox\"\nhost = \"dev@devbox\"\nremote_command = \"/opt/agents-cockpit\"\n\n[[machines]]\nname = \"gpu-box\"\nhost = \"gpu\"\nremote_command = \"/usr/local/bin/agents-cockpit\"\n";
         let config: Config = text.parse().unwrap();
 
-        assert_eq!(config.daemon, DaemonConfig::InApp);
+        assert_eq!(config.daemon, Some(DaemonConfig::InApp));
         assert_eq!(
             config.machines,
             [
@@ -525,11 +528,11 @@ pub(crate) mod tests {
 
         assert_eq!(
             config.daemon,
-            DaemonConfig::Ssh {
+            Some(DaemonConfig::Ssh {
                 host: "build-box".to_owned(),
                 remote_command: "/opt/agents-cockpit".to_owned(),
                 source_dir: Some("/srv/cockpit".to_owned()),
-            }
+            })
         );
         assert_eq!(
             config.machines.first().unwrap().source_dir.as_deref(),
@@ -635,7 +638,7 @@ pub(crate) mod tests {
             "# Reach the build box.\n[daemon]\ntransport = \"in_app\"\n\n[notifications]\n# Too many.\nenabled = false\n"
         );
         let config: Config = saved.parse().unwrap();
-        assert_eq!(config.daemon, DaemonConfig::InApp);
+        assert_eq!(config.daemon, Some(DaemonConfig::InApp));
         assert!(!config.notifications.enabled);
     }
 
@@ -657,7 +660,7 @@ pub(crate) mod tests {
         save_machines(&file, &[]).unwrap();
         let none = std::fs::read_to_string(&file).unwrap();
 
-        assert_eq!(one.daemon, DaemonConfig::InApp);
+        assert_eq!(one.daemon, Some(DaemonConfig::InApp));
         assert_eq!(one.machines, [devbox]);
         assert_eq!(none, "# This computer.\n[daemon]\ntransport = \"in_app\"\n");
     }
@@ -678,7 +681,7 @@ pub(crate) mod tests {
             saved,
             "[daemon]\ntransport = \"local\"\nstart_service = true\n"
         );
-        assert_eq!(saved.parse::<Config>().unwrap().daemon, service);
+        assert_eq!(saved.parse::<Config>().unwrap().daemon, Some(service));
     }
 
     #[cfg(unix)]

@@ -45,13 +45,25 @@ pub struct NoDaemon {
     pub subject: String,
     pub error: String,
     pub absence: Absence,
-    /// "Use this every time" is ticked.
-    pub every_time: bool,
+    /// The tick of "Use this every time" once the user or a choice on the screen set it. Until
+    /// then, the box follows the config ([`every_time`]).
+    pub tick: Option<bool>,
     /// How many choices failed in a row on this screen, so that a click that fails like the last
     /// one still changes what it shows.
     pub failed_tries: u32,
     /// The choice being carried out, which the screen waits for.
     pub busy: Option<DaemonChoice>,
+}
+
+impl NoDaemon {
+    /// Whether "Use this every time" is ticked, where the config names `configured`. Until the
+    /// user sets it, the box is ticked only at a first start: nothing runs and the config names no
+    /// daemon, so the choice is a setup, made once. A daemon the config names, "Ask" included,
+    /// stays unless the user ticks the box.
+    fn every_time(&self, configured: Option<&DaemonConfig>) -> bool {
+        self.tick
+            .unwrap_or(self.absence == Absence::NothingRuns && configured.is_none())
+    }
 }
 
 /// Which daemon a choice runs, and the daemon the config keeps from then on when it changes.
@@ -65,8 +77,7 @@ pub struct ChoicePlan {
 pub const SERVICE_OFFERED: bool = cfg!(unix);
 
 /// Shows the screen: the app could not reach `tried`. `every_time` is the tick of the last choice
-/// on the screen, which it keeps. Before any choice, the tick is on when nothing runs: the choice
-/// is then a setup, made once.
+/// on the screen, which it keeps. Before any choice, the box follows the config ([`every_time`]).
 pub fn show(
     state: &mut AppState,
     tried: &DaemonLabel,
@@ -88,7 +99,7 @@ pub fn show(
         subject: tried.subject(),
         error,
         absence,
-        every_time: every_time.unwrap_or(absence == Absence::NothingRuns),
+        tick: every_time,
         failed_tries,
         busy: None,
     });
@@ -121,11 +132,22 @@ pub fn absence(place: DaemonPlace, error: &SessionError) -> Absence {
     }
 }
 
+/// Whether the screen's "Use this every time" is ticked. Nothing is ticked while no screen shows.
+pub fn every_time(state: &AppState) -> bool {
+    match &state.machines.this.connection {
+        ConnectionState::NoDaemon(screen) => screen.every_time(state.machines.configured.as_ref()),
+        ConnectionState::Connecting { .. }
+        | ConnectionState::Connected
+        | ConnectionState::Disconnected { .. } => false,
+    }
+}
+
 pub fn toggle_every_time(state: &mut AppState) {
+    let configured = state.machines.configured.as_ref();
     if let ConnectionState::NoDaemon(screen) = &mut state.machines.this.connection
         && screen.busy.is_none()
     {
-        screen.every_time = !screen.every_time;
+        screen.tick = Some(!screen.every_time(configured));
     }
 }
 
@@ -133,22 +155,24 @@ pub fn toggle_every_time(state: &mut AppState) {
 /// is under way.
 pub fn choose(state: &mut AppState, choice: DaemonChoice) -> Option<Chosen> {
     let service_offered = state.machines.service_offered;
+    let configured = state.machines.configured.as_ref();
     let ConnectionState::NoDaemon(screen) = &mut state.machines.this.connection else {
         return None;
     };
     if screen.busy.is_some() || (choice == DaemonChoice::Service && !service_offered) {
         return None;
     }
+    let every_time = screen.every_time(configured);
+    // The box shows the tick of the choice under way, even when the config changes meanwhile.
+    screen.tick = Some(every_time);
     screen.busy = Some(choice);
-    Some(Chosen {
-        choice,
-        every_time: screen.every_time,
-    })
+    Some(Chosen { choice, every_time })
 }
 
 /// The daemon a choice runs, after the app tried `tried`. Without "Use this every time" the config
-/// stays, so the next start tries its daemon again.
-pub fn plan(chosen: Chosen, tried: &DaemonConfig, configured: &DaemonConfig) -> ChoicePlan {
+/// stays, so the next start tries its daemon again. With it, the config takes the choice unless it
+/// names that daemon already.
+pub fn plan(chosen: Chosen, tried: &DaemonConfig, configured: Option<&DaemonConfig>) -> ChoicePlan {
     let run = match chosen.choice {
         DaemonChoice::Retry => tried.clone(),
         DaemonChoice::InApp => DaemonConfig::InApp,
@@ -157,13 +181,14 @@ pub fn plan(chosen: Chosen, tried: &DaemonConfig, configured: &DaemonConfig) -> 
             start_service: true,
         },
     };
-    let save = (chosen.every_time && run != *configured).then(|| run.clone());
+    let save = (chosen.every_time && configured != Some(&run)).then(|| run.clone());
     ChoicePlan { run, save }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
     use crate::daemon_label::DaemonLabel;
 
     fn screen() -> AppState {
@@ -230,7 +255,7 @@ mod tests {
             }
         );
         assert_eq!(
-            plan(chosen, &ssh(), &ssh()),
+            plan(chosen, &ssh(), Some(&ssh())),
             ChoicePlan {
                 run: DaemonConfig::InApp,
                 save: None
@@ -250,7 +275,7 @@ mod tests {
         };
 
         assert_eq!(
-            plan(in_app, &ssh(), &ssh()),
+            plan(in_app, &ssh(), Some(&ssh())),
             ChoicePlan {
                 run: DaemonConfig::InApp,
                 save: Some(DaemonConfig::InApp)
@@ -261,7 +286,7 @@ mod tests {
             start_service: true,
         };
         assert_eq!(
-            plan(service, &ssh(), &ssh()),
+            plan(service, &ssh(), Some(&ssh())),
             ChoicePlan {
                 run: started.clone(),
                 save: Some(started)
@@ -285,7 +310,7 @@ mod tests {
         };
 
         assert_eq!(
-            plan(every_time, &ssh(), &ssh()),
+            plan(every_time, &ssh(), Some(&ssh())),
             ChoicePlan {
                 run: ssh(),
                 save: None
@@ -293,14 +318,14 @@ mod tests {
             "the config's daemon is the default already"
         );
         assert_eq!(
-            plan(retry, &service, &ssh()),
+            plan(retry, &service, Some(&ssh())),
             ChoicePlan {
                 run: service.clone(),
                 save: None
             }
         );
         assert_eq!(
-            plan(every_time, &service, &ssh()),
+            plan(every_time, &service, Some(&ssh())),
             ChoicePlan {
                 run: service.clone(),
                 save: Some(service)
@@ -316,7 +341,7 @@ mod tests {
 
         assert_eq!(choose(&mut state, DaemonChoice::InApp), None);
         toggle_every_time(&mut state);
-        assert!(shown(&state).every_time, "the tick waits with the choice");
+        assert!(every_time(&state), "the tick waits with the choice");
 
         // The daemon answered the choice, then its first connection failed.
         state.machines.this.connection = ConnectionState::Connecting { attempt: 1 };
@@ -330,7 +355,7 @@ mod tests {
 
         let screen = shown(&state);
         assert_eq!(screen.busy, None);
-        assert!(screen.every_time);
+        assert!(every_time(&state));
         assert_eq!(screen.tried, "the daemon in this app");
     }
 
@@ -369,22 +394,66 @@ mod tests {
     }
 
     #[test]
-    fn the_tick_starts_on_when_nothing_runs_and_then_keeps_the_users() {
+    fn the_tick_starts_on_at_a_first_start_and_then_keeps_the_users() {
         let mut state = AppState::new(DaemonLabel::socket());
-        let tick = |state: &mut AppState, absence, every_time| {
-            show(
-                state,
-                &DaemonLabel::socket(),
-                String::new(),
-                absence,
-                every_time,
-            );
-            shown(state).every_time
+        let tick = |state: &mut AppState, absence, kept| {
+            show(state, &DaemonLabel::socket(), String::new(), absence, kept);
+            every_time(state)
         };
 
         assert!(tick(&mut state, Absence::NothingRuns, None));
         assert!(!tick(&mut state, Absence::Failed, None));
         assert!(!tick(&mut state, Absence::NothingRuns, Some(false)));
+    }
+
+    #[test]
+    fn the_box_starts_ticked_only_when_the_config_names_no_daemon() {
+        let ticked = |config: &str, absence| {
+            let mut state = AppState::new(DaemonLabel::socket());
+            state.machines.configured = config.parse::<Config>().unwrap().daemon;
+            show(
+                &mut state,
+                &DaemonLabel::socket(),
+                String::new(),
+                absence,
+                None,
+            );
+            choose(&mut state, DaemonChoice::InApp).map(|chosen| chosen.every_time)
+        };
+
+        assert_eq!(ticked("", Absence::NothingRuns), Some(true));
+        assert_eq!(
+            ticked("[notifications]\nenabled = false\n", Absence::NothingRuns),
+            Some(true)
+        );
+        assert_eq!(
+            ticked("[daemon]\ntransport = \"local\"\n", Absence::NothingRuns),
+            Some(false),
+            "a config that asks keeps asking"
+        );
+        assert_eq!(
+            ticked("[daemon]\ntransport = \"in_app\"\n", Absence::NothingRuns),
+            Some(false)
+        );
+        assert_eq!(ticked("", Absence::Failed), Some(false));
+    }
+
+    #[test]
+    fn a_choice_under_way_keeps_its_tick_when_the_config_takes_another() {
+        let mut state = AppState::new(DaemonLabel::socket());
+        show(
+            &mut state,
+            &DaemonLabel::socket(),
+            String::new(),
+            Absence::NothingRuns,
+            None,
+        );
+
+        let chosen = choose(&mut state, DaemonChoice::InApp);
+        state.machines.configured = Some(DaemonConfig::default());
+
+        assert_eq!(chosen.map(|chosen| chosen.every_time), Some(true));
+        assert!(every_time(&state));
     }
 
     #[test]
