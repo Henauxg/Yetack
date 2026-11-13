@@ -151,8 +151,8 @@ mod tests {
     use std::path::PathBuf;
 
     use cockpit_protocol::{
-        AgentStatus, ClaudeSessionId, EventRecord, Frame, ItemBody, Mark, Position, ServerMessage,
-        Settings, TaskListItem, TaskStatus, Timestamp,
+        AgentStatus, ClaudeSessionId, EventRecord, Frame, ItemBody, Mark, NoticeKind, Position,
+        ServerMessage, Settings, TaskListItem, TaskStatus, Timestamp,
     };
 
     use crate::store::{PastFile, ResumeAs};
@@ -186,6 +186,7 @@ mod tests {
             body: ItemBody::Notice {
                 text: text.to_owned(),
                 detail: None,
+                kind: NoticeKind::Plain,
             },
         }
     }

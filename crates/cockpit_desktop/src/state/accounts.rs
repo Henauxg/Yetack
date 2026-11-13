@@ -10,9 +10,9 @@ use cockpit_daemon::CLAUDE_HOME_FOLDER;
 use cockpit_protocol::{
     Account, AccountAddParams, AccountChangeParams, AccountId, AccountParams, AccountState,
     AgentId, AgentStatus, AgentSummary, ClaudeRoute, CredentialSource, EnvironmentCredentials,
-    FOLDER_SEPARATOR, ItemBody, ItemId, PlanUsage, Prompt, PromptDelivery, PromptParams, Request,
-    ResponseBody, SignIn, SignInWait, TranscriptItem, TurnOutcome, UsageWindow, UserMessage,
-    account_folder_name,
+    FOLDER_SEPARATOR, ItemBody, ItemId, NoticeKind, PlanUsage, Prompt, PromptDelivery,
+    PromptParams, Request, ResponseBody, SignIn, SignInWait, TranscriptItem, TurnOutcome,
+    UsageWindow, UserMessage, account_folder_name,
 };
 
 use super::app_state::{AgentEntry, AppState, MachineState};
@@ -332,7 +332,15 @@ pub fn sign_in_turn(entry: &AgentEntry) -> Option<SignInTurn> {
     let before = items.get(..end).unwrap_or_default();
     let notice = before
         .last()
-        .filter(|item| matches!(item.body, ItemBody::Notice { .. }))
+        .filter(|item| {
+            matches!(
+                item.body,
+                ItemBody::Notice {
+                    kind: NoticeKind::Plain,
+                    ..
+                }
+            )
+        })
         .map(|item| item.id);
     let message = before.iter().rev().find_map(|item| match &item.body {
         ItemBody::UserMessage(message) => Some(message.clone()),
@@ -875,8 +883,9 @@ mod tests {
 
     use cockpit_client::RequestError;
     use cockpit_protocol::{
-        ClaudeSessionId, CostUsd, Event, EventRecord, HistoryPage, Method, OlderItems, PastSession,
-        PermissionMode, RateLimitStatus, Seq, Timestamp, TokenUsage, TurnEnd, WindowUsage,
+        ClaudeSessionId, CostUsd, Event, EventRecord, HistoryPage, Method, NoticeKind, OlderItems,
+        PastSession, PermissionMode, RateLimitStatus, Seq, Timestamp, TokenUsage, TurnEnd,
+        WindowUsage,
     };
 
     use super::*;
@@ -1685,6 +1694,28 @@ mod tests {
     }
 
     #[test]
+    fn the_sign_in_card_keeps_a_message_from_another_session_in_view() {
+        let mut state = state_with(vec![in_folder(1, "/work/app", work())]);
+        let peer = ItemBody::Notice {
+            text: "The cart test passes now.".to_owned(),
+            detail: None,
+            kind: NoticeKind::Message,
+        };
+        let entry = state.agents.get_mut(&AgentId::new(1)).unwrap();
+        entry.transcript.merge_page(HistoryPage {
+            items: vec![
+                transcript_item(1, peer),
+                transcript_item(2, failed_turn(TurnOutcome::NotSignedIn)),
+            ],
+            older_items: OlderItems::None,
+        });
+
+        let card = sign_in_turn(state.agents.get(&AgentId::new(1)).unwrap());
+
+        assert_eq!(card.and_then(|turn| turn.notice), None);
+    }
+
+    #[test]
     fn a_turn_without_login_shows_its_card_until_a_message_goes_after_it() {
         let mut waiting = in_folder(1, "/work/app", work());
         waiting.sign_in_wait = SignInWait::Waiting;
@@ -1694,6 +1725,7 @@ mod tests {
         let notice = ItemBody::Notice {
             text: "The account Work is not signed in.".to_owned(),
             detail: None,
+            kind: NoticeKind::Plain,
         };
         let entry = state.agents.get_mut(&AgentId::new(1)).unwrap();
         entry.transcript.merge_page(HistoryPage {

@@ -83,6 +83,8 @@ pub enum OriginKind {
     Human,
     /// A background task ended: the text holds a `<task-notification>`.
     TaskNotification,
+    /// Another Claude session sent the message, such as a subagent's report.
+    Peer,
 }
 
 /// The text of the `user` line Claude Code writes when the user interrupts a turn. The line has

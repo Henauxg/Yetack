@@ -56,7 +56,34 @@ pub enum ItemBody {
         /// loads.
         #[serde(default)]
         detail: Option<String>,
+        /// What the notice reports, which sets how the app draws it. `Plain` when missing, so a
+        /// notice saved without it still loads.
+        #[serde(default, skip_serializing_if = "NoticeKind::is_plain")]
+        kind: NoticeKind,
     },
+}
+
+/// What a notice reports. The task kinds come from the status a task notification gives.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, VariantArray,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum NoticeKind {
+    /// Anything else, which the chat shows as a centered line.
+    #[default]
+    Plain,
+    /// A message another Claude session sent the agent, such as a subagent's report.
+    Message,
+    TaskDone,
+    TaskFailed,
+    TaskStopped,
+}
+
+impl NoticeKind {
+    #[must_use]
+    pub fn is_plain(&self) -> bool {
+        *self == Self::Plain
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

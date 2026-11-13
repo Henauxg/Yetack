@@ -548,8 +548,8 @@ mod tests {
 
     use cockpit_client::{ConnectError, SessionError};
     use cockpit_protocol::{
-        AgentDetails, CostUsd, Image, ImageMediaType, ItemId, PendingId, PlanUsage, Question,
-        ReleaseVersion, Seq, Settings, TaskProgress, TokenUsage, TranscriptItem, TurnEnd,
+        AgentDetails, CostUsd, Image, ImageMediaType, ItemId, NoticeKind, PendingId, PlanUsage,
+        Question, ReleaseVersion, Seq, Settings, TaskProgress, TokenUsage, TranscriptItem, TurnEnd,
         TurnOutcome,
     };
 
@@ -739,6 +739,7 @@ mod tests {
             body: ItemBody::Notice {
                 text: text.to_owned(),
                 detail: None,
+                kind: NoticeKind::Plain,
             },
         }
     }

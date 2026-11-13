@@ -1,6 +1,8 @@
 //! Pages of an agent's transcript, newest first, bounded by count and by bytes.
 
-use cockpit_protocol::{HistoryPage, ItemBody, ItemId, MAX_LINE_BYTES, OlderItems, TranscriptItem};
+use cockpit_protocol::{
+    HistoryPage, ItemBody, ItemId, MAX_LINE_BYTES, NoticeKind, OlderItems, TranscriptItem,
+};
 
 /// The most items one page holds, whatever the client asks.
 const MAX_PAGE_ITEMS: usize = 500;
@@ -84,6 +86,7 @@ fn placeholder(item: &TranscriptItem, bytes: usize) -> TranscriptItem {
         body: ItemBody::Notice {
             text: format!("This item is too large to show ({bytes} bytes)."),
             detail: None,
+            kind: NoticeKind::Plain,
         },
     }
 }
@@ -98,7 +101,11 @@ mod tests {
         TranscriptItem {
             id: ItemId::new(id),
             parent: None,
-            body: ItemBody::Notice { text, detail: None },
+            body: ItemBody::Notice {
+                text,
+                detail: None,
+                kind: NoticeKind::Plain,
+            },
         }
     }
 

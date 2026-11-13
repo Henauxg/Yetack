@@ -16,7 +16,7 @@ use claude_protocol::{
 use cockpit_protocol::{
     AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, Answer, AnswerState, Approval,
     BackgroundTask, BackgroundTaskId, BackgroundTaskStatus, ClaudeSessionId, ContextUsage, CostUsd,
-    Effort, EffortSource, Event, Image, ItemBody, ItemId, Mark, McpServer, PendingId,
+    Effort, EffortSource, Event, Image, ItemBody, ItemId, Mark, McpServer, NoticeKind, PendingId,
     PermissionMode, Plan, Position, Prompt, PromptId, Question, SignInWait, SlashCommand,
     SubagentRun, SubagentStatus, SubagentToolCall, Timestamp, TokenUsage, ToolCall, ToolCallStatus,
     TranscriptItem, TurnEnd, TurnOutcome, UserMessage, WaitingPrompt, WaitingState,
@@ -334,6 +334,7 @@ impl AgentView {
                         ItemBody::Notice {
                             text: output.to_owned(),
                             detail: None,
+                            kind: NoticeKind::Plain,
                         },
                     );
                 }
@@ -723,6 +724,7 @@ impl AgentView {
             ItemBody::Notice {
                 text: notice,
                 detail: None,
+                kind: NoticeKind::Plain,
             },
         );
         self.drop_waiting_prompts();
@@ -742,6 +744,7 @@ impl AgentView {
                 ItemBody::Notice {
                     text: UNREAD_PROMPT_NOTICE.to_owned(),
                     detail: Some(prompt.text),
+                    kind: NoticeKind::Plain,
                 },
             );
         }
@@ -749,7 +752,14 @@ impl AgentView {
 
     /// A line from the daemon in the transcript.
     pub(crate) fn add_notice(&mut self, text: String) {
-        self.push_item(None, ItemBody::Notice { text, detail: None });
+        self.push_item(
+            None,
+            ItemBody::Notice {
+                text,
+                detail: None,
+                kind: NoticeKind::Plain,
+            },
+        );
     }
 
     pub(crate) fn set_commands(&mut self, response: &InitializeResponse) {
@@ -858,6 +868,7 @@ impl AgentView {
                         ItemBody::Notice {
                             text: COMPACTED_NOTICE.to_owned(),
                             detail: None,
+                            kind: NoticeKind::Plain,
                         },
                     );
                     self.expected_context = Some(ExpectedContext::Summary);
@@ -898,6 +909,7 @@ impl AgentView {
             ItemBody::Notice {
                 text: text.to_owned(),
                 detail: None,
+                kind: NoticeKind::Plain,
             },
         );
     }
@@ -951,6 +963,7 @@ impl AgentView {
                         ItemBody::Notice {
                             text: REFUSED_NOTICE.to_owned(),
                             detail: Some(text.text),
+                            kind: NoticeKind::Plain,
                         },
                     );
                 }
@@ -960,6 +973,7 @@ impl AgentView {
                         ItemBody::Notice {
                             text: text.text,
                             detail: None,
+                            kind: NoticeKind::Plain,
                         },
                     );
                 }
@@ -1090,13 +1104,17 @@ impl AgentView {
         }
         if let Some(notices) = notices::notices(origin.as_ref(), &text) {
             // A message another source wrote whole, such as a subagent's report, unfolds to it.
-            let detail = (is_synthetic && notices.len() == 1).then(|| text.clone());
-            for notice in notices {
+            let detail = match notices.as_slice() {
+                [(_, NoticeKind::Message)] => notices::message_body(&text),
+                _ => (is_synthetic && notices.len() == 1).then(|| text.clone()),
+            };
+            for (notice, kind) in notices {
                 self.push_item(
                     parent,
                     ItemBody::Notice {
                         text: notice,
                         detail: detail.clone(),
+                        kind,
                     },
                 );
             }
@@ -1109,6 +1127,7 @@ impl AgentView {
                 let body = ItemBody::Notice {
                     text: context_title(expected),
                     detail: Some(text),
+                    kind: NoticeKind::Plain,
                 };
                 self.push_item(parent, body);
             }
@@ -1122,6 +1141,7 @@ impl AgentView {
                     ItemBody::Notice {
                         text: output.to_owned(),
                         detail: None,
+                        kind: NoticeKind::Plain,
                     },
                 );
             }
@@ -1138,6 +1158,7 @@ impl AgentView {
                 ItemBody::Notice {
                     text: PAST_STOP_NOTICE.to_owned(),
                     detail: None,
+                    kind: NoticeKind::Plain,
                 }
             } else {
                 user_message(text, images, line_time)
@@ -1163,7 +1184,14 @@ impl AgentView {
             self.push_item(parent, user_message(text, images, line_time.or(Some(now))));
         } else {
             // Claude Code's own lines.
-            self.push_item(None, ItemBody::Notice { text, detail: None });
+            self.push_item(
+                None,
+                ItemBody::Notice {
+                    text,
+                    detail: None,
+                    kind: NoticeKind::Plain,
+                },
+            );
         }
     }
 
@@ -1671,6 +1699,7 @@ impl AgentView {
                     ItemBody::Notice {
                         text: UNREAD_PROMPT_NOTICE.to_owned(),
                         detail: Some(prompt.text),
+                        kind: NoticeKind::Plain,
                     },
                 );
             }
@@ -2688,7 +2717,7 @@ mod tests {
             .items()
             .iter()
             .filter_map(|item| match &item.body {
-                ItemBody::Notice { text, detail } => Some((text.as_str(), detail.as_deref())),
+                ItemBody::Notice { text, detail, .. } => Some((text.as_str(), detail.as_deref())),
                 _ => None,
             })
             .collect();
@@ -3320,7 +3349,7 @@ mod tests {
             .items()
             .iter()
             .filter_map(|item| match &item.body {
-                ItemBody::Notice { text, detail } if text == UNREAD_PROMPT_NOTICE => {
+                ItemBody::Notice { text, detail, .. } if text == UNREAD_PROMPT_NOTICE => {
                     Some(detail.as_deref())
                 }
                 _ => None,
@@ -3359,7 +3388,7 @@ mod tests {
             .items()
             .iter()
             .filter_map(|item| match &item.body {
-                ItemBody::Notice { text, detail } if text == UNREAD_PROMPT_NOTICE => {
+                ItemBody::Notice { text, detail, .. } if text == UNREAD_PROMPT_NOTICE => {
                     Some(detail.as_deref())
                 }
                 _ => None,
@@ -3478,11 +3507,13 @@ mod tests {
             [
                 &ItemBody::Notice {
                     text: UNREAD_PROMPT_NOTICE.to_owned(),
-                    detail: Some("Sent one".to_owned())
+                    detail: Some("Sent one".to_owned()),
+                    kind: NoticeKind::Plain,
                 },
                 &ItemBody::Notice {
                     text: UNREAD_PROMPT_NOTICE.to_owned(),
-                    detail: Some("Queued one".to_owned())
+                    detail: Some("Queued one".to_owned()),
+                    kind: NoticeKind::Plain,
                 },
             ]
         );
@@ -3659,7 +3690,8 @@ mod tests {
             view.items()[1].body,
             ItemBody::Notice {
                 text: "claude exited with status 1".to_owned(),
-                detail: None
+                detail: None,
+                kind: NoticeKind::Plain,
             }
         );
     }
@@ -3707,7 +3739,8 @@ mod tests {
             restored.items()[3].body,
             ItemBody::Notice {
                 text: UNREAD_PROMPT_NOTICE.to_owned(),
-                detail: Some("Then this".to_owned())
+                detail: Some("Then this".to_owned()),
+                kind: NoticeKind::Plain,
             }
         );
         assert!(restored.details().waiting_prompts.is_empty());
@@ -3785,7 +3818,8 @@ mod tests {
             bodies(&view),
             [&ItemBody::Notice {
                 text: "Compacted".to_owned(),
-                detail: None
+                detail: None,
+                kind: NoticeKind::Plain,
             }]
         );
     }
@@ -3941,6 +3975,7 @@ mod tests {
         ItemBody::Notice {
             text: text.to_owned(),
             detail: detail.map(str::to_owned),
+            kind: NoticeKind::Plain,
         }
     }
 
@@ -4024,7 +4059,9 @@ mod tests {
     #[test]
     fn a_report_another_source_wrote_unfolds_to_it() {
         let mut view = view();
-        let mut report = synthetic("[Subagent hand-back] The report follows:\n  All tests pass.");
+        let mut report = synthetic(
+            "[Subagent hand-back] The report follows:\n  All tests pass.\n  Nothing is pushed.",
+        );
         report["origin"] = json!({"kind": "peer"});
         report["isReplay"] = json!(true);
 
@@ -4032,10 +4069,11 @@ mod tests {
 
         assert_eq!(
             bodies(&view),
-            [&notice(
-                "peer: [Subagent hand-back] The report follows:",
-                Some("[Subagent hand-back] The report follows:\n  All tests pass.")
-            )]
+            [&ItemBody::Notice {
+                text: "All tests pass.".to_owned(),
+                detail: Some("All tests pass.\nNothing is pushed.".to_owned()),
+                kind: NoticeKind::Message,
+            }]
         );
     }
 
@@ -4052,7 +4090,8 @@ mod tests {
             view.items()[0].body,
             ItemBody::Notice {
                 text: COMPACTED_NOTICE.to_owned(),
-                detail: None
+                detail: None,
+                kind: NoticeKind::Plain,
             }
         );
     }
@@ -4082,7 +4121,8 @@ mod tests {
             [
                 &ItemBody::Notice {
                     text: summary.to_owned(),
-                    detail: None
+                    detail: None,
+                    kind: NoticeKind::TaskStopped,
                 },
                 &user_message("Typed in another app".to_owned(), Vec::new(), Some(now())),
             ]
@@ -4108,7 +4148,8 @@ mod tests {
             bodies(&view),
             [&ItemBody::Notice {
                 text: "Set effort level to low".to_owned(),
-                detail: None
+                detail: None,
+                kind: NoticeKind::Plain,
             }]
         );
         assert_eq!(view.summary().turns, 0);

@@ -145,6 +145,7 @@ fn is_instructions_of(next: &TranscriptItem, item: &TranscriptItem, call: &ToolC
     let ItemBody::Notice {
         text,
         detail: Some(_),
+        ..
     } = &next.body
     else {
         return false;
@@ -335,7 +336,7 @@ impl ExploredSummary {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::ToolCallStatus;
+    use cockpit_protocol::{NoticeKind, ToolCallStatus};
     use serde_json::json;
 
     use super::*;
@@ -385,6 +386,7 @@ mod tests {
             body: ItemBody::Notice {
                 text: text.to_owned(),
                 detail: Some("Check that the code works.".to_owned()),
+                kind: NoticeKind::Plain,
             },
         }
     }

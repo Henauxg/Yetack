@@ -5,8 +5,8 @@
 use std::collections::BTreeSet;
 
 use cockpit_protocol::{
-    AnswerState, Approval, ApprovalDecision, ItemBody, ItemId, Plan, PlanDecision, Question,
-    ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome,
+    AnswerState, Approval, ApprovalDecision, ItemBody, ItemId, NoticeKind, Plan, PlanDecision,
+    Question, ToolCall, ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome,
 };
 
 use super::app_state::AgentEntry;
@@ -117,6 +117,11 @@ pub fn conversation_markdown(entry: &AgentEntry) -> String {
                     say(&mut parts, Speaker::Claude, Part::ListLine(line));
                 }
             }
+            ItemBody::Notice {
+                text,
+                kind: NoticeKind::Message,
+                ..
+            } => parts.push(notice(&format!("Message from another session: {text}"))),
             ItemBody::Notice { text, .. } => parts.push(notice(text)),
             ItemBody::Thinking { .. } => {}
         }
@@ -387,6 +392,7 @@ mod tests {
                     ItemBody::Notice {
                         text: "Conversation compacted".to_owned(),
                         detail: None,
+                        kind: NoticeKind::Plain,
                     },
                 ),
                 (None, user("Thanks", 0)),
@@ -425,6 +431,26 @@ Thanks
 "
         );
         assert!(is_complete(&entry));
+    }
+
+    #[test]
+    fn an_export_says_a_message_came_from_another_session() {
+        let entry = entry_with(
+            vec![(
+                None,
+                ItemBody::Notice {
+                    text: "The cart test passes now.".to_owned(),
+                    detail: Some("The cart test passes now.\n\nNothing is pushed.".to_owned()),
+                    kind: NoticeKind::Message,
+                },
+            )],
+            OlderItems::None,
+        );
+
+        assert_eq!(
+            conversation_markdown(&entry),
+            "# Agent 1\n\n_Message from another session: The cart test passes now._\n"
+        );
     }
 
     #[test]
@@ -483,6 +509,7 @@ Thanks
                     ItemBody::Notice {
                         text: "Context usage\n\n# System prompt: 3k\n```json".to_owned(),
                         detail: None,
+                        kind: NoticeKind::Plain,
                     },
                 ),
                 (
