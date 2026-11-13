@@ -28,10 +28,16 @@ Done:
 - Updating Local checks its agents as the script does on a server. While Local's daemon refuses the app, "Update Local" always asks first, since the app cannot list the agents: "Update now" or "Cancel". While the app is connected, it reads the resting agents' raw logs first, and an agent that may hold a scheduled job (more `CronCreate` than `CronDelete` calls since the daemon started) counts as busy: the confirmation lists it with "may hold a scheduled job". "Update when they are idle" waits only for the agents that run something, since a job may never end; the restart reads the logs again, and refuses with "Update now" on its screen while a job may be held. The demo shows these with `--demo-update local-confirm-jobs`, `local-holds-jobs` and `local-confirm-unseen`.
 - Local's update no longer stays on "Updating…" when another program restarts the old daemon during the stop, such as a systemd unit with `Restart=always`: the app counts its connections, and judges a connection made since the stop once the restart ends.
 - The script's stop signals no process that got the daemon's pid since the script found it: it compares the start time from `/proc/<pid>/stat` right before `kill`.
+- Fixes from `/review fix` on these changes. A second click on "Update Local" during the read of the logs does nothing, and the button says "Checking jobs…". The restart refuses when an agent started a turn during its read. A clock that was ahead when the daemon started no longer hides a scheduled job.
+
+Known gaps in the update's stop, left as they are:
+
+- The app's stop of Local's daemon (`stop_lock_holder`) waits until nobody holds `serve.lock`. Another program, such as a systemd unit with `RestartSec=0`, can start the old daemon again between two of its checks, 100 ms apart. The lock then never looks free, and after 10 seconds the update fails with "did not stop", naming the daemon that did stop. A check that the holder changed (another pid or start time) would end the stop instead.
+- The script's `stop_daemon` finds the daemon as the first process in `/proc` that holds `serve.lock`, in the order of the folder names (`1000` comes before `999`). While the daemon starts an agent, its child holds the lock too, for the moment between fork and exec. The script can pick that child and send it SIGTERM first: the daemon then gets its own signal one second later.
 
 Left, in order:
 
-1. `/review fix`, then `/review-standard fix`.
+1. `/review-standard fix` (`/review fix` is done).
 2. Ask the user before merging into `main`.
 
 To check Unix code without CI, cross-build the daemon crates for `x86_64-unknown-linux-musl`, with `rust-lld` as the linker, and run their test binaries in WSL. The tests embed Windows paths through `env!`, so give them absolute paths for the run, and don't commit that change. The `update_daemon` tests fail in about 4 of 10 full runs there, on `main` too: rerun a failing test alone.
