@@ -2732,3 +2732,22 @@ fn a_refusal_without_the_daemons_build_reads_as_one_that_names_none() {
         }
     );
 }
+
+#[test]
+fn a_refusal_that_names_the_daemons_build_on_the_wire() {
+    let message = ServerMessage::Refused {
+        reason: "the daemon speaks protocol 9, the client 10".to_owned(),
+        daemon_version: Some(ReleaseVersion::new("0.1.0".to_owned())),
+        daemon_commit: Some(commit()),
+    };
+
+    assert_wire(
+        &message,
+        json!({
+            "type": "refused",
+            "reason": "the daemon speaks protocol 9, the client 10",
+            "daemon_version": "0.1.0",
+            "daemon_commit": "3f9c2e1a7b4d5c6e8f9a0b1c2d3e4f5a6b7c8d9e",
+        }),
+    );
+}
