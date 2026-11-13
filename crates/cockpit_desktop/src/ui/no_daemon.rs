@@ -4,18 +4,16 @@ use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
 use crate::machine::MachineId;
-use crate::state::ConnectionState;
-use crate::state::no_daemon::{
-    self, Absence, DaemonChoice, NoDaemon, SERVICE_OFFERED, SOCKET_REACHABLE,
-};
+use crate::state::no_daemon::{self, Absence, DaemonChoice, NoDaemon};
+use crate::state::{ConnectionState, settings};
 use crate::ui::daemon_update::DaemonUpdateScreens;
 
-/// What the screen says when nothing runs on this machine.
-const NOTHING_RUNS_LEAD: &str = if SOCKET_REACHABLE {
-    "No daemon runs on this machine yet. Pick one way to run your agents."
-} else {
-    "On Windows, agents run inside this app. To use a server instead, add it in Machines."
-};
+/// What the screen says when nothing runs on this machine, where the background service runs.
+const NOTHING_RUNS_LEAD: &str =
+    "No daemon runs on this machine yet. Pick one way to run your agents.";
+/// What the screen says when nothing runs on this machine, on Windows.
+const NOTHING_RUNS_LEAD_IN_APP: &str =
+    "On Windows, agents run inside this app. To use a server instead, add it in Machines.";
 
 pub(super) const IN_APP_DETAIL: &str =
     "The agents stop when the app closes, and come back the next time the app runs them.";
@@ -44,11 +42,20 @@ pub fn NoDaemonCard() -> Element {
             DaemonUpdateScreens { machine: MachineId::THIS }
         };
     }
-    let screen = match &cockpit.state.read().machines.this.connection {
-        ConnectionState::NoDaemon(screen) => screen.clone(),
-        ConnectionState::Connecting { .. }
-        | ConnectionState::Connected
-        | ConnectionState::Disconnected { .. } => return rsx! {},
+    let (screen, service_offered) = {
+        let state = cockpit.state.read();
+        let screen = match &state.machines.this.connection {
+            ConnectionState::NoDaemon(screen) => screen.clone(),
+            ConnectionState::Connecting { .. }
+            | ConnectionState::Connected
+            | ConnectionState::Disconnected { .. } => return rsx! {},
+        };
+        (screen, state.machines.service_offered)
+    };
+    let nothing_runs_lead = if service_offered {
+        NOTHING_RUNS_LEAD
+    } else {
+        NOTHING_RUNS_LEAD_IN_APP
     };
     let NoDaemon {
         tried,
@@ -72,7 +79,7 @@ pub fn NoDaemonCard() -> Element {
     let body = match absence {
         Absence::NothingRuns => rsx! {
             h1 { id: "no-daemon-title", "Where should agents run?" }
-            p { class: "no-daemon-lead", "{NOTHING_RUNS_LEAD}" }
+            p { class: "no-daemon-lead", "{nothing_runs_lead}" }
             div { class: "no-daemon-choices",
                 Choice {
                     choice: DaemonChoice::InApp,
@@ -82,7 +89,7 @@ pub fn NoDaemonCard() -> Element {
                     busy_title: "Starting…",
                     detail: "{IN_APP_DETAIL}",
                 }
-                if SERVICE_OFFERED {
+                if service_offered {
                     Choice {
                         choice: DaemonChoice::Service,
                         primary: DaemonChoice::InApp,
@@ -97,7 +104,7 @@ pub fn NoDaemonCard() -> Element {
             {failure_line}
             div { class: "no-daemon-footer",
                 Details { error, open: failed_tries > 0 }
-                if SOCKET_REACHABLE {
+                if service_offered {
                     button {
                         class: "no-daemon-link",
                         disabled: waiting,
@@ -129,7 +136,7 @@ pub fn NoDaemonCard() -> Element {
                     busy_title: "Starting…",
                     detail: "{IN_APP_DETAIL}",
                 }
-                if SERVICE_OFFERED {
+                if service_offered {
                     Choice {
                         choice: DaemonChoice::Service,
                         primary: DaemonChoice::Retry,
@@ -161,10 +168,12 @@ pub fn NoDaemonCard() -> Element {
     }
 }
 
-/// "Use this every time", for a choice about this computer's daemon.
+/// "Use this every time", for a choice about this computer's daemon, and where to change it
+/// later where the Settings dialog offers a choice.
 #[component]
 pub(super) fn EveryTimeTick(every_time: bool, waiting: bool) -> Element {
     let cockpit: Cockpit = use_context();
+    let change_later = settings::change_later(&cockpit.state.read());
     rsx! {
         label { class: if waiting { "no-daemon-every-time disabled" } else { "no-daemon-every-time" },
             input {
@@ -174,6 +183,9 @@ pub(super) fn EveryTimeTick(every_time: bool, waiting: bool) -> Element {
                 onchange: move |_| cockpit.update(no_daemon::toggle_every_time),
             }
             span { "Use this every time" }
+        }
+        if let Some(hint) = change_later {
+            p { class: "no-daemon-hint", "{hint}" }
         }
     }
 }

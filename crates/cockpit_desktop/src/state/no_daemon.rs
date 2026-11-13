@@ -61,11 +61,8 @@ pub struct ChoicePlan {
     pub save: Option<DaemonConfig>,
 }
 
-/// Whether this platform can start the background service.
+/// Whether this platform can start the background service, and reach a daemon's socket.
 pub const SERVICE_OFFERED: bool = cfg!(unix);
-
-/// Whether this platform reaches a daemon's socket, so that looking for one again can help.
-pub const SOCKET_REACHABLE: bool = cfg!(unix);
 
 /// Shows the screen: the app could not reach `tried`. `every_time` is the tick of the last choice
 /// on the screen, which it keeps. Before any choice, the tick is on when nothing runs: the choice
@@ -135,10 +132,11 @@ pub fn toggle_every_time(state: &mut AppState) {
 /// A click on one of the screen's buttons. Returns the choice to carry out, unless another one
 /// is under way.
 pub fn choose(state: &mut AppState, choice: DaemonChoice) -> Option<Chosen> {
+    let service_offered = state.machines.service_offered;
     let ConnectionState::NoDaemon(screen) = &mut state.machines.this.connection else {
         return None;
     };
-    if screen.busy.is_some() || (choice == DaemonChoice::Service && !SERVICE_OFFERED) {
+    if screen.busy.is_some() || (choice == DaemonChoice::Service && !service_offered) {
         return None;
     }
     screen.busy = Some(choice);
@@ -387,6 +385,22 @@ mod tests {
         assert!(tick(&mut state, Absence::NothingRuns, None));
         assert!(!tick(&mut state, Absence::Failed, None));
         assert!(!tick(&mut state, Absence::NothingRuns, Some(false)));
+    }
+
+    #[test]
+    fn the_service_is_chosen_only_where_it_runs() {
+        let mut state = screen();
+        state.machines.service_offered = false;
+
+        let refused = choose(&mut state, DaemonChoice::Service);
+        state.machines.service_offered = true;
+        let chosen = choose(&mut state, DaemonChoice::Service);
+
+        assert_eq!(refused, None);
+        assert_eq!(
+            chosen.map(|chosen| chosen.choice),
+            Some(DaemonChoice::Service)
+        );
     }
 
     #[test]

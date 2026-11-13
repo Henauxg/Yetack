@@ -164,6 +164,8 @@ pub struct SettingsView {
     pub adding_rule: Option<RuleKind>,
     /// The project the tab just created, whose name field takes the focus.
     pub created: Option<ProjectId>,
+    /// Why the config did not take the last choice of where Local's agents run.
+    pub start_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

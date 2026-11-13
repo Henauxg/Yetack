@@ -6017,6 +6017,29 @@ html.reordering * {
   flex: none;
 }
 
+/* A setting and the line under it. The dialog's gap stays above the pair, so only the line's
+   own height moves the rows under it. */
+.setting-block {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Folds open and shut by its height, as a refused shortcut does. */
+.setting-refused {
+  display: grid;
+  grid-template-rows: 1fr;
+  animation: refused-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.presence.leaving > .setting-refused {
+  animation: refused-out var(--motion-out) var(--ease-in) forwards;
+}
+
+.setting-refused .refused-text {
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+}
+
 /* The Keyboard tab: every shortcut, by group. A command's keys are a button that records new
    ones; a fixed shortcut shows its keys with a lock. */
 .keyboard-tab {

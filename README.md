@@ -67,7 +67,7 @@ Start the app. At the first start, the app asks "Where should agents run?":
 - **Run agents in this app**: the agents stop when the app closes, and come back at the next start. On Windows, this choice is the only one.
 - **Start the background service here** (Linux): the agents keep running after the app closes.
 
-The box "Use this every time" is ticked, so the app keeps your choice. To get the question again at the next start, untick the box.
+The box "Use this every time" is ticked, so the app keeps your choice. To get the question again at the next start, untick the box. On Linux, you can change the choice later in Settings (the gear at the foot of the sidebar), under Local: "In this app", "Background service", or "Ask", which asks again at a start where no service answers.
 
 ### On a server over SSH
 
