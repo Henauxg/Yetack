@@ -32,16 +32,18 @@ Download the files from the [releases page](https://github.com/Henauxg/agents-co
 
 The `.deb` installs the app (`agents-cockpit-desktop`) and the daemon with its command line (`agents-cockpit`).
 
+Nobody has run the app on macOS yet.
+
 Each machine that runs agents also needs Claude Code. Install [Claude Code](https://claude.com/claude-code), then run `claude` once and sign in.
 
 ### With Nix
 
-The repository is a Nix flake. Nix builds the app from the release's source on your computer, which takes a few minutes. Nix fetches the source with your SSH key, as `git clone` does. The app, its menu entry and its icon then come with your Nix setup.
+The repository is a Nix flake. Nix builds the app from the release's source on your computer, which takes a few minutes. The app, its menu entry and its icon then come with your Nix setup.
 
 To try the app, add it to your user profile. If your Nix does not know `nix profile add`, write `install` in place of `add`.
 
 ```sh
-nix profile add 'git+ssh://git@github.com/Henauxg/agents-cockpit?ref=refs/tags/v<version>'
+nix profile add 'github:Henauxg/agents-cockpit/v<version>'
 ```
 
 The profile keeps the version you added. For a new release, remove the app with `nix profile remove agents-cockpit`, then add the new version.
@@ -50,7 +52,7 @@ To install the app with the rest of your NixOS configuration, add the flake as a
 
 ```nix
 # In your system's flake.nix
-inputs.agents-cockpit.url = "git+ssh://git@github.com/Henauxg/agents-cockpit?ref=refs/tags/v<version>";
+inputs.agents-cockpit.url = "github:Henauxg/agents-cockpit/v<version>";
 
 # In your NixOS configuration
 environment.systemPackages = [ inputs.agents-cockpit.packages.${pkgs.system}.default ];
