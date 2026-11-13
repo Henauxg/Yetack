@@ -82,17 +82,25 @@ enum Command {
 #[derive(Debug, Default)]
 struct Ledger {
     shown: BTreeMap<AgentId, AlertKind>,
+    /// `UiState::focus_returns` at the last update.
+    focus_returns: u64,
 }
 
 impl Ledger {
     /// Each alert replaces its agent's notification. A "needs you" notification closes once its
-    /// agent no longer needs you; a "finished" one goes away on the service's timeout. Any
-    /// notification closes once its agent is gone, or once the levels no longer let it through.
-    /// An alert the levels hold back is dropped. While the window has the focus, you are in the
-    /// app: every alert is dropped, and every notification closes.
+    /// agent no longer needs you; a "finished" one stays until a close. Any notification closes
+    /// once its agent is gone, or once the levels no longer let it through. An alert the levels
+    /// hold back is dropped. While the window has the focus, you are in the app: every alert is
+    /// dropped. The window getting the focus back closes every notification.
     fn update(&mut self, alerts: Vec<Alert>, state: &AppState) -> Vec<Command> {
         let focused = state.ui.window_focused;
+        let came_back = self.focus_returns != state.ui.focus_returns;
+        self.focus_returns = state.ui.focus_returns;
         let mut commands = Vec::new();
+        if focused || came_back {
+            let shown = std::mem::take(&mut self.shown);
+            commands.extend(shown.into_keys().map(Command::Close));
+        }
         for alert in alerts {
             if !focused && notification_levels::shows(state, alert.agent, alert.kind) {
                 self.shown.insert(alert.agent, alert.kind);
@@ -105,7 +113,6 @@ impl Ledger {
             .filter(|&(&agent, &kind)| {
                 let status = state.agents.get(&agent).map(|entry| entry.summary.status);
                 match (kind, status) {
-                    _ if focused => true,
                     (_, None) => true,
                     _ if !notification_levels::shows(state, agent, kind) => true,
                     (AlertKind::NeedsYou, Some(status)) => status != AgentStatus::NeedsYou,
@@ -122,12 +129,13 @@ impl Ledger {
     }
 }
 
-/// Shows the alert, and sends its agent to `opened` when the user clicks it. Waits until the
-/// notification goes away, or until `close` fires or is dropped, and then closes it.
+/// Shows the alert, and sends its agent to `opened` when the user clicks it. Waits until `close`
+/// fires or is dropped, and then closes the notification. A service that expires a notification
+/// may keep it in its list, which only that close takes it out of.
 #[cfg(unix)]
 async fn present(
     alert: Alert,
-    close: oneshot::Receiver<()>,
+    mut close: oneshot::Receiver<()>,
     opened: mpsc::UnboundedSender<AgentId>,
 ) {
     let shown = Notification::new()
@@ -154,9 +162,13 @@ async fn present(
         }
     });
     tokio::select! {
-        () = clicked => {}
-        _ = close => handle.close_async().await,
+        () = clicked => {
+            // Fires or fails: either way the notification closes.
+            let _ = (&mut close).await;
+        }
+        _ = &mut close => {}
     }
+    handle.close_async().await;
 }
 
 /// Shows the alert as a toast, and sends its agent to `opened` when the user clicks it while it
@@ -211,7 +223,7 @@ mod tests {
     use crate::prefs::NotificationLevel;
     use cockpit_protocol::AgentSummary;
 
-    use crate::state::{state_with, summary};
+    use crate::state::{file_reread, state_with, summary};
 
     /// A state whose window is behind another, where alerts show.
     fn away(summaries: Vec<AgentSummary>) -> AppState {
@@ -340,6 +352,20 @@ mod tests {
             ]
         );
         assert!(again.is_empty());
+    }
+
+    #[test]
+    fn a_return_to_the_window_closes_the_notifications_even_after_leaving_again() {
+        let mut state = away(vec![summary(1, AgentStatus::NeedsYou)]);
+        let mut ledger = Ledger::default();
+        ledger.update(vec![alert(1, AlertKind::NeedsYou)], &state);
+
+        // Both reach the state before the notifier hears of the return.
+        file_reread::window_focused(&mut state, true);
+        file_reread::window_focused(&mut state, false);
+        let heard = ledger.update(Vec::new(), &state);
+
+        assert_eq!(heard, [Command::Close(AgentId::new(1))]);
     }
 
     #[test]

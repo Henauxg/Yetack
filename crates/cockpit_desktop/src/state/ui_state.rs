@@ -535,6 +535,9 @@ pub struct UiState {
     /// arrived yet.
     pub picked_projects: BTreeMap<AgentId, ProjectKey>,
     pub window_focused: bool,
+    /// How many times the window got the focus back. A notifier that sees it grow closes its
+    /// notifications, even when the window lost the focus again before it heard.
+    pub focus_returns: u64,
     /// The floating blocks shown unfolded.
     pub open_blocks: BTreeSet<Block>,
     /// The block shown as a popover from its badge, while the file view is open.
@@ -583,6 +586,7 @@ impl Default for UiState {
             project_rename: None,
             picked_projects: BTreeMap::new(),
             window_focused: true,
+            focus_returns: 0,
             open_blocks: BTreeSet::from([Block::Tasks, Block::Messages, Block::Running]),
             badge: None,
             finished_tasks_unfolded: BTreeSet::new(),
