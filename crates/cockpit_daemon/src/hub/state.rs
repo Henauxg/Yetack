@@ -567,6 +567,38 @@ mod tests {
         assert!(replayed_details(&mut restarted, 3).is_empty());
     }
 
+    #[test]
+    fn a_quiet_stretch_publishes_one_summary_however_many_checks_see_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join("state");
+        let agent = state_with_agent(&folder);
+        let mut hub = Hub::for_tests(&folder);
+        let prompt = Prompt {
+            text: "Fix the cart total".to_owned(),
+            images: Vec::new(),
+        };
+        let started = Timestamp::from_unix_millis(1_000);
+        hub.agents
+            .get_mut(&agent)
+            .unwrap()
+            .view
+            .add_prompt(&prompt, started);
+        hub.publish(agent);
+
+        hub.check_quiet();
+        hub.check_quiet();
+
+        let mut quiet = Vec::new();
+        for_each_event(&hub.logs.path(LogName::Agent(agent)), |record| {
+            if let Event::AgentUpdated(summary) = record.event {
+                quiet.push(summary.quiet_since);
+            }
+        })
+        .unwrap();
+        assert_eq!(quiet.last(), Some(&Some(started)));
+        assert_eq!(quiet.iter().filter(|since| since.is_some()).count(), 1);
+    }
+
     #[tokio::test]
     async fn a_held_details_change_goes_out_when_it_is_due() {
         let temp = tempfile::tempdir().unwrap();
