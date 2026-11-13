@@ -35,7 +35,7 @@ install -Dm644 contrib/agents-cockpit-desktop.desktop ~/.local/share/application
 install -Dm644 crates/cockpit_desktop/assets/agents-cockpit.svg ~/.local/share/icons/hicolor/scalable/apps/agents-cockpit.svg
 ```
 
-With Nix, `nix profile install 'git+ssh://git@github.com/Henauxg/agents-cockpit'` does all of these steps. The command builds the latest code. Add `?ref=refs/tags/v0.1.0` to the address to build a release.
+With Nix, `nix profile install 'github:Henauxg/agents-cockpit'` does all of these steps. The command builds the latest code. Add the release's tag to the address to build that release, as in `github:Henauxg/agents-cockpit/v0.1.0`.
 
 ### Windows
 
