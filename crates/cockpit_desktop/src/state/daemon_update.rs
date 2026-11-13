@@ -358,13 +358,16 @@ pub fn jobs_to_check(state: &AppState, machine: MachineId) -> Option<JobCheck> {
 }
 
 /// The raw logs of [`jobs_to_check`] were read: `holders` may hold scheduled jobs, so they count
-/// as busy. Returns what [`start`] returns.
+/// as busy. Returns what [`start`] returns. A read that ends once an update waits or runs, such as
+/// one an earlier read started, changes nothing.
 pub fn jobs_checked(
     state: &mut AppState,
     machine: MachineId,
     holders: Vec<AgentId>,
 ) -> Option<UpdateRun> {
-    state.machines.get_mut(machine)?.job_holders = holders;
+    let known = state.machines.get_mut(machine)?;
+    plan_to_run(known)?;
+    known.job_holders = holders;
     start(state, machine)
 }
 
@@ -2475,6 +2478,18 @@ mod tests {
         let started = jobs_checked(&mut state, MachineId::THIS, Vec::new());
 
         assert_eq!(started, Some(run(service_plan())));
+    }
+
+    /// Two clicks on "Update" read the logs twice: the first read starts the update.
+    #[test]
+    fn a_read_that_ends_once_the_update_runs_keeps_no_holder() {
+        let mut state = with_local_service(&[AgentStatus::Idle]);
+        jobs_checked(&mut state, MachineId::THIS, Vec::new()).unwrap();
+
+        let second = jobs_checked(&mut state, MachineId::THIS, vec![AgentId::new(1)]);
+
+        assert_eq!(second, None);
+        assert_eq!(state.machines.this.job_holders, []);
     }
 
     #[test]
