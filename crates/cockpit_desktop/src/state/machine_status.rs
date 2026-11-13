@@ -204,7 +204,7 @@ pub fn strip_lines(state: &AppState) -> Vec<StripLine> {
 mod tests {
     use std::time::Instant;
 
-    use cockpit_protocol::BuildCommit;
+    use cockpit_protocol::{BuildCommit, PROTOCOL_VERSION};
 
     use super::*;
     use crate::daemon_label::DaemonLabel;
@@ -223,6 +223,8 @@ mod tests {
         VersionGap {
             kind: GapKind::OlderProtocol,
             details: "the daemon speaks protocol 8, the client 9".to_owned(),
+            daemon: None,
+            protocol: PROTOCOL_VERSION - 1,
         }
     }
 
@@ -376,6 +378,8 @@ mod tests {
         known.version_gap = Some(VersionGap {
             kind: GapKind::OtherBuild,
             details: String::new(),
+            daemon: None,
+            protocol: PROTOCOL_VERSION,
         });
         let other_build = chip(&state);
 
@@ -387,6 +391,8 @@ mod tests {
         known.version_gap = Some(VersionGap {
             kind: GapKind::NewerRelease,
             details: String::new(),
+            daemon: None,
+            protocol: PROTOCOL_VERSION,
         });
         let newer = chip(&state);
 

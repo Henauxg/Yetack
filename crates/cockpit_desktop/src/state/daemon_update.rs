@@ -362,7 +362,11 @@ fn plan_to_run(known: &MachineState) -> Option<UpdatePlan> {
 fn begin(state: &mut AppState, machine: MachineId, busy: BusyAgents) -> Option<UpdateRun> {
     let known = state.machines.get_mut(machine)?;
     let plan = plan_to_run(known)?;
-    let replaces = ProgramBuild::daemon_of(known);
+    let replaces = known
+        .version_gap
+        .as_ref()
+        .and_then(|gap| gap.daemon.clone())
+        .or_else(|| ProgramBuild::daemon_of(known));
     known.update = Some(DaemonUpdate::Running(UpdateProgress::new(
         plan.clone(),
         replaces,
@@ -783,6 +787,8 @@ mod tests {
     fn refused(reason: &str) -> SessionError {
         SessionError::Connect(ConnectError::Refused {
             reason: reason.to_owned(),
+            daemon_version: None,
+            daemon_commit: None,
         })
     }
 
@@ -801,6 +807,8 @@ mod tests {
         VersionGap {
             kind: GapKind::OlderProtocol,
             details: "the daemon speaks protocol 1, the client 4".to_owned(),
+            daemon: None,
+            protocol: PROTOCOL_VERSION - 1,
         }
     }
 
@@ -1474,6 +1482,8 @@ mod tests {
         known_mut(&mut state).version_gap = Some(VersionGap {
             kind: GapKind::NewerProtocol,
             details: String::new(),
+            daemon: None,
+            protocol: PROTOCOL_VERSION + 1,
         });
         assert_eq!(text(&state), Some(("Runs a newer version.", "Details")));
 

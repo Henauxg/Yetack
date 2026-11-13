@@ -3,7 +3,7 @@
 use std::io;
 use std::path::PathBuf;
 
-use cockpit_protocol::{ErrorBody, FrameError, PROTOCOL_VERSION};
+use cockpit_protocol::{BuildCommit, ErrorBody, FrameError, PROTOCOL_VERSION, ReleaseVersion};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectError {
@@ -24,7 +24,13 @@ pub enum ConnectError {
     #[error("ssh failed: {stderr}")]
     Ssh { stderr: String },
     #[error("the daemon refused the connection: {reason}")]
-    Refused { reason: String },
+    Refused {
+        reason: String,
+        /// The release and commit the daemon names, which a daemon of protocol 8 or older does
+        /// not.
+        daemon_version: Option<ReleaseVersion>,
+        daemon_commit: Option<BuildCommit>,
+    },
     #[error("the daemon speaks protocol {daemon}, this client {PROTOCOL_VERSION}")]
     VersionMismatch { daemon: u16 },
     #[error("the daemon closed the connection before it answered")]
@@ -47,7 +53,7 @@ impl ConnectError {
     pub fn daemon_protocol(&self) -> Option<u16> {
         match self {
             Self::VersionMismatch { daemon } => Some(*daemon),
-            Self::Refused { reason } => {
+            Self::Refused { reason, .. } => {
                 let rest = reason.strip_prefix(REFUSED_PROTOCOL_PREFIX)?;
                 rest.split(|character: char| !character.is_ascii_digit())
                     .next()?
@@ -108,6 +114,8 @@ mod tests {
     fn refused(reason: &str) -> ConnectError {
         ConnectError::Refused {
             reason: reason.to_owned(),
+            daemon_version: None,
+            daemon_commit: None,
         }
     }
 

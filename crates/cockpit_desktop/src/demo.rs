@@ -14,8 +14,8 @@ use cockpit_protocol::{
     CostUsd, CredentialSource, DirEntry, DirListing, Effort, EffortSource, EntryKind, EntryLink,
     EnvironmentCredentials, ErrorBody, ErrorCode, FileEdit, GitIgnore, HistoryPage, Image,
     ImageMediaType, ItemBody, ItemId, LoadAverage, LoadHistory, MachineLoad, Mark, McpScope,
-    McpServer, McpServerStatus, McpTool, McpTransport, OlderItems, PastSession, PendingId,
-    PermissionMode, Plan, PlanUsage, Position, ProcessId, Prompt, PromptId, Question,
+    McpServer, McpServerStatus, McpTool, McpTransport, OlderItems, PROTOCOL_VERSION, PastSession,
+    PendingId, PermissionMode, Plan, PlanUsage, Position, ProcessId, Prompt, PromptId, Question,
     QuestionAnswer, QuestionOption, RateLimitStatus, ReleaseVersion, Repository, Request,
     ResourceUse, ResponseBody, Selection, ServerLoad, ServerPoint, SignIn, SignInWait,
     SlashCommand, Subagent, SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem,
@@ -36,7 +36,7 @@ use crate::state::daemon_update::{
 use crate::state::file_tree::TreeFilter;
 use crate::state::no_daemon::{self, Absence};
 use crate::state::projects::ProjectKey;
-use crate::state::update_offer::{GapKind, VersionGap};
+use crate::state::update_offer::{GapKind, ProgramBuild, VersionGap};
 use crate::state::update_plan::{ServerPlan, ServicePlan, UpdatePlan, UpdateStep};
 use crate::state::{
     AgentEntry, AppState, ConnectionState, Dialog, Drafts, Loadable, MachineState, Utf16Offset,
@@ -98,7 +98,11 @@ const FUZZ_TASK: &str = "Write fuzz inputs with unicode";
 const UPDATE_MACHINE: &str = "build-box";
 /// A made-up commit.
 const UPDATE_COMMIT: &str = "3f9c2e17ab54c90d1e2f3a4b5c6d7e8f90a1b2c3";
-const REFUSED_FOR_OLDER: &str = "the daemon speaks protocol 1, the client 4";
+/// The made-up commit of the older daemons on the update screens.
+const OLDER_COMMIT: &str = "f00ba12c3d4e5f60718293a4b5c6d7e8f9012345";
+/// The protocol of the older daemons on the update screens.
+const OLDER_PROTOCOL: u16 = 8;
+const REFUSED_FOR_OLDER: &str = "the daemon speaks protocol 8, the client 9";
 /// The release of this computer's service on the update screens: older than any of the app's.
 const LOCAL_OLDER_RELEASE: &str = "0.0.1";
 /// This computer's state folder and the app's, made up.
@@ -769,13 +773,23 @@ fn older_gap() -> VersionGap {
     VersionGap {
         kind: GapKind::OlderProtocol,
         details: REFUSED_FOR_OLDER.to_owned(),
+        daemon: Some(ProgramBuild {
+            version: ReleaseVersion::new(LOCAL_OLDER_RELEASE.to_owned()),
+            commit: Some(BuildCommit::new(OLDER_COMMIT.to_owned())),
+        }),
+        protocol: OLDER_PROTOCOL,
     }
 }
 
 fn newer_gap() -> VersionGap {
     VersionGap {
         kind: GapKind::NewerProtocol,
-        details: "the daemon speaks protocol 5, the client 4".to_owned(),
+        details: format!(
+            "the daemon speaks protocol {}, the client {PROTOCOL_VERSION}",
+            PROTOCOL_VERSION + 1
+        ),
+        daemon: None,
+        protocol: PROTOCOL_VERSION + 1,
     }
 }
 
@@ -815,7 +829,7 @@ fn local_service_of_another_build(state: &mut AppState) {
     let this = &mut state.machines.this;
     this.daemon = DaemonLabel::service();
     this.daemon_version = Some(ReleaseVersion::new(LOCAL_OLDER_RELEASE.to_owned()));
-    this.daemon_commit = Some(BuildCommit::new(UPDATE_COMMIT.to_owned()));
+    this.daemon_commit = Some(BuildCommit::new(OLDER_COMMIT.to_owned()));
     this.update_plan = Some(UpdatePlan::Service(ServicePlan {
         state_dir: PathBuf::from(LOCAL_STATE),
         log_folder: PathBuf::from(LOCAL_APP_STATE),

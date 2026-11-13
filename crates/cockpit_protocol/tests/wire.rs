@@ -938,6 +938,13 @@ fn server_messages() -> Vec<ServerMessage> {
         },
         ServerMessage::Refused {
             reason: "the daemon speaks protocol 2".to_owned(),
+            daemon_version: Some(ReleaseVersion::new("0.1.0".to_owned())),
+            daemon_commit: Some(commit()),
+        },
+        ServerMessage::Refused {
+            reason: "the daemon speaks protocol 2".to_owned(),
+            daemon_version: None,
+            daemon_commit: None,
         },
     ];
     for (raw, body) in (1..).zip(response_bodies()) {
@@ -2708,4 +2715,20 @@ fn a_request_names_the_agent_it_is_about() {
 
     assert!(agents.contains(&Some(Method::AgentMove)));
     assert!(agents.contains(&None), "sessions.list is about no agent");
+}
+
+#[test]
+fn a_refusal_without_the_daemons_build_reads_as_one_that_names_none() {
+    let older = r#"{"type":"refused","reason":"the daemon speaks protocol 8, the client 9"}"#;
+
+    let read: ServerMessage = serde_json::from_str(older).unwrap();
+
+    assert_eq!(
+        read,
+        ServerMessage::Refused {
+            reason: "the daemon speaks protocol 8, the client 9".to_owned(),
+            daemon_version: None,
+            daemon_commit: None,
+        }
+    );
 }

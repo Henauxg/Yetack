@@ -101,9 +101,16 @@ pub enum ServerMessage {
         daemon_commit: Option<BuildCommit>,
         catchup: Catchup,
     },
-    /// The daemon closes the connection after it.
+    /// The daemon closes the connection after it. Its shape stays the same in every protocol, so
+    /// that a client of another protocol reads it.
     Refused {
         reason: String,
+        /// The daemon's release and commit, so that a client can say which daemon refused it.
+        /// Absent from a daemon of protocol 8 or older.
+        #[serde(default)]
+        daemon_version: Option<ReleaseVersion>,
+        #[serde(default)]
+        daemon_commit: Option<BuildCommit>,
     },
     Response {
         id: RequestId,

@@ -111,7 +111,12 @@ where
         Ok(None) => return Err(End::Closed),
         Err(error) => return Err(End::Frame(error)),
     };
-    send(writer, &ServerMessage::Refused { reason }).await?;
+    let refused = ServerMessage::Refused {
+        reason,
+        daemon_version: Some(ReleaseVersion::new(RELEASE_VERSION.to_owned())),
+        daemon_commit: build_commit(),
+    };
+    send(writer, &refused).await?;
     Err(End::Refused)
 }
 

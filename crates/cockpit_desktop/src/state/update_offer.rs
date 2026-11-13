@@ -87,6 +87,11 @@ pub struct VersionGap {
     pub kind: GapKind,
     /// The refusal as the daemon or the client worded it, or the two builds.
     pub details: String,
+    /// The daemon's build: the one it runs while connected, or the one its refusal names. A
+    /// daemon of protocol 8 or older names none as it refuses.
+    pub daemon: Option<ProgramBuild>,
+    /// The protocol the daemon speaks.
+    pub protocol: u16,
 }
 
 /// The daemon's protocol, from a first connection that failed, when it differs from the app's. An
@@ -96,16 +101,32 @@ pub fn protocol_gap(place: DaemonPlace, error: &SessionError) -> Option<VersionG
     let SessionError::Connect(connect) = error else {
         return None;
     };
-    let kind = match connect.daemon_protocol()?.cmp(&PROTOCOL_VERSION) {
+    let protocol = connect.daemon_protocol()?;
+    let kind = match protocol.cmp(&PROTOCOL_VERSION) {
         Ordering::Less if updates_older(place) => GapKind::OlderProtocol,
         Ordering::Greater => GapKind::NewerProtocol,
         Ordering::Less | Ordering::Equal => return None,
     };
-    let details = match connect {
-        ConnectError::Refused { reason } => reason.clone(),
-        other => other.to_string(),
+    let (details, daemon) = match connect {
+        ConnectError::Refused {
+            reason,
+            daemon_version,
+            daemon_commit,
+        } => (
+            reason.clone(),
+            daemon_version.clone().map(|version| ProgramBuild {
+                version,
+                commit: daemon_commit.clone(),
+            }),
+        ),
+        other => (other.to_string(), None),
     };
-    Some(VersionGap { kind, details })
+    Some(VersionGap {
+        kind,
+        details,
+        daemon,
+        protocol,
+    })
 }
 
 /// Whether the app updates a daemon at `place` of an older protocol. The daemon in the app runs
@@ -132,6 +153,8 @@ pub fn build_gap(daemon: &ProgramBuild, app: &ProgramBuild) -> Option<VersionGap
     Some(VersionGap {
         kind,
         details: format!("the daemon runs version {daemon}, this app version {app}"),
+        daemon: Some(daemon.clone()),
+        protocol: PROTOCOL_VERSION,
     })
 }
 
@@ -202,9 +225,10 @@ pub struct UpdateOffer {
     /// How an update would run. `None` when the app cannot update the daemon: it is newer, or the
     /// app does not know its own commit for a server's build.
     pub plan: Option<UpdatePlan>,
-    /// The daemon's build, while the app is connected to it. A daemon that refuses the app tells
-    /// only its protocol.
+    /// The daemon's build, as `VersionGap::daemon` has it.
     pub daemon: Option<ProgramBuild>,
+    /// The protocol the daemon speaks.
+    pub daemon_protocol: u16,
     /// This app's build, which an update installs.
     pub app: ProgramBuild,
     /// The refusal, or the two builds, in words.
@@ -224,7 +248,8 @@ pub fn offer(state: &AppState, machine: MachineId) -> Option<UpdateOffer> {
     Some(UpdateOffer {
         kind: gap.kind,
         plan,
-        daemon: ProgramBuild::daemon_of(known),
+        daemon: gap.daemon.clone(),
+        daemon_protocol: gap.protocol,
         app: state.app_build.clone(),
         details: gap.details.clone(),
     })
@@ -264,6 +289,8 @@ mod tests {
     fn refused(reason: &str) -> SessionError {
         SessionError::Connect(ConnectError::Refused {
             reason: reason.to_owned(),
+            daemon_version: None,
+            daemon_commit: None,
         })
     }
 

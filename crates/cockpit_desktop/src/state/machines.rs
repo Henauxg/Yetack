@@ -421,7 +421,7 @@ mod tests {
     use crate::state::update_offer::{GapKind, VersionGap};
     use crate::state::update_plan::{ServerPlan, UpdatePlan};
     use crate::state::{AgentEntry, MachineState};
-    use cockpit_protocol::{AccountId, AgentStatus, BuildCommit};
+    use cockpit_protocol::{AccountId, AgentStatus, BuildCommit, PROTOCOL_VERSION};
 
     fn typed(state: &mut AppState, name: &str, host: &str, remote_command: &str) {
         open_machines(state);
@@ -592,6 +592,8 @@ mod tests {
             known.version_gap = Some(VersionGap {
                 kind: GapKind::OlderProtocol,
                 details: "protocol 3, the app speaks 4".to_owned(),
+                daemon: None,
+                protocol: PROTOCOL_VERSION - 1,
             });
             known.update_plan = Some(UpdatePlan::Server(devbox_plan()));
         }

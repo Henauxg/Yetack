@@ -177,7 +177,15 @@ where
                 })
             }
         }
-        Some(ServerMessage::Refused { reason }) => Err(ConnectError::Refused { reason }),
+        Some(ServerMessage::Refused {
+            reason,
+            daemon_version,
+            daemon_commit,
+        }) => Err(ConnectError::Refused {
+            reason,
+            daemon_version,
+            daemon_commit,
+        }),
         Some(ServerMessage::Response { .. } | ServerMessage::Event(_)) => {
             Err(ConnectError::Unexpected)
         }
@@ -402,7 +410,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_refused_hello_fails_with_the_reason() {
+    async fn a_refused_hello_fails_with_the_reason_and_the_daemons_build() {
         let daemon = TestDaemon::new();
         let transport = daemon.transport();
         let refuse = async {
@@ -410,6 +418,8 @@ mod tests {
             peer.hello().await;
             peer.send(&ServerMessage::Refused {
                 reason: "the daemon speaks protocol 2".to_owned(),
+                daemon_version: Some(ReleaseVersion::new("0.1.0".to_owned())),
+                daemon_commit: Some(BuildCommit::new("f00ba12".to_owned())),
             })
             .await;
             peer
@@ -417,10 +427,23 @@ mod tests {
 
         let (connected, _peer) = tokio::join!(Connection::connect(&transport, None), refuse);
 
-        let Err(ConnectError::Refused { reason }) = connected else {
+        let Err(ConnectError::Refused {
+            reason,
+            daemon_version,
+            daemon_commit,
+        }) = connected
+        else {
             panic!("expected a refusal");
         };
         assert_eq!(reason, "the daemon speaks protocol 2");
+        assert_eq!(
+            daemon_version.as_ref().map(ReleaseVersion::as_str),
+            Some("0.1.0")
+        );
+        assert_eq!(
+            daemon_commit.as_ref().map(BuildCommit::as_str),
+            Some("f00ba12")
+        );
     }
 
     #[tokio::test]
