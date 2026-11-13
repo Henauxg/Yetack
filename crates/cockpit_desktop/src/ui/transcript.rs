@@ -1254,7 +1254,8 @@ fn capitalized(word: &str) -> String {
 enum TitleLayout {
     /// Over the IN and OUT block, which holds the command.
     Full,
-    /// Alone, in a subagent: the command takes the place of a missing description.
+    /// Alone, in a subagent or on a folded call's line: the command takes the place of a missing
+    /// description.
     Compact,
 }
 
@@ -1682,7 +1683,7 @@ fn ToolView(agent: AgentId, id: ItemId, call: ToolCall, stage: CallStage) -> Ele
                         decided.set(Some(!open));
                     }
                 },
-                {tool_title(agent, &call, &shape, TitleLayout::Full)}
+                {tool_title(agent, &call, &shape, if framed && open { TitleLayout::Full } else { TitleLayout::Compact })}
                 if stage == CallStage::Running {
                     RunningMeta { agent, item: id }
                 } else if !meta.is_empty() {
