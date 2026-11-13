@@ -271,7 +271,7 @@ const TOOL_ERROR_CLOSE: &str = "</tool_use_error>";
 /// The rows a chat draws in the frame it opens, enough to fill the window. The older rows follow
 /// in chunks, one per frame: drawing a long conversation at once keeps the window from answering
 /// a click for about 100 ms.
-const FIRST_ROWS: usize = 25;
+const FIRST_ROWS: usize = 40;
 /// The older rows each following frame adds.
 const CHUNK_ROWS: usize = 40;
 
@@ -955,7 +955,7 @@ pub fn ItemView(
             ThinkingView { text }
         },
         ItemBody::ToolCall(call) if call.edit.is_some() => rsx! {
-            EditView { agent, folder, stage: CallStage::new(&call, awaits_approval), call }
+            EditView { agent, id, folder, stage: CallStage::new(&call, awaits_approval), call }
         },
         ItemBody::ToolCall(call) => rsx! {
             ToolView { agent, id, stage: CallStage::new(&call, awaits_approval), call }
@@ -1630,26 +1630,43 @@ impl EditMeta {
     }
 }
 
-/// How much of each tool call the chat shows, as the preferences say.
+/// How much of each tool call the chat shows, as the preferences say, and the items that hold the
+/// passage of a quote being written, whose calls show in full so that the quote finds it.
 #[derive(Clone, Copy)]
-struct CallDetail(Memo<ToolCallDetail>);
+struct CallDetail {
+    detail: Memo<ToolCallDetail>,
+    quoted: Memo<BTreeSet<(AgentId, ItemId)>>,
+}
 
-/// Provides the window's `CallDetail`. A row reads this one memo, so a change of the state runs it
+/// Provides the window's `CallDetail`. A row reads these memos, so a change of the state runs them
 /// once, not once per call in the chat.
 pub fn use_call_detail(cockpit: Cockpit) {
     let detail = use_memo(move || cockpit.state.read().prefs.chat.tool_calls);
-    use_context_provider(|| CallDetail(detail));
+    let quoted = use_memo(move || {
+        cockpit
+            .drafts
+            .read()
+            .composer
+            .iter()
+            .flat_map(|(agent, draft)| {
+                draft
+                    .quotes
+                    .iter()
+                    .map(|quote| (*agent, quote.passage.anchor.item))
+            })
+            .collect()
+    });
+    use_context_provider(|| CallDetail { detail, quoted });
 }
 
 /// Whether a call's input and output show, and the toggle a click on its line or its chevron
-/// gives. A call shows them as the preferences say until a click decides for it.
-fn use_call_fold() -> (bool, Signal<Option<bool>>) {
-    let CallDetail(detail) = use_context();
+/// gives. A call shows them as the preferences say, or while a quote being written holds a
+/// passage of them, until a click decides for it.
+fn use_call_fold(agent: AgentId, item: ItemId) -> (bool, Signal<Option<bool>>) {
+    let CallDetail { detail, quoted } = use_context();
     let decided = use_signal(|| None::<bool>);
-    (
-        decided().unwrap_or(detail() == ToolCallDetail::Full),
-        decided,
-    )
+    let shown = detail() == ToolCallDetail::Full || quoted.read().contains(&(agent, item));
+    (decided().unwrap_or(shown), decided)
 }
 
 /// The chevron at the end of a call's line, which shows or hides its input and output.
@@ -1678,7 +1695,7 @@ fn CallFold(open: bool, decided: Signal<Option<bool>>) -> Element {
 
 #[component]
 fn ToolView(agent: AgentId, id: ItemId, call: ToolCall, stage: CallStage) -> Element {
-    let (open, mut decided) = use_call_fold();
+    let (open, mut decided) = use_call_fold(agent, id);
     let shape = ToolShape::new(&call);
     let meta = tool_meta(&call, stage);
     let input = shape.input().map(str::to_owned);
@@ -1733,9 +1750,15 @@ fn ToolView(agent: AgentId, id: ItemId, call: ToolCall, stage: CallStage) -> Ele
 }
 
 #[component]
-fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall, stage: CallStage) -> Element {
+fn EditView(
+    agent: AgentId,
+    id: ItemId,
+    folder: PathBuf,
+    call: ToolCall,
+    stage: CallStage,
+) -> Element {
     let cockpit: Cockpit = use_context();
-    let (open, mut decided) = use_call_fold();
+    let (open, mut decided) = use_call_fold(agent, id);
     let Some(edit) = call.edit.clone() else {
         return rsx! {};
     };
