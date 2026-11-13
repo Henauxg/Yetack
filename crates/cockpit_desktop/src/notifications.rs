@@ -82,11 +82,14 @@ impl Ledger {
     /// Each alert replaces its agent's notification. A "needs you" notification closes once its
     /// agent no longer needs you; a "finished" one goes away on the service's timeout. Any
     /// notification closes once its agent is gone, or once the levels no longer let it through.
-    /// An alert the levels hold back is dropped.
+    /// An alert the levels hold back is dropped, and so is any alert while the window has the
+    /// focus: the sidebar shows it already.
     fn update(&mut self, alerts: Vec<Alert>, state: &AppState) -> Vec<Command> {
         let mut commands = Vec::new();
         for alert in alerts {
-            if notification_levels::shows(state, alert.agent, alert.kind) {
+            if !state.ui.window_focused
+                && notification_levels::shows(state, alert.agent, alert.kind)
+            {
                 self.shown.insert(alert.agent, alert.kind);
                 commands.push(Command::Show(alert));
             }
@@ -203,7 +206,16 @@ fn escaped_body(text: &str) -> String {
 mod tests {
     use super::*;
     use crate::prefs::NotificationLevel;
+    use cockpit_protocol::AgentSummary;
+
     use crate::state::{state_with, summary};
+
+    /// A state whose window is behind another, where alerts show.
+    fn away(summaries: Vec<AgentSummary>) -> AppState {
+        let mut state = state_with(summaries);
+        state.ui.window_focused = false;
+        state
+    }
 
     fn alert(id: u32, kind: AlertKind) -> Alert {
         Alert {
@@ -231,7 +243,7 @@ mod tests {
 
     #[test]
     fn a_needs_you_notification_closes_once_the_agent_no_longer_needs_you() {
-        let mut state = state_with(vec![
+        let mut state = away(vec![
             summary(1, AgentStatus::NeedsYou),
             summary(2, AgentStatus::NeedsYou),
         ]);
@@ -252,7 +264,7 @@ mod tests {
 
     #[test]
     fn a_new_alert_replaces_the_agents_notification() {
-        let mut state = state_with(vec![summary(1, AgentStatus::NeedsYou)]);
+        let mut state = away(vec![summary(1, AgentStatus::NeedsYou)]);
         let mut ledger = Ledger::default();
         ledger.update(vec![alert(1, AlertKind::NeedsYou)], &state);
 
@@ -271,7 +283,7 @@ mod tests {
 
     #[test]
     fn a_removed_agent_closes_its_notification() {
-        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        let mut state = away(vec![summary(1, AgentStatus::Idle)]);
         let mut ledger = Ledger::default();
         ledger.update(vec![alert(1, AlertKind::Finished)], &state);
 
@@ -282,9 +294,29 @@ mod tests {
     }
 
     #[test]
+    fn nothing_shows_while_the_window_has_the_focus() {
+        let mut state = away(vec![
+            summary(1, AgentStatus::NeedsYou),
+            summary(2, AgentStatus::Idle),
+        ]);
+        state.ui.window_focused = true;
+        let mut ledger = Ledger::default();
+
+        let focused = ledger.update(
+            vec![alert(1, AlertKind::NeedsYou), alert(2, AlertKind::Finished)],
+            &state,
+        );
+        state.ui.window_focused = false;
+        let away = ledger.update(vec![alert(2, AlertKind::Finished)], &state);
+
+        assert!(focused.is_empty());
+        assert_eq!(away, [Command::Show(alert(2, AlertKind::Finished))]);
+    }
+
+    #[test]
     fn the_levels_hold_back_an_alert_and_close_what_they_no_longer_let_through() {
         let state_of = |level| {
-            let mut state = state_with(vec![
+            let mut state = away(vec![
                 summary(1, AgentStatus::Idle),
                 summary(2, AgentStatus::NeedsYou),
             ]);

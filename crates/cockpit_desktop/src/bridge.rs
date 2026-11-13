@@ -82,6 +82,8 @@ const sidebarItem = (element) => {
 })();
 window.addEventListener("focus", () => send({ type: "focus", focused: true }));
 window.addEventListener("blur", () => send({ type: "focus", focused: false }));
+// A window that opens behind another gets no blur.
+send({ type: "focus", focused: document.hasFocus() });
 // A menu that takes the focus remembers where it took it from, for Esc to give it back. A menu
 // opened from another keeps the first one's.
 document.addEventListener("focusin", (event) => {

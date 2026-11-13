@@ -497,10 +497,9 @@ pub fn release_finishes(state: &mut AppState, machine: MachineId, now: Instant) 
     alerts
 }
 
-/// Marks the finished agent unread unless it is selected, and announces it unless you look at it.
+/// Marks the finished agent unread unless it is selected, and announces it.
 fn finished(state: &mut AppState, agent: AgentId) -> Option<Alert> {
     let selected = state.ui.selected == Some(agent);
-    let looked_at = selected && state.ui.window_focused;
     let summary = &state.agents.get(&agent)?.summary;
     let mut body = summary.activity.clone().unwrap_or_default();
     if let Some(progress) = summary.task_progress {
@@ -516,7 +515,7 @@ fn finished(state: &mut AppState, agent: AgentId) -> Option<Alert> {
     if !selected {
         state.ui.unread.insert(agent);
     }
-    (!looked_at).then_some(Alert {
+    Some(Alert {
         agent,
         kind: AlertKind::Finished,
         title,
@@ -977,32 +976,19 @@ mod tests {
     }
 
     #[test]
-    fn finishing_under_your_eyes_is_silent_but_not_when_the_window_is_away() {
+    fn the_selected_agent_finishing_is_announced_but_not_unread() {
         let mut state = state_with(vec![summary(1, AgentStatus::Working)]);
         state.ui.selected = Some(AgentId::new(1));
 
-        let silent = apply(
-            &mut state,
-            &mut Drafts::default(),
-            record(Event::AgentUpdated(with_status(1, AgentStatus::Idle))),
-            MachineId::THIS,
-        );
-        apply(
-            &mut state,
-            &mut Drafts::default(),
-            record(Event::AgentUpdated(with_status(1, AgentStatus::Working))),
-            MachineId::THIS,
-        );
-        state.ui.window_focused = false;
-        let away = apply(
+        let alert = apply(
             &mut state,
             &mut Drafts::default(),
             record(Event::AgentUpdated(with_status(1, AgentStatus::Idle))),
             MachineId::THIS,
         );
 
-        assert_eq!(silent, None);
-        assert!(away.is_some());
+        // The notifier decides whether it shows: not while the window has the focus.
+        assert_eq!(alert.map(|alert| alert.kind), Some(AlertKind::Finished));
         assert!(!state.is_unread(AgentId::new(1)));
     }
 
