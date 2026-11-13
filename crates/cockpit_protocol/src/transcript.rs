@@ -63,7 +63,7 @@ pub enum ItemBody {
     },
 }
 
-/// What a notice reports.
+/// What a notice reports. The task kinds come from the status a task notification gives.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, VariantArray,
 )]
@@ -74,13 +74,13 @@ pub enum NoticeKind {
     Plain,
     /// A message another Claude session sent the agent, such as a subagent's report.
     Message,
-    /// A background task ended, as a task notification says: done, failed or stopped.
     TaskDone,
     TaskFailed,
     TaskStopped,
 }
 
 impl NoticeKind {
+    #[must_use]
     pub fn is_plain(&self) -> bool {
         *self == Self::Plain
     }

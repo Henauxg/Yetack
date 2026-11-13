@@ -110,7 +110,10 @@ fn task_and_session_words_are_pinned() {
 
 #[test]
 fn origin_kinds_are_pinned() {
-    assert_eq!(words::<OriginKind>(), ["human", "task-notification"]);
+    assert_eq!(
+        words::<OriginKind>(),
+        ["human", "task-notification", "peer"]
+    );
 }
 
 #[test]

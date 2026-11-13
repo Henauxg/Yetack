@@ -336,11 +336,10 @@ impl ExploredSummary {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::ToolCallStatus;
+    use cockpit_protocol::{NoticeKind, ToolCallStatus};
     use serde_json::json;
 
     use super::*;
-    use cockpit_protocol::NoticeKind;
 
     fn call(id: u32, tool: &str, summary: &str, status: ToolCallStatus) -> TranscriptItem {
         TranscriptItem {

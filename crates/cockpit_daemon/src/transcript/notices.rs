@@ -11,8 +11,6 @@ const TASK_DONE: &str = "A background task finished";
 const TASK_FAILED: &str = "A background task failed";
 const TASK_STOPPED: &str = "A background task was stopped";
 const TASK_ENDED: &str = "A background task ended";
-/// The origin of a message another Claude session sent, such as a subagent's report.
-const PEER_ORIGIN: &str = "peer";
 
 /// The notices that show a message Claude Code wrote itself, each with its kind; `None` for one
 /// the user typed.
@@ -36,7 +34,7 @@ pub(super) fn notices(
             .into_iter()
             .map(task_notice)
             .collect(),
-        OpenWord::Unknown(kind) if kind == PEER_ORIGIN => {
+        OpenWord::Known(OriginKind::Peer) => {
             vec![(cut(message_line(text)), NoticeKind::Message)]
         }
         OpenWord::Unknown(_) => Vec::new(),
@@ -174,7 +172,7 @@ mod tests {
 
     #[test]
     fn a_peer_message_gives_its_first_line_of_prose() {
-        let peer = origin(OpenWord::Unknown(PEER_ORIGIN.to_owned()));
+        let peer = origin(OpenWord::Known(OriginKind::Peer));
         let text = "<agent-message from=\"session-7\">\n\
             [Subagent hand-back] The text below is the report of a subagent.\n\n\
             \x20   The cart test passes now.\n\
@@ -219,7 +217,7 @@ mod tests {
 
     #[test]
     fn a_peer_message_keeps_a_first_line_that_starts_with_a_link_or_a_less_than_sign() {
-        let peer = origin(OpenWord::Unknown(PEER_ORIGIN.to_owned()));
+        let peer = origin(OpenWord::Known(OriginKind::Peer));
         let link = "<agent-message from=\"session-7\">\n\
             [The cart fix](https://example.com/pull/12) is merged.\n\
             Nothing else is left.\n\
