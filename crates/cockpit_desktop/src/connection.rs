@@ -613,7 +613,7 @@ async fn run_update(
                 BusyAgents::Refuse => Some(BusyCheck {
                     resting: update_offer::resting_agents(&state.peek(), machine),
                     runs_something: Box::new(move || {
-                        !update_offer::running_agents(&state.peek(), machine).is_empty()
+                        daemon_update::runs_something_now(&state.peek(), machine)
                     }),
                 }),
                 BusyAgents::Interrupt => None,

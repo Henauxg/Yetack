@@ -388,6 +388,17 @@ pub fn jobs_checked(
     start(state, machine)
 }
 
+/// Whether one of `machine`'s agents runs something, as the restart of this computer's service
+/// asks once it read the raw logs. The app sees the agents only while it is connected: the ones
+/// it saw before the daemon went run nothing.
+pub fn runs_something_now(state: &AppState, machine: MachineId) -> bool {
+    state
+        .machines
+        .get(machine)
+        .is_some_and(MachineState::is_connected)
+        && !update_offer::running_agents(state, machine).is_empty()
+}
+
 /// The read of [`jobs_to_check`] will not run, as when the machine's connection task has ended.
 pub fn job_check_dropped(state: &mut AppState, machine: MachineId) {
     if let Some(known) = state.machines.get_mut(machine) {
@@ -2467,6 +2478,31 @@ mod tests {
             start(&mut state, MachineId::THIS),
             Some(run(service_plan()))
         );
+    }
+
+    /// "Update now" interrupted a working agent, and the new service did not start: the app
+    /// still shows the agent as it last saw it.
+    #[test]
+    fn an_agent_seen_working_before_the_daemon_went_runs_nothing_now() {
+        let mut state = with_local_service(&[AgentStatus::Working]);
+        assert!(runs_something_now(&state, MachineId::THIS));
+        start_now(&mut state, MachineId::THIS).unwrap();
+        restart_ended(
+            &mut state,
+            MachineId::THIS,
+            Err(RestartFailure::NotStarted {
+                error: "made-up".to_owned(),
+                log: None,
+            }),
+        );
+        drop_connection(&mut state, MachineId::THIS);
+        attempt_failed(&mut state, MachineId::THIS, None);
+
+        assert_eq!(
+            start(&mut state, MachineId::THIS),
+            Some(run(service_plan()))
+        );
+        assert!(!runs_something_now(&state, MachineId::THIS));
     }
 
     #[test]
