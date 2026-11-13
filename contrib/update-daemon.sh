@@ -142,12 +142,30 @@ choose_restart() {
 
 # Without these tools no daemon and no scheduled job would show, and a busy daemon would restart.
 check_tools() {
-    if [ ! -r /proc/locks ] || [ -z "$(stat -L -c %i / 2>/dev/null)" ] ||
+    command -v flock >/dev/null 2>&1 || die "cannot take the update lock: this needs flock"
+    if ! lists_locks ||
         ! find "/proc/$$/fd" -maxdepth 1 -lname '*' >/dev/null 2>&1 ||
         [ -z "$(ps -o etimes= -p "$$" 2>/dev/null)" ]; then
-        die "cannot tell whether a daemon runs: this needs /proc/locks, a stat with -c, a find with -lname and a ps with -o etimes"
+        die "cannot tell whether a daemon runs: this needs a /proc/locks that lists locks, a stat with -c, a find with -lname and a ps with -o etimes"
     fi
-    command -v flock >/dev/null 2>&1 || die "cannot take the update lock: this needs flock"
+}
+
+# Whether /proc/locks lists a lock taken on a scratch file. Some sandboxed kernels list none. It
+# hides a lock whose process ended, so flock holds this one while awk reads.
+lists_locks() {
+    probe=$(mktemp) || return 1
+    inode=$(stat -L -c %i "$probe" 2>/dev/null)
+    listed=$([ -n "$inode" ] && flock -n "$probe" awk -v inode="$inode" "$lockers_program" /proc/locks)
+    rm -f "$probe"
+    [ -n "$listed" ]
+}
+
+# The pids that took a lock on the file of inode $1, from /proc/locks, which gives the file as
+# device:inode. A waiter's line has `->` first. On Btrfs, stat gives another device than
+# /proc/locks, so only the inode is compared.
+lockers_program='$2 == "FLOCK" && $6 ~ (":" inode "$") { print $5 }'
+lockers() {
+    awk -v inode="$1" "$lockers_program" /proc/locks
 }
 
 # The path of the state folder's lock file as `find -lname` matches it: that takes a shell pattern,
@@ -157,14 +175,11 @@ lock_pattern() {
 }
 
 # The daemon of this state folder is the process that holds the lock on its lock file, whatever
-# binary it runs. Others may have the file open, such as its child between fork and exec.
-# /proc/locks gives the pid that took each lock and the file's device:inode. A waiter's line has
-# `->` first. On Btrfs, stat gives another device, so only the inode is compared, and the process
-# must have the file open.
+# binary it runs. Others may have the file open, such as its child between fork and exec. Since
+# only the inode is compared, the process must also have the file open.
 daemon_pid() {
     inode=$(stat -L -c %i "$state_dir/serve.lock" 2>/dev/null) || return 0
-    lockers=$(awk -v inode="$inode" '$2 == "FLOCK" && $6 ~ (":" inode "$") { print $5 }' /proc/locks)
-    for pid in $lockers; do
+    for pid in $(lockers "$inode"); do
         if has_lock_file_open "$pid"; then
             echo "$pid"
             return 0

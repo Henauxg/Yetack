@@ -876,6 +876,28 @@ fn refuses_when_it_cannot_read_the_lock_files_inode() {
     assert!(!machine.built(), "it refuses before the build");
 }
 
+/// Some sandboxed kernels give a `/proc/locks` that lists no lock: the daemon would not show, and
+/// its busy agents would restart. A fake `awk` reads it so.
+#[test]
+fn refuses_when_proc_locks_lists_no_lock() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let before = machine.daemon_pid();
+    machine.write_program(
+        "bin/awk",
+        r#"#!/bin/sh
+for last in "$@"; do :; done
+[ "$last" = /proc/locks ] && exit 1
+PATH=${PATH#*:} exec awk "$@"
+"#,
+    );
+
+    let output = machine.update("origin/main");
+
+    assert_refused(&machine, &output, 1, "cannot tell", &before);
+    assert!(!machine.built(), "it refuses before the build");
+}
+
 #[test]
 fn refuses_a_scheduled_job_until_it_is_deleted() {
     let machine = Machine::new();
