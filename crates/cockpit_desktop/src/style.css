@@ -3108,7 +3108,8 @@ html.reordering * {
   color: var(--dim);
 }
 
-.tool-head.foldable:hover .call-fold {
+/* The chevron sets its own color. */
+.tool-head.foldable:hover .chevron {
   color: var(--text);
 }
 
@@ -9364,6 +9365,7 @@ label.icon-button,
 .copy-button:not(:disabled):active,
 .back-button:active,
 .fold-lines:active,
+.call-fold:active,
 .repeat-count:active,
 .filter-chip:active,
 .question-tab:active,
