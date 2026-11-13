@@ -432,9 +432,9 @@ An account can use an API key or token in two ways, neither of which passes one 
 
 An agent of an account without a valid login starts as any other: `claude` answers `initialize`, and `system/init` says nothing about the login.
 Its first prompt fails: Claude Code writes an assistant line from `<synthetic>` whose `error` is `authentication_failed` (a word of the Agent SDK's types), with a text such as "Not logged in · Please run /login", then a `result` with `is_error`.
-Claude Code also marks a 403 `authentication_failed`, with a text such as "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare": Cloudflare, in front of the API, refused that request. No sign-in fixes it, and it passes, so the daemon keeps it apart: a notice says the request was refused, with Claude Code's text as its detail, and the turn fails as any other does.
 The daemon leaves out that text, which names a command the cockpit has no place for, and adds a notice once per turn: "The account Work is not signed in, or its login expired. Run this command in a terminal on the daemon's machine to sign in, then send your message again: `<command>`".
 For an account that takes its credentials from the environment, while the daemon has a key or token, the notice says they were refused instead.
+Claude Code also marks a 403 `authentication_failed`, with a text such as "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare": Cloudflare, in front of the API, refused that request. No sign-in fixes it, and it passes, so the daemon keeps it apart: a notice says the request was refused, with Claude Code's text as its detail, and the turn fails as any other does.
 The turn ends with the error "The account is not signed in", and its `TurnEnd` has the outcome `not_signed_in`.
 
 The agent then needs you: its summary's `sign_in_wait` is `waiting`, and its status is `NeedsYou` with no pending request, so the app raises a notification and the "Needs you" filter shows it.
