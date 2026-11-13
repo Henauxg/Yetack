@@ -292,7 +292,7 @@ mod tests {
         // One Show, which takes the place of the "needs you" notification: no Close.
         assert_eq!(commands, [Command::Show(finished)]);
         assert_eq!(ledger.shown.len(), 1);
-        // A "finished" notification waits for the service's timeout.
+        // A "finished" notification stays until a close: the agent working again is none.
         assert!(working.is_empty());
     }
 
@@ -364,8 +364,33 @@ mod tests {
         file_reread::window_focused(&mut state, true);
         file_reread::window_focused(&mut state, false);
         let heard = ledger.update(Vec::new(), &state);
+        let later = ledger.update(vec![alert(1, AlertKind::NeedsYou)], &state);
 
         assert_eq!(heard, [Command::Close(AgentId::new(1))]);
+        // The return counts once.
+        assert_eq!(later, [Command::Show(alert(1, AlertKind::NeedsYou))]);
+    }
+
+    #[test]
+    fn an_alert_heard_with_a_return_shows_after_the_close() {
+        let mut state = away(vec![
+            summary(1, AgentStatus::NeedsYou),
+            summary(2, AgentStatus::Idle),
+        ]);
+        let mut ledger = Ledger::default();
+        ledger.update(vec![alert(1, AlertKind::NeedsYou)], &state);
+
+        file_reread::window_focused(&mut state, true);
+        file_reread::window_focused(&mut state, false);
+        let commands = ledger.update(vec![alert(2, AlertKind::Finished)], &state);
+
+        assert_eq!(
+            commands,
+            [
+                Command::Close(AgentId::new(1)),
+                Command::Show(alert(2, AlertKind::Finished))
+            ]
+        );
     }
 
     #[test]
