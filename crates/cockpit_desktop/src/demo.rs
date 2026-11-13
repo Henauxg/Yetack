@@ -5002,7 +5002,12 @@ pub struct ParseError {
             let arguments: Vec<String> = list.iter().map(|&argument| argument.to_owned()).collect();
             local_scene(&arguments)
         };
+        let names: Vec<&str> = LocalScene::VARIANTS
+            .iter()
+            .map(|&scene| scene.into())
+            .collect();
 
+        assert_eq!(names, ["unix", "read-only"]);
         assert_eq!(
             scene(&[DEMO_FLAG, LOCAL_FLAG, "read-only"]),
             Some(LocalScene::ReadOnly)

@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 
 use crate::config::{DaemonConfig, MachineConfig, save_daemon, save_machines};
 use crate::daemon_label::{DaemonLabel, DaemonPlace};
+use crate::demo::LocalScene;
 use crate::in_app_host::InAppHost;
 use crate::machine::MachineId;
 use crate::notifications::Notifier;
@@ -40,7 +41,7 @@ use crate::{bridge, demo, format, update_script};
 /// What the window was started with.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Startup {
-    /// The state to start from, this computer's daemon as the config names it included.
+    /// The state to start from. It holds this computer's daemon as the config names it.
     pub state: AppState,
     /// The other machines the config names, reached over SSH.
     pub machines: Vec<(MachineId, MachineConfig)>,
@@ -53,7 +54,7 @@ pub struct Startup {
     /// Answers requests from the sample state instead of a daemon.
     pub demo: bool,
     /// What the demo shows of where Local's agents run (`--demo-local`).
-    pub demo_local: Option<demo::LocalScene>,
+    pub demo_local: Option<LocalScene>,
     /// Where the preferences are saved, `None` without a home folder.
     pub prefs_file: Option<PathBuf>,
 }
@@ -783,7 +784,7 @@ async fn run_demo(
     mut drafts: Signal<Drafts>,
     load: Signal<ShownLoad>,
     mut requests: UnboundedReceiver<ToDaemon>,
-    local: Option<demo::LocalScene>,
+    local: Option<LocalScene>,
 ) {
     use futures_util::StreamExt;
 

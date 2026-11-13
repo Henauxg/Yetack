@@ -9,7 +9,7 @@ use super::app_state::AppState;
 use super::machines::THIS_COMPUTER;
 use super::projects::{self, NEW_PROJECT_NAME, ProjectKey, RuleKind};
 use super::ui_state::{Dialog, RefusedChord, SettingsTab, SettingsView};
-use crate::config::DaemonConfig;
+use crate::config::{DAEMON_SECTION, DaemonConfig};
 use crate::keymap::{Chord, Command, Refusal};
 use crate::prefs::{CommentPlacement, EscStop, PaneState, ProjectId, SteerHold, ToolCallDetail};
 
@@ -63,7 +63,7 @@ pub fn local_start(state: &AppState) -> LocalStart {
     let chosen = match &state.machines.configured {
         DaemonConfig::Ssh { host, .. } => {
             return LocalStart::Note(format!(
-                "The agents run on {host}, over SSH, as the config file's [daemon] section says. Change it in the file."
+                "The agents run on {host}, over SSH, as the config file's [{DAEMON_SECTION}] section says. Change it in the file."
             ));
         }
         DaemonConfig::InApp => StartDaemon::InApp,
@@ -373,11 +373,10 @@ mod tests {
         let mut written = Vec::new();
 
         // The clicks come before the connection task writes the first one.
-        let clicks = [StartDaemon::Service, StartDaemon::Service, StartDaemon::Ask];
-        let sent: Vec<DaemonConfig> = clicks
-            .into_iter()
-            .filter_map(|choice| choose_start(&mut state, choice))
-            .collect();
+        let mut sent = Vec::new();
+        for choice in [StartDaemon::Service, StartDaemon::Service, StartDaemon::Ask] {
+            sent.extend(choose_start(&mut state, choice));
+        }
         for next in sent {
             save_start(&mut state, next, |next| {
                 written.push(next.clone());
