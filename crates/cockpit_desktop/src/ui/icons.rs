@@ -12,8 +12,6 @@ pub enum IconKind {
     Close,
     Copy,
     Check,
-    /// The files pane: folders and files in a tree.
-    FileTree,
     /// A target, to show the file view's file in the tree.
     Target,
     /// Two arrows that meet, to close every folder.
@@ -89,9 +87,6 @@ impl IconKind {
                 r#"<rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15V6a2 2 0 0 1 2-2h9"></path>"#
             }
             Self::Check => r#"<path d="M5 12l5 5 9-10"></path>"#,
-            Self::FileTree => {
-                r#"<path d="M4 4h6v5H4z"></path><path d="M14 15h6v5h-6z"></path><path d="M14 4h6v5h-6z"></path><path d="M7 9v8.5h7"></path><path d="M10 6.5h4"></path>"#
-            }
             Self::Target => {
                 r#"<circle cx="12" cy="12" r="7"></circle><circle cx="12" cy="12" r="2"></circle>"#
             }
