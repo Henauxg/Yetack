@@ -1135,6 +1135,7 @@ mod tests {
     fn timed(status: AgentStatus) -> AgentSummary {
         AgentSummary {
             last_activity_at: Some(at(1_000)),
+            quiet_since: None,
             turn_started_at: Some(at(700)),
             ..summary(1, status)
         }

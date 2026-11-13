@@ -482,6 +482,7 @@ impl Hub {
         if let Some(process) = &agent.process {
             process.write(answered.line);
         }
+        agent.view.note_answer(state::now());
         if let Some(mode) = answered.then_mode {
             let request = ControlRequest::SetPermissionMode {
                 mode: words::mode_to_claude(mode),
@@ -767,6 +768,7 @@ pub(super) fn initial_summary(record: &AgentRecord) -> AgentSummary {
         cost: CostUsd::new(0.0),
         started_at: record.started_at,
         last_activity_at: Some(record.started_at),
+        quiet_since: None,
         turn_started_at: None,
         session: record.session.clone(),
         position: record.position,

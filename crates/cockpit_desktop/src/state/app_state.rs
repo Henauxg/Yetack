@@ -709,6 +709,7 @@ pub(crate) mod tests {
             cost: CostUsd::new(0.0),
             started_at: Timestamp::from_unix_millis(u64::from(id) * 1000),
             last_activity_at: None,
+            quiet_since: None,
             turn_started_at: None,
             session: None,
             position: Position::default(),

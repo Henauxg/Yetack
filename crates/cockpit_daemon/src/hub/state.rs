@@ -31,6 +31,8 @@ const CLIENT_QUEUE: usize = 4096;
 /// How often the hub checks whether each account signed in or out: a file's metadata per
 /// account.
 const SIGN_IN_CHECK: Duration = Duration::from_secs(3);
+/// How often the hub looks for working agents that turned quiet.
+const QUIET_CHECK: Duration = Duration::from_secs(1);
 
 /// The least time between two details events of one agent. A subagent's burst of tool calls
 /// changes the details many times a second, and each event carries them whole.
@@ -195,6 +197,8 @@ impl Hub {
         self.start_restored_agents();
         let mut checks = tokio::time::interval(SIGN_IN_CHECK);
         checks.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut quiet = tokio::time::interval(QUIET_CHECK);
+        quiet.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 input = inputs.recv() => match input {
@@ -202,7 +206,22 @@ impl Hub {
                     None => return,
                 },
                 _ = checks.tick() => self.check_sign_ins(),
+                _ = quiet.tick() => self.check_quiet(),
             }
+        }
+    }
+
+    /// Marks the working agents that turned quiet, and publishes each one that did.
+    fn check_quiet(&mut self) {
+        let now = now();
+        let mut quiet: Vec<AgentId> = Vec::new();
+        for (id, agent) in &mut self.agents {
+            if agent.view.check_quiet(now) {
+                quiet.push(*id);
+            }
+        }
+        for agent in quiet {
+            self.publish(agent);
         }
     }
 
@@ -547,6 +566,38 @@ mod tests {
         assert_eq!(restarted.last_seq, Some(Seq::new(3)));
         assert_eq!(replayed_details(&mut restarted, 2), [(3, "two".to_owned())]);
         assert!(replayed_details(&mut restarted, 3).is_empty());
+    }
+
+    #[test]
+    fn a_quiet_stretch_publishes_one_summary_however_many_checks_see_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join("state");
+        let agent = state_with_agent(&folder);
+        let mut hub = Hub::for_tests(&folder);
+        let prompt = Prompt {
+            text: "Fix the cart total".to_owned(),
+            images: Vec::new(),
+        };
+        let started = Timestamp::from_unix_millis(1_000);
+        hub.agents
+            .get_mut(&agent)
+            .unwrap()
+            .view
+            .add_prompt(&prompt, started);
+        hub.publish(agent);
+
+        hub.check_quiet();
+        hub.check_quiet();
+
+        let mut quiet = Vec::new();
+        for_each_event(&hub.logs.path(LogName::Agent(agent)), |record| {
+            if let Event::AgentUpdated(summary) = record.event {
+                quiet.push(summary.quiet_since);
+            }
+        })
+        .unwrap();
+        assert_eq!(quiet.last(), Some(&Some(started)));
+        assert_eq!(quiet.iter().filter(|since| since.is_some()).count(), 1);
     }
 
     #[tokio::test]

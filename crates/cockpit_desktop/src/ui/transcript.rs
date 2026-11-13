@@ -5,12 +5,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use chrono::NaiveDate;
 use cockpit_protocol::{
-    AgentId, AgentStatus, AnswerState, ItemBody, ItemId, SignInWait, ToolCall, ToolCallStatus,
-    TranscriptItem, TurnEnd, TurnOutcome, UserMessage,
+    AgentId, AgentStatus, AnswerState, ItemBody, ItemId, SignInWait, Timestamp, ToolCall,
+    ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UserMessage,
 };
 use dioxus::prelude::*;
 use serde::Serialize;
@@ -414,6 +414,7 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
     let status = entry.summary.status;
     let working = status == AgentStatus::Working;
     let turn_start = entry.turn_start();
+    let quiet_since = entry.summary.quiet_since;
     let items: Vec<&TranscriptItem> = entry.transcript.items().collect();
     let loaded: BTreeSet<ItemId> = items.iter().map(|item| item.id).collect();
     let children = children_by_parent(&items);
@@ -530,7 +531,7 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
                     }
                 }
                 if working && shown != ShownRows::Skeleton {
-                    WorkingLine { since: turn_start, linked: working_linked }
+                    WorkingLine { since: turn_start, quiet_since, linked: working_linked }
                 }
             }
         }
@@ -746,23 +747,36 @@ fn step_links(is_step: &[bool], working: bool) -> Vec<StepLinks> {
     links
 }
 
-/// The last step of a running turn: a spinner on the steps' line, and the time since the turn
-/// started.
+/// The last step of a running turn: a spinner on the steps' line, the time since the turn
+/// started, and how long the agent has written nothing, once the daemon says it is quiet.
 #[component]
-fn WorkingLine(since: Option<TurnStart>, linked: bool) -> Element {
+fn WorkingLine(since: Option<TurnStart>, quiet_since: Option<Timestamp>, linked: bool) -> Element {
     let Clock(now) = use_context::<Clock>();
+    let now = now();
     let text = match since {
-        Some(start) => format!("Working, {}", format::duration(start.elapsed(now()))),
+        Some(start) => format!("Working, {}", format::duration(start.elapsed(now))),
         None => "Working".to_owned(),
     };
+    let quiet = quiet_since.map(|quiet_since| quiet_text(quiet_since, now));
     rsx! {
         div { class: if linked { "step working linked-above" } else { "step working" },
             span { class: "step-marker",
                 span { class: "spinner", role: "status", aria_label: "Working" }
             }
             "{text}"
+            if let Some(quiet) = quiet {
+                span { class: "working-quiet", " · {quiet}" }
+            }
         }
     }
+}
+
+/// "no output for 57 s", from the time the daemon says the agent last wrote.
+fn quiet_text(quiet_since: Timestamp, now: SystemTime) -> String {
+    let quiet = format::duration(Duration::from_secs(
+        format::since(quiet_since, now).as_secs(),
+    ));
+    format!("no output for {quiet}")
 }
 
 /// The items the chat shows at its top level, in order.
@@ -2017,6 +2031,21 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn the_working_line_says_how_long_the_agent_has_been_quiet() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_000);
+
+        assert_eq!(
+            quiet_text(Timestamp::from_unix_millis(943_000), now),
+            "no output for 57 s"
+        );
+        assert_eq!(
+            quiet_text(Timestamp::from_unix_millis(1_010_000), now),
+            "no output for 0 s",
+            "a daemon clock ahead"
+        );
+    }
 
     #[test]
     fn a_call_is_named_by_its_tool_or_its_mcp_server() {

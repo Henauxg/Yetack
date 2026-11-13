@@ -2687,6 +2687,17 @@ html.reordering * {
   color: var(--dim);
 }
 
+/* Under the turn, where the agent's text starts: a step's `padding-left`. */
+.turn-end {
+  align-self: flex-start;
+  padding-left: 22px;
+}
+
+.working-quiet {
+  color: var(--dim);
+  animation: fade-in var(--motion-in) var(--ease-out) backwards;
+}
+
 .turn-end.failed {
   color: var(--red);
 }
