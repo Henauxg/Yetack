@@ -149,12 +149,20 @@ check_tools() {
     command -v flock >/dev/null 2>&1 || die "cannot take the update lock: this needs flock"
 }
 
+# The path of the state folder's lock file as `find -lname` matches it: that takes a shell pattern,
+# and this path must match as it is written.
+lock_pattern() {
+    readlink -f "$state_dir/serve.lock" | sed 's/[][*?\\]/\\&/g'
+}
+
 # The daemon of this state folder is the process holding its lock file, whatever binary it runs.
 daemon_pid() {
-    # `find -lname` takes a shell pattern, and this path must match as it is written.
-    lock_pattern=$(readlink -f "$state_dir/serve.lock" | sed 's/[][*?\\]/\\&/g')
-    find /proc/[0-9]*/fd -maxdepth 1 -lname "$lock_pattern" 2>/dev/null |
+    find /proc/[0-9]*/fd -maxdepth 1 -lname "$(lock_pattern)" 2>/dev/null |
         sed -n '1s|^/proc/\([0-9]*\)/.*|\1|p'
+}
+
+holds_lock() {
+    [ -n "$(find "/proc/$1/fd" -maxdepth 1 -lname "$(lock_pattern)" 2>/dev/null)" ]
 }
 
 # Prints how many times Claude called a tool in a raw log since a time in milliseconds. A raw line
@@ -243,12 +251,22 @@ build() {
     [ -x "$built" ] || die "the build of $sha made no $built"
 }
 
+# Signals the process that holds the lock, and waits until none does. A pid names the daemon by its
+# start time, read once the pid is found and checked to hold the lock: right before the signal, the
+# start time must be the same, so a process that got the pid since gets no signal.
 stop_daemon() {
-    daemon=$(daemon_pid)
-    [ -n "$daemon" ] || return 0
-    kill -TERM "$daemon" || die_installing "cannot stop the daemon, pid $daemon"
     tries=0
-    while [ -n "$(daemon_pid)" ]; do
+    signalled=
+    while daemon=$(daemon_pid) && [ -n "$daemon" ]; do
+        started=$(start_time "$daemon")
+        if [ -n "$started" ] && [ "$daemon $started" != "$signalled" ] && holds_lock "$daemon" &&
+            [ "$(start_time "$daemon")" = "$started" ]; then
+            if kill -TERM "$daemon" 2>/dev/null; then
+                signalled="$daemon $started"
+            elif [ "$(start_time "$daemon")" = "$started" ]; then
+                die_installing "cannot stop the daemon, pid $daemon"
+            fi
+        fi
         tries=$((tries + 1))
         [ "$tries" -le 30 ] || die_installing "the daemon, pid $daemon, did not stop within 30 seconds"
         sleep 1

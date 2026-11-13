@@ -16,6 +16,7 @@ use std::io;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -1154,6 +1155,67 @@ fn a_start_file_that_starts_another_binary_exits_with_four() {
     let output = machine.update("origin/main");
 
     assert_eq!(output.status.code(), Some(4), "{}", stderr(&output));
+}
+
+/// The stop finds a pid that holds the lock, then the process of that pid ends before the signal:
+/// it stands for a pid another process gets meanwhile. A fake `find` plays it with a process of
+/// the test, which it says holds the lock, then kills while the stop checks it.
+#[test]
+fn the_stop_signals_no_process_that_changed_since_it_found_its_pid() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let mut other = Command::new("sleep")
+        .arg("30")
+        .stdin(Stdio::null())
+        .spawn()
+        .unwrap();
+    let other_pid = other.id();
+    machine.write_program(
+        "bin/find",
+        &format!(
+            r#"#!/bin/sh
+if [ ! -f '{checked}' ] && grep -qF '{mark}' '{installed}' 2>/dev/null; then
+    if [ "$1" = /proc/{other_pid}/fd ]; then
+        kill -KILL {other_pid}
+        until [ "$(sed 's/.*) //' /proc/{other_pid}/stat | cut -c1)" = Z ]; do sleep 0.01; done
+        : >'{checked}'
+        echo /proc/{other_pid}/fd/0
+        exit 0
+    fi
+    if [ ! -f '{found}' ]; then
+        : >'{found}'
+        echo /proc/{other_pid}/fd/0
+        exit 0
+    fi
+fi
+PATH=${{PATH#*:}} exec find "$@"
+"#,
+            checked = machine.path("other-checked").display(),
+            found = machine.path("other-found").display(),
+            mark = String::from_utf8_lossy(BUILT_MARK),
+            installed = machine.installed().display(),
+        ),
+    );
+    let before = machine.daemon_pid();
+
+    let output = machine.update("origin/main");
+
+    let ended = other.wait().unwrap();
+    assert_eq!(
+        ended.signal(),
+        Some(9),
+        "only the fake find's SIGKILL reached it"
+    );
+    assert!(
+        machine.path("other-checked").exists(),
+        "the stop never looked at the other process"
+    );
+    assert_succeeded(&output);
+    assert_ne!(
+        machine.daemon_pid(),
+        before,
+        "the daemon was stopped all the same"
+    );
 }
 
 #[test]

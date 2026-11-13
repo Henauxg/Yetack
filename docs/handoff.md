@@ -27,6 +27,7 @@ Done:
 - An idle agent whose background tasks still run counts as busy, as the user decided: in `busy_agents`, in the confirmation ("runs 2 background tasks"), and in the script's check, through the TASKS column of `agents-cockpit list`.
 - Updating Local checks its agents as the script does on a server. While Local's daemon refuses the app, "Update Local" always asks first, since the app cannot list the agents: "Update now" or "Cancel". While the app is connected, it reads the resting agents' raw logs first, and an agent that may hold a scheduled job (more `CronCreate` than `CronDelete` calls since the daemon started) counts as busy: the confirmation lists it with "may hold a scheduled job". "Update when they are idle" waits only for the agents that run something, since a job may never end; the restart reads the logs again, and refuses with "Update now" on its screen while a job may be held. The demo shows these with `--demo-update local-confirm-jobs`, `local-holds-jobs` and `local-confirm-unseen`.
 - Local's update no longer stays on "Updating…" when another program restarts the old daemon during the stop, such as a systemd unit with `Restart=always`: the app counts its connections, and judges a connection made since the stop once the restart ends.
+- The script's stop signals no process that got the daemon's pid since the script found it: it compares the start time from `/proc/<pid>/stat` right before `kill`.
 
 Left, in order:
 
