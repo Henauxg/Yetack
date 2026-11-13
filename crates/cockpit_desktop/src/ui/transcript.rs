@@ -1642,7 +1642,7 @@ struct CallDetail {
 /// once, not once per call in the chat.
 pub fn use_call_detail(cockpit: Cockpit) {
     let detail = use_memo(move || cockpit.state.read().prefs.chat.tool_calls);
-    let quoted = use_memo(move || {
+    let quoted: Memo<BTreeSet<(AgentId, ItemId)>> = use_memo(move || {
         cockpit
             .drafts
             .read()
