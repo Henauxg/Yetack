@@ -9756,14 +9756,16 @@ html.splitting .sidebar {
 }
 
 /* Sized by the font: span { class: "spinner", role: "status", aria_label: "<what loads>" }. */
+/* A comet: a ring whose arc fades into its tail as it turns. */
 .spinner {
   display: inline-block;
   flex: none;
   width: 1em;
   height: 1em;
   border-radius: 50%;
-  border: 0.14em solid rgba(45, 212, 191, 0.22);
-  border-top-color: var(--teal);
+  background: conic-gradient(rgba(45, 212, 191, 0) 0deg 70deg, var(--teal) 360deg);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 0.16em), #000 calc(100% - 0.15em));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 0.16em), #000 calc(100% - 0.15em));
   vertical-align: -0.15em;
   animation: spin var(--motion-spin) linear infinite;
 }
