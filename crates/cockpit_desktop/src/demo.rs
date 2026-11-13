@@ -513,7 +513,7 @@ const DEMO_QUIET_SECONDS: u64 = 57;
 
 /// The parser agent's running command, and its call, which the command's task names.
 const PARSER_TESTS_COMMAND: &str = "cargo test parser";
-const PARSER_TESTS_CALL: u32 = 21;
+const PARSER_TESTS_CALL: u32 = 23;
 /// The body of a report another session sent the selected agent.
 const PEER_REPORT: &str = "The columns worktree builds, and its 31 lexer tests pass.\n\n\
     - `unexpected_token.rs` counts columns from 1.\n\
@@ -2456,7 +2456,7 @@ fn parser_agent(now: SystemTime) -> Sample {
         item(19, None, ItemBody::ToolCall(position_read)),
         item(LOOKUP_ITEM, None, text(LOOKUP_ANSWER)),
         item(
-            22,
+            21,
             None,
             ItemBody::Notice {
                 text: "Agent \"Benchmark the lexer\" finished".to_owned(),
@@ -2465,7 +2465,7 @@ fn parser_agent(now: SystemTime) -> Sample {
             },
         ),
         item(
-            23,
+            22,
             None,
             ItemBody::Notice {
                 text: "The columns worktree builds, and its 31 lexer tests pass.".to_owned(),
@@ -4004,6 +4004,36 @@ mod tests {
             update_screen(&arguments(&["--demo", "--demo-update", "older"])),
             Some("older")
         );
+    }
+
+    #[test]
+    fn each_sample_lists_its_rows_in_the_order_the_transcript_shows_them() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let samples = [
+            parser_agent(now),
+            question_agent(now),
+            approval_agent(now),
+            plan_agent(now),
+            benchmark_agent(now),
+            exited_agent(now),
+            live_agent(now),
+            map_agent(now),
+            sign_in_agent(now),
+        ];
+
+        for sample in samples {
+            let ids: Vec<ItemId> = sample
+                .items
+                .iter()
+                .filter(|item| item.parent.is_none())
+                .map(|item| item.id)
+                .collect();
+            assert!(
+                ids.is_sorted_by(|before, after| before < after),
+                "agent {}: {ids:?}",
+                sample.summary.id.get()
+            );
+        }
     }
 
     #[test]
