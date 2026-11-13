@@ -365,10 +365,12 @@ mod tests {
         file_reread::window_focused(&mut state, false);
         let heard = ledger.update(Vec::new(), &state);
         let later = ledger.update(vec![alert(1, AlertKind::NeedsYou)], &state);
+        let next = ledger.update(Vec::new(), &state);
 
         assert_eq!(heard, [Command::Close(AgentId::new(1))]);
-        // The return counts once.
         assert_eq!(later, [Command::Show(alert(1, AlertKind::NeedsYou))]);
+        // The return counts once: the notification shown since stays.
+        assert!(next.is_empty());
     }
 
     #[test]
