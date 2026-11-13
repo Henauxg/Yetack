@@ -57,7 +57,8 @@ fn task_notice(notification: TaskNotificationText) -> (String, NoticeKind) {
         Some(BackgroundTaskStatus::Done) => (TASK_DONE, NoticeKind::TaskDone),
         Some(BackgroundTaskStatus::Failed) => (TASK_FAILED, NoticeKind::TaskFailed),
         Some(BackgroundTaskStatus::Stopped) => (TASK_STOPPED, NoticeKind::TaskStopped),
-        Some(BackgroundTaskStatus::Running) | None => (TASK_ENDED, NoticeKind::TaskDone),
+        // A status this app does not know may be a failure: no check for it.
+        Some(BackgroundTaskStatus::Running) | None => (TASK_ENDED, NoticeKind::Plain),
     };
     (
         notification.summary.unwrap_or_else(|| sentence.to_owned()),
@@ -165,7 +166,7 @@ mod tests {
             Some(vec![
                 (TASK_FAILED.to_owned(), NoticeKind::TaskFailed),
                 (TASK_STOPPED.to_owned(), NoticeKind::TaskStopped),
-                (TASK_ENDED.to_owned(), NoticeKind::TaskDone),
+                (TASK_ENDED.to_owned(), NoticeKind::Plain),
             ])
         );
     }
