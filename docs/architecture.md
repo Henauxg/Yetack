@@ -434,7 +434,6 @@ An agent of an account without a valid login starts as any other: `claude` answe
 Its first prompt fails: Claude Code writes an assistant line from `<synthetic>` whose `error` is `authentication_failed` (a word of the Agent SDK's types), with a text such as "Not logged in · Please run /login", then a `result` with `is_error`.
 The daemon leaves out that text, which names a command the cockpit has no place for, and adds a notice once per turn: "The account Work is not signed in, or its login expired. Run this command in a terminal on the daemon's machine to sign in, then send your message again: `<command>`".
 For an account that takes its credentials from the environment, while the daemon has a key or token, the notice says they were refused instead.
-Claude Code also marks a 403 `authentication_failed`, with a text such as "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare": Cloudflare, in front of the API, refused that request. No sign-in fixes it, and it passes, so the daemon keeps it apart: a notice says the request was refused, with Claude Code's text as its detail, and the turn fails as any other does.
 The turn ends with the error "The account is not signed in", and its `TurnEnd` has the outcome `not_signed_in`.
 
 The agent then needs you: its summary's `sign_in_wait` is `waiting`, and its status is `NeedsYou` with no pending request, so the app raises a notification and the "Needs you" filter shows it.
@@ -446,6 +445,8 @@ It waits until one of these:
   The hub's check (`SIGN_IN_CHECK`, in a blocking task, one at a time) also compares each account's sign-in state with the last check's, and sends `AccountsChanged` when one changed, or when an account was not there at the last check. The clients then ask `accounts.list` again, so a sign-in shows without "Check again". The daemon's first check sends nothing: a client lists the accounts when it connects.
   A login in the macOS Keychain writes no file there: only a message ends the wait, and the app's "Send the message again" stays on for an account whose state is `unknown`.
   An account whose `credentials` are `environment` has no file to find either: once its key or token was refused, only a message ends the wait, so the button stays on for such an account too.
+
+Claude Code also marks a 403 `authentication_failed`, with a text such as "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare": Cloudflare, in front of the API, refused that request. No sign-in fixes it, and it passes, so the daemon keeps it apart: a notice says the request was refused, with Claude Code's text as its detail, and the turn fails as any other does.
 
 `--enable-auth-status`, which the editor extensions pass, adds `auth_status` lines, which report a login in progress (`isAuthenticating`, the output of a helper such as a cloud provider's refresh). A signed-in run gives one with `isAuthenticating: false` and no output. They do not tell a missing login, so the daemon does not pass the flag.
 
