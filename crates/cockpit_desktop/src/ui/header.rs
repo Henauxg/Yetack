@@ -303,7 +303,7 @@ pub fn Header() -> Element {
                     aria_label: "{changes_label}",
                     title: "Files ({state.prefs.keys.shown(Command::FilesPane)})",
                     onclick: move |_| cockpit.update(|state| file_tree::toggle_from_changes(state, agent)),
-                    Icon { kind: IconKind::FileTree, size: 15 }
+                    Icon { kind: IconKind::Folder, size: 15 }
                     if file_count > 0 {
                         span { class: "chip-full mono",
                             span { class: "added", "+{added}" }
