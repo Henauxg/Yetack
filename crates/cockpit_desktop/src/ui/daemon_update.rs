@@ -13,7 +13,7 @@ use crate::connection::Cockpit;
 use crate::daemon_label::DaemonPlace;
 use crate::format;
 use crate::machine::MachineId;
-use crate::state::daemon_update::{self, DaemonUpdate, FailedUpdate, UpdateProgress};
+use crate::state::daemon_update::{self, Confirmation, DaemonUpdate, FailedUpdate, UpdateProgress};
 use crate::state::machines::MachineName;
 use crate::state::no_daemon::DaemonChoice;
 use crate::state::update_offer::{self, GapKind, ProgramBuild, UpdateOffer};
@@ -495,7 +495,7 @@ pub fn ConfirmUpdateDialog(machine: MachineId) -> Element {
         let agents = busy_rows(&state, &confirmation.agents);
         (name, confirmation, agents)
     };
-    let daemon_update::Confirmation {
+    let Confirmation {
         text,
         list_note,
         offers_wait,

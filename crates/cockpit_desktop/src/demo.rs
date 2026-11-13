@@ -4260,6 +4260,7 @@ mod tests {
 
     use super::*;
     use crate::prefs;
+    use crate::state::daemon_update::{DaemonUpdate, FailedUpdate};
     use crate::state::{HistoryState, WaitingKind};
 
     #[test]
@@ -4341,15 +4342,12 @@ mod tests {
         let refused = shown(UpdateScreen::LocalHoldsJobs);
         assert!(matches!(
             refused.machines.this.update,
-            Some(daemon_update::DaemonUpdate::Failed(
-                daemon_update::FailedUpdate {
-                    failure: UpdateFailure::HoldsJobs,
-                    ..
-                }
-            ))
+            Some(DaemonUpdate::Failed(FailedUpdate {
+                failure: UpdateFailure::HoldsJobs,
+                ..
+            }))
         ));
-        let Some(daemon_update::DaemonUpdate::Failed(failed)) = &refused.machines.this.update
-        else {
+        let Some(DaemonUpdate::Failed(failed)) = &refused.machines.this.update else {
             panic!("expected a failure");
         };
         assert_eq!(
