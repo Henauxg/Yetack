@@ -279,6 +279,7 @@ fn is_busy(entry: &AgentEntry) -> bool {
 mod tests {
     use std::io;
     use std::path::PathBuf;
+    use std::time::Instant;
 
     use cockpit_protocol::SignInWait;
 
@@ -557,7 +558,7 @@ mod tests {
         known.daemon_version = Some(release("0.3.0"));
         known.connection = ConnectionState::Disconnected {
             error: "refused".to_owned(),
-            retry_at: std::time::Instant::now(),
+            retry_at: Instant::now(),
         };
         known.version_gap = protocol_gap(DaemonPlace::Ssh, &older_daemon());
         known.update_plan = Some(server_plan());

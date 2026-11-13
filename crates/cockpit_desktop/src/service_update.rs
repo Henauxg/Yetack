@@ -154,10 +154,12 @@ async fn start_service(_state_dir: &Path, _log_folder: &Path) -> Result<(), Stri
 
 #[cfg(test)]
 mod tests {
+    use std::fs::OpenOptions;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
     use cockpit_protocol::ProcessId;
+    use tempfile::TempDir;
 
     use super::*;
     use crate::state::daemon_update::HandStop;
@@ -200,7 +202,7 @@ mod tests {
             if !self.logged.is_empty() {
                 use std::io::Write;
 
-                let mut log = std::fs::OpenOptions::new()
+                let mut log = OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open(log_folder.join(SERVICE_LOG))
@@ -313,7 +315,7 @@ mod tests {
         );
     }
 
-    fn log_with(text: &str) -> (tempfile::TempDir, PathBuf) {
+    fn log_with(text: &str) -> (TempDir, PathBuf) {
         let temp = tempfile::tempdir().unwrap();
         let log = temp.path().join(SERVICE_LOG);
         std::fs::write(&log, text).unwrap();

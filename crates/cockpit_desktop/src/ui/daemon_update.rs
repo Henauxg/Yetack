@@ -397,10 +397,10 @@ fn busy_agents(state: &AppState, machine: MachineId) -> Vec<BusyAgent> {
         .into_iter()
         .filter_map(|agent| state.agents.get(&agent))
         .map(|entry| {
-            let (status_class, doing) = match accounts::turn_status(&entry.summary) {
-                AgentStatus::NeedsYou => ("status-needs-you", "waits for you".to_owned()),
+            let (status, doing) = match accounts::turn_status(&entry.summary) {
+                AgentStatus::NeedsYou => (AgentStatus::NeedsYou, "waits for you".to_owned()),
                 AgentStatus::Idle => (
-                    "status-idle",
+                    AgentStatus::Idle,
                     format!(
                         "runs {}",
                         format::count(
@@ -411,13 +411,13 @@ fn busy_agents(state: &AppState, machine: MachineId) -> Vec<BusyAgent> {
                     ),
                 ),
                 AgentStatus::Working | AgentStatus::Exited => {
-                    ("status-working", "working".to_owned())
+                    (AgentStatus::Working, "working".to_owned())
                 }
             };
             BusyAgent {
                 key: entry.id().get().to_string(),
                 title: entry.summary.title.clone(),
-                status_class,
+                status_class: format::status_class(status),
                 doing,
             }
         })
