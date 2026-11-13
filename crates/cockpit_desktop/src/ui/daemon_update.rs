@@ -11,6 +11,7 @@ use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
 use crate::daemon_label::DaemonPlace;
+use crate::format;
 use crate::machine::MachineId;
 use crate::state::daemon_update::{
     self, DaemonUpdate, FailedUpdate, UpdateFailure, UpdateProgress,
@@ -386,8 +387,8 @@ struct BusyAgent {
     title: String,
     /// The status class of its dot.
     status_class: &'static str,
-    /// What it does: "working", "waits for you".
-    doing: &'static str,
+    /// What it does: "working", "waits for you", "runs 2 background tasks".
+    doing: String,
 }
 
 /// The busy agents of `machine`, in the sidebar's order.
@@ -397,9 +398,20 @@ fn busy_agents(state: &AppState, machine: MachineId) -> Vec<BusyAgent> {
         .filter_map(|agent| state.agents.get(&agent))
         .map(|entry| {
             let (status_class, doing) = match accounts::turn_status(&entry.summary) {
-                AgentStatus::NeedsYou => ("status-needs-you", "waits for you"),
-                AgentStatus::Working | AgentStatus::Idle | AgentStatus::Exited => {
-                    ("status-working", "working")
+                AgentStatus::NeedsYou => ("status-needs-you", "waits for you".to_owned()),
+                AgentStatus::Idle => (
+                    "status-idle",
+                    format!(
+                        "runs {}",
+                        format::count(
+                            usize::from(entry.summary.background_running),
+                            "background task",
+                            "background tasks",
+                        )
+                    ),
+                ),
+                AgentStatus::Working | AgentStatus::Exited => {
+                    ("status-working", "working".to_owned())
                 }
             };
             BusyAgent {
@@ -436,7 +448,7 @@ fn WaitingCard(machine: MachineId, name: String, local: bool) -> Element {
         CardHead {
             local,
             title: format!("{name} updates once its agents are idle"),
-            lead: "The update starts by itself once none of these agents works or waits for an answer.".to_owned(),
+            lead: "The update starts by itself once none of these agents works, waits for an answer or runs background tasks.".to_owned(),
         }
         BusyAgentList { agents }
         CardActions { details: None,
@@ -465,8 +477,7 @@ pub fn ConfirmUpdateDialog(machine: MachineId) -> Element {
         };
         let name = MachineName::new(machine, known).name;
         let app = &state.app_build.version;
-        let restart =
-            "It ends the current turn of these agents, which resume their conversations after it.";
+        let restart = "It interrupts these agents, which resume their conversations after it.";
         let text = match &known.update_plan {
             Some(UpdatePlan::Server(_)) => format!(
                 "The update builds this app's version, {app}, on {name} and restarts its daemon. {restart}"

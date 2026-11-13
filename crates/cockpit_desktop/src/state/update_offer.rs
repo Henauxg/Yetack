@@ -255,8 +255,9 @@ pub fn offer(state: &AppState, machine: MachineId) -> Option<UpdateOffer> {
     })
 }
 
-/// The agents of `machine` whose turn a restart would end, in the sidebar's order: those that
-/// work or wait for an answer. An agent that waits only for its account's sign-in runs no turn.
+/// The agents of `machine` that a restart would interrupt, in the sidebar's order: those that
+/// work or wait for an answer, and the idle ones whose background tasks still run. An agent that
+/// waits only for its account's sign-in runs no turn.
 pub fn busy_agents(state: &AppState, machine: MachineId) -> Vec<AgentId> {
     state
         .agents_in_order()
@@ -269,7 +270,8 @@ pub fn busy_agents(state: &AppState, machine: MachineId) -> Vec<AgentId> {
 fn is_busy(entry: &AgentEntry) -> bool {
     match accounts::turn_status(&entry.summary) {
         AgentStatus::Working | AgentStatus::NeedsYou => true,
-        AgentStatus::Idle | AgentStatus::Exited => false,
+        AgentStatus::Idle => entry.summary.background_running > 0,
+        AgentStatus::Exited => false,
     }
 }
 
@@ -592,5 +594,16 @@ mod tests {
             busy_agents(&state, server),
             [server.app_agent(AgentId::new(5))]
         );
+    }
+
+    #[test]
+    fn an_idle_agent_whose_background_tasks_run_is_busy() {
+        let mut watching = summary(1, AgentStatus::Idle);
+        watching.background_running = 2;
+        let mut ended = summary(2, AgentStatus::Exited);
+        ended.background_running = 1;
+        let state = state_with(vec![watching, ended, summary(3, AgentStatus::Idle)]);
+
+        assert_eq!(busy_agents(&state, MachineId::THIS), [AgentId::new(1)]);
     }
 }

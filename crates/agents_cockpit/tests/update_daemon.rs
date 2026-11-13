@@ -272,6 +272,32 @@ printf '%s' '{mark}' >>"$2/release/agents-cockpit"
         }
     }
 
+    /// Waits until the `list` row of agent `id` shows `value` in the column headed `column`.
+    fn wait_for_column(&self, id: &str, column: &str, value: &str) {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let list = self.ok(&["list"]);
+            let mut lines = list.lines();
+            let index = lines
+                .next()
+                .and_then(|header| header.split_whitespace().position(|name| name == column));
+            let found = index.is_some_and(|index| {
+                lines.any(|row| {
+                    let columns: Vec<&str> = row.split_whitespace().collect();
+                    columns.first() == Some(&id) && columns.get(index) == Some(&value)
+                })
+            });
+            if found {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "agent {id} never had {value} in {column}: {list}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     /// Adds a tool call to an agent's raw log, in the form the daemon writes it.
     fn log_tool_call(&self, agent: &str, tool: &str, at: u128) {
         let claude_line = format!(
@@ -631,6 +657,28 @@ fn refuses_while_an_agent_works() {
     assert!(!machine.built(), "it refuses before the build");
 }
 
+#[test]
+fn refuses_while_an_idle_agent_runs_background_tasks() {
+    let machine = Machine::new();
+    // A claude that reports a background command as it starts, then echoes what it reads.
+    machine.write_program(
+        "echo-claude",
+        "#!/bin/sh\necho '{\"type\":\"system\",\"subtype\":\"task_started\",\"task_id\":\"bg-1\",\"description\":\"Watch the build\",\"task_type\":\"local_bash\"}'\nexec cat\n",
+    );
+    machine.start_daemon();
+    let id = machine.idle_agent();
+    machine.wait_for_column(&id, "TASKS", "1");
+    let before = machine.daemon_pid();
+
+    let output = machine.update("origin/main");
+
+    assert_refused(&machine, &output, 3, "these agents are busy", &before);
+    assert!(
+        stderr(&output).contains(&format!("\n{id} ")),
+        "{}",
+        stderr(&output)
+    );
+}
 #[test]
 fn refuses_while_an_agent_works_under_a_daemon_of_another_name() {
     let machine = Machine::new();

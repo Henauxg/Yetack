@@ -24,15 +24,12 @@ Done:
 - The update's state and flow, the same for every machine (`state/update_offer.rs`, `state/update_plan.rs`, `state/daemon_update.rs`, `service_update.rs`). A server runs `contrib/update-daemon.sh`. Local's background service is stopped, then started again with the app's own program. When agents are busy, a confirmation offers "Update when they are idle" and "Update now", which gives the script `--even-if-busy`.
 - Machine panels even when Local is alone, "Local" for this computer, a strip of machine troubles when agents are grouped by project, the Machines dialog as a grid, and compact menus in the composer (`state/machine_status.rs`).
 - The update screens, from the mockups (`ui/daemon_update.rs`): the cards with the daemon's build beside the app's, the "0.1.0 → 0.2.0" version column, the confirmation with each busy agent's status, and an older daemon's line with "Update" alone. A refusal names the daemon's release and commit, so the cards can show them. The demo shows each state with `--demo-update <state>` and `--demo-machines <scene>`.
+- An idle agent whose background tasks still run counts as busy, as the user decided: in `busy_agents`, in the confirmation ("runs 2 background tasks"), and in the script's check, through the TASKS column of `agents-cockpit list`.
 
 Left, in order:
 
-1. An idle agent with running background tasks counts as busy: the user decided so.
-   - `AgentSummary` needs its count of running background tasks. Protocol 9 is not released yet, so it needs no new version.
-   - `busy_agents` in `state/update_offer.rs` uses the count, and the confirmation says "runs N background tasks".
-   - `agents-cockpit list` and the script's busy check count the agent too, unless `--even-if-busy`.
-2. `/review fix`, then `/review-standard fix`.
-3. Ask the user before merging into `main`.
+1. `/review fix`, then `/review-standard fix`.
+2. Ask the user before merging into `main`.
 
 To check Unix code without CI, cross-build the daemon crates for `x86_64-unknown-linux-musl`, with `rust-lld` as the linker, and run their test binaries in WSL. The tests embed Windows paths through `env!`, so give them absolute paths for the run, and don't commit that change. The `update_daemon` tests fail in about 4 of 10 full runs there, on `main` too: rerun a failing test alone.
 

@@ -14,8 +14,8 @@
 # It builds outside the checkout, which stays as it is. It restarts the daemon with
 # $XDG_CONFIG_HOME/agents-cockpit/start-daemon when that file exists (a script that starts the
 # daemon in the background and returns), and otherwise with the agents-cockpit systemd user
-# service. Without --even-if-busy, it refuses while an agent works, waits for an answer or may
-# hold a scheduled job.
+# service. Without --even-if-busy, it refuses while an agent works, waits for an answer, runs
+# background tasks or may hold a scheduled job.
 # Once started it finishes even when the connection is lost: build.log, in its folder under
 # $XDG_CACHE_HOME/agents-cockpit/update, keeps the build's output.
 #
@@ -176,7 +176,11 @@ check_agents() {
         fi
     fi
     [ -z "$even_if_busy" ] || return 0
-    busy=$(printf '%s\n' "$listing" | awk 'NR > 1 && $2 != "idle" && $2 != "exited"')
+    # An idle agent whose background tasks still run is busy too. The TASKS column is found by
+    # its header: the listing of an older binary has none.
+    busy=$(printf '%s\n' "$listing" | awk '
+        NR == 1 { for (i = 1; i <= NF; i++) if ($i == "TASKS") tasks = i; next }
+        ($2 != "idle" && $2 != "exited") || ($2 == "idle" && tasks && $tasks > 0)')
     [ -z "$busy" ] || refuse "not restarting the daemon, these agents are busy:
 $busy"
     # A scheduled job lives in its claude process, so none outlasts the daemon's last start. `ps`
