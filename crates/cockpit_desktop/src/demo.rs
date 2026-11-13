@@ -42,7 +42,7 @@ use crate::state::{
     AgentEntry, AppState, ConnectionState, Dialog, Drafts, Loadable, MachineState, Utf16Offset,
     ViewMode, actions, file_edits, file_tree, projects, quotes, sending,
 };
-use crate::update_script::{APP_VERSION, app_commit};
+use crate::update_script::{self, APP_VERSION};
 
 /// The command-line flag that starts the demo.
 pub const DEMO_FLAG: &str = "--demo";
@@ -666,97 +666,124 @@ const SIDEBAR_ORDER: [u32; 9] = [
 /// The room between two agents' positions, as the daemon leaves it.
 const POSITION_STEP: u32 = 1024;
 
-/// The screen named by `--demo-update`, which only the demo opens.
-pub fn update_screen(arguments: &[String]) -> Option<&str> {
+/// The screens of a daemon's update that `--demo-update` names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr, VariantArray)]
+#[strum(serialize_all = "kebab-case")]
+pub enum UpdateScreen {
+    Older,
+    NoCommit,
+    Newer,
+    Running,
+    Refused,
+    Failed,
+    Cancelled,
+    InstallFailed,
+    RolledBack,
+    AlreadyRunning,
+    Lost,
+    Sidebar,
+    Dialog,
+    LocalAvailable,
+    LocalConfirm,
+    LocalWaiting,
+    LocalRunning,
+    LocalNotStopped,
+    LocalUnrecorded,
+    LocalUnverified,
+    LocalNotStarted,
+    LocalOtherBuild,
+}
+
+/// The screen named by `--demo-update`, which only the demo opens. A name the demo does not know
+/// opens nothing.
+pub fn update_screen(arguments: &[String]) -> Option<UpdateScreen> {
     if !is_requested(arguments) {
         return None;
     }
     let flag = arguments
         .iter()
         .position(|argument| argument == UPDATE_SCREEN_FLAG)?;
-    arguments.get(flag + 1).map(String::as_str)
+    arguments.get(flag + 1)?.parse().ok()
 }
 
-/// The update of a daemon, in the state of one of the screens: the rest of the demo stays. A name
-/// the demo does not know opens nothing.
-pub fn show_update_screen(state: &mut AppState, screen: &str) {
+/// The update of a daemon, in the state of one of the screens: the rest of the demo stays.
+pub fn show_update_screen(state: &mut AppState, screen: UpdateScreen) {
     match screen {
-        "older" => this_computer_refused(state, older_gap(), Some(update_plan())),
-        "no-commit" => this_computer_refused(state, older_gap(), None),
-        "newer" => this_computer_refused(state, newer_gap(), None),
-        "running" => {
+        UpdateScreen::Older => this_computer_refused(state, older_gap(), Some(update_plan())),
+        UpdateScreen::NoCommit => this_computer_refused(state, older_gap(), None),
+        UpdateScreen::Newer => this_computer_refused(state, newer_gap(), None),
+        UpdateScreen::Running => {
             this_computer_refused(state, older_gap(), Some(update_plan()));
             start_demo_update(state, MachineId::THIS);
         }
-        "refused" => failed_update(state, UpdateFailure::Refused, Some(3)),
-        "failed" => failed_update(state, UpdateFailure::Failed, Some(1)),
-        "cancelled" => failed_update(state, UpdateFailure::Cancelled, Some(1)),
-        "install-failed" => failed_update(state, UpdateFailure::InstallFailed, Some(4)),
-        "rolled-back" => failed_update(state, UpdateFailure::RolledBack, Some(5)),
-        "already-running" => failed_update(state, UpdateFailure::AlreadyRunning, Some(6)),
-        "lost" => failed_update(state, UpdateFailure::Unknown, Some(255)),
-        "sidebar" => {
+        UpdateScreen::Refused => failed_update(state, UpdateFailure::Refused, Some(3)),
+        UpdateScreen::Failed => failed_update(state, UpdateFailure::Failed, Some(1)),
+        UpdateScreen::Cancelled => failed_update(state, UpdateFailure::Cancelled, Some(1)),
+        UpdateScreen::InstallFailed => failed_update(state, UpdateFailure::InstallFailed, Some(4)),
+        UpdateScreen::RolledBack => failed_update(state, UpdateFailure::RolledBack, Some(5)),
+        UpdateScreen::AlreadyRunning => failed_update(state, UpdateFailure::AlreadyRunning, Some(6)),
+        UpdateScreen::Lost => failed_update(state, UpdateFailure::Unknown, Some(255)),
+        UpdateScreen::Sidebar => {
             server_refused(state);
         }
-        "dialog" => {
+        UpdateScreen::Dialog => {
             let machine = server_refused(state);
             state.ui.dialog = Some(Dialog::DaemonUpdate(machine));
         }
-        "local-available" => {
+        UpdateScreen::LocalAvailable => {
             local_service_of_another_build(state);
             state.ui.dialog = Some(Dialog::DaemonUpdate(MachineId::THIS));
         }
-        "local-confirm" => {
+        UpdateScreen::LocalConfirm => {
             local_service_of_another_build(state);
             daemon_update::start(state, MachineId::THIS);
         }
-        "local-waiting" => {
+        UpdateScreen::LocalWaiting => {
             local_service_of_another_build(state);
             daemon_update::start(state, MachineId::THIS);
             daemon_update::wait_for_idle(state, MachineId::THIS);
         }
-        "local-running" => {
+        UpdateScreen::LocalRunning => {
             local_service_of_another_build(state);
             state.ui.dialog = Some(Dialog::DaemonUpdate(MachineId::THIS));
             daemon_update::start_now(state, MachineId::THIS);
             daemon_update::step_started(state, MachineId::THIS, UpdateStep::Start);
         }
-        "local-not-stopped" => failed_restart(
+        UpdateScreen::LocalNotStopped => failed_restart(
             state,
             RestartFailure::NotStopped(StopFailure {
                 reason: "the daemon, process 4242, did not stop within 10 seconds".to_owned(),
                 by_hand: Some(HandStop::Process(ProcessId::new(4242))),
             }),
         ),
-        "local-unrecorded" => failed_restart(
+        UpdateScreen::LocalUnrecorded => failed_restart(
             state,
             RestartFailure::NotStopped(StopFailure {
                 reason: format!("{LOCAL_STATE}/serve.lock names no process"),
                 by_hand: Some(HandStop::Unrecorded),
             }),
         ),
-        "local-unverified" => failed_restart(
+        UpdateScreen::LocalUnverified => failed_restart(
             state,
             RestartFailure::NotStopped(StopFailure {
                 reason: "cannot tell that process 4242 is the daemon".to_owned(),
                 by_hand: Some(HandStop::Unverified),
             }),
         ),
-        "local-not-started" => failed_restart(
+        UpdateScreen::LocalNotStarted => failed_restart(
             state,
             RestartFailure::NotStarted {
                 error: "the service stopped as it started (exit status: 1): agents-cockpit: cannot bind the socket".to_owned(),
                 log: Some("INFO reading the state folder\nagents-cockpit: cannot bind the socket".to_owned()),
             },
         ),
-        "local-other-build" => {
+        UpdateScreen::LocalOtherBuild => {
             local_service_of_another_build(state);
             state.ui.dialog = Some(Dialog::DaemonUpdate(MachineId::THIS));
             daemon_update::start_now(state, MachineId::THIS);
             daemon_update::restart_ended(state, MachineId::THIS, Ok(()));
             daemon_update::connected(state, MachineId::THIS);
         }
-        _ => {}
     }
 }
 
@@ -1048,7 +1075,7 @@ pub fn state(daemon: DaemonLabel) -> AppState {
     let mut state = AppState::new(daemon);
     state.machines.this.connection = ConnectionState::Connected;
     state.machines.this.daemon_version = Some(ReleaseVersion::new(APP_VERSION.to_owned()));
-    state.machines.this.daemon_commit = app_commit();
+    state.machines.this.daemon_commit = update_script::app_commit();
     let agents = [
         parser_agent(now),
         question_agent(now),
@@ -1174,7 +1201,7 @@ fn insert_server<const N: usize>(
     let mut server = MachineState::new(DaemonLabel::ssh(host.to_owned()));
     server.connection = ConnectionState::Connected;
     server.daemon_version = Some(ReleaseVersion::new(APP_VERSION.to_owned()));
-    server.daemon_commit = app_commit();
+    server.daemon_commit = update_script::app_commit();
     server.plan_usage = plan_usage(now);
     server.accounts = accounts().into_iter().take(1).collect();
     server.server = Some(MachineConfig {
@@ -4201,7 +4228,47 @@ mod tests {
         );
         assert_eq!(
             update_screen(&arguments(&["--demo", "--demo-update", "older"])),
-            Some("older")
+            Some(UpdateScreen::Older)
+        );
+        assert_eq!(
+            update_screen(&arguments(&["--demo", "--demo-update", "unknown"])),
+            None
+        );
+    }
+
+    #[test]
+    fn the_update_screens_are_named_in_kebab_case() {
+        let names: Vec<&str> = UpdateScreen::VARIANTS
+            .iter()
+            .map(|&screen| screen.into())
+            .collect();
+
+        assert_eq!(
+            names,
+            [
+                "older",
+                "no-commit",
+                "newer",
+                "running",
+                "refused",
+                "failed",
+                "cancelled",
+                "install-failed",
+                "rolled-back",
+                "already-running",
+                "lost",
+                "sidebar",
+                "dialog",
+                "local-available",
+                "local-confirm",
+                "local-waiting",
+                "local-running",
+                "local-not-stopped",
+                "local-unrecorded",
+                "local-unverified",
+                "local-not-started",
+                "local-other-build",
+            ]
         );
     }
 
