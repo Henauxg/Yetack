@@ -508,6 +508,9 @@ fn pow_raises_to_a_power() {
 }
 ";
 
+/// How long ago a working agent of the demo last wrote, which its Working line says.
+const DEMO_QUIET_SECONDS: u64 = 57;
+
 /// The parser agent's running command, and its call, which the command's task names.
 const PARSER_TESTS_COMMAND: &str = "cargo test parser";
 const PARSER_TESTS_CALL: u32 = 21;
@@ -1987,6 +1990,7 @@ fn summary(parts: SummaryParts<'_>, now: SystemTime) -> AgentSummary {
         cost: CostUsd::new(1.84),
         started_at: at(now, since + 3600),
         last_activity_at: Some(at(now, last_activity)),
+        last_output_at: turn_started.map(|_| at(now, DEMO_QUIET_SECONDS)),
         turn_started_at: turn_started.map(|seconds| at(now, seconds)),
         session: Some(ClaudeSessionId::new(format!("demo-session-{}", parts.id))),
         position: Position::default(),

@@ -100,6 +100,11 @@ pub struct AgentSummary {
     /// you, a turn ended, or its process ended. `None` from a daemon that predates it.
     #[serde(default)]
     pub last_activity_at: Option<Timestamp>,
+    /// When `claude` last wrote a line, its progress while Claude thinks included, to the second:
+    /// the chat says how long the working agent has been quiet. `None` before any line, and from
+    /// a daemon that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_output_at: Option<Timestamp>,
     /// When the running turn started. `None` between turns, and from a daemon that predates it.
     #[serde(default)]
     pub turn_started_at: Option<Timestamp>,

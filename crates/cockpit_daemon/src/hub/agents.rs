@@ -767,6 +767,7 @@ pub(super) fn initial_summary(record: &AgentRecord) -> AgentSummary {
         cost: CostUsd::new(0.0),
         started_at: record.started_at,
         last_activity_at: Some(record.started_at),
+        last_output_at: None,
         turn_started_at: None,
         session: record.session.clone(),
         position: record.position,

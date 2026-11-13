@@ -5,12 +5,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use chrono::NaiveDate;
 use cockpit_protocol::{
-    AgentId, AgentStatus, AnswerState, ItemBody, ItemId, SignInWait, ToolCall, ToolCallStatus,
-    TranscriptItem, TurnEnd, TurnOutcome, UserMessage,
+    AgentId, AgentStatus, AnswerState, ItemBody, ItemId, SignInWait, Timestamp, ToolCall,
+    ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UserMessage,
 };
 use dioxus::prelude::*;
 use serde::Serialize;
@@ -414,6 +414,7 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
     let status = entry.summary.status;
     let working = status == AgentStatus::Working;
     let turn_start = entry.turn_start();
+    let last_output = entry.summary.last_output_at;
     let items: Vec<&TranscriptItem> = entry.transcript.items().collect();
     let loaded: BTreeSet<ItemId> = items.iter().map(|item| item.id).collect();
     let children = children_by_parent(&items);
@@ -530,7 +531,7 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
                     }
                 }
                 if working && shown != ShownRows::Skeleton {
-                    WorkingLine { since: turn_start, linked: working_linked }
+                    WorkingLine { since: turn_start, last_output, linked: working_linked }
                 }
             }
         }
@@ -746,23 +747,42 @@ fn step_links(is_step: &[bool], working: bool) -> Vec<StepLinks> {
     links
 }
 
-/// The last step of a running turn: a spinner on the steps' line, and the time since the turn
-/// started.
+/// How long `claude` stays quiet before the Working line says so: below it, the line would
+/// change at every line Claude Code writes.
+const QUIET_SHOWN_FROM: Duration = Duration::from_secs(5);
+
+/// The last step of a running turn: a spinner on the steps' line, the time since the turn
+/// started, and how long ago `claude` last wrote, once it has been quiet a while.
 #[component]
-fn WorkingLine(since: Option<TurnStart>, linked: bool) -> Element {
+fn WorkingLine(since: Option<TurnStart>, last_output: Option<Timestamp>, linked: bool) -> Element {
     let Clock(now) = use_context::<Clock>();
+    let now = now();
     let text = match since {
-        Some(start) => format!("Working, {}", format::duration(start.elapsed(now()))),
+        Some(start) => format!("Working, {}", format::duration(start.elapsed(now))),
         None => "Working".to_owned(),
     };
+    let quiet = quiet_text(last_output, now);
     rsx! {
         div { class: if linked { "step working linked-above" } else { "step working" },
             span { class: "step-marker",
                 span { class: "spinner", role: "status", aria_label: "Working" }
             }
             "{text}"
+            if let Some(quiet) = quiet {
+                span { class: "working-quiet", " · {quiet}" }
+            }
         }
     }
+}
+
+/// "last output 57 s ago", once `claude` has been quiet for `QUIET_SHOWN_FROM`. A daemon whose
+/// clock runs ahead of this one's reads as just written.
+fn quiet_text(last_output: Option<Timestamp>, now: SystemTime) -> Option<String> {
+    let quiet = now.duration_since(last_output?.to_system_time()?).ok()?;
+    (quiet >= QUIET_SHOWN_FROM).then(|| {
+        let quiet = format::duration(Duration::from_secs(quiet.as_secs()));
+        format!("last output {quiet} ago")
+    })
 }
 
 /// The items the chat shows at its top level, in order.
@@ -2017,6 +2037,20 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn the_working_line_names_the_quiet_once_it_lasts() {
+        let now = UNIX_EPOCH + Duration::from_secs(1_000);
+        let at = |seconds: u64| Some(Timestamp::from_unix_millis(seconds * 1_000));
+
+        assert_eq!(quiet_text(at(996), now), None, "4 s of quiet");
+        assert_eq!(
+            quiet_text(at(943), now).as_deref(),
+            Some("last output 57 s ago")
+        );
+        assert_eq!(quiet_text(at(1_010), now), None, "a daemon clock ahead");
+        assert_eq!(quiet_text(None, now), None);
+    }
 
     #[test]
     fn a_call_is_named_by_its_tool_or_its_mcp_server() {

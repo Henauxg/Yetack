@@ -2680,10 +2680,16 @@ html.reordering * {
 }
 
 .notice,
+/* Under the turn, where the agent's text starts. */
 .turn-end {
-  align-self: center;
+  align-self: flex-start;
   margin: 0;
+  padding-left: 22px;
   font-size: 12px;
+  color: var(--dim);
+}
+
+.working-quiet {
   color: var(--dim);
 }
 

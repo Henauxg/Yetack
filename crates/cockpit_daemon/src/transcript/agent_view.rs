@@ -96,6 +96,8 @@ const REFUSED_STATUS: &str = "API Error: 403";
 /// The notice of a refused request, with Claude Code's text as its detail.
 const REFUSED_NOTICE: &str =
     "The API refused the request (HTTP 403). No sign-in fixes it: send the message again.";
+/// How often `last_output_at` moves while `claude` writes.
+const OUTPUT_STAMP_MILLIS: u64 = 1_000;
 const COMPACTED_NOTICE: &str = "Conversation compacted";
 const SUMMARY_TITLE: &str = "Conversation summary";
 /// Titles context Claude Code adds that no line before it explains.
@@ -292,6 +294,7 @@ impl AgentView {
             cost: CostUsd::new(0.0),
             started_at: Timestamp::from_unix_millis(0),
             last_activity_at: None,
+            last_output_at: None,
             turn_started_at: None,
             session: None,
             position: Position::default(),
@@ -450,6 +453,7 @@ impl AgentView {
 
     /// Reads one line from `claude`.
     pub(crate) fn apply(&mut self, line: OutputLine, now: Timestamp) -> Vec<FollowUp> {
+        self.note_output(now);
         let mut follow_ups = Vec::new();
         match line {
             OutputLine::System(event) => self.apply_system(event, now),
@@ -1703,6 +1707,17 @@ impl AgentView {
         self.items.get_mut(index)
     }
 
+    /// `claude` wrote a line. The stamp moves once a second at most, so that a fast stream of lines
+    /// publishes the summary that often at most.
+    fn note_output(&mut self, now: Timestamp) {
+        let due = self.summary.last_output_at.is_none_or(|last| {
+            now.unix_millis().saturating_sub(last.unix_millis()) >= OUTPUT_STAMP_MILLIS
+        });
+        if due {
+            self.summary.last_output_at = Some(now);
+        }
+    }
+
     /// A prompt went to `claude`: a new turn starts now, even when the last one had not ended.
     fn start_turn(&mut self, now: Timestamp) {
         self.working = true;
@@ -1973,6 +1988,7 @@ mod tests {
             cost: CostUsd::new(0.0),
             started_at: Timestamp::from_unix_millis(0),
             last_activity_at: None,
+            last_output_at: None,
             turn_started_at: None,
             session: None,
             position: Position::default(),
@@ -4153,6 +4169,27 @@ mod tests {
     }
 
     #[test]
+    fn each_line_moves_the_last_output_once_a_second_at_most() {
+        let mut view = view();
+        let thinking = json!({"type": "system", "subtype": "thinking_tokens",
+                              "estimated_tokens": 50, "estimated_tokens_delta": 50});
+        let at_millis = |view: &mut AgentView, millis: u64| {
+            let parsed: OutputLine = thinking.to_string().parse().unwrap();
+            view.apply(parsed, Timestamp::from_unix_millis(millis));
+            view.summary().last_output_at
+        };
+        assert_eq!(view.summary().last_output_at, None);
+
+        let first = at_millis(&mut view, 100_000);
+        let soon = at_millis(&mut view, 100_600);
+        let later = at_millis(&mut view, 101_000);
+
+        assert_eq!(first, Some(Timestamp::from_unix_millis(100_000)));
+        assert_eq!(soon, first);
+        assert_eq!(later, Some(Timestamp::from_unix_millis(101_000)));
+    }
+
+    #[test]
     fn a_queued_prompt_sent_at_a_turns_end_starts_a_new_turn() {
         let mut view = view();
         view.add_prompt(&prompt("First"), at(100));
@@ -4289,6 +4326,7 @@ mod tests {
         let logged = |last: u64, turn: u64| AgentSummary {
             status: AgentStatus::Working,
             last_activity_at: Some(at(last)),
+            last_output_at: None,
             turn_started_at: Some(at(turn)),
             ..view().summary().clone()
         };
