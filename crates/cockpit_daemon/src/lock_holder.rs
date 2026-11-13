@@ -14,7 +14,7 @@ use std::fs::{File, TryLockError};
 #[cfg(unix)]
 use std::io;
 #[cfg(unix)]
-use std::os::fd::OwnedFd;
+use std::os::fd::BorrowedFd;
 #[cfg(unix)]
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
@@ -227,6 +227,8 @@ pub fn stop_lock_holder(state_dir: &Path) -> Result<(), StopLockHolderError> {
 
 #[cfg(unix)]
 fn stop_within(state_dir: &Path, wait: Duration) -> Result<(), StopLockHolderError> {
+    use std::os::fd::AsFd;
+
     use rustix::io::Errno;
     use rustix::process::{Pid, PidfdFlags, Signal};
 
@@ -264,7 +266,7 @@ fn stop_within(state_dir: &Path, wait: Duration) -> Result<(), StopLockHolderErr
         pid = pid.get(),
         "stopping the daemon that holds the state folder"
     );
-    match ends_within(&pidfd, wait) {
+    match ends_within(pidfd.as_fd(), wait) {
         Ok(true) => Ok(()),
         Ok(false) => Err(StopLockHolderError::StillRunning { pid, waited: wait }),
         Err(errno) => Err(StopLockHolderError::Wait {
@@ -277,7 +279,7 @@ fn stop_within(state_dir: &Path, wait: Duration) -> Result<(), StopLockHolderErr
 /// Whether the process of `pidfd` ends within `wait`. A pidfd becomes readable as its process
 /// ends, a zombie included.
 #[cfg(unix)]
-fn ends_within(pidfd: &OwnedFd, wait: Duration) -> rustix::io::Result<bool> {
+fn ends_within(pidfd: BorrowedFd<'_>, wait: Duration) -> rustix::io::Result<bool> {
     use rustix::event::{PollFd, PollFlags, Timespec};
     use rustix::io::Errno;
 
@@ -285,7 +287,7 @@ fn ends_within(pidfd: &OwnedFd, wait: Duration) -> rustix::io::Result<bool> {
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         let timeout = Timespec::try_from(left).map_err(|_| Errno::INVAL)?;
-        let mut pidfds = [PollFd::new(pidfd, PollFlags::IN)];
+        let mut pidfds = [PollFd::from_borrowed_fd(pidfd, PollFlags::IN)];
         match rustix::event::poll(&mut pidfds, Some(&timeout)) {
             Ok(0) => return Ok(false),
             Ok(_) => return Ok(true),
@@ -362,6 +364,7 @@ mod tests {
     mod unix {
         use std::os::unix::process::ExitStatusExt;
         use std::process::{Child, Command, Stdio};
+        use std::thread::JoinHandle;
 
         use rustix::process::Signal;
 
@@ -422,7 +425,7 @@ mod tests {
 
         /// Takes the lock of `state_dir` the moment it is free, as a daemon that another program
         /// starts again at once would. It returns once that daemon waits for the lock.
-        fn next_daemon(state_dir: &Path) -> std::thread::JoinHandle<File> {
+        fn next_daemon(state_dir: &Path) -> JoinHandle<File> {
             let path = store::lock_path(state_dir);
             let next = std::thread::spawn({
                 let path = path.clone();

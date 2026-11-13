@@ -877,7 +877,7 @@ fn refuses_when_it_cannot_read_the_lock_files_inode() {
 }
 
 /// Some sandboxed kernels give a `/proc/locks` that lists no lock: the daemon would not show, and
-/// its busy agents would restart. A fake `awk` reads it so.
+/// its busy agents would restart. A fake `awk` finds no lock in it.
 #[test]
 fn refuses_when_proc_locks_lists_no_lock() {
     let machine = Machine::new();
@@ -1284,8 +1284,8 @@ PATH=${{PATH#*:}} exec sed "$@"
     );
 }
 
-/// While the daemon starts an agent, its child has the lock's file open between fork and exec, and
-/// any program may open the file. Only the daemon holds the lock. This process opens the file
+/// While the daemon starts an agent, its child has the lock's file open between fork and exec. Any
+/// program may open the file too. Only the daemon holds the lock. This process opens the file
 /// before the daemon starts, so its pid comes first in `/proc`.
 #[test]
 fn the_stop_leaves_a_process_that_only_opened_the_lock_file_alone() {
