@@ -3061,8 +3061,15 @@ html.reordering * {
   color: var(--muted);
 }
 
-.transcript-entry:has(> .step-call) + .transcript-entry:has(> .step-call) {
-  margin-top: -8px;
+/* 6 px between calls in a row, in place of the column's 14 px gap: the entry's top margin is
+   already -6 px. A "New" divider or an older-step note above the call keeps the full gap. */
+.transcript-entry:has(> .step-call) + .transcript-entry:has(> .step-call:first-child) {
+  margin-top: -14px;
+}
+
+/* The line then crosses only the 6 px gap: past it, it would run into the next call's dot. */
+.transcript-entry:has(+ .transcript-entry > .step-call:first-child) > .step-call.linked-below::after {
+  bottom: -6px;
 }
 
 /* The working line ends a running turn's line with the spinner in place of a dot. */
