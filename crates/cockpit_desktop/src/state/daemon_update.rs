@@ -618,13 +618,21 @@ pub struct UpdateLine {
     pub text: &'static str,
     /// The link that opens the update's screens.
     pub link: &'static str,
-    /// The daemon answers no request, so the panel offers "Retry now".
+    /// The daemon answers no request: the panel's edge turns red.
     pub down: bool,
+    /// The line offers "Retry now" too. A daemon the app can update needs the update, not
+    /// another try.
+    pub retry: bool,
 }
 
 /// The sidebar's line for `known`, when it has an update to show.
 pub fn update_line(known: &MachineState) -> Option<UpdateLine> {
-    let line = |text, link, down| UpdateLine { text, link, down };
+    let line = |text, link, down| UpdateLine {
+        text,
+        link,
+        down,
+        retry: down,
+    };
     match (&known.update, &known.version_gap) {
         (Some(DaemonUpdate::Running(_) | DaemonUpdate::Reconnecting(_)), _) => {
             Some(line("Updating…", "Show", false))
@@ -638,9 +646,10 @@ pub fn update_line(known: &MachineState) -> Option<UpdateLine> {
             !known.is_connected(),
         )),
         (None, Some(gap)) => match (gap.kind, &known.update_plan) {
-            (GapKind::OlderProtocol, Some(_)) => {
-                Some(line("Runs an older version.", "Update", true))
-            }
+            (GapKind::OlderProtocol, Some(_)) => Some(UpdateLine {
+                retry: false,
+                ..line("Runs an older version.", "Update", true)
+            }),
             (GapKind::OlderProtocol, None) => Some(line("Runs an older version.", "Details", true)),
             (GapKind::NewerProtocol, _) => Some(line("Runs a newer version.", "Details", true)),
             (GapKind::OtherBuild, Some(_)) => Some(line("Update available.", "Update", false)),

@@ -27,6 +27,8 @@ pub enum IconKind {
     Terminal,
     Send,
     ArrowDown,
+    /// From one version to the next.
+    ArrowRight,
     Clock,
     Shield,
     Bolt,
@@ -40,6 +42,8 @@ pub enum IconKind {
     Eye,
     EyeOff,
     Question,
+    /// A note that explains, before its text.
+    Info,
     Warning,
     Folder,
     File,
@@ -112,6 +116,7 @@ impl IconKind {
             Self::Terminal => r#"<path d="M5 7l5 5-5 5"></path><path d="M12 18h7"></path>"#,
             Self::Send => r#"<path d="M12 19V5"></path><path d="M6 11l6-6 6 6"></path>"#,
             Self::ArrowDown => r#"<path d="M12 5v14"></path><path d="M6 13l6 6 6-6"></path>"#,
+            Self::ArrowRight => r#"<path d="M5 12h14"></path><path d="M13 6l6 6-6 6"></path>"#,
             Self::Clock => {
                 r#"<circle cx="12" cy="12" r="8"></circle><path d="M12 8v4l3 2"></path>"#
             }
@@ -149,6 +154,9 @@ impl IconKind {
             }
             Self::Question => {
                 r#"<circle cx="12" cy="12" r="9"></circle><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6V14"></path><path d="M12 17h.01"></path>"#
+            }
+            Self::Info => {
+                r#"<circle cx="12" cy="12" r="9"></circle><path d="M12 11v5"></path><path d="M12 8h.01"></path>"#
             }
             Self::Warning => {
                 r#"<path d="M12 3l9 16H3z"></path><path d="M12 10v4"></path><path d="M12 17h.01"></path>"#

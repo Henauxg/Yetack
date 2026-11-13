@@ -10,7 +10,9 @@ use dioxus::prelude::*;
 use crate::connection::{Clock, Cockpit};
 use crate::machine::MachineId;
 use crate::state::machine_status::StatusAction;
-use crate::state::machines::{self, MachineChange, MachineName, MachineRow, RowNote, ServerRow};
+use crate::state::machines::{
+    self, MachineChange, MachineName, MachineRow, RowNote, RowVersion, ServerRow,
+};
 use crate::state::{AppState, Dialog, MachineEdit, MachineMenu, MachinesView, daemon_update};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::menu::{FlatMenu, FlatRow};
@@ -199,8 +201,16 @@ fn MachineRowView(row: MachineRow, menu_open: bool) -> Element {
                 }
             }
             span { class: "machine-cell-version mono",
-                if let Some(version) = version {
-                    "{version}"
+                match version {
+                    Some(RowVersion::Runs(release)) => rsx! { "{release}" },
+                    Some(RowVersion::Update { from, to }) => rsx! {
+                        if let Some(from) = from {
+                            span { class: "version-from", "{from}" }
+                        }
+                        Icon { kind: IconKind::ArrowRight, size: 12 }
+                        span { class: "version-to", "{to}" }
+                    },
+                    None => rsx! {},
                 }
             }
             span { class: "machine-cell-action",

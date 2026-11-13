@@ -2,6 +2,7 @@
 //! the servers the app reaches beside this computer, which it adds, edits and removes in the
 //! config.
 
+use std::fmt;
 use std::time::Instant;
 
 use cockpit_protocol::{AgentId, ReleaseVersion};
@@ -10,9 +11,9 @@ use super::app_state::{AppState, ConnectionState, MachineState};
 use super::apply::forget_agent;
 use super::daemon_update::{self, DaemonUpdate};
 use super::drafts::Drafts;
-use super::file_tree;
 use super::machine_status::{self, MachineStatus, StatusAction, Tone};
 use super::ui_state::{Dialog, MachineEdit, MachineMenu, MachinesView};
+use super::{file_tree, update_offer};
 use crate::config::MachineConfig;
 use crate::daemon_label::{DaemonLabel, DaemonPlace};
 use crate::format;
@@ -64,13 +65,56 @@ pub struct MachineRow {
     pub chip: &'static str,
     /// The error, as the chip's tooltip.
     pub error: Option<String>,
-    /// The release its daemon runs, while it is connected: an earlier connection's may no longer
-    /// be the one it runs.
-    pub version: Option<ReleaseVersion>,
+    pub version: Option<RowVersion>,
     /// Its button: the first link of its line in the sidebar.
     pub action: Option<StatusAction>,
     /// A server the config names, which its ⋯ menu edits, copies and removes.
     pub server: Option<ServerRow>,
+}
+
+/// The release a row shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowVersion {
+    /// The release its daemon runs, while it is connected: an earlier connection's may no longer
+    /// be the one it runs.
+    Runs(ReleaseVersion),
+    /// The app can update its daemon from `from` to `to`, this app's release. `from` is `None` for
+    /// a daemon of protocol 8 or older, which does not name its release as it refuses the app.
+    Update {
+        from: Option<ReleaseVersion>,
+        to: ReleaseVersion,
+    },
+}
+
+/// "0.2.0", "0.1.0 → 0.2.0", or "→ 0.2.0" when the daemon did not name its release.
+impl fmt::Display for RowVersion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Runs(release) => write!(formatter, "{release}"),
+            Self::Update {
+                from: Some(from),
+                to,
+            } => write!(formatter, "{from} → {to}"),
+            Self::Update { from: None, to } => write!(formatter, "→ {to}"),
+        }
+    }
+}
+
+impl RowVersion {
+    fn of(state: &AppState, machine: MachineId, known: &MachineState) -> Option<Self> {
+        let update = update_offer::offer(state, machine).filter(|offer| offer.plan.is_some());
+        match update {
+            Some(offer) => Some(Self::Update {
+                from: offer.daemon.map(|daemon| daemon.version),
+                to: offer.app.version,
+            }),
+            None => known
+                .daemon_version
+                .clone()
+                .filter(|_| known.is_connected())
+                .map(Self::Runs),
+        }
+    }
 }
 
 /// What a server's ⋯ menu acts on.
@@ -94,6 +138,10 @@ pub fn rows(state: &AppState) -> Vec<MachineRow> {
                 .keys()
                 .filter(|agent| MachineId::of(**agent) == machine)
                 .count();
+            // A countdown to the next try shows only where the row offers to try again.
+            let retries = line
+                .as_ref()
+                .is_some_and(|line| line.actions.contains(&StatusAction::Retry));
             let (error, action) = match line {
                 Some(line) => (line.error, line.actions.first().copied()),
                 None => (None, None),
@@ -103,14 +151,12 @@ pub fn rows(state: &AppState) -> Vec<MachineRow> {
                 name: MachineName::new(machine, known),
                 place: place(known),
                 agents,
-                note: RowNote::of(known),
+                note: RowNote::of(known)
+                    .filter(|note| retries || !matches!(note, RowNote::RetryAt(_))),
                 tone,
                 chip,
                 error,
-                version: known
-                    .daemon_version
-                    .clone()
-                    .filter(|_| known.is_connected()),
+                version: RowVersion::of(state, machine, known),
                 action,
                 server: known.server.as_ref().map(|config| ServerRow {
                     host: config.host.clone(),
@@ -418,7 +464,7 @@ pub fn forget(state: &mut AppState, drafts: &mut Drafts, machine: MachineId) {
 mod tests {
     use super::*;
     use crate::state::app_state::tests::{state_with, summary};
-    use crate::state::update_offer::{GapKind, VersionGap};
+    use crate::state::update_offer::{GapKind, ProgramBuild, VersionGap};
     use crate::state::update_plan::{ServerPlan, UpdatePlan};
     use crate::state::{AgentEntry, MachineState};
     use cockpit_protocol::{AccountId, AgentStatus, BuildCommit, PROTOCOL_VERSION};
@@ -826,6 +872,58 @@ mod tests {
                 None,
                 Some("Retrying in 8 s.".to_owned()),
             ]
+        );
+    }
+
+    #[test]
+    fn an_older_daemons_row_offers_its_update_from_the_release_it_named_with_no_countdown() {
+        let now = Instant::now();
+        let mut state = dialog_state(now);
+        let gpu_box = MachineId::new(2);
+        refuses_as_older(&mut state, gpu_box);
+        let app = state.app_build.version.clone();
+        let row = |state: &AppState| {
+            rows(state)
+                .into_iter()
+                .find(|row| row.machine == gpu_box)
+                .map(|row| {
+                    (
+                        row.version.map(|version| version.to_string()),
+                        row.action,
+                        row.note,
+                    )
+                })
+        };
+
+        let unnamed = row(&state);
+        if let Some(gap) = state
+            .machines
+            .others
+            .get_mut(&gpu_box)
+            .and_then(|known| known.version_gap.as_mut())
+        {
+            gap.daemon = Some(ProgramBuild {
+                version: ReleaseVersion::new("0.0.1".to_owned()),
+                commit: None,
+            });
+        }
+        let named = row(&state);
+
+        assert_eq!(
+            unnamed,
+            Some((
+                Some(format!("→ {app}")),
+                Some(StatusAction::Update("Update")),
+                None
+            ))
+        );
+        assert_eq!(
+            named,
+            Some((
+                Some(format!("0.0.1 → {app}")),
+                Some(StatusAction::Update("Update")),
+                None
+            ))
         );
     }
 

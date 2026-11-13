@@ -91,7 +91,7 @@ pub fn status(known: &MachineState) -> MachineStatus {
         return answers;
     };
     let mut actions = vec![StatusAction::Update(update.link)];
-    if update.down {
+    if update.retry {
         actions.push(StatusAction::Retry);
     }
     MachineStatus {
@@ -301,7 +301,7 @@ mod tests {
             older.map(|line| (line.text, line.actions)),
             Some((
                 "Runs an older version.",
-                vec![StatusAction::Update("Update"), StatusAction::Retry]
+                vec![StatusAction::Update("Update")]
             ))
         );
         let lab = status(&state.machines.others[&MachineId::new(3)]);

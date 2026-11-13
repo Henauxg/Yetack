@@ -1024,6 +1024,19 @@ button:disabled {
   color: var(--muted);
 }
 
+.machine-cell-version .version-from {
+  color: var(--dim);
+}
+
+.machine-cell-version .version-to {
+  color: var(--text-soft);
+}
+
+.machine-cell-version .icon {
+  flex: none;
+  color: var(--dim);
+}
+
 /* Every row's button has one width, so the columns after it line up. */
 .line-button {
   width: 92px;
@@ -10154,11 +10167,226 @@ html.splitting .sidebar {
   overflow-wrap: anywhere;
 }
 
-.update-actions {
+/* An update screen's card: the machine's icon and title, the two versions, a note, the buttons. */
+.no-daemon-card.update-card {
+  width: 560px;
+  gap: 16px;
+  padding: 22px 24px 20px;
+}
+
+.update-card-head {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.update-card-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: var(--raised);
+  color: var(--text-soft);
+}
+
+.update-card-titles {
+  min-width: 0;
+}
+
+.no-daemon-card .update-card-lead {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+
+.version-pair {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 10px;
+}
+
+.version-box {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--raised);
+}
+
+/* The daemon the app cannot reach until it is updated. */
+.version-box.behind-protocol {
+  background: rgba(244, 112, 103, 0.08);
+}
+
+/* The daemon the app still uses, which an update would replace. */
+.version-box.behind {
+  background: rgba(245, 165, 36, 0.08);
+}
+
+.version-who {
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.version-number {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.version-meta {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.version-arrow {
+  display: inline-flex;
+  width: 18px;
+  color: var(--dim);
+}
+
+.update-callout {
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-soft);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.callout-icon {
+  flex: none;
+  display: inline-flex;
+  padding-top: 1px;
+  color: var(--muted);
+}
+
+.update-card-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
   gap: 8px;
-  margin-top: 6px;
+}
+
+.details-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: auto;
+  padding: 4px 2px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: color var(--motion-hover) var(--ease);
+}
+
+.details-link:hover {
+  color: var(--text-soft);
+}
+
+.details-link:active {
+  transform: scale(var(--press-scale));
+}
+
+.details-link:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.details-link .icon {
+  transition: transform var(--motion-out) var(--ease-in);
+}
+
+.details-link.open .icon {
+  transform: rotate(90deg);
+  transition: transform var(--motion-in) var(--ease-out);
+}
+
+/* The details fold open under the buttons, and the card's gap above them closes with them. */
+.update-details-fold {
+  --fold-gap: 16px;
+  display: grid;
+  grid-template-rows: 1fr;
+  animation: line-fold-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.update-details-fold.leaving {
+  animation: line-fold-out var(--motion-out) var(--ease-in) forwards;
+}
+
+.update-details-clip {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.update-details {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--well);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The agents a restart would interrupt, each with its status dot and what it does. */
+.busy-agents {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.busy-agents li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.busy-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-soft);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.busy-doing {
+  flex: none;
+  font-size: 12.5px;
+  color: var(--dim);
+}
+
+.dialog.confirm-update {
+  width: 560px;
+  max-width: calc(100vw - 32px);
+}
+
+.dialog.confirm-update .busy-agents {
+  padding: 0 20px 18px;
+}
+
+.dialog.confirm-update .dialog-actions {
+  flex-wrap: wrap;
+  padding: 0 16px 16px;
 }
 
 .machine-trouble .link-button:not(:last-child) {
