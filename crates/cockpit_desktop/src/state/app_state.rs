@@ -380,7 +380,7 @@ pub struct MachineState {
     /// How many times the app connected to the daemon in this run. An update of this computer's
     /// service compares it with its count at the stop, to tell a connection to the daemon that
     /// started since from one to the stopped daemon.
-    pub connections: u64,
+    pub connections: u32,
     /// The server's entry in the config, which the Machines dialog edits. `None` for this
     /// computer.
     pub server: Option<MachineConfig>,

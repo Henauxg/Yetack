@@ -48,7 +48,7 @@ pub struct UpdateProgress {
     pub cancel_asked: bool,
     /// The machine's count of connections (`MachineState::connections`) as the stop of this
     /// computer's daemon started.
-    connections_at_stop: Option<u64>,
+    connections_at_stop: Option<u32>,
 }
 
 impl UpdateProgress {
@@ -66,7 +66,7 @@ impl UpdateProgress {
 
     /// Whether the app connected after the stop of this computer's daemon started, `connections`
     /// being the machine's count now. Such a connection reaches a daemon that started since.
-    fn connected_since_the_stop(&self, connections: u64) -> bool {
+    fn connected_since_the_stop(&self, connections: u32) -> bool {
         self.connections_at_stop
             .is_some_and(|at_stop| connections > at_stop)
     }
