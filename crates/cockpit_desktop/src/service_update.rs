@@ -394,10 +394,11 @@ mod tests {
 
         assert_eq!(result, Ok(()));
         assert_eq!(steps, [UpdateStep::Stop, UpdateStep::Start]);
-        assert_eq!(
-            fake.calls().first().map(String::as_str),
-            Some("read the jobs of [AgentId(1)] in /made-up/state")
+        let read = format!(
+            "read the jobs of [AgentId(1)] in {}",
+            plan.state_dir.display()
         );
+        assert_eq!(fake.calls().first(), Some(&read));
     }
 
     #[tokio::test]
