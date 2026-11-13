@@ -451,9 +451,9 @@ async fn route(
                 continue;
             }
             ToDaemon::Machines(MachineChange::LocalDaemon(next)) => {
-                let saved =
-                    save_daemon(&config_file, next).map_err(|error| state::error_chain(&error));
-                settings::start_saved(&mut state.write(), next.clone(), saved);
+                settings::save_start(&mut state.write(), next.clone(), |next| {
+                    save_daemon(&config_file, next).map_err(|error| state::error_chain(&error))
+                });
                 continue;
             }
             ToDaemon::Update(command) => {
@@ -820,7 +820,7 @@ async fn run_demo(
                     }
                     // The demo writes no config.
                     Some(ToDaemon::Machines(MachineChange::LocalDaemon(next))) => {
-                        settings::start_saved(&mut state.write(), next, demo::save_local(local));
+                        settings::save_start(&mut state.write(), next, |_| demo::save_local(local));
                         continue;
                     }
                     Some(

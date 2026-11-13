@@ -93,8 +93,8 @@ pub fn change_later(state: &AppState) -> Option<String> {
     })
 }
 
-/// A click on one of the Local section's choices. Returns the daemon for the config to take,
-/// unless the config names it already. The section shows the choice once the config took it.
+/// A click on one of the Local section's choices. Returns the daemon for the config to take. The
+/// section shows the choice once the config took it.
 pub fn choose_start(state: &mut AppState, choice: StartDaemon) -> Option<DaemonConfig> {
     if let Some(view) = view_mut(state) {
         view.start_error = None;
@@ -102,15 +102,22 @@ pub fn choose_start(state: &mut AppState, choice: StartDaemon) -> Option<DaemonC
     if !matches!(local_start(state), LocalStart::Choices(_)) {
         return None;
     }
-    let next = choice.config(&state.machines.configured);
-    (next != state.machines.configured).then_some(next)
+    Some(choice.config(&state.machines.configured))
 }
 
-/// The config took `next`, or refused it with `saved`'s error, as a read-only config does. A
-/// refusal keeps the config's choice, and the Local section says why under it. The window's notes
-/// sit under the dialog's backdrop, so they say it only when the section is not on screen.
-pub fn start_saved(state: &mut AppState, next: DaemonConfig, saved: Result<(), String>) {
-    let error = match saved {
+/// Writes `next` to the config with `save`, unless the config names it already: a click sent
+/// earlier may have made it so. A refusal, as a read-only config gives, keeps the config's choice,
+/// and the Local section says why under it. The window's notes sit under the dialog's backdrop, so
+/// they say it only when the section is not on screen.
+pub fn save_start(
+    state: &mut AppState,
+    next: DaemonConfig,
+    save: impl FnOnce(&DaemonConfig) -> Result<(), String>,
+) {
+    if next == state.machines.configured {
+        return;
+    }
+    let error = match save(&next) {
         Ok(()) => {
             state.machines.configured = next;
             return;
@@ -344,7 +351,6 @@ mod tests {
 
         let to_service = choose_start(&mut state, StartDaemon::Service);
         let to_app = choose_start(&mut state, StartDaemon::InApp);
-        let again = choose_start(&mut state, StartDaemon::Ask);
 
         assert_eq!(
             to_service,
@@ -354,7 +360,6 @@ mod tests {
             })
         );
         assert_eq!(to_app, Some(DaemonConfig::InApp));
-        assert_eq!(again, None, "the config names it already");
         assert_eq!(
             local_start(&state),
             LocalStart::Choices(StartDaemon::Ask),
@@ -363,18 +368,58 @@ mod tests {
     }
 
     #[test]
+    fn quick_clicks_end_on_the_last_choice_and_write_each_change_once() {
+        let mut state = general();
+        let mut written = Vec::new();
+
+        // The clicks come before the connection task writes the first one.
+        let clicks = [StartDaemon::Service, StartDaemon::Service, StartDaemon::Ask];
+        let sent: Vec<DaemonConfig> = clicks
+            .into_iter()
+            .filter_map(|choice| choose_start(&mut state, choice))
+            .collect();
+        for next in sent {
+            save_start(&mut state, next, |next| {
+                written.push(next.clone());
+                Ok(())
+            });
+        }
+        let current = choose_start(&mut state, StartDaemon::Ask);
+        if let Some(current) = current {
+            save_start(&mut state, current, |_| Err(READ_ONLY.to_owned()));
+        }
+
+        assert_eq!(local_start(&state), LocalStart::Choices(StartDaemon::Ask));
+        assert_eq!(
+            written,
+            [
+                DaemonConfig::Local {
+                    socket: None,
+                    start_service: true,
+                },
+                DaemonConfig::default(),
+            ]
+        );
+        assert_eq!(
+            view(&state).start_error,
+            None,
+            "the config names the current choice already"
+        );
+    }
+
+    #[test]
     fn a_start_choice_the_config_refuses_keeps_the_old_one_and_says_why_under_it() {
         let mut state = general();
         let Some(next) = choose_start(&mut state, StartDaemon::InApp) else {
-            panic!("the config names the daemon in the app already");
+            panic!("the section offers no choice");
         };
 
-        start_saved(&mut state, next, Err(READ_ONLY.to_owned()));
+        save_start(&mut state, next, |_| Err(READ_ONLY.to_owned()));
         let refused = (local_start(&state), view(&state).start_error);
         let service = choose_start(&mut state, StartDaemon::Service);
         let cleared = view(&state).start_error;
         if let Some(service) = service {
-            start_saved(&mut state, service, Ok(()));
+            save_start(&mut state, service, |_| Ok(()));
         }
 
         assert_eq!(
@@ -396,10 +441,14 @@ mod tests {
     fn a_refusal_the_section_cannot_show_goes_to_the_notes() {
         let mut state = crate::state::state_with(Vec::new());
 
-        start_saved(&mut state, DaemonConfig::InApp, Err(READ_ONLY.to_owned()));
+        save_start(&mut state, DaemonConfig::InApp, |_| {
+            Err(READ_ONLY.to_owned())
+        });
         open(&mut state);
         show_tab(&mut state, SettingsTab::Keyboard);
-        start_saved(&mut state, DaemonConfig::InApp, Err(READ_ONLY.to_owned()));
+        save_start(&mut state, DaemonConfig::InApp, |_| {
+            Err(READ_ONLY.to_owned())
+        });
 
         assert_eq!(state.machines.configured, DaemonConfig::default());
         assert_eq!(state.ui.errors.len(), 2);

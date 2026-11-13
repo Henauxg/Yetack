@@ -622,7 +622,7 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
 - **Where Local's agents run from the next start** (`state/settings.rs`, `ui/settings.rs`): the Settings dialog's General tab has a Local section, "Where agents run", with "In this app", "Background service" and "Ask" (`StartDaemon`).
   They write the config's `[daemon]` with `save_daemon`, as the screen's tick does: `in_app`, `local` with `start_service`, and `local` without it, which shows the screen again at a start where no service answers. A socket the config names stays.
   The state holds the config's daemon (`Machines::configured`). The connection task reaches it at the start, and a choice on the screen with the tick changes it, so the section and the screen agree.
-  A click sends `MachineChange::LocalDaemon` to the router, which writes the file. The section shows the choice once the file took it.
+  A click sends `MachineChange::LocalDaemon` to the router, which writes the file unless the config names that daemon already, so quick clicks end on the last one. The section shows the choice once the file took it.
   A config that refuses it, such as a link into the Nix store, keeps the old choice, and the section says why in a line under it (`SettingsView::start_error`), which folds open and shut. A refusal while the General tab is not on screen goes to the window's notes.
   A daemon over SSH is set in the config file alone, so the section only says where it runs. On Windows, which has no background service, the section says the agents always run in the app.
   Under its tick, the question screen says where to change the choice later, on Unix only.
