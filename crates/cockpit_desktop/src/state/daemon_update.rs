@@ -147,7 +147,7 @@ impl UpdateFailure {
 /// What the user stops by hand before a retry, when the app could not stop the daemon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HandStop {
-    /// The daemon's process, which did not stop or took no signal.
+    /// The daemon's process, which did not stop, took no signal, or could not be waited for.
     Process(ProcessId),
     /// A daemon older than the record of its process holds the state folder, so the app cannot
     /// tell which process it is. Once it is gone, the next daemon records its own.
@@ -2167,8 +2167,8 @@ mod tests {
     }
 
     /// Another program, such as a systemd unit with `Restart=always`, restarts the old daemon
-    /// within the stop's 100 ms: the app reconnects to it during the stop, then the start finds
-    /// a daemon that answers.
+    /// the moment the stop ends it: the app reconnects to it before the stop returns, then the
+    /// start finds a daemon that answers.
     #[test]
     fn an_old_daemon_restarted_during_the_stop_fails_the_update_once_the_restart_ends() {
         let mut state = with_local_service(&[]);
