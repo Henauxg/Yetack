@@ -18,6 +18,7 @@ use serde_json::Value;
 
 use crate::connection::{Clock, Cockpit, Today};
 use crate::keymap::Command;
+use crate::prefs::ToolCallDetail;
 use crate::render::{self, Diff, Found, Language, OutputPart, SearchTool, diff_lines};
 use crate::state::sending::{SendingPlace, SendingPrompt};
 use crate::state::{
@@ -63,6 +64,14 @@ const MESSAGE_CLIP_CLASS: &str = "message-clip";
 
 /// The CSS property in which a row tells the fold script how many screen lines it keeps.
 const FOLD_LINES_PROPERTY: &str = "--fold-lines";
+
+/// A call's line that a click folds or unfolds. The fold script keeps a click that selects text
+/// in it from folding.
+const CALL_LINE_CLASS: &str = "foldable";
+
+/// Marks a call's input and output, or its diff, that a click showed: they come in with an
+/// animation.
+const UNFOLDED_CLASS: &str = "unfolded";
 
 /// Folds IN and OUT rows, and long messages you sent, by their lines on screen, which only the
 /// page knows: wrapping depends on the width. It marks `data-tall` each row whose text takes more
@@ -225,6 +234,16 @@ if (!window.agentsCockpitFolds) {
     }
   }).observe(document.body, { childList: true, subtree: true });
   watch(document.body, true);
+  // The click that ends a selection in a call's line selects: it leaves the call as it is. The
+  // app's own listener sits on its root, below the document, so it never sees that click.
+  document.addEventListener("click", (event) => {
+    const line = event.target instanceof Element ? event.target.closest(`.${classes.call_line}`) : null;
+    const own = line === null ? null : event.target.closest("button, a");
+    const selection = document.getSelection();
+    if (line !== null && own === null && selection !== null && !selection.isCollapsed && line.contains(selection.focusNode)) {
+      event.stopPropagation();
+    }
+  }, true);
 }
 "#;
 
@@ -252,7 +271,7 @@ const TOOL_ERROR_CLOSE: &str = "</tool_use_error>";
 /// The rows a chat draws in the frame it opens, enough to fill the window. The older rows follow
 /// in chunks, one per frame: drawing a long conversation at once keeps the window from answering
 /// a click for about 100 ms.
-const FIRST_ROWS: usize = 25;
+const FIRST_ROWS: usize = 40;
 /// The older rows each following frame adds.
 const CHUNK_ROWS: usize = 40;
 
@@ -936,7 +955,7 @@ pub fn ItemView(
             ThinkingView { text }
         },
         ItemBody::ToolCall(call) if call.edit.is_some() => rsx! {
-            EditView { agent, folder, stage: CallStage::new(&call, awaits_approval), call }
+            EditView { agent, id, folder, stage: CallStage::new(&call, awaits_approval), call }
         },
         ItemBody::ToolCall(call) => rsx! {
             ToolView { agent, id, stage: CallStage::new(&call, awaits_approval), call }
@@ -1239,7 +1258,8 @@ fn capitalized(word: &str) -> String {
 enum TitleLayout {
     /// Over the IN and OUT block, which holds the command.
     Full,
-    /// Alone, in a subagent: the command takes the place of a missing description.
+    /// Alone, in a subagent or on a folded call's line: the command takes the place of a missing
+    /// description.
     Compact,
 }
 
@@ -1288,7 +1308,9 @@ fn FileLink(agent: AgentId, path: PathBuf, line: Option<u32>, text: String) -> E
         button {
             class: "tool-summary path-link",
             title: "Open the file",
-            onclick: move |_| {
+            // A click on the link opens the file and leaves the call's fold as it is.
+            onclick: move |event| {
+                event.stop_propagation();
                 let path = path.clone();
                 cockpit.update(|state| actions::open_file(state, agent, path, line));
             },
@@ -1339,6 +1361,7 @@ struct FoldClasses {
     message_clip: &'static str,
     markdown: &'static str,
     lines_property: &'static str,
+    call_line: &'static str,
 }
 
 const FOLD_CLASSES: FoldClasses = FoldClasses {
@@ -1350,6 +1373,7 @@ const FOLD_CLASSES: FoldClasses = FoldClasses {
     message_clip: MESSAGE_CLIP_CLASS,
     markdown: MARKDOWN_CLASS,
     lines_property: FOLD_LINES_PROPERTY,
+    call_line: CALL_LINE_CLASS,
 };
 
 fn start_fold_script() {
@@ -1606,8 +1630,72 @@ impl EditMeta {
     }
 }
 
+/// How much of each tool call the chat shows, as the preferences say, and the items that hold the
+/// passage of a quote being written, whose calls show in full so that the quote finds it.
+#[derive(Clone, Copy)]
+struct CallDetail {
+    detail: Memo<ToolCallDetail>,
+    quoted: Memo<BTreeSet<(AgentId, ItemId)>>,
+}
+
+/// Provides the window's `CallDetail`. A row reads these memos, so a change of the state runs them
+/// once, not once per call in the chat.
+pub fn use_call_detail(cockpit: Cockpit) {
+    let detail = use_memo(move || cockpit.state.read().prefs.chat.tool_calls);
+    let quoted: Memo<BTreeSet<(AgentId, ItemId)>> = use_memo(move || {
+        cockpit
+            .drafts
+            .read()
+            .composer
+            .iter()
+            .flat_map(|(agent, draft)| {
+                draft
+                    .quotes
+                    .iter()
+                    .map(|quote| (*agent, quote.passage.anchor.item))
+            })
+            .collect()
+    });
+    use_context_provider(|| CallDetail { detail, quoted });
+}
+
+/// Whether a call's input and output show, and the toggle a click on its line or its chevron
+/// gives. A call shows them as the preferences say, or while a quote being written holds a
+/// passage of them, until a click decides for it.
+fn use_call_fold(agent: AgentId, item: ItemId) -> (bool, Signal<Option<bool>>) {
+    let CallDetail { detail, quoted } = use_context();
+    let decided = use_signal(|| None::<bool>);
+    let shown = detail() == ToolCallDetail::Full || quoted.read().contains(&(agent, item));
+    (decided().unwrap_or(shown), decided)
+}
+
+/// The chevron at the end of a call's line, which shows or hides its input and output.
+#[component]
+fn CallFold(open: bool, decided: Signal<Option<bool>>) -> Element {
+    let mut decided = decided;
+    let label = if open {
+        "Hide the input and output"
+    } else {
+        "Show the input and output"
+    };
+    rsx! {
+        button {
+            class: "call-fold",
+            aria_expanded: open,
+            aria_label: label,
+            title: label,
+            onclick: move |event| {
+                event.stop_propagation();
+                decided.set(Some(!open));
+            },
+            span { class: if open { "chevron open" } else { "chevron" }, Icon { kind: IconKind::ChevronRight, size: 12 } }
+        }
+    }
+}
+
 #[component]
 fn ToolView(agent: AgentId, id: ItemId, call: ToolCall, stage: CallStage) -> Element {
+    let (open, mut decided) = use_call_fold(agent, id);
     let shape = ToolShape::new(&call);
     let meta = tool_meta(&call, stage);
     let input = shape.input().map(str::to_owned);
@@ -1618,18 +1706,37 @@ fn ToolView(agent: AgentId, id: ItemId, call: ToolCall, stage: CallStage) -> Ele
     // A command's last lines say how it ended.
     let out_fold = out_fold(&shape, output.as_deref().unwrap_or_default());
     let framed = input.is_some() || output.is_some();
+    let layout = if framed && open {
+        TitleLayout::Full
+    } else {
+        TitleLayout::Compact
+    };
+    let unfolded = if decided().is_some() {
+        UNFOLDED_CLASS
+    } else {
+        ""
+    };
     rsx! {
         div { class: stage.class(),
-            div { class: "tool-head",
-                {tool_title(agent, &call, &shape, TitleLayout::Full)}
+            div {
+                class: if framed { "tool-head {CALL_LINE_CLASS}" } else { "tool-head" },
+                onclick: move |_| {
+                    if framed {
+                        decided.set(Some(!open));
+                    }
+                },
+                {tool_title(agent, &call, &shape, layout)}
                 if stage == CallStage::Running {
                     RunningMeta { agent, item: id }
                 } else if !meta.is_empty() {
                     span { class: "tool-meta", "{meta}" }
                 }
+                if framed {
+                    CallFold { open, decided }
+                }
             }
-            if framed {
-                div { class: "tool-io",
+            if framed && open {
+                div { class: "tool-io {unfolded}",
                     if let Some(input) = input {
                         IoRow { kind: IoKind::In, text: input, fold: FoldEnd::First }
                     }
@@ -1643,8 +1750,15 @@ fn ToolView(agent: AgentId, id: ItemId, call: ToolCall, stage: CallStage) -> Ele
 }
 
 #[component]
-fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall, stage: CallStage) -> Element {
+fn EditView(
+    agent: AgentId,
+    id: ItemId,
+    folder: PathBuf,
+    call: ToolCall,
+    stage: CallStage,
+) -> Element {
     let cockpit: Cockpit = use_context();
+    let (open, mut decided) = use_call_fold(agent, id);
     let Some(edit) = call.edit.clone() else {
         return rsx! {};
     };
@@ -1669,21 +1783,39 @@ fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall, stage: CallStage) -
     };
     let shown_path = file_edits::shown_path(&folder, &edit.path);
     let path = edit.path.clone();
-    let open = move |_: MouseEvent| {
+    // A click on the path opens the file and leaves the call's fold as it is.
+    let open_file = move |event: MouseEvent| {
+        event.stop_propagation();
         let path = path.clone();
         cockpit.update(|state| actions::open_file(state, agent, path, None));
     };
-    let open_more = open.clone();
+    let open_more = open_file.clone();
     let more_text = format!(
         "{} more, open in the file view",
         format::count(more, "line", "lines")
     );
     let meta = EditMeta::new(&call, stage, added, removed);
+    let failure = call
+        .output
+        .clone()
+        .filter(|_| call.status == ToolCallStatus::Failed);
+    let foldable = !preview.is_empty() || failure.is_some();
+    let unfolded = if decided().is_some() {
+        UNFOLDED_CLASS
+    } else {
+        ""
+    };
     rsx! {
         div { class: stage.class(),
-            div { class: "tool-head",
+            div {
+                class: if foldable { "tool-head {CALL_LINE_CLASS}" } else { "tool-head" },
+                onclick: move |_| {
+                    if foldable {
+                        decided.set(Some(!open));
+                    }
+                },
                 span { class: "tool-name", "{call.tool}" }
-                button { class: "path-link mono", onclick: open, "{shown_path}" }
+                button { class: "path-link mono", onclick: open_file, "{shown_path}" }
                 match meta {
                     EditMeta::Stage(words) => rsx! {
                         span { class: "tool-meta", "{words}" }
@@ -1702,9 +1834,12 @@ fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall, stage: CallStage) -
                         }
                     },
                 }
+                if foldable {
+                    CallFold { open, decided }
+                }
             }
-            if !preview.is_empty() {
-                div { class: "diff-box inline-diff scroll-x",
+            if open && !preview.is_empty() {
+                div { class: "diff-box inline-diff scroll-x {unfolded}",
                     div { class: "diff-rows",
                         for row in preview.iter() {
                             {diff_row(row, numbers, LineMarks::marked(None))}
@@ -1715,9 +1850,9 @@ fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall, stage: CallStage) -
                     }
                 }
             }
-            if call.status == ToolCallStatus::Failed {
-                if let Some(output) = call.output.clone() {
-                    div { class: "tool-io",
+            if open {
+                if let Some(output) = failure {
+                    div { class: "tool-io {unfolded}",
                         IoRow { kind: IoKind::Out, text: output, fold: FoldEnd::First }
                     }
                 }
@@ -1902,8 +2037,8 @@ mod tests {
         let second = next_drawn(agent, first, &rows, false);
         let third = next_drawn(agent, second, &rows, false);
 
-        // The opening frame drew the latest 25: rows 75 on.
-        assert_eq!(first, Some(Drawn::From(agent, row(35))));
+        // The opening frame drew the latest 40, rows 60 on, and the next one adds 40.
+        assert_eq!(first, Some(Drawn::From(agent, row(20))));
         assert_eq!(second, Some(Drawn::All(agent)));
         assert_eq!(third, None, "all drawn: nothing more to do");
         assert_eq!(
@@ -2478,6 +2613,7 @@ mod tests {
                 "message_clip": "message-clip",
                 "markdown": "markdown",
                 "lines_property": "--fold-lines",
+                "call_line": "foldable",
             })
         );
     }

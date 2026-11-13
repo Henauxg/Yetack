@@ -29,7 +29,7 @@ use crate::ui::splitter::{
     SidebarSplitter, Splitter, use_splitter,
 };
 use crate::ui::tab_menu::TabMenu;
-use crate::ui::transcript::TranscriptView;
+use crate::ui::transcript::{TranscriptView, use_call_detail};
 
 #[component]
 pub fn App() -> Element {
@@ -42,6 +42,7 @@ pub fn App() -> Element {
     use_clock();
     use_bridge(cockpit);
     use_quotes(cockpit);
+    use_call_detail(cockpit);
     use_splitter(cockpit);
     use_reorder(cockpit);
     use_held_release(cockpit);

@@ -36,7 +36,8 @@
 //!     "comments": "hidden",
 //!     "last_message": "hidden",
 //!     "steer_hold": "three_seconds",
-//!     "esc_stop": "at_once"
+//!     "esc_stop": "at_once",
+//!     "tool_calls": "full"
 //!   }
 //! }
 //! ```
@@ -301,6 +302,34 @@ pub struct ChatPrefs {
     pub steer_hold: SteerHold,
     /// What Esc does to a busy agent once nothing is left open.
     pub esc_stop: EscStop,
+    /// How much of each tool call the chat shows before a click.
+    pub tool_calls: ToolCallDetail,
+}
+
+/// How much of a tool call the chat shows: its line alone, which a click unfolds, or its input
+/// and output too.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumString, IntoStaticStr, VariantArray,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum ToolCallDetail {
+    #[default]
+    OneLine,
+    Full,
+}
+
+impl Serialize for ToolCallDetail {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.into())
+    }
+}
+
+/// A word this version does not know, from another version of the app, reads as the default.
+impl<'de> Deserialize<'de> for ToolCallDetail {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let word = String::deserialize(deserializer)?;
+        Ok(word.parse().unwrap_or_default())
+    }
 }
 
 /// What Esc does to the selected agent while it works or waits for you, once nothing is left open
@@ -1084,7 +1113,8 @@ mod tests {
     "comments": "hidden",
     "last_message": "hidden",
     "steer_hold": "three_seconds",
-    "esc_stop": "at_once"
+    "esc_stop": "at_once",
+    "tool_calls": "full"
   },
   "keys": {
     "switcher": "Ctrl+j"
@@ -1176,6 +1206,7 @@ mod tests {
                     last_message: LastMessage::Hidden,
                     steer_hold: SteerHold::ThreeSeconds,
                     esc_stop: EscStop::AtOnce,
+                    tool_calls: ToolCallDetail::Full,
                 },
                 keys: switched,
                 agent_order: vec![AgentKey {
@@ -1410,6 +1441,21 @@ mod tests {
         assert_eq!(hidden.chat.comments, CommentPlacement::Hidden);
         assert_eq!(unknown.chat.comments, CommentPlacement::Beside);
         assert_eq!(unknown.sidebar.width, Some(300));
+    }
+
+    #[test]
+    fn the_tool_call_words_are_pinned_and_one_line_is_the_default() {
+        let words: Vec<&str> = ToolCallDetail::VARIANTS
+            .iter()
+            .map(|&detail| detail.into())
+            .collect();
+        let full: Prefs = serde_json::from_str(r#"{"chat": {"tool_calls": "full"}}"#).unwrap();
+        let unknown: Prefs = serde_json::from_str(r#"{"chat": {"tool_calls": "folded"}}"#).unwrap();
+
+        assert_eq!(words, ["one_line", "full"]);
+        assert_eq!(full.chat.tool_calls, ToolCallDetail::Full);
+        assert_eq!(unknown.chat.tool_calls, ToolCallDetail::OneLine);
+        assert_eq!(Prefs::default().chat.tool_calls, ToolCallDetail::OneLine);
     }
 
     #[test]
