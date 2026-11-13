@@ -761,7 +761,7 @@ fn WorkingLine(since: Option<TurnStart>, last_output: Option<Timestamp>, linked:
         Some(start) => format!("Working, {}", format::duration(start.elapsed(now))),
         None => "Working".to_owned(),
     };
-    let quiet = quiet_text(last_output, now);
+    let quiet = quiet_text(last_output, since, now);
     rsx! {
         div { class: if linked { "step working linked-above" } else { "step working" },
             span { class: "step-marker",
@@ -775,10 +775,16 @@ fn WorkingLine(since: Option<TurnStart>, last_output: Option<Timestamp>, linked:
     }
 }
 
-/// "last output 57 s ago", once `claude` has been quiet for `QUIET_SHOWN_FROM`. A daemon whose
-/// clock runs ahead of this one's reads as just written.
-fn quiet_text(last_output: Option<Timestamp>, now: SystemTime) -> Option<String> {
-    let quiet = now.duration_since(last_output?.to_system_time()?).ok()?;
+/// "last output 57 s ago", once `claude` has been quiet for `QUIET_SHOWN_FROM` in the running
+/// turn: a line of an earlier turn counts as written when this one started. A daemon whose clock
+/// runs ahead of this one's reads as just written.
+fn quiet_text(
+    last_output: Option<Timestamp>,
+    turn_start: Option<TurnStart>,
+    now: SystemTime,
+) -> Option<String> {
+    let since_output = format::since(last_output?, now);
+    let quiet = turn_start.map_or(since_output, |start| since_output.min(start.elapsed(now)));
     (quiet >= QUIET_SHOWN_FROM).then(|| {
         let quiet = format::duration(Duration::from_secs(quiet.as_secs()));
         format!("last output {quiet} ago")
@@ -2042,14 +2048,36 @@ mod tests {
     fn the_working_line_names_the_quiet_once_it_lasts() {
         let now = UNIX_EPOCH + Duration::from_secs(1_000);
         let at = |seconds: u64| Some(Timestamp::from_unix_millis(seconds * 1_000));
+        let turn = Some(TurnStart::Daemon(Timestamp::from_unix_millis(900_000)));
 
-        assert_eq!(quiet_text(at(996), now), None, "4 s of quiet");
+        assert_eq!(quiet_text(at(996), turn, now), None, "4 s of quiet");
         assert_eq!(
-            quiet_text(at(943), now).as_deref(),
+            quiet_text(at(943), turn, now).as_deref(),
             Some("last output 57 s ago")
         );
-        assert_eq!(quiet_text(at(1_010), now), None, "a daemon clock ahead");
-        assert_eq!(quiet_text(None, now), None);
+        assert_eq!(
+            quiet_text(at(1_010), turn, now),
+            None,
+            "a daemon clock ahead"
+        );
+        assert_eq!(quiet_text(None, turn, now), None);
+    }
+
+    #[test]
+    fn the_quiet_counts_from_the_turn_start_after_an_earlier_turns_output() {
+        let now = UNIX_EPOCH + Duration::from_secs(10_000);
+        let earlier_turn = Some(Timestamp::from_unix_millis(6_400_000));
+        let started = |seconds: u64| {
+            Some(TurnStart::Daemon(Timestamp::from_unix_millis(
+                seconds * 1_000,
+            )))
+        };
+
+        assert_eq!(quiet_text(earlier_turn, started(9_999), now), None);
+        assert_eq!(
+            quiet_text(earlier_turn, started(9_980), now).as_deref(),
+            Some("last output 20 s ago")
+        );
     }
 
     #[test]
