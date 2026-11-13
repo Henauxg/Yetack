@@ -16,7 +16,6 @@ use std::io;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
-use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -544,6 +543,16 @@ fn start_time(pid: u32) -> String {
         .to_owned()
 }
 
+/// Waits until process `pid` runs `sleep`, once the commands before it ran.
+fn wait_until_it_sleeps(pid: u32) {
+    let comm = format!("/proc/{pid}/comm");
+    let deadline = Instant::now() + WAIT;
+    while fs::read_to_string(&comm).unwrap() != "sleep\n" {
+        assert!(Instant::now() < deadline, "process {pid} never ran sleep");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// A pid that no process has any more.
 fn dead_pid() -> u32 {
     let mut child = Command::new("true").spawn().unwrap();
@@ -855,6 +864,41 @@ fn refuses_when_it_cannot_tell_when_the_daemon_started() {
 }
 
 #[test]
+fn refuses_when_it_cannot_read_the_lock_files_inode() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let before = machine.daemon_pid();
+    machine.write_program("bin/stat", "#!/bin/sh\nexit 1\n");
+
+    let output = machine.update("origin/main");
+
+    assert_refused(&machine, &output, 1, "cannot tell", &before);
+    assert!(!machine.built(), "it refuses before the build");
+}
+
+/// Some sandboxed kernels give a `/proc/locks` that lists no lock: the daemon would not show, and
+/// its busy agents would restart. A fake `awk` finds no lock in it.
+#[test]
+fn refuses_when_proc_locks_lists_no_lock() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let before = machine.daemon_pid();
+    machine.write_program(
+        "bin/awk",
+        r#"#!/bin/sh
+for last in "$@"; do :; done
+[ "$last" = /proc/locks ] && exit 1
+PATH=${PATH#*:} exec awk "$@"
+"#,
+    );
+
+    let output = machine.update("origin/main");
+
+    assert_refused(&machine, &output, 1, "cannot tell", &before);
+    assert!(!machine.built(), "it refuses before the build");
+}
+
+#[test]
 fn refuses_a_scheduled_job_until_it_is_deleted() {
     let machine = Machine::new();
     machine.start_daemon();
@@ -1157,9 +1201,10 @@ fn a_start_file_that_starts_another_binary_exits_with_four() {
     assert_eq!(output.status.code(), Some(4), "{}", stderr(&output));
 }
 
-/// The stop finds a pid that holds the lock, then the process of that pid ends before the signal:
-/// it stands for a pid another process gets meanwhile. A fake `find` plays it with a process of
-/// the test, which it says holds the lock, then kills while the stop checks it.
+/// The stop finds a pid that holds the lock, then the process of that pid changes before the
+/// signal: another process got the pid meanwhile. Fakes play it with a process of the test. `awk`
+/// says it holds the lock and `find` that it has the file open. Once the stop has looked at it
+/// twice, `sed` gives it another start time.
 #[test]
 fn the_stop_signals_no_process_that_changed_since_it_found_its_pid() {
     let machine = Machine::new();
@@ -1170,52 +1215,102 @@ fn the_stop_signals_no_process_that_changed_since_it_found_its_pid() {
         .spawn()
         .unwrap();
     let other_pid = other.id();
+    let checked = machine.path("other-checked");
+    machine.write_program(
+        "bin/awk",
+        &format!(
+            r#"#!/bin/sh
+for last in "$@"; do :; done
+if [ "$last" = /proc/locks ] && [ ! -f '{checked}' ] && grep -qF '{mark}' '{installed}' 2>/dev/null; then
+    echo {other_pid}
+    exit 0
+fi
+PATH=${{PATH#*:}} exec awk "$@"
+"#,
+            checked = checked.display(),
+            mark = String::from_utf8_lossy(BUILT_MARK),
+            installed = machine.installed().display(),
+        ),
+    );
     machine.write_program(
         "bin/find",
         &format!(
             r#"#!/bin/sh
-if [ ! -f '{checked}' ] && grep -qF '{mark}' '{installed}' 2>/dev/null; then
-    if [ "$1" = /proc/{other_pid}/fd ]; then
-        kill -KILL {other_pid}
-        until [ "$(sed 's/.*) //' /proc/{other_pid}/stat | cut -c1)" = Z ]; do sleep 0.01; done
+if [ "$1" = /proc/{other_pid}/fd ] && [ ! -f '{checked}' ]; then
+    if [ -f '{found}' ]; then
         : >'{checked}'
-        echo /proc/{other_pid}/fd/0
-        exit 0
     fi
-    if [ ! -f '{found}' ]; then
-        : >'{found}'
-        echo /proc/{other_pid}/fd/0
-        exit 0
-    fi
+    : >'{found}'
+    echo /proc/{other_pid}/fd/0
+    exit 0
 fi
 PATH=${{PATH#*:}} exec find "$@"
 "#,
-            checked = machine.path("other-checked").display(),
+            checked = checked.display(),
             found = machine.path("other-found").display(),
-            mark = String::from_utf8_lossy(BUILT_MARK),
-            installed = machine.installed().display(),
+        ),
+    );
+    machine.write_program(
+        "bin/sed",
+        &format!(
+            r#"#!/bin/sh
+for last in "$@"; do :; done
+if [ "$last" = /proc/{other_pid}/stat ] && [ -f '{checked}' ]; then
+    PATH=${{PATH#*:}} sed "$@" | PATH=${{PATH#*:}} awk '{{ $20 = $20 + 1; print }}'
+    exit 0
+fi
+PATH=${{PATH#*:}} exec sed "$@"
+"#,
+            checked = checked.display(),
         ),
     );
     let before = machine.daemon_pid();
 
     let output = machine.update("origin/main");
 
-    let ended = other.wait().unwrap();
-    assert_eq!(
-        ended.signal(),
-        Some(9),
-        "only the fake find's SIGKILL reached it"
-    );
+    let other_runs = other.try_wait().unwrap().is_none();
+    let _ = other.kill();
+    let _ = other.wait();
     assert!(
-        machine.path("other-checked").exists(),
+        checked.exists(),
         "the stop never looked at the other process"
     );
+    assert!(other_runs, "the process that changed got no signal");
     assert_succeeded(&output);
     assert_ne!(
         machine.daemon_pid(),
         before,
         "the daemon was stopped all the same"
     );
+}
+
+/// While the daemon starts an agent, its child has the lock's file open between fork and exec. Any
+/// program may open the file too. Only the daemon holds the lock. This process opens the file
+/// before the daemon starts, so its pid comes first in `/proc`.
+#[test]
+fn the_stop_leaves_a_process_that_only_opened_the_lock_file_alone() {
+    let machine = Machine::new();
+    let lock = machine.state().join("serve.lock");
+    fs::create_dir_all(machine.state()).unwrap();
+    File::create(&lock).unwrap();
+    let mut opener = Command::new("sh")
+        .args(["-c", "exec 9<\"$1\"; exec sleep 600", "sh"])
+        .arg(&lock)
+        .stdin(Stdio::null())
+        .spawn()
+        .unwrap();
+    wait_until_it_sleeps(opener.id());
+    machine.start_daemon();
+    let before = machine.daemon_pid();
+
+    let output = machine.update("origin/main");
+
+    let opener_runs = opener.try_wait().unwrap().is_none();
+    let _ = opener.kill();
+    let _ = opener.wait();
+    assert_succeeded(&output);
+    assert!(opener_runs, "the process that only opened the file runs on");
+    assert_ne!(machine.daemon_pid(), before);
 }
 
 #[test]
