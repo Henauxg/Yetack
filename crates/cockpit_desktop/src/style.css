@@ -10409,6 +10409,28 @@ html.splitting .sidebar {
   font-size: 12.5px;
 }
 
+/* The hint under a ticked "Use this every time" folds open and shut, and the card's gap above it
+   closes with it. */
+.no-daemon-hint-fold {
+  --fold-gap: 10px;
+  display: grid;
+  grid-template-rows: 1fr;
+  animation: line-fold-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.no-daemon-hint-fold.leaving {
+  animation: line-fold-out var(--motion-out) var(--ease-in) forwards;
+}
+
+.update-card .no-daemon-hint-fold {
+  --fold-gap: 16px;
+}
+
+.no-daemon-hint-clip {
+  min-height: 0;
+  overflow: hidden;
+}
+
 /* The update of a server's daemon, on the "No daemon answers" card. */
 
 .no-daemon-hint code {

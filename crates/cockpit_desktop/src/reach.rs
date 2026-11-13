@@ -228,16 +228,16 @@ async fn start_service(
 pub fn settle(
     chosen: Chosen,
     tried: &DaemonConfig,
-    configured: &mut DaemonConfig,
+    configured: &mut Option<DaemonConfig>,
     config_file: &Path,
 ) -> (DaemonConfig, Option<String>) {
-    let plan = no_daemon::plan(chosen, tried, configured);
+    let plan = no_daemon::plan(chosen, tried, configured.as_ref());
     let Some(save) = plan.save else {
         return (plan.run, None);
     };
     match save_daemon(config_file, &save) {
         Ok(()) => {
-            *configured = save;
+            *configured = Some(save);
             (plan.run, None)
         }
         Err(error) => (plan.run, Some(error_chain(&error))),
@@ -247,7 +247,9 @@ pub fn settle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::no_daemon::DaemonChoice;
+    use crate::config::Config;
+    use crate::state::AppState;
+    use crate::state::no_daemon::{Absence, DaemonChoice};
 
     fn places(root: &Path) -> Places {
         Places {
@@ -436,7 +438,7 @@ mod tests {
     fn a_choice_for_this_run_leaves_the_config_alone() {
         let temp = tempfile::tempdir().unwrap();
         let places = places(temp.path());
-        let mut configured = ssh();
+        let mut configured = Some(ssh());
         let chosen = Chosen {
             choice: DaemonChoice::InApp,
             every_time: false,
@@ -445,7 +447,7 @@ mod tests {
         let (run, error) = settle(chosen, &ssh(), &mut configured, &places.config_file);
 
         assert_eq!((run, error), (DaemonConfig::InApp, None));
-        assert_eq!(configured, ssh());
+        assert_eq!(configured, Some(ssh()));
         assert!(!places.config_file.exists());
     }
 
@@ -453,7 +455,7 @@ mod tests {
     fn use_this_every_time_writes_the_config() {
         let temp = tempfile::tempdir().unwrap();
         let places = places(temp.path());
-        let mut configured = ssh();
+        let mut configured = Some(ssh());
         let chosen = Chosen {
             choice: DaemonChoice::InApp,
             every_time: true,
@@ -462,7 +464,7 @@ mod tests {
         let (run, error) = settle(chosen, &ssh(), &mut configured, &places.config_file);
 
         assert_eq!((run, error), (DaemonConfig::InApp, None));
-        assert_eq!(configured, DaemonConfig::InApp);
+        assert_eq!(configured, Some(DaemonConfig::InApp));
         let saved = std::fs::read_to_string(&places.config_file).unwrap();
         assert_eq!(saved, "[daemon]\ntransport = \"in_app\"\n");
     }
@@ -472,7 +474,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let config_file = temp.path().join("config.toml");
         std::fs::write(&config_file, "this is not toml = = =").unwrap();
-        let mut configured = ssh();
+        let mut configured = Some(ssh());
         let chosen = Chosen {
             choice: DaemonChoice::InApp,
             every_time: true,
@@ -481,7 +483,75 @@ mod tests {
         let (run, error) = settle(chosen, &ssh(), &mut configured, &config_file);
 
         assert_eq!(run, DaemonConfig::InApp);
-        assert_eq!(configured, ssh());
+        assert_eq!(configured, Some(ssh()));
         assert!(error.unwrap().contains("is not a valid TOML file"));
+    }
+
+    /// Shows the screen in `state` afresh, nothing running, and returns whether "Use this every
+    /// time" starts ticked.
+    fn starts_ticked(state: &mut AppState) -> bool {
+        no_daemon::show(
+            state,
+            &DaemonLabel::socket(),
+            "no daemon listens on its socket".to_owned(),
+            Absence::NothingRuns,
+            None,
+        );
+        no_daemon::choose(state, DaemonChoice::InApp).is_some_and(|chosen| chosen.every_time)
+    }
+
+    /// A first start's state, with the config file `file`.
+    fn started_with(file: &Path) -> AppState {
+        let mut state = AppState::new(DaemonLabel::socket());
+        let text = std::fs::read_to_string(file).unwrap_or_default();
+        state.machines.configured = text.parse::<Config>().unwrap().daemon;
+        state
+    }
+
+    #[test]
+    fn a_choice_saved_from_the_box_unticks_it_from_then_on() {
+        let temp = tempfile::tempdir().unwrap();
+        let places = places(temp.path());
+        let mut state = started_with(&places.config_file);
+        let first_start = starts_ticked(&mut state);
+        let chosen = Chosen {
+            choice: DaemonChoice::InApp,
+            every_time: first_start,
+        };
+
+        let (run, error) = settle(
+            chosen,
+            &DaemonConfig::default(),
+            &mut state.machines.configured,
+            &places.config_file,
+        );
+
+        assert!(first_start);
+        assert_eq!((run, error), (DaemonConfig::InApp, None));
+        assert!(!starts_ticked(&mut state), "the state names the daemon");
+        assert!(!starts_ticked(&mut started_with(&places.config_file)));
+    }
+
+    #[test]
+    fn a_ticked_retry_at_a_first_start_names_the_daemon_in_the_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let places = places(temp.path());
+        let mut state = started_with(&places.config_file);
+        let chosen = Chosen {
+            choice: DaemonChoice::Retry,
+            every_time: true,
+        };
+
+        let (run, error) = settle(
+            chosen,
+            &DaemonConfig::default(),
+            &mut state.machines.configured,
+            &places.config_file,
+        );
+
+        assert_eq!((run, error), (DaemonConfig::default(), None));
+        assert!(!starts_ticked(&mut state));
+        let saved = std::fs::read_to_string(&places.config_file).unwrap();
+        assert_eq!(saved, "[daemon]\ntransport = \"local\"\n");
     }
 }

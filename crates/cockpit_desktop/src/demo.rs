@@ -1131,6 +1131,9 @@ pub enum LocalScene {
     Unix,
     /// The same choices, with a read-only config that refuses each one.
     ReadOnly,
+    /// The same choices at a first start: the config names no daemon yet, so the question's
+    /// "Use this every time" starts ticked.
+    FirstStart,
 }
 
 /// What a read-only config says, as a link into the Nix store makes it.
@@ -1148,17 +1151,21 @@ pub fn local_scene(arguments: &[String]) -> Option<LocalScene> {
     arguments.get(flag + 1)?.parse().ok()
 }
 
-/// Local as on Unix, where the background service runs, its config asking at each start.
-pub fn show_local(state: &mut AppState) {
+/// Local as on Unix, where the background service runs, its config asking at each start or
+/// naming no daemon yet.
+pub fn show_local(state: &mut AppState, scene: LocalScene) {
     state.machines.service_offered = true;
-    state.machines.configured = DaemonConfig::default();
+    state.machines.configured = match scene {
+        LocalScene::Unix | LocalScene::ReadOnly => Some(DaemonConfig::default()),
+        LocalScene::FirstStart => None,
+    };
 }
 
 /// How the demo's config answers a choice of where Local's agents run. It writes nothing.
 pub fn save_local(scene: Option<LocalScene>) -> Result<(), String> {
     match scene {
         Some(LocalScene::ReadOnly) => Err(READ_ONLY_CONFIG.to_owned()),
-        Some(LocalScene::Unix) | None => Ok(()),
+        Some(LocalScene::Unix | LocalScene::FirstStart) | None => Ok(()),
     }
 }
 
@@ -5007,18 +5014,33 @@ pub struct ParseError {
             .map(|&scene| scene.into())
             .collect();
 
-        assert_eq!(names, ["unix", "read-only"]);
+        assert_eq!(names, ["unix", "read-only", "first-start"]);
         assert_eq!(
             scene(&[DEMO_FLAG, LOCAL_FLAG, "read-only"]),
             Some(LocalScene::ReadOnly)
         );
         assert_eq!(scene(&[LOCAL_FLAG, "unix"]), None);
         assert_eq!(save_local(Some(LocalScene::Unix)), Ok(()));
+        assert_eq!(save_local(Some(LocalScene::FirstStart)), Ok(()));
         assert_eq!(save_local(None), Ok(()));
         assert_eq!(
             save_local(Some(LocalScene::ReadOnly)),
             Err(READ_ONLY_CONFIG.to_owned())
         );
+    }
+
+    #[test]
+    fn only_the_first_start_ticks_the_questions_box() {
+        let ticked = |scene| {
+            let mut state = state(DaemonLabel::socket());
+            show_machines(&mut state, MachinesScene::LocalNoDaemon);
+            show_local(&mut state, scene);
+            no_daemon::every_time(&state)
+        };
+
+        assert!(ticked(LocalScene::FirstStart));
+        assert!(!ticked(LocalScene::Unix));
+        assert!(!ticked(LocalScene::ReadOnly));
     }
 
     #[test]

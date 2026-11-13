@@ -15,7 +15,7 @@ use crate::format;
 use crate::machine::MachineId;
 use crate::state::daemon_update::{self, Confirmation, DaemonUpdate, FailedUpdate, UpdateProgress};
 use crate::state::machines::MachineName;
-use crate::state::no_daemon::DaemonChoice;
+use crate::state::no_daemon::{self, DaemonChoice};
 use crate::state::update_offer::{self, GapKind, ProgramBuild, UpdateOffer};
 use crate::state::update_plan::{UpdatePlan, UpdateStep};
 use crate::state::{AppState, ConnectionState, accounts};
@@ -85,8 +85,9 @@ fn screen_choice(cockpit: Cockpit, machine: MachineId) -> (Option<DaemonChoice>,
     if machine != MachineId::THIS {
         return (None, false);
     }
-    match &cockpit.state.read().machines.this.connection {
-        ConnectionState::NoDaemon(screen) => (screen.busy, screen.every_time),
+    let state = cockpit.state.read();
+    match &state.machines.this.connection {
+        ConnectionState::NoDaemon(screen) => (screen.busy, no_daemon::every_time(&state)),
         ConnectionState::Connecting { .. }
         | ConnectionState::Connected
         | ConnectionState::Disconnected { .. } => (None, false),

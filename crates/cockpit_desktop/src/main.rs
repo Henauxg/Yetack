@@ -77,7 +77,7 @@ fn main() -> anyhow::Result<ExitCode> {
     let log = |error: &ConfigError| tracing::error!("{}", state::error_chain(error));
     let config = Config::load(&environment).inspect_err(log)?;
     let places = Places::new(&environment).inspect_err(log)?;
-    let label = reach::label(&config.daemon);
+    let label = reach::label(&config.daemon.clone().unwrap_or_default());
     let mut state = if demo {
         demo::state(label)
     } else {
@@ -94,8 +94,8 @@ fn main() -> anyhow::Result<ExitCode> {
         demo::show_machines(&mut state, scene);
     }
     let demo_local = demo::local_scene(&arguments);
-    if demo_local.is_some() {
-        demo::show_local(&mut state);
+    if let Some(scene) = demo_local {
+        demo::show_local(&mut state, scene);
     }
     let machines: Vec<(MachineId, MachineConfig)> =
         (1..).map(MachineId::new).zip(config.machines).collect();

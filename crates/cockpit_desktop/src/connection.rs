@@ -930,7 +930,7 @@ async fn run(
         in_app,
         notify: _,
     } = live;
-    let mut daemon = state.peek().machines.configured.clone();
+    let mut daemon = state.peek().machines.configured.clone().unwrap_or_default();
     // The tick of the last choice on the screen.
     let mut every_time = None;
     loop {

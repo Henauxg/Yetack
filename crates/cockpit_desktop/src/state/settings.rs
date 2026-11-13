@@ -7,6 +7,7 @@ use strum::VariantArray;
 
 use super::app_state::AppState;
 use super::machines::THIS_COMPUTER;
+use super::no_daemon;
 use super::projects::{self, NEW_PROJECT_NAME, ProjectKey, RuleKind};
 use super::ui_state::{Dialog, RefusedChord, SettingsTab, SettingsView};
 use crate::config::{DAEMON_SECTION, DaemonConfig};
@@ -29,10 +30,10 @@ pub enum StartDaemon {
 
 impl StartDaemon {
     /// The config of this choice. A socket `current` names stays.
-    fn config(self, current: &DaemonConfig) -> DaemonConfig {
+    fn config(self, current: Option<&DaemonConfig>) -> DaemonConfig {
         let socket = match current {
-            DaemonConfig::Local { socket, .. } => socket.clone(),
-            DaemonConfig::Ssh { .. } | DaemonConfig::InApp => None,
+            Some(DaemonConfig::Local { socket, .. }) => socket.clone(),
+            Some(DaemonConfig::Ssh { .. } | DaemonConfig::InApp) | None => None,
         };
         match self {
             Self::InApp => DaemonConfig::InApp,
@@ -58,23 +59,24 @@ pub enum LocalStart {
 }
 
 /// What the Local section shows for the config's daemon. A daemon over SSH is set in the config
-/// file alone.
+/// file alone. A config without a daemon asks, as "Ask" does.
 pub fn local_start(state: &AppState) -> LocalStart {
     let chosen = match &state.machines.configured {
-        DaemonConfig::Ssh { host, .. } => {
+        Some(DaemonConfig::Ssh { host, .. }) => {
             return LocalStart::Note(format!(
                 "The agents run on {host}, over SSH, as the config file's [{DAEMON_SECTION}] section says. Change it in the file."
             ));
         }
-        DaemonConfig::InApp => StartDaemon::InApp,
-        DaemonConfig::Local {
+        Some(DaemonConfig::InApp) => StartDaemon::InApp,
+        Some(DaemonConfig::Local {
             start_service: true,
             ..
-        } => StartDaemon::Service,
-        DaemonConfig::Local {
+        }) => StartDaemon::Service,
+        Some(DaemonConfig::Local {
             start_service: false,
             ..
-        } => StartDaemon::Ask,
+        })
+        | None => StartDaemon::Ask,
     };
     if state.machines.service_offered {
         LocalStart::Choices(chosen)
@@ -83,10 +85,10 @@ pub fn local_start(state: &AppState) -> LocalStart {
     }
 }
 
-/// What the "No daemon answers" screen says of changing its choice later, where the Local section
-/// offers choices.
+/// What the "No daemon answers" screen says of changing its choice later, while "Use this every
+/// time" is ticked and where the Local section offers choices.
 pub fn change_later(state: &AppState) -> Option<String> {
-    state.machines.service_offered.then(|| {
+    (state.machines.service_offered && no_daemon::every_time(state)).then(|| {
         format!(
             "You can change it later under {THIS_COMPUTER} in Settings, from the gear at the foot of the sidebar."
         )
@@ -102,24 +104,26 @@ pub fn choose_start(state: &mut AppState, choice: StartDaemon) -> Option<DaemonC
     if !matches!(local_start(state), LocalStart::Choices(_)) {
         return None;
     }
-    Some(choice.config(&state.machines.configured))
+    Some(choice.config(state.machines.configured.as_ref()))
 }
 
 /// Writes `next` to the config with `save`, unless the config names it already: a click sent
-/// earlier may have made it so. A refusal, as a read-only config gives, keeps the config's choice,
-/// and the Local section says why under it. The window's notes sit under the dialog's backdrop, so
-/// they say it only when the section is not on screen.
+/// earlier may have made it so. A config without a daemon takes every choice, "Ask" included, so
+/// that the question's "Use this every time" starts unticked from then on. A refusal, as a
+/// read-only config gives, keeps the config's choice, and the Local section says why under it. The
+/// window's notes sit under the dialog's backdrop, so they say it only when the section is not on
+/// screen.
 pub fn save_start(
     state: &mut AppState,
     next: DaemonConfig,
     save: impl FnOnce(&DaemonConfig) -> Result<(), String>,
 ) {
-    if next == state.machines.configured {
+    if state.machines.configured.as_ref() == Some(&next) {
         return;
     }
     let error = match save(&next) {
         Ok(()) => {
-            state.machines.configured = next;
+            state.machines.configured = Some(next);
             return;
         }
         Err(error) => error,
@@ -326,8 +330,11 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::config::Config;
+    use crate::daemon_label::DaemonLabel;
     use crate::prefs::ProjectRule;
     use crate::state::Popover;
+    use crate::state::no_daemon::{Absence, DaemonChoice};
 
     const READ_ONLY: &str =
         "/nix/store/made-up-home-manager-files/.config/agents-cockpit/config.toml is read-only";
@@ -344,10 +351,10 @@ mod tests {
     fn each_start_choice_names_its_daemon_and_keeps_a_socket_the_config_names() {
         let socket = Some(PathBuf::from("/run/cockpit/agents.sock"));
         let mut state = general();
-        state.machines.configured = DaemonConfig::Local {
+        state.machines.configured = Some(DaemonConfig::Local {
             socket: socket.clone(),
             start_service: false,
-        };
+        });
 
         let to_service = choose_start(&mut state, StartDaemon::Service);
         let to_app = choose_start(&mut state, StartDaemon::InApp);
@@ -449,7 +456,7 @@ mod tests {
             Err(READ_ONLY.to_owned())
         });
 
-        assert_eq!(state.machines.configured, DaemonConfig::default());
+        assert_eq!(state.machines.configured, None);
         assert_eq!(state.ui.errors.len(), 2);
         assert_eq!(view(&state).start_error, None);
     }
@@ -458,6 +465,7 @@ mod tests {
     fn where_no_background_service_runs_the_agents_run_in_the_app() {
         let mut state = general();
         state.machines.service_offered = false;
+        show_question(&mut state);
 
         let section = local_start(&state);
         let chosen = choose_start(&mut state, StartDaemon::InApp);
@@ -467,22 +475,82 @@ mod tests {
         assert_eq!(section, LocalStart::Note(IN_APP_ONLY.to_owned()));
         assert_eq!(chosen, None);
         assert_eq!(hint, None, "the section offers no choice to change");
+        assert_eq!(change_later(&state).as_deref(), Some(CHANGE_LATER));
+    }
+
+    /// The hint under a ticked "Use this every time".
+    const CHANGE_LATER: &str = "You can change it later under Local in Settings, from the gear at the foot of the sidebar.";
+
+    /// The "No daemon answers" screen, at a start where nothing runs, as a dialog beside servers.
+    fn show_question(state: &mut AppState) {
+        no_daemon::show(
+            state,
+            &DaemonLabel::socket(),
+            "no daemon listens on its socket".to_owned(),
+            Absence::NothingRuns,
+            None,
+        );
+    }
+
+    #[test]
+    fn the_hint_shows_only_while_the_box_is_ticked() {
+        let mut state = general();
+        show_question(&mut state);
+
+        let ticked = change_later(&state);
+        no_daemon::toggle_every_time(&mut state);
+        let unticked = change_later(&state);
+        no_daemon::toggle_every_time(&mut state);
+
+        assert_eq!(ticked.as_deref(), Some(CHANGE_LATER));
+        assert_eq!(unticked, None);
+        assert_eq!(change_later(&state).as_deref(), Some(CHANGE_LATER));
+    }
+
+    #[test]
+    fn ask_chosen_in_settings_keeps_asking_on_the_screen() {
+        let mut state = general();
+        state.machines.configured = "".parse::<Config>().unwrap().daemon;
+        show_question(&mut state);
+        let mut written = Vec::new();
+
+        let ask = choose_start(&mut state, StartDaemon::Ask);
+        if let Some(ask) = ask {
+            save_start(&mut state, ask, |next| {
+                written.push(next.clone());
+                Ok(())
+            });
+        }
+        let hint = change_later(&state);
+        let chosen = no_daemon::choose(&mut state, DaemonChoice::InApp);
+
         assert_eq!(
-            change_later(&state).as_deref(),
-            Some(
-                "You can change it later under Local in Settings, from the gear at the foot of the sidebar."
-            )
+            written,
+            [DaemonConfig::Local {
+                socket: None,
+                start_service: false,
+            }],
+            "the config names the daemon from then on"
+        );
+        assert_eq!(chosen.map(|chosen| chosen.every_time), Some(false));
+        assert_eq!(hint, None);
+
+        // Shown afresh, as at the next start.
+        show_question(&mut state);
+        assert_eq!(
+            no_daemon::choose(&mut state, DaemonChoice::InApp).map(|chosen| chosen.every_time),
+            Some(false)
         );
     }
 
     #[test]
     fn a_daemon_over_ssh_is_changed_in_the_config_file() {
         let mut state = general();
-        state.machines.configured = DaemonConfig::Ssh {
+        state.machines.configured = Some(DaemonConfig::Ssh {
             host: "build-box".to_owned(),
             remote_command: "/opt/agents-cockpit".to_owned(),
             source_dir: None,
-        };
+        });
 
         let section = local_start(&state);
         let chosen = choose_start(&mut state, StartDaemon::InApp);
