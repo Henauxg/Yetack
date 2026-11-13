@@ -366,12 +366,22 @@ mod tests {
     /// `tools` for agent 3, at `at` milliseconds after the epoch.
     #[cfg(unix)]
     fn daemon_with_calls(tools: &[&str], at: u128) -> (TempDir, File) {
+        let temp = folder_with_calls(tools, at);
+        let lock = File::open(temp.path().join("serve.lock")).unwrap();
+        lock.try_lock().unwrap();
+        (temp, lock)
+    }
+
+    /// The state folder of `daemon_with_calls`, whose lock no daemon holds. A lock the test took
+    /// and let go may stay held a moment: a process another test forks shares it until it runs
+    /// its program.
+    #[cfg(unix)]
+    fn folder_with_calls(tools: &[&str], at: u128) -> TempDir {
         use std::io::Write;
 
         let temp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(temp.path().join("raw")).unwrap();
-        let lock = File::create(temp.path().join("serve.lock")).unwrap();
-        lock.try_lock().unwrap();
+        File::create(temp.path().join("serve.lock")).unwrap();
         let mut log = File::create(temp.path().join("raw/3.jsonl")).unwrap();
         for tool in tools {
             let claude_line = format!(
@@ -383,7 +393,7 @@ mod tests {
             );
             log.write_all(line.as_bytes()).unwrap();
         }
-        (temp, lock)
+        temp
     }
 
     #[cfg(unix)]
@@ -411,8 +421,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_folder_no_daemon_holds_has_no_job() {
-        let (temp, lock) = daemon_with_calls(&["CronCreate"], now_millis() + 1000);
-        drop(lock);
+        let temp = folder_with_calls(&["CronCreate"], now_millis() + 1000);
 
         assert_eq!(job_holders(temp.path(), &[AgentId::new(3)]), []);
     }
