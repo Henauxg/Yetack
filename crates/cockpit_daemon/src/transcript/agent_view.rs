@@ -97,7 +97,7 @@ const REFUSED_STATUS: &str = "API Error: 403";
 const REFUSED_NOTICE: &str =
     "The API refused the request (HTTP 403). No sign-in fixes it: send the message again.";
 /// How often `last_output_at` moves while `claude` writes.
-const OUTPUT_STAMP_MILLIS: u64 = 1_000;
+const OUTPUT_STAMP_EVERY: Duration = Duration::from_secs(1);
 const COMPACTED_NOTICE: &str = "Conversation compacted";
 const SUMMARY_TITLE: &str = "Conversation summary";
 /// Titles context Claude Code adds that no line before it explains.
@@ -1713,9 +1713,10 @@ impl AgentView {
     /// `claude` wrote a line. The stamp moves once a second at most, so that a fast stream of lines
     /// publishes the summary that often at most.
     fn note_output(&mut self, now: Timestamp) {
-        let due = self.summary.last_output_at.is_none_or(|last| {
-            now.unix_millis().saturating_sub(last.unix_millis()) >= OUTPUT_STAMP_MILLIS
-        });
+        let due = self
+            .summary
+            .last_output_at
+            .is_none_or(|last| now >= add(last, OUTPUT_STAMP_EVERY));
         if due {
             self.summary.last_output_at = Some(now);
         }
