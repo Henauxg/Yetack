@@ -214,11 +214,12 @@ impl Hub {
     /// Marks the working agents that turned quiet, and publishes each one that did.
     fn check_quiet(&mut self) {
         let now = now();
-        let quiet: Vec<AgentId> = self
-            .agents
-            .iter_mut()
-            .filter_map(|(id, agent)| agent.view.check_quiet(now).then_some(*id))
-            .collect();
+        let mut quiet: Vec<AgentId> = Vec::new();
+        for (id, agent) in &mut self.agents {
+            if agent.view.check_quiet(now) {
+                quiet.push(*id);
+            }
+        }
         for agent in quiet {
             self.publish(agent);
         }
