@@ -142,11 +142,30 @@ choose_restart() {
 
 # Without these tools no daemon and no scheduled job would show, and a busy daemon would restart.
 check_tools() {
-    if ! find "/proc/$$/fd" -maxdepth 1 -lname '*' >/dev/null 2>&1 ||
-        [ -z "$(ps -o etimes= -p "$$" 2>/dev/null)" ]; then
-        die "cannot tell whether a daemon runs: this needs a find with -lname and a ps with -o etimes"
-    fi
     command -v flock >/dev/null 2>&1 || die "cannot take the update lock: this needs flock"
+    if ! lists_locks ||
+        ! find "/proc/$$/fd" -maxdepth 1 -lname '*' >/dev/null 2>&1 ||
+        [ -z "$(ps -o etimes= -p "$$" 2>/dev/null)" ]; then
+        die "cannot tell whether a daemon runs: this needs a /proc/locks that lists locks, a stat with -c, a find with -lname and a ps with -o etimes"
+    fi
+}
+
+# Whether /proc/locks lists a lock taken on a scratch file. Some sandboxed kernels list none. It
+# hides a lock whose process ended, so flock holds this one while awk reads.
+lists_locks() {
+    probe=$(mktemp) || return 1
+    inode=$(stat -L -c %i "$probe" 2>/dev/null)
+    listed=$([ -n "$inode" ] && flock -n "$probe" awk -v inode="$inode" "$lockers_program" /proc/locks)
+    rm -f "$probe"
+    [ -n "$listed" ]
+}
+
+# The pids that took a lock on the file of inode $1, from /proc/locks, which gives the file as
+# device:inode. A waiter's line has `->` first. On Btrfs, stat gives another device than
+# /proc/locks, so only the inode is compared.
+lockers_program='$2 == "FLOCK" && $6 ~ (":" inode "$") { print $5 }'
+lockers() {
+    awk -v inode="$1" "$lockers_program" /proc/locks
 }
 
 # The path of the state folder's lock file as `find -lname` matches it: that takes a shell pattern,
@@ -155,13 +174,20 @@ lock_pattern() {
     readlink -f "$state_dir/serve.lock" | sed 's/[][*?\\]/\\&/g'
 }
 
-# The daemon of this state folder is the process holding its lock file, whatever binary it runs.
+# The daemon of this state folder is the process that holds the lock on its lock file, whatever
+# binary it runs. Others may have the file open, such as its child between fork and exec. Since
+# only the inode is compared, the process must also have the file open.
 daemon_pid() {
-    find /proc/[0-9]*/fd -maxdepth 1 -lname "$(lock_pattern)" 2>/dev/null |
-        sed -n '1s|^/proc/\([0-9]*\)/.*|\1|p'
+    inode=$(stat -L -c %i "$state_dir/serve.lock" 2>/dev/null) || return 0
+    for pid in $(lockers "$inode"); do
+        if has_lock_file_open "$pid"; then
+            echo "$pid"
+            return 0
+        fi
+    done
 }
 
-holds_lock() {
+has_lock_file_open() {
     [ -n "$(find "/proc/$1/fd" -maxdepth 1 -lname "$(lock_pattern)" 2>/dev/null)" ]
 }
 
@@ -252,15 +278,15 @@ build() {
 }
 
 # Signals the process that holds the lock, and waits until none does. A pid names the daemon by its
-# start time, read once the pid is found and checked to hold the lock: right before the signal, the
-# start time must be the same, so a process that got the pid since gets no signal.
+# start time, read once the pid is found and checked to hold the lock again: right before the
+# signal, the start time must be the same, so a process that got the pid since gets no signal.
 stop_daemon() {
     tries=0
     signalled=
     while daemon=$(daemon_pid) && [ -n "$daemon" ]; do
         started=$(start_time "$daemon")
-        if [ -n "$started" ] && [ "$daemon $started" != "$signalled" ] && holds_lock "$daemon" &&
-            [ "$(start_time "$daemon")" = "$started" ]; then
+        if [ -n "$started" ] && [ "$daemon $started" != "$signalled" ] &&
+            [ "$(daemon_pid)" = "$daemon" ] && [ "$(start_time "$daemon")" = "$started" ]; then
             if kill -TERM "$daemon" 2>/dev/null; then
                 signalled="$daemon $started"
             elif [ "$(start_time "$daemon")" = "$started" ]; then

@@ -14,6 +14,8 @@ use std::fs::{File, TryLockError};
 #[cfg(unix)]
 use std::io;
 #[cfg(unix)]
+use std::os::fd::BorrowedFd;
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::time::{Duration, Instant, SystemTime};
@@ -26,11 +28,9 @@ use crate::machine_load;
 use crate::store;
 use crate::store::{BootId, RecordedProcess};
 
-/// How long a stop waits for the daemon to let the lock go.
+/// How long a stop waits for the daemon's process to end.
 #[cfg(unix)]
 const STOP_WAIT: Duration = Duration::from_secs(10);
-#[cfg(unix)]
-const STOP_POLL: Duration = Duration::from_millis(100);
 
 /// A daemon's process, as it records itself in `serve.lock`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,6 +141,13 @@ pub enum StopLockHolderError {
         #[source]
         source: io::Error,
     },
+    /// The signal went, and the wait for the process to end failed.
+    #[error("cannot wait for the daemon, process {}, to stop", .pid.get())]
+    Wait {
+        pid: ProcessId,
+        #[source]
+        source: io::Error,
+    },
     #[error(
         "the daemon, process {}, did not stop within {} seconds",
         .pid.get(),
@@ -207,11 +214,12 @@ pub fn lock_held_since(state_dir: &Path) -> Result<Option<SystemTime>, LockHolde
 }
 
 /// Stops the daemon that holds the lock of `state_dir` as systemd stops the background service,
-/// with SIGTERM, then waits up to 10 seconds for the lock to go free. The daemon leaves its agents
+/// with SIGTERM, then waits up to 10 seconds for its process to end. The daemon leaves its agents
 /// marked as running, so the next daemon resumes them.
 ///
 /// The signal goes to the process the file names, once its start time shows it is still that
-/// process. It blocks.
+/// process. Another program, such as a service manager, may start a daemon again the moment this
+/// one ends, so the lock may be held again when the stop returns. It blocks.
 #[cfg(unix)]
 pub fn stop_lock_holder(state_dir: &Path) -> Result<(), StopLockHolderError> {
     stop_within(state_dir, STOP_WAIT)
@@ -219,6 +227,8 @@ pub fn stop_lock_holder(state_dir: &Path) -> Result<(), StopLockHolderError> {
 
 #[cfg(unix)]
 fn stop_within(state_dir: &Path, wait: Duration) -> Result<(), StopLockHolderError> {
+    use std::os::fd::AsFd;
+
     use rustix::io::Errno;
     use rustix::process::{Pid, PidfdFlags, Signal};
 
@@ -248,7 +258,7 @@ fn stop_within(state_dir: &Path, wait: Duration) -> Result<(), StopLockHolderErr
     }
     match rustix::process::pidfd_send_signal(&pidfd, Signal::TERM) {
         Ok(()) => {}
-        // It ended since the check, and let the lock go.
+        // It ended since the check.
         Err(errno) if errno == Errno::SRCH => {}
         Err(errno) => return Err(signal_failed(errno)),
     }
@@ -256,20 +266,34 @@ fn stop_within(state_dir: &Path, wait: Duration) -> Result<(), StopLockHolderErr
         pid = pid.get(),
         "stopping the daemon that holds the state folder"
     );
-    let path = store::lock_path(state_dir);
+    match ends_within(pidfd.as_fd(), wait) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(StopLockHolderError::StillRunning { pid, waited: wait }),
+        Err(errno) => Err(StopLockHolderError::Wait {
+            pid,
+            source: errno.into(),
+        }),
+    }
+}
+
+/// Whether the process of `pidfd` ends within `wait`. A pidfd becomes readable as its process
+/// ends, a zombie included.
+#[cfg(unix)]
+fn ends_within(pidfd: BorrowedFd<'_>, wait: Duration) -> rustix::io::Result<bool> {
+    use rustix::event::{PollFd, PollFlags, Timespec};
+    use rustix::io::Errno;
+
     let deadline = Instant::now() + wait;
     loop {
-        let held = held_lock(&path).map_err(|source| LockHolderError::Read {
-            path: path.clone(),
-            source,
-        })?;
-        if held.is_none() {
-            return Ok(());
+        let left = deadline.saturating_duration_since(Instant::now());
+        let timeout = Timespec::try_from(left).map_err(|_| Errno::INVAL)?;
+        let mut pidfds = [PollFd::from_borrowed_fd(pidfd, PollFlags::IN)];
+        match rustix::event::poll(&mut pidfds, Some(&timeout)) {
+            Ok(0) => return Ok(false),
+            Ok(_) => return Ok(true),
+            Err(errno) if errno == Errno::INTR => {}
+            Err(errno) => return Err(errno),
         }
-        if Instant::now() >= deadline {
-            return Err(StopLockHolderError::StillRunning { pid, waited: wait });
-        }
-        std::thread::sleep(STOP_POLL);
     }
 }
 
@@ -340,6 +364,7 @@ mod tests {
     mod unix {
         use std::os::unix::process::ExitStatusExt;
         use std::process::{Child, Command, Stdio};
+        use std::thread::JoinHandle;
 
         use rustix::process::Signal;
 
@@ -352,6 +377,26 @@ mod tests {
                 .stdin(Stdio::null())
                 .spawn()
                 .unwrap()
+        }
+
+        /// A `sleep` that ignores SIGTERM, as a daemon whose stop hangs would.
+        fn deaf_sleeper() -> Child {
+            let mut child = Command::new("sh")
+                .args(["-c", "trap '' TERM; exec sleep 30"])
+                .stdin(Stdio::null())
+                .spawn()
+                .unwrap();
+            let comm = format!("/proc/{}/comm", child.id());
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while std::fs::read_to_string(&comm).unwrap() != "sleep\n" {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("process {} never ran sleep", child.id());
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            child
         }
 
         /// The record of `child`, as a daemon in that process would write it.
@@ -368,6 +413,50 @@ mod tests {
         /// Replaces the record of the lock the test holds, as another daemon would have written it.
         fn write_record(state_dir: &Path, holder: &LockHolder) {
             std::fs::write(store::lock_path(state_dir), holder.encode().unwrap()).unwrap();
+        }
+
+        /// A `sleep` that holds the lock of `state_dir`, as a daemon in that process would. Its
+        /// stdin is the file the test took the lock on, so the lock goes with it.
+        fn locking_sleeper(state_dir: &Path) -> Child {
+            let lock = File::create(store::lock_path(state_dir)).unwrap();
+            lock.try_lock().unwrap();
+            Command::new("sleep").arg("30").stdin(lock).spawn().unwrap()
+        }
+
+        /// Takes the lock of `state_dir` the moment it is free, as a daemon that another program
+        /// starts again at once would. It returns once that daemon waits for the lock.
+        fn next_daemon(state_dir: &Path) -> JoinHandle<File> {
+            let path = store::lock_path(state_dir);
+            let next = std::thread::spawn({
+                let path = path.clone();
+                move || {
+                    let file = File::open(path).unwrap();
+                    file.lock().unwrap();
+                    file
+                }
+            });
+            wait_for_a_waiter(&path);
+            next
+        }
+
+        /// Waits until `/proc/locks` lists a process that waits for the lock of `path`: `->`
+        /// comes before the lock's type, and the file's `device:inode` ends with its inode.
+        fn wait_for_a_waiter(path: &Path) {
+            use std::os::unix::fs::MetadataExt;
+
+            let inode = format!(":{}", std::fs::metadata(path).unwrap().ino());
+            let waits = |line: &str| {
+                let fields: Vec<&str> = line.split_whitespace().collect();
+                fields.get(1) == Some(&"->") && fields.get(6).is_some_and(|id| id.ends_with(&inode))
+            };
+            for _ in 0..500 {
+                let locks = std::fs::read_to_string("/proc/locks").unwrap();
+                if locks.lines().any(waits) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panic!("nothing waits for the lock of {}", path.display());
         }
 
         #[test]
@@ -530,13 +619,12 @@ mod tests {
             assert!(running, "a process that got the pid runs on");
         }
 
-        /// The test holds the lock, so the signalled process cannot let it go.
         #[test]
-        fn a_stop_signals_the_holder_and_waits_for_the_lock() {
+        fn a_stop_fails_when_the_holder_does_not_end_in_time() {
             let temp = tempfile::tempdir().unwrap();
             let state = StateDir::create(temp.path()).unwrap();
             let _lock = state.lock().unwrap();
-            let mut child = sleeper();
+            let mut child = deaf_sleeper();
             write_record(temp.path(), &record_of(&child));
             let wait = Duration::from_millis(300);
 
@@ -544,13 +632,32 @@ mod tests {
             let stopped = stop_within(temp.path(), wait);
             let waited = started.elapsed();
 
-            let status = child.wait().unwrap();
-            assert_eq!(status.signal(), Some(Signal::TERM.as_raw()));
+            let running = child.try_wait().unwrap().is_none();
+            let _ = child.kill();
+            let _ = child.wait();
             assert!(
                 matches!(stopped, Err(StopLockHolderError::StillRunning { .. })),
                 "{stopped:?}"
             );
             assert!(waited >= wait, "{waited:?}");
+            assert!(running, "it ignores SIGTERM");
+        }
+
+        /// Another program, such as a systemd unit with `RestartSec=0`, starts a daemon again the
+        /// moment the stopped one lets the lock go, so the lock never looks free.
+        #[test]
+        fn a_stop_ends_with_the_holder_even_when_another_daemon_takes_the_lock_at_once() {
+            let temp = tempfile::tempdir().unwrap();
+            let mut child = locking_sleeper(temp.path());
+            write_record(temp.path(), &record_of(&child));
+            let next = next_daemon(temp.path());
+
+            let stopped = stop_within(temp.path(), Duration::from_secs(5));
+
+            let status = child.wait().unwrap();
+            next.join().unwrap();
+            assert_eq!(status.signal(), Some(Signal::TERM.as_raw()));
+            assert!(stopped.is_ok(), "{stopped:?}");
         }
     }
 }

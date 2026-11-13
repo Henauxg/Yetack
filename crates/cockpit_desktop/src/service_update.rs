@@ -26,8 +26,9 @@ const LOG_TAIL_BYTES: u64 = 4 * 1024;
 
 /// What restarting the service does on this system.
 pub trait ServiceControl: Clone + Send + 'static {
-    /// Stops the daemon that holds `state_dir`'s lock, and returns once it let the lock go. A
-    /// lock that no daemon holds counts as stopped. It blocks.
+    /// Stops the daemon that holds `state_dir`'s lock, and returns once its process ended. A
+    /// lock that no daemon holds counts as stopped. Another program may have started a daemon
+    /// again by then: the update judges the daemon that answers next. It blocks.
     fn stop(&self, state_dir: &Path) -> Result<(), StopFailure>;
 
     /// Starts the service for `state_dir`, with its log in `log_folder`, and returns once it
@@ -197,9 +198,9 @@ fn stop_lock_holder(state_dir: &Path) -> Result<(), StopFailure> {
         Err(error) => error,
     };
     let by_hand = match &error {
-        StopLockHolderError::Signal { pid, .. } | StopLockHolderError::StillRunning { pid, .. } => {
-            Some(HandStop::Process(*pid))
-        }
+        StopLockHolderError::Signal { pid, .. }
+        | StopLockHolderError::Wait { pid, .. }
+        | StopLockHolderError::StillRunning { pid, .. } => Some(HandStop::Process(*pid)),
         StopLockHolderError::Holder(LockHolderError::Unnamed { .. }) => Some(HandStop::Unrecorded),
         StopLockHolderError::Unverified { .. } => Some(HandStop::Unverified),
         StopLockHolderError::NoDaemon
@@ -393,10 +394,11 @@ mod tests {
 
         assert_eq!(result, Ok(()));
         assert_eq!(steps, [UpdateStep::Stop, UpdateStep::Start]);
-        assert_eq!(
-            fake.calls().first().map(String::as_str),
-            Some("read the jobs of [AgentId(1)] in /made-up/state")
+        let read = format!(
+            "read the jobs of [AgentId(1)] in {}",
+            plan.state_dir.display()
         );
+        assert_eq!(fake.calls().first(), Some(&read));
     }
 
     #[tokio::test]
