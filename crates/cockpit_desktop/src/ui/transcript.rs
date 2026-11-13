@@ -1626,14 +1626,26 @@ impl EditMeta {
     }
 }
 
+/// How much of each tool call the chat shows, as the preferences say.
+#[derive(Clone, Copy)]
+struct CallDetail(Memo<ToolCallDetail>);
+
+/// Provides the window's `CallDetail`. A row reads this one memo, so a change of the state runs it
+/// once, not once per call in the chat.
+pub fn use_call_detail(cockpit: Cockpit) {
+    let detail = use_memo(move || cockpit.state.read().prefs.chat.tool_calls);
+    use_context_provider(|| CallDetail(detail));
+}
+
 /// Whether a call's input and output show, and the toggle a click on its line or its chevron
 /// gives. A call shows them as the preferences say until a click decides for it.
-fn use_call_fold(cockpit: Cockpit) -> (bool, Signal<Option<bool>>) {
-    // A memo, so that a row renders again when the preference changes and not at every change of
-    // the state.
-    let full = use_memo(move || cockpit.state.read().prefs.chat.tool_calls == ToolCallDetail::Full);
+fn use_call_fold() -> (bool, Signal<Option<bool>>) {
+    let CallDetail(detail) = use_context();
     let decided = use_signal(|| None::<bool>);
-    (decided().unwrap_or(full()), decided)
+    (
+        decided().unwrap_or(detail() == ToolCallDetail::Full),
+        decided,
+    )
 }
 
 /// The chevron at the end of a call's line, which shows or hides its input and output.
@@ -1662,8 +1674,7 @@ fn CallFold(open: bool, decided: Signal<Option<bool>>) -> Element {
 
 #[component]
 fn ToolView(agent: AgentId, id: ItemId, call: ToolCall, stage: CallStage) -> Element {
-    let cockpit: Cockpit = use_context();
-    let (open, mut decided) = use_call_fold(cockpit);
+    let (open, mut decided) = use_call_fold();
     let shape = ToolShape::new(&call);
     let meta = tool_meta(&call, stage);
     let input = shape.input().map(str::to_owned);
@@ -1710,7 +1721,7 @@ fn ToolView(agent: AgentId, id: ItemId, call: ToolCall, stage: CallStage) -> Ele
 #[component]
 fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall, stage: CallStage) -> Element {
     let cockpit: Cockpit = use_context();
-    let (open, mut decided) = use_call_fold(cockpit);
+    let (open, mut decided) = use_call_fold();
     let Some(edit) = call.edit.clone() else {
         return rsx! {};
     };
