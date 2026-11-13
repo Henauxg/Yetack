@@ -7,18 +7,16 @@ Update it when you hand over.
 
 ## Where the work is
 
-- Work goes on short branches, each in its own worktree (see AGENTS.md), and is merged into `main` once the user agrees. The open one is in "In progress: updating any machine's daemon" below.
+- Work goes on short branches, each in its own worktree (see AGENTS.md), and is merged into `main` once the user agrees.
 - CI (`.github/workflows/ci.yml`) runs on Linux and Windows, only when started: `gh workflow run ci.yml --ref <branch>`, or from the Actions tab. Ask the user before you start it. The Windows job is the only real Windows test, and it caught several failures that no Linux run showed.
 - CI is green on both platforms from `b57f7cd` on, the Windows job's tests of every crate included. Before it, the Windows job failed from the accounts commits on, on four account tests whose home folder was a Unix path.
 - The protocol version is 9: `Welcome` carries the daemon's commit (`daemon_commit`). An app and a daemon of different versions refuse each other at `Hello`, so they are rebuilt together.
 
-## In progress: updating any machine's daemon
+## Updating any machine's daemon
 
-The branch `feat/machine-updates` is pushed and not merged into `main`. Work in a worktree of it: `git worktree add ../agents-cockpit-machine-updates feat/machine-updates`.
+This work is in `main`. The user approved its screens after three rounds of HTML mockups, which were removed at the merge. Step 2 of [packaging.md](packaging.md) builds on it: a third plan that sends a prebuilt daemon over SSH, beside the build on the server.
 
-The user approved the design after three rounds of HTML mockups. The approved screens and the script that writes them are in [mockups/machine-updates](mockups/machine-updates/README.md).
-
-Done:
+What it does:
 
 - The daemon sends its commit in `Welcome` and writes its process into `serve.lock`. On Unix, `cockpit_daemon::stop_lock_holder` stops that process and no other.
 - The update's state and flow, the same for every machine (`state/update_offer.rs`, `state/update_plan.rs`, `state/daemon_update.rs`, `service_update.rs`). A server runs `contrib/update-daemon.sh`. Local's background service is stopped, then started again with the app's own program. When agents are busy, a confirmation offers "Update when they are idle" and "Update now", which gives the script `--even-if-busy`.
@@ -34,11 +32,6 @@ Known gaps in the update's stop, left as they are:
 
 - The app's stop of Local's daemon (`stop_lock_holder`) waits until nobody holds `serve.lock`. Another program, such as a systemd unit with `RestartSec=0`, can start the old daemon again between two of its checks, 100 ms apart. The lock then never looks free, and after 10 seconds the update fails with "did not stop", naming the daemon that did stop. A check that the holder changed (another pid or start time) would end the stop instead.
 - The script's `stop_daemon` finds the daemon as the first process in `/proc` that holds `serve.lock`, in the order of the folder names (`1000` comes before `999`). While the daemon starts an agent, its child holds the lock too, for the moment between fork and exec. The script can pick that child and send it SIGTERM first: the daemon then gets its own signal one second later.
-
-Left, in order:
-
-1. `/review-standard fix` (`/review fix` is done).
-2. Ask the user before merging into `main`.
 
 To check Unix code without CI, cross-build the daemon crates for `x86_64-unknown-linux-musl`, with `rust-lld` as the linker, and run their test binaries in WSL. The tests embed Windows paths through `env!`, so give them absolute paths for the run, and don't commit that change. The `update_daemon` tests fail in about 4 of 10 full runs there, on `main` too: rerun a failing test alone.
 
