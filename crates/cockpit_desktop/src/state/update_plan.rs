@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use cockpit_protocol::BuildCommit;
+use cockpit_protocol::{AgentId, BuildCommit};
 
 /// The script's lines that move the steps on, as `say` in `contrib/update-daemon.sh` prints them.
 pub const BUILDING_LINE: &str = "update-daemon: building";
@@ -97,10 +97,22 @@ impl UpdateStep {
 /// What an update does about the machine's busy agents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BusyAgents {
-    /// The server's script refuses to restart while an agent is busy or may hold a scheduled job.
+    /// The update refuses to restart while an agent is busy or may hold a scheduled job. A
+    /// server's script checks both. Before it restarts this computer's service, the app reads the
+    /// jobs again: it saw the running agents itself.
     Refuse,
-    /// "Update now": the restart ends their turns, which the new daemon resumes.
+    /// "Update now": the restart ends their turns, which the new daemon resumes, and loses their
+    /// scheduled jobs.
     Interrupt,
+}
+
+/// The raw logs to read before an update of this computer's service, to tell which of its resting
+/// agents may hold a scheduled job.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobCheck {
+    pub plan: ServicePlan,
+    /// The resting agents, by the app's ids.
+    pub agents: Vec<AgentId>,
 }
 
 /// An update to run.

@@ -370,6 +370,10 @@ pub struct MachineState {
     pub update_plan: Option<UpdatePlan>,
     /// The update of this machine's daemon: waiting for idle agents, under way, or failed.
     pub update: Option<DaemonUpdate>,
+    /// The resting agents that may hold a scheduled job, which a restart loses, as the app last
+    /// read their raw logs. Only an update of this computer's background service reads them: a
+    /// server's script checks its own.
+    pub job_holders: Vec<AgentId>,
     /// The server's entry in the config, which the Machines dialog edits. `None` for this
     /// computer.
     pub server: Option<MachineConfig>,
@@ -392,6 +396,7 @@ impl MachineState {
             version_gap: None,
             update_plan: None,
             update: None,
+            job_holders: Vec::new(),
             server: None,
         }
     }

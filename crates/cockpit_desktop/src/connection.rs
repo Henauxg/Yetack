@@ -27,7 +27,9 @@ use crate::state::machine_load::{LOAD_POLL, LoadView, ShownLoad};
 use crate::state::machines::{self, MachineChange};
 use crate::state::no_daemon::{self, Absence, Chosen, DaemonChoice, SERVICE_OFFERED};
 use crate::state::update_offer::{self, VersionGap};
-use crate::state::update_plan::{ServerPlan, ServicePlan, UpdatePlan, UpdateRun, UpdateStep};
+use crate::state::update_plan::{
+    BusyAgents, JobCheck, ServerPlan, ServicePlan, UpdatePlan, UpdateRun, UpdateStep,
+};
 use crate::state::{
     self, AgentEntry, AppState, ConnectionState, Dialog, Drafts, MachineState, Outgoing, Purpose,
     TitlePlace, Utf16Offset, actions, notification_levels,
@@ -80,6 +82,9 @@ pub enum ToDaemon {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateCommand {
+    /// Reads the raw logs of this computer's resting agents, then starts the update as
+    /// `daemon_update::jobs_checked` says.
+    CheckJobs(MachineId, JobCheck),
     Start(MachineId, UpdateRun),
     /// Asks a server's running script to stop before it installs.
     Cancel(MachineId, ServerPlan),
@@ -118,10 +123,18 @@ impl Cockpit {
         self.daemon.send(ToDaemon::Machines(change));
     }
 
-    /// Starts the update of `machine`'s daemon, from a card or "Update again". Busy agents open
-    /// the confirmation first.
+    /// Starts the update of `machine`'s daemon, from a card, "Update again" or "Retry". Busy
+    /// agents open the confirmation first. Before a restart of this computer's service, the app
+    /// reads which agents may hold a scheduled job, beside the window.
     pub fn update_daemon(&self, machine: MachineId) {
-        self.begin_update(machine, |state| daemon_update::start(state, machine));
+        let check = daemon_update::jobs_to_check(&self.state.peek(), machine);
+        match check {
+            Some(check) => {
+                self.daemon
+                    .send(ToDaemon::Update(UpdateCommand::CheckJobs(machine, check)));
+            }
+            None => self.begin_update(machine, |state| daemon_update::start(state, machine)),
+        }
     }
 
     /// "Update when they are idle", on the confirmation.
@@ -530,6 +543,12 @@ impl Servers {
     /// Runs an update or a cancel next to the machine's connection task.
     fn start_update_command(&self, state: Signal<AppState>, command: UpdateCommand) {
         match command {
+            UpdateCommand::CheckJobs(machine, check) => {
+                if !self.tasks.contains_key(&machine) {
+                    return;
+                }
+                spawn(check_jobs(state, machine, check, self.retries.clone()));
+            }
             UpdateCommand::Start(machine, run) => {
                 if !self.tasks.contains_key(&machine) {
                     return;
@@ -587,7 +606,11 @@ async fn run_update(
             daemon_update::finished(&mut state.write(), machine, code)
         }
         UpdatePlan::Service(plan) => {
-            let restarted = service_update::restart(&SystemService, &plan, |step| {
+            let keep_jobs = match busy {
+                BusyAgents::Refuse => Some(update_offer::resting_agents(&state.peek(), machine)),
+                BusyAgents::Interrupt => None,
+            };
+            let restarted = service_update::restart(&SystemService, &plan, keep_jobs, |step| {
                 daemon_update::step_started(&mut state.write(), machine, step);
             })
             .await;
@@ -601,6 +624,22 @@ async fn run_update(
     if let Some(retry) = retry {
         // The window closed: nothing tries the machine again.
         let _ = retries.send(retry);
+    }
+}
+
+/// Reads which of this computer's resting agents may hold a scheduled job, then starts the update,
+/// or opens the confirmation that names them.
+async fn check_jobs(
+    mut state: Signal<AppState>,
+    machine: MachineId,
+    check: JobCheck,
+    retries: mpsc::UnboundedSender<ToDaemon>,
+) {
+    let JobCheck { plan, agents } = check;
+    let holders = service_update::read_job_holders(&SystemService, &plan, agents).await;
+    let run = daemon_update::jobs_checked(&mut state.write(), machine, holders);
+    if let Some(run) = run {
+        run_update(state, machine, run, retries).await;
     }
 }
 
@@ -731,6 +770,14 @@ async fn run_demo(
                     Some(ToDaemon::Send(outgoing)) => outgoing,
                     Some(ToDaemon::Update(UpdateCommand::Start(machine, run))) => {
                         spawn(play_demo_update(state, machine, run.plan));
+                        continue;
+                    }
+                    // The demo's agents have no raw logs: none holds a job.
+                    Some(ToDaemon::Update(UpdateCommand::CheckJobs(machine, _))) => {
+                        let run = daemon_update::jobs_checked(&mut state.write(), machine, Vec::new());
+                        if let Some(run) = run {
+                            spawn(play_demo_update(state, machine, run.plan));
+                        }
                         continue;
                     }
                     Some(ToDaemon::Machines(MachineChange::Edit(machine, config))) => {

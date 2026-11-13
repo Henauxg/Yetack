@@ -255,24 +255,56 @@ pub fn offer(state: &AppState, machine: MachineId) -> Option<UpdateOffer> {
     })
 }
 
-/// The agents of `machine` that a restart would interrupt, in the sidebar's order: those that
-/// work or wait for an answer, and the idle ones whose background tasks still run. An agent that
-/// waits only for its account's sign-in runs no turn.
+/// The agents of `machine` that a restart would hurt, in the sidebar's order: the running ones
+/// ([`running_agents`]), and the resting ones that may hold a scheduled job, which it would lose
+/// (`MachineState::job_holders`).
 pub fn busy_agents(state: &AppState, machine: MachineId) -> Vec<AgentId> {
+    let holders = state
+        .machines
+        .get(machine)
+        .map_or(&[][..], |known| known.job_holders.as_slice());
+    agents_where(state, machine, |entry| {
+        runs_something(entry) || (rests(entry) && holders.contains(&entry.id()))
+    })
+}
+
+/// The agents of `machine` that a restart would interrupt, in the sidebar's order: those that
+/// work or wait for an answer, and the idle ones whose background tasks still run.
+pub fn running_agents(state: &AppState, machine: MachineId) -> Vec<AgentId> {
+    agents_where(state, machine, runs_something)
+}
+
+/// The agents of `machine` that run no turn, in the sidebar's order: the idle ones, and those
+/// that wait only for their account's sign-in. Their `claude` runs, so they may hold a scheduled
+/// job.
+pub fn resting_agents(state: &AppState, machine: MachineId) -> Vec<AgentId> {
+    agents_where(state, machine, rests)
+}
+
+fn agents_where(
+    state: &AppState,
+    machine: MachineId,
+    wanted: impl Fn(&AgentEntry) -> bool,
+) -> Vec<AgentId> {
     state
         .agents_in_order()
         .into_iter()
-        .filter(|entry| MachineId::of(entry.id()) == machine && is_busy(entry))
+        .filter(|entry| MachineId::of(entry.id()) == machine && wanted(entry))
         .map(AgentEntry::id)
         .collect()
 }
 
-fn is_busy(entry: &AgentEntry) -> bool {
+fn runs_something(entry: &AgentEntry) -> bool {
     match accounts::turn_status(&entry.summary) {
         AgentStatus::Working | AgentStatus::NeedsYou => true,
         AgentStatus::Idle => entry.summary.background_running > 0,
         AgentStatus::Exited => false,
     }
+}
+
+/// An agent that waits only for its account's sign-in has the status `Idle` here.
+fn rests(entry: &AgentEntry) -> bool {
+    accounts::turn_status(&entry.summary) == AgentStatus::Idle
 }
 
 #[cfg(test)]
@@ -606,5 +638,32 @@ mod tests {
         let state = state_with(vec![watching, ended, summary(3, AgentStatus::Idle)]);
 
         assert_eq!(busy_agents(&state, MachineId::THIS), [AgentId::new(1)]);
+    }
+
+    #[test]
+    fn a_resting_agent_that_may_hold_a_scheduled_job_is_busy_without_running_anything() {
+        let mut sign_in_only = summary(4, AgentStatus::NeedsYou);
+        sign_in_only.sign_in_wait = SignInWait::Waiting;
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::Idle),
+            summary(2, AgentStatus::Exited),
+            summary(3, AgentStatus::Working),
+            sign_in_only,
+            summary(5, AgentStatus::Idle),
+        ]);
+        state.machines.this.job_holders = [1, 2, 3, 4].map(AgentId::new).to_vec();
+
+        let mut busy = busy_agents(&state, MachineId::THIS);
+        busy.sort();
+        let mut resting = resting_agents(&state, MachineId::THIS);
+        resting.sort();
+
+        assert_eq!(
+            busy,
+            [1, 3, 4].map(AgentId::new),
+            "an ended agent holds no job"
+        );
+        assert_eq!(running_agents(&state, MachineId::THIS), [AgentId::new(3)]);
+        assert_eq!(resting, [1, 4, 5].map(AgentId::new));
     }
 }

@@ -7,6 +7,8 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
+use cockpit_protocol::AgentId;
+
 use crate::state::daemon_update::{RestartFailure, StopFailure};
 use crate::state::update_plan::{ServicePlan, UpdateStep};
 
@@ -31,15 +33,45 @@ pub trait ServiceControl: Clone + Send + 'static {
     /// Starts the service for `state_dir`, with its log in `log_folder`, and returns once it
     /// answers. `Err` says why it did not.
     async fn start(&self, state_dir: &Path, log_folder: &Path) -> Result<(), String>;
+
+    /// Those of `agents`, by the app's ids, that may hold a scheduled job in the daemon that
+    /// holds `state_dir`'s lock. It reads their raw logs: it blocks.
+    fn job_holders(&self, state_dir: &Path, agents: &[AgentId]) -> Vec<AgentId>;
+}
+
+/// The agents of the plan's daemon that may hold a scheduled job, among `agents`. A read that
+/// ended before it was done counts every one of them.
+pub async fn read_job_holders(
+    control: &impl ServiceControl,
+    plan: &ServicePlan,
+    agents: Vec<AgentId>,
+) -> Vec<AgentId> {
+    let reader = control.clone();
+    let state_dir = plan.state_dir.clone();
+    let read = tokio::task::spawn_blocking({
+        let agents = agents.clone();
+        move || reader.job_holders(&state_dir, &agents)
+    });
+    read.await.unwrap_or(agents)
 }
 
 /// Stops the daemon, then starts the service with this app's program, and tells `steps` each step
 /// as it starts. Once it returns `Ok`, the app connects to the new daemon.
+///
+/// With `keep_jobs`, the resting agents, it first reads their raw logs again, and restarts nothing
+/// when one may hold a scheduled job, as the script refuses on a server.
 pub async fn restart(
     control: &impl ServiceControl,
     plan: &ServicePlan,
+    keep_jobs: Option<Vec<AgentId>>,
     mut steps: impl FnMut(UpdateStep),
 ) -> Result<(), RestartFailure> {
+    if let Some(resting) = keep_jobs {
+        let holders = read_job_holders(control, plan, resting).await;
+        if !holders.is_empty() {
+            return Err(RestartFailure::HoldsJobs(holders));
+        }
+    }
     steps(UpdateStep::Stop);
     let stopper = control.clone();
     let state_dir = plan.state_dir.clone();
@@ -102,6 +134,39 @@ impl ServiceControl for SystemService {
     async fn start(&self, state_dir: &Path, log_folder: &Path) -> Result<(), String> {
         start_service(state_dir, log_folder).await
     }
+
+    fn job_holders(&self, state_dir: &Path, agents: &[AgentId]) -> Vec<AgentId> {
+        job_holders(state_dir, agents)
+    }
+}
+
+/// The rule of `contrib/update-daemon.sh`: Claude called `CronCreate` more often than
+/// `CronDelete` in the agent's raw log since the daemon started. A lock the app cannot read
+/// counts every call, and a log it cannot read counts as a job. No daemon holds no job.
+#[cfg(unix)]
+fn job_holders(state_dir: &Path, agents: &[AgentId]) -> Vec<AgentId> {
+    use std::time::SystemTime;
+
+    use crate::machine::MachineId;
+
+    let since = match cockpit_daemon::lock_held_since(state_dir) {
+        Ok(Some(since)) => since,
+        Ok(None) => return Vec::new(),
+        Err(_) => SystemTime::UNIX_EPOCH,
+    };
+    agents
+        .iter()
+        .copied()
+        .filter(|agent| {
+            let daemon_agent = MachineId::daemon_agent(*agent);
+            cockpit_daemon::may_hold_scheduled_job(state_dir, daemon_agent, since).unwrap_or(true)
+        })
+        .collect()
+}
+
+#[cfg(not(unix))]
+fn job_holders(_state_dir: &Path, _agents: &[AgentId]) -> Vec<AgentId> {
+    Vec::new()
 }
 
 /// Stops the daemon as systemd stops the service, after checking that the lock names it.
@@ -171,6 +236,8 @@ mod tests {
         started: Result<(), String>,
         /// What the start writes to the log first.
         logged: &'static str,
+        /// The agents that may hold a scheduled job.
+        holders: Vec<AgentId>,
         calls: Arc<Mutex<Vec<String>>>,
     }
 
@@ -180,6 +247,7 @@ mod tests {
                 stopped: Ok(()),
                 started: Ok(()),
                 logged: "",
+                holders: Vec::new(),
                 calls: Arc::default(),
             }
         }
@@ -211,6 +279,16 @@ mod tests {
             }
             self.started.clone()
         }
+
+        fn job_holders(&self, state_dir: &Path, agents: &[AgentId]) -> Vec<AgentId> {
+            let call = format!("read the jobs of {agents:?} in {}", state_dir.display());
+            self.calls.lock().unwrap().push(call);
+            agents
+                .iter()
+                .copied()
+                .filter(|agent| self.holders.contains(agent))
+                .collect()
+        }
     }
 
     fn plan(root: &Path) -> ServicePlan {
@@ -224,9 +302,119 @@ mod tests {
         fake: &Fake,
         plan: &ServicePlan,
     ) -> (Result<(), RestartFailure>, Vec<UpdateStep>) {
+        restarted_keeping(fake, plan, None).await
+    }
+
+    async fn restarted_keeping(
+        fake: &Fake,
+        plan: &ServicePlan,
+        keep_jobs: Option<Vec<AgentId>>,
+    ) -> (Result<(), RestartFailure>, Vec<UpdateStep>) {
         let mut steps = Vec::new();
-        let result = restart(fake, plan, |step| steps.push(step)).await;
+        let result = restart(fake, plan, keep_jobs, |step| steps.push(step)).await;
         (result, steps)
+    }
+
+    #[tokio::test]
+    async fn an_agent_that_may_hold_a_scheduled_job_stops_the_restart_before_the_stop() {
+        let fake = Fake {
+            holders: vec![AgentId::new(2)],
+            ..Fake::new()
+        };
+        let plan = plan(Path::new("/made-up"));
+        let resting = vec![AgentId::new(1), AgentId::new(2)];
+
+        let (result, steps) = restarted_keeping(&fake, &plan, Some(resting)).await;
+
+        assert_eq!(
+            result,
+            Err(RestartFailure::HoldsJobs(vec![AgentId::new(2)]))
+        );
+        assert_eq!(steps, [], "nothing stopped");
+        assert_eq!(fake.calls().len(), 1, "the read alone: {:?}", fake.calls());
+    }
+
+    #[tokio::test]
+    async fn resting_agents_without_a_job_let_the_restart_go_on() {
+        let fake = Fake::new();
+        let plan = plan(Path::new("/made-up"));
+
+        let (result, steps) = restarted_keeping(&fake, &plan, Some(vec![AgentId::new(1)])).await;
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(steps, [UpdateStep::Stop, UpdateStep::Start]);
+        assert_eq!(
+            fake.calls().first().map(String::as_str),
+            Some("read the jobs of [AgentId(1)] in /made-up/state")
+        );
+    }
+
+    #[tokio::test]
+    async fn update_now_reads_no_job() {
+        let fake = Fake {
+            holders: vec![AgentId::new(1)],
+            ..Fake::new()
+        };
+
+        let (result, _) = restarted(&fake, &plan(Path::new("/made-up"))).await;
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(fake.calls().len(), 2, "the stop and the start");
+    }
+
+    /// The state folder of a daemon this test plays: it holds the lock, and Claude called
+    /// `tools` for agent 3, at `at` milliseconds after the epoch.
+    #[cfg(unix)]
+    fn daemon_with_calls(tools: &[&str], at: u128) -> (TempDir, File) {
+        use std::io::Write;
+
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("raw")).unwrap();
+        let lock = File::create(temp.path().join("serve.lock")).unwrap();
+        lock.try_lock().unwrap();
+        let mut log = File::create(temp.path().join("raw/3.jsonl")).unwrap();
+        for tool in tools {
+            let claude_line = format!(
+                r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"toolu_made_up","name":"{tool}","input":{{}}}}]}}}}"#
+            );
+            let line = format!(
+                "{{\"at\":{at},\"direction\":\"from_claude\",\"line\":{}}}\n",
+                serde_json::to_string(&claude_line).unwrap()
+            );
+            log.write_all(line.as_bytes()).unwrap();
+        }
+        (temp, lock)
+    }
+
+    #[cfg(unix)]
+    fn now_millis() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_agent_holds_the_jobs_it_created_and_did_not_delete_since_the_daemon_started() {
+        let agents = [AgentId::new(3)];
+        let (created, _lock) = daemon_with_calls(&["CronCreate"], now_millis() + 1000);
+        let (deleted, _other_lock) =
+            daemon_with_calls(&["CronCreate", "CronDelete"], now_millis() + 1000);
+        let (before_the_start, _old_lock) = daemon_with_calls(&["CronCreate"], 1000);
+
+        assert_eq!(job_holders(created.path(), &agents), agents);
+        assert_eq!(job_holders(deleted.path(), &agents), []);
+        assert_eq!(job_holders(before_the_start.path(), &agents), []);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_no_daemon_holds_has_no_job() {
+        let (temp, lock) = daemon_with_calls(&["CronCreate"], now_millis() + 1000);
+        drop(lock);
+
+        assert_eq!(job_holders(temp.path(), &[AgentId::new(3)]), []);
     }
 
     #[tokio::test]

@@ -16,7 +16,7 @@ use std::io;
 #[cfg(unix)]
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_protocol::ProcessId;
 use serde::{Deserialize, Serialize};
@@ -162,6 +162,29 @@ pub fn lock_holder(state_dir: &Path) -> Result<Option<LockHolder>, LockHolderErr
         Some(holder) => Ok(Some(holder)),
         None => Err(LockHolderError::Unnamed { path }),
     }
+}
+
+/// A moment no later than the start of the daemon that holds the lock of `state_dir`, or `None`
+/// when no daemon holds it. It is the last write to the lock's file: a daemon writes its record
+/// there as it takes the lock, before it starts any agent. A daemon older than the record writes
+/// nothing, so the moment is earlier then.
+///
+/// It takes a free lock for a moment, as [`lock_holder`] does.
+#[cfg(unix)]
+pub fn lock_held_since(state_dir: &Path) -> Result<Option<SystemTime>, LockHolderError> {
+    let path = store::lock_path(state_dir);
+    let read_error = |source| LockHolderError::Read {
+        path: path.clone(),
+        source,
+    };
+    let Some(file) = held_lock(&path).map_err(read_error)? else {
+        return Ok(None);
+    };
+    let written = file
+        .metadata()
+        .and_then(|metadata| metadata.modified())
+        .map_err(read_error)?;
+    Ok(Some(written))
 }
 
 /// Stops the daemon that holds the lock of `state_dir` as systemd stops the background service,
@@ -370,6 +393,21 @@ mod tests {
                 matches!(read, Err(LockHolderError::Unnamed { .. })),
                 "{read:?}"
             );
+        }
+
+        #[test]
+        fn a_held_lock_was_written_as_its_daemon_took_it() {
+            let temp = tempfile::tempdir().unwrap();
+            let state = StateDir::create(temp.path()).unwrap();
+            let before = SystemTime::now() - Duration::from_secs(1);
+            let missing = lock_held_since(temp.path());
+            let _lock = state.lock().unwrap();
+
+            let since = lock_held_since(temp.path()).unwrap().unwrap();
+
+            assert_eq!(missing.unwrap(), None);
+            assert!(since >= before, "{since:?} is before {before:?}");
+            assert!(since <= SystemTime::now());
         }
 
         #[test]

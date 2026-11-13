@@ -153,9 +153,15 @@ impl StateDir {
 
     /// `raw/<agent-id>.jsonl`.
     pub(crate) fn raw_log(&self, agent: AgentId) -> PathBuf {
-        self.raw()
-            .join(format!("{}.{RAW_LOG_EXTENSION}", agent.get()))
+        raw_log_path(&self.root, agent)
     }
+}
+
+/// `raw/<agent-id>.jsonl` in the state folder `state_dir`.
+pub(crate) fn raw_log_path(state_dir: &Path, agent: AgentId) -> PathBuf {
+    state_dir
+        .join(RAW_FOLDER)
+        .join(format!("{}.{RAW_LOG_EXTENSION}", agent.get()))
 }
 
 /// Writes this process into the lock's file, in place of the record a killed daemon left.

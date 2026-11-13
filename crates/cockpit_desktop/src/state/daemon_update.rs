@@ -5,12 +5,12 @@
 use std::collections::VecDeque;
 
 use cockpit_daemon::SERVE_SUBCOMMAND;
-use cockpit_protocol::ProcessId;
+use cockpit_protocol::{AgentId, ProcessId};
 
 use super::app_state::{AppState, MachineState};
 use super::ui_state::Dialog;
 use super::update_offer::{self, GapKind, ProgramBuild, VersionGap};
-use super::update_plan::{BusyAgents, ServerPlan, UpdatePlan, UpdateRun, UpdateStep};
+use super::update_plan::{BusyAgents, JobCheck, ServerPlan, UpdatePlan, UpdateRun, UpdateStep};
 use crate::config::MachineConfig;
 use crate::machine::MachineId;
 
@@ -95,6 +95,9 @@ pub enum UpdateFailure {
     /// The service started, and the daemon that answers runs another build: another program
     /// restarted the old one, such as a systemd unit that restarts it whenever it stops.
     OtherBuildAnswers,
+    /// Resting agents of this computer's daemon may hold scheduled jobs, which a restart would
+    /// lose (`MachineState::job_holders`): nothing changed.
+    HoldsJobs,
 }
 
 impl UpdateFailure {
@@ -120,7 +123,8 @@ impl UpdateFailure {
             | Self::Cancelled
             | Self::RolledBack
             | Self::NotStopped { .. }
-            | Self::OtherBuildAnswers => "Was not updated.",
+            | Self::OtherBuildAnswers
+            | Self::HoldsJobs => "Was not updated.",
             Self::InstallFailed | Self::NotStarted => "Update failed during the restart.",
             Self::AlreadyRunning => "An update is already running.",
             Self::Unknown => "Update status unknown.",
@@ -152,6 +156,8 @@ pub struct StopFailure {
 /// How the restart of this computer's background service failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RestartFailure {
+    /// These resting agents may hold scheduled jobs: nothing was stopped.
+    HoldsJobs(Vec<AgentId>),
     NotStopped(StopFailure),
     NotStarted {
         error: String,
@@ -180,9 +186,13 @@ impl FailedUpdate {
         })
     }
 
-    /// Whether the screen offers "Update now": the server's script refused for busy agents.
+    /// Whether the screen offers "Update now": the update refused for busy agents or scheduled
+    /// jobs.
     pub fn offers_update_now(&self) -> bool {
-        self.failure == UpdateFailure::Refused
+        matches!(
+            self.failure,
+            UpdateFailure::Refused | UpdateFailure::HoldsJobs
+        )
     }
 }
 
@@ -286,19 +296,63 @@ fn after_restart(progress: UpdateProgress, gap: &VersionGap) -> Option<DaemonUpd
     }
 }
 
-/// "Update" on a card, or "Update again" on a failure. Returns the update to run: `None` when one
-/// waits or runs already, when the app has none to run, or when busy agents of a machine the app
-/// is connected to need the user's answer first, which the confirmation asks. A machine the app
-/// does not reach shows no agents to ask about: a server's script checks them itself.
+/// "Update" on a card, or "Update again" or "Retry" on a failure. Returns the update to run:
+/// `None` when one waits or runs already, when the app has none to run, or when the user answers
+/// first, which the confirmation asks:
+/// - a machine the app is connected to has busy agents;
+/// - this computer's service runs a daemon the app cannot list the agents of ([`agents_unseen`]).
+///
+/// A server the app does not reach shows no agents to ask about: its script checks them itself.
+/// Before a restart of this computer's service while the app is connected, the connection task
+/// reads the raw logs ([`jobs_to_check`]), then calls [`jobs_checked`], which calls this.
 pub fn start(state: &mut AppState, machine: MachineId) -> Option<UpdateRun> {
     let known = state.machines.get(machine)?;
     plan_to_run(known)?;
-    if known.is_connected() && !update_offer::busy_agents(state, machine).is_empty() {
+    let ask = if known.is_connected() {
+        !update_offer::busy_agents(state, machine).is_empty()
+    } else {
+        agents_unseen(known)
+    };
+    if ask {
         state.ui.popover = None;
         state.ui.dialog = Some(Dialog::ConfirmUpdate(machine));
         return None;
     }
     begin(state, machine, BusyAgents::Refuse)
+}
+
+/// Whether `known` is this computer's service while the app is not connected to its daemon, which
+/// last answered: it refuses the app, or the connection dropped. The app cannot list its agents,
+/// and nothing else checks them before the restart.
+pub fn agents_unseen(known: &MachineState) -> bool {
+    matches!(known.update_plan, Some(UpdatePlan::Service(_)))
+        && !known.is_connected()
+        && known.version_gap.is_some()
+}
+
+/// The raw logs to read before [`start`] restarts this computer's service, while the app is
+/// connected to it: its resting agents may hold scheduled jobs. `None` when `start` needs no
+/// read.
+pub fn jobs_to_check(state: &AppState, machine: MachineId) -> Option<JobCheck> {
+    let known = state.machines.get(machine)?;
+    let UpdatePlan::Service(plan) = plan_to_run(known)? else {
+        return None;
+    };
+    known.is_connected().then(|| JobCheck {
+        plan,
+        agents: update_offer::resting_agents(state, machine),
+    })
+}
+
+/// The raw logs of [`jobs_to_check`] were read: `holders` may hold scheduled jobs, so they count
+/// as busy. Returns what [`start`] returns.
+pub fn jobs_checked(
+    state: &mut AppState,
+    machine: MachineId,
+    holders: Vec<AgentId>,
+) -> Option<UpdateRun> {
+    state.machines.get_mut(machine)?.job_holders = holders;
+    start(state, machine)
 }
 
 /// "Update when they are idle", on the confirmation. Returns the update to run when none of the
@@ -311,13 +365,18 @@ pub fn wait_for_idle(state: &mut AppState, machine: MachineId) -> Option<UpdateR
     start_when_idle(state, machine)
 }
 
-/// Starts a waiting update once none of the machine's agents is busy. The app sees them only while
-/// it is connected: a machine it does not reach keeps waiting.
+/// Starts a waiting update once none of the machine's agents runs something. The app sees them
+/// only while it is connected: a machine it does not reach keeps waiting.
+///
+/// An agent that may hold a scheduled job does not hold the wait: its job may never end, since
+/// one that runs once ends with no `CronDelete`. The update itself checks the jobs again, as it
+/// starts, and refuses while one may be held (`UpdateFailure::Refused` from a server's script,
+/// `UpdateFailure::HoldsJobs` on this computer), with "Update now" on its screen.
 pub fn start_when_idle(state: &mut AppState, machine: MachineId) -> Option<UpdateRun> {
     let known = state.machines.get(machine)?;
     let idle = known.update.as_ref().is_some_and(DaemonUpdate::is_waiting)
         && known.is_connected()
-        && update_offer::busy_agents(state, machine).is_empty();
+        && update_offer::running_agents(state, machine).is_empty();
     if !idle {
         return None;
     }
@@ -368,6 +427,7 @@ fn begin(state: &mut AppState, machine: MachineId, busy: BusyAgents) -> Option<U
         .as_ref()
         .and_then(|gap| gap.daemon.clone())
         .or_else(|| ProgramBuild::daemon_of(known));
+    known.job_holders.clear();
     known.update = Some(DaemonUpdate::Running(UpdateProgress::new(
         plan.clone(),
         replaces,
@@ -465,6 +525,9 @@ pub fn restart_ended(
             true
         }
         Err(failure) => {
+            if let RestartFailure::HoldsJobs(holders) = &failure {
+                known.job_holders.clone_from(holders);
+            }
             known.update = Some(DaemonUpdate::Failed(restart_failure(progress, failure)));
             false
         }
@@ -480,7 +543,7 @@ fn failure_of(progress: UpdateProgress, failure: UpdateFailure) -> FailedUpdate 
     };
     let message = match failure {
         UpdateFailure::Refused | UpdateFailure::RolledBack => progress.errors.join("\n"),
-        UpdateFailure::AlreadyRunning => String::new(),
+        UpdateFailure::AlreadyRunning | UpdateFailure::HoldsJobs => String::new(),
         UpdateFailure::Failed
         | UpdateFailure::Cancelled
         | UpdateFailure::InstallFailed
@@ -505,9 +568,11 @@ fn failure_of(progress: UpdateProgress, failure: UpdateFailure) -> FailedUpdate 
     }
 }
 
-/// The error, and for a service that did not start, the end of its log.
+/// The error, and for a service that did not start, the end of its log. Agents that may hold
+/// scheduled jobs show in a list of their own.
 fn restart_failure(progress: UpdateProgress, failure: RestartFailure) -> FailedUpdate {
     let (failure, message) = match failure {
+        RestartFailure::HoldsJobs(_) => (UpdateFailure::HoldsJobs, String::new()),
         RestartFailure::NotStopped(StopFailure { reason, by_hand }) => {
             (UpdateFailure::NotStopped { by_hand }, reason)
         }
@@ -780,6 +845,10 @@ pub fn failure_text(failed: &FailedUpdate, name: &str) -> FailureText {
             lead: "The app started this app's version, but the daemon that answers still runs another build: another program restarted the old one, such as a systemd unit that restarts it whenever it stops.".to_owned(),
             hint: Some("Stop that program, or point it at this app's version, then retry.".to_owned()),
         },
+        UpdateFailure::HoldsJobs => text(
+            not_updated,
+            "These agents may hold scheduled jobs, which a restart would lose. Delete the jobs or stop the agents, then retry.".to_owned(),
+        ),
     }
 }
 
@@ -2038,6 +2107,174 @@ mod tests {
         assert_eq!(
             update_line(&state.machines.this).map(|line| line.text),
             Some("Update failed during the restart.")
+        );
+    }
+
+    /// This computer's service, whose daemon refuses the app for an older protocol.
+    fn with_local_service_that_refuses(agents: &[AgentStatus]) -> AppState {
+        let mut state = with_local_service(agents);
+        drop_connection(&mut state, MachineId::THIS);
+        let refusal = update_offer::protocol_gap(
+            DaemonPlace::Service,
+            &refused("the daemon speaks protocol 1, the client 4"),
+        );
+        attempt_failed(&mut state, MachineId::THIS, refusal.or(Some(older())));
+        state
+    }
+
+    #[test]
+    fn a_service_that_refuses_the_app_is_asked_about_since_its_agents_cannot_be_seen() {
+        let mut state = with_local_service_that_refuses(&[AgentStatus::Working]);
+        assert_eq!(
+            state.machines.this.version_gap.as_ref().map(|gap| gap.kind),
+            Some(GapKind::OlderProtocol)
+        );
+
+        assert_eq!(
+            jobs_to_check(&state, MachineId::THIS),
+            None,
+            "no log to read first"
+        );
+        assert_eq!(start(&mut state, MachineId::THIS), None);
+
+        assert_eq!(
+            state.ui.dialog,
+            Some(Dialog::ConfirmUpdate(MachineId::THIS))
+        );
+        assert_eq!(this_update(&state), None, "nothing stops before the answer");
+        assert!(agents_unseen(&state.machines.this));
+        assert_eq!(
+            start_now(&mut state, MachineId::THIS),
+            Some(UpdateRun {
+                plan: service_plan(),
+                busy: BusyAgents::Interrupt
+            })
+        );
+    }
+
+    #[test]
+    fn a_server_that_refuses_the_app_updates_at_once_and_its_script_checks() {
+        let state = with_older_server();
+
+        assert!(!agents_unseen(known(&state)));
+    }
+
+    #[test]
+    fn a_service_with_no_daemon_left_restarts_at_once() {
+        let mut state = with_local_service(&[]);
+        start(&mut state, MachineId::THIS).unwrap();
+        restart_ended(
+            &mut state,
+            MachineId::THIS,
+            Err(RestartFailure::NotStarted {
+                error: "made-up".to_owned(),
+                log: None,
+            }),
+        );
+        drop_connection(&mut state, MachineId::THIS);
+        attempt_failed(&mut state, MachineId::THIS, None);
+
+        assert_eq!(
+            start(&mut state, MachineId::THIS),
+            Some(run(service_plan()))
+        );
+    }
+
+    #[test]
+    fn a_connected_service_reads_the_jobs_of_its_resting_agents_first() {
+        let state =
+            with_local_service(&[AgentStatus::Working, AgentStatus::Idle, AgentStatus::Exited]);
+
+        let check = jobs_to_check(&state, MachineId::THIS).unwrap();
+
+        assert_eq!(check.agents, [AgentId::new(2)]);
+        assert_eq!(UpdatePlan::Service(check.plan), service_plan());
+        assert_eq!(
+            jobs_to_check(
+                &with_server_of_another_build(&[AgentStatus::Idle]),
+                build_box()
+            ),
+            None,
+            "a server's script reads its own"
+        );
+    }
+
+    #[test]
+    fn an_idle_agent_that_may_hold_a_scheduled_job_is_asked_about() {
+        let mut state = with_local_service(&[AgentStatus::Idle, AgentStatus::Idle]);
+
+        let started = jobs_checked(&mut state, MachineId::THIS, vec![AgentId::new(2)]);
+
+        assert_eq!(started, None);
+        assert_eq!(
+            state.ui.dialog,
+            Some(Dialog::ConfirmUpdate(MachineId::THIS))
+        );
+        assert_eq!(
+            update_offer::busy_agents(&state, MachineId::THIS),
+            [AgentId::new(2)]
+        );
+        assert_eq!(update_offer::running_agents(&state, MachineId::THIS), []);
+    }
+
+    #[test]
+    fn with_no_job_held_the_idle_service_restarts_at_once() {
+        let mut state = with_local_service(&[AgentStatus::Idle]);
+
+        let started = jobs_checked(&mut state, MachineId::THIS, Vec::new());
+
+        assert_eq!(started, Some(run(service_plan())));
+    }
+
+    #[test]
+    fn a_wait_for_idle_agents_does_not_wait_for_a_scheduled_job() {
+        let mut state = with_local_service(&[AgentStatus::Working, AgentStatus::Idle]);
+        jobs_checked(&mut state, MachineId::THIS, vec![AgentId::new(2)]);
+
+        assert_eq!(wait_for_idle(&mut state, MachineId::THIS), None);
+        set_status(&mut state, AgentId::new(1), AgentStatus::Idle);
+
+        assert_eq!(
+            start_when_idle(&mut state, MachineId::THIS),
+            Some(run(service_plan())),
+            "the restart reads the jobs again"
+        );
+        assert_eq!(state.machines.this.job_holders, [], "a run starts afresh");
+    }
+
+    #[test]
+    fn a_restart_refused_for_scheduled_jobs_lists_them_and_offers_update_now() {
+        let mut state = with_local_service(&[AgentStatus::Idle]);
+        state.ui.dialog = Some(Dialog::DaemonUpdate(MachineId::THIS));
+        start(&mut state, MachineId::THIS).unwrap();
+
+        let ended = restart_ended(
+            &mut state,
+            MachineId::THIS,
+            Err(RestartFailure::HoldsJobs(vec![AgentId::new(1)])),
+        );
+
+        assert!(!ended);
+        let Some(DaemonUpdate::Failed(failed)) = this_update(&state).cloned() else {
+            panic!("expected a failure, got {:?}", this_update(&state));
+        };
+        assert_eq!(failed.failure, UpdateFailure::HoldsJobs);
+        assert!(failed.offers_update_now());
+        assert_eq!(
+            update_offer::busy_agents(&state, MachineId::THIS),
+            [AgentId::new(1)]
+        );
+        assert_eq!(
+            update_line(&state.machines.this).map(|line| line.text),
+            Some("Was not updated.")
+        );
+        assert_eq!(
+            failure_text(&failed, "Local").lead,
+            "These agents may hold scheduled jobs, which a restart would lose. Delete the jobs or stop the agents, then retry."
+        );
+        assert_eq!(
+            start_now(&mut state, MachineId::THIS).map(|run| run.busy),
+            Some(BusyAgents::Interrupt)
         );
     }
 

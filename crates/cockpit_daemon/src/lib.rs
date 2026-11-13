@@ -18,6 +18,7 @@ mod mcp_remove;
 mod process;
 mod read_file;
 mod repository;
+mod scheduled_jobs;
 mod serve;
 mod server;
 mod sessions;
@@ -40,9 +41,11 @@ pub use daemon_config::{
 pub use in_app_daemon::InAppDaemon;
 #[cfg(unix)]
 pub use lock_holder::{
-    LockHolder, LockHolderError, StopLockHolderError, lock_holder, stop_lock_holder,
+    LockHolder, LockHolderError, StopLockHolderError, lock_held_since, lock_holder,
+    stop_lock_holder,
 };
 pub use process::ProcessError;
+pub use scheduled_jobs::may_hold_scheduled_job;
 #[cfg(unix)]
 pub use serve::serve;
 pub use serve::{START_TASK, ServeError};

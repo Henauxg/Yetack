@@ -3,12 +3,13 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use cockpit_protocol::Timestamp;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::store::state_dir;
 use crate::store::store_error::StoreError;
 
-/// `raw/<agent-id>.jsonl`: every line exchanged with one agent's `claude`, for debugging.
+/// `raw/<agent-id>.jsonl`: every line exchanged with one agent's `claude`, for debugging, and for
+/// the scheduled jobs an agent may hold.
 #[derive(Debug)]
 pub(crate) struct RawLog {
     path: PathBuf,
@@ -17,7 +18,7 @@ pub(crate) struct RawLog {
     failed: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Direction {
     ToClaude,
@@ -30,6 +31,14 @@ struct Entry<'line> {
     at: Timestamp,
     direction: Direction,
     line: &'line str,
+}
+
+/// A line of a raw log, as [`RawLog::append`] wrote it.
+#[derive(Debug, Deserialize)]
+pub(crate) struct LoggedLine {
+    pub(crate) at: Timestamp,
+    pub(crate) direction: Direction,
+    pub(crate) line: String,
 }
 
 impl RawLog {

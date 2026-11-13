@@ -36,7 +36,7 @@ use crate::state::daemon_update::{
 use crate::state::file_tree::TreeFilter;
 use crate::state::no_daemon::{self, Absence};
 use crate::state::projects::ProjectKey;
-use crate::state::update_offer::{GapKind, ProgramBuild, VersionGap};
+use crate::state::update_offer::{self, GapKind, ProgramBuild, VersionGap};
 use crate::state::update_plan::{ServerPlan, ServicePlan, UpdatePlan, UpdateStep};
 use crate::state::{
     AgentEntry, AppState, ConnectionState, Dialog, Drafts, Loadable, MachineState, Utf16Offset,
@@ -692,6 +692,12 @@ pub enum UpdateScreen {
     LocalUnverified,
     LocalNotStarted,
     LocalOtherBuild,
+    /// The confirmation, where an idle agent may hold a scheduled job.
+    LocalConfirmJobs,
+    /// The restart refused: an idle agent may hold a scheduled job.
+    LocalHoldsJobs,
+    /// The confirmation for a background service that refuses the app.
+    LocalConfirmUnseen,
 }
 
 /// The screen named by `--demo-update`, which only the demo opens. A name the demo does not know
@@ -784,7 +790,28 @@ pub fn show_update_screen(state: &mut AppState, screen: UpdateScreen) {
             daemon_update::restart_ended(state, MachineId::THIS, Ok(()));
             daemon_update::connected(state, MachineId::THIS);
         }
+        UpdateScreen::LocalConfirmJobs => {
+            local_service_of_another_build(state);
+            let holders = first_resting_agent(state);
+            daemon_update::jobs_checked(state, MachineId::THIS, holders);
+        }
+        UpdateScreen::LocalHoldsJobs => {
+            let holders = first_resting_agent(state);
+            failed_restart(state, RestartFailure::HoldsJobs(holders));
+        }
+        UpdateScreen::LocalConfirmUnseen => {
+            local_service_refused(state);
+            daemon_update::start(state, MachineId::THIS);
+        }
     }
+}
+
+/// The first of this computer's agents that rests, as the one that may hold a scheduled job.
+fn first_resting_agent(state: &AppState) -> Vec<AgentId> {
+    update_offer::resting_agents(state, MachineId::THIS)
+        .into_iter()
+        .take(1)
+        .collect()
 }
 
 fn update_plan() -> UpdatePlan {
@@ -864,6 +891,25 @@ fn local_service_of_another_build(state: &mut AppState) {
     daemon_update::connected(state, MachineId::THIS);
 }
 
+/// This computer's background service runs a daemon of an older protocol, which refuses the app.
+fn local_service_refused(state: &mut AppState) {
+    let label = DaemonLabel::service();
+    no_daemon::show(
+        state,
+        &label,
+        format!("the daemon refused the connection: {REFUSED_FOR_OLDER}"),
+        Absence::Failed,
+        None,
+    );
+    let this = &mut state.machines.this;
+    this.daemon = label;
+    this.version_gap = Some(older_gap());
+    this.update_plan = Some(UpdatePlan::Service(ServicePlan {
+        state_dir: PathBuf::from(LOCAL_STATE),
+        log_folder: PathBuf::from(LOCAL_APP_STATE),
+    }));
+}
+
 /// The restart of this computer's service ended on `failure`.
 fn failed_restart(state: &mut AppState, failure: RestartFailure) {
     local_service_of_another_build(state);
@@ -929,7 +975,8 @@ fn failed_update(state: &mut AppState, failure: UpdateFailure, code: Option<i32>
         // The restart of this computer's service ends otherwise: `failed_restart`.
         UpdateFailure::NotStopped { .. }
         | UpdateFailure::NotStarted
-        | UpdateFailure::OtherBuildAnswers => Vec::new(),
+        | UpdateFailure::OtherBuildAnswers
+        | UpdateFailure::HoldsJobs => Vec::new(),
     };
     daemon_update::output(state, machine, lines);
     daemon_update::finished(state, machine, code);
@@ -4268,8 +4315,46 @@ mod tests {
                 "local-unverified",
                 "local-not-started",
                 "local-other-build",
+                "local-confirm-jobs",
+                "local-holds-jobs",
+                "local-confirm-unseen",
             ]
         );
+    }
+
+    #[test]
+    fn the_scheduled_job_screens_show_what_they_name() {
+        let shown = |screen| {
+            let mut state = state(label());
+            show_update_screen(&mut state, screen);
+            state
+        };
+
+        let jobs = shown(UpdateScreen::LocalConfirmJobs);
+        assert_eq!(jobs.ui.dialog, Some(Dialog::ConfirmUpdate(MachineId::THIS)));
+        assert_eq!(jobs.machines.this.job_holders.len(), 1);
+        assert!(
+            update_offer::busy_agents(&jobs, MachineId::THIS)
+                .contains(&jobs.machines.this.job_holders[0])
+        );
+
+        let refused = shown(UpdateScreen::LocalHoldsJobs);
+        assert!(matches!(
+            refused.machines.this.update,
+            Some(daemon_update::DaemonUpdate::Failed(
+                daemon_update::FailedUpdate {
+                    failure: UpdateFailure::HoldsJobs,
+                    ..
+                }
+            ))
+        ));
+
+        let unseen = shown(UpdateScreen::LocalConfirmUnseen);
+        assert_eq!(
+            unseen.ui.dialog,
+            Some(Dialog::ConfirmUpdate(MachineId::THIS))
+        );
+        assert!(daemon_update::agents_unseen(&unseen.machines.this));
     }
 
     #[test]
