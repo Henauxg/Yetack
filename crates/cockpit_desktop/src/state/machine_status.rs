@@ -3,7 +3,7 @@
 //! Without machine panels, the sidebar shows these lines in a strip at the top of its list.
 
 use super::app_state::{AppState, ConnectionState, MachineState};
-use super::daemon_update::{self, DaemonUpdate};
+use super::daemon_update::{self, DaemonUpdate, UpdateLink};
 use super::machines::MachineName;
 use super::no_daemon::Absence;
 use super::update_offer::GapKind;
@@ -38,8 +38,8 @@ impl Tone {
 /// What a link of a machine's line does, or the Machines dialog's button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusAction {
-    /// Opens the update's screens, under this label: "Update", "Details" or "Show".
-    Update(&'static str),
+    /// Opens the update's screens, under the link's label.
+    Update(UpdateLink),
     Retry,
     /// Opens the "No daemon answers" screen as a dialog, to choose how agents run on this
     /// computer.
@@ -50,7 +50,7 @@ impl StatusAction {
     /// The link's text in the sidebar.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Update(label) => label,
+            Self::Update(link) => link.label(),
             Self::Retry => "Retry now",
             Self::ChooseDaemon => "Choose how agents run here",
         }
@@ -301,7 +301,7 @@ mod tests {
             older.map(|line| (line.text, line.actions)),
             Some((
                 "Runs an older version.",
-                vec![StatusAction::Update("Update")]
+                vec![StatusAction::Update(UpdateLink::Update)]
             ))
         );
         let lab = status(&state.machines.others[&MachineId::new(3)]);
@@ -361,7 +361,7 @@ mod tests {
         assert_eq!((running.tone, running.chip), (Tone::Notice, "Updating"));
         assert_eq!(
             running.line.map(|line| line.actions),
-            Some(vec![StatusAction::Update("Show")])
+            Some(vec![StatusAction::Update(UpdateLink::Show)])
         );
     }
 

@@ -462,8 +462,11 @@ pub fn forget(state: &mut AppState, drafts: &mut Drafts, machine: MachineId) {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use crate::state::app_state::tests::{state_with, summary};
+    use crate::state::daemon_update::UpdateLink;
     use crate::state::update_offer::{GapKind, ProgramBuild, VersionGap};
     use crate::state::update_plan::{ServerPlan, UpdatePlan};
     use crate::state::{AgentEntry, MachineState};
@@ -812,7 +815,7 @@ mod tests {
         if let Some(known) = state.machines.others.get_mut(&MachineId::new(2)) {
             known.connection = ConnectionState::Disconnected {
                 error: "ssh: connection refused".to_owned(),
-                retry_at: now + std::time::Duration::from_secs(8),
+                retry_at: now + Duration::from_secs(8),
             };
             known.daemon_version = Some(ReleaseVersion::new("0.1.0".to_owned()));
         }
@@ -913,7 +916,7 @@ mod tests {
             unnamed,
             Some((
                 Some(format!("→ {app}")),
-                Some(StatusAction::Update("Update")),
+                Some(StatusAction::Update(UpdateLink::Update)),
                 None
             ))
         );
@@ -921,7 +924,7 @@ mod tests {
             named,
             Some((
                 Some(format!("0.0.1 → {app}")),
-                Some(StatusAction::Update("Update")),
+                Some(StatusAction::Update(UpdateLink::Update)),
                 None
             ))
         );

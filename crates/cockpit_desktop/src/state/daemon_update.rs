@@ -4,6 +4,7 @@
 
 use std::collections::VecDeque;
 
+use cockpit_daemon::SERVE_SUBCOMMAND;
 use cockpit_protocol::ProcessId;
 
 use super::app_state::{AppState, MachineState};
@@ -612,12 +613,33 @@ pub fn open(state: &mut AppState, machine: MachineId) {
     state.ui.dialog = Some(Dialog::DaemonUpdate(machine));
 }
 
+/// The link of a machine's line that opens its update's screens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateLink {
+    /// The app can update the daemon.
+    Update,
+    /// The app cannot update the daemon: the screens say why.
+    Details,
+    /// An update waits, runs or failed.
+    Show,
+}
+
+impl UpdateLink {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Update => "Update",
+            Self::Details => "Details",
+            Self::Show => "Show",
+        }
+    }
+}
+
 /// What the sidebar says of a machine with an update to show.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UpdateLine {
     pub text: &'static str,
     /// The link that opens the update's screens.
-    pub link: &'static str,
+    pub link: UpdateLink,
     /// The daemon answers no request: the panel's edge turns red.
     pub down: bool,
     /// The line offers "Retry now" too. A daemon the app can update needs the update, not
@@ -637,26 +659,38 @@ pub fn update_line(known: &MachineState) -> Option<UpdateLine> {
     let connected = known.is_connected();
     match (&known.update, &known.version_gap) {
         (Some(DaemonUpdate::Running(_) | DaemonUpdate::Reconnecting(_)), _) => {
-            Some(line("Updating…", "Show", false))
+            Some(line("Updating…", UpdateLink::Show, false))
         }
         (Some(DaemonUpdate::Waiting), _) if !connected => None,
-        (Some(DaemonUpdate::Waiting), _) => {
-            Some(line("Updates once its agents are idle.", "Show", false))
-        }
-        (Some(DaemonUpdate::Failed(failed)), _) => {
-            Some(line(failed.failure.sidebar_text(), "Show", !connected))
-        }
+        (Some(DaemonUpdate::Waiting), _) => Some(line(
+            "Updates once its agents are idle.",
+            UpdateLink::Show,
+            false,
+        )),
+        (Some(DaemonUpdate::Failed(failed)), _) => Some(line(
+            failed.failure.sidebar_text(),
+            UpdateLink::Show,
+            !connected,
+        )),
         (None, Some(gap)) => match (gap.kind, &known.update_plan) {
             (GapKind::OlderProtocol, Some(_)) => Some(UpdateLine {
                 retry: false,
-                ..line("Runs an older version.", "Update", true)
+                ..line("Runs an older version.", UpdateLink::Update, true)
             }),
-            (GapKind::OlderProtocol, None) => Some(line("Runs an older version.", "Details", true)),
-            (GapKind::NewerProtocol, _) => Some(line("Runs a newer version.", "Details", true)),
+            (GapKind::OlderProtocol, None) => {
+                Some(line("Runs an older version.", UpdateLink::Details, true))
+            }
+            (GapKind::NewerProtocol, _) => {
+                Some(line("Runs a newer version.", UpdateLink::Details, true))
+            }
             (GapKind::OtherBuild | GapKind::NewerRelease, _) if !connected => None,
-            (GapKind::OtherBuild, Some(_)) => Some(line("Update available.", "Update", false)),
+            (GapKind::OtherBuild, Some(_)) => {
+                Some(line("Update available.", UpdateLink::Update, false))
+            }
             (GapKind::OtherBuild, None) => None,
-            (GapKind::NewerRelease, _) => Some(line("Runs a newer version.", "Details", false)),
+            (GapKind::NewerRelease, _) => {
+                Some(line("Runs a newer version.", UpdateLink::Details, false))
+            }
         },
         (None, None) => None,
     }
@@ -720,11 +754,11 @@ pub fn failure_text(failed: &FailedUpdate, name: &str) -> FailureText {
                 ),
                 Some(HandStop::Unrecorded) => (
                     "The daemon that runs now comes from an older version, which does not record its process, so the app cannot tell which process to stop.".to_owned(),
-                    Some(format!("Stop the agents-cockpit serve of {state_dir} yourself, once, then retry. From then on, the app stops the daemon itself.")),
+                    Some(format!("Stop the agents-cockpit {SERVE_SUBCOMMAND} of {state_dir} yourself, once, then retry. From then on, the app stops the daemon itself.")),
                 ),
                 Some(HandStop::Unverified) => (
                     "The app could not tell which process runs the daemon, so it stopped none.".to_owned(),
-                    Some(format!("Stop the agents-cockpit serve of {state_dir} yourself, then retry.")),
+                    Some(format!("Stop the agents-cockpit {SERVE_SUBCOMMAND} of {state_dir} yourself, then retry.")),
                 ),
                 None => (
                     format!("The app could not stop the daemon, so {name} still runs its old version."),
@@ -760,7 +794,6 @@ mod tests {
     use super::*;
     use crate::daemon_label::{DaemonLabel, DaemonPlace};
     use crate::state::app_state::tests::{state_with, summary};
-    use crate::state::update_offer::{offer, protocol_gap};
     use crate::state::update_plan::ServicePlan;
     use crate::state::{AgentEntry, ConnectionState, Drafts, MachineState, machines};
 
@@ -804,7 +837,7 @@ mod tests {
     }
 
     fn gap_over_ssh(reason: &str) -> Option<VersionGap> {
-        protocol_gap(DaemonPlace::Ssh, &refused(reason))
+        update_offer::protocol_gap(DaemonPlace::Ssh, &refused(reason))
     }
 
     fn newer_over_ssh() -> Option<VersionGap> {
@@ -1217,7 +1250,7 @@ mod tests {
 
         assert_eq!(
             (shown.text, shown.link),
-            ("Runs an older version.", "Details")
+            ("Runs an older version.", UpdateLink::Details)
         );
         assert!(shown.down);
     }
@@ -1332,7 +1365,7 @@ mod tests {
 
         assert_eq!(progress(&state).step, UpdateStep::Build);
         let shown = update_line(known(&state)).unwrap();
-        assert_eq!((shown.text, shown.link), ("Updating…", "Show"));
+        assert_eq!((shown.text, shown.link), ("Updating…", UpdateLink::Show));
     }
 
     #[test]
@@ -1351,7 +1384,7 @@ mod tests {
 
         attempt_failed(&mut state, build_box(), newer_over_ssh());
 
-        assert_eq!(offer(&state, build_box()).unwrap().plan, None);
+        assert_eq!(update_offer::offer(&state, build_box()).unwrap().plan, None);
         assert_eq!(start(&mut state, build_box()), None);
     }
 
@@ -1483,11 +1516,14 @@ mod tests {
         let mut state = with_older_server();
         let text = |state: &AppState| update_line(known(state)).map(|line| (line.text, line.link));
 
-        assert_eq!(text(&state), Some(("Runs an older version.", "Update")));
+        assert_eq!(
+            text(&state),
+            Some(("Runs an older version.", UpdateLink::Update))
+        );
         start(&mut state, build_box()).unwrap();
-        assert_eq!(text(&state), Some(("Updating…", "Show")));
+        assert_eq!(text(&state), Some(("Updating…", UpdateLink::Show)));
         finished(&mut state, build_box(), Some(1));
-        assert_eq!(text(&state), Some(("Was not updated.", "Show")));
+        assert_eq!(text(&state), Some(("Was not updated.", UpdateLink::Show)));
 
         known_mut(&mut state).update = None;
         known_mut(&mut state).version_gap = Some(VersionGap {
@@ -1496,7 +1532,10 @@ mod tests {
             daemon: None,
             protocol: PROTOCOL_VERSION + 1,
         });
-        assert_eq!(text(&state), Some(("Runs a newer version.", "Details")));
+        assert_eq!(
+            text(&state),
+            Some(("Runs a newer version.", UpdateLink::Details))
+        );
 
         known_mut(&mut state).version_gap = None;
         assert_eq!(text(&state), None);
@@ -1520,7 +1559,11 @@ mod tests {
             finished(&mut state, build_box(), code);
 
             let shown = update_line(known(&state)).unwrap();
-            assert_eq!((shown.text, shown.link), (expected, "Show"), "{code:?}");
+            assert_eq!(
+                (shown.text, shown.link),
+                (expected, UpdateLink::Show),
+                "{code:?}"
+            );
             assert!(shown.down, "{code:?}");
         }
     }
@@ -1533,7 +1576,7 @@ mod tests {
 
         assert_eq!(
             (shown.text, shown.link, shown.down),
-            ("Update available.", "Update", false)
+            ("Update available.", UpdateLink::Update, false)
         );
         assert_eq!(start(&mut state, build_box()), Some(run(plan())));
         assert_eq!(progress(&state).replaces, Some(other_build()));
@@ -1548,7 +1591,7 @@ mod tests {
 
         assert_eq!(
             (shown.text, shown.link, shown.down),
-            ("Runs a newer version.", "Details", false)
+            ("Runs a newer version.", UpdateLink::Details, false)
         );
         assert_eq!(start(&mut state, build_box()), None);
     }
@@ -1644,7 +1687,7 @@ mod tests {
         let shown = update_line(known(&state)).unwrap();
         assert_eq!(
             (shown.text, shown.link, shown.down),
-            ("Updates once its agents are idle.", "Show", false)
+            ("Updates once its agents are idle.", UpdateLink::Show, false)
         );
 
         set_status(&mut state, first, AgentStatus::Idle);
