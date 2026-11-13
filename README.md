@@ -114,6 +114,8 @@ ssh devbox 'chmod +x ~/.local/bin/agents-cockpit.new && mv ~/.local/bin/agents-c
 
 The app's "Update" button builds the daemon from source on the server. The button works only on a server with Rust and a checkout of this repository, as [docs/development.md](docs/development.md) says.
 
+On this computer, when the agents run in the background service, the button restarts the service with the app's own version. Before an update, the app names the agents a restart would interrupt, and can wait until they are idle.
+
 ## When something goes wrong
 
 See [docs/troubleshooting.md](docs/troubleshooting.md).

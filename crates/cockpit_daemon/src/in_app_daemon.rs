@@ -144,6 +144,7 @@ mod tests {
         let (mut connection, welcome) = Connection::connect(&transport, None).await.unwrap();
         assert!(matches!(welcome.catchup, Catchup::Snapshot(_)));
         assert_eq!(welcome.daemon_version.as_str(), env!("CARGO_PKG_VERSION"));
+        assert_eq!(welcome.daemon_commit, crate::build_commit());
 
         let (_other, connections) = InAppLink::new();
         let refused = InAppDaemon::start(config(temp.path()), connections)

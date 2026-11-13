@@ -4950,9 +4950,15 @@ mod tests {
                 devbox.app_agent(AgentId::new(1))
             ]
         );
-        assert!(
-            ordered().sidebar_groups().is_empty(),
-            "one machine needs no header"
+        let alone: Vec<GroupKey> = ordered()
+            .sidebar_groups()
+            .into_iter()
+            .map(|group| group.key)
+            .collect();
+        assert_eq!(
+            alone,
+            [GroupKey::Machine(MachineId::THIS)],
+            "this computer alone has its panel too"
         );
     }
 

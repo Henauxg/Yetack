@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use cockpit_protocol::{
-    Catchup, ClientMessage, EventRecord, Frame, FrameError, FrameReader, FrameWriter,
+    BuildCommit, Catchup, ClientMessage, EventRecord, Frame, FrameError, FrameReader, FrameWriter,
     PROTOCOL_VERSION, ReleaseVersion, Request, RequestId, ResponseBody, Seq, ServerMessage,
 };
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, BufReader};
@@ -38,6 +38,8 @@ pub struct Connection {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Welcome {
     pub daemon_version: ReleaseVersion,
+    /// The commit of the program that runs the daemon, when its build knew it.
+    pub daemon_commit: Option<BuildCommit>,
     pub catchup: Catchup,
 }
 
@@ -160,11 +162,13 @@ where
         Some(ServerMessage::Welcome {
             protocol_version,
             daemon_version,
+            daemon_commit,
             catchup,
         }) => {
             if protocol_version == PROTOCOL_VERSION {
                 Ok(Welcome {
                     daemon_version,
+                    daemon_commit,
                     catchup,
                 })
             } else {
@@ -173,7 +177,15 @@ where
                 })
             }
         }
-        Some(ServerMessage::Refused { reason }) => Err(ConnectError::Refused { reason }),
+        Some(ServerMessage::Refused {
+            reason,
+            daemon_version,
+            daemon_commit,
+        }) => Err(ConnectError::Refused {
+            reason,
+            daemon_version,
+            daemon_commit,
+        }),
         Some(ServerMessage::Response { .. } | ServerMessage::Event(_)) => {
             Err(ConnectError::Unexpected)
         }
@@ -375,7 +387,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hello_carries_the_last_seq_and_welcome_gives_the_daemons_version_and_catchup() {
+    async fn hello_carries_the_last_seq_and_welcome_gives_the_daemons_build_and_catchup() {
         let daemon = TestDaemon::new();
 
         let transport = daemon.transport();
@@ -391,13 +403,14 @@ mod tests {
             welcome,
             Welcome {
                 daemon_version: test_daemon::daemon_version(),
+                daemon_commit: Some(test_daemon::daemon_commit()),
                 catchup: Catchup::Snapshot(test_daemon::snapshot(Some(9))),
             }
         );
     }
 
     #[tokio::test]
-    async fn a_refused_hello_fails_with_the_reason() {
+    async fn a_refused_hello_fails_with_the_reason_and_the_daemons_build() {
         let daemon = TestDaemon::new();
         let transport = daemon.transport();
         let refuse = async {
@@ -405,6 +418,8 @@ mod tests {
             peer.hello().await;
             peer.send(&ServerMessage::Refused {
                 reason: "the daemon speaks protocol 2".to_owned(),
+                daemon_version: Some(ReleaseVersion::new("0.1.0".to_owned())),
+                daemon_commit: Some(BuildCommit::new("f00ba12".to_owned())),
             })
             .await;
             peer
@@ -412,10 +427,23 @@ mod tests {
 
         let (connected, _peer) = tokio::join!(Connection::connect(&transport, None), refuse);
 
-        let Err(ConnectError::Refused { reason }) = connected else {
+        let Err(ConnectError::Refused {
+            reason,
+            daemon_version,
+            daemon_commit,
+        }) = connected
+        else {
             panic!("expected a refusal");
         };
         assert_eq!(reason, "the daemon speaks protocol 2");
+        assert_eq!(
+            daemon_version.as_ref().map(ReleaseVersion::as_str),
+            Some("0.1.0")
+        );
+        assert_eq!(
+            daemon_commit.as_ref().map(BuildCommit::as_str),
+            Some("f00ba12")
+        );
     }
 
     #[tokio::test]
@@ -428,6 +456,7 @@ mod tests {
             peer.send(&ServerMessage::Welcome {
                 protocol_version: PROTOCOL_VERSION + 1,
                 daemon_version: ReleaseVersion::new("9.0.0".to_owned()),
+                daemon_commit: None,
                 catchup: Catchup::Replay,
             })
             .await;

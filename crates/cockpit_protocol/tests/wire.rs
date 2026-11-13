@@ -18,24 +18,24 @@ use cockpit_protocol::{
     AccountState, AgentDetails, AgentHistory, AgentId, AgentLoad, AgentParams, AgentStatus,
     AgentSummary, Answer, AnswerParams, AnswerState, Approval, ApprovalAnswer, ApprovalDecision,
     AskedQuestion, BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus,
-    Catchup, ChangedFile, ClaudeRoute, ClaudeSessionId, ClientMessage, CommandKind, CommandLoad,
-    Completeness, ContextCategory, ContextUsage, Cores, CostUsd, CredentialSource, DirEntry,
-    DirListing, Effort, EffortSource, EntryKind, EntryLink, EnvironmentCredentials, ErrorBody,
-    ErrorCode, Event, EventRecord, FileEdit, FindFilesParams, FolderParams, FoldersListParams,
-    GitIgnore, HistoryPage, HistoryParams, Image, ImageMediaType, ItemBody, ItemId, ListDirParams,
-    LoadAverage, LoadHistory, MachineLoad, Mark, MarkParams, McpRemoveParams, McpScope, McpServer,
-    McpServerParams, McpServerStatus, McpToggleAction, McpToggleParams, McpTool, McpTransport,
-    Method, MoveParams, NoticeKind, OlderItems, PROTOCOL_VERSION, PastSession, PendingId,
-    PermissionMode, Plan, PlanAnswer, PlanDecision, PlanUsage, Position, ProcessId, Prompt,
-    PromptDelivery, PromptId, PromptParams, Question, QuestionAnswer, QuestionOption,
-    QueuedPromptParams, RateLimitStatus, ReadFileParams, ReleaseVersion, RenameParams, Request,
-    RequestId, ResourceUse, ResponseBody, ResponseResult, Selection, Seq, ServerLoad,
-    ServerMessage, ServerPoint, SessionResumeParams, SetEffortParams, SetModeParams,
-    SetModelParams, Settings, SignIn, SignInWait, SlashCommand, Snapshot, StartParams,
-    StopProcessParams, StopTaskParams, Subagent, SubagentRun, SubagentStatus, SubagentToolCall,
-    TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus,
-    TranscriptItem, TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt, WaitingState,
-    WindowUsage,
+    BuildCommit, Catchup, ChangedFile, ClaudeRoute, ClaudeSessionId, ClientMessage, CommandKind,
+    CommandLoad, Completeness, ContextCategory, ContextUsage, Cores, CostUsd, CredentialSource,
+    DirEntry, DirListing, Effort, EffortSource, EntryKind, EntryLink, EnvironmentCredentials,
+    ErrorBody, ErrorCode, Event, EventRecord, FileEdit, FindFilesParams, FolderParams,
+    FoldersListParams, GitIgnore, HistoryPage, HistoryParams, Image, ImageMediaType, ItemBody,
+    ItemId, ListDirParams, LoadAverage, LoadHistory, MachineLoad, Mark, MarkParams,
+    McpRemoveParams, McpScope, McpServer, McpServerParams, McpServerStatus, McpToggleAction,
+    McpToggleParams, McpTool, McpTransport, Method, MoveParams, NoticeKind, OlderItems,
+    PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision,
+    PlanUsage, Position, ProcessId, Prompt, PromptDelivery, PromptId, PromptParams, Question,
+    QuestionAnswer, QuestionOption, QueuedPromptParams, RateLimitStatus, ReadFileParams,
+    ReleaseVersion, RenameParams, Request, RequestId, ResourceUse, ResponseBody, ResponseResult,
+    Selection, Seq, ServerLoad, ServerMessage, ServerPoint, SessionResumeParams, SetEffortParams,
+    SetModeParams, SetModelParams, Settings, SignIn, SignInWait, SlashCommand, Snapshot,
+    StartParams, StopProcessParams, StopTaskParams, Subagent, SubagentRun, SubagentStatus,
+    SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall,
+    ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt,
+    WaitingState, WindowUsage,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -529,6 +529,10 @@ fn plan_usage() -> PlanUsage {
     }
 }
 
+fn commit() -> BuildCommit {
+    BuildCommit::new("3f9c2e1a7b4d5c6e8f9a0b1c2d3e4f5a6b7c8d9e".to_owned())
+}
+
 fn settings() -> Settings {
     Settings {
         hidden_mcp_servers: BTreeSet::from(["events".to_owned()]),
@@ -932,15 +936,24 @@ fn server_messages() -> Vec<ServerMessage> {
         ServerMessage::Welcome {
             protocol_version: PROTOCOL_VERSION,
             daemon_version: ReleaseVersion::new("0.1.0".to_owned()),
+            daemon_commit: Some(commit()),
             catchup: Catchup::Replay,
         },
         ServerMessage::Welcome {
             protocol_version: PROTOCOL_VERSION,
             daemon_version: ReleaseVersion::new("0.1.0".to_owned()),
+            daemon_commit: None,
             catchup: Catchup::Snapshot(snapshot()),
         },
         ServerMessage::Refused {
             reason: "the daemon speaks protocol 2".to_owned(),
+            daemon_version: Some(ReleaseVersion::new("0.1.0".to_owned())),
+            daemon_commit: Some(commit()),
+        },
+        ServerMessage::Refused {
+            reason: "the daemon speaks protocol 2".to_owned(),
+            daemon_version: None,
+            daemon_commit: None,
         },
     ];
     for (raw, body) in (1..).zip(response_bodies()) {
@@ -1682,6 +1695,7 @@ fn a_welcome_with_a_snapshot_on_the_wire() {
     let message = ServerMessage::Welcome {
         protocol_version: 1,
         daemon_version: ReleaseVersion::new("0.1.0".to_owned()),
+        daemon_commit: Some(commit()),
         catchup: Catchup::Snapshot(Snapshot {
             agents: Vec::new(),
             plan_usage: plan_usage(),
@@ -1701,6 +1715,7 @@ fn a_welcome_with_a_snapshot_on_the_wire() {
             "type": "welcome",
             "protocol_version": 1,
             "daemon_version": "0.1.0",
+            "daemon_commit": "3f9c2e1a7b4d5c6e8f9a0b1c2d3e4f5a6b7c8d9e",
             "catchup": {
                 "type": "snapshot",
                 "agents": [],
@@ -2741,4 +2756,39 @@ fn a_request_names_the_agent_it_is_about() {
 
     assert!(agents.contains(&Some(Method::AgentMove)));
     assert!(agents.contains(&None), "sessions.list is about no agent");
+}
+
+#[test]
+fn a_refusal_without_the_daemons_build_reads_as_one_that_names_none() {
+    let older = r#"{"type":"refused","reason":"the daemon speaks protocol 8, the client 9"}"#;
+
+    let read: ServerMessage = serde_json::from_str(older).unwrap();
+
+    assert_eq!(
+        read,
+        ServerMessage::Refused {
+            reason: "the daemon speaks protocol 8, the client 9".to_owned(),
+            daemon_version: None,
+            daemon_commit: None,
+        }
+    );
+}
+
+#[test]
+fn a_refusal_that_names_the_daemons_build_on_the_wire() {
+    let message = ServerMessage::Refused {
+        reason: "the daemon speaks protocol 9, the client 10".to_owned(),
+        daemon_version: Some(ReleaseVersion::new("0.1.0".to_owned())),
+        daemon_commit: Some(commit()),
+    };
+
+    assert_wire(
+        &message,
+        json!({
+            "type": "refused",
+            "reason": "the daemon speaks protocol 9, the client 10",
+            "daemon_version": "0.1.0",
+            "daemon_commit": "3f9c2e1a7b4d5c6e8f9a0b1c2d3e4f5a6b7c8d9e",
+        }),
+    );
 }

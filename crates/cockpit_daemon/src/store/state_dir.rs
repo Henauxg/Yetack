@@ -1,10 +1,11 @@
-use std::env;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
+use std::{env, io};
 
 use cockpit_protocol::AgentId;
 
 use crate::daemon_config::HOME_ENV;
+use crate::lock_holder::LockHolder;
 use crate::store::store_error::StoreError;
 
 const STATE_FOLDER_NAME: &str = "agents-cockpit";
@@ -56,6 +57,11 @@ pub fn socket_path(state_dir: &Path) -> PathBuf {
     state_dir.join(SOCKET_FILE)
 }
 
+/// `serve.lock` in the state folder `state_dir`.
+pub(crate) fn lock_path(state_dir: &Path) -> PathBuf {
+    state_dir.join(LOCK_FILE)
+}
+
 /// The state folder, created with mode 700.
 #[derive(Debug, Clone)]
 pub(crate) struct StateDir {
@@ -65,7 +71,16 @@ pub(crate) struct StateDir {
 /// Held while the daemon runs. The operating system releases it when the process ends.
 #[derive(Debug)]
 pub(crate) struct ServeLock {
-    _file: File,
+    file: File,
+}
+
+impl Drop for ServeLock {
+    fn drop(&mut self) {
+        // A later daemon older than the record writes none: the file must not name this process.
+        if let Err(error) = self.file.set_len(0) {
+            tracing::warn!(%error, file = LOCK_FILE, "cannot empty the lock's file");
+        }
+    }
 }
 
 impl StateDir {
@@ -85,9 +100,9 @@ impl StateDir {
         Ok(state)
     }
 
-    /// Takes `serve.lock`, or fails with `AlreadyRunning`.
+    /// Takes `serve.lock` and writes this process into it, or fails with `AlreadyRunning`.
     pub(crate) fn lock(&self) -> Result<ServeLock, StoreError> {
-        let path = self.root.join(LOCK_FILE);
+        let path = lock_path(&self.root);
         let file = owner_only()
             .create(true)
             .truncate(false)
@@ -98,7 +113,13 @@ impl StateDir {
                 source,
             })?;
         match file.try_lock() {
-            Ok(()) => Ok(ServeLock { _file: file }),
+            Ok(()) => {
+                // Only the app reads the record, to stop this daemon: the daemon runs without it.
+                if let Err(error) = record_holder(&file) {
+                    tracing::warn!(%error, file = LOCK_FILE, "cannot record this daemon");
+                }
+                Ok(ServeLock { file })
+            }
             Err(TryLockError::WouldBlock) => Err(StoreError::AlreadyRunning { path }),
             Err(TryLockError::Error(source)) => Err(StoreError::Lock { path, source }),
         }
@@ -132,9 +153,24 @@ impl StateDir {
 
     /// `raw/<agent-id>.jsonl`.
     pub(crate) fn raw_log(&self, agent: AgentId) -> PathBuf {
-        self.raw()
-            .join(format!("{}.{RAW_LOG_EXTENSION}", agent.get()))
+        raw_log_path(&self.root, agent)
     }
+}
+
+/// `raw/<agent-id>.jsonl` in the state folder `state_dir`.
+pub(crate) fn raw_log_path(state_dir: &Path, agent: AgentId) -> PathBuf {
+    state_dir
+        .join(RAW_FOLDER)
+        .join(format!("{}.{RAW_LOG_EXTENSION}", agent.get()))
+}
+
+/// Writes this process into the lock's file, in place of the record a killed daemon left.
+fn record_holder(mut file: &File) -> io::Result<()> {
+    use std::io::Write;
+
+    let line = LockHolder::this_process().encode()?;
+    file.set_len(0)?;
+    file.write_all(&line)
 }
 
 /// Options that create a file with mode 600.
@@ -215,6 +251,31 @@ mod tests {
 
         let mode = std::fs::metadata(&root).unwrap().mode() & 0o777;
         assert_eq!(mode, FOLDER_MODE);
+    }
+
+    /// On Windows, the lock keeps the test from reading the file.
+    #[cfg(unix)]
+    #[test]
+    fn a_taken_lock_names_this_process() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = StateDir::create(temp.path()).unwrap();
+        let left = "{\"pid\":4242,\"started\":987654,\"boot\":\"the boot of a killed daemon\"}\n";
+        std::fs::write(lock_path(temp.path()), left).unwrap();
+
+        let _lock = state.lock().unwrap();
+
+        let record = std::fs::read(lock_path(temp.path())).unwrap();
+        assert_eq!(record, LockHolder::this_process().encode().unwrap());
+    }
+
+    #[test]
+    fn a_released_lock_names_no_process() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = StateDir::create(temp.path()).unwrap();
+
+        drop(state.lock().unwrap());
+
+        assert_eq!(std::fs::read(lock_path(temp.path())).unwrap(), b"");
     }
 
     #[test]

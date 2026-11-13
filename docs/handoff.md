@@ -7,10 +7,33 @@ Update it when you hand over.
 
 ## Where the work is
 
-- All work is on the branch `ccr-8be27d05-6ge2s2`, pushed. `main` has not moved: the branch is about 150 commits ahead of it, and no pull request exists yet. Ask the user before opening one or merging.
+- Work goes on short branches, each in its own worktree (see AGENTS.md), and is merged into `main` once the user agrees.
 - CI (`.github/workflows/ci.yml`) runs on Linux and Windows, only when started: `gh workflow run ci.yml --ref <branch>`, or from the Actions tab. Ask the user before you start it. The Windows job is the only real Windows test, and it caught several failures that no Linux run showed.
 - CI is green on both platforms from `b57f7cd` on, the Windows job's tests of every crate included. Before it, the Windows job failed from the accounts commits on, on four account tests whose home folder was a Unix path.
-- The protocol version is 8. An app and a daemon of different versions refuse each other at `Hello`, so they are rebuilt together.
+- The protocol version is 9: `Welcome` carries the daemon's commit (`daemon_commit`). An app and a daemon of different versions refuse each other at `Hello`, so they are rebuilt together.
+
+## Updating any machine's daemon
+
+This work is in `main`. The user approved its screens after three rounds of HTML mockups, which were removed at the merge. Step 2 of [packaging.md](packaging.md) builds on it: a third plan that sends a prebuilt daemon over SSH, beside the build on the server.
+
+What it does:
+
+- The daemon sends its commit in `Welcome` and writes its process into `serve.lock`. On Unix, `cockpit_daemon::stop_lock_holder` stops that process and no other.
+- The update's state and flow, the same for every machine (`state/update_offer.rs`, `state/update_plan.rs`, `state/daemon_update.rs`, `service_update.rs`). A server runs `contrib/update-daemon.sh`. Local's background service is stopped, then started again with the app's own program. When agents are busy, a confirmation offers "Update when they are idle" and "Update now", which gives the script `--even-if-busy`.
+- Machine panels even when Local is alone, "Local" for this computer, a strip of machine troubles when agents are grouped by project, the Machines dialog as a grid, and compact menus in the composer (`state/machine_status.rs`).
+- The update screens, from the mockups (`ui/daemon_update.rs`): the cards with the daemon's build beside the app's, the "0.1.0 → 0.2.0" version column, the confirmation with each busy agent's status, and an older daemon's line with "Update" alone. A refusal names the daemon's release and commit, so the cards can show them. The demo shows each state with `--demo-update <state>` and `--demo-machines <scene>`.
+- An idle agent whose background tasks still run counts as busy, as the user decided: in `busy_agents`, in the confirmation ("runs 2 background tasks"), and in the script's check, through the TASKS column of `agents-cockpit list`.
+- Updating Local checks its agents as the script does on a server. While Local's daemon refuses the app, "Update Local" always asks first, since the app cannot list the agents: "Update now" or "Cancel". While the app is connected, it reads the resting agents' raw logs first, and an agent that may hold a scheduled job (more `CronCreate` than `CronDelete` calls since the daemon started) counts as busy: the confirmation lists it with "may hold a scheduled job". "Update when they are idle" waits only for the agents that run something, since a job may never end; the restart reads the logs again, and refuses with "Update now" on its screen while a job may be held. The demo shows these with `--demo-update local-confirm-jobs`, `local-holds-jobs` and `local-confirm-unseen`.
+- Local's update no longer stays on "Updating…" when another program restarts the old daemon during the stop, such as a systemd unit with `Restart=always`: the app counts its connections, and judges a connection made since the stop once the restart ends.
+- The script's stop signals no process that got the daemon's pid since the script found it: it compares the start time from `/proc/<pid>/stat` right before `kill`.
+- Fixes from `/review fix` on these changes. A second click on "Update Local" during the read of the logs does nothing, and the button says "Checking jobs…". The restart refuses when an agent started a turn during its read. A clock that was ahead when the daemon started no longer hides a scheduled job.
+
+Known gaps in the update's stop, left as they are:
+
+- The app's stop of Local's daemon (`stop_lock_holder`) waits until nobody holds `serve.lock`. Another program, such as a systemd unit with `RestartSec=0`, can start the old daemon again between two of its checks, 100 ms apart. The lock then never looks free, and after 10 seconds the update fails with "did not stop", naming the daemon that did stop. A check that the holder changed (another pid or start time) would end the stop instead.
+- The script's `stop_daemon` finds the daemon as the first process in `/proc` that holds `serve.lock`, in the order of the folder names (`1000` comes before `999`). While the daemon starts an agent, its child holds the lock too, for the moment between fork and exec. The script can pick that child and send it SIGTERM first: the daemon then gets its own signal one second later.
+
+To check Unix code without CI, cross-build the daemon crates for `x86_64-unknown-linux-musl`, with `rust-lld` as the linker, and run their test binaries in WSL. The tests embed Windows paths through `env!`, so give them absolute paths for the run, and don't commit that change. The `update_daemon` tests fail in about 4 of 10 full runs there, on `main` too: rerun a failing test alone.
 
 ## What the branch added
 

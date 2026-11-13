@@ -1,17 +1,224 @@
-//! The "Machines" dialog: the servers the app reaches beside this computer, which it adds,
-//! edits and removes in the config.
+//! The machines as the interface names them, and the "Machines" dialog: a row per machine, and
+//! the servers the app reaches beside this computer, which it adds, edits and removes in the
+//! config.
 
-use cockpit_protocol::AgentId;
+use std::fmt;
+use std::time::Instant;
 
-use super::app_state::{AppState, MachineState};
+use cockpit_protocol::{AgentId, ReleaseVersion};
+
+use super::app_state::{AppState, ConnectionState, MachineState};
 use super::apply::forget_agent;
 use super::daemon_update::{self, DaemonUpdate};
 use super::drafts::Drafts;
-use super::file_tree;
-use super::ui_state::{Dialog, MachineEdit, MachinesView};
+use super::machine_status::{self, MachineStatus, StatusAction, Tone};
+use super::ui_state::{Dialog, MachineEdit, MachineMenu, MachinesView};
+use super::{file_tree, update_offer};
 use crate::config::MachineConfig;
-use crate::daemon_label::DaemonLabel;
+use crate::daemon_label::{DaemonLabel, DaemonPlace};
+use crate::format;
 use crate::machine::MachineId;
+
+/// What the interface calls this computer, unless its daemon runs over SSH.
+pub const THIS_COMPUTER: &str = "Local";
+
+/// A machine as the interface names it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MachineName {
+    pub name: String,
+    /// This computer, which shows a laptop where the others show a server.
+    pub local: bool,
+}
+
+impl MachineName {
+    pub fn new(machine: MachineId, known: &MachineState) -> Self {
+        let local = machine == MachineId::THIS && known.daemon.place != DaemonPlace::Ssh;
+        let name = if local {
+            THIS_COMPUTER.to_owned()
+        } else {
+            known.daemon.machine.clone()
+        };
+        Self { name, local }
+    }
+
+    /// The name of `machine`, empty for a machine the app does not know.
+    pub fn of(state: &AppState, machine: MachineId) -> Self {
+        state
+            .machines
+            .get(machine)
+            .map(|known| Self::new(machine, known))
+            .unwrap_or_default()
+    }
+}
+
+/// A machine's row in the Machines dialog.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MachineRow {
+    pub machine: MachineId,
+    pub name: MachineName,
+    /// Where its daemon runs: "Background service", "SSH dev@devbox".
+    pub place: String,
+    pub agents: usize,
+    /// A line under the place: when the app tries again, or that the agents stop with the app.
+    pub note: Option<RowNote>,
+    pub tone: Tone,
+    pub chip: &'static str,
+    /// The error, as the chip's tooltip.
+    pub error: Option<String>,
+    pub version: Option<RowVersion>,
+    /// Its button: the first link of its line in the sidebar.
+    pub action: Option<StatusAction>,
+    /// A server the config names, which its ⋯ menu edits, copies and removes.
+    pub server: Option<ServerRow>,
+}
+
+/// The release a row shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowVersion {
+    /// The release its daemon runs, while it is connected: an earlier connection's may no longer
+    /// be the one it runs.
+    Runs(ReleaseVersion),
+    /// The app can update its daemon from `from` to `to`, this app's release. `from` is `None` for
+    /// a daemon of protocol 8 or older, which does not name its release as it refuses the app.
+    Update {
+        from: Option<ReleaseVersion>,
+        to: ReleaseVersion,
+    },
+}
+
+/// "0.2.0", "0.1.0 → 0.2.0", or "→ 0.2.0" when the daemon did not name its release.
+impl fmt::Display for RowVersion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Runs(release) => write!(formatter, "{release}"),
+            Self::Update {
+                from: Some(from),
+                to,
+            } => write!(formatter, "{from} → {to}"),
+            Self::Update { from: None, to } => write!(formatter, "→ {to}"),
+        }
+    }
+}
+
+impl RowVersion {
+    fn of(state: &AppState, machine: MachineId, known: &MachineState) -> Option<Self> {
+        let update = update_offer::offer(state, machine).filter(|offer| offer.plan.is_some());
+        match update {
+            Some(offer) => Some(Self::Update {
+                from: offer.daemon.map(|daemon| daemon.version),
+                to: offer.app.version,
+            }),
+            None => known
+                .daemon_version
+                .clone()
+                .filter(|_| known.is_connected())
+                .map(Self::Runs),
+        }
+    }
+}
+
+/// What a server's ⋯ menu acts on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerRow {
+    /// The SSH host, which the menu copies.
+    pub host: String,
+    /// Whether its form can open (`can_edit`).
+    pub editable: bool,
+}
+
+/// The dialog's rows, this computer first.
+pub fn rows(state: &AppState) -> Vec<MachineRow> {
+    state
+        .machines
+        .all()
+        .map(|(machine, known)| {
+            let MachineStatus { tone, chip, line } = machine_status::status(known);
+            let agents = state
+                .agents
+                .keys()
+                .filter(|agent| MachineId::of(**agent) == machine)
+                .count();
+            // A countdown to the next try shows only where the row offers to try again.
+            let retries = line
+                .as_ref()
+                .is_some_and(|line| line.actions.contains(&StatusAction::Retry));
+            let (error, action) = match line {
+                Some(line) => (line.error, line.actions.first().copied()),
+                None => (None, None),
+            };
+            MachineRow {
+                machine,
+                name: MachineName::new(machine, known),
+                place: place(known),
+                agents,
+                note: RowNote::of(known)
+                    .filter(|note| retries || !matches!(note, RowNote::RetryAt(_))),
+                tone,
+                chip,
+                error,
+                version: RowVersion::of(state, machine, known),
+                action,
+                server: known.server.as_ref().map(|config| ServerRow {
+                    host: config.host.clone(),
+                    editable: can_edit(known),
+                }),
+            }
+        })
+        .collect()
+}
+
+fn place(known: &MachineState) -> String {
+    match known.daemon.place {
+        DaemonPlace::InApp => "In this app".to_owned(),
+        DaemonPlace::Service => "Background service".to_owned(),
+        DaemonPlace::Socket => "Local daemon".to_owned(),
+        DaemonPlace::Ssh => {
+            let host = known
+                .server
+                .as_ref()
+                .map_or(&known.daemon.machine, |config| &config.host);
+            format!("SSH {host}")
+        }
+    }
+}
+
+/// The line under a row's place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowNote {
+    /// The app tries the machine again then.
+    RetryAt(Instant),
+    /// The app has tried this many times since the machine last answered.
+    Attempt(u32),
+    /// The daemon runs in the app, and its agents with it.
+    StopsWithApp,
+}
+
+impl RowNote {
+    fn of(known: &MachineState) -> Option<Self> {
+        match &known.connection {
+            ConnectionState::Disconnected { retry_at, .. } => Some(Self::RetryAt(*retry_at)),
+            ConnectionState::Connecting { attempt } if *attempt > 1 => {
+                Some(Self::Attempt(*attempt))
+            }
+            ConnectionState::Connected => {
+                (known.daemon.place == DaemonPlace::InApp).then_some(Self::StopsWithApp)
+            }
+            ConnectionState::Connecting { .. } | ConnectionState::NoDaemon(_) => None,
+        }
+    }
+
+    /// Its text at `now`, which a countdown needs.
+    pub fn text(self, now: Instant) -> String {
+        match self {
+            Self::RetryAt(retry_at) => format!(
+                "Retrying in {}.",
+                format::duration(retry_at.saturating_duration_since(now))
+            ),
+            Self::Attempt(attempt) => format!("Attempt {attempt}."),
+            Self::StopsWithApp => "Its agents stop when the app closes.".to_owned(),
+        }
+    }
+}
 
 /// A change to the machines, which the connection task carries out and writes to the config.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +241,38 @@ pub fn with_view(state: &mut AppState, change: impl FnOnce(&mut MachinesView)) {
     if let Some(Dialog::Machines(view)) = &mut state.ui.dialog {
         change(view);
     }
+}
+
+/// Shows the form for a new server, from "Add a server".
+pub fn open_add_form(state: &mut AppState) {
+    with_view(state, |view| {
+        view.adding = true;
+        view.menu = None;
+    });
+}
+
+/// Closes the form for a new server, and empties it.
+pub fn close_add_form(state: &mut AppState) {
+    with_view(state, |view| {
+        *view = MachinesView {
+            editing: view.editing.take(),
+            ..MachinesView::default()
+        };
+    });
+}
+
+/// Opens a server's ⋯ menu at `x`, `y`, or closes it when it is open already.
+pub fn toggle_menu(state: &mut AppState, machine: MachineId, x: i32, y: i32) {
+    with_view(state, |view| {
+        view.menu = match view.menu {
+            Some(open) if open.machine == machine => None,
+            Some(_) | None => Some(MachineMenu { machine, x, y }),
+        };
+    });
+}
+
+pub fn close_menu(state: &mut AppState) {
+    with_view(state, |view| view.menu = None);
 }
 
 /// The server the form names, once it holds what the app needs to reach it. Otherwise the form
@@ -80,6 +319,7 @@ pub fn start_edit(state: &mut AppState, machine: MachineId) {
         return;
     };
     with_view(state, |view| {
+        view.menu = None;
         view.editing = Some(MachineEdit {
             machine,
             name: config.name,
@@ -178,9 +418,11 @@ fn check(
     if !remote_command.starts_with('/') {
         return Err("Give the absolute path of agents-cockpit on the server.");
     }
-    let taken = std::iter::once((MachineId::THIS, &state.machines.this))
-        .chain(state.machines.others.iter().map(|(id, known)| (*id, known)))
-        .any(|(machine, known)| Some(machine) != editing && known.daemon.machine == name);
+    // A name keys the preferences, and the interface shows another one for this computer.
+    let taken = state.machines.all().any(|(machine, known)| {
+        Some(machine) != editing
+            && (known.daemon.machine == name || MachineName::new(machine, known).name == name)
+    });
     if taken {
         return Err("Another machine has this name.");
     }
@@ -208,20 +450,27 @@ pub fn forget(state: &mut AppState, drafts: &mut Drafts, machine: MachineId) {
     state.ui.closing.retain(|agent| !on_machine(agent));
     state.ui.closed.take_if(|closed| on_machine(&closed.agent));
     state.ui.folded_machines.remove(&machine);
-    state
-        .ui
-        .dialog
-        .take_if(|dialog| matches!(dialog, Dialog::DaemonUpdate(shown) if *shown == machine));
+    state.ui.dialog.take_if(|dialog| {
+        matches!(dialog, Dialog::DaemonUpdate(shown) | Dialog::ConfirmUpdate(shown) if *shown == machine)
+    });
+    with_view(state, |view| {
+        view.menu.take_if(|menu| menu.machine == machine);
+        view.editing.take_if(|edit| edit.machine == machine);
+    });
     state.fix_selection();
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use crate::state::app_state::tests::{state_with, summary};
-    use crate::state::daemon_update::{ProtocolGap, UpdatePlan, VersionGap};
+    use crate::state::daemon_update::UpdateLink;
+    use crate::state::update_offer::{GapKind, ProgramBuild, VersionGap};
+    use crate::state::update_plan::{ServerPlan, UpdatePlan};
     use crate::state::{AgentEntry, MachineState};
-    use cockpit_protocol::{AccountId, AgentStatus};
+    use cockpit_protocol::{AccountId, AgentStatus, BuildCommit, PROTOCOL_VERSION};
 
     fn typed(state: &mut AppState, name: &str, host: &str, remote_command: &str) {
         open_machines(state);
@@ -377,23 +626,34 @@ mod tests {
         assert!(!state.prefs.notifications.agents.contains_key("devbox"));
     }
 
+    fn devbox_plan() -> ServerPlan {
+        ServerPlan {
+            host: "dev@devbox".to_owned(),
+            remote_command: "/opt/agents-cockpit".to_owned(),
+            source_dir: None,
+            commit: BuildCommit::new("3f9c2e1a7b4d5c6e".to_owned()),
+        }
+    }
+
+    /// Makes the server at `devbox` refuse the app for an older protocol.
+    fn refuses_as_older(state: &mut AppState, devbox: MachineId) {
+        if let Some(known) = state.machines.others.get_mut(&devbox) {
+            known.version_gap = Some(VersionGap {
+                kind: GapKind::OlderProtocol,
+                details: "protocol 3, the app speaks 4".to_owned(),
+                daemon: None,
+                protocol: PROTOCOL_VERSION - 1,
+            });
+            known.update_plan = Some(UpdatePlan::Server(devbox_plan()));
+        }
+    }
+
     #[test]
     fn a_server_whose_update_runs_cannot_be_edited() {
         let mut state = state_with(Vec::new());
         server(&mut state, 1, "devbox");
         let devbox = MachineId::new(1);
-        if let Some(known) = state.machines.others.get_mut(&devbox) {
-            known.version_gap = Some(VersionGap {
-                kind: ProtocolGap::Older,
-                details: "protocol 3, the app speaks 4".to_owned(),
-                plan: Some(UpdatePlan {
-                    host: "dev@devbox".to_owned(),
-                    remote_command: "/opt/agents-cockpit".to_owned(),
-                    source_dir: None,
-                    commit: "3f9c2e1a7b4d5c6e".to_owned(),
-                }),
-            });
-        }
+        refuses_as_older(&mut state, devbox);
         assert!(can_edit(&state.machines.others[&devbox]));
 
         daemon_update::start(&mut state, devbox);
@@ -421,20 +681,15 @@ mod tests {
         let mut state = state_with(Vec::new());
         server(&mut state, 1, "devbox");
         let devbox = MachineId::new(1);
-        let old_plan = UpdatePlan {
-            host: "dev@devbox".to_owned(),
-            remote_command: "/opt/agents-cockpit".to_owned(),
-            source_dir: None,
-            commit: "3f9c2e1a7b4d5c6e".to_owned(),
+        refuses_as_older(&mut state, devbox);
+        let source_dir = |plan: Option<UpdatePlan>| match plan {
+            Some(UpdatePlan::Server(plan)) => plan.source_dir,
+            other => panic!("expected a server's plan, got {other:?}"),
         };
-        if let Some(known) = state.machines.others.get_mut(&devbox) {
-            known.version_gap = Some(VersionGap {
-                kind: ProtocolGap::Older,
-                details: "protocol 3, the app speaks 4".to_owned(),
-                plan: Some(old_plan.clone()),
-            });
-        }
-        assert_eq!(daemon_update::start(&mut state, devbox), Some(old_plan));
+        assert_eq!(
+            daemon_update::start(&mut state, devbox).map(|run| run.plan),
+            Some(UpdatePlan::Server(devbox_plan()))
+        );
         daemon_update::finished(&mut state, devbox, Some(1));
         let config = MachineConfig {
             source_dir: Some("/src/agents-cockpit".to_owned()),
@@ -445,15 +700,11 @@ mod tests {
 
         let again = daemon_update::start(&mut state, devbox);
         assert_eq!(
-            again.and_then(|plan| plan.source_dir),
+            source_dir(again.map(|run| run.plan)),
             Some("/src/agents-cockpit".to_owned())
         );
-        let gap_plan = state.machines.others[&devbox]
-            .version_gap
-            .as_ref()
-            .and_then(|gap| gap.plan.clone());
         assert_eq!(
-            gap_plan.and_then(|plan| plan.source_dir),
+            source_dir(state.machines.others[&devbox].update_plan.clone()),
             Some("/src/agents-cockpit".to_owned())
         );
     }
@@ -542,5 +793,224 @@ mod tests {
             "no undo brings back an agent of a removed server"
         );
         assert_eq!(drafts.draft(remote.id), None);
+    }
+
+    /// Local in the app with agent 1, devbox connected with agent 1 of its own, and gpu-box not
+    /// connected, trying again in 8 seconds.
+    fn dialog_state(now: Instant) -> AppState {
+        let mut state = AppState::new(DaemonLabel::in_app());
+        state.machines.this.connection = ConnectionState::Connected;
+        state.machines.this.daemon_version = Some(ReleaseVersion::new("0.2.0".to_owned()));
+        state.agents.insert(
+            AgentId::new(1),
+            AgentEntry::new(summary(1, AgentStatus::Idle)),
+        );
+        server(&mut state, 1, "devbox");
+        server(&mut state, 2, "gpu-box");
+        let devbox = MachineId::new(1);
+        if let Some(known) = state.machines.others.get_mut(&devbox) {
+            known.connection = ConnectionState::Connected;
+            known.daemon_version = Some(ReleaseVersion::new("0.2.0".to_owned()));
+        }
+        if let Some(known) = state.machines.others.get_mut(&MachineId::new(2)) {
+            known.connection = ConnectionState::Disconnected {
+                error: "ssh: connection refused".to_owned(),
+                retry_at: now + Duration::from_secs(8),
+            };
+            known.daemon_version = Some(ReleaseVersion::new("0.1.0".to_owned()));
+        }
+        let mut remote = summary(1, AgentStatus::Working);
+        remote.id = devbox.app_agent(AgentId::new(1));
+        state.agents.insert(remote.id, AgentEntry::new(remote));
+        state
+    }
+
+    #[test]
+    fn a_row_says_where_the_daemon_runs_and_how_many_agents_it_has() {
+        let now = Instant::now();
+        let state = dialog_state(now);
+
+        let shown: Vec<(String, bool, String, usize)> = rows(&state)
+            .into_iter()
+            .map(|row| (row.name.name, row.name.local, row.place, row.agents))
+            .collect();
+
+        assert_eq!(
+            shown,
+            [
+                ("Local".to_owned(), true, "In this app".to_owned(), 1),
+                ("devbox".to_owned(), false, "SSH dev@devbox".to_owned(), 1),
+                ("gpu-box".to_owned(), false, "SSH dev@gpu-box".to_owned(), 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_row_shows_its_status_its_version_while_connected_and_the_action_its_line_offers() {
+        let now = Instant::now();
+        let state = dialog_state(now);
+
+        let rows = rows(&state);
+
+        let chips: Vec<&str> = rows.iter().map(|row| row.chip).collect();
+        let versions: Vec<Option<String>> = rows
+            .iter()
+            .map(|row| row.version.as_ref().map(ToString::to_string))
+            .collect();
+        let actions: Vec<Option<StatusAction>> = rows.iter().map(|row| row.action).collect();
+        let notes: Vec<Option<String>> = rows
+            .iter()
+            .map(|row| row.note.map(|note| note.text(now)))
+            .collect();
+        assert_eq!(chips, ["Connected", "Connected", "Not connected"]);
+        assert_eq!(
+            versions,
+            [Some("0.2.0".to_owned()), Some("0.2.0".to_owned()), None]
+        );
+        assert_eq!(actions, [None, None, Some(StatusAction::Retry)]);
+        assert_eq!(
+            notes,
+            [
+                Some("Its agents stop when the app closes.".to_owned()),
+                None,
+                Some("Retrying in 8 s.".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_older_daemons_row_offers_its_update_from_the_release_it_named_with_no_countdown() {
+        let now = Instant::now();
+        let mut state = dialog_state(now);
+        let gpu_box = MachineId::new(2);
+        refuses_as_older(&mut state, gpu_box);
+        let app = state.app_build.version.clone();
+        let row = |state: &AppState| {
+            rows(state)
+                .into_iter()
+                .find(|row| row.machine == gpu_box)
+                .map(|row| {
+                    (
+                        row.version.map(|version| version.to_string()),
+                        row.action,
+                        row.note,
+                    )
+                })
+        };
+
+        let unnamed = row(&state);
+        if let Some(gap) = state
+            .machines
+            .others
+            .get_mut(&gpu_box)
+            .and_then(|known| known.version_gap.as_mut())
+        {
+            gap.daemon = Some(ProgramBuild {
+                version: ReleaseVersion::new("0.0.1".to_owned()),
+                commit: None,
+            });
+        }
+        let named = row(&state);
+
+        assert_eq!(
+            unnamed,
+            Some((
+                Some(format!("→ {app}")),
+                Some(StatusAction::Update(UpdateLink::Update)),
+                None
+            ))
+        );
+        assert_eq!(
+            named,
+            Some((
+                Some(format!("0.0.1 → {app}")),
+                Some(StatusAction::Update(UpdateLink::Update)),
+                None
+            ))
+        );
+    }
+
+    #[test]
+    fn only_a_server_has_a_menu_and_it_copies_its_ssh_host() {
+        let now = Instant::now();
+        let mut state = dialog_state(now);
+        state.machines.this = MachineState::new(DaemonLabel::ssh("build-box".to_owned()));
+
+        let menus: Vec<Option<String>> = rows(&state)
+            .into_iter()
+            .map(|row| row.server.map(|server| server.host))
+            .collect();
+
+        assert_eq!(
+            menus,
+            [
+                None,
+                Some("dev@devbox".to_owned()),
+                Some("dev@gpu-box".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn a_menu_opens_on_one_server_at_a_time_and_its_edit_closes_it() {
+        let mut state = dialog_state(Instant::now());
+        open_machines(&mut state);
+        let menu = |state: &AppState| match &state.ui.dialog {
+            Some(Dialog::Machines(view)) => view.menu.map(|menu| menu.machine),
+            _ => None,
+        };
+
+        toggle_menu(&mut state, MachineId::new(1), 600, 300);
+        let first = menu(&state);
+        toggle_menu(&mut state, MachineId::new(2), 600, 360);
+        let second = menu(&state);
+        start_edit(&mut state, MachineId::new(2));
+
+        assert_eq!(first, Some(MachineId::new(1)));
+        assert_eq!(second, Some(MachineId::new(2)));
+        assert_eq!(menu(&state), None);
+        assert!(state.ui.close_overlays(), "Esc closes the form");
+        assert!(matches!(&state.ui.dialog, Some(Dialog::Machines(_))));
+    }
+
+    #[test]
+    fn the_add_form_opens_from_its_button_and_esc_closes_it_before_the_dialog() {
+        let mut state = state_with(Vec::new());
+        typed(&mut state, "lab", "dev@lab", "");
+        open_add_form(&mut state);
+        let adding = matches!(&state.ui.dialog, Some(Dialog::Machines(view)) if view.adding);
+
+        let first_escape = state.ui.close_overlays();
+
+        assert!(adding);
+        assert!(first_escape);
+        assert!(matches!(&state.ui.dialog, Some(Dialog::Machines(view)) if !view.adding));
+        state.ui.close_overlays();
+        assert_eq!(state.ui.dialog, None);
+    }
+
+    #[test]
+    fn a_server_cannot_take_the_name_the_interface_gives_this_computer() {
+        let mut state = AppState::new(DaemonLabel::in_app());
+
+        typed(&mut state, THIS_COMPUTER, "dev@lab", "/opt/agents-cockpit");
+
+        assert_eq!(add(&mut state), None);
+        assert!(error(&state).is_some());
+    }
+
+    #[test]
+    fn a_removed_server_takes_its_menu_and_its_form_with_it() {
+        let mut state = dialog_state(Instant::now());
+        open_machines(&mut state);
+        start_edit(&mut state, MachineId::new(2));
+        toggle_menu(&mut state, MachineId::new(2), 600, 360);
+
+        forget(&mut state, &mut Drafts::default(), MachineId::new(2));
+
+        assert!(matches!(
+            &state.ui.dialog,
+            Some(Dialog::Machines(view)) if view.menu.is_none() && view.editing.is_none()
+        ));
     }
 }

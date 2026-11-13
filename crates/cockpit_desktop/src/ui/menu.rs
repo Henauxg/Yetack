@@ -43,20 +43,30 @@ pub fn menu_key(key: &Key, code: Code) -> Option<MenuKey> {
     }
 }
 
+/// The classes of a keyed menu's frame. `compact-menu` gives its rows their spacing, which the
+/// composer's menus share.
+const MENU_CLASSES: &str = "popover menu row-menu compact-menu keyed-menu";
+
 /// The menu's frame, at `x`, `y` in the window's pixels: it takes the focus as it opens and passes
 /// on the keys it takes. Esc reaches the app through the page's script, which closes the menu:
-/// the focus then goes to `focus_back`, or to where the menu took it from.
+/// the focus then goes to `focus_back`, or to where the menu took it from. `class` adds to the
+/// frame's classes.
 #[component]
 pub fn KeyedMenu(
     x: i32,
     y: i32,
     focus_back: Option<&'static str>,
     on_key: EventHandler<MenuKey>,
+    class: Option<&'static str>,
     children: Element,
 ) -> Element {
+    let class = match class {
+        Some(class) => format!("{MENU_CLASSES} {class}"),
+        None => MENU_CLASSES.to_owned(),
+    };
     rsx! {
         div {
-            class: "popover menu row-menu keyed-menu",
+            class,
             role: "menu",
             tabindex: -1,
             "data-own-keys": true,
@@ -104,10 +114,13 @@ pub struct FlatRow {
     pub title: String,
     /// A line divides it from the row above.
     pub divided: bool,
+    /// It cannot be undone, and shows in red.
+    pub danger: bool,
 }
 
 /// A menu without submenus. A pick by the pointer, Enter or a letter gives the focus back, then
-/// calls `on_pick` with the row's index, which may move the focus elsewhere.
+/// calls `on_pick` with the row's index, which may move the focus elsewhere. `class` adds to the
+/// frame's classes.
 #[component]
 pub fn FlatMenu(
     x: i32,
@@ -115,6 +128,7 @@ pub fn FlatMenu(
     rows: Vec<FlatRow>,
     focus_back: Option<&'static str>,
     on_pick: EventHandler<usize>,
+    class: Option<&'static str>,
 ) -> Element {
     let mut highlighted = use_signal(|| None::<usize>);
     let keyed: Vec<KeyedRow> = rows
@@ -134,6 +148,7 @@ pub fn FlatMenu(
             x,
             y,
             focus_back,
+            class,
             on_key: move |key: MenuKey| {
                 let step = menu_keys::step(&keyed, *highlighted.peek(), &key);
                 if step.highlighted != *highlighted.peek() {
@@ -148,7 +163,12 @@ pub fn FlatMenu(
                     div { class: "menu-divider" }
                 }
                 button {
-                    class: if now == Some(index) { "menu-item {HIGHLIGHTED_CLASS}" } else { "menu-item" },
+                    class: match (now == Some(index), row.danger) {
+                        (true, true) => format!("menu-item danger {HIGHLIGHTED_CLASS}"),
+                        (true, false) => format!("menu-item {HIGHLIGHTED_CLASS}"),
+                        (false, true) => "menu-item danger".to_owned(),
+                        (false, false) => "menu-item".to_owned(),
+                    },
                     role: "menuitem",
                     tabindex: -1,
                     disabled: !row.enabled,

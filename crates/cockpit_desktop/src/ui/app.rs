@@ -8,7 +8,7 @@ use dioxus::prelude::*;
 use crate::bridge::use_bridge;
 use crate::connection::{Cockpit, Startup, use_clock, use_cockpit};
 use crate::prefs::use_prefs_saver;
-use crate::state::{ConnectionState, NoteKind, actions, file_tree, sending};
+use crate::state::{ConnectionState, NoteKind, actions, daemon_update, file_tree, sending};
 use crate::ui::blocks::FloatingBlocks;
 use crate::ui::chat_scroll::InView;
 use crate::ui::composer::Composer;
@@ -99,9 +99,8 @@ pub fn App() -> Element {
     }
     let app_class = app_classes.join(" ");
     // With servers, the question shows from this computer's panel, and the servers stay in use.
-    // An update of this computer's daemon keeps the screen until the new daemon answers.
     let no_daemon = matches!(state.machines.this.connection, ConnectionState::NoDaemon(_))
-        || state.machines.this.update.is_some();
+        || daemon_update::takes_the_window(&state.machines.this);
     if no_daemon && state.machines.others.is_empty() {
         return rsx! {
             NoDaemonScreen {}

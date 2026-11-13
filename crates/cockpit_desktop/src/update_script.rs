@@ -7,16 +7,21 @@ use std::process::ExitStatus;
 use std::time::Duration;
 
 use cockpit_client::ssh_script_command;
+use cockpit_protocol::BuildCommit;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-use crate::state::daemon_update::{OutputLine, OutputStream, UpdatePlan};
+use crate::state::daemon_update::{OutputLine, OutputStream};
 use crate::state::error_chain;
+use crate::state::update_plan::{BusyAgents, ServerPlan};
 
 const SCRIPT: &str = include_str!("../../../contrib/update-daemon.sh");
 
 const CANCEL_OPTION: &str = "--cancel";
+
+/// Skips the script's refusal for busy agents: "Update now".
+const EVEN_IF_BUSY_OPTION: &str = "--even-if-busy";
 
 /// How long the output waits before the next lines show, so that a build renders the window a few
 /// times a second at most.
@@ -25,23 +30,28 @@ const OUTPUT_PAUSE: Duration = Duration::from_millis(150);
 /// The most lines shown at once.
 const OUTPUT_BATCH: usize = 256;
 
-/// The release this app was built from.
-pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The longest line kept, in bytes: the rest of a longer line is dropped, so that a server that
+/// never ends its line cannot fill the app's memory.
+const MAX_LINE_BYTES: usize = 64 * 1024;
 
-/// The commit this app was built from, when its build knew it. A Nix build of a tree with
-/// uncommitted changes sets it empty.
-pub fn app_commit() -> Option<&'static str> {
-    known_commit(option_env!("AGENTS_COCKPIT_COMMIT"))
-}
+/// The release this app was built from. The app builds the daemon from its own tree, so the daemon
+/// in the app tells the same release.
+pub const APP_VERSION: &str = cockpit_daemon::RELEASE_VERSION;
 
-fn known_commit(built_with: Option<&'static str>) -> Option<&'static str> {
-    built_with.filter(|commit| !commit.is_empty())
+/// The commit this app was built from, when its build knew it. The app builds the daemon from its
+/// own tree, so the daemon in the app tells the same commit.
+pub fn app_commit() -> Option<BuildCommit> {
+    cockpit_daemon::build_commit()
 }
 
 /// Runs the update on its server, streaming the lines to `on_lines`, and returns the script's exit
 /// code: 255 or `None` when ssh lost the connection or could not start.
-pub async fn update(plan: &UpdatePlan, mut on_lines: impl FnMut(Vec<OutputLine>)) -> Option<i32> {
-    let command = match ssh_script_command(&plan.host, &update_arguments(plan)) {
+pub async fn update(
+    plan: &ServerPlan,
+    busy: BusyAgents,
+    mut on_lines: impl FnMut(Vec<OutputLine>),
+) -> Option<i32> {
+    let command = match ssh_script_command(&plan.host, &update_arguments(plan, busy)) {
         Ok(command) => command,
         Err(error) => {
             on_lines(vec![error_line(&error)]);
@@ -58,7 +68,7 @@ pub async fn update(plan: &UpdatePlan, mut on_lines: impl FnMut(Vec<OutputLine>)
 }
 
 /// Asks the server's running update to stop before it installs. `Err` says why that failed.
-pub async fn cancel(plan: &UpdatePlan) -> Result<(), String> {
+pub async fn cancel(plan: &ServerPlan) -> Result<(), String> {
     let command =
         ssh_script_command(&plan.host, &[CANCEL_OPTION]).map_err(|error| error.to_string())?;
     let mut lines = Vec::new();
@@ -79,7 +89,7 @@ fn error_line(error: &dyn Error) -> OutputLine {
     }
 }
 
-fn update_arguments(plan: &UpdatePlan) -> Vec<&str> {
+fn update_arguments(plan: &ServerPlan, busy: BusyAgents) -> Vec<&str> {
     let mut arguments = vec![
         "--commit",
         plan.commit.as_str(),
@@ -88,6 +98,10 @@ fn update_arguments(plan: &UpdatePlan) -> Vec<&str> {
     ];
     if let Some(source_dir) = &plan.source_dir {
         arguments.extend(["--source-dir", source_dir.as_str()]);
+    }
+    match busy {
+        BusyAgents::Refuse => {}
+        BusyAgents::Interrupt => arguments.push(EVEN_IF_BUSY_OPTION),
     }
     arguments
 }
@@ -119,7 +133,8 @@ async fn run(
     child.wait().await
 }
 
-/// Sends each line of `stream` to `sender`, until `stream` ends.
+/// Sends each line of `stream` to `sender`, until `stream` ends. A line keeps its first
+/// `MAX_LINE_BYTES` bytes.
 async fn read_lines(
     stream: impl AsyncRead + Unpin,
     output: OutputStream,
@@ -128,41 +143,49 @@ async fn read_lines(
     let mut reader = BufReader::new(stream);
     let mut bytes = Vec::new();
     loop {
-        bytes.clear();
-        match reader.read_until(b'\n', &mut bytes).await {
-            Ok(0) | Err(_) => return,
-            Ok(_) => {
-                let line = OutputLine {
-                    stream: output,
-                    text: String::from_utf8_lossy(&bytes).trim_end().to_owned(),
-                };
-                if sender.send(line).is_err() {
-                    return;
-                }
+        let Ok(chunk) = reader.fill_buf().await else {
+            return;
+        };
+        if chunk.is_empty() {
+            if !bytes.is_empty() {
+                let _ = sender.send(output_line(output, &bytes));
             }
+            return;
         }
+        let newline = chunk.iter().position(|&byte| byte == b'\n');
+        let part = newline.map_or(chunk, |at| chunk.get(..at).unwrap_or(chunk));
+        let room = MAX_LINE_BYTES.saturating_sub(bytes.len());
+        bytes.extend_from_slice(part.get(..room).unwrap_or(part));
+        let consumed = newline.map_or(chunk.len(), |at| at + 1);
+        reader.consume(consumed);
+        if newline.is_some() {
+            if sender.send(output_line(output, &bytes)).is_err() {
+                return;
+            }
+            bytes.clear();
+        }
+    }
+}
+
+fn output_line(stream: OutputStream, bytes: &[u8]) -> OutputLine {
+    OutputLine {
+        stream,
+        text: String::from_utf8_lossy(bytes).trim_end().to_owned(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::daemon_update::{BUILDING_LINE, DAEMON_RUNS_LINE, RESTARTING_LINE};
+    use crate::state::update_plan::{BUILDING_LINE, DAEMON_RUNS_LINE, RESTARTING_LINE};
 
-    fn plan(source_dir: Option<&str>) -> UpdatePlan {
-        UpdatePlan {
+    fn plan(source_dir: Option<&str>) -> ServerPlan {
+        ServerPlan {
             host: "build-box".to_owned(),
             remote_command: "/opt/agents-cockpit".to_owned(),
             source_dir: source_dir.map(str::to_owned),
-            commit: "3f9c2e1".to_owned(),
+            commit: BuildCommit::new("3f9c2e1".to_owned()),
         }
-    }
-
-    #[test]
-    fn an_empty_commit_is_no_commit() {
-        assert_eq!(known_commit(None), None);
-        assert_eq!(known_commit(Some("")), None);
-        assert_eq!(known_commit(Some("3f9c2e1")), Some("3f9c2e1"));
     }
 
     #[test]
@@ -185,11 +208,11 @@ mod tests {
         let (without_a_folder, with_a_folder) = (plan(None), plan(Some("/srv/cockpit")));
 
         assert_eq!(
-            update_arguments(&without_a_folder),
+            update_arguments(&without_a_folder, BusyAgents::Refuse),
             ["--commit", "3f9c2e1", "--binary", "/opt/agents-cockpit"]
         );
         assert_eq!(
-            update_arguments(&with_a_folder),
+            update_arguments(&with_a_folder, BusyAgents::Refuse),
             [
                 "--commit",
                 "3f9c2e1",
@@ -198,6 +221,28 @@ mod tests {
                 "--source-dir",
                 "/srv/cockpit"
             ]
+        );
+    }
+
+    #[test]
+    fn update_now_runs_the_script_even_if_agents_are_busy() {
+        assert_eq!(
+            update_arguments(&plan(None), BusyAgents::Interrupt),
+            [
+                "--commit",
+                "3f9c2e1",
+                "--binary",
+                "/opt/agents-cockpit",
+                "--even-if-busy"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_embedded_script_takes_the_option_that_skips_busy_agents() {
+        assert!(
+            SCRIPT.contains(&format!("[ \"$1\" = {EVEN_IF_BUSY_OPTION} ]")),
+            "the script parses it"
         );
     }
 
@@ -236,5 +281,20 @@ mod tests {
         };
         assert_eq!(text(OutputStream::Stdout), ["out", "no newline"]);
         assert_eq!(text(OutputStream::Stderr), ["err"]);
+    }
+
+    #[tokio::test]
+    async fn a_long_line_keeps_its_start_and_the_next_line_comes_whole() {
+        let long = "a".repeat(3 * MAX_LINE_BYTES);
+        let output = format!("{long}\nnext\n{long}");
+        let (sender, mut received) = mpsc::unbounded_channel();
+
+        read_lines(output.as_bytes(), OutputStream::Stdout, sender).await;
+
+        let mut lines = Vec::new();
+        received.recv_many(&mut lines, 10).await;
+        let texts: Vec<&str> = lines.iter().map(|line| line.text.as_str()).collect();
+        let kept = "a".repeat(MAX_LINE_BYTES);
+        assert_eq!(texts, [kept.as_str(), "next", kept.as_str()]);
     }
 }

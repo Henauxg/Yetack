@@ -16,6 +16,7 @@ use std::io;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -272,6 +273,63 @@ printf '%s' '{mark}' >>"$2/release/agents-cockpit"
         }
     }
 
+    /// Starts an agent whose first turn fails for a missing login, and waits for it to wait for
+    /// its sign-in. `before` runs in its claude before the turn.
+    fn agent_waiting_for_its_sign_in(&self, before: &str) -> String {
+        self.write_program(
+            "echo-claude",
+            &format!(
+                "#!/bin/sh\n{before}\nread -r _\necho '{{\"type\":\"assistant\",\"error\":\"authentication_failed\",\"message\":{{\"model\":\"<synthetic>\",\"content\":[{{\"type\":\"text\",\"text\":\"Not logged in\"}}]}}}}'\necho '{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"num_turns\":1}}'\nexec cat\n"
+            ),
+        );
+        let work = self.path("work");
+        let id = self
+            .ok(&["start", work.to_str().unwrap(), "Fix the parser"])
+            .trim()
+            .to_owned();
+        self.wait_for_status(&id, "needs_you");
+        self.wait_for_column(&id, "WAIT", "0");
+        id
+    }
+
+    /// Installs a binary whose `list` prints `listing`, as an older binary would, and that runs
+    /// the real one otherwise. The daemon that runs keeps its own binary.
+    fn list_as(&self, listing: &str) {
+        fs::remove_file(self.installed()).unwrap();
+        self.write_program(
+            "install/agents-cockpit",
+            &format!(
+                "#!/bin/sh\nif [ \"$1\" = list ]; then printf '%s' '{listing}'; exit 0; fi\nexec '{BINARY}' \"$@\"\n"
+            ),
+        );
+    }
+
+    /// Waits until the `list` row of agent `id` shows `value` in the column headed `column`.
+    fn wait_for_column(&self, id: &str, column: &str, value: &str) {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let list = self.ok(&["list"]);
+            let mut lines = list.lines();
+            let index = lines
+                .next()
+                .and_then(|header| header.split_whitespace().position(|name| name == column));
+            let found = index.is_some_and(|index| {
+                lines.any(|row| {
+                    let columns: Vec<&str> = row.split_whitespace().collect();
+                    columns.first() == Some(&id) && columns.get(index) == Some(&value)
+                })
+            });
+            if found {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "agent {id} never had {value} in {column}: {list}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     /// Adds a tool call to an agent's raw log, in the form the daemon writes it.
     fn log_tool_call(&self, agent: &str, tool: &str, at: u128) {
         let claude_line = format!(
@@ -321,6 +379,14 @@ printf '%s' '{mark}' >>"$2/release/agents-cockpit"
 
     fn update(&self, commit: &str) -> Output {
         self.update_command(commit).output().unwrap()
+    }
+
+    /// The update the app runs for "Update now", which ends the busy agents' turns.
+    fn update_even_if_busy(&self, commit: &str) -> Output {
+        self.update_command(commit)
+            .arg("--even-if-busy")
+            .output()
+            .unwrap()
     }
 
     /// Asks the update that runs to stop, as the app does over a second connection.
@@ -624,6 +690,117 @@ fn refuses_while_an_agent_works() {
 }
 
 #[test]
+fn refuses_while_an_idle_agent_runs_background_tasks() {
+    let machine = Machine::new();
+    // A claude that reports a background command as it starts, then echoes what it reads.
+    machine.write_program(
+        "echo-claude",
+        "#!/bin/sh\necho '{\"type\":\"system\",\"subtype\":\"task_started\",\"task_id\":\"bg-1\",\"description\":\"Watch the build\",\"task_type\":\"local_bash\"}'\nexec cat\n",
+    );
+    machine.start_daemon();
+    let id = machine.idle_agent();
+    machine.wait_for_column(&id, "TASKS", "1");
+    let before = machine.daemon_pid();
+
+    let output = machine.update("origin/main");
+
+    assert_refused(&machine, &output, 3, "these agents are busy", &before);
+    assert!(
+        stderr(&output).contains(&format!("\n{id} ")),
+        "{}",
+        stderr(&output)
+    );
+}
+
+/// A background command that Claude reports as it starts.
+const BACKGROUND_TASK: &str = "echo '{\"type\":\"system\",\"subtype\":\"task_started\",\"task_id\":\"bg-1\",\"description\":\"Watch the build\",\"task_type\":\"local_bash\"}'";
+
+#[test]
+fn an_agent_that_waits_only_for_its_sign_in_runs_no_turn_to_interrupt() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    machine.agent_waiting_for_its_sign_in("");
+
+    let output = machine.update("origin/main");
+
+    assert_succeeded(&output);
+    assert!(machine.installed_is_the_new_build());
+}
+
+#[test]
+fn refuses_while_an_agent_that_waits_for_its_sign_in_runs_background_tasks() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let id = machine.agent_waiting_for_its_sign_in(BACKGROUND_TASK);
+    machine.wait_for_column(&id, "TASKS", "1");
+    let before = machine.daemon_pid();
+
+    let output = machine.update("origin/main");
+
+    assert_refused(&machine, &output, 3, "these agents are busy", &before);
+    assert!(
+        stderr(&output).contains(&format!("\n{id} ")),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn refuses_a_scheduled_job_of_an_agent_that_waits_for_its_sign_in() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let id = machine.agent_waiting_for_its_sign_in("");
+    machine.log_tool_call(&id, "CronCreate", now_ms());
+    let before = machine.daemon_pid();
+
+    let output = machine.update("origin/main");
+
+    assert_refused(&machine, &output, 3, "scheduled jobs", &before);
+}
+
+#[test]
+fn an_older_listing_without_tasks_lets_a_sign_in_wait_through() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    machine.list_as(
+        "ID   STATUS    WAIT TURNS TITLE     FOLDER\n7    needs_you 0    1     Sign in   /made/up/work\n8    idle      0    2     Done      /made/up/work\n",
+    );
+
+    let output = machine.update("origin/main");
+
+    assert_succeeded(&output);
+    assert!(machine.installed_is_the_new_build());
+}
+
+#[test]
+fn a_listing_without_wait_counts_every_agent_that_needs_you_as_busy() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    machine.list_as(
+        "ID   STATUS    TURNS TITLE     FOLDER\n7    needs_you 1     Sign in   /made/up/work\n",
+    );
+    let before = machine.daemon_pid();
+
+    let output = machine.update("origin/main");
+
+    assert_refused(&machine, &output, 3, "\n7    needs_you", &before);
+}
+
+#[test]
+fn refuses_an_agent_that_needs_you_with_a_question_to_answer() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    machine.list_as(
+        "ID   STATUS    WAIT TURNS TASKS TITLE     FOLDER\n7    needs_you 1    1     0     Approve   /made/up/work\n",
+    );
+    let before = machine.daemon_pid();
+
+    let output = machine.update("origin/main");
+
+    assert_refused(&machine, &output, 3, "\n7    needs_you", &before);
+}
+
+#[test]
 fn refuses_while_an_agent_works_under_a_daemon_of_another_name() {
     let machine = Machine::new();
     let renamed = machine.path("install/cockpit-renamed");
@@ -711,6 +888,117 @@ fn a_job_from_before_the_daemon_started_is_gone() {
     machine.log_tool_call(&id, "CronCreate", 1_000);
 
     assert_succeeded(&machine.update("origin/main"));
+}
+
+#[test]
+fn even_if_busy_restarts_while_an_agent_works() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let id = machine.working_agent();
+    let before = machine.daemon_pid();
+
+    let output = machine.update_even_if_busy("origin/main");
+
+    assert_succeeded(&output);
+    assert!(machine.installed_is_the_new_build());
+    assert_ne!(machine.daemon_pid(), before);
+    assert!(
+        machine
+            .ok(&["list"])
+            .lines()
+            .any(|row| row.starts_with(&id)),
+        "the new daemon has the agent"
+    );
+}
+
+#[test]
+fn even_if_busy_restarts_with_a_scheduled_job() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let id = machine.idle_agent();
+    machine.log_tool_call(&id, "CronCreate", now_ms());
+    let before = machine.daemon_pid();
+
+    let output = machine.update_even_if_busy("origin/main");
+
+    assert_succeeded(&output);
+    assert!(machine.installed_is_the_new_build());
+    assert_ne!(machine.daemon_pid(), before);
+}
+
+#[test]
+fn even_if_busy_may_come_before_the_other_options() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    machine.working_agent();
+
+    let output = machine
+        .command("sh")
+        .args(["-s", "--", "--even-if-busy", "--commit", "origin/main"])
+        .arg("--binary")
+        .arg(machine.installed())
+        .arg("--source-dir")
+        .arg(machine.path("source"))
+        .stdin(Stdio::from(File::open(SCRIPT).unwrap()))
+        .output()
+        .unwrap();
+
+    assert_succeeded(&output);
+    assert!(machine.installed_is_the_new_build());
+}
+
+#[test]
+fn even_if_busy_still_refuses_when_it_cannot_look_for_the_daemon() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    machine.working_agent();
+    let before = machine.daemon_pid();
+    machine.write_program("bin/find", "#!/bin/sh\nexit 1\n");
+
+    let output = machine.update_even_if_busy("origin/main");
+
+    assert_refused(&machine, &output, 1, "cannot tell", &before);
+    assert!(!machine.built(), "it refuses before the build");
+}
+
+#[test]
+fn even_if_busy_still_reads_the_agents() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let before = machine.daemon_pid();
+    machine.leave_the_old_daemon_behind_a_new_binary();
+    fs::remove_file(machine.previous()).unwrap();
+    machine.write_program(
+        "install/agents-cockpit.previous",
+        "#!/bin/sh\necho 'made-up failure' >&2\nexit 1\n",
+    );
+
+    let output = machine.update_even_if_busy("origin/main");
+
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("cannot read the agents from the daemon"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!machine.built(), "it refuses before the build");
+    assert_eq!(machine.daemon_pid(), before);
+}
+
+#[test]
+fn even_if_busy_still_refuses_a_second_update() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    machine.working_agent();
+    let before = machine.daemon_pid();
+    let pid = std::process::id();
+    machine.write_lock(pid, &start_time(pid));
+
+    let output = machine.update_even_if_busy("origin/main");
+
+    assert_eq!(output.status.code(), Some(6), "{}", stderr(&output));
+    assert!(!machine.built());
+    assert_eq!(machine.daemon_pid(), before);
 }
 
 #[test]
@@ -867,6 +1155,67 @@ fn a_start_file_that_starts_another_binary_exits_with_four() {
     let output = machine.update("origin/main");
 
     assert_eq!(output.status.code(), Some(4), "{}", stderr(&output));
+}
+
+/// The stop finds a pid that holds the lock, then the process of that pid ends before the signal:
+/// it stands for a pid another process gets meanwhile. A fake `find` plays it with a process of
+/// the test, which it says holds the lock, then kills while the stop checks it.
+#[test]
+fn the_stop_signals_no_process_that_changed_since_it_found_its_pid() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let mut other = Command::new("sleep")
+        .arg("30")
+        .stdin(Stdio::null())
+        .spawn()
+        .unwrap();
+    let other_pid = other.id();
+    machine.write_program(
+        "bin/find",
+        &format!(
+            r#"#!/bin/sh
+if [ ! -f '{checked}' ] && grep -qF '{mark}' '{installed}' 2>/dev/null; then
+    if [ "$1" = /proc/{other_pid}/fd ]; then
+        kill -KILL {other_pid}
+        until [ "$(sed 's/.*) //' /proc/{other_pid}/stat | cut -c1)" = Z ]; do sleep 0.01; done
+        : >'{checked}'
+        echo /proc/{other_pid}/fd/0
+        exit 0
+    fi
+    if [ ! -f '{found}' ]; then
+        : >'{found}'
+        echo /proc/{other_pid}/fd/0
+        exit 0
+    fi
+fi
+PATH=${{PATH#*:}} exec find "$@"
+"#,
+            checked = machine.path("other-checked").display(),
+            found = machine.path("other-found").display(),
+            mark = String::from_utf8_lossy(BUILT_MARK),
+            installed = machine.installed().display(),
+        ),
+    );
+    let before = machine.daemon_pid();
+
+    let output = machine.update("origin/main");
+
+    let ended = other.wait().unwrap();
+    assert_eq!(
+        ended.signal(),
+        Some(9),
+        "only the fake find's SIGKILL reached it"
+    );
+    assert!(
+        machine.path("other-checked").exists(),
+        "the stop never looked at the other process"
+    );
+    assert_succeeded(&output);
+    assert_ne!(
+        machine.daemon_pid(),
+        before,
+        "the daemon was stopped all the same"
+    );
 }
 
 #[test]

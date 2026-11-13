@@ -1,25 +1,37 @@
-//! The screens that update a server's daemon of an older version: in the "No daemon answers"
-//! screen's place for this computer, as a dialog for a server.
+//! The screens that update a machine's daemon: in the "No daemon answers" screen's place for this
+//! computer alone, as a dialog otherwise, and the confirmation that names busy agents.
+//!
+//! Each screen is a card: the machine's icon with a title and a lead, then what the screen is
+//! about, then its buttons, which "Details" starts when the screen has details to fold open.
 
 use std::cmp::Ordering;
 
+use cockpit_protocol::{AgentId, AgentStatus, PROTOCOL_VERSION};
 use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
+use crate::daemon_label::DaemonPlace;
+use crate::format;
 use crate::machine::MachineId;
-use crate::state::ConnectionState;
-use crate::state::daemon_update::{
-    self, DaemonUpdate, FailedUpdate, ProtocolGap, UpdateFailure, UpdateProgress, UpdateStep,
-    VersionGap,
-};
+use crate::state::daemon_update::{self, Confirmation, DaemonUpdate, FailedUpdate, UpdateProgress};
+use crate::state::machines::MachineName;
 use crate::state::no_daemon::DaemonChoice;
+use crate::state::update_offer::{self, GapKind, ProgramBuild, UpdateOffer};
+use crate::state::update_plan::{UpdatePlan, UpdateStep};
+use crate::state::{AppState, ConnectionState, accounts};
 use crate::ui::icons::{Icon, IconKind};
-use crate::ui::no_daemon::{Details, EveryTimeTick, IN_APP_DETAIL};
+use crate::ui::machines::machine_icon;
+use crate::ui::no_daemon::{EveryTimeTick, IN_APP_DETAIL};
+use crate::ui::presence::use_presence;
 
 const TITLE_ID: &str = "no-daemon-title";
 
-/// The screen `machine`'s state calls for: a card that offers the update, the update under way, or
-/// how it failed.
+/// What happens to the agents on a restart, as the cards and the confirmation say it.
+const AGENTS_RESUME: &str =
+    "A working agent stops its current turn, and every agent resumes its conversation after.";
+
+/// The screen `machine`'s state calls for: a card that offers the update, the update waiting or
+/// under way, or how it failed.
 #[component]
 pub fn DaemonUpdateScreens(machine: MachineId) -> Element {
     let cockpit: Cockpit = use_context();
@@ -27,30 +39,39 @@ pub fn DaemonUpdateScreens(machine: MachineId) -> Element {
     let Some(known) = state.machines.get(machine) else {
         return rsx! {};
     };
-    let name = known.daemon.machine.clone();
-    let subject = known.daemon.subject();
-    let body = match (known.update.clone(), known.version_gap.clone()) {
+    let MachineName { name, local } = MachineName::new(machine, known);
+    let offer = update_offer::offer(&state, machine);
+    let body = match (known.update.clone(), offer) {
         (Some(DaemonUpdate::Running(progress) | DaemonUpdate::Reconnecting(progress)), _) => {
             rsx! {
-                ProgressCard { machine, name, progress }
+                ProgressCard { machine, name, local, progress }
             }
         }
-        (Some(DaemonUpdate::Failed(failed)), _) => rsx! {
-            FailedCard { machine, name, failed }
+        (Some(DaemonUpdate::Waiting), _) => rsx! {
+            WaitingCard { machine, name, local }
         },
-        (None, Some(gap)) => match gap.kind {
-            ProtocolGap::Older => rsx! {
-                OlderCard { machine, name, subject, gap }
+        (Some(DaemonUpdate::Failed(failed)), _) => rsx! {
+            FailedCard { machine, name, local, failed }
+        },
+        (None, Some(offer)) => match offer.kind {
+            GapKind::OlderProtocol => rsx! {
+                OlderCard { machine, name, local, offer }
             },
-            ProtocolGap::Newer => rsx! {
-                NewerCard { machine, name, subject, gap }
+            GapKind::NewerProtocol => rsx! {
+                NewerCard { machine, name, local, offer }
+            },
+            GapKind::OtherBuild => rsx! {
+                AvailableCard { machine, name, local, offer }
+            },
+            GapKind::NewerRelease => rsx! {
+                NewerReleaseCard { name, local, offer }
             },
         },
         (None, None) => return rsx! {},
     };
     rsx! {
         div {
-            class: "no-daemon-card",
+            class: "no-daemon-card update-card",
             role: "dialog",
             aria_labelledby: TITLE_ID,
             onclick: move |event| event.stop_propagation(),
@@ -72,39 +93,176 @@ fn screen_choice(cockpit: Cockpit, machine: MachineId) -> (Option<DaemonChoice>,
     }
 }
 
+/// What "Update" does to `name`, as the card's note says it.
+fn what_the_update_does(plan: &UpdatePlan, name: &str, app: &ProgramBuild) -> String {
+    match plan {
+        UpdatePlan::Server(_) => format!(
+            "The update builds {} on {name} from its checkout, then restarts its daemon. {AGENTS_RESUME}",
+            app.version
+        ),
+        UpdatePlan::Service(_) => format!(
+            "The update restarts {name}'s background service with this app's program. {AGENTS_RESUME}"
+        ),
+    }
+}
+
+/// A card's head: the machine's icon, then the title over what it means.
 #[component]
-fn OlderCard(machine: MachineId, name: String, subject: String, gap: VersionGap) -> Element {
+fn CardHead(local: bool, title: String, lead: String) -> Element {
+    rsx! {
+        div { class: "update-card-head",
+            span { class: "update-card-icon", aria_hidden: true,
+                Icon { kind: machine_icon(local), size: 20 }
+            }
+            div { class: "update-card-titles",
+                h1 { id: TITLE_ID, "{title}" }
+                p { class: "update-card-lead", "{lead}" }
+            }
+        }
+    }
+}
+
+/// The daemon's build beside this app's. An arrow between them shows the way an update goes,
+/// when the daemon is the older one.
+#[component]
+fn VersionPair(name: String, offer: UpdateOffer) -> Element {
+    let daemon_class = match offer.kind {
+        GapKind::OlderProtocol => "version-box behind-protocol",
+        GapKind::OtherBuild => "version-box behind",
+        GapKind::NewerRelease | GapKind::NewerProtocol => "version-box",
+    };
+    rsx! {
+        div { class: "version-pair",
+            VersionBox {
+                class: daemon_class,
+                who: name,
+                program: offer.daemon.clone(),
+                protocol: offer.daemon_protocol,
+            }
+            span { class: "version-arrow", aria_hidden: true,
+                if !offer.kind.is_newer() {
+                    Icon { kind: IconKind::ArrowRight, size: 18 }
+                }
+            }
+            VersionBox {
+                class: "version-box",
+                who: "This app".to_owned(),
+                program: Some(offer.app.clone()),
+                protocol: PROTOCOL_VERSION,
+            }
+        }
+    }
+}
+
+/// One side of the pair: who runs it, its release, its commit and its protocol. A daemon of
+/// protocol 8 or older does not name its build as it refuses the app.
+#[component]
+fn VersionBox(
+    class: &'static str,
+    who: String,
+    program: Option<ProgramBuild>,
+    protocol: u16,
+) -> Element {
+    let release = program.as_ref().map_or_else(
+        || "Unknown version".to_owned(),
+        |build| build.version.to_string(),
+    );
+    let meta = match program.as_ref().and_then(|build| build.commit.as_ref()) {
+        Some(commit) => format!("{} · protocol {protocol}", commit.short()),
+        None => format!("protocol {protocol}"),
+    };
+    rsx! {
+        div { class,
+            span { class: "version-who", "{who}" }
+            span { class: "version-number", "{release}" }
+            span { class: "version-meta mono", "{meta}" }
+        }
+    }
+}
+
+/// A note that explains what the card's main button does.
+#[component]
+fn Callout(text: String) -> Element {
+    rsx! {
+        div { class: "update-callout",
+            span { class: "callout-icon", aria_hidden: true,
+                Icon { kind: IconKind::Info, size: 16 }
+            }
+            span { "{text}" }
+        }
+    }
+}
+
+/// A card's buttons, at its end. "Details" starts the row when the card has details: it folds
+/// them open under the row, and the card grows with them.
+#[component]
+fn CardActions(details: Option<String>, children: Element) -> Element {
+    let mut open = use_signal(|| false);
+    let unfolded = details.clone().filter(|_| open());
+    let shown = use_presence(unfolded);
+    rsx! {
+        div { class: "update-card-actions",
+            if details.is_some() {
+                button {
+                    class: if open() { "details-link open" } else { "details-link" },
+                    aria_expanded: open(),
+                    onclick: move |_| open.toggle(),
+                    Icon { kind: IconKind::ChevronRight, size: 12 }
+                    "Details"
+                }
+            }
+            {children}
+        }
+        if let Some(shown) = shown {
+            div {
+                class: if shown.leaving { "update-details-fold leaving" } else { "update-details-fold" },
+                inert: shown.leaving.then_some(true),
+                div { class: "update-details-clip",
+                    pre { class: "update-details", "{shown.value}" }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn OlderCard(machine: MachineId, name: String, local: bool, offer: UpdateOffer) -> Element {
     let cockpit: Cockpit = use_context();
     let (busy, every_time) = screen_choice(cockpit, machine);
     let waiting = busy.is_some();
     let on_this_computer = machine == MachineId::THIS;
+    let over_ssh = cockpit
+        .state
+        .read()
+        .machines
+        .get(machine)
+        .is_some_and(|known| known.daemon.place == DaemonPlace::Ssh);
+    let lead =
+        format!("The app can reach {name}'s agents again once {name} runs this app's version.");
     rsx! {
-        h1 { id: TITLE_ID, "{subject} runs an older version" }
-        p { class: "no-daemon-lead",
-            "This app and the daemon on {name} are different versions, so they cannot connect."
-        }
-        if gap.plan.is_none() {
-            p { class: "no-daemon-hint",
-                "This app does not know which version it is, so it cannot update {name}."
-            }
-        }
-        Details { error: gap.details.clone(), open: false }
-        div { class: "no-daemon-choices",
-            if let Some(plan) = &gap.plan {
-                OfferButton {
-                    primary: true,
-                    disabled: waiting,
-                    title: format!("Update {name}"),
-                    detail: format!(
-                        "Builds this app's version ({}) on the server and restarts its daemon. Agents resume after the restart.",
-                        plan.short_commit()
-                    ),
-                    onclick: move |()| cockpit.update_daemon(machine),
+        CardHead { local, title: format!("{name} runs an older version"), lead }
+        VersionPair { name: name.clone(), offer: offer.clone() }
+        match &offer.plan {
+            Some(plan) => rsx! {
+                Callout { text: what_the_update_does(plan, &name, &offer.app) }
+            },
+            None => rsx! {
+                p { class: "no-daemon-hint",
+                    if over_ssh {
+                        "This app does not know which version it is, so it cannot update {name}."
+                    } else {
+                        "This app cannot tell which state folder this daemon serves, so it cannot restart it."
+                    }
                 }
-            }
-            RetryOffer { machine, name: name.clone(), primary: gap.plan.is_none(), busy }
+            },
+        }
+        CardActions { details: Some(offer.details.clone()),
             if on_this_computer {
-                InAppOffer { busy }
+                InAppButton { busy }
+            }
+            RetryButton { machine, primary: offer.plan.is_none(), busy }
+            if offer.plan.is_some() {
+                UpdateButton { machine, label: format!("Update {name}"), disabled: waiting }
             }
         }
         if on_this_computer {
@@ -114,86 +272,299 @@ fn OlderCard(machine: MachineId, name: String, subject: String, gap: VersionGap)
 }
 
 #[component]
-fn NewerCard(machine: MachineId, name: String, subject: String, gap: VersionGap) -> Element {
+fn NewerCard(machine: MachineId, name: String, local: bool, offer: UpdateOffer) -> Element {
     let cockpit: Cockpit = use_context();
     let (busy, _) = screen_choice(cockpit, machine);
     rsx! {
-        h1 { id: TITLE_ID, "{subject} runs a newer version" }
-        p { class: "no-daemon-lead",
-            "This app is older than the daemon on {name}, so they cannot connect. Update this app to connect."
+        CardHead {
+            local,
+            title: format!("{name} runs a newer version"),
+            lead: format!("This app is older than the daemon on {name}, so they cannot connect. Update this app to connect."),
         }
-        Details { error: gap.details.clone(), open: false }
-        div { class: "no-daemon-choices",
-            RetryOffer { machine, name: name.clone(), primary: true, busy }
+        VersionPair { name: name.clone(), offer: offer.clone() }
+        CardActions { details: Some(offer.details.clone()),
             if machine == MachineId::THIS {
-                InAppOffer { busy }
+                InAppButton { busy }
             }
+            RetryButton { machine, primary: true, busy }
+        }
+    }
+}
+
+/// A machine the app uses, whose daemon runs another build than the app's.
+#[component]
+fn AvailableCard(machine: MachineId, name: String, local: bool, offer: UpdateOffer) -> Element {
+    let cockpit: Cockpit = use_context();
+    let Some(plan) = offer.plan.clone() else {
+        return rsx! {};
+    };
+    rsx! {
+        CardHead {
+            local,
+            title: format!("Update available for {name}"),
+            lead: format!("{name}'s agents keep working until you update it."),
+        }
+        VersionPair { name: name.clone(), offer: offer.clone() }
+        Callout { text: what_the_update_does(&plan, &name, &offer.app) }
+        CardActions { details: Some(offer.details.clone()),
+            button {
+                class: "button",
+                onclick: move |_| cockpit.update(|state| state.ui.close_dialog()),
+                "Not now"
+            }
+            UpdateButton { machine, label: format!("Update {name}"), disabled: false }
+        }
+    }
+}
+
+/// A machine the app uses, whose daemon is of a newer release than the app.
+#[component]
+fn NewerReleaseCard(name: String, local: bool, offer: UpdateOffer) -> Element {
+    let cockpit: Cockpit = use_context();
+    rsx! {
+        CardHead {
+            local,
+            title: format!("{name} runs a newer version"),
+            lead: "Update this app to match it.".to_owned(),
+        }
+        VersionPair { name: name.clone(), offer: offer.clone() }
+        CardActions { details: Some(offer.details.clone()),
+            button {
+                class: "button",
+                onclick: move |_| cockpit.update(|state| state.ui.close_dialog()),
+                "Close"
+            }
+        }
+    }
+}
+
+/// The button that starts `machine`'s update. On this computer the app reads the agents' raw logs
+/// first, and the button says so meanwhile.
+#[component]
+fn UpdateButton(machine: MachineId, label: String, disabled: bool) -> Element {
+    let cockpit: Cockpit = use_context();
+    let checking = cockpit
+        .state
+        .read()
+        .machines
+        .get(machine)
+        .is_some_and(|known| known.checking_jobs);
+    rsx! {
+        button {
+            class: "button primary",
+            disabled: disabled || checking,
+            onclick: move |_| cockpit.update_daemon(machine),
+            if checking { "Checking jobs…" } else { "{label}" }
         }
     }
 }
 
 /// "Retry", as the older-version and the newer-version cards offer it.
 #[component]
-fn RetryOffer(
-    machine: MachineId,
-    name: String,
-    primary: bool,
-    busy: Option<DaemonChoice>,
-) -> Element {
+fn RetryButton(machine: MachineId, primary: bool, busy: Option<DaemonChoice>) -> Element {
     let cockpit: Cockpit = use_context();
     let retrying = busy == Some(DaemonChoice::Retry);
     rsx! {
-        OfferButton {
-            primary,
+        button {
+            class: if primary { "button primary" } else { "button" },
             disabled: busy.is_some(),
-            title: if retrying { "Retrying…".to_owned() } else { "Retry".to_owned() },
-            detail: format!("Try {name} again."),
-            onclick: move |()| cockpit.retry_machine(machine),
+            onclick: move |_| cockpit.retry_machine(machine),
+            if retrying { "Retrying…" } else { "Retry" }
         }
     }
 }
 
+/// "Run agents in this app", which only this computer's cards offer.
 #[component]
-fn InAppOffer(busy: Option<DaemonChoice>) -> Element {
+fn InAppButton(busy: Option<DaemonChoice>) -> Element {
     let cockpit: Cockpit = use_context();
     let starting = busy == Some(DaemonChoice::InApp);
     rsx! {
-        OfferButton {
-            primary: false,
-            disabled: busy.is_some(),
-            title: if starting { "Starting…".to_owned() } else { "Run agents in this app".to_owned() },
-            detail: IN_APP_DETAIL.to_owned(),
-            onclick: move |()| cockpit.choose_daemon(DaemonChoice::InApp),
-        }
-    }
-}
-
-/// A choice with its title and what it does.
-#[component]
-fn OfferButton(
-    primary: bool,
-    disabled: bool,
-    title: String,
-    detail: String,
-    onclick: EventHandler<()>,
-) -> Element {
-    rsx! {
         button {
-            class: if primary { "button primary no-daemon-choice" } else { "button no-daemon-choice" },
-            disabled,
-            onclick: move |_| onclick.call(()),
-            span { class: "no-daemon-choice-title", "{title}" }
-            span { class: "no-daemon-choice-detail", "{detail}" }
+            class: "button",
+            disabled: busy.is_some(),
+            title: IN_APP_DETAIL,
+            onclick: move |_| cockpit.choose_daemon(DaemonChoice::InApp),
+            if starting { "Starting…" } else { "Run in this app" }
+        }
+    }
+}
+
+/// A busy agent, as the confirmation and the wait list it.
+#[derive(Debug, Clone, PartialEq)]
+struct BusyAgent {
+    key: String,
+    title: String,
+    /// The status class of its dot.
+    status_class: &'static str,
+    /// What it does: "working", "waits for you", "runs 2 background tasks".
+    doing: String,
+}
+
+/// `agents`, as the lists show them. An idle agent in such a list runs background tasks, or may
+/// hold a scheduled job.
+fn busy_rows(state: &AppState, agents: &[AgentId]) -> Vec<BusyAgent> {
+    agents
+        .iter()
+        .filter_map(|agent| state.agents.get(agent))
+        .map(|entry| {
+            let background = usize::from(entry.summary.background_running);
+            let (status, doing) = match accounts::turn_status(&entry.summary) {
+                AgentStatus::NeedsYou => (AgentStatus::NeedsYou, "waits for you".to_owned()),
+                AgentStatus::Idle if background > 0 => (
+                    AgentStatus::Idle,
+                    format!(
+                        "runs {}",
+                        format::count(background, "background task", "background tasks")
+                    ),
+                ),
+                AgentStatus::Idle => (AgentStatus::Idle, "may hold a scheduled job".to_owned()),
+                AgentStatus::Working | AgentStatus::Exited => {
+                    (AgentStatus::Working, "working".to_owned())
+                }
+            };
+            BusyAgent {
+                key: entry.id().get().to_string(),
+                title: entry.summary.title.clone(),
+                status_class: format::status_class(status),
+                doing,
+            }
+        })
+        .collect()
+}
+
+#[component]
+fn BusyAgentList(agents: Vec<BusyAgent>) -> Element {
+    rsx! {
+        ul { class: "busy-agents",
+            for agent in agents {
+                li { key: "{agent.key}", class: "{agent.status_class}",
+                    span { class: "status-dot", aria_hidden: true }
+                    span { class: "busy-title", "{agent.title}" }
+                    span { class: "busy-doing", "{agent.doing}" }
+                }
+            }
+        }
+    }
+}
+
+/// An update that starts once the machine's agents are idle.
+#[component]
+fn WaitingCard(machine: MachineId, name: String, local: bool) -> Element {
+    let cockpit: Cockpit = use_context();
+    let agents = {
+        let state = cockpit.state.read();
+        busy_rows(&state, &update_offer::running_agents(&state, machine))
+    };
+    rsx! {
+        CardHead {
+            local,
+            title: format!("{name} updates once its agents are idle"),
+            lead: "The update starts by itself once none of these agents works, waits for an answer or runs background tasks.".to_owned(),
+        }
+        BusyAgentList { agents }
+        CardActions { details: None,
+            button {
+                class: "button",
+                onclick: move |_| cockpit.update(|state| daemon_update::cancel_wait(state, machine)),
+                "Cancel"
+            }
+            button {
+                class: "button primary",
+                onclick: move |_| cockpit.update_daemon_now(machine),
+                "Update now"
+            }
+        }
+    }
+}
+
+/// Names the machine's busy agents before its update, and what the update does to them. For this
+/// computer's service while the app cannot list its agents, it says so instead.
+#[component]
+pub fn ConfirmUpdateDialog(machine: MachineId) -> Element {
+    let cockpit: Cockpit = use_context();
+    let (name, confirmation, agents) = {
+        let state = cockpit.state.read();
+        let Some(known) = state.machines.get(machine) else {
+            return rsx! {};
+        };
+        let name = MachineName::new(machine, known).name;
+        let Some(confirmation) = daemon_update::confirmation(&state, machine, &name) else {
+            return rsx! {};
+        };
+        let agents = busy_rows(&state, &confirmation.agents);
+        (name, confirmation, agents)
+    };
+    let Confirmation {
+        text,
+        list_note,
+        offers_wait,
+        ..
+    } = confirmation;
+    let close = move |_| cockpit.update(|state| state.ui.close_dialog());
+    let focus = move |event: MountedEvent| async move {
+        // The dialog may have closed already: nothing to focus then.
+        let _ = event.data().set_focus(true).await;
+    };
+    rsx! {
+        div {
+            class: "dialog confirm-update",
+            role: "alertdialog",
+            aria_label: "Update {name}?",
+            onclick: move |event| event.stop_propagation(),
+            div { class: "dialog-head",
+                h2 { "Update {name}?" }
+                button { class: "icon-button small", aria_label: "Close", onclick: close,
+                    Icon { kind: IconKind::Close, size: 14 }
+                }
+            }
+            p { class: "dialog-text", "{text}" }
+            if let Some(note) = list_note {
+                p { class: "dialog-text list-note", "{note}" }
+            }
+            if !agents.is_empty() {
+                BusyAgentList { agents }
+            }
+            div { class: "dialog-actions",
+                button { class: "button", onclick: close, "Cancel" }
+                if offers_wait {
+                    button {
+                        class: "button",
+                        onclick: move |_| cockpit.update_daemon_now(machine),
+                        "Update now"
+                    }
+                    button {
+                        class: "button primary",
+                        onmounted: focus,
+                        onclick: move |_| cockpit.update_daemon_when_idle(machine),
+                        "Update when they are idle"
+                    }
+                } else {
+                    button {
+                        class: "button primary",
+                        onmounted: focus,
+                        onclick: move |_| cockpit.update_daemon_now(machine),
+                        "Update now"
+                    }
+                }
+            }
         }
     }
 }
 
 #[component]
-fn ProgressCard(machine: MachineId, name: String, progress: UpdateProgress) -> Element {
+fn ProgressCard(
+    machine: MachineId,
+    name: String,
+    local: bool,
+    progress: UpdateProgress,
+) -> Element {
     let cockpit: Cockpit = use_context();
+    let app = cockpit.state.read().app_build.clone();
     let UpdateProgress {
         plan,
         step,
+        replaces,
         output,
         cancel_asked,
         ..
@@ -203,22 +574,38 @@ fn ProgressCard(machine: MachineId, name: String, progress: UpdateProgress) -> E
         .map(String::as_str)
         .collect::<Vec<_>>()
         .join("\n");
-    rsx! {
-        h1 { id: TITLE_ID, "Updating {name}" }
-        p { class: "no-daemon-lead",
-            "The daemon keeps running until the new version is built. You can close the app: the update continues on the server."
+    let lead = match plan {
+        UpdatePlan::Server(_) => {
+            "The daemon keeps running until the new version is built. You can close the app: the update continues on the server.".to_owned()
         }
+        UpdatePlan::Service(_) => {
+            format!("The agents resume once {name} runs version {}.", app.version)
+        }
+    };
+    let labels = StepLabels {
+        name: name.clone(),
+        short_commit: match plan {
+            UpdatePlan::Server(plan) => plan.commit.short().to_owned(),
+            UpdatePlan::Service(_) => String::new(),
+        },
+        replaces: replaces.as_ref().map(ToString::to_string),
+        app: app.to_string(),
+    };
+    rsx! {
+        CardHead { local, title: format!("Updating {name}"), lead }
         ol { class: "update-steps",
-            for shown in UpdateStep::ALL {
-                StepRow { key: "{shown:?}", shown, current: *step, short_commit: plan.short_commit().to_owned() }
+            for shown in plan.steps().iter().copied() {
+                StepRow { key: "{shown:?}", shown, current: *step, label: labels.of(shown) }
             }
         }
-        details { class: "no-daemon-details", open: true,
-            summary { "Build output" }
-            ScrolledOutput { text: output }
+        if matches!(plan, UpdatePlan::Server(_)) {
+            details { class: "no-daemon-details", open: true,
+                summary { "Build output" }
+                ScrolledOutput { text: output }
+            }
         }
         if progress.offers_cancel() {
-            div { class: "update-actions",
+            CardActions { details: None,
                 button {
                     class: "button",
                     disabled: *cancel_asked,
@@ -226,6 +613,32 @@ fn ProgressCard(machine: MachineId, name: String, progress: UpdateProgress) -> E
                     if *cancel_asked { "Cancelling when the build ends…" } else { "Cancel the update" }
                 }
             }
+        }
+    }
+}
+
+/// What the steps of an update say.
+struct StepLabels {
+    /// The machine, as the screens name it.
+    name: String,
+    short_commit: String,
+    /// The daemon's build the update replaces, when the app knew it.
+    replaces: Option<String>,
+    app: String,
+}
+
+impl StepLabels {
+    fn of(&self, step: UpdateStep) -> String {
+        match step {
+            UpdateStep::GetVersion => format!("Get version {}", self.short_commit),
+            UpdateStep::Build => format!("Build it on {}", self.name),
+            UpdateStep::Restart => "Restart the daemon".to_owned(),
+            UpdateStep::Stop => match &self.replaces {
+                Some(build) => format!("Stop version {build}"),
+                None => "Stop the daemon".to_owned(),
+            },
+            UpdateStep::Start => format!("Start version {}", self.app),
+            UpdateStep::Reconnect => "Reconnect".to_owned(),
         }
     }
 }
@@ -241,7 +654,7 @@ fn ScrolledOutput(text: String) -> Element {
 }
 
 #[component]
-fn StepRow(shown: UpdateStep, current: UpdateStep, short_commit: String) -> Element {
+fn StepRow(shown: UpdateStep, current: UpdateStep, label: String) -> Element {
     let (class, mark) = match shown.cmp(&current) {
         Ordering::Less => ("done", rsx! { Icon { kind: IconKind::Check, size: 14 } }),
         Ordering::Equal => (
@@ -249,12 +662,6 @@ fn StepRow(shown: UpdateStep, current: UpdateStep, short_commit: String) -> Elem
             rsx! { span { class: "spinner", role: "status", aria_label: "In progress" } },
         ),
         Ordering::Greater => ("", rsx! { Icon { kind: IconKind::Circle, size: 12 } }),
-    };
-    let label = match shown {
-        UpdateStep::GetVersion => format!("Get version {short_commit}"),
-        UpdateStep::Build => "Build it on the server".to_owned(),
-        UpdateStep::Restart => "Restart the daemon".to_owned(),
-        UpdateStep::Reconnect => "Reconnect".to_owned(),
     };
     rsx! {
         li { class,
@@ -264,52 +671,29 @@ fn StepRow(shown: UpdateStep, current: UpdateStep, short_commit: String) -> Elem
     }
 }
 
-/// The title and the lead of a failure's screen.
-fn failure_text(failure: UpdateFailure, name: &str) -> (String, String) {
-    let not_updated = format!("{name} was not updated");
-    match failure {
-        UpdateFailure::Refused => (
-            not_updated,
-            "These agents are busy, and a restart would interrupt them. Let them finish, then update again.".to_owned(),
-        ),
-        UpdateFailure::Failed => (
-            not_updated,
-            format!("The update failed, so {name} still runs its old version."),
-        ),
-        UpdateFailure::Cancelled => (
-            not_updated,
-            format!("The update was cancelled, so {name} still runs its old version."),
-        ),
-        UpdateFailure::InstallFailed => (
-            not_updated,
-            format!("The update failed during the install or the restart, so the daemon on {name} may not have come back. Check the server."),
-        ),
-        UpdateFailure::RolledBack => (
-            not_updated,
-            format!("The new version did not start, so {name} runs its old version again."),
-        ),
-        UpdateFailure::AlreadyRunning => (
-            format!("An update is already running on {name}"),
-            "Try again in a few minutes.".to_owned(),
-        ),
-        UpdateFailure::Unknown => (
-            "The app lost track of the update".to_owned(),
-            format!("The app cannot tell how the update of {name} went. If it started, it goes on on the server: try again in a few minutes."),
-        ),
-    }
-}
-
 #[component]
-fn FailedCard(machine: MachineId, name: String, failed: FailedUpdate) -> Element {
+fn FailedCard(machine: MachineId, name: String, local: bool, failed: FailedUpdate) -> Element {
     let cockpit: Cockpit = use_context();
-    let (title, lead) = failure_text(failed.failure, &name);
-    let stop_hint = (failed.failure == UpdateFailure::Refused)
-        .then(|| failed.first_agent().unwrap_or("<id>").to_owned());
+    let text = daemon_update::failure_text(&failed, &name);
+    let stop_hint = failed.stop_hint().map(str::to_owned);
+    let listed = {
+        let state = cockpit.state.read();
+        busy_rows(
+            &state,
+            &daemon_update::failure_agents(&state, machine, &failed),
+        )
+    };
+    let again = match failed.plan {
+        UpdatePlan::Server(_) => "Update again",
+        UpdatePlan::Service(_) => "Retry",
+    };
     rsx! {
-        h1 { id: TITLE_ID, "{title}" }
-        p { class: "no-daemon-lead", "{lead}" }
+        CardHead { local, title: text.title, lead: text.lead }
         if !failed.message.is_empty() {
             ScrolledOutput { text: failed.message.clone() }
+        }
+        if !listed.is_empty() {
+            BusyAgentList { agents: listed }
         }
         if let Some(agent) = stop_hint {
             p { class: "no-daemon-hint",
@@ -318,57 +702,23 @@ fn FailedCard(machine: MachineId, name: String, failed: FailedUpdate) -> Element
                 " on the server."
             }
         }
-        div { class: "update-actions",
-            button {
-                class: "button primary",
-                onclick: move |_| cockpit.update_daemon(machine),
-                "Update again"
-            }
+        if let Some(hint) = &text.hint {
+            p { class: "no-daemon-hint", "{hint}" }
+        }
+        CardActions { details: None,
             button {
                 class: "button",
                 onclick: move |_| cockpit.update(|state| daemon_update::back(state, machine)),
                 "Back"
             }
+            if failed.offers_update_now() {
+                button {
+                    class: "button",
+                    onclick: move |_| cockpit.update_daemon_now(machine),
+                    "Update now"
+                }
+            }
+            UpdateButton { machine, label: again.to_owned(), disabled: false }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_cancel_the_user_asked_for_reads_as_one() {
-        let lead = |failure| failure_text(failure, "build-box").1;
-
-        assert_eq!(
-            lead(UpdateFailure::Cancelled),
-            "The update was cancelled, so build-box still runs its old version."
-        );
-        assert_eq!(
-            lead(UpdateFailure::Failed),
-            "The update failed, so build-box still runs its old version."
-        );
-    }
-
-    #[test]
-    fn a_rollback_and_another_update_have_their_own_words() {
-        let text = |failure| failure_text(failure, "build-box");
-
-        assert_eq!(
-            text(UpdateFailure::RolledBack),
-            (
-                "build-box was not updated".to_owned(),
-                "The new version did not start, so build-box runs its old version again."
-                    .to_owned()
-            )
-        );
-        assert_eq!(
-            text(UpdateFailure::AlreadyRunning),
-            (
-                "An update is already running on build-box".to_owned(),
-                "Try again in a few minutes.".to_owned()
-            )
-        );
     }
 }

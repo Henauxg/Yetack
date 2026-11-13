@@ -828,10 +828,80 @@ button:disabled {
   justify-content: center;
 }
 
+/* What a machine says under its panel's head, or in the strip: a mark in its tone, the text and
+   its links. It folds open and shut by its height, so the rows under it move with it. */
+.machine-trouble-fold {
+  display: grid;
+  grid-template-rows: 1fr;
+  margin: 0 10px 0 31px;
+}
+
+/* The panel's gap above the line closes with it. */
+.machine-group > .machine-trouble-fold {
+  --fold-gap: 2px;
+}
+
+.machine-trouble-clip {
+  min-height: 0;
+  overflow: hidden;
+}
+
 .machine-trouble {
-  margin: 0 10px 6px 31px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding-bottom: 6px;
   font-size: 11.5px;
   color: var(--dim);
+}
+
+.trouble-mark {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--dim);
+}
+
+.machine-trouble.tone-notice .trouble-mark {
+  background: var(--amber);
+}
+
+.machine-trouble.tone-down .trouble-mark {
+  background: var(--red);
+}
+
+.trouble-machine {
+  color: var(--text-soft);
+  font-weight: 600;
+}
+
+/* Without machine panels, the machines with something to say show at the top of the list, as
+   their panels would. It folds open and shut as its lines do. */
+.machine-strip {
+  display: grid;
+  grid-template-rows: 1fr;
+  margin-bottom: 8px;
+}
+
+.machine-strip-clip {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.machine-strip-box {
+  display: flex;
+  flex-direction: column;
+  padding: 7px 0 1px;
+  border-radius: 10px;
+  border: 1px solid #242424;
+  background: #171717;
+}
+
+.machine-strip-box .machine-trouble-fold {
+  margin: 0 12px;
 }
 
 .foot-buttons {
@@ -839,41 +909,157 @@ button:disabled {
   gap: 6px;
 }
 
-.dialog.machines .machine-rows {
+/* The Machines dialog: a row per machine, its parts in columns that line up from row to row. */
+.dialog.accounts.machines {
+  width: 680px;
+}
+
+.machine-table {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
 }
 
-.machine-row {
-  display: flex;
+.machine-columns,
+.machine-grid-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) 132px 112px 92px 32px;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
+  column-gap: 12px;
+}
+
+.machine-columns {
+  padding: 0 8px 2px 12px;
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+.machine-grid-row {
+  min-height: 54px;
+  padding: 8px 8px 8px 12px;
   border-radius: 10px;
-  border: 1px solid var(--line);
+  background: var(--raised);
 }
 
-.machine-row.down {
-  border-color: rgba(244, 112, 103, 0.35);
+.machine-cell-icon {
+  display: inline-flex;
+  color: var(--muted);
 }
 
-.machine-row-main {
-  flex: 1 1 auto;
+.machine-cell-main {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
-.machine-row-name {
+.machine-cell-name {
+  font-size: 14px;
   font-weight: 600;
 }
 
-.machine-row-detail {
+.machine-cell-detail {
   font-size: 12.5px;
-  color: var(--dim);
+  color: var(--muted);
   overflow-wrap: anywhere;
+}
+
+.machine-cell-note {
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.machine-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dim);
+}
+
+.machine-chip.tone-fine {
+  background: rgba(74, 194, 107, 0.12);
+  color: #8fd3a8;
+}
+
+.machine-chip.tone-fine .chip-dot {
+  background: var(--green);
+}
+
+.machine-chip.tone-notice {
+  background: rgba(245, 165, 36, 0.14);
+  color: #f5c06a;
+}
+
+.machine-chip.tone-notice .chip-dot {
+  background: var(--amber);
+}
+
+.machine-chip.tone-down {
+  background: rgba(244, 112, 103, 0.14);
+  color: #f6a49c;
+}
+
+.machine-chip.tone-down .chip-dot {
+  background: var(--red);
+}
+
+.machine-cell-version {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.machine-cell-version .version-from {
+  color: var(--dim);
+}
+
+.machine-cell-version .version-to {
+  color: var(--text-soft);
+}
+
+.machine-cell-version .icon {
+  flex: none;
+  color: var(--dim);
+}
+
+/* Every row's button has one width, so the columns after it line up. */
+.line-button {
+  width: 92px;
+  justify-content: center;
+}
+
+.add-machine {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+/* `MENU_WIDTH` in ui/machines.rs: the menu opens with its right edge under its button's. */
+.popover.row-menu.server-menu {
+  width: 220px;
 }
 
 .machine-add {
@@ -1127,28 +1313,53 @@ button:disabled {
   bottom: auto;
   min-width: 200px;
   max-width: 280px;
-  gap: 0;
-  padding: 4px;
-  border-radius: 10px;
   transform-origin: top left;
 }
 
-.row-menu .menu-item {
+/* A compact menu: the row menu's spacing, which the composer's model and mode menus share. */
+.popover.compact-menu {
+  gap: 0;
+  padding: 4px;
+  border-radius: 10px;
+}
+
+.compact-menu .menu-item {
   min-height: 28px;
   gap: 16px;
   padding: 0 8px;
   white-space: nowrap;
 }
 
-.row-menu .menu-item:disabled,
-.row-menu .menu-item:disabled:hover,
-.row-menu .menu-item:disabled:active {
+.compact-menu .menu-item:disabled,
+.compact-menu .menu-item:disabled:hover,
+.compact-menu .menu-item:disabled:active {
   background: transparent;
   color: var(--dim);
 }
 
-.row-menu .menu-divider {
+.compact-menu .menu-divider {
   margin: 4px 8px;
+}
+
+.compact-menu.model-menu .menu-title {
+  padding: 6px 8px 2px;
+}
+
+/* A mode, with what it does under it, smaller. */
+.compact-menu .menu-item.two-lines {
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 0;
+  min-height: 0;
+  padding: 4px 8px;
+  white-space: normal;
+}
+
+.menu-sub {
+  font-size: 11.5px;
+  line-height: 1.3;
+  color: var(--dim);
 }
 
 /* A menu that takes the keys has one highlight, which the pointer and the keys move: no hover of
@@ -1464,43 +1675,6 @@ html.reordering * {
   padding: 4px 10px;
   font-size: 12px;
   color: var(--muted);
-}
-
-.connection {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.connection-dot {
-  flex: none;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-}
-
-.connection.connecting .connection-dot {
-  background: var(--amber);
-}
-
-.connection.waiting .connection-dot {
-  background: var(--dim);
-}
-
-.connection.disconnected .connection-dot {
-  background: var(--red);
-}
-
-.connection-error {
-  color: #f6a49c;
-  overflow-wrap: anywhere;
-}
-
-/* Shows only while this computer's daemon does not answer. */
-.connection-trouble {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
 }
 
 /* Center pane. */
@@ -6229,12 +6403,12 @@ html.reordering * {
 
 .model-menu {
   left: 120px;
-  width: 300px;
+  width: 260px;
 }
 
 .mode-menu {
   right: 20px;
-  width: 340px;
+  width: 320px;
 }
 
 .menu-title {
@@ -9124,7 +9298,8 @@ button.map-toggle:hover {
   font-size: 12.5px;
 }
 
-.foot-accounts:hover {
+.foot-accounts:hover,
+.add-machine:hover {
   background: var(--hover);
   color: var(--text);
 }
@@ -9495,6 +9670,7 @@ label.icon-button,
 .question-tab:active,
 .group-switch:active,
 .keep-button:active,
+.add-machine:active,
 .file-list-button:active,
 .file-list-close:active,
 .notification-tag:active,
@@ -9771,11 +9947,39 @@ html.splitting .sidebar {
   animation: popover-out var(--motion-out) var(--ease-in) forwards;
 }
 
-.connection-trouble {
-  animation: rise-in var(--motion-in) var(--ease-out) backwards;
+.machine-trouble-fold,
+.machine-strip {
+  animation: line-fold-in var(--motion-in) var(--ease-out) backwards;
 }
 
-.connection-trouble.leaving {
+.machine-trouble-fold.leaving,
+.machine-strip.leaving {
+  animation: line-fold-out var(--motion-out) var(--ease-in) forwards;
+}
+
+@keyframes line-fold-in {
+  from {
+    grid-template-rows: 0fr;
+    margin-top: calc(-1 * var(--fold-gap, 0px));
+    margin-bottom: 0;
+    opacity: 0;
+  }
+}
+
+@keyframes line-fold-out {
+  to {
+    grid-template-rows: 0fr;
+    margin-top: calc(-1 * var(--fold-gap, 0px));
+    margin-bottom: 0;
+    opacity: 0;
+  }
+}
+
+.machine-add {
+  animation: unfold var(--motion-in) var(--ease-out) backwards;
+}
+
+.machine-add.leaving {
   animation: fade-out var(--motion-out) var(--ease-in) forwards;
 }
 
@@ -10125,11 +10329,231 @@ html.splitting .sidebar {
   overflow-wrap: anywhere;
 }
 
-.update-actions {
+/* An update screen's card: the machine's icon and title, the two versions, a note, the buttons. */
+.no-daemon-card.update-card {
+  width: 560px;
+  gap: 16px;
+  padding: 22px 24px 20px;
+}
+
+.update-card-head {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.update-card-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: var(--raised);
+  color: var(--text-soft);
+}
+
+.update-card-titles {
+  min-width: 0;
+}
+
+.no-daemon-card .update-card-lead {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+
+.version-pair {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 10px;
+}
+
+.version-box {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--raised);
+}
+
+/* The daemon the app cannot reach until it is updated. */
+.version-box.behind-protocol {
+  background: rgba(244, 112, 103, 0.08);
+}
+
+/* The daemon the app still uses, which an update would replace. */
+.version-box.behind {
+  background: rgba(245, 165, 36, 0.08);
+}
+
+.version-who {
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.version-number {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.version-meta {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.version-arrow {
+  display: inline-flex;
+  width: 18px;
+  color: var(--dim);
+}
+
+.update-callout {
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-soft);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.callout-icon {
+  flex: none;
+  display: inline-flex;
+  padding-top: 1px;
+  color: var(--muted);
+}
+
+.update-card-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
   gap: 8px;
-  margin-top: 6px;
+}
+
+.details-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: auto;
+  padding: 4px 2px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: color var(--motion-hover) var(--ease);
+}
+
+.details-link:hover {
+  color: var(--text-soft);
+}
+
+.details-link:active {
+  transform: scale(var(--press-scale));
+}
+
+.details-link:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.details-link .icon {
+  transition: transform var(--motion-out) var(--ease-in);
+}
+
+.details-link.open .icon {
+  transform: rotate(90deg);
+  transition: transform var(--motion-in) var(--ease-out);
+}
+
+/* The details fold open under the buttons, and the card's gap above them closes with them. */
+.update-details-fold {
+  --fold-gap: 16px;
+  display: grid;
+  grid-template-rows: 1fr;
+  animation: line-fold-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.update-details-fold.leaving {
+  animation: line-fold-out var(--motion-out) var(--ease-in) forwards;
+}
+
+.update-details-clip {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.update-details {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--well);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The agents a restart would interrupt, each with its status dot and what it does. */
+.busy-agents {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.busy-agents li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.busy-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-soft);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.busy-doing {
+  flex: none;
+  font-size: 12.5px;
+  color: var(--dim);
+}
+
+.dialog.confirm-update {
+  width: 560px;
+  max-width: calc(100vw - 32px);
+}
+
+.dialog.confirm-update .busy-agents {
+  padding: 0 20px 18px;
+}
+
+.dialog.confirm-update .list-note {
+  padding-top: 0;
+  padding-bottom: 8px;
+}
+
+.dialog.confirm-update .dialog-actions {
+  flex-wrap: wrap;
+  padding: 0 16px 16px;
 }
 
 .machine-trouble .link-button:not(:last-child) {

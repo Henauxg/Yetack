@@ -169,33 +169,33 @@ async fn answers(_socket: &Path) -> bool {
     false
 }
 
-/// The service serves the state folder of `socket`, or the default one. It listens in that folder
-/// on a socket of its own name, so a `socket` named otherwise is refused.
+/// The state folder of the service that listens on `socket`, or on the default socket. A service
+/// listens in its folder on a socket of its own name, so a `socket` named otherwise has none.
+pub fn service_state_dir(socket: Option<&Path>, places: &Places) -> Option<PathBuf> {
+    let Some(socket) = socket else {
+        return Some(places.daemon_state.clone());
+    };
+    let folder = socket.parent()?;
+    (socket.is_absolute() && cockpit_daemon::socket_path(folder) == socket)
+        .then(|| folder.to_owned())
+}
+
+/// The service serves the state folder of `socket`, or the default one.
 #[cfg(unix)]
 async fn start_service(
     socket: Option<&Path>,
     places: &Places,
     label: DaemonLabel,
 ) -> Result<Reached, Unreached> {
-    let state_dir = match socket {
-        None => places.daemon_state.clone(),
-        Some(socket) => match socket.parent() {
-            Some(folder)
-                if socket.is_absolute() && cockpit_daemon::socket_path(folder) == socket =>
-            {
-                folder.to_owned()
-            }
-            Some(_) | None => {
-                return Err(Unreached {
-                    label,
-                    error: format!(
-                        "the app starts the service only for a socket such as {}, in the service's state folder: the config names {}",
-                        places.socket(None).display(),
-                        socket.display()
-                    ),
-                });
-            }
-        },
+    let Some(state_dir) = service_state_dir(socket, places) else {
+        let named = socket.map_or_else(String::new, |socket| socket.display().to_string());
+        return Err(Unreached {
+            label,
+            error: format!(
+                "the app starts the service only for a socket such as {}, in the service's state folder: the config names {named}",
+                places.socket(None).display(),
+            ),
+        });
     };
     match crate::service::ensure(&state_dir, &places.app_state).await {
         Ok(socket) => Ok(Reached {
@@ -218,7 +218,7 @@ async fn start_service(
 ) -> Result<Reached, Unreached> {
     Err(Unreached {
         label,
-        error: "the background service runs on Unix only".to_owned(),
+        error: crate::service_update::UNIX_ONLY.to_owned(),
     })
 }
 
@@ -293,6 +293,27 @@ mod tests {
             places.socket(None),
             state.join("agents-cockpit").join("agents-cockpit.sock")
         );
+    }
+
+    #[test]
+    fn a_service_serves_the_folder_its_socket_is_named_after() {
+        let temp = tempfile::tempdir().unwrap();
+        let places = places(temp.path());
+        let other = temp.path().join("other-state");
+        let in_its_folder = cockpit_daemon::socket_path(&other);
+        let named_otherwise = other.join("cockpit.sock");
+        let relative = Path::new("other-state").join("agents-cockpit.sock");
+
+        assert_eq!(
+            service_state_dir(None, &places),
+            Some(places.daemon_state.clone())
+        );
+        assert_eq!(
+            service_state_dir(Some(&in_its_folder), &places),
+            Some(other)
+        );
+        assert_eq!(service_state_dir(Some(&named_otherwise), &places), None);
+        assert_eq!(service_state_dir(Some(&relative), &places), None);
     }
 
     #[tokio::test]

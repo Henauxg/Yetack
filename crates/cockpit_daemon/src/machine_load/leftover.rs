@@ -66,6 +66,33 @@ fn same_boot(recorded: Option<&BootId>, current: Option<&BootId>) -> bool {
     }
 }
 
+/// Whether `recorded` still runs: a process of this boot with its id and start time.
+#[cfg(unix)]
+pub(crate) fn still_runs(recorded: &RecordedProcess) -> bool {
+    same_boot(recorded.boot.as_ref(), boot().as_ref())
+        && started(recorded.pid) == Some(recorded.started)
+}
+
+/// How long a process of this boot that started at `started` has run: the time since the boot
+/// (`/proc/uptime`) less its start. Both count from the boot, so a change of the clock leaves it
+/// as it is.
+#[cfg(unix)]
+pub(crate) fn running_for(started: u64) -> Option<Duration> {
+    use crate::machine_load::proc_files::{self, UPTIME_PATH};
+
+    let ticks_per_second = rustix::param::clock_ticks_per_second();
+    let text = std::fs::read_to_string(UPTIME_PATH).ok()?;
+    let uptime = proc_files::parse_uptime_ticks(&text, ticks_per_second)?;
+    ticks_duration(uptime.checked_sub(started)?, ticks_per_second)
+}
+
+#[cfg(any(unix, test))]
+fn ticks_duration(ticks: u64, ticks_per_second: u64) -> Option<Duration> {
+    let whole = Duration::from_secs(ticks.checked_div(ticks_per_second)?);
+    let rest = (ticks % ticks_per_second).checked_mul(1_000_000_000)? / ticks_per_second;
+    whole.checked_add(Duration::from_nanos(rest))
+}
+
 /// When `pid` started, unless it has ended.
 #[cfg(unix)]
 fn started(pid: ProcessId) -> Option<u64> {
@@ -322,6 +349,25 @@ mod tests {
             started: started?,
             parent: Some(parent),
         })
+    }
+
+    #[test]
+    fn clock_ticks_turn_into_a_duration() {
+        assert_eq!(ticks_duration(250, 100), Some(Duration::from_millis(2_500)));
+        assert_eq!(ticks_duration(7, 0), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn this_process_has_run_since_its_start() {
+        let started = record_process(ProcessId::new(std::process::id()))
+            .unwrap()
+            .started;
+
+        let ran = running_for(started).unwrap();
+
+        assert!(ran < Duration::from_secs(3_600), "{ran:?}");
+        assert_eq!(running_for(u64::MAX), None, "a start after now");
     }
 
     #[test]

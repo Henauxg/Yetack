@@ -23,6 +23,7 @@ mod reach;
 mod render;
 #[cfg(unix)]
 mod service;
+mod service_update;
 mod state;
 mod ui;
 mod update_script;
@@ -87,6 +88,9 @@ fn main() -> anyhow::Result<ExitCode> {
     }
     if let Some(scene) = demo::showcase_scene(&arguments) {
         demo::showcase(&mut state, scene);
+    }
+    if let Some(scene) = demo::machines_scene(&arguments) {
+        demo::show_machines(&mut state, scene);
     }
     let machines: Vec<(MachineId, MachineConfig)> =
         (1..).map(MachineId::new).zip(config.machines).collect();

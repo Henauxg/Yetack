@@ -6,21 +6,23 @@ use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_protocol::{
     Account, AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, AnswerState,
-    BackgroundTask, BackgroundTaskStatus, FileEdit, Image, ItemBody, ItemId, PastSession,
-    PlanUsage, ReleaseVersion, Settings, SlashCommand, Timestamp, ToolCallStatus, TranscriptItem,
-    WaitingPrompt, list_order,
+    BackgroundTask, BackgroundTaskStatus, BuildCommit, FileEdit, Image, ItemBody, ItemId,
+    PastSession, PlanUsage, ReleaseVersion, Settings, SlashCommand, Timestamp, ToolCallStatus,
+    TranscriptItem, WaitingPrompt, list_order,
 };
 use strum::VariantArray;
 
 use super::accounts::SignIns;
 use super::chat_images::KeptImage;
-use super::daemon_update::{DaemonUpdate, VersionGap};
+use super::daemon_update::DaemonUpdate;
 use super::file_tree::FileTree;
 use super::grouping::GroupKey;
 use super::no_daemon::NoDaemon;
 use super::sending::Sending;
 use super::transcript::Transcript;
 use super::ui_state::UiState;
+use super::update_offer::{ProgramBuild, VersionGap};
+use super::update_plan::UpdatePlan;
 use super::{file_edits, grouping, projects};
 use crate::config::MachineConfig;
 use crate::daemon_label::DaemonLabel;
@@ -342,6 +344,9 @@ pub struct MachineState {
     pub connection: ConnectionState,
     /// The release the daemon said it runs, at its last connection.
     pub daemon_version: Option<ReleaseVersion>,
+    /// The commit the daemon said its program was built from, at its last connection. `None`
+    /// when that build did not know it.
+    pub daemon_commit: Option<BuildCommit>,
     /// The default account's plan usage.
     pub plan_usage: PlanUsage,
     pub settings: Settings,
@@ -357,10 +362,25 @@ pub struct MachineState {
     /// The daemon is older than `folders.list`: the folder field lists nothing until the app
     /// connects again.
     pub folders_unknown: bool,
-    /// The daemon refused the last attempt to connect for its protocol.
+    /// How the daemon stands against this app, when it does not run this app's build: from the
+    /// protocol of a refusal, or from the build a connection told.
     pub version_gap: Option<VersionGap>,
-    /// The update of this machine's daemon, under way or failed.
+    /// How an update of this machine's daemon runs, `None` when the app cannot update it. The
+    /// connection task sets it from the daemon it reaches.
+    pub update_plan: Option<UpdatePlan>,
+    /// The update of this machine's daemon: waiting for idle agents, under way, or failed.
     pub update: Option<DaemonUpdate>,
+    /// The resting agents that may hold a scheduled job, which a restart loses, as the app last
+    /// read their raw logs. Only an update of this computer's background service reads them: a
+    /// server's script checks its own.
+    pub job_holders: Vec<AgentId>,
+    /// The app reads the raw logs of this computer's resting agents before it restarts its
+    /// service: the update's buttons and the machine's line show it as under way.
+    pub checking_jobs: bool,
+    /// How many times the app connected to the daemon in this run. An update of this computer's
+    /// service compares it with its count at the stop, to tell a connection to the daemon that
+    /// started since from one to the stopped daemon.
+    pub connections: u32,
     /// The server's entry in the config, which the Machines dialog edits. `None` for this
     /// computer.
     pub server: Option<MachineConfig>,
@@ -372,6 +392,7 @@ impl MachineState {
             daemon,
             connection: ConnectionState::Connecting { attempt: 1 },
             daemon_version: None,
+            daemon_commit: None,
             plan_usage: PlanUsage::default(),
             settings: Settings::default(),
             accounts: Vec::new(),
@@ -380,7 +401,11 @@ impl MachineState {
             sessions: Loadable::NotRequested,
             folders_unknown: false,
             version_gap: None,
+            update_plan: None,
             update: None,
+            job_holders: Vec::new(),
+            checking_jobs: false,
+            connections: 0,
             server: None,
         }
     }
@@ -413,6 +438,12 @@ impl Machines {
             self.others.get_mut(&machine)
         }
     }
+
+    /// Every machine, this computer first, then the others in the config's order.
+    pub fn all(&self) -> impl Iterator<Item = (MachineId, &MachineState)> {
+        let others = self.others.iter().map(|(machine, known)| (*machine, known));
+        std::iter::once((MachineId::THIS, &self.this)).chain(others)
+    }
 }
 
 /// A header in the sidebar, a machine's or a project's, and the rows under it.
@@ -432,6 +463,8 @@ pub struct AppState {
     /// The app's notification level from the config file, until the window saves one. Never
     /// saved.
     pub config_notifications: NotificationLevel,
+    /// This app's release and commit, which the daemons' builds compare with.
+    pub app_build: ProgramBuild,
 }
 
 /// Agents that wait for you come first, then working, idle and exited ones.
@@ -455,6 +488,7 @@ impl AppState {
             ui: UiState::default(),
             prefs: Prefs::default(),
             config_notifications: NotificationLevel::All,
+            app_build: ProgramBuild::this_program(),
         }
     }
 
@@ -478,27 +512,24 @@ impl AppState {
     }
 
     /// The headers the sidebar shows, with the rows under each. Grouped by machine: this computer
-    /// first, then the others in the config's order, and none while the app reaches this computer
-    /// alone. Grouped by project: the projects that have agents. Not grouped: none.
+    /// first, then the others in the config's order, this computer alone included. Grouped by
+    /// project: the projects that have agents. Not grouped: none.
     pub fn sidebar_groups(&self) -> Vec<SidebarGroup<'_>> {
         let shown = self.sidebar_agents();
         match self.prefs.sidebar.group_by {
             GroupBy::None => Vec::new(),
-            GroupBy::Machine if self.machines.others.is_empty() => Vec::new(),
-            GroupBy::Machine => {
-                let machines =
-                    std::iter::once(MachineId::THIS).chain(self.machines.others.keys().copied());
-                machines
-                    .map(|machine| SidebarGroup {
-                        key: GroupKey::Machine(machine),
-                        rows: shown
-                            .iter()
-                            .copied()
-                            .filter(|entry| MachineId::of(entry.id()) == machine)
-                            .collect(),
-                    })
-                    .collect()
-            }
+            GroupBy::Machine => self
+                .machines
+                .all()
+                .map(|(machine, _)| SidebarGroup {
+                    key: GroupKey::Machine(machine),
+                    rows: shown
+                        .iter()
+                        .copied()
+                        .filter(|entry| MachineId::of(entry.id()) == machine)
+                        .collect(),
+                })
+                .collect(),
             GroupBy::Project => projects::shown_projects(self)
                 .into_iter()
                 .map(|project| SidebarGroup {
@@ -721,8 +752,14 @@ pub(crate) mod tests {
         }
     }
 
+    /// The app with `summaries`, built as the daemon of `connected_update`, so that a connection
+    /// finds nothing to update.
     pub(crate) fn state_with(summaries: Vec<AgentSummary>) -> AppState {
         let mut state = AppState::new(DaemonLabel::ssh("build-box".to_owned()));
+        state.app_build = ProgramBuild {
+            version: ReleaseVersion::new(DAEMON_VERSION.to_owned()),
+            commit: Some(BuildCommit::new(DAEMON_COMMIT.to_owned())),
+        };
         for summary in summaries {
             state.agents.insert(summary.id, AgentEntry::new(summary));
         }
@@ -731,11 +768,15 @@ pub(crate) mod tests {
 
     /// The release of the daemon in `connected_update`.
     pub(crate) const DAEMON_VERSION: &str = "0.4.2";
+    /// The commit of the daemon in `connected_update`.
+    pub(crate) const DAEMON_COMMIT: &str = "3f9c2e1a7b4d5c6e8f9a0b1c2d3e4f5a6b7c8d9e";
 
-    /// A daemon of release `DAEMON_VERSION` accepted the connection with `catchup`.
+    /// A daemon of release `DAEMON_VERSION`, built from `DAEMON_COMMIT`, accepted the connection
+    /// with `catchup`.
     pub(crate) fn connected_update(catchup: Catchup) -> SessionUpdate {
         SessionUpdate::Connected(Welcome {
             daemon_version: ReleaseVersion::new(DAEMON_VERSION.to_owned()),
+            daemon_commit: Some(BuildCommit::new(DAEMON_COMMIT.to_owned())),
             catchup,
         })
     }

@@ -9,14 +9,14 @@ use cockpit_client::RequestError;
 use cockpit_protocol::{
     Account, AccountId, AccountState, AgentDetails, AgentHistory, AgentId, AgentLoad, AgentStatus,
     AgentSummary, Answer, AnswerState, Approval, AskedQuestion, BackgroundTask, BackgroundTaskId,
-    BackgroundTaskKind, BackgroundTaskStatus, ChangedFile, ClaudeRoute, ClaudeSessionId,
-    CommandKind, CommandLoad, Completeness, ContextCategory, ContextUsage, Cores, CostUsd,
-    CredentialSource, DirEntry, DirListing, Effort, EffortSource, EntryKind, EntryLink,
+    BackgroundTaskKind, BackgroundTaskStatus, BuildCommit, ChangedFile, ClaudeRoute,
+    ClaudeSessionId, CommandKind, CommandLoad, Completeness, ContextCategory, ContextUsage, Cores,
+    CostUsd, CredentialSource, DirEntry, DirListing, Effort, EffortSource, EntryKind, EntryLink,
     EnvironmentCredentials, ErrorBody, ErrorCode, FileEdit, GitIgnore, HistoryPage, Image,
     ImageMediaType, ItemBody, ItemId, LoadAverage, LoadHistory, MachineLoad, Mark, McpScope,
-    McpServer, McpServerStatus, McpTool, McpTransport, NoticeKind, OlderItems, PastSession,
-    PendingId, PermissionMode, Plan, PlanUsage, Position, ProcessId, Prompt, PromptId, Question,
-    QuestionAnswer, QuestionOption, RateLimitStatus, ReleaseVersion, Repository, Request,
+    McpServer, McpServerStatus, McpTool, McpTransport, NoticeKind, OlderItems, PROTOCOL_VERSION,
+    PastSession, PendingId, PermissionMode, Plan, PlanUsage, Position, ProcessId, Prompt, PromptId,
+    Question, QuestionAnswer, QuestionOption, RateLimitStatus, ReleaseVersion, Repository, Request,
     ResourceUse, ResponseBody, Selection, ServerLoad, ServerPoint, SignIn, SignInWait,
     SlashCommand, Subagent, SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem,
     TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem,
@@ -31,16 +31,18 @@ use crate::machine::MachineId;
 use crate::path_style::PathStyle;
 use crate::prefs::{CommentPlacement, GroupBy, ProjectRule};
 use crate::state::daemon_update::{
-    self, OutputLine, OutputStream, ProtocolGap, UpdateFailure, UpdatePlan, VersionGap,
+    self, HandStop, OutputLine, OutputStream, RestartFailure, StopFailure, UpdateFailure,
 };
 use crate::state::file_tree::TreeFilter;
 use crate::state::no_daemon::{self, Absence};
 use crate::state::projects::ProjectKey;
+use crate::state::update_offer::{self, GapKind, ProgramBuild, VersionGap};
+use crate::state::update_plan::{ServerPlan, ServicePlan, UpdatePlan, UpdateStep};
 use crate::state::{
     AgentEntry, AppState, ConnectionState, Dialog, Drafts, Loadable, MachineState, Utf16Offset,
     ViewMode, actions, file_edits, file_tree, projects, quotes, sending,
 };
-use crate::update_script::APP_VERSION;
+use crate::update_script::{self, APP_VERSION};
 
 /// The command-line flag that starts the demo.
 pub const DEMO_FLAG: &str = "--demo";
@@ -96,7 +98,16 @@ const FUZZ_TASK: &str = "Write fuzz inputs with unicode";
 const UPDATE_MACHINE: &str = "build-box";
 /// A made-up commit.
 const UPDATE_COMMIT: &str = "3f9c2e17ab54c90d1e2f3a4b5c6d7e8f90a1b2c3";
-const REFUSED_FOR_OLDER: &str = "the daemon speaks protocol 1, the client 4";
+/// The made-up commit of the older daemons on the update screens.
+const OLDER_COMMIT: &str = "f00ba12c3d4e5f60718293a4b5c6d7e8f9012345";
+/// The protocol of the older daemons on the update screens.
+const OLDER_PROTOCOL: u16 = 8;
+const REFUSED_FOR_OLDER: &str = "the daemon speaks protocol 8, the client 9";
+/// The release of this computer's service on the update screens: older than any of the app's.
+const LOCAL_OLDER_RELEASE: &str = "0.0.1";
+/// This computer's state folder and the app's, made up.
+const LOCAL_STATE: &str = "/home/dev/.local/state/agents-cockpit";
+const LOCAL_APP_STATE: &str = "/home/dev/.local/state/agents-cockpit-desktop";
 
 /// How long the demo's update waits before each line of its output.
 pub const UPDATE_LINE_PAUSE: Duration = Duration::from_millis(700);
@@ -662,73 +673,189 @@ const SIDEBAR_ORDER: [u32; 9] = [
 /// The room between two agents' positions, as the daemon leaves it.
 const POSITION_STEP: u32 = 1024;
 
-/// The screen named by `--demo-update`, which only the demo opens.
-pub fn update_screen(arguments: &[String]) -> Option<&str> {
+/// The screens of a daemon's update that `--demo-update` names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr, VariantArray)]
+#[strum(serialize_all = "kebab-case")]
+pub enum UpdateScreen {
+    Older,
+    NoCommit,
+    Newer,
+    Running,
+    Refused,
+    Failed,
+    Cancelled,
+    InstallFailed,
+    RolledBack,
+    AlreadyRunning,
+    Lost,
+    Sidebar,
+    Dialog,
+    LocalAvailable,
+    LocalConfirm,
+    LocalWaiting,
+    LocalRunning,
+    LocalNotStopped,
+    LocalUnrecorded,
+    LocalUnverified,
+    LocalNotStarted,
+    LocalOtherBuild,
+    /// The confirmation, where an idle agent may hold a scheduled job.
+    LocalConfirmJobs,
+    /// The restart refused: an idle agent may hold a scheduled job.
+    LocalHoldsJobs,
+    /// The confirmation for a background service that refuses the app.
+    LocalConfirmUnseen,
+}
+
+/// The screen named by `--demo-update`, which only the demo opens. A name the demo does not know
+/// opens nothing.
+pub fn update_screen(arguments: &[String]) -> Option<UpdateScreen> {
     if !is_requested(arguments) {
         return None;
     }
     let flag = arguments
         .iter()
         .position(|argument| argument == UPDATE_SCREEN_FLAG)?;
-    arguments.get(flag + 1).map(String::as_str)
+    arguments.get(flag + 1)?.parse().ok()
 }
 
-/// The update of a daemon, in the state of one of the screens: the rest of the demo stays. A name
-/// the demo does not know opens nothing.
-pub fn show_update_screen(state: &mut AppState, screen: &str) {
+/// The update of a daemon, in the state of one of the screens: the rest of the demo stays.
+pub fn show_update_screen(state: &mut AppState, screen: UpdateScreen) {
     match screen {
-        "older" => this_computer_refused(state, older_gap(Some(update_plan()))),
-        "no-commit" => this_computer_refused(state, older_gap(None)),
-        "newer" => this_computer_refused(state, newer_gap()),
-        "running" => {
-            this_computer_refused(state, older_gap(Some(update_plan())));
+        UpdateScreen::Older => this_computer_refused(state, older_gap(), Some(update_plan())),
+        UpdateScreen::NoCommit => this_computer_refused(state, older_gap(), None),
+        UpdateScreen::Newer => this_computer_refused(state, newer_gap(), None),
+        UpdateScreen::Running => {
+            this_computer_refused(state, older_gap(), Some(update_plan()));
             start_demo_update(state, MachineId::THIS);
         }
-        "refused" => failed_update(state, UpdateFailure::Refused, Some(3)),
-        "failed" => failed_update(state, UpdateFailure::Failed, Some(1)),
-        "cancelled" => failed_update(state, UpdateFailure::Cancelled, Some(1)),
-        "install-failed" => failed_update(state, UpdateFailure::InstallFailed, Some(4)),
-        "rolled-back" => failed_update(state, UpdateFailure::RolledBack, Some(5)),
-        "already-running" => failed_update(state, UpdateFailure::AlreadyRunning, Some(6)),
-        "lost" => failed_update(state, UpdateFailure::Unknown, Some(255)),
-        "sidebar" => {
+        UpdateScreen::Refused => failed_update(state, UpdateFailure::Refused, Some(3)),
+        UpdateScreen::Failed => failed_update(state, UpdateFailure::Failed, Some(1)),
+        UpdateScreen::Cancelled => failed_update(state, UpdateFailure::Cancelled, Some(1)),
+        UpdateScreen::InstallFailed => failed_update(state, UpdateFailure::InstallFailed, Some(4)),
+        UpdateScreen::RolledBack => failed_update(state, UpdateFailure::RolledBack, Some(5)),
+        UpdateScreen::AlreadyRunning => failed_update(state, UpdateFailure::AlreadyRunning, Some(6)),
+        UpdateScreen::Lost => failed_update(state, UpdateFailure::Unknown, Some(255)),
+        UpdateScreen::Sidebar => {
             server_refused(state);
         }
-        "dialog" => {
+        UpdateScreen::Dialog => {
             let machine = server_refused(state);
             state.ui.dialog = Some(Dialog::DaemonUpdate(machine));
         }
-        _ => {}
+        UpdateScreen::LocalAvailable => {
+            local_service_of_another_build(state);
+            state.ui.dialog = Some(Dialog::DaemonUpdate(MachineId::THIS));
+        }
+        UpdateScreen::LocalConfirm => {
+            local_service_of_another_build(state);
+            daemon_update::start(state, MachineId::THIS);
+        }
+        UpdateScreen::LocalWaiting => {
+            local_service_of_another_build(state);
+            daemon_update::start(state, MachineId::THIS);
+            daemon_update::wait_for_idle(state, MachineId::THIS);
+        }
+        UpdateScreen::LocalRunning => {
+            local_service_of_another_build(state);
+            state.ui.dialog = Some(Dialog::DaemonUpdate(MachineId::THIS));
+            daemon_update::start_now(state, MachineId::THIS);
+            daemon_update::step_started(state, MachineId::THIS, UpdateStep::Start);
+        }
+        UpdateScreen::LocalNotStopped => failed_restart(
+            state,
+            RestartFailure::NotStopped(StopFailure {
+                reason: "the daemon, process 4242, did not stop within 10 seconds".to_owned(),
+                by_hand: Some(HandStop::Process(ProcessId::new(4242))),
+            }),
+        ),
+        UpdateScreen::LocalUnrecorded => failed_restart(
+            state,
+            RestartFailure::NotStopped(StopFailure {
+                reason: format!("{LOCAL_STATE}/serve.lock names no process"),
+                by_hand: Some(HandStop::Unrecorded),
+            }),
+        ),
+        UpdateScreen::LocalUnverified => failed_restart(
+            state,
+            RestartFailure::NotStopped(StopFailure {
+                reason: "cannot tell that process 4242 is the daemon".to_owned(),
+                by_hand: Some(HandStop::Unverified),
+            }),
+        ),
+        UpdateScreen::LocalNotStarted => failed_restart(
+            state,
+            RestartFailure::NotStarted {
+                error: "the service stopped as it started (exit status: 1): agents-cockpit: cannot bind the socket".to_owned(),
+                log: Some("INFO reading the state folder\nagents-cockpit: cannot bind the socket".to_owned()),
+            },
+        ),
+        UpdateScreen::LocalOtherBuild => {
+            local_service_of_another_build(state);
+            state.ui.dialog = Some(Dialog::DaemonUpdate(MachineId::THIS));
+            daemon_update::start_now(state, MachineId::THIS);
+            daemon_update::restart_ended(state, MachineId::THIS, Ok(()));
+            daemon_update::connected(state, MachineId::THIS);
+        }
+        UpdateScreen::LocalConfirmJobs => {
+            local_service_of_another_build(state);
+            let holders = first_resting_agent(state);
+            daemon_update::jobs_checked(state, MachineId::THIS, holders);
+        }
+        UpdateScreen::LocalHoldsJobs => {
+            let holders = first_resting_agent(state);
+            failed_restart(state, RestartFailure::HoldsJobs(holders));
+        }
+        UpdateScreen::LocalConfirmUnseen => {
+            local_service_refused(state);
+            daemon_update::start(state, MachineId::THIS);
+        }
     }
+}
+
+/// The first of this computer's agents that rests, as the one that may hold a scheduled job.
+fn first_resting_agent(state: &AppState) -> Vec<AgentId> {
+    update_offer::resting_agents(state, MachineId::THIS)
+        .into_iter()
+        .take(1)
+        .collect()
 }
 
 fn update_plan() -> UpdatePlan {
-    UpdatePlan {
+    UpdatePlan::Server(ServerPlan {
         host: UPDATE_MACHINE.to_owned(),
         remote_command: "/opt/agents-cockpit/bin/agents-cockpit".to_owned(),
         source_dir: None,
-        commit: UPDATE_COMMIT.to_owned(),
-    }
+        commit: BuildCommit::new(UPDATE_COMMIT.to_owned()),
+    })
 }
 
-fn older_gap(plan: Option<UpdatePlan>) -> VersionGap {
+fn older_gap() -> VersionGap {
     VersionGap {
-        kind: ProtocolGap::Older,
+        kind: GapKind::OlderProtocol,
         details: REFUSED_FOR_OLDER.to_owned(),
-        plan,
+        daemon: Some(ProgramBuild {
+            version: ReleaseVersion::new(LOCAL_OLDER_RELEASE.to_owned()),
+            commit: Some(BuildCommit::new(OLDER_COMMIT.to_owned())),
+        }),
+        protocol: OLDER_PROTOCOL,
     }
 }
 
 fn newer_gap() -> VersionGap {
     VersionGap {
-        kind: ProtocolGap::Newer,
-        details: "the daemon speaks protocol 5, the client 4".to_owned(),
-        plan: None,
+        kind: GapKind::NewerProtocol,
+        details: format!(
+            "the daemon speaks protocol {}, the client {PROTOCOL_VERSION}",
+            PROTOCOL_VERSION + 1
+        ),
+        daemon: None,
+        protocol: PROTOCOL_VERSION + 1,
     }
 }
 
 /// This computer's daemon, over SSH, refuses the app: the window shows the update screens alone.
-fn this_computer_refused(state: &mut AppState, gap: VersionGap) {
+fn this_computer_refused(state: &mut AppState, gap: VersionGap, plan: Option<UpdatePlan>) {
     let label = DaemonLabel::ssh(UPDATE_MACHINE.to_owned());
     no_daemon::show(
         state,
@@ -739,6 +866,7 @@ fn this_computer_refused(state: &mut AppState, gap: VersionGap) {
     );
     state.machines.this.daemon = label;
     state.machines.this.version_gap = Some(gap);
+    state.machines.this.update_plan = plan;
 }
 
 /// A server beside this computer that refuses the app, the demo's agents staying in use.
@@ -750,9 +878,54 @@ fn server_refused(state: &mut AppState) -> MachineId {
         error: format!("the daemon refused the connection: {REFUSED_FOR_OLDER}"),
         retry_at: Instant::now() + Duration::from_secs(10),
     };
-    server.version_gap = Some(older_gap(Some(update_plan())));
+    server.version_gap = Some(older_gap());
+    server.update_plan = Some(update_plan());
     state.machines.others.insert(machine, server);
     machine
+}
+
+/// This computer's agents run in its background service, which runs another build than the app:
+/// the demo's agents stay in use, and some of them are busy.
+fn local_service_of_another_build(state: &mut AppState) {
+    let this = &mut state.machines.this;
+    this.daemon = DaemonLabel::service();
+    this.daemon_version = Some(ReleaseVersion::new(LOCAL_OLDER_RELEASE.to_owned()));
+    this.daemon_commit = Some(BuildCommit::new(OLDER_COMMIT.to_owned()));
+    this.update_plan = Some(UpdatePlan::Service(ServicePlan {
+        state_dir: PathBuf::from(LOCAL_STATE),
+        log_folder: PathBuf::from(LOCAL_APP_STATE),
+    }));
+    daemon_update::connected(state, MachineId::THIS);
+}
+
+/// This computer's background service runs a daemon of an older protocol, which refuses the app.
+fn local_service_refused(state: &mut AppState) {
+    let label = DaemonLabel::service();
+    no_daemon::show(
+        state,
+        &label,
+        format!("the daemon refused the connection: {REFUSED_FOR_OLDER}"),
+        Absence::Failed,
+        None,
+    );
+    let this = &mut state.machines.this;
+    this.daemon = label;
+    this.version_gap = Some(older_gap());
+    this.update_plan = Some(UpdatePlan::Service(ServicePlan {
+        state_dir: PathBuf::from(LOCAL_STATE),
+        log_folder: PathBuf::from(LOCAL_APP_STATE),
+    }));
+}
+
+/// The restart of this computer's service ended on `failure`.
+fn failed_restart(state: &mut AppState, failure: RestartFailure) {
+    local_service_of_another_build(state);
+    state.ui.dialog = Some(Dialog::DaemonUpdate(MachineId::THIS));
+    daemon_update::start_now(state, MachineId::THIS);
+    if matches!(failure, RestartFailure::NotStarted { .. }) {
+        daemon_update::step_started(state, MachineId::THIS, UpdateStep::Start);
+    }
+    daemon_update::restart_ended(state, MachineId::THIS, Err(failure));
 }
 
 /// Starts the update and takes it partway through the build.
@@ -773,7 +946,7 @@ fn start_demo_update(state: &mut AppState, machine: MachineId) {
 
 /// The update ended on `code`, with what the script said on such a failure.
 fn failed_update(state: &mut AppState, failure: UpdateFailure, code: Option<i32>) {
-    this_computer_refused(state, older_gap(Some(update_plan())));
+    this_computer_refused(state, older_gap(), Some(update_plan()));
     let machine = MachineId::THIS;
     if daemon_update::start(state, machine).is_none() {
         return;
@@ -806,17 +979,144 @@ fn failed_update(state: &mut AppState, failure: UpdateFailure, code: Option<i32>
         )],
         UpdateFailure::AlreadyRunning => vec![stderr("update-daemon: another update is running")],
         UpdateFailure::Unknown => vec![stderr("Connection to build-box closed by remote host.")],
+        // The restart of this computer's service ends otherwise: `failed_restart`.
+        UpdateFailure::NotStopped { .. }
+        | UpdateFailure::NotStarted
+        | UpdateFailure::OtherBuildAnswers
+        | UpdateFailure::HoldsJobs => Vec::new(),
     };
     daemon_update::output(state, machine, lines);
     daemon_update::finished(state, machine, code);
 }
 
-/// Ends the demo's update as its first connection does.
+/// Ends the demo's update as its first connection does: the new daemon runs the app's build.
 pub fn finish_update(state: &mut AppState, machine: MachineId) {
+    let app = state.app_build.clone();
     if let Some(known) = state.machines.get_mut(machine) {
         known.connection = ConnectionState::Connected;
+        known.daemon_version = Some(app.version);
+        known.daemon_commit = app.commit;
     }
     daemon_update::connected(state, machine);
+}
+
+/// With the demo, puts its machines in one of the states the sidebar and the Machines dialog
+/// show: `--demo-machines trouble`.
+const MACHINES_FLAG: &str = "--demo-machines";
+
+/// The states of the demo's machines that `--demo-machines` names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr, VariantArray)]
+#[strum(serialize_all = "kebab-case")]
+pub enum MachinesScene {
+    /// Local alone, without the server.
+    Alone,
+    /// Two more servers: one that does not answer, one that runs an older version.
+    Trouble,
+    /// Local's daemon stopped answering, and the app tries again.
+    LocalDown,
+    /// Local's daemon has not answered three attempts yet.
+    LocalConnecting,
+    /// Local has no daemon yet, beside the server.
+    LocalNoDaemon,
+}
+
+/// The server that does not answer, in `MachinesScene::Trouble`.
+const DOWN_SERVER: MachineId = MachineId::new(4);
+const DOWN_HOST: &str = "gpu-box";
+/// The server of an older version, in `MachinesScene::Trouble`.
+const OLDER_SERVER: MachineId = MachineId::new(5);
+const OLDER_HOST: &str = "lab";
+/// How long the demo's machines that do not answer wait before the app tries them again.
+const DEMO_RETRY: Duration = Duration::from_secs(40);
+
+/// The state `--demo-machines` names, which only the demo takes.
+pub fn machines_scene(arguments: &[String]) -> Option<MachinesScene> {
+    if !is_requested(arguments) {
+        return None;
+    }
+    let flag = arguments
+        .iter()
+        .position(|argument| argument == MACHINES_FLAG)?;
+    arguments.get(flag + 1)?.parse().ok()
+}
+
+pub fn show_machines(state: &mut AppState, scene: MachinesScene) {
+    let not_answering = |error: &str| ConnectionState::Disconnected {
+        error: error.to_owned(),
+        retry_at: Instant::now() + DEMO_RETRY,
+    };
+    match scene {
+        MachinesScene::Alone => {
+            state.machines.others.clear();
+            state
+                .agents
+                .retain(|&agent, _| MachineId::of(agent) == MachineId::THIS);
+        }
+        MachinesScene::Trouble => {
+            let parts = |id, title, status, since| SummaryParts {
+                id,
+                title,
+                folder: GPU_FOLDER,
+                status,
+                activity: None,
+                pending: 0,
+                since,
+            };
+            let agents = [(
+                parts(
+                    1,
+                    "Train the ranking model",
+                    AgentStatus::Exited,
+                    Duration::from_secs(2 * 3600),
+                ),
+                [
+                    user("Train the ranking model on last week's clicks."),
+                    text("Training runs on both GPUs."),
+                ],
+            )];
+            insert_server(state, SystemTime::now(), DOWN_SERVER, DOWN_HOST, agents);
+            let agents = [(
+                parts(
+                    1,
+                    "Profile the data loader",
+                    AgentStatus::Exited,
+                    Duration::from_secs(24 * 3600),
+                ),
+                [
+                    user("Why does the data loader use only one core?"),
+                    text("It reads the shards one at a time."),
+                ],
+            )];
+            insert_server(state, SystemTime::now(), OLDER_SERVER, OLDER_HOST, agents);
+            if let Some(server) = state.machines.others.get_mut(&DOWN_SERVER) {
+                server.connection =
+                    not_answering("ssh: connect to host gpu-box port 22: Connection refused");
+            }
+            if let Some(server) = state.machines.others.get_mut(&OLDER_SERVER) {
+                server.connection = not_answering(&format!(
+                    "the daemon refused the connection: {REFUSED_FOR_OLDER}"
+                ));
+                server.version_gap = Some(older_gap());
+                server.update_plan = Some(update_plan());
+            }
+        }
+        MachinesScene::LocalDown => {
+            state.machines.this.connection = not_answering("the daemon stopped answering");
+        }
+        MachinesScene::LocalConnecting => {
+            state.machines.this.connection = ConnectionState::Connecting { attempt: 3 };
+        }
+        MachinesScene::LocalNoDaemon => {
+            let label = state.machines.this.daemon.clone();
+            no_daemon::show(
+                state,
+                &label,
+                "no daemon listens on its socket".to_owned(),
+                Absence::NothingRuns,
+                None,
+            );
+        }
+    }
 }
 
 pub fn is_requested(arguments: &[String]) -> bool {
@@ -829,6 +1129,7 @@ pub fn state(daemon: DaemonLabel) -> AppState {
     let mut state = AppState::new(daemon);
     state.machines.this.connection = ConnectionState::Connected;
     state.machines.this.daemon_version = Some(ReleaseVersion::new(APP_VERSION.to_owned()));
+    state.machines.this.daemon_commit = update_script::app_commit();
     let agents = [
         parser_agent(now),
         question_agent(now),
@@ -954,6 +1255,7 @@ fn insert_server<const N: usize>(
     let mut server = MachineState::new(DaemonLabel::ssh(host.to_owned()));
     server.connection = ConnectionState::Connected;
     server.daemon_version = Some(ReleaseVersion::new(APP_VERSION.to_owned()));
+    server.daemon_commit = update_script::app_commit();
     server.plan_usage = plan_usage(now);
     server.accounts = accounts().into_iter().take(1).collect();
     server.server = Some(MachineConfig {
@@ -3987,6 +4289,7 @@ mod tests {
 
     use super::*;
     use crate::prefs;
+    use crate::state::daemon_update::{DaemonUpdate, FailedUpdate};
     use crate::state::{HistoryState, WaitingKind};
 
     #[test]
@@ -4002,7 +4305,97 @@ mod tests {
         );
         assert_eq!(
             update_screen(&arguments(&["--demo", "--demo-update", "older"])),
-            Some("older")
+            Some(UpdateScreen::Older)
+        );
+        assert_eq!(
+            update_screen(&arguments(&["--demo", "--demo-update", "unknown"])),
+            None
+        );
+    }
+
+    #[test]
+    fn the_update_screens_are_named_in_kebab_case() {
+        let names: Vec<&str> = UpdateScreen::VARIANTS
+            .iter()
+            .map(|&screen| screen.into())
+            .collect();
+
+        assert_eq!(
+            names,
+            [
+                "older",
+                "no-commit",
+                "newer",
+                "running",
+                "refused",
+                "failed",
+                "cancelled",
+                "install-failed",
+                "rolled-back",
+                "already-running",
+                "lost",
+                "sidebar",
+                "dialog",
+                "local-available",
+                "local-confirm",
+                "local-waiting",
+                "local-running",
+                "local-not-stopped",
+                "local-unrecorded",
+                "local-unverified",
+                "local-not-started",
+                "local-other-build",
+                "local-confirm-jobs",
+                "local-holds-jobs",
+                "local-confirm-unseen",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_scheduled_job_screens_show_what_they_name() {
+        let shown = |screen| {
+            let mut state = state(label());
+            show_update_screen(&mut state, screen);
+            state
+        };
+
+        let jobs = shown(UpdateScreen::LocalConfirmJobs);
+        assert_eq!(jobs.ui.dialog, Some(Dialog::ConfirmUpdate(MachineId::THIS)));
+        assert_eq!(jobs.machines.this.job_holders.len(), 1);
+        assert!(
+            update_offer::busy_agents(&jobs, MachineId::THIS)
+                .contains(&jobs.machines.this.job_holders[0])
+        );
+
+        let refused = shown(UpdateScreen::LocalHoldsJobs);
+        assert!(matches!(
+            refused.machines.this.update,
+            Some(DaemonUpdate::Failed(FailedUpdate {
+                failure: UpdateFailure::HoldsJobs,
+                ..
+            }))
+        ));
+        let Some(DaemonUpdate::Failed(failed)) = &refused.machines.this.update else {
+            panic!("expected a failure");
+        };
+        assert_eq!(
+            daemon_update::failure_agents(&refused, MachineId::THIS, failed),
+            refused.machines.this.job_holders,
+            "the demo's working agents are left out"
+        );
+        assert!(!update_offer::running_agents(&refused, MachineId::THIS).is_empty());
+
+        let unseen = shown(UpdateScreen::LocalConfirmUnseen);
+        assert_eq!(
+            unseen.ui.dialog,
+            Some(Dialog::ConfirmUpdate(MachineId::THIS))
+        );
+        assert!(daemon_update::agents_unseen(&unseen.machines.this));
+        let asked = daemon_update::confirmation(&unseen, MachineId::THIS, "Local").unwrap();
+        assert!(
+            asked.list_note.is_some(),
+            "the demo's agents are from before"
         );
     }
 
@@ -4531,6 +4924,49 @@ pub struct ParseError {
         assert_eq!(sessions.len(), state.agents.len());
     }
 
+    #[test]
+    fn the_machines_scene_needs_the_demo_and_takes_its_name() {
+        let scene = |list: &[&str]| {
+            let arguments: Vec<String> = list.iter().map(|&argument| argument.to_owned()).collect();
+            machines_scene(&arguments)
+        };
+        let names: Vec<&str> = MachinesScene::VARIANTS
+            .iter()
+            .map(|&scene| scene.into())
+            .collect();
+
+        assert_eq!(
+            names,
+            [
+                "alone",
+                "trouble",
+                "local-down",
+                "local-connecting",
+                "local-no-daemon"
+            ]
+        );
+        assert_eq!(
+            scene(&[DEMO_FLAG, MACHINES_FLAG, "trouble"]),
+            Some(MachinesScene::Trouble)
+        );
+        assert_eq!(scene(&[MACHINES_FLAG, "trouble"]), None);
+        assert_eq!(scene(&[DEMO_FLAG, MACHINES_FLAG]), None);
+    }
+
+    #[test]
+    fn the_trouble_scene_adds_a_server_that_does_not_answer_and_an_older_one() {
+        let mut state = state(DaemonLabel::in_app());
+
+        show_machines(&mut state, MachinesScene::Trouble);
+
+        let lines: Vec<&str> = [DOWN_SERVER, OLDER_SERVER]
+            .into_iter()
+            .filter_map(|machine| state.machines.get(machine))
+            .filter_map(|known| crate::state::machine_status::status(known).line)
+            .map(|line| line.text)
+            .collect();
+        assert_eq!(lines, ["Not connected.", "Runs an older version."]);
+    }
     #[test]
     fn the_showcase_needs_the_demo_and_takes_a_scene_by_name() {
         let scene = |list: &[&str]| {

@@ -31,4 +31,22 @@ Linger is off, so systemd stops your services when your last session on the serv
 
 ## A machine's row says "Runs an older version" or "Runs a newer version"
 
-The app and the server's daemon come from different releases and do not speak the same protocol. Update the older one, as the "Update a server" section of [README.md](../README.md) says.
+The app and the machine's daemon come from different releases and do not speak the same protocol. Update the older one: the daemon with the row's Update link, or the app. The "Update a server" section of [README.md](../README.md) says how to update a server by hand.
+
+## A machine's row says "Update available."
+
+The machine's daemon was built from another version than the app, and the app still uses it. The Update link puts the app's version in its place. When agents of the machine are busy, the app names them first, and the update can wait until they are idle.
+
+## The app cannot stop this computer's background service
+
+A background service started by an older version of the app does not record its process, so the app cannot tell which process to stop. Stop it yourself once, then retry the update:
+
+1. Find it: `pgrep -af -- '--state-dir'`. It runs with `--state-dir`, your state folder (`~/.local/state/agents-cockpit` by default), and `serve`.
+2. Stop it: `kill <pid>`. It stops as a service does, and the next daemon resumes its agents.
+3. Click Retry in the app.
+
+The daemon the app starts records its process, so the next update stops it by itself.
+
+## The update says another build still answers
+
+The app stopped the daemon and started its own version, but another program started the old daemon again, such as a systemd unit that restarts it whenever it stops. Stop that program, or point it at the app's version, then retry. For the systemd unit: `systemctl --user disable --now agents-cockpit`.

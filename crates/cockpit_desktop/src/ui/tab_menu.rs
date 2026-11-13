@@ -37,6 +37,7 @@ pub fn TabMenu() -> Element {
             enabled: row.enabled,
             title: title(row.item, row.enabled),
             divided: row.item == TabItem::CopyPath,
+            danger: false,
         })
         .collect();
     let focus_back = (target.origin == TabMenuOrigin::List).then_some(FILTER_ID);

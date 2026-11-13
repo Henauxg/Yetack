@@ -16,7 +16,9 @@ pub(crate) use event_log::{
     DetailsFrame, EventLogs, LatestDetails, LogName, ReplayRead, details_path, for_each_event,
     move_details_out, read_latest_details, read_replay,
 };
-pub(crate) use raw_log::{Direction, RawLog};
-pub(crate) use state_dir::{ServeLock, StateDir};
+pub(crate) use raw_log::{Direction, LoggedLine, RawLog};
+#[cfg(unix)]
+pub(crate) use state_dir::lock_path;
+pub(crate) use state_dir::{ServeLock, StateDir, raw_log_path};
 pub use state_dir::{default_state_dir, socket_path};
 pub use store_error::StoreError;

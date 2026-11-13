@@ -17,6 +17,7 @@ pub mod file_tree;
 pub mod folder_field;
 pub mod grouping;
 pub mod machine_load;
+pub mod machine_status;
 pub mod machines;
 pub mod mcp_reconnect;
 pub mod menu_keys;
@@ -37,6 +38,8 @@ pub mod to_handle;
 mod transcript;
 mod ui_state;
 pub mod unread;
+pub mod update_offer;
+pub mod update_plan;
 mod utf16_offset;
 pub mod working_folder;
 
@@ -51,9 +54,9 @@ pub use shortcuts::{ANSWER_KEYS, KeyPress, PAGE_RELOAD_KEY, handle_key};
 pub use transcript::{HistoryState, WaitingKind, awaiting_approval};
 pub use ui_state::{
     Block, Dialog, FileSearch, FolderAction, FolderList, FormMenu, ImageView, MachineEdit,
-    MachinesView, McpView, NewAgentForm, NewAgentTab, NoteKind, OpenFileView, PaletteOrigin,
-    Popover, RefusedChord, RevealPlace, SettingsTab, SettingsView, TabMenuOrigin, TitleEdit,
-    TitlePlace, ToolFilter, ViewMode, WorkingFolderForm, is_markdown,
+    MachineMenu, MachinesView, McpView, NewAgentForm, NewAgentTab, NoteKind, OpenFileView,
+    PaletteOrigin, Popover, RefusedChord, RevealPlace, SettingsTab, SettingsView, TabMenuOrigin,
+    TitleEdit, TitlePlace, ToolFilter, ViewMode, WorkingFolderForm, is_markdown,
 };
 pub use utf16_offset::Utf16Offset;
 

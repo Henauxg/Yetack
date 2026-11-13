@@ -1070,6 +1070,7 @@ pub fn dialog(dialog: Dialog) -> Element {
         | Dialog::Machines(_)
         | Dialog::NoDaemon
         | Dialog::DaemonUpdate(_)
+        | Dialog::ConfirmUpdate(_)
         | Dialog::ImageView(_)
         | Dialog::WorkingFolder(_)
         | Dialog::Settings(_) => rsx! {},

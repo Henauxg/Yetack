@@ -15,10 +15,10 @@ use tokio::runtime::Runtime;
 use tokio::time::Instant;
 use tracing_subscriber::EnvFilter;
 
+use crate::service_update::SERVICE_LOG;
+
 /// The service's log level, unless `RUST_LOG` says otherwise.
 const LOG_LEVEL: &str = "info";
-/// What the service writes to stderr, in the app's state folder.
-const LOG_FILE: &str = "serve.log";
 const LOG_MODE: u32 = 0o600;
 /// The service reads its state folder back before it listens.
 const START_WAIT: Duration = Duration::from_secs(20);
@@ -102,7 +102,7 @@ pub async fn ensure(state_dir: &Path, log_folder: &Path) -> Result<PathBuf, Serv
         return Ok(socket);
     }
     let program = std::env::current_exe().map_err(ServiceError::NoProgram)?;
-    let log = log_folder.join(LOG_FILE);
+    let log = log_folder.join(SERVICE_LOG);
     let logged_before = std::fs::metadata(&log).map_or(0, |metadata| metadata.len());
     let mut child = spawn(&program, state_dir, &log)?;
     tracing::info!(program = %program.display(), "started the background service");
@@ -233,7 +233,7 @@ mod tests {
             "#!/bin/sh\necho \"agents-cockpit: another daemon already runs on $2/serve.lock\" >&2\nexit 1\n",
         );
         let state = temp.path().join("state");
-        let log = temp.path().join("app").join(LOG_FILE);
+        let log = temp.path().join("app").join(SERVICE_LOG);
 
         let mut child = spawn(&program, &state, &log).unwrap();
         let status = child.wait().await.unwrap();
@@ -252,7 +252,7 @@ mod tests {
     async fn a_silent_service_does_not_quote_an_earlier_run() {
         let temp = tempfile::tempdir().unwrap();
         let program = script_in(&temp.path().join("bin"), "#!/bin/sh\nexit 1\n");
-        let log = temp.path().join("app").join(LOG_FILE);
+        let log = temp.path().join("app").join(SERVICE_LOG);
         std::fs::create_dir_all(log.parent().unwrap()).unwrap();
         std::fs::write(&log, "agents-cockpit: an earlier run stopped\n").unwrap();
         let logged_before = std::fs::metadata(&log).unwrap().len();

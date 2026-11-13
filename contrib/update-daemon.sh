@@ -1,18 +1,21 @@
 #!/bin/sh
 # Updates this machine's agents-cockpit daemon to one commit and restarts it. Linux only.
 #
-#   ssh HOST sh -s -- --commit HASH --binary PATH [--source-dir DIR] < contrib/update-daemon.sh
+#   ssh HOST sh -s -- --commit HASH --binary PATH [--source-dir DIR] [--even-if-busy] < contrib/update-daemon.sh
 #   ssh HOST sh -s -- --cancel < contrib/update-daemon.sh
 #
-#   --commit      a commit or ref that the source checkout can fetch from origin
-#   --binary      the absolute path of the agents-cockpit binary to replace
-#   --source-dir  a git checkout of the repository, by default ~/agents-cockpit
-#   --cancel      makes the running update stop before it installs: its build runs on
+#   --commit        a commit or ref that the source checkout can fetch from origin
+#   --binary        the absolute path of the agents-cockpit binary to replace
+#   --source-dir    a git checkout of the repository, by default ~/agents-cockpit
+#   --even-if-busy  restarts even while agents are busy or may hold a scheduled job: the restart
+#                   ends their turns, which the new daemon resumes, and loses their jobs
+#   --cancel        makes the running update stop before it installs: its build runs on
 #
 # It builds outside the checkout, which stays as it is. It restarts the daemon with
 # $XDG_CONFIG_HOME/agents-cockpit/start-daemon when that file exists (a script that starts the
 # daemon in the background and returns), and otherwise with the agents-cockpit systemd user
-# service. It refuses while an agent works, waits for an answer or may hold a scheduled job.
+# service. Without --even-if-busy, it refuses while an agent works, waits for an answer, runs
+# background tasks or may hold a scheduled job.
 # Once started it finishes even when the connection is lost: build.log, in its folder under
 # $XDG_CACHE_HOME/agents-cockpit/update, keeps the build's output.
 #
@@ -53,7 +56,13 @@ parse_arguments() {
     commit=
     binary=
     source_dir=$HOME/agents-cockpit
+    even_if_busy=
     while [ "$#" -gt 0 ]; do
+        if [ "$1" = --even-if-busy ]; then
+            even_if_busy=yes
+            shift
+            continue
+        fi
         [ "$#" -ge 2 ] || die "$1 needs a value"
         case $1 in
             --commit) commit=$2 ;;
@@ -140,12 +149,20 @@ check_tools() {
     command -v flock >/dev/null 2>&1 || die "cannot take the update lock: this needs flock"
 }
 
+# The path of the state folder's lock file as `find -lname` matches it: that takes a shell pattern,
+# and this path must match as it is written.
+lock_pattern() {
+    readlink -f "$state_dir/serve.lock" | sed 's/[][*?\\]/\\&/g'
+}
+
 # The daemon of this state folder is the process holding its lock file, whatever binary it runs.
 daemon_pid() {
-    # `find -lname` takes a shell pattern, and this path must match as it is written.
-    lock_pattern=$(readlink -f "$state_dir/serve.lock" | sed 's/[][*?\\]/\\&/g')
-    find /proc/[0-9]*/fd -maxdepth 1 -lname "$lock_pattern" 2>/dev/null |
+    find /proc/[0-9]*/fd -maxdepth 1 -lname "$(lock_pattern)" 2>/dev/null |
         sed -n '1s|^/proc/\([0-9]*\)/.*|\1|p'
+}
+
+holds_lock() {
+    [ -n "$(find "/proc/$1/fd" -maxdepth 1 -lname "$(lock_pattern)" 2>/dev/null)" ]
 }
 
 # Prints how many times Claude called a tool in a raw log since a time in milliseconds. A raw line
@@ -166,14 +183,29 @@ check_agents() {
             die "cannot read the agents from the daemon: $listing_error"
         fi
     fi
-    busy=$(printf '%s\n' "$listing" | awk 'NR > 1 && $2 != "idle" && $2 != "exited"')
+    [ -z "$even_if_busy" ] || return 0
+    # A resting agent runs no turn: it is idle, or it waits only for its account's sign-in, with
+    # nothing to answer. The columns are found by their headers: the listing of an older binary
+    # has no TASKS, and without WAIT every agent that needs you counts as busy.
+    # shellcheck disable=SC2016
+    resting='NR == 1 {
+            for (i = 1; i <= NF; i++) {
+                if ($i == "WAIT") wait_column = i
+                if ($i == "TASKS") tasks_column = i
+            }
+            next
+        }
+        { resting = $2 == "idle" || ($2 == "needs_you" && wait_column && $wait_column == 0) }'
+    # A resting agent whose background tasks still run is busy too.
+    busy=$(printf '%s\n' "$listing" | awk "$resting"'
+        $2 != "exited" && (!resting || (tasks_column && $tasks_column > 0))')
     [ -z "$busy" ] || refuse "not restarting the daemon, these agents are busy:
 $busy"
     # A scheduled job lives in its claude process, so none outlasts the daemon's last start. `ps`
     # counts whole seconds, so the start is taken a little early.
     started_at=$((($(date +%s) - $(ps -o etimes= -p "$daemon") - 2) * 1000))
     holding=
-    for id in $(printf '%s\n' "$listing" | awk 'NR > 1 && $2 == "idle" { print $1 }'); do
+    for id in $(printf '%s\n' "$listing" | awk "$resting"' resting { print $1 }'); do
         log=$state_dir/raw/$id.jsonl
         [ -f "$log" ] || continue
         created=$(count_calls "$log" "$started_at" CronCreate)
@@ -219,12 +251,22 @@ build() {
     [ -x "$built" ] || die "the build of $sha made no $built"
 }
 
+# Signals the process that holds the lock, and waits until none does. A pid names the daemon by its
+# start time, read once the pid is found and checked to hold the lock: right before the signal, the
+# start time must be the same, so a process that got the pid since gets no signal.
 stop_daemon() {
-    daemon=$(daemon_pid)
-    [ -n "$daemon" ] || return 0
-    kill -TERM "$daemon" || die_installing "cannot stop the daemon, pid $daemon"
     tries=0
-    while [ -n "$(daemon_pid)" ]; do
+    signalled=
+    while daemon=$(daemon_pid) && [ -n "$daemon" ]; do
+        started=$(start_time "$daemon")
+        if [ -n "$started" ] && [ "$daemon $started" != "$signalled" ] && holds_lock "$daemon" &&
+            [ "$(start_time "$daemon")" = "$started" ]; then
+            if kill -TERM "$daemon" 2>/dev/null; then
+                signalled="$daemon $started"
+            elif [ "$(start_time "$daemon")" = "$started" ]; then
+                die_installing "cannot stop the daemon, pid $daemon"
+            fi
+        fi
         tries=$((tries + 1))
         [ "$tries" -le 30 ] || die_installing "the daemon, pid $daemon, did not stop within 30 seconds"
         sleep 1

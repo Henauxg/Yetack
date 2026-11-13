@@ -1,33 +1,33 @@
-//! The agent list: a status filter, compact two-line rows in the order the user sets, and the
-//! connection's state.
+//! The agent list: a status filter, compact one-line rows in the order the user sets, a panel per
+//! machine that says how it answers, and the foot's buttons.
 
 use std::collections::BTreeMap;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use cockpit_protocol::{AgentId, AgentStatus, AgentSummary, MAX_TITLE_CHARS, Mark, Timestamp};
 use dioxus::prelude::*;
 
 use crate::bridge::{self, ROW_TITLE_FIELD_ID};
 use crate::connection::{Clock, Cockpit};
-use crate::daemon_label::DaemonPlace;
 use crate::keymap::{Command, Keymap};
 use crate::machine::MachineId;
 use crate::prefs::{AccountColor, NotificationLevel, StatusFilter};
 use crate::state::accounts::{self, AccountLabel, SignInLine};
 use crate::state::grouping::GroupKey;
-use crate::state::no_daemon::Absence;
+use crate::state::machine_status::{self, StatusLine, Tone};
+use crate::state::machines::MachineName;
 use crate::state::projects::ProjectKey;
 use crate::state::sidebar_keys::SidebarItem;
 use crate::state::{
-    AgentEntry, AppState, ConnectionState, Dialog, TitleEdit, TitlePlace, actions, daemon_update,
-    grouping, machines, notification_levels, project_menu, projects, settings, to_handle,
+    AgentEntry, AppState, Dialog, TitleEdit, TitlePlace, actions, grouping, machines,
+    notification_levels, project_menu, projects, settings, to_handle,
 };
 use crate::ui::accounts::{AccountLetter, AccountsButton};
 use crate::ui::grouping::GroupSwitch;
 use crate::ui::icons::{Icon, IconKind};
-use crate::ui::machines::THIS_COMPUTER;
+use crate::ui::machines::{machine_icon, run_action};
 use crate::ui::notification_levels::{self as levels_ui, AppBell, LevelIcon};
-use crate::ui::presence::{Shown, use_presence};
+use crate::ui::presence::use_presence;
 use crate::ui::project_menu::ProjectNameField;
 use crate::ui::projects_tab;
 use crate::ui::reorder::{
@@ -337,6 +337,7 @@ pub fn Sidebar() -> Element {
             }
             GroupSwitch {}
             div { id: LIST_ID, class: "agent-list scroll",
+                MachineStrip {}
                 if selected_hidden {
                     p { class: "hidden-note",
                         "The filter hides the selected agent. "
@@ -364,7 +365,7 @@ pub fn Sidebar() -> Element {
                     }
                 }
             }
-            ConnectionFooter {}
+            SidebarFoot {}
         }
     }
 }
@@ -389,26 +390,15 @@ struct MachineGroup {
     needs_you: usize,
     /// The machine's agents marked to handle, which a folded header still shows.
     to_handle: usize,
-    /// What the panel says while the machine does not answer.
-    trouble: Option<MachineTrouble>,
+    /// What the panel says while the machine does not answer or has an update to show.
+    line: Option<ShownLine>,
+    /// It answers no request: its panel's edge turns red.
+    down: bool,
     rows: Vec<AgentRow>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-struct MachineTrouble {
-    line: String,
-    /// The error, as a tooltip.
-    error: Option<String>,
-    /// A machine that answered no first connection: its panel's edge turns red.
-    down: bool,
-    /// This computer has no daemon yet: the panel asks where its agents run.
-    asks: bool,
-    /// The link that opens the update's screens, for a daemon of another version.
-    update_link: Option<&'static str>,
-}
-
-/// The machine as a header or a machine line names it: "This computer" with a laptop, or its name
-/// with a server.
+/// The machine as a header or a machine line names it: "Local" with a laptop, or its name with a
+/// server.
 struct MachineLook {
     name: String,
     icon: IconKind,
@@ -416,26 +406,16 @@ struct MachineLook {
 
 impl MachineLook {
     fn new(state: &AppState, machine: MachineId) -> Self {
-        let label = state.machines.get(machine).map(|known| &known.daemon);
-        let this_computer =
-            machine == MachineId::THIS && label.is_none_or(|label| label.place != DaemonPlace::Ssh);
-        if this_computer {
-            Self {
-                name: THIS_COMPUTER.to_owned(),
-                icon: IconKind::Laptop,
-            }
-        } else {
-            Self {
-                name: label.map_or_else(String::new, |label| label.machine.clone()),
-                icon: IconKind::Server,
-            }
+        let MachineName { name, local } = MachineName::of(state, machine);
+        Self {
+            name,
+            icon: machine_icon(local),
         }
     }
 }
 
 impl MachineGroup {
     fn new(state: &AppState, machine: MachineId, rows: Vec<AgentRow>) -> Self {
-        let known = state.machines.get(machine);
         let MachineLook { name, icon } = MachineLook::new(state, machine);
         let agents = state
             .agents
@@ -447,40 +427,16 @@ impl MachineGroup {
             needs_you += usize::from(entry.summary.status == AgentStatus::NeedsYou);
             to_handle += usize::from(entry.summary.mark.is_to_handle());
         }
-        let trouble = known.and_then(|known| {
-            if let Some(line) = daemon_update::update_line(known) {
-                return Some(MachineTrouble {
-                    line: line.text.to_owned(),
-                    error: None,
-                    down: line.down,
-                    asks: false,
-                    update_link: Some(line.link),
-                });
-            }
-            match &known.connection {
-                ConnectionState::Connected => None,
-                ConnectionState::Connecting { .. } => Some(MachineTrouble {
-                    line: "Connecting…".to_owned(),
-                    error: None,
-                    down: false,
-                    asks: false,
-                    update_link: None,
-                }),
-                ConnectionState::Disconnected { error, .. } => Some(MachineTrouble {
-                    line: "Not connected. The app tries again on its own.".to_owned(),
-                    error: Some(error.clone()),
-                    down: true,
-                    asks: false,
-                    update_link: None,
-                }),
-                ConnectionState::NoDaemon(_) => Some(MachineTrouble {
-                    line: "No daemon yet.".to_owned(),
-                    error: None,
-                    down: false,
-                    asks: true,
-                    update_link: None,
-                }),
-            }
+        let status = state.machines.get(machine).map(machine_status::status);
+        let down = status
+            .as_ref()
+            .is_some_and(|status| status.tone == Tone::Down);
+        let line = status.and_then(|status| {
+            Some(ShownLine {
+                name: None,
+                tone: status.tone,
+                line: status.line?,
+            })
         });
         Self {
             machine,
@@ -491,7 +447,8 @@ impl MachineGroup {
             count,
             needs_you,
             to_handle,
-            trouble,
+            line,
+            down,
             rows,
         }
     }
@@ -508,11 +465,11 @@ fn MachineGroupView(group: MachineGroup) -> Element {
         count,
         needs_you,
         to_handle,
-        trouble,
+        line,
+        down,
         rows,
         ..
     } = group;
-    let down = trouble.as_ref().is_some_and(|trouble| trouble.down);
     let fold_label = if folded {
         format!("Show the agents of {name}")
     } else {
@@ -544,35 +501,97 @@ fn MachineGroupView(group: MachineGroup) -> Element {
                 }
                 span { class: "machine-count", "{count}" }
             }
-            if let Some(trouble) = trouble {
-                p { class: "machine-trouble", title: trouble.error.clone().unwrap_or_default(),
-                    "{trouble.line} "
-                    if let Some(link) = trouble.update_link {
-                        button {
-                            class: "link-button",
-                            onclick: move |_| cockpit.update(|state| daemon_update::open(state, machine)),
-                            "{link}"
-                        }
+            MachineLineView { machine, line }
+            if !folded {
+                for row in rows {
+                    AgentRowView { key: "{row.id.get()}", row }
+                }
+            }
+        }
+    }
+}
+
+/// A machine's line, as its panel or the strip shows it.
+#[derive(Debug, Clone, PartialEq)]
+struct ShownLine {
+    /// The machine's name, in the strip, where no header says it.
+    name: Option<String>,
+    tone: Tone,
+    line: StatusLine,
+}
+
+/// What a machine says, with what to do about it: under its panel's head, or in the strip. The
+/// line folds open and shut, so the rows under it move with it.
+#[component]
+fn MachineLineView(machine: MachineId, line: Option<ShownLine>) -> Element {
+    let cockpit: Cockpit = use_context();
+    let Some(shown) = use_presence(line) else {
+        return rsx! {};
+    };
+    let ShownLine { name, tone, line } = shown.value;
+    rsx! {
+        div {
+            class: if shown.leaving { "machine-trouble-fold leaving" } else { "machine-trouble-fold" },
+            inert: shown.leaving.then_some(true),
+            div { class: "machine-trouble-clip",
+                p {
+                    class: "machine-trouble {tone.class()}",
+                    title: line.error.unwrap_or_default(),
+                    span { class: "trouble-mark", aria_hidden: true }
+                    if let Some(name) = name {
+                        span { class: "trouble-machine", "{name}" }
                     }
-                    if trouble.down {
+                    span { class: "trouble-text", "{line.text}" }
+                    for action in line.actions {
                         button {
+                            key: "{action.label()}",
                             class: "link-button",
-                            onclick: move |_| cockpit.retry_machine(machine),
-                            "Retry now"
-                        }
-                    }
-                    if trouble.asks {
-                        button {
-                            class: "link-button",
-                            onclick: move |_| cockpit.update(|state| state.ui.dialog = Some(Dialog::NoDaemon)),
-                            "Choose how agents run here"
+                            onclick: move |_| run_action(cockpit, machine, action),
+                            "{action.label()}"
                         }
                     }
                 }
             }
-            if !folded {
-                for row in rows {
-                    AgentRowView { key: "{row.id.get()}", row }
+        }
+    }
+}
+
+/// The machines with something to say, at the top of a sidebar without machine panels: a line
+/// each, as its panel would say it. Gone while every machine answers.
+#[component]
+fn MachineStrip() -> Element {
+    let cockpit: Cockpit = use_context();
+    let state = cockpit.state.read();
+    let mut lines = machine_status::strip_lines(&state);
+    // A line per machine the app knows, so that each leaves on its own.
+    let machines: Vec<MachineId> = state.machines.all().map(|(machine, _)| machine).collect();
+    let shown = use_presence((!lines.is_empty()).then_some(()));
+    let Some(shown) = shown else {
+        return rsx! {};
+    };
+    let mut line_of = |machine: MachineId| {
+        let at = lines.iter().position(|line| line.machine == machine)?;
+        let line = lines.remove(at);
+        Some(ShownLine {
+            name: Some(line.name),
+            tone: line.tone,
+            line: line.line,
+        })
+    };
+    let strip: Vec<(MachineId, Option<ShownLine>)> = machines
+        .into_iter()
+        .map(|machine| (machine, line_of(machine)))
+        .collect();
+    rsx! {
+        div {
+            class: if shown.leaving { "machine-strip leaving" } else { "machine-strip" },
+            inert: shown.leaving.then_some(true),
+            role: "status",
+            div { class: "machine-strip-clip",
+                div { class: "machine-strip-box",
+                    for (machine, line) in strip {
+                        MachineLineView { key: "{machine.get()}", machine, line }
+                    }
                 }
             }
         }
@@ -1006,61 +1025,12 @@ fn RowTimeView(time: RowTime) -> Element {
     }
 }
 
-/// The foot's line while this computer's daemon does not answer. Connected, it shows nothing: the
-/// Machines dialog says where the agents run.
-#[derive(Debug, Clone, PartialEq)]
-struct ConnectionLine {
-    class: &'static str,
-    line: String,
-    detail: Option<String>,
-}
-
+/// Accounts, Machines and the Settings gear. Each machine's panel, or the strip above the list,
+/// says how its machine answers.
 #[component]
-fn ConnectionFooter() -> Element {
+fn SidebarFoot() -> Element {
     let cockpit: Cockpit = use_context();
-    let Clock(now) = use_context::<Clock>();
-    let state = cockpit.state.read();
-    let machine = &state.machines.this.daemon.machine;
-    let trouble = match &state.machines.this.connection {
-        ConnectionState::Connected => None,
-        ConnectionState::Connecting { attempt } => {
-            let mut line = format!("Connecting to {machine}");
-            if *attempt > 1 {
-                line.push_str(&format!(", attempt {attempt}"));
-            }
-            Some(ConnectionLine {
-                class: "connection connecting",
-                line,
-                detail: None,
-            })
-        }
-        ConnectionState::Disconnected { error, retry_at } => {
-            // Reading the clock refreshes the countdown every second.
-            let _tick = now();
-            let wait = retry_at.saturating_duration_since(Instant::now());
-            Some(ConnectionLine {
-                class: "connection disconnected",
-                line: format!("Not connected to {machine}"),
-                detail: Some(format!("{error}. Retrying in {}.", format::duration(wait))),
-            })
-        }
-        ConnectionState::NoDaemon(screen) => Some(match screen.absence {
-            Absence::NothingRuns => ConnectionLine {
-                class: "connection waiting",
-                line: "No daemon yet".to_owned(),
-                detail: None,
-            },
-            Absence::Failed => ConnectionLine {
-                class: "connection disconnected",
-                line: format!("{} does not answer", screen.subject),
-                detail: Some(screen.error.clone()),
-            },
-        }),
-    };
-    // With several machines, each panel says how its machine answers.
-    let panels = !state.machines.others.is_empty();
-    let trouble = use_presence(trouble.filter(|_| !panels));
-    let settings_open = matches!(state.ui.dialog, Some(Dialog::Settings(_)));
+    let settings_open = matches!(cockpit.state.read().ui.dialog, Some(Dialog::Settings(_)));
     rsx! {
         div { class: "sidebar-foot",
             div { class: "foot-buttons",
@@ -1079,19 +1049,6 @@ fn ConnectionFooter() -> Element {
                     aria_label: "Settings",
                     onclick: move |_| cockpit.update(settings::open),
                     Icon { kind: IconKind::Gear, size: 16 }
-                }
-            }
-            if let Some(Shown { value: ConnectionLine { class, line, detail }, leaving, .. }) = trouble {
-                div {
-                    class: if leaving { "connection-trouble leaving" } else { "connection-trouble" },
-                    inert: leaving.then_some(true),
-                    span { class,
-                        span { class: "connection-dot", aria_hidden: true }
-                        "{line}"
-                    }
-                    if let Some(detail) = detail {
-                        span { class: "connection-error", "{detail}" }
-                    }
                 }
             }
         }

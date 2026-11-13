@@ -107,9 +107,11 @@ async fn list(transport: &Transport) -> anyhow::Result<()> {
     let Catchup::Snapshot(snapshot) = welcome.catchup else {
         bail!("the daemon sent no snapshot");
     };
+    // TASKS counts the background tasks that still run. The update script finds the column by
+    // its header, since an older binary prints none.
     let header = format!(
-        "{:<4} {:<9} {:<4} {:<5} {:<TITLE_COLUMN$} FOLDER",
-        "ID", "STATUS", "WAIT", "TURNS", "TITLE"
+        "{:<4} {:<9} {:<4} {:<5} {:<5} {:<TITLE_COLUMN$} FOLDER",
+        "ID", "STATUS", "WAIT", "TURNS", "TASKS", "TITLE"
     );
     if print_line(&header)? == Stdout::Closed {
         return Ok(());
@@ -118,11 +120,12 @@ async fn list(transport: &Transport) -> anyhow::Result<()> {
     agents.sort_by(|left, right| cockpit_protocol::list_order(left.place(), right.place()));
     for agent in agents {
         let row = format!(
-            "{:<4} {:<9} {:<4} {:<5} {:<TITLE_COLUMN$} {}",
+            "{:<4} {:<9} {:<4} {:<5} {:<5} {:<TITLE_COLUMN$} {}",
             agent.id.get(),
             word(agent.status)?,
             agent.pending_count,
             agent.turns,
+            agent.background_running,
             shorten(&printable(&agent.title), TITLE_COLUMN),
             printable(&agent.folder.display().to_string())
         );

@@ -72,10 +72,12 @@ fn apply_session_update(
         }
         SessionUpdate::Connected(Welcome {
             daemon_version,
+            daemon_commit,
             catchup,
         }) => {
             known.connection = ConnectionState::Connected;
             known.daemon_version = Some(daemon_version);
+            known.daemon_commit = daemon_commit;
             // The daemon may have been updated.
             known.folders_unknown = false;
             daemon_update::connected(state, machine);
@@ -547,16 +549,16 @@ mod tests {
 
     use cockpit_client::{ConnectError, SessionError};
     use cockpit_protocol::{
-        AgentDetails, CostUsd, Image, ImageMediaType, ItemId, NoticeKind, PendingId, PlanUsage,
-        Question, ReleaseVersion, Seq, Settings, TaskProgress, TokenUsage, TranscriptItem, TurnEnd,
-        TurnOutcome,
+        AgentDetails, BuildCommit, CostUsd, Image, ImageMediaType, ItemId, NoticeKind, PendingId,
+        PlanUsage, Question, ReleaseVersion, Seq, Settings, TaskProgress, TokenUsage,
+        TranscriptItem, TurnEnd, TurnOutcome,
     };
 
     use super::*;
     use crate::daemon_label::DaemonLabel;
     use crate::prefs::{GroupBy, NotificationLevel, StatusFilter};
     use crate::state::app_state::tests::{
-        DAEMON_VERSION, connected_update, placed, state_with, summary,
+        DAEMON_COMMIT, DAEMON_VERSION, connected_update, placed, state_with, summary,
     };
     use crate::state::projects::ProjectKey;
     use crate::state::ui_state::{Block, Dialog, PaletteOrigin, Popover, TitleEdit, TitlePlace};
@@ -1651,6 +1653,26 @@ mod tests {
         assert_eq!(
             state.machines.this.daemon_version,
             Some(ReleaseVersion::new(DAEMON_VERSION.to_owned()))
+        );
+        assert_eq!(
+            state.machines.this.daemon_commit,
+            Some(BuildCommit::new(DAEMON_COMMIT.to_owned()))
+        );
+
+        let mut without_commit = connected_update(Catchup::Replay);
+        if let SessionUpdate::Connected(welcome) = &mut without_commit {
+            welcome.daemon_commit = None;
+        }
+        apply_update(
+            &mut state,
+            &mut Drafts::default(),
+            without_commit,
+            now,
+            MachineId::THIS,
+        );
+        assert_eq!(
+            state.machines.this.daemon_commit, None,
+            "a daemon built without its commit"
         );
     }
 }
