@@ -14,8 +14,9 @@ use dioxus::desktop::DesktopContext;
 use dioxus::prelude::*;
 use tokio::sync::mpsc;
 
-use crate::config::{DaemonConfig, MachineConfig, save_machines};
+use crate::config::{DaemonConfig, MachineConfig, save_daemon, save_machines};
 use crate::daemon_label::{DaemonLabel, DaemonPlace};
+use crate::demo::LocalScene;
 use crate::in_app_host::InAppHost;
 use crate::machine::MachineId;
 use crate::notifications::Notifier;
@@ -26,6 +27,7 @@ use crate::state::daemon_update::{self, OutputLine, OutputStream};
 use crate::state::machine_load::{LOAD_POLL, LoadView, ShownLoad};
 use crate::state::machines::{self, MachineChange};
 use crate::state::no_daemon::{self, Absence, Chosen, DaemonChoice, SERVICE_OFFERED};
+use crate::state::settings::{self, StartDaemon};
 use crate::state::update_offer::{self, VersionGap};
 use crate::state::update_plan::{
     BusyAgents, JobCheck, ServerPlan, ServicePlan, UpdatePlan, UpdateRun, UpdateStep,
@@ -39,9 +41,8 @@ use crate::{bridge, demo, format, update_script};
 /// What the window was started with.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Startup {
+    /// The state to start from. It holds this computer's daemon as the config names it.
     pub state: AppState,
-    /// This computer's daemon, as the config names it.
-    pub daemon: DaemonConfig,
     /// The other machines the config names, reached over SSH.
     pub machines: Vec<(MachineId, MachineConfig)>,
     pub places: Places,
@@ -52,6 +53,8 @@ pub struct Startup {
     pub notifications: bool,
     /// Answers requests from the sample state instead of a daemon.
     pub demo: bool,
+    /// What the demo shows of where Local's agents run (`--demo-local`).
+    pub demo_local: Option<LocalScene>,
     /// Where the preferences are saved, `None` without a home folder.
     pub prefs_file: Option<PathBuf>,
 }
@@ -121,6 +124,16 @@ impl Cockpit {
     /// Adds or removes a server, or tries one again.
     pub fn change_machines(&self, change: MachineChange) {
         self.daemon.send(ToDaemon::Machines(change));
+    }
+
+    /// A choice in the Settings dialog of where Local's agents run from the next start, which the
+    /// connection task writes to the config.
+    pub fn choose_start(&self, choice: StartDaemon) {
+        let mut signal = self.state;
+        let next = settings::choose_start(&mut signal.write(), choice);
+        if let Some(next) = next {
+            self.change_machines(MachineChange::LocalDaemon(next));
+        }
     }
 
     /// Starts the update of `machine`'s daemon, from a card, "Update again" or "Retry". Busy
@@ -326,12 +339,12 @@ fn use_today(now: Signal<SystemTime>) -> Today {
 pub fn use_cockpit(startup: Startup) -> Cockpit {
     let Startup {
         state: initial,
-        daemon: configured,
         machines,
         places,
         in_app,
         notifications,
         demo,
+        demo_local,
         prefs_file: _,
     } = startup;
     let state = use_signal(move || initial);
@@ -345,7 +358,6 @@ pub fn use_cockpit(startup: Startup) -> Cockpit {
     let load = use_signal(ShownLoad::default);
     let daemon = use_coroutine(move |requests: UnboundedReceiver<ToDaemon>| {
         let live = Live {
-            configured: configured.clone(),
             places: places.clone(),
             in_app: in_app.clone(),
             notify: notifications,
@@ -353,7 +365,7 @@ pub fn use_cockpit(startup: Startup) -> Cockpit {
         let machines = machines.clone();
         async move {
             if demo {
-                run_demo(state, drafts, load, requests).await;
+                run_demo(state, drafts, load, requests, demo_local).await;
             } else {
                 route(state, drafts, load, live, machines, requests).await;
             }
@@ -437,6 +449,12 @@ async fn route(
                 servers.configs.retain(|(id, _)| *id != machine);
                 machines::forget(&mut state.write(), &mut drafts.write(), machine);
                 servers.save(state, &config_file);
+                continue;
+            }
+            ToDaemon::Machines(MachineChange::LocalDaemon(next)) => {
+                settings::save_start(&mut state.write(), next.clone(), |next| {
+                    save_daemon(&config_file, next).map_err(|error| state::error_chain(&error))
+                });
                 continue;
             }
             ToDaemon::Update(command) => {
@@ -766,6 +784,7 @@ async fn run_demo(
     mut drafts: Signal<Drafts>,
     load: Signal<ShownLoad>,
     mut requests: UnboundedReceiver<ToDaemon>,
+    local: Option<LocalScene>,
 ) {
     use futures_util::StreamExt;
 
@@ -798,6 +817,11 @@ async fn run_demo(
                     }
                     Some(ToDaemon::Machines(MachineChange::Edit(machine, config))) => {
                         machines::apply_edit(&mut state.write(), machine, &config);
+                        continue;
+                    }
+                    // The demo writes no config.
+                    Some(ToDaemon::Machines(MachineChange::LocalDaemon(next))) => {
+                        settings::save_start(&mut state.write(), next, |_| demo::save_local(local));
                         continue;
                     }
                     Some(
@@ -873,7 +897,6 @@ async fn play_demo_update(mut state: Signal<AppState>, machine: MachineId, plan:
 
 /// What the connection task needs to reach a daemon.
 struct Live {
-    configured: DaemonConfig,
     places: Places,
     in_app: InAppHost,
     notify: bool,
@@ -903,12 +926,11 @@ async fn run(
     task: Task,
 ) {
     let Live {
-        mut configured,
         places,
         in_app,
         notify: _,
     } = live;
-    let mut daemon = configured.clone();
+    let mut daemon = state.peek().machines.configured.clone();
     // The tick of the last choice on the screen.
     let mut every_time = None;
     loop {
@@ -954,7 +976,13 @@ async fn run(
             return;
         };
         every_time = Some(chosen.every_time);
-        let (next, error) = reach::settle(chosen, &daemon, &mut configured, &places.config_file);
+        // The Settings dialog may have changed it since the start.
+        let (next, error) = reach::settle(
+            chosen,
+            &daemon,
+            &mut state.write().machines.configured,
+            &places.config_file,
+        );
         if let Some(error) = error {
             state
                 .write()

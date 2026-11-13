@@ -14,7 +14,7 @@ use super::drafts::Drafts;
 use super::machine_status::{self, MachineStatus, StatusAction, Tone};
 use super::ui_state::{Dialog, MachineEdit, MachineMenu, MachinesView};
 use super::{file_tree, update_offer};
-use crate::config::MachineConfig;
+use crate::config::{DaemonConfig, MachineConfig};
 use crate::daemon_label::{DaemonLabel, DaemonPlace};
 use crate::format;
 use crate::machine::MachineId;
@@ -230,6 +230,8 @@ pub enum MachineChange {
     Remove(MachineId),
     /// Tries a machine that does not answer again now.
     Retry(MachineId),
+    /// Writes the daemon this computer reaches from the next start, as Settings chose it.
+    LocalDaemon(DaemonConfig),
 }
 
 pub fn open_machines(state: &mut AppState) {

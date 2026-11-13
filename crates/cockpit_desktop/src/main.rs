@@ -83,6 +83,7 @@ fn main() -> anyhow::Result<ExitCode> {
     } else {
         AppState::new(label)
     };
+    state.machines.configured = config.daemon;
     if let Some(screen) = demo::update_screen(&arguments) {
         demo::show_update_screen(&mut state, screen);
     }
@@ -91,6 +92,10 @@ fn main() -> anyhow::Result<ExitCode> {
     }
     if let Some(scene) = demo::machines_scene(&arguments) {
         demo::show_machines(&mut state, scene);
+    }
+    let demo_local = demo::local_scene(&arguments);
+    if demo_local.is_some() {
+        demo::show_local(&mut state);
     }
     let machines: Vec<(MachineId, MachineConfig)> =
         (1..).map(MachineId::new).zip(config.machines).collect();
@@ -114,12 +119,12 @@ fn main() -> anyhow::Result<ExitCode> {
     in_app_host::stop_on_panic(in_app.clone());
     let startup = Startup {
         state,
-        daemon: config.daemon,
         machines,
         places,
         in_app: in_app.clone(),
         notifications: !demo,
         demo,
+        demo_local,
         prefs_file,
     };
     let window = WindowBuilder::new()

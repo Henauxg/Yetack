@@ -1,9 +1,9 @@
 //! The Settings dialog, from the gear in the sidebar's foot. Its General tab holds the app's
 //! notifications, as the sidebar's bell sets them, where comments on quotes show, how long a message
-//! sent to a working agent can still be cancelled, and whether a new agent's files pane shows. Its
-//! last section, About, gives the app's version with a button that copies it. Its Keyboard tab
-//! lists every shortcut and records new ones for the commands. Its Projects tab edits the projects
-//! the sidebar can group agents by.
+//! sent to a working agent can still be cancelled, whether a new agent's files pane shows, and
+//! where Local's agents run from the next start. Its last section, About, gives the app's version
+//! with a button that copies it. Its Keyboard tab lists every shortcut and records new ones for the
+//! commands. Its Projects tab edits the projects the sidebar can group agents by.
 
 use std::sync::LazyLock;
 
@@ -17,6 +17,8 @@ use crate::prefs::{
     CommentPlacement, EscStop, FirstMark, GroupBy, NotificationLevel, PaneState, ProjectSplit,
     SteerHold, ToolCallDetail,
 };
+use crate::state::machines::THIS_COMPUTER;
+use crate::state::settings::{LocalStart, StartDaemon};
 use crate::state::{
     RefusedChord, SettingsTab, SettingsView, grouping, notification_levels, settings,
 };
@@ -45,6 +47,17 @@ const FILES_PANE_LABEL_ID: &str = "setting-files-pane";
 const GROUP_BY_LABEL_ID: &str = "setting-group-by";
 const PROJECT_SPLIT_LABEL_ID: &str = "setting-project-split";
 const FIRST_MARK_LABEL_ID: &str = "setting-first-mark";
+const LOCAL_START_LABEL_ID: &str = "setting-local-start";
+
+const LOCAL_START_HELP: &str = "Applies from the next start. In this app, the agents stop when the app closes. The background service keeps them running. Ask uses a service that runs, and asks when none answers.";
+
+fn start_label(choice: StartDaemon) -> &'static str {
+    match choice {
+        StartDaemon::InApp => "In this app",
+        StartDaemon::Service => "Background service",
+        StartDaemon::Ask => "Ask",
+    }
+}
 
 fn first_mark_label(first: FirstMark) -> &'static str {
     match first {
@@ -126,7 +139,7 @@ pub fn SettingsDialog(view: SettingsView) -> Element {
             }
             match view.tab {
                 SettingsTab::General => rsx! {
-                    GeneralTab {}
+                    GeneralTab { start_error: view.start_error.clone() }
                 },
                 SettingsTab::Keyboard => rsx! {
                     KeyboardTab { recording: view.recording, refused: view.refused }
@@ -139,8 +152,9 @@ pub fn SettingsDialog(view: SettingsView) -> Element {
     }
 }
 
+/// `start_error` says why the config did not take the last choice of where Local's agents run.
 #[component]
-fn GeneralTab() -> Element {
+fn GeneralTab(start_error: Option<String>) -> Element {
     let cockpit: Cockpit = use_context();
     let (
         group_by,
@@ -348,6 +362,7 @@ fn GeneralTab() -> Element {
                     }
                 }
             }
+            LocalSection { start_error }
             h3 { class: "settings-title", "About" }
             div { class: "setting-row",
                 img { class: "about-icon", src: APP_ICON.as_str(), alt: "" }
@@ -362,6 +377,55 @@ fn GeneralTab() -> Element {
                     text: format!("{APP_NAME} {APP_VERSION}"),
                     label: "Copy the app's version",
                     look: CopyLook::Worded,
+                }
+            }
+        }
+    }
+}
+
+/// Where Local's agents run from the next start, and a line under it that says why the config
+/// did not take the last choice.
+#[component]
+fn LocalSection(start_error: Option<String>) -> Element {
+    let cockpit: Cockpit = use_context();
+    let start = settings::local_start(&cockpit.state.read());
+    // While it leaves, the line keeps its text and the rows under it move up with it.
+    let error_shown = use_presence(start_error);
+    let help = match &start {
+        LocalStart::Choices(_) => LOCAL_START_HELP,
+        LocalStart::Note(note) => note.as_str(),
+    };
+    rsx! {
+        h3 { class: "settings-title", "{THIS_COMPUTER}" }
+        div { class: "setting-block",
+            div { class: "setting-row",
+                div { class: "setting-text",
+                    span { id: LOCAL_START_LABEL_ID, class: "setting-label", "Where agents run" }
+                    span { class: "setting-help", "{help}" }
+                }
+                if let LocalStart::Choices(chosen) = start {
+                    div { class: "segmented", role: "group", aria_labelledby: LOCAL_START_LABEL_ID,
+                        for &choice in StartDaemon::VARIANTS {
+                            button {
+                                key: "{start_label(choice)}",
+                                class: if choice == chosen { "segment chosen" } else { "segment" },
+                                aria_pressed: choice == chosen,
+                                onclick: move |_| cockpit.choose_start(choice),
+                                "{start_label(choice)}"
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(Shown { value, leaving, .. }) = error_shown {
+                div {
+                    class: if leaving { "presence leaving" } else { "presence" },
+                    inert: leaving.then_some(true),
+                    div { class: "setting-refused", role: "alert",
+                        div { class: "refused-clip",
+                            div { class: "refused-text", "{value}" }
+                        }
+                    }
                 }
             }
         }

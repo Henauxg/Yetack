@@ -17,14 +17,14 @@ use super::chat_images::KeptImage;
 use super::daemon_update::DaemonUpdate;
 use super::file_tree::FileTree;
 use super::grouping::GroupKey;
-use super::no_daemon::NoDaemon;
+use super::no_daemon::{NoDaemon, SERVICE_OFFERED};
 use super::sending::Sending;
 use super::transcript::Transcript;
 use super::ui_state::UiState;
 use super::update_offer::{ProgramBuild, VersionGap};
 use super::update_plan::UpdatePlan;
 use super::{file_edits, grouping, projects};
-use crate::config::MachineConfig;
+use crate::config::{DaemonConfig, MachineConfig};
 use crate::daemon_label::DaemonLabel;
 use crate::format;
 use crate::machine::MachineId;
@@ -420,6 +420,11 @@ impl MachineState {
 pub struct Machines {
     pub this: MachineState,
     pub others: BTreeMap<MachineId, MachineState>,
+    /// This computer's daemon as the config names it, which the next start reaches.
+    pub configured: DaemonConfig,
+    /// This computer runs the background service and reaches a daemon's socket, as
+    /// [`SERVICE_OFFERED`] says. The demo shows Unix's choices on any platform.
+    pub service_offered: bool,
 }
 
 impl Machines {
@@ -483,6 +488,8 @@ impl AppState {
             machines: Machines {
                 this: MachineState::new(daemon),
                 others: BTreeMap::new(),
+                configured: DaemonConfig::default(),
+                service_offered: SERVICE_OFFERED,
             },
             agents: BTreeMap::new(),
             ui: UiState::default(),

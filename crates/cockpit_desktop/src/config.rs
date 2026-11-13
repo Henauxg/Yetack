@@ -29,7 +29,7 @@ use toml_edit::{DocumentMut, TomlError};
 
 const APP_FOLDER: &str = "agents-cockpit";
 const CONFIG_FILE: &str = "config.toml";
-const DAEMON_SECTION: &str = "daemon";
+pub const DAEMON_SECTION: &str = "daemon";
 const MACHINES_SECTION: &str = "machines";
 /// Where a new config file is written before it replaces the old one.
 const TEMPORARY_EXTENSION: &str = "toml.new";

@@ -25,7 +25,7 @@ use cockpit_protocol::{
 use serde_json::Value;
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
-use crate::config::MachineConfig;
+use crate::config::{DaemonConfig, MachineConfig};
 use crate::daemon_label::DaemonLabel;
 use crate::machine::MachineId;
 use crate::path_style::PathStyle;
@@ -1116,6 +1116,49 @@ pub fn show_machines(state: &mut AppState, scene: MachinesScene) {
                 None,
             );
         }
+    }
+}
+
+/// With the demo, shows the Settings dialog's choices of where Local's agents run as on Unix:
+/// `--demo-local unix`.
+const LOCAL_FLAG: &str = "--demo-local";
+
+/// What `--demo-local` shows of where Local's agents run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr, VariantArray)]
+#[strum(serialize_all = "kebab-case")]
+pub enum LocalScene {
+    /// The choices where the background service runs, the config asking at each start.
+    Unix,
+    /// The same choices, with a read-only config that refuses each one.
+    ReadOnly,
+}
+
+/// What a read-only config says, as a link into the Nix store makes it.
+const READ_ONLY_CONFIG: &str =
+    "/nix/store/made-up-home-manager-files/.config/agents-cockpit/config.toml is read-only";
+
+/// The scene `--demo-local` names, which only the demo takes.
+pub fn local_scene(arguments: &[String]) -> Option<LocalScene> {
+    if !is_requested(arguments) {
+        return None;
+    }
+    let flag = arguments
+        .iter()
+        .position(|argument| argument == LOCAL_FLAG)?;
+    arguments.get(flag + 1)?.parse().ok()
+}
+
+/// Local as on Unix, where the background service runs, its config asking at each start.
+pub fn show_local(state: &mut AppState) {
+    state.machines.service_offered = true;
+    state.machines.configured = DaemonConfig::default();
+}
+
+/// How the demo's config answers a choice of where Local's agents run. It writes nothing.
+pub fn save_local(scene: Option<LocalScene>) -> Result<(), String> {
+    match scene {
+        Some(LocalScene::ReadOnly) => Err(READ_ONLY_CONFIG.to_owned()),
+        Some(LocalScene::Unix) | None => Ok(()),
     }
 }
 
@@ -4951,6 +4994,31 @@ pub struct ParseError {
         );
         assert_eq!(scene(&[MACHINES_FLAG, "trouble"]), None);
         assert_eq!(scene(&[DEMO_FLAG, MACHINES_FLAG]), None);
+    }
+
+    #[test]
+    fn the_local_scene_needs_the_demo_and_only_its_read_only_config_refuses() {
+        let scene = |list: &[&str]| {
+            let arguments: Vec<String> = list.iter().map(|&argument| argument.to_owned()).collect();
+            local_scene(&arguments)
+        };
+        let names: Vec<&str> = LocalScene::VARIANTS
+            .iter()
+            .map(|&scene| scene.into())
+            .collect();
+
+        assert_eq!(names, ["unix", "read-only"]);
+        assert_eq!(
+            scene(&[DEMO_FLAG, LOCAL_FLAG, "read-only"]),
+            Some(LocalScene::ReadOnly)
+        );
+        assert_eq!(scene(&[LOCAL_FLAG, "unix"]), None);
+        assert_eq!(save_local(Some(LocalScene::Unix)), Ok(()));
+        assert_eq!(save_local(None), Ok(()));
+        assert_eq!(
+            save_local(Some(LocalScene::ReadOnly)),
+            Err(READ_ONLY_CONFIG.to_owned())
+        );
     }
 
     #[test]
