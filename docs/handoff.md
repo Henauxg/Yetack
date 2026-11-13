@@ -23,23 +23,16 @@ Done:
 - The daemon sends its commit in `Welcome` and writes its process into `serve.lock`. On Unix, `cockpit_daemon::stop_lock_holder` stops that process and no other.
 - The update's state and flow, the same for every machine (`state/update_offer.rs`, `state/update_plan.rs`, `state/daemon_update.rs`, `service_update.rs`). A server runs `contrib/update-daemon.sh`. Local's background service is stopped, then started again with the app's own program. When agents are busy, a confirmation offers "Update when they are idle" and "Update now", which gives the script `--even-if-busy`.
 - Machine panels even when Local is alone, "Local" for this computer, a strip of machine troubles when agents are grouped by project, the Machines dialog as a grid, and compact menus in the composer (`state/machine_status.rs`).
+- The update screens, from the mockups (`ui/daemon_update.rs`): the cards with the daemon's build beside the app's, the "0.1.0 → 0.2.0" version column, the confirmation with each busy agent's status, and an older daemon's line with "Update" alone. A refusal names the daemon's release and commit, so the cards can show them. The demo shows each state with `--demo-update <state>` and `--demo-machines <scene>`.
 
 Left, in order:
 
-1. The update screens, from the mockups:
-   - the update states in `machine_status.rs`: panel lines, the strip and the dialog's chips. An older daemon's line offers only "Update", and its dialog row has no "Retrying in N s." note;
-   - the "0.1.0 → 0.2.0" version column;
-   - the update card, the progress card and the failure card (`failure_text`);
-   - the confirmation (`Dialog::ConfirmUpdate`);
-   - when Local's update fills the window (`takes_the_window`).
-
-   The demo shows each state with `--demo-update <state>` and `--demo-machines <scene>`.
-2. An idle agent with running background tasks counts as busy: the user decided so.
+1. An idle agent with running background tasks counts as busy: the user decided so.
    - `AgentSummary` needs its count of running background tasks. Protocol 9 is not released yet, so it needs no new version.
    - `busy_agents` in `state/update_offer.rs` uses the count, and the confirmation says "runs N background tasks".
    - `agents-cockpit list` and the script's busy check count the agent too, unless `--even-if-busy`.
-3. `/review fix`, then `/review-standard fix`.
-4. Ask the user before merging into `main`.
+2. `/review fix`, then `/review-standard fix`.
+3. Ask the user before merging into `main`.
 
 To check Unix code without CI, cross-build the daemon crates for `x86_64-unknown-linux-musl`, with `rust-lld` as the linker, and run their test binaries in WSL. The tests embed Windows paths through `env!`, so give them absolute paths for the run, and don't commit that change. The `update_daemon` tests fail in about 4 of 10 full runs there, on `main` too: rerun a failing test alone.
 
