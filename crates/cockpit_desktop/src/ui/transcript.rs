@@ -471,7 +471,7 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
             step: state.map(|state| Step {
                 state,
                 links,
-                call: matches!(row.first().body, ItemBody::ToolCall(_)),
+                call: is_call(row),
             }),
             older_step,
         })
@@ -735,6 +735,11 @@ impl Step {
         }
         class
     }
+}
+
+/// Whether a row shows a tool call: one call, an edit, a run of reads or a skill.
+fn is_call(row: &Row<'_>) -> bool {
+    matches!(row.first().body, ItemBody::ToolCall(_))
 }
 
 /// The links of each item, given which items are steps: a user message, a notice or a turn's end
@@ -2535,6 +2540,50 @@ mod tests {
             older_step_notes(&top, &loaded),
             [true, false, false, true, true]
         );
+    }
+
+    #[test]
+    fn a_call_row_shows_as_a_call_and_the_agent_text_does_not() {
+        let done = ToolCallStatus::Done;
+        let bash = item(
+            1,
+            None,
+            ItemBody::ToolCall(call("Bash", "cargo test", done)),
+        );
+        let read = item(
+            2,
+            None,
+            ItemBody::ToolCall(call("Read", "src/lib.rs", done)),
+        );
+        let skill = item(3, None, ItemBody::ToolCall(call("Skill", "review", done)));
+        let text = item(
+            4,
+            None,
+            ItemBody::AssistantText {
+                markdown: "Done.".to_owned(),
+            },
+        );
+        let subagent = item(5, None, ItemBody::Subagent(call("Agent", "Map", done)));
+        let explored = Row::Explored {
+            first: &read,
+            rest: vec![&bash],
+        };
+        let skill_row = Row::Skill {
+            call: &skill,
+            instructions: None,
+        };
+        let step = Step {
+            state: StepState::Done,
+            links: StepLinks::default(),
+            call: true,
+        };
+
+        assert!(is_call(&Row::Item(&bash)));
+        assert!(is_call(&explored));
+        assert!(is_call(&skill_row));
+        assert!(!is_call(&Row::Item(&text)));
+        assert!(!is_call(&Row::Item(&subagent)), "a subagent keeps its size");
+        assert_eq!(step.class(), "step step-done step-call");
     }
 
     #[test]
