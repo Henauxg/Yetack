@@ -24,7 +24,7 @@ const PEER_ORIGIN: &str = "peer";
 /// - Any other origin gives its kind and the first line of the text, such as
 ///   `scheduled: Run the nightly check`.
 ///
-/// Each is cut to [`MAX_LINE_NOTICE_CHARS`].
+/// A first line is cut to [`MAX_LINE_NOTICE_CHARS`].
 pub(super) fn notices(
     origin: Option<&MessageOrigin>,
     text: &str,
@@ -73,7 +73,7 @@ fn task_notice(notification: TaskNotificationText) -> (String, NoticeKind) {
 fn message_line(text: &str) -> &str {
     let lines = || text.lines().map(str::trim).filter(|line| !line.is_empty());
     lines()
-        .find(|line| !line.starts_with('<') && !line.starts_with('['))
+        .find(|line| !is_tag(line) && !is_preamble(line))
         .or_else(|| lines().next())
         .unwrap_or_default()
 }
@@ -82,17 +82,10 @@ fn message_line(text: &str) -> &str {
 /// around it and the bracketed preamble go, and its lines lose their common indent, which
 /// Markdown would draw as a code block. `None` when the body is no more than the line.
 pub(super) fn message_body(text: &str) -> Option<String> {
-    let is_tag = |line: &str| {
-        let line = line.trim();
-        line.starts_with('<') && line.ends_with('>')
-    };
     let lines: Vec<&str> = text.lines().collect();
     let start = lines
         .iter()
-        .position(|line| {
-            let line = line.trim();
-            !line.is_empty() && !is_tag(line) && !line.starts_with('[')
-        })
+        .position(|line| !line.trim().is_empty() && !is_tag(line) && !is_preamble(line))
         .unwrap_or(lines.len());
     let end = lines
         .iter()
@@ -111,6 +104,21 @@ pub(super) fn message_body(text: &str) -> Option<String> {
         .map(|line| line.get(indent..).unwrap_or_else(|| line.trim_start()))
         .collect();
     (body.len() > 1).then(|| body.join("\n"))
+}
+
+/// A line that is a whole tag, such as `<agent-message from="…">`.
+fn is_tag(line: &str) -> bool {
+    let line = line.trim();
+    line.starts_with('<') && line.ends_with('>')
+}
+
+/// A line that opens with a bracketed preamble, such as `[Subagent hand-back] …`. A Markdown
+/// link, such as `[The fix](…) is merged.`, is prose.
+fn is_preamble(line: &str) -> bool {
+    line.trim()
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once(']'))
+        .is_some_and(|(_, after)| !after.starts_with(['(', '[', ':']))
 }
 
 fn cut(line: &str) -> String {
@@ -207,6 +215,42 @@ mod tests {
             None
         );
         assert_eq!(message_body("<agent-message></agent-message>"), None);
+    }
+
+    #[test]
+    fn a_peer_message_keeps_a_first_line_that_starts_with_a_link_or_a_less_than_sign() {
+        let peer = origin(OpenWord::Unknown(PEER_ORIGIN.to_owned()));
+        let link = "<agent-message from=\"session-7\">\n\
+            [The cart fix](https://example.com/pull/12) is merged.\n\
+            Nothing else is left.\n\
+            </agent-message>";
+        let less = "<agent-message from=\"session-7\">\n\
+            <= 2 ms per frame now.\n\
+            The lexer was the slow part.\n\
+            </agent-message>";
+
+        assert_eq!(
+            notices(Some(&peer), link),
+            Some(vec![(
+                "[The cart fix](https://example.com/pull/12) is merged.".to_owned(),
+                NoticeKind::Message
+            )])
+        );
+        assert_eq!(
+            message_body(link).as_deref(),
+            Some("[The cart fix](https://example.com/pull/12) is merged.\nNothing else is left.")
+        );
+        assert_eq!(
+            notices(Some(&peer), less),
+            Some(vec![(
+                "<= 2 ms per frame now.".to_owned(),
+                NoticeKind::Message
+            )])
+        );
+        assert_eq!(
+            message_body(less).as_deref(),
+            Some("<= 2 ms per frame now.\nThe lexer was the slow part.")
+        );
     }
 
     #[test]
