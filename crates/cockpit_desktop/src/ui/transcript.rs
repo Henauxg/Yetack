@@ -69,6 +69,10 @@ const FOLD_LINES_PROPERTY: &str = "--fold-lines";
 /// in it from folding.
 const CALL_LINE_CLASS: &str = "foldable";
 
+/// Marks a call's input and output, or its diff, that a click showed: they come in with an
+/// animation.
+const UNFOLDED_CLASS: &str = "unfolded";
+
 /// Folds IN and OUT rows, and long messages you sent, by their lines on screen, which only the
 /// page knows: wrapping depends on the width. It marks `data-tall` each row whose text takes more
 /// screen lines than the `--fold-lines` the row sets, and writes on its button how many lines the
@@ -1685,6 +1689,16 @@ fn ToolView(agent: AgentId, id: ItemId, call: ToolCall, stage: CallStage) -> Ele
     // A command's last lines say how it ended.
     let out_fold = out_fold(&shape, output.as_deref().unwrap_or_default());
     let framed = input.is_some() || output.is_some();
+    let layout = if framed && open {
+        TitleLayout::Full
+    } else {
+        TitleLayout::Compact
+    };
+    let unfolded = if decided().is_some() {
+        UNFOLDED_CLASS
+    } else {
+        ""
+    };
     rsx! {
         div { class: stage.class(),
             div {
@@ -1694,7 +1708,7 @@ fn ToolView(agent: AgentId, id: ItemId, call: ToolCall, stage: CallStage) -> Ele
                         decided.set(Some(!open));
                     }
                 },
-                {tool_title(agent, &call, &shape, if framed && open { TitleLayout::Full } else { TitleLayout::Compact })}
+                {tool_title(agent, &call, &shape, layout)}
                 if stage == CallStage::Running {
                     RunningMeta { agent, item: id }
                 } else if !meta.is_empty() {
@@ -1705,7 +1719,7 @@ fn ToolView(agent: AgentId, id: ItemId, call: ToolCall, stage: CallStage) -> Ele
                 }
             }
             if framed && open {
-                div { class: if decided().is_some() { "tool-io unfolded" } else { "tool-io" },
+                div { class: "tool-io {unfolded}",
                     if let Some(input) = input {
                         IoRow { kind: IoKind::In, text: input, fold: FoldEnd::First }
                     }
@@ -1763,7 +1777,11 @@ fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall, stage: CallStage) -
         .clone()
         .filter(|_| call.status == ToolCallStatus::Failed);
     let foldable = !preview.is_empty() || failure.is_some();
-    let unfolded = if decided().is_some() { " unfolded" } else { "" };
+    let unfolded = if decided().is_some() {
+        UNFOLDED_CLASS
+    } else {
+        ""
+    };
     rsx! {
         div { class: stage.class(),
             div {
@@ -1798,7 +1816,7 @@ fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall, stage: CallStage) -
                 }
             }
             if open && !preview.is_empty() {
-                div { class: "diff-box inline-diff scroll-x{unfolded}",
+                div { class: "diff-box inline-diff scroll-x {unfolded}",
                     div { class: "diff-rows",
                         for row in preview.iter() {
                             {diff_row(row, numbers, LineMarks::marked(None))}
@@ -1811,7 +1829,7 @@ fn EditView(agent: AgentId, folder: PathBuf, call: ToolCall, stage: CallStage) -
             }
             if open {
                 if let Some(output) = failure {
-                    div { class: "tool-io{unfolded}",
+                    div { class: "tool-io {unfolded}",
                         IoRow { kind: IoKind::Out, text: output, fold: FoldEnd::First }
                     }
                 }
