@@ -11,10 +11,20 @@ pub enum DaemonProbe {
     /// The app has not looked yet, or looks again once asked.
     #[default]
     Unknown,
-    Probing,
+    /// The probe of this number runs.
+    Probing(u64),
     Read(ServerInstall),
     /// ssh or the server failed, as this says.
     Failed(String),
+}
+
+/// A probe to run: the server, and the daemon's path or command. Its number tells it from a probe
+/// that an edit or a retry replaced since.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeTarget {
+    pub host: String,
+    pub binary: String,
+    pub number: u64,
 }
 
 /// A server, as the probe read it.

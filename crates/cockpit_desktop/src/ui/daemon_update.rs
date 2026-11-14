@@ -41,13 +41,6 @@ const AGENTS_RESUME: &str =
 #[component]
 pub fn DaemonUpdateScreens(machine: MachineId) -> Element {
     let cockpit: Cockpit = use_context();
-    let state = cockpit.state.read();
-    let Some(known) = state.machines.get(machine) else {
-        return rsx! {};
-    };
-    let MachineName { name, local } = MachineName::new(machine, known);
-    let offer = update_offer::offer(&state, machine);
-    drop(state);
     // The failure's "Update again" and a wait need the probe as much as the offer does.
     use_effect(move || {
         let due = daemon_update::probe_due(&cockpit.state.read(), machine);
@@ -59,6 +52,8 @@ pub fn DaemonUpdateScreens(machine: MachineId) -> Element {
     let Some(known) = state.machines.get(machine) else {
         return rsx! {};
     };
+    let MachineName { name, local } = MachineName::new(machine, known);
+    let offer = update_offer::offer(&state, machine);
     let body = match (known.update.clone(), offer) {
         (Some(DaemonUpdate::Running(progress) | DaemonUpdate::Reconnecting(progress)), _) => {
             rsx! {
@@ -148,7 +143,7 @@ fn UpdateNote(machine: MachineId, name: String, plan: UpdatePlan, app: ProgramBu
         .unwrap_or_default();
     let release = app.version.to_string();
     let install = match probe {
-        DaemonProbe::Unknown | DaemonProbe::Probing => {
+        DaemonProbe::Unknown | DaemonProbe::Probing(_) => {
             return rsx! {
                 Callout { text: format!("Looking at {name}'s daemon…") }
             };
@@ -949,6 +944,18 @@ fn FailedCard(machine: MachineId, name: String, local: bool, failed: FailedUpdat
         UpdatePlan::Server(_) => "Update again",
         UpdatePlan::Service(_) => "Retry",
     };
+    // A retry or an edit since the failure makes the app look at the daemon again.
+    let (ready, check_again, app) = {
+        let state = cockpit.state.read();
+        let known = state.machines.get(machine);
+        let ready = known.is_some_and(daemon_update::update_ready);
+        let check_again = known.is_some_and(|known| {
+            daemon_update::owned_by_another(known)
+                || matches!(known.daemon_probe, DaemonProbe::Failed(_))
+        });
+        (ready, check_again, state.app_build.clone())
+    };
+    let note_plan = (!ready).then(|| failed.plan.clone());
     rsx! {
         CardHead { local, title: text.title, lead: text.lead }
         if !failed.message.is_empty() {
@@ -967,11 +974,21 @@ fn FailedCard(machine: MachineId, name: String, local: bool, failed: FailedUpdat
         if let Some(hint) = &text.hint {
             p { class: "no-daemon-hint", "{hint}" }
         }
+        if let Some(plan) = note_plan {
+            UpdateNote { machine, name: name.clone(), plan, app }
+        }
         CardActions { details: None,
             button {
                 class: "button",
                 onclick: move |_| cockpit.update(|state| daemon_update::back(state, machine)),
                 "Back"
+            }
+            if check_again {
+                button {
+                    class: "button",
+                    onclick: move |_| cockpit.update(|state| daemon_update::forget_probe(state, machine)),
+                    "Check again"
+                }
             }
             if failed.offers_update_now() {
                 button {
@@ -980,7 +997,7 @@ fn FailedCard(machine: MachineId, name: String, local: bool, failed: FailedUpdat
                     "Update now"
                 }
             }
-            UpdateButton { machine, label: again.to_owned(), disabled: false }
+            UpdateButton { machine, label: again.to_owned(), disabled: !ready }
         }
     }
 }

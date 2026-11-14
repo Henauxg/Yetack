@@ -20,6 +20,9 @@
 #   1  failed before anything changed
 #   4  failed during the install or the start
 
+# The first line of the unit the install writes, which tells it from a unit the user wrote.
+UNIT_MARK="which the desktop app installed"
+
 say() {
     printf 'install-daemon: %s\n' "$*" 2>/dev/null || true
 }
@@ -84,9 +87,10 @@ check_systemd() {
 }
 
 # A service of this name runs a daemon the user set up: the install must not replace its unit, and
-# `enable --now` would leave its daemon running.
+# `enable --now` would leave its daemon running. A unit an earlier install wrote is the app's own.
 check_no_service() {
     unit=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/agents-cockpit.service
+    [ -L "$unit" ] || ! grep -q "$UNIT_MARK" "$unit" 2>/dev/null || return 0
     if [ -e "$unit" ] || [ -L "$unit" ] || systemctl --user cat agents-cockpit >/dev/null 2>&1; then
         die "a systemd user service agents-cockpit exists already: give the path of the daemon it runs, or remove the service first"
     fi

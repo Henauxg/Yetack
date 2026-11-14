@@ -3,12 +3,13 @@
 //! this computer's background service, and reports here.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use cockpit_daemon::SERVE_SUBCOMMAND;
 use cockpit_protocol::{AgentId, ProcessId};
 
 use super::app_state::{AppState, MachineState};
-use super::daemon_probe::{DaemonProbe, ServerInstall};
+use super::daemon_probe::{DaemonProbe, ProbeTarget, ServerInstall};
 use super::ui_state::Dialog;
 use super::update_offer::{self, GapKind, ProgramBuild, VersionGap};
 use super::update_plan::{BusyAgents, JobCheck, ServerPlan, UpdatePlan, UpdateRun, UpdateStep};
@@ -17,6 +18,9 @@ use crate::machine::MachineId;
 
 /// The most lines of output kept. A build prints a line per crate.
 const OUTPUT_LINES: usize = 500;
+
+/// The number of the next probe of a server's daemon.
+static NEXT_PROBE: AtomicU64 = AtomicU64::new(1);
 
 /// How many of the last lines a failure shows.
 const FAILURE_LINES: usize = 30;
@@ -435,9 +439,17 @@ pub fn start_when_idle(state: &mut AppState, machine: MachineId) -> Option<Updat
     let idle = known.update.as_ref().is_some_and(DaemonUpdate::is_waiting)
         && known.is_connected()
         && update_offer::running_agents(state, machine).is_empty();
-    // A config edit or a retry makes the app look at the daemon again: the wait holds until the
-    // card's probe says the update can run.
-    if !idle || runnable(known).is_none() {
+    if !idle {
+        return None;
+    }
+    // A daemon the app may not replace ends the wait: the card says how to update it.
+    let blocked = owned_by_another(known) || matches!(known.daemon_probe, DaemonProbe::Failed(_));
+    if blocked {
+        state.machines.get_mut(machine)?.update = None;
+        return None;
+    }
+    // After an edit or a retry, the wait holds until the probe says the update can run.
+    if runnable(known).is_none() {
         return None;
     }
     state.machines.get_mut(machine)?.update = None;
@@ -515,7 +527,7 @@ pub fn probe_due(state: &AppState, machine: MachineId) -> bool {
 
 /// The server and the daemon's path to probe, when `machine`'s update screens need the probe and
 /// the app has not looked yet. The probe counts as under way from here.
-pub fn probe_to_run(state: &mut AppState, machine: MachineId) -> Option<(String, String)> {
+pub fn probe_to_run(state: &mut AppState, machine: MachineId) -> Option<ProbeTarget> {
     let known = state.machines.get_mut(machine)?;
     let Some(UpdatePlan::Server(plan)) = &known.update_plan else {
         return None;
@@ -523,27 +535,41 @@ pub fn probe_to_run(state: &mut AppState, machine: MachineId) -> Option<(String,
     if known.daemon_probe != DaemonProbe::Unknown {
         return None;
     }
-    let target = (plan.host.clone(), plan.remote_command.clone());
-    known.daemon_probe = DaemonProbe::Probing;
+    let number = NEXT_PROBE.fetch_add(1, Ordering::Relaxed);
+    let target = ProbeTarget {
+        host: plan.host.clone(),
+        binary: plan.remote_command.clone(),
+        number,
+    };
+    known.daemon_probe = DaemonProbe::Probing(number);
     Some(target)
 }
 
-/// The probe of `target`, the host and the daemon's path, ended. It counts only while it is the
-/// probe under way of the server's present config: an edit or a retry started another since.
+/// The probe a wait for idle agents needs before its update can start, once its agents are idle:
+/// an edit or a retry made the app forget the last one.
+pub fn probe_for_wait(state: &mut AppState, machine: MachineId) -> Option<ProbeTarget> {
+    let known = state.machines.get(machine)?;
+    let waits = known.update.as_ref().is_some_and(DaemonUpdate::is_waiting)
+        && known.is_connected()
+        && update_offer::running_agents(state, machine).is_empty();
+    if !waits {
+        return None;
+    }
+    probe_to_run(state, machine)
+}
+
+/// The probe of `target` ended. It counts only while it is the probe under way: an edit or a
+/// retry started another since.
 pub fn probed(
     state: &mut AppState,
     machine: MachineId,
-    target: (&str, &str),
+    target: &ProbeTarget,
     read: Result<ServerInstall, String>,
 ) {
     let Some(known) = state.machines.get_mut(machine) else {
         return;
     };
-    let current = matches!(
-        &known.update_plan,
-        Some(UpdatePlan::Server(plan)) if (plan.host.as_str(), plan.remote_command.as_str()) == target
-    );
-    if !current || known.daemon_probe != DaemonProbe::Probing {
+    if known.daemon_probe != DaemonProbe::Probing(target.number) {
         return;
     }
     known.daemon_probe = match read {
@@ -2102,25 +2128,52 @@ mod tests {
     }
 
     #[test]
-    fn a_probe_of_the_path_before_an_edit_is_dropped() {
+    fn a_probe_that_a_retry_replaced_is_dropped() {
         let mut state = with_older_server();
         known_mut(&mut state).daemon_probe = DaemonProbe::Unknown;
-        let (host, old_path) = probe_to_run(&mut state, build_box()).unwrap();
-        if let Some(UpdatePlan::Server(plan)) = &mut known_mut(&mut state).update_plan {
-            plan.remote_command = "/home/someone/.local/bin/agents-cockpit".to_owned();
-        }
-
-        probed(
-            &mut state,
-            build_box(),
-            (&host, &old_path),
+        let before = probe_to_run(&mut state, build_box()).unwrap();
+        forget_probe(&mut state, build_box());
+        let after = probe_to_run(&mut state, build_box()).unwrap();
+        let nothing = || {
             Ok(ServerInstall {
                 system: "Linux x86_64".to_owned(),
                 daemon: None,
-            }),
+            })
+        };
+
+        probed(&mut state, build_box(), &before, nothing());
+        assert_eq!(
+            known(&state).daemon_probe,
+            DaemonProbe::Probing(after.number)
         );
 
-        assert_eq!(known(&state).daemon_probe, DaemonProbe::Probing);
+        probed(&mut state, build_box(), &after, nothing());
+        assert!(matches!(known(&state).daemon_probe, DaemonProbe::Read(_)));
+    }
+
+    #[test]
+    fn a_wait_whose_probe_was_forgotten_probes_once_its_agents_are_idle() {
+        let mut state = with_server_of_another_build(&[AgentStatus::Idle]);
+        known_mut(&mut state).update = Some(DaemonUpdate::Waiting);
+        known_mut(&mut state).daemon_probe = DaemonProbe::Unknown;
+
+        let probe = probe_for_wait(&mut state, build_box());
+
+        assert!(probe.is_some());
+        assert!(
+            probe_for_wait(&mut state, build_box()).is_none(),
+            "one runs already"
+        );
+    }
+
+    #[test]
+    fn a_wait_ends_when_the_daemon_is_not_the_apps_to_replace() {
+        let mut state = with_server_of_another_build(&[AgentStatus::Idle]);
+        known_mut(&mut state).update = Some(DaemonUpdate::Waiting);
+        known_mut(&mut state).daemon_probe = DaemonProbe::Failed("ssh: timed out".to_owned());
+
+        assert_eq!(start_when_idle(&mut state, build_box()), None);
+        assert_eq!(update(&state), None);
     }
 
     #[test]

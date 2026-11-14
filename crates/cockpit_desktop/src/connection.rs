@@ -23,6 +23,7 @@ use crate::notifications::Notifier;
 use crate::prefs::NotificationLevel;
 use crate::reach::{self, Places, Reached, Unreached};
 use crate::service_update::{self, BusyCheck, SystemService};
+use crate::state::daemon_probe::ProbeTarget;
 use crate::state::daemon_update::{self, OutputLine, OutputStream};
 use crate::state::machine_load::{LOAD_POLL, LoadView, ShownLoad};
 use crate::state::machines::{self, Adding, MachineChange};
@@ -94,7 +95,7 @@ pub enum UpdateCommand {
     Cancel(MachineId, ServerPlan),
     /// Reads where a server's daemon is and who owns it: the host, and the daemon's path or
     /// command.
-    Probe(MachineId, String, String),
+    Probe(MachineId, ProbeTarget),
     /// A step of a new server's setup, from "Add a server".
     Setup(SetupRun),
 }
@@ -201,10 +202,9 @@ impl Cockpit {
             return;
         }
         let target = daemon_update::probe_to_run(&mut signal.write(), machine);
-        if let Some((host, binary)) = target {
-            self.daemon.send(ToDaemon::Update(UpdateCommand::Probe(
-                machine, host, binary,
-            )));
+        if let Some(target) = target {
+            self.daemon
+                .send(ToDaemon::Update(UpdateCommand::Probe(machine, target)));
         }
     }
 
@@ -657,11 +657,17 @@ impl Servers {
             UpdateCommand::Cancel(machine, plan) => {
                 spawn(cancel_update(state, machine, plan));
             }
-            UpdateCommand::Probe(machine, host, binary) => {
+            UpdateCommand::Probe(machine, target) => {
                 let mut state = state;
+                let updates = self.retries.clone();
                 spawn(async move {
-                    let read = server_daemon::probe(&host, &binary).await;
-                    daemon_update::probed(&mut state.write(), machine, (&host, &binary), read);
+                    let read = server_daemon::probe(&target.host, &target.binary).await;
+                    let mut state = state.write();
+                    daemon_update::probed(&mut state, machine, &target, read);
+                    // A wait for idle agents may have waited for this probe.
+                    if let Some(run) = daemon_update::start_when_idle(&mut state, machine) {
+                        let _ = updates.send(ToDaemon::Update(UpdateCommand::Start(machine, run)));
+                    }
                 });
             }
             UpdateCommand::Setup(run) => {
@@ -995,9 +1001,9 @@ async fn run_demo(
                         machines::apply_edit(&mut state.write(), machine, &config);
                         continue;
                     }
-                    Some(ToDaemon::Update(UpdateCommand::Probe(machine, host, binary))) => {
-                        let read = Ok(demo::probe_answer(&binary));
-                        daemon_update::probed(&mut state.write(), machine, (&host, &binary), read);
+                    Some(ToDaemon::Update(UpdateCommand::Probe(machine, target))) => {
+                        let read = Ok(demo::probe_answer());
+                        daemon_update::probed(&mut state.write(), machine, &target, read);
                         continue;
                     }
                     Some(ToDaemon::Update(UpdateCommand::Setup(run))) => {
@@ -1369,11 +1375,16 @@ async fn serve(
                     let alerts =
                         state::apply_update(&mut state, &mut drafts, update, Instant::now(), machine);
                     let idle_update = daemon_update::start_when_idle(&mut state, machine);
-                    (alerts, state::needed_requests(&mut state), idle_update)
+                    let wait_probe = daemon_update::probe_for_wait(&mut state, machine);
+                    (alerts, state::needed_requests(&mut state), (idle_update, wait_probe))
                 };
+                let (idle_update, wait_probe) = idle_update;
+                // The window closed: nothing runs the update or the probe.
                 if let Some(run) = idle_update {
-                    // The window closed: nothing runs the update.
                     let _ = task.updates.send(ToDaemon::Update(UpdateCommand::Start(machine, run)));
+                }
+                if let Some(target) = wait_probe {
+                    let _ = task.updates.send(ToDaemon::Update(UpdateCommand::Probe(machine, target)));
                 }
                 send_all(state, drafts, &requester, &task, follow_up);
                 if let Some(notifier) = &mut notifier {

@@ -965,9 +965,9 @@ fn sending_plan() -> UpdatePlan {
     })
 }
 
-/// The probe of a server whose daemon the app owns.
-fn owned_probe() -> DaemonProbe {
-    DaemonProbe::Read(ServerInstall {
+/// A server whose daemon the app owns.
+fn owned_install() -> ServerInstall {
+    ServerInstall {
         system: CARRIED_SYSTEM.to_owned(),
         daemon: Some(InstalledDaemon {
             path: SERVER_DAEMON.to_owned(),
@@ -975,7 +975,12 @@ fn owned_probe() -> DaemonProbe {
             owner: DaemonOwner::App,
             version: format!("agents-cockpit {LOCAL_OLDER_RELEASE} ({OLDER_COMMIT})"),
         }),
-    })
+    }
+}
+
+/// The probe of a server whose daemon the app owns.
+fn owned_probe() -> DaemonProbe {
+    DaemonProbe::Read(owned_install())
 }
 
 /// A server that refuses the app, whose daemon at `path` belongs to `owner`, its card open.
@@ -1101,14 +1106,8 @@ fn failed_update(state: &mut AppState, failure: UpdateFailure, code: Option<i32>
 }
 
 /// What the demo's servers answer to a probe of their daemon: one the app owns.
-pub fn probe_answer(_binary: &str) -> ServerInstall {
-    match owned_probe() {
-        DaemonProbe::Read(install) => install,
-        DaemonProbe::Unknown | DaemonProbe::Probing | DaemonProbe::Failed(_) => ServerInstall {
-            system: CARRIED_SYSTEM.to_owned(),
-            daemon: None,
-        },
-    }
+pub fn probe_answer() -> ServerInstall {
+    owned_install()
 }
 
 /// The install script's lines in the demo, the report saying what is left to do.

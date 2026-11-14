@@ -267,6 +267,30 @@ ExecStart=%h/.cargo/bin/agents-cockpit serve
 }
 
 #[test]
+fn a_unit_an_earlier_install_wrote_is_written_again() {
+    let server = Server::new();
+    fs::create_dir_all(server.unit().parent().unwrap()).unwrap();
+    fs::write(
+        server.unit(),
+        "# The agents-cockpit daemon as a systemd user service, which the desktop app installed.\n",
+    )
+    .unwrap();
+    let (sent, version) = server.sent_binary();
+
+    let output = server.install(&[
+        "--built",
+        sent.to_str().unwrap(),
+        "--sha256",
+        &sha256(&sent),
+        "--version",
+        &version,
+    ]);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(server.installed().exists());
+}
+
+#[test]
 fn a_check_only_reports_what_the_daemon_needs() {
     let server = Server::new();
 
