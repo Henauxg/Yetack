@@ -13,12 +13,12 @@ use dioxus::prelude::*;
 use crate::connection::Cockpit;
 use crate::daemon_label::DaemonPlace;
 use crate::machine::MachineId;
-use crate::state::daemon_probe::{DaemonOwner, DaemonProbe};
+use crate::state::daemon_probe::{APP_BIN_FOLDER, DaemonOwner, DaemonProbe, USER_BIN_FOLDER};
 use crate::state::daemon_update::{self, Confirmation, DaemonUpdate, FailedUpdate, UpdateProgress};
 use crate::state::machines::MachineName;
 use crate::state::no_daemon::{self, DaemonChoice};
 use crate::state::update_offer::{self, GapKind, ProgramBuild, UpdateOffer};
-use crate::state::update_plan::{UpdatePlan, UpdateStep};
+use crate::state::update_plan::{SendProgress, UpdatePlan, UpdateStep};
 use crate::state::{AppState, ConnectionState, accounts};
 use crate::ui::accounts::CommandBox;
 use crate::ui::icons::{Icon, IconKind};
@@ -167,12 +167,9 @@ fn UpdateNote(machine: MachineId, name: String, plan: UpdatePlan, app: ProgramBu
     };
     match daemon.owner {
         DaemonOwner::App => {
-            let mut runs = server.clone();
-            if !install.runs_carried_daemon() {
-                runs.daemon_file = None;
-            }
+            let runs = UpdatePlan::Server(install.plan_for(server.clone()));
             rsx! {
-                Callout { text: what_the_update_does(&UpdatePlan::Server(runs), &name, &app) }
+                Callout { text: what_the_update_does(&runs, &name, &app) }
             }
         }
         DaemonOwner::Nix => rsx! {
@@ -203,9 +200,9 @@ fn UpdateNote(machine: MachineId, name: String, plan: UpdatePlan, app: ProgramBu
                     "{name}'s daemon is "
                     code { "{daemon.path}" }
                     ". The app only replaces daemons in "
-                    code { "~/.local/share/agents-cockpit/bin" }
+                    code { "{APP_BIN_FOLDER}" }
                     " or "
-                    code { "~/.local/bin" }
+                    code { "{USER_BIN_FOLDER}" }
                     ". Replace it with {release} by hand, then retry."
                 }
             }
@@ -240,13 +237,7 @@ fn package_owned(cockpit: Cockpit, machine: MachineId) -> bool {
         .machines
         .get(machine)
         .is_some_and(|known| {
-            matches!(
-                &known.daemon_probe,
-                DaemonProbe::Read(install) if install
-                    .daemon
-                    .as_ref()
-                    .is_some_and(|daemon| matches!(daemon.owner, DaemonOwner::Package(_)))
-            )
+            matches!(&known.daemon_probe, DaemonProbe::Read(install) if install.package().is_some())
         })
 }
 
@@ -844,8 +835,8 @@ struct StepLabels {
     app: String,
     /// This app's release, which a send names.
     release: String,
-    /// The bytes of the daemon sent, and its size.
-    sent: Option<(u64, u64)>,
+    /// How far the send of the daemon has gone.
+    sent: Option<SendProgress>,
 }
 
 impl StepLabels {
@@ -868,14 +859,7 @@ impl StepLabels {
     /// The line under a step, which says how it goes or went.
     fn detail(&self, step: UpdateStep, current: UpdateStep) -> Option<String> {
         match step {
-            UpdateStep::Send => {
-                let (sent, total) = self.sent?;
-                Some(if current == UpdateStep::Send && sent < total {
-                    format!("{} of {}", format::bytes(sent), format::bytes(total))
-                } else {
-                    format::bytes(total)
-                })
-            }
+            UpdateStep::Send => self.sent.map(SendProgress::detail),
             UpdateStep::Check if current == UpdateStep::Check => {
                 Some("Its checksum, then its version".to_owned())
             }
@@ -921,7 +905,9 @@ fn StepRow(
             span { class: "step-text",
                 "{label}"
                 if let Some(detail) = detail {
-                    span { class: "step-detail", "{detail}" }
+                    span { class: "step-detail",
+                        span { "{detail}" }
+                    }
                 }
             }
         }

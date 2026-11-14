@@ -32,7 +32,7 @@ use crate::state::server_setup::{self, SetupRun};
 use crate::state::settings::{self, StartDaemon};
 use crate::state::update_offer::{self, VersionGap};
 use crate::state::update_plan::{
-    BusyAgents, JobCheck, ServerPlan, ServicePlan, UpdatePlan, UpdateRun, UpdateStep,
+    BusyAgents, JobCheck, SendProgress, ServerPlan, ServicePlan, UpdatePlan, UpdateRun, UpdateStep,
 };
 use crate::state::{
     self, AgentEntry, AppState, ConnectionState, Dialog, Drafts, MachineState, Outgoing, Purpose,
@@ -713,10 +713,15 @@ async fn run_update(
 ) {
     let UpdateRun { plan, busy } = run;
     let retry_now = match plan {
-        UpdatePlan::Server(plan) => {
-            let code = update_server(state, machine, &plan, busy).await;
-            daemon_update::finished(&mut state.write(), machine, code)
-        }
+        UpdatePlan::Server(plan) => match update_server(state, machine, &plan, busy).await {
+            ServerUpdateEnd::ScriptEnded(code) => {
+                daemon_update::finished(&mut state.write(), machine, code)
+            }
+            ServerUpdateEnd::NotSent => {
+                daemon_update::send_failed(&mut state.write(), machine);
+                false
+            }
+        },
         UpdatePlan::Service(plan) => {
             let check = match busy {
                 BusyAgents::Refuse => Some(BusyCheck {
@@ -744,8 +749,8 @@ async fn run_update(
     }
 }
 
-/// The daemon's name, which the setup of a new server looks for on its `PATH`.
-const BESIDE_ON_PATH: &str = "agents-cockpit";
+/// The daemon's command, which the setup of a new server looks for on its `PATH`.
+const DAEMON_COMMAND: &str = "agents-cockpit";
 
 /// Runs a step of a server's setup. A server whose daemon runs joins the app through `added`.
 async fn run_setup(
@@ -755,9 +760,9 @@ async fn run_setup(
 ) {
     let change = match run {
         SetupRun::Look { host } => {
-            let found = server_daemon::probe(&host, BESIDE_ON_PATH).await;
-            let carries = server_daemon::carried().is_some();
-            server_setup::looked(&mut state.write(), &host, found, carries)
+            let found = server_daemon::probe(&host, DAEMON_COMMAND).await;
+            let carried = server_daemon::carried();
+            server_setup::looked(&mut state.write(), &host, found, carried.as_deref())
         }
         SetupRun::Install { host } => install_on(state, &host).await,
         SetupRun::Check { host } => {
@@ -786,8 +791,8 @@ async fn install_on(mut state: Signal<AppState>, host: &str) -> Option<MachineCh
         );
         return None;
     };
-    let sent = server_daemon::send(host, &file, |sent, total| {
-        server_setup::sending(&mut state.write(), host, sent, total);
+    let sent = server_daemon::send(host, &file, |progress| {
+        server_setup::sending(&mut state.write(), host, progress);
     })
     .await;
     let sent = match sent {
@@ -809,18 +814,25 @@ async fn install_on(mut state: Signal<AppState>, host: &str) -> Option<MachineCh
     server_setup::installed(&mut state.write(), host, code, &said)
 }
 
-/// Sends the daemon this app carries, if the plan has one, then runs the update script. Returns
-/// the script's exit code, 1 when the send failed.
+/// How a server's update ended.
+enum ServerUpdateEnd {
+    /// The script ran, and ended with this exit code: `None` when ssh lost it.
+    ScriptEnded(Option<i32>),
+    /// The send of the daemon failed, so the script did not run.
+    NotSent,
+}
+
+/// Sends the daemon this app carries, if the plan has one, then runs the update script.
 async fn update_server(
     mut state: Signal<AppState>,
     machine: MachineId,
     plan: &ServerPlan,
     busy: BusyAgents,
-) -> Option<i32> {
+) -> ServerUpdateEnd {
     let sent = match &plan.daemon_file {
         Some(file) => {
-            let sent = server_daemon::send(&plan.host, file, |sent, total| {
-                daemon_update::sending(&mut state.write(), machine, sent, total);
+            let sent = server_daemon::send(&plan.host, file, |progress| {
+                daemon_update::sending(&mut state.write(), machine, progress);
             })
             .await;
             match sent {
@@ -831,16 +843,17 @@ async fn update_server(
                         text: format!("Could not send the daemon: {error}"),
                     };
                     daemon_update::output(&mut state.write(), machine, vec![line]);
-                    return Some(1);
+                    return ServerUpdateEnd::NotSent;
                 }
             }
         }
         None => None,
     };
-    update_script::update(plan, busy, sent.as_ref(), |lines| {
+    let code = update_script::update(plan, busy, sent.as_ref(), |lines| {
         daemon_update::output(&mut state.write(), machine, lines);
     })
-    .await
+    .await;
+    ServerUpdateEnd::ScriptEnded(code)
 }
 
 /// Reads which of this computer's resting agents may hold a scheduled job, then starts the update,
@@ -1066,8 +1079,11 @@ async fn play_demo_update(mut state: Signal<AppState>, machine: MachineId, plan:
             let lines = if plan.daemon_file.is_some() {
                 for fifth in 1..=5 {
                     tokio::time::sleep(demo::UPDATE_LINE_PAUSE / 2).await;
-                    let sent = demo::SENT_SIZE * fifth / 5;
-                    daemon_update::sending(&mut state.write(), machine, sent, demo::SENT_SIZE);
+                    let sent = SendProgress {
+                        sent: demo::SENT_SIZE * fifth / 5,
+                        total: demo::SENT_SIZE,
+                    };
+                    daemon_update::sending(&mut state.write(), machine, sent);
                 }
                 demo::SENT_OUTPUT
             } else {

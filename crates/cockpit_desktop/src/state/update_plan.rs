@@ -6,6 +6,8 @@ use std::path::PathBuf;
 
 use cockpit_protocol::{AgentId, BuildCommit};
 
+use crate::format;
+
 /// The script's lines that move the steps on, as `say` in `contrib/update-daemon.sh` prints them.
 pub const BUILDING_LINE: &str = "update-daemon: building";
 pub const CHECKING_LINE: &str = "update-daemon: checking";
@@ -112,6 +114,40 @@ impl UpdateStep {
     }
 }
 
+/// How far the send of the daemon the app carries has gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SendProgress {
+    /// The bytes sent so far.
+    pub sent: u64,
+    /// The daemon's size.
+    pub total: u64,
+}
+
+impl SendProgress {
+    /// The line under the send's step: "4.1 MB of 9.3 MB" while bytes are left to send, then the
+    /// daemon's size.
+    pub fn detail(self) -> String {
+        if self.sent < self.total {
+            format!(
+                "{} of {}",
+                format::bytes(self.sent),
+                format::bytes(self.total)
+            )
+        } else {
+            format::bytes(self.total)
+        }
+    }
+
+    /// The share of the daemon sent, in percent.
+    pub fn percent(self) -> u8 {
+        if self.total == 0 {
+            return 0;
+        }
+        let percent = self.sent.min(self.total).saturating_mul(100) / self.total;
+        u8::try_from(percent).unwrap_or(100)
+    }
+}
+
 /// What an update does about the machine's busy agents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BusyAgents {
@@ -181,6 +217,25 @@ mod tests {
             assert!(steps.is_sorted(), "{plan:?}");
             assert_eq!(steps.last(), Some(&UpdateStep::Reconnect), "{plan:?}");
         }
+    }
+
+    #[test]
+    fn a_send_counts_its_bytes_until_it_ends_then_gives_the_size() {
+        let size = 9_800_000;
+        let under_way = SendProgress {
+            sent: 4_300_000,
+            total: size,
+        };
+        let done = SendProgress {
+            sent: size,
+            total: size,
+        };
+
+        assert_eq!(under_way.detail(), "4.1 MB of 9.3 MB");
+        assert_eq!(under_way.percent(), 43);
+        assert_eq!(done.detail(), "9.3 MB");
+        assert_eq!(done.percent(), 100);
+        assert_eq!(SendProgress { sent: 0, total: 0 }.percent(), 0);
     }
 
     #[test]

@@ -564,7 +564,9 @@ fn MachineLineView(machine: MachineId, line: Option<ShownLine>) -> Element {
                             aria_valuenow: "{progress.percent}",
                             aria_valuemin: "0",
                             aria_valuemax: "100",
-                            span { style: "width: {progress.percent}%" }
+                            span {
+                                style: format!("transform: scaleX({})", f32::from(progress.percent) / 100.0),
+                            }
                         }
                     }
                 }

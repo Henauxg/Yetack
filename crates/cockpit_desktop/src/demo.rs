@@ -44,7 +44,7 @@ use crate::state::server_setup::{
     self, InstallReport, InstallStep, ServerSetup, SetupRun, SetupStage,
 };
 use crate::state::update_offer::{self, GapKind, ProgramBuild, VersionGap};
-use crate::state::update_plan::{ServerPlan, ServicePlan, UpdatePlan, UpdateStep};
+use crate::state::update_plan::{SendProgress, ServerPlan, ServicePlan, UpdatePlan, UpdateStep};
 use crate::state::{
     AgentEntry, AppState, ConnectionState, Dialog, Drafts, Loadable, MachineState, Utf16Offset,
     ViewMode, actions, file_edits, file_tree, machines, projects, quotes, sending,
@@ -142,6 +142,15 @@ pub const SENT_SIZE: u64 = 9_800_000;
 
 /// Where the demo's app finds the daemon it carries.
 const CARRIED_DAEMON: &str = "/opt/agents-cockpit/agents-cockpit-x86_64-linux";
+
+/// What the update script says when the daemon on the server is not the one the app sent.
+const CHECKSUM_DIFFERS: &str = "update-daemon: the binary on this machine is not the one the app sent: its checksum differs; the daemon was not touched";
+
+/// Why this computer's service did not start, and the end of its log.
+const NOT_STARTED_ERROR: &str =
+    "the service stopped as it started (exit status: 1): agents-cockpit: cannot bind the socket";
+const NOT_STARTED_LOG: &str =
+    "INFO reading the state folder\nagents-cockpit: cannot bind the socket";
 
 /// Where the demo's servers keep their daemon.
 const SERVER_DAEMON: &str = "/opt/agents-cockpit/bin/agents-cockpit";
@@ -767,7 +776,9 @@ pub fn show_update_screen(state: &mut AppState, screen: UpdateScreen) {
         UpdateScreen::Cancelled => failed_update(state, UpdateFailure::Cancelled, Some(1)),
         UpdateScreen::InstallFailed => failed_update(state, UpdateFailure::InstallFailed, Some(4)),
         UpdateScreen::RolledBack => failed_update(state, UpdateFailure::RolledBack, Some(5)),
-        UpdateScreen::AlreadyRunning => failed_update(state, UpdateFailure::AlreadyRunning, Some(6)),
+        UpdateScreen::AlreadyRunning => {
+            failed_update(state, UpdateFailure::AlreadyRunning, Some(6))
+        }
         UpdateScreen::Lost => failed_update(state, UpdateFailure::Unknown, Some(255)),
         UpdateScreen::Sidebar => {
             server_refused(state);
@@ -779,22 +790,30 @@ pub fn show_update_screen(state: &mut AppState, screen: UpdateScreen) {
         UpdateScreen::Sending => {
             let machine = server_refused(state);
             if daemon_update::start(state, machine).is_some() {
-                daemon_update::sending(state, machine, SENT_SIZE * 2 / 5, SENT_SIZE);
+                let sent = SendProgress {
+                    sent: SENT_SIZE * 2 / 5,
+                    total: SENT_SIZE,
+                };
+                daemon_update::sending(state, machine, sent);
             }
             state.ui.dialog = Some(Dialog::DaemonUpdate(machine));
         }
         UpdateScreen::CheckFailed => {
             let machine = server_refused(state);
             if daemon_update::start(state, machine).is_some() {
-                daemon_update::sending(state, machine, SENT_SIZE, SENT_SIZE);
+                daemon_update::sending(state, machine, all_sent());
                 let stderr = |text: &str| OutputLine {
                     stream: OutputStream::Stderr,
                     text: text.to_owned(),
                 };
-                daemon_update::output(state, machine, vec![
-                    stderr(SENT_OUTPUT.first().copied().unwrap_or_default()),
-                    stderr("update-daemon: the binary on this machine is not the one the app sent: its checksum differs; the daemon was not touched"),
-                ]);
+                daemon_update::output(
+                    state,
+                    machine,
+                    vec![
+                        stderr(SENT_OUTPUT.first().copied().unwrap_or_default()),
+                        stderr(CHECKSUM_DIFFERS),
+                    ],
+                );
                 daemon_update::finished(state, machine, Some(1));
             }
             state.ui.dialog = Some(Dialog::DaemonUpdate(machine));
@@ -805,7 +824,11 @@ pub fn show_update_screen(state: &mut AppState, screen: UpdateScreen) {
             DaemonOwner::Nix,
         ),
         UpdateScreen::Package => {
-            server_owned_by(state, "/usr/bin/agents-cockpit", DaemonOwner::Package("agents-cockpit".to_owned()));
+            server_owned_by(
+                state,
+                "/usr/bin/agents-cockpit",
+                DaemonOwner::Package("agents-cockpit".to_owned()),
+            );
         }
         UpdateScreen::Elsewhere => {
             server_owned_by(state, "/opt/tools/agents-cockpit", DaemonOwner::Other);
@@ -853,8 +876,8 @@ pub fn show_update_screen(state: &mut AppState, screen: UpdateScreen) {
         UpdateScreen::LocalNotStarted => failed_restart(
             state,
             RestartFailure::NotStarted {
-                error: "the service stopped as it started (exit status: 1): agents-cockpit: cannot bind the socket".to_owned(),
-                log: Some("INFO reading the state folder\nagents-cockpit: cannot bind the socket".to_owned()),
+                error: NOT_STARTED_ERROR.to_owned(),
+                log: Some(NOT_STARTED_LOG.to_owned()),
             },
         ),
         UpdateScreen::LocalOtherBuild => {
@@ -888,14 +911,18 @@ fn first_resting_agent(state: &AppState) -> Vec<AgentId> {
         .collect()
 }
 
-fn update_plan() -> UpdatePlan {
-    UpdatePlan::Server(ServerPlan {
+fn server_plan() -> ServerPlan {
+    ServerPlan {
         host: UPDATE_MACHINE.to_owned(),
         remote_command: "/opt/agents-cockpit/bin/agents-cockpit".to_owned(),
         source_dir: None,
         commit: BuildCommit::new(UPDATE_COMMIT.to_owned()),
         daemon_file: None,
-    })
+    }
+}
+
+fn update_plan() -> UpdatePlan {
+    UpdatePlan::Server(server_plan())
 }
 
 fn older_gap() -> VersionGap {
@@ -956,13 +983,18 @@ fn server_refused(state: &mut AppState) -> MachineId {
 
 /// The update of a server that sends the daemon the app carries.
 fn sending_plan() -> UpdatePlan {
-    let UpdatePlan::Server(plan) = update_plan() else {
-        return update_plan();
-    };
     UpdatePlan::Server(ServerPlan {
         daemon_file: Some(PathBuf::from(CARRIED_DAEMON)),
-        ..plan
+        ..server_plan()
     })
+}
+
+/// The send of the demo's daemon, once it ended.
+fn all_sent() -> SendProgress {
+    SendProgress {
+        sent: SENT_SIZE,
+        total: SENT_SIZE,
+    }
 }
 
 /// A server whose daemon the app owns.
@@ -1129,12 +1161,17 @@ pub async fn play_setup(mut state: Signal<AppState>, run: SetupRun) {
                 system: CARRIED_SYSTEM.to_owned(),
                 daemon: None,
             };
-            server_setup::looked(&mut state.write(), &host, Ok(none), true);
+            let carried = Path::new(CARRIED_DAEMON);
+            server_setup::looked(&mut state.write(), &host, Ok(none), Some(carried));
         }
         SetupRun::Install { host } => {
             for fifth in 1..=5 {
                 tokio::time::sleep(UPDATE_LINE_PAUSE / 2).await;
-                server_setup::sending(&mut state.write(), &host, SENT_SIZE * fifth / 5, SENT_SIZE);
+                let sent = SendProgress {
+                    sent: SENT_SIZE * fifth / 5,
+                    total: SENT_SIZE,
+                };
+                server_setup::sending(&mut state.write(), &host, sent);
             }
             for line in SETUP_OUTPUT {
                 tokio::time::sleep(UPDATE_LINE_PAUSE).await;
@@ -1311,7 +1348,7 @@ pub fn show_machines(state: &mut AppState, scene: MachinesScene) {
             state,
             SetupStage::Installing {
                 step: InstallStep::Start,
-                sent: Some((SENT_SIZE, SENT_SIZE)),
+                sent: Some(all_sent()),
             },
         ),
         MachinesScene::SetupInstalled => setup_at(

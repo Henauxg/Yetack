@@ -2,8 +2,48 @@
 //! offers to update it. The app replaces only a daemon it owns: one in a folder of the user's that
 //! it installs to. Nix and `apt` own theirs, and the user updates those, as anything else, by hand.
 
+use std::str::FromStr;
+
+use strum::{EnumString, IntoStaticStr, VariantArray};
+
+use super::update_plan::ServerPlan;
+
 /// The system the daemon this app carries runs on, as `uname -sm` prints it.
 pub const CARRIED_SYSTEM: &str = "Linux x86_64";
+
+/// The folder the app installs the daemon to, as the screens name it.
+pub const APP_BIN_FOLDER: &str = "~/.local/share/agents-cockpit/bin";
+
+/// The user's own folder of programs, where the app also replaces a daemon it finds.
+pub const USER_BIN_FOLDER: &str = "~/.local/bin";
+
+/// The daemon's systemd unit, which the install writes.
+pub const UNIT_FILE: &str = "~/.config/systemd/user/agents-cockpit.service";
+
+/// The keys of the probe's `key=value` lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr, VariantArray)]
+#[strum(serialize_all = "snake_case")]
+pub enum ProbeKey {
+    System,
+    Path,
+    Command,
+    Owner,
+    Version,
+}
+
+/// The words the probe gives as `owner`, besides a package's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr, VariantArray)]
+#[strum(serialize_all = "snake_case")]
+pub enum OwnerWord {
+    /// No daemon is at the path.
+    Missing,
+    App,
+    Nix,
+    Other,
+}
+
+/// What the probe's `owner` starts with before the name of a package.
+pub const PACKAGE_OWNER: &str = "package ";
 
 /// What the app knows of a server's install.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -77,34 +117,40 @@ impl DaemonProbe {
     }
 }
 
-impl ServerInstall {
+impl FromStr for ServerInstall {
+    type Err = String;
+
     /// Reads the probe's lines, `key=value` each. `Err` says what was missing.
-    pub fn parse(output: &str) -> Result<Self, String> {
-        let value = |key: &str| {
+    fn from_str(output: &str) -> Result<Self, String> {
+        let value = |key: ProbeKey| {
+            let key: &str = key.into();
             output.lines().find_map(|line| {
                 let (name, value) = line.split_once('=')?;
                 (name == key).then(|| value.trim().to_owned())
             })
         };
-        let system = value("system").ok_or("The server did not say which system it runs")?;
-        let owner = match value("owner").as_deref() {
-            Some("missing") => {
+        let system =
+            value(ProbeKey::System).ok_or("The server did not say which system it runs")?;
+        let Some(owner) = value(ProbeKey::Owner) else {
+            return Err("The server did not say who owns its daemon".to_owned());
+        };
+        let owner = match owner.parse::<OwnerWord>() {
+            Ok(OwnerWord::Missing) => {
                 return Ok(Self {
                     system,
                     daemon: None,
                 });
             }
-            Some("app") => DaemonOwner::App,
-            Some("nix") => DaemonOwner::Nix,
-            Some("other") => DaemonOwner::Other,
-            Some(owner) => match owner.strip_prefix("package ") {
+            Ok(OwnerWord::App) => DaemonOwner::App,
+            Ok(OwnerWord::Nix) => DaemonOwner::Nix,
+            Ok(OwnerWord::Other) => DaemonOwner::Other,
+            Err(_) => match owner.strip_prefix(PACKAGE_OWNER) {
                 Some(package) => DaemonOwner::Package(package.to_owned()),
                 None => return Err(format!("The server named an unknown owner: {owner}")),
             },
-            None => return Err("The server did not say who owns its daemon".to_owned()),
         };
-        let path = value("path").ok_or("The server did not say where its daemon is")?;
-        let command = value("command")
+        let path = value(ProbeKey::Path).ok_or("The server did not say where its daemon is")?;
+        let command = value(ProbeKey::Command)
             .filter(|command| command.starts_with('/'))
             .unwrap_or_else(|| path.clone());
         Ok(Self {
@@ -113,11 +159,13 @@ impl ServerInstall {
                 path,
                 command,
                 owner,
-                version: value("version").unwrap_or_default(),
+                version: value(ProbeKey::Version).unwrap_or_default(),
             }),
         })
     }
+}
 
+impl ServerInstall {
     /// Whether the daemon this app carries runs there.
     pub fn runs_carried_daemon(&self) -> bool {
         self.system == CARRIED_SYSTEM
@@ -129,17 +177,39 @@ impl ServerInstall {
             .as_ref()
             .filter(|daemon| daemon.owner == DaemonOwner::App)
     }
+
+    /// The package that owns the daemon, when one does.
+    pub fn package(&self) -> Option<&str> {
+        match &self.daemon.as_ref()?.owner {
+            DaemonOwner::Package(package) => Some(package),
+            DaemonOwner::App | DaemonOwner::Nix | DaemonOwner::Other => None,
+        }
+    }
+
+    /// `plan` as an update runs it here: it replaces the daemon at the path the probe resolved,
+    /// and sends the daemon this app carries only to a system it runs on.
+    pub fn plan_for(&self, mut plan: ServerPlan) -> ServerPlan {
+        if let Some(daemon) = &self.daemon {
+            plan.remote_command.clone_from(&daemon.path);
+        }
+        if !self.runs_carried_daemon() {
+            plan.daemon_file = None;
+        }
+        plan
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use cockpit_protocol::BuildCommit;
+
     use super::*;
 
     #[test]
     fn a_daemon_the_app_owns_comes_with_its_path_and_version() {
         let output = "system=Linux x86_64\npath=/home/someone/.local/bin/agents-cockpit\ncommand=agents-cockpit\nowner=app\nversion=agents-cockpit 0.1.0 (743d664)\n";
 
-        let install = ServerInstall::parse(output).unwrap();
+        let install: ServerInstall = output.parse().unwrap();
 
         assert!(install.runs_carried_daemon());
         assert_eq!(
@@ -157,12 +227,13 @@ mod tests {
     fn a_daemon_a_package_owns_names_the_package_and_is_not_replaceable() {
         let output = "system=Linux x86_64\npath=/usr/bin/agents-cockpit\nowner=package agents-cockpit\nversion=agents-cockpit 0.1.0\n";
 
-        let install = ServerInstall::parse(output).unwrap();
+        let install: ServerInstall = output.parse().unwrap();
 
         assert_eq!(
             install.daemon.as_ref().map(|daemon| &daemon.owner),
             Some(&DaemonOwner::Package("agents-cockpit".to_owned()))
         );
+        assert_eq!(install.package(), Some("agents-cockpit"));
         assert_eq!(install.replaceable(), None);
     }
 
@@ -170,7 +241,8 @@ mod tests {
     fn a_daemon_found_through_a_link_keeps_the_links_path_to_run_by() {
         let output = "system=Linux x86_64\npath=/nix/store/0c4d9kx2-agents-cockpit/bin/agents-cockpit\ncommand=/home/someone/.nix-profile/bin/agents-cockpit\nowner=nix\n";
 
-        let daemon = ServerInstall::parse(output).unwrap().daemon.unwrap();
+        let install: ServerInstall = output.parse().unwrap();
+        let daemon = install.daemon.unwrap();
 
         assert_eq!(
             daemon.command,
@@ -184,7 +256,7 @@ mod tests {
 
     #[test]
     fn a_server_without_a_daemon_or_of_another_system_says_so() {
-        let install = ServerInstall::parse("system=Linux aarch64\nowner=missing\n").unwrap();
+        let install: ServerInstall = "system=Linux aarch64\nowner=missing\n".parse().unwrap();
 
         assert_eq!(install.daemon, None);
         assert!(!install.runs_carried_daemon());
@@ -192,7 +264,52 @@ mod tests {
 
     #[test]
     fn output_that_is_not_the_probes_is_an_error() {
-        assert!(ServerInstall::parse("Welcome to the server!\n").is_err());
-        assert!(ServerInstall::parse("system=Linux x86_64\nowner=root\npath=/x\n").is_err());
+        assert!("Welcome to the server!\n".parse::<ServerInstall>().is_err());
+        assert!(
+            "system=Linux x86_64\nowner=root\npath=/x\n"
+                .parse::<ServerInstall>()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn the_probes_words_are_pinned() {
+        let keys: Vec<&str> = ProbeKey::VARIANTS.iter().map(|&key| key.into()).collect();
+        let owners: Vec<&str> = OwnerWord::VARIANTS
+            .iter()
+            .map(|&owner| owner.into())
+            .collect();
+
+        assert_eq!(keys, ["system", "path", "command", "owner", "version"]);
+        assert_eq!(owners, ["missing", "app", "nix", "other"]);
+    }
+
+    #[test]
+    fn an_update_sends_the_carried_daemon_only_to_its_system_and_replaces_the_probed_path() {
+        let plan = ServerPlan {
+            host: "build-box".to_owned(),
+            remote_command: "agents-cockpit".to_owned(),
+            source_dir: None,
+            commit: BuildCommit::new("3f9c2e1".to_owned()),
+            daemon_file: Some("/opt/app/agents-cockpit-x86_64-linux".into()),
+        };
+        let here = "system=Linux x86_64\npath=/home/someone/.local/bin/agents-cockpit\nowner=app\n";
+        let arm = "system=Linux aarch64\npath=/home/someone/.local/bin/agents-cockpit\nowner=app\n";
+        let here: ServerInstall = here.parse().unwrap();
+        let arm: ServerInstall = arm.parse().unwrap();
+
+        let sends = here.plan_for(plan.clone());
+        let builds = arm.plan_for(plan);
+
+        assert_eq!(
+            sends.remote_command,
+            "/home/someone/.local/bin/agents-cockpit"
+        );
+        assert!(sends.daemon_file.is_some());
+        assert_eq!(
+            builds.remote_command,
+            "/home/someone/.local/bin/agents-cockpit"
+        );
+        assert_eq!(builds.daemon_file, None);
     }
 }

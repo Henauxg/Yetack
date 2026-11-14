@@ -3,18 +3,33 @@
 //! the daemon needs. The setup lives beside the Machines dialog, so closing the dialog does not
 //! stop an install: the dialog shows where it stands when it opens again.
 
+use std::path::Path;
+
+use strum::IntoStaticStr;
+
 use super::app_state::AppState;
 use super::daemon_probe::ServerInstall;
 use super::machines::{self, MachineChange};
+use super::update_plan::SendProgress;
 use crate::config::MachineConfig;
 
-/// The lines `contrib/install-daemon.sh` prints, as `say` writes them.
+/// What `say` in `contrib/install-daemon.sh` puts before each of its lines.
+const SAY_PREFIX: &str = "install-daemon: ";
+
+// The lines of `contrib/install-daemon.sh` that the setup reads, each starting with `SAY_PREFIX`.
 pub const CHECKING_LINE: &str = "install-daemon: checking";
 pub const INSTALLED_LINE: &str = "install-daemon: installed ";
 pub const STARTING_LINE: &str = "install-daemon: starting the service";
 pub const RUNS_LINE: &str = "install-daemon: the daemon runs";
 pub const LINGER_LINE: &str = "install-daemon: linger ";
 pub const CLAUDE_LINE: &str = "install-daemon: claude ";
+
+// The words after `LINGER_LINE` and `CLAUDE_LINE`.
+const LINGER_ON: &str = "yes";
+const LINGER_OFF: &str = "no";
+const CLAUDE_MISSING: &str = "missing";
+
+const LOST_CONNECTION: &str = "The connection to the server was lost: the install may have ended there. Try again looks at the server again.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerSetup {
@@ -24,7 +39,8 @@ pub struct ServerSetup {
     pub stage: SetupStage,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Where a setup stands. The interface keys a stage's content by its name.
+#[derive(Debug, Clone, PartialEq, Eq, IntoStaticStr)]
 pub enum SetupStage {
     /// The app reaches the server and looks for agents-cockpit there.
     Looking,
@@ -35,8 +51,8 @@ pub enum SetupStage {
     CannotInstall { system: String },
     Installing {
         step: InstallStep,
-        /// The bytes of the daemon sent so far, and its size.
-        sent: Option<(u64, u64)>,
+        /// How far the send of the daemon has gone, once it started.
+        sent: Option<SendProgress>,
     },
     /// The daemon runs, and the report says what else it needs.
     Installed(InstallReport),
@@ -72,14 +88,14 @@ impl InstallReport {
         for line in lines {
             if let Some(linger) = line.strip_prefix(LINGER_LINE) {
                 report.linger = match linger.trim() {
-                    "yes" => Some(true),
-                    "no" => Some(false),
+                    LINGER_ON => Some(true),
+                    LINGER_OFF => Some(false),
                     _ => None,
                 };
             } else if let Some(claude) = line.strip_prefix(CLAUDE_LINE) {
                 let claude = claude.trim();
                 report.claude =
-                    (claude != "missing" && !claude.is_empty()).then(|| claude.to_owned());
+                    (claude != CLAUDE_MISSING && !claude.is_empty()).then(|| claude.to_owned());
             }
         }
         report
@@ -114,12 +130,13 @@ pub fn start(state: &mut AppState, config: MachineConfig) -> SetupRun {
 }
 
 /// The look at the server ended. A daemon found there adds the server with its path. Otherwise
-/// the setup offers to install, when `carries` says the app has a daemon for the server's system.
+/// the setup offers to install `carried`, the daemon this app carries, when it runs on the
+/// server's system.
 pub fn looked(
     state: &mut AppState,
     host: &str,
     found: Result<ServerInstall, String>,
-    carries: bool,
+    carried: Option<&Path>,
 ) -> Option<MachineChange> {
     let setup = setup_of(state, host)?;
     if setup.stage != SetupStage::Looking {
@@ -142,7 +159,7 @@ pub fn looked(
         machines::close_add_form(state);
         return Some(MachineChange::Add(config));
     }
-    setup.stage = if carries && install.runs_carried_daemon() {
+    setup.stage = if carried.is_some() && install.runs_carried_daemon() {
         SetupStage::Offer {
             system: install.system,
         }
@@ -169,12 +186,12 @@ pub fn install(state: &mut AppState) -> Option<SetupRun> {
     })
 }
 
-/// The app sent `sent` bytes of the daemon, of `total`, to `host`.
-pub fn sending(state: &mut AppState, host: &str, sent_now: u64, total: u64) {
+/// The send of the daemon to `host` reached `progress`.
+pub fn sending(state: &mut AppState, host: &str, progress: SendProgress) {
     if let Some(SetupStage::Installing { sent, .. }) =
         setup_of(state, host).map(|setup| &mut setup.stage)
     {
-        *sent = Some((sent_now, total));
+        *sent = Some(progress);
     }
 }
 
@@ -217,12 +234,12 @@ pub fn installed(
     }
     let said: Vec<&str> = lines
         .iter()
-        .filter_map(|line| line.strip_prefix("install-daemon: "))
+        .filter_map(|line| line.strip_prefix(SAY_PREFIX))
         .collect();
     // The script exits with 1 or 4 after its last word. ssh says 255 when it lost the server,
     // where the install may have ended well.
     let message = match (code, said.last()) {
-        (None | Some(255), _) => "The connection to the server was lost: the install may have ended there. Try again looks at the server again.".to_owned(),
+        (None | Some(255), _) => LOST_CONNECTION.to_owned(),
         (_, Some(last)) => (*last).to_owned(),
         (Some(code), None) => format!("The install ended with code {code}."),
     };
@@ -339,6 +356,25 @@ mod tests {
         texts.iter().map(|text| (*text).to_owned()).collect()
     }
 
+    fn carried() -> Option<&'static Path> {
+        Some(Path::new("/opt/app/agents-cockpit-x86_64-linux"))
+    }
+
+    #[test]
+    fn each_line_the_setup_reads_starts_as_say_writes_it() {
+        let read = [
+            CHECKING_LINE,
+            INSTALLED_LINE,
+            STARTING_LINE,
+            RUNS_LINE,
+            LINGER_LINE,
+            CLAUDE_LINE,
+        ];
+        for line in read {
+            assert!(line.starts_with(SAY_PREFIX), "{line}");
+        }
+    }
+
     #[test]
     fn a_daemon_found_on_the_server_adds_it_with_its_path() {
         let mut state = state_with(Vec::new());
@@ -351,7 +387,7 @@ mod tests {
                 Some("/home/someone/.local/bin/agents-cockpit"),
                 "Linux x86_64",
             )),
-            true,
+            carried(),
         );
 
         assert_eq!(
@@ -366,21 +402,21 @@ mod tests {
 
     #[test]
     fn without_a_daemon_the_app_offers_to_install_only_the_one_it_has() {
-        for (system, carries, offers) in [
-            ("Linux x86_64", true, true),
-            ("Linux aarch64", true, false),
-            ("Linux x86_64", false, false),
+        for (system, carried, offers) in [
+            ("Linux x86_64", carried(), true),
+            ("Linux aarch64", carried(), false),
+            ("Linux x86_64", None, false),
         ] {
             let mut state = state_with(Vec::new());
             start(&mut state, lab());
 
-            let change = looked(&mut state, "lab", Ok(server(None, system)), carries);
+            let change = looked(&mut state, "lab", Ok(server(None, system)), carried);
 
             assert_eq!(change, None);
             assert_eq!(
                 matches!(stage(&state), Some(SetupStage::Offer { .. })),
                 offers,
-                "{system}, carries {carries}"
+                "{system}, carried {carried:?}"
             );
         }
     }
@@ -404,7 +440,7 @@ mod tests {
                 Some("/home/someone/.local/bin/agents-cockpit"),
                 "Linux x86_64",
             )),
-            true,
+            carried(),
         );
 
         assert_eq!(change, None);
@@ -419,7 +455,12 @@ mod tests {
     fn a_lost_connection_during_the_install_says_so_rather_than_the_last_step() {
         let mut state = state_with(Vec::new());
         start(&mut state, lab());
-        looked(&mut state, "lab", Ok(server(None, "Linux x86_64")), true);
+        looked(
+            &mut state,
+            "lab",
+            Ok(server(None, "Linux x86_64")),
+            carried(),
+        );
         install(&mut state);
         let said = lines(&["install-daemon: starting the service"]);
 
@@ -438,7 +479,12 @@ mod tests {
     fn an_install_moves_through_its_steps_and_adds_the_server_with_the_installed_path() {
         let mut state = state_with(Vec::new());
         start(&mut state, lab());
-        looked(&mut state, "lab", Ok(server(None, "Linux x86_64")), true);
+        looked(
+            &mut state,
+            "lab",
+            Ok(server(None, "Linux x86_64")),
+            carried(),
+        );
 
         assert_eq!(
             install(&mut state),
@@ -446,12 +492,13 @@ mod tests {
                 host: "lab".to_owned()
             })
         );
-        sending(&mut state, "lab", 5, 10);
+        let half = SendProgress { sent: 5, total: 10 };
+        sending(&mut state, "lab", half);
         assert_eq!(
             stage(&state),
             Some(&SetupStage::Installing {
                 step: InstallStep::Send,
-                sent: Some((5, 10))
+                sent: Some(half)
             })
         );
         let said = lines(&[
@@ -486,7 +533,12 @@ mod tests {
     fn a_failed_install_names_its_step_and_the_scripts_last_word() {
         let mut state = state_with(Vec::new());
         start(&mut state, lab());
-        looked(&mut state, "lab", Ok(server(None, "Linux x86_64")), true);
+        looked(
+            &mut state,
+            "lab",
+            Ok(server(None, "Linux x86_64")),
+            carried(),
+        );
         install(&mut state);
         let said = lines(&[
             "install-daemon: checking /tmp/x",
@@ -544,7 +596,12 @@ mod tests {
     fn closing_leaves_an_install_under_way_to_finish() {
         let mut state = state_with(Vec::new());
         start(&mut state, lab());
-        looked(&mut state, "lab", Ok(server(None, "Linux x86_64")), true);
+        looked(
+            &mut state,
+            "lab",
+            Ok(server(None, "Linux x86_64")),
+            carried(),
+        );
         install(&mut state);
 
         close(&mut state);

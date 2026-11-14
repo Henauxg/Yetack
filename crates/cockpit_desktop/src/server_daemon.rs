@@ -11,13 +11,16 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::state::daemon_probe::ServerInstall;
 use crate::state::daemon_update::OutputLine;
 use crate::state::error_chain;
-use crate::update_script::{self, APP_VERSION};
+use crate::state::update_plan::SendProgress;
+use crate::update_script::{
+    self, APP_VERSION, BUILT_OPTION, CHECK_OPTION, SHA256_OPTION, VERSION_OPTION,
+};
 
 const INSTALL_SCRIPT: &str = include_str!("../../../contrib/install-daemon.sh");
 
-/// The Linux daemon's name beside the app. The Windows zip holds it, and `just linux-daemon`
-/// writes it beside a build from source.
-pub const BESIDE_THE_APP: &str = "agents-cockpit-x86_64-linux";
+/// The file name of the Linux daemon the app carries beside itself. The Windows zip holds it, and
+/// `just linux-daemon` writes it beside a build from source.
+pub const CARRIED_FILE_NAME: &str = "agents-cockpit-x86_64-linux";
 
 /// The Linux daemon a package carries, set when it builds the app: the `.deb`'s
 /// `/usr/bin/agents-cockpit`, or the flake's static daemon in the Nix store.
@@ -43,8 +46,9 @@ fi
 echo "$file""#;
 
 /// Prints the server's system, then where the daemon `$1` names is, who owns it, and its version,
-/// as `key=value` lines for `ServerInstall::parse`. A command run over SSH loads no shell profile,
-/// so the folders a user's own programs are in join the `PATH`.
+/// as `key=value` lines that `ServerInstall` parses: `ProbeKey` names the keys, and `OwnerWord` and
+/// `PACKAGE_OWNER` the owners. A command run over SSH loads no shell profile, so the folders a
+/// user's own programs are in join the `PATH`.
 const PROBE_SCRIPT: &str = r#"PATH=$PATH:$HOME/.local/share/agents-cockpit/bin:$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin:/etc/profiles/per-user/$(id -un)/bin
 echo "system=$(uname -sm)"
 binary=$1
@@ -96,11 +100,11 @@ pub async fn install(
         None => APP_VERSION.to_owned(),
     };
     let arguments = [
-        "--built",
+        BUILT_OPTION,
         sent.remote_file.as_str(),
-        "--sha256",
+        SHA256_OPTION,
         sent.sha256.as_str(),
-        "--version",
+        VERSION_OPTION,
         version.as_str(),
     ];
     run_install_script(host, &arguments, on_lines).await
@@ -108,19 +112,30 @@ pub async fn install(
 
 /// Reads again what the daemon on `host` needs besides itself, giving the lines to `on_lines`.
 pub async fn check_needs(host: &str, on_lines: impl FnMut(Vec<OutputLine>)) -> Option<i32> {
-    run_install_script(host, &["--check"], on_lines).await
+    run_install_script(host, &[CHECK_OPTION], on_lines).await
 }
 
+/// Runs the install script with `arguments`. Why ssh could not start or the script could not run
+/// goes to `on_lines` as a line of stderr, and the exit code is then `None`.
 async fn run_install_script(
     host: &str,
     arguments: &[&str],
     mut on_lines: impl FnMut(Vec<OutputLine>),
 ) -> Option<i32> {
-    let command = ssh_script_command(host, arguments).ok()?;
-    update_script::run(command, INSTALL_SCRIPT, &mut on_lines)
-        .await
-        .ok()?
-        .code()
+    let command = match ssh_script_command(host, arguments) {
+        Ok(command) => command,
+        Err(error) => {
+            on_lines(vec![update_script::error_line(&error)]);
+            return None;
+        }
+    };
+    match update_script::run(command, INSTALL_SCRIPT, &mut on_lines).await {
+        Ok(status) => status.code(),
+        Err(error) => {
+            on_lines(vec![update_script::error_line(&error)]);
+            None
+        }
+    }
 }
 
 /// Reads how `host` runs `binary`, the daemon's path or command. `Err` says why it failed.
@@ -137,7 +152,8 @@ pub async fn probe(host: &str, binary: &str) -> Result<ServerInstall, String> {
             said => said.to_owned(),
         });
     }
-    ServerInstall::parse(&String::from_utf8_lossy(&output.stdout))
+    let install: ServerInstall = String::from_utf8_lossy(&output.stdout).parse()?;
+    Ok(install)
 }
 
 /// The Linux daemon this app carries, when it has one: the one its package names, or the file
@@ -146,7 +162,7 @@ pub fn carried() -> Option<PathBuf> {
     let packaged = PACKAGED.filter(|path| !path.is_empty()).map(PathBuf::from);
     let beside = std::env::current_exe()
         .ok()
-        .and_then(|app| Some(app.parent()?.join(BESIDE_THE_APP)));
+        .and_then(|app| Some(app.parent()?.join(CARRIED_FILE_NAME)));
     packaged
         .into_iter()
         .chain(beside)
@@ -162,12 +178,11 @@ pub struct SentDaemon {
     pub sha256: String,
 }
 
-/// Sends `file` to `host`, telling `on_progress` the bytes sent and the total as it goes. `Err`
-/// says why it failed.
+/// Sends `file` to `host`, telling `on_progress` how far it has gone. `Err` says why it failed.
 pub async fn send(
     host: &str,
     file: &Path,
-    mut on_progress: impl FnMut(u64, u64),
+    mut on_progress: impl FnMut(SendProgress),
 ) -> Result<SentDaemon, String> {
     let bytes = tokio::fs::read(file)
         .await
@@ -186,42 +201,61 @@ pub async fn send(
     // its stderr then say why.
     let writing = async move {
         let mut sent = 0_u64;
-        on_progress(sent, total);
+        on_progress(SendProgress { sent, total });
         for chunk in bytes.chunks(CHUNK) {
             stdin.write_all(chunk).await?;
             sent = sent.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
-            on_progress(sent, total);
+            on_progress(SendProgress { sent, total });
         }
         stdin.shutdown().await
     };
     let mut said = String::new();
     let mut errors = String::new();
-    let (written, _, _) = tokio::join!(
+    let (written, read_said, read_errors) = tokio::join!(
         writing,
         stdout.read_to_string(&mut said),
         stderr.read_to_string(&mut errors),
     );
     let status = child.wait().await.map_err(|error| error_chain(&error))?;
     let remote_file = said.lines().last().unwrap_or_default().trim();
-    if status.success() && written.is_ok() && remote_file.starts_with('/') {
+    let complete = written.is_ok() && read_said.is_ok();
+    if status.success() && complete && remote_file.starts_with('/') {
         return Ok(SentDaemon {
             remote_file: remote_file.to_owned(),
             sha256,
         });
     }
-    Err(send_failure(&errors, written.err()))
+    let own_error = own_send_error(written, read_said, read_errors);
+    Err(send_failure(&errors, own_error))
 }
 
-/// Why a send failed: what ssh or the server wrote, else why the app could not write.
-fn send_failure(errors: &str, write_error: Option<io::Error>) -> String {
+/// What failed on the app's side of a send: its write, its read of the file's path, then its
+/// read of what ssh said.
+fn own_send_error(
+    written: io::Result<()>,
+    read_said: io::Result<usize>,
+    read_errors: io::Result<usize>,
+) -> Option<String> {
+    if let Err(error) = written {
+        return Some(format!("The connection closed during the send: {error}"));
+    }
+    if let Err(error) = read_said {
+        return Some(format!(
+            "Cannot read where the server wrote the file: {error}"
+        ));
+    }
+    read_errors
+        .err()
+        .map(|error| format!("Cannot read what ssh said: {error}"))
+}
+
+/// Why a send failed: what ssh or the server wrote, else what failed on the app's side.
+fn send_failure(errors: &str, own_error: Option<String>) -> String {
     let errors = errors.trim();
     if !errors.is_empty() {
         return errors.to_owned();
     }
-    match write_error {
-        Some(error) => format!("The connection closed during the send: {error}"),
-        None => "The server did not say where it wrote the file".to_owned(),
-    }
+    own_error.unwrap_or_else(|| "The server did not say where it wrote the file".to_owned())
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -260,19 +294,60 @@ mod tests {
     }
 
     #[test]
+    fn the_probe_prints_each_key_and_owner_that_server_install_reads() {
+        use crate::state::daemon_probe::{OwnerWord, PACKAGE_OWNER, ProbeKey};
+        use strum::VariantArray;
+
+        for &key in ProbeKey::VARIANTS {
+            let key: &str = key.into();
+            assert!(PROBE_SCRIPT.contains(&format!("echo \"{key}=")), "{key}");
+        }
+        for &owner in OwnerWord::VARIANTS {
+            let owner: &str = owner.into();
+            assert!(PROBE_SCRIPT.contains(&format!("owner={owner}")), "{owner}");
+        }
+        assert!(PROBE_SCRIPT.contains(&format!("owner=\"{PACKAGE_OWNER}")));
+    }
+
+    #[test]
+    fn the_probe_owns_a_daemon_in_the_folders_the_screens_name() {
+        use crate::state::daemon_probe::{APP_BIN_FOLDER, USER_BIN_FOLDER};
+
+        for folder in [APP_BIN_FOLDER, USER_BIN_FOLDER] {
+            let in_home = folder.strip_prefix("~/").unwrap();
+            assert!(
+                PROBE_SCRIPT.contains(&format!("readlink -f \"$HOME/{in_home}\"")),
+                "{folder}"
+            );
+        }
+    }
+
+    #[test]
     fn a_failed_send_says_what_the_server_wrote_first() {
-        let refused = io::Error::from(io::ErrorKind::BrokenPipe);
+        let refused = || Err(io::Error::from(io::ErrorKind::BrokenPipe));
+        let invalid = || Err(io::Error::from(io::ErrorKind::InvalidData));
 
         assert_eq!(
-            send_failure("mkdir: cannot create directory\n", Some(refused)),
+            send_failure(
+                "mkdir: cannot create directory\n",
+                own_send_error(refused(), Ok(0), Ok(0))
+            ),
             "mkdir: cannot create directory"
         );
         assert!(
-            send_failure("", Some(io::Error::from(io::ErrorKind::BrokenPipe)))
+            send_failure("", own_send_error(refused(), invalid(), Ok(0)))
                 .starts_with("The connection closed during the send")
         );
+        assert!(
+            send_failure("", own_send_error(Ok(()), invalid(), Ok(0)))
+                .starts_with("Cannot read where the server wrote the file")
+        );
+        assert!(
+            send_failure("", own_send_error(Ok(()), Ok(0), invalid()))
+                .starts_with("Cannot read what ssh said")
+        );
         assert_eq!(
-            send_failure("  ", None),
+            send_failure("  ", own_send_error(Ok(()), Ok(0), Ok(0))),
             "The server did not say where it wrote the file"
         );
     }
@@ -285,7 +360,7 @@ mod tests {
             .env("HOME", home)
             .output()
             .unwrap();
-        ServerInstall::parse(&String::from_utf8(output.stdout).unwrap()).unwrap()
+        String::from_utf8(output.stdout).unwrap().parse().unwrap()
     }
 
     /// A fake daemon at `path`, which prints its version.

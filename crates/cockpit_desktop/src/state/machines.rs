@@ -344,9 +344,9 @@ pub fn add(state: &mut AppState) -> Option<Adding> {
         return None;
     };
     let path = if view.remote_command.trim().is_empty() {
-        Path::Look
+        DaemonPath::MayLook
     } else {
-        Path::Given
+        DaemonPath::Required
     };
     let checked = check(
         state,
@@ -360,11 +360,11 @@ pub fn add(state: &mut AppState) -> Option<Adding> {
         return None;
     };
     match (checked, path) {
-        (Ok(machine), Path::Given) => {
+        (Ok(machine), DaemonPath::Required) => {
             *view = MachinesView::default();
             Some(Adding::Add(MachineChange::Add(machine)))
         }
-        (Ok(machine), Path::Look) => {
+        (Ok(machine), DaemonPath::MayLook) => {
             view.error = None;
             Some(Adding::Setup(server_setup::start(state, machine)))
         }
@@ -377,10 +377,10 @@ pub fn add(state: &mut AppState) -> Option<Adding> {
 
 /// Whether a form must name the daemon's path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Path {
-    Given,
+enum DaemonPath {
+    Required,
     /// A new server's form may leave it empty: the app looks for the daemon.
-    Look,
+    MayLook,
 }
 
 /// Whether the server's Edit button shows: a server the config names, whose update is not under
@@ -437,7 +437,7 @@ pub fn save_edit(state: &mut AppState) -> Option<MachineChange> {
             &edit.host,
             &edit.remote_command,
             Some(machine),
-            Path::Given,
+            DaemonPath::Required,
         )
         .map(|config| MachineConfig {
             source_dir: (!source_dir.is_empty()).then(|| source_dir.to_owned()),
@@ -491,7 +491,7 @@ fn check(
     host: &str,
     remote_command: &str,
     editing: Option<MachineId>,
-    path: Path,
+    path: DaemonPath,
 ) -> Result<MachineConfig, &'static str> {
     let host = host.trim();
     let remote_command = remote_command.trim();
@@ -503,7 +503,7 @@ fn check(
     if host.is_empty() || host.starts_with('-') {
         return Err("Name the SSH host, such as devbox or dev@devbox.");
     }
-    let looks = path == Path::Look && remote_command.is_empty();
+    let looks = path == DaemonPath::MayLook && remote_command.is_empty();
     if !looks && !remote_command.starts_with('/') {
         return Err("Give the absolute path of agents-cockpit on the server, or leave it empty.");
     }

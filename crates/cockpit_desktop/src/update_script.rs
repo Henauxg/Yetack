@@ -21,6 +21,15 @@ const SCRIPT: &str = include_str!("../../../contrib/update-daemon.sh");
 
 const CANCEL_OPTION: &str = "--cancel";
 
+// The options both scripts take for a daemon the app sent: its file, its checksum, and the
+// version it must print.
+pub const BUILT_OPTION: &str = "--built";
+pub const SHA256_OPTION: &str = "--sha256";
+pub const VERSION_OPTION: &str = "--version";
+
+/// Makes `contrib/install-daemon.sh` only say what the daemon needs.
+pub const CHECK_OPTION: &str = "--check";
+
 /// Skips the script's refusal for busy agents: "Update now".
 const EVEN_IF_BUSY_OPTION: &str = "--even-if-busy";
 
@@ -87,7 +96,8 @@ pub async fn cancel(plan: &ServerPlan) -> Result<(), String> {
     Err(said.join(" "))
 }
 
-fn error_line(error: &dyn Error) -> OutputLine {
+/// `error` as a line of the script's stderr.
+pub fn error_line(error: &dyn Error) -> OutputLine {
     OutputLine {
         stream: OutputStream::Stderr,
         text: error_chain(error),
@@ -109,11 +119,11 @@ fn update_arguments<'a>(
     ];
     match sent {
         Some(sent) => arguments.extend([
-            "--built",
+            BUILT_OPTION,
             sent.remote_file.as_str(),
-            "--sha256",
+            SHA256_OPTION,
             sent.sha256.as_str(),
-            "--version",
+            VERSION_OPTION,
             version,
         ]),
         None => {
@@ -298,7 +308,7 @@ mod tests {
                 "0.2.0 (3f9c2e1)"
             ]
         );
-        for option in ["--built", "--sha256", "--version"] {
+        for option in [BUILT_OPTION, SHA256_OPTION, VERSION_OPTION] {
             assert!(
                 SCRIPT.contains(&format!("{option}) ")),
                 "the script parses {option}"

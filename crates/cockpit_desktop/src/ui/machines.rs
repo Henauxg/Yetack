@@ -2,6 +2,7 @@
 //! do about it, a ⋯ menu on each server's row that edits, copies or removes it, and the form that
 //! adds a server.
 
+use std::cmp::Ordering;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -9,7 +10,7 @@ use dioxus::prelude::*;
 
 use crate::connection::{Clock, Cockpit};
 use crate::machine::MachineId;
-use crate::state::daemon_probe::CARRIED_SYSTEM;
+use crate::state::daemon_probe::{APP_BIN_FOLDER, CARRIED_SYSTEM, UNIT_FILE};
 use crate::state::machine_status::StatusAction;
 use crate::state::machines::{
     self, MachineChange, MachineName, MachineRow, RowNote, RowVersion, ServerRow, UpdateLine,
@@ -17,6 +18,7 @@ use crate::state::machines::{
 };
 use crate::state::server_setup::{self, InstallReport, InstallStep, ServerSetup, SetupStage};
 use crate::state::update_offer::ProgramBuild;
+use crate::state::update_plan::SendProgress;
 use crate::state::{AppState, Dialog, MachineEdit, MachineMenu, MachinesView, daemon_update};
 use crate::ui::accounts::CommandBox;
 use crate::ui::icons::{Icon, IconKind};
@@ -507,20 +509,29 @@ fn SetupStepRow(mark: Mark, title: String, detail: Option<String>) -> Element {
             span { class: "step-text",
                 "{title}"
                 if let Some(detail) = detail {
-                    span { class: "step-detail", "{detail}" }
+                    span { class: "step-detail",
+                        span { "{detail}" }
+                    }
                 }
             }
         }
     }
 }
 
-/// The mark of `step` while `current` runs or failed.
-fn mark_of(step: InstallStep, current: InstallStep, failed: bool) -> Mark {
-    match step.cmp(&current) {
-        std::cmp::Ordering::Less => Mark::Done,
-        std::cmp::Ordering::Equal if failed => Mark::Failed,
-        std::cmp::Ordering::Equal => Mark::Now,
-        std::cmp::Ordering::Greater => Mark::Later,
+/// How the setup's current step stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CurrentStep {
+    Runs,
+    Failed,
+}
+
+/// The mark of `step` while `current` stands as `standing` says.
+fn mark_of(step: InstallStep, current: InstallStep, standing: CurrentStep) -> Mark {
+    match (step.cmp(&current), standing) {
+        (Ordering::Less, _) => Mark::Done,
+        (Ordering::Equal, CurrentStep::Runs) => Mark::Now,
+        (Ordering::Equal, CurrentStep::Failed) => Mark::Failed,
+        (Ordering::Greater, _) => Mark::Later,
     }
 }
 
@@ -539,7 +550,8 @@ fn SetupPanel(setup: ServerSetup) -> Element {
             machines::close_add_form(state);
         });
     };
-    match setup.stage {
+    let stage: &'static str = (&setup.stage).into();
+    let content = match setup.stage {
         SetupStage::Looking => rsx! {
             SetupHead { title: format!("Set up {name}"), lead: format!("SSH {host}") }
             ol { class: "update-steps",
@@ -567,8 +579,8 @@ fn SetupPanel(setup: ServerSetup) -> Element {
                     ":"
                 }
                 ul { class: "setup-files mono",
-                    li { "~/.local/share/agents-cockpit/bin/agents-cockpit" }
-                    li { "~/.config/systemd/user/agents-cockpit.service" }
+                    li { "{APP_BIN_FOLDER}/agents-cockpit" }
+                    li { "{UNIT_FILE}" }
                 }
             }
             div { class: "machine-add-actions",
@@ -606,13 +618,7 @@ fn SetupPanel(setup: ServerSetup) -> Element {
             }
         }
         SetupStage::Installing { step, sent } => {
-            let sent_detail = sent.map(|(sent, total)| {
-                if step == InstallStep::Send && sent < total {
-                    format!("{} of {}", format::bytes(sent), format::bytes(total))
-                } else {
-                    format::bytes(total)
-                }
-            });
+            let sent_detail = sent.map(SendProgress::detail);
             rsx! {
                 SetupHead {
                     title: format!("Installing on {name}"),
@@ -621,12 +627,12 @@ fn SetupPanel(setup: ServerSetup) -> Element {
                 ol { class: "update-steps",
                     SetupStepRow { mark: Mark::Done, title: format!("Reach {name}"), detail: None }
                     SetupStepRow {
-                        mark: mark_of(InstallStep::Send, step, false),
+                        mark: mark_of(InstallStep::Send, step, CurrentStep::Runs),
                         title: format!("Send {release} to {name}"),
                         detail: sent_detail,
                     }
-                    SetupStepRow { mark: mark_of(InstallStep::Check, step, false), title: format!("Check it on {name}"), detail: None }
-                    SetupStepRow { mark: mark_of(InstallStep::Start, step, false), title: "Start the service", detail: None }
+                    SetupStepRow { mark: mark_of(InstallStep::Check, step, CurrentStep::Runs), title: format!("Check it on {name}"), detail: None }
+                    SetupStepRow { mark: mark_of(InstallStep::Start, step, CurrentStep::Runs), title: "Start the service", detail: None }
                     SetupStepRow { mark: Mark::Later, title: "Keep it running after you log out", detail: None }
                     SetupStepRow { mark: Mark::Later, title: "Find Claude Code", detail: None }
                 }
@@ -651,23 +657,23 @@ fn SetupPanel(setup: ServerSetup) -> Element {
             SetupHead { title: format!("The setup of {name} failed"), lead: format!("SSH {host}") }
             ol { class: "update-steps",
                 SetupStepRow {
-                    mark: mark_of(InstallStep::Reach, step, true),
+                    mark: mark_of(InstallStep::Reach, step, CurrentStep::Failed),
                     title: format!("Reach {name}"),
                     detail: (step == InstallStep::Reach).then(|| message.clone()),
                 }
                 if step > InstallStep::Reach {
                     SetupStepRow {
-                        mark: mark_of(InstallStep::Send, step, true),
+                        mark: mark_of(InstallStep::Send, step, CurrentStep::Failed),
                         title: format!("Send {release} to {name}"),
                         detail: (step == InstallStep::Send).then(|| message.clone()),
                     }
                     SetupStepRow {
-                        mark: mark_of(InstallStep::Check, step, true),
+                        mark: mark_of(InstallStep::Check, step, CurrentStep::Failed),
                         title: format!("Check it on {name}"),
                         detail: (step == InstallStep::Check).then(|| message.clone()),
                     }
                     SetupStepRow {
-                        mark: mark_of(InstallStep::Start, step, true),
+                        mark: mark_of(InstallStep::Start, step, CurrentStep::Failed),
                         title: "Start the service",
                         detail: (step == InstallStep::Start).then(|| message.clone()),
                     }
@@ -685,6 +691,13 @@ fn SetupPanel(setup: ServerSetup) -> Element {
                 }
             }
         },
+    };
+    // A list of one, keyed by the stage: each stage's content comes in new, and fades in.
+    let keyed = std::iter::once(rsx! {
+        div { key: "{stage}", class: "setup-stage", {content} }
+    });
+    rsx! {
+        {keyed}
     }
 }
 

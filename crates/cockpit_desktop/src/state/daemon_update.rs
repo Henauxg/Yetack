@@ -12,7 +12,9 @@ use super::app_state::{AppState, MachineState};
 use super::daemon_probe::{DaemonProbe, ProbeTarget, ServerInstall};
 use super::ui_state::Dialog;
 use super::update_offer::{self, GapKind, ProgramBuild, VersionGap};
-use super::update_plan::{BusyAgents, JobCheck, ServerPlan, UpdatePlan, UpdateRun, UpdateStep};
+use super::update_plan::{
+    BusyAgents, JobCheck, SendProgress, ServerPlan, UpdatePlan, UpdateRun, UpdateStep,
+};
 use crate::config::MachineConfig;
 use crate::machine::MachineId;
 
@@ -49,8 +51,8 @@ pub struct UpdateProgress {
     pub output: VecDeque<String>,
     /// What the script wrote to stderr, which says why it stopped, the oldest lines dropped.
     errors: Vec<String>,
-    /// The bytes of the daemon sent so far, and its size, once the app started to send it.
-    pub sent: Option<(u64, u64)>,
+    /// How far the send of the daemon has gone, once the app started to send it.
+    pub sent: Option<SendProgress>,
     /// "Cancel the update" was pressed.
     pub cancel_asked: bool,
     /// The machine's count of connections (`MachineState::connections`) as the stop of this
@@ -449,9 +451,7 @@ pub fn start_when_idle(state: &mut AppState, machine: MachineId) -> Option<Updat
         return None;
     }
     // After an edit or a retry, the wait holds until the probe says the update can run.
-    if runnable(known).is_none() {
-        return None;
-    }
+    runnable(known)?;
     state.machines.get_mut(machine)?.update = None;
     begin(state, machine, BusyAgents::Refuse)
 }
@@ -491,16 +491,12 @@ fn plan_to_run(known: &MachineState) -> Option<UpdatePlan> {
 /// system it runs on. Elsewhere the script builds it.
 fn runnable(known: &MachineState) -> Option<UpdatePlan> {
     match known.update_plan.clone()? {
-        UpdatePlan::Server(mut plan) => {
+        UpdatePlan::Server(plan) => {
             let DaemonProbe::Read(install) = &known.daemon_probe else {
                 return None;
             };
-            let daemon = install.replaceable()?;
-            plan.remote_command.clone_from(&daemon.path);
-            if !install.runs_carried_daemon() {
-                plan.daemon_file = None;
-            }
-            Some(UpdatePlan::Server(plan))
+            install.replaceable()?;
+            Some(UpdatePlan::Server(install.plan_for(plan)))
         }
         service @ UpdatePlan::Service(_) => Some(service),
     }
@@ -639,10 +635,10 @@ pub fn output(state: &mut AppState, machine: MachineId, lines: Vec<OutputLine>) 
     progress.errors.drain(..dropped);
 }
 
-/// The app sent `sent` bytes of the daemon, of `total`.
-pub fn sending(state: &mut AppState, machine: MachineId, sent: u64, total: u64) {
+/// The send of the daemon reached `sent`.
+pub fn sending(state: &mut AppState, machine: MachineId, sent: SendProgress) {
     if let Some(progress) = running_mut(state, machine) {
-        progress.sent = Some((sent, total));
+        progress.sent = Some(sent);
     }
 }
 
@@ -664,6 +660,17 @@ pub fn step_started(state: &mut AppState, machine: MachineId, step: UpdateStep) 
 /// The script ended with `code`, `None` when ssh lost it. Returns whether the app should try the
 /// machine again at once.
 pub fn finished(state: &mut AppState, machine: MachineId, code: Option<i32>) -> bool {
+    ended(state, machine, UpdateFailure::from_exit_code(code))
+}
+
+/// The send of the daemon failed, so the script never ran: nothing changed on the server.
+pub fn send_failed(state: &mut AppState, machine: MachineId) {
+    ended(state, machine, Some(UpdateFailure::Failed));
+}
+
+/// The update ended, with `failure` unless it succeeded. Returns whether the app should try the
+/// machine again at once.
+fn ended(state: &mut AppState, machine: MachineId, failure: Option<UpdateFailure>) -> bool {
     let Some(known) = state.machines.get_mut(machine) else {
         return false;
     };
@@ -673,7 +680,7 @@ pub fn finished(state: &mut AppState, machine: MachineId, code: Option<i32>) -> 
     else {
         return false;
     };
-    match UpdateFailure::from_exit_code(code) {
+    match failure {
         // The script waits for the new daemon to answer: a connection the app has now reaches it.
         None if known.is_connected() => {
             close_empty_dialog(state, machine);
@@ -943,7 +950,7 @@ pub fn update_line(known: &MachineState) -> Option<UpdateLine> {
     match (&known.update, &known.version_gap) {
         (Some(DaemonUpdate::Running(progress) | DaemonUpdate::Reconnecting(progress)), _) => {
             Some(UpdateLine {
-                progress: Some(LineProgress::of(progress)),
+                progress: Some(LineProgress::from(progress)),
                 ..line("Updating…", UpdateLink::Show, false)
             })
         }
@@ -989,11 +996,11 @@ pub struct LineProgress {
     /// The step under way: "Sending 0.2.0", "Restarting".
     pub text: String,
     /// The share of the update done, in percent: the steps done, and the bytes of a send.
-    pub percent: u32,
+    pub percent: u8,
 }
 
-impl LineProgress {
-    fn of(progress: &UpdateProgress) -> Self {
+impl From<&UpdateProgress> for LineProgress {
+    fn from(progress: &UpdateProgress) -> Self {
         let release = &ProgramBuild::this_program().version;
         let text = match progress.step {
             UpdateStep::GetVersion | UpdateStep::Build => format!("Building {release}"),
@@ -1010,9 +1017,7 @@ impl LineProgress {
             .position(|step| *step == progress.step)
             .unwrap_or_default();
         let within = match (progress.step, progress.sent) {
-            (UpdateStep::Send, Some((sent, total))) if total > 0 => {
-                sent.min(total).saturating_mul(100) / total
-            }
+            (UpdateStep::Send, Some(sent)) => u64::from(sent.percent()),
             _ => 0,
         };
         let count = u64::try_from(steps.len()).unwrap_or(1).max(1);
@@ -1020,7 +1025,7 @@ impl LineProgress {
         let percent = (done.saturating_mul(100).saturating_add(within)) / count;
         Self {
             text,
-            percent: u32::try_from(percent).unwrap_or(100),
+            percent: u8::try_from(percent).unwrap_or(100),
         }
     }
 }
@@ -1209,7 +1214,6 @@ mod tests {
     use crate::daemon_label::{DaemonLabel, DaemonPlace};
     use crate::state::app_state::tests::{state_with, summary};
     use crate::state::update_plan::ServicePlan;
-
     use crate::state::{AgentEntry, ConnectionState, Drafts, MachineState, machines};
 
     fn build_box() -> MachineId {
@@ -2203,6 +2207,34 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_send_ends_the_update_as_failed_with_what_the_app_said() {
+        let mut state = with_older_server();
+        let sends = UpdatePlan::Server(ServerPlan {
+            daemon_file: Some("/opt/app/agents-cockpit-x86_64-linux".into()),
+            ..server_plan()
+        });
+        known_mut(&mut state).update_plan = Some(sends.clone());
+        start(&mut state, build_box()).unwrap();
+        let said = "Could not send the daemon: Connection refused";
+        output(
+            &mut state,
+            build_box(),
+            vec![line(OutputStream::Stderr, said)],
+        );
+
+        send_failed(&mut state, build_box());
+
+        assert_eq!(
+            update(&state),
+            Some(&DaemonUpdate::Failed(FailedUpdate {
+                plan: sends,
+                failure: UpdateFailure::Failed,
+                message: said.to_owned(),
+            }))
+        );
+    }
+
+    #[test]
     fn the_sidebar_line_names_the_step_and_counts_the_bytes_of_a_send() {
         let mut state = with_older_server();
         let sends = UpdatePlan::Server(ServerPlan {
@@ -2218,7 +2250,7 @@ mod tests {
                 .map(|progress| (progress.text, progress.percent))
         };
 
-        sending(&mut state, build_box(), 2, 4);
+        sending(&mut state, build_box(), SendProgress { sent: 2, total: 4 });
         assert_eq!(
             progress(&state),
             Some((format!("Sending {release}"), 12)),
