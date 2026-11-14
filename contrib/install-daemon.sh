@@ -83,6 +83,15 @@ check_systemd() {
         die "this machine runs no systemd user session: start the daemon with contrib/start-daemon instead"
 }
 
+# A service of this name runs a daemon the user set up: the install must not replace its unit, and
+# `enable --now` would leave its daemon running.
+check_no_service() {
+    unit=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/agents-cockpit.service
+    if [ -e "$unit" ] || [ -L "$unit" ] || systemctl --user cat agents-cockpit >/dev/null 2>&1; then
+        die "a systemd user service agents-cockpit exists already: give the path of the daemon it runs, or remove the service first"
+    fi
+}
+
 install_binary() {
     folder=$HOME/.local/share/agents-cockpit
     binary=$folder/bin/agents-cockpit
@@ -156,6 +165,7 @@ main() {
     trap 'rm -f "$sent"' EXIT
     check_sent
     check_systemd
+    check_no_service
     install_binary
     write_unit
     start_service

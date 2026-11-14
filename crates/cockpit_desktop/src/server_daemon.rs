@@ -45,7 +45,7 @@ echo "$file""#;
 /// Prints the server's system, then where the daemon `$1` names is, who owns it, and its version,
 /// as `key=value` lines for `ServerInstall::parse`. A command run over SSH loads no shell profile,
 /// so the folders a user's own programs are in join the `PATH`.
-const PROBE_SCRIPT: &str = r#"PATH=$PATH:$HOME/.local/share/agents-cockpit/bin:$HOME/.local/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin
+const PROBE_SCRIPT: &str = r#"PATH=$PATH:$HOME/.local/share/agents-cockpit/bin:$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin:/etc/profiles/per-user/$(id -un)/bin
 echo "system=$(uname -sm)"
 binary=$1
 case $binary in
@@ -59,6 +59,7 @@ if [ -z "$path" ] || [ ! -f "$path" ]; then
     exit 0
 fi
 echo "path=$path"
+echo "command=$binary"
 folder=${path%/*}
 package=
 case $path in

@@ -11,7 +11,6 @@ use cockpit_client::{
 };
 use cockpit_protocol::{AgentId, Request};
 use dioxus::desktop::DesktopContext;
-use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 use tokio::sync::mpsc;
 
@@ -93,6 +92,11 @@ pub enum UpdateCommand {
     Start(MachineId, UpdateRun),
     /// Asks a server's running script to stop before it installs.
     Cancel(MachineId, ServerPlan),
+    /// Reads where a server's daemon is and who owns it: the host, and the daemon's path or
+    /// command.
+    Probe(MachineId, String, String),
+    /// A step of a new server's setup, from "Add a server".
+    Setup(SetupRun),
 }
 
 /// What components hold to read and change the state and to reach the daemon. The drafts are a
@@ -192,13 +196,15 @@ impl Cockpit {
     /// it and the app has not looked yet.
     pub fn probe_daemon(&self, machine: MachineId) {
         let mut signal = self.state;
+        // A write tells every reader, so it waits until a probe is due.
+        if !daemon_update::probe_due(&signal.peek(), machine) {
+            return;
+        }
         let target = daemon_update::probe_to_run(&mut signal.write(), machine);
         if let Some((host, binary)) = target {
-            // Not tied to the card, which may close before the probe ends.
-            spawn_forever(async move {
-                let read = server_daemon::probe(&host, &binary).await;
-                daemon_update::probed(&mut signal.write(), machine, read);
-            });
+            self.daemon.send(ToDaemon::Update(UpdateCommand::Probe(
+                machine, host, binary,
+            )));
         }
     }
 
@@ -244,33 +250,8 @@ impl Cockpit {
     /// Runs a step of a server's setup beside the window: the Machines dialog may close before it
     /// ends.
     fn run_setup(&self, run: SetupRun) {
-        let cockpit = *self;
-        let mut state = self.state;
-        spawn_forever(async move {
-            match run {
-                SetupRun::Look { host } => {
-                    let found = server_daemon::probe(&host, BESIDE_ON_PATH).await;
-                    let carries = server_daemon::carried().is_some();
-                    let change = server_setup::looked(&mut state.write(), found, carries);
-                    if let Some(change) = change {
-                        cockpit.change_machines(change);
-                    }
-                }
-                SetupRun::Install { host } => {
-                    let change = install_on(state, &host).await;
-                    if let Some(change) = change {
-                        cockpit.change_machines(change);
-                    }
-                }
-                SetupRun::Check { host } => {
-                    let mut lines = Vec::new();
-                    let code = server_daemon::check_needs(&host, |batch| lines.extend(batch)).await;
-                    let texts: Vec<String> = lines.into_iter().map(|line| line.text).collect();
-                    let read = (code == Some(0)).then_some(texts.as_slice());
-                    server_setup::checked(&mut state.write(), read);
-                }
-            }
-        });
+        self.daemon
+            .send(ToDaemon::Update(UpdateCommand::Setup(run)));
     }
 
     /// Tries a machine that does not answer again now. The update screens look at its daemon
@@ -676,6 +657,16 @@ impl Servers {
             UpdateCommand::Cancel(machine, plan) => {
                 spawn(cancel_update(state, machine, plan));
             }
+            UpdateCommand::Probe(machine, host, binary) => {
+                let mut state = state;
+                spawn(async move {
+                    let read = server_daemon::probe(&host, &binary).await;
+                    daemon_update::probed(&mut state.write(), machine, (&host, &binary), read);
+                });
+            }
+            UpdateCommand::Setup(run) => {
+                spawn(run_setup(state, run, self.retries.clone()));
+            }
         }
     }
 
@@ -750,24 +741,53 @@ async fn run_update(
 /// The daemon's name, which the setup of a new server looks for on its `PATH`.
 const BESIDE_ON_PATH: &str = "agents-cockpit";
 
+/// Runs a step of a server's setup. A server whose daemon runs joins the app through `added`.
+async fn run_setup(
+    mut state: Signal<AppState>,
+    run: SetupRun,
+    added: mpsc::UnboundedSender<ToDaemon>,
+) {
+    let change = match run {
+        SetupRun::Look { host } => {
+            let found = server_daemon::probe(&host, BESIDE_ON_PATH).await;
+            let carries = server_daemon::carried().is_some();
+            server_setup::looked(&mut state.write(), &host, found, carries)
+        }
+        SetupRun::Install { host } => install_on(state, &host).await,
+        SetupRun::Check { host } => {
+            let mut lines = Vec::new();
+            let code = server_daemon::check_needs(&host, |batch| lines.extend(batch)).await;
+            let texts: Vec<String> = lines.into_iter().map(|line| line.text).collect();
+            let read = (code == Some(0)).then_some(texts.as_slice());
+            server_setup::checked(&mut state.write(), &host, read);
+            None
+        }
+    };
+    if let Some(change) = change {
+        // The window closed: nothing adds the server.
+        let _ = added.send(ToDaemon::Machines(change));
+    }
+}
+
 /// Sends the daemon this app carries to `host` and installs it there. Returns the server to add
 /// once its daemon runs.
 async fn install_on(mut state: Signal<AppState>, host: &str) -> Option<MachineChange> {
     let Some(file) = server_daemon::carried() else {
         server_setup::send_failed(
             &mut state.write(),
+            host,
             "This app carries no daemon to send.".to_owned(),
         );
         return None;
     };
     let sent = server_daemon::send(host, &file, |sent, total| {
-        server_setup::sending(&mut state.write(), sent, total);
+        server_setup::sending(&mut state.write(), host, sent, total);
     })
     .await;
     let sent = match sent {
         Ok(sent) => sent,
         Err(error) => {
-            server_setup::send_failed(&mut state.write(), error);
+            server_setup::send_failed(&mut state.write(), host, error);
             return None;
         }
     };
@@ -775,12 +795,12 @@ async fn install_on(mut state: Signal<AppState>, host: &str) -> Option<MachineCh
     let code = server_daemon::install(host, &sent, |lines| {
         let mut state = state.write();
         for line in lines {
-            server_setup::output(&mut state, &line.text);
+            server_setup::output(&mut state, host, &line.text);
             said.push(line.text);
         }
     })
     .await;
-    server_setup::installed(&mut state.write(), code, &said)
+    server_setup::installed(&mut state.write(), host, code, &said)
 }
 
 /// Sends the daemon this app carries, if the plan has one, then runs the update script. Returns
@@ -973,6 +993,15 @@ async fn run_demo(
                     }
                     Some(ToDaemon::Machines(MachineChange::Edit(machine, config))) => {
                         machines::apply_edit(&mut state.write(), machine, &config);
+                        continue;
+                    }
+                    Some(ToDaemon::Update(UpdateCommand::Probe(machine, host, binary))) => {
+                        let read = Ok(demo::probe_answer(&binary));
+                        daemon_update::probed(&mut state.write(), machine, (&host, &binary), read);
+                        continue;
+                    }
+                    Some(ToDaemon::Update(UpdateCommand::Setup(run))) => {
+                        spawn(demo::play_setup(state, run));
                         continue;
                     }
                     // The demo writes no config.

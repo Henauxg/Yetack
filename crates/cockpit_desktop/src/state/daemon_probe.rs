@@ -30,6 +30,9 @@ pub struct ServerInstall {
 pub struct InstalledDaemon {
     /// The binary's absolute path, its links resolved.
     pub path: String,
+    /// The path the server runs it by, before the links: a profile's link outlives the Nix
+    /// store path it leads to now.
+    pub command: String,
     pub owner: DaemonOwner,
     /// What `--version` printed: "agents-cockpit 0.2.0 (3f9c2e1…)". Empty when it printed nothing.
     pub version: String,
@@ -56,6 +59,7 @@ impl DaemonProbe {
             system: CARRIED_SYSTEM.to_owned(),
             daemon: Some(InstalledDaemon {
                 path: path.to_owned(),
+                command: path.to_owned(),
                 owner: DaemonOwner::App,
                 version: "agents-cockpit 0.0.1".to_owned(),
             }),
@@ -90,10 +94,14 @@ impl ServerInstall {
             None => return Err("The server did not say who owns its daemon".to_owned()),
         };
         let path = value("path").ok_or("The server did not say where its daemon is")?;
+        let command = value("command")
+            .filter(|command| command.starts_with('/'))
+            .unwrap_or_else(|| path.clone());
         Ok(Self {
             system,
             daemon: Some(InstalledDaemon {
                 path,
+                command,
                 owner,
                 version: value("version").unwrap_or_default(),
             }),
@@ -119,7 +127,7 @@ mod tests {
 
     #[test]
     fn a_daemon_the_app_owns_comes_with_its_path_and_version() {
-        let output = "system=Linux x86_64\npath=/home/someone/.local/bin/agents-cockpit\nowner=app\nversion=agents-cockpit 0.1.0 (743d664)\n";
+        let output = "system=Linux x86_64\npath=/home/someone/.local/bin/agents-cockpit\ncommand=agents-cockpit\nowner=app\nversion=agents-cockpit 0.1.0 (743d664)\n";
 
         let install = ServerInstall::parse(output).unwrap();
 
@@ -128,6 +136,7 @@ mod tests {
             install.replaceable(),
             Some(&InstalledDaemon {
                 path: "/home/someone/.local/bin/agents-cockpit".to_owned(),
+                command: "/home/someone/.local/bin/agents-cockpit".to_owned(),
                 owner: DaemonOwner::App,
                 version: "agents-cockpit 0.1.0 (743d664)".to_owned(),
             })
@@ -145,6 +154,22 @@ mod tests {
             Some(&DaemonOwner::Package("agents-cockpit".to_owned()))
         );
         assert_eq!(install.replaceable(), None);
+    }
+
+    #[test]
+    fn a_daemon_found_through_a_link_keeps_the_links_path_to_run_by() {
+        let output = "system=Linux x86_64\npath=/nix/store/0c4d9kx2-agents-cockpit/bin/agents-cockpit\ncommand=/home/someone/.nix-profile/bin/agents-cockpit\nowner=nix\n";
+
+        let daemon = ServerInstall::parse(output).unwrap().daemon.unwrap();
+
+        assert_eq!(
+            daemon.command,
+            "/home/someone/.nix-profile/bin/agents-cockpit"
+        );
+        assert_eq!(
+            daemon.path,
+            "/nix/store/0c4d9kx2-agents-cockpit/bin/agents-cockpit"
+        );
     }
 
     #[test]

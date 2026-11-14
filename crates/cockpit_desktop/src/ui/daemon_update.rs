@@ -47,6 +47,18 @@ pub fn DaemonUpdateScreens(machine: MachineId) -> Element {
     };
     let MachineName { name, local } = MachineName::new(machine, known);
     let offer = update_offer::offer(&state, machine);
+    drop(state);
+    // The failure's "Update again" and a wait need the probe as much as the offer does.
+    use_effect(move || {
+        let due = daemon_update::probe_due(&cockpit.state.read(), machine);
+        if due {
+            cockpit.probe_daemon(machine);
+        }
+    });
+    let state = cockpit.state.read();
+    let Some(known) = state.machines.get(machine) else {
+        return rsx! {};
+    };
     let body = match (known.update.clone(), offer) {
         (Some(DaemonUpdate::Running(progress) | DaemonUpdate::Reconnecting(progress)), _) => {
             rsx! {
@@ -122,17 +134,6 @@ fn what_the_update_does(plan: &UpdatePlan, name: &str, app: &ProgramBuild) -> St
 #[component]
 fn UpdateNote(machine: MachineId, name: String, plan: UpdatePlan, app: ProgramBuild) -> Element {
     let cockpit: Cockpit = use_context();
-    use_effect(move || {
-        let unknown = cockpit
-            .state
-            .read()
-            .machines
-            .get(machine)
-            .is_some_and(|known| known.daemon_probe == DaemonProbe::Unknown);
-        if unknown {
-            cockpit.probe_daemon(machine);
-        }
-    });
     let UpdatePlan::Server(server) = &plan else {
         return rsx! {
             Callout { text: what_the_update_does(&plan, &name, &app) }
@@ -466,7 +467,8 @@ fn AvailableCard(machine: MachineId, name: String, local: bool, offer: UpdateOff
             .map_or((false, false), |known| {
                 (
                     daemon_update::update_ready(known),
-                    daemon_update::owned_by_another(known),
+                    daemon_update::owned_by_another(known)
+                        || matches!(known.daemon_probe, DaemonProbe::Failed(_)),
                 )
             });
     let package = package_owned(cockpit, machine);

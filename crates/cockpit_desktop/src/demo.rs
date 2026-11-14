@@ -22,6 +22,7 @@ use cockpit_protocol::{
     TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem,
     TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
 };
+use dioxus::prelude::{Signal, WritableExt};
 use serde_json::Value;
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
@@ -39,7 +40,9 @@ use crate::state::daemon_update::{
 use crate::state::file_tree::TreeFilter;
 use crate::state::no_daemon::{self, Absence};
 use crate::state::projects::ProjectKey;
-use crate::state::server_setup::{InstallReport, InstallStep, ServerSetup, SetupStage};
+use crate::state::server_setup::{
+    self, InstallReport, InstallStep, ServerSetup, SetupRun, SetupStage,
+};
 use crate::state::update_offer::{self, GapKind, ProgramBuild, VersionGap};
 use crate::state::update_plan::{ServerPlan, ServicePlan, UpdatePlan, UpdateStep};
 use crate::state::{
@@ -968,6 +971,7 @@ fn owned_probe() -> DaemonProbe {
         system: CARRIED_SYSTEM.to_owned(),
         daemon: Some(InstalledDaemon {
             path: SERVER_DAEMON.to_owned(),
+            command: SERVER_DAEMON.to_owned(),
             owner: DaemonOwner::App,
             version: format!("agents-cockpit {LOCAL_OLDER_RELEASE} ({OLDER_COMMIT})"),
         }),
@@ -982,6 +986,7 @@ fn server_owned_by(state: &mut AppState, path: &str, owner: DaemonOwner) {
             system: CARRIED_SYSTEM.to_owned(),
             daemon: Some(InstalledDaemon {
                 path: path.to_owned(),
+                command: path.to_owned(),
                 owner,
                 version: format!("agents-cockpit {LOCAL_OLDER_RELEASE}"),
             }),
@@ -1093,6 +1098,62 @@ fn failed_update(state: &mut AppState, failure: UpdateFailure, code: Option<i32>
     };
     daemon_update::output(state, machine, lines);
     daemon_update::finished(state, machine, code);
+}
+
+/// What the demo's servers answer to a probe of their daemon: one the app owns.
+pub fn probe_answer(_binary: &str) -> ServerInstall {
+    match owned_probe() {
+        DaemonProbe::Read(install) => install,
+        DaemonProbe::Unknown | DaemonProbe::Probing | DaemonProbe::Failed(_) => ServerInstall {
+            system: CARRIED_SYSTEM.to_owned(),
+            daemon: None,
+        },
+    }
+}
+
+/// The install script's lines in the demo, the report saying what is left to do.
+const SETUP_OUTPUT: &[&str] = &[
+    "install-daemon: checking /home/dev/.cache/agents-cockpit/sent/agents-cockpit.k3v9Qa",
+    "install-daemon: installed /home/dev/.local/share/agents-cockpit/bin/agents-cockpit",
+    "install-daemon: starting the service",
+    "install-daemon: the daemon runs",
+    "install-daemon: linger no",
+    "install-daemon: claude missing",
+];
+
+/// Plays a step of a new server's setup: the server has no daemon, and the install works.
+pub async fn play_setup(mut state: Signal<AppState>, run: SetupRun) {
+    match run {
+        SetupRun::Look { host } => {
+            tokio::time::sleep(UPDATE_LINE_PAUSE).await;
+            let none = ServerInstall {
+                system: CARRIED_SYSTEM.to_owned(),
+                daemon: None,
+            };
+            server_setup::looked(&mut state.write(), &host, Ok(none), true);
+        }
+        SetupRun::Install { host } => {
+            for fifth in 1..=5 {
+                tokio::time::sleep(UPDATE_LINE_PAUSE / 2).await;
+                server_setup::sending(&mut state.write(), &host, SENT_SIZE * fifth / 5, SENT_SIZE);
+            }
+            for line in SETUP_OUTPUT {
+                tokio::time::sleep(UPDATE_LINE_PAUSE).await;
+                server_setup::output(&mut state.write(), &host, line);
+            }
+            let said: Vec<String> = SETUP_OUTPUT.iter().map(|line| (*line).to_owned()).collect();
+            // The demo adds no server: its machines are the sample's.
+            server_setup::installed(&mut state.write(), &host, Some(0), &said);
+        }
+        SetupRun::Check { host } => {
+            tokio::time::sleep(UPDATE_LINE_PAUSE).await;
+            let said = [
+                "install-daemon: linger yes".to_owned(),
+                "install-daemon: claude /home/dev/.local/bin/claude".to_owned(),
+            ];
+            server_setup::checked(&mut state.write(), &host, Some(&said));
+        }
+    }
 }
 
 /// Ends the demo's update as its first connection does: the new daemon runs the app's build.

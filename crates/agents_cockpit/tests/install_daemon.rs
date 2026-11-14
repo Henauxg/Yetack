@@ -44,6 +44,7 @@ impl Server {
 echo "$*" >>'{log}'
 case "$*" in
     "--user show-environment") [ ! -f '{no_session}' ] ;;
+    "--user cat agents-cockpit") [ -f '{unit}' ] ;;
     "--user enable --now agents-cockpit")
         "$HOME/.local/share/agents-cockpit/bin/agents-cockpit" serve >>'{serve_log}' 2>&1 </dev/null &
         echo $! >'{pid}'
@@ -52,6 +53,7 @@ esac
 "#,
                 log = server.path("systemctl.log").display(),
                 no_session = server.path("no-session").display(),
+                unit = server.unit().display(),
                 serve_log = server.path("serve.log").display(),
                 pid = server.path("daemon.pid").display(),
             ),
@@ -230,6 +232,38 @@ fn without_a_systemd_user_session_it_installs_nothing_and_says_what_to_do() {
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
     assert!(stderr(&output).contains("contrib/start-daemon"));
     assert!(!server.installed().exists());
+}
+
+#[test]
+fn a_service_the_user_set_up_is_left_alone() {
+    let server = Server::new();
+    fs::create_dir_all(server.unit().parent().unwrap()).unwrap();
+    fs::write(
+        server.unit(),
+        "[Service]
+ExecStart=%h/.cargo/bin/agents-cockpit serve
+",
+    )
+    .unwrap();
+    let (sent, version) = server.sent_binary();
+
+    let output = server.install(&[
+        "--built",
+        sent.to_str().unwrap(),
+        "--sha256",
+        &sha256(&sent),
+        "--version",
+        &version,
+    ]);
+
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(stderr(&output).contains("exists already"));
+    assert!(!server.installed().exists());
+    assert!(
+        fs::read_to_string(server.unit())
+            .unwrap()
+            .contains(".cargo/bin")
+    );
 }
 
 #[test]

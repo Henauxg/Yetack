@@ -117,10 +117,11 @@ pub fn start(state: &mut AppState, config: MachineConfig) -> SetupRun {
 /// the setup offers to install, when `carries` says the app has a daemon for the server's system.
 pub fn looked(
     state: &mut AppState,
+    host: &str,
     found: Result<ServerInstall, String>,
     carries: bool,
 ) -> Option<MachineChange> {
-    let setup = state.machines.setup.as_mut()?;
+    let setup = setup_of(state, host)?;
     if setup.stage != SetupStage::Looking {
         return None;
     }
@@ -136,7 +137,7 @@ pub fn looked(
     };
     if let Some(daemon) = install.daemon {
         let mut config = setup.config.clone();
-        config.remote_command = daemon.path;
+        config.remote_command = daemon.command;
         state.machines.setup = None;
         machines::close_add_form(state);
         return Some(MachineChange::Add(config));
@@ -168,16 +169,19 @@ pub fn install(state: &mut AppState) -> Option<SetupRun> {
     })
 }
 
-/// The app sent `sent` bytes of the daemon, of `total`.
-pub fn sending(state: &mut AppState, sent_now: u64, total: u64) {
-    if let Some(SetupStage::Installing { sent, .. }) = stage_mut(state) {
+/// The app sent `sent` bytes of the daemon, of `total`, to `host`.
+pub fn sending(state: &mut AppState, host: &str, sent_now: u64, total: u64) {
+    if let Some(SetupStage::Installing { sent, .. }) =
+        setup_of(state, host).map(|setup| &mut setup.stage)
+    {
         *sent = Some((sent_now, total));
     }
 }
 
-/// A line of the install script, which moves the steps on and names the installed daemon.
-pub fn output(state: &mut AppState, line: &str) {
-    let Some(setup) = state.machines.setup.as_mut() else {
+/// A line of the install script on `host`, which moves the steps on and names the installed
+/// daemon.
+pub fn output(state: &mut AppState, host: &str, line: &str) {
+    let Some(setup) = setup_of(state, host) else {
         return;
     };
     if let Some(path) = line.strip_prefix(INSTALLED_LINE) {
@@ -195,14 +199,15 @@ pub fn output(state: &mut AppState, line: &str) {
     }
 }
 
-/// The install ended with `code`, `None` when ssh lost it, and `lines`, what the script printed.
-/// Once the daemon runs, the server joins the app with the installed path.
+/// The install on `host` ended with `code`, `None` when ssh lost it, and `lines`, what the
+/// script printed. Once the daemon runs, the server joins the app with the installed path.
 pub fn installed(
     state: &mut AppState,
+    host: &str,
     code: Option<i32>,
     lines: &[String],
 ) -> Option<MachineChange> {
-    let setup = state.machines.setup.as_mut()?;
+    let setup = setup_of(state, host)?;
     let SetupStage::Installing { step, .. } = setup.stage else {
         return None;
     };
@@ -214,18 +219,20 @@ pub fn installed(
         .iter()
         .filter_map(|line| line.strip_prefix("install-daemon: "))
         .collect();
-    let message = match said.last() {
-        Some(last) => (*last).to_owned(),
-        None if code.is_none() => "The connection to the server was lost.".to_owned(),
-        None => format!("The install ended with code {}.", code.unwrap_or_default()),
+    // The script exits with 1 or 4 after its last word. ssh says 255 when it lost the server,
+    // where the install may have ended well.
+    let message = match (code, said.last()) {
+        (None | Some(255), _) => "The connection to the server was lost: the install may have ended there. Try again looks at the server again.".to_owned(),
+        (_, Some(last)) => (*last).to_owned(),
+        (Some(code), None) => format!("The install ended with code {code}."),
     };
     setup.stage = SetupStage::Failed { step, message };
     None
 }
 
-/// The send failed before the script ran.
-pub fn send_failed(state: &mut AppState, message: String) {
-    if let Some(setup) = state.machines.setup.as_mut() {
+/// The send to `host` failed before the script ran.
+pub fn send_failed(state: &mut AppState, host: &str, message: String) {
+    if let Some(setup) = setup_of(state, host) {
         setup.stage = SetupStage::Failed {
             step: InstallStep::Send,
             message,
@@ -248,9 +255,11 @@ pub fn check_again(state: &mut AppState) -> Option<SetupRun> {
     })
 }
 
-/// The report read again, from the script's lines. A check that failed keeps the last report.
-pub fn checked(state: &mut AppState, lines: Option<&[String]>) {
-    if let Some(SetupStage::Installed(report)) = stage_mut(state) {
+/// The report of `host` read again, from the script's lines. A check that failed keeps the last
+/// report.
+pub fn checked(state: &mut AppState, host: &str, lines: Option<&[String]>) {
+    if let Some(SetupStage::Installed(report)) = setup_of(state, host).map(|setup| &mut setup.stage)
+    {
         *report = match lines {
             Some(lines) => InstallReport::read(lines.iter().map(String::as_str)),
             None => InstallReport {
@@ -285,8 +294,14 @@ pub fn close(state: &mut AppState) {
     }
 }
 
-fn stage_mut(state: &mut AppState) -> Option<&mut SetupStage> {
-    state.machines.setup.as_mut().map(|setup| &mut setup.stage)
+/// The setup of `host`. A result of another host's setup, which the user closed since, finds
+/// none.
+fn setup_of<'a>(state: &'a mut AppState, host: &str) -> Option<&'a mut ServerSetup> {
+    state
+        .machines
+        .setup
+        .as_mut()
+        .filter(|setup| setup.config.host == host)
 }
 
 #[cfg(test)]
@@ -309,6 +324,7 @@ mod tests {
             system: system.to_owned(),
             daemon: daemon.map(|path| InstalledDaemon {
                 path: path.to_owned(),
+                command: path.to_owned(),
                 owner: DaemonOwner::App,
                 version: "agents-cockpit 0.1.0".to_owned(),
             }),
@@ -330,6 +346,7 @@ mod tests {
 
         let change = looked(
             &mut state,
+            "lab",
             Ok(server(
                 Some("/home/someone/.local/bin/agents-cockpit"),
                 "Linux x86_64",
@@ -357,7 +374,7 @@ mod tests {
             let mut state = state_with(Vec::new());
             start(&mut state, lab());
 
-            let change = looked(&mut state, Ok(server(None, system)), carries);
+            let change = looked(&mut state, "lab", Ok(server(None, system)), carries);
 
             assert_eq!(change, None);
             assert_eq!(
@@ -369,10 +386,59 @@ mod tests {
     }
 
     #[test]
+    fn a_result_for_a_setup_the_user_closed_does_not_reach_the_next_one() {
+        let mut state = state_with(Vec::new());
+        start(&mut state, lab());
+        close(&mut state);
+        let lab2 = MachineConfig {
+            name: "lab2".to_owned(),
+            host: "lab2".to_owned(),
+            ..lab()
+        };
+        start(&mut state, lab2);
+
+        let change = looked(
+            &mut state,
+            "lab",
+            Ok(server(
+                Some("/home/someone/.local/bin/agents-cockpit"),
+                "Linux x86_64",
+            )),
+            true,
+        );
+
+        assert_eq!(change, None);
+        assert_eq!(
+            stage(&state),
+            Some(&SetupStage::Looking),
+            "lab2 waits for its own look"
+        );
+    }
+
+    #[test]
+    fn a_lost_connection_during_the_install_says_so_rather_than_the_last_step() {
+        let mut state = state_with(Vec::new());
+        start(&mut state, lab());
+        looked(&mut state, "lab", Ok(server(None, "Linux x86_64")), true);
+        install(&mut state);
+        let said = lines(&["install-daemon: starting the service"]);
+
+        installed(&mut state, "lab", Some(255), &said);
+
+        let Some(SetupStage::Failed { message, .. }) = stage(&state) else {
+            panic!("expected a failure, got {:?}", stage(&state));
+        };
+        assert!(
+            message.starts_with("The connection to the server was lost"),
+            "{message}"
+        );
+    }
+
+    #[test]
     fn an_install_moves_through_its_steps_and_adds_the_server_with_the_installed_path() {
         let mut state = state_with(Vec::new());
         start(&mut state, lab());
-        looked(&mut state, Ok(server(None, "Linux x86_64")), true);
+        looked(&mut state, "lab", Ok(server(None, "Linux x86_64")), true);
 
         assert_eq!(
             install(&mut state),
@@ -380,7 +446,7 @@ mod tests {
                 host: "lab".to_owned()
             })
         );
-        sending(&mut state, 5, 10);
+        sending(&mut state, "lab", 5, 10);
         assert_eq!(
             stage(&state),
             Some(&SetupStage::Installing {
@@ -397,9 +463,9 @@ mod tests {
             "install-daemon: claude missing",
         ]);
         for line in &said {
-            output(&mut state, line);
+            output(&mut state, "lab", line);
         }
-        let change = installed(&mut state, Some(0), &said);
+        let change = installed(&mut state, "lab", Some(0), &said);
 
         assert_eq!(
             change,
@@ -420,15 +486,15 @@ mod tests {
     fn a_failed_install_names_its_step_and_the_scripts_last_word() {
         let mut state = state_with(Vec::new());
         start(&mut state, lab());
-        looked(&mut state, Ok(server(None, "Linux x86_64")), true);
+        looked(&mut state, "lab", Ok(server(None, "Linux x86_64")), true);
         install(&mut state);
         let said = lines(&[
             "install-daemon: checking /tmp/x",
             "install-daemon: the binary on this machine is not the one the app sent: its checksum differs",
         ]);
-        output(&mut state, &said[0]);
+        output(&mut state, "lab", &said[0]);
 
-        let change = installed(&mut state, Some(1), &said);
+        let change = installed(&mut state, "lab", Some(1), &said);
 
         assert_eq!(change, None);
         assert_eq!(
@@ -460,6 +526,7 @@ mod tests {
         assert_eq!(check_again(&mut state), None, "one runs already");
         checked(
             &mut state,
+            "lab",
             Some(&lines(&[
                 "install-daemon: linger yes",
                 "install-daemon: claude /usr/bin/claude",
@@ -477,13 +544,13 @@ mod tests {
     fn closing_leaves_an_install_under_way_to_finish() {
         let mut state = state_with(Vec::new());
         start(&mut state, lab());
-        looked(&mut state, Ok(server(None, "Linux x86_64")), true);
+        looked(&mut state, "lab", Ok(server(None, "Linux x86_64")), true);
         install(&mut state);
 
         close(&mut state);
         assert!(state.machines.setup.is_some(), "the install goes on");
 
-        installed(&mut state, Some(1), &[]);
+        installed(&mut state, "lab", Some(1), &[]);
         close(&mut state);
         assert_eq!(state.machines.setup, None);
     }
