@@ -828,9 +828,10 @@ mod tests {
             &mut Drafts::default(),
             Method::AgentDetails,
             crate::state::Purpose::Details { agent: agent() },
-            Ok(cockpit_protocol::ResponseBody::Details(waiting(&[(
-                1, "yes",
-            )]))),
+            Ok(cockpit_protocol::ResponseBody::Details {
+                details: waiting(&[(1, "yes")]),
+                last_seq: None,
+            }),
             MachineId::THIS,
         );
         assert!(entry(&mut state).waiting_prompts().is_empty());

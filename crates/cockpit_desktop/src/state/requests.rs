@@ -17,7 +17,10 @@ use super::projects::{self, ProjectKey};
 use super::sending::{self, SendingId};
 use super::transcript::HistoryState;
 use super::ui_state::{Dialog, FolderAction, OpenFileView};
-use super::{accounts, actions, chat_images, file_edits, file_tree, mcp_reconnect, working_folder};
+use super::{
+    accounts, actions, chat_images, details_updates, file_edits, file_tree, mcp_reconnect,
+    working_folder,
+};
 use crate::machine::MachineId;
 use crate::path_style;
 use crate::prefs::AccountColor;
@@ -435,12 +438,13 @@ pub fn apply_response(
             let Some(entry) = state.agents.get_mut(&agent) else {
                 return;
             };
-            // An event that came first holds newer details: the answer, computed before it, is older.
-            if !matches!(entry.details, Loadable::Loaded(_)) {
-                entry.details = match result {
-                    Ok(ResponseBody::Details(details)) => Loadable::Loaded(details),
-                    other => Failure::from_result(other).into_loadable(),
-                };
+            match result {
+                Ok(ResponseBody::Details { details, last_seq }) => {
+                    details_updates::answered(entry, details, last_seq);
+                }
+                other => {
+                    details_updates::failed(entry, Failure::from_result(other).into_loadable())
+                }
             }
             sending::details_loaded(entry);
             sending::waiting_changed(entry);

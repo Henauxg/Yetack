@@ -58,9 +58,14 @@ impl Hub {
             Request::AgentClose(params) => agents::respond(reply, self.close(params.agent)),
             Request::AgentHistory(params) => agents::respond(reply, self.history(params)),
             Request::AgentDetails(params) => {
-                let details = self
-                    .agent(params.agent)
-                    .map(|agent| ResponseBody::Details(agent.view.details().clone()));
+                // The answer holds what the clients hold, so a change held for the spacing goes
+                // out first.
+                self.send_held_details(params.agent);
+                let last_seq = self.last_seq;
+                let details = self.agent(params.agent).map(|agent| ResponseBody::Details {
+                    details: agent.sent_details().clone(),
+                    last_seq,
+                });
                 agents::respond(reply, details);
             }
             Request::AgentSetModel(params) => self.set_model(params, reply),

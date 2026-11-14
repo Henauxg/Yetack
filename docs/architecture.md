@@ -189,7 +189,7 @@ A reader refuses a line longer than a fixed maximum (16 MiB) instead of bufferin
    `daemon_commit` is the full git commit of the program that runs the daemon (`BuildCommit`), or `null` when its build did not know it. Two builds of one release can differ, so the commit tells the app whether a daemon runs its own code.
    `cockpit_daemon`'s `build.rs` sets it when the crate builds, from `AGENTS_COCKPIT_SOURCE_COMMIT` or git's `HEAD` (see "Updating a machine's daemon" under [Desktop app](#desktop-app-cockpit_desktop)). `agents-cockpit` and the app each build the daemon from their own tree, so it is their commit too.
    The app keeps it in `MachineState.daemon_commit`, beside `daemon_version`.
-3. `catchup` is `Replay` when `last_seq` was given and the logs still hold every event after it: the daemon then sends those events, with each agent's latest details in place of the older ones, then live events.
+3. `catchup` is `Replay` when `last_seq` was given and the logs still hold every event after it: the daemon then sends those events, with each agent's latest details, whole, in place of its details events, then live events.
    Otherwise it is `Snapshot(snapshot)`: the client replaces its state with it, and live events follow.
    A welcome never carries both, so no event is applied twice.
 4. The client sends `Request { id, request }`; the daemon answers `Response { id, result }`.
@@ -246,10 +246,20 @@ Older daemons send it as it is, so a test pins it.
 
 ### Events
 
-`AgentAdded`, `AgentUpdated(AgentSummary)`, `AgentRemoved`, `TranscriptAppended { agent, item }`, `TranscriptChanged { agent, item }`, `DetailsChanged { agent, details }`, `CommandsChanged { agent, commands }` (the slash commands and skills, which change only when `claude` starts or reloads, so they travel apart from the details), `PlanUsageChanged` (the default account's), `SettingsChanged`, `AccountPlanUsageChanged { account, usage }` (another account's), `AccountsChanged { accounts }`.
+`AgentAdded`, `AgentUpdated(AgentSummary)`, `AgentRemoved`, `TranscriptAppended { agent, item }`, `TranscriptChanged { agent, item }`, `DetailsChanged { agent, details }`, `DetailsUpdated { agent, changes }`, `CommandsChanged { agent, commands }` (the slash commands and skills, which change only when `claude` starts or reloads, so they travel apart from the details), `PlanUsageChanged` (the default account's), `SettingsChanged`, `AccountPlanUsageChanged { account, usage }` (another account's), `AccountsChanged { accounts }`.
 Each carries its `Seq`.
 
-`DetailsChanged` carries the whole details, so it goes out only when something they hold changes: a subagent's text or a streamed delta sends none, its tool calls and its task events do. During a burst, a change waits until 200 ms passed since the last one, and a later change replaces it. A change of the waiting prompts goes out at once, since the app matches them against the transcript events.
+An agent's details go out whole, in a `DetailsChanged`, only as its first details event since the daemon started, and in a replay. Every later change goes out as a `DetailsUpdated`, which carries the parts that changed (`DetailsChange`): the task list, the background tasks, the changed files, the context usage, the MCP servers or the waiting prompts, each whole, and of the subagents only those that changed, each whole, with the items of those that left the list.
+
+- A client takes out the subagents that left, then puts each changed one in place of the entry with its item, or at the end of the list.
+- A subagent that moves in the list, as when a call is seen twice and its subagent starts again at the end, leaves and comes back, with every entry after its old place.
+- `AgentDetails::changes_since` makes the changes and `AgentDetails::apply` applies them (`cockpit_protocol`), so the daemon and the app agree on them.
+- On an agent with 200 subagents, the most the daemon keeps, a subagent's tool call sends about 470 bytes, against 72 KB for the whole details.
+- The first details event after a start is whole because a client may hold details that the restarted daemon lost, as when its details file could not be written.
+
+Details events go out only when something they hold changes: a subagent's text or a streamed delta sends none, its tool calls and its task events do. During a burst, a change waits until 200 ms passed since the last one, and a later change replaces it: the update then carries what changed since the last event. A change of the waiting prompts goes out at once, since the app matches them against the transcript events.
+
+An update applies to the details as the last details event left them. `agent.details` answers those details, with `last_seq`, the daemon's last event when it answered: a details event after it changes them, and one up to it is in them already. A change held for the spacing goes out just before the answer, so the answer is current. The daemon writes answers and events in any order, so an update can arrive before or after the answer that holds it. The app keeps the updates that arrive while the details load, then applies to the answer those after its `last_seq`. It skips an update its details already hold, and drops the updates of an agent whose details it has not asked for.
 
 ## Daemon (`cockpit_daemon`)
 
@@ -353,7 +363,7 @@ Everything lives in `$XDG_STATE_HOME/agents-cockpit/` (default `~/.local/state/a
 - `agents.json`: one entry per agent (id, title, folder, account, Claude session id, model, effort, mode, position in the list, for an agent made from a past session the part of the session file it shows, and while its `claude` runs, that process's id, start time and, on Linux, boot), written atomically (write to a temporary file, then rename);
 - `settings.json`: the hidden MCP servers, the accounts (the default account's name and credentials, the added accounts, the next account id), and other daemon-side settings;
 - `events/<agent-id>.jsonl`: the agent's cockpit events, each with its `Seq`, appended, but its details;
-- `details/<agent-id>.json`: the frame of the agent's latest `DetailsChanged`, replaced at each change. Each change replaces the last one, and logging them all would grow a busy agent's log by tens of kilobytes per change. A log from an older daemon gives its details to this file at start, once;
+- `details/<agent-id>.json`: the agent's whole details as its last details event left them, as a `DetailsChanged` frame at that event's `Seq`, replaced at each change. A replay and a restart need only the latest details, so the details events stay out of the log. A log from an older daemon gives its details to this file at start, once;
 - `raw/<agent-id>.jsonl`: every line exchanged with `claude`, for debugging, and for the scheduled jobs an agent may hold (`may_hold_scheduled_job`, below).
 
 The daemon leaves the umask alone, since `claude` and the agents' commands inherit it.
@@ -839,6 +849,9 @@ A child of an interpreter root, the real `claude` of an npm `claude.cmd`, is ref
   The agent leaves the sidebar at once, with its drafts and file view, and the selection goes to the next row, or to the one above for the last.
   Its events until the daemon's `AgentRemoved` are not applied, so a late update does not bring it back; a refused close puts it back.
   A note offers Undo for 8 seconds: `sessions.resume` brings the session back as a new agent, which the app then moves above the agent that was below it.
+- **Details** (`state/details_updates.rs`): an agent's entry holds its details once the app asked for them (`AgentEntry.details`), with the seq of the last details event they hold (`details_seq`).
+  A `DetailsChanged` replaces them. A `DetailsUpdated` applies to them when its seq is past `details_seq`, waits in `early_details` while the answer to `agent.details` is on its way, and is dropped before the app asked for them.
+  The answer takes the waiting updates after its `last_seq`, unless a whole `DetailsChanged` came first, which is newer.
 - **Agent map**: Ctrl+M, the composer's map button, or the Running block's link opens a dialog (`Dialog::AgentMap`) on the selected agent; a click on a subagent in the Running block opens it on that subagent.
   The outline's logic is pure and tested (`state/agent_map.rs`): it builds the tree from each subagent's `parent` (one whose parent left the list shows at the top), splits the current turn from the earlier ones, folds a subtree with no running or failed subagent, folds the oldest ended siblings past eight into one row, applies the filter, and moves the selection with the keys.
   The view keeps only what the user changed: the folds that differ from the default, the opened levels and earlier turns, the filter, the selected row and tab. Opening the map on a subagent unfolds what hides it.

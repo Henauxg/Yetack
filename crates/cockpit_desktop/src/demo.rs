@@ -1727,7 +1727,12 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
             .ok_or_else(|| refused(ErrorCode::NotFound, "The demo has no such agent."))
     };
     match request {
-        Request::AgentDetails(params) => agent_details(params.agent).map(ResponseBody::Details),
+        Request::AgentDetails(params) => {
+            agent_details(params.agent).map(|details| ResponseBody::Details {
+                details,
+                last_seq: None,
+            })
+        }
         Request::AgentMcpStatus(params) => {
             agent_details(params.agent).map(|details| ResponseBody::McpServers {
                 servers: details.mcp_servers,

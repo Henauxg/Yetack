@@ -137,7 +137,8 @@ impl LoggedAgent {
             }
             Event::DetailsChanged { details, .. } => self.details = Some((seq, details)),
             Event::CommandsChanged { commands, .. } => self.commands = commands,
-            Event::AgentRemoved { .. }
+            Event::DetailsUpdated { .. }
+            | Event::AgentRemoved { .. }
             | Event::PlanUsageChanged(_)
             | Event::SettingsChanged(_)
             | Event::AccountPlanUsageChanged(_)

@@ -47,6 +47,7 @@ Each item is described in architecture.md and was reviewed with `/review fix` an
 - Several Claude accounts: each account is a `CLAUDE_CONFIG_DIR` folder with its own login; agents, past sessions and plan usage are per account; the daemon removes `CLAUDE_CODE_OAUTH_TOKEN` from every agent, and `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` unless the account takes its credentials from the environment. The app never reads a credential. Screens built from an approved mockup, with the Tag label style.
 - The protocol's bool fields became enums (`CredentialSource`, `TurnOutcome`, `Delivery`, ...); old files on disk still read.
 - Steering: a message sent while the agent works goes to `claude` at once, and Claude reads it at its next step (Alt+Enter queues it instead). Messages Claude has not read show pinned above the composer, from `AgentDetails.waiting_prompts`. Checked against Claude Code 2.1.319 by hand; the fake `claude` only covers the case where the message waits for the turn's end.
+- Details updates: after an agent's first details event, a change sends only the parts that changed, and of the subagents only those that changed (`DetailsUpdated`). A subagent's tool call on an agent with 200 subagents sends about 470 bytes instead of 72 KB.
 
 ## How the user works
 
@@ -91,7 +92,6 @@ It is merged into `main`, but the user has not fully run it yet. Left:
 
 Decisions not taken yet, and things nobody could check here. The ideas for later are in [todos.md](todos.md).
 
-- Details updates carry the whole subagent list, up to about 70 KB, at each subagent tool call, and the event logs keep them. Batching them per agent every 250 to 500 ms was proposed, not decided.
 - An interrupted foreground subagent may show "failed" rather than "Stopped by you": it depends on what Claude Code writes, and no capture shows it.
 - Windows was tested by the user only for starting agents in the app. Toasts (whether their threads end when Windows sends no answer), Job Objects on real Windows, and `CREATE_NO_WINDOW` were checked by CI tests or not at all.
 - macOS was never run. Its sign-in state is `unknown` (Keychain), and its leftover check records nothing (no `/proc`).
