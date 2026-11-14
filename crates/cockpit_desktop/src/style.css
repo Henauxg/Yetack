@@ -911,7 +911,7 @@ button:disabled {
 
 /* The Machines dialog: a row per machine, its parts in columns that line up from row to row. */
 .dialog.accounts.machines {
-  width: 680px;
+  width: 720px;
 }
 
 .machine-table {
@@ -923,7 +923,7 @@ button:disabled {
 .machine-columns,
 .machine-grid-row {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) 132px 112px 92px 32px;
+  grid-template-columns: 22px minmax(0, 1fr) 132px 132px 92px 32px;
   align-items: center;
   column-gap: 12px;
 }
@@ -1017,14 +1017,30 @@ button:disabled {
 }
 
 .machine-cell-version {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
   font-size: 12px;
   color: var(--muted);
 }
 
-.machine-cell-version .version-from {
+/* The releases over the commits, in three columns: the daemon's side, an arrow, this app's. */
+.version-grid {
+  display: inline-grid;
+  grid-template-columns: auto auto auto;
+  align-items: center;
+  column-gap: 4px;
+  row-gap: 1px;
+  overflow-wrap: anywhere;
+}
+
+.version-grid.runs {
+  grid-template-columns: auto;
+}
+
+.machine-cell-version .version-release {
+  font-size: 10.5px;
+}
+
+.machine-cell-version .version-from,
+.machine-cell-version .version-commit {
   color: var(--dim);
 }
 
@@ -1032,8 +1048,11 @@ button:disabled {
   color: var(--text-soft);
 }
 
+.machine-cell-version .version-to.version-release {
+  color: var(--muted);
+}
+
 .machine-cell-version .icon {
-  flex: none;
   color: var(--dim);
 }
 
