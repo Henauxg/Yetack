@@ -182,7 +182,7 @@ A reader refuses a line longer than a fixed maximum (16 MiB) instead of bufferin
 ### Session
 
 1. The client sends `Hello { protocol_version, last_seq }`.
-   The version is 9. An app and a daemon of different versions refuse each other.
+   The version is 10. An app and a daemon of different versions refuse each other.
 2. The daemon answers `Welcome { protocol_version, daemon_version, daemon_commit, catchup }`, or `Refused { reason, daemon_version, daemon_commit }` when the versions differ.
    `Refused` keeps one shape in every protocol, so that a client of another protocol reads it. Its `reason` starts with "the daemon speaks protocol N". A daemon of protocol 8 or older sends no `daemon_version` or `daemon_commit`, and they read as `null`. The update screens show the build the refusal names.
    `daemon_version` is the daemon's release, its Cargo version ("0.1.0"). The Machines dialog shows it on each machine's row, and the About section at the end of the Settings dialog's General tab shows the app's own version.

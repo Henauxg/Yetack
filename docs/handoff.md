@@ -10,7 +10,7 @@ Update it when you hand over.
 - Work goes on short branches, each in its own worktree (see AGENTS.md), and is merged into `main` once the user agrees.
 - CI (`.github/workflows/ci.yml`) runs on Linux and Windows, only when started: `gh workflow run ci.yml --ref <branch>`, or from the Actions tab. Ask the user before you start it. The Windows job is the only real Windows test, and it caught several failures that no Linux run showed.
 - CI is green on both platforms from `b57f7cd` on, the Windows job's tests of every crate included. Before it, the Windows job failed from the accounts commits on, on four account tests whose home folder was a Unix path.
-- The protocol version is 9: `Welcome` carries the daemon's commit (`daemon_commit`). An app and a daemon of different versions refuse each other at `Hello`, so they are rebuilt together.
+- The protocol version is 10: `Welcome` carries the daemon's commit (`daemon_commit`), and details go out as `DetailsUpdated`, with only the parts and subagents that changed. An app and a daemon of different versions refuse each other at `Hello`, so they are rebuilt together.
 
 ## Updating any machine's daemon
 
