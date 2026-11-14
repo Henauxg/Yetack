@@ -23,7 +23,9 @@ const PACKAGED: Option<&str> = option_env!("AGENTS_COCKPIT_LINUX_DAEMON");
 const CHUNK: usize = 256 * 1024;
 
 /// Writes stdin to a new file on the server, then prints its path. The folder is the user's own,
-/// and a send cut short leaves a file there, so each send deletes those older than an hour.
+/// and a send cut short leaves a file there, so each send deletes those older than an hour. Like
+/// `PROBE_SCRIPT`, it holds no single quote and no backslash: Windows' ssh breaks the quoting of a
+/// remote command that has one.
 const RECEIVE_SCRIPT: &str = r#"set -eu
 umask 077
 dir=${XDG_CACHE_HOME:-$HOME/.cache}/agents-cockpit/sent
@@ -34,13 +36,13 @@ if ! cat >"$file"; then
     rm -f "$file"
     exit 1
 fi
-printf '%s\n' "$file""#;
+echo "$file""#;
 
 /// Prints the server's system, then where the daemon `$1` names is, who owns it, and its version,
 /// as `key=value` lines for `ServerInstall::parse`. A command run over SSH loads no shell profile,
 /// so the folders a user's own programs are in join the `PATH`.
 const PROBE_SCRIPT: &str = r#"PATH=$PATH:$HOME/.local/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin
-printf 'system=%s\n' "$(uname -sm)"
+echo "system=$(uname -sm)"
 binary=$1
 case $binary in
     /*) ;;
@@ -52,7 +54,7 @@ if [ -z "$path" ] || [ ! -f "$path" ]; then
     echo owner=missing
     exit 0
 fi
-printf 'path=%s\n' "$path"
+echo "path=$path"
 folder=${path%/*}
 package=
 case $path in
@@ -73,8 +75,8 @@ case $path in
         fi
         ;;
 esac
-printf 'owner=%s\n' "$owner"
-printf 'version=%s\n' "$("$path" --version 2>/dev/null | head -n 1)"
+echo "owner=$owner"
+echo "version=$("$path" --version 2>/dev/null | head -n 1)"
 "#;
 
 /// Reads how `host` runs `binary`, the daemon's path or command. `Err` says why it failed.
@@ -199,6 +201,13 @@ mod tests {
             hex(&Sha256::digest(b"abc")),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    #[test]
+    fn the_inline_scripts_hold_nothing_that_windows_ssh_breaks() {
+        for script in [RECEIVE_SCRIPT, PROBE_SCRIPT] {
+            assert!(!script.contains(['\'', '\\']), "{script}");
+        }
     }
 
     #[test]

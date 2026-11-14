@@ -9,6 +9,28 @@ default:
 run:
     cargo run --release -p cockpit_desktop
 
+# The Rust toolchain's own linker builds the static Linux daemon on any host, Windows included.
+export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER := "rust-lld"
+
+# The static Linux daemon that `linux-daemon` builds, and the name the app looks for beside itself.
+linux_daemon := "target/x86_64-unknown-linux-musl/release/agents-cockpit"
+beside_the_app := "agents-cockpit-x86_64-linux"
+
+# Needs the target: rustup target add x86_64-unknown-linux-musl. The app's "Update" sends the
+# daemon to servers, which then build nothing.
+
+# Builds the static Linux daemon beside the app's debug and release builds.
+[unix]
+linux-daemon:
+    cargo build --release --locked --target x86_64-unknown-linux-musl -p agents_cockpit --bin agents-cockpit
+    for profile in debug release; do mkdir -p "target/$profile" && cp {{linux_daemon}} "target/$profile/{{beside_the_app}}"; done
+
+# Builds the static Linux daemon beside the app's debug and release builds.
+[windows]
+linux-daemon:
+    cargo build --release --locked --target x86_64-unknown-linux-musl -p agents_cockpit --bin agents-cockpit
+    foreach ($profile in 'debug', 'release') { New-Item -ItemType Directory -Force "target/$profile" | Out-Null; Copy-Item {{linux_daemon}} "target/$profile/{{beside_the_app}}" }
+
 # Builds the daemon program and the app in release mode.
 build:
     cargo build --release -p agents_cockpit -p cockpit_desktop

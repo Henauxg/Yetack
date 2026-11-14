@@ -175,7 +175,8 @@ pub fn ssh_script_command(host: &str, arguments: &[&str]) -> Result<Command, Con
 
 /// ssh to `host` running `script` as `sh -c`, with `arguments` as its `$1` and on. Its stdin stays
 /// free for data, such as a file to write on the host. The host's other users can read the script
-/// and the arguments, which must hold nothing private.
+/// and the arguments, which must hold nothing private. Windows' ssh breaks the quoting of a single
+/// quote, so neither may hold one.
 pub fn ssh_inline_command(
     host: &str,
     script: &str,
