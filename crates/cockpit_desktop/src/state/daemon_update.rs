@@ -826,6 +826,9 @@ pub fn update_line(known: &MachineState) -> Option<UpdateLine> {
                 Some(line("Runs a newer version.", UpdateLink::Details, true))
             }
             (GapKind::OtherBuild | GapKind::NewerRelease, _) if !connected => None,
+            (GapKind::OtherBuild, Some(_)) if gap.is_other_commit() => {
+                Some(line("Runs another build.", UpdateLink::Update, false))
+            }
             (GapKind::OtherBuild, Some(_)) => {
                 Some(line("Update available.", UpdateLink::Update, false))
             }
@@ -1790,6 +1793,23 @@ mod tests {
             );
             assert!(shown.down, "{code:?}");
         }
+    }
+
+    #[test]
+    fn a_daemon_of_this_release_from_another_commit_runs_another_build_and_still_offers_it() {
+        let mut state = with_server();
+        let same_release = ProgramBuild {
+            version: ProgramBuild::this_program().version,
+            ..other_build()
+        };
+        connect(&mut state, build_box(), &same_release);
+
+        let shown = update_line(known(&state)).unwrap();
+
+        assert_eq!(
+            (shown.text, shown.link, shown.down),
+            ("Runs another build.", UpdateLink::Update, false)
+        );
     }
 
     #[test]

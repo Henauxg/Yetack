@@ -13,6 +13,7 @@ use super::daemon_update::{self, DaemonUpdate};
 use super::drafts::Drafts;
 use super::machine_status::{self, MachineStatus, StatusAction, Tone};
 use super::ui_state::{Dialog, MachineEdit, MachineMenu, MachinesView};
+use super::update_offer::ProgramBuild;
 use super::{file_tree, update_offer};
 use crate::config::{DaemonConfig, MachineConfig};
 use crate::daemon_label::{DaemonLabel, DaemonPlace};
@@ -78,15 +79,14 @@ pub enum RowVersion {
     /// The release its daemon runs, while it is connected: an earlier connection's may no longer
     /// be the one it runs.
     Runs(ReleaseVersion),
-    /// The app can update its daemon from `from` to `to`, this app's release. `from` is `None` for
-    /// a daemon of protocol 8 or older, which does not name its release as it refuses the app.
-    Update {
-        from: Option<ReleaseVersion>,
-        to: ReleaseVersion,
-    },
+    /// The app can update its daemon from `from` to `to`, this app's build: their releases, or
+    /// for one release, its two commits (`update_texts`). `from` is `None` for a daemon of
+    /// protocol 8 or older, which does not name its release as it refuses the app.
+    Update { from: Option<String>, to: String },
 }
 
-/// "0.2.0", "0.1.0 → 0.2.0", or "→ 0.2.0" when the daemon did not name its release.
+/// "0.2.0", "0.1.0 → 0.2.0", "0.1.0 · 743d664 → eb65d4e" for one release built from two commits,
+/// or "→ 0.2.0" when the daemon did not name its release.
 impl fmt::Display for RowVersion {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -104,16 +104,31 @@ impl RowVersion {
     fn of(state: &AppState, machine: MachineId, known: &MachineState) -> Option<Self> {
         let update = update_offer::offer(state, machine).filter(|offer| offer.plan.is_some());
         match update {
-            Some(offer) => Some(Self::Update {
-                from: offer.daemon.map(|daemon| daemon.version),
-                to: offer.app.version,
-            }),
+            Some(offer) => {
+                let (from, to) = update_texts(offer.daemon.as_ref(), &offer.app);
+                Some(Self::Update { from, to })
+            }
             None => known
                 .daemon_version
                 .clone()
                 .filter(|_| known.is_connected())
                 .map(Self::Runs),
         }
+    }
+}
+
+/// The texts of an update's two builds: the daemon's, `None` when it did not name it, and this
+/// app's. Two builds of one release differ by their commits, which the texts name then.
+fn update_texts(daemon: Option<&ProgramBuild>, app: &ProgramBuild) -> (Option<String>, String) {
+    let Some(daemon) = daemon else {
+        return (None, app.version.to_string());
+    };
+    match (&daemon.commit, &app.commit) {
+        (Some(from), Some(to)) if daemon.version == app.version => (
+            Some(format!("{} · {}", daemon.version, from.short())),
+            to.short().to_owned(),
+        ),
+        _ => (Some(daemon.version.to_string()), app.version.to_string()),
     }
 }
 
@@ -488,6 +503,40 @@ mod tests {
             Some(Dialog::Machines(view)) => view.error.clone(),
             _ => None,
         }
+    }
+
+    #[test]
+    fn an_update_names_the_releases_or_for_one_release_its_two_commits() {
+        let build = |version: &str, commit: Option<&str>| ProgramBuild {
+            version: ReleaseVersion::new(version.to_owned()),
+            commit: commit.map(|commit| cockpit_protocol::BuildCommit::new(commit.to_owned())),
+        };
+        let app = build("0.1.0", Some("eb65d4e1111111111111111111111111111111bb"));
+
+        let same = update_texts(
+            Some(&build(
+                "0.1.0",
+                Some("743d6640000000000000000000000000000000aa"),
+            )),
+            &app,
+        );
+        let older = update_texts(
+            Some(&build(
+                "0.0.9",
+                Some("743d6640000000000000000000000000000000aa"),
+            )),
+            &app,
+        );
+        let no_commit = update_texts(Some(&build("0.1.0", None)), &app);
+        let unnamed = update_texts(None, &app);
+
+        assert_eq!(
+            same,
+            (Some("0.1.0 · 743d664".to_owned()), "eb65d4e".to_owned())
+        );
+        assert_eq!(older, (Some("0.0.9".to_owned()), "0.1.0".to_owned()));
+        assert_eq!(no_commit, (Some("0.1.0".to_owned()), "0.1.0".to_owned()));
+        assert_eq!(unnamed, (None, "0.1.0".to_owned()));
     }
 
     #[test]

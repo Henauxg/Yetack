@@ -94,6 +94,18 @@ pub struct VersionGap {
     pub protocol: u16,
 }
 
+impl VersionGap {
+    /// The daemon runs this app's release, built from another commit. Two commits of one release
+    /// have no order the app knows, so neither build is the update.
+    pub fn is_other_commit(&self) -> bool {
+        self.kind == GapKind::OtherBuild
+            && self
+                .daemon
+                .as_ref()
+                .is_some_and(|daemon| daemon.version == ProgramBuild::this_program().version)
+    }
+}
+
 /// The daemon's protocol, from a first connection that failed, when it differs from the app's. An
 /// older daemon counts only where the app can update it: over SSH, and this computer's service or
 /// socket where the app runs the service. Any other keeps the "No daemon answers" screen.

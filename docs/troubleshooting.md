@@ -33,9 +33,9 @@ Linger is off, so systemd stops your services when your last session on the serv
 
 The app and the machine's daemon come from different releases and do not speak the same protocol. Update the older one: the daemon with the row's Update link, or the app. The "Update a server" section of [README.md](../README.md) says how to update a server by hand.
 
-## A machine's row says "Update available."
+## A machine's row says "Update available." or "Runs another build."
 
-The machine's daemon was built from another version than the app, and the app still uses it. The Update link puts the app's version in its place. When agents of the machine are busy, the app names them first, and the update can wait until they are idle.
+The machine's daemon was built from another version than the app, and the app still uses it. "Runs another build." means the same release from another commit: the Machines dialog names both commits, and the app cannot tell which one is newer. The Update link puts the app's build in its place. When agents of the machine are busy, the app names them first, and the update can wait until they are idle.
 
 ## The app cannot stop this computer's background service
 

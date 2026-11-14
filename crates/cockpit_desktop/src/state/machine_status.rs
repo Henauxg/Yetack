@@ -165,6 +165,7 @@ fn update_chip(known: &MachineState) -> Option<&'static str> {
         (Some(DaemonUpdate::Failed(_)), _) => Some("Update failed"),
         (None, Some(gap)) => Some(match gap.kind {
             GapKind::OlderProtocol => "Older version",
+            GapKind::OtherBuild if gap.is_other_commit() => "Other build",
             GapKind::OtherBuild => "Update available",
             GapKind::NewerRelease | GapKind::NewerProtocol => "Newer version",
         }),
@@ -212,7 +213,7 @@ mod tests {
     use super::*;
     use crate::daemon_label::DaemonLabel;
     use crate::state::no_daemon;
-    use crate::state::update_offer::VersionGap;
+    use crate::state::update_offer::{ProgramBuild, VersionGap};
     use crate::state::update_plan::{ServerPlan, UpdatePlan};
 
     fn down(error: &str) -> ConnectionState {
@@ -402,6 +403,29 @@ mod tests {
         assert_eq!(other_build, (Tone::Notice, "Update available"));
         assert_eq!(waiting, (Tone::Notice, "Waiting"));
         assert_eq!(newer, (Tone::Notice, "Newer version"));
+    }
+
+    #[test]
+    fn a_daemon_of_this_release_from_another_commit_is_another_build_not_an_update() {
+        let mut state = four_machines();
+        let devbox = MachineId::new(1);
+        let known = state.machines.others.get_mut(&devbox).unwrap();
+        known.update_plan = Some(lab_plan());
+        known.version_gap = Some(VersionGap {
+            kind: GapKind::OtherBuild,
+            details: String::new(),
+            daemon: Some(ProgramBuild {
+                version: ProgramBuild::this_program().version,
+                commit: Some(BuildCommit::new(
+                    "743d6640000000000000000000000000000000aa".to_owned(),
+                )),
+            }),
+            protocol: PROTOCOL_VERSION,
+        });
+
+        let shown = status(&state.machines.others[&devbox]);
+
+        assert_eq!((shown.tone, shown.chip), (Tone::Notice, "Other build"));
     }
 
     #[test]
