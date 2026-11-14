@@ -449,10 +449,10 @@ pub fn waiting_changed(entry: &mut AgentEntry) {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_client::RequestError;
+    use cockpit_client::{RequestError, SessionUpdate};
     use cockpit_protocol::{
-        AgentDetails, AgentId, ImageMediaType, ItemId, Method, PromptDelivery, PromptId,
-        UserMessage, WaitingState,
+        AgentDetails, AgentId, DetailsChange, Event, EventRecord, ImageMediaType, ItemId, Method,
+        PromptDelivery, PromptId, ResponseBody, Seq, UserMessage, WaitingState,
     };
 
     use super::*;
@@ -462,7 +462,7 @@ mod tests {
     const HOLD: Duration = Duration::from_secs(3);
     use crate::state::app_state::{AppState, Loadable};
     use crate::state::drafts::Drafts;
-    use crate::state::{actions, apply_response, state_with, summary};
+    use crate::state::{actions, apply_response, apply_update, state_with, summary};
 
     fn agent() -> AgentId {
         AgentId::new(1)
@@ -792,6 +792,45 @@ mod tests {
         assert!(texts(&mut state, SendingPlace::Waiting).is_empty());
     }
 
+    /// An update can reach the app before the details answer it follows. The message sent while
+    /// the details loaded knows the answer's waiting messages, so the update holds its echo.
+    #[test]
+    fn an_echo_that_overtakes_the_details_answer_ends_the_wait() {
+        let mut state = working_agent(Loadable::Loading);
+        queued(&mut state, "yes");
+        let changes = vec![DetailsChange::WaitingPrompts {
+            waiting_prompts: waiting(&[(1, "yes")]).waiting_prompts,
+        }];
+        let echo = EventRecord {
+            seq: Seq::new(101),
+            event: Event::DetailsUpdated {
+                agent: agent(),
+                changes,
+            },
+        };
+
+        apply_update(
+            &mut state,
+            &mut Drafts::default(),
+            SessionUpdate::Event(echo),
+            Instant::now(),
+            MachineId::THIS,
+        );
+        apply_response(
+            &mut state,
+            &mut Drafts::default(),
+            Method::AgentDetails,
+            crate::state::Purpose::Details { agent: agent() },
+            Ok(ResponseBody::Details {
+                details: waiting(&[]),
+                last_seq: Some(Seq::new(100)),
+            }),
+            MachineId::THIS,
+        );
+
+        assert!(texts(&mut state, SendingPlace::Waiting).is_empty());
+    }
+
     #[test]
     fn one_waiting_echo_ends_one_wait_even_as_the_list_changes_again() {
         let mut state = working_agent(Loadable::Loaded(waiting(&[])));
@@ -828,9 +867,10 @@ mod tests {
             &mut Drafts::default(),
             Method::AgentDetails,
             crate::state::Purpose::Details { agent: agent() },
-            Ok(cockpit_protocol::ResponseBody::Details(waiting(&[(
-                1, "yes",
-            )]))),
+            Ok(cockpit_protocol::ResponseBody::Details {
+                details: waiting(&[(1, "yes")]),
+                last_seq: None,
+            }),
             MachineId::THIS,
         );
         assert!(entry(&mut state).waiting_prompts().is_empty());

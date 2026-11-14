@@ -12,13 +12,13 @@ use cockpit_protocol::{
 };
 
 use super::accounts::{self, SignIns};
-use super::app_state::{AgentEntry, AppState, ConnectionState, Loadable};
+use super::app_state::{AgentEntry, AppState, ConnectionState};
 use super::drafts::Drafts;
 use super::sending::Sending;
 use super::transcript::KEPT_ITEMS_AWAY;
 use super::{
-    actions, daemon_update, file_reread, file_tree, grouping, notification_levels, project_menu,
-    projects, sending,
+    actions, daemon_update, details_updates, file_reread, file_tree, grouping, notification_levels,
+    project_menu, projects, sending,
 };
 use crate::machine::MachineId;
 
@@ -339,7 +339,14 @@ pub fn apply(
         }
         Event::DetailsChanged { agent, details } => {
             if let Some(entry) = state.agents.get_mut(&agent) {
-                entry.details = Loadable::Loaded(details);
+                details_updates::replace(entry, record.seq, details);
+                sending::waiting_changed(entry);
+            }
+            None
+        }
+        Event::DetailsUpdated { agent, changes } => {
+            if let Some(entry) = state.agents.get_mut(&agent) {
+                details_updates::update(entry, record.seq, changes);
                 sending::waiting_changed(entry);
             }
             None
@@ -562,7 +569,7 @@ mod tests {
     };
     use crate::state::projects::ProjectKey;
     use crate::state::ui_state::{Block, Dialog, PaletteOrigin, Popover, TitleEdit, TitlePlace};
-    use crate::state::{MachineState, agent_map, chat_images, mcp_reconnect};
+    use crate::state::{Loadable, MachineState, agent_map, chat_images, mcp_reconnect};
 
     #[test]
     fn a_snapshot_closes_the_stop_dialog_of_a_turn_that_ended_meanwhile() {

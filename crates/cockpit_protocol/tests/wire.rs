@@ -20,10 +20,10 @@ use cockpit_protocol::{
     AskedQuestion, BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus,
     BuildCommit, Catchup, ChangedFile, ClaudeRoute, ClaudeSessionId, ClientMessage, CommandKind,
     CommandLoad, Completeness, ContextCategory, ContextUsage, Cores, CostUsd, CredentialSource,
-    DirEntry, DirListing, Effort, EffortSource, EntryKind, EntryLink, EnvironmentCredentials,
-    ErrorBody, ErrorCode, Event, EventRecord, FileEdit, FindFilesParams, FolderParams,
-    FoldersListParams, GitIgnore, HistoryPage, HistoryParams, Image, ImageMediaType, ItemBody,
-    ItemId, ListDirParams, LoadAverage, LoadHistory, MachineLoad, Mark, MarkParams,
+    DetailsChange, DirEntry, DirListing, Effort, EffortSource, EntryKind, EntryLink,
+    EnvironmentCredentials, ErrorBody, ErrorCode, Event, EventRecord, FileEdit, FindFilesParams,
+    FolderParams, FoldersListParams, GitIgnore, HistoryPage, HistoryParams, Image, ImageMediaType,
+    ItemBody, ItemId, ListDirParams, LoadAverage, LoadHistory, MachineLoad, Mark, MarkParams,
     McpRemoveParams, McpScope, McpServer, McpServerParams, McpServerStatus, McpToggleAction,
     McpToggleParams, McpTool, McpTransport, Method, MoveParams, NoticeKind, OlderItems,
     PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision,
@@ -506,6 +506,31 @@ fn subagents() -> Vec<Subagent> {
     ]
 }
 
+/// One change of every part of the details.
+fn details_changes() -> Vec<DetailsChange> {
+    let AgentDetails {
+        tasks,
+        background_tasks,
+        changed_files,
+        context,
+        mcp_servers,
+        subagents,
+        waiting_prompts,
+    } = details();
+    vec![
+        DetailsChange::Tasks { tasks },
+        DetailsChange::BackgroundTasks { background_tasks },
+        DetailsChange::ChangedFiles { changed_files },
+        DetailsChange::Context { context },
+        DetailsChange::McpServers { mcp_servers },
+        DetailsChange::WaitingPrompts { waiting_prompts },
+        DetailsChange::Subagents {
+            changed: subagents,
+            removed: vec![ItemId::new(12)],
+        },
+    ]
+}
+
 fn plan_usage() -> PlanUsage {
     PlanUsage {
         windows: BTreeMap::from([
@@ -809,7 +834,14 @@ fn response_bodies() -> Vec<ResponseBody> {
             items: items(),
             older_items: OlderItems::Exist,
         }),
-        ResponseBody::Details(details()),
+        ResponseBody::Details {
+            details: details(),
+            last_seq: Some(Seq::new(41)),
+        },
+        ResponseBody::Details {
+            details: AgentDetails::default(),
+            last_seq: None,
+        },
         ResponseBody::ContextUsage(context_usage()),
         ResponseBody::McpServers {
             servers: mcp_servers(),
@@ -885,6 +917,14 @@ fn events() -> Vec<Event> {
         Event::DetailsChanged {
             agent: agent(),
             details: AgentDetails::default(),
+        },
+        Event::DetailsUpdated {
+            agent: agent(),
+            changes: details_changes(),
+        },
+        Event::DetailsUpdated {
+            agent: agent(),
+            changes: Vec::new(),
         },
         Event::CommandsChanged {
             agent: agent(),
@@ -1142,6 +1182,7 @@ fn message_and_body_tags_are_pinned() {
             "transcript_appended",
             "transcript_changed",
             "details_changed",
+            "details_updated",
             "commands_changed",
             "plan_usage_changed",
             "settings_changed",
@@ -1162,6 +1203,18 @@ fn message_and_body_tags_are_pinned() {
             "plan",
             "turn_end",
             "notice",
+        ]
+    );
+    assert_eq!(
+        tags(&details_changes(), "part"),
+        [
+            "tasks",
+            "background_tasks",
+            "changed_files",
+            "context",
+            "mcp_servers",
+            "waiting_prompts",
+            "subagents",
         ]
     );
     assert_eq!(tags(&answers(), "type"), ["approval", "question", "plan"]);
@@ -1976,6 +2029,77 @@ fn a_subagent_on_the_wire() {
             "error": null,
             "turn": 3,
             "task": "task-2",
+        }),
+    );
+}
+
+#[test]
+fn a_subagents_update_on_the_wire() {
+    let [_, failed] = subagents().try_into().unwrap();
+    let event = Event::DetailsUpdated {
+        agent: agent(),
+        changes: vec![
+            DetailsChange::Subagents {
+                changed: vec![failed],
+                removed: vec![ItemId::new(12)],
+            },
+            DetailsChange::Context { context: None },
+        ],
+    };
+
+    assert_wire(
+        &event,
+        json!({
+            "type": "details_updated",
+            "agent": AGENT,
+            "changes": [
+                {
+                    "part": "subagents",
+                    "changed": [{
+                        "item": 44,
+                        "parent": 40,
+                        "description": "Check the lockfile",
+                        "agent_type": null,
+                        "run": "foreground",
+                        "status": "failed",
+                        "started_at": 1_700_000_130_000_u64,
+                        "ended_at": 1_700_000_142_000_u64,
+                        "tokens": null,
+                        "tool_calls": 2,
+                        "last_tool": null,
+                        "error": "API error 529: overloaded",
+                        "turn": 3,
+                        "task": null,
+                    }],
+                    "removed": [12],
+                },
+                {"part": "context", "context": null},
+            ],
+        }),
+    );
+}
+
+#[test]
+fn the_details_answer_says_the_last_event_they_hold() {
+    let body = ResponseBody::Details {
+        details: AgentDetails::default(),
+        last_seq: Some(Seq::new(41)),
+    };
+
+    assert_wire(
+        &body,
+        json!({
+            "type": "details",
+            "details": {
+                "tasks": [],
+                "background_tasks": [],
+                "changed_files": [],
+                "context": null,
+                "mcp_servers": [],
+                "subagents": [],
+                "waiting_prompts": [],
+            },
+            "last_seq": 41,
         }),
     );
 }

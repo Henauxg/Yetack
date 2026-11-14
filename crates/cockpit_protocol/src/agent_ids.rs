@@ -73,7 +73,7 @@ impl ResponseBody {
             Self::MachineLoad(load) => load.map_agents(map),
             Self::Done
             | Self::History(_)
-            | Self::Details(_)
+            | Self::Details { .. }
             | Self::ContextUsage(_)
             | Self::McpServers { .. }
             | Self::Commands { .. }
@@ -99,6 +99,7 @@ impl Event {
             | Self::TranscriptAppended { agent, .. }
             | Self::TranscriptChanged { agent, .. }
             | Self::DetailsChanged { agent, .. }
+            | Self::DetailsUpdated { agent, .. }
             | Self::CommandsChanged { agent, .. } => *agent = map(*agent),
             Self::PlanUsageChanged(_)
             | Self::SettingsChanged(_)

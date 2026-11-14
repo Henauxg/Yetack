@@ -47,7 +47,7 @@ pub enum Request {
     AgentClose(AgentParams),
     /// Answered by `History`.
     AgentHistory(HistoryParams),
-    /// Answered by `Details`. `DetailsChanged` events keep them current after that.
+    /// Answered by `Details`. The details events after its `last_seq` keep them current.
     AgentDetails(AgentParams),
     /// Answered by `Done`.
     AgentSetModel(SetModelParams),
