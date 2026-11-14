@@ -97,6 +97,7 @@ pub fn status_requests(state: &mut AppState) -> Vec<Outgoing> {
                 purpose: Purpose::McpReconnected {
                     agent: *agent,
                     server: server.clone(),
+                    details_seq: state.agents.get(agent).and_then(|entry| entry.details_seq),
                 },
                 to: MachineId::THIS,
             });
@@ -219,6 +220,7 @@ mod tests {
         Purpose::McpReconnected {
             agent: agent(),
             server: SERVER.to_owned(),
+            details_seq: None,
         }
     }
 

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::account::Account;
 use crate::agent::AgentSummary;
 use crate::details::{AgentDetails, SlashCommand};
+use crate::details_change::DetailsChange;
 use crate::ids::{AgentId, Seq};
 use crate::settings::Settings;
 use crate::transcript::TranscriptItem;
@@ -28,10 +29,17 @@ pub enum Event {
         agent: AgentId,
         item: TranscriptItem,
     },
-    /// Replaces the agent's details.
+    /// Replaces the agent's details whole, its subagents included. The daemon sends it as the
+    /// agent's first details event, and a replay sends the latest details this way, in place of
+    /// the events that changed them.
     DetailsChanged {
         agent: AgentId,
         details: AgentDetails,
+    },
+    /// Changes the parts of the agent's details that changed since its last details event.
+    DetailsUpdated {
+        agent: AgentId,
+        changes: Vec<DetailsChange>,
     },
     /// Replaces the agent's slash commands and skills, for the palette.
     CommandsChanged {

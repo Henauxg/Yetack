@@ -244,6 +244,7 @@ fn event_agent(event: &Event) -> Option<AgentId> {
         | Event::TranscriptAppended { agent, .. }
         | Event::TranscriptChanged { agent, .. }
         | Event::DetailsChanged { agent, .. }
+        | Event::DetailsUpdated { agent, .. }
         | Event::CommandsChanged { agent, .. } => Some(*agent),
         Event::PlanUsageChanged(_)
         | Event::SettingsChanged(_)

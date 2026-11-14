@@ -7,7 +7,7 @@ use strum::VariantArray;
 
 use crate::account::{AccountState, EnvironmentCredentials};
 use crate::details::{AgentDetails, ContextUsage, McpServer, SlashCommand};
-use crate::ids::{AccountId, AgentId, ClaudeSessionId};
+use crate::ids::{AccountId, AgentId, ClaudeSessionId, Seq};
 use crate::machine_load::MachineLoad;
 use crate::time::Timestamp;
 use crate::transcript::{FileEdit, Image, TranscriptItem};
@@ -48,7 +48,13 @@ pub enum ResponseBody {
         agent: AgentId,
     },
     History(HistoryPage),
-    Details(AgentDetails),
+    /// The details as the agent's last details event left them.
+    Details {
+        details: AgentDetails,
+        /// The daemon's last event when it answered: a details event after it changes these
+        /// details, and one up to it is in them. `None` before the daemon's first event.
+        last_seq: Option<Seq>,
+    },
     ContextUsage(ContextUsage),
     McpServers {
         servers: Vec<McpServer>,

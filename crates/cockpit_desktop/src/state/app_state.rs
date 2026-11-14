@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime};
 use cockpit_protocol::{
     Account, AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, AnswerState,
     BackgroundTask, BackgroundTaskStatus, BuildCommit, FileEdit, Image, ItemBody, ItemId,
-    PastSession, PlanUsage, ReleaseVersion, Settings, SlashCommand, Timestamp, ToolCallStatus,
+    PastSession, PlanUsage, ReleaseVersion, Seq, Settings, SlashCommand, Timestamp, ToolCallStatus,
     TranscriptItem, WaitingPrompt, list_order,
 };
 use strum::VariantArray;
@@ -15,6 +15,7 @@ use strum::VariantArray;
 use super::accounts::SignIns;
 use super::chat_images::KeptImage;
 use super::daemon_update::DaemonUpdate;
+use super::details_updates::EarlyUpdate;
 use super::file_tree::FileTree;
 use super::grouping::GroupKey;
 use super::no_daemon::{NoDaemon, SERVICE_OFFERED};
@@ -146,6 +147,10 @@ pub struct AgentEntry {
     pub summary: AgentSummary,
     pub transcript: Transcript,
     pub details: Loadable<AgentDetails>,
+    /// The last details event that `details` hold: an update up to it is in them already.
+    pub details_seq: Option<Seq>,
+    /// The details updates that came while the details load, oldest first.
+    pub early_details: Vec<EarlyUpdate>,
     /// An `agent.context_usage` request is on its way: the usage card shows that it loads.
     pub context_loading: bool,
     /// The file view's texts, by the path the view uses.
@@ -277,6 +282,8 @@ impl AgentEntry {
             summary,
             transcript: Transcript::default(),
             details: Loadable::NotRequested,
+            details_seq: None,
+            early_details: Vec::new(),
             context_loading: false,
             files: BTreeMap::new(),
             file_freshness: FileFreshness::default(),

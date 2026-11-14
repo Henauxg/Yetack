@@ -17,6 +17,7 @@ mod account;
 mod agent;
 mod agent_ids;
 mod details;
+mod details_change;
 mod event;
 mod frame;
 mod ids;
@@ -45,6 +46,7 @@ pub use details::{
     McpTransport, SlashCommand, Subagent, SubagentRun, SubagentStatus, SubagentToolCall,
     TaskListItem, TaskStatus, WaitingPrompt, WaitingState,
 };
+pub use details_change::DetailsChange;
 pub use event::{Event, EventRecord};
 pub use frame::{Frame, FrameError, FrameReader, FrameWriter, MAX_LINE_BYTES};
 pub use ids::{

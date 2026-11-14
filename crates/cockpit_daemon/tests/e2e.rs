@@ -21,14 +21,15 @@ use cockpit_protocol::{
     Account, AccountAddParams, AccountId, AccountParams, AccountPlanUsage, AccountState, AgentId,
     AgentParams, AgentStatus, AgentSummary, Answer, AnswerParams, AnswerState, Approval,
     ApprovalAnswer, ApprovalDecision, BackgroundTaskId, Catchup, ClaudeSessionId, CommandKind,
-    CostUsd, CredentialSource, Effort, EffortSource, EnvironmentCredentials, ErrorCode, Event,
-    EventRecord, FileEdit, HistoryParams, Image, ImageMediaType, ItemBody, McpRemoveParams,
-    McpScope, McpServerParams, McpServerStatus, McpToggleAction, McpToggleParams, MoveParams,
-    PROTOCOL_VERSION, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision, PlanUsage,
-    ProcessId, Prompt, PromptDelivery, PromptParams, Question, QuestionAnswer, QueuedPromptParams,
-    ReadFileParams, RenameParams, Request, ResponseBody, Seq, SessionResumeParams, SetEffortParams,
-    SetModeParams, SetModelParams, Settings, SignIn, SignInWait, StartParams, StopProcessParams,
-    StopTaskParams, TranscriptItem, TurnOutcome, UsageWindow, WaitingPrompt, WaitingState,
+    CostUsd, CredentialSource, DetailsChange, Effort, EffortSource, EnvironmentCredentials,
+    ErrorCode, Event, EventRecord, FileEdit, HistoryParams, Image, ImageMediaType, ItemBody,
+    McpRemoveParams, McpScope, McpServerParams, McpServerStatus, McpToggleAction, McpToggleParams,
+    MoveParams, PROTOCOL_VERSION, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision,
+    PlanUsage, ProcessId, Prompt, PromptDelivery, PromptParams, Question, QuestionAnswer,
+    QueuedPromptParams, ReadFileParams, RenameParams, Request, ResponseBody, Seq,
+    SessionResumeParams, SetEffortParams, SetModeParams, SetModelParams, Settings, SignIn,
+    SignInWait, StartParams, StopProcessParams, StopTaskParams, TranscriptItem, TurnOutcome,
+    UsageWindow, WaitingPrompt, WaitingState,
 };
 use rustix::process::{Pid, Signal};
 use serde_json::{Value, json};
@@ -397,14 +398,22 @@ impl Client {
         agent: AgentId,
         mut matches: impl FnMut(&[WaitingPrompt]) -> bool,
     ) -> Vec<WaitingPrompt> {
-        self.wait_for(|event| match event {
-            Event::DetailsChanged {
-                agent: from,
-                details,
-            } if *from == agent && matches(&details.waiting_prompts) => {
-                Some(details.waiting_prompts.clone())
-            }
-            _ => None,
+        self.wait_for(|event| {
+            let waiting = match event {
+                Event::DetailsChanged {
+                    agent: from,
+                    details,
+                } if *from == agent => &details.waiting_prompts,
+                Event::DetailsUpdated {
+                    agent: from,
+                    changes,
+                } if *from == agent => changes.iter().find_map(|change| match change {
+                    DetailsChange::WaitingPrompts { waiting_prompts } => Some(waiting_prompts),
+                    _ => None,
+                })?,
+                _ => return None,
+            };
+            matches(waiting).then(|| waiting.clone())
         })
         .await
     }
@@ -537,7 +546,7 @@ async fn an_agent_answers_a_prompt_and_reports_its_state() {
         })
         .collect();
     assert_eq!(kinds, ["user", "text", "end"], "{items:?}");
-    let ResponseBody::Details(details) = client
+    let ResponseBody::Details { details, .. } = client
         .ok(Request::AgentDetails(AgentParams { agent }))
         .await
     else {
@@ -842,7 +851,7 @@ async fn a_new_agent_shows_its_mcp_servers_and_context_before_any_prompt() {
     let with_context = client
         .summary_with(agent, |summary| summary.context_percent.is_some())
         .await;
-    let ResponseBody::Details(details) = client
+    let ResponseBody::Details { details, .. } = client
         .ok(Request::AgentDetails(AgentParams { agent }))
         .await
     else {
