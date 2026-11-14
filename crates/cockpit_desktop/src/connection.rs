@@ -23,20 +23,22 @@ use crate::notifications::Notifier;
 use crate::prefs::NotificationLevel;
 use crate::reach::{self, Places, Reached, Unreached};
 use crate::service_update::{self, BusyCheck, SystemService};
+use crate::state::daemon_probe::ProbeTarget;
 use crate::state::daemon_update::{self, OutputLine, OutputStream};
 use crate::state::machine_load::{LOAD_POLL, LoadView, ShownLoad};
-use crate::state::machines::{self, MachineChange};
+use crate::state::machines::{self, Adding, MachineChange};
 use crate::state::no_daemon::{self, Absence, Chosen, DaemonChoice, SERVICE_OFFERED};
+use crate::state::server_setup::{self, SetupRun};
 use crate::state::settings::{self, StartDaemon};
 use crate::state::update_offer::{self, VersionGap};
 use crate::state::update_plan::{
-    BusyAgents, JobCheck, ServerPlan, ServicePlan, UpdatePlan, UpdateRun, UpdateStep,
+    BusyAgents, JobCheck, SendProgress, ServerPlan, ServicePlan, UpdatePlan, UpdateRun, UpdateStep,
 };
 use crate::state::{
     self, AgentEntry, AppState, ConnectionState, Dialog, Drafts, MachineState, Outgoing, Purpose,
     TitlePlace, Utf16Offset, actions, file_reread, notification_levels,
 };
-use crate::{bridge, demo, format, update_script};
+use crate::{bridge, demo, format, server_daemon, update_script};
 
 /// What the window was started with.
 #[derive(Debug, Clone, PartialEq)]
@@ -91,6 +93,11 @@ pub enum UpdateCommand {
     Start(MachineId, UpdateRun),
     /// Asks a server's running script to stop before it installs.
     Cancel(MachineId, ServerPlan),
+    /// Reads where a server's daemon is and who owns it: the host, and the daemon's path or
+    /// command.
+    Probe(MachineId, ProbeTarget),
+    /// A step of a new server's setup, from "Add a server".
+    Setup(SetupRun),
 }
 
 /// What components hold to read and change the state and to reach the daemon. The drafts are a
@@ -186,9 +193,72 @@ impl Cockpit {
         }
     }
 
-    /// Tries a machine that does not answer again now.
+    /// Reads where `machine`'s daemon is installed and who owns it, when its update screens need
+    /// it and the app has not looked yet.
+    pub fn probe_daemon(&self, machine: MachineId) {
+        let mut signal = self.state;
+        // A write tells every reader, so it waits until a probe is due.
+        if !daemon_update::probe_due(&signal.peek(), machine) {
+            return;
+        }
+        let target = daemon_update::probe_to_run(&mut signal.write(), machine);
+        if let Some(target) = target {
+            self.daemon
+                .send(ToDaemon::Update(UpdateCommand::Probe(machine, target)));
+        }
+    }
+
+    /// "Add the server": the server joins the app, or without a path, the app looks for its
+    /// daemon first.
+    pub fn add_server(&self) {
+        let mut signal = self.state;
+        let adding = machines::add(&mut signal.write());
+        match adding {
+            Some(Adding::Add(change)) => self.change_machines(change),
+            Some(Adding::Setup(run)) => self.run_setup(run),
+            None => {}
+        }
+    }
+
+    /// "Install on <server>", in the setup of a new server.
+    pub fn install_server(&self) {
+        let mut signal = self.state;
+        let run = server_setup::install(&mut signal.write());
+        if let Some(run) = run {
+            self.run_setup(run);
+        }
+    }
+
+    /// "Try again", once a setup failed.
+    pub fn retry_server_setup(&self) {
+        let mut signal = self.state;
+        let run = server_setup::retry(&mut signal.write());
+        if let Some(run) = run {
+            self.run_setup(run);
+        }
+    }
+
+    /// "Check again", once the setup's install is done.
+    pub fn check_server_again(&self) {
+        let mut signal = self.state;
+        let run = server_setup::check_again(&mut signal.write());
+        if let Some(run) = run {
+            self.run_setup(run);
+        }
+    }
+
+    /// Runs a step of a server's setup beside the window: the Machines dialog may close before it
+    /// ends.
+    fn run_setup(&self, run: SetupRun) {
+        self.daemon
+            .send(ToDaemon::Update(UpdateCommand::Setup(run)));
+    }
+
+    /// Tries a machine that does not answer again now. The update screens look at its daemon
+    /// again too: the user may have updated it by hand.
     pub fn retry_machine(&self, machine: MachineId) {
         let mut signal = self.state;
+        daemon_update::forget_probe(&mut signal.write(), machine);
         let retry = retry_message(&mut signal.write(), machine);
         if let Some(retry) = retry {
             self.daemon.send(retry);
@@ -587,6 +657,22 @@ impl Servers {
             UpdateCommand::Cancel(machine, plan) => {
                 spawn(cancel_update(state, machine, plan));
             }
+            UpdateCommand::Probe(machine, target) => {
+                let mut state = state;
+                let updates = self.retries.clone();
+                spawn(async move {
+                    let read = server_daemon::probe(&target.host, &target.binary).await;
+                    let mut state = state.write();
+                    daemon_update::probed(&mut state, machine, &target, read);
+                    // A wait for idle agents may have waited for this probe.
+                    if let Some(run) = daemon_update::start_when_idle(&mut state, machine) {
+                        let _ = updates.send(ToDaemon::Update(UpdateCommand::Start(machine, run)));
+                    }
+                });
+            }
+            UpdateCommand::Setup(run) => {
+                spawn(run_setup(state, run, self.retries.clone()));
+            }
         }
     }
 
@@ -627,13 +713,15 @@ async fn run_update(
 ) {
     let UpdateRun { plan, busy } = run;
     let retry_now = match plan {
-        UpdatePlan::Server(plan) => {
-            let code = update_script::update(&plan, busy, |lines| {
-                daemon_update::output(&mut state.write(), machine, lines);
-            })
-            .await;
-            daemon_update::finished(&mut state.write(), machine, code)
-        }
+        UpdatePlan::Server(plan) => match update_server(state, machine, &plan, busy).await {
+            ServerUpdateEnd::ScriptEnded(code) => {
+                daemon_update::finished(&mut state.write(), machine, code)
+            }
+            ServerUpdateEnd::NotSent => {
+                daemon_update::send_failed(&mut state.write(), machine);
+                false
+            }
+        },
         UpdatePlan::Service(plan) => {
             let check = match busy {
                 BusyAgents::Refuse => Some(BusyCheck {
@@ -659,6 +747,113 @@ async fn run_update(
         // The window closed: nothing tries the machine again.
         let _ = retries.send(retry);
     }
+}
+
+/// The daemon's command, which the setup of a new server looks for on its `PATH`.
+const DAEMON_COMMAND: &str = "agents-cockpit";
+
+/// Runs a step of a server's setup. A server whose daemon runs joins the app through `added`.
+async fn run_setup(
+    mut state: Signal<AppState>,
+    run: SetupRun,
+    added: mpsc::UnboundedSender<ToDaemon>,
+) {
+    let change = match run {
+        SetupRun::Look { host } => {
+            let found = server_daemon::probe(&host, DAEMON_COMMAND).await;
+            let carried = server_daemon::carried();
+            server_setup::looked(&mut state.write(), &host, found, carried.as_deref())
+        }
+        SetupRun::Install { host } => install_on(state, &host).await,
+        SetupRun::Check { host } => {
+            let mut lines = Vec::new();
+            let code = server_daemon::check_needs(&host, |batch| lines.extend(batch)).await;
+            let texts: Vec<String> = lines.into_iter().map(|line| line.text).collect();
+            let read = (code == Some(0)).then_some(texts.as_slice());
+            server_setup::checked(&mut state.write(), &host, read);
+            None
+        }
+    };
+    if let Some(change) = change {
+        // The window closed: nothing adds the server.
+        let _ = added.send(ToDaemon::Machines(change));
+    }
+}
+
+/// Sends the daemon this app carries to `host` and installs it there. Returns the server to add
+/// once its daemon runs.
+async fn install_on(mut state: Signal<AppState>, host: &str) -> Option<MachineChange> {
+    let Some(file) = server_daemon::carried() else {
+        server_setup::send_failed(
+            &mut state.write(),
+            host,
+            "This app carries no daemon to send.".to_owned(),
+        );
+        return None;
+    };
+    let sent = server_daemon::send(host, &file, |progress| {
+        server_setup::sending(&mut state.write(), host, progress);
+    })
+    .await;
+    let sent = match sent {
+        Ok(sent) => sent,
+        Err(error) => {
+            server_setup::send_failed(&mut state.write(), host, error);
+            return None;
+        }
+    };
+    let mut said = Vec::new();
+    let code = server_daemon::install(host, &sent, |lines| {
+        let mut state = state.write();
+        for line in lines {
+            server_setup::output(&mut state, host, &line.text);
+            said.push(line.text);
+        }
+    })
+    .await;
+    server_setup::installed(&mut state.write(), host, code, &said)
+}
+
+/// How a server's update ended.
+enum ServerUpdateEnd {
+    /// The script ran, and ended with this exit code: `None` when ssh lost it.
+    ScriptEnded(Option<i32>),
+    /// The send of the daemon failed, so the script did not run.
+    NotSent,
+}
+
+/// Sends the daemon this app carries, if the plan has one, then runs the update script.
+async fn update_server(
+    mut state: Signal<AppState>,
+    machine: MachineId,
+    plan: &ServerPlan,
+    busy: BusyAgents,
+) -> ServerUpdateEnd {
+    let sent = match &plan.daemon_file {
+        Some(file) => {
+            let sent = server_daemon::send(&plan.host, file, |progress| {
+                daemon_update::sending(&mut state.write(), machine, progress);
+            })
+            .await;
+            match sent {
+                Ok(sent) => Some(sent),
+                Err(error) => {
+                    let line = OutputLine {
+                        stream: OutputStream::Stderr,
+                        text: format!("Could not send the daemon: {error}"),
+                    };
+                    daemon_update::output(&mut state.write(), machine, vec![line]);
+                    return ServerUpdateEnd::NotSent;
+                }
+            }
+        }
+        None => None,
+    };
+    let code = update_script::update(plan, busy, sent.as_ref(), |lines| {
+        daemon_update::output(&mut state.write(), machine, lines);
+    })
+    .await;
+    ServerUpdateEnd::ScriptEnded(code)
 }
 
 /// Reads which of this computer's resting agents may hold a scheduled job, then starts the update,
@@ -819,6 +1014,15 @@ async fn run_demo(
                         machines::apply_edit(&mut state.write(), machine, &config);
                         continue;
                     }
+                    Some(ToDaemon::Update(UpdateCommand::Probe(machine, target))) => {
+                        let read = Ok(demo::probe_answer());
+                        daemon_update::probed(&mut state.write(), machine, &target, read);
+                        continue;
+                    }
+                    Some(ToDaemon::Update(UpdateCommand::Setup(run))) => {
+                        spawn(demo::play_setup(state, run));
+                        continue;
+                    }
                     // The demo writes no config.
                     Some(ToDaemon::Machines(MachineChange::LocalDaemon(next))) => {
                         settings::save_start(&mut state.write(), next, |_| demo::save_local(local));
@@ -871,8 +1075,21 @@ async fn run_demo(
 /// then the first connection.
 async fn play_demo_update(mut state: Signal<AppState>, machine: MachineId, plan: UpdatePlan) {
     let reconnects = match plan {
-        UpdatePlan::Server(_) => {
-            for line in demo::UPDATE_OUTPUT {
+        UpdatePlan::Server(plan) => {
+            let lines = if plan.daemon_file.is_some() {
+                for fifth in 1..=5 {
+                    tokio::time::sleep(demo::UPDATE_LINE_PAUSE / 2).await;
+                    let sent = SendProgress {
+                        sent: demo::SENT_SIZE * fifth / 5,
+                        total: demo::SENT_SIZE,
+                    };
+                    daemon_update::sending(&mut state.write(), machine, sent);
+                }
+                demo::SENT_OUTPUT
+            } else {
+                demo::UPDATE_OUTPUT
+            };
+            for line in lines {
                 tokio::time::sleep(demo::UPDATE_LINE_PAUSE).await;
                 let line = OutputLine {
                     stream: OutputStream::Stdout,
@@ -1039,6 +1256,7 @@ fn server_plan(host: &str, remote_command: &str, source_dir: Option<String>) -> 
         remote_command: remote_command.to_owned(),
         source_dir,
         commit: update_script::app_commit()?,
+        daemon_file: server_daemon::carried(),
     }))
 }
 
@@ -1173,11 +1391,16 @@ async fn serve(
                     let alerts =
                         state::apply_update(&mut state, &mut drafts, update, Instant::now(), machine);
                     let idle_update = daemon_update::start_when_idle(&mut state, machine);
-                    (alerts, state::needed_requests(&mut state), idle_update)
+                    let wait_probe = daemon_update::probe_for_wait(&mut state, machine);
+                    (alerts, state::needed_requests(&mut state), (idle_update, wait_probe))
                 };
+                let (idle_update, wait_probe) = idle_update;
+                // The window closed: nothing runs the update or the probe.
                 if let Some(run) = idle_update {
-                    // The window closed: nothing runs the update.
                     let _ = task.updates.send(ToDaemon::Update(UpdateCommand::Start(machine, run)));
+                }
+                if let Some(target) = wait_probe {
+                    let _ = task.updates.send(ToDaemon::Update(UpdateCommand::Probe(machine, target)));
                 }
                 send_all(state, drafts, &requester, &task, follow_up);
                 if let Some(notifier) = &mut notifier {

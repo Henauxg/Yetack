@@ -2,16 +2,23 @@
 # Updates this machine's agents-cockpit daemon to one commit and restarts it. Linux only.
 #
 #   ssh HOST sh -s -- --commit HASH --binary PATH [--source-dir DIR] [--even-if-busy] < contrib/update-daemon.sh
+#   ssh HOST sh -s -- --commit HASH --binary PATH --built FILE --sha256 SUM --version TEXT
+#       [--even-if-busy] < contrib/update-daemon.sh
 #   ssh HOST sh -s -- --cancel < contrib/update-daemon.sh
 #
 #   --commit        a commit or ref that the source checkout can fetch from origin
 #   --binary        the absolute path of the agents-cockpit binary to replace
 #   --source-dir    a git checkout of the repository, by default ~/agents-cockpit
+#   --built         a binary already on this machine, which replaces the build: the app sends its
+#                   own. The script deletes it once it is done.
+#   --sha256        the checksum FILE must have
+#   --version       what `FILE --version` must print after "agents-cockpit "
 #   --even-if-busy  restarts even while agents are busy or may hold a scheduled job: the restart
 #                   ends their turns, which the new daemon resumes, and loses their jobs
 #   --cancel        makes the running update stop before it installs: its build runs on
 #
-# It builds outside the checkout, which stays as it is. It restarts the daemon with
+# It builds outside the checkout, which stays as it is. With --built it checks FILE instead, by its
+# checksum and its version, before anything changes. It restarts the daemon with
 # $XDG_CONFIG_HOME/agents-cockpit/start-daemon when that file exists (a script that starts the
 # daemon in the background and returns), and otherwise with the agents-cockpit systemd user
 # service. Without --even-if-busy, it refuses while an agent works, waits for an answer, runs
@@ -57,6 +64,9 @@ parse_arguments() {
     binary=
     source_dir=$HOME/agents-cockpit
     even_if_busy=
+    sent=
+    sha256=
+    version=
     while [ "$#" -gt 0 ]; do
         if [ "$1" = --even-if-busy ]; then
             even_if_busy=yes
@@ -68,6 +78,9 @@ parse_arguments() {
             --commit) commit=$2 ;;
             --binary) binary=$2 ;;
             --source-dir) source_dir=$2 ;;
+            --built) sent=$2 ;;
+            --sha256) sha256=$2 ;;
+            --version) version=$2 ;;
             *) die "unknown option: $1" ;;
         esac
         shift 2
@@ -80,6 +93,9 @@ parse_arguments() {
         /*) ;;
         *) die "--binary must be an absolute path" ;;
     esac
+    if [ -n "$sent" ]; then
+        [ -n "$sha256" ] && [ -n "$version" ] || die "--built needs --sha256 and --version"
+    fi
 }
 
 # The start time of a process that runs, empty for a dead one. A zombie counts as dead.
@@ -110,7 +126,7 @@ take_lock() {
     rm -f "$claim"
     [ "$taken" != 6 ] || fail 6 "another update is running"
     [ "$taken" = 0 ] || die "cannot take $lock"
-    trap 'rm -f "$lock"' EXIT
+    trap 'rm -f "$lock"; [ -z "$sent" ] || rm -f "$sent"' EXIT
     trap 'exit 1' INT TERM
     rm -rf "$work_dir/cancel"
 }
@@ -277,6 +293,23 @@ build() {
     [ -x "$built" ] || die "the build of $sha made no $built"
 }
 
+# The binary the app sent must be the file it read, and this app's build: a file left beside the
+# app by an older build would put another version in place.
+check_sent() {
+    say "checking $sent"
+    [ -f "$sent" ] || die "$sent is missing"
+    command -v sha256sum >/dev/null 2>&1 || die "cannot check the binary the app sent: this needs sha256sum"
+    sum=$(sha256sum "$sent" | cut -d ' ' -f 1)
+    [ "$sum" = "$sha256" ] ||
+        die "the binary on this machine is not the one the app sent: its checksum differs; the daemon was not touched"
+    chmod 700 "$sent" || die "cannot make $sent executable"
+    said=$("$sent" --version 2>&1 | head -n 1)
+    [ "$said" = "agents-cockpit $version" ] ||
+        die "the binary the app sent says \"$said\", not \"agents-cockpit $version\"; the daemon was not touched"
+    sha=$commit
+    built=$sent
+}
+
 # Signals the process that holds the lock, and waits until none does. A pid names the daemon by its
 # start time, read once the pid is found and checked to hold the lock again: right before the
 # signal, the start time must be the same, so a process that got the pid since gets no signal.
@@ -389,6 +422,7 @@ main() {
         return
     fi
     parse_arguments "$@"
+    trap '[ -z "$sent" ] || rm -f "$sent"' EXIT
     # A command run over SSH loads no shell profile.
     PATH=$PATH:$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin
     PATH=$PATH:/etc/profiles/per-user/$(id -un)/bin
@@ -398,9 +432,13 @@ main() {
     take_lock
     choose_restart
     check_agents
-    build
-    # The build takes minutes: an agent may have started working meanwhile.
-    check_agents
+    if [ -n "$sent" ]; then
+        check_sent
+    else
+        build
+        # The build takes minutes: an agent may have started working meanwhile.
+        check_agents
+    fi
     mkdir "$work_dir/cancel" 2>/dev/null || die "the update was cancelled; the daemon was not touched"
     install_and_restart
 }

@@ -7,7 +7,7 @@ A release has up to five files:
 | --- | --- |
 | `agents-cockpit-0.1.0-x86_64-linux` | The daemon and command line for Linux x86_64, static: it runs on any distribution |
 | `agents-cockpit_0.1.0_amd64.deb` | The app for Ubuntu 22.04 and newer, and Debian 12, with the daemon beside it |
-| `agents-cockpit-desktop-0.1.0-windows-x64.zip` | The app for Windows, when a Windows machine is at hand |
+| `agents-cockpit-desktop-0.1.0-windows-x64.zip` | The app for Windows, with the Linux daemon beside it, when a Windows machine is at hand |
 | `agents-cockpit.service` | The systemd user service that runs the daemon on a server |
 | `SHA256SUMS` | The checksum of each file |
 
@@ -28,15 +28,18 @@ The Windows zip is built on a Windows machine, the other files on a Linux machin
 
 ## 2. Build the Windows zip, if you can
 
-Skip this step when no Windows machine is at hand. On the Windows machine, in PowerShell, in a checkout of the repository:
+Skip this step when no Windows machine is at hand. The zip holds the app and the static Linux daemon, `agents-cockpit-x86_64-linux`, which the app's "Update" sends to servers. `just linux-daemon` builds that daemon and copies it beside the app. It needs the musl target once: `rustup target add x86_64-unknown-linux-musl`.
+
+On the Windows machine, in PowerShell, in a checkout of the repository:
 
 ```powershell
 git fetch --tags
 git checkout v0.1.0
 cargo build --release -p cockpit_desktop
+just linux-daemon
 $version = "0.1.0"
 New-Item -ItemType Directory -Force dist | Out-Null
-Compress-Archive -Force -Path target\release\agents-cockpit-desktop.exe, LICENSE `
+Compress-Archive -Force -Path target\release\agents-cockpit-desktop.exe, target\release\agents-cockpit-x86_64-linux, LICENSE `
     -DestinationPath "dist\agents-cockpit-desktop-$version-windows-x64.zip"
 ```
 
@@ -54,7 +57,7 @@ The recipe refuses a tree with uncommitted changes. It builds `HEAD` inside an U
 
 The first run takes about ten minutes. Later runs reuse two Docker volumes, `agents-cockpit-release-registry` and `agents-cockpit-release-target`, and still rebuild every crate of the repository.
 
-The app inside the `.deb` knows the commit it was built from, so its "Update" button builds that commit on a server.
+The app inside the `.deb` knows the commit it was built from. Its "Update" button sends the package's `/usr/bin/agents-cockpit` to a server, which then builds nothing.
 
 ## 4. Check the files
 

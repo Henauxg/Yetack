@@ -43,8 +43,15 @@
             # offers no update. The sandbox has no git to ask.
             AGENTS_COCKPIT_SOURCE_COMMIT = self.rev or "";
           };
+          # The daemon the app sends to servers: static, so that it runs on any x86_64 Linux.
+          linuxDaemon = pkgs.pkgsStatic.rustPlatform.buildRustPackage (common // {
+            pname = "agents-cockpit-static";
+            cargoBuildFlags = [ "-p" "agents_cockpit" ];
+            meta.mainProgram = "agents-cockpit";
+          });
+          carriesDaemon = pkgs.stdenv.hostPlatform.system == "x86_64-linux";
         in
-        rec {
+        {
           # The daemon and the command line, for the server.
           daemon = rustPlatform.buildRustPackage (common // {
             pname = "agents-cockpit";
@@ -58,6 +65,10 @@
             cargoBuildFlags = [ "-p" "cockpit_desktop" ];
             nativeBuildInputs = [ pkgs.pkg-config pkgs.wrapGAppsHook3 ];
             buildInputs = desktopLibraries pkgs;
+            # The daemon the app's update sends to a server, which then builds nothing. An app of
+            # another system carries none: its update builds on the server.
+            AGENTS_COCKPIT_LINUX_DAEMON =
+              pkgs.lib.optionalString carriesDaemon "${linuxDaemon}/bin/agents-cockpit";
             # GTK names the window after the binary, so a Wayland desktop finds the entry, and its
             # icon, by the binary's name.
             postInstall = ''
@@ -71,7 +82,9 @@
             meta.mainProgram = "agents-cockpit-desktop";
           });
 
-          default = desktop;
+          default = self.packages.${pkgs.stdenv.hostPlatform.system}.desktop;
+        } // pkgs.lib.optionalAttrs carriesDaemon {
+          daemon-static = linuxDaemon;
         });
 
       devShells = forEachSystem (pkgs:
@@ -80,6 +93,8 @@
           # unstable options of docs/standards/rust/rustfmt.toml.
           stable = pkgs.rust-bin.stable.latest.minimal.override {
             extensions = [ "clippy" "rust-src" "rust-analyzer" ];
+            # For `just linux-daemon`.
+            targets = [ "x86_64-unknown-linux-musl" ];
           };
           nightlyRustfmt = pkgs.rust-bin.selectLatestNightlyWith (toolchain: toolchain.rustfmt);
         in

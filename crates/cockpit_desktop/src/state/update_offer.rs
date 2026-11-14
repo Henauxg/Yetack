@@ -552,6 +552,7 @@ mod tests {
             remote_command: "/opt/agents-cockpit".to_owned(),
             source_dir: None,
             commit: BuildCommit::new(APP_COMMIT.to_owned()),
+            daemon_file: None,
         })
     }
 

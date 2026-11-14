@@ -380,6 +380,35 @@ printf '%s' '{mark}' >>"$2/release/agents-cockpit"
         self.update_command(commit).output().unwrap()
     }
 
+    /// A copy of the test's binary, as the app sends it, with what its `--version` prints after
+    /// the program's name.
+    fn sent_binary(&self) -> (PathBuf, String) {
+        let sent = self.path("home/cache/agents-cockpit/sent/agents-cockpit.a1b2c3");
+        fs::create_dir_all(sent.parent().unwrap()).unwrap();
+        fs::copy(BINARY, &sent).unwrap();
+        let said = Command::new(BINARY).arg("--version").output().unwrap();
+        let version = String::from_utf8(said.stdout).unwrap();
+        let version = version
+            .trim()
+            .strip_prefix("agents-cockpit ")
+            .unwrap()
+            .to_owned();
+        (sent, version)
+    }
+
+    /// The update the app runs once it sent `sent`, which must have `sha256` and `version`.
+    fn update_with_sent(&self, sent: &Path, sha256: &str, version: &str) -> Output {
+        self.command("sh")
+            .args(["-s", "--", "--commit", "3f9c2e1", "--binary"])
+            .arg(self.installed())
+            .arg("--built")
+            .arg(sent)
+            .args(["--sha256", sha256, "--version", version])
+            .stdin(Stdio::from(File::open(SCRIPT).unwrap()))
+            .output()
+            .unwrap()
+    }
+
     /// The update the app runs for "Update now", which ends the busy agents' turns.
     fn update_even_if_busy(&self, commit: &str) -> Output {
         self.update_command(commit)
@@ -627,6 +656,65 @@ fn a_commit_replaces_the_binary_restarts_the_daemon_and_leaves_the_checkout() {
             .ends_with(BUILT_MARK)
     );
     assert!(machine.update_lock_is_free());
+}
+
+fn sha256(path: &Path) -> String {
+    let output = Command::new("sha256sum").arg(path).output().unwrap();
+    let line = String::from_utf8(output.stdout).unwrap();
+    line.split_whitespace().next().unwrap().to_owned()
+}
+
+#[test]
+fn a_sent_binary_replaces_the_daemon_without_a_build_and_goes_away() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let before = machine.daemon_pid();
+    let (sent, version) = machine.sent_binary();
+    let sent_bytes = fs::read(&sent).unwrap();
+
+    let output = machine.update_with_sent(&sent, &sha256(&sent), &version);
+
+    assert_succeeded(&output);
+    assert!(!machine.built(), "nothing was built");
+    assert_eq!(fs::read(machine.installed()).unwrap(), sent_bytes);
+    assert_ne!(machine.daemon_pid(), before);
+    machine.ok(&["list"]);
+    assert!(!sent.exists(), "the sent file is deleted");
+    assert!(machine.update_lock_is_free());
+}
+
+#[test]
+fn a_sent_binary_that_is_not_the_one_the_app_read_changes_nothing() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let before = machine.daemon_pid();
+    let installed = fs::read(machine.installed()).unwrap();
+    let (sent, version) = machine.sent_binary();
+    let other_sum = "0".repeat(64);
+
+    let output = machine.update_with_sent(&sent, &other_sum, &version);
+
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(stderr(&output).contains("its checksum differs"));
+    assert_eq!(fs::read(machine.installed()).unwrap(), installed);
+    assert_eq!(machine.daemon_pid(), before);
+    assert!(!sent.exists());
+}
+
+#[test]
+fn a_sent_binary_of_another_version_changes_nothing() {
+    let machine = Machine::new();
+    machine.start_daemon();
+    let before = machine.daemon_pid();
+    let installed = fs::read(machine.installed()).unwrap();
+    let (sent, _) = machine.sent_binary();
+
+    let output = machine.update_with_sent(&sent, &sha256(&sent), "9.9.9 (3f9c2e1)");
+
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    assert!(stderr(&output).contains("not \"agents-cockpit 9.9.9 (3f9c2e1)\""));
+    assert_eq!(fs::read(machine.installed()).unwrap(), installed);
+    assert_eq!(machine.daemon_pid(), before);
 }
 
 #[test]

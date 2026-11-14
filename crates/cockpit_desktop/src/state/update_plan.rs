@@ -6,15 +6,19 @@ use std::path::PathBuf;
 
 use cockpit_protocol::{AgentId, BuildCommit};
 
+use crate::format;
+
 /// The script's lines that move the steps on, as `say` in `contrib/update-daemon.sh` prints them.
 pub const BUILDING_LINE: &str = "update-daemon: building";
+pub const CHECKING_LINE: &str = "update-daemon: checking";
 pub const RESTARTING_LINE: &str = "update-daemon: restarting the daemon";
 pub const DAEMON_RUNS_LINE: &str = "update-daemon: the daemon runs";
 
 /// How an update of a machine's daemon runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdatePlan {
-    /// A daemon reached over SSH: the update script builds this app's commit on its machine.
+    /// A daemon reached over SSH: the app sends the Linux daemon it carries, or without one the
+    /// update script builds this app's commit on the server.
     Server(ServerPlan),
     /// This computer's background service: the app stops the daemon that holds its state folder,
     /// then starts the service with its own program.
@@ -30,6 +34,9 @@ pub struct ServerPlan {
     pub source_dir: Option<String>,
     /// The commit this app was built from.
     pub commit: BuildCommit,
+    /// The Linux daemon this app carries, which the update sends. Without it, the script builds
+    /// `commit` on the server.
+    pub daemon_file: Option<PathBuf>,
 }
 
 /// The background service the app restarts.
@@ -45,6 +52,12 @@ impl UpdatePlan {
     /// The steps the update's screen lists, in order.
     pub fn steps(&self) -> &'static [UpdateStep] {
         match self {
+            Self::Server(plan) if plan.daemon_file.is_some() => &[
+                UpdateStep::Send,
+                UpdateStep::Check,
+                UpdateStep::Restart,
+                UpdateStep::Reconnect,
+            ],
             Self::Server(_) => &[
                 UpdateStep::GetVersion,
                 UpdateStep::Build,
@@ -58,6 +71,7 @@ impl UpdatePlan {
     /// The step an update of this plan starts at.
     pub fn first_step(&self) -> UpdateStep {
         match self {
+            Self::Server(plan) if plan.daemon_file.is_some() => UpdateStep::Send,
             Self::Server(_) => UpdateStep::GetVersion,
             Self::Service(_) => UpdateStep::Stop,
         }
@@ -70,6 +84,10 @@ pub enum UpdateStep {
     /// The script fetches this app's commit on the server.
     GetVersion,
     Build,
+    /// The app sends the daemon it carries to the server.
+    Send,
+    /// The script checks the sent daemon's checksum and version.
+    Check,
     /// The script installs the build and restarts the daemon.
     Restart,
     /// The app stops the daemon that holds the state folder.
@@ -84,6 +102,8 @@ impl UpdateStep {
     pub fn from_line(line: &str) -> Option<Self> {
         if line.starts_with(BUILDING_LINE) {
             Some(Self::Build)
+        } else if line.starts_with(CHECKING_LINE) {
+            Some(Self::Check)
         } else if line.starts_with(RESTARTING_LINE) {
             Some(Self::Restart)
         } else if line.starts_with(DAEMON_RUNS_LINE) {
@@ -91,6 +111,40 @@ impl UpdateStep {
         } else {
             None
         }
+    }
+}
+
+/// How far the send of the daemon the app carries has gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SendProgress {
+    /// The bytes sent so far.
+    pub sent: u64,
+    /// The daemon's size.
+    pub total: u64,
+}
+
+impl SendProgress {
+    /// The line under the send's step: "4.1 MB of 9.3 MB" while bytes are left to send, then the
+    /// daemon's size.
+    pub fn detail(self) -> String {
+        if self.sent < self.total {
+            format!(
+                "{} of {}",
+                format::bytes(self.sent),
+                format::bytes(self.total)
+            )
+        } else {
+            format::bytes(self.total)
+        }
+    }
+
+    /// The share of the daemon sent, in percent.
+    pub fn percent(self) -> u8 {
+        if self.total == 0 {
+            return 0;
+        }
+        let percent = self.sent.min(self.total).saturating_mul(100) / self.total;
+        u8::try_from(percent).unwrap_or(100)
     }
 }
 
@@ -126,12 +180,24 @@ pub struct UpdateRun {
 mod tests {
     use super::*;
 
-    fn server() -> UpdatePlan {
-        UpdatePlan::Server(ServerPlan {
+    fn server_plan() -> ServerPlan {
+        ServerPlan {
             host: "build-box".to_owned(),
             remote_command: "/opt/agents-cockpit".to_owned(),
             source_dir: None,
             commit: BuildCommit::new("3f9c2e1a7b4d5c6e".to_owned()),
+            daemon_file: None,
+        }
+    }
+
+    fn server() -> UpdatePlan {
+        UpdatePlan::Server(server_plan())
+    }
+
+    fn sending_server() -> UpdatePlan {
+        UpdatePlan::Server(ServerPlan {
+            daemon_file: Some(PathBuf::from("/opt/app/agents-cockpit-x86_64-linux")),
+            ..server_plan()
         })
     }
 
@@ -144,7 +210,7 @@ mod tests {
 
     #[test]
     fn each_plan_lists_its_steps_in_order_from_its_first() {
-        for plan in [server(), service()] {
+        for plan in [server(), sending_server(), service()] {
             let steps = plan.steps();
 
             assert_eq!(steps.first(), Some(&plan.first_step()), "{plan:?}");
@@ -154,10 +220,33 @@ mod tests {
     }
 
     #[test]
+    fn a_send_counts_its_bytes_until_it_ends_then_gives_the_size() {
+        let size = 9_800_000;
+        let under_way = SendProgress {
+            sent: 4_300_000,
+            total: size,
+        };
+        let done = SendProgress {
+            sent: size,
+            total: size,
+        };
+
+        assert_eq!(under_way.detail(), "4.1 MB of 9.3 MB");
+        assert_eq!(under_way.percent(), 43);
+        assert_eq!(done.detail(), "9.3 MB");
+        assert_eq!(done.percent(), 100);
+        assert_eq!(SendProgress { sent: 0, total: 0 }.percent(), 0);
+    }
+
+    #[test]
     fn the_scripts_lines_name_their_steps() {
         assert_eq!(
             UpdateStep::from_line("update-daemon: building 3f9c2e1"),
             Some(UpdateStep::Build)
+        );
+        assert_eq!(
+            UpdateStep::from_line("update-daemon: checking /home/someone/.cache/x"),
+            Some(UpdateStep::Check)
         );
         assert_eq!(
             UpdateStep::from_line("update-daemon: restarting the daemon"),

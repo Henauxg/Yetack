@@ -75,7 +75,16 @@ The box "Use this every time" is ticked, so the app keeps your choice. To get th
 
 The server needs Linux on x86_64, SSH access with a key, and Claude Code signed in. For another CPU, build the daemon as [docs/install-from-source.md](docs/install-from-source.md) says.
 
-From the releases page, download `agents-cockpit-<version>-x86_64-linux` and `agents-cockpit.service`. On Ubuntu and Debian, the `.deb` also put the daemon at `/usr/bin/agents-cockpit`.
+The app can install the daemon for you:
+
+1. In the app, open **Machines** at the bottom left, and click **Add a server**.
+2. Type the **SSH host**, as you type it after `ssh`, and leave **Path of agents-cockpit on the server** empty.
+3. The app looks for `agents-cockpit` on the server, and adds the server with the one it finds. When the server has none, the app offers to install it as a systemd user service.
+4. Once the daemon runs, the app says what is left to do on the server: turn linger on, or install Claude Code.
+
+The install needs a systemd user session on the server. Without one, start the daemon with [contrib/start-daemon](contrib/start-daemon).
+
+To install the daemon by hand instead: from the releases page, download `agents-cockpit-<version>-x86_64-linux` and `agents-cockpit.service`. On Ubuntu and Debian, the `.deb` also put the daemon at `/usr/bin/agents-cockpit`.
 
 1. On your computer, copy the two files to the server. Replace `devbox` with the server's name in your SSH config:
 
@@ -107,14 +116,16 @@ The server's agents show in their own panel in the sidebar.
 
 The app and the daemon must speak the same protocol. If the protocols differ, the server's row in the sidebar says "Runs an older version".
 
-To update the daemon, copy the new daemon over the old one, then restart the service. The restart stops the agents, and the daemon resumes the agents when the daemon starts again. Restart while the agents are idle:
+The app's "Update" button sends the app's own daemon to the server, checks it there, then restarts the daemon. The server needs no Rust and no checkout of this repository. The update runs beside the window, and the sidebar shows its progress under the server.
+
+The button replaces only a daemon in `~/.local/share/agents-cockpit/bin` or `~/.local/bin`. A daemon from Nix or from the `.deb` is updated by its package manager, and the app gives the steps. An app built from source without a Linux daemon, or a server that is not Linux x86_64, builds the daemon on the server instead. That server needs Rust and a checkout of this repository, as [docs/development.md](docs/development.md) says.
+
+To update the daemon by hand, copy the new daemon over the old one, then restart the service. The restart stops the agents, and the daemon resumes the agents when the daemon starts again. Restart while the agents are idle:
 
 ```sh
 scp agents-cockpit-<version>-x86_64-linux devbox:.local/bin/agents-cockpit.new
 ssh devbox 'chmod +x ~/.local/bin/agents-cockpit.new && mv ~/.local/bin/agents-cockpit.new ~/.local/bin/agents-cockpit && systemctl --user restart agents-cockpit'
 ```
-
-The app's "Update" button builds the daemon from source on the server. The button works only on a server with Rust and a checkout of this repository, as [docs/development.md](docs/development.md) says.
 
 On this computer, when the agents run in the background service, the button restarts the service with the app's own version. Before an update, the app names the agents a restart would interrupt, and can wait until they are idle.
 

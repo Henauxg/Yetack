@@ -59,6 +59,6 @@ On the server, or on any Linux machine of the same CPU type, install a C linker 
 cargo install --locked --path crates/agents_cockpit --root ~/.local
 ```
 
-This puts `agents-cockpit` in `~/.local/bin`, where [contrib/agents-cockpit.service](../contrib/agents-cockpit.service) looks for it. Copy that file to `~/.config/systemd/user/`, then follow "On a server over SSH" in [README.md](../README.md) from step 2.
+This puts `agents-cockpit` in `~/.local/bin`, where [contrib/agents-cockpit.service](../contrib/agents-cockpit.service) looks for it. Copy that file to `~/.config/systemd/user/`, then follow the install by hand of "On a server over SSH" in [README.md](../README.md) from step 2.
 
-A server with Rust and this checkout can also be updated from the app's "Update" button: [development.md](./development.md) says how.
+The app's "Update" button can update this daemon later. On a Linux x86_64 server, it sends the daemon the app carries. An app built from source carries one once `just linux-daemon` has run. Otherwise the button builds the daemon on the server, which needs Rust and this checkout: [development.md](./development.md) says how.

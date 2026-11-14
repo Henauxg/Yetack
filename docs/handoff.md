@@ -14,7 +14,7 @@ Update it when you hand over.
 
 ## Updating any machine's daemon
 
-This work is in `main`. The user approved its screens after three rounds of HTML mockups, which were removed at the merge. Step 2 of [packaging.md](packaging.md) builds on it: a third plan that sends a prebuilt daemon over SSH, beside the build on the server.
+This work is in `main`. The user approved its screens after three rounds of HTML mockups, which were removed at the merge. Step 2 of [packaging.md](packaging.md) builds on it, on branch `feat/server-daemon-install`: a third plan that sends the app's own Linux daemon over SSH, beside the build on the server (`ServerPlan::daemon_file`), a probe of who owns a server's daemon before its update, and the install of a daemon from "Add a server". packaging.md lists what it does and what is not built.
 
 What it does:
 
