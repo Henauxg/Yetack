@@ -136,12 +136,14 @@ fn subagent_changes(older: &[Subagent], newer: &[Subagent]) -> Option<DetailsCha
         .zip(&kept)
         .take_while(|(new, old)| new.item == old.item)
         .count();
-    let changed: Vec<Subagent> = newer
+    let changed_in_place = newer
         .iter()
-        .enumerate()
-        .filter(|(index, subagent)| *index >= in_place || kept.get(*index) != Some(subagent))
-        .map(|(_, subagent)| subagent.clone())
-        .collect();
+        .zip(&kept)
+        .take(in_place)
+        .filter(|(new, old)| new != *old)
+        .map(|(new, _)| new);
+    let moved = newer.iter().skip(in_place);
+    let changed: Vec<Subagent> = changed_in_place.chain(moved).cloned().collect();
     let staying: HashSet<ItemId> = newer
         .iter()
         .take(in_place)

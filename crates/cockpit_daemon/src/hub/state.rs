@@ -601,16 +601,36 @@ mod tests {
         frames
     }
 
-    /// The events the client got, each with its seq and the size of its frame.
-    fn received(frames: &mut mpsc::Receiver<Frame>) -> Vec<(u64, Event, usize)> {
+    /// An event a client got.
+    #[derive(Debug)]
+    struct Received {
+        seq: u64,
+        event: Event,
+        /// The size of its frame.
+        bytes: usize,
+    }
+
+    fn received(frames: &mut mpsc::Receiver<Frame>) -> Vec<Received> {
         let mut received = Vec::new();
         while let Ok(frame) = frames.try_recv() {
             let Ok(ServerMessage::Event(record)) = serde_json::from_slice(frame.as_bytes()) else {
                 panic!("expected an event");
             };
-            received.push((record.seq.get(), record.event, frame.as_bytes().len()));
+            received.push(Received {
+                seq: record.seq.get(),
+                event: record.event,
+                bytes: frame.as_bytes().len(),
+            });
         }
         received
+    }
+
+    /// The events the client got.
+    fn received_events(frames: &mut mpsc::Receiver<Frame>) -> Vec<Event> {
+        received(frames)
+            .into_iter()
+            .map(|received| received.event)
+            .collect()
     }
 
     /// The seq and the details of each details frame a replay after `after` sends.
@@ -703,18 +723,19 @@ mod tests {
         hub.space_details(agent, after.clone());
 
         let received = received(&mut frames);
-        let [(1, first, whole), (2, second, update)] = received.as_slice() else {
+        let [whole, update] = received.as_slice() else {
             panic!("expected two events, got {received:?}");
         };
+        assert_eq!((whole.seq, update.seq), (1, 2));
         assert_eq!(
-            *first,
+            whole.event,
             Event::DetailsChanged {
                 agent,
                 details: before,
             }
         );
         assert_eq!(
-            *second,
+            update.event,
             Event::DetailsUpdated {
                 agent,
                 changes: vec![DetailsChange::Subagents {
@@ -723,8 +744,9 @@ mod tests {
                 }],
             }
         );
-        assert!(*whole > 50_000, "the whole details weigh {whole} bytes");
-        assert!(*update < 1_000, "the update weighs {update} bytes");
+        let (whole, update) = (whole.bytes, update.bytes);
+        assert!(whole > 50_000, "the whole details weigh {whole} bytes");
+        assert!(update < 1_000, "the update weighs {update} bytes");
         assert_eq!(replayed_details(&mut hub, 1), [(2, after)]);
     }
 
@@ -769,10 +791,7 @@ mod tests {
         restarted.space_details(agent, with_task("three"));
         restarted.space_details(agent, with_task("four"));
 
-        let events: Vec<Event> = received(&mut frames)
-            .into_iter()
-            .map(|(_, event, _)| event)
-            .collect();
+        let events = received_events(&mut frames);
         assert_eq!(
             events,
             [
@@ -815,10 +834,7 @@ mod tests {
         hub.space_details(agent, lost);
         hub.space_details(agent, last.clone());
 
-        let events: Vec<Event> = received(&mut frames)
-            .into_iter()
-            .map(|(_, event, _)| event)
-            .collect();
+        let events = received_events(&mut frames);
         assert_eq!(
             events,
             [
@@ -881,10 +897,7 @@ mod tests {
         let due = inputs.recv().await.unwrap();
         hub.handle(due);
 
-        let events: Vec<Event> = received(&mut frames)
-            .into_iter()
-            .map(|(_, event, _)| event)
-            .collect();
+        let events = received_events(&mut frames);
         assert_eq!(sent_at_once, 1, "the second and third changes wait");
         assert_eq!(
             events,
@@ -916,7 +929,7 @@ mod tests {
 
         let seqs: Vec<u64> = received(&mut frames)
             .into_iter()
-            .map(|(seq, _, _)| seq)
+            .map(|received| received.seq)
             .collect();
         assert_eq!(seqs, [1, 2], "the held change goes out before the answer");
         assert_eq!(

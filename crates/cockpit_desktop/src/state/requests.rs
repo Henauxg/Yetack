@@ -37,6 +37,9 @@ pub struct Outgoing {
 }
 
 /// What to do with the answer.
+///
+/// A `details_seq` is the agent's when the request left. The answer goes into the details only
+/// when it has not moved since (`details_updates::unchanged_since`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Purpose {
     /// Answered by `Done`: only a failure shows.
@@ -48,7 +51,6 @@ pub enum Purpose {
     Details {
         agent: AgentId,
     },
-    /// `details_seq` is the agent's when the request left: see [`details_updates::as_asked`].
     ContextUsage {
         agent: AgentId,
         details_seq: Option<Seq>,
@@ -459,7 +461,7 @@ pub fn apply_response(
             }
             match result {
                 Ok(ResponseBody::ContextUsage(context)) => {
-                    if let Some(details) = details_as_asked(state, agent, details_seq) {
+                    if let Some(details) = details_unchanged_since(state, agent, details_seq) {
                         details.context = Some(context);
                     }
                 }
@@ -468,7 +470,7 @@ pub fn apply_response(
         }
         Purpose::McpStatus { agent, details_seq } => match result {
             Ok(ResponseBody::McpServers { servers }) => {
-                if let Some(details) = details_as_asked(state, agent, details_seq) {
+                if let Some(details) = details_unchanged_since(state, agent, details_seq) {
                     details.mcp_servers = servers;
                 }
             }
@@ -485,7 +487,7 @@ pub fn apply_response(
         } => match result {
             Ok(ResponseBody::McpServers { servers }) => {
                 mcp_reconnect::checked(state, agent, &server, Ok(&servers), Instant::now());
-                if let Some(details) = details_as_asked(state, agent, details_seq) {
+                if let Some(details) = details_unchanged_since(state, agent, details_seq) {
                     details.mcp_servers = servers;
                 }
             }
@@ -771,12 +773,12 @@ pub fn apply_response(
     }
 }
 
-fn details_as_asked(
+fn details_unchanged_since(
     state: &mut AppState,
     agent: AgentId,
     asked: Option<Seq>,
 ) -> Option<&mut AgentDetails> {
-    details_updates::as_asked(state.agents.get_mut(&agent)?, asked)
+    details_updates::unchanged_since(state.agents.get_mut(&agent)?, asked)
 }
 
 /// The edits of the file at `path` in `agent`'s loaded messages.

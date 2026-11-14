@@ -78,7 +78,7 @@ pub fn forget(entry: &mut AgentEntry) {
 /// The agent's loaded details, unless a details event reached them since a request left with
 /// `asked`, their seq then. The daemon also sends what it answered in a details event, and one
 /// applied since may be newer than the answer.
-pub fn as_asked(entry: &mut AgentEntry, asked: Option<Seq>) -> Option<&mut AgentDetails> {
+pub fn unchanged_since(entry: &mut AgentEntry, asked: Option<Seq>) -> Option<&mut AgentDetails> {
     if entry.details_seq != asked {
         return None;
     }
