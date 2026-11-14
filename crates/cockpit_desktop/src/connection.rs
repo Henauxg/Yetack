@@ -36,7 +36,7 @@ use crate::state::{
     self, AgentEntry, AppState, ConnectionState, Dialog, Drafts, MachineState, Outgoing, Purpose,
     TitlePlace, Utf16Offset, actions, file_reread, notification_levels,
 };
-use crate::{bridge, demo, format, update_script};
+use crate::{bridge, demo, format, server_daemon, update_script};
 
 /// What the window was started with.
 #[derive(Debug, Clone, PartialEq)]
@@ -186,9 +186,24 @@ impl Cockpit {
         }
     }
 
-    /// Tries a machine that does not answer again now.
+    /// Reads where `machine`'s daemon is installed and who owns it, when its update screens need
+    /// it and the app has not looked yet.
+    pub fn probe_daemon(&self, machine: MachineId) {
+        let mut signal = self.state;
+        let target = daemon_update::probe_to_run(&mut signal.write(), machine);
+        if let Some((host, binary)) = target {
+            spawn(async move {
+                let read = server_daemon::probe(&host, &binary).await;
+                daemon_update::probed(&mut signal.write(), machine, read);
+            });
+        }
+    }
+
+    /// Tries a machine that does not answer again now. The update screens look at its daemon
+    /// again too: the user may have updated it by hand.
     pub fn retry_machine(&self, machine: MachineId) {
         let mut signal = self.state;
+        daemon_update::forget_probe(&mut signal.write(), machine);
         let retry = retry_message(&mut signal.write(), machine);
         if let Some(retry) = retry {
             self.daemon.send(retry);
@@ -628,10 +643,7 @@ async fn run_update(
     let UpdateRun { plan, busy } = run;
     let retry_now = match plan {
         UpdatePlan::Server(plan) => {
-            let code = update_script::update(&plan, busy, |lines| {
-                daemon_update::output(&mut state.write(), machine, lines);
-            })
-            .await;
+            let code = update_server(state, machine, &plan, busy).await;
             daemon_update::finished(&mut state.write(), machine, code)
         }
         UpdatePlan::Service(plan) => {
@@ -659,6 +671,40 @@ async fn run_update(
         // The window closed: nothing tries the machine again.
         let _ = retries.send(retry);
     }
+}
+
+/// Sends the daemon this app carries, if the plan has one, then runs the update script. Returns
+/// the script's exit code, 1 when the send failed.
+async fn update_server(
+    mut state: Signal<AppState>,
+    machine: MachineId,
+    plan: &ServerPlan,
+    busy: BusyAgents,
+) -> Option<i32> {
+    let sent = match &plan.daemon_file {
+        Some(file) => {
+            let sent = server_daemon::send(&plan.host, file, |sent, total| {
+                daemon_update::sending(&mut state.write(), machine, sent, total);
+            })
+            .await;
+            match sent {
+                Ok(sent) => Some(sent),
+                Err(error) => {
+                    let line = OutputLine {
+                        stream: OutputStream::Stderr,
+                        text: format!("Could not send the daemon: {error}"),
+                    };
+                    daemon_update::output(&mut state.write(), machine, vec![line]);
+                    return Some(1);
+                }
+            }
+        }
+        None => None,
+    };
+    update_script::update(plan, busy, sent.as_ref(), |lines| {
+        daemon_update::output(&mut state.write(), machine, lines);
+    })
+    .await
 }
 
 /// Reads which of this computer's resting agents may hold a scheduled job, then starts the update,
@@ -871,8 +917,18 @@ async fn run_demo(
 /// then the first connection.
 async fn play_demo_update(mut state: Signal<AppState>, machine: MachineId, plan: UpdatePlan) {
     let reconnects = match plan {
-        UpdatePlan::Server(_) => {
-            for line in demo::UPDATE_OUTPUT {
+        UpdatePlan::Server(plan) => {
+            let lines = if plan.daemon_file.is_some() {
+                for fifth in 1..=5 {
+                    tokio::time::sleep(demo::UPDATE_LINE_PAUSE / 2).await;
+                    let sent = demo::SENT_SIZE * fifth / 5;
+                    daemon_update::sending(&mut state.write(), machine, sent, demo::SENT_SIZE);
+                }
+                demo::SENT_OUTPUT
+            } else {
+                demo::UPDATE_OUTPUT
+            };
+            for line in lines {
                 tokio::time::sleep(demo::UPDATE_LINE_PAUSE).await;
                 let line = OutputLine {
                     stream: OutputStream::Stdout,
@@ -1039,6 +1095,7 @@ fn server_plan(host: &str, remote_command: &str, source_dir: Option<String>) -> 
         remote_command: remote_command.to_owned(),
         source_dir,
         commit: update_script::app_commit()?,
+        daemon_file: server_daemon::carried(),
     }))
 }
 

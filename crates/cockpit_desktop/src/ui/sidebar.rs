@@ -541,13 +541,30 @@ fn MachineLineView(machine: MachineId, line: Option<ShownLine>) -> Element {
                     if let Some(name) = name {
                         span { class: "trouble-machine", "{name}" }
                     }
-                    span { class: "trouble-text", "{line.text}" }
+                    match &line.progress {
+                        Some(progress) => rsx! {
+                            span { class: "trouble-text", "{progress.text}" }
+                        },
+                        None => rsx! {
+                            span { class: "trouble-text", "{line.text}" }
+                        },
+                    }
                     for action in line.actions {
                         button {
                             key: "{action.label()}",
                             class: "link-button",
                             onclick: move |_| run_action(cockpit, machine, action),
                             "{action.label()}"
+                        }
+                    }
+                    if let Some(progress) = &line.progress {
+                        span {
+                            class: "update-bar",
+                            role: "progressbar",
+                            aria_valuenow: "{progress.percent}",
+                            aria_valuemin: "0",
+                            aria_valuemax: "100",
+                            span { style: "width: {progress.percent}%" }
                         }
                     }
                 }

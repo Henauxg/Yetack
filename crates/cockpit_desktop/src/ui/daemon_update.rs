@@ -7,24 +7,30 @@
 use std::cmp::Ordering;
 
 use cockpit_protocol::{AgentId, AgentStatus, PROTOCOL_VERSION};
+use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
 use crate::daemon_label::DaemonPlace;
-use crate::format;
 use crate::machine::MachineId;
+use crate::state::daemon_probe::{DaemonOwner, DaemonProbe};
 use crate::state::daemon_update::{self, Confirmation, DaemonUpdate, FailedUpdate, UpdateProgress};
 use crate::state::machines::MachineName;
 use crate::state::no_daemon::{self, DaemonChoice};
 use crate::state::update_offer::{self, GapKind, ProgramBuild, UpdateOffer};
 use crate::state::update_plan::{UpdatePlan, UpdateStep};
 use crate::state::{AppState, ConnectionState, accounts};
+use crate::ui::accounts::CommandBox;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::machines::machine_icon;
 use crate::ui::no_daemon::{EveryTimeTick, IN_APP_DETAIL};
 use crate::ui::presence::use_presence;
+use crate::{browser, format};
 
 const TITLE_ID: &str = "no-daemon-title";
+
+/// The releases, where the `.deb` of each is.
+const RELEASES_URL: &str = "https://github.com/Henauxg/agents-cockpit/releases";
 
 /// What happens to the agents on a restart, as the cards and the confirmation say it.
 const AGENTS_RESUME: &str =
@@ -97,6 +103,10 @@ fn screen_choice(cockpit: Cockpit, machine: MachineId) -> (Option<DaemonChoice>,
 /// What "Update" does to `name`, as the card's note says it.
 fn what_the_update_does(plan: &UpdatePlan, name: &str, app: &ProgramBuild) -> String {
     match plan {
+        UpdatePlan::Server(plan) if plan.daemon_file.is_some() => format!(
+            "Sends {} to {name} and checks it there, then restarts {name}'s daemon. {AGENTS_RESUME}",
+            app.version
+        ),
         UpdatePlan::Server(_) => format!(
             "The update builds {} on {name} from its checkout, then restarts its daemon. {AGENTS_RESUME}",
             app.version
@@ -105,6 +115,143 @@ fn what_the_update_does(plan: &UpdatePlan, name: &str, app: &ProgramBuild) -> St
             "The update restarts {name}'s background service with this app's program. {AGENTS_RESUME}"
         ),
     }
+}
+
+/// What the card says the update does. A server's waits for the probe of its daemon, which the
+/// card starts: the app replaces only a daemon it owns, and says how to update any other.
+#[component]
+fn UpdateNote(machine: MachineId, name: String, plan: UpdatePlan, app: ProgramBuild) -> Element {
+    let cockpit: Cockpit = use_context();
+    use_effect(move || {
+        let unknown = cockpit
+            .state
+            .read()
+            .machines
+            .get(machine)
+            .is_some_and(|known| known.daemon_probe == DaemonProbe::Unknown);
+        if unknown {
+            cockpit.probe_daemon(machine);
+        }
+    });
+    let UpdatePlan::Server(server) = &plan else {
+        return rsx! {
+            Callout { text: what_the_update_does(&plan, &name, &app) }
+        };
+    };
+    let probe = cockpit
+        .state
+        .read()
+        .machines
+        .get(machine)
+        .map(|known| known.daemon_probe.clone())
+        .unwrap_or_default();
+    let release = app.version.to_string();
+    let install = match probe {
+        DaemonProbe::Unknown | DaemonProbe::Probing => {
+            return rsx! {
+                Callout { text: format!("Looking at {name}'s daemon…") }
+            };
+        }
+        DaemonProbe::Failed(error) => {
+            return rsx! {
+                p { class: "no-daemon-failed", "The app could not look at {name}'s daemon: {error}" }
+            };
+        }
+        DaemonProbe::Read(install) => install,
+    };
+    let Some(daemon) = install.daemon.clone() else {
+        return rsx! {
+            Callout {
+                text: format!(
+                    "The app finds no daemon at {} on {name}. Check the path in the Machines dialog, then retry.",
+                    server.remote_command
+                ),
+            }
+        };
+    };
+    match daemon.owner {
+        DaemonOwner::App => {
+            let mut runs = server.clone();
+            if !install.runs_carried_daemon() {
+                runs.daemon_file = None;
+            }
+            rsx! {
+                Callout { text: what_the_update_does(&UpdatePlan::Server(runs), &name, &app) }
+            }
+        }
+        DaemonOwner::Nix => rsx! {
+            Callout {
+                text: format!(
+                    "{name}'s daemon comes from Nix, so the app does not replace it. Move {name} to {release} in its flake or its system configuration, then retry."
+                ),
+            }
+        },
+        DaemonOwner::Package(package) => rsx! {
+            div { class: "owner-steps",
+                p {
+                    "{name}'s daemon comes from the "
+                    code { "{package}" }
+                    " package, so the app does not replace it. Download the {release} "
+                    code { ".deb" }
+                    " from the release page onto {name}, then run:"
+                }
+                CommandBox { command: format!("sudo apt install ./agents-cockpit_{release}_amd64.deb") }
+            }
+        },
+        DaemonOwner::Other => rsx! {
+            div { class: "update-callout",
+                span { class: "callout-icon", aria_hidden: true,
+                    Icon { kind: IconKind::Info, size: 16 }
+                }
+                span {
+                    "{name}'s daemon is "
+                    code { "{daemon.path}" }
+                    ". The app only replaces daemons in "
+                    code { "~/.local/share/agents-cockpit/bin" }
+                    " or "
+                    code { "~/.local/bin" }
+                    ". Replace it with {release} by hand, then retry."
+                }
+            }
+        },
+    }
+}
+
+/// "Open the release page", beside the command that installs a `.deb`.
+#[component]
+fn ReleasePageButton() -> Element {
+    let cockpit: Cockpit = use_context();
+    rsx! {
+        button {
+            class: "button",
+            onclick: move |_| {
+                spawn_forever(async move {
+                    if let Err(error) = browser::open(RELEASES_URL).await {
+                        cockpit.update(|state| state.ui.report(format!("Cannot open {RELEASES_URL}: {error}")));
+                    }
+                });
+            },
+            "Open the release page"
+        }
+    }
+}
+
+/// Whether the probe says a package owns the machine's daemon.
+fn package_owned(cockpit: Cockpit, machine: MachineId) -> bool {
+    cockpit
+        .state
+        .read()
+        .machines
+        .get(machine)
+        .is_some_and(|known| {
+            matches!(
+                &known.daemon_probe,
+                DaemonProbe::Read(install) if install
+                    .daemon
+                    .as_ref()
+                    .is_some_and(|daemon| matches!(daemon.owner, DaemonOwner::Package(_)))
+            )
+        })
 }
 
 /// A card's head: the machine's icon, then the title over what it means.
@@ -232,12 +379,20 @@ fn OlderCard(machine: MachineId, name: String, local: bool, offer: UpdateOffer) 
     let (busy, every_time) = screen_choice(cockpit, machine);
     let waiting = busy.is_some();
     let on_this_computer = machine == MachineId::THIS;
-    let over_ssh = cockpit
-        .state
-        .read()
-        .machines
-        .get(machine)
-        .is_some_and(|known| known.daemon.place == DaemonPlace::Ssh);
+    let (over_ssh, ready, owned_elsewhere) =
+        cockpit
+            .state
+            .read()
+            .machines
+            .get(machine)
+            .map_or((false, false, false), |known| {
+                (
+                    known.daemon.place == DaemonPlace::Ssh,
+                    daemon_update::update_ready(known),
+                    daemon_update::owned_by_another(known),
+                )
+            });
+    let package = package_owned(cockpit, machine);
     let lead =
         format!("The app can reach {name}'s agents again once {name} runs this app's version.");
     rsx! {
@@ -245,7 +400,7 @@ fn OlderCard(machine: MachineId, name: String, local: bool, offer: UpdateOffer) 
         VersionPair { name: name.clone(), offer: offer.clone() }
         match &offer.plan {
             Some(plan) => rsx! {
-                Callout { text: what_the_update_does(plan, &name, &offer.app) }
+                UpdateNote { machine, name: name.clone(), plan: plan.clone(), app: offer.app.clone() }
             },
             None => rsx! {
                 p { class: "no-daemon-hint",
@@ -261,9 +416,12 @@ fn OlderCard(machine: MachineId, name: String, local: bool, offer: UpdateOffer) 
             if on_this_computer {
                 InAppButton { busy }
             }
-            RetryButton { machine, primary: offer.plan.is_none(), busy }
-            if offer.plan.is_some() {
-                UpdateButton { machine, label: format!("Update {name}"), disabled: waiting }
+            if package {
+                ReleasePageButton {}
+            }
+            RetryButton { machine, primary: offer.plan.is_none() || owned_elsewhere, busy }
+            if offer.plan.is_some() && !owned_elsewhere {
+                UpdateButton { machine, label: format!("Update {name}"), disabled: waiting || !ready }
             }
         }
         if on_this_computer {
@@ -299,6 +457,19 @@ fn AvailableCard(machine: MachineId, name: String, local: bool, offer: UpdateOff
     let Some(plan) = offer.plan.clone() else {
         return rsx! {};
     };
+    let (ready, owned_elsewhere) =
+        cockpit
+            .state
+            .read()
+            .machines
+            .get(machine)
+            .map_or((false, false), |known| {
+                (
+                    daemon_update::update_ready(known),
+                    daemon_update::owned_by_another(known),
+                )
+            });
+    let package = package_owned(cockpit, machine);
     rsx! {
         CardHead {
             local,
@@ -306,14 +477,25 @@ fn AvailableCard(machine: MachineId, name: String, local: bool, offer: UpdateOff
             lead: format!("{name}'s agents keep working until you update it."),
         }
         VersionPair { name: name.clone(), offer: offer.clone() }
-        Callout { text: what_the_update_does(&plan, &name, &offer.app) }
+        UpdateNote { machine, name: name.clone(), plan, app: offer.app.clone() }
         CardActions { details: Some(offer.details.clone()),
             button {
                 class: "button",
                 onclick: move |_| cockpit.update(|state| state.ui.close_dialog()),
                 "Not now"
             }
-            UpdateButton { machine, label: format!("Update {name}"), disabled: false }
+            if package {
+                ReleasePageButton {}
+            }
+            if owned_elsewhere {
+                button {
+                    class: "button primary",
+                    onclick: move |_| cockpit.update(|state| daemon_update::forget_probe(state, machine)),
+                    "Check again"
+                }
+            } else {
+                UpdateButton { machine, label: format!("Update {name}"), disabled: !ready }
+            }
         }
     }
 }
@@ -567,17 +749,31 @@ fn ProgressCard(
         step,
         replaces,
         output,
+        sent,
         cancel_asked,
         ..
     } = &progress;
+    let sends = matches!(plan, UpdatePlan::Server(plan) if plan.daemon_file.is_some());
+    // This computer's screens fill the window while it reaches no daemon: there is nothing to
+    // hide them behind.
+    let hides = machine != MachineId::THIS
+        || cockpit
+            .state
+            .read()
+            .machines
+            .get(machine)
+            .is_some_and(|known| !daemon_update::takes_the_window(known));
     let output = output
         .iter()
         .map(String::as_str)
         .collect::<Vec<_>>()
         .join("\n");
     let lead = match plan {
+        UpdatePlan::Server(_) if sends => format!(
+            "Hiding this card does not stop the update: the sidebar shows its progress under {name}. Once the file is checked, you can also close the app."
+        ),
         UpdatePlan::Server(_) => {
-            "The daemon keeps running until the new version is built. You can close the app: the update continues on the server.".to_owned()
+            "The daemon keeps running until the new version is built. Hiding this card does not stop the update, and neither does closing the app: the update continues on the server.".to_owned()
         }
         UpdatePlan::Service(_) => {
             format!("The agents resume once {name} runs version {}.", app.version)
@@ -591,27 +787,50 @@ fn ProgressCard(
         },
         replaces: replaces.as_ref().map(ToString::to_string),
         app: app.to_string(),
+        release: app.version.to_string(),
+        sent: *sent,
     };
     rsx! {
         CardHead { local, title: format!("Updating {name}"), lead }
         ol { class: "update-steps",
             for shown in plan.steps().iter().copied() {
-                StepRow { key: "{shown:?}", shown, current: *step, label: labels.of(shown) }
+                StepRow {
+                    key: "{shown:?}",
+                    shown,
+                    current: *step,
+                    label: labels.of(shown),
+                    detail: labels.detail(shown, *step),
+                }
             }
         }
         if matches!(plan, UpdatePlan::Server(_)) {
-            details { class: "no-daemon-details", open: true,
-                summary { "Build output" }
+            details { class: "no-daemon-details", open: !sends,
+                summary { if sends { "Update output" } else { "Build output" } }
                 ScrolledOutput { text: output }
             }
         }
-        if progress.offers_cancel() {
+        if progress.offers_cancel() || hides {
             CardActions { details: None,
-                button {
-                    class: "button",
-                    disabled: *cancel_asked,
-                    onclick: move |_| cockpit.cancel_daemon_update(machine),
-                    if *cancel_asked { "Cancelling when the build ends…" } else { "Cancel the update" }
+                if progress.offers_cancel() {
+                    button {
+                        class: "button",
+                        disabled: *cancel_asked,
+                        onclick: move |_| cockpit.cancel_daemon_update(machine),
+                        if !*cancel_asked {
+                            "Cancel the update"
+                        } else if sends {
+                            "Cancelling…"
+                        } else {
+                            "Cancelling when the build ends…"
+                        }
+                    }
+                }
+                if hides {
+                    button {
+                        class: "button primary",
+                        onclick: move |_| cockpit.update(|state| state.ui.close_dialog()),
+                        "Hide"
+                    }
                 }
             }
         }
@@ -626,6 +845,10 @@ struct StepLabels {
     /// The daemon's build the update replaces, when the app knew it.
     replaces: Option<String>,
     app: String,
+    /// This app's release, which a send names.
+    release: String,
+    /// The bytes of the daemon sent, and its size.
+    sent: Option<(u64, u64)>,
 }
 
 impl StepLabels {
@@ -633,6 +856,8 @@ impl StepLabels {
         match step {
             UpdateStep::GetVersion => format!("Get version {}", self.short_commit),
             UpdateStep::Build => format!("Build it on {}", self.name),
+            UpdateStep::Send => format!("Send {} to {}", self.release, self.name),
+            UpdateStep::Check => format!("Check it on {}", self.name),
             UpdateStep::Restart => "Restart the daemon".to_owned(),
             UpdateStep::Stop => match &self.replaces {
                 Some(build) => format!("Stop version {build}"),
@@ -640,6 +865,30 @@ impl StepLabels {
             },
             UpdateStep::Start => format!("Start version {}", self.app),
             UpdateStep::Reconnect => "Reconnect".to_owned(),
+        }
+    }
+
+    /// The line under a step, which says how it goes or went.
+    fn detail(&self, step: UpdateStep, current: UpdateStep) -> Option<String> {
+        match step {
+            UpdateStep::Send => {
+                let (sent, total) = self.sent?;
+                Some(if current == UpdateStep::Send && sent < total {
+                    format!("{} of {}", format::bytes(sent), format::bytes(total))
+                } else {
+                    format::bytes(total)
+                })
+            }
+            UpdateStep::Check if current == UpdateStep::Check => {
+                Some("Its checksum, then its version".to_owned())
+            }
+            UpdateStep::GetVersion
+            | UpdateStep::Build
+            | UpdateStep::Check
+            | UpdateStep::Restart
+            | UpdateStep::Stop
+            | UpdateStep::Start
+            | UpdateStep::Reconnect => None,
         }
     }
 }
@@ -655,7 +904,12 @@ fn ScrolledOutput(text: String) -> Element {
 }
 
 #[component]
-fn StepRow(shown: UpdateStep, current: UpdateStep, label: String) -> Element {
+fn StepRow(
+    shown: UpdateStep,
+    current: UpdateStep,
+    label: String,
+    detail: Option<String>,
+) -> Element {
     let (class, mark) = match shown.cmp(&current) {
         Ordering::Less => ("done", rsx! { Icon { kind: IconKind::Check, size: 14 } }),
         Ordering::Equal => (
@@ -667,7 +921,12 @@ fn StepRow(shown: UpdateStep, current: UpdateStep, label: String) -> Element {
     rsx! {
         li { class,
             span { class: "update-mark", {mark} }
-            "{label}"
+            span { class: "step-text",
+                "{label}"
+                if let Some(detail) = detail {
+                    span { class: "step-detail", "{detail}" }
+                }
+            }
         }
     }
 }

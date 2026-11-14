@@ -13,6 +13,16 @@ pub fn build_commit() -> Option<BuildCommit> {
     known_commit(option_env!("AGENTS_COCKPIT_COMMIT"))
 }
 
+/// What `agents-cockpit --version` prints after the program's name: the release, then the commit
+/// when the build knew it. The app checks a daemon it sent to a server by this text.
+#[must_use]
+pub fn version_text(release: &str, commit: Option<&BuildCommit>) -> String {
+    match commit {
+        Some(commit) => format!("{release} ({})", commit.as_str()),
+        None => release.to_owned(),
+    }
+}
+
 fn known_commit(built_with: Option<&str>) -> Option<BuildCommit> {
     built_with
         .filter(|commit| !commit.is_empty())
@@ -22,6 +32,14 @@ fn known_commit(built_with: Option<&str>) -> Option<BuildCommit> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_version_text_names_the_commit_the_build_knew() {
+        let commit = BuildCommit::new("3f9c2e1".to_owned());
+
+        assert_eq!(version_text("0.2.0", Some(&commit)), "0.2.0 (3f9c2e1)");
+        assert_eq!(version_text("0.2.0", None), "0.2.0");
+    }
 
     #[test]
     fn an_empty_commit_is_no_commit() {

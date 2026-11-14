@@ -3,7 +3,7 @@
 //! Without machine panels, the sidebar shows these lines in a strip at the top of its list.
 
 use super::app_state::{AppState, ConnectionState, MachineState};
-use super::daemon_update::{self, DaemonUpdate, UpdateLink};
+use super::daemon_update::{self, DaemonUpdate, LineProgress, UpdateLink};
 use super::machines::MachineName;
 use super::no_daemon::Absence;
 use super::update_offer::GapKind;
@@ -69,6 +69,8 @@ impl StatusAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusLine {
     pub text: &'static str,
+    /// An update under way, which the line shows in place of `text`, with a bar.
+    pub progress: Option<LineProgress>,
     /// The error, as a tooltip.
     pub error: Option<String>,
     /// The links after the text, in order.
@@ -103,6 +105,7 @@ pub fn status(known: &MachineState) -> MachineStatus {
         chip: update_chip(known).unwrap_or(answers.chip),
         line: Some(StatusLine {
             text: update.text,
+            progress: update.progress,
             error: None,
             actions,
         }),
@@ -114,6 +117,7 @@ fn connection_status(known: &MachineState) -> MachineStatus {
     let line = |text, error, actions| {
         Some(StatusLine {
             text,
+            progress: None,
             error,
             actions,
         })
@@ -212,6 +216,7 @@ mod tests {
 
     use super::*;
     use crate::daemon_label::DaemonLabel;
+    use crate::state::daemon_probe::DaemonProbe;
     use crate::state::no_daemon;
     use crate::state::update_offer::{ProgramBuild, VersionGap};
     use crate::state::update_plan::{ServerPlan, UpdatePlan};
@@ -238,6 +243,7 @@ mod tests {
             remote_command: "/opt/agents-cockpit".to_owned(),
             source_dir: None,
             commit: BuildCommit::new("3f9c2e1a7b4d5c6e".to_owned()),
+            daemon_file: None,
         })
     }
 
@@ -259,6 +265,7 @@ mod tests {
             let mut known = MachineState::new(DaemonLabel::ssh(name.to_owned()));
             known.connection = connection;
             known.update_plan = gap.is_some().then(lab_plan);
+            known.daemon_probe = DaemonProbe::owned_at("/opt/agents-cockpit");
             known.version_gap = gap;
             state.machines.others.insert(MachineId::new(id), known);
         }
@@ -297,6 +304,7 @@ mod tests {
             not_connected,
             Some(StatusLine {
                 text: "Not connected.",
+                progress: None,
                 error: Some("ssh: connection refused".to_owned()),
                 actions: vec![StatusAction::Retry],
             })

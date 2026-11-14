@@ -517,6 +517,7 @@ mod tests {
 
     use super::*;
     use crate::state::app_state::tests::{state_with, summary};
+    use crate::state::daemon_probe::DaemonProbe;
     use crate::state::daemon_update::UpdateLink;
     use crate::state::update_offer::{GapKind, ProgramBuild, VersionGap};
     use crate::state::update_plan::{ServerPlan, UpdatePlan};
@@ -812,6 +813,7 @@ mod tests {
             remote_command: "/opt/agents-cockpit".to_owned(),
             source_dir: None,
             commit: BuildCommit::new("3f9c2e1a7b4d5c6e".to_owned()),
+            daemon_file: None,
         }
     }
 
@@ -825,6 +827,7 @@ mod tests {
                 protocol: PROTOCOL_VERSION - 1,
             });
             known.update_plan = Some(UpdatePlan::Server(devbox_plan()));
+            known.daemon_probe = DaemonProbe::owned_at("/opt/agents-cockpit");
         }
     }
 
@@ -877,6 +880,13 @@ mod tests {
         };
 
         apply_edit(&mut state, devbox, &config);
+        assert_eq!(
+            state.machines.others[&devbox].daemon_probe,
+            DaemonProbe::Unknown,
+            "the edited server's daemon may be another"
+        );
+        state.machines.others.get_mut(&devbox).unwrap().daemon_probe =
+            DaemonProbe::owned_at("/opt/agents-cockpit");
 
         let again = daemon_update::start(&mut state, devbox);
         assert_eq!(

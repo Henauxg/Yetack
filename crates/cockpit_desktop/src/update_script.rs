@@ -12,6 +12,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
+use crate::server_daemon::SentDaemon;
 use crate::state::daemon_update::{OutputLine, OutputStream};
 use crate::state::error_chain;
 use crate::state::update_plan::{BusyAgents, ServerPlan};
@@ -45,13 +46,17 @@ pub fn app_commit() -> Option<BuildCommit> {
 }
 
 /// Runs the update on its server, streaming the lines to `on_lines`, and returns the script's exit
-/// code: 255 or `None` when ssh lost the connection or could not start.
+/// code: 255 or `None` when ssh lost the connection or could not start. With `sent`, the script
+/// installs that daemon in place of a build.
 pub async fn update(
     plan: &ServerPlan,
     busy: BusyAgents,
+    sent: Option<&SentDaemon>,
     mut on_lines: impl FnMut(Vec<OutputLine>),
 ) -> Option<i32> {
-    let command = match ssh_script_command(&plan.host, &update_arguments(plan, busy)) {
+    let version = cockpit_daemon::version_text(APP_VERSION, Some(&plan.commit));
+    let arguments = update_arguments(plan, busy, sent, &version);
+    let command = match ssh_script_command(&plan.host, &arguments) {
         Ok(command) => command,
         Err(error) => {
             on_lines(vec![error_line(&error)]);
@@ -89,15 +94,33 @@ fn error_line(error: &dyn Error) -> OutputLine {
     }
 }
 
-fn update_arguments(plan: &ServerPlan, busy: BusyAgents) -> Vec<&str> {
+/// The script's arguments. `version` is what the sent daemon must print after its name.
+fn update_arguments<'a>(
+    plan: &'a ServerPlan,
+    busy: BusyAgents,
+    sent: Option<&'a SentDaemon>,
+    version: &'a str,
+) -> Vec<&'a str> {
     let mut arguments = vec![
         "--commit",
         plan.commit.as_str(),
         "--binary",
         plan.remote_command.as_str(),
     ];
-    if let Some(source_dir) = &plan.source_dir {
-        arguments.extend(["--source-dir", source_dir.as_str()]);
+    match sent {
+        Some(sent) => arguments.extend([
+            "--built",
+            sent.remote_file.as_str(),
+            "--sha256",
+            sent.sha256.as_str(),
+            "--version",
+            version,
+        ]),
+        None => {
+            if let Some(source_dir) = &plan.source_dir {
+                arguments.extend(["--source-dir", source_dir.as_str()]);
+            }
+        }
     }
     match busy {
         BusyAgents::Refuse => {}
@@ -177,7 +200,9 @@ fn output_line(stream: OutputStream, bytes: &[u8]) -> OutputLine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::update_plan::{BUILDING_LINE, DAEMON_RUNS_LINE, RESTARTING_LINE};
+    use crate::state::update_plan::{
+        BUILDING_LINE, CHECKING_LINE, DAEMON_RUNS_LINE, RESTARTING_LINE,
+    };
 
     fn plan(source_dir: Option<&str>) -> ServerPlan {
         ServerPlan {
@@ -185,6 +210,7 @@ mod tests {
             remote_command: "/opt/agents-cockpit".to_owned(),
             source_dir: source_dir.map(str::to_owned),
             commit: BuildCommit::new("3f9c2e1".to_owned()),
+            daemon_file: None,
         }
     }
 
@@ -192,7 +218,12 @@ mod tests {
     fn the_steps_follow_the_lines_the_embedded_script_prints() {
         let prefix = "update-daemon: ";
         assert!(SCRIPT.contains(&format!("printf '{prefix}%s\\n'")));
-        for line in [BUILDING_LINE, RESTARTING_LINE, DAEMON_RUNS_LINE] {
+        for line in [
+            BUILDING_LINE,
+            CHECKING_LINE,
+            RESTARTING_LINE,
+            DAEMON_RUNS_LINE,
+        ] {
             let said = line.strip_prefix(prefix).unwrap();
             assert!(SCRIPT.contains(&format!("say \"{said}")), "{line}");
         }
@@ -208,11 +239,11 @@ mod tests {
         let (without_a_folder, with_a_folder) = (plan(None), plan(Some("/srv/cockpit")));
 
         assert_eq!(
-            update_arguments(&without_a_folder, BusyAgents::Refuse),
+            update_arguments(&without_a_folder, BusyAgents::Refuse, None, ""),
             ["--commit", "3f9c2e1", "--binary", "/opt/agents-cockpit"]
         );
         assert_eq!(
-            update_arguments(&with_a_folder, BusyAgents::Refuse),
+            update_arguments(&with_a_folder, BusyAgents::Refuse, None, ""),
             [
                 "--commit",
                 "3f9c2e1",
@@ -227,7 +258,7 @@ mod tests {
     #[test]
     fn update_now_runs_the_script_even_if_agents_are_busy() {
         assert_eq!(
-            update_arguments(&plan(None), BusyAgents::Interrupt),
+            update_arguments(&plan(None), BusyAgents::Interrupt, None, ""),
             [
                 "--commit",
                 "3f9c2e1",
@@ -236,6 +267,42 @@ mod tests {
                 "--even-if-busy"
             ]
         );
+    }
+
+    #[test]
+    fn a_sent_daemon_replaces_the_build_with_its_file_checksum_and_version() {
+        let sent = SentDaemon {
+            remote_file: "/home/someone/.cache/agents-cockpit/sent/agents-cockpit.a1b2c3"
+                .to_owned(),
+            sha256: "ba7816bf".to_owned(),
+        };
+
+        assert_eq!(
+            update_arguments(
+                &plan(Some("/srv/cockpit")),
+                BusyAgents::Refuse,
+                Some(&sent),
+                "0.2.0 (3f9c2e1)"
+            ),
+            [
+                "--commit",
+                "3f9c2e1",
+                "--binary",
+                "/opt/agents-cockpit",
+                "--built",
+                "/home/someone/.cache/agents-cockpit/sent/agents-cockpit.a1b2c3",
+                "--sha256",
+                "ba7816bf",
+                "--version",
+                "0.2.0 (3f9c2e1)"
+            ]
+        );
+        for option in ["--built", "--sha256", "--version"] {
+            assert!(
+                SCRIPT.contains(&format!("{option}) ")),
+                "the script parses {option}"
+            );
+        }
     }
 
     #[test]

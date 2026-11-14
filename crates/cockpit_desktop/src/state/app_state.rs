@@ -14,6 +14,7 @@ use strum::VariantArray;
 
 use super::accounts::SignIns;
 use super::chat_images::KeptImage;
+use super::daemon_probe::DaemonProbe;
 use super::daemon_update::DaemonUpdate;
 use super::details_updates::EarlyUpdate;
 use super::file_tree::FileTree;
@@ -375,6 +376,8 @@ pub struct MachineState {
     /// How an update of this machine's daemon runs, `None` when the app cannot update it. The
     /// connection task sets it from the daemon it reaches.
     pub update_plan: Option<UpdatePlan>,
+    /// Where a server's daemon is installed and who owns it, which a server's update needs first.
+    pub daemon_probe: DaemonProbe,
     /// The update of this machine's daemon: waiting for idle agents, under way, or failed.
     pub update: Option<DaemonUpdate>,
     /// The resting agents that may hold a scheduled job, which a restart loses, as the app last
@@ -409,6 +412,7 @@ impl MachineState {
             folders_unknown: false,
             version_gap: None,
             update_plan: None,
+            daemon_probe: DaemonProbe::Unknown,
             update: None,
             job_holders: Vec::new(),
             checking_jobs: false,

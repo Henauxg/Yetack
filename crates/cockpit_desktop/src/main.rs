@@ -21,6 +21,7 @@ mod path_style;
 mod prefs;
 mod reach;
 mod render;
+mod server_daemon;
 #[cfg(unix)]
 mod service;
 mod service_update;

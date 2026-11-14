@@ -3,12 +3,13 @@
 use std::convert::Infallible;
 use std::num::ParseIntError;
 use std::path::PathBuf;
+use std::sync::LazyLock;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 #[cfg(unix)]
 use cockpit_client::BRIDGE_SUBCOMMAND;
 use cockpit_client::Transport;
-use cockpit_daemon::{HOME_ENV, STATE_DIR_FLAG};
+use cockpit_daemon::{HOME_ENV, RELEASE_VERSION, STATE_DIR_FLAG, build_commit, version_text};
 use cockpit_protocol::{AccountId, AgentId, Effort, PendingId, PermissionMode, PlanDecision};
 
 /// The program's name, as the command line and its messages show it.
@@ -18,10 +19,13 @@ pub(crate) use cockpit_daemon::SERVE_SUBCOMMAND;
 pub(crate) const SSH_FLAG: &str = "ssh";
 const DEFAULT_REMOTE_COMMAND: &str = PROGRAM;
 
+static VERSION: LazyLock<String> =
+    LazyLock::new(|| version_text(RELEASE_VERSION, build_commit().as_ref()));
+
 #[derive(Debug, Parser)]
 #[command(
     name = PROGRAM,
-    version,
+    version = VERSION.as_str(),
     about = "Run Claude Code agents in a daemon, and steer them"
 )]
 pub(crate) struct Cli {

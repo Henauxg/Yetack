@@ -27,6 +27,7 @@ pulldown-cmark = { version = "0.13.6", default-features = false }
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10.9"
 similar = { version = "3.2.1", features = ["inline"] }
 strum.workspace = true
 # The pure Rust regex engine: no C library to build.

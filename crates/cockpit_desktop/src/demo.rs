@@ -30,6 +30,9 @@ use crate::daemon_label::DaemonLabel;
 use crate::machine::MachineId;
 use crate::path_style::PathStyle;
 use crate::prefs::{CommentPlacement, GroupBy, ProjectRule};
+use crate::state::daemon_probe::{
+    CARRIED_SYSTEM, DaemonOwner, DaemonProbe, InstalledDaemon, ServerInstall,
+};
 use crate::state::daemon_update::{
     self, HandStop, OutputLine, OutputStream, RestartFailure, StopFailure, UpdateFailure,
 };
@@ -122,6 +125,22 @@ pub const UPDATE_OUTPUT: &[&str] = &[
     "update-daemon: restarting the daemon",
     "update-daemon: the daemon runs 3f9c2e17ab54c90d1e2f3a4b5c6d7e8f90a1b2c3",
 ];
+
+/// The script's lines after the app sent its daemon.
+pub const SENT_OUTPUT: &[&str] = &[
+    "update-daemon: checking /home/dev/.cache/agents-cockpit/sent/agents-cockpit.k3v9Qa",
+    "update-daemon: restarting the daemon",
+    "update-daemon: the daemon runs 3f9c2e17ab54c90d1e2f3a4b5c6d7e8f90a1b2c3",
+];
+
+/// The size of the daemon the demo sends, in bytes.
+pub const SENT_SIZE: u64 = 9_800_000;
+
+/// Where the demo's app finds the daemon it carries.
+const CARRIED_DAEMON: &str = "/opt/agents-cockpit/agents-cockpit-x86_64-linux";
+
+/// Where the demo's servers keep their daemon.
+const SERVER_DAEMON: &str = "/opt/agents-cockpit/bin/agents-cockpit";
 
 const PARSER_FOLDER: &str = "/home/dev/projects/calc-parser";
 const SERVICE_FOLDER: &str = "/home/dev/projects/calc-service";
@@ -705,6 +724,16 @@ pub enum UpdateScreen {
     LocalHoldsJobs,
     /// The confirmation for a background service that refuses the app.
     LocalConfirmUnseen,
+    /// A server's update that sends the app's daemon, its card open.
+    Sending,
+    /// The sent daemon failed its check.
+    CheckFailed,
+    /// A server whose daemon Nix owns.
+    Nix,
+    /// A server whose daemon a `.deb` installed.
+    Package,
+    /// A server whose daemon is in a folder the app does not own.
+    Elsewhere,
 }
 
 /// The screen named by `--demo-update`, which only the demo opens. A name the demo does not know
@@ -742,6 +771,40 @@ pub fn show_update_screen(state: &mut AppState, screen: UpdateScreen) {
         UpdateScreen::Dialog => {
             let machine = server_refused(state);
             state.ui.dialog = Some(Dialog::DaemonUpdate(machine));
+        }
+        UpdateScreen::Sending => {
+            let machine = server_refused(state);
+            if daemon_update::start(state, machine).is_some() {
+                daemon_update::sending(state, machine, SENT_SIZE * 2 / 5, SENT_SIZE);
+            }
+            state.ui.dialog = Some(Dialog::DaemonUpdate(machine));
+        }
+        UpdateScreen::CheckFailed => {
+            let machine = server_refused(state);
+            if daemon_update::start(state, machine).is_some() {
+                daemon_update::sending(state, machine, SENT_SIZE, SENT_SIZE);
+                let stderr = |text: &str| OutputLine {
+                    stream: OutputStream::Stderr,
+                    text: text.to_owned(),
+                };
+                daemon_update::output(state, machine, vec![
+                    stderr(SENT_OUTPUT.first().copied().unwrap_or_default()),
+                    stderr("update-daemon: the binary on this machine is not the one the app sent: its checksum differs; the daemon was not touched"),
+                ]);
+                daemon_update::finished(state, machine, Some(1));
+            }
+            state.ui.dialog = Some(Dialog::DaemonUpdate(machine));
+        }
+        UpdateScreen::Nix => server_owned_by(
+            state,
+            "/nix/store/0c4d9kx2-agents-cockpit-0.0.1/bin/agents-cockpit",
+            DaemonOwner::Nix,
+        ),
+        UpdateScreen::Package => {
+            server_owned_by(state, "/usr/bin/agents-cockpit", DaemonOwner::Package("agents-cockpit".to_owned()));
+        }
+        UpdateScreen::Elsewhere => {
+            server_owned_by(state, "/opt/tools/agents-cockpit", DaemonOwner::Other);
         }
         UpdateScreen::LocalAvailable => {
             local_service_of_another_build(state);
@@ -827,6 +890,7 @@ fn update_plan() -> UpdatePlan {
         remote_command: "/opt/agents-cockpit/bin/agents-cockpit".to_owned(),
         source_dir: None,
         commit: BuildCommit::new(UPDATE_COMMIT.to_owned()),
+        daemon_file: None,
     })
 }
 
@@ -867,6 +931,7 @@ fn this_computer_refused(state: &mut AppState, gap: VersionGap, plan: Option<Upd
     state.machines.this.daemon = label;
     state.machines.this.version_gap = Some(gap);
     state.machines.this.update_plan = plan;
+    state.machines.this.daemon_probe = owned_probe();
 }
 
 /// A server beside this computer that refuses the app, the demo's agents staying in use.
@@ -879,9 +944,49 @@ fn server_refused(state: &mut AppState) -> MachineId {
         retry_at: Instant::now() + Duration::from_secs(10),
     };
     server.version_gap = Some(older_gap());
-    server.update_plan = Some(update_plan());
+    server.update_plan = Some(sending_plan());
+    server.daemon_probe = owned_probe();
     state.machines.others.insert(machine, server);
     machine
+}
+
+/// The update of a server that sends the daemon the app carries.
+fn sending_plan() -> UpdatePlan {
+    let UpdatePlan::Server(plan) = update_plan() else {
+        return update_plan();
+    };
+    UpdatePlan::Server(ServerPlan {
+        daemon_file: Some(PathBuf::from(CARRIED_DAEMON)),
+        ..plan
+    })
+}
+
+/// The probe of a server whose daemon the app owns.
+fn owned_probe() -> DaemonProbe {
+    DaemonProbe::Read(ServerInstall {
+        system: CARRIED_SYSTEM.to_owned(),
+        daemon: Some(InstalledDaemon {
+            path: SERVER_DAEMON.to_owned(),
+            owner: DaemonOwner::App,
+            version: format!("agents-cockpit {LOCAL_OLDER_RELEASE} ({OLDER_COMMIT})"),
+        }),
+    })
+}
+
+/// A server that refuses the app, whose daemon at `path` belongs to `owner`, its card open.
+fn server_owned_by(state: &mut AppState, path: &str, owner: DaemonOwner) {
+    let machine = server_refused(state);
+    if let Some(known) = state.machines.others.get_mut(&machine) {
+        known.daemon_probe = DaemonProbe::Read(ServerInstall {
+            system: CARRIED_SYSTEM.to_owned(),
+            daemon: Some(InstalledDaemon {
+                path: path.to_owned(),
+                owner,
+                version: format!("agents-cockpit {LOCAL_OLDER_RELEASE}"),
+            }),
+        });
+    }
+    state.ui.dialog = Some(Dialog::DaemonUpdate(machine));
 }
 
 /// This computer's agents run in its background service, which runs another build than the app:

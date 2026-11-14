@@ -173,6 +173,21 @@ pub fn ssh_script_command(host: &str, arguments: &[&str]) -> Result<Command, Con
     Ok(command)
 }
 
+/// ssh to `host` running `script` as `sh -c`, with `arguments` as its `$1` and on. Its stdin stays
+/// free for data, such as a file to write on the host. The host's other users can read the script
+/// and the arguments, which must hold nothing private.
+pub fn ssh_inline_command(
+    host: &str,
+    script: &str,
+    arguments: &[&str],
+) -> Result<Command, ConnectError> {
+    check_host(host)?;
+    let mut command = ssh_to(host);
+    command.args(["sh", "-c", &shell_quoted(script), "sh"]);
+    command.args(arguments.iter().map(|argument| shell_quoted(argument)));
+    Ok(command)
+}
+
 fn ssh_command(host: &str, remote_command: &str) -> Command {
     let mut command = ssh_to(host);
     command
@@ -387,6 +402,43 @@ mod tests {
                 "'/opt/my tools/x'",
             ]
         );
+    }
+
+    /// The words after the host, which ssh joins with spaces for the host's shell.
+    fn remote_words(command: &Command) -> Vec<String> {
+        let args: Vec<String> = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_str().unwrap().to_owned())
+            .collect();
+        let options_end = args.iter().position(|arg| arg == "--").unwrap();
+        args.get(options_end + 2..).unwrap().to_vec()
+    }
+
+    #[test]
+    fn an_inline_script_comes_quoted_with_its_arguments() {
+        let command = ssh_inline_command("build-box", "cat >\"$1\"", &["it's here"]).unwrap();
+
+        assert_eq!(
+            remote_words(&command),
+            ["sh", "-c", "'cat >\"$1\"'", "sh", r"'it'\''s here'"]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_hosts_shell_gives_an_inline_script_its_arguments_as_they_were() {
+        let command =
+            ssh_inline_command("build-box", "printf '%s|' \"$1\" \"$2\"", &["a b", "it's"])
+                .unwrap();
+        let line = remote_words(&command).join(" ");
+
+        let output = std::process::Command::new("sh")
+            .args(["-c", &line])
+            .output()
+            .unwrap();
+
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), "a b|it's|");
     }
 
     #[test]
