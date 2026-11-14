@@ -1702,16 +1702,22 @@ pub fn toggle_block(state: &mut AppState, agent: AgentId, block: Block) -> Vec<O
         state.ui.open_blocks.insert(block);
         true
     };
-    let running = state
+    let Some(entry) = state
         .agents
         .get(&agent)
-        .is_some_and(|entry| entry.summary.status != AgentStatus::Exited);
-    if !(opening && block == Block::Mcp && running) {
+        .filter(|entry| entry.summary.status != AgentStatus::Exited)
+    else {
+        return Vec::new();
+    };
+    if !(opening && block == Block::Mcp) {
         return Vec::new();
     }
     vec![Outgoing {
         request: Request::AgentMcpStatus(AgentParams { agent }),
-        purpose: Purpose::McpStatus { agent },
+        purpose: Purpose::McpStatus {
+            agent,
+            details_seq: entry.details_seq,
+        },
         to: MachineId::THIS,
     }]
 }
@@ -1730,7 +1736,10 @@ pub fn toggle_usage(state: &mut AppState, agent: AgentId) -> Vec<Outgoing> {
     entry.context_loading = true;
     vec![Outgoing {
         request: Request::AgentContextUsage(AgentParams { agent }),
-        purpose: Purpose::ContextUsage { agent },
+        purpose: Purpose::ContextUsage {
+            agent,
+            details_seq: entry.details_seq,
+        },
         to: MachineId::THIS,
     }]
 }

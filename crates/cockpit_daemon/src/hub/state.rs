@@ -790,6 +790,50 @@ mod tests {
         );
     }
 
+    /// A change too large for a frame never reaches the clients, so the next one cannot build on
+    /// it.
+    #[test]
+    fn after_a_change_that_cannot_go_out_the_next_details_go_out_whole() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join("state");
+        let agent = state_with_agent(&folder);
+        let mut hub = Hub::for_tests(&folder);
+        let mut frames = client(&mut hub);
+        let first = AgentDetails {
+            subagents: busy_details().subagents.into_iter().take(2).collect(),
+            ..AgentDetails::default()
+        };
+        let mut lost = first.clone();
+        lost.subagents[0].description = "x".repeat(cockpit_protocol::MAX_LINE_BYTES);
+        lost.subagents[1].tool_calls += 1;
+        let mut last = lost.clone();
+        last.subagents[0]
+            .description
+            .clone_from(&first.subagents[0].description);
+
+        hub.space_details(agent, first.clone());
+        hub.space_details(agent, lost);
+        hub.space_details(agent, last.clone());
+
+        let events: Vec<Event> = received(&mut frames)
+            .into_iter()
+            .map(|(_, event, _)| event)
+            .collect();
+        assert_eq!(
+            events,
+            [
+                Event::DetailsChanged {
+                    agent,
+                    details: first,
+                },
+                Event::DetailsChanged {
+                    agent,
+                    details: last,
+                },
+            ]
+        );
+    }
+
     #[test]
     fn a_quiet_stretch_publishes_one_summary_however_many_checks_see_it() {
         let temp = tempfile::tempdir().unwrap();
@@ -980,6 +1024,62 @@ mod tests {
             update(vec![DetailsChange::WaitingPrompts {
                 waiting_prompts: waiting("Then run the tests").waiting_prompts,
             }])
+        );
+    }
+
+    #[test]
+    fn a_change_of_the_waiting_prompts_takes_the_held_change_with_it() {
+        let agent = AgentId::new(1);
+        let start = Instant::now();
+        let mut out = DetailsOut::default();
+        let both = AgentDetails {
+            tasks: with_task("two").tasks,
+            ..waiting("Then run the tests")
+        };
+
+        out.space(agent, with_task("one"), start);
+        let held = out.space(agent, with_task("two"), start + Duration::from_millis(10));
+        let changed = out.space(agent, both.clone(), start + Duration::from_millis(20));
+        let due = out.take_held(agent, start + DETAILS_SPACING);
+
+        assert_eq!(
+            held,
+            Spaced::Held {
+                wake_in: Some(Duration::from_millis(190))
+            }
+        );
+        assert_eq!(
+            changed,
+            update(vec![
+                DetailsChange::Tasks { tasks: both.tasks },
+                DetailsChange::WaitingPrompts {
+                    waiting_prompts: both.waiting_prompts,
+                },
+            ])
+        );
+        assert_eq!(due, Spaced::Unchanged);
+    }
+
+    /// Before its first details event since the start, the answer holds the details the daemon
+    /// read back, and that event goes out whole.
+    #[tokio::test]
+    async fn the_details_answer_after_a_restart_holds_the_details_read_back() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path().join("state");
+        let agent = state_with_agent(&folder);
+        let mut hub = Hub::for_tests(&folder);
+        hub.space_details(agent, with_task("one"));
+        let mut restarted = Hub::for_tests(&folder);
+        let (reply, answer) = oneshot::channel();
+
+        restarted.request(Request::AgentDetails(AgentParams { agent }), reply);
+
+        assert_eq!(
+            answer.await.unwrap(),
+            ResponseResult::Ok(ResponseBody::Details {
+                details: with_task("one"),
+                last_seq: Some(Seq::new(1)),
+            })
         );
     }
 }

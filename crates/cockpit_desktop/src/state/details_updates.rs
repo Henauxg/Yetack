@@ -7,6 +7,7 @@
 use cockpit_protocol::{AgentDetails, DetailsChange, Seq};
 
 use super::app_state::{AgentEntry, Loadable};
+use super::sending;
 
 /// A details update that came while the details load.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,11 +47,13 @@ pub fn update(entry: &mut AgentEntry, seq: Seq, changes: Vec<DetailsChange>) {
 pub fn answered(entry: &mut AgentEntry, details: AgentDetails, last_seq: Option<Seq>) {
     let early = std::mem::take(&mut entry.early_details);
     // The app drops updates while it does not wait for an answer, as after a snapshot.
-    if entry.details != Loadable::Loading {
-        return;
+    if entry.details == Loadable::Loading {
+        entry.details = Loadable::Loaded(details);
+        entry.details_seq = last_seq;
     }
-    entry.details = Loadable::Loaded(details);
-    entry.details_seq = last_seq;
+    // A message sent while the details loaded knew the answer's waiting messages, not those of
+    // the updates after it.
+    sending::details_loaded(entry);
     for EarlyUpdate { seq, changes } in early {
         update(entry, seq, changes);
     }
@@ -65,21 +68,42 @@ pub fn failed(entry: &mut AgentEntry, failure: Loadable<AgentDetails>) {
     }
 }
 
+/// Forgets the details, which missed events: the app asks for them again.
+pub fn forget(entry: &mut AgentEntry) {
+    entry.details = Loadable::NotRequested;
+    entry.details_seq = None;
+    entry.early_details.clear();
+}
+
+/// The agent's loaded details, unless a details event reached them since a request left with
+/// `asked`, their seq then. The daemon also sends what it answered in a details event, and one
+/// applied since may be newer than the answer.
+pub fn as_asked(entry: &mut AgentEntry, asked: Option<Seq>) -> Option<&mut AgentDetails> {
+    if entry.details_seq != asked {
+        return None;
+    }
+    entry.details.loaded_mut()
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Instant;
 
     use cockpit_client::{RequestError, SessionUpdate};
     use cockpit_protocol::{
-        AgentId, AgentParams, AgentStatus, BackgroundTaskId, Catchup, Event, EventRecord, ItemId,
-        Method, PlanUsage, Request, ResponseBody, Settings, Snapshot, Subagent, SubagentRun,
-        SubagentStatus, SubagentToolCall, TaskListItem, TaskStatus, Timestamp,
+        AgentId, AgentParams, AgentStatus, BackgroundTaskId, Catchup, ContextUsage, Event,
+        EventRecord, ItemId, McpServer, McpServerStatus, Method, PlanUsage, Request, ResponseBody,
+        Settings, Snapshot, Subagent, SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem,
+        TaskStatus, Timestamp,
     };
 
     use super::*;
     use crate::machine::MachineId;
     use crate::state::app_state::tests::{connected_update, state_with, summary};
-    use crate::state::{AppState, Drafts, Purpose, apply_response, apply_update, needed_requests};
+    use crate::state::ui_state::Block;
+    use crate::state::{
+        AppState, Drafts, Outgoing, Purpose, actions, apply_response, apply_update, needed_requests,
+    };
 
     fn agent() -> AgentId {
         AgentId::new(1)
@@ -335,5 +359,136 @@ mod tests {
             "the app asks for the details"
         );
         assert_eq!(*details(&state), loaded(&steps[3]));
+    }
+
+    /// A replay's whole details can be applied after an answer the app asked for once connected:
+    /// the updates after them, which follow them on the connection, bring the details back.
+    #[test]
+    fn whole_details_older_than_the_answer_are_caught_up_by_the_updates_after_them() {
+        let steps = steps();
+        let mut state = loading();
+
+        answer_details(&mut state, steps[3].clone(), 12);
+        whole(&mut state, 10, steps[1].clone());
+        update_to(&mut state, 11, &steps[1], &steps[2]);
+        update_to(&mut state, 12, &steps[2], &steps[3]);
+        update_to(&mut state, 13, &steps[3], &steps[4]);
+
+        assert_eq!(*details(&state), loaded(&steps[4]));
+    }
+
+    /// While the close is on its way, the app has no entry for the agent and drops its events.
+    #[test]
+    fn an_agent_whose_close_failed_asks_for_its_details_again() {
+        let steps = steps();
+        let mut state = working();
+        whole(&mut state, 1, steps[0].clone());
+
+        let closing = actions::close_agent(&mut state, &mut Drafts::default(), agent());
+        update_to(&mut state, 2, &steps[0], &steps[1]);
+        for outgoing in closing {
+            let method = outgoing.request.method();
+            let refused = Err(RequestError::Disconnected);
+            apply_response(
+                &mut state,
+                &mut Drafts::default(),
+                method,
+                outgoing.purpose,
+                refused,
+                MachineId::THIS,
+            );
+        }
+        update_to(&mut state, 3, &steps[1], &steps[2]);
+
+        assert_eq!(*details(&state), Loadable::NotRequested);
+    }
+
+    fn with_context(tokens: u32) -> AgentDetails {
+        AgentDetails {
+            context: Some(ContextUsage {
+                tokens,
+                max_tokens: 200_000,
+                percent: 1,
+                categories: Vec::new(),
+            }),
+            ..AgentDetails::default()
+        }
+    }
+
+    fn with_server(status: McpServerStatus) -> AgentDetails {
+        AgentDetails {
+            mcp_servers: vec![McpServer {
+                name: "notes".to_owned(),
+                status,
+                error: None,
+                version: None,
+                transport: None,
+                scope: None,
+                tools: Vec::new(),
+            }],
+            ..AgentDetails::default()
+        }
+    }
+
+    /// Answers the requests with `body`.
+    fn answer_all(state: &mut AppState, asked: Vec<Outgoing>, body: &ResponseBody) {
+        for outgoing in asked {
+            let method = outgoing.request.method();
+            apply_response(
+                state,
+                &mut Drafts::default(),
+                method,
+                outgoing.purpose,
+                Ok(body.clone()),
+                MachineId::THIS,
+            );
+        }
+    }
+
+    #[test]
+    fn a_context_answer_shows_at_once() {
+        let mut state = working();
+        whole(&mut state, 1, AgentDetails::default());
+        let answered = with_context(4_000);
+
+        let asked = actions::toggle_usage(&mut state, agent());
+        let context = answered.context.clone().unwrap();
+        answer_all(&mut state, asked, &ResponseBody::ContextUsage(context));
+
+        assert_eq!(*details(&state), loaded(&answered));
+    }
+
+    /// The daemon sends the context it answered in an update too, and the app can apply the
+    /// updates before the answer.
+    #[test]
+    fn a_late_context_answer_leaves_a_newer_update() {
+        let mut state = working();
+        whole(&mut state, 1, AgentDetails::default());
+        let answered = with_context(4_000);
+        let newer = with_context(9_000);
+
+        let asked = actions::toggle_usage(&mut state, agent());
+        update_to(&mut state, 2, &AgentDetails::default(), &answered);
+        update_to(&mut state, 3, &answered, &newer);
+        let context = answered.context.clone().unwrap();
+        answer_all(&mut state, asked, &ResponseBody::ContextUsage(context));
+
+        assert_eq!(*details(&state), loaded(&newer));
+    }
+
+    #[test]
+    fn a_late_mcp_answer_leaves_a_newer_update() {
+        let mut state = working();
+        whole(&mut state, 1, AgentDetails::default());
+        let answered = with_server(McpServerStatus::Failed);
+        let newer = with_server(McpServerStatus::Connected);
+
+        let asked = actions::toggle_block(&mut state, agent(), Block::Mcp);
+        update_to(&mut state, 2, &AgentDetails::default(), &answered);
+        update_to(&mut state, 3, &answered, &newer);
+        let servers = answered.mcp_servers.clone();
+        answer_all(&mut state, asked, &ResponseBody::McpServers { servers });
+
+        assert_eq!(*details(&state), loaded(&newer));
     }
 }

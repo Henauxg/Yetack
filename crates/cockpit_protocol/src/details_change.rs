@@ -353,4 +353,62 @@ mod tests {
             assert_eq!(followed, pair[1]);
         }
     }
+
+    /// Numbers that look random and are the same at every run.
+    struct Draws(u64);
+
+    impl Draws {
+        /// A number from 0 to `bound`, excluded, or 0 when `bound` is 0.
+        fn below(&mut self, bound: usize) -> usize {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let draw = usize::try_from(self.0 >> 33).unwrap();
+            draw.checked_rem(bound).unwrap_or(0)
+        }
+    }
+
+    /// Each step starts, ends, prunes, starts again or changes a few subagents, as the daemon
+    /// does, or changes the tasks.
+    #[test]
+    fn the_changes_lead_through_many_random_steps() {
+        let mut draws = Draws(7);
+        let mut next_item = 1;
+        let mut details = AgentDetails::default();
+        let mut followed = AgentDetails::default();
+
+        for step in 0..2_000 {
+            let older = details.clone();
+            for _ in 0..=draws.below(3) {
+                let count = details.subagents.len();
+                let index = draws.below(count);
+                match draws.below(5) {
+                    0 | 1 => {
+                        details
+                            .subagents
+                            .push(subagent(next_item, SubagentStatus::Running));
+                        next_item += 1;
+                    }
+                    2 if count > 0 => {
+                        details.subagents.remove(index);
+                    }
+                    3 if count > 0 => {
+                        let again = details.subagents.remove(index);
+                        details.subagents.push(again);
+                    }
+                    4 if count > 0 => {
+                        details.subagents[index].tool_calls += 1;
+                        details.subagents[index].status = SubagentStatus::Done;
+                    }
+                    _ => details.tasks = vec![task(&format!("Step {step}"))],
+                }
+            }
+            for change in details.changes_since(&older) {
+                followed.apply(change);
+            }
+
+            assert_eq!(followed, details, "at step {step}");
+        }
+    }
 }

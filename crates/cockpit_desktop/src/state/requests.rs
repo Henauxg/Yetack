@@ -7,7 +7,7 @@ use cockpit_client::RequestError;
 use cockpit_protocol::{
     AgentDetails, AgentId, AgentParams, ErrorCode, FileEdit, FindFilesParams, FoldersListParams,
     HistoryParams, ItemId, ListDirParams, Method, Position, ReadFileParams, Request, ResponseBody,
-    Timestamp,
+    Seq, Timestamp,
 };
 
 use super::app_state::{AgentEntry, AppState, FileRead, Loadable, MachineState, Reread};
@@ -48,11 +48,14 @@ pub enum Purpose {
     Details {
         agent: AgentId,
     },
+    /// `details_seq` is the agent's when the request left: see [`details_updates::as_asked`].
     ContextUsage {
         agent: AgentId,
+        details_seq: Option<Seq>,
     },
     McpStatus {
         agent: AgentId,
+        details_seq: Option<Seq>,
     },
     /// `agent.mcp_reconnect` from a server's page, which shows how it goes.
     McpReconnect {
@@ -63,6 +66,7 @@ pub enum Purpose {
     McpReconnected {
         agent: AgentId,
         server: String,
+        details_seq: Option<Seq>,
     },
     Commands {
         agent: AgentId,
@@ -443,28 +447,28 @@ pub fn apply_response(
                     details_updates::answered(entry, details, last_seq);
                 }
                 other => {
-                    details_updates::failed(entry, Failure::from_result(other).into_loadable())
+                    details_updates::failed(entry, Failure::from_result(other).into_loadable());
+                    sending::details_loaded(entry);
                 }
             }
-            sending::details_loaded(entry);
             sending::waiting_changed(entry);
         }
-        Purpose::ContextUsage { agent } => {
+        Purpose::ContextUsage { agent, details_seq } => {
             if let Some(entry) = state.agents.get_mut(&agent) {
                 entry.context_loading = false;
             }
             match result {
                 Ok(ResponseBody::ContextUsage(context)) => {
-                    if let Some(details) = loaded_details(state, agent) {
+                    if let Some(details) = details_as_asked(state, agent, details_seq) {
                         details.context = Some(context);
                     }
                 }
                 other => report(state, method, other),
             }
         }
-        Purpose::McpStatus { agent } => match result {
+        Purpose::McpStatus { agent, details_seq } => match result {
             Ok(ResponseBody::McpServers { servers }) => {
-                if let Some(details) = loaded_details(state, agent) {
+                if let Some(details) = details_as_asked(state, agent, details_seq) {
                     details.mcp_servers = servers;
                 }
             }
@@ -474,10 +478,14 @@ pub fn apply_response(
             let refusal = result.err().map(|failure| failure.message);
             mcp_reconnect::answered(state, agent, &server, refusal);
         }
-        Purpose::McpReconnected { agent, server } => match result {
+        Purpose::McpReconnected {
+            agent,
+            server,
+            details_seq,
+        } => match result {
             Ok(ResponseBody::McpServers { servers }) => {
                 mcp_reconnect::checked(state, agent, &server, Ok(&servers), Instant::now());
-                if let Some(details) = loaded_details(state, agent) {
+                if let Some(details) = details_as_asked(state, agent, details_seq) {
                     details.mcp_servers = servers;
                 }
             }
@@ -740,7 +748,10 @@ pub fn apply_response(
                 state.ui.closing.remove(&agent);
                 state.ui.closed.take_if(|closed| closed.agent == agent);
                 if !failure.not_found {
-                    state.agents.entry(agent).or_insert(*entry);
+                    let mut entry = *entry;
+                    // The app dropped the agent's details events while it was closing.
+                    details_updates::forget(&mut entry);
+                    state.agents.entry(agent).or_insert(entry);
                     state
                         .ui
                         .report(format!("The agent was not closed: {}", failure.message));
@@ -760,8 +771,12 @@ pub fn apply_response(
     }
 }
 
-fn loaded_details(state: &mut AppState, agent: AgentId) -> Option<&mut AgentDetails> {
-    state.agents.get_mut(&agent)?.details.loaded_mut()
+fn details_as_asked(
+    state: &mut AppState,
+    agent: AgentId,
+    asked: Option<Seq>,
+) -> Option<&mut AgentDetails> {
+    details_updates::as_asked(state.agents.get_mut(&agent)?, asked)
 }
 
 /// The edits of the file at `path` in `agent`'s loaded messages.
