@@ -5,7 +5,7 @@
 use std::fmt;
 use std::time::Instant;
 
-use cockpit_protocol::{AgentId, ReleaseVersion};
+use cockpit_protocol::AgentId;
 
 use super::app_state::{AppState, ConnectionState, MachineState};
 use super::apply::forget_agent;
@@ -73,62 +73,96 @@ pub struct MachineRow {
     pub server: Option<ServerRow>,
 }
 
-/// The release a row shows.
+/// The build a row shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowVersion {
-    /// The release its daemon runs, while it is connected: an earlier connection's may no longer
+    /// The build its daemon runs, while it is connected: an earlier connection's may no longer
     /// be the one it runs.
-    Runs(ReleaseVersion),
-    /// The app can update its daemon from `from` to `to`, this app's build: their releases, or
-    /// for one release, its two commits (`update_texts`). `from` is `None` for a daemon of
-    /// protocol 8 or older, which does not name its release as it refuses the app.
-    Update { from: Option<String>, to: String },
+    Runs(ProgramBuild),
+    /// The app can update its daemon from `from` to `to`, this app's build. `from` is `None` for
+    /// a daemon of protocol 8 or older, which does not name its build as it refuses the app.
+    Update {
+        from: Option<ProgramBuild>,
+        to: ProgramBuild,
+    },
 }
 
-/// "0.2.0", "0.1.0 → 0.2.0", "0.1.0 · 743d664 → eb65d4e" for one release built from two commits,
-/// or "→ 0.2.0" when the daemon did not name its release.
+/// The cell in words, as a screen reader reads it: "0.2.0 (eb65d4e)", "0.1.0 (743d664) to 0.2.0
+/// (eb65d4e)", or "to 0.2.0 (eb65d4e)" when the daemon did not name its build.
 impl fmt::Display for RowVersion {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Runs(release) => write!(formatter, "{release}"),
+            Self::Runs(build) => write!(formatter, "{build}"),
             Self::Update {
                 from: Some(from),
                 to,
-            } => write!(formatter, "{from} → {to}"),
-            Self::Update { from: None, to } => write!(formatter, "→ {to}"),
+            } => write!(formatter, "{from} to {to}"),
+            Self::Update { from: None, to } => write!(formatter, "to {to}"),
         }
     }
+}
+
+/// The version cell's text: the releases, and under them the commits. A commit line shows when a
+/// build knows its commit, and the releases are the main line otherwise.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VersionCell {
+    /// A connected daemon's build, in one column.
+    Runs {
+        release: String,
+        commit: Option<String>,
+    },
+    Update {
+        releases: UpdateLine,
+        commits: Option<UpdateLine>,
+    },
+}
+
+/// A line of an update: the daemon's side, an arrow, then this app's. A side the app does not
+/// know is `None`, and shows empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateLine {
+    pub from: Option<String>,
+    pub to: Option<String>,
 }
 
 impl RowVersion {
     fn of(state: &AppState, machine: MachineId, known: &MachineState) -> Option<Self> {
         let update = update_offer::offer(state, machine).filter(|offer| offer.plan.is_some());
         match update {
-            Some(offer) => {
-                let (from, to) = update_texts(offer.daemon.as_ref(), &offer.app);
-                Some(Self::Update { from, to })
-            }
-            None => known
-                .daemon_version
-                .clone()
-                .filter(|_| known.is_connected())
-                .map(Self::Runs),
+            Some(offer) => Some(Self::Update {
+                from: offer.daemon,
+                to: offer.app,
+            }),
+            None => ProgramBuild::daemon_of(known).map(Self::Runs),
         }
     }
-}
 
-/// The texts of an update's two builds: the daemon's, `None` when it did not name it, and this
-/// app's. Two builds of one release differ by their commits, which the texts name then.
-fn update_texts(daemon: Option<&ProgramBuild>, app: &ProgramBuild) -> (Option<String>, String) {
-    let Some(daemon) = daemon else {
-        return (None, app.version.to_string());
-    };
-    match (&daemon.commit, &app.commit) {
-        (Some(from), Some(to)) if daemon.version == app.version => (
-            Some(format!("{} · {}", daemon.version, from.short())),
-            to.short().to_owned(),
-        ),
-        _ => (Some(daemon.version.to_string()), app.version.to_string()),
+    pub fn cell(&self) -> VersionCell {
+        let short = |build: &ProgramBuild| {
+            build
+                .commit
+                .as_ref()
+                .map(|commit| commit.short().to_owned())
+        };
+        match self {
+            Self::Runs(build) => VersionCell::Runs {
+                release: build.version.to_string(),
+                commit: short(build),
+            },
+            Self::Update { from, to } => {
+                let commits = UpdateLine {
+                    from: from.as_ref().and_then(short),
+                    to: short(to),
+                };
+                VersionCell::Update {
+                    releases: UpdateLine {
+                        from: from.as_ref().map(|build| build.version.to_string()),
+                        to: Some(to.version.to_string()),
+                    },
+                    commits: (commits.from.is_some() || commits.to.is_some()).then_some(commits),
+                }
+            }
+        }
     }
 }
 
@@ -487,7 +521,7 @@ mod tests {
     use crate::state::update_offer::{GapKind, ProgramBuild, VersionGap};
     use crate::state::update_plan::{ServerPlan, UpdatePlan};
     use crate::state::{AgentEntry, MachineState};
-    use cockpit_protocol::{AccountId, AgentStatus, BuildCommit, PROTOCOL_VERSION};
+    use cockpit_protocol::{AccountId, AgentStatus, BuildCommit, PROTOCOL_VERSION, ReleaseVersion};
 
     fn typed(state: &mut AppState, name: &str, host: &str, remote_command: &str) {
         open_machines(state);
@@ -505,38 +539,133 @@ mod tests {
         }
     }
 
-    #[test]
-    fn an_update_names_the_releases_or_for_one_release_its_two_commits() {
-        let build = |version: &str, commit: Option<&str>| ProgramBuild {
-            version: ReleaseVersion::new(version.to_owned()),
-            commit: commit.map(|commit| cockpit_protocol::BuildCommit::new(commit.to_owned())),
-        };
-        let app = build("0.1.0", Some("eb65d4e1111111111111111111111111111111bb"));
+    /// The daemon's made-up commit.
+    const OLD_COMMIT: &str = "743d6640000000000000000000000000000000aa";
+    /// The app's made-up commit.
+    const NEW_COMMIT: &str = "eb65d4e1111111111111111111111111111111bb";
 
-        let same = update_texts(
-            Some(&build(
-                "0.1.0",
-                Some("743d6640000000000000000000000000000000aa"),
-            )),
-            &app,
-        );
-        let older = update_texts(
-            Some(&build(
-                "0.0.9",
-                Some("743d6640000000000000000000000000000000aa"),
-            )),
-            &app,
-        );
-        let no_commit = update_texts(Some(&build("0.1.0", None)), &app);
-        let unnamed = update_texts(None, &app);
+    fn build(version: &str, commit: Option<&str>) -> ProgramBuild {
+        ProgramBuild {
+            version: ReleaseVersion::new(version.to_owned()),
+            commit: commit.map(|commit| BuildCommit::new(commit.to_owned())),
+        }
+    }
+
+    fn line(from: Option<&str>, to: Option<&str>) -> UpdateLine {
+        UpdateLine {
+            from: from.map(str::to_owned),
+            to: to.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn a_release_update_shows_the_releases_over_the_commits() {
+        let version = RowVersion::Update {
+            from: Some(build("0.1.0", Some(OLD_COMMIT))),
+            to: build("0.2.0", Some(NEW_COMMIT)),
+        };
 
         assert_eq!(
-            same,
-            (Some("0.1.0 · 743d664".to_owned()), "eb65d4e".to_owned())
+            version.cell(),
+            VersionCell::Update {
+                releases: line(Some("0.1.0"), Some("0.2.0")),
+                commits: Some(line(Some("743d664"), Some("eb65d4e"))),
+            }
         );
-        assert_eq!(older, (Some("0.0.9".to_owned()), "0.1.0".to_owned()));
-        assert_eq!(no_commit, (Some("0.1.0".to_owned()), "0.1.0".to_owned()));
-        assert_eq!(unnamed, (None, "0.1.0".to_owned()));
+        assert_eq!(version.to_string(), "0.1.0 (743d664) to 0.2.0 (eb65d4e)");
+    }
+
+    #[test]
+    fn a_build_update_of_one_release_shows_the_release_on_both_sides() {
+        let version = RowVersion::Update {
+            from: Some(build("0.1.0", Some(OLD_COMMIT))),
+            to: build("0.1.0", Some(NEW_COMMIT)),
+        };
+
+        assert_eq!(
+            version.cell(),
+            VersionCell::Update {
+                releases: line(Some("0.1.0"), Some("0.1.0")),
+                commits: Some(line(Some("743d664"), Some("eb65d4e"))),
+            }
+        );
+        assert_eq!(version.to_string(), "0.1.0 (743d664) to 0.1.0 (eb65d4e)");
+    }
+
+    #[test]
+    fn an_up_to_date_daemon_shows_its_release_over_its_commit() {
+        let with_commit = RowVersion::Runs(build("0.2.0", Some(NEW_COMMIT)));
+        let without = RowVersion::Runs(build("0.2.0", None));
+
+        assert_eq!(
+            with_commit.cell(),
+            VersionCell::Runs {
+                release: "0.2.0".to_owned(),
+                commit: Some("eb65d4e".to_owned()),
+            }
+        );
+        assert_eq!(with_commit.to_string(), "0.2.0 (eb65d4e)");
+        assert_eq!(
+            without.cell(),
+            VersionCell::Runs {
+                release: "0.2.0".to_owned(),
+                commit: None,
+            }
+        );
+        assert_eq!(without.to_string(), "0.2.0");
+    }
+
+    #[test]
+    fn a_daemon_that_names_nothing_leaves_its_side_empty() {
+        let version = RowVersion::Update {
+            from: None,
+            to: build("0.2.0", Some(NEW_COMMIT)),
+        };
+
+        assert_eq!(
+            version.cell(),
+            VersionCell::Update {
+                releases: line(None, Some("0.2.0")),
+                commits: Some(line(None, Some("eb65d4e"))),
+            }
+        );
+        assert_eq!(version.to_string(), "to 0.2.0 (eb65d4e)");
+    }
+
+    #[test]
+    fn a_commit_one_build_does_not_know_stays_empty_and_without_both_only_the_releases_show() {
+        let cell =
+            |from: Option<ProgramBuild>, to: ProgramBuild| RowVersion::Update { from, to }.cell();
+        let releases = line(Some("0.1.0"), Some("0.2.0"));
+
+        assert_eq!(
+            cell(Some(build("0.1.0", None)), build("0.2.0", Some(NEW_COMMIT))),
+            VersionCell::Update {
+                releases: releases.clone(),
+                commits: Some(line(None, Some("eb65d4e"))),
+            }
+        );
+        assert_eq!(
+            cell(Some(build("0.1.0", Some(OLD_COMMIT))), build("0.2.0", None)),
+            VersionCell::Update {
+                releases: releases.clone(),
+                commits: Some(line(Some("743d664"), None)),
+            }
+        );
+        assert_eq!(
+            cell(Some(build("0.1.0", None)), build("0.2.0", None)),
+            VersionCell::Update {
+                releases,
+                commits: None,
+            }
+        );
+        assert_eq!(
+            cell(None, build("0.2.0", None)),
+            VersionCell::Update {
+                releases: line(None, Some("0.2.0")),
+                commits: None,
+            }
+        );
     }
 
     #[test]
@@ -862,6 +991,7 @@ mod tests {
         if let Some(known) = state.machines.others.get_mut(&devbox) {
             known.connection = ConnectionState::Connected;
             known.daemon_version = Some(ReleaseVersion::new("0.2.0".to_owned()));
+            known.daemon_commit = Some(BuildCommit::new(NEW_COMMIT.to_owned()));
         }
         if let Some(known) = state.machines.others.get_mut(&MachineId::new(2)) {
             known.connection = ConnectionState::Disconnected {
@@ -916,7 +1046,11 @@ mod tests {
         assert_eq!(chips, ["Connected", "Connected", "Not connected"]);
         assert_eq!(
             versions,
-            [Some("0.2.0".to_owned()), Some("0.2.0".to_owned()), None]
+            [
+                Some("0.2.0".to_owned()),
+                Some("0.2.0 (eb65d4e)".to_owned()),
+                None
+            ]
         );
         assert_eq!(actions, [None, None, Some(StatusAction::Retry)]);
         assert_eq!(
@@ -933,20 +1067,14 @@ mod tests {
     fn an_older_daemons_row_offers_its_update_from_the_release_it_named_with_no_countdown() {
         let now = Instant::now();
         let mut state = dialog_state(now);
+        state.app_build = build("0.2.0", Some(NEW_COMMIT));
         let gpu_box = MachineId::new(2);
         refuses_as_older(&mut state, gpu_box);
-        let app = state.app_build.version.clone();
         let row = |state: &AppState| {
             rows(state)
                 .into_iter()
                 .find(|row| row.machine == gpu_box)
-                .map(|row| {
-                    (
-                        row.version.map(|version| version.to_string()),
-                        row.action,
-                        row.note,
-                    )
-                })
+                .map(|row| (row.version, row.action, row.note))
         };
 
         let unnamed = row(&state);
@@ -956,17 +1084,17 @@ mod tests {
             .get_mut(&gpu_box)
             .and_then(|known| known.version_gap.as_mut())
         {
-            gap.daemon = Some(ProgramBuild {
-                version: ReleaseVersion::new("0.0.1".to_owned()),
-                commit: None,
-            });
+            gap.daemon = Some(build("0.0.1", Some(OLD_COMMIT)));
         }
         let named = row(&state);
 
         assert_eq!(
             unnamed,
             Some((
-                Some(format!("→ {app}")),
+                Some(RowVersion::Update {
+                    from: None,
+                    to: build("0.2.0", Some(NEW_COMMIT)),
+                }),
                 Some(StatusAction::Update(UpdateLink::Update)),
                 None
             ))
@@ -974,7 +1102,10 @@ mod tests {
         assert_eq!(
             named,
             Some((
-                Some(format!("0.0.1 → {app}")),
+                Some(RowVersion::Update {
+                    from: Some(build("0.0.1", Some(OLD_COMMIT))),
+                    to: build("0.2.0", Some(NEW_COMMIT)),
+                }),
                 Some(StatusAction::Update(UpdateLink::Update)),
                 None
             ))

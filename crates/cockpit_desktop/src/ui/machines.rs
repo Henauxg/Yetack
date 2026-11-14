@@ -11,7 +11,8 @@ use crate::connection::{Clock, Cockpit};
 use crate::machine::MachineId;
 use crate::state::machine_status::StatusAction;
 use crate::state::machines::{
-    self, MachineChange, MachineName, MachineRow, RowNote, RowVersion, ServerRow,
+    self, MachineChange, MachineName, MachineRow, RowNote, RowVersion, ServerRow, UpdateLine,
+    VersionCell,
 };
 use crate::state::{AppState, Dialog, MachineEdit, MachineMenu, MachinesView, daemon_update};
 use crate::ui::icons::{Icon, IconKind};
@@ -21,6 +22,9 @@ use crate::{bridge, format};
 
 /// Between the parts of a machine row's detail line.
 const DETAIL_SEPARATOR: &str = " · ";
+
+/// The class of the releases in the version cell when the commits show under them.
+const RELEASE_LINE: &str = "version-release";
 
 /// The width of a server's menu in the style sheet (`.server-menu`): the menu opens with its right
 /// edge under its button's.
@@ -201,16 +205,8 @@ fn MachineRowView(row: MachineRow, menu_open: bool) -> Element {
                 }
             }
             span { class: "machine-cell-version mono",
-                match version {
-                    Some(RowVersion::Runs(release)) => rsx! { "{release}" },
-                    Some(RowVersion::Update { from, to }) => rsx! {
-                        if let Some(from) = from {
-                            span { class: "version-from", "{from}" }
-                        }
-                        Icon { kind: IconKind::ArrowRight, size: 12 }
-                        span { class: "version-to", "{to}" }
-                    },
-                    None => rsx! {},
+                if let Some(version) = version {
+                    VersionCellView { version }
                 }
             }
             span { class: "machine-cell-action",
@@ -237,6 +233,47 @@ fn MachineRowView(row: MachineRow, menu_open: bool) -> Element {
                 span {}
             }
         }
+    }
+}
+
+/// The releases over the commits, in a grid whose columns line up. A screen reader reads the
+/// builds as one text instead.
+#[component]
+fn VersionCellView(version: RowVersion) -> Element {
+    let grid = match version.cell() {
+        VersionCell::Runs { release, commit } => rsx! {
+            span { class: "version-grid runs", aria_hidden: true,
+                span { class: if commit.is_some() { RELEASE_LINE }, "{release}" }
+                if let Some(commit) = &commit {
+                    span { class: "version-commit", "{commit}" }
+                }
+            }
+        },
+        VersionCell::Update { releases, commits } => rsx! {
+            span { class: "version-grid", aria_hidden: true,
+                UpdateLineView { line: releases, small: commits.is_some() }
+                if let Some(commits) = commits {
+                    UpdateLineView { line: commits, small: false }
+                }
+            }
+        },
+    };
+    rsx! {
+        span { class: "visually-hidden", "{version}" }
+        {grid}
+    }
+}
+
+/// The three cells of a line of an update: the daemon's side, an arrow, then this app's. `small`
+/// is for the releases above the commits.
+#[component]
+fn UpdateLineView(line: UpdateLine, small: bool) -> Element {
+    let UpdateLine { from, to } = line;
+    let (line_class, arrow) = if small { (RELEASE_LINE, 10) } else { ("", 12) };
+    rsx! {
+        span { class: "version-from {line_class}", if let Some(from) = from { "{from}" } }
+        Icon { kind: IconKind::ArrowRight, size: arrow }
+        span { class: "version-to {line_class}", if let Some(to) = to { "{to}" } }
     }
 }
 

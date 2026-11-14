@@ -1012,6 +1012,8 @@ pub enum MachinesScene {
     Alone,
     /// Two more servers: one that does not answer, one that runs an older version.
     Trouble,
+    /// The server runs the app's release, built from another commit.
+    OtherBuild,
     /// Local's daemon stopped answering, and the app tries again.
     LocalDown,
     /// Local's daemon has not answered three attempts yet.
@@ -1099,6 +1101,13 @@ pub fn show_machines(state: &mut AppState, scene: MachinesScene) {
                 server.version_gap = Some(older_gap());
                 server.update_plan = Some(update_plan());
             }
+        }
+        MachinesScene::OtherBuild => {
+            if let Some(server) = state.machines.others.get_mut(&SERVER) {
+                server.daemon_commit = Some(BuildCommit::new(OLDER_COMMIT.to_owned()));
+                server.update_plan = Some(update_plan());
+            }
+            daemon_update::connected(state, SERVER);
         }
         MachinesScene::LocalDown => {
             state.machines.this.connection = not_answering("the daemon stopped answering");
@@ -4995,6 +5004,7 @@ pub struct ParseError {
             [
                 "alone",
                 "trouble",
+                "other-build",
                 "local-down",
                 "local-connecting",
                 "local-no-daemon"
@@ -5062,6 +5072,22 @@ pub struct ParseError {
             .collect();
         assert_eq!(lines, ["Not connected.", "Runs an older version."]);
     }
+
+    #[test]
+    fn the_other_build_scene_runs_the_apps_release_from_another_commit_on_the_server() {
+        let mut state = state(DaemonLabel::in_app());
+        state.app_build.commit = Some(BuildCommit::new(UPDATE_COMMIT.to_owned()));
+
+        show_machines(&mut state, MachinesScene::OtherBuild);
+
+        let line = state
+            .machines
+            .get(SERVER)
+            .and_then(|known| crate::state::machine_status::status(known).line)
+            .map(|line| line.text);
+        assert_eq!(line, Some("Runs another build."));
+    }
+
     #[test]
     fn the_showcase_needs_the_demo_and_takes_a_scene_by_name() {
         let scene = |list: &[&str]| {
