@@ -23,6 +23,9 @@ use crate::{bridge, format};
 /// Between the parts of a machine row's detail line.
 const DETAIL_SEPARATOR: &str = " · ";
 
+/// The class of the releases in the version cell when the commits show under them.
+const RELEASE_LINE: &str = "version-release";
+
 /// The width of a server's menu in the style sheet (`.server-menu`): the menu opens with its right
 /// edge under its button's.
 const MENU_WIDTH: f64 = 220.0;
@@ -240,7 +243,7 @@ fn VersionCellView(version: RowVersion) -> Element {
     let grid = match version.cell() {
         VersionCell::Runs { release, commit } => rsx! {
             span { class: "version-grid runs", aria_hidden: true,
-                span { class: if commit.is_some() { "version-release" }, "{release}" }
+                span { class: if commit.is_some() { RELEASE_LINE }, "{release}" }
                 if let Some(commit) = &commit {
                     span { class: "version-commit", "{commit}" }
                 }
@@ -266,15 +269,11 @@ fn VersionCellView(version: RowVersion) -> Element {
 #[component]
 fn UpdateLineView(line: UpdateLine, small: bool) -> Element {
     let UpdateLine { from, to } = line;
-    let (size, arrow) = if small {
-        (" version-release", 10)
-    } else {
-        ("", 12)
-    };
+    let (line_class, arrow) = if small { (RELEASE_LINE, 10) } else { ("", 12) };
     rsx! {
-        span { class: "version-from{size}", if let Some(from) = from { "{from}" } }
+        span { class: "version-from {line_class}", if let Some(from) = from { "{from}" } }
         Icon { kind: IconKind::ArrowRight, size: arrow }
-        span { class: "version-to{size}", if let Some(to) = to { "{to}" } }
+        span { class: "version-to {line_class}", if let Some(to) = to { "{to}" } }
     }
 }
 

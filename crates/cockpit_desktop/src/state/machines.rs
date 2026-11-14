@@ -539,8 +539,9 @@ mod tests {
         }
     }
 
-    /// The daemon's made-up commit, and the app's.
+    /// The daemon's made-up commit.
     const OLD_COMMIT: &str = "743d6640000000000000000000000000000000aa";
+    /// The app's made-up commit.
     const NEW_COMMIT: &str = "eb65d4e1111111111111111111111111111111bb";
 
     fn build(version: &str, commit: Option<&str>) -> ProgramBuild {

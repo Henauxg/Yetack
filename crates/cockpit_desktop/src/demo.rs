@@ -5087,6 +5087,7 @@ pub struct ParseError {
             .map(|line| line.text);
         assert_eq!(line, Some("Runs another build."));
     }
+
     #[test]
     fn the_showcase_needs_the_demo_and_takes_a_scene_by_name() {
         let scene = |list: &[&str]| {
