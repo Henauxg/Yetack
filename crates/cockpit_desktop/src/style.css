@@ -10505,6 +10505,103 @@ html.splitting .sidebar {
   font-weight: 400;
 }
 
+.step-detail code,
+.owner-steps code,
+.setup-offer code,
+.update-callout code {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* A step that failed, or that waits for the user to act on the server. */
+.update-steps li.failed,
+.update-steps li.warn {
+  color: var(--text);
+}
+
+.update-steps li.failed .update-mark {
+  color: var(--red);
+}
+
+.update-steps li.warn .update-mark {
+  color: var(--amber);
+}
+
+.update-steps li.failed .step-detail,
+.update-steps li.warn .step-detail {
+  color: var(--text-soft);
+}
+
+/* The steps a package's daemon takes to update, which the user runs. */
+.owner-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.owner-steps p {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+/* A new server's setup, in the place of the form that started it. */
+.machine-add.setup {
+  gap: 12px;
+}
+
+.setup-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.setup-title {
+  font-weight: 600;
+}
+
+.setup-lead,
+.setup-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.machine-add .update-steps {
+  margin: 0;
+}
+
+.setup-offer {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.setup-offer p {
+  margin: 0 0 6px;
+}
+
+.setup-files {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* The command a step asks for, under its text. */
+.step-command {
+  margin: -4px 0 0 26px;
+}
+
+.field-label .optional {
+  margin-left: 6px;
+  color: var(--faint);
+  font-weight: 400;
+}
+
 .update-steps li.done {
   color: var(--muted);
 }

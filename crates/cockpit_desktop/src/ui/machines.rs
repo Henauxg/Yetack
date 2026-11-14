@@ -9,12 +9,16 @@ use dioxus::prelude::*;
 
 use crate::connection::{Clock, Cockpit};
 use crate::machine::MachineId;
+use crate::state::daemon_probe::CARRIED_SYSTEM;
 use crate::state::machine_status::StatusAction;
 use crate::state::machines::{
     self, MachineChange, MachineName, MachineRow, RowNote, RowVersion, ServerRow, UpdateLine,
     VersionCell,
 };
+use crate::state::server_setup::{self, InstallReport, InstallStep, ServerSetup, SetupStage};
+use crate::state::update_offer::ProgramBuild;
 use crate::state::{AppState, Dialog, MachineEdit, MachineMenu, MachinesView, daemon_update};
+use crate::ui::accounts::CommandBox;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::menu::{FlatMenu, FlatRow};
 use crate::ui::presence::use_presence;
@@ -390,13 +394,20 @@ fn AddServer(view: MachinesView) -> Element {
         };
     };
     let view = shown.value;
-    let add = move |_| {
-        let mut change = None;
-        cockpit.update(|state| change = machines::add(state));
-        if let Some(change) = change {
-            cockpit.change_machines(change);
-        }
-    };
+    let setup = cockpit.state.read().machines.setup.clone();
+    if let Some(setup) = setup {
+        return rsx! {
+            div {
+                key: "{shown.opening}",
+                class: if shown.leaving { "machine-add setup leaving" } else { "machine-add setup" },
+                inert: shown.leaving.then_some(true),
+                role: "group",
+                aria_label: "Set up the server",
+                SetupPanel { setup }
+            }
+        };
+    }
+    let add = move |_| cockpit.add_server();
     let type_into = move |field: fn(&mut MachinesView) -> &mut String| {
         move |event: FormEvent| {
             let typed = event.value();
@@ -439,12 +450,15 @@ fn AddServer(view: MachinesView) -> Element {
                 }
             }
             div { class: "field-group",
-                label { class: "field-label", "Path of agents-cockpit on the server" }
+                label { class: "field-label",
+                    "Path of agents-cockpit on the server"
+                    span { class: "optional", "optional" }
+                }
                 input {
                     class: "text-input mono",
                     r#type: "text",
                     spellcheck: false,
-                    placeholder: "/home/you/.local/bin/agents-cockpit",
+                    placeholder: "Found, or installed by the app",
                     value: "{view.remote_command}",
                     oninput: type_into(|view| &mut view.remote_command),
                 }
@@ -453,11 +467,283 @@ fn AddServer(view: MachinesView) -> Element {
                 span { class: "form-error", role: "alert", "{error}" }
             }
             div { class: "machine-add-actions",
-                span { class: "hint", "The app connects with your SSH keys, as ssh does, and saves the server in its config." }
+                span { class: "hint",
+                    "The app connects with your SSH keys, as ssh does. When the server has no agents-cockpit, the app offers to install it."
+                }
                 div { class: "machine-edit-actions",
                     button { class: "button small", onclick: move |_| cockpit.update(machines::close_add_form), "Cancel" }
                     button { class: "button primary small", onclick: add, "Add the server" }
                 }
+            }
+        }
+    }
+}
+
+/// One step of a setup: done, under way, failed, waiting for the user, or still to come.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mark {
+    Done,
+    Now,
+    Failed,
+    Warn,
+    Later,
+}
+
+#[component]
+fn SetupStepRow(mark: Mark, title: String, detail: Option<String>) -> Element {
+    let (class, icon) = match mark {
+        Mark::Done => ("done", rsx! { Icon { kind: IconKind::Check, size: 14 } }),
+        Mark::Now => (
+            "now",
+            rsx! { span { class: "spinner", role: "status", aria_label: "In progress" } },
+        ),
+        Mark::Failed => ("failed", rsx! { Icon { kind: IconKind::Close, size: 14 } }),
+        Mark::Warn => ("warn", rsx! { Icon { kind: IconKind::Warning, size: 14 } }),
+        Mark::Later => ("", rsx! { Icon { kind: IconKind::Circle, size: 12 } }),
+    };
+    rsx! {
+        li { class,
+            span { class: "update-mark", {icon} }
+            span { class: "step-text",
+                "{title}"
+                if let Some(detail) = detail {
+                    span { class: "step-detail", "{detail}" }
+                }
+            }
+        }
+    }
+}
+
+/// The mark of `step` while `current` runs or failed.
+fn mark_of(step: InstallStep, current: InstallStep, failed: bool) -> Mark {
+    match step.cmp(&current) {
+        std::cmp::Ordering::Less => Mark::Done,
+        std::cmp::Ordering::Equal if failed => Mark::Failed,
+        std::cmp::Ordering::Equal => Mark::Now,
+        std::cmp::Ordering::Greater => Mark::Later,
+    }
+}
+
+/// A new server's setup, in the form's place: what the app found, its offer to install, the
+/// install's steps, then what the daemon still needs.
+#[component]
+fn SetupPanel(setup: ServerSetup) -> Element {
+    let cockpit: Cockpit = use_context();
+    let name = setup.config.name.clone();
+    let host = setup.config.host.clone();
+    let release = ProgramBuild::this_program().version.to_string();
+    let close = move |_| cockpit.update(server_setup::close);
+    let done = move |_| {
+        cockpit.update(|state| {
+            server_setup::close(state);
+            machines::close_add_form(state);
+        });
+    };
+    match setup.stage {
+        SetupStage::Looking => rsx! {
+            SetupHead { title: format!("Set up {name}"), lead: format!("SSH {host}") }
+            ol { class: "update-steps",
+                SetupStepRow { mark: Mark::Now, title: format!("Reach {name}"), detail: None }
+                SetupStepRow { mark: Mark::Later, title: "Look for agents-cockpit", detail: None }
+            }
+            div { class: "machine-add-actions",
+                span {}
+                div { class: "machine-edit-actions",
+                    button { class: "button small", onclick: close, "Cancel" }
+                }
+            }
+        },
+        SetupStage::Offer { system } => rsx! {
+            SetupHead { title: format!("Set up {name}"), lead: format!("SSH {host}") }
+            ol { class: "update-steps",
+                SetupStepRow { mark: Mark::Done, title: format!("Reach {name}"), detail: Some(system) }
+                SetupStepRow { mark: Mark::Done, title: "Look for agents-cockpit", detail: Some("None installed".to_owned()) }
+            }
+            div { class: "setup-offer",
+                p {
+                    b { "Install agents-cockpit {release} on {name}?" }
+                    " The app writes these files on {name}, and never runs "
+                    code { "sudo" }
+                    ":"
+                }
+                ul { class: "setup-files mono",
+                    li { "~/.local/share/agents-cockpit/bin/agents-cockpit" }
+                    li { "~/.config/systemd/user/agents-cockpit.service" }
+                }
+            }
+            div { class: "machine-add-actions",
+                span {}
+                div { class: "machine-edit-actions",
+                    button { class: "button small", onclick: close, "Cancel" }
+                    button {
+                        class: "button primary small",
+                        onclick: move |_| cockpit.install_server(),
+                        "Install on {name}"
+                    }
+                }
+            }
+        },
+        SetupStage::CannotInstall { system } => {
+            let why = if system == CARRIED_SYSTEM {
+                "This app carries no daemon to install: it was built from source.".to_owned()
+            } else {
+                format!("{system}: this app carries a daemon for {CARRIED_SYSTEM} only.")
+            };
+            rsx! {
+                SetupHead { title: format!("{name} needs a build from source"), lead: format!("SSH {host}") }
+                ol { class: "update-steps",
+                    SetupStepRow { mark: Mark::Failed, title: format!("Reach {name}"), detail: Some(why) }
+                }
+                p { class: "setup-note",
+                    "Build agents-cockpit on {name} as the README says, then give its path in the form."
+                }
+                div { class: "machine-add-actions",
+                    span {}
+                    div { class: "machine-edit-actions",
+                        button { class: "button primary small", onclick: close, "Back to the form" }
+                    }
+                }
+            }
+        }
+        SetupStage::Installing { step, sent } => {
+            let sent_detail = sent.map(|(sent, total)| {
+                if step == InstallStep::Send && sent < total {
+                    format!("{} of {}", format::bytes(sent), format::bytes(total))
+                } else {
+                    format::bytes(total)
+                }
+            });
+            rsx! {
+                SetupHead {
+                    title: format!("Installing on {name}"),
+                    lead: "Closing this dialog does not stop the install: the server joins the app once its daemon runs.".to_owned(),
+                }
+                ol { class: "update-steps",
+                    SetupStepRow { mark: Mark::Done, title: format!("Reach {name}"), detail: None }
+                    SetupStepRow {
+                        mark: mark_of(InstallStep::Send, step, false),
+                        title: format!("Send {release} to {name}"),
+                        detail: sent_detail,
+                    }
+                    SetupStepRow { mark: mark_of(InstallStep::Check, step, false), title: format!("Check it on {name}"), detail: None }
+                    SetupStepRow { mark: mark_of(InstallStep::Start, step, false), title: "Start the service", detail: None }
+                    SetupStepRow { mark: Mark::Later, title: "Keep it running after you log out", detail: None }
+                    SetupStepRow { mark: Mark::Later, title: "Find Claude Code", detail: None }
+                }
+            }
+        }
+        SetupStage::Installed(report) => rsx! {
+            InstalledReport { name, release, report: report.clone() }
+            div { class: "machine-add-actions",
+                span {}
+                div { class: "machine-edit-actions",
+                    button {
+                        class: "button small",
+                        disabled: report.checking,
+                        onclick: move |_| cockpit.check_server_again(),
+                        if report.checking { "Checking…" } else { "Check again" }
+                    }
+                    button { class: "button primary small", onclick: done, "Done" }
+                }
+            }
+        },
+        SetupStage::Failed { step, message } => rsx! {
+            SetupHead { title: format!("The setup of {name} failed"), lead: format!("SSH {host}") }
+            ol { class: "update-steps",
+                SetupStepRow {
+                    mark: mark_of(InstallStep::Reach, step, true),
+                    title: format!("Reach {name}"),
+                    detail: (step == InstallStep::Reach).then(|| message.clone()),
+                }
+                if step > InstallStep::Reach {
+                    SetupStepRow {
+                        mark: mark_of(InstallStep::Send, step, true),
+                        title: format!("Send {release} to {name}"),
+                        detail: (step == InstallStep::Send).then(|| message.clone()),
+                    }
+                    SetupStepRow {
+                        mark: mark_of(InstallStep::Check, step, true),
+                        title: format!("Check it on {name}"),
+                        detail: (step == InstallStep::Check).then(|| message.clone()),
+                    }
+                    SetupStepRow {
+                        mark: mark_of(InstallStep::Start, step, true),
+                        title: "Start the service",
+                        detail: (step == InstallStep::Start).then(|| message.clone()),
+                    }
+                }
+            }
+            div { class: "machine-add-actions",
+                span {}
+                div { class: "machine-edit-actions",
+                    button { class: "button small", onclick: close, "Back to the form" }
+                    button {
+                        class: "button primary small",
+                        onclick: move |_| cockpit.retry_server_setup(),
+                        "Try again"
+                    }
+                }
+            }
+        },
+    }
+}
+
+#[component]
+fn SetupHead(title: String, lead: String) -> Element {
+    rsx! {
+        div { class: "setup-head",
+            span { class: "setup-title", "{title}" }
+            span { class: "setup-lead", "{lead}" }
+        }
+    }
+}
+
+/// The daemon runs: what else it needs, with the command that fixes each need on the server.
+#[component]
+fn InstalledReport(name: String, release: String, report: InstallReport) -> Element {
+    let left = report.left_to_do();
+    let title = match left {
+        0 => format!("{name} is set up"),
+        1 => format!("{name} is set up, with one thing left to do"),
+        _ => format!("{name} is set up, with two things left to do"),
+    };
+    let lead = if left == 0 {
+        format!("{name}'s agents work now.")
+    } else {
+        format!("{name}'s agents work now. Fix these on {name}, then check again.")
+    };
+    rsx! {
+        SetupHead { title, lead }
+        ol { class: "update-steps",
+            SetupStepRow { mark: Mark::Done, title: format!("Send and check {release}"), detail: None }
+            SetupStepRow { mark: Mark::Done, title: "Start the service", detail: Some("Running".to_owned()) }
+            if report.linger == Some(true) {
+                SetupStepRow { mark: Mark::Done, title: "Keep it running after you log out", detail: Some("Linger is on".to_owned()) }
+            } else {
+                SetupStepRow {
+                    mark: Mark::Warn,
+                    title: "Keep it running after you log out",
+                    detail: Some(format!("Linger is off: systemd stops {name}'s daemon, and its agents, when you log out of {name}. Run this on {name} (some servers need sudo before it):")),
+                }
+            }
+        }
+        if report.linger != Some(true) {
+            div { class: "step-command",
+                CommandBox { command: "loginctl enable-linger".to_owned() }
+            }
+        }
+        ol { class: "update-steps",
+            match &report.claude {
+                Some(path) => rsx! {
+                    SetupStepRow { mark: Mark::Done, title: "Find Claude Code", detail: Some(path.clone()) }
+                },
+                None => rsx! {
+                    SetupStepRow {
+                        mark: Mark::Warn,
+                        title: "Find Claude Code",
+                        detail: Some(format!("The service finds no claude on its PATH. Install Claude Code on {name} and sign in with claude.")),
+                    }
+                },
             }
         }
     }

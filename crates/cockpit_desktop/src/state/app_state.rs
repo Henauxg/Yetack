@@ -21,6 +21,7 @@ use super::file_tree::FileTree;
 use super::grouping::GroupKey;
 use super::no_daemon::{NoDaemon, SERVICE_OFFERED};
 use super::sending::Sending;
+use super::server_setup::ServerSetup;
 use super::transcript::Transcript;
 use super::ui_state::UiState;
 use super::update_offer::{ProgramBuild, VersionGap};
@@ -438,6 +439,8 @@ pub struct Machines {
     /// This computer runs the background service and reaches a daemon's socket, as
     /// [`SERVICE_OFFERED`] says. The demo shows Unix's choices on any platform.
     pub service_offered: bool,
+    /// The setup of a server from "Add a server", which outlives the Machines dialog.
+    pub setup: Option<ServerSetup>,
 }
 
 impl Machines {
@@ -503,6 +506,7 @@ impl AppState {
                 others: BTreeMap::new(),
                 configured: None,
                 service_offered: SERVICE_OFFERED,
+                setup: None,
             },
             agents: BTreeMap::new(),
             ui: UiState::default(),

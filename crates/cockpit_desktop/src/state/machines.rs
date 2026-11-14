@@ -12,6 +12,7 @@ use super::apply::forget_agent;
 use super::daemon_update::{self, DaemonUpdate};
 use super::drafts::Drafts;
 use super::machine_status::{self, MachineStatus, StatusAction, Tone};
+use super::server_setup::{self, SetupRun};
 use super::ui_state::{Dialog, MachineEdit, MachineMenu, MachinesView};
 use super::update_offer::ProgramBuild;
 use super::{file_tree, update_offer};
@@ -326,26 +327,60 @@ pub fn close_menu(state: &mut AppState) {
     with_view(state, |view| view.menu = None);
 }
 
+/// What "Add the server" does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Adding {
+    /// The form names the daemon's path: the server joins the app.
+    Add(MachineChange),
+    /// The form names no path: the app looks for agents-cockpit on the server first.
+    Setup(SetupRun),
+}
+
 /// The server the form names, once it holds what the app needs to reach it. Otherwise the form
-/// says why, and nothing is added. An empty name takes the host's.
-pub fn add(state: &mut AppState) -> Option<MachineChange> {
+/// says why, and nothing is added. An empty name takes the host's. Without a path, the setup
+/// takes the form's place.
+pub fn add(state: &mut AppState) -> Option<Adding> {
     let Some(Dialog::Machines(view)) = &state.ui.dialog else {
         return None;
     };
-    let checked = check(state, &view.name, &view.host, &view.remote_command, None);
+    let path = if view.remote_command.trim().is_empty() {
+        Path::Look
+    } else {
+        Path::Given
+    };
+    let checked = check(
+        state,
+        &view.name,
+        &view.host,
+        &view.remote_command,
+        None,
+        path,
+    );
     let Some(Dialog::Machines(view)) = &mut state.ui.dialog else {
         return None;
     };
-    match checked {
-        Ok(machine) => {
+    match (checked, path) {
+        (Ok(machine), Path::Given) => {
             *view = MachinesView::default();
-            Some(MachineChange::Add(machine))
+            Some(Adding::Add(MachineChange::Add(machine)))
         }
-        Err(error) => {
+        (Ok(machine), Path::Look) => {
+            view.error = None;
+            Some(Adding::Setup(server_setup::start(state, machine)))
+        }
+        (Err(error), _) => {
             view.error = Some(error.to_owned());
             None
         }
     }
+}
+
+/// Whether a form must name the daemon's path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Path {
+    Given,
+    /// A new server's form may leave it empty: the app looks for the daemon.
+    Look,
 }
 
 /// Whether the server's Edit button shows: a server the config names, whose update is not under
@@ -402,6 +437,7 @@ pub fn save_edit(state: &mut AppState) -> Option<MachineChange> {
             &edit.host,
             &edit.remote_command,
             Some(machine),
+            Path::Given,
         )
         .map(|config| MachineConfig {
             source_dir: (!source_dir.is_empty()).then(|| source_dir.to_owned()),
@@ -455,6 +491,7 @@ fn check(
     host: &str,
     remote_command: &str,
     editing: Option<MachineId>,
+    path: Path,
 ) -> Result<MachineConfig, &'static str> {
     let host = host.trim();
     let remote_command = remote_command.trim();
@@ -466,8 +503,9 @@ fn check(
     if host.is_empty() || host.starts_with('-') {
         return Err("Name the SSH host, such as devbox or dev@devbox.");
     }
-    if !remote_command.starts_with('/') {
-        return Err("Give the absolute path of agents-cockpit on the server.");
+    let looks = path == Path::Look && remote_command.is_empty();
+    if !looks && !remote_command.starts_with('/') {
+        return Err("Give the absolute path of agents-cockpit on the server, or leave it empty.");
     }
     // A name keys the preferences, and the interface shows another one for this computer.
     let taken = state.machines.all().any(|(machine, known)| {
@@ -686,17 +724,40 @@ mod tests {
         assert_eq!(relative, None);
         assert_eq!(
             added,
-            Some(MachineChange::Add(MachineConfig {
+            Some(Adding::Add(MachineChange::Add(MachineConfig {
                 name: "dev@devbox".to_owned(),
                 host: "dev@devbox".to_owned(),
                 remote_command: "/opt/agents-cockpit".to_owned(),
                 source_dir: None,
-            }))
+            })))
         );
         assert_eq!(
             error(&state),
             None,
             "the form empties once the server is added"
+        );
+    }
+
+    #[test]
+    fn a_server_without_a_path_is_looked_at_first() {
+        let mut state = state_with(Vec::new());
+
+        typed(&mut state, "lab", "lab", "  ");
+        let adding = add(&mut state);
+
+        assert_eq!(
+            adding,
+            Some(Adding::Setup(SetupRun::Look {
+                host: "lab".to_owned()
+            }))
+        );
+        assert_eq!(
+            state
+                .machines
+                .setup
+                .as_ref()
+                .map(|setup| &setup.config.name),
+            Some(&"lab".to_owned())
         );
     }
 

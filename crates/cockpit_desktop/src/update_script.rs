@@ -63,7 +63,7 @@ pub async fn update(
             return None;
         }
     };
-    match run(command, &mut on_lines).await {
+    match run(command, SCRIPT, &mut on_lines).await {
         Ok(status) => status.code(),
         Err(error) => {
             on_lines(vec![error_line(&error)]);
@@ -77,7 +77,7 @@ pub async fn cancel(plan: &ServerPlan) -> Result<(), String> {
     let command =
         ssh_script_command(&plan.host, &[CANCEL_OPTION]).map_err(|error| error.to_string())?;
     let mut lines = Vec::new();
-    let status = run(command, &mut |batch| lines.extend(batch))
+    let status = run(command, SCRIPT, &mut |batch| lines.extend(batch))
         .await
         .map_err(|error| error.to_string())?;
     if status.success() {
@@ -129,9 +129,10 @@ fn update_arguments<'a>(
     arguments
 }
 
-/// Runs `command` with the script on its stdin, and gives each batch of its output to `on_lines`.
-async fn run(
+/// Runs `command` with `script` on its stdin, and gives each batch of its output to `on_lines`.
+pub async fn run(
     mut command: Command,
+    script: &'static str,
     on_lines: &mut impl FnMut(Vec<OutputLine>),
 ) -> io::Result<ExitStatus> {
     let mut child = command.spawn()?;
@@ -146,7 +147,7 @@ async fn run(
     // Closing stdin ends the script for the remote shell. ssh can end first, as when the host
     // refuses it: its exit status then says so.
     tokio::spawn(async move {
-        let _ = stdin.write_all(SCRIPT.as_bytes()).await;
+        let _ = stdin.write_all(script.as_bytes()).await;
     });
     let mut batch = Vec::new();
     while lines.recv_many(&mut batch, OUTPUT_BATCH).await > 0 {
@@ -334,7 +335,7 @@ mod tests {
         let command = script_runner("echo out; echo err >&2; printf 'no newline'; exit 3");
         let mut lines = Vec::new();
 
-        let status = run(command, &mut |batch| lines.extend(batch))
+        let status = run(command, SCRIPT, &mut |batch| lines.extend(batch))
             .await
             .unwrap();
 

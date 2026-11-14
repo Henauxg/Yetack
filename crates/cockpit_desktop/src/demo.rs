@@ -39,11 +39,12 @@ use crate::state::daemon_update::{
 use crate::state::file_tree::TreeFilter;
 use crate::state::no_daemon::{self, Absence};
 use crate::state::projects::ProjectKey;
+use crate::state::server_setup::{InstallReport, InstallStep, ServerSetup, SetupStage};
 use crate::state::update_offer::{self, GapKind, ProgramBuild, VersionGap};
 use crate::state::update_plan::{ServerPlan, ServicePlan, UpdatePlan, UpdateStep};
 use crate::state::{
     AgentEntry, AppState, ConnectionState, Dialog, Drafts, Loadable, MachineState, Utf16Offset,
-    ViewMode, actions, file_edits, file_tree, projects, quotes, sending,
+    ViewMode, actions, file_edits, file_tree, machines, projects, quotes, sending,
 };
 use crate::update_script::{self, APP_VERSION};
 
@@ -1125,6 +1126,16 @@ pub enum MachinesScene {
     LocalConnecting,
     /// Local has no daemon yet, beside the server.
     LocalNoDaemon,
+    /// "Add a server" found no agents-cockpit on the server, and offers to install it.
+    SetupOffer,
+    /// The setup installs the daemon.
+    SetupInstalling,
+    /// The daemon runs, and two things are left to do.
+    SetupInstalled,
+    /// The server runs another system.
+    SetupCannot,
+    /// The check of the sent daemon failed.
+    SetupFailed,
 }
 
 /// The server that does not answer, in `MachinesScene::Trouble`.
@@ -1230,7 +1241,58 @@ pub fn show_machines(state: &mut AppState, scene: MachinesScene) {
                 None,
             );
         }
+        MachinesScene::SetupOffer => setup_at(
+            state,
+            SetupStage::Offer {
+                system: CARRIED_SYSTEM.to_owned(),
+            },
+        ),
+        MachinesScene::SetupInstalling => setup_at(
+            state,
+            SetupStage::Installing {
+                step: InstallStep::Start,
+                sent: Some((SENT_SIZE, SENT_SIZE)),
+            },
+        ),
+        MachinesScene::SetupInstalled => setup_at(
+            state,
+            SetupStage::Installed(InstallReport {
+                linger: Some(false),
+                claude: None,
+                checking: false,
+            }),
+        ),
+        MachinesScene::SetupCannot => setup_at(
+            state,
+            SetupStage::CannotInstall {
+                system: "Linux aarch64".to_owned(),
+            },
+        ),
+        MachinesScene::SetupFailed => setup_at(
+            state,
+            SetupStage::Failed {
+                step: InstallStep::Check,
+                message:
+                    "the binary on this machine is not the one the app sent: its checksum differs"
+                        .to_owned(),
+            },
+        ),
     }
+}
+
+/// The Machines dialog, with the setup of the server "lab" at `stage` in the form's place.
+fn setup_at(state: &mut AppState, stage: SetupStage) {
+    machines::open_machines(state);
+    machines::open_add_form(state);
+    state.machines.setup = Some(ServerSetup {
+        config: MachineConfig {
+            name: OLDER_HOST.to_owned(),
+            host: OLDER_HOST.to_owned(),
+            remote_command: String::new(),
+            source_dir: None,
+        },
+        stage,
+    });
 }
 
 /// With the demo, shows the Settings dialog's choices of where Local's agents run as on Unix:
@@ -4517,6 +4579,11 @@ mod tests {
                 "local-confirm-jobs",
                 "local-holds-jobs",
                 "local-confirm-unseen",
+                "sending",
+                "check-failed",
+                "nix",
+                "package",
+                "elsewhere",
             ]
         );
     }
@@ -5112,7 +5179,12 @@ pub struct ParseError {
                 "other-build",
                 "local-down",
                 "local-connecting",
-                "local-no-daemon"
+                "local-no-daemon",
+                "setup-offer",
+                "setup-installing",
+                "setup-installed",
+                "setup-cannot",
+                "setup-failed",
             ]
         );
         assert_eq!(

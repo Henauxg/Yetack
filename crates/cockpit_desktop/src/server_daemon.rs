@@ -4,12 +4,16 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use cockpit_client::ssh_inline_command;
+use cockpit_client::{ssh_inline_command, ssh_script_command};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::state::daemon_probe::ServerInstall;
+use crate::state::daemon_update::OutputLine;
 use crate::state::error_chain;
+use crate::update_script::{self, APP_VERSION};
+
+const INSTALL_SCRIPT: &str = include_str!("../../../contrib/install-daemon.sh");
 
 /// The Linux daemon's name beside the app. The Windows zip holds it, and `just linux-daemon`
 /// writes it beside a build from source.
@@ -41,7 +45,7 @@ echo "$file""#;
 /// Prints the server's system, then where the daemon `$1` names is, who owns it, and its version,
 /// as `key=value` lines for `ServerInstall::parse`. A command run over SSH loads no shell profile,
 /// so the folders a user's own programs are in join the `PATH`.
-const PROBE_SCRIPT: &str = r#"PATH=$PATH:$HOME/.local/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin
+const PROBE_SCRIPT: &str = r#"PATH=$PATH:$HOME/.local/share/agents-cockpit/bin:$HOME/.local/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin
 echo "system=$(uname -sm)"
 binary=$1
 case $binary in
@@ -78,6 +82,45 @@ esac
 echo "owner=$owner"
 echo "version=$("$path" --version 2>/dev/null | head -n 1)"
 "#;
+
+/// Installs `sent` on `host` as the daemon's service, giving the script's lines to `on_lines`.
+/// Returns the script's exit code: `None` when ssh lost the connection or could not start.
+pub async fn install(
+    host: &str,
+    sent: &SentDaemon,
+    on_lines: impl FnMut(Vec<OutputLine>),
+) -> Option<i32> {
+    let version = match update_script::app_commit() {
+        Some(commit) => cockpit_daemon::version_text(APP_VERSION, Some(&commit)),
+        None => APP_VERSION.to_owned(),
+    };
+    let arguments = [
+        "--built",
+        sent.remote_file.as_str(),
+        "--sha256",
+        sent.sha256.as_str(),
+        "--version",
+        version.as_str(),
+    ];
+    run_install_script(host, &arguments, on_lines).await
+}
+
+/// Reads again what the daemon on `host` needs besides itself, giving the lines to `on_lines`.
+pub async fn check_needs(host: &str, on_lines: impl FnMut(Vec<OutputLine>)) -> Option<i32> {
+    run_install_script(host, &["--check"], on_lines).await
+}
+
+async fn run_install_script(
+    host: &str,
+    arguments: &[&str],
+    mut on_lines: impl FnMut(Vec<OutputLine>),
+) -> Option<i32> {
+    let command = ssh_script_command(host, arguments).ok()?;
+    update_script::run(command, INSTALL_SCRIPT, &mut on_lines)
+        .await
+        .ok()?
+        .code()
+}
 
 /// Reads how `host` runs `binary`, the daemon's path or command. `Err` says why it failed.
 pub async fn probe(host: &str, binary: &str) -> Result<ServerInstall, String> {
@@ -201,6 +244,11 @@ mod tests {
             hex(&Sha256::digest(b"abc")),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    #[test]
+    fn the_embedded_install_script_has_no_carriage_return() {
+        assert!(!INSTALL_SCRIPT.contains('\r'));
     }
 
     #[test]
