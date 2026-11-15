@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use cockpit_protocol::{AgentId, Image, PendingId};
 
+use super::find::Finds;
 use super::quotes::{Quote, QuoteEditor};
 use super::utf16_offset::Utf16Offset;
 
@@ -140,6 +141,8 @@ pub struct Drafts {
     pub quote_editor: Option<QuoteEditor>,
     /// The last quote id or opening of the comment field given out.
     pub(super) quote_serial: u32,
+    /// What each agent's finds look for (Ctrl+F).
+    pub finds: Finds,
 }
 
 impl Drafts {
@@ -187,6 +190,7 @@ impl Drafts {
         self.composer.retain(|&agent, _| keep(agent));
         self.composer_writes.retain(|&agent, _| keep(agent));
         self.composer_carets.retain(|&agent, _| keep(agent));
+        self.finds.retain(&keep);
         if self
             .quote_editor
             .as_ref()
