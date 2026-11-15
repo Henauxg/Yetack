@@ -323,6 +323,16 @@ mod tests {
     }
 
     #[test]
+    fn the_install_writes_the_files_the_screens_name() {
+        use crate::state::daemon_probe::{APP_BIN_FOLDER, UNIT_FILE};
+
+        let folder = APP_BIN_FOLDER.strip_prefix("~/").unwrap();
+        assert!(INSTALL_SCRIPT.contains(&format!("ExecStart=%h/{folder}/yetack serve")));
+        let unit = UNIT_FILE.strip_prefix("~/.config/").unwrap();
+        assert!(INSTALL_SCRIPT.contains(&format!("${{XDG_CONFIG_HOME:-$HOME/.config}}/{unit}")));
+    }
+
+    #[test]
     fn a_failed_send_says_what_the_server_wrote_first() {
         let refused = || Err(io::Error::from(io::ErrorKind::BrokenPipe));
         let invalid = || Err(io::Error::from(io::ErrorKind::InvalidData));
