@@ -7,6 +7,8 @@ pub enum IconKind {
     Search,
     Plus,
     ChevronDown,
+    /// The find's previous match.
+    ChevronUp,
     ChevronRight,
     ChevronLeft,
     Close,
@@ -57,8 +59,6 @@ pub enum IconKind {
     Flag,
     /// Long lines wrapped, for the file view's wrap toggle.
     Wrap,
-    /// An arrow out of a box, to open a page in the browser.
-    External,
     /// Notifications, of the app or of an agent.
     Bell,
     /// Notifications turned off.
@@ -77,6 +77,8 @@ pub enum IconKind {
     Message,
     /// A git repository: a branch leaving its trunk.
     Repository,
+    /// A link that opens in the browser.
+    External,
 }
 
 impl IconKind {
@@ -88,6 +90,7 @@ impl IconKind {
             }
             Self::Plus => r#"<path d="M12 5v14"></path><path d="M5 12h14"></path>"#,
             Self::ChevronDown => r#"<path d="M6 9l6 6 6-6"></path>"#,
+            Self::ChevronUp => r#"<path d="M6 15l6-6 6 6"></path>"#,
             Self::ChevronRight => r#"<path d="M9 6l6 6-6 6"></path>"#,
             Self::ChevronLeft => r#"<path d="M15 6l-6 6 6 6"></path>"#,
             Self::Close => r#"<path d="M6 6l12 12"></path><path d="M18 6L6 18"></path>"#,
@@ -140,6 +143,9 @@ impl IconKind {
             Self::Message => {
                 r#"<path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"></path>"#
             }
+            Self::External => {
+                r#"<path d="M14 4h6v6"></path><path d="M20 4l-9 9"></path><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"></path>"#
+            }
             Self::Repository => {
                 r#"<circle cx="6" cy="5" r="2"></circle><circle cx="6" cy="19" r="2"></circle><circle cx="18" cy="7" r="2"></circle><path d="M6 7v10"></path><path d="M18 9c0 5-6 4-11.5 8.5"></path>"#
             }
@@ -178,9 +184,6 @@ impl IconKind {
             }
             Self::Folder => {
                 r#"<path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>"#
-            }
-            Self::External => {
-                r#"<path d="M14 4h6v6"></path><path d="M20 4l-9 9"></path><path d="M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"></path>"#
             }
             Self::Wrap => {
                 r#"<path d="M3 6h18"></path><path d="M3 12h15a3 3 0 0 1 0 6h-4"></path><path d="M16 16l-2 2 2 2"></path><path d="M3 18h7"></path>"#

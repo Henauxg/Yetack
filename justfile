@@ -115,15 +115,15 @@ release:
         exit 1
     fi
     docker build -q -t yetack-release contrib/release >/dev/null
-    # This version's Windows zip stays in dist/ and goes into SHA256SUMS. Any other file would be
-    # published with the release, so the recipe refuses it.
+    # This version's Windows zip and app stay in dist/ and go into SHA256SUMS. Any other file
+    # would be published with the release, so the recipe refuses it.
     version=$(cargo pkgid --locked -p yetack | sed 's/.*[#@]//')
     : "${version:?could not read the version from Cargo.lock}"
     mkdir -p dist
     for file in dist/*; do
         [ -e "$file" ] || continue
         case "${file#dist/}" in
-            "yetack-desktop-$version-windows-x64.zip") ;;
+            "yetack-desktop-$version-windows-x64.zip" | "yetack-desktop-$version-windows-x64.exe") ;;
             yetack-*-x86_64-linux | yetack_*_amd64.deb | yetack.service | SHA256SUMS)
                 rm -f "$file" ;;
             *)

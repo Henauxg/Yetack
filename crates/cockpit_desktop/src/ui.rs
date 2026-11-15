@@ -3,6 +3,7 @@
 mod accounts;
 mod agent_map;
 mod app;
+mod app_update;
 mod blocks;
 mod cards;
 mod chat_scroll;
@@ -15,6 +16,8 @@ mod emoji_picker;
 mod file_list;
 mod file_view;
 mod files_pane;
+mod find;
+mod find_folds;
 mod grouping;
 mod header;
 mod icons;
@@ -47,5 +50,6 @@ mod waiting_prompts;
 mod zoom;
 
 pub use app::App;
+pub use find::{FIND_FIELD_IDS, focus_after_find};
 pub use sidebar::item_id as sidebar_item_id;
-pub use splitter::FILES_PANE_ID;
+pub use splitter::{FILE_VIEW_ID, FILES_PANE_ID};

@@ -13,6 +13,7 @@ use cockpit_protocol::{
 use strum::VariantArray;
 
 use super::accounts::SignIns;
+use super::app_update::AppUpdate;
 use super::chat_images::KeptImage;
 use super::daemon_probe::DaemonProbe;
 use super::daemon_update::DaemonUpdate;
@@ -489,6 +490,8 @@ pub struct AppState {
     pub app_build: ProgramBuild,
     /// The copies of server pages whose files the daemons are reading, for "Open in browser".
     pub page_copies: PageCopies,
+    /// The app's own newer release, and its update.
+    pub app_update: AppUpdate,
 }
 
 /// Agents that wait for you come first, then working, idle and exited ones.
@@ -517,6 +520,7 @@ impl AppState {
             config_notifications: NotificationLevel::All,
             app_build: ProgramBuild::this_program(),
             page_copies: PageCopies::default(),
+            app_update: AppUpdate::new(),
         }
     }
 

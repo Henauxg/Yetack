@@ -30,6 +30,7 @@ use crate::state::{
 };
 use crate::ui::accounts::{self as accounts_view, AccountMini, AccountPicker};
 use crate::ui::agent_map::AgentMapDialog;
+use crate::ui::app_update::AppUpdateCard;
 use crate::ui::composer::mode_icon;
 use crate::ui::daemon_update::{ConfirmUpdateDialog, DaemonUpdateScreens};
 use crate::ui::icons::{Icon, IconKind};
@@ -156,6 +157,9 @@ pub fn Dialogs() -> Element {
                     },
                     Dialog::ConfirmUpdate(machine) => rsx! {
                         ConfirmUpdateDialog { machine }
+                    },
+                    Dialog::AppUpdate => rsx! {
+                        AppUpdateCard {}
                     },
                     Dialog::ImageView(view) => rsx! {
                         ImageViewDialog { view }

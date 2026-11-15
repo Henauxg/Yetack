@@ -27,11 +27,14 @@ use dioxus::prelude::{Signal, WritableExt};
 use serde_json::Value;
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
+use crate::command_line;
 use crate::config::{DaemonConfig, MachineConfig};
 use crate::daemon_label::DaemonLabel;
 use crate::machine::MachineId;
 use crate::path_style::PathStyle;
 use crate::prefs::{CommentPlacement, GroupBy, ProjectRule};
+use crate::self_update::CheckFileError;
+use crate::state::app_update::{self, AppStep, InstallKind, Release, ReleaseAsset};
 use crate::state::daemon_probe::{
     CARRIED_SYSTEM, DaemonOwner, DaemonProbe, InstalledDaemon, ServerInstall,
 };
@@ -756,10 +759,9 @@ pub fn update_screen(arguments: &[String]) -> Option<UpdateScreen> {
     if !is_requested(arguments) {
         return None;
     }
-    let flag = arguments
-        .iter()
-        .position(|argument| argument == UPDATE_SCREEN_FLAG)?;
-    arguments.get(flag + 1)?.parse().ok()
+    command_line::flag_value(arguments, UPDATE_SCREEN_FLAG)?
+        .parse()
+        .ok()
 }
 
 /// The update of a daemon, in the state of one of the screens: the rest of the demo stays.
@@ -1250,10 +1252,9 @@ pub fn machines_scene(arguments: &[String]) -> Option<MachinesScene> {
     if !is_requested(arguments) {
         return None;
     }
-    let flag = arguments
-        .iter()
-        .position(|argument| argument == MACHINES_FLAG)?;
-    arguments.get(flag + 1)?.parse().ok()
+    command_line::flag_value(arguments, MACHINES_FLAG)?
+        .parse()
+        .ok()
 }
 
 pub fn show_machines(state: &mut AppState, scene: MachinesScene) {
@@ -1419,10 +1420,9 @@ pub fn local_scene(arguments: &[String]) -> Option<LocalScene> {
     if !is_requested(arguments) {
         return None;
     }
-    let flag = arguments
-        .iter()
-        .position(|argument| argument == LOCAL_FLAG)?;
-    arguments.get(flag + 1)?.parse().ok()
+    command_line::flag_value(arguments, LOCAL_FLAG)?
+        .parse()
+        .ok()
 }
 
 /// Local as on Unix, where the background service runs, its config asking at each start or
@@ -1443,6 +1443,127 @@ pub fn save_local(scene: Option<LocalScene>) -> Result<(), String> {
     }
 }
 
+/// With the demo, opens the app's own update in one of its states: `--demo-app-update offer`.
+const APP_UPDATE_FLAG: &str = "--demo-app-update";
+
+/// How long after the start the demo's check finds its made-up release.
+pub const APP_RELEASE_DELAY: Duration = Duration::from_secs(2);
+
+/// The pause between two steps of the demo's update of the app.
+pub const APP_UPDATE_PAUSE: Duration = Duration::from_millis(300);
+
+/// The program the demo's update puts in place, which nothing starts.
+pub const APP_PROGRAM: &str = "yetack-desktop.exe";
+
+/// The states of the app's own update that `--demo-app-update` names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr, VariantArray)]
+#[strum(serialize_all = "kebab-case")]
+pub enum AppUpdateScreen {
+    /// The Windows zip's offer.
+    Offer,
+    Downloading,
+    Ready,
+    /// The download does not match its checksum.
+    Failed,
+    /// The offer to an app that apt installed.
+    Deb,
+    Nix,
+    /// The offer to a build from source.
+    Source,
+}
+
+/// The state `--demo-app-update` names, which only the demo takes.
+pub fn app_update_screen(arguments: &[String]) -> Option<AppUpdateScreen> {
+    if !is_requested(arguments) {
+        return None;
+    }
+    command_line::flag_value(arguments, APP_UPDATE_FLAG)?
+        .parse()
+        .ok()
+}
+
+/// The release after this app's, made up: the next minor version, out three days ago.
+pub fn app_release() -> Release {
+    let mut numbers = APP_VERSION.split('.');
+    let major = numbers.next().unwrap_or("0");
+    let minor: u32 = numbers
+        .next()
+        .and_then(|minor| minor.parse().ok())
+        .unwrap_or(0);
+    let version = ReleaseVersion::new(format!("{major}.{}.0", minor + 1));
+    let published = SystemTime::now()
+        .checked_sub(app_update::DAY * 3)
+        .and_then(Timestamp::from_system_time);
+    let asset = |name: String, size: u64| ReleaseAsset {
+        url: format!("{}v{version}/{name}", app_update::DOWNLOAD_PREFIX),
+        name,
+        size,
+    };
+    let assets = vec![
+        asset(app_update::app_asset_name(&version), 9_961_472),
+        asset(app_update::daemon_asset_name(&version), 4_823_000),
+        asset(app_update::CHECKSUMS_NAME.to_owned(), 449),
+    ];
+    Release {
+        notes: format!(
+            "## Yetack {version}\n\n- The app tells you when a new release is out, and the Windows app updates itself.\n- Find in the transcript: Ctrl+F searches the selected agent's conversation.\n- The Machines dialog installs the daemon on a server that has none.\n\nTested with Claude Code 2.1.330.\n\n## Fixes\n\n- A long title no longer pushes the sidebar's buttons out.\n"
+        ),
+        html_url: format!("{}/tag/v{version}", app_update::RELEASES_URL),
+        version,
+        published,
+        assets,
+    }
+}
+
+/// The app's own update in the state `screen` names, its card open and the sidebar's note shown.
+pub fn show_app_update(state: &mut AppState, screen: AppUpdateScreen) {
+    state.app_update.install = match screen {
+        AppUpdateScreen::Deb => InstallKind::Deb,
+        AppUpdateScreen::Nix => InstallKind::Nix,
+        AppUpdateScreen::Source => InstallKind::Source,
+        AppUpdateScreen::Offer
+        | AppUpdateScreen::Downloading
+        | AppUpdateScreen::Ready
+        | AppUpdateScreen::Failed => InstallKind::Zip,
+    };
+    app_update::found(state, app_release());
+    app_update::open_card(state);
+    let started = match screen {
+        AppUpdateScreen::Offer
+        | AppUpdateScreen::Deb
+        | AppUpdateScreen::Nix
+        | AppUpdateScreen::Source => return,
+        AppUpdateScreen::Downloading | AppUpdateScreen::Ready | AppUpdateScreen::Failed => {
+            app_update::start(state)
+        }
+    };
+    let Some(started) = started else {
+        return;
+    };
+    let id = started.id;
+    let total = started.assets.total_size();
+    match screen {
+        AppUpdateScreen::Downloading => {
+            app_update::mark_without_task(state, id);
+            app_update::downloaded(state, id, total * 37 / 100);
+        }
+        AppUpdateScreen::Ready => {
+            app_update::step_started(state, id, AppStep::Replace);
+            app_update::ready(state, id, PathBuf::from(APP_PROGRAM));
+        }
+        AppUpdateScreen::Failed => {
+            app_update::downloaded(state, id, total);
+            app_update::step_started(state, id, AppStep::Check);
+            let message = CheckFileError::Mismatch(started.assets.app.name).to_string();
+            app_update::failed(state, id, AppStep::Check, message);
+        }
+        AppUpdateScreen::Offer
+        | AppUpdateScreen::Deb
+        | AppUpdateScreen::Nix
+        | AppUpdateScreen::Source => {}
+    }
+}
+
 pub fn is_requested(arguments: &[String]) -> bool {
     arguments.iter().any(|argument| argument == DEMO_FLAG)
 }
@@ -1451,6 +1572,7 @@ pub fn is_requested(arguments: &[String]) -> bool {
 pub fn state(daemon: DaemonLabel) -> AppState {
     let now = SystemTime::now();
     let mut state = AppState::new(daemon);
+    state.app_update.demo = true;
     state.machines.this.connection = ConnectionState::Connected;
     state.machines.this.daemon_version = Some(ReleaseVersion::new(APP_VERSION.to_owned()));
     state.machines.this.daemon_commit = update_script::app_commit();
@@ -1624,10 +1746,10 @@ pub fn showcase_scene(arguments: &[String]) -> Option<Scene> {
     if !is_requested(arguments) {
         return None;
     }
-    let flag = arguments
-        .iter()
-        .position(|argument| argument == SHOWCASE_FLAG)?;
-    match arguments.get(flag + 1) {
+    if !arguments.iter().any(|argument| argument == SHOWCASE_FLAG) {
+        return None;
+    }
+    match command_line::flag_value(arguments, SHOWCASE_FLAG) {
         Some(name) if !name.starts_with("--") => name.parse::<Scene>().ok(),
         Some(_) | None => Some(Scene::Machines),
     }
@@ -5314,6 +5436,63 @@ pub struct ParseError {
         );
         assert_eq!(scene(&[MACHINES_FLAG, "trouble"]), None);
         assert_eq!(scene(&[DEMO_FLAG, MACHINES_FLAG]), None);
+    }
+
+    #[test]
+    fn the_app_update_screens_need_the_demo_and_take_their_names() {
+        let screen = |list: &[&str]| {
+            let arguments: Vec<String> = list.iter().map(|&argument| argument.to_owned()).collect();
+            app_update_screen(&arguments)
+        };
+        let names: Vec<&str> = AppUpdateScreen::VARIANTS
+            .iter()
+            .map(|&screen| screen.into())
+            .collect();
+
+        assert_eq!(
+            names,
+            [
+                "offer",
+                "downloading",
+                "ready",
+                "failed",
+                "deb",
+                "nix",
+                "source"
+            ]
+        );
+        assert_eq!(
+            screen(&[DEMO_FLAG, APP_UPDATE_FLAG, "ready"]),
+            Some(AppUpdateScreen::Ready)
+        );
+        assert_eq!(screen(&[APP_UPDATE_FLAG, "ready"]), None);
+        assert_eq!(screen(&[DEMO_FLAG, APP_UPDATE_FLAG]), None);
+    }
+
+    #[test]
+    fn each_app_update_screen_opens_its_card_with_the_note() {
+        for &screen in AppUpdateScreen::VARIANTS {
+            let mut state = super::state(DaemonLabel::in_app());
+
+            show_app_update(&mut state, screen);
+
+            assert_eq!(state.ui.dialog, Some(Dialog::AppUpdate), "{screen:?}");
+            assert!(app_update::notice(&state).is_some(), "{screen:?}");
+            let release = app_update::offered(&state).unwrap();
+            assert!(release.windows_assets().is_some(), "{screen:?}");
+            assert!(state.app_update.demo);
+        }
+    }
+
+    #[test]
+    fn cancel_ends_the_downloading_screens_run() {
+        let mut state = super::state(DaemonLabel::in_app());
+        show_app_update(&mut state, AppUpdateScreen::Downloading);
+
+        app_update::cancel(&mut state);
+
+        assert_eq!(state.app_update.run, None);
+        assert!(!app_update::is_stopping(&state));
     }
 
     #[test]
