@@ -5,19 +5,17 @@ Orchestrator to control multiple agents over multiple machines and accounts.
 | ![The app with agents on three machines: the sidebar lists the agents by machine, the middle shows one agent's conversation with a reply under way that quotes three passages, each with its comment beside the text, and the right column shows the agent's tasks, subagents and messages](docs/images/machines.png) | ![The app with the agents grouped by project: one agent asks three questions, the machine's load is open under the header with each agent's cores and memory, the file view shows the changelog that the agent edited, and the files pane lists the agent's folder](docs/images/projects.png) |
 | --- | --- |
 
-Main features are:
+Features:
 
 - Multiple machines (local & remotes)
-- Multiple accounts (work, personal, ...)
+- Multiple accounts (work, personal)
 - Persistent sessions via daemons
-
-On top of that, all the basics and some:
-
-- Steering, questions, plans, MCPs, notifications, ...
-- File browsing, diffs, ...
+- Steering, questions, plans, approvals, MCPs, notifications
+- File browsing, diffs, machine load
+- Projects grouping
 - Quote & reply intuitively
-- Messages timeline navigation
-- Subagents views
+- Messages timeline
+- Subagents views and map
 
 ## Install
 
