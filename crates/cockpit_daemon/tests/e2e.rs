@@ -1641,13 +1641,13 @@ async fn claude_keeps_the_users_umask_and_the_state_stays_private() {
     }
     files.sort();
     let expected = [
-        "yetack.sock",
         "agents.json",
         "details/1.json",
         "events/1.jsonl",
         "events/daemon.jsonl",
         "raw/1.jsonl",
         "serve.lock",
+        "yetack.sock",
     ];
     assert_eq!(files, expected.map(PathBuf::from));
 }
