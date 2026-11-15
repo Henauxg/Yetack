@@ -8,7 +8,7 @@ use std::process::{ExitCode, ExitStatus, Stdio};
 use std::time::Duration;
 
 use anyhow::Context;
-use cockpit_daemon::{DaemonConfig, SERVE_SUBCOMMAND, STATE_DIR_FLAG};
+use cockpit_daemon::{DaemonConfig, PROGRAM, SERVE_SUBCOMMAND, STATE_DIR_FLAG};
 use tokio::net::UnixStream;
 use tokio::process::{Child, Command};
 use tokio::runtime::Runtime;
@@ -69,7 +69,7 @@ pub fn run(state_dir: PathBuf) -> ExitCode {
     match serve(state_dir) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("agents-cockpit: {error:#}");
+            eprintln!("{PROGRAM}: {error:#}");
             ExitCode::FAILURE
         }
     }
@@ -163,7 +163,7 @@ pub async fn answers(socket: &Path) -> bool {
     UnixStream::connect(socket).await.is_ok()
 }
 
-/// The last line the service wrote to its log past `from`, where `agents-cockpit` says why it
+/// The last line the service wrote to its log past `from`, where `yetack` says why it
 /// stopped. The earlier lines are other runs'.
 fn last_line(log: &Path, from: u64) -> Option<String> {
     let bytes = std::fs::read(log).ok()?;
@@ -189,7 +189,7 @@ mod tests {
     /// Once the script ran, no process can hold it open for writing again.
     fn script_in(folder: &Path, text: &str) -> PathBuf {
         std::fs::create_dir_all(folder).unwrap();
-        let program = folder.join("agents-cockpit");
+        let program = folder.join("yetack");
         std::fs::write(&program, text).unwrap();
         std::fs::set_permissions(&program, Permissions::from_mode(0o755)).unwrap();
         for _ in 0..200 {
@@ -230,7 +230,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let program = script_in(
             &temp.path().join("bin"),
-            "#!/bin/sh\necho \"agents-cockpit: another daemon already runs on $2/serve.lock\" >&2\nexit 1\n",
+            "#!/bin/sh\necho \"yetack: another daemon already runs on $2/serve.lock\" >&2\nexit 1\n",
         );
         let state = temp.path().join("state");
         let log = temp.path().join("app").join(SERVICE_LOG);
@@ -242,7 +242,7 @@ mod tests {
         assert_eq!(
             last_line(&log, 0),
             Some(format!(
-                "agents-cockpit: another daemon already runs on {}/serve.lock",
+                "yetack: another daemon already runs on {}/serve.lock",
                 state.display()
             ))
         );
@@ -254,7 +254,7 @@ mod tests {
         let program = script_in(&temp.path().join("bin"), "#!/bin/sh\nexit 1\n");
         let log = temp.path().join("app").join(SERVICE_LOG);
         std::fs::create_dir_all(log.parent().unwrap()).unwrap();
-        std::fs::write(&log, "agents-cockpit: an earlier run stopped\n").unwrap();
+        std::fs::write(&log, "yetack: an earlier run stopped\n").unwrap();
         let logged_before = std::fs::metadata(&log).unwrap().len();
 
         let mut child = spawn(&program, &temp.path().join("state"), &log).unwrap();
@@ -262,7 +262,7 @@ mod tests {
 
         assert_eq!(
             last_line(&log, 0).as_deref(),
-            Some("agents-cockpit: an earlier run stopped")
+            Some("yetack: an earlier run stopped")
         );
         assert_eq!(last_line(&log, logged_before), None);
     }

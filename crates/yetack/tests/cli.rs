@@ -24,7 +24,7 @@ use serde_json::Value;
 use tempfile::TempDir;
 
 const WAIT: Duration = Duration::from_secs(15);
-const BINARY: &str = env!("CARGO_BIN_EXE_agents-cockpit");
+const BINARY: &str = env!("CARGO_BIN_EXE_yetack");
 
 struct Daemon {
     temp: TempDir,
@@ -249,7 +249,7 @@ fn list_follows_the_order_and_move_changes_it() {
     assert!(!refused.status.success());
 }
 
-/// As in `agents-cockpit tail | head -n 1`.
+/// As in `yetack tail | head -n 1`.
 #[test]
 fn tail_ends_when_its_output_closes() {
     let daemon = Daemon::start();
@@ -397,8 +397,5 @@ fn the_bridge_says_when_no_daemon_runs() {
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("is `agents-cockpit serve` running?"),
-        "{stderr}"
-    );
+    assert!(stderr.contains("is `yetack serve` running?"), "{stderr}");
 }

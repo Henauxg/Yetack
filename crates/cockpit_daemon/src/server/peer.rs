@@ -196,14 +196,8 @@ mod tests {
         fake_proc(vec![
             (ProcessId::new(1), entry(ROOT, "1 (init) S 0 1 1")),
             (ProcessId::new(40), sshd),
-            (
-                ProcessId::new(41),
-                entry(USER, "41 (agents-cockpit) S 40 41 41"),
-            ),
-            (
-                ProcessId::new(50),
-                entry(USER, "50 (agents-cockpit) S 1 50 50"),
-            ),
+            (ProcessId::new(41), entry(USER, "41 (yetack) S 40 41 41")),
+            (ProcessId::new(50), entry(USER, "50 (yetack) S 1 50 50")),
             (ProcessId::new(60), entry(USER, "60 (claude) S 50 60 60")),
             (ProcessId::new(70), entry(USER, "70 (sh (x) y) R 60 70 70")),
         ])

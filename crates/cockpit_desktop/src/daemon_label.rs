@@ -49,7 +49,7 @@ impl DaemonLabel {
         }
     }
 
-    /// The path rules of the daemon's machine. SSH reaches `agents-cockpit bridge`, which only
+    /// The path rules of the daemon's machine. SSH reaches `yetack bridge`, which only
     /// Unix builds.
     pub fn path_style(&self) -> PathStyle {
         match self.place {

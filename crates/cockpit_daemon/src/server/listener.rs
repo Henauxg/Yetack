@@ -70,7 +70,7 @@ mod tests {
         use std::os::unix::fs::MetadataExt;
 
         let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("agents-cockpit.sock");
+        let path = temp.path().join("yetack.sock");
         // Dropping a listener leaves its file, as a crashed daemon does.
         drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
 

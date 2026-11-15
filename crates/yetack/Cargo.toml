@@ -1,5 +1,5 @@
 [package]
-name = "agents_cockpit"
+name = "yetack"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,7 +7,7 @@ license.workspace = true
 publish = false
 
 [[bin]]
-name = "agents-cockpit"
+name = "yetack"
 path = "src/main.rs"
 
 [dependencies]

@@ -525,12 +525,12 @@ mod tests {
         std::fs::create_dir_all(&plan.log_folder).unwrap();
         std::fs::write(
             plan.log_folder.join(SERVICE_LOG),
-            "agents-cockpit: an earlier run stopped\n",
+            "yetack: an earlier run stopped\n",
         )
         .unwrap();
         let fake = Fake {
             started: Err("the service stopped as it started (exit status: 1)".to_owned()),
-            logged: "INFO starting\nagents-cockpit: another daemon already runs\n",
+            logged: "INFO starting\nyetack: another daemon already runs\n",
             ..Fake::new()
         };
 
@@ -540,7 +540,7 @@ mod tests {
             result,
             Err(RestartFailure::NotStarted {
                 error: "the service stopped as it started (exit status: 1)".to_owned(),
-                log: Some("INFO starting\nagents-cockpit: another daemon already runs".to_owned()),
+                log: Some("INFO starting\nyetack: another daemon already runs".to_owned()),
             })
         );
     }
@@ -549,7 +549,7 @@ mod tests {
     async fn a_service_with_no_log_says_its_error_alone() {
         let temp = tempfile::tempdir().unwrap();
         let fake = Fake {
-            started: Err("cannot start /made-up/agents-cockpit".to_owned()),
+            started: Err("cannot start /made-up/yetack".to_owned()),
             ..Fake::new()
         };
 
@@ -558,7 +558,7 @@ mod tests {
         assert_eq!(
             result,
             Err(RestartFailure::NotStarted {
-                error: "cannot start /made-up/agents-cockpit".to_owned(),
+                error: "cannot start /made-up/yetack".to_owned(),
                 log: None,
             })
         );

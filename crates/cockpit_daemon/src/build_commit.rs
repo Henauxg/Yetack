@@ -6,14 +6,14 @@ use cockpit_protocol::BuildCommit;
 /// and the app compares it with its own, which is this same constant.
 pub const RELEASE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// The commit this program was built from, when its build knew it: `agents-cockpit` or the app,
+/// The commit this program was built from, when its build knew it: `yetack` or the app,
 /// whichever runs this code. A Nix build of a tree with uncommitted changes sets it empty.
 #[must_use]
 pub fn build_commit() -> Option<BuildCommit> {
-    known_commit(option_env!("AGENTS_COCKPIT_COMMIT"))
+    known_commit(option_env!("YETACK_COMMIT"))
 }
 
-/// What `agents-cockpit --version` prints after the program's name: the release, then the commit
+/// What `yetack --version` prints after the program's name: the release, then the commit
 /// when the build knew it. The app checks a daemon it sent to a server by this text.
 #[must_use]
 pub fn version_text(release: &str, commit: Option<&BuildCommit>) -> String {

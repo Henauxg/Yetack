@@ -253,16 +253,16 @@ mod tests {
 
     fn places(root: &Path) -> Places {
         Places {
-            config_file: root.join("config/agents-cockpit/config.toml"),
-            daemon_state: root.join("state/agents-cockpit"),
-            app_state: root.join("state/agents-cockpit-desktop"),
+            config_file: root.join("config/yetack/config.toml"),
+            daemon_state: root.join("state/yetack"),
+            app_state: root.join("state/yetack-desktop"),
         }
     }
 
     fn ssh() -> DaemonConfig {
         DaemonConfig::Ssh {
             host: "build-box".to_owned(),
-            remote_command: "/opt/agents-cockpit".to_owned(),
+            remote_command: "/opt/yetack".to_owned(),
             source_dir: None,
         }
     }
@@ -286,14 +286,14 @@ mod tests {
         assert_eq!(
             places,
             Places {
-                config_file: home.join(config).join("agents-cockpit").join("config.toml"),
-                daemon_state: state.join("agents-cockpit"),
-                app_state: state.join("agents-cockpit-desktop"),
+                config_file: home.join(config).join("yetack").join("config.toml"),
+                daemon_state: state.join("yetack"),
+                app_state: state.join("yetack-desktop"),
             }
         );
         assert_eq!(
             places.socket(None),
-            state.join("agents-cockpit").join("agents-cockpit.sock")
+            state.join("yetack").join("yetack.sock")
         );
     }
 
@@ -304,7 +304,7 @@ mod tests {
         let other = temp.path().join("other-state");
         let in_its_folder = cockpit_daemon::socket_path(&other);
         let named_otherwise = other.join("cockpit.sock");
-        let relative = Path::new("other-state").join("agents-cockpit.sock");
+        let relative = Path::new("other-state").join("yetack.sock");
 
         assert_eq!(
             service_state_dir(None, &places),
@@ -331,7 +331,7 @@ mod tests {
         assert_eq!(
             local.transport,
             Transport::Local {
-                socket: PathBuf::from("/srv/state/agents-cockpit/agents-cockpit.sock")
+                socket: PathBuf::from("/srv/state/yetack/yetack.sock")
             }
         );
         assert_eq!(local.label.name(), "the daemon on this machine");
@@ -339,7 +339,7 @@ mod tests {
             remote.transport,
             Transport::Ssh {
                 host: "build-box".to_owned(),
-                remote_command: "/opt/agents-cockpit".to_owned()
+                remote_command: "/opt/yetack".to_owned()
             }
         );
         assert_eq!(remote.label.name(), "build-box, over SSH");
@@ -401,7 +401,7 @@ mod tests {
         assert_eq!(label, DaemonLabel::service());
         assert_eq!(
             error,
-            "the app starts the service only for a socket such as /srv/state/agents-cockpit/agents-cockpit.sock, in the service's state folder: the config names /run/cockpit.sock"
+            "the app starts the service only for a socket such as /srv/state/yetack/yetack.sock, in the service's state folder: the config names /run/cockpit.sock"
         );
     }
 

@@ -1,4 +1,4 @@
-//! The ways to reach a daemon: its Unix socket, `agents-cockpit bridge` over SSH, or an
+//! The ways to reach a daemon: its Unix socket, `yetack bridge` over SSH, or an
 //! in-memory stream to a daemon in this process.
 
 use std::io;
@@ -14,7 +14,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::error::ConnectError;
 
-/// The `agents-cockpit` subcommand that copies bytes between its stdin and stdout and the
+/// The `yetack` subcommand that copies bytes between its stdin and stdout and the
 /// daemon's socket.
 pub const BRIDGE_SUBCOMMAND: &str = "bridge";
 
@@ -36,7 +36,7 @@ pub enum Transport {
     /// The daemon runs on this machine.
     Local { socket: PathBuf },
     /// Runs `ssh <host> <remote_command> bridge` and speaks the protocol over its stdin and
-    /// stdout. `remote_command` is the absolute path of `agents-cockpit` on the host, since a
+    /// stdout. `remote_command` is the absolute path of `yetack` on the host, since a
     /// non-interactive SSH command may not have it on its `PATH`. The host's shell reads it as
     /// it is: it expands no `~` and no variable.
     Ssh {
@@ -279,7 +279,7 @@ mod tests {
 
     #[test]
     fn ssh_runs_the_bridge_without_a_password_prompt_or_any_forwarding() {
-        let command = ssh_command("build-box", "/opt/agents-cockpit/bin/agents-cockpit");
+        let command = ssh_command("build-box", "/opt/yetack/bin/yetack");
 
         let std_command = command.as_std();
         let args: Vec<&str> = std_command
@@ -306,7 +306,7 @@ mod tests {
                 "ServerAliveCountMax=4",
                 "--",
                 "build-box",
-                "'/opt/agents-cockpit/bin/agents-cockpit'",
+                "'/opt/yetack/bin/yetack'",
                 "bridge",
             ]
         );
@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn the_bridge_and_a_script_both_send_keepalives_and_share_no_connection() {
-        let bridge = ssh_command("build-box", "/opt/agents-cockpit");
+        let bridge = ssh_command("build-box", "/opt/yetack");
         let script = ssh_script_command("build-box", &["--cancel"]).unwrap();
 
         for command in [bridge, script] {
@@ -355,9 +355,9 @@ mod tests {
     #[test]
     fn the_host_shell_reads_the_remote_command_as_it_is() {
         for path in [
-            "/opt/my tools/agents-cockpit",
+            "/opt/my tools/yetack",
             "/opt/x;printf injected",
-            "/opt/it's/$HOME/agents-cockpit",
+            "/opt/it's/$HOME/yetack",
         ] {
             let command = ssh_command("build-box", path);
 
@@ -476,7 +476,7 @@ mod tests {
     #[test]
     fn a_host_that_reads_as_an_option_is_refused() {
         for host in ["-oProxyCommand=sh", ""] {
-            let result = spawn_ssh(host, "agents-cockpit");
+            let result = spawn_ssh(host, "yetack");
 
             assert!(
                 matches!(&result, Err(ConnectError::InvalidHost { host: refused }) if refused == host),

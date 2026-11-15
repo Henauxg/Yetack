@@ -17,7 +17,7 @@ use std::process::{Command, Output, Stdio};
 
 use tempfile::TempDir;
 
-const BINARY: &str = env!("CARGO_BIN_EXE_agents-cockpit");
+const BINARY: &str = env!("CARGO_BIN_EXE_yetack");
 const SCRIPT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contrib/install-daemon.sh"
@@ -44,9 +44,9 @@ impl Server {
 echo "$*" >>'{log}'
 case "$*" in
     "--user show-environment") [ ! -f '{no_session}' ] ;;
-    "--user cat agents-cockpit") [ -f '{unit}' ] ;;
-    "--user enable --now agents-cockpit")
-        "$HOME/.local/share/agents-cockpit/bin/agents-cockpit" serve >>'{serve_log}' 2>&1 </dev/null &
+    "--user cat yetack") [ -f '{unit}' ] ;;
+    "--user enable --now yetack")
+        "$HOME/.local/share/yetack/bin/yetack" serve >>'{serve_log}' 2>&1 </dev/null &
         echo $! >'{pid}'
         ;;
 esac
@@ -95,16 +95,12 @@ esac
     /// A copy of the test's binary, as the app sends it, with what its `--version` prints after
     /// the program's name.
     fn sent_binary(&self) -> (PathBuf, String) {
-        let sent = self.path("home/cache/agents-cockpit/sent/agents-cockpit.a1b2c3");
+        let sent = self.path("home/cache/yetack/sent/yetack.a1b2c3");
         fs::create_dir_all(sent.parent().unwrap()).unwrap();
         fs::copy(BINARY, &sent).unwrap();
         let said = Command::new(BINARY).arg("--version").output().unwrap();
         let version = String::from_utf8(said.stdout).unwrap();
-        let version = version
-            .trim()
-            .strip_prefix("agents-cockpit ")
-            .unwrap()
-            .to_owned();
+        let version = version.trim().strip_prefix("yetack ").unwrap().to_owned();
         (sent, version)
     }
 
@@ -118,11 +114,11 @@ esac
     }
 
     fn installed(&self) -> PathBuf {
-        self.path("home/.local/share/agents-cockpit/bin/agents-cockpit")
+        self.path("home/.local/share/yetack/bin/yetack")
     }
 
     fn unit(&self) -> PathBuf {
-        self.path("home/config/systemd/user/agents-cockpit.service")
+        self.path("home/config/systemd/user/yetack.service")
     }
 }
 
@@ -178,8 +174,8 @@ fn a_sent_binary_becomes_a_running_service_and_the_report_says_what_it_needs() {
         fs::read(BINARY).unwrap()
     );
     let unit = fs::read_to_string(server.unit()).unwrap();
-    assert!(unit.contains("ExecStart=%h/.local/share/agents-cockpit/bin/agents-cockpit serve"));
-    let folder = server.path("home/.local/share/agents-cockpit");
+    assert!(unit.contains("ExecStart=%h/.local/share/yetack/bin/yetack serve"));
+    let folder = server.path("home/.local/share/yetack");
     assert_eq!(
         fs::metadata(folder).unwrap().permissions().mode() & 0o777,
         0o700
@@ -241,7 +237,7 @@ fn a_service_the_user_set_up_is_left_alone() {
     fs::write(
         server.unit(),
         "[Service]
-ExecStart=%h/.cargo/bin/agents-cockpit serve
+ExecStart=%h/.cargo/bin/yetack serve
 ",
     )
     .unwrap();
@@ -272,7 +268,7 @@ fn a_unit_an_earlier_install_wrote_is_written_again() {
     fs::create_dir_all(server.unit().parent().unwrap()).unwrap();
     fs::write(
         server.unit(),
-        "# The agents-cockpit daemon as a systemd user service, which the desktop app installed.\n",
+        "# The yetack daemon as a systemd user service, which the desktop app installed.\n",
     )
     .unwrap();
     let (sent, version) = server.sent_binary();

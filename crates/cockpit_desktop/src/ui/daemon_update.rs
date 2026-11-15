@@ -6,6 +6,7 @@
 
 use std::cmp::Ordering;
 
+use cockpit_daemon::PROGRAM;
 use cockpit_protocol::{AgentId, AgentStatus, PROTOCOL_VERSION};
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
@@ -30,7 +31,7 @@ use crate::{browser, format};
 const TITLE_ID: &str = "no-daemon-title";
 
 /// The releases, where the `.deb` of each is.
-const RELEASES_URL: &str = "https://github.com/Henauxg/agents-cockpit/releases";
+const RELEASES_URL: &str = "https://github.com/Henauxg/yetack/releases";
 
 /// What happens to the agents on a restart, as the cards and the confirmation say it.
 const AGENTS_RESUME: &str =
@@ -188,7 +189,7 @@ fn UpdateNote(machine: MachineId, name: String, plan: UpdatePlan, app: ProgramBu
                     code { ".deb" }
                     " from the release page onto {name}, then run:"
                 }
-                CommandBox { command: format!("sudo apt install ./agents-cockpit_{release}_amd64.deb") }
+                CommandBox { command: format!("sudo apt install ./yetack_{release}_amd64.deb") }
             }
         },
         DaemonOwner::Other => rsx! {
@@ -953,7 +954,7 @@ fn FailedCard(machine: MachineId, name: String, local: bool, failed: FailedUpdat
         if let Some(agent) = stop_hint {
             p { class: "no-daemon-hint",
                 "To stop one now, run "
-                code { "agents-cockpit stop {agent}" }
+                code { "{PROGRAM} stop {agent}" }
                 " on the server."
             }
         }

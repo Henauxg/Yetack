@@ -1164,7 +1164,7 @@ mod tests {
             r"\\attacker.invalid\share\notes.txt",
             "//attacker.invalid/share/notes.txt",
             r"\\?\UNC\attacker.invalid\share\notes.txt",
-            r"\\.\pipe\agents-cockpit",
+            r"\\.\pipe\yetack",
             r"\\.\C:\notes.txt",
             r"\\?\GLOBALROOT\Device\Null",
         ] {

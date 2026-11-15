@@ -971,7 +971,7 @@ mod tests {
 
         let relative = hub.agent_for_session(session("work")).unwrap_err();
         let missing = hub
-            .agent_for_session(session("/nonexistent/agents-cockpit/work"))
+            .agent_for_session(session("/nonexistent/yetack/work"))
             .unwrap_err();
 
         assert_eq!(relative.code, ErrorCode::InvalidRequest);

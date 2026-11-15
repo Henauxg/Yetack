@@ -8,7 +8,7 @@ publish = false
 description = "Watch and steer Claude Code agents, on this computer or on a server"
 
 [[bin]]
-name = "agents-cockpit-desktop"
+name = "yetack-desktop"
 path = "src/main.rs"
 
 [dependencies]
@@ -59,13 +59,14 @@ workspace = true
 
 # The Linux release's .deb, built by `just release` (docs/releasing.md).
 [package.metadata.deb]
-name = "agents-cockpit"
+name = "yetack"
 maintainer = "Henauxg <Henauxg@users.noreply.github.com>"
-copyright = "agents-cockpit contributors"
+copyright = "Yetack contributors"
 license-file = ["../../LICENSE", "0"]
 extended-description = """\
-Run Claude Code agents on this computer or on a server, and watch and steer them \
-from a desktop app: their conversations, tool calls, approvals, questions and plans."""
+Yet another agents cockpit. Run Claude Code agents on this computer or on a server, and \
+watch and steer them from a desktop app: their conversations, tool calls, approvals, \
+questions and plans."""
 section = "devel"
 priority = "optional"
 revision = ""
@@ -73,10 +74,10 @@ depends = "$auto"
 # The app shows emoji in agent titles, which a system without an emoji font draws as boxes.
 recommends = "fonts-noto-color-emoji"
 assets = [
-    ["target/release/agents-cockpit-desktop", "usr/bin/", "755"],
+    ["target/release/yetack-desktop", "usr/bin/", "755"],
     # The static daemon, which contrib/release/build.sh puts there first.
-    ["../../dist/agents-cockpit", "usr/bin/", "755"],
-    ["../../contrib/agents-cockpit-desktop.desktop", "usr/share/applications/", "644"],
-    ["assets/agents-cockpit.svg", "usr/share/icons/hicolor/scalable/apps/agents-cockpit.svg", "644"],
-    ["assets/agents-cockpit-256.png", "usr/share/icons/hicolor/256x256/apps/agents-cockpit.png", "644"],
+    ["../../dist/yetack", "usr/bin/", "755"],
+    ["../../contrib/yetack-desktop.desktop", "usr/share/applications/", "644"],
+    ["assets/yetack.svg", "usr/share/icons/hicolor/scalable/apps/yetack.svg", "644"],
+    ["assets/yetack-256.png", "usr/share/icons/hicolor/256x256/apps/yetack.png", "644"],
 ]

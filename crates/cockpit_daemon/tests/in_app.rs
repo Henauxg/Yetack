@@ -86,7 +86,7 @@ impl Setup {
         Ok((daemon, Transport::InApp(link)))
     }
 
-    /// `agents-cockpit serve` in its own process, as a background service.
+    /// `yetack serve` in its own process, as a background service.
     fn start_service(&self) -> Child {
         let child = Command::new(env!("CARGO_BIN_EXE_test-serve"))
             .arg(self.state())

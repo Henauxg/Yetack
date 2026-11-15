@@ -13,8 +13,8 @@ run:
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER := "rust-lld"
 
 # The static Linux daemon that `linux-daemon` builds, and the name the app looks for beside itself.
-linux_daemon := "target/x86_64-unknown-linux-musl/release/agents-cockpit"
-beside_the_app := "agents-cockpit-x86_64-linux"
+linux_daemon := "target/x86_64-unknown-linux-musl/release/yetack"
+beside_the_app := "yetack-x86_64-linux"
 
 # Needs the target: rustup target add x86_64-unknown-linux-musl. The app's "Update" sends the
 # daemon to servers, which then build nothing.
@@ -22,18 +22,18 @@ beside_the_app := "agents-cockpit-x86_64-linux"
 # Builds the static Linux daemon beside the app's debug and release builds.
 [unix]
 linux-daemon:
-    cargo build --release --locked --target x86_64-unknown-linux-musl -p agents_cockpit --bin agents-cockpit
+    cargo build --release --locked --target x86_64-unknown-linux-musl -p yetack --bin yetack
     for profile in debug release; do mkdir -p "target/$profile" && cp {{linux_daemon}} "target/$profile/{{beside_the_app}}"; done
 
 # Builds the static Linux daemon beside the app's debug and release builds.
 [windows]
 linux-daemon:
-    cargo build --release --locked --target x86_64-unknown-linux-musl -p agents_cockpit --bin agents-cockpit
+    cargo build --release --locked --target x86_64-unknown-linux-musl -p yetack --bin yetack
     foreach ($profile in 'debug', 'release') { New-Item -ItemType Directory -Force "target/$profile" | Out-Null; Copy-Item {{linux_daemon}} "target/$profile/{{beside_the_app}}" }
 
 # Builds the daemon program and the app in release mode.
 build:
-    cargo build --release -p agents_cockpit -p cockpit_desktop
+    cargo build --release -p yetack -p cockpit_desktop
 
 # Runs what CI runs, and shellcheck on the update script.
 check: test clippy shellcheck
@@ -68,7 +68,7 @@ fmt:
 service-restart:
     #!/usr/bin/env sh
     set -eu
-    lock=$(readlink -m "${XDG_STATE_HOME:-$HOME/.local/state}/agents-cockpit/serve.lock")
+    lock=$(readlink -m "${XDG_STATE_HOME:-$HOME/.local/state}/yetack/serve.lock")
     holder() {
         find /proc/[0-9]*/fd -maxdepth 1 -type l -printf '%l\t%p\n' 2>/dev/null |
             awk -F '\t' -v lock="$lock" '$1 == lock { split($2, parts, "/"); print parts[3]; exit }'
@@ -90,7 +90,7 @@ service-restart:
     done
     echo "the service stopped; the app's next start runs the new build"
 
-# The commit must be on GitHub. The binary's path defaults to ~/.local/bin/agents-cockpit.
+# The commit must be on GitHub. The binary's path defaults to ~/.local/bin/yetack.
 
 # Updates a server's daemon to this checkout's commit.
 [unix]
@@ -99,7 +99,7 @@ update-server host binary="":
     set -eu
     binary='{{ binary }}'
     if [ -z "$binary" ]; then
-        binary="$(ssh '{{ host }}' 'echo "$HOME"')/.local/bin/agents-cockpit"
+        binary="$(ssh '{{ host }}' 'echo "$HOME"')/.local/bin/yetack"
     fi
     exec ssh '{{ host }}' sh -s -- --commit "$(git rev-parse HEAD)" --binary "$binary" <contrib/update-daemon.sh
 
@@ -114,17 +114,17 @@ release:
         echo "commit or stash your changes first: the release builds HEAD" >&2
         exit 1
     fi
-    docker build -q -t agents-cockpit-release contrib/release >/dev/null
+    docker build -q -t yetack-release contrib/release >/dev/null
     # This version's Windows zip stays in dist/ and goes into SHA256SUMS. Any other file would be
     # published with the release, so the recipe refuses it.
-    version=$(cargo pkgid --locked -p agents_cockpit | sed 's/.*[#@]//')
+    version=$(cargo pkgid --locked -p yetack | sed 's/.*[#@]//')
     : "${version:?could not read the version from Cargo.lock}"
     mkdir -p dist
     for file in dist/*; do
         [ -e "$file" ] || continue
         case "${file#dist/}" in
-            "agents-cockpit-desktop-$version-windows-x64.zip") ;;
-            agents-cockpit-*-x86_64-linux | agents-cockpit_*_amd64.deb | agents-cockpit.service | SHA256SUMS)
+            "yetack-desktop-$version-windows-x64.zip") ;;
+            yetack-*-x86_64-linux | yetack_*_amd64.deb | yetack.service | SHA256SUMS)
                 rm -f "$file" ;;
             *)
                 echo "$file is not a file of release $version: move it out of dist/ first" >&2
@@ -134,11 +134,11 @@ release:
     # tar -m dates every file now: with the commit's dates, cargo would reuse the cached builds
     # of a later commit.
     git archive --format=tar HEAD | docker run --rm -i \
-        -e AGENTS_COCKPIT_SOURCE_COMMIT="$(git rev-parse HEAD)" -e OWNER="$(id -u):$(id -g)" \
+        -e YETACK_SOURCE_COMMIT="$(git rev-parse HEAD)" -e OWNER="$(id -u):$(id -g)" \
         -v "$PWD/dist:/out" \
-        -v agents-cockpit-release-registry:/opt/cargo/registry \
-        -v agents-cockpit-release-target:/src/target \
-        agents-cockpit-release sh -c 'tar -xm && exec sh contrib/release/build.sh'
+        -v yetack-release-registry:/opt/cargo/registry \
+        -v yetack-release-target:/src/target \
+        yetack-release sh -c 'tar -xm && exec sh contrib/release/build.sh'
     ls -l dist
 
 # Needs Xvfb, openbox, wmctrl, xdotool and ImageMagick: see the script.

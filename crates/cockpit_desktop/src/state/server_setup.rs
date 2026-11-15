@@ -1,4 +1,4 @@
-//! "Add a server" without a path: the app looks for agents-cockpit on the server. It adds the
+//! "Add a server" without a path: the app looks for `yetack` on the server. It adds the
 //! server with the daemon it finds, or offers to install the daemon it carries, then says what else
 //! the daemon needs. The setup lives beside the Machines dialog, so closing the dialog does not
 //! stop an install: the dialog shows where it stands when it opens again.
@@ -42,11 +42,11 @@ pub struct ServerSetup {
 /// Where a setup stands. The interface keys a stage's content by its name.
 #[derive(Debug, Clone, PartialEq, Eq, IntoStaticStr)]
 pub enum SetupStage {
-    /// The app reaches the server and looks for agents-cockpit there.
+    /// The app reaches the server and looks for `yetack` there.
     Looking,
-    /// The server, of `system`, has no agents-cockpit: the app asks before it installs one.
+    /// The server, of `system`, has no `yetack`: the app asks before it installs one.
     Offer { system: String },
-    /// The server has no agents-cockpit, and the app has none for it: its `system` is not the one
+    /// The server has no `yetack`, and the app has none for it: its `system` is not the one
     /// of the daemon the app carries, or the app carries none.
     CannotInstall { system: String },
     Installing {
@@ -111,7 +111,7 @@ impl InstallReport {
 /// What the connection task runs for a setup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SetupRun {
-    /// Looks for agents-cockpit on `host`.
+    /// Looks for `yetack` on `host`.
     Look { host: String },
     /// Sends the daemon the app carries to `host`, and installs it there.
     Install { host: String },
@@ -343,7 +343,7 @@ mod tests {
                 path: path.to_owned(),
                 command: path.to_owned(),
                 owner: DaemonOwner::App,
-                version: "agents-cockpit 0.1.0".to_owned(),
+                version: "yetack 0.1.0".to_owned(),
             }),
         }
     }
@@ -357,7 +357,7 @@ mod tests {
     }
 
     fn carried() -> Option<&'static Path> {
-        Some(Path::new("/opt/app/agents-cockpit-x86_64-linux"))
+        Some(Path::new("/opt/app/yetack-x86_64-linux"))
     }
 
     #[test]
@@ -384,7 +384,7 @@ mod tests {
             &mut state,
             "lab",
             Ok(server(
-                Some("/home/someone/.local/bin/agents-cockpit"),
+                Some("/home/someone/.local/bin/yetack"),
                 "Linux x86_64",
             )),
             carried(),
@@ -393,7 +393,7 @@ mod tests {
         assert_eq!(
             change,
             Some(MachineChange::Add(MachineConfig {
-                remote_command: "/home/someone/.local/bin/agents-cockpit".to_owned(),
+                remote_command: "/home/someone/.local/bin/yetack".to_owned(),
                 ..lab()
             }))
         );
@@ -437,7 +437,7 @@ mod tests {
             &mut state,
             "lab",
             Ok(server(
-                Some("/home/someone/.local/bin/agents-cockpit"),
+                Some("/home/someone/.local/bin/yetack"),
                 "Linux x86_64",
             )),
             carried(),
@@ -502,8 +502,8 @@ mod tests {
             })
         );
         let said = lines(&[
-            "install-daemon: checking /home/someone/.cache/agents-cockpit/sent/agents-cockpit.a1",
-            "install-daemon: installed /home/someone/.local/share/agents-cockpit/bin/agents-cockpit",
+            "install-daemon: checking /home/someone/.cache/yetack/sent/yetack.a1",
+            "install-daemon: installed /home/someone/.local/share/yetack/bin/yetack",
             "install-daemon: starting the service",
             "install-daemon: the daemon runs",
             "install-daemon: linger no",
@@ -517,8 +517,7 @@ mod tests {
         assert_eq!(
             change,
             Some(MachineChange::Add(MachineConfig {
-                remote_command: "/home/someone/.local/share/agents-cockpit/bin/agents-cockpit"
-                    .to_owned(),
+                remote_command: "/home/someone/.local/share/yetack/bin/yetack".to_owned(),
                 ..lab()
             }))
         );

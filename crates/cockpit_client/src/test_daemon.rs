@@ -62,7 +62,7 @@ pub(crate) fn snapshot(last_seq: Option<u64>) -> Snapshot {
 impl TestDaemon {
     pub(crate) fn new() -> Self {
         let folder = tempfile::tempdir().unwrap();
-        let socket = folder.path().join("agents-cockpit.sock");
+        let socket = folder.path().join("yetack.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         Self {
             folder,

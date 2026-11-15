@@ -5,13 +5,15 @@ use std::path::PathBuf;
 
 use crate::store::default_state_dir;
 
-/// The `agents-cockpit` subcommand that runs the daemon behind its socket.
+/// The command line's program, which the app also runs over SSH and names on its screens.
+pub const PROGRAM: &str = "yetack";
+/// The `yetack` subcommand that runs the daemon behind its socket.
 pub const SERVE_SUBCOMMAND: &str = "serve";
-/// The `agents-cockpit` option that names the state folder, without its leading `--`.
+/// The `yetack` option that names the state folder, without its leading `--`.
 pub const STATE_DIR_FLAG: &str = "state-dir";
 
 /// Names the `claude` program to run instead of the one on `PATH`, for tests.
-pub const CLAUDE_PROGRAM_ENV: &str = "AGENTS_COCKPIT_CLAUDE";
+pub const CLAUDE_PROGRAM_ENV: &str = "YETACK_CLAUDE";
 pub(crate) const DEFAULT_CLAUDE_PROGRAM: &str = "claude";
 /// Claude Code's own setting for its folder, which holds its login, settings and sessions.
 pub const CLAUDE_CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";

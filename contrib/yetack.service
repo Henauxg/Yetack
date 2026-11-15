@@ -1,20 +1,20 @@
-# The agents-cockpit daemon as a systemd user service.
+# The yetack daemon as a systemd user service.
 #
 # Install:
-#   cp contrib/agents-cockpit.service ~/.config/systemd/user/
+#   cp contrib/yetack.service ~/.config/systemd/user/
 #   systemctl --user daemon-reload
-#   systemctl --user enable --now agents-cockpit
+#   systemctl --user enable --now yetack
 #   loginctl enable-linger "$USER"    # keeps it running after you log out
 #
-# Edit ExecStart if agents-cockpit is not in ~/.local/bin (cargo install puts it in ~/.cargo/bin),
+# Edit ExecStart if yetack is not in ~/.local/bin (cargo install puts it in ~/.cargo/bin),
 # and PATH so that it finds `claude`.
 
 [Unit]
-Description=agents-cockpit daemon: Claude Code agents steered from the desktop app
+Description=Yetack daemon: Claude Code agents steered from the desktop app
 
 [Service]
 Type=exec
-ExecStart=%h/.local/bin/agents-cockpit serve
+ExecStart=%h/.local/bin/yetack serve
 Environment=PATH=%h/.local/bin:%h/.cargo/bin:%h/.nix-profile/bin:/etc/profiles/per-user/%u/bin:/run/current-system/sw/bin:/usr/local/bin:/usr/bin:/bin
 # SIGTERM goes to the daemon alone: it stops with its agents still marked as running, so the next
 # start resumes them. Their `claude` processes end with it.

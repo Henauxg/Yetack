@@ -1,4 +1,4 @@
-//! `agents-cockpit serve`: the daemon behind its Unix socket, and the errors of starting a daemon.
+//! `yetack serve`: the daemon behind its Unix socket, and the errors of starting a daemon.
 
 use std::io;
 use std::path::PathBuf;

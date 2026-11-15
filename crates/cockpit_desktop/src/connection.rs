@@ -9,6 +9,7 @@ use chrono::NaiveDate;
 use cockpit_client::{
     Backoff, RequestError, Requester, Session, SessionError, SessionUpdate, Transport,
 };
+use cockpit_daemon::PROGRAM;
 use cockpit_protocol::{AgentId, Request};
 use dioxus::desktop::DesktopContext;
 use dioxus::prelude::*;
@@ -749,9 +750,6 @@ async fn run_update(
     }
 }
 
-/// The daemon's command, which the setup of a new server looks for on its `PATH`.
-const DAEMON_COMMAND: &str = "agents-cockpit";
-
 /// Runs a step of a server's setup. A server whose daemon runs joins the app through `added`.
 async fn run_setup(
     mut state: Signal<AppState>,
@@ -760,7 +758,7 @@ async fn run_setup(
 ) {
     let change = match run {
         SetupRun::Look { host } => {
-            let found = server_daemon::probe(&host, DAEMON_COMMAND).await;
+            let found = server_daemon::probe(&host, PROGRAM).await;
             let carried = server_daemon::carried();
             server_setup::looked(&mut state.write(), &host, found, carried.as_deref())
         }
@@ -1640,8 +1638,8 @@ mod tests {
         let home = std::env::temp_dir().join("made-up-home");
         Places {
             config_file: home.join("config.toml"),
-            daemon_state: home.join("state").join("agents-cockpit"),
-            app_state: home.join("state").join("agents-cockpit-desktop"),
+            daemon_state: home.join("state").join("yetack"),
+            app_state: home.join("state").join("yetack-desktop"),
         }
     }
 
@@ -1650,7 +1648,7 @@ mod tests {
         let places = places();
         let ssh = DaemonConfig::Ssh {
             host: "build-box".to_owned(),
-            remote_command: "/opt/agents-cockpit".to_owned(),
+            remote_command: "/opt/yetack".to_owned(),
             source_dir: None,
         };
         let service = DaemonConfig::Local {

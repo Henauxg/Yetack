@@ -1,6 +1,6 @@
-//! Tells the daemon which commit it is built from, as `AGENTS_COCKPIT_COMMIT`: from
-//! `AGENTS_COCKPIT_SOURCE_COMMIT` when the environment sets it, as the Nix and release builds do,
-//! and otherwise from git's `HEAD`. Each program that runs the daemon, `agents-cockpit` and the
+//! Tells the daemon which commit it is built from, as `YETACK_COMMIT`: from
+//! `YETACK_SOURCE_COMMIT` when the environment sets it, as the Nix and release builds do,
+//! and otherwise from git's `HEAD`. Each program that runs the daemon, `yetack` and the
 //! app, is built with it from the same tree, so this is their commit too.
 
 use std::path::Path;
@@ -8,8 +8,8 @@ use std::process::Command;
 
 /// Not the variable this script writes: `cargo run` puts that one in the program's environment,
 /// and the agents the program starts would build with their parent's commit.
-const SOURCE_VAR: &str = "AGENTS_COCKPIT_SOURCE_COMMIT";
-const COMMIT_VAR: &str = "AGENTS_COCKPIT_COMMIT";
+const SOURCE_VAR: &str = "YETACK_SOURCE_COMMIT";
+const COMMIT_VAR: &str = "YETACK_COMMIT";
 
 fn main() {
     println!("cargo:rerun-if-env-changed={SOURCE_VAR}");

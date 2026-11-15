@@ -23,7 +23,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tempfile::TempDir;
 
 const WAIT: Duration = Duration::from_secs(15);
-const BINARY: &str = env!("CARGO_BIN_EXE_agents-cockpit");
+const BINARY: &str = env!("CARGO_BIN_EXE_yetack");
 const SCRIPT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contrib/update-daemon.sh"
@@ -46,7 +46,7 @@ impl Machine {
         let machine = Self {
             temp: tempfile::Builder::new().prefix(prefix).tempdir().unwrap(),
         };
-        for folder in ["bin", "install", "work", "home/config/agents-cockpit"] {
+        for folder in ["bin", "install", "work", "home/config/yetack"] {
             fs::create_dir_all(machine.path(folder)).unwrap();
         }
         machine.write_program("echo-claude", "#!/bin/sh\nexec cat\n");
@@ -67,12 +67,12 @@ while [ "$#" -gt 0 ] && [ "$1" != --target-dir ]; do shift; done
 [ "$#" -ge 2 ] || exit 1
 mkdir -p "$2/release"
 if [ -f '{broken}' ]; then
-    printf '#!/bin/sh\nexit 1\n' >"$2/release/agents-cockpit"
-    chmod 755 "$2/release/agents-cockpit"
+    printf '#!/bin/sh\nexit 1\n' >"$2/release/yetack"
+    chmod 755 "$2/release/yetack"
 else
-    cp '{BINARY}' "$2/release/agents-cockpit"
+    cp '{BINARY}' "$2/release/yetack"
 fi
-printf '%s' '{mark}' >>"$2/release/agents-cockpit"
+printf '%s' '{mark}' >>"$2/release/yetack"
 "#,
                 log = machine.path("cargo.log").display(),
                 fails = machine.path("cargo-fails").display(),
@@ -120,11 +120,11 @@ printf '%s' '{mark}' >>"$2/release/agents-cockpit"
     }
 
     fn installed(&self) -> PathBuf {
-        self.path("install/agents-cockpit")
+        self.path("install/yetack")
     }
 
     fn start_file(&self) -> PathBuf {
-        self.path("home/config/agents-cockpit/start-daemon")
+        self.path("home/config/yetack/start-daemon")
     }
 
     /// A start file that runs `binary` as the daemon, in the background.
@@ -138,7 +138,7 @@ printf '%s' '{mark}' >>"$2/release/agents-cockpit"
     }
 
     fn state(&self) -> PathBuf {
-        self.path("home/state/agents-cockpit")
+        self.path("home/state/yetack")
     }
 
     fn write_program(&self, relative: &str, text: &str) {
@@ -296,7 +296,7 @@ printf '%s' '{mark}' >>"$2/release/agents-cockpit"
     fn list_as(&self, listing: &str) {
         fs::remove_file(self.installed()).unwrap();
         self.write_program(
-            "install/agents-cockpit",
+            "install/yetack",
             &format!(
                 "#!/bin/sh\nif [ \"$1\" = list ]; then printf '%s' '{listing}'; exit 0; fi\nexec '{BINARY}' \"$@\"\n"
             ),
@@ -383,16 +383,12 @@ printf '%s' '{mark}' >>"$2/release/agents-cockpit"
     /// A copy of the test's binary, as the app sends it, with what its `--version` prints after
     /// the program's name.
     fn sent_binary(&self) -> (PathBuf, String) {
-        let sent = self.path("home/cache/agents-cockpit/sent/agents-cockpit.a1b2c3");
+        let sent = self.path("home/cache/yetack/sent/yetack.a1b2c3");
         fs::create_dir_all(sent.parent().unwrap()).unwrap();
         fs::copy(BINARY, &sent).unwrap();
         let said = Command::new(BINARY).arg("--version").output().unwrap();
         let version = String::from_utf8(said.stdout).unwrap();
-        let version = version
-            .trim()
-            .strip_prefix("agents-cockpit ")
-            .unwrap()
-            .to_owned();
+        let version = version.trim().strip_prefix("yetack ").unwrap().to_owned();
         (sent, version)
     }
 
@@ -457,7 +453,7 @@ printf '%s' '{mark}' >>"$2/release/agents-cockpit"
     }
 
     fn update_folder(&self) -> PathBuf {
-        self.path("home/cache/agents-cockpit/update")
+        self.path("home/cache/yetack/update")
     }
 
     fn lock_file(&self) -> PathBuf {
@@ -507,7 +503,7 @@ printf '%s' '{mark}' >>"$2/release/agents-cockpit"
     /// talk to it.
     fn leave_the_old_daemon_behind_a_new_binary(&self) {
         fs::rename(self.installed(), self.previous()).unwrap();
-        self.write_program("install/agents-cockpit", "#!/bin/sh\nexit 1\n");
+        self.write_program("install/yetack", "#!/bin/sh\nexit 1\n");
     }
 }
 
@@ -645,7 +641,7 @@ fn a_commit_replaces_the_binary_restarts_the_daemon_and_leaves_the_checkout() {
     );
     assert_eq!(
         machine.git(
-            Path::new("home/cache/agents-cockpit/update/source"),
+            Path::new("home/cache/yetack/update/source"),
             &["rev-parse", "HEAD"]
         ),
         commit
@@ -712,7 +708,7 @@ fn a_sent_binary_of_another_version_changes_nothing() {
     let output = machine.update_with_sent(&sent, &sha256(&sent), "9.9.9 (3f9c2e1)");
 
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
-    assert!(stderr(&output).contains("not \"agents-cockpit 9.9.9 (3f9c2e1)\""));
+    assert!(stderr(&output).contains("not \"yetack 9.9.9 (3f9c2e1)\""));
     assert_eq!(fs::read(machine.installed()).unwrap(), installed);
     assert_eq!(machine.daemon_pid(), before);
 }
@@ -1101,7 +1097,7 @@ fn even_if_busy_still_reads_the_agents() {
     machine.leave_the_old_daemon_behind_a_new_binary();
     fs::remove_file(machine.previous()).unwrap();
     machine.write_program(
-        "install/agents-cockpit.previous",
+        "install/yetack.previous",
         "#!/bin/sh\necho 'made-up failure' >&2\nexit 1\n",
     );
 
@@ -1182,7 +1178,7 @@ fn refuses_when_neither_binary_reads_the_agents() {
     machine.leave_the_old_daemon_behind_a_new_binary();
     fs::remove_file(machine.previous()).unwrap();
     machine.write_program(
-        "install/agents-cockpit.previous",
+        "install/yetack.previous",
         "#!/bin/sh\necho 'made-up failure' >&2\nexit 1\n",
     );
 
@@ -1256,7 +1252,7 @@ fn without_a_start_file_it_restarts_the_systemd_service() {
     assert_succeeded(&output);
     assert!(machine.installed_is_the_new_build());
     let calls = fs::read_to_string(machine.path("systemctl.log")).unwrap();
-    assert!(calls.contains("--user restart agents-cockpit"), "{calls}");
+    assert!(calls.contains("--user restart yetack"), "{calls}");
     assert_ne!(machine.daemon_pid(), before);
 }
 
@@ -1697,11 +1693,7 @@ fn a_service_whose_new_daemon_never_starts_is_rolled_back() {
     assert!(!machine.installed_is_the_new_build());
     machine.ok(&["list"]);
     let calls = fs::read_to_string(machine.path("systemctl.log")).unwrap();
-    assert_eq!(
-        calls.matches("--user restart agents-cockpit").count(),
-        2,
-        "{calls}"
-    );
+    assert_eq!(calls.matches("--user restart yetack").count(), 2, "{calls}");
 }
 
 #[test]
@@ -1861,7 +1853,7 @@ fn a_checkout_cloned_again_does_not_stop_the_next_update() {
     assert_succeeded(&output);
     assert_eq!(
         machine.git(
-            Path::new("home/cache/agents-cockpit/update/source"),
+            Path::new("home/cache/yetack/update/source"),
             &["rev-parse", "HEAD"]
         ),
         commit
@@ -1872,7 +1864,7 @@ fn a_checkout_cloned_again_does_not_stop_the_next_update() {
 fn a_binary_it_cannot_replace_exits_with_four() {
     let machine = Machine::new();
     fs::write(machine.path("install/blocker"), "a file, not a folder").unwrap();
-    let binary = machine.path("install/blocker/agents-cockpit");
+    let binary = machine.path("install/blocker/yetack");
 
     let output = machine
         .command("sh")

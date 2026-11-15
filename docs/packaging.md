@@ -1,6 +1,6 @@
 # Packaging plan
 
-How agents-cockpit becomes something other people install, rather than build.
+How Yetack becomes something other people install, rather than build.
 The first users are colleagues on Linux and Windows. The repository will be public later, so each choice keeps that door open.
 
 ## Decisions
@@ -29,7 +29,7 @@ These were settled with the user on 2026-11-11.
 ### 1.2 Versions
 
 - The workspace version in the root `Cargo.toml` is the release version. A release is a tag `v0.1.0` on `main`.
-- `agents-cockpit --version` already prints it.
+- `yetack --version` already prints it.
 - The daemon always sends its release version in `Welcome` (`daemon_version`), and the protocol version went from 5 to 6. A daemon of protocol 5 or older refuses the app at `Hello`. The app then offers "Update", as it does for any protocol gap.
 - The Machines dialog shows each daemon's version on its row, and the About section at the end of the Settings dialog's General tab shows the app's own version.
 - The app offers "Update" when the daemon runs another build than the app, of any protocol. The update sends the app's own daemon, or builds the app's commit on the server ([update_script::app_commit](crates/cockpit_desktop/src/update_script.rs)) when the app carries none.
@@ -38,10 +38,10 @@ These were settled with the user on 2026-11-11.
 
 | File | What it holds | How it is built |
 | --- | --- | --- |
-| `agents-cockpit-0.1.0-x86_64-linux` | The daemon and CLI, one static binary | `cargo build --release --target x86_64-unknown-linux-musl -p agents_cockpit` inside an `ubuntu:22.04` container |
-| `agents-cockpit_0.1.0_amd64.deb` | The app, the static daemon, the `.desktop` file and the icons | `cargo deb` in the same container |
-| `agents-cockpit-desktop-0.1.0-windows-x64.zip` | `agents-cockpit-desktop.exe`, and the static daemon `agents-cockpit-x86_64-linux` that its updates send to servers | `cargo build --release -p cockpit_desktop` and `just linux-daemon` on the user's Windows laptop |
-| `agents-cockpit.service` | The systemd user service, for a server | copied from [contrib/agents-cockpit.service](contrib/agents-cockpit.service) |
+| `yetack-<version>-x86_64-linux` | The daemon and CLI, one static binary | `cargo build --release --target x86_64-unknown-linux-musl -p yetack` inside an `ubuntu:22.04` container |
+| `yetack_<version>_amd64.deb` | The app, the static daemon, the `.desktop` file and the icons | `cargo deb` in the same container |
+| `yetack-desktop-<version>-windows-x64.zip` | `yetack-desktop.exe`, and the static daemon `yetack-x86_64-linux` that its updates send to servers | `cargo build --release -p cockpit_desktop` and `just linux-daemon` on the user's Windows laptop |
+| `yetack.service` | The systemd user service, for a server | copied from [contrib/yetack.service](contrib/yetack.service) |
 | `SHA256SUMS` | The checksum of each file | `sha256sum` |
 
 Why musl for the daemon:
@@ -66,7 +66,7 @@ Why a `.deb` and not an AppImage:
 The README starts with what the app does and a screenshot, then "Install", then the three setups, each with its exact commands:
 
 1. **Only this computer.** Install the app and Claude Code, sign in to Claude Code, start the app. It runs the agents inside itself.
-2. **A background service on this computer.** Agents keep running when the app closes. Install [contrib/agents-cockpit.service](contrib/agents-cockpit.service), then `systemctl --user enable --now agents-cockpit`.
+2. **A background service on this computer.** Agents keep running when the app closes. Install [contrib/yetack.service](contrib/yetack.service), then `systemctl --user enable --now yetack`.
 3. **A server over SSH.** Copy the daemon binary to the server, install the service there, enable linger, then add the server in the app's Machines dialog.
 
 A "Troubleshooting" section covers:
@@ -85,25 +85,25 @@ Built on branch `feat/server-daemon-install`. The same idea as VS Code Remote: t
 
 The app carries the static daemon for Linux x86_64. It never downloads one. Nothing outside the app has to be trusted, and an install works offline. The app takes the first of these that exists (`server_daemon::carried`):
 
-1. The path its build names in `AGENTS_COCKPIT_LINUX_DAEMON`. The `.deb` names `/usr/bin/agents-cockpit`, the daemon it already installs ([contrib/release/build.sh](contrib/release/build.sh)). On x86_64 Linux, the flake builds a static daemon (the package `daemon-static`) and names it in the app it builds.
-2. The file `agents-cockpit-x86_64-linux` beside the app's program. The Windows zip holds it. For a build from source, `just linux-daemon` cross-builds it and copies it into `target/debug` and `target/release`.
+1. The path its build names in `YETACK_LINUX_DAEMON`. The `.deb` names `/usr/bin/yetack`, the daemon it already installs ([contrib/release/build.sh](contrib/release/build.sh)). On x86_64 Linux, the flake builds a static daemon (the package `daemon-static`) and names it in the app it builds.
+2. The file `yetack-x86_64-linux` beside the app's program. The Windows zip holds it. For a build from source, `just linux-daemon` cross-builds it and copies it into `target/debug` and `target/release`.
 
 An app without such a file still updates a server by building on it from its checkout. Linux aarch64 servers get a binary too once someone has one.
 
 ### Sending the binary
 
-The app reads the file's SHA-256, then runs `ssh <host> sh -c '<script>'` with the file on stdin. The script writes it to a new file in `~/.cache/agents-cockpit/sent/` and prints its path. The file is mode 600 and the folder mode 700. Each send first deletes the files there older than an hour, which a send cut short leaves behind.
+The app reads the file's SHA-256, then runs `ssh <host> sh -c '<script>'` with the file on stdin. The script writes it to a new file in `~/.cache/yetack/sent/` and prints its path. The file is mode 600 and the folder mode 700. Each send first deletes the files there older than an hour, which a send cut short leaves behind.
 
-The script that installs the file checks it before anything changes: its checksum with `sha256sum`, then that `<file> --version` prints `agents-cockpit <release> (<commit>)`, the app's own build. A file that fails either check changes nothing (exit 1). The script deletes the file when it ends.
+The script that installs the file checks it before anything changes: its checksum with `sha256sum`, then that `<file> --version` prints `yetack <release> (<commit>)`, the app's own build. A file that fails either check changes nothing (exit 1). The script deletes the file when it ends.
 
 ### First connection to a server
 
 "Add a server" in the Machines dialog sets the server up when the form's path is left empty ([contrib/install-daemon.sh](contrib/install-daemon.sh)):
 
-1. The app looks for `agents-cockpit` on the server: on the `PATH`, and in `~/.local/share/agents-cockpit/bin` and `~/.local/bin`. It also reads `uname -sm`. When it finds a daemon, it adds the server with that daemon's path, and the setup ends.
+1. The app looks for `yetack` on the server: on the `PATH`, and in `~/.local/share/yetack/bin` and `~/.local/bin`. It also reads `uname -sm`. When it finds a daemon, it adds the server with that daemon's path, and the setup ends.
 2. When the server has none, runs `Linux x86_64`, and the app carries a daemon, the app offers to install it and lists the two files it writes. Otherwise it says the server needs a build from source, as the README says.
 3. The app sends the binary, then runs `install-daemon.sh --built <file> --sha256 <sum> --version <text>` over `ssh <host> sh -s`. The script checks the file. It needs a systemd user session: without one, it exits with 1 and points to [contrib/start-daemon](contrib/start-daemon).
-4. It installs `~/.local/share/agents-cockpit/bin/agents-cockpit`, in a folder of mode 700. It writes `~/.config/systemd/user/agents-cockpit.service`, the unit of [contrib/agents-cockpit.service](contrib/agents-cockpit.service) with `ExecStart=%h/.local/share/agents-cockpit/bin/agents-cockpit serve`. It runs `systemctl --user daemon-reload` and `systemctl --user enable --now agents-cockpit`, then waits up to 30 seconds for `agents-cockpit list` to answer.
+4. It installs `~/.local/share/yetack/bin/yetack`, in a folder of mode 700. It writes `~/.config/systemd/user/yetack.service`, the unit of [contrib/yetack.service](contrib/yetack.service) with `ExecStart=%h/.local/share/yetack/bin/yetack serve`. It runs `systemctl --user daemon-reload` and `systemctl --user enable --now yetack`, then waits up to 30 seconds for `yetack list` to answer.
 5. It reports whether linger is on (`linger yes` or `linger no`, from `loginctl show-user`), and where the service's `PATH` finds `claude` (`claude <path>` or `claude missing`).
 6. Once the daemon runs, the server joins the app's config, with the installed path as its `remote_command`. The panel shows what is left to do: turn linger on with `loginctl enable-linger` (some servers want `sudo` before it), and install Claude Code. "Check again" runs the script with `--check`, which prints only the report.
 
@@ -111,7 +111,7 @@ The script exits with 0 when the daemon runs, 1 when it failed before anything c
 
 ### Updates
 
-1. Before the app offers "Update" for a server, it reads where the server's daemon is and who owns it (`server_daemon::probe`). The update card starts this check when it opens. The check resolves the configured path with `readlink -f`, or first finds the command on the `PATH`. It names the owner: `nix` for a path in `/nix/store`, `package <name>` when `dpkg -S` names a package, `app` for a binary in `~/.local/share/agents-cockpit/bin` or `~/.local/bin` whose folder the user can write, and `other` otherwise. It also reads `uname -sm` and the binary's `--version`.
+1. Before the app offers "Update" for a server, it reads where the server's daemon is and who owns it (`server_daemon::probe`). The update card starts this check when it opens. The check resolves the configured path with `readlink -f`, or first finds the command on the `PATH`. It names the owner: `nix` for a path in `/nix/store`, `package <name>` when `dpkg -S` names a package, `app` for a binary in `~/.local/share/yetack/bin` or `~/.local/bin` whose folder the user can write, and `other` otherwise. It also reads `uname -sm` and the binary's `--version`.
 2. The app replaces only an `app` daemon, at the path the check resolved. It sends its daemon only to a `Linux x86_64` server. A server of another system gets the build from its checkout, as before.
 3. The update sends the binary, then runs [contrib/update-daemon.sh](contrib/update-daemon.sh) with `--built <file> --sha256 <sum> --version <text>`. The script checks the file, then installs it in place of a build, restarts the daemon and rolls back as before. Its exit codes stay as they are.
 4. The card's steps are "Send <release> to <machine>", with the bytes sent, then "Check it on <machine>", "Restart the daemon" and "Reconnect". "Cancel the update" is not offered during the send.
@@ -122,7 +122,7 @@ The script exits with 0 when the daemon runs, 1 when it failed before anything c
 Nix keeps the daemon in `/nix/store`, which is read-only, and the system's configuration decides its version. The `.deb` puts it in `/usr/bin`, which `apt` owns. The app never replaces such a daemon. Its update card says what to do instead, and the sidebar's link reads "Details" in place of "Update":
 
 - From Nix: move the server to the release in its flake or its system configuration, then retry.
-- From a package: the card gives the command `sudo apt install ./agents-cockpit_<release>_amd64.deb`, with a copy button and a button that opens the release page.
+- From a package: the card gives the command `sudo apt install ./yetack_<release>_amd64.deb`, with a copy button and a button that opens the release page.
 - Anywhere else: the card names the daemon's path and says to replace it by hand.
 
 "Retry", "Check again" and an edit of the server's config make the app check the server again.
@@ -139,7 +139,7 @@ Nix keeps the daemon in `/nix/store`, which is read-only, and the system's confi
 - The plan's rules hold: no network port, the SSH key is the only login.
 - The binary comes from the app's own files. On the server, the script checks its checksum and its version before it replaces anything.
 - The server's other users can read the scripts the app passes to `sh -c` (the check of the daemon and the receive script), so they hold nothing private. They hold no single quote and no backslash: Windows' ssh breaks the quoting of a remote command that holds a single quote.
-- An install writes only under `~/.cache/agents-cockpit/`, `~/.local/share/agents-cockpit/` and `~/.config/systemd/user/` on the server. An update replaces only a daemon in `~/.local/share/agents-cockpit/bin` or `~/.local/bin`. The app never runs `sudo`.
+- An install writes only under `~/.cache/yetack/`, `~/.local/share/yetack/` and `~/.config/systemd/user/` on the server. An update replaces only a daemon in `~/.local/share/yetack/bin` or `~/.local/bin`. The app never runs `sudo`.
 
 ## Step 3: warn about an untested Claude Code version
 

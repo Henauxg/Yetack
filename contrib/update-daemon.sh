@@ -1,5 +1,5 @@
 #!/bin/sh
-# Updates this machine's agents-cockpit daemon to one commit and restarts it. Linux only.
+# Updates this machine's yetack daemon to one commit and restarts it. Linux only.
 #
 #   ssh HOST sh -s -- --commit HASH --binary PATH [--source-dir DIR] [--even-if-busy] < contrib/update-daemon.sh
 #   ssh HOST sh -s -- --commit HASH --binary PATH --built FILE --sha256 SUM --version TEXT
@@ -7,24 +7,24 @@
 #   ssh HOST sh -s -- --cancel < contrib/update-daemon.sh
 #
 #   --commit        a commit or ref that the source checkout can fetch from origin
-#   --binary        the absolute path of the agents-cockpit binary to replace
-#   --source-dir    a git checkout of the repository, by default ~/agents-cockpit
+#   --binary        the absolute path of the yetack binary to replace
+#   --source-dir    a git checkout of the repository, by default ~/yetack
 #   --built         a binary already on this machine, which replaces the build: the app sends its
 #                   own. The script deletes it once it is done.
 #   --sha256        the checksum FILE must have
-#   --version       what `FILE --version` must print after "agents-cockpit "
+#   --version       what `FILE --version` must print after "yetack "
 #   --even-if-busy  restarts even while agents are busy or may hold a scheduled job: the restart
 #                   ends their turns, which the new daemon resumes, and loses their jobs
 #   --cancel        makes the running update stop before it installs: its build runs on
 #
 # It builds outside the checkout, which stays as it is. With --built it checks FILE instead, by its
 # checksum and its version, before anything changes. It restarts the daemon with
-# $XDG_CONFIG_HOME/agents-cockpit/start-daemon when that file exists (a script that starts the
-# daemon in the background and returns), and otherwise with the agents-cockpit systemd user
+# $XDG_CONFIG_HOME/yetack/start-daemon when that file exists (a script that starts the
+# daemon in the background and returns), and otherwise with the yetack systemd user
 # service. Without --even-if-busy, it refuses while an agent works, waits for an answer, runs
 # background tasks or may hold a scheduled job.
 # Once started it finishes even when the connection is lost: build.log, in its folder under
-# $XDG_CACHE_HOME/agents-cockpit/update, keeps the build's output.
+# $XDG_CACHE_HOME/yetack/update, keeps the build's output.
 #
 # Exit status:
 #   0  the daemon runs the new version
@@ -62,7 +62,7 @@ die_installing() {
 parse_arguments() {
     commit=
     binary=
-    source_dir=$HOME/agents-cockpit
+    source_dir=$HOME/yetack
     even_if_busy=
     sent=
     sha256=
@@ -148,11 +148,11 @@ choose_restart() {
     if [ -f "$start_file" ]; then
         restart=start_file
     elif command -v systemctl >/dev/null 2>&1 &&
-        { systemctl --user is-active --quiet agents-cockpit 2>/dev/null ||
-            systemctl --user is-enabled --quiet agents-cockpit 2>/dev/null; }; then
+        { systemctl --user is-active --quiet yetack 2>/dev/null ||
+            systemctl --user is-enabled --quiet yetack 2>/dev/null; }; then
         restart=systemd
     else
-        die "cannot restart the daemon: no $start_file and no agents-cockpit systemd user service"
+        die "cannot restart the daemon: no $start_file and no yetack systemd user service"
     fi
 }
 
@@ -276,7 +276,7 @@ build() {
     say "building $sha"
     # The dev shell unsets CARGO_TARGET_DIR, so the folder goes on the command line.
     target_dir=$work_dir/target
-    set -- cargo build --release --locked -p agents_cockpit \
+    set -- cargo build --release --locked -p yetack \
         --target-dir "$target_dir" --jobs "${CARGO_BUILD_JOBS:-4}"
     if [ -f "$tree/flake.nix" ] && command -v nix >/dev/null 2>&1; then
         set -- nix --extra-experimental-features 'nix-command flakes' develop --command "$@"
@@ -289,7 +289,7 @@ build() {
     { cd "$tree" && nice -n 19 "$@" </dev/null 2>&1; echo "$?" >"$status_file"; } | tee "$work_dir/build.log"
     [ "$(cat "$status_file" 2>/dev/null)" = 0 ] ||
         die "the build of $sha failed; the daemon was not touched"
-    built=$target_dir/release/agents-cockpit
+    built=$target_dir/release/yetack
     [ -x "$built" ] || die "the build of $sha made no $built"
 }
 
@@ -304,8 +304,8 @@ check_sent() {
         die "the binary on this machine is not the one the app sent: its checksum differs; the daemon was not touched"
     chmod 700 "$sent" || die "cannot make $sent executable"
     said=$("$sent" --version 2>&1 | head -n 1)
-    [ "$said" = "agents-cockpit $version" ] ||
-        die "the binary the app sent says \"$said\", not \"agents-cockpit $version\"; the daemon was not touched"
+    [ "$said" = "yetack $version" ] ||
+        die "the binary the app sent says \"$said\", not \"yetack $version\"; the daemon was not touched"
     sha=$commit
     built=$sent
 }
@@ -336,7 +336,7 @@ stop_daemon() {
 restart_daemon() {
     case $restart in
         systemd)
-            systemctl --user restart agents-cockpit </dev/null || {
+            systemctl --user restart yetack </dev/null || {
                 why="systemctl could not restart the daemon"
                 return 1
             }
@@ -415,7 +415,7 @@ main() {
     # A lost connection must not stop the update: a client that goes away closes the output pipes,
     # and may send SIGHUP.
     trap '' HUP PIPE
-    work_dir=${XDG_CACHE_HOME:-$HOME/.cache}/agents-cockpit/update
+    work_dir=${XDG_CACHE_HOME:-$HOME/.cache}/yetack/update
     lock=$work_dir/lock.pid
     if [ "$*" = --cancel ]; then
         request_cancel
@@ -426,8 +426,8 @@ main() {
     # A command run over SSH loads no shell profile.
     PATH=$PATH:$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin
     PATH=$PATH:/etc/profiles/per-user/$(id -un)/bin
-    state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/agents-cockpit
-    start_file=${XDG_CONFIG_HOME:-$HOME/.config}/agents-cockpit/start-daemon
+    state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/yetack
+    start_file=${XDG_CONFIG_HOME:-$HOME/.config}/yetack/start-daemon
     check_tools
     take_lock
     choose_restart

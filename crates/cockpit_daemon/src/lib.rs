@@ -1,7 +1,7 @@
-//! The agents-cockpit daemon: Claude Code processes, the hub, the store and the socket server.
+//! The Yetack daemon: Claude Code processes, the hub, the store and the socket server.
 //!
-//! [`serve`] runs it behind its socket: the `agents-cockpit` binary calls it for
-//! `agents-cockpit serve`. [`InAppDaemon`] runs it inside the desktop app, for clients in the
+//! [`serve`] runs it behind its socket: the `yetack` binary calls it for
+//! `yetack serve`. [`InAppDaemon`] runs it inside the desktop app, for clients in the
 //! same process.
 
 mod accounts;
@@ -35,7 +35,7 @@ mod windows_path;
 pub use accounts::{API_KEY_ENV, AUTH_TOKEN_ENV, ENVIRONMENT_CREDENTIALS_ENV};
 pub use build_commit::{RELEASE_VERSION, build_commit, version_text};
 pub use daemon_config::{
-    CLAUDE_CONFIG_DIR_ENV, CLAUDE_HOME_FOLDER, CLAUDE_PROGRAM_ENV, DaemonConfig, HOME_ENV,
+    CLAUDE_CONFIG_DIR_ENV, CLAUDE_HOME_FOLDER, CLAUDE_PROGRAM_ENV, DaemonConfig, HOME_ENV, PROGRAM,
     SERVE_SUBCOMMAND, STATE_DIR_FLAG,
 };
 pub use in_app_daemon::InAppDaemon;

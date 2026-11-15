@@ -1,6 +1,6 @@
-# agents-cockpit plan
+# Yetack plan
 
-agents-cockpit runs several Claude Code agents on the server and lets you watch and steer them from a desktop app on your laptop.
+Yetack runs several Claude Code agents on the server and lets you watch and steer them from a desktop app on your laptop.
 The app draws a real interface with HTML and CSS: conversations, tool calls, approval buttons.
 Agents keep working when the laptop disconnects.
 
@@ -30,7 +30,7 @@ Agents keep working when the laptop disconnects.
 3. The daemon listens only on a Unix socket in a folder of mode 700.
    No TCP port is open, on the server or on the laptop.
    The daemon in the app listens on nothing: the app reaches it through memory.
-4. The laptop reaches the daemon through `ssh <server> agents-cockpit bridge`.
+4. The laptop reaches the daemon through `ssh <server> yetack bridge`.
    Your SSH key is the only login.
 5. The front end is a Dioxus desktop app on the laptop (HTML and CSS in a webview).
 
@@ -38,11 +38,11 @@ Agents keep working when the laptop disconnects.
 
 ```text
 laptop                               server
-agents-cockpit desktop app
-  runs: ssh <server> agents-cockpit bridge
-        (stdin/stdout over SSH)  →   agents-cockpit bridge
+Yetack desktop app
+  runs: ssh <server> yetack bridge
+        (stdin/stdout over SSH)  →   yetack bridge
                                        copies bytes to the Unix socket
-                                     agents-cockpit daemon
+                                     yetack daemon
                                        one claude process per agent,
                                        JSON on stdin/stdout
 ```
@@ -50,13 +50,13 @@ agents-cockpit desktop app
 One Cargo workspace with three crates:
 
 - `protocol`: serde types for Claude Code's JSON events and for the daemon API.
-- `agents-cockpit`: one binary for the server with the subcommands `serve` (the daemon), `bridge`, and a few CLI commands (`list`, `start`, `prompt`) for scripts and tests.
+- `yetack`: one binary for the server with the subcommands `serve` (the daemon), `bridge`, and a few CLI commands (`list`, `start`, `prompt`) for scripts and tests.
 - `desktop`: the Dioxus desktop app for the laptop.
 
 ### What the bridge does
 
 SSH can run a command on the server and connect that command's stdin and stdout to the laptop app.
-`agents-cockpit bridge` is that command: it connects to `~/.local/state/agents-cockpit/agents-cockpit.sock` and copies bytes in both directions until one side closes.
+`yetack bridge` is that command: it connects to `~/.local/state/yetack/yetack.sock` and copies bytes in both directions until one side closes.
 It does the same job as `socat - UNIX-CONNECT:<socket>`, without needing socat on the server or the socket path in the laptop's config.
 Without it, the laptop would need `ssh -L` socket forwarding, which leaves a socket file on the laptop that any laptop process can use.
 Later, the bridge can also start the daemon when it is not running.
@@ -72,7 +72,7 @@ claude --output-format stream-json --verbose --input-format stream-json
        --replay-user-messages --enable-auth-status ...
 ```
 
-agents-cockpit starts `claude` the same way:
+Yetack starts `claude` the same way:
 
 - One long-running process per agent, with JSON in and out, one object per line.
 - Prompts go in as `{"type":"user","message":{"role":"user","content":"..."}}` on stdin.
@@ -115,8 +115,8 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
 - Or runs inside the desktop app, with the same state folder and the same `serve.lock`, so the app and a service never run at once on one folder (see "How the app reaches a daemon").
 - Leaves the umask alone, so `claude` and the agents' commands create files as the user would.
   Each of its own files and folders gets a private mode when it is created.
-- Keeps everything in `~/.local/state/agents-cockpit/` (mode 700):
-  - `agents-cockpit.sock`: the Unix socket (mode 600).
+- Keeps everything in `~/.local/state/yetack/` (mode 700):
+  - `yetack.sock`: the Unix socket (mode 600).
   - `serve.lock`: held while a daemon runs.
   - `agents.json`: one entry per agent with its Id, folder, title and Claude session Id.
   - `logs/<agent-id>.jsonl`: every event received from `claude` and every message sent to it, appended.
@@ -159,7 +159,7 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
 - The daemon in the app has no socket, so no peer check applies and the agents' commands have nothing to connect to.
 - The parent-chain check stops an agent that simply calls the socket.
   It does not stop code that detaches on purpose (double fork, `setsid`), because such a process gets a new parent.
-  The real protection against that is Claude Code's sandbox, configured to deny the agents' commands access to `~/.local/state/agents-cockpit/`: the probe checks whether this works with a Unix socket.
+  The real protection against that is Claude Code's sandbox, configured to deny the agents' commands access to `~/.local/state/yetack/`: the probe checks whether this works with a Unix socket.
 - `ForwardAgent` stays off for the server in the laptop's `~/.ssh/config`, so a process on the server cannot use your laptop's key to log back in through `sshd`.
 - Prompts go only through stdin.
 - The daemon never reads, stores or passes a credential, an API key or a token.
@@ -253,13 +253,13 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   - An agent moves to another project from its row's menu, by drag and drop, or from the new agent dialog's Project menu. Kept projects are reordered by dragging their headers.
   - A right-click on a project's header opens its menu: Keep (a temporary project), Rename (the name turns into a field in the header), the six colors (digits 1 to 6), Edit the rules (its card in Settings), Fold, and Delete, which asks for a second pick. A rename, a color or the rules keep a temporary project first.
   - The Settings dialog's Projects tab edits the projects, with a card per project as the Accounts dialog has.
-- It starts `ssh <server> /absolute/path/to/agents-cockpit bridge` and speaks the daemon API over the process's stdin and stdout.
+- It starts `ssh <server> /absolute/path/to/yetack bridge` and speaks the daemon API over the process's stdin and stdout.
   Use an absolute path: a non-interactive SSH command does not load your interactive shell setup, so `~/.cargo/bin` may be missing from `PATH`.
 - It reconnects after an SSH drop and sends its last sequence number.
 - How the app reaches a daemon:
   - The app's config file, per machine, names its default daemon: a local socket, a host over SSH, or the daemon in the app (`transport = "in_app"`).
   - When the first connection fails at startup, the app shows a "No daemon answers" screen.
-    It names the daemon it tried and why it failed, and offers Retry, "Run agents in this app", and "Start the background service here" (on Unix, where the app starts `agents-cockpit serve` as a process that outlives it).
+    It names the daemon it tried and why it failed, and offers Retry, "Run agents in this app", and "Start the background service here" (on Unix, where the app starts `yetack serve` as a process that outlives it).
   - A choice holds for this run only, so a laptop that usually reaches a server can run locally for a day while the server is down.
     With "Use this every time" ticked, the choice becomes the config's default.
   - The daemon in the app is the daemon's own code in the app's process, reached through an in-memory stream that carries the same protocol.
@@ -329,5 +329,5 @@ Found by the first end-to-end run of the app against a real daemon:
 
 - herdr ([github.com/herdrdev/herdr](https://github.com/herdrdev/herdr)) runs Claude Code in its terminal interface inside a pseudo-terminal and reads the screen to detect status.
   Its public API returns screen snapshots, and its live stream (`herdr terminal session control`) sends ANSI bytes.
-  That fits a terminal UI, not a CSS one, which is why agents-cockpit talks to Claude Code in JSON mode instead.
-- agents-cockpit copies herdr's useful ideas: a daemon that outlives the client, an SSH stdin/stdout attach, and a snapshot followed by events with sequence numbers.
+  That fits a terminal UI, not a CSS one, which is why Yetack talks to Claude Code in JSON mode instead.
+- Yetack copies herdr's useful ideas: a daemon that outlives the client, an SSH stdin/stdout attach, and a snapshot followed by events with sequence numbers.

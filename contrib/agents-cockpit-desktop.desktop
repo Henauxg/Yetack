@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Agents Cockpit
-Comment=Watch and steer Claude Code agents
-Exec=agents-cockpit-desktop
-Icon=agents-cockpit
-Categories=Development;
-StartupWMClass=agents-cockpit-desktop

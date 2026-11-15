@@ -240,7 +240,7 @@ mod tests {
     fn lab_plan() -> UpdatePlan {
         UpdatePlan::Server(ServerPlan {
             host: "dev@lab".to_owned(),
-            remote_command: "/opt/agents-cockpit".to_owned(),
+            remote_command: "/opt/yetack".to_owned(),
             source_dir: None,
             commit: BuildCommit::new("3f9c2e1a7b4d5c6e".to_owned()),
             daemon_file: None,
@@ -265,7 +265,7 @@ mod tests {
             let mut known = MachineState::new(DaemonLabel::ssh(name.to_owned()));
             known.connection = connection;
             known.update_plan = gap.is_some().then(lab_plan);
-            known.daemon_probe = DaemonProbe::owned_at("/opt/agents-cockpit");
+            known.daemon_probe = DaemonProbe::owned_at("/opt/yetack");
             known.version_gap = gap;
             state.machines.others.insert(MachineId::new(id), known);
         }

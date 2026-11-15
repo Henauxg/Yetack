@@ -916,7 +916,7 @@ mod tests {
                     machine: MachineId::new(1),
                     name: "devbox".to_owned(),
                     host: "dev@devbox".to_owned(),
-                    remote_command: "/opt/agents-cockpit".to_owned(),
+                    remote_command: "/opt/yetack".to_owned(),
                     source_dir: String::new(),
                     error: None,
                 }),

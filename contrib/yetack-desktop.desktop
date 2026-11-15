@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Yetack
+Comment=Watch and steer Claude Code agents
+Exec=yetack-desktop
+Icon=yetack
+Categories=Development;
+StartupWMClass=yetack-desktop
