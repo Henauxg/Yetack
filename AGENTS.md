@@ -1,6 +1,6 @@
-# agents-cockpit
+# Yetack
 
-agents-cockpit runs Claude Code agents on a server and lets you steer them from a desktop app.
+Yetack runs Claude Code agents on a server and lets you steer them from a desktop app.
 Read [docs/plan.md](docs/plan.md) for what it does and [docs/architecture.md](docs/architecture.md) for how the code is split, before changing anything.
 Read [docs/handoff.md](docs/handoff.md) for where the work stands and how the user works.
 
@@ -20,7 +20,7 @@ The review skills write `cargo +nightly fmt`; in this repository, `cargo fmt` in
 
 Several agent sessions work on this repository at once.
 
-1. Work in your own git worktree, on your own branch: `git worktree add ../agents-cockpit-<topic> -b feat/<topic> main`.
+1. Work in your own git worktree, on your own branch: `git worktree add ../yetack-<topic> -b feat/<topic> main`.
 2. Leave the main checkout on a clean `main`. It is only for merging finished branches and pushing. Merge only once it has no uncommitted changes.
 3. A new worktree has its own `target/` folder, so its first build takes a few minutes.
 

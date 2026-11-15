@@ -1,4 +1,4 @@
-# Agents Cockpit
+# Yetack (Yet another agents cockpit)
 
 Orchestrator to control multiple agents over multiple machines and accounts.
 
@@ -19,16 +19,16 @@ Features:
 
 ## Install
 
-Download the files from the [releases page](https://github.com/Henauxg/agents-cockpit/releases).
+Download the files from the [releases page](https://github.com/Henauxg/yetack/releases).
 
 | Your computer | File | Command |
 | --- | --- | --- |
-| Ubuntu 22.04 or newer, Debian 12 | `agents-cockpit_<version>_amd64.deb` | `sudo apt install ./agents-cockpit_<version>_amd64.deb` |
-| Windows 10 or 11 | `agents-cockpit-desktop-<version>-windows-x64.zip`, if the release has one | Unzip the file and run `agents-cockpit-desktop.exe` |
+| Ubuntu 22.04 or newer, Debian 12 | `yetack_<version>_amd64.deb` | `sudo apt install ./yetack_<version>_amd64.deb` |
+| Windows 10 or 11 | `yetack-desktop-<version>-windows-x64.zip`, if the release has one | Unzip the file and run `yetack-desktop.exe` |
 | NixOS, or Linux with Nix | None | See [With Nix](#with-nix) |
 | Any other system | None | Build the app: [docs/install-from-source.md](docs/install-from-source.md) |
 
-The `.deb` installs the app (`agents-cockpit-desktop`) and the daemon with its command line (`agents-cockpit`).
+The `.deb` installs the app (`yetack-desktop`) and the daemon with its command line (`yetack`).
 
 Nobody has run the app on macOS yet.
 
@@ -41,22 +41,22 @@ The repository is a Nix flake. Nix builds the app from the release's source on y
 To try the app, add it to your user profile. If your Nix does not know `nix profile add`, write `install` in place of `add`.
 
 ```sh
-nix profile add 'github:Henauxg/agents-cockpit/v<version>'
+nix profile add 'github:Henauxg/yetack/v<version>'
 ```
 
-The profile keeps the version you added. For a new release, remove the app with `nix profile remove agents-cockpit`, then add the new version.
+The profile keeps the version you added. For a new release, remove the app with `nix profile remove yetack`, then add the new version.
 
 To install the app with the rest of your NixOS configuration, add the flake as an input of your system's flake:
 
 ```nix
 # In your system's flake.nix
-inputs.agents-cockpit.url = "github:Henauxg/agents-cockpit/v<version>";
+inputs.yetack.url = "github:Henauxg/yetack/v<version>";
 
 # In your NixOS configuration
-environment.systemPackages = [ inputs.agents-cockpit.packages.${pkgs.system}.default ];
+environment.systemPackages = [ inputs.yetack.packages.${pkgs.system}.default ];
 ```
 
-For a new release, change the version in the input, run `nix flake update agents-cockpit`, and rebuild your system. A home-manager configuration takes the same package in `home.packages`.
+For a new release, change the version in the input, run `nix flake update yetack`, and rebuild your system. A home-manager configuration takes the same package in `home.packages`.
 
 ## Local or remote agents
 
@@ -80,38 +80,38 @@ The server needs Linux on x86_64, SSH access with a key, and Claude Code signed 
 The app can install the daemon for you:
 
 1. In the app, open **Machines** at the bottom left, and click **Add a server**.
-2. Type the **SSH host**, as you type it after `ssh`, and leave **Path of agents-cockpit on the server** empty.
-3. The app looks for `agents-cockpit` on the server, and adds the server with the one it finds. When the server has none, the app offers to install it as a systemd user service.
+2. Type the **SSH host**, as you type it after `ssh`, and leave **Path of yetack on the server** empty.
+3. The app looks for `yetack` on the server, and adds the server with the one it finds. When the server has none, the app offers to install it as a systemd user service.
 4. Once the daemon runs, the app says what is left to do on the server: turn linger on (see [Keep the agents running after you log out](#keep-the-agents-running-after-you-log-out)), or install Claude Code.
 
 The install needs a systemd user session on the server. Without one, start the daemon with [contrib/start-daemon](contrib/start-daemon).
 
 #### Install by hand
 
-From the releases page, download `agents-cockpit-<version>-x86_64-linux` and `agents-cockpit.service`. On Ubuntu and Debian, the `.deb` also put the daemon at `/usr/bin/agents-cockpit`.
+From the releases page, download `yetack-<version>-x86_64-linux` and `yetack.service`. On Ubuntu and Debian, the `.deb` also put the daemon at `/usr/bin/yetack`.
 
 1. On your computer, copy the two files to the server. Replace `devbox` with the server's name in your SSH config:
 
    ```sh
    ssh devbox 'mkdir -p ~/.local/bin ~/.config/systemd/user'
-   scp agents-cockpit-<version>-x86_64-linux devbox:.local/bin/agents-cockpit
-   scp agents-cockpit.service devbox:.config/systemd/user/
-   ssh devbox 'chmod +x ~/.local/bin/agents-cockpit'
+   scp yetack-<version>-x86_64-linux devbox:.local/bin/yetack
+   scp yetack.service devbox:.config/systemd/user/
+   ssh devbox 'chmod +x ~/.local/bin/yetack'
    ```
 
 2. On the server, start the daemon as a service:
 
    ```sh
    systemctl --user daemon-reload
-   systemctl --user enable --now agents-cockpit
-   systemctl --user status agents-cockpit
+   systemctl --user enable --now yetack
+   systemctl --user status yetack
    ```
 
    Then turn linger on, as [Keep the agents running after you log out](#keep-the-agents-running-after-you-log-out) says.
 
 3. In the app, open **Machines** at the bottom left, and add the server:
    - **SSH host**: `devbox`, as you type it after `ssh`.
-   - **Path of agents-cockpit on the server**: `/home/<you>/.local/bin/agents-cockpit`.
+   - **Path of yetack on the server**: `/home/<you>/.local/bin/yetack`.
 
 #### Keep the agents running after you log out
 
@@ -129,15 +129,15 @@ The app and the daemon must speak the same protocol. If the protocols differ, th
 
 The app's "Update" button sends the app's own daemon to the server, checks it there, then restarts the daemon. The server needs no Rust and no checkout of this repository. The update runs beside the window, and the sidebar shows its progress under the server.
 
-The button replaces only a daemon in `~/.local/share/agents-cockpit/bin` or `~/.local/bin`. A daemon from Nix or from the `.deb` is updated by its package manager, and the app gives the steps. An app built from source without a Linux daemon, or a server that is not Linux x86_64, builds the daemon on the server instead. That server needs Rust and a checkout of this repository, as [docs/development.md](docs/development.md) says.
+The button replaces only a daemon in `~/.local/share/yetack/bin` or `~/.local/bin`. A daemon from Nix or from the `.deb` is updated by its package manager, and the app gives the steps. An app built from source without a Linux daemon, or a server that is not Linux x86_64, builds the daemon on the server instead. That server needs Rust and a checkout of this repository, as [docs/development.md](docs/development.md) says.
 
 Before an update, the app names the agents a restart would interrupt, and can wait until they are idle.
 
 To update the daemon by hand, copy the new daemon over the old one, then restart the service. The restart stops the agents, and the daemon resumes the agents when the daemon starts again. Restart while the agents are idle:
 
 ```sh
-scp agents-cockpit-<version>-x86_64-linux devbox:.local/bin/agents-cockpit.new
-ssh devbox 'chmod +x ~/.local/bin/agents-cockpit.new && mv ~/.local/bin/agents-cockpit.new ~/.local/bin/agents-cockpit && systemctl --user restart agents-cockpit'
+scp yetack-<version>-x86_64-linux devbox:.local/bin/yetack.new
+ssh devbox 'chmod +x ~/.local/bin/yetack.new && mv ~/.local/bin/yetack.new ~/.local/bin/yetack && systemctl --user restart yetack'
 ```
 
 ## When something goes wrong
@@ -154,4 +154,4 @@ The app reaches a server with your SSH key, and the daemon opens no network port
 
 ## License
 
-agents-cockpit is under the [Mozilla Public License 2.0](LICENSE). [CONTRIBUTING.md](CONTRIBUTING.md) says how contributions are licensed. To build agents-cockpit or work on it, read [docs/development.md](docs/development.md).
+Yetack is under the [Mozilla Public License 2.0](LICENSE). [CONTRIBUTING.md](CONTRIBUTING.md) says how contributions are licensed. To build Yetack or work on it, read [docs/development.md](docs/development.md).

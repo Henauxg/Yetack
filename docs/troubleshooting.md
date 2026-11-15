@@ -7,22 +7,22 @@ The commands below use `devbox` for the server: replace it with your server's na
 The app runs `ssh devbox` without a terminal, so it cannot type a password or answer a question.
 
 1. On your computer, run `ssh devbox true`. It must end at once, with no password prompt and no question about the host key. If it asks something, set up a key (`ssh-copy-id devbox`) and answer the host key question once.
-2. In the app's Machines dialog, the path of `agents-cockpit` must be the full path on the server, such as `/home/<you>/.local/bin/agents-cockpit`. Check it with `ssh devbox ls -l /home/<you>/.local/bin/agents-cockpit`.
+2. In the app's Machines dialog, the path of `yetack` must be the full path on the server, such as `/home/<you>/.local/bin/yetack`. Check it with `ssh devbox ls -l /home/<you>/.local/bin/yetack`.
 
 ## The service does not start
 
-On the server, `journalctl --user -u agents-cockpit -e` shows why.
+On the server, `journalctl --user -u yetack -e` shows why.
 
-- `status=203/EXEC` means systemd cannot run the binary: it is missing, or not executable. Run `chmod +x ~/.local/bin/agents-cockpit`, then `systemctl --user restart agents-cockpit`.
-- If `agents-cockpit` is somewhere else than `~/.local/bin`, change `ExecStart` in `~/.config/systemd/user/agents-cockpit.service`, then `systemctl --user daemon-reload`.
+- `status=203/EXEC` means systemd cannot run the binary: it is missing, or not executable. Run `chmod +x ~/.local/bin/yetack`, then `systemctl --user restart yetack`.
+- If `yetack` is somewhere else than `~/.local/bin`, change `ExecStart` in `~/.config/systemd/user/yetack.service`, then `systemctl --user daemon-reload`.
 
 ## The server's agents do not start, and the daemon cannot find `claude`
 
-The service's `PATH` is in `~/.config/systemd/user/agents-cockpit.service`. Add the folder that holds `claude` (run `command -v claude` on the server), then:
+The service's `PATH` is in `~/.config/systemd/user/yetack.service`. Add the folder that holds `claude` (run `command -v claude` on the server), then:
 
 ```sh
 systemctl --user daemon-reload
-systemctl --user restart agents-cockpit
+systemctl --user restart yetack
 ```
 
 ## The agents stop when you log out of the server
@@ -41,7 +41,7 @@ The machine's daemon was built from another version than the app, and the app st
 
 A background service started by an older version of the app does not record its process, so the app cannot tell which process to stop. Stop it yourself once, then retry the update:
 
-1. Find it: `pgrep -af -- '--state-dir'`. It runs with `--state-dir`, your state folder (`~/.local/state/agents-cockpit` by default), and `serve`.
+1. Find it: `pgrep -af -- '--state-dir'`. It runs with `--state-dir`, your state folder (`~/.local/state/yetack` by default), and `serve`.
 2. Stop it: `kill <pid>`. It stops as a service does, and the next daemon resumes its agents.
 3. Click Retry in the app.
 
@@ -49,4 +49,4 @@ The daemon the app starts records its process, so the next update stops it by it
 
 ## The update says another build still answers
 
-The app stopped the daemon and started its own version, but another program started the old daemon again, such as a systemd unit that restarts it whenever it stops. Stop that program, or point it at the app's version, then retry. For the systemd unit: `systemctl --user disable --now agents-cockpit`.
+The app stopped the daemon and started its own version, but another program started the old daemon again, such as a systemd unit that restarts it whenever it stops. Stop that program, or point it at the app's version, then retry. For the systemd unit: `systemctl --user disable --now yetack`.
