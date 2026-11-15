@@ -2,7 +2,7 @@
 //! notifications, as the sidebar's bell sets them, where comments on quotes show, how long a message
 //! sent to a working agent can still be cancelled, whether a new agent's files pane shows, and
 //! where Local's agents run from the next start. Its last section, About, gives the app's version
-//! with a button that copies it. Its Keyboard tab lists every shortcut and records new ones for the
+//! with a button that copies it, a newer release, and whether the app looks for one. Its Keyboard tab lists every shortcut and records new ones for the
 //! commands. Its Projects tab edits the projects the sidebar can group agents by.
 
 use std::sync::LazyLock;
@@ -22,6 +22,7 @@ use crate::state::settings::{LocalStart, StartDaemon};
 use crate::state::{
     RefusedChord, SettingsTab, SettingsView, grouping, notification_levels, settings,
 };
+use crate::ui::app_update::AboutRelease;
 use crate::ui::code::{CopyButton, CopyLook};
 use crate::ui::grouping::{group_by_label, project_split_label};
 use crate::ui::icons::{Icon, IconKind};
@@ -31,7 +32,7 @@ use crate::ui::projects_tab::ProjectsTab;
 use crate::update_script::APP_VERSION;
 use crate::{APP_NAME, format};
 
-static APP_ICON: LazyLock<String> = LazyLock::new(|| {
+pub static APP_ICON: LazyLock<String> = LazyLock::new(|| {
     use base64::Engine;
 
     let svg = include_bytes!("../../assets/yetack.svg");
@@ -379,6 +380,7 @@ fn GeneralTab(start_error: Option<String>) -> Element {
                     look: CopyLook::Worded,
                 }
             }
+            AboutRelease {}
         }
     }
 }

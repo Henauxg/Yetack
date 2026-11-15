@@ -5,6 +5,7 @@ pub mod accounts;
 pub mod actions;
 pub mod agent_map;
 mod app_state;
+pub mod app_update;
 mod apply;
 pub mod chat_images;
 pub mod claude_code_version;

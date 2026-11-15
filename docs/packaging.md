@@ -132,7 +132,6 @@ Nix keeps the daemon in `/nix/store`, which is read-only, and the system's confi
 - The first-run screen. The plan: when no config file exists, the app asks "Where do your agents run?" with two answers, "This computer" and "A server". For a server it runs the setup above, showing each step with its result. This screen gets an HTML mockup first, as every new screen does. Today a server is added from the Machines dialog.
 - An install on a server without systemd. The install script tells the user to start the daemon with [contrib/start-daemon](contrib/start-daemon), and does not install it.
 - The check that `claude` is signed in. The install reports only whether the service finds `claude`. The app's Accounts dialog shows the sign-in.
-- The app does not look for newer releases, so a Nix or `.deb` install of the app is not told when one exists.
 
 ### Security
 
@@ -149,7 +148,17 @@ Built on branch `feat/claude-code-version`. The daemon reads Claude Code's JSON 
 - The `system/init` line that starts each turn carries `claude_code_version`. The daemon sends it to the app in the agent's summary (`AgentSummary.claude_code_version`), which the header reads. The summary leaves it out until the agent's `claude` writes that line. The protocol moved to version 11 for it.
 - When an agent's version is newer than the tested one, the header's folder line goes on with a quiet note: "Claude Code 2.3.1 is newer than this release was tested with (2.1.319)." Versions compare by their numbers, so 2.10.0 is newer than 2.9.9. An older or equal version, or one the app cannot read, shows nothing.
 
-## Later
+## Step 4: the app tells when a new release is out
+
+Built on branch `feat/self-update`. [docs/architecture.md](architecture.md) describes the code, under "The app's own update".
+
+- About ten seconds after it starts, then once a day, the app asks GitHub's API for the repository's latest release. The request names the app and its version (`User-Agent: yetack-desktop/<version>`) and nothing else. A failed check goes to the log, and the next one tries again.
+- A release newer than the app shows a note at the foot of the sidebar, "0.4.0 is out", and a row in Settings › General › About. The note's cross, or the card's "Skip this version", hides that release for good. A newer one shows again. "Not now" hides the note until the next start.
+- Settings › General › About has "Look for new releases", on by default. Turned off, the app asks GitHub nothing.
+- The build says how the app was installed, in `YETACK_PACKAGE`: `zip` for the Windows release ([releasing.md](releasing.md), step 2), `deb` for the `.deb` ([contrib/release/build.sh](../contrib/release/build.sh)), `nix` for the flake. Any other build is one from source.
+- The Windows zip updates itself. It downloads the release's `yetack-desktop-<version>-windows-x64.exe`, `yetack-<version>-x86_64-linux` and `SHA256SUMS`, only from the repository's release downloads, and checks both files against the checksums before anything moves. It then puts them in place of its own program and of the Linux daemon beside it, and restarts when the user says so. A failure leaves the app as it was.
+- The other installs get the steps: the `.deb`'s `apt` command, the Nix configuration to change, or the commands that build the release from a checkout.
+
 
 - An AppImage or an `.rpm`, when a colleague needs one.
 - Signing the Windows build, when there are Windows users besides the author.

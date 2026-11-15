@@ -258,7 +258,8 @@ fn send_failure(errors: &str, own_error: Option<String>) -> String {
     own_error.unwrap_or_else(|| "The server did not say where it wrote the file".to_owned())
 }
 
-fn hex(bytes: &[u8]) -> String {
+/// The bytes in lowercase hex, as `sha256sum` prints a checksum.
+pub fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
 
     bytes

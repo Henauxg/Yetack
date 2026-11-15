@@ -23,6 +23,7 @@ use crate::state::{
     notification_levels, project_menu, projects, settings, to_handle,
 };
 use crate::ui::accounts::{AccountLetter, AccountsButton};
+use crate::ui::app_update::ReleaseNoteLine;
 use crate::ui::grouping::GroupSwitch;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::machines::{machine_icon, run_action};
@@ -1044,14 +1045,15 @@ fn RowTimeView(time: RowTime) -> Element {
     }
 }
 
-/// Accounts, Machines and the Settings gear. Each machine's panel, or the strip above the list,
-/// says how its machine answers.
+/// The note of a newer release, then Accounts, Machines and the Settings gear. Each machine's
+/// panel, or the strip above the list, says how its machine answers.
 #[component]
 fn SidebarFoot() -> Element {
     let cockpit: Cockpit = use_context();
     let settings_open = matches!(cockpit.state.read().ui.dialog, Some(Dialog::Settings(_)));
     rsx! {
         div { class: "sidebar-foot",
+            ReleaseNoteLine {}
             div { class: "foot-buttons",
                 AccountsButton {}
                 button {
