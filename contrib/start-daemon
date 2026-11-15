@@ -1,4 +1,4 @@
-# Starts the yetack daemon in a tmux session named "cockpit", from a clean login shell, so
+# Starts the yetack daemon in a tmux session named "yetack", from a clean login shell, so
 # that no CLAUDE variable of the session running it reaches the agents. The daemon's update runs
 # it to start the daemon again, when no systemd user service does.
 #
@@ -8,7 +8,7 @@
 #
 # Edit binary if yetack is not in ~/.local/bin. The login shell must find `claude`: add
 # -i to its flags when the PATH that finds it is set in an interactive shell's file, such as
-# .zshrc. `tmux attach -t cockpit` shows the daemon's output.
+# .zshrc. `tmux attach -t yetack` shows the daemon's output.
 
 binary=$HOME/.local/bin/yetack
 shell=${SHELL:-/bin/sh}
@@ -18,12 +18,12 @@ tmux=$(command -v tmux) || {
 }
 
 # The old daemon's session can outlive its lock for a moment, and tmux refuses a second session of
-# that name. The "=" matches the name exactly: without it, a session "cockpit-dev" matches too.
+# that name. The "=" matches the name exactly: without it, a session "yetack-dev" matches too.
 tries=0
-while env -i HOME="$HOME" "$tmux" has-session -t =cockpit 2>/dev/null; do
+while env -i HOME="$HOME" "$tmux" has-session -t =yetack 2>/dev/null; do
     tries=$((tries + 1))
     if [ "$tries" -gt 50 ]; then
-        echo "the tmux session \"cockpit\" still runs after 10 seconds" >&2
+        echo "the tmux session \"yetack\" still runs after 10 seconds" >&2
         exit 1
     fi
     sleep 0.2
@@ -35,11 +35,11 @@ case $shell in
     *) flags=-lc ;;
 esac
 
-# The binary's path goes through COCKPIT_BINARY, which sh, bash, zsh, fish and csh all expand the
+# The binary's path goes through YETACK_BINARY, which sh, bash, zsh, fish and csh all expand the
 # same way: tmux sets it in the session even when its server already runs. `env -u` keeps it
 # from the daemon.
 # shellcheck disable=SC2016
 env -i HOME="$HOME" USER="$(id -un)" LOGNAME="$(id -un)" SHELL="$shell" TERM=xterm-256color \
     LANG="${LANG:-C.UTF-8}" \
-    "$tmux" new-session -d -s cockpit -e COCKPIT_BINARY="$binary" \
-    "$shell" "$flags" 'exec env -u COCKPIT_BINARY "$COCKPIT_BINARY" serve'
+    "$tmux" new-session -d -s yetack -e YETACK_BINARY="$binary" \
+    "$shell" "$flags" 'exec env -u YETACK_BINARY "$YETACK_BINARY" serve'
