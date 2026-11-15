@@ -8,7 +8,7 @@ Update it when you hand over.
 ## Where the work is
 
 - Work goes on short branches, each in its own worktree (see AGENTS.md), and is merged into `main` once the user agrees.
-- CI (`.github/workflows/ci.yml`) runs on Linux and Windows, only when started: `gh workflow run ci.yml --ref <branch>`, or from the Actions tab. Ask the user before you start it. The Windows job is the only real Windows test, and it caught several failures that no Linux run showed.
+- CI (`.github/workflows/ci.yml`) runs on Linux and Windows on each push to `main` and on each pull request. For another branch, start it by hand (`gh workflow run ci.yml --ref <branch>`, or from the Actions tab), and ask the user first. The Windows job is the only real Windows test, and it caught several failures that no Linux run showed.
 - CI is green on both platforms from `b57f7cd` on, the Windows job's tests of every crate included. Before it, the Windows job failed from the accounts commits on, on four account tests whose home folder was a Unix path.
 - The protocol version is 11: `Welcome` carries the daemon's commit (`daemon_commit`), details go out as `DetailsUpdated`, with only the parts and subagents that changed, and an agent's summary carries its Claude Code version (`claude_code_version`). An app and a daemon of different versions refuse each other at `Hello`, so they are rebuilt together.
 
@@ -53,7 +53,7 @@ Each item is described in architecture.md and was reviewed with `/review fix` an
 
 - The user decides; agents propose. Ask before a design change, a protocol change, or anything outside the request, with a recommendation first. The user often answers "ok" to a numbered list: map the answers by number.
 - For a new screen or a large UI change, make an HTML mockup first (self-contained, reusing the app's `style.css`, in the scratchpad, with Playwright screenshots), send it, and build only once the user picked.
-- After a feature: `/review fix` (one agent for the daemon side and one for the desktop crate work well in parallel), then `/review-standard fix`, then push. CI runs only when started (see "Where the work is"). Each bug fix comes with a test that failed first.
+- After a feature: `/review fix` (one agent for the daemon side and one for the desktop crate work well in parallel), then `/review-standard fix`, then push. CI runs on the push to `main` (see "Where the work is"). Each bug fix comes with a test that failed first.
 - Commits: plain English subject in the imperative, short body, no `Co-Authored-By` or other trailer. No em-dashes anywhere. Comments only for what code cannot show.
 - The user tests on a Windows laptop: they clone the repository, `git pull`, then `cargo run -p cockpit_desktop`. Claude Code is installed there with the native installer (`claude.exe` in `%USERPROFILE%\.local\bin`, not on PATH).
 
