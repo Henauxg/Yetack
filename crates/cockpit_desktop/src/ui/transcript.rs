@@ -30,6 +30,7 @@ use crate::ui::chat_scroll::{
     self, CHAT_SCROLL_ID, ENTRY_CLASS, FOLD_BUTTON_CLASS, InView, JumpToLatest, NewDivider,
 };
 use crate::ui::code::{LineMarks, LineNumbers, diff_row};
+use crate::ui::find::SKIP_CLASS;
 use crate::ui::find_folds::{self, FoldChip, FoldKey};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::last_instruction::LastInstruction;
@@ -52,7 +53,7 @@ const MESSAGE_FOLD_LINES: u8 = 8;
 /// The classes the fold script looks for: an IN or OUT row, the box that cuts its text, and the
 /// label it writes on the row's button.
 const IO_ROW_CLASS: &str = "io-row";
-const IO_CLIP_CLASS: &str = "io-clip";
+pub(super) const IO_CLIP_CLASS: &str = "io-clip";
 const FOLD_LABEL_CLASS: &str = "fold-more";
 /// Marks a row that keeps its last screen lines when folded.
 const FOLD_LAST_CLASS: &str = "fold-last";
@@ -61,7 +62,7 @@ const FOLD_LAST_CLASS: &str = "fold-last";
 const MESSAGE_ROW_CLASS: &str = "message-fold";
 /// A message you sent. The quotes' script finds the quotes in it.
 pub const USER_BUBBLE_CLASS: &str = "user-bubble";
-const MESSAGE_CLIP_CLASS: &str = "message-clip";
+pub(super) const MESSAGE_CLIP_CLASS: &str = "message-clip";
 
 /// The CSS property in which a row tells the fold script how many screen lines it keeps.
 const FOLD_LINES_PROPERTY: &str = "--fold-lines";
@@ -774,8 +775,9 @@ fn WorkingLine(since: Option<TurnStart>, quiet_since: Option<Timestamp>, linked:
         None => "Working".to_owned(),
     };
     let quiet = quiet_since.map(|quiet_since| quiet_text(quiet_since, now));
+    let link_class = if linked { " linked-above" } else { "" };
     rsx! {
-        div { class: if linked { "step working linked-above" } else { "step working" }, "data-find-skip": true,
+        div { class: "step working{link_class} {SKIP_CLASS}",
             span { class: "step-marker",
                 span { class: "spinner", role: "status", aria_label: "Working" }
             }
@@ -1650,11 +1652,10 @@ pub(crate) fn RunningMeta(agent: AgentId, item: ItemId) -> Element {
         None => RUNNING_WORD.to_owned(),
     };
     rsx! {
-        span { class: "tool-meta", "data-find-skip": true, "{text}" }
+        span { class: "tool-meta {SKIP_CLASS}", "{text}" }
         if let Some(task) = task() {
             button {
-                class: "call-stop",
-                "data-find-skip": true,
+                class: "call-stop {SKIP_CLASS}",
                 aria_label: "Stop this call",
                 title: "Stop this call: Claude gets it as stopped, goes on, and reads the messages it has",
                 onclick: move |event| {

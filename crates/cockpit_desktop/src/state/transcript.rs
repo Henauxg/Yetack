@@ -37,10 +37,13 @@ impl HistoryState {
 pub struct Transcript {
     items: BTreeMap<ItemId, TranscriptItem>,
     history: HistoryState,
-    /// Names the state of `items`, so that what the app works out from them is kept until they
-    /// change. The numbers come from one count for every transcript.
-    revision: u64,
+    revision: Revision,
 }
+
+/// Names the state of a transcript's items, so that what the app works out from them is kept
+/// until they change. The numbers come from one count for every transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Revision(u64);
 
 /// The last revision any transcript took.
 static REVISIONS: AtomicU64 = AtomicU64::new(0);
@@ -108,12 +111,12 @@ impl Transcript {
         self.history = history;
     }
 
-    pub fn revision(&self) -> u64 {
+    pub fn revision(&self) -> Revision {
         self.revision
     }
 
     fn changed(&mut self) {
-        self.revision = REVISIONS.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+        self.revision = Revision(REVISIONS.fetch_add(1, Ordering::Relaxed).wrapping_add(1));
     }
 
     pub fn first_id(&self) -> Option<ItemId> {

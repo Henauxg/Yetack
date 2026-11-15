@@ -40,6 +40,12 @@ const FILE_DIFF_CONTEXT: usize = 3;
 /// How long "Updated just now" and the changed lines' highlight last after a read again.
 const UPDATE_SHOWN_FOR: Duration = Duration::from_secs(10);
 
+/// The file's text, which the find searches.
+pub(super) const FILE_BODY_CLASS: &str = "file-body";
+
+/// The placeholder lines shown while the file loads: the find waits for the text.
+pub(super) const FILE_LOADING_CLASS: &str = "file-loading";
+
 /// The widths of the placeholder lines shown while the file loads, in percent of the text's width.
 const LOADING_LINE_WIDTHS: [u8; 8] = [46, 72, 64, 30, 81, 58, 69, 38];
 
@@ -111,6 +117,11 @@ pub fn FileViewPanel() -> Element {
     };
     let wrap = state.prefs.file_view.wrap;
     let find_open = view.find;
+    let body_layout = match (preview, wrap) {
+        (true, _) => "scroll file-preview",
+        (false, true) => "scroll mono wrap",
+        (false, false) => "scroll mono",
+    };
     rsx! {
         section {
             id: FILE_VIEW_ID,
@@ -188,16 +199,12 @@ pub fn FileViewPanel() -> Element {
                 FileFindBox { agent, open: find_open }
             }
             div {
-                class: match (preview, wrap) {
-                    (true, _) => "file-body scroll file-preview",
-                    (false, true) => "file-body scroll mono wrap",
-                    (false, false) => "file-body scroll mono",
-                },
+                class: "{FILE_BODY_CLASS} {body_layout}",
                 // Focusable, so that after a click in the text End and Home scroll it.
                 tabindex: -1,
                 match text {
                     Loadable::NotRequested | Loadable::Loading => rsx! {
-                        div { class: "file-loading", aria_hidden: true,
+                        div { class: FILE_LOADING_CLASS, aria_hidden: true,
                             for (index, width) in LOADING_LINE_WIDTHS.iter().enumerate() {
                                 div { key: "{index}", class: "skeleton skeleton-line", style: "width: {width}%" }
                             }

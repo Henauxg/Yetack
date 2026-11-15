@@ -37,7 +37,7 @@ pub struct FindDraft {
 impl FindDraft {
     /// The page's report, when it is about the text the find holds now: a report on its way
     /// while the user typed is about an older text.
-    pub fn take_report(&mut self, report: &FindReport) {
+    pub fn apply_report(&mut self, report: &FindReport) {
         if report.query == self.query && report.match_case == self.match_case {
             self.found = Some(report.found);
         }
@@ -100,7 +100,7 @@ impl Finds {
             FindPane::File => &mut self.file,
         };
         if let Some(draft) = finds.get_mut(&report.agent) {
-            draft.take_report(report);
+            draft.apply_report(report);
         }
     }
 
@@ -227,7 +227,7 @@ impl Needle {
 
     /// The matches in `haystack`.
     pub fn count(&self, haystack: &str) -> usize {
-        if self.lowercases() {
+        if self.needs_lowercase() {
             return self.count_lowercase(&haystack.to_lowercase());
         }
         if self.match_case {
@@ -238,7 +238,7 @@ impl Needle {
 
     /// Whether counting takes the haystack in lower case (`count_lowercase`): a text past ASCII,
     /// whatever its case.
-    pub fn lowercases(&self) -> bool {
+    pub fn needs_lowercase(&self) -> bool {
         !self.match_case && !self.text.is_ascii()
     }
 

@@ -14,6 +14,9 @@ use crate::state::RevealPlace;
 use crate::ui::chat_scroll::InView;
 use crate::ui::presence::{Shown, use_presence};
 
+/// The bar's message, which covers the top of the chat for the find.
+pub(super) const MESSAGE_CLASS: &str = "last-instruction-message";
+
 /// The characters of the message the bar holds. It shows one line of them.
 const SHOWN_CHARS: usize = 400;
 
@@ -74,7 +77,7 @@ pub fn LastInstruction(in_view: Signal<Option<InView>>) -> Element {
         div { class: if leaving { "last-instruction leaving" } else { "last-instruction" }, inert: leaving.then_some(true),
             div { class: "last-instruction-column",
                 button {
-                    class: "last-instruction-message",
+                    class: MESSAGE_CLASS,
                     title: "Show this message in the chat",
                     onclick: move |_| cockpit.update(|state| {
                         state.ui.reveal_in_chat(agent, item, RevealPlace::Top);

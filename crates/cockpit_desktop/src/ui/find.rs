@@ -15,9 +15,13 @@ use crate::state::find::{self, FindDraft, FindPane, FindReport};
 use crate::state::{AppState, Drafts, HistoryState, actions};
 use crate::ui::chat_scroll::{CHAT_SCROLL_ID, ENTRY_CLASS, FOLD_BUTTON_CLASS};
 use crate::ui::dialogs::OVERLAY_CLASS;
+use crate::ui::file_view::{FILE_BODY_CLASS, FILE_LOADING_CLASS};
+use crate::ui::find_folds::CHIP_CLASS;
 use crate::ui::icons::{Icon, IconKind};
+use crate::ui::last_instruction::MESSAGE_CLASS as LAST_INSTRUCTION_CLASS;
 use crate::ui::presence::use_presence;
 use crate::ui::splitter::FILE_VIEW_ID;
+use crate::ui::transcript::{IO_CLIP_CLASS, MESSAGE_CLIP_CLASS};
 
 /// The chat find's field.
 const CHAT_FIELD_ID: &str = "chat-find-field";
@@ -34,12 +38,9 @@ const FILE_BOX_ID: &str = "file-find-box";
 /// The event the script sends the chat's scroll script to bring a match into view.
 pub(super) const REVEAL_EVENT: &str = "yetack-find-reveal";
 
-/// Marks what the find leaves out, such as a time that changes every second. The components write
-/// it as a literal.
-const SKIP_ATTRIBUTE: &str = "data-find-skip";
-
-/// Marks the chip of a fold with matches inside, with their count (`find_folds::FoldChip`).
-const FOLDED_ATTRIBUTE: &str = "data-find-folded";
+/// Marks what the find leaves out, such as a time that changes every second: it does not search
+/// it, nor search again when it changes.
+pub(super) const SKIP_CLASS: &str = "find-skip";
 
 /// Past this many matches, the find stops counting, and the bar shows "10000+".
 const MAX_MATCHES: u32 = 10_000;
@@ -52,7 +53,7 @@ const RERUN_MS: u32 = 250;
 const VIEW_MARGIN_PX: u16 = 24;
 
 /// Where the find puts a match it scrolls to, as a share of the pane's height from its top.
-const REVEAL_AT: f32 = 0.35;
+const REVEAL_AT: f64 = 0.35;
 
 /// How long the script waits for a fold it clicked to open, in milliseconds, before the find
 /// steps on without it.
@@ -209,7 +210,7 @@ class Finder {
     }
     const node = record.target;
     const element = node instanceof Element ? node : node.parentElement;
-    if (element === null || element.closest(`[${settings.skip_attribute}]`) !== null) {
+    if (element === null || element.closest(`.${settings.skip_class}`) !== null) {
       return false;
     }
     return this.root.contains(node) || node.contains(this.root);
@@ -281,7 +282,7 @@ class Finder {
       });
     }
     // A closed fold's chip counts as its matches, where the fold is.
-    const chips = this.pane === "chat" ? [...root.querySelectorAll(`[${settings.folded_attribute}]`)] : [];
+    const chips = this.pane === "chat" ? [...root.querySelectorAll(`.${settings.chip_class}`)] : [];
     const stops = [];
     let next = 0;
     for (const chip of chips) {
@@ -289,7 +290,7 @@ class Finder {
         stops.push(matches[next]);
         next += 1;
       }
-      const count = Number(chip.getAttribute(settings.folded_attribute)) || 0;
+      const count = Number(chip.textContent) || 0;
       for (let index = 0; index < count; index += 1) {
         stops.push({ chip, index });
       }
@@ -433,7 +434,7 @@ class Finder {
 
   paint() {
     if (this.pane === "chat") {
-      document.querySelectorAll(`[${settings.folded_attribute}][${settings.current_attribute}]`)
+      document.querySelectorAll(`.${settings.chip_class}[${settings.current_attribute}]`)
         .forEach((chip) => chip.removeAttribute(settings.current_attribute));
     }
     if (!highlights) {
@@ -482,13 +483,13 @@ class Finder {
       this.scrollTo(scroller, here);
       return;
     }
-    const clip = elementOf(here).closest(settings.clip_selector);
-    const cut = clip === null ? null : clip.querySelector(`.${settings.clip_class}, .${settings.message_clip_class}`);
+    // A folded row's clip cuts the match: its fold button, beside the clip, unfolds the row.
+    const cut = elementOf(here).closest(settings.clip_selector);
     if (cut !== null) {
       const rect = rectOf(here);
       const edges = cut.getBoundingClientRect();
       if (rect.top < edges.top || rect.bottom > edges.bottom) {
-        clip.querySelector(`.${settings.fold_button_class}`)?.click();
+        cut.parentElement?.querySelector(`:scope > .${settings.fold_button_class}`)?.click();
         // The row grows over its transition: the match takes its place at its end.
         cut.addEventListener("transitionend", () => guarded(() => this.scrollTo(scroller, here)), { once: true });
       }
@@ -608,20 +609,20 @@ struct Settings {
     file_box_id: &'static str,
     chat_field_id: &'static str,
     file_field_id: &'static str,
-    /// What the find leaves out: its own chips, the fold buttons, the line numbers and notes.
+    /// What the find leaves out: what changes every second, its own chips, hidden text and the
+    /// fold buttons.
     skip_selector: String,
-    skip_attribute: &'static str,
+    skip_class: &'static str,
     /// The elements whose text a match never runs across.
     block_selector: &'static str,
-    folded_attribute: &'static str,
+    /// A closed fold's chip, whose text is its count.
+    chip_class: &'static str,
     /// What covers the top of the chat: the last instruction's bar.
-    chat_covers: &'static str,
+    chat_covers: String,
     /// An open dialog, behind which F3 moves no find.
     dialog_selector: String,
-    /// A row that a fold cuts, and the part of it that cuts.
-    clip_selector: &'static str,
-    clip_class: &'static str,
-    message_clip_class: &'static str,
+    /// The part of a row that its fold cuts.
+    clip_selector: String,
     fold_button_class: &'static str,
     /// Marks the chip of the current match while its fold has not opened.
     current_attribute: &'static str,
@@ -629,8 +630,40 @@ struct Settings {
     max_matches: u32,
     rerun_ms: u32,
     view_margin_px: u16,
-    reveal_at: f32,
+    reveal_at: f64,
     open_wait_ms: u32,
+}
+
+impl Settings {
+    fn new() -> Self {
+        Self {
+            chat_scroll_id: CHAT_SCROLL_ID,
+            entry_class: ENTRY_CLASS,
+            file_view_id: FILE_VIEW_ID,
+            file_body_class: FILE_BODY_CLASS,
+            file_loading_class: FILE_LOADING_CLASS,
+            file_box_id: FILE_BOX_ID,
+            chat_field_id: CHAT_FIELD_ID,
+            file_field_id: FILE_FIELD_ID,
+            skip_selector: format!(
+                ".{SKIP_CLASS}, .{CHIP_CLASS}, [aria-hidden=\"true\"], .{FOLD_BUTTON_CLASS}"
+            ),
+            skip_class: SKIP_CLASS,
+            block_selector: "p, li, pre, td, th, h1, h2, h3, h4, h5, h6, blockquote, div, button",
+            chip_class: CHIP_CLASS,
+            chat_covers: format!(".{LAST_INSTRUCTION_CLASS}"),
+            dialog_selector: format!(".{OVERLAY_CLASS}"),
+            clip_selector: format!(".{IO_CLIP_CLASS}, .{MESSAGE_CLIP_CLASS}"),
+            fold_button_class: FOLD_BUTTON_CLASS,
+            current_attribute: "data-find-current",
+            reveal_event: REVEAL_EVENT,
+            max_matches: MAX_MATCHES,
+            rerun_ms: RERUN_MS,
+            view_margin_px: VIEW_MARGIN_PX,
+            reveal_at: REVEAL_AT,
+            open_wait_ms: OPEN_WAIT_MS,
+        }
+    }
 }
 
 /// What the app tells the script.
@@ -697,36 +730,7 @@ impl FindScript {
 pub(super) fn use_find(cockpit: Cockpit) {
     let script = use_hook(|| {
         let mut script = document::eval(SCRIPT);
-        let settings = Settings {
-            chat_scroll_id: CHAT_SCROLL_ID,
-            entry_class: ENTRY_CLASS,
-            file_view_id: FILE_VIEW_ID,
-            file_body_class: "file-body",
-            file_loading_class: "file-loading",
-            file_box_id: FILE_BOX_ID,
-            chat_field_id: CHAT_FIELD_ID,
-            file_field_id: FILE_FIELD_ID,
-            skip_selector: format!(
-                "[{SKIP_ATTRIBUTE}], [{FOLDED_ATTRIBUTE}], [aria-hidden=\"true\"], .{FOLD_BUTTON_CLASS}, .chevron, .line-gutter, .file-note, .edit-title, .lines-not-shown"
-            ),
-            skip_attribute: SKIP_ATTRIBUTE,
-            block_selector: "p, li, pre, td, th, h1, h2, h3, h4, h5, h6, blockquote, div, button",
-            folded_attribute: FOLDED_ATTRIBUTE,
-            chat_covers: ".last-instruction:not(.leaving) .last-instruction-message",
-            dialog_selector: format!(".{OVERLAY_CLASS}:not(.leaving)"),
-            clip_selector: ".io-row[data-tall]:not(.unfolded), .message-fold[data-tall]:not(.unfolded)",
-            clip_class: "io-clip",
-            message_clip_class: "message-clip",
-            fold_button_class: FOLD_BUTTON_CLASS,
-            current_attribute: "data-find-current",
-            reveal_event: REVEAL_EVENT,
-            max_matches: MAX_MATCHES,
-            rerun_ms: RERUN_MS,
-            view_margin_px: VIEW_MARGIN_PX,
-            reveal_at: REVEAL_AT,
-            open_wait_ms: OPEN_WAIT_MS,
-        };
-        if let Err(error) = script.send(settings) {
+        if let Err(error) = script.send(Settings::new()) {
             tracing::warn!("cannot start the find's script: {error}");
         }
         spawn(async move {
@@ -1015,6 +1019,40 @@ mod tests {
         );
         assert_eq!(count_text(&draft("", Some(found))), "");
         assert_eq!(count_text(&draft("column", None)), "");
+    }
+
+    /// The script reads these fields by name: a rename in Rust would make it read `undefined`.
+    #[test]
+    fn the_settings_the_script_reads_are_pinned() {
+        let expected = json!({
+            "chat_scroll_id": "chat-scroll",
+            "entry_class": "transcript-entry",
+            "file_view_id": "file-view",
+            "file_body_class": "file-body",
+            "file_loading_class": "file-loading",
+            "file_box_id": "file-find-box",
+            "chat_field_id": "chat-find-field",
+            "file_field_id": "file-find-field",
+            "skip_selector": ".find-skip, .find-chip, [aria-hidden=\"true\"], .fold-lines",
+            "skip_class": "find-skip",
+            "block_selector": "p, li, pre, td, th, h1, h2, h3, h4, h5, h6, blockquote, div, button",
+            "chip_class": "find-chip",
+            "chat_covers": ".last-instruction-message",
+            "dialog_selector": ".overlay",
+            "clip_selector": ".io-clip, .message-clip",
+            "fold_button_class": "fold-lines",
+            "current_attribute": "data-find-current",
+            "reveal_event": "yetack-find-reveal",
+            "max_matches": 10_000,
+            "rerun_ms": 250,
+            "view_margin_px": 24,
+            "reveal_at": 0.35,
+            "open_wait_ms": 1_500,
+        });
+
+        let settings = serde_json::to_value(Settings::new()).unwrap();
+
+        assert_eq!(settings, expected);
     }
 
     /// The script reads these fields by name: a rename in Rust would make it read `undefined`.

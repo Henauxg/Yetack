@@ -12,7 +12,6 @@ use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::Path;
-use std::rc::Rc;
 
 use cockpit_protocol::{AgentId, ItemBody, ItemId, ToolCall, ToolCallStatus, TranscriptItem};
 use dioxus::prelude::*;
@@ -20,7 +19,7 @@ use dioxus::prelude::*;
 use crate::connection::Cockpit;
 use crate::render::{self, DiffRow, SearchTool};
 use crate::state::find::{FindPane, Needle};
-use crate::state::{AgentEntry, accounts, actions, awaiting_approval};
+use crate::state::{AgentEntry, Revision, accounts, actions, awaiting_approval};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::tool_rows::{self, Row};
 use crate::ui::transcript::{
@@ -39,6 +38,9 @@ pub(crate) enum FoldKey {
 /// The matches in each fold that holds some.
 pub(crate) type FoldMatches = BTreeMap<FoldKey, u32>;
 
+/// A closed fold's chip. The find's script reads its count from its text.
+pub(super) const CHIP_CLASS: &str = "find-chip";
+
 /// The selected agent's fold matches, for the rows of its chat.
 #[derive(Clone, Copy)]
 struct ChatFolds(Memo<FoldMatches>);
@@ -47,7 +49,7 @@ struct ChatFolds(Memo<FoldMatches>);
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct GatheredFor {
     agent: AgentId,
-    revision: u64,
+    revision: Revision,
     /// A run of reads ends at the "New" divider.
     divider: Option<ItemId>,
     /// The sign-in card takes the place of its notice.
@@ -58,9 +60,22 @@ struct GatheredFor {
 /// looked for. Typing in the find's field counts again, and gathers nothing.
 #[derive(Default)]
 struct Kept {
-    texts: Option<(GatheredFor, Rc<FoldTexts>)>,
-    matches: Option<(GatheredFor, Needle, FoldMatches)>,
+    texts: Option<Gathered>,
+    matches: Option<Counted>,
     previews: Previews,
+}
+
+#[derive(Debug)]
+struct Gathered {
+    gathered_for: GatheredFor,
+    texts: FoldTexts,
+}
+
+#[derive(Debug)]
+struct Counted {
+    gathered_for: GatheredFor,
+    needle: Needle,
+    matches: FoldMatches,
 }
 
 /// The lines of each edit's preview, from one gathering to the next: the diff behind them is the
@@ -69,8 +84,14 @@ struct Kept {
 #[derive(Debug, Default)]
 pub(crate) struct Previews {
     agent: Option<AgentId>,
-    /// By the edit's item, with a hash of its texts.
-    lines: HashMap<ItemId, (u64, Rc<[String]>)>,
+    by_edit: HashMap<ItemId, Preview>,
+}
+
+#[derive(Debug)]
+struct Preview {
+    /// A hash of the edit's old and new texts, which the lines come from.
+    texts_hash: u64,
+    lines: Vec<String>,
 }
 
 /// Provides the fold matches of the selected agent's chat to the rows under the caller.
@@ -95,22 +116,26 @@ pub(super) fn use_chat_folds(cockpit: Cockpit) {
             sign_in_notice: accounts::sign_in_turn(entry).and_then(|turn| turn.notice),
         };
         let mut kept = kept.write();
-        if let Some((counted_for, counted_needle, matches)) = &kept.matches
-            && *counted_for == gathered_for
-            && *counted_needle == needle
+        if let Some(counted) = &kept.matches
+            && counted.gathered_for == gathered_for
+            && counted.needle == needle
         {
-            return matches.clone();
+            return counted.matches.clone();
         }
-        let texts = match &kept.texts {
-            Some((texts_for, texts)) if *texts_for == gathered_for => Rc::clone(texts),
-            Some(_) | None => {
-                let texts = Rc::new(chat_fold_texts(entry, &gathered_for, &mut kept.previews));
-                kept.texts = Some((gathered_for.clone(), Rc::clone(&texts)));
-                texts
-            }
+        let texts = match kept.texts.take() {
+            Some(gathered) if gathered.gathered_for == gathered_for => gathered.texts,
+            Some(_) | None => chat_fold_texts(entry, &gathered_for, &mut kept.previews),
         };
         let matches = texts.matches(&needle);
-        kept.matches = Some((gathered_for, needle, matches.clone()));
+        kept.texts = Some(Gathered {
+            gathered_for: gathered_for.clone(),
+            texts,
+        });
+        kept.matches = Some(Counted {
+            gathered_for,
+            needle,
+            matches: matches.clone(),
+        });
         matches
     });
     use_context_provider(|| ChatFolds(folds));
@@ -123,7 +148,7 @@ fn chat_fold_texts(
 ) -> FoldTexts {
     if previews.agent != Some(gathered.agent) {
         previews.agent = Some(gathered.agent);
-        previews.lines.clear();
+        previews.by_edit.clear();
     }
     let items: Vec<&TranscriptItem> = entry.transcript.items().collect();
     let loaded: BTreeSet<ItemId> = items.iter().map(|item| item.id).collect();
@@ -131,7 +156,7 @@ fn chat_fold_texts(
     let awaiting = awaiting_approval(&items);
     let rows = tool_rows::rows(&top, &awaiting, gathered.divider);
     let children = children_by_parent(&items);
-    FoldTexts::of(&rows, &children, &awaiting, &entry.summary.folder, previews)
+    FoldTexts::gather(&rows, &children, &awaiting, &entry.summary.folder, previews)
 }
 
 /// A text a fold shows once open, with every fold it sits in: a fold inside a subagent counts for
@@ -153,7 +178,7 @@ pub(crate) struct FoldTexts {
 impl FoldTexts {
     /// `folder` is the agent's, from which an edit's line shows its path. `previews` holds the
     /// edits' lines of the last gathering, and gets this one's.
-    pub(crate) fn of(
+    pub(crate) fn gather(
         rows: &[Row<'_>],
         children: &Children<'_>,
         awaiting: &BTreeSet<ItemId>,
@@ -164,8 +189,8 @@ impl FoldTexts {
             children,
             awaiting,
             folder,
-            kept_previews: std::mem::take(&mut previews.lines),
-            previews: &mut previews.lines,
+            kept_previews: std::mem::take(&mut previews.by_edit),
+            previews: &mut previews.by_edit,
             open: Vec::new(),
             pieces: Vec::new(),
             subagents: BTreeSet::new(),
@@ -182,7 +207,7 @@ impl FoldTexts {
     pub(crate) fn matches(&self, needle: &Needle) -> FoldMatches {
         let mut found = FoldMatches::new();
         for piece in &self.pieces {
-            let count = if needle.lowercases() {
+            let count = if needle.needs_lowercase() {
                 needle.count_lowercase(piece.lowercase.get_or_init(|| piece.text.to_lowercase()))
             } else {
                 needle.count(&piece.text)
@@ -213,8 +238,8 @@ struct Gatherer<'run, 'item> {
     awaiting: &'run BTreeSet<ItemId>,
     folder: &'run Path,
     /// The previews of the last gathering, which this one takes from.
-    kept_previews: HashMap<ItemId, (u64, Rc<[String]>)>,
-    previews: &'run mut HashMap<ItemId, (u64, Rc<[String]>)>,
+    kept_previews: HashMap<ItemId, Preview>,
+    previews: &'run mut HashMap<ItemId, Preview>,
     /// The folds the texts added now sit in, the outermost first.
     open: Vec<FoldKey>,
     pieces: Vec<Piece>,
@@ -292,22 +317,19 @@ impl Gatherer<'_, '_> {
             }
             return;
         };
-        let lines = self.preview(id, &edit.old_text, &edit.new_text);
-        for line in lines.iter() {
-            self.add(line);
-        }
+        self.preview(id, &edit.old_text, &edit.new_text);
         if call.status == ToolCallStatus::Failed {
             self.add(call.output.as_deref().unwrap_or_default());
         }
     }
 
     /// The lines an edit's preview shows, from the last gathering while its texts are the same.
-    fn preview(&mut self, id: ItemId, old: &str, new: &str) -> Rc<[String]> {
+    fn preview(&mut self, id: ItemId, old: &str, new: &str) {
         let mut hasher = DefaultHasher::new();
         (old, new).hash(&mut hasher);
-        let hash = hasher.finish();
-        let lines = match self.kept_previews.remove(&id) {
-            Some((kept, lines)) if kept == hash => lines,
+        let texts_hash = hasher.finish();
+        let lines: Vec<String> = match self.kept_previews.remove(&id) {
+            Some(kept) if kept.texts_hash == texts_hash => kept.lines,
             Some(_) | None => {
                 let diff =
                     render::diff_lines(old, new, None, EDIT_CONTEXT_LINES, 1, EDIT_PREVIEW_ROWS);
@@ -325,8 +347,10 @@ impl Gatherer<'_, '_> {
                     .collect()
             }
         };
-        self.previews.insert(id, (hash, Rc::clone(&lines)));
-        lines
+        for line in &lines {
+            self.add(line);
+        }
+        self.previews.insert(id, Preview { texts_hash, lines });
     }
 
     /// A search's line in a subagent or a run of reads opens on what it found.
@@ -390,8 +414,7 @@ pub(crate) fn FoldChip(fold: FoldKey) -> Element {
     };
     rsx! {
         span {
-            class: "find-chip",
-            "data-find-folded": "{count}",
+            class: CHIP_CLASS,
             title: "{matches} in what this line folds. The find opens it when it gets there.",
             Icon { kind: IconKind::Search, size: 10 }
             "{count}"
@@ -402,7 +425,7 @@ pub(crate) fn FoldChip(fold: FoldKey) -> Element {
 #[cfg(test)]
 mod tests {
     use cockpit_protocol::{FileEdit, NoticeKind, UserMessage};
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use super::*;
 
@@ -414,7 +437,7 @@ mod tests {
         }
     }
 
-    fn call(tool: &str, summary: &str, input: serde_json::Value, output: &str) -> ToolCall {
+    fn call(tool: &str, summary: &str, input: Value, output: &str) -> ToolCall {
         ToolCall {
             tool: tool.to_owned(),
             summary: summary.to_owned(),
@@ -438,7 +461,7 @@ mod tests {
         let awaiting = awaiting_approval(&refs);
         let rows = tool_rows::rows(&top, &awaiting, divider.map(ItemId::new));
         let children = children_by_parent(&refs);
-        FoldTexts::of(
+        FoldTexts::gather(
             &rows,
             &children,
             &awaiting,
@@ -639,7 +662,7 @@ mod tests {
             let refs: Vec<&TranscriptItem> = items.iter().collect();
             let awaiting = BTreeSet::new();
             let rows = tool_rows::rows(&refs, &awaiting, None);
-            FoldTexts::of(
+            FoldTexts::gather(
                 &rows,
                 &children_by_parent(&refs),
                 &awaiting,
@@ -656,7 +679,7 @@ mod tests {
         let found = FoldMatches::from([(FoldKey::Item(ItemId::new(1)), 1)]);
         assert_eq!((first, again), (found.clone(), found));
         assert_eq!(changed, FoldMatches::new());
-        assert_eq!(previews.lines.len(), 1);
+        assert_eq!(previews.by_edit.len(), 1);
     }
 
     #[test]
