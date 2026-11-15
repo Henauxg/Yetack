@@ -1760,10 +1760,7 @@ fn show_project_files(state: &mut AppState) {
     state.ui.selected = Some(agent);
     if let Some(entry) = state.agents.get_mut(&agent) {
         for folder in ["docs", "src", "tests"] {
-            entry
-                .tree
-                .expanded
-                .insert(PathBuf::from(PARSER_FOLDER).join(folder));
+            entry.tree.expanded.insert(in_folder(PARSER_FOLDER, folder));
         }
     }
     // Opens the pane, as the header's files chip does.
@@ -5429,6 +5426,27 @@ pub struct ParseError {
             Some((PathBuf::from(CHANGELOG_FILE), ViewMode::Preview))
         );
         assert!(prefs::is_sidebar_width(SHOWCASE_SIDEBAR_WIDTH));
+    }
+
+    /// `PathBuf::join` writes a backslash on Windows, and a folder written so matches none of
+    /// the tree's: its files never show.
+    #[test]
+    fn the_projects_scene_opens_its_folders_by_their_unix_paths() {
+        let mut state = state(label());
+
+        showcase(&mut state, Scene::Projects);
+
+        let mut expanded: Vec<String> = state.agents[&AgentId::new(QUESTION_AGENT)]
+            .tree
+            .expanded
+            .iter()
+            .map(|folder| folder.display().to_string())
+            .collect();
+        expanded.sort();
+        assert_eq!(
+            expanded,
+            ["docs", "src", "tests"].map(|folder| format!("{PARSER_FOLDER}/{folder}"))
+        );
     }
 
     #[test]
