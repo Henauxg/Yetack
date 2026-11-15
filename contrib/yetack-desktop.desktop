@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=Agents Cockpit
+Name=Yetack
 Comment=Watch and steer Claude Code agents
 Exec=yetack-desktop
 Icon=yetack

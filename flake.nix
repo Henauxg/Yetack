@@ -1,5 +1,5 @@
 {
-  description = "yetack: run Claude Code agents on a server and steer them from a desktop app";
+  description = "Yetack: run Claude Code agents on a server and steer them from a desktop app";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

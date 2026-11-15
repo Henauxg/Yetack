@@ -61,11 +61,12 @@ workspace = true
 [package.metadata.deb]
 name = "yetack"
 maintainer = "Henauxg <Henauxg@users.noreply.github.com>"
-copyright = "yetack contributors"
+copyright = "Yetack contributors"
 license-file = ["../../LICENSE", "0"]
 extended-description = """\
-Run Claude Code agents on this computer or on a server, and watch and steer them \
-from a desktop app: their conversations, tool calls, approvals, questions and plans."""
+Yet another agents cockpit. Run Claude Code agents on this computer or on a server, and \
+watch and steer them from a desktop app: their conversations, tool calls, approvals, \
+questions and plans."""
 section = "devel"
 priority = "optional"
 revision = ""

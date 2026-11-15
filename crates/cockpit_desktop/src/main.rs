@@ -51,7 +51,7 @@ use crate::state::{AppState, MachineState};
 const STYLESHEET: &str = include_str!("style.css");
 
 /// The name the window title, the sidebar and the notifications show.
-const APP_NAME: &str = "Agents Cockpit";
+const APP_NAME: &str = "Yetack";
 
 /// The window's icon, for window managers that read it from the window. A Wayland desktop takes
 /// the icon from the desktop entry instead, which `flake.nix` installs with the same artwork.
