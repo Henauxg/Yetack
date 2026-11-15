@@ -12,7 +12,7 @@ use crate::hub::HubInput;
 use crate::serve::{START_TASK, ServeError};
 use crate::server;
 
-const THREAD_NAME: &str = "agents-cockpit-daemon";
+const THREAD_NAME: &str = "yetack-daemon";
 
 /// The daemon, run by another program on a Tokio runtime of its own.
 ///

@@ -337,7 +337,7 @@ mod tests {
     use crate::state::no_daemon::{Absence, DaemonChoice};
 
     const READ_ONLY: &str =
-        "/nix/store/made-up-home-manager-files/.config/agents-cockpit/config.toml is read-only";
+        "/nix/store/made-up-home-manager-files/.config/yetack/config.toml is read-only";
 
     /// The General tab, where the background service runs and the config names no daemon.
     fn general() -> AppState {
@@ -548,7 +548,7 @@ mod tests {
         let mut state = general();
         state.machines.configured = Some(DaemonConfig::Ssh {
             host: "build-box".to_owned(),
-            remote_command: "/opt/agents-cockpit".to_owned(),
+            remote_command: "/opt/yetack".to_owned(),
             source_dir: None,
         });
 

@@ -1,5 +1,5 @@
 {
-  description = "agents-cockpit: run Claude Code agents on a server and steer them from a desktop app";
+  description = "yetack: run Claude Code agents on a server and steer them from a desktop app";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -45,41 +45,41 @@
           };
           # The daemon the app sends to servers: static, so that it runs on any x86_64 Linux.
           linuxDaemon = pkgs.pkgsStatic.rustPlatform.buildRustPackage (common // {
-            pname = "agents-cockpit-static";
-            cargoBuildFlags = [ "-p" "agents_cockpit" ];
-            meta.mainProgram = "agents-cockpit";
+            pname = "yetack-static";
+            cargoBuildFlags = [ "-p" "yetack" ];
+            meta.mainProgram = "yetack";
           });
           carriesDaemon = pkgs.stdenv.hostPlatform.system == "x86_64-linux";
         in
         {
           # The daemon and the command line, for the server.
           daemon = rustPlatform.buildRustPackage (common // {
-            pname = "agents-cockpit";
-            cargoBuildFlags = [ "-p" "agents_cockpit" ];
-            meta.mainProgram = "agents-cockpit";
+            pname = "yetack";
+            cargoBuildFlags = [ "-p" "yetack" ];
+            meta.mainProgram = "yetack";
           });
 
           # The desktop app, with its desktop entry and icon, for the laptop.
           desktop = rustPlatform.buildRustPackage (common // {
-            pname = "agents-cockpit-desktop";
+            pname = "yetack-desktop";
             cargoBuildFlags = [ "-p" "cockpit_desktop" ];
             nativeBuildInputs = [ pkgs.pkg-config pkgs.wrapGAppsHook3 ];
             buildInputs = desktopLibraries pkgs;
             # The daemon the app's update sends to a server, which then builds nothing. An app of
             # another system carries none: its update builds on the server.
             YETACK_LINUX_DAEMON =
-              pkgs.lib.optionalString carriesDaemon "${linuxDaemon}/bin/agents-cockpit";
+              pkgs.lib.optionalString carriesDaemon "${linuxDaemon}/bin/yetack";
             # GTK names the window after the binary, so a Wayland desktop finds the entry, and its
             # icon, by the binary's name.
             postInstall = ''
-              install -Dm644 contrib/agents-cockpit-desktop.desktop \
-                $out/share/applications/agents-cockpit-desktop.desktop
-              install -Dm644 crates/cockpit_desktop/assets/agents-cockpit.svg \
-                $out/share/icons/hicolor/scalable/apps/agents-cockpit.svg
-              install -Dm644 crates/cockpit_desktop/assets/agents-cockpit-256.png \
-                $out/share/icons/hicolor/256x256/apps/agents-cockpit.png
+              install -Dm644 contrib/yetack-desktop.desktop \
+                $out/share/applications/yetack-desktop.desktop
+              install -Dm644 crates/cockpit_desktop/assets/yetack.svg \
+                $out/share/icons/hicolor/scalable/apps/yetack.svg
+              install -Dm644 crates/cockpit_desktop/assets/yetack-256.png \
+                $out/share/icons/hicolor/256x256/apps/yetack.png
             '';
-            meta.mainProgram = "agents-cockpit-desktop";
+            meta.mainProgram = "yetack-desktop";
           });
 
           default = self.packages.${pkgs.stdenv.hostPlatform.system}.desktop;

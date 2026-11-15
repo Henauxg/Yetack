@@ -218,7 +218,7 @@ mod tests {
     fn plan(source_dir: Option<&str>) -> ServerPlan {
         ServerPlan {
             host: "build-box".to_owned(),
-            remote_command: "/opt/agents-cockpit".to_owned(),
+            remote_command: "/opt/yetack".to_owned(),
             source_dir: source_dir.map(str::to_owned),
             commit: BuildCommit::new("3f9c2e1".to_owned()),
             daemon_file: None,
@@ -251,7 +251,7 @@ mod tests {
 
         assert_eq!(
             update_arguments(&without_a_folder, BusyAgents::Refuse, None, ""),
-            ["--commit", "3f9c2e1", "--binary", "/opt/agents-cockpit"]
+            ["--commit", "3f9c2e1", "--binary", "/opt/yetack"]
         );
         assert_eq!(
             update_arguments(&with_a_folder, BusyAgents::Refuse, None, ""),
@@ -259,7 +259,7 @@ mod tests {
                 "--commit",
                 "3f9c2e1",
                 "--binary",
-                "/opt/agents-cockpit",
+                "/opt/yetack",
                 "--source-dir",
                 "/srv/cockpit"
             ]
@@ -274,7 +274,7 @@ mod tests {
                 "--commit",
                 "3f9c2e1",
                 "--binary",
-                "/opt/agents-cockpit",
+                "/opt/yetack",
                 "--even-if-busy"
             ]
         );
@@ -283,8 +283,7 @@ mod tests {
     #[test]
     fn a_sent_daemon_replaces_the_build_with_its_file_checksum_and_version() {
         let sent = SentDaemon {
-            remote_file: "/home/someone/.cache/agents-cockpit/sent/agents-cockpit.a1b2c3"
-                .to_owned(),
+            remote_file: "/home/someone/.cache/yetack/sent/yetack.a1b2c3".to_owned(),
             sha256: "ba7816bf".to_owned(),
         };
 
@@ -299,9 +298,9 @@ mod tests {
                 "--commit",
                 "3f9c2e1",
                 "--binary",
-                "/opt/agents-cockpit",
+                "/opt/yetack",
                 "--built",
-                "/home/someone/.cache/agents-cockpit/sent/agents-cockpit.a1b2c3",
+                "/home/someone/.cache/yetack/sent/yetack.a1b2c3",
                 "--sha256",
                 "ba7816bf",
                 "--version",

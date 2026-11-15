@@ -1,4 +1,4 @@
-//! The app's own preferences, `$XDG_STATE_HOME/agents-cockpit-desktop/prefs.json`: choices made in
+//! The app's own preferences, `$XDG_STATE_HOME/yetack-desktop/prefs.json`: choices made in
 //! the window that last across restarts.
 //!
 //! ```json
@@ -68,7 +68,7 @@ use crate::connection::Cockpit;
 use crate::keymap::Keymap;
 use crate::state::Block;
 
-pub const PREFS_FOLDER: &str = "agents-cockpit-desktop";
+pub const PREFS_FOLDER: &str = "yetack-desktop";
 const PREFS_FILE: &str = "prefs.json";
 const TEMPORARY_SUFFIX: &str = ".tmp";
 
@@ -1722,9 +1722,9 @@ mod tests {
             state_home: None,
         };
         #[cfg(unix)]
-        let expected = "/home/someone/.local/state/agents-cockpit-desktop/prefs.json";
+        let expected = "/home/someone/.local/state/yetack-desktop/prefs.json";
         #[cfg(windows)]
-        let expected = r"C:\Users\someone\AppData\Local\agents-cockpit-desktop\prefs.json";
+        let expected = r"C:\Users\someone\AppData\Local\yetack-desktop\prefs.json";
 
         assert_eq!(file(&environment), Some(PathBuf::from(expected)));
         assert_eq!(file(&Environment::default()), None);

@@ -1,13 +1,13 @@
-//! The app's config file, `$XDG_CONFIG_HOME/agents-cockpit/config.toml` (on Windows,
-//! `%APPDATA%\agents-cockpit\config.toml`): which daemon to reach.
+//! The app's config file, `$XDG_CONFIG_HOME/yetack/config.toml` (on Windows,
+//! `%APPDATA%\yetack\config.toml`): which daemon to reach.
 //!
 //! ```toml
 //! [daemon]
 //! transport = "ssh"
 //! host = "build-box"
-//! remote_command = "/home/me/.local/bin/agents-cockpit"
-//! # Where the daemon's update builds from, by default ~/agents-cockpit:
-//! # source_dir = "/home/me/src/agents-cockpit"
+//! remote_command = "/home/me/.local/bin/yetack"
+//! # Where the daemon's update builds from, by default ~/yetack:
+//! # source_dir = "/home/me/src/yetack"
 //!
 //! [notifications]
 //! enabled = true
@@ -27,7 +27,7 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, TomlError};
 
-const APP_FOLDER: &str = "agents-cockpit";
+const APP_FOLDER: &str = "yetack";
 const CONFIG_FILE: &str = "config.toml";
 pub const DAEMON_SECTION: &str = "daemon";
 const MACHINES_SECTION: &str = "machines";
@@ -81,7 +81,7 @@ pub struct MachineConfig {
     /// What the sidebar calls the machine.
     pub name: String,
     pub host: String,
-    /// The absolute path of `agents-cockpit` on the host.
+    /// The absolute path of `yetack` on the host.
     pub remote_command: String,
     /// The git checkout the daemon's update builds from. Unset, the update script's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -91,15 +91,15 @@ pub struct MachineConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "transport", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DaemonConfig {
-    /// `socket` defaults to `$XDG_STATE_HOME/agents-cockpit/agents-cockpit.sock`. With
-    /// `start_service`, the app starts `agents-cockpit serve` when the socket does not answer.
+    /// `socket` defaults to `$XDG_STATE_HOME/yetack/yetack.sock`. With
+    /// `start_service`, the app starts `yetack serve` when the socket does not answer.
     Local {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         socket: Option<PathBuf>,
         #[serde(default, skip_serializing_if = "is_false")]
         start_service: bool,
     },
-    /// `remote_command` is the absolute path of `agents-cockpit` on the host, and `source_dir`
+    /// `remote_command` is the absolute path of `yetack` on the host, and `source_dir`
     /// the git checkout the daemon's update builds from (unset, the update script's default).
     Ssh {
         host: String,
@@ -397,15 +397,15 @@ pub(crate) mod tests {
     #[cfg(unix)]
     pub(crate) const HOME: &str = "/home/someone";
     #[cfg(unix)]
-    const CONFIG_UNDER_HOME: &str = "/home/someone/.config/agents-cockpit/config.toml";
+    const CONFIG_UNDER_HOME: &str = "/home/someone/.config/yetack/config.toml";
     #[cfg(unix)]
-    const STATE_UNDER_HOME: &str = "/home/someone/.local/state/agents-cockpit";
+    const STATE_UNDER_HOME: &str = "/home/someone/.local/state/yetack";
     #[cfg(windows)]
     pub(crate) const HOME: &str = r"C:\Users\someone";
     #[cfg(windows)]
-    const CONFIG_UNDER_HOME: &str = r"C:\Users\someone\AppData\Roaming\agents-cockpit\config.toml";
+    const CONFIG_UNDER_HOME: &str = r"C:\Users\someone\AppData\Roaming\yetack\config.toml";
     #[cfg(windows)]
-    const STATE_UNDER_HOME: &str = r"C:\Users\someone\AppData\Local\agents-cockpit";
+    const STATE_UNDER_HOME: &str = r"C:\Users\someone\AppData\Local\yetack";
 
     fn environment() -> Environment {
         Environment {
@@ -438,7 +438,7 @@ pub(crate) mod tests {
             [daemon]
             transport = "ssh"
             host = "build-box"
-            remote_command = "/opt/agents-cockpit/bin/agents-cockpit"
+            remote_command = "/opt/yetack/bin/yetack"
 
             [notifications]
             enabled = false
@@ -450,7 +450,7 @@ pub(crate) mod tests {
             config.daemon,
             Some(DaemonConfig::Ssh {
                 host: "build-box".to_owned(),
-                remote_command: "/opt/agents-cockpit/bin/agents-cockpit".to_owned(),
+                remote_command: "/opt/yetack/bin/yetack".to_owned(),
                 source_dir: None,
             })
         );
@@ -491,7 +491,7 @@ pub(crate) mod tests {
 
     #[test]
     fn each_machines_table_names_a_server_beside_this_computers_daemon() {
-        let text = "[daemon]\ntransport = \"in_app\"\n\n[[machines]]\nname = \"devbox\"\nhost = \"dev@devbox\"\nremote_command = \"/opt/agents-cockpit\"\n\n[[machines]]\nname = \"gpu-box\"\nhost = \"gpu\"\nremote_command = \"/usr/local/bin/agents-cockpit\"\n";
+        let text = "[daemon]\ntransport = \"in_app\"\n\n[[machines]]\nname = \"devbox\"\nhost = \"dev@devbox\"\nremote_command = \"/opt/yetack\"\n\n[[machines]]\nname = \"gpu-box\"\nhost = \"gpu\"\nremote_command = \"/usr/local/bin/yetack\"\n";
         let config: Config = text.parse().unwrap();
 
         assert_eq!(config.daemon, Some(DaemonConfig::InApp));
@@ -501,13 +501,13 @@ pub(crate) mod tests {
                 MachineConfig {
                     name: "devbox".to_owned(),
                     host: "dev@devbox".to_owned(),
-                    remote_command: "/opt/agents-cockpit".to_owned(),
+                    remote_command: "/opt/yetack".to_owned(),
                     source_dir: None,
                 },
                 MachineConfig {
                     name: "gpu-box".to_owned(),
                     host: "gpu".to_owned(),
-                    remote_command: "/usr/local/bin/agents-cockpit".to_owned(),
+                    remote_command: "/usr/local/bin/yetack".to_owned(),
                     source_dir: None,
                 },
             ]
@@ -516,13 +516,13 @@ pub(crate) mod tests {
             "[[machines]]\nname = \"devbox\"\nhost = \"devbox\"\n"
                 .parse::<Config>()
                 .is_err(),
-            "a machine needs the path of agents-cockpit"
+            "a machine needs the path of yetack"
         );
     }
 
     #[test]
     fn a_source_dir_is_optional_per_machine_and_on_an_ssh_daemon() {
-        let text = "[daemon]\ntransport = \"ssh\"\nhost = \"build-box\"\nremote_command = \"/opt/agents-cockpit\"\nsource_dir = \"/srv/cockpit\"\n\n[[machines]]\nname = \"devbox\"\nhost = \"devbox\"\nremote_command = \"/opt/agents-cockpit\"\nsource_dir = \"/home/dev/src/cockpit\"\n";
+        let text = "[daemon]\ntransport = \"ssh\"\nhost = \"build-box\"\nremote_command = \"/opt/yetack\"\nsource_dir = \"/srv/cockpit\"\n\n[[machines]]\nname = \"devbox\"\nhost = \"devbox\"\nremote_command = \"/opt/yetack\"\nsource_dir = \"/home/dev/src/cockpit\"\n";
 
         let config: Config = text.parse().unwrap();
 
@@ -530,7 +530,7 @@ pub(crate) mod tests {
             config.daemon,
             Some(DaemonConfig::Ssh {
                 host: "build-box".to_owned(),
-                remote_command: "/opt/agents-cockpit".to_owned(),
+                remote_command: "/opt/yetack".to_owned(),
                 source_dir: Some("/srv/cockpit".to_owned()),
             })
         );
@@ -547,7 +547,7 @@ pub(crate) mod tests {
         let devbox = MachineConfig {
             name: "devbox".to_owned(),
             host: "devbox".to_owned(),
-            remote_command: "/opt/agents-cockpit".to_owned(),
+            remote_command: "/opt/yetack".to_owned(),
             source_dir: Some("/srv/cockpit".to_owned()),
         };
 
@@ -582,11 +582,11 @@ pub(crate) mod tests {
 
         assert_eq!(
             environment.config_file().unwrap(),
-            PathBuf::from("/cfg/agents-cockpit/config.toml")
+            PathBuf::from("/cfg/yetack/config.toml")
         );
         assert_eq!(
             environment.daemon_state_dir().unwrap(),
-            PathBuf::from("/state/agents-cockpit")
+            PathBuf::from("/state/yetack")
         );
         assert_eq!(
             self::environment().config_file().unwrap(),
@@ -616,7 +616,7 @@ pub(crate) mod tests {
     fn a_missing_file_loads_the_defaults() {
         let environment = Environment {
             home: None,
-            config_home: Some(PathBuf::from("/nonexistent/agents-cockpit-test")),
+            config_home: Some(PathBuf::from("/nonexistent/yetack-test")),
             state_home: None,
         };
 
@@ -627,7 +627,7 @@ pub(crate) mod tests {
     fn saving_a_daemon_keeps_the_rest_of_the_file() {
         let temp = tempfile::tempdir().unwrap();
         let file = temp.path().join(CONFIG_FILE);
-        let text = "# Reach the build box.\n[daemon]\ntransport = \"ssh\"\nhost = \"build-box\"\nremote_command = \"/opt/agents-cockpit\"\n\n[notifications]\n# Too many.\nenabled = false\n";
+        let text = "# Reach the build box.\n[daemon]\ntransport = \"ssh\"\nhost = \"build-box\"\nremote_command = \"/opt/yetack\"\n\n[notifications]\n# Too many.\nenabled = false\n";
         std::fs::write(&file, text).unwrap();
 
         save_daemon(&file, &DaemonConfig::InApp).unwrap();
@@ -646,12 +646,12 @@ pub(crate) mod tests {
     fn saving_the_servers_replaces_their_tables_and_keeps_the_rest() {
         let temp = tempfile::tempdir().unwrap();
         let file = temp.path().join(CONFIG_FILE);
-        let text = "# This computer.\n[daemon]\ntransport = \"in_app\"\n\n[[machines]]\nname = \"old\"\nhost = \"old-host\"\nremote_command = \"/opt/agents-cockpit\"\n";
+        let text = "# This computer.\n[daemon]\ntransport = \"in_app\"\n\n[[machines]]\nname = \"old\"\nhost = \"old-host\"\nremote_command = \"/opt/yetack\"\n";
         std::fs::write(&file, text).unwrap();
         let devbox = MachineConfig {
             name: "devbox".to_owned(),
             host: "dev@devbox".to_owned(),
-            remote_command: "/home/dev/.cargo/bin/agents-cockpit".to_owned(),
+            remote_command: "/home/dev/.cargo/bin/yetack".to_owned(),
             source_dir: None,
         };
 

@@ -1,4 +1,4 @@
-//! `agents-cockpit bridge`: what `ssh <host> agents-cockpit bridge` runs. It copies bytes between
+//! `yetack bridge`: what `ssh <host> yetack bridge` runs. It copies bytes between
 //! its stdin and stdout and the daemon's socket, and parses nothing.
 
 use std::io;

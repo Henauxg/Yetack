@@ -1169,11 +1169,11 @@ pub fn failure_text(failed: &FailedUpdate, name: &str) -> FailureText {
                 ),
                 Some(HandStop::Unrecorded) => (
                     "The daemon that runs now comes from an older version, which does not record its process, so the app cannot tell which process to stop.".to_owned(),
-                    Some(format!("Stop the agents-cockpit {SERVE_SUBCOMMAND} of {state_dir} yourself, once, then retry. From then on, the app stops the daemon itself.")),
+                    Some(format!("Stop the yetack {SERVE_SUBCOMMAND} of {state_dir} yourself, once, then retry. From then on, the app stops the daemon itself.")),
                 ),
                 Some(HandStop::Unverified) => (
                     "The app could not tell which process runs the daemon, so it stopped none.".to_owned(),
-                    Some(format!("Stop the agents-cockpit {SERVE_SUBCOMMAND} of {state_dir} yourself, then retry.")),
+                    Some(format!("Stop the yetack {SERVE_SUBCOMMAND} of {state_dir} yourself, then retry.")),
                 ),
                 None => (
                     format!("The app could not stop the daemon, so {name} still runs its old version."),
@@ -1223,7 +1223,7 @@ mod tests {
     fn server_plan() -> ServerPlan {
         ServerPlan {
             host: "build-box".to_owned(),
-            remote_command: "/opt/agents-cockpit".to_owned(),
+            remote_command: "/opt/yetack".to_owned(),
             source_dir: None,
             commit: BuildCommit::new("3f9c2e1a7b4d5c6e".to_owned()),
             daemon_file: None,
@@ -1236,8 +1236,8 @@ mod tests {
 
     fn service_plan() -> UpdatePlan {
         UpdatePlan::Service(ServicePlan {
-            state_dir: PathBuf::from("/home/someone/.local/state/agents-cockpit"),
-            log_folder: PathBuf::from("/home/someone/.local/state/agents-cockpit-desktop"),
+            state_dir: PathBuf::from("/home/someone/.local/state/yetack"),
+            log_folder: PathBuf::from("/home/someone/.local/state/yetack-desktop"),
         })
     }
 
@@ -1278,7 +1278,7 @@ mod tests {
 
     /// The probe of a server whose daemon the app owns, at the plan's path.
     fn owned_probe() -> DaemonProbe {
-        DaemonProbe::owned_at("/opt/agents-cockpit")
+        DaemonProbe::owned_at("/opt/yetack")
     }
 
     fn with_server() -> AppState {
@@ -2210,7 +2210,7 @@ mod tests {
     fn a_failed_send_ends_the_update_as_failed_with_what_the_app_said() {
         let mut state = with_older_server();
         let sends = UpdatePlan::Server(ServerPlan {
-            daemon_file: Some("/opt/app/agents-cockpit-x86_64-linux".into()),
+            daemon_file: Some("/opt/app/yetack-x86_64-linux".into()),
             ..server_plan()
         });
         known_mut(&mut state).update_plan = Some(sends.clone());
@@ -2238,7 +2238,7 @@ mod tests {
     fn the_sidebar_line_names_the_step_and_counts_the_bytes_of_a_send() {
         let mut state = with_older_server();
         let sends = UpdatePlan::Server(ServerPlan {
-            daemon_file: Some("/opt/app/agents-cockpit-x86_64-linux".into()),
+            daemon_file: Some("/opt/app/yetack-x86_64-linux".into()),
             ..server_plan()
         });
         state.machines.get_mut(build_box()).unwrap().update_plan = Some(sends);
@@ -2663,8 +2663,7 @@ mod tests {
             failure: UpdateFailure::NotStopped {
                 by_hand: Some(HandStop::Unrecorded),
             },
-            message: "/home/someone/.local/state/agents-cockpit/serve.lock names no process"
-                .to_owned(),
+            message: "/home/someone/.local/state/yetack/serve.lock names no process".to_owned(),
         };
 
         let text = failure_text(&failed, "This computer");
@@ -2672,7 +2671,7 @@ mod tests {
         assert_eq!(
             text.hint.as_deref(),
             Some(
-                "Stop the agents-cockpit serve of /home/someone/.local/state/agents-cockpit yourself, once, then retry. From then on, the app stops the daemon itself."
+                "Stop the yetack serve of /home/someone/.local/state/yetack yourself, once, then retry. From then on, the app stops the daemon itself."
             )
         );
     }
@@ -2688,7 +2687,7 @@ mod tests {
             MachineId::THIS,
             Err(RestartFailure::NotStarted {
                 error: "the service stopped as it started (exit status: 1): made-up".to_owned(),
-                log: Some("agents-cockpit: made-up".to_owned()),
+                log: Some("yetack: made-up".to_owned()),
             }),
         );
 
@@ -2698,7 +2697,7 @@ mod tests {
         assert_eq!(failed.failure, UpdateFailure::NotStarted);
         assert_eq!(
             failed.message,
-            "the service stopped as it started (exit status: 1): made-up\n\nagents-cockpit: made-up"
+            "the service stopped as it started (exit status: 1): made-up\n\nyetack: made-up"
         );
         assert_eq!(
             update_line(&state.machines.this).map(|line| line.text),
@@ -3087,8 +3086,8 @@ mod tests {
         let config = MachineConfig {
             name: "lab".to_owned(),
             host: "dev@lab".to_owned(),
-            remote_command: "/srv/agents-cockpit".to_owned(),
-            source_dir: Some("/src/agents-cockpit".to_owned()),
+            remote_command: "/srv/yetack".to_owned(),
+            source_dir: Some("/src/yetack".to_owned()),
         };
 
         follow_config(known_mut(&mut state), &config);
@@ -3098,8 +3097,8 @@ mod tests {
         follow_config(known_mut(&mut state), &config);
         let moved = UpdatePlan::Server(ServerPlan {
             host: "dev@lab".to_owned(),
-            remote_command: "/srv/agents-cockpit".to_owned(),
-            source_dir: Some("/src/agents-cockpit".to_owned()),
+            remote_command: "/srv/yetack".to_owned(),
+            source_dir: Some("/src/yetack".to_owned()),
             commit: server_plan().commit,
             daemon_file: None,
         });

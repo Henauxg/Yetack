@@ -20,10 +20,10 @@ const INSTALL_SCRIPT: &str = include_str!("../../../contrib/install-daemon.sh");
 
 /// The file name of the Linux daemon the app carries beside itself. The Windows zip holds it, and
 /// `just linux-daemon` writes it beside a build from source.
-pub const CARRIED_FILE_NAME: &str = "agents-cockpit-x86_64-linux";
+pub const CARRIED_FILE_NAME: &str = "yetack-x86_64-linux";
 
 /// The Linux daemon a package carries, set when it builds the app: the `.deb`'s
-/// `/usr/bin/agents-cockpit`, or the flake's static daemon in the Nix store.
+/// `/usr/bin/yetack`, or the flake's static daemon in the Nix store.
 const PACKAGED: Option<&str> = option_env!("YETACK_LINUX_DAEMON");
 
 /// The bytes sent at once, between two reports of the progress.
@@ -35,10 +35,10 @@ const CHUNK: usize = 256 * 1024;
 /// remote command that has one.
 const RECEIVE_SCRIPT: &str = r#"set -eu
 umask 077
-dir=${XDG_CACHE_HOME:-$HOME/.cache}/agents-cockpit/sent
+dir=${XDG_CACHE_HOME:-$HOME/.cache}/yetack/sent
 mkdir -p "$dir"
 find "$dir" -type f -mmin +60 -exec rm -f {} + 2>/dev/null || true
-file=$(mktemp "$dir/agents-cockpit.XXXXXX")
+file=$(mktemp "$dir/yetack.XXXXXX")
 if ! cat >"$file"; then
     rm -f "$file"
     exit 1
@@ -49,7 +49,7 @@ echo "$file""#;
 /// as `key=value` lines that `ServerInstall` parses: `ProbeKey` names the keys, and `OwnerWord` and
 /// `PACKAGE_OWNER` the owners. A command run over SSH loads no shell profile, so the folders a
 /// user's own programs are in join the `PATH`.
-const PROBE_SCRIPT: &str = r#"PATH=$PATH:$HOME/.local/share/agents-cockpit/bin:$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin:/etc/profiles/per-user/$(id -un)/bin
+const PROBE_SCRIPT: &str = r#"PATH=$PATH:$HOME/.local/share/yetack/bin:$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin:/etc/profiles/per-user/$(id -un)/bin
 echo "system=$(uname -sm)"
 binary=$1
 case $binary in
@@ -75,7 +75,7 @@ case $path in
         if [ -n "$package" ]; then
             owner="package $package"
         elif [ -w "$folder" ] && {
-            [ "$folder" = "$(readlink -f "$HOME/.local/share/agents-cockpit/bin")" ] ||
+            [ "$folder" = "$(readlink -f "$HOME/.local/share/yetack/bin")" ] ||
                 [ "$folder" = "$(readlink -f "$HOME/.local/bin")" ]
         }; then
             owner=app
@@ -369,7 +369,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, "#!/bin/sh\necho 'agents-cockpit 0.1.0 (743d664)'\n").unwrap();
+        std::fs::write(path, "#!/bin/sh\necho 'yetack 0.1.0 (743d664)'\n").unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
@@ -379,14 +379,14 @@ mod tests {
         use crate::state::daemon_probe::DaemonOwner;
 
         let home = tempfile::tempdir().unwrap();
-        let daemon = home.path().join(".local/bin/agents-cockpit");
+        let daemon = home.path().join(".local/bin/yetack");
         fake_daemon(&daemon);
 
         let install = probe_here(home.path(), daemon.to_str().unwrap());
 
         let found = install.replaceable().unwrap();
         assert_eq!(found.owner, DaemonOwner::App);
-        assert_eq!(found.version, "agents-cockpit 0.1.0 (743d664)");
+        assert_eq!(found.version, "yetack 0.1.0 (743d664)");
     }
 
     #[cfg(target_os = "linux")]
@@ -395,9 +395,9 @@ mod tests {
         use crate::state::daemon_probe::DaemonOwner;
 
         let home = tempfile::tempdir().unwrap();
-        let elsewhere = home.path().join("tools/agents-cockpit");
+        let elsewhere = home.path().join("tools/yetack");
         fake_daemon(&elsewhere);
-        let link = home.path().join(".local/bin/agents-cockpit");
+        let link = home.path().join(".local/bin/yetack");
         std::fs::create_dir_all(link.parent().unwrap()).unwrap();
         std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
 
@@ -415,7 +415,7 @@ mod tests {
     fn the_probe_says_when_no_daemon_is_there() {
         let home = tempfile::tempdir().unwrap();
 
-        let install = probe_here(home.path(), "/nowhere/agents-cockpit");
+        let install = probe_here(home.path(), "/nowhere/yetack");
 
         assert_eq!(install.daemon, None);
     }
@@ -445,7 +445,7 @@ mod tests {
         assert!(output.status.success());
         let path = String::from_utf8(output.stdout).unwrap();
         let path = Path::new(path.trim());
-        assert!(path.starts_with(cache.path().join("agents-cockpit/sent")));
+        assert!(path.starts_with(cache.path().join("yetack/sent")));
         assert_eq!(std::fs::read(path).unwrap(), b"the daemon");
     }
 }

@@ -115,8 +115,8 @@ const REFUSED_FOR_OLDER: &str = "the daemon speaks protocol 8, the client 9";
 /// The release of this computer's service on the update screens: older than any of the app's.
 const LOCAL_OLDER_RELEASE: &str = "0.0.1";
 /// This computer's state folder and the app's, made up.
-const LOCAL_STATE: &str = "/home/dev/.local/state/agents-cockpit";
-const LOCAL_APP_STATE: &str = "/home/dev/.local/state/agents-cockpit-desktop";
+const LOCAL_STATE: &str = "/home/dev/.local/state/yetack";
+const LOCAL_APP_STATE: &str = "/home/dev/.local/state/yetack-desktop";
 
 /// How long the demo's update waits before each line of its output.
 pub const UPDATE_LINE_PAUSE: Duration = Duration::from_millis(700);
@@ -134,7 +134,7 @@ pub const UPDATE_OUTPUT: &[&str] = &[
 
 /// The script's lines after the app sent its daemon.
 pub const SENT_OUTPUT: &[&str] = &[
-    "update-daemon: checking /home/dev/.cache/agents-cockpit/sent/agents-cockpit.k3v9Qa",
+    "update-daemon: checking /home/dev/.cache/yetack/sent/yetack.k3v9Qa",
     "update-daemon: restarting the daemon",
     "update-daemon: the daemon runs 3f9c2e17ab54c90d1e2f3a4b5c6d7e8f90a1b2c3",
 ];
@@ -143,19 +143,18 @@ pub const SENT_OUTPUT: &[&str] = &[
 pub const SENT_SIZE: u64 = 9_800_000;
 
 /// Where the demo's app finds the daemon it carries.
-const CARRIED_DAEMON: &str = "/opt/agents-cockpit/agents-cockpit-x86_64-linux";
+const CARRIED_DAEMON: &str = "/opt/yetack/yetack-x86_64-linux";
 
 /// What the update script says when the daemon on the server is not the one the app sent.
 const CHECKSUM_DIFFERS: &str = "update-daemon: the binary on this machine is not the one the app sent: its checksum differs; the daemon was not touched";
 
 /// Why this computer's service did not start, and the end of its log.
 const NOT_STARTED_ERROR: &str =
-    "the service stopped as it started (exit status: 1): agents-cockpit: cannot bind the socket";
-const NOT_STARTED_LOG: &str =
-    "INFO reading the state folder\nagents-cockpit: cannot bind the socket";
+    "the service stopped as it started (exit status: 1): yetack: cannot bind the socket";
+const NOT_STARTED_LOG: &str = "INFO reading the state folder\nyetack: cannot bind the socket";
 
 /// Where the demo's servers keep their daemon.
-const SERVER_DAEMON: &str = "/opt/agents-cockpit/bin/agents-cockpit";
+const SERVER_DAEMON: &str = "/opt/yetack/bin/yetack";
 
 const PARSER_FOLDER: &str = "/home/dev/projects/calc-parser";
 const SERVICE_FOLDER: &str = "/home/dev/projects/calc-service";
@@ -822,18 +821,18 @@ pub fn show_update_screen(state: &mut AppState, screen: UpdateScreen) {
         }
         UpdateScreen::Nix => server_owned_by(
             state,
-            "/nix/store/0c4d9kx2-agents-cockpit-0.0.1/bin/agents-cockpit",
+            "/nix/store/0c4d9kx2-yetack-0.0.1/bin/yetack",
             DaemonOwner::Nix,
         ),
         UpdateScreen::Package => {
             server_owned_by(
                 state,
-                "/usr/bin/agents-cockpit",
-                DaemonOwner::Package("agents-cockpit".to_owned()),
+                "/usr/bin/yetack",
+                DaemonOwner::Package("yetack".to_owned()),
             );
         }
         UpdateScreen::Elsewhere => {
-            server_owned_by(state, "/opt/tools/agents-cockpit", DaemonOwner::Other);
+            server_owned_by(state, "/opt/tools/yetack", DaemonOwner::Other);
         }
         UpdateScreen::LocalAvailable => {
             local_service_of_another_build(state);
@@ -916,7 +915,7 @@ fn first_resting_agent(state: &AppState) -> Vec<AgentId> {
 fn server_plan() -> ServerPlan {
     ServerPlan {
         host: UPDATE_MACHINE.to_owned(),
-        remote_command: "/opt/agents-cockpit/bin/agents-cockpit".to_owned(),
+        remote_command: "/opt/yetack/bin/yetack".to_owned(),
         source_dir: None,
         commit: BuildCommit::new(UPDATE_COMMIT.to_owned()),
         daemon_file: None,
@@ -1007,7 +1006,7 @@ fn owned_install() -> ServerInstall {
             path: SERVER_DAEMON.to_owned(),
             command: SERVER_DAEMON.to_owned(),
             owner: DaemonOwner::App,
-            version: format!("agents-cockpit {LOCAL_OLDER_RELEASE} ({OLDER_COMMIT})"),
+            version: format!("yetack {LOCAL_OLDER_RELEASE} ({OLDER_COMMIT})"),
         }),
     }
 }
@@ -1027,7 +1026,7 @@ fn server_owned_by(state: &mut AppState, path: &str, owner: DaemonOwner) {
                 path: path.to_owned(),
                 command: path.to_owned(),
                 owner,
-                version: format!("agents-cockpit {LOCAL_OLDER_RELEASE}"),
+                version: format!("yetack {LOCAL_OLDER_RELEASE}"),
             }),
         });
     }
@@ -1146,8 +1145,8 @@ pub fn probe_answer() -> ServerInstall {
 
 /// The install script's lines in the demo, the report saying what is left to do.
 const SETUP_OUTPUT: &[&str] = &[
-    "install-daemon: checking /home/dev/.cache/agents-cockpit/sent/agents-cockpit.k3v9Qa",
-    "install-daemon: installed /home/dev/.local/share/agents-cockpit/bin/agents-cockpit",
+    "install-daemon: checking /home/dev/.cache/yetack/sent/yetack.k3v9Qa",
+    "install-daemon: installed /home/dev/.local/share/yetack/bin/yetack",
     "install-daemon: starting the service",
     "install-daemon: the daemon runs",
     "install-daemon: linger no",
@@ -1225,7 +1224,7 @@ pub enum MachinesScene {
     LocalConnecting,
     /// Local has no daemon yet, beside the server.
     LocalNoDaemon,
-    /// "Add a server" found no agents-cockpit on the server, and offers to install it.
+    /// "Add a server" found no `yetack` on the server, and offers to install it.
     SetupOffer,
     /// The setup installs the daemon.
     SetupInstalling,
@@ -1413,7 +1412,7 @@ pub enum LocalScene {
 
 /// What a read-only config says, as a link into the Nix store makes it.
 const READ_ONLY_CONFIG: &str =
-    "/nix/store/made-up-home-manager-files/.config/agents-cockpit/config.toml is read-only";
+    "/nix/store/made-up-home-manager-files/.config/yetack/config.toml is read-only";
 
 /// The scene `--demo-local` names, which only the demo takes.
 pub fn local_scene(arguments: &[String]) -> Option<LocalScene> {
@@ -1586,7 +1585,7 @@ fn insert_server<const N: usize>(
     server.server = Some(MachineConfig {
         name: host.to_owned(),
         host: format!("dev@{host}"),
-        remote_command: "/home/dev/.local/bin/agents-cockpit".to_owned(),
+        remote_command: "/home/dev/.local/bin/yetack".to_owned(),
         source_dir: None,
     });
     state.machines.others.insert(machine, server);
@@ -2419,7 +2418,7 @@ const IGNORED_FILE: &str = "target/debug/calc-parser.d";
 
 /// Folders of the demo server that hold no agent, past session or sample file.
 const OTHER_FOLDERS: [&str; 5] = [
-    "/home/dev/.config/agents-cockpit",
+    "/home/dev/.config/yetack",
     "/home/dev/.cache",
     "/home/dev/notes",
     "/home/dev/projects/archive/2025-prototypes",

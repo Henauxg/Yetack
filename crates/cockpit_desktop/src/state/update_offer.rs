@@ -395,7 +395,7 @@ mod tests {
             stderr: "Connection timed out".to_owned(),
         });
         let socket_error = SessionError::Connect(ConnectError::Socket {
-            path: "/run/agents-cockpit.sock".into(),
+            path: "/run/yetack.sock".into(),
             source: io::Error::from(io::ErrorKind::NotFound),
         });
 
@@ -451,7 +451,7 @@ mod tests {
     fn server_plan() -> UpdatePlan {
         UpdatePlan::Server(ServerPlan {
             host: "build-box".to_owned(),
-            remote_command: "/opt/agents-cockpit".to_owned(),
+            remote_command: "/opt/yetack".to_owned(),
             source_dir: None,
             commit: BuildCommit::new(APP_COMMIT.to_owned()),
             daemon_file: None,
@@ -460,8 +460,8 @@ mod tests {
 
     fn service_plan() -> UpdatePlan {
         UpdatePlan::Service(ServicePlan {
-            state_dir: PathBuf::from("/home/someone/.local/state/agents-cockpit"),
-            log_folder: PathBuf::from("/home/someone/.local/state/agents-cockpit-desktop"),
+            state_dir: PathBuf::from("/home/someone/.local/state/yetack"),
+            log_folder: PathBuf::from("/home/someone/.local/state/yetack-desktop"),
         })
     }
 

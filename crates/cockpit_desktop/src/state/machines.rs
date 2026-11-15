@@ -332,7 +332,7 @@ pub fn close_menu(state: &mut AppState) {
 pub enum Adding {
     /// The form names the daemon's path: the server joins the app.
     Add(MachineChange),
-    /// The form names no path: the app looks for agents-cockpit on the server first.
+    /// The form names no path: the app looks for `yetack` on the server first.
     Setup(SetupRun),
 }
 
@@ -505,7 +505,7 @@ fn check(
     }
     let looks = path == DaemonPath::MayLook && remote_command.is_empty();
     if !looks && !remote_command.starts_with('/') {
-        return Err("Give the absolute path of agents-cockpit on the server, or leave it empty.");
+        return Err("Give the absolute path of yetack on the server, or leave it empty.");
     }
     // A name keys the preferences, and the interface shows another one for this computer.
     let taken = state.machines.all().any(|(machine, known)| {
@@ -711,12 +711,12 @@ mod tests {
     fn a_server_needs_a_host_and_an_absolute_path_and_takes_the_hosts_name() {
         let mut state = state_with(Vec::new());
 
-        typed(&mut state, "", "-oProxyCommand=x", "/opt/agents-cockpit");
+        typed(&mut state, "", "-oProxyCommand=x", "/opt/yetack");
         let option = add(&mut state);
         let option_error = error(&state);
-        typed(&mut state, "", "devbox", "agents-cockpit");
+        typed(&mut state, "", "devbox", "yetack");
         let relative = add(&mut state);
-        typed(&mut state, " ", " dev@devbox ", " /opt/agents-cockpit ");
+        typed(&mut state, " ", " dev@devbox ", " /opt/yetack ");
         let added = add(&mut state);
 
         assert_eq!(option, None);
@@ -727,7 +727,7 @@ mod tests {
             Some(Adding::Add(MachineChange::Add(MachineConfig {
                 name: "dev@devbox".to_owned(),
                 host: "dev@devbox".to_owned(),
-                remote_command: "/opt/agents-cockpit".to_owned(),
+                remote_command: "/opt/yetack".to_owned(),
                 source_dir: None,
             })))
         );
@@ -767,7 +767,7 @@ mod tests {
         known.server = Some(MachineConfig {
             name: name.to_owned(),
             host: format!("dev@{name}"),
-            remote_command: "/opt/agents-cockpit".to_owned(),
+            remote_command: "/opt/yetack".to_owned(),
             source_dir: None,
         });
         state.machines.others.insert(MachineId::new(machine), known);
@@ -802,7 +802,7 @@ mod tests {
         start_edit(&mut state, MachineId::new(1));
         edit(&mut state, |edit| {
             edit.name = "lab".to_owned();
-            edit.source_dir = " /src/agents-cockpit ".to_owned();
+            edit.source_dir = " /src/yetack ".to_owned();
         });
         assert_eq!(
             save_edit(&mut state),
@@ -811,8 +811,8 @@ mod tests {
                 MachineConfig {
                     name: "lab".to_owned(),
                     host: "dev@devbox".to_owned(),
-                    remote_command: "/opt/agents-cockpit".to_owned(),
-                    source_dir: Some("/src/agents-cockpit".to_owned()),
+                    remote_command: "/opt/yetack".to_owned(),
+                    source_dir: Some("/src/yetack".to_owned()),
                 }
             ))
         );
@@ -837,7 +837,7 @@ mod tests {
 
         edit(&mut state, |edit| {
             edit.name = "devbox".to_owned();
-            edit.source_dir = "src/agents-cockpit".to_owned();
+            edit.source_dir = "src/yetack".to_owned();
         });
         assert_eq!(save_edit(&mut state), None, "a relative checkout");
         assert!(edit_error(&state).is_some());
@@ -855,7 +855,7 @@ mod tests {
         let config = MachineConfig {
             name: "lab".to_owned(),
             host: "dev@lab".to_owned(),
-            remote_command: "/opt/agents-cockpit".to_owned(),
+            remote_command: "/opt/yetack".to_owned(),
             source_dir: None,
         };
 
@@ -871,7 +871,7 @@ mod tests {
     fn devbox_plan() -> ServerPlan {
         ServerPlan {
             host: "dev@devbox".to_owned(),
-            remote_command: "/opt/agents-cockpit".to_owned(),
+            remote_command: "/opt/yetack".to_owned(),
             source_dir: None,
             commit: BuildCommit::new("3f9c2e1a7b4d5c6e".to_owned()),
             daemon_file: None,
@@ -888,7 +888,7 @@ mod tests {
                 protocol: PROTOCOL_VERSION - 1,
             });
             known.update_plan = Some(UpdatePlan::Server(devbox_plan()));
-            known.daemon_probe = DaemonProbe::owned_at("/opt/agents-cockpit");
+            known.daemon_probe = DaemonProbe::owned_at("/opt/yetack");
         }
     }
 
@@ -936,7 +936,7 @@ mod tests {
         );
         daemon_update::finished(&mut state, devbox, Some(1));
         let config = MachineConfig {
-            source_dir: Some("/src/agents-cockpit".to_owned()),
+            source_dir: Some("/src/yetack".to_owned()),
             ..state.machines.others[&devbox].server.clone().unwrap()
         };
 
@@ -947,16 +947,16 @@ mod tests {
             "the edited server's daemon may be another"
         );
         state.machines.others.get_mut(&devbox).unwrap().daemon_probe =
-            DaemonProbe::owned_at("/opt/agents-cockpit");
+            DaemonProbe::owned_at("/opt/yetack");
 
         let again = daemon_update::start(&mut state, devbox);
         assert_eq!(
             source_dir(again.map(|run| run.plan)),
-            Some("/src/agents-cockpit".to_owned())
+            Some("/src/yetack".to_owned())
         );
         assert_eq!(
             source_dir(state.machines.others[&devbox].update_plan.clone()),
-            Some("/src/agents-cockpit".to_owned())
+            Some("/src/yetack".to_owned())
         );
     }
 
@@ -968,7 +968,7 @@ mod tests {
             MachineState::new(DaemonLabel::ssh("devbox".to_owned())),
         );
 
-        typed(&mut state, "devbox", "other-host", "/opt/agents-cockpit");
+        typed(&mut state, "devbox", "other-host", "/opt/yetack");
 
         assert_eq!(add(&mut state), None);
         assert!(error(&state).is_some());
@@ -1246,7 +1246,7 @@ mod tests {
     fn a_server_cannot_take_the_name_the_interface_gives_this_computer() {
         let mut state = AppState::new(DaemonLabel::in_app());
 
-        typed(&mut state, THIS_COMPUTER, "dev@lab", "/opt/agents-cockpit");
+        typed(&mut state, THIS_COMPUTER, "dev@lab", "/opt/yetack");
 
         assert_eq!(add(&mut state), None);
         assert!(error(&state).is_some());

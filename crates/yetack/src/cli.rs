@@ -13,7 +13,7 @@ use cockpit_daemon::{HOME_ENV, RELEASE_VERSION, STATE_DIR_FLAG, build_commit, ve
 use cockpit_protocol::{AccountId, AgentId, Effort, PendingId, PermissionMode, PlanDecision};
 
 /// The program's name, as the command line and its messages show it.
-pub(crate) const PROGRAM: &str = "agents-cockpit";
+pub(crate) const PROGRAM: &str = "yetack";
 #[cfg(unix)]
 pub(crate) use cockpit_daemon::SERVE_SUBCOMMAND;
 pub(crate) const SSH_FLAG: &str = "ssh";
@@ -38,13 +38,13 @@ pub(crate) struct Cli {
 /// Which daemon a command serves or reaches.
 #[derive(Debug, Args)]
 pub(crate) struct Target {
-    /// The daemon's state folder [default: $XDG_STATE_HOME/agents-cockpit]
+    /// The daemon's state folder [default: $XDG_STATE_HOME/yetack]
     #[arg(long = STATE_DIR_FLAG, global = true)]
     pub(crate) state_dir: Option<PathBuf>,
     /// Reach the daemon on this host over SSH, through its bridge
     #[arg(long = SSH_FLAG, global = true, conflicts_with = "state_dir")]
     pub(crate) ssh: Option<String>,
-    /// The absolute path of agents-cockpit on the SSH host
+    /// The absolute path of yetack on the SSH host
     #[arg(long, global = true, default_value = DEFAULT_REMOTE_COMMAND)]
     pub(crate) remote_command: String,
 }
@@ -56,7 +56,7 @@ pub(crate) enum Command {
     #[command(name = SERVE_SUBCOMMAND)]
     Serve,
     /// Copy bytes between stdin and stdout and the daemon's socket, for
-    /// `ssh <host> agents-cockpit bridge`
+    /// `ssh <host> yetack bridge`
     #[cfg(unix)]
     #[command(name = BRIDGE_SUBCOMMAND)]
     Bridge,
@@ -313,7 +313,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_bridge_subcommand_is_the_one_clients_run() {
-        let cli = Cli::try_parse_from(["agents-cockpit", BRIDGE_SUBCOMMAND]).unwrap();
+        let cli = Cli::try_parse_from(["yetack", BRIDGE_SUBCOMMAND]).unwrap();
 
         assert!(matches!(cli.command, Command::Bridge));
         assert_eq!(BRIDGE_SUBCOMMAND, "bridge");
@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn answers_parse() {
         let cli = Cli::try_parse_from([
-            "agents-cockpit",
+            "yetack",
             "answer",
             "3",
             "perm-1",
@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn the_credentials_flag_parses_under_its_name_and_its_older_one() {
         let added = |flag: &str| {
-            let cli = Cli::try_parse_from(["agents-cockpit", "account", "add", "Work", flag]);
+            let cli = Cli::try_parse_from(["yetack", "account", "add", "Work", flag]);
             match cli.unwrap().command {
                 Command::Account {
                     command:
@@ -365,8 +365,7 @@ mod tests {
             }
         };
         let changed = |flag: &str, value: &str| {
-            let cli =
-                Cli::try_parse_from(["agents-cockpit", "account", "change", "2", flag, value]);
+            let cli = Cli::try_parse_from(["yetack", "account", "change", "2", flag, value]);
             match cli.unwrap().command {
                 Command::Account {
                     command:

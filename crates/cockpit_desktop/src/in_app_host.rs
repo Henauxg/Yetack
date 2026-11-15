@@ -19,12 +19,12 @@ const START_WAIT: Duration = Duration::from_secs(5);
 const PANIC_LOCK_WAIT: Duration = Duration::from_secs(1);
 /// How often that stop tries the lock again.
 const PANIC_LOCK_RETRY: Duration = Duration::from_millis(10);
-const START_THREAD: &str = "agents-cockpit-start";
-const SIGNAL_THREAD: &str = "agents-cockpit-signals";
+const START_THREAD: &str = "yetack-start";
+const SIGNAL_THREAD: &str = "yetack-signals";
 /// How long the signal thread waits for the window's thread to end the app before it does.
 #[cfg(target_os = "linux")]
 const WINDOW_EXIT_WAIT: Duration = Duration::from_secs(5);
-const PANIC_THREAD: &str = "agents-cockpit-panic";
+const PANIC_THREAD: &str = "yetack-panic";
 /// The thread `main` runs on, which runs the window.
 const MAIN_THREAD: &str = "main";
 

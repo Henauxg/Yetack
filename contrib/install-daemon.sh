@@ -1,5 +1,5 @@
 #!/bin/sh
-# Installs the agents-cockpit daemon that the app sent, as a systemd user service, then says what
+# Installs the yetack daemon that the app sent, as a systemd user service, then says what
 # else the daemon needs. Linux only. It never runs sudo.
 #
 #   ssh HOST sh -s -- --built FILE --sha256 SUM --version TEXT < contrib/install-daemon.sh
@@ -7,11 +7,11 @@
 #
 #   --built     the binary the app sent, which the script deletes once it is done
 #   --sha256    the checksum FILE must have
-#   --version   what `FILE --version` must print after "agents-cockpit "
+#   --version   what `FILE --version` must print after "yetack "
 #   --check     only says what the daemon needs, as the last lines of an install do
 #
-# It installs the binary as ~/.local/share/agents-cockpit/bin/agents-cockpit, writes
-# ~/.config/systemd/user/agents-cockpit.service and starts it. Then it prints whether systemd keeps
+# It installs the binary as ~/.local/share/yetack/bin/yetack, writes
+# ~/.config/systemd/user/yetack.service and starts it. Then it prints whether systemd keeps
 # the user's services running after they log out ("linger yes"), and where the service finds
 # claude ("claude PATH", or "claude missing").
 #
@@ -76,8 +76,8 @@ check_sent() {
     [ "$sum" = "$sha256" ] || die "the binary on this machine is not the one the app sent: its checksum differs"
     chmod 700 "$sent" || die "cannot make $sent executable"
     said=$("$sent" --version 2>&1 | head -n 1)
-    [ "$said" = "agents-cockpit $version" ] ||
-        die "the binary the app sent says \"$said\", not \"agents-cockpit $version\""
+    [ "$said" = "yetack $version" ] ||
+        die "the binary the app sent says \"$said\", not \"yetack $version\""
 }
 
 # A command run over SSH may have no user session bus, which `systemctl --user` needs.
@@ -89,16 +89,16 @@ check_systemd() {
 # A service of this name runs a daemon the user set up: the install must not replace its unit, and
 # `enable --now` would leave its daemon running. A unit an earlier install wrote is the app's own.
 check_no_service() {
-    unit=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/agents-cockpit.service
+    unit=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/yetack.service
     [ -L "$unit" ] || ! grep -q "$UNIT_MARK" "$unit" 2>/dev/null || return 0
-    if [ -e "$unit" ] || [ -L "$unit" ] || systemctl --user cat agents-cockpit >/dev/null 2>&1; then
-        die "a systemd user service agents-cockpit exists already: give the path of the daemon it runs, or remove the service first"
+    if [ -e "$unit" ] || [ -L "$unit" ] || systemctl --user cat yetack >/dev/null 2>&1; then
+        die "a systemd user service yetack exists already: give the path of the daemon it runs, or remove the service first"
     fi
 }
 
 install_binary() {
-    folder=$HOME/.local/share/agents-cockpit
-    binary=$folder/bin/agents-cockpit
+    folder=$HOME/.local/share/yetack
+    binary=$folder/bin/yetack
     mkdir -p "$folder/bin" && chmod 700 "$folder" || die_installing "cannot create $folder/bin"
     install -m 755 "$sent" "$binary.new" || die_installing "cannot write $binary.new"
     mv -f "$binary.new" "$binary" || die_installing "cannot write $binary"
@@ -110,19 +110,19 @@ service_path() {
     printf '%s' "$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.nix-profile/bin:/etc/profiles/per-user/$(id -un)/bin:/run/current-system/sw/bin:/usr/local/bin:/usr/bin:/bin"
 }
 
-# contrib/agents-cockpit.service, run from where this script installs the binary.
+# contrib/yetack.service, run from where this script installs the binary.
 write_unit() {
     units=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
     mkdir -p "$units" || die_installing "cannot create $units"
-    cat >"$units/agents-cockpit.service" <<'EOF' || die_installing "cannot write $units/agents-cockpit.service"
-# The agents-cockpit daemon as a systemd user service, which the desktop app installed.
+    cat >"$units/yetack.service" <<'EOF' || die_installing "cannot write $units/yetack.service"
+# The yetack daemon as a systemd user service, which the desktop app installed.
 
 [Unit]
-Description=agents-cockpit daemon: Claude Code agents steered from the desktop app
+Description=Yetack daemon: Claude Code agents steered from the desktop app
 
 [Service]
 Type=exec
-ExecStart=%h/.local/share/agents-cockpit/bin/agents-cockpit serve
+ExecStart=%h/.local/share/yetack/bin/yetack serve
 Environment=PATH=%h/.local/bin:%h/.cargo/bin:%h/.nix-profile/bin:/etc/profiles/per-user/%u/bin:/run/current-system/sw/bin:/usr/local/bin:/usr/bin:/bin
 # SIGTERM goes to the daemon alone: it stops with its agents still marked as running, so the next
 # start resumes them. Their `claude` processes end with it.
@@ -139,8 +139,8 @@ EOF
 start_service() {
     say "starting the service"
     systemctl --user daemon-reload </dev/null || die_installing "systemctl could not reload the user units"
-    systemctl --user enable --now agents-cockpit </dev/null ||
-        die_installing "systemctl could not start agents-cockpit"
+    systemctl --user enable --now yetack </dev/null ||
+        die_installing "systemctl could not start yetack"
     tries=0
     until "$binary" list >/dev/null 2>&1; do
         tries=$((tries + 1))

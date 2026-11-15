@@ -1,6 +1,6 @@
 //! Tells the daemon which commit it is built from, as `YETACK_COMMIT`: from
 //! `YETACK_SOURCE_COMMIT` when the environment sets it, as the Nix and release builds do,
-//! and otherwise from git's `HEAD`. Each program that runs the daemon, `agents-cockpit` and the
+//! and otherwise from git's `HEAD`. Each program that runs the daemon, `yetack` and the
 //! app, is built with it from the same tree, so this is their commit too.
 
 use std::path::Path;

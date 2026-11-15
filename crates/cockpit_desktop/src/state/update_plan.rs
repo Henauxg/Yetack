@@ -29,7 +29,7 @@ pub enum UpdatePlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerPlan {
     pub host: String,
-    /// The absolute path of `agents-cockpit` on the host.
+    /// The absolute path of `yetack` on the host.
     pub remote_command: String,
     pub source_dir: Option<String>,
     /// The commit this app was built from.
@@ -183,7 +183,7 @@ mod tests {
     fn server_plan() -> ServerPlan {
         ServerPlan {
             host: "build-box".to_owned(),
-            remote_command: "/opt/agents-cockpit".to_owned(),
+            remote_command: "/opt/yetack".to_owned(),
             source_dir: None,
             commit: BuildCommit::new("3f9c2e1a7b4d5c6e".to_owned()),
             daemon_file: None,
@@ -196,15 +196,15 @@ mod tests {
 
     fn sending_server() -> UpdatePlan {
         UpdatePlan::Server(ServerPlan {
-            daemon_file: Some(PathBuf::from("/opt/app/agents-cockpit-x86_64-linux")),
+            daemon_file: Some(PathBuf::from("/opt/app/yetack-x86_64-linux")),
             ..server_plan()
         })
     }
 
     fn service() -> UpdatePlan {
         UpdatePlan::Service(ServicePlan {
-            state_dir: PathBuf::from("/home/someone/.local/state/agents-cockpit"),
-            log_folder: PathBuf::from("/home/someone/.local/state/agents-cockpit-desktop"),
+            state_dir: PathBuf::from("/home/someone/.local/state/yetack"),
+            log_folder: PathBuf::from("/home/someone/.local/state/yetack-desktop"),
         })
     }
 

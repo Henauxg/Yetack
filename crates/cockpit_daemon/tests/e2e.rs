@@ -1641,7 +1641,7 @@ async fn claude_keeps_the_users_umask_and_the_state_stays_private() {
     }
     files.sort();
     let expected = [
-        "agents-cockpit.sock",
+        "yetack.sock",
         "agents.json",
         "details/1.json",
         "events/1.jsonl",

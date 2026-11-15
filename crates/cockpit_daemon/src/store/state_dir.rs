@@ -8,7 +8,7 @@ use crate::daemon_config::HOME_ENV;
 use crate::lock_holder::LockHolder;
 use crate::store::store_error::StoreError;
 
-const STATE_FOLDER_NAME: &str = "agents-cockpit";
+const STATE_FOLDER_NAME: &str = "yetack";
 #[cfg(unix)]
 const STATE_HOME_ENV: &str = "XDG_STATE_HOME";
 /// Where the state goes under `$HOME` when `XDG_STATE_HOME` is unset.
@@ -20,7 +20,7 @@ const STATE_HOME_ENV: &str = "LOCALAPPDATA";
 #[cfg(windows)]
 const HOME_STATE: &str = r"AppData\Local";
 
-const SOCKET_FILE: &str = "agents-cockpit.sock";
+const SOCKET_FILE: &str = "yetack.sock";
 const LOCK_FILE: &str = "serve.lock";
 const AGENTS_FILE: &str = "agents.json";
 const SETTINGS_FILE: &str = "settings.json";
@@ -36,8 +36,8 @@ const FOLDER_MODE: u32 = 0o700;
 #[cfg(unix)]
 const FILE_MODE: u32 = 0o600;
 
-/// `$XDG_STATE_HOME/agents-cockpit`, or `~/.local/state/agents-cockpit`; on Windows,
-/// `%LOCALAPPDATA%\agents-cockpit`. `None` without a home.
+/// `$XDG_STATE_HOME/yetack`, or `~/.local/state/yetack`; on Windows,
+/// `%LOCALAPPDATA%\yetack`. `None` without a home.
 #[must_use]
 pub fn default_state_dir() -> Option<PathBuf> {
     // The XDG specification ignores a relative path.

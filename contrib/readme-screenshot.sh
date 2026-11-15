@@ -9,7 +9,7 @@
 #   nix shell nixpkgs#openbox nixpkgs#wmctrl nixpkgs#xdotool nixpkgs#imagemagick
 set -eu
 
-app=${CARGO_TARGET_DIR:-target}/release/agents-cockpit-desktop
+app=${CARGO_TARGET_DIR:-target}/release/yetack-desktop
 scenes="machines projects"
 [ -x "$app" ] || { echo "build $app first: cargo build --release -p cockpit_desktop" >&2; exit 1; }
 

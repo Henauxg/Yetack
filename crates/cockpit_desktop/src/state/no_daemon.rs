@@ -15,7 +15,7 @@ pub enum DaemonChoice {
     Retry,
     /// Runs the agents in the app's own process.
     InApp,
-    /// Starts `agents-cockpit serve` on this machine, which outlives the app.
+    /// Starts `yetack serve` on this machine, which outlives the app.
     Service,
 }
 
@@ -236,7 +236,7 @@ mod tests {
     fn ssh() -> DaemonConfig {
         DaemonConfig::Ssh {
             host: "build-box".to_owned(),
-            remote_command: "/opt/agents-cockpit".to_owned(),
+            remote_command: "/opt/yetack".to_owned(),
             source_dir: None,
         }
     }
@@ -361,7 +361,7 @@ mod tests {
 
     fn socket_error(kind: io::ErrorKind) -> SessionError {
         SessionError::Connect(ConnectError::Socket {
-            path: "/run/agents-cockpit.sock".into(),
+            path: "/run/yetack.sock".into(),
             source: io::Error::from(kind),
         })
     }

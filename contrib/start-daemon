@@ -1,16 +1,16 @@
-# Starts the agents-cockpit daemon in a tmux session named "cockpit", from a clean login shell, so
+# Starts the yetack daemon in a tmux session named "cockpit", from a clean login shell, so
 # that no CLAUDE variable of the session running it reaches the agents. The daemon's update runs
 # it to start the daemon again, when no systemd user service does.
 #
 # Install:
-#   mkdir -p ~/.config/agents-cockpit
-#   cp contrib/start-daemon ~/.config/agents-cockpit/
+#   mkdir -p ~/.config/yetack
+#   cp contrib/start-daemon ~/.config/yetack/
 #
-# Edit binary if agents-cockpit is not in ~/.local/bin. The login shell must find `claude`: add
+# Edit binary if yetack is not in ~/.local/bin. The login shell must find `claude`: add
 # -i to its flags when the PATH that finds it is set in an interactive shell's file, such as
 # .zshrc. `tmux attach -t cockpit` shows the daemon's output.
 
-binary=$HOME/.local/bin/agents-cockpit
+binary=$HOME/.local/bin/yetack
 shell=${SHELL:-/bin/sh}
 tmux=$(command -v tmux) || {
     echo "tmux is not installed" >&2

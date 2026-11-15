@@ -1,4 +1,4 @@
-//! The agents-cockpit command line: the daemon, the SSH bridge, and client commands.
+//! The yetack command line: the daemon, the SSH bridge, and client commands.
 
 #[cfg(unix)]
 mod bridge;

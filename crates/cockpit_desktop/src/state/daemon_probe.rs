@@ -12,13 +12,13 @@ use super::update_plan::ServerPlan;
 pub const CARRIED_SYSTEM: &str = "Linux x86_64";
 
 /// The folder the app installs the daemon to, as the screens name it.
-pub const APP_BIN_FOLDER: &str = "~/.local/share/agents-cockpit/bin";
+pub const APP_BIN_FOLDER: &str = "~/.local/share/yetack/bin";
 
 /// The user's own folder of programs, where the app also replaces a daemon it finds.
 pub const USER_BIN_FOLDER: &str = "~/.local/bin";
 
 /// The daemon's systemd unit, which the install writes.
-pub const UNIT_FILE: &str = "~/.config/systemd/user/agents-cockpit.service";
+pub const UNIT_FILE: &str = "~/.config/systemd/user/yetack.service";
 
 /// The keys of the probe's `key=value` lines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr, VariantArray)]
@@ -84,14 +84,14 @@ pub struct InstalledDaemon {
     /// store path it leads to now.
     pub command: String,
     pub owner: DaemonOwner,
-    /// What `--version` printed: "agents-cockpit 0.2.0 (3f9c2e1…)". Empty when it printed nothing.
+    /// What `--version` printed: "yetack 0.2.0 (3f9c2e1…)". Empty when it printed nothing.
     pub version: String,
 }
 
 /// Who may replace a daemon's binary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonOwner {
-    /// It is in `~/.local/share/agents-cockpit/bin` or `~/.local/bin`, where the user can write.
+    /// It is in `~/.local/share/yetack/bin` or `~/.local/bin`, where the user can write.
     App,
     /// It is in `/nix/store`: the system's configuration decides its version.
     Nix,
@@ -111,7 +111,7 @@ impl DaemonProbe {
                 path: path.to_owned(),
                 command: path.to_owned(),
                 owner: DaemonOwner::App,
-                version: "agents-cockpit 0.0.1".to_owned(),
+                version: "yetack 0.0.1".to_owned(),
             }),
         })
     }
@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn a_daemon_the_app_owns_comes_with_its_path_and_version() {
-        let output = "system=Linux x86_64\npath=/home/someone/.local/bin/agents-cockpit\ncommand=agents-cockpit\nowner=app\nversion=agents-cockpit 0.1.0 (743d664)\n";
+        let output = "system=Linux x86_64\npath=/home/someone/.local/bin/yetack\ncommand=yetack\nowner=app\nversion=yetack 0.1.0 (743d664)\n";
 
         let install: ServerInstall = output.parse().unwrap();
 
@@ -215,43 +215,37 @@ mod tests {
         assert_eq!(
             install.replaceable(),
             Some(&InstalledDaemon {
-                path: "/home/someone/.local/bin/agents-cockpit".to_owned(),
-                command: "/home/someone/.local/bin/agents-cockpit".to_owned(),
+                path: "/home/someone/.local/bin/yetack".to_owned(),
+                command: "/home/someone/.local/bin/yetack".to_owned(),
                 owner: DaemonOwner::App,
-                version: "agents-cockpit 0.1.0 (743d664)".to_owned(),
+                version: "yetack 0.1.0 (743d664)".to_owned(),
             })
         );
     }
 
     #[test]
     fn a_daemon_a_package_owns_names_the_package_and_is_not_replaceable() {
-        let output = "system=Linux x86_64\npath=/usr/bin/agents-cockpit\nowner=package agents-cockpit\nversion=agents-cockpit 0.1.0\n";
+        let output = "system=Linux x86_64\npath=/usr/bin/yetack\nowner=package yetack\nversion=yetack 0.1.0\n";
 
         let install: ServerInstall = output.parse().unwrap();
 
         assert_eq!(
             install.daemon.as_ref().map(|daemon| &daemon.owner),
-            Some(&DaemonOwner::Package("agents-cockpit".to_owned()))
+            Some(&DaemonOwner::Package("yetack".to_owned()))
         );
-        assert_eq!(install.package(), Some("agents-cockpit"));
+        assert_eq!(install.package(), Some("yetack"));
         assert_eq!(install.replaceable(), None);
     }
 
     #[test]
     fn a_daemon_found_through_a_link_keeps_the_links_path_to_run_by() {
-        let output = "system=Linux x86_64\npath=/nix/store/0c4d9kx2-agents-cockpit/bin/agents-cockpit\ncommand=/home/someone/.nix-profile/bin/agents-cockpit\nowner=nix\n";
+        let output = "system=Linux x86_64\npath=/nix/store/0c4d9kx2-yetack/bin/yetack\ncommand=/home/someone/.nix-profile/bin/yetack\nowner=nix\n";
 
         let install: ServerInstall = output.parse().unwrap();
         let daemon = install.daemon.unwrap();
 
-        assert_eq!(
-            daemon.command,
-            "/home/someone/.nix-profile/bin/agents-cockpit"
-        );
-        assert_eq!(
-            daemon.path,
-            "/nix/store/0c4d9kx2-agents-cockpit/bin/agents-cockpit"
-        );
+        assert_eq!(daemon.command, "/home/someone/.nix-profile/bin/yetack");
+        assert_eq!(daemon.path, "/nix/store/0c4d9kx2-yetack/bin/yetack");
     }
 
     #[test]
@@ -288,28 +282,22 @@ mod tests {
     fn an_update_sends_the_carried_daemon_only_to_its_system_and_replaces_the_probed_path() {
         let plan = ServerPlan {
             host: "build-box".to_owned(),
-            remote_command: "agents-cockpit".to_owned(),
+            remote_command: "yetack".to_owned(),
             source_dir: None,
             commit: BuildCommit::new("3f9c2e1".to_owned()),
-            daemon_file: Some("/opt/app/agents-cockpit-x86_64-linux".into()),
+            daemon_file: Some("/opt/app/yetack-x86_64-linux".into()),
         };
-        let here = "system=Linux x86_64\npath=/home/someone/.local/bin/agents-cockpit\nowner=app\n";
-        let arm = "system=Linux aarch64\npath=/home/someone/.local/bin/agents-cockpit\nowner=app\n";
+        let here = "system=Linux x86_64\npath=/home/someone/.local/bin/yetack\nowner=app\n";
+        let arm = "system=Linux aarch64\npath=/home/someone/.local/bin/yetack\nowner=app\n";
         let here: ServerInstall = here.parse().unwrap();
         let arm: ServerInstall = arm.parse().unwrap();
 
         let sends = here.plan_for(plan.clone());
         let builds = arm.plan_for(plan);
 
-        assert_eq!(
-            sends.remote_command,
-            "/home/someone/.local/bin/agents-cockpit"
-        );
+        assert_eq!(sends.remote_command, "/home/someone/.local/bin/yetack");
         assert!(sends.daemon_file.is_some());
-        assert_eq!(
-            builds.remote_command,
-            "/home/someone/.local/bin/agents-cockpit"
-        );
+        assert_eq!(builds.remote_command, "/home/someone/.local/bin/yetack");
         assert_eq!(builds.daemon_file, None);
     }
 }

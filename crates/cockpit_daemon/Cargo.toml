@@ -8,7 +8,7 @@ publish = false
 
 # The two binaries serve the integration tests only: a fake `claude`, and a daemon in its own
 # process, since the peer check refuses a client inside the daemon's process. The product's
-# binary is `agents-cockpit`, in the `agents_cockpit` crate.
+# binary is `yetack`, in the `yetack` crate.
 [[bin]]
 name = "fake-claude"
 path = "src/bin/fake_claude.rs"

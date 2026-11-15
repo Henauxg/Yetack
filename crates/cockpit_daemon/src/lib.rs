@@ -1,7 +1,7 @@
-//! The agents-cockpit daemon: Claude Code processes, the hub, the store and the socket server.
+//! The Yetack daemon: Claude Code processes, the hub, the store and the socket server.
 //!
-//! [`serve`] runs it behind its socket: the `agents-cockpit` binary calls it for
-//! `agents-cockpit serve`. [`InAppDaemon`] runs it inside the desktop app, for clients in the
+//! [`serve`] runs it behind its socket: the `yetack` binary calls it for
+//! `yetack serve`. [`InAppDaemon`] runs it inside the desktop app, for clients in the
 //! same process.
 
 mod accounts;

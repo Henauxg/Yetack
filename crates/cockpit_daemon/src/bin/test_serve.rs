@@ -1,5 +1,5 @@
 //! The daemon in a process of its own, for the integration tests: a client inside the daemon's
-//! process would fail the peer check. It reads the same environment as `agents-cockpit serve`.
+//! process would fail the peer check. It reads the same environment as `yetack serve`.
 
 use std::process::ExitCode;
 

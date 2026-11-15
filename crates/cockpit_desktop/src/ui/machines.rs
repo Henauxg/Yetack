@@ -453,7 +453,7 @@ fn AddServer(view: MachinesView) -> Element {
             }
             div { class: "field-group",
                 label { class: "field-label",
-                    "Path of agents-cockpit on the server"
+                    "Path of yetack on the server"
                     span { class: "optional", "optional" }
                 }
                 input {
@@ -470,7 +470,7 @@ fn AddServer(view: MachinesView) -> Element {
             }
             div { class: "machine-add-actions",
                 span { class: "hint",
-                    "The app connects with your SSH keys, as ssh does. When the server has no agents-cockpit, the app offers to install it."
+                    "The app connects with your SSH keys, as ssh does. When the server has no yetack, the app offers to install it."
                 }
                 div { class: "machine-edit-actions",
                     button { class: "button small", onclick: move |_| cockpit.update(machines::close_add_form), "Cancel" }
@@ -556,7 +556,7 @@ fn SetupPanel(setup: ServerSetup) -> Element {
             SetupHead { title: format!("Set up {name}"), lead: format!("SSH {host}") }
             ol { class: "update-steps",
                 SetupStepRow { mark: Mark::Now, title: format!("Reach {name}"), detail: None }
-                SetupStepRow { mark: Mark::Later, title: "Look for agents-cockpit", detail: None }
+                SetupStepRow { mark: Mark::Later, title: "Look for yetack", detail: None }
             }
             div { class: "machine-add-actions",
                 span {}
@@ -569,17 +569,17 @@ fn SetupPanel(setup: ServerSetup) -> Element {
             SetupHead { title: format!("Set up {name}"), lead: format!("SSH {host}") }
             ol { class: "update-steps",
                 SetupStepRow { mark: Mark::Done, title: format!("Reach {name}"), detail: Some(system) }
-                SetupStepRow { mark: Mark::Done, title: "Look for agents-cockpit", detail: Some("None installed".to_owned()) }
+                SetupStepRow { mark: Mark::Done, title: "Look for yetack", detail: Some("None installed".to_owned()) }
             }
             div { class: "setup-offer",
                 p {
-                    b { "Install agents-cockpit {release} on {name}?" }
+                    b { "Install yetack {release} on {name}?" }
                     " The app writes these files on {name}, and never runs "
                     code { "sudo" }
                     ":"
                 }
                 ul { class: "setup-files mono",
-                    li { "{APP_BIN_FOLDER}/agents-cockpit" }
+                    li { "{APP_BIN_FOLDER}/yetack" }
                     li { "{UNIT_FILE}" }
                 }
             }
@@ -607,7 +607,7 @@ fn SetupPanel(setup: ServerSetup) -> Element {
                     SetupStepRow { mark: Mark::Failed, title: format!("Reach {name}"), detail: Some(why) }
                 }
                 p { class: "setup-note",
-                    "Build agents-cockpit on {name} as the README says, then give its path in the form."
+                    "Build yetack on {name} as the README says, then give its path in the form."
                 }
                 div { class: "machine-add-actions",
                     span {}
@@ -822,12 +822,12 @@ fn MachineEditView(name: String, agents: usize, edit: MachineEdit) -> Element {
                 }
             }
             div { class: "field-group",
-                label { class: "field-label", "Path of agents-cockpit on the server" }
+                label { class: "field-label", "Path of yetack on the server" }
                 input {
                     class: "text-input mono",
                     r#type: "text",
                     spellcheck: false,
-                    placeholder: "/home/you/.local/bin/agents-cockpit",
+                    placeholder: "/home/you/.local/bin/yetack",
                     initial_value: "{edit.remote_command}",
                     oninput: type_into(|edit| &mut edit.remote_command),
                 }

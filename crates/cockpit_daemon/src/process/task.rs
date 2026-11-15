@@ -38,7 +38,7 @@ const STDERR_BUFFER: usize = 64;
 
 const CONTROL_ID_PREFIX: &str = "cockpit-";
 /// What a control request the daemon cannot handle gets as an answer.
-const UNHANDLED_REQUEST: &str = "agents-cockpit does not handle this request";
+const UNHANDLED_REQUEST: &str = "Yetack does not handle this request";
 
 /// What the hub asks of the process.
 #[derive(Debug)]

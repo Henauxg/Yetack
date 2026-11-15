@@ -1,4 +1,4 @@
-//! A connection to an agents-cockpit daemon, over its local socket, an SSH bridge, or an
+//! A connection to a Yetack daemon, over its local socket, an SSH bridge, or an
 //! in-memory stream to a daemon in the same process.
 //!
 //! [`Session`] is what an app keeps: it reconnects after a drop and reports every change of

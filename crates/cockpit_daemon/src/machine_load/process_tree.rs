@@ -425,7 +425,7 @@ pub(super) mod tests {
     fn machine() -> FakeProc {
         let mut proc = FakeProc::default();
         proc.add(1, "init", 0, (5, 900), 100);
-        proc.add(10, "agents-cockpit", 1, (5, 5), 100);
+        proc.add(10, "yetack", 1, (5, 5), 100);
         proc.add(20, "claude", 10, (300, 400), 50_000);
         proc.add(21, "bash", 20, (2, 2), 900);
         proc.add(22, "cargo", 21, (40, 40), 9_000);
