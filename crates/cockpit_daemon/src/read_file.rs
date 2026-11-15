@@ -82,7 +82,7 @@ impl Access {
     /// `touched` holds the absolute paths of the files the agent read or changed. `home` is the
     /// home folder, which no checkout of the agent's may hold.
     pub(crate) fn new(folder: &Path, touched: &[PathBuf], home: Option<&Path>) -> Self {
-        // A removed worktree leaves its agent, whose views still open other files.
+        // The agent stays when its worktree is removed. Its views still open other files.
         let folder = canonical(folder).unwrap_or_else(|_| folder.to_owned());
         // Compared with checkouts whose symlinks are resolved.
         let home: Option<PathBuf> =
@@ -142,8 +142,7 @@ impl Access {
         Ok(())
     }
 
-    /// Resolving a Unix path opens nothing and reaches no other host, so nothing is refused
-    /// before.
+    /// Refuses nothing: resolving a Unix path opens no file and reaches no other host.
     #[cfg(unix)]
     pub(crate) fn check_before_open(&self, _asked: &Path) -> Result<(), ReadFileError> {
         Ok(())
@@ -381,10 +380,10 @@ fn name_tail(path: &Path) -> Option<PathBuf> {
     (!tail.as_os_str().is_empty()).then_some(tail)
 }
 
-/// The files in `folder`, the agent's folder as its record names it, and in the checkouts of
-/// `access`, whose path relative to their checkout passes `matches_path`, as `git ls-files` lists
-/// them, each once, until `deadline` or [`MAX_MATCHES`]. A folder that is not in a git checkout
-/// adds nothing, and neither does a symlink to nothing.
+/// The files whose path passes `matches_path`, as `git ls-files` lists them in `folder` and in the
+/// checkouts of `access`, each once, until `deadline` or [`MAX_MATCHES`]. `folder` is the agent's
+/// folder as its record names it. `matches_path` gets a path relative to the folder listed. A
+/// folder that is not in a git checkout adds nothing, and neither does a symlink to nothing.
 pub(crate) async fn search(
     access: &Access,
     folder: PathBuf,
@@ -602,6 +601,7 @@ pub(crate) fn open_to_read(path: &Path) -> io::Result<File> {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Debug;
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
     #[cfg(unix)]
@@ -620,7 +620,7 @@ mod tests {
         Content::Text(text.to_owned())
     }
 
-    fn assert_goes_up<T: std::fmt::Debug>(result: Result<T, ReadFileError>) {
+    fn assert_goes_up<T: Debug>(result: Result<T, ReadFileError>) {
         assert!(matches!(result, Err(ReadFileError::GoesUp)), "{result:?}");
     }
 
@@ -1019,10 +1019,11 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn what_is_not_a_regular_file_is_refused_before_it_opens() {
-        use std::ffi::CStr;
+        use std::ffi::{CStr, CString};
         use std::mem::MaybeUninit;
 
         use rustix::fs::inotify::{self, CreateFlags, WatchFlags};
+        use rustix::io::Errno;
 
         let temp = tempfile::tempdir().unwrap();
         rustix::fs::mkfifoat(rustix::fs::CWD, temp.path().join("notes.txt"), Mode::RUSR).unwrap();
@@ -1033,12 +1034,12 @@ mod tests {
         let read = read(&access, Path::new("notes.txt"));
 
         assert!(matches!(read, Err(ReadFileError::NotAFile)), "{read:?}");
-        let mut buffer = [MaybeUninit::uninit(); 1024];
+        let mut buffer: [MaybeUninit<u8>; 1024] = [MaybeUninit::uninit(); 1024];
         let mut events = inotify::Reader::new(&watch, &mut buffer);
-        let opened = events
+        let opened: Result<Option<CString>, Errno> = events
             .next()
             .map(|event| event.file_name().map(CStr::to_owned));
-        assert_eq!(opened, Err(rustix::io::Errno::AGAIN));
+        assert_eq!(opened, Err(Errno::AGAIN));
     }
 
     /// An agent stays in the list when its worktree is removed.
@@ -1123,7 +1124,7 @@ mod tests {
     /// host, and a device may wait for input.
     #[cfg(windows)]
     #[test]
-    fn a_device_or_a_share_no_allowed_folder_is_on_is_refused() {
+    fn a_device_or_a_share_the_agent_does_not_work_on_is_refused() {
         let temp = tempfile::tempdir().unwrap();
         let access = only_folder(temp.path());
 
