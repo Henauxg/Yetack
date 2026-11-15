@@ -102,21 +102,43 @@ const shown = (entry) => entry.lastElementChild;
 // content overflows, over the entries below: the wrapper ends where the entry ends on screen.
 const bottomOf = (entry, element) =>
   Math.min(element.getBoundingClientRect().bottom, entry.getBoundingClientRect().bottom);
-// The first entry whose bottom is lower than `below` pixels under the view's top.
-const firstInView = (below = 0) => {
-  const entries = column.getElementsByClassName(settings.entry_class);
-  const top = boxTop();
+// The searches below find where the view's edge `y` falls among the entries in two steps. The
+// page lays out an entry's wrapper even when it skips the entry's content, but reading the
+// position of anything inside a skipped entry lays that content out: in a chat of 1600 entries,
+// a search over the shown elements makes a scroll frame last about 100 ms. So the search runs
+// over the wrappers, and only the entries at the edge, laid out already, are read inside.
+// The first entry whose wrapper starts at or below `y`. Wrappers come in order, and each entry
+// starts no higher than its wrapper, so every entry from it on starts at or below `y`.
+const firstStartingBelow = (entries, y) => {
   let low = 0;
   let high = entries.length;
   while (low < high) {
     const middle = (low + high) >> 1;
-    const element = shown(entries[middle]);
-    if (element !== null && bottomOf(entries[middle], element) <= top + below) {
+    if (entries[middle].getBoundingClientRect().top < y) {
       low = middle + 1;
     } else {
       high = middle;
     }
   }
+  return low;
+};
+// Moves `index` back over the entries before it that `stays` keeps: the entries at the edge.
+const backWhile = (entries, index, stays) => {
+  let at = index;
+  while (at > 0 && stays(entries[at - 1])) {
+    at -= 1;
+  }
+  return at;
+};
+// The first entry whose bottom is lower than `below` pixels under the view's top.
+const firstInView = (below = 0) => {
+  const entries = column.getElementsByClassName(settings.entry_class);
+  const top = boxTop();
+  const limit = top + below;
+  const low = backWhile(entries, firstStartingBelow(entries, limit), (entry) => {
+    const element = shown(entry);
+    return element === null || bottomOf(entry, element) > limit;
+  });
   const entry = entries[low];
   const element = entry === undefined ? null : shown(entry);
   return element === null ? null : { id: entry.id, top: element.getBoundingClientRect().top - top };
@@ -128,17 +150,10 @@ const firstInView = (below = 0) => {
 const anchorInView = () => {
   const entries = column.getElementsByClassName(settings.entry_class);
   const top = boxTop();
-  let low = 0;
-  let high = entries.length;
-  while (low < high) {
-    const middle = (low + high) >> 1;
-    const element = shown(entries[middle]);
-    if (element !== null && element.getBoundingClientRect().top < top) {
-      low = middle + 1;
-    } else {
-      high = middle;
-    }
-  }
+  const low = backWhile(entries, firstStartingBelow(entries, top), (entry) => {
+    const element = shown(entry);
+    return element === null || element.getBoundingClientRect().top >= top;
+  });
   const entry = entries[low];
   const element = entry === undefined ? null : shown(entry);
   return element === null ? firstInView() : { id: entry.id, top: element.getBoundingClientRect().top - top };
@@ -147,17 +162,10 @@ const anchorInView = () => {
 const lastInView = () => {
   const entries = column.getElementsByClassName(settings.entry_class);
   const bottom = box.getBoundingClientRect().bottom;
-  let low = 0;
-  let high = entries.length;
-  while (low < high) {
-    const middle = (low + high) >> 1;
-    const element = shown(entries[middle]);
-    if (element !== null && element.getBoundingClientRect().top < bottom) {
-      low = middle + 1;
-    } else {
-      high = middle;
-    }
-  }
+  const low = backWhile(entries, firstStartingBelow(entries, bottom), (entry) => {
+    const element = shown(entry);
+    return element === null || element.getBoundingClientRect().top >= bottom;
+  });
   return low === 0 ? null : entries[low - 1];
 };
 // An entry's id ends with its item's: see `entry_id`.
