@@ -1,33 +1,25 @@
-//! `agent.read_file`: a text file or an image the agent can reach, for the file view. An image is
-//! a file whose extension names a type Claude reads, such as `.png`.
+//! `agent.read_file`: a text file or an image, for the file view. An image is a file whose
+//! extension names a type Claude reads, such as `.png`.
 //!
-//! The daemon reads, once symlinks are resolved:
-//!
-//! - any file in the agent's folder;
-//! - any file in the git checkout that holds a file the agent read or changed, such as a sibling
-//!   worktree beside the agent's folder: the folder with the `.git` entry nearest above that
-//!   file;
-//! - a file the agent read or changed that no such checkout holds, and only that file.
-//!
-//! A checkout that is `/`, or that holds the home folder (a home kept in git), adds only its
-//! files the agent touched: it would open everything the user owns.
+//! The daemon reads any regular file its user can read, as an IDE opens any file: an absolute
+//! path, or one relative to the agent's folder. The daemon and the app run as the same user, and
+//! the agent's own commands read whatever that user can, so this shows the user nothing they
+//! cannot already read. A path that goes up with `..` is refused.
 //!
 //! A relative path that names no file in the agent's folder, such as a bare file name in the
 //! agent's text, is looked up in this order:
 //!
 //! 1. the most recent file the agent read or changed whose path ends with it;
-//! 2. the files whose path ends with it in the agent's folder and the allowed checkouts, as
-//!    `git ls-files` lists them, within [`MAX_MATCHES`] and [`SEARCH_TIME`]. One match is read;
-//!    several are listed for the user to pick from.
+//! 2. the files whose path ends with it in the agent's folder and the git checkouts it worked in,
+//!    as `git ls-files` lists them, within [`MAX_MATCHES`] and [`SEARCH_TIME`]. One match is
+//!    read; several are listed for the user to pick from. A checkout the agent worked in is the
+//!    folder with the `.git` entry nearest above a file it read or changed, unless that folder is
+//!    `/` or holds the home folder, which would search everything the user owns.
 //!
-//! On Windows, names compare whatever their case, and a path on a network share opens only when
-//! the agent's folder or one of the allowed checkouts or files is on that share (module
-//! `windows_path`).
-//!
-//! This shows the user nothing they cannot already read. The daemon and the app run as the same
-//! user, and the agent's own commands read whatever that user can, so these checkouts are folders
-//! the agent already worked in. The limits keep the view to the agent's work: a link in the
-//! agent's text cannot open an unrelated file of the user's.
+//! On Windows, names compare whatever their case. A device path or name, such as `\\.\pipe` or
+//! `NUL`, is refused. So is a path on a network share that neither the agent's folder nor a
+//! checkout or file it worked on is on: opening it would make Windows connect to that host and
+//! send it a hash of the user's login (module `windows_path`).
 
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -52,9 +44,6 @@ use crate::{windows_files, windows_path};
 pub(crate) const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 /// The largest image the view shows. In base64 it stays well under a frame's limit.
 pub(crate) const MAX_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
-/// Links to the process's open files, each naming the file's path.
-#[cfg(unix)]
-const OPEN_FILES: &str = "/proc/self/fd";
 /// The entry that marks a git checkout's top folder: a folder, or a file in a worktree.
 pub(crate) const GIT_ENTRY: &str = ".git";
 
@@ -77,19 +66,21 @@ pub(crate) const GIT_FOLDER_OPTION: &str = "-C";
 /// git config.
 pub(crate) const NO_MONITOR: [&str; 2] = ["-c", "core.fsmonitor=false"];
 
-/// The folders and files `read` may open, all with their symlinks resolved.
+/// Where the agent worked, with symlinks resolved: where a search looks for a name, and on
+/// Windows, the network shares a path may be on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Access {
     folder: PathBuf,
     /// The git checkouts holding a file the agent read or changed.
     checkouts: Vec<PathBuf>,
-    /// The files the agent read or changed that no allowed checkout holds.
+    /// The files the agent read or changed that no checkout holds.
+    #[cfg(windows)]
     files: Vec<PathBuf>,
 }
 
 impl Access {
     /// `touched` holds the absolute paths of the files the agent read or changed. `home` is the
-    /// home folder, which no allowed checkout may hold.
+    /// home folder, which no checkout of the agent's may hold.
     pub(crate) fn new(
         folder: &Path,
         touched: &[PathBuf],
@@ -100,6 +91,7 @@ impl Access {
         let home: Option<PathBuf> =
             home.map(|home| canonical(home).unwrap_or_else(|_| home.to_owned()));
         let mut checkouts: Vec<PathBuf> = Vec::new();
+        #[cfg(windows)]
         let mut files: Vec<PathBuf> = Vec::new();
         // Files of one folder share their checkout: each folder is looked up once.
         let mut checkout_of: BTreeMap<PathBuf, Option<PathBuf>> = BTreeMap::new();
@@ -112,11 +104,9 @@ impl Access {
                 .or_insert_with_key(|parent| checkout_holding(parent, home.as_deref()))
                 .clone();
             match checkout {
-                Some(checkout) => {
-                    if !checkouts.contains(&checkout) {
-                        checkouts.push(checkout);
-                    }
-                }
+                Some(checkout) if !checkouts.contains(&checkout) => checkouts.push(checkout),
+                Some(_) => {}
+                #[cfg(windows)]
                 None => {
                     if let Ok(file) = canonical(file)
                         && !files.contains(&file)
@@ -124,42 +114,30 @@ impl Access {
                         files.push(file);
                     }
                 }
+                #[cfg(unix)]
+                None => {}
             }
         }
         Ok(Self {
             folder,
             checkouts,
+            #[cfg(windows)]
             files,
         })
     }
 
-    /// The allowed folder or file that holds `resolved`, a path without symlinks.
-    fn holder(&self, resolved: &Path) -> Option<&Path> {
-        let file = || self.files.iter().find(|file| is_same(resolved, file));
-        self.folder_holding(resolved)
-            .or_else(|| file().map(PathBuf::as_path))
-    }
-
-    /// The agent's folder or the allowed checkout that holds `resolved`, a path without symlinks.
-    /// The files allowed alone hold nothing.
-    pub(crate) fn folder_holding(&self, resolved: &Path) -> Option<&Path> {
-        let mut folders = std::iter::once(&self.folder).chain(&self.checkouts);
-        folders
-            .find(|folder| is_inside(resolved, folder))
-            .map(PathBuf::as_path)
-    }
-
     /// Refuses a path the file system must not open even to resolve it: a device path, a name
-    /// such as `NUL`, or a network share that no allowed folder or file is on.
+    /// such as `NUL`, or a network share that neither the agent's folder nor a checkout or file
+    /// it worked on is on.
     #[cfg(windows)]
     pub(crate) fn check_before_open(&self, asked: &Path) -> Result<(), ReadFileError> {
-        let text = asked.to_str().ok_or(ReadFileError::Outside)?;
-        let allowed = std::iter::once(&self.folder)
+        let text = asked.to_str().ok_or(ReadFileError::Share)?;
+        let worked_on = std::iter::once(&self.folder)
             .chain(&self.checkouts)
             .chain(&self.files)
             .filter_map(|path| path.to_str());
-        if !windows_path::may_open(text, allowed) {
-            return Err(ReadFileError::Outside);
+        if !windows_path::may_open(text, worked_on) {
+            return Err(ReadFileError::Share);
         }
         if windows_path::names_a_device(text) {
             return Err(ReadFileError::NotAFile);
@@ -167,9 +145,16 @@ impl Access {
         Ok(())
     }
 
+    /// A Unix path opens no device and reaches no other host before it is open: the checks on
+    /// the open file are enough.
+    #[cfg(unix)]
+    pub(crate) fn check_before_open(&self, _asked: &Path) -> Result<(), ReadFileError> {
+        Ok(())
+    }
+
     /// The folders a search lists: `folder`, the agent's folder as its record names it, then the
     /// checkouts other than that folder, so that no checkout is listed twice.
-    pub(crate) fn search_roots(&self, folder: PathBuf) -> Vec<PathBuf> {
+    fn search_roots(&self, folder: PathBuf) -> Vec<PathBuf> {
         let others = self
             .checkouts
             .iter()
@@ -191,8 +176,11 @@ fn checkout_holding(folder: &Path, home: Option<&Path>) -> Option<PathBuf> {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ReadFileError {
-    #[error("the file is outside the agent's folder and the checkouts it worked in")]
-    Outside,
+    #[error("the path goes up with `..`")]
+    GoesUp,
+    #[cfg(windows)]
+    #[error("the path is a device path, or on a network share the agent does not work on")]
+    Share,
     #[error("{} does not exist", .0.display())]
     Missing(PathBuf),
     /// A relative path that the lookup did not find either.
@@ -213,7 +201,9 @@ pub(crate) enum ReadFileError {
 impl ReadFileError {
     pub(crate) fn to_error_body(&self) -> ErrorBody {
         let code = match self {
-            Self::Outside => ErrorCode::InvalidRequest,
+            Self::GoesUp => ErrorCode::InvalidRequest,
+            #[cfg(windows)]
+            Self::Share => ErrorCode::InvalidRequest,
             Self::Missing(_) | Self::Unknown(_) | Self::NotFound(_) => ErrorCode::NotFound,
             Self::NotAFile | Self::TooLarge(_) | Self::NotText | Self::Io(_) => {
                 ErrorCode::FileUnreadable
@@ -230,8 +220,7 @@ pub(crate) enum Content {
     Image(Image),
 }
 
-/// Reads `path`, absolute or relative to the agent's folder, when `access` allows it once its
-/// symlinks are resolved.
+/// Reads `path`, absolute or relative to the agent's folder.
 pub(crate) fn read(access: &Access, path: &Path) -> Result<Content, ReadFileError> {
     use std::io::Read;
 
@@ -241,22 +230,17 @@ pub(crate) fn read(access: &Access, path: &Path) -> Result<Content, ReadFileErro
         .components()
         .any(|component| component == Component::ParentDir)
     {
-        return Err(ReadFileError::Outside);
+        return Err(ReadFileError::GoesUp);
     }
     let asked = access.folder.join(path);
-    #[cfg(windows)]
     access.check_before_open(&asked)?;
     let resolved = canonical(&asked).map_err(|error| match error.kind() {
         io::ErrorKind::NotFound => ReadFileError::Missing(path.to_owned()),
         _ => ReadFileError::NotFound(error),
     })?;
     // A link may lead to a file named `AUX`, which the path opens as the device.
-    #[cfg(windows)]
     access.check_before_open(&resolved)?;
-    let holder = access.holder(&resolved).ok_or(ReadFileError::Outside)?;
     let file = open_to_read(&resolved).map_err(ReadFileError::NotFound)?;
-    // The checks use the open file, so a swap after them does not matter.
-    ensure_inside(&file, holder)?;
     let metadata = file.metadata().map_err(ReadFileError::Io)?;
     if !metadata.is_file() {
         return Err(ReadFileError::NotAFile);
@@ -319,10 +303,15 @@ pub(crate) async fn find_and_read(
     if let Some(found) = found {
         return Ok(found);
     }
-    let roots = access.search_roots(folder);
     let tail = name_tail(&path).unwrap_or_else(|| path.clone());
     let ends_with_tail = |relative: &Path| relative.ends_with(&tail);
-    let matches = search(&access, roots, ends_with_tail, Instant::now() + SEARCH_TIME).await;
+    let matches = search(
+        &access,
+        folder,
+        ends_with_tail,
+        Instant::now() + SEARCH_TIME,
+    )
+    .await;
     match matches.as_slice() {
         [] => Err(ReadFileError::Unknown(path)),
         [only] => {
@@ -389,20 +378,20 @@ fn name_tail(path: &Path) -> Option<PathBuf> {
     (!tail.as_os_str().is_empty()).then_some(tail)
 }
 
-/// The files under `roots` whose path relative to their root passes `matches_path`, as `git
-/// ls-files` lists them, each once, until `deadline` or [`MAX_MATCHES`]. A root that is not in a
-/// git checkout adds nothing, and neither does a file `access` does not allow once its symlinks
-/// are resolved.
+/// The files in `folder`, the agent's folder as its record names it, and in the checkouts of
+/// `access`, whose path relative to their checkout passes `matches_path`, as `git ls-files` lists
+/// them, each once, until `deadline` or [`MAX_MATCHES`]. A folder that is not in a git checkout
+/// adds nothing, and neither does a symlink to nothing.
 pub(crate) async fn search(
     access: &Access,
-    roots: Vec<PathBuf>,
+    folder: PathBuf,
     matches_path: impl Fn(&Path) -> bool,
     deadline: Instant,
 ) -> Vec<PathBuf> {
     let mut matches: Vec<PathBuf> = Vec::new();
     // The agent's folder may sit in one of the checkouts: a file found twice is listed once.
     let mut seen: Vec<PathBuf> = Vec::new();
-    for root in roots {
+    for root in access.search_roots(folder) {
         let mut git = Command::new(GIT_PROGRAM);
         git.args(NO_MONITOR)
             .arg(GIT_FOLDER_OPTION)
@@ -437,14 +426,13 @@ pub(crate) async fn search(
                 continue;
             }
             let found = root.join(relative);
-            #[cfg(windows)]
             if access.check_before_open(&found).is_err() {
                 continue;
             }
             let Ok(resolved) = canonical(&found) else {
                 continue;
             };
-            if access.holder(&resolved).is_none() || seen.contains(&resolved) {
+            if seen.contains(&resolved) {
                 continue;
             }
             seen.push(resolved);
@@ -607,31 +595,6 @@ pub(crate) fn open_to_read(path: &Path) -> io::Result<File> {
     windows_files::open(path)
 }
 
-/// Refuses an open file or folder outside `holder`, a folder or the file itself: a folder of its
-/// path may have become a symlink since the path was checked.
-#[cfg(unix)]
-pub(crate) fn ensure_inside(file: &File, holder: &Path) -> Result<(), ReadFileError> {
-    use std::os::fd::AsRawFd;
-
-    let link = Path::new(OPEN_FILES).join(file.as_raw_fd().to_string());
-    let opened = std::fs::read_link(link).map_err(ReadFileError::Io)?;
-    if !opened.starts_with(holder) {
-        return Err(ReadFileError::Outside);
-    }
-    Ok(())
-}
-
-/// Refuses an open file or folder outside `holder`, a folder or the file itself: a folder of its
-/// path may have become a link since the path was checked.
-#[cfg(windows)]
-pub(crate) fn ensure_inside(file: &File, holder: &Path) -> Result<(), ReadFileError> {
-    let opened = windows_files::final_path(file).map_err(ReadFileError::Io)?;
-    if !is_inside(&opened, holder) {
-        return Err(ReadFileError::Outside);
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
@@ -652,8 +615,8 @@ mod tests {
         Content::Text(text.to_owned())
     }
 
-    fn assert_outside(result: Result<Content, ReadFileError>) {
-        assert!(matches!(result, Err(ReadFileError::Outside)), "{result:?}");
+    fn assert_goes_up<T: std::fmt::Debug>(result: Result<T, ReadFileError>) {
+        assert!(matches!(result, Err(ReadFileError::GoesUp)), "{result:?}");
     }
 
     /// Writes `text` at `path`, creating its folders.
@@ -724,41 +687,35 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn refuses_to_leave_the_folder() {
+    fn reads_outside_the_folder_but_not_up_from_it() {
         let temp = tempfile::tempdir().unwrap();
         let folder = temp.path().join("agent");
         std::fs::create_dir(&folder).unwrap();
-        std::fs::write(temp.path().join("secret.txt"), "secret").unwrap();
-        symlink(temp.path().join("secret.txt"), folder.join("link.txt")).unwrap();
+        std::fs::write(temp.path().join("notes.txt"), "notes").unwrap();
+        symlink(temp.path().join("notes.txt"), folder.join("link.txt")).unwrap();
 
         let access = only_folder(&folder);
 
-        let dotdot = read(&access, Path::new("../secret.txt"));
-        let absolute = read(&access, &temp.path().join("secret.txt"));
+        let absolute = read(&access, &temp.path().join("notes.txt"));
         let link = read(&access, Path::new("link.txt"));
 
-        for result in [dotdot, absolute, link] {
-            assert_outside(result);
-        }
+        assert_eq!(absolute.unwrap(), text("notes"));
+        assert_eq!(link.unwrap(), text("notes"));
+        assert_goes_up(read(&access, Path::new("../notes.txt")));
     }
 
     #[test]
-    fn reads_in_the_checkouts_of_the_files_the_agent_touched() {
+    fn reads_files_the_agent_never_touched() {
         let layout = Layout::new();
-        let access = layout.access(&[
-            layout.feature.join("src/app/touched.ts"),
-            layout.loose.join("todo.txt"),
-        ]);
+        let access = layout.access(&[layout.loose.join("todo.txt")]);
 
         let beside = read(&access, &layout.feature.join("src/app/beside.ts"));
-        let todo = read(&access, &layout.loose.join("todo.txt"));
+        let diary = read(&access, &layout.loose.join("diary.txt"));
+        let untouched = read(&access, &layout.untouched.join("src/secret.ts"));
 
         assert_eq!(beside.unwrap(), text("beside\n"));
-        assert_eq!(todo.unwrap(), text("todo\n"));
-        // No checkout holds the loose file: its neighbours stay out.
-        assert_outside(read(&access, &layout.loose.join("diary.txt")));
-        assert_outside(read(&access, &layout.untouched.join("src/secret.ts")));
-        assert_outside(read(&access, Path::new("../app_feature/src/app/beside.ts")));
+        assert_eq!(diary.unwrap(), text("diary\n"));
+        assert_eq!(untouched.unwrap(), text("secret\n"));
     }
 
     fn git_init(folder: &Path) {
@@ -859,10 +816,10 @@ mod tests {
         );
     }
 
-    /// A symlink out of the allowed folders, or to nothing, is no file the user can open.
+    /// A symlink to nothing is no file the user can open. One that leads out of the checkout is.
     #[cfg(unix)]
     #[tokio::test]
-    async fn a_search_lists_only_files_the_daemon_reads() {
+    async fn a_search_leaves_out_a_symlink_to_nothing() {
         let layout = Layout::new();
         git_init(&layout.agent);
         write(&layout.agent.join("src/a/widget.ts"), "widget\n");
@@ -883,7 +840,10 @@ mod tests {
 
         assert_eq!(
             found,
-            file(layout.agent.join("src/a/widget.ts"), "widget\n")
+            Found::Several(vec![
+                layout.agent.join("src/a/widget.ts"),
+                layout.agent.join("src/b/widget.ts"),
+            ])
         );
     }
 
@@ -933,7 +893,7 @@ mod tests {
             message.message,
             format!("{} does not exist", missing.display())
         );
-        assert_outside(dots.map(|_| Content::Text(String::new())));
+        assert_goes_up(dots);
     }
 
     #[test]
@@ -977,19 +937,16 @@ mod tests {
     }
 
     #[test]
-    fn a_checkout_holding_the_home_folder_adds_only_the_touched_files() {
+    fn a_checkout_holding_the_home_folder_is_not_searched() {
         let layout = Layout::new();
         let home = canonical(layout.temp.path()).unwrap();
         std::fs::create_dir(home.join(GIT_ENTRY)).unwrap();
         write(&home.join("dotfile.txt"), "dotfile\n");
         let access = Access::new(&layout.agent, &[home.join("dotfile.txt")], Some(&home)).unwrap();
 
-        assert_eq!(
-            read(&access, &home.join("dotfile.txt")).unwrap(),
-            text("dotfile\n")
-        );
-        assert_outside(read(&access, &layout.loose.join("todo.txt")));
-        assert_outside(read(&access, &layout.feature.join("src/app/beside.ts")));
+        let roots = access.search_roots(layout.agent.clone());
+
+        assert_eq!(roots, std::slice::from_ref(&layout.agent));
     }
 
     /// Some systems keep the home folders behind a symlink, such as `/home` to `/var/home`.
@@ -1011,58 +968,26 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            read(&access, &home.join("dotfile.txt")).unwrap(),
-            text("dotfile\n")
-        );
-        assert_outside(read(&access, &layout.loose.join("todo.txt")));
+        let roots = access.search_roots(layout.agent.clone());
+
+        assert_eq!(roots, std::slice::from_ref(&layout.agent));
     }
 
     #[cfg(unix)]
     #[test]
-    fn symlinks_are_resolved_before_the_roots_are_checked() {
+    fn a_checkout_reached_through_a_symlink_is_searched_once() {
         let layout = Layout::new();
         let root = layout.agent.parent().unwrap();
         symlink(&layout.feature, root.join("feature_link")).unwrap();
-        symlink(
-            layout.untouched.join("src/secret.ts"),
-            layout.feature.join("src/escape.ts"),
-        )
-        .unwrap();
-        symlink(
+        // The agent read one file through a symlinked folder, the other one directly.
+        let access = layout.access(&[
+            root.join("feature_link/src/app/touched.ts"),
             layout.feature.join("src/app/beside.ts"),
-            layout.agent.join("beside_link.ts"),
-        )
-        .unwrap();
-        // The agent read the file through a symlinked folder.
-        let access = layout.access(&[root.join("feature_link/src/app/touched.ts")]);
+        ]);
 
-        let through_link = read(&access, &root.join("feature_link/src/app/beside.ts"));
-        let from_the_folder = read(&access, Path::new("beside_link.ts"));
-
-        assert_eq!(through_link.unwrap(), text("beside\n"));
-        assert_eq!(from_the_folder.unwrap(), text("beside\n"));
-        assert_outside(read(&access, &layout.feature.join("src/escape.ts")));
-    }
-
-    /// A folder of the path swapped for a symlink between the path check and the open leads the
-    /// open outside: the open file's own path is checked again.
-    #[test]
-    fn an_open_file_outside_the_folder_is_refused() {
-        let temp = tempfile::tempdir().unwrap();
-        let folder = temp.path().join("agent");
-        std::fs::create_dir(&folder).unwrap();
-        std::fs::write(folder.join("inside.txt"), "inside").unwrap();
-        std::fs::write(temp.path().join("secret.txt"), "secret").unwrap();
-        let folder = canonical(&folder).unwrap();
-        let inside = open_to_read(&folder.join("inside.txt")).unwrap();
-        let outside = open_to_read(&temp.path().join("secret.txt")).unwrap();
-
-        assert!(ensure_inside(&inside, &folder).is_ok());
-        let refused = ensure_inside(&outside, &folder);
-        assert!(
-            matches!(refused, Err(ReadFileError::Outside)),
-            "{refused:?}"
+        assert_eq!(
+            access.search_roots(layout.agent.clone()),
+            [layout.agent.clone(), layout.feature.clone()]
         );
     }
 
@@ -1168,7 +1093,11 @@ mod tests {
             r"\\.\C:\notes.txt",
             r"\\?\GLOBALROOT\Device\Null",
         ] {
-            assert_outside(read(&access, Path::new(path)));
+            let refused = read(&access, Path::new(path));
+            assert!(
+                matches!(refused, Err(ReadFileError::Share)),
+                "{path}: {refused:?}"
+            );
         }
         for device in ["NUL", "con.txt", r"sub\COM1", "conin$"] {
             let refused = read(&access, Path::new(device));
@@ -1202,21 +1131,16 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn a_file_outside_the_folder_is_refused_whatever_the_case() {
+    fn a_file_outside_the_folder_reads_whatever_the_case() {
         let temp = tempfile::tempdir().unwrap();
         let folder = temp.path().join("agent");
         write(&folder.join("inside.txt"), "inside");
-        write(
-            &temp.path().join("agent_other").join("secret.txt"),
-            "secret",
-        );
+        write(&temp.path().join("agent_other").join("notes.txt"), "notes");
         let access = only_folder(&folder);
 
-        let sibling = read(&access, &temp.path().join(r"AGENT_OTHER\secret.txt"));
-        let drive_root = read(&access, Path::new(r"C:\windows\win.ini"));
+        let sibling = read(&access, &temp.path().join(r"AGENT_OTHER\notes.txt"));
 
-        assert_outside(sibling);
-        assert_outside(drive_root);
+        assert_eq!(sibling.unwrap(), text("notes"));
         assert_eq!(
             read(&access, Path::new("INSIDE.TXT")).unwrap(),
             text("inside")

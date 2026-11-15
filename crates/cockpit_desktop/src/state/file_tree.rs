@@ -2070,7 +2070,7 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_outside_every_checkout_shows_the_files_the_agent_touched_there() {
+    fn a_folder_that_does_not_list_shows_the_files_the_agent_touched_there() {
         let mut tree = tree();
         let outside = PathBuf::from("/etc");
         tree.expanded.insert(outside.clone());
@@ -2078,8 +2078,7 @@ mod tests {
             outside,
             Listing {
                 entries: Loadable::Failed(
-                    "the folder is outside the agent's folder and the checkouts it worked in"
-                        .to_owned(),
+                    "cannot read the folder: Permission denied (os error 13)".to_owned(),
                 ),
                 stale: false,
                 reading: false,

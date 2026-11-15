@@ -209,16 +209,17 @@ Transcripts are not in the snapshot: the app asks for an agent's transcript with
 The daemon interrupts a working agent's turn, takes the agent out at once (`AgentRemoved`, its logs deleted), and the process handle leaving with it closes `claude`'s stdin.
 `claude` ends its session file and exits, or is killed after 10 seconds, so the session can come back with `sessions.resume`.
 
-The three file requests reach the same folders, once symlinks are resolved and with `..` refused: the agent's folder, and each git checkout that holds a file the agent read or changed (the folder with the `.git` entry nearest above it, unless that is `/` or holds the home folder).
-`agent.read_file` also reads a file the agent touched that no such checkout holds, and that file only.
-The daemon and the app run as the same user, and the agent's commands already read what that user can, so these limits keep the views to the agent's work rather than hide anything from the user.
+`agent.read_file` and `agent.list_dir` open any file or folder the daemon's user can read, as an IDE does: an absolute path, or one relative to the agent's folder.
+A path with `..` is refused.
+The daemon and the app run as the same user, and the agent's commands already read what that user can, so the views show the user nothing new.
+A relative name that names no file in the agent's folder is looked up, and `agent.find_files` searches, in the agent's folder and in each git checkout that holds a file the agent read or changed (the folder with the `.git` entry nearest above it, unless that is `/` or holds the home folder).
 
-Each request checks the file or folder once it is open, so a folder of its path swapped for a symbolic link after the checks changes nothing: on Linux through `/proc/self/fd`, on Windows through `GetFinalPathNameByHandleW`.
+Each request checks what it opened: a file must be a regular file and a folder a folder, so a link swapped in after the checks cannot make it read a device or a FIFO.
 On Windows, a folder's entries come from `GetFileInformationByHandleEx` on the open folder, and the checks read paths as text (module `windows_path`):
 
 - The verbatim prefix that `canonicalize` adds, `\\?\C:\` or `\\?\UNC\host\share\`, counts as absent. The daemon keeps canonical paths without it, so they show as a user writes them.
 - Names compare whatever their case, as Windows does, with one upper case character for each: `ß` stays `ß`. Drive letters and shares must match.
-- A device path (`\\.\pipe\...`), a device name such as `NUL`, `COM1` or `AUX:` in any folder, and a network share that none of the agent's allowed folders and files is on, are refused before any file system call, so that a check never makes Windows connect to another host. A symbolic link in an allowed folder that leads to a share is still followed when the path is resolved, then refused: the agent can reach that host itself.
+- A device path (`\\.\pipe\...`), a device name such as `NUL`, `COM1` or `AUX:` in any folder, and a network share that neither the agent's folder nor a checkout or file it worked on is on, are refused before any file system call. Opening a path on a share makes Windows connect to its host and send it a hash of the user's login, and a path in an agent's text can name any host. A symbolic link that leads to a share is still followed when the path is resolved, then refused: the agent made the link and can reach that host itself.
   A link that leads to a device name is refused once resolved, before the file opens. A search leaves out a path that `git ls-files` lists outside its checkout, which an index file the agent wrote can hold.
 - `folders.list` takes a share, since the user types it.
 

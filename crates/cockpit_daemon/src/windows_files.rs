@@ -1,6 +1,6 @@
-//! The Windows calls the file requests make on an open file or folder: where it is once its
-//! links are resolved, and a folder's entries, read through the open handle so that a folder
-//! swapped for a link after the checks is not the one read.
+//! The Windows calls the file requests make on an open file or folder: a folder's entries, read
+//! through the open handle so that a folder swapped for a link after the checks is not the one
+//! read.
 
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
@@ -8,21 +8,19 @@ use std::ops::ControlFlow;
 use std::os::windows::ffi::OsStringExt;
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::AsRawHandle;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::{io, mem};
 
 use windows_sys::Win32::Foundation::ERROR_NO_MORE_FILES;
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FULL_DIR_INFO, FILE_NAME_NORMALIZED, FileFullDirectoryInfo, FileFullDirectoryRestartInfo,
-    GetFileInformationByHandleEx, GetFinalPathNameByHandleW, VOLUME_NAME_DOS,
+    FILE_FULL_DIR_INFO, FileFullDirectoryInfo, FileFullDirectoryRestartInfo,
+    GetFileInformationByHandleEx,
 };
 use windows_sys::Win32::System::SystemServices::{
     IO_REPARSE_TAG_MOUNT_POINT, IO_REPARSE_TAG_SYMLINK,
 };
 
-/// The longest path Windows gives, in UTF-16 units, with its final NUL.
-const MAX_PATH_UNITS: usize = 32_768;
 /// Entries are read 64 KiB at a time, in 8-byte words: the records need that alignment.
 const ENTRY_BUFFER_WORDS: usize = 8 * 1024;
 
@@ -32,36 +30,6 @@ pub(crate) fn open(path: &Path) -> io::Result<File> {
         .read(true)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
         .open(path)
-}
-
-/// Where the open file is, with its links resolved, as a verbatim path: `\\?\C:\...` or
-/// `\\?\UNC\host\share\...`.
-pub(crate) fn final_path(file: &File) -> io::Result<PathBuf> {
-    let mut buffer: Vec<u16> = vec![0; 512];
-    loop {
-        let capacity = u32::try_from(buffer.len()).unwrap_or(u32::MAX);
-        // SAFETY: the handle is open, and the buffer holds `capacity` UTF-16 units.
-        let length = unsafe {
-            GetFinalPathNameByHandleW(
-                file.as_raw_handle(),
-                buffer.as_mut_ptr(),
-                capacity,
-                FILE_NAME_NORMALIZED | VOLUME_NAME_DOS,
-            )
-        };
-        let length = usize::try_from(length).unwrap_or(usize::MAX);
-        if length == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // Without room, the length counts the final NUL; with room, it does not.
-        if let Some(path) = buffer.get(..length).filter(|_| length < buffer.len()) {
-            return Ok(PathBuf::from(OsString::from_wide(path)));
-        }
-        if length > MAX_PATH_UNITS {
-            return Err(io::Error::other("the file's path is too long"));
-        }
-        buffer.resize(length, 0);
-    }
 }
 
 /// One entry of a folder, as the folder lists it: a link is not followed.
@@ -249,16 +217,5 @@ mod tests {
 
         assert_eq!(seen, 3_000);
         assert_eq!(first, 10);
-    }
-
-    #[test]
-    fn the_final_path_of_an_open_file_is_its_verbatim_path() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("notes.txt");
-        std::fs::write(&path, "notes").unwrap();
-
-        let opened = final_path(&open(&path).unwrap()).unwrap();
-
-        assert_eq!(opened, path.canonicalize().unwrap());
     }
 }
