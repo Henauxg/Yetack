@@ -32,6 +32,14 @@ What it does:
 
 To check Unix code without CI, cross-build the daemon crates for `x86_64-unknown-linux-musl`, with `rust-lld` as the linker, and run their test binaries in WSL. The tests embed Windows paths through `env!`, so give them absolute paths for the run, and don't commit that change. The `update_daemon` tests fail in about 4 of 10 full runs there, on `main` too: rerun a failing test alone.
 
+## Find (Ctrl+F)
+
+Built on branch `feat/find` from the mockups the user picked: a bar under the header for the chat (proposal B), and a box over the top right of the file for the file view (proposal A). The mockups were removed. How it works is in docs/architecture.md, "Find".
+
+- Reviewed with `/review fix` (three passes) and `/review-standard fix`. Each fix of the Rust side has a test. The page script has no unit test: its fixes were checked in the demo, driven over the DevTools protocol (see "Checking the app on Windows").
+- Checked on Windows only, in the demo. WebKitGTK was not run: the highlights need its CSS Custom Highlight API, from 2.44 on.
+- The matches in folded calls come from the transcript's text, so a chip's count can differ a little from what the fold shows once open, as for a Markdown link's address. The page counts again once the fold is open.
+
 ## What the branch added
 
 Each item is described in architecture.md and was reviewed with `/review fix` and `/review-standard fix`.

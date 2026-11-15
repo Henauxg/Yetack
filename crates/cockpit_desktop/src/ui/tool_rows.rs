@@ -11,6 +11,7 @@ use serde_json::Value;
 use crate::format;
 use crate::render::SearchTool;
 use crate::state::{actions, file_edits};
+use crate::ui::find_folds::{FoldChip, FoldKey};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::markdown::MarkdownView;
 use crate::ui::transcript::{self, CallStage, CompactItem, RunningMeta};
@@ -214,6 +215,9 @@ pub fn SkillView(
                         title: if open { "Hide the skill's instructions" } else { "Show the skill's instructions" },
                         onclick: move |_| expanded.toggle(),
                         {head}
+                        if !open {
+                            FoldChip { fold: FoldKey::Item(id) }
+                        }
                         span { class: if open { "chevron open" } else { "chevron" }, Icon { kind: IconKind::ChevronRight, size: 12 } }
                     }
                     if open {
@@ -237,6 +241,7 @@ pub fn ExploredView(agent: AgentId, folder: PathBuf, calls: Vec<TranscriptItem>)
     let mut expanded = use_signal(|| false);
     let open = expanded();
     let summary = ExploredSummary::of(&calls);
+    let first = calls.first().map(|call| call.id);
     let title = if summary.running.is_some() {
         "Exploring"
     } else {
@@ -254,6 +259,9 @@ pub fn ExploredView(agent: AgentId, folder: PathBuf, calls: Vec<TranscriptItem>)
                     RunningMeta { agent, item }
                 } else if summary.failed > 0 {
                     span { class: "tool-meta", "{summary.failed} failed" }
+                }
+                if let Some(first) = first.filter(|_| !open) {
+                    FoldChip { fold: FoldKey::Explored(first) }
                 }
                 span { class: if open { "chevron open" } else { "chevron" }, Icon { kind: IconKind::ChevronRight, size: 12 } }
             }

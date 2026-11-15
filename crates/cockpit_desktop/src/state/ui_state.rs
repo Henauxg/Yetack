@@ -14,6 +14,7 @@ use strum::{EnumString, IntoStaticStr, VariantArray};
 use super::accounts::{AccountsView, AddAccountForm};
 use super::agent_map::MapView;
 use super::app_state::Loadable;
+use super::find::FindFocus;
 use super::mcp_reconnect::Reconnects;
 use super::projects::{ProjectKey, RuleKind};
 use crate::keymap::{Chord, Command, Refusal};
@@ -454,6 +455,8 @@ pub struct FileView {
     pub closed: BTreeSet<PathBuf>,
     /// The tab whose menu is open.
     pub menu: Option<PathBuf>,
+    /// Its find is open (Ctrl+F in the file view).
+    pub find: bool,
 }
 
 impl FileView {
@@ -465,6 +468,7 @@ impl FileView {
             opened: Vec::new(),
             closed: BTreeSet::new(),
             menu: None,
+            find: false,
         }
     }
 
@@ -593,6 +597,10 @@ pub struct UiState {
     pub closed: Option<ClosedAgent>,
     next_closed: u32,
     pub reopening: Option<Reopening>,
+    /// The agents whose chat shows its find (Ctrl+F). Each agent keeps its own.
+    pub chat_finds: BTreeSet<AgentId>,
+    /// The last request for the focus in a find's field.
+    pub find_focus: FindFocus,
 }
 
 impl Default for UiState {
@@ -627,6 +635,8 @@ impl Default for UiState {
             closed: None,
             next_closed: 0,
             reopening: None,
+            chat_finds: BTreeSet::new(),
+            find_focus: FindFocus::default(),
         }
     }
 }
