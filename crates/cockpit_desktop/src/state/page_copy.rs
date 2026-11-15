@@ -1,6 +1,6 @@
 //! "Open in browser" for a web page on a server, which the browser on this computer cannot reach.
-//! The daemon reads the files the page names, and `browser::open_copy` writes them with the page
-//! to a folder on this computer. The page's own text is the one the file view shows.
+//! The daemon reads the files the page names, and `page_files::open_copy` writes them with the
+//! page to a folder on this computer. The page's own text is the one the file view shows.
 //!
 //! The files read are those the page's `src` and `href` attributes name by a relative address,
 //! such as its images, style sheets and scripts. A file that a script or a style sheet loads is
@@ -32,6 +32,9 @@ const FILE_ATTRIBUTES: [&str; 2] = ["src", "href"];
 /// What starts an escaped byte in an address, as in `%20`.
 const ESCAPE: char = '%';
 
+/// The names that end a path in a folder: the folder itself and the one above.
+const FOLDER_NAMES: [&str; 2] = [".", ".."];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CopyId(u64);
 
@@ -48,22 +51,31 @@ impl PageCopies {
         self.copies.iter().any(PageCopy::is_ready)
     }
 
-    /// Whether the daemon is reading the files of a copy of `page`.
-    pub fn reading(&self, page: &str) -> bool {
-        self.copies
-            .iter()
-            .any(|copy| copy.style.same_path(&copy.page, page))
+    /// Whether the daemon is reading the files of `agent`'s copy of `page`.
+    pub fn reading(&self, agent: AgentId, page: &str) -> bool {
+        self.copies.iter().any(|copy| {
+            copy.agent == agent
+                && copy
+                    .style
+                    .same_path(&copy.page, &copy.style.resolve(page, ""))
+        })
+    }
+
+    /// Keeps the copies of the agents `keep` accepts. A forgotten agent's page does not open.
+    pub fn retain_agents(&mut self, keep: impl Fn(AgentId) -> bool) {
+        self.copies.retain(|copy| keep(copy.agent));
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 struct PageCopy {
     id: CopyId,
+    agent: AgentId,
     style: PathStyle,
     /// The folder on the agent's machine that holds the page and every file it names. The copy
     /// keeps their places under it, so that the page's addresses still lead to them.
     root: String,
-    /// The page's path on the agent's machine, with its text.
+    /// The page's path on the agent's machine, without "." and "..", with its text.
     page: String,
     text: String,
     files: Vec<CopiedFile>,
@@ -91,7 +103,7 @@ enum FileBytes {
     Failed,
 }
 
-/// A copy whose files the daemon sent or refused, for `browser::open_copy` to write.
+/// A copy whose files the daemon sent or refused, for `page_files::open_copy` to write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadyCopy {
     /// The page's names under the copy's folder.
@@ -115,10 +127,15 @@ pub fn is_page(path: &str) -> bool {
 }
 
 /// Starts a copy of the page at `page`, an absolute path on the agent's machine whose text is
-/// `text`: asks the daemon for each file the page names, up to [`MAX_FILES`].
+/// `text`: asks the daemon for each file the page names, up to [`MAX_FILES`]. Does nothing while
+/// the agent's copy of that page is reading.
 pub fn start(state: &mut AppState, agent: AgentId, page: &str, text: String) -> Vec<Outgoing> {
+    if state.page_copies.reading(agent, page) {
+        return Vec::new();
+    }
     let style = PathStyle::of_text(page);
-    let Some(folder) = style.parent(page) else {
+    let page = style.resolve(page, "");
+    let Some(folder) = style.parent(&page) else {
         return Vec::new();
     };
     let mut paths: Vec<String> = Vec::new();
@@ -127,8 +144,9 @@ pub fn start(state: &mut AppState, agent: AgentId, page: &str, text: String) -> 
             break;
         }
         let path = style.resolve(folder, &reference);
-        let known =
-            style.same_path(&path, page) || paths.iter().any(|known| style.same_path(known, &path));
+        // Both are resolved, so they name the same file when they read the same.
+        let known = style.same_name(&path, &page)
+            || paths.iter().any(|known| style.same_name(known, &path));
         if !known {
             paths.push(path);
         }
@@ -159,9 +177,10 @@ pub fn start(state: &mut AppState, agent: AgentId, page: &str, text: String) -> 
         .collect();
     state.page_copies.copies.push(PageCopy {
         id,
+        agent,
         style,
         root,
-        page: page.to_owned(),
+        page,
         text,
         files,
     });
@@ -269,24 +288,23 @@ fn common_folder(style: PathStyle, folder: &str, paths: &[String]) -> String {
     root.to_owned()
 }
 
-/// The paths that `html`'s `src` and `href` attributes name by a relative address, each once,
-/// in the page's order.
-fn relative_references(html: &str) -> Vec<String> {
-    let mut references: Vec<String> = Vec::new();
+/// The paths that `html`'s `src` and `href` attributes name by a relative address, in the page's
+/// order, as the caller takes them.
+fn relative_references(html: &str) -> impl Iterator<Item = String> {
     let mut rest = html;
-    while let Some(at) = rest.find(|character: char| character.is_ascii_whitespace()) {
-        rest = rest.get(at + 1..).unwrap_or_default();
-        let Some((address, after)) = attribute_value(rest) else {
-            continue;
-        };
-        rest = after;
-        if let Some(path) = relative_path(address)
-            && !references.contains(&path)
-        {
-            references.push(path);
+    std::iter::from_fn(move || {
+        while let Some(at) = rest.find(|character: char| character.is_ascii_whitespace()) {
+            rest = rest.get(at + 1..).unwrap_or_default();
+            let Some((address, after)) = attribute_value(rest) else {
+                continue;
+            };
+            rest = after;
+            if let Some(path) = relative_path(address) {
+                return Some(path);
+            }
         }
-    }
-    references
+        None
+    })
 }
 
 /// The address of a `src` or `href` attribute that starts `text`, and the text after it.
@@ -314,18 +332,16 @@ fn attribute_value(text: &str) -> Option<(&str, &str)> {
 
 /// The path a relative address names, without its query and fragment, its escapes decoded.
 /// `None` for an address with a scheme, such as `https:` or `data:`, one from a root, and one
-/// that names a folder or nothing.
+/// that names a folder or nothing. The decoded path is checked, so that `%2F` starts no root.
 fn relative_path(address: &str) -> Option<String> {
     let address = address.trim();
     let end = address.find(['?', '#']).unwrap_or(address.len());
-    let path = address.get(..end)?;
+    let path = unescaped(address.get(..end)?)?;
     let from_root = path.starts_with(['/', '\\']);
-    let folder = path.is_empty() || path.ends_with(['/', '\\']);
-    if from_root || folder || has_scheme(path) {
-        return None;
-    }
-    let decoded = unescaped(path)?;
-    (!decoded.chars().any(char::is_control)).then_some(decoded)
+    let last = path.rsplit(['/', '\\']).next().unwrap_or_default();
+    let folder = last.is_empty() || FOLDER_NAMES.contains(&last);
+    let control = path.chars().any(char::is_control);
+    (!from_root && !folder && !control && !has_scheme(&path)).then_some(path)
 }
 
 /// Whether `address` starts with a scheme and its colon, as `mailto:` does. A Windows drive,
@@ -431,9 +447,10 @@ mod tests {
 <a href="next.html#part">next</a>"##;
 
         assert_eq!(
-            relative_references(html),
+            relative_references(html).collect::<Vec<_>>(),
             [
                 "style.css",
+                "shots/a b.png",
                 "shots/a b.png",
                 "../shared/app.js",
                 "next.html"
@@ -443,9 +460,12 @@ mod tests {
 
     #[test]
     fn a_broken_escape_or_a_control_character_names_no_file() {
-        assert!(relative_references(r#" src="a%2.png" src="a%ZZ.png""#).is_empty());
         assert_eq!(
-            relative_references(r#" src="a%0A.png" src="b.png""#),
+            relative_references(r#" src="a%2.png" src="a%ZZ.png""#).count(),
+            0
+        );
+        assert_eq!(
+            relative_references(r#" src="a%0A.png" src="b.png""#).collect::<Vec<_>>(),
             ["b.png"]
         );
     }
@@ -529,10 +549,10 @@ mod tests {
             r#" <img src="a.png">"#.to_owned(),
         );
 
-        assert!(state.page_copies.reading(page));
-        assert!(!state.page_copies.reading("/srv/site/other.html"));
+        assert!(state.page_copies.reading(agent(), page));
+        assert!(!state.page_copies.reading(agent(), "/srv/site/other.html"));
         assert!(take_ready(&mut state).is_empty());
-        assert!(state.page_copies.reading(page));
+        assert!(state.page_copies.reading(agent(), page));
     }
 
     #[test]
@@ -589,6 +609,105 @@ mod tests {
         let requests = start(&mut state, agent(), "/srv/index.html", html);
 
         assert_eq!(requests.len(), MAX_FILES);
+    }
+
+    /// The daemon sends a page of up to 4 MiB, and the scan runs on a click.
+    #[test]
+    fn a_page_of_many_addresses_is_read_in_linear_time() {
+        let html: String = (0..60_000)
+            .map(|index| format!(" src={index}.png"))
+            .collect();
+        let started = std::time::Instant::now();
+
+        let requests = start(&mut state(), agent(), "/srv/index.html", html);
+
+        assert_eq!(requests.len(), MAX_FILES);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn an_escape_does_not_make_an_address_absolute() {
+        let html = r#" src="%2Fetc%2Fpasswd" src="%5C%5Chost%5Cshare%5Ca.png"
+            src="C%3A%5Cother.png" src="a%2Fb.png""#;
+
+        assert_eq!(relative_references(html).collect::<Vec<_>>(), ["a/b.png"]);
+    }
+
+    #[test]
+    fn an_address_that_ends_in_a_folder_names_no_file() {
+        let html = r#" href="." href=".." href="docs/.." href="docs/../a.png""#;
+
+        assert_eq!(
+            relative_references(html).collect::<Vec<_>>(),
+            ["docs/../a.png"]
+        );
+    }
+
+    #[test]
+    fn a_copy_is_reading_for_its_own_agent_only() {
+        let mut state = state();
+        let page = "/srv/site/index.html";
+
+        start(
+            &mut state,
+            agent(),
+            page,
+            r#" <img src="a.png">"#.to_owned(),
+        );
+
+        assert!(state.page_copies.reading(agent(), page));
+        assert!(!state.page_copies.reading(AgentId::new(8), page));
+    }
+
+    #[test]
+    fn a_second_click_while_reading_asks_for_nothing() {
+        let mut state = state();
+        let page = "/srv/site/index.html";
+        let html = r#" <img src="a.png">"#;
+
+        let first = start(&mut state, agent(), page, html.to_owned());
+        let second = start(&mut state, agent(), page, html.to_owned());
+
+        assert_eq!(asked(&first), ["/srv/site/a.png"]);
+        assert!(second.is_empty());
+    }
+
+    #[test]
+    fn a_forgotten_agent_opens_no_copy() {
+        let mut state = state();
+        let requests = start(
+            &mut state,
+            agent(),
+            "/srv/site/index.html",
+            r#" <img src="a.png">"#.to_owned(),
+        );
+        let copy = copy_of(&requests);
+
+        let mut drafts = crate::state::Drafts::default();
+        crate::state::apply::forget_agent(&mut state, &mut drafts, agent());
+        answered(&mut state, copy, "/srv/site/a.png", None);
+
+        assert!(take_ready(&mut state).is_empty());
+    }
+
+    #[test]
+    fn a_page_path_that_goes_up_keeps_its_place() {
+        let mut state = state();
+        let requests = start(
+            &mut state,
+            agent(),
+            "/srv/site/pages/../index.html",
+            r#" <img src="a.png"> <img src="index.html">"#.to_owned(),
+        );
+        let copy = copy_of(&requests);
+        answered(&mut state, copy, "/srv/site/a.png", text("png"));
+
+        assert_eq!(asked(&requests), ["/srv/site/a.png"]);
+        let ready = take_ready(&mut state);
+        assert_eq!(
+            ready.first().map(|ready| ready.page.clone()),
+            Some(names("index.html"))
+        );
     }
 
     #[test]

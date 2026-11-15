@@ -116,7 +116,7 @@ pub fn FileViewPanel() -> Element {
         .machines
         .get(MachineId::of(agent))
         .is_some_and(|machine| machine.daemon.place != DaemonPlace::Ssh);
-    let reading_page = state.page_copies.reading(&full);
+    let reading_page = state.page_copies.reading(agent, &full);
     let wrap = state.prefs.file_view.wrap;
     rsx! {
         section {

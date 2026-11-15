@@ -2,7 +2,7 @@
 //! files it names, in a new private folder of the temporary folder (`state::page_copy` reads
 //! them through the daemon).
 
-use std::io;
+use std::io::{self, Write as _};
 use std::path::{Component, Path, PathBuf};
 
 use crate::browser::{self, OpenError};
@@ -21,8 +21,8 @@ const SUPERSCRIPT_DIGITS: [char; 3] = ['\u{b9}', '\u{b2}', '\u{b3}'];
 const FORBIDDEN: [char; 9] = ['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
 
 /// Writes `copy` to a new folder, then opens its page. The folder stays: the browser reads its
-/// files after this returns. Returns the paths of the files whose names this computer cannot
-/// take, which the copy lacks.
+/// files after this returns. Returns the paths of the files the copy lacks, as [`write`] leaves
+/// them out.
 pub async fn open_copy(copy: ReadyCopy) -> Result<Vec<String>, OpenError> {
     let (page, refused) = tokio::task::spawn_blocking(move || {
         let folder = tempfile::Builder::new()
@@ -37,21 +37,32 @@ pub async fn open_copy(copy: ReadyCopy) -> Result<Vec<String>, OpenError> {
     Ok(refused)
 }
 
-/// Writes the files of `copy` under `folder`. Returns the page's path, and the files left out.
+/// Writes the files of `copy` under `folder`. Returns the page's path, and the files left out:
+/// those whose name this computer cannot take, and those it fails to write but the page. A file
+/// never replaces another: where case does not count, `A.png` would replace `a.png`.
 fn write(folder: &Path, copy: &ReadyCopy) -> Result<(PathBuf, Vec<String>), OpenError> {
     let page = local_path(folder, &copy.page).ok_or(OpenError::NotAPage)?;
     let mut refused = Vec::new();
     for (names, bytes) in &copy.files {
-        let Some(path) = local_path(folder, names) else {
-            refused.push(names.join("/"));
-            continue;
-        };
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+        let written = local_path(folder, names).map(|path| write_file(&path, bytes));
+        match written {
+            Some(Ok(())) => {}
+            Some(Err(error)) if *names == copy.page => return Err(error.into()),
+            Some(Err(error)) => {
+                tracing::warn!("Cannot write a file of a page's copy: {error}");
+                refused.push(names.join("/"));
+            }
+            None => refused.push(names.join("/")),
         }
-        std::fs::write(&path, bytes)?;
     }
     Ok((page, refused))
+}
+
+fn write_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::File::create_new(path)?.write_all(bytes)
 }
 
 /// `names` under `folder`, when each is a plain file name on Linux as on Windows.
@@ -164,6 +175,50 @@ mod tests {
             b"body {}"
         );
         assert_eq!(refused, ["pages/nul.png"]);
+    }
+
+    /// A file and a folder of one name, as `a` and `a/b.png`, or `A` and `a/b.png` where case
+    /// does not count, cannot both be written.
+    #[test]
+    fn a_file_that_cannot_be_written_is_left_out() {
+        let temp = tempfile::tempdir().unwrap();
+        let copy = ReadyCopy {
+            page: names("index.html"),
+            files: vec![
+                (names("index.html"), b"<img src=shots>".to_vec()),
+                (names("shots"), b"file".to_vec()),
+                (names("shots/a.png"), vec![0x89, 0x50]),
+                (names("b.png"), vec![0x89]),
+            ],
+            missing: Vec::new(),
+        };
+
+        let (page, refused) = write(temp.path(), &copy).unwrap();
+
+        assert_eq!(std::fs::read(&page).unwrap(), b"<img src=shots>");
+        assert_eq!(std::fs::read(temp.path().join("b.png")).unwrap(), [0x89]);
+        assert_eq!(refused, ["shots/a.png"]);
+    }
+
+    /// Names a Linux server tells apart by their case are one file on Windows and macOS.
+    #[test]
+    fn a_later_file_never_replaces_an_earlier_one() {
+        let temp = tempfile::tempdir().unwrap();
+        let copy = ReadyCopy {
+            page: names("index.html"),
+            files: vec![
+                (names("index.html"), b"<p>page</p>".to_vec()),
+                (names("INDEX.HTML"), b"<p>other</p>".to_vec()),
+                (names("a.png"), b"first".to_vec()),
+                (names("A.png"), b"second".to_vec()),
+            ],
+            missing: Vec::new(),
+        };
+
+        let (page, _) = write(temp.path(), &copy).unwrap();
+
+        assert_eq!(std::fs::read(&page).unwrap(), b"<p>page</p>");
+        assert_eq!(std::fs::read(temp.path().join("a.png")).unwrap(), b"first");
     }
 
     #[test]
