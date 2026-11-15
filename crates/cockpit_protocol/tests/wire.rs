@@ -18,24 +18,25 @@ use cockpit_protocol::{
     AccountState, AgentDetails, AgentHistory, AgentId, AgentLoad, AgentParams, AgentStatus,
     AgentSummary, Answer, AnswerParams, AnswerState, Approval, ApprovalAnswer, ApprovalDecision,
     AskedQuestion, BackgroundTask, BackgroundTaskId, BackgroundTaskKind, BackgroundTaskStatus,
-    BuildCommit, Catchup, ChangedFile, ClaudeRoute, ClaudeSessionId, ClientMessage, CommandKind,
-    CommandLoad, Completeness, ContextCategory, ContextUsage, Cores, CostUsd, CredentialSource,
-    DetailsChange, DirEntry, DirListing, Effort, EffortSource, EntryKind, EntryLink,
-    EnvironmentCredentials, ErrorBody, ErrorCode, Event, EventRecord, FileEdit, FindFilesParams,
-    FolderParams, FoldersListParams, GitIgnore, HistoryPage, HistoryParams, Image, ImageMediaType,
-    ItemBody, ItemId, ListDirParams, LoadAverage, LoadHistory, MachineLoad, Mark, MarkParams,
-    McpRemoveParams, McpScope, McpServer, McpServerParams, McpServerStatus, McpToggleAction,
-    McpToggleParams, McpTool, McpTransport, Method, MoveParams, NoticeKind, OlderItems,
-    PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan, PlanAnswer, PlanDecision,
-    PlanUsage, Position, ProcessId, Prompt, PromptDelivery, PromptId, PromptParams, Question,
-    QuestionAnswer, QuestionOption, QueuedPromptParams, RateLimitStatus, ReadFileParams,
-    ReleaseVersion, RenameParams, Request, RequestId, ResourceUse, ResponseBody, ResponseResult,
-    Selection, Seq, ServerLoad, ServerMessage, ServerPoint, SessionResumeParams, SetEffortParams,
-    SetModeParams, SetModelParams, Settings, SignIn, SignInWait, SlashCommand, Snapshot,
-    StartParams, StopProcessParams, StopTaskParams, Subagent, SubagentRun, SubagentStatus,
-    SubagentToolCall, TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall,
-    ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt,
-    WaitingState, WindowUsage,
+    BuildCommit, Catchup, ChangedFile, ClaudeCodeVersion, ClaudeRoute, ClaudeSessionId,
+    ClientMessage, CommandKind, CommandLoad, Completeness, ContextCategory, ContextUsage, Cores,
+    CostUsd, CredentialSource, DetailsChange, DirEntry, DirListing, Effort, EffortSource,
+    EntryKind, EntryLink, EnvironmentCredentials, ErrorBody, ErrorCode, Event, EventRecord,
+    FileEdit, FindFilesParams, FolderParams, FoldersListParams, GitIgnore, HistoryPage,
+    HistoryParams, Image, ImageMediaType, ItemBody, ItemId, ListDirParams, LoadAverage,
+    LoadHistory, MachineLoad, Mark, MarkParams, McpRemoveParams, McpScope, McpServer,
+    McpServerParams, McpServerStatus, McpToggleAction, McpToggleParams, McpTool, McpTransport,
+    Method, MoveParams, NoticeKind, OlderItems, PROTOCOL_VERSION, PastSession, PendingId,
+    PermissionMode, Plan, PlanAnswer, PlanDecision, PlanUsage, Position, ProcessId, Prompt,
+    PromptDelivery, PromptId, PromptParams, Question, QuestionAnswer, QuestionOption,
+    QueuedPromptParams, RateLimitStatus, ReadFileParams, ReleaseVersion, RenameParams, Request,
+    RequestId, ResourceUse, ResponseBody, ResponseResult, Selection, Seq, ServerLoad,
+    ServerMessage, ServerPoint, SessionResumeParams, SetEffortParams, SetModeParams,
+    SetModelParams, Settings, SignIn, SignInWait, SlashCommand, Snapshot, StartParams,
+    StopProcessParams, StopTaskParams, Subagent, SubagentRun, SubagentStatus, SubagentToolCall,
+    TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus,
+    TranscriptItem, TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt, WaitingState,
+    WindowUsage,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -88,6 +89,7 @@ fn summary() -> AgentSummary {
         background_running: 2,
         mark: Mark::ToHandle,
         repository: None,
+        claude_code_version: Some(ClaudeCodeVersion::new("9.9.9".to_owned())),
     }
 }
 
@@ -119,6 +121,7 @@ fn idle_summary() -> AgentSummary {
         background_running: 0,
         mark: Mark::Unmarked,
         repository: None,
+        claude_code_version: None,
     }
 }
 
@@ -1966,6 +1969,7 @@ fn an_agent_update_on_the_wire() {
                 "sign_in_wait": "waiting",
                 "background_running": 2,
                 "mark": "to_handle",
+                "claude_code_version": "9.9.9",
             },
         }),
     );
@@ -2186,6 +2190,20 @@ fn a_summary_from_a_daemon_without_activity_times_reads_none() {
 
     assert_eq!(read.last_activity_at, None);
     assert_eq!(read.turn_started_at, None);
+}
+
+/// Until its `claude` reports its version, an agent's summary leaves the field out, and a summary
+/// from a daemon that predates it reads none.
+#[test]
+fn a_summary_without_a_claude_code_version_leaves_it_out() {
+    let sent = serde_json::to_value(idle_summary()).unwrap();
+    let mut older = serde_json::to_value(summary()).unwrap();
+    older.as_object_mut().unwrap().remove("claude_code_version");
+
+    let read: AgentSummary = serde_json::from_value(older).unwrap();
+
+    assert!(sent.get("claude_code_version").is_none());
+    assert_eq!(read.claude_code_version, None);
 }
 
 #[test]

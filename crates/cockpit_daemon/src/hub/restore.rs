@@ -152,8 +152,8 @@ mod tests {
     use std::path::PathBuf;
 
     use cockpit_protocol::{
-        AgentStatus, ClaudeSessionId, EventRecord, Frame, ItemBody, Mark, NoticeKind, Position,
-        ServerMessage, Settings, TaskListItem, TaskStatus, Timestamp,
+        AgentStatus, ClaudeCodeVersion, ClaudeSessionId, EventRecord, Frame, ItemBody, Mark,
+        NoticeKind, Position, ServerMessage, Settings, TaskListItem, TaskStatus, Timestamp,
     };
 
     use crate::store::{PastFile, ResumeAs};
@@ -259,6 +259,38 @@ mod tests {
         let (_, second) = &restored.agents[1];
         assert_eq!(second.summary().title, "Agent 2");
         assert!(second.items().is_empty());
+    }
+
+    /// The resumed `claude` reports its version at its next turn: until then, the agent keeps the
+    /// one its last summary had.
+    #[test]
+    fn a_restart_keeps_the_claude_code_version_of_the_last_summary() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = StateDir::create(temp.path()).unwrap();
+        AgentsFile {
+            next_agent: AgentId::new(2),
+            replay_floor: None,
+            agents: vec![record(1)],
+        }
+        .save(&state.agents_file())
+        .unwrap();
+        let mut logs = EventLogs::new(state.events(), state.details());
+        let mut summary = initial_summary(&record(1));
+        summary.claude_code_version = Some(ClaudeCodeVersion::new("9.9.9".to_owned()));
+        log(
+            &mut logs,
+            LogName::Agent(AgentId::new(1)),
+            1,
+            Event::AgentAdded(summary),
+        );
+
+        let restored = restore(&state, &temp.path().join("claude")).unwrap();
+
+        let (_, view) = &restored.agents[0];
+        assert_eq!(
+            view.summary().claude_code_version,
+            Some(ClaudeCodeVersion::new("9.9.9".to_owned()))
+        );
     }
 
     #[test]

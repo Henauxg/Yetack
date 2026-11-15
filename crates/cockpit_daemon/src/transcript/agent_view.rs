@@ -15,11 +15,11 @@ use claude_protocol::{
 };
 use cockpit_protocol::{
     AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, Answer, AnswerState, Approval,
-    BackgroundTask, BackgroundTaskId, BackgroundTaskStatus, ClaudeSessionId, ContextUsage, CostUsd,
-    Effort, EffortSource, Event, Image, ItemBody, ItemId, Mark, McpServer, NoticeKind, PendingId,
-    PermissionMode, Plan, Position, Prompt, PromptId, Question, SignInWait, SlashCommand,
-    SubagentRun, SubagentStatus, SubagentToolCall, Timestamp, TokenUsage, ToolCall, ToolCallStatus,
-    TranscriptItem, TurnEnd, TurnOutcome, UserMessage, WaitingPrompt, WaitingState,
+    BackgroundTask, BackgroundTaskId, BackgroundTaskStatus, ClaudeCodeVersion, ClaudeSessionId,
+    ContextUsage, CostUsd, Effort, EffortSource, Event, Image, ItemBody, ItemId, Mark, McpServer,
+    NoticeKind, PendingId, PermissionMode, Plan, Position, Prompt, PromptId, Question, SignInWait,
+    SlashCommand, SubagentRun, SubagentStatus, SubagentToolCall, Timestamp, TokenUsage, ToolCall,
+    ToolCallStatus, TranscriptItem, TurnEnd, TurnOutcome, UserMessage, WaitingPrompt, WaitingState,
 };
 use serde_json::{Map, Value};
 use strum::{EnumString, IntoStaticStr, VariantArray};
@@ -308,6 +308,7 @@ impl AgentView {
             background_running: 0,
             mark: Mark::Unmarked,
             repository: None,
+            claude_code_version: None,
         };
         Self::new(summary, Duration::ZERO)
     }
@@ -923,6 +924,9 @@ impl AgentView {
         }
         if let Some(OpenWord::Known(mode)) = init.permission_mode {
             self.summary.mode = words::mode_to_cockpit(mode);
+        }
+        if let Some(version) = init.claude_code_version {
+            self.summary.claude_code_version = Some(ClaudeCodeVersion::new(version));
         }
         let commands_before = self.commands.clone();
         let servers_before = self.details.mcp_servers.clone();
@@ -2057,6 +2061,7 @@ mod tests {
             mark: Mark::Unmarked,
             repository: None,
             background_running: 0,
+            claude_code_version: None,
         };
         let mut view = AgentView::new(summary, Duration::from_secs(3600));
         view.mark_published();
@@ -2255,6 +2260,41 @@ mod tests {
         let details = view.details();
         assert_eq!(details.mcp_servers.len(), 1);
         assert_eq!(details.mcp_servers[0].status, McpServerStatus::Connected);
+    }
+
+    #[test]
+    fn the_summary_carries_the_claude_code_version_of_the_latest_init() {
+        let mut view = view();
+        let sent_versions = |view: &mut AgentView| -> Vec<Option<ClaudeCodeVersion>> {
+            view.take_events()
+                .into_iter()
+                .filter_map(|event| match event {
+                    Event::AgentUpdated(summary) => Some(summary.claude_code_version),
+                    _ => None,
+                })
+                .collect()
+        };
+        let init_of = |version: &str| {
+            let mut line = init();
+            line["claude_code_version"] = json!(version);
+            line
+        };
+        let version = |text: &str| Some(ClaudeCodeVersion::new(text.to_owned()));
+
+        let before = view.summary().claude_code_version.clone();
+        apply(&mut view, init_of("9.9.9"));
+        let first = sent_versions(&mut view);
+        apply(&mut view, result(0.25));
+        sent_versions(&mut view);
+        apply(&mut view, init());
+        let without = view.summary().claude_code_version.clone();
+        apply(&mut view, init_of("9.10.0"));
+        let later = sent_versions(&mut view);
+
+        assert_eq!(before, None, "no version before claude reports one");
+        assert_eq!(first, [version("9.9.9")]);
+        assert_eq!(without, version("9.9.9"), "an init without one keeps it");
+        assert_eq!(later, [version("9.10.0")]);
     }
 
     #[test]

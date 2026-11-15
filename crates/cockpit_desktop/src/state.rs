@@ -7,6 +7,7 @@ pub mod agent_map;
 mod app_state;
 mod apply;
 pub mod chat_images;
+pub mod claude_code_version;
 pub mod daemon_probe;
 pub mod daemon_update;
 mod details_updates;

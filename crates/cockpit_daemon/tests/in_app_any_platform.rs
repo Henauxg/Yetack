@@ -14,7 +14,8 @@ use std::time::Duration;
 use cockpit_client::{Connection, InAppLink, Transport};
 use cockpit_daemon::{DaemonConfig, InAppDaemon};
 use cockpit_protocol::{
-    AccountId, AgentStatus, Catchup, Event, Prompt, Request, ResponseBody, StartParams,
+    AccountId, AgentStatus, Catchup, ClaudeCodeVersion, Event, Prompt, Request, ResponseBody,
+    StartParams,
 };
 
 const WAIT: Duration = Duration::from_secs(15);
@@ -85,6 +86,8 @@ async fn an_agent_runs_and_is_still_there_after_the_app_runs_agents_again() {
                 && summary.status == AgentStatus::Working
                 && summary.session.is_some()
             {
+                let version = summary.claude_code_version.as_ref();
+                assert_eq!(version.map(ClaudeCodeVersion::as_str), Some("9.9.9"));
                 break;
             }
         }

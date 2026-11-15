@@ -18,8 +18,9 @@ The Windows zip is built on a Windows machine, the other files on a Linux machin
 1. On `main`, set `version` under `[workspace.package]` in [Cargo.toml](../Cargo.toml).
 2. Run `cargo check -q --workspace`, which writes the new version into `Cargo.lock`.
 3. If the protocol's messages changed since the last release, check that `PROTOCOL_VERSION` in [crates/cockpit_protocol/src/session.rs](../crates/cockpit_protocol/src/session.rs) changed too.
-4. Run `just check`, then commit: `git commit -am "Release 0.1.0"`.
-5. Tag and push:
+4. Check the release against the current Claude Code. Update Claude Code (`claude update`), then run the app from this checkout. Start an agent, and take it through a turn with a command, an approval, a question, a plan, a message sent while it works, and a stop. When each shows as it should, set `TESTED_VERSION` in [crates/cockpit_desktop/src/state/claude_code_version.rs](../crates/cockpit_desktop/src/state/claude_code_version.rs) to the version `claude --version` prints. The app shows a note on each agent whose Claude Code is newer than that version.
+5. Run `just check`, then commit: `git commit -am "Release 0.1.0"`.
+6. Tag and push:
 
    ```sh
    git tag -a v0.1.0 -m "agents-cockpit 0.1.0"
@@ -67,7 +68,7 @@ The app inside the `.deb` knows the commit it was built from. Its "Update" butto
 
 ## 5. Publish
 
-Write the release notes in a file outside the repository: what changed, and the Claude Code version the release was tested with (`claude --version`). Then, from the checkout's root:
+Write the release notes in a file outside the repository: what changed, and the Claude Code version the release was tested with (`TESTED_VERSION`, from step 1). Then, from the checkout's root:
 
 ```sh
 version=0.1.0

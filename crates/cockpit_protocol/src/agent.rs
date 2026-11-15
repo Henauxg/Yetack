@@ -1,5 +1,6 @@
 //! What the sidebar and the center header show about an agent.
 
+use std::fmt;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -138,6 +139,33 @@ pub struct AgentSummary {
     /// a repository without a remote, and from a daemon that predates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repository: Option<Repository>,
+    /// The Claude Code version of the agent's latest `system/init` line. `None` until its
+    /// `claude` writes one, and from a daemon that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_code_version: Option<ClaudeCodeVersion>,
+}
+
+/// A Claude Code version as `claude` reports it, such as "2.1.319".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ClaudeCodeVersion(String);
+
+impl ClaudeCodeVersion {
+    #[must_use]
+    pub fn new(raw: String) -> Self {
+        Self(raw)
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ClaudeCodeVersion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
 }
 
 /// Where an agent's effort comes from.
