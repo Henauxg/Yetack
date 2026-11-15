@@ -3,8 +3,11 @@
 //! page to a folder on this computer. The page's own text is the one the file view shows.
 //!
 //! The files read are those the page's `src` and `href` attributes name by a relative address,
-//! such as its images, style sheets and scripts. A file that a script or a style sheet loads is
-//! not read, and neither is one the daemon does not send: a binary file other than an image.
+//! such as its images, style sheets and scripts. As an IDE serves a page from its project, a copy
+//! takes only web files ([`WEB_EXTENSIONS`]) in the page's folder or the agent's: a file the
+//! page names elsewhere, or a key or a script for the shell, stays on the server. A file that a
+//! script or a style sheet loads is not read, and neither is one the daemon does not send: a
+//! binary file other than an image.
 
 use std::path::PathBuf;
 
@@ -25,6 +28,13 @@ const MAX_NAMED: usize = 3;
 
 /// The extensions of a web page's file, whatever their case.
 const PAGE_EXTENSIONS: [&str; 2] = ["html", "htm"];
+
+/// The extensions of the files a copy takes, whatever their case: what a page shows or runs in
+/// the browser.
+const WEB_EXTENSIONS: [&str; 16] = [
+    "html", "htm", "css", "js", "mjs", "json", "map", "svg", "txt", "xml", "csv", "png", "jpg",
+    "jpeg", "gif", "webp",
+];
 
 /// The attributes whose address names a file the page shows, runs or links to.
 const FILE_ATTRIBUTES: [&str; 2] = ["src", "href"];
@@ -116,13 +126,18 @@ pub struct ReadyCopy {
 
 /// Whether `path` names a web page: its extension is `.html` or `.htm`, whatever its case.
 pub fn is_page(path: &str) -> bool {
+    has_extension(path, &PAGE_EXTENSIONS)
+}
+
+/// Whether the extension of `path`'s file is one of `extensions`, whatever its case.
+fn has_extension(path: &str, extensions: &[&str]) -> bool {
     PathStyle::of_text(path)
         .file_name(path)
         .and_then(|name| name.rsplit_once('.'))
         .is_some_and(|(_, extension)| {
-            PAGE_EXTENSIONS
+            extensions
                 .iter()
-                .any(|page| extension.eq_ignore_ascii_case(page))
+                .any(|known| extension.eq_ignore_ascii_case(known))
         })
 }
 
@@ -138,17 +153,39 @@ pub fn start(state: &mut AppState, agent: AgentId, page: &str, text: String) -> 
     let Some(folder) = style.parent(&page) else {
         return Vec::new();
     };
+    let agent_folder = state
+        .agents
+        .get(&agent)
+        .map(|entry| style.resolve(&entry.summary.folder.to_string_lossy(), ""));
+    let inside = |path: &str, holder: &str| {
+        style
+            .strip_prefix(path, holder)
+            .is_some_and(|rest| !rest.is_empty())
+    };
     let mut paths: Vec<String> = Vec::new();
+    let mut left_out: Vec<String> = Vec::new();
     for reference in relative_references(&text) {
-        if paths.len() >= MAX_FILES {
+        if paths.len() + left_out.len() >= MAX_FILES {
             break;
         }
         let path = style.resolve(folder, &reference);
         // Both are resolved, so they name the same file when they read the same.
         let known = style.same_name(&path, &page)
-            || paths.iter().any(|known| style.same_name(known, &path));
-        if !known {
+            || paths
+                .iter()
+                .chain(&left_out)
+                .any(|known| style.same_name(known, &path));
+        if known {
+            continue;
+        }
+        let in_project = inside(&path, folder)
+            || agent_folder
+                .as_deref()
+                .is_some_and(|agent_folder| inside(&path, agent_folder));
+        if in_project && has_extension(&path, &WEB_EXTENSIONS) {
             paths.push(path);
+        } else {
+            left_out.push(path);
         }
     }
     let root = common_folder(style, folder, &paths);
@@ -168,13 +205,15 @@ pub fn start(state: &mut AppState, agent: AgentId, page: &str, text: String) -> 
             to: MachineId::THIS,
         })
         .collect();
-    let files = paths
-        .into_iter()
-        .map(|path| CopiedFile {
-            path,
-            bytes: FileBytes::Waiting,
-        })
-        .collect();
+    let waiting = paths.into_iter().map(|path| CopiedFile {
+        path,
+        bytes: FileBytes::Waiting,
+    });
+    let failed = left_out.into_iter().map(|path| CopiedFile {
+        path,
+        bytes: FileBytes::Failed,
+    });
+    let files = waiting.chain(failed).collect();
     state.page_copies.copies.push(PageCopy {
         id,
         agent,
@@ -376,17 +415,22 @@ fn unescaped(address: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use cockpit_protocol::{Image, ImageMediaType};
+    use cockpit_protocol::{AgentStatus, Image, ImageMediaType};
 
     use super::*;
-    use crate::daemon_label::DaemonLabel;
+    use crate::state::{state_with, summary};
+
+    /// The agent's folder, which holds the pages of most tests.
+    const AGENT_FOLDER: &str = "/srv/site";
 
     fn agent() -> AgentId {
         AgentId::new(7)
     }
 
     fn state() -> AppState {
-        AppState::new(DaemonLabel::ssh("build-box".to_owned()))
+        let mut agent = summary(7, AgentStatus::Idle);
+        agent.folder = PathBuf::from(AGENT_FOLDER);
+        state_with(vec![agent])
     }
 
     fn asked(requests: &[Outgoing]) -> Vec<String> {
@@ -577,6 +621,41 @@ mod tests {
         );
     }
 
+    /// As an IDE serves a page from its project: a file the page names elsewhere, or a file no
+    /// browser needs, such as a key or a script for the shell, stays on the server.
+    #[test]
+    fn a_copy_takes_only_web_files_from_the_pages_or_the_agents_folder() {
+        let mut state = state();
+        let html = r#" <link href="../style.css"> <img src="shot.PNG"> <a href="run.bat">
+            <a href="../../../home/dev/.ssh/id_ed25519"> <link href="../../other/theme.css">
+            <a href="notes/.env">"#;
+
+        let requests = start(
+            &mut state,
+            agent(),
+            "/srv/site/mock/index.html",
+            html.to_owned(),
+        );
+        let copy = copy_of(&requests);
+        answered(&mut state, copy, "/srv/site/style.css", text("body {}"));
+        answered(&mut state, copy, "/srv/site/mock/shot.PNG", text("png"));
+
+        assert_eq!(
+            asked(&requests),
+            ["/srv/site/style.css", "/srv/site/mock/shot.PNG"]
+        );
+        let ready = take_ready(&mut state);
+        assert_eq!(
+            ready.first().map(|ready| ready.missing.clone()),
+            Some(vec![
+                "/srv/site/mock/run.bat".to_owned(),
+                "/home/dev/.ssh/id_ed25519".to_owned(),
+                "/srv/other/theme.css".to_owned(),
+                "/srv/site/mock/notes/.env".to_owned(),
+            ])
+        );
+    }
+
     #[test]
     fn a_page_that_names_no_file_is_ready_at_once() {
         let mut state = state();
@@ -712,7 +791,9 @@ mod tests {
 
     #[test]
     fn an_address_above_the_drive_stays_on_it() {
-        let mut state = state();
+        let mut at_the_root = summary(7, AgentStatus::Idle);
+        at_the_root.folder = PathBuf::from(r"C:\");
+        let mut state = state_with(vec![at_the_root]);
 
         let requests = start(
             &mut state,
