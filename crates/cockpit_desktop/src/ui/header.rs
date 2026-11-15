@@ -1,6 +1,7 @@
 //! The center header: the agent's title, status and folder, the usage chip, the load chip and the
-//! files chip, which opens the files pane on the agent's changes. It stays on one line; when narrow, the title shortens, then the chips shrink to
-//! icons. After the folder, a note says when the agent's Claude Code is newer than the tested one.
+//! files chip, which opens the files pane on the agent's changes. It stays on one line; when
+//! narrow, the title shortens, then the chips shrink to icons. After the folder, a note says when
+//! the agent's Claude Code is newer than the tested one.
 
 use std::time::SystemTime;
 
