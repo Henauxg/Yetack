@@ -106,8 +106,8 @@ const bottomOf = (entry, element) =>
 // position of anything inside a skipped entry lays that content out: in a chat of 1600 entries,
 // a search over the shown elements makes a scroll frame last about 100 ms. So the search runs
 // over the wrappers, and only the entries at the edge, laid out already, are read inside.
-// The first entry whose wrapper starts at or below `y`. Everything from it on starts at or below
-// `y` too, since an entry starts no higher than its wrapper.
+// The first entry whose wrapper starts at or below `y`. Wrappers come in order, and each entry
+// starts no higher than its wrapper, so every entry from it on starts at or below `y`.
 const firstStartingBelow = (entries, y) => {
   let low = 0;
   let high = entries.length;
