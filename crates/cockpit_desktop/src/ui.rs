@@ -49,5 +49,6 @@ mod waiting_prompts;
 mod zoom;
 
 pub use app::App;
+pub use find::{FIND_FIELD_IDS, focus_after_find};
 pub use sidebar::item_id as sidebar_item_id;
 pub use splitter::{FILE_VIEW_ID, FILES_PANE_ID};

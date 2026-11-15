@@ -227,13 +227,24 @@ impl Needle {
 
     /// The matches in `haystack`.
     pub fn count(&self, haystack: &str) -> usize {
+        if self.lowercases() {
+            return self.count_lowercase(&haystack.to_lowercase());
+        }
         if self.match_case {
             return haystack.matches(self.text.as_str()).count();
         }
-        if self.text.is_ascii() {
-            return count_ascii_folded(haystack.as_bytes(), self.text.as_bytes());
-        }
-        haystack.to_lowercase().matches(self.text.as_str()).count()
+        count_ascii_folded(haystack.as_bytes(), self.text.as_bytes())
+    }
+
+    /// Whether counting takes the haystack in lower case (`count_lowercase`): a text past ASCII,
+    /// whatever its case.
+    pub fn lowercases(&self) -> bool {
+        !self.match_case && !self.text.is_ascii()
+    }
+
+    /// The matches in `haystack`, which is in lower case.
+    pub fn count_lowercase(&self, haystack: &str) -> usize {
+        haystack.matches(self.text.as_str()).count()
     }
 }
 

@@ -51,6 +51,9 @@ pub struct KeyPress {
     /// The page's selection, with a command's shortcut: Ctrl+F looks for it.
     #[serde(default)]
     pub selection: String,
+    /// The key went to a find's field: Esc there closes the find.
+    #[serde(default)]
+    pub in_find: bool,
 }
 
 /// Esc with nothing left open: the selected agent's turn stops, at once or after the dialog that
@@ -156,9 +159,12 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
         if state.ui.close_overlays() {
             return Vec::new();
         }
-        // In another text field, such as a search, Esc never stops an agent. A find's own field
-        // closes its find.
+        // In a text field, such as a search, Esc never stops an agent. A find's own field closes
+        // its find.
         if press.target == KeyTarget::Field {
+            if press.in_find {
+                find::close_on_escape(state, press.pane);
+            }
             return Vec::new();
         }
         if find::close_on_escape(state, press.pane) {
@@ -355,6 +361,7 @@ mod tests {
             composer_text: String::new(),
             pane: FindPane::Chat,
             selection: String::new(),
+            in_find: false,
         }
     }
 
@@ -567,7 +574,7 @@ mod tests {
         let mut state = state(AgentStatus::Working, None);
         find::open(&mut state, &mut drafts, FindPane::Chat, "");
 
-        // In a text field, such as the find's own, Esc leaves the find to the field.
+        // In another text field, such as the files pane's search, Esc leaves the find open.
         handle_key(
             &mut state,
             &mut drafts,
@@ -589,6 +596,38 @@ mod tests {
             &press(KEY_ESCAPE, KeyTarget::Composer),
         );
         assert_eq!(state.ui.dialog, Some(Dialog::StopAgent(AgentId::new(1))));
+    }
+
+    #[test]
+    fn escape_in_the_find_closes_an_open_comment_first_and_never_stops_the_agent() {
+        let mut drafts = Drafts::default();
+        let mut state = state(AgentStatus::Working, None);
+        find::open(&mut state, &mut drafts, FindPane::Chat, "");
+        let passage = quotes::Passage {
+            anchor: quotes::QuoteAnchor {
+                item: ItemId::new(3),
+                start: Utf16Offset::new(0),
+                end: Utf16Offset::new(4),
+            },
+            raw: "word".to_owned(),
+            text: "word".to_owned(),
+            code: false,
+        };
+        quotes::start(&mut drafts, AgentId::new(1), passage);
+        let escape = KeyPress {
+            in_find: true,
+            ..press(KEY_ESCAPE, KeyTarget::Field)
+        };
+
+        handle_key(&mut state, &mut drafts, &escape);
+        let comment_closed = drafts.quote_editor.is_none();
+        let find_kept = find::is_open(&state, FindPane::Chat, AgentId::new(1));
+        handle_key(&mut state, &mut drafts, &escape);
+        let find_closed = !find::is_open(&state, FindPane::Chat, AgentId::new(1));
+        handle_key(&mut state, &mut drafts, &escape);
+
+        assert!(comment_closed && find_kept && find_closed);
+        assert_eq!(state.ui.dialog, None);
     }
 
     #[test]

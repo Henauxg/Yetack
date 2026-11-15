@@ -8,7 +8,10 @@
 //! its marks too, and an output counts each line of a run the chat shows once. The page counts
 //! the matches again once the fold is open.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::cell::OnceCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::path::Path;
 use std::rc::Rc;
 
 use cockpit_protocol::{AgentId, ItemBody, ItemId, ToolCall, ToolCallStatus, TranscriptItem};
@@ -21,8 +24,8 @@ use crate::state::{AgentEntry, accounts, actions, awaiting_approval};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::tool_rows::{self, Row};
 use crate::ui::transcript::{
-    CallStage, Children, EDIT_CONTEXT_LINES, EDIT_PREVIEW_ROWS, ToolShape, children_by_parent,
-    hides_output, top_items, waits_for_answer,
+    CallStage, Children, EDIT_CONTEXT_LINES, EDIT_PREVIEW_ROWS, SUBAGENT_NAME, ToolShape,
+    children_by_parent, compact_line, hides_output, top_items, waits_for_answer,
 };
 
 /// What closes over hidden matches: an item's own fold, or a run of reads and searches, which its
@@ -57,6 +60,17 @@ struct GatheredFor {
 struct Kept {
     texts: Option<(GatheredFor, Rc<FoldTexts>)>,
     matches: Option<(GatheredFor, Needle, FoldMatches)>,
+    previews: Previews,
+}
+
+/// The lines of each edit's preview, from one gathering to the next: the diff behind them is the
+/// costly part of a gathering, and an edit's texts seldom change. Each gathering keeps only the
+/// edits it met.
+#[derive(Debug, Default)]
+pub(crate) struct Previews {
+    agent: Option<AgentId>,
+    /// By the edit's item, with a hash of its texts.
+    lines: HashMap<ItemId, (u64, Rc<[String]>)>,
 }
 
 /// Provides the fold matches of the selected agent's chat to the rows under the caller.
@@ -90,7 +104,7 @@ pub(super) fn use_chat_folds(cockpit: Cockpit) {
         let texts = match &kept.texts {
             Some((texts_for, texts)) if *texts_for == gathered_for => Rc::clone(texts),
             Some(_) | None => {
-                let texts = Rc::new(chat_fold_texts(entry, &gathered_for));
+                let texts = Rc::new(chat_fold_texts(entry, &gathered_for, &mut kept.previews));
                 kept.texts = Some((gathered_for.clone(), Rc::clone(&texts)));
                 texts
             }
@@ -102,14 +116,22 @@ pub(super) fn use_chat_folds(cockpit: Cockpit) {
     use_context_provider(|| ChatFolds(folds));
 }
 
-fn chat_fold_texts(entry: &AgentEntry, gathered: &GatheredFor) -> FoldTexts {
+fn chat_fold_texts(
+    entry: &AgentEntry,
+    gathered: &GatheredFor,
+    previews: &mut Previews,
+) -> FoldTexts {
+    if previews.agent != Some(gathered.agent) {
+        previews.agent = Some(gathered.agent);
+        previews.lines.clear();
+    }
     let items: Vec<&TranscriptItem> = entry.transcript.items().collect();
     let loaded: BTreeSet<ItemId> = items.iter().map(|item| item.id).collect();
     let top = top_items(&items, &loaded, gathered.sign_in_notice);
     let awaiting = awaiting_approval(&items);
     let rows = tool_rows::rows(&top, &awaiting, gathered.divider);
     let children = children_by_parent(&items);
-    FoldTexts::of(&rows, &children, &awaiting)
+    FoldTexts::of(&rows, &children, &awaiting, &entry.summary.folder, previews)
 }
 
 /// A text a fold shows once open, with every fold it sits in: a fold inside a subagent counts for
@@ -117,6 +139,8 @@ fn chat_fold_texts(entry: &AgentEntry, gathered: &GatheredFor) -> FoldTexts {
 #[derive(Debug)]
 struct Piece {
     text: String,
+    /// `text` in lower case, made once for the texts past ASCII a find looks for.
+    lowercase: OnceCell<String>,
     folds: Vec<FoldKey>,
 }
 
@@ -127,14 +151,21 @@ pub(crate) struct FoldTexts {
 }
 
 impl FoldTexts {
+    /// `folder` is the agent's, from which an edit's line shows its path. `previews` holds the
+    /// edits' lines of the last gathering, and gets this one's.
     pub(crate) fn of(
         rows: &[Row<'_>],
         children: &Children<'_>,
         awaiting: &BTreeSet<ItemId>,
+        folder: &Path,
+        previews: &mut Previews,
     ) -> Self {
         let mut gatherer = Gatherer {
             children,
             awaiting,
+            folder,
+            kept_previews: std::mem::take(&mut previews.lines),
+            previews: &mut previews.lines,
             open: Vec::new(),
             pieces: Vec::new(),
             subagents: BTreeSet::new(),
@@ -151,7 +182,12 @@ impl FoldTexts {
     pub(crate) fn matches(&self, needle: &Needle) -> FoldMatches {
         let mut found = FoldMatches::new();
         for piece in &self.pieces {
-            let count = u32::try_from(needle.count(&piece.text)).unwrap_or(u32::MAX);
+            let count = if needle.lowercases() {
+                needle.count_lowercase(piece.lowercase.get_or_init(|| piece.text.to_lowercase()))
+            } else {
+                needle.count(&piece.text)
+            };
+            let count = u32::try_from(count).unwrap_or(u32::MAX);
             if count == 0 {
                 continue;
             }
@@ -175,6 +211,10 @@ enum Place {
 struct Gatherer<'run, 'item> {
     children: &'run Children<'item>,
     awaiting: &'run BTreeSet<ItemId>,
+    folder: &'run Path,
+    /// The previews of the last gathering, which this one takes from.
+    kept_previews: HashMap<ItemId, (u64, Rc<[String]>)>,
+    previews: &'run mut HashMap<ItemId, (u64, Rc<[String]>)>,
     /// The folds the texts added now sit in, the outermost first.
     open: Vec<FoldKey>,
     pieces: Vec<Piece>,
@@ -187,6 +227,7 @@ impl Gatherer<'_, '_> {
         if !self.open.is_empty() && !text.is_empty() {
             self.pieces.push(Piece {
                 text: text.to_owned(),
+                lowercase: OnceCell::new(),
                 folds: self.open.clone(),
             });
         }
@@ -251,27 +292,41 @@ impl Gatherer<'_, '_> {
             }
             return;
         };
-        let preview = render::diff_lines(
-            &edit.old_text,
-            &edit.new_text,
-            None,
-            EDIT_CONTEXT_LINES,
-            1,
-            EDIT_PREVIEW_ROWS,
-        );
-        for row in &preview.rows {
-            if let DiffRow::Line(line) = row {
-                let text: String = line
-                    .segments
-                    .iter()
-                    .map(|segment| segment.text.as_str())
-                    .collect();
-                self.add(&text);
-            }
+        let lines = self.preview(id, &edit.old_text, &edit.new_text);
+        for line in lines.iter() {
+            self.add(line);
         }
         if call.status == ToolCallStatus::Failed {
             self.add(call.output.as_deref().unwrap_or_default());
         }
+    }
+
+    /// The lines an edit's preview shows, from the last gathering while its texts are the same.
+    fn preview(&mut self, id: ItemId, old: &str, new: &str) -> Rc<[String]> {
+        let mut hasher = DefaultHasher::new();
+        (old, new).hash(&mut hasher);
+        let hash = hasher.finish();
+        let lines = match self.kept_previews.remove(&id) {
+            Some((kept, lines)) if kept == hash => lines,
+            Some(_) | None => {
+                let diff =
+                    render::diff_lines(old, new, None, EDIT_CONTEXT_LINES, 1, EDIT_PREVIEW_ROWS);
+                diff.rows
+                    .iter()
+                    .filter_map(|row| match row {
+                        DiffRow::Line(line) => Some(
+                            line.segments
+                                .iter()
+                                .map(|segment| segment.text.as_str())
+                                .collect(),
+                        ),
+                        DiffRow::Folded { .. } => None,
+                    })
+                    .collect()
+            }
+        };
+        self.previews.insert(id, (hash, Rc::clone(&lines)));
+        lines
     }
 
     /// A search's line in a subagent or a run of reads opens on what it found.
@@ -303,8 +358,14 @@ impl Gatherer<'_, '_> {
             ItemBody::UserMessage(message) => self.add(&message.text),
             ItemBody::AssistantText { markdown } => self.add(markdown),
             ItemBody::Notice { text, .. } => self.add(text),
-            ItemBody::ToolCall(call) | ItemBody::Subagent(call) => {
-                self.add(&call.tool);
+            ItemBody::ToolCall(call) => {
+                let stage = CallStage::new(call, self.awaiting.contains(&item.id));
+                for words in compact_line(self.folder, call, stage) {
+                    self.add(&words);
+                }
+            }
+            ItemBody::Subagent(call) => {
+                self.add(SUBAGENT_NAME);
                 self.add(&call.summary);
             }
             _ => {}
@@ -366,13 +427,25 @@ mod tests {
     }
 
     fn matches(items: &[TranscriptItem], query: &str) -> FoldMatches {
+        matches_from(items, query, None)
+    }
+
+    /// With the "New" divider above `divider`.
+    fn matches_from(items: &[TranscriptItem], query: &str, divider: Option<u32>) -> FoldMatches {
         let refs: Vec<&TranscriptItem> = items.iter().collect();
         let loaded: BTreeSet<ItemId> = refs.iter().map(|item| item.id).collect();
         let top = top_items(&refs, &loaded, None);
         let awaiting = awaiting_approval(&refs);
-        let rows = tool_rows::rows(&top, &awaiting, None);
+        let rows = tool_rows::rows(&top, &awaiting, divider.map(ItemId::new));
         let children = children_by_parent(&refs);
-        FoldTexts::of(&rows, &children, &awaiting).matches(&Needle::new(query, false).unwrap())
+        FoldTexts::of(
+            &rows,
+            &children,
+            &awaiting,
+            Path::new("/work/app"),
+            &mut Previews::default(),
+        )
+        .matches(&Needle::new(query, false).unwrap())
     }
 
     #[test]
@@ -486,6 +559,170 @@ mod tests {
                 (FoldKey::Item(ItemId::new(4)), 1),
             ])
         );
+    }
+
+    #[test]
+    fn the_folds_of_the_main_conversation_count_what_they_open_on() {
+        let skill = call(
+            "Skill",
+            "review",
+            json!({"skill": "review"}),
+            "Launching skill",
+        );
+        let mut failed = call(
+            "Edit",
+            "src/grid.rs",
+            json!({}),
+            "<tool_use_error>column not found</tool_use_error>",
+        );
+        failed.status = ToolCallStatus::Failed;
+        failed.edit = Some(FileEdit {
+            path: "src/grid.rs".into(),
+            old_text: "column".to_owned(),
+            new_text: "row".to_owned(),
+        });
+        let items = [
+            item(
+                1,
+                None,
+                ItemBody::Thinking {
+                    text: "Which column?".to_owned(),
+                },
+            ),
+            item(2, None, ItemBody::ToolCall(skill)),
+            item(
+                3,
+                None,
+                ItemBody::Notice {
+                    text: cockpit_protocol::skill_instructions_title("review"),
+                    detail: Some("Check each column, then each row.".to_owned()),
+                    kind: NoticeKind::Plain,
+                },
+            ),
+            item(4, None, ItemBody::ToolCall(failed)),
+            item(
+                5,
+                None,
+                ItemBody::Notice {
+                    text: "A message".to_owned(),
+                    detail: Some("The column is fixed.".to_owned()),
+                    kind: NoticeKind::Message,
+                },
+            ),
+        ];
+
+        // The edit's removed line and its error each hold one.
+        assert_eq!(
+            matches(&items, "column"),
+            FoldMatches::from([
+                (FoldKey::Item(ItemId::new(1)), 1),
+                (FoldKey::Item(ItemId::new(2)), 1),
+                (FoldKey::Item(ItemId::new(4)), 2),
+                (FoldKey::Item(ItemId::new(5)), 1),
+            ])
+        );
+    }
+
+    #[test]
+    fn an_edit_whose_texts_changed_counts_its_new_lines() {
+        let edit = |new_text: &str| {
+            let mut write = call("Write", "src/grid.rs", json!({}), "");
+            write.edit = Some(FileEdit {
+                path: "src/grid.rs".into(),
+                old_text: String::new(),
+                new_text: new_text.to_owned(),
+            });
+            [item(1, None, ItemBody::ToolCall(write))]
+        };
+        let mut previews = Previews::default();
+        let mut gather = |items: &[TranscriptItem]| {
+            let refs: Vec<&TranscriptItem> = items.iter().collect();
+            let awaiting = BTreeSet::new();
+            let rows = tool_rows::rows(&refs, &awaiting, None);
+            FoldTexts::of(
+                &rows,
+                &children_by_parent(&refs),
+                &awaiting,
+                Path::new("/work/app"),
+                &mut previews,
+            )
+            .matches(&Needle::new("column", false).unwrap())
+        };
+
+        let first = gather(&edit("column"));
+        let again = gather(&edit("column"));
+        let changed = gather(&edit("row"));
+
+        let found = FoldMatches::from([(FoldKey::Item(ItemId::new(1)), 1)]);
+        assert_eq!((first, again), (found.clone(), found));
+        assert_eq!(changed, FoldMatches::new());
+        assert_eq!(previews.lines.len(), 1);
+    }
+
+    #[test]
+    fn the_new_divider_splits_a_run_of_reads_and_its_count() {
+        let read = |id: u32| {
+            item(
+                id,
+                None,
+                ItemBody::ToolCall(call("Read", "src/column.rs", json!({}), "1	column")),
+            )
+        };
+        let items = [read(1), read(2), read(3), read(4)];
+
+        assert_eq!(
+            matches_from(&items, "column", Some(3)),
+            FoldMatches::from([
+                (FoldKey::Explored(ItemId::new(1)), 2),
+                (FoldKey::Explored(ItemId::new(3)), 2),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_subagent_counts_its_lines_as_they_show() {
+        let bash = call(
+            "Bash",
+            "rg -c column",
+            json!({"command": "rg -c column", "description": "Count the places"}),
+            "3",
+        );
+        let mcp = call(
+            "mcp__tickets__list_tickets",
+            "open tickets",
+            json!({}),
+            "[]",
+        );
+        let mut edit = call("Edit", "/work/app/src/lexer.rs", json!({}), "");
+        edit.edit = Some(FileEdit {
+            path: "/work/app/src/lexer.rs".into(),
+            old_text: "a".to_owned(),
+            new_text: "b".to_owned(),
+        });
+        let items = [
+            item(
+                1,
+                None,
+                ItemBody::Subagent(call("Agent", "Look", json!({}), "Done.")),
+            ),
+            item(2, Some(1), ItemBody::ToolCall(bash)),
+            item(3, Some(1), ItemBody::ToolCall(mcp)),
+            item(4, Some(1), ItemBody::ToolCall(edit)),
+        ];
+        let subagent = |query: &str| {
+            matches(&items, query)
+                .get(&FoldKey::Item(ItemId::new(1)))
+                .copied()
+        };
+
+        // A command shows its description, an MCP call its server and tool, an edit its path
+        // from the agent's folder.
+        assert_eq!(subagent("rg -c"), None);
+        assert_eq!(subagent("count the places"), Some(1));
+        assert_eq!(subagent("mcp__"), None);
+        assert_eq!(subagent("[list_tickets]"), Some(1));
+        assert_eq!(subagent("/work/app"), None);
+        assert_eq!(subagent("src/lexer.rs"), Some(1));
     }
 
     #[test]

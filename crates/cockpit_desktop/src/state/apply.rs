@@ -572,6 +572,7 @@ mod tests {
     use crate::state::app_state::tests::{
         DAEMON_COMMIT, DAEMON_VERSION, connected_update, placed, state_with, summary,
     };
+    use crate::state::find::{self, FindPane};
     use crate::state::projects::ProjectKey;
     use crate::state::ui_state::{Block, Dialog, PaletteOrigin, Popover, TitleEdit, TitlePlace};
     use crate::state::{Loadable, MachineState, agent_map, chat_images, mcp_reconnect};
@@ -1177,6 +1178,58 @@ mod tests {
             let new_from: Vec<&AgentId> = state.ui.chat_new_from.keys().collect();
             assert_eq!(
                 (scrolled, new_from),
+                (vec![&AgentId::new(2)], vec![&AgentId::new(2)])
+            );
+        }
+    }
+
+    #[test]
+    fn a_removed_agent_leaves_no_find() {
+        let found = || {
+            let mut state = state_with(vec![
+                summary(1, AgentStatus::Idle),
+                summary(2, AgentStatus::Idle),
+            ]);
+            let mut drafts = Drafts::default();
+            for agent in [AgentId::new(1), AgentId::new(2)] {
+                state.ui.selected = Some(agent);
+                find::open(&mut state, &mut drafts, FindPane::Chat, "column");
+                drafts.finds.get_mut(FindPane::File, agent).query = "lexer".to_owned();
+            }
+            (state, drafts)
+        };
+        let (mut removed, mut removed_drafts) = found();
+        let (mut dropped, mut dropped_drafts) = found();
+
+        apply(
+            &mut removed,
+            &mut removed_drafts,
+            record(Event::AgentRemoved {
+                agent: AgentId::new(1),
+            }),
+            MachineId::THIS,
+        );
+        apply_catchup(
+            &mut dropped,
+            &mut dropped_drafts,
+            Catchup::Snapshot(Snapshot {
+                agents: vec![summary(2, AgentStatus::Idle)],
+                plan_usage: PlanUsage::default(),
+                settings: Settings::default(),
+                last_seq: Some(Seq::new(40)),
+                accounts: Vec::new(),
+                other_plan_usage: Vec::new(),
+            }),
+            MachineId::THIS,
+        );
+
+        for (state, drafts) in [(&removed, &removed_drafts), (&dropped, &dropped_drafts)] {
+            let open: Vec<&AgentId> = state.ui.chat_finds.iter().collect();
+            let chat: Vec<&AgentId> = drafts.finds.chat.keys().collect();
+            let file: Vec<&AgentId> = drafts.finds.file.keys().collect();
+            assert_eq!(open, [&AgentId::new(2)]);
+            assert_eq!(
+                (chat, file),
                 (vec![&AgentId::new(2)], vec![&AgentId::new(2)])
             );
         }

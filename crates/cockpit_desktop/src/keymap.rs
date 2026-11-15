@@ -65,6 +65,9 @@ const ZOOM_KEYS: [&str; 4] = ["0", "-", "=", "+"];
 
 const ENTER: &str = "Enter";
 
+/// With or without Shift, goes to the next or previous match of a find.
+const FIND_STEP_KEY: &str = "F3";
+
 /// A command a shortcut runs. The serde names are the preferences file's.
 #[derive(
     Debug,
@@ -239,13 +242,13 @@ pub const FIXED: [FixedShortcut; 11] = [
     FixedShortcut {
         label: "Next match",
         context: Some("in a find"),
-        keys: &[&["Enter"], &["F3"]],
+        keys: &[&["Enter"], &[FIND_STEP_KEY]],
         group: Group::Anywhere,
     },
     FixedShortcut {
         label: "Previous match",
         context: Some("in a find"),
-        keys: &[&[SHIFT, "Enter"], &[SHIFT, "F3"]],
+        keys: &[&[SHIFT, "Enter"], &[SHIFT, FIND_STEP_KEY]],
         group: Group::Anywhere,
     },
     FixedShortcut {
@@ -506,6 +509,9 @@ fn reserved(chord: &Chord) -> Option<&'static str> {
         "w" if chord.ctrl && !chord.shift => Some("closes the shown file"),
         "r" if chord.ctrl && !chord.shift => Some("replies to the selected text"),
         "F4" if chord.alt => Some("closes the window"),
+        FIND_STEP_KEY if !chord.ctrl && !chord.alt => {
+            Some("goes to the next or previous match of a find")
+        }
         _ => None,
     }
 }
@@ -884,6 +890,9 @@ mod tests {
             check("Ctrl+Shift+z"),
             Err(Refusal::Reserved("undoes or redoes typing"))
         );
+        assert!(matches!(check("F3"), Err(Refusal::Reserved(_))));
+        assert!(matches!(check("Shift+F3"), Err(Refusal::Reserved(_))));
+        assert_eq!(check("Ctrl+F3"), Ok(()));
     }
 
     #[test]

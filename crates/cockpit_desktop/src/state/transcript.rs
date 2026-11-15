@@ -2,6 +2,7 @@
 //! events.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use cockpit_protocol::{
     AnswerState, HistoryPage, ItemBody, ItemId, OlderItems, PendingId, ToolCall, ToolCallStatus,
@@ -32,13 +33,23 @@ impl HistoryState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Transcript {
     items: BTreeMap<ItemId, TranscriptItem>,
     history: HistoryState,
-    /// Counts the changes of `items`, so that what the app works out from them is kept until the
-    /// next one.
+    /// Names the state of `items`, so that what the app works out from them is kept until they
+    /// change. The numbers come from one count for every transcript.
     revision: u64,
+}
+
+/// The last revision any transcript took.
+static REVISIONS: AtomicU64 = AtomicU64::new(0);
+
+/// Two transcripts with the same items and history are equal, whatever their revisions.
+impl PartialEq for Transcript {
+    fn eq(&self, other: &Self) -> bool {
+        self.items == other.items && self.history == other.history
+    }
 }
 
 /// What a card waiting for an answer asks, which decides what the Y, N and number keys do.
@@ -102,7 +113,7 @@ impl Transcript {
     }
 
     fn changed(&mut self) {
-        self.revision = self.revision.wrapping_add(1);
+        self.revision = REVISIONS.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
     }
 
     pub fn first_id(&self) -> Option<ItemId> {
@@ -460,6 +471,46 @@ mod tests {
         transcript.change(text(2, "never seen"));
 
         assert_eq!(texts(&transcript), ["after"]);
+    }
+
+    #[test]
+    fn the_revision_moves_with_each_change_of_the_items_and_only_then() {
+        let mut transcript = Transcript::default();
+        let mut revisions = vec![transcript.revision()];
+        let mut moved = |transcript: &Transcript| {
+            let moved = revisions.last() != Some(&transcript.revision());
+            revisions.push(transcript.revision());
+            moved
+        };
+
+        transcript.append(text(1, "first"));
+        assert!(moved(&transcript), "append");
+        transcript.change(text(1, "changed"));
+        assert!(moved(&transcript), "a change of a held item");
+        transcript.change(text(9, "never seen"));
+        assert!(!moved(&transcript), "a change of an unknown item");
+        transcript.merge_page(HistoryPage {
+            items: vec![text(0, "older")],
+            older_items: OlderItems::None,
+        });
+        assert!(moved(&transcript), "a page");
+        transcript.trim(5);
+        assert!(!moved(&transcript), "a trim that drops nothing");
+        transcript.trim(1);
+        assert!(moved(&transcript), "a trim that drops items");
+    }
+
+    /// A reconnect builds the agent's transcript again: its revisions never meet the ones of the
+    /// transcript it replaces, which the app may have kept work for.
+    #[test]
+    fn a_new_transcript_takes_none_of_an_older_ones_revisions() {
+        let mut older = Transcript::default();
+        older.append(text(1, "item"));
+        let mut newer = Transcript::default();
+        newer.append(text(1, "item"));
+
+        assert_ne!(newer.revision(), older.revision());
+        assert_eq!(newer, older, "the revision is no part of the content");
     }
 
     #[test]

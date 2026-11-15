@@ -14,6 +14,7 @@ use crate::connection::Cockpit;
 use crate::state::find::{self, FindDraft, FindPane, FindReport};
 use crate::state::{AppState, Drafts, HistoryState, actions};
 use crate::ui::chat_scroll::{CHAT_SCROLL_ID, ENTRY_CLASS, FOLD_BUTTON_CLASS};
+use crate::ui::dialogs::OVERLAY_CLASS;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::presence::use_presence;
 use crate::ui::splitter::FILE_VIEW_ID;
@@ -23,6 +24,9 @@ const CHAT_FIELD_ID: &str = "chat-find-field";
 
 /// The file view find's field.
 const FILE_FIELD_ID: &str = "file-find-field";
+
+/// The finds' fields, where Esc closes the find.
+pub const FIND_FIELD_IDS: [&str; 2] = [CHAT_FIELD_ID, FILE_FIELD_ID];
 
 /// The file view's find box: the file's text under it does not count as in view.
 const FILE_BOX_ID: &str = "file-find-box";
@@ -137,6 +141,11 @@ class Finder {
     // The chips of folds that did not open when clicked: the find does not click them again.
     this.unopened = new WeakSet();
     this.scrollNext = false;
+    // Whether the scroll that waits goes into a fold backwards, on its last match.
+    this.scrollBackward = false;
+    // Whether the find showed its current match since it started without a scroll: until then, a
+    // step first shows that match when it is out of view, rather than going past it.
+    this.seen = false;
     this.timer = null;
     this.reported = "";
     this.root = null;
@@ -171,8 +180,11 @@ class Finder {
     if (query || target) {
       this.point = null;
       this.opening = null;
-      // A new text goes to its first match from the view. Another agent or file keeps its place.
-      this.scrollNext = query;
+      // A new text goes to its first match from the view. Another agent or file, or a find that
+      // opens again, keeps its place.
+      this.scrollNext = query && !target;
+      this.scrollBackward = false;
+      this.seen = this.scrollNext;
     }
     this.schedule(0);
   }
@@ -184,7 +196,7 @@ class Finder {
       }
       clearTimeout(this.timer);
     }
-    this.timer = setTimeout(() => this.run(), delay);
+    this.timer = setTimeout(() => guarded(() => this.run()), delay);
   }
 
   // Whether a change of the page may change what the find finds.
@@ -300,9 +312,8 @@ class Finder {
 
   pick(scroller) {
     const stops = this.stops;
-    if (stops.length === 0) {
-      return -1;
-    }
+    // A fold the find clicked open: its first match, or its last when the find went backwards.
+    // Once that is decided, the fold is the user's: one closed by hand stays closed.
     if (this.opening !== null) {
       const { chip, line, backward, since } = this.opening;
       if (chip.isConnected && performance.now() - since < settings.open_wait_ms) {
@@ -315,8 +326,9 @@ class Finder {
         this.unopened.add(chip);
       }
       this.opening = null;
-      this.scrollNext = true;
-      if (line.isConnected) {
+      if (stops.length > 0 && line.isConnected) {
+        this.scrollNext = true;
+        this.scrollBackward = backward;
         if (backward) {
           const end = firstFrom(stops, pointAfter(line.parentElement));
           return Math.max(end - 1, 0);
@@ -324,6 +336,9 @@ class Finder {
         const start = firstFrom(stops, pointAfter(line));
         return start < stops.length ? start : 0;
       }
+    }
+    if (stops.length === 0) {
+      return -1;
     }
     if (this.point !== null && this.point.node.isConnected) {
       const at = firstFrom(stops, this.point);
@@ -357,24 +372,53 @@ class Finder {
     if (found === null) {
       return;
     }
+    this.update(found);
+    if (this.scrollNext) {
+      const backward = this.scrollBackward;
+      this.scrollNext = false;
+      this.scrollBackward = false;
+      this.reveal(found.scroller, backward);
+    }
+    this.report();
+  }
+
+  // Searches the page as it is, and finds the current stop in it again.
+  update(found) {
     this.root = found.root;
     this.stops = this.search(found.root);
     this.current = this.pick(found.scroller);
     const here = this.stops[this.current];
     this.point = here === undefined ? null : pointOf(here);
     this.paint();
-    if (this.scrollNext) {
-      this.scrollNext = false;
-      this.reveal(found.scroller);
-    }
-    this.report();
   }
 
   step(forward) {
-    const count = this.stops.length;
+    if (!this.want.open || this.want.query === "") {
+      return;
+    }
     const found = this.where();
+    if (found === null) {
+      return;
+    }
+    // A change of the page waits to be searched, such as a fold the find just opened: the step
+    // starts from what the page shows now.
+    if (this.timer !== null) {
+      clearTimeout(this.timer);
+      this.timer = null;
+      this.update(found);
+      this.scrollNext = false;
+      this.scrollBackward = false;
+    }
+    const count = this.stops.length;
     // While a fold opens, its matches are not on the page yet: the step would click it again.
-    if (count === 0 || found === null || (this.opening !== null && this.opening.chip.isConnected)) {
+    if (count === 0 || (this.opening !== null && this.opening.chip.isConnected)) {
+      this.report();
+      return;
+    }
+    const here = this.stops[this.current];
+    if (!this.seen && here !== undefined && !this.inView(found.scroller, here)) {
+      this.reveal(found.scroller);
+      this.report();
       return;
     }
     this.opening = null;
@@ -420,9 +464,11 @@ class Finder {
   // find goes `backward`, and the folded row that cuts it, then scrolls.
   reveal(scroller, backward = false) {
     const here = this.stops[this.current];
-    if (here === undefined) {
+    // A stop the page took away since the search: the next search finds the current one again.
+    if (here === undefined || !elementOf(here)?.isConnected) {
       return;
     }
+    this.seen = true;
     if (here.chip !== undefined) {
       // The chip sits in the fold's button, or beside it on the fold's line.
       const line = here.chip.closest("button[aria-expanded]") ?? here.chip.parentElement;
@@ -444,20 +490,26 @@ class Finder {
       if (rect.top < edges.top || rect.bottom > edges.bottom) {
         clip.querySelector(`.${settings.fold_button_class}`)?.click();
         // The row grows over its transition: the match takes its place at its end.
-        cut.addEventListener("transitionend", () => this.scrollTo(scroller, here), { once: true });
+        cut.addEventListener("transitionend", () => guarded(() => this.scrollTo(scroller, here)), { once: true });
       }
     }
     this.scrollTo(scroller, here);
+  }
+
+  inView(scroller, stop) {
+    const rect = rectOf(stop);
+    const bottom = scroller.getBoundingClientRect().bottom - settings.view_margin_px;
+    return rect.top >= this.viewTop(scroller) && rect.bottom <= bottom;
   }
 
   scrollTo(scroller, stop) {
     if (stop.range !== undefined && !stop.range.startContainer.isConnected) {
       return;
     }
-    const rect = rectOf(stop);
-    const top = this.viewTop(scroller);
-    const bottom = scroller.getBoundingClientRect().bottom - settings.view_margin_px;
-    if (rect.top < top || rect.bottom > bottom) {
+    if (!this.inView(scroller, stop)) {
+      const rect = rectOf(stop);
+      const top = this.viewTop(scroller);
+      const bottom = scroller.getBoundingClientRect().bottom - settings.view_margin_px;
       const delta = rect.top - (top + (bottom - top) * settings.reveal_at);
       const entry = this.pane === "chat" ? elementOf(stop).closest(`.${settings.entry_class}`) : null;
       if (entry !== null) {
@@ -491,15 +543,25 @@ class Finder {
 }
 
 const finders = { chat: new Finder("chat"), file: new Finder("file") };
-new MutationObserver((records) => {
+// An error in one find's work is logged and leaves the script running: an uncaught one in the
+// loop below would end it, and every later command with it.
+const guarded = (work) => {
+  try {
+    work();
+  } catch (error) {
+    console.error("The find failed:", error);
+  }
+};
+new MutationObserver((records) => guarded(() => {
   for (const finder of Object.values(finders)) {
     if (records.some((record) => finder.concerns(record))) {
       finder.schedule(settings.rerun_ms);
     }
   }
-}).observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["class", "data-agent"] });
-// Enter in a find's field and F3 anywhere go to the next match, with Shift to the one before.
-document.addEventListener("keydown", (event) => {
+})).observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["class", "data-agent"] });
+// Enter in a find's field and F3 outside dialogs go to the next match, with Shift to the one
+// before.
+document.addEventListener("keydown", (event) => guarded(() => {
   if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.altKey || event.metaKey) {
     return;
   }
@@ -512,7 +574,7 @@ document.addEventListener("keydown", (event) => {
     }
     return;
   }
-  if (event.key === "F3") {
+  if (event.key === "F3" && document.querySelector(settings.dialog_selector) === null) {
     const inFile = target instanceof Element && target.closest(`#${settings.file_view_id}`) !== null;
     const { chat, file } = finders;
     const finder = inFile && file.want.open ? file : chat.want.open ? chat : file.want.open ? file : null;
@@ -521,15 +583,17 @@ document.addEventListener("keydown", (event) => {
       finder.step(!event.shiftKey);
     }
   }
-}, true);
+}), true);
 for (;;) {
   const command = await dioxus.recv();
   const finder = finders[command.pane];
-  if (command.type === "find") {
-    finder.set(command);
-  } else if (command.type === "step") {
-    finder.step(command.forward);
-  }
+  guarded(() => {
+    if (command.type === "find") {
+      finder.set(command);
+    } else if (command.type === "step") {
+      finder.step(command.forward);
+    }
+  });
 }
 "#;
 
@@ -552,6 +616,8 @@ struct Settings {
     folded_attribute: &'static str,
     /// What covers the top of the chat: the last instruction's bar.
     chat_covers: &'static str,
+    /// An open dialog, behind which F3 moves no find.
+    dialog_selector: String,
     /// A row that a fold cuts, and the part of it that cuts.
     clip_selector: &'static str,
     clip_class: &'static str,
@@ -647,6 +713,7 @@ pub(super) fn use_find(cockpit: Cockpit) {
             block_selector: "p, li, pre, td, th, h1, h2, h3, h4, h5, h6, blockquote, div, button",
             folded_attribute: FOLDED_ATTRIBUTE,
             chat_covers: ".last-instruction:not(.leaving) .last-instruction-message",
+            dialog_selector: format!(".{OVERLAY_CLASS}:not(.leaving)"),
             clip_selector: ".io-row[data-tall]:not(.unfolded), .message-fold[data-tall]:not(.unfolded)",
             clip_class: "io-clip",
             message_clip_class: "message-clip",
@@ -753,13 +820,15 @@ pub(super) fn ChatFindBar() -> Element {
     }
 }
 
-/// The file view's find, over the top right of the file.
+/// The file view's find, over the top right of the file. As the chat's, a switch shows the other
+/// agent's at once, and only the agent that closes its find sees it leave.
 #[component]
 pub(super) fn FileFindBox(agent: AgentId, open: bool) -> Element {
     let shown = use_presence(open.then_some(agent));
-    let Some(shown) = shown else {
+    let Some(shown) = shown.filter(|shown| !shown.leaving || shown.value == agent) else {
         return rsx! {};
     };
+    let agent = shown.value;
     rsx! {
         div {
             key: "{shown.opening}",
@@ -815,12 +884,6 @@ fn FindControls(pane: FindPane, agent: AgentId) -> Element {
                     let query = event.value();
                     cockpit.with_drafts(|_, drafts| drafts.finds.get_mut(pane, agent).query = query);
                 },
-                onkeydown: move |event| {
-                    if event.key() == Key::Escape {
-                        event.stop_propagation();
-                        close(cockpit, pane, agent);
-                    }
-                },
             }
         }
         span { class: if none { "find-count none" } else { "find-count" }, aria_live: "polite", "{count}" }
@@ -874,6 +937,11 @@ fn close(cockpit: Cockpit, pane: FindPane, agent: AgentId) {
     cockpit.update(|state| {
         find::close(state, pane, agent);
     });
+    focus_after_find(pane);
+}
+
+/// Gives the focus to where `pane` takes keys, once its find closed from its field or its button.
+pub fn focus_after_find(pane: FindPane) {
     match pane {
         FindPane::Chat => bridge::focus_field(COMPOSER_ID),
         FindPane::File => bridge::focus_element(FILE_VIEW_ID.to_owned()),

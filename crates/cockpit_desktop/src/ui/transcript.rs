@@ -3,7 +3,7 @@
 //! color says where the step stands.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -2035,7 +2035,7 @@ fn SubagentView(
                 class: "fold-button tool-head",
                 aria_expanded: open,
                 onclick: move |_| expanded.toggle(),
-                span { class: "tool-name", "Agent" }
+                span { class: "tool-name", "{SUBAGENT_NAME}" }
                 span { class: "subagent-title", "{call.summary}" }
                 span { class: "tool-meta", "{meta}" }
                 if !open {
@@ -2055,6 +2055,37 @@ fn SubagentView(
             }
         }
     }
+}
+
+/// What a subagent's line calls it.
+pub(super) const SUBAGENT_NAME: &str = "Agent";
+
+/// The words of a call's line in a subagent or a run of reads, as `CompactItem` shows them: its
+/// name and its description, file or summary, then its result in a word. The find counts them
+/// while the fold above hides them.
+pub(super) fn compact_line(folder: &Path, call: &ToolCall, stage: CallStage) -> Vec<String> {
+    let mut words = match &call.edit {
+        Some(edit) => vec![
+            call.tool.clone(),
+            file_edits::shown_path(folder, &edit.path),
+        ],
+        None => match ToolShape::new(call) {
+            ToolShape::Command {
+                description: Some(description),
+                ..
+            } => vec![call.tool.clone(), description],
+            ToolShape::Mcp { server, tool, .. } if tool.is_empty() => vec![server],
+            ToolShape::Mcp { server, tool, .. } => vec![server, format!("[{tool}]")],
+            ToolShape::Command { .. } | ToolShape::File { .. } | ToolShape::Other => {
+                vec![call.tool.clone(), call.summary.clone()]
+            }
+        },
+    };
+    // A running call's time changes every second, and the find leaves it out.
+    if stage != CallStage::Running {
+        words.push(tool_meta(call, stage));
+    }
+    words
 }
 
 /// A subagent's item: tool calls on one line, the rest as in the main conversation. A search's
