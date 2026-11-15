@@ -1,9 +1,10 @@
 //! The Settings dialog, from the gear in the sidebar's foot. Its General tab holds the app's
-//! notifications, as the sidebar's bell sets them, where comments on quotes show, how long a message
-//! sent to a working agent can still be cancelled, whether a new agent's files pane shows, and
-//! where Local's agents run from the next start. Its last section, About, gives the app's version
-//! with a button that copies it, a newer release, and whether the app looks for one. Its Keyboard tab lists every shortcut and records new ones for the
-//! commands. Its Projects tab edits the projects the sidebar can group agents by.
+//! notifications, as the sidebar's bell sets them, where comments on quotes show, how long a
+//! message sent to a working agent can still be cancelled, whether a new agent's files pane shows,
+//! and where Local's agents run from the next start. Its last section, About, gives the app's
+//! version with a button that copies it, a newer release, and whether the app looks for one. Its
+//! Keyboard tab lists every shortcut and records new ones for the commands. Its Projects tab edits
+//! the projects the sidebar can group agents by.
 
 use std::sync::LazyLock;
 

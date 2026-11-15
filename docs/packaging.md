@@ -152,13 +152,14 @@ Built on branch `feat/claude-code-version`. The daemon reads Claude Code's JSON 
 
 Built on branch `feat/self-update`. [docs/architecture.md](architecture.md) describes the code, under "The app's own update".
 
-- About ten seconds after it starts, then once a day, the app asks GitHub's API for the repository's latest release. The request names the app and its version (`User-Agent: yetack-desktop/<version>`) and nothing else. A failed check goes to the log, and the next one tries again.
-- A release newer than the app shows a note at the foot of the sidebar, "0.4.0 is out", and a row in Settings › General › About. The note's cross, or the card's "Skip this version", hides that release for good. A newer one shows again. "Not now" hides the note until the next start.
+- Once a day, the app asks GitHub's API for the repository's latest release. It saves when it last asked, so a restart does not ask again within the day. It waits at least ten seconds after it starts. The request names the app and its version (`User-Agent: yetack-desktop/<version>`) and nothing else. A failed check goes to the log, and the next one tries again.
+- A release newer than the app shows a note at the foot of the sidebar, "0.4.0 is out", and a row in Settings › General › About. The note's cross, or the card's "Skip this version", hides that release for good. A newer one shows again. "Not now" hides that release's note until the next start. A newer release found before then shows.
 - Settings › General › About has "Look for new releases", on by default. Turned off, the app asks GitHub nothing.
 - The build says how the app was installed, in `YETACK_PACKAGE`: `zip` for the Windows release ([releasing.md](releasing.md), step 2), `deb` for the `.deb` ([contrib/release/build.sh](../contrib/release/build.sh)), `nix` for the flake. Any other build is one from source.
-- The Windows zip updates itself. It downloads the release's `yetack-desktop-<version>-windows-x64.exe`, `yetack-<version>-x86_64-linux` and `SHA256SUMS`, only from the repository's release downloads, and checks both files against the checksums before anything moves. It then puts them in place of its own program and of the Linux daemon beside it, and restarts when the user says so. A failure leaves the app as it was.
+- The Windows zip updates itself. It downloads the release's `yetack-desktop-<version>-windows-x64.exe`, `yetack-<version>-x86_64-linux` and `SHA256SUMS`, only from the repository's release downloads, and checks both files against the checksums before anything moves. It then puts them in place of its own program and of the Linux daemon beside it, and restarts when the user says so. A failure leaves the app as it was. If the files cannot all go back, the update deletes none of them and says where each one is.
 - The other installs get the steps: the `.deb`'s `apt` command, the Nix configuration to change, or the commands that build the release from a checkout.
 
+## Later
 
 - An AppImage or an `.rpm`, when a colleague needs one.
 - Signing the Windows build, when there are Windows users besides the author.

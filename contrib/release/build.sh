@@ -19,7 +19,7 @@ cargo build -q --release --locked --target "$musl" -p yetack
 mkdir -p dist
 cp "target/$musl/release/yetack" dist/yetack
 strip dist/yetack
-YETACK_LINUX_DAEMON=/usr/bin/yetack YETACK_PACKAGE=deb     cargo deb -q --locked -p cockpit_desktop --output /out/
+YETACK_LINUX_DAEMON=/usr/bin/yetack YETACK_PACKAGE=deb cargo deb -q --locked -p cockpit_desktop --output /out/
 
 cp dist/yetack "/out/yetack-$version-x86_64-linux"
 cp contrib/yetack.service /out/

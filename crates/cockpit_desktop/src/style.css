@@ -892,6 +892,20 @@ button:disabled {
   }
 }
 
+/* The update's step ended: the bar's row folds shut, and the gap above it with it. */
+.update-bar.leaving {
+  animation: update-bar-out var(--motion-out) var(--ease-in) forwards;
+}
+
+@keyframes update-bar-out {
+  to {
+    height: 0;
+    margin-top: -6px;
+    margin-bottom: 0;
+    opacity: 0;
+  }
+}
+
 .update-bar > span {
   display: block;
   height: 100%;
@@ -10793,6 +10807,11 @@ html.splitting .sidebar {
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* "Cancel" fades once the files move. The buttons sit at the right, so none moves when it goes. */
+.update-card-actions > .presence.leaving > .button {
+  animation: fade-out var(--motion-out) var(--ease-in) forwards;
 }
 
 .details-link {

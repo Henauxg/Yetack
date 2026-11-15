@@ -27,11 +27,13 @@ use dioxus::prelude::{Signal, WritableExt};
 use serde_json::Value;
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
+use crate::command_line;
 use crate::config::{DaemonConfig, MachineConfig};
 use crate::daemon_label::DaemonLabel;
 use crate::machine::MachineId;
 use crate::path_style::PathStyle;
 use crate::prefs::{CommentPlacement, GroupBy, ProjectRule};
+use crate::self_update::CheckFileError;
 use crate::state::app_update::{self, AppStep, InstallKind, Release, ReleaseAsset};
 use crate::state::daemon_probe::{
     CARRIED_SYSTEM, DaemonOwner, DaemonProbe, InstalledDaemon, ServerInstall,
@@ -757,10 +759,9 @@ pub fn update_screen(arguments: &[String]) -> Option<UpdateScreen> {
     if !is_requested(arguments) {
         return None;
     }
-    let flag = arguments
-        .iter()
-        .position(|argument| argument == UPDATE_SCREEN_FLAG)?;
-    arguments.get(flag + 1)?.parse().ok()
+    command_line::flag_value(arguments, UPDATE_SCREEN_FLAG)?
+        .parse()
+        .ok()
 }
 
 /// The update of a daemon, in the state of one of the screens: the rest of the demo stays.
@@ -1251,10 +1252,9 @@ pub fn machines_scene(arguments: &[String]) -> Option<MachinesScene> {
     if !is_requested(arguments) {
         return None;
     }
-    let flag = arguments
-        .iter()
-        .position(|argument| argument == MACHINES_FLAG)?;
-    arguments.get(flag + 1)?.parse().ok()
+    command_line::flag_value(arguments, MACHINES_FLAG)?
+        .parse()
+        .ok()
 }
 
 pub fn show_machines(state: &mut AppState, scene: MachinesScene) {
@@ -1420,10 +1420,9 @@ pub fn local_scene(arguments: &[String]) -> Option<LocalScene> {
     if !is_requested(arguments) {
         return None;
     }
-    let flag = arguments
-        .iter()
-        .position(|argument| argument == LOCAL_FLAG)?;
-    arguments.get(flag + 1)?.parse().ok()
+    command_line::flag_value(arguments, LOCAL_FLAG)?
+        .parse()
+        .ok()
 }
 
 /// Local as on Unix, where the background service runs, its config asking at each start or
@@ -1456,9 +1455,6 @@ pub const APP_UPDATE_PAUSE: Duration = Duration::from_millis(300);
 /// The program the demo's update puts in place, which nothing starts.
 pub const APP_PROGRAM: &str = "yetack-desktop.exe";
 
-/// What the demo's release weighs: its app, its daemon and its checksums.
-const APP_RELEASE_SIZES: [u64; 3] = [9_961_472, 4_823_000, 449];
-
 /// The states of the app's own update that `--demo-app-update` names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr, VariantArray)]
 #[strum(serialize_all = "kebab-case")]
@@ -1481,10 +1477,9 @@ pub fn app_update_screen(arguments: &[String]) -> Option<AppUpdateScreen> {
     if !is_requested(arguments) {
         return None;
     }
-    let flag = arguments
-        .iter()
-        .position(|argument| argument == APP_UPDATE_FLAG)?;
-    arguments.get(flag + 1)?.parse().ok()
+    command_line::flag_value(arguments, APP_UPDATE_FLAG)?
+        .parse()
+        .ok()
 }
 
 /// The release after this app's, made up: the next minor version, out three days ago.
@@ -1495,29 +1490,25 @@ pub fn app_release() -> Release {
         .next()
         .and_then(|minor| minor.parse().ok())
         .unwrap_or(0);
-    let version = format!("{major}.{}.0", minor + 1);
+    let version = ReleaseVersion::new(format!("{major}.{}.0", minor + 1));
     let published = SystemTime::now()
-        .checked_sub(Duration::from_secs(3 * 24 * 60 * 60))
+        .checked_sub(app_update::DAY * 3)
         .and_then(Timestamp::from_system_time);
-    let names = [
-        format!("yetack-desktop-{version}-windows-x64.exe"),
-        format!("yetack-{version}-x86_64-linux"),
-        app_update::CHECKSUMS_NAME.to_owned(),
+    let asset = |name: String, size: u64| ReleaseAsset {
+        url: format!("{}v{version}/{name}", app_update::DOWNLOAD_PREFIX),
+        name,
+        size,
+    };
+    let assets = vec![
+        asset(app_update::app_asset_name(&version), 9_961_472),
+        asset(app_update::daemon_asset_name(&version), 4_823_000),
+        asset(app_update::CHECKSUMS_NAME.to_owned(), 449),
     ];
-    let assets = names
-        .into_iter()
-        .zip(APP_RELEASE_SIZES)
-        .map(|(name, size)| ReleaseAsset {
-            url: format!("{}v{version}/{name}", app_update::DOWNLOAD_PREFIX),
-            name,
-            size,
-        })
-        .collect();
     Release {
         notes: format!(
             "## Yetack {version}\n\n- The app tells you when a new release is out, and the Windows app updates itself.\n- Find in the transcript: Ctrl+F searches the selected agent's conversation.\n- The Machines dialog installs the daemon on a server that has none.\n\nTested with Claude Code 2.1.330.\n\n## Fixes\n\n- A long title no longer pushes the sidebar's buttons out.\n"
         ),
-        page: format!("{}/tag/v{version}", app_update::RELEASES_URL),
+        html_url: format!("{}/tag/v{version}", app_update::RELEASES_URL),
         version,
         published,
         assets,
@@ -1553,6 +1544,7 @@ pub fn show_app_update(state: &mut AppState, screen: AppUpdateScreen) {
     let total = started.assets.total_size();
     match screen {
         AppUpdateScreen::Downloading => {
+            app_update::mark_without_task(state, id);
             app_update::downloaded(state, id, total * 37 / 100);
         }
         AppUpdateScreen::Ready => {
@@ -1562,10 +1554,7 @@ pub fn show_app_update(state: &mut AppState, screen: AppUpdateScreen) {
         AppUpdateScreen::Failed => {
             app_update::downloaded(state, id, total);
             app_update::step_started(state, id, AppStep::Check);
-            let message = format!(
-                "The download of {} does not match the checksum the release lists.",
-                started.assets.app.name
-            );
+            let message = CheckFileError::Mismatch(started.assets.app.name).to_string();
             app_update::failed(state, id, AppStep::Check, message);
         }
         AppUpdateScreen::Offer
@@ -1757,10 +1746,10 @@ pub fn showcase_scene(arguments: &[String]) -> Option<Scene> {
     if !is_requested(arguments) {
         return None;
     }
-    let flag = arguments
-        .iter()
-        .position(|argument| argument == SHOWCASE_FLAG)?;
-    match arguments.get(flag + 1) {
+    if !arguments.iter().any(|argument| argument == SHOWCASE_FLAG) {
+        return None;
+    }
+    match command_line::flag_value(arguments, SHOWCASE_FLAG) {
         Some(name) if !name.starts_with("--") => name.parse::<Scene>().ok(),
         Some(_) | None => Some(Scene::Machines),
     }
@@ -5467,11 +5456,22 @@ pub struct ParseError {
             show_app_update(&mut state, screen);
 
             assert_eq!(state.ui.dialog, Some(Dialog::AppUpdate), "{screen:?}");
-            assert!(app_update::note(&state).is_some(), "{screen:?}");
+            assert!(app_update::notice(&state).is_some(), "{screen:?}");
             let release = app_update::offered(&state).unwrap();
             assert!(release.windows_assets().is_some(), "{screen:?}");
             assert!(state.app_update.demo);
         }
+    }
+
+    #[test]
+    fn cancel_ends_the_downloading_screens_run() {
+        let mut state = super::state(DaemonLabel::in_app());
+        show_app_update(&mut state, AppUpdateScreen::Downloading);
+
+        app_update::cancel(&mut state);
+
+        assert_eq!(state.app_update.run, None);
+        assert!(!app_update::is_stopping(&state));
     }
 
     #[test]

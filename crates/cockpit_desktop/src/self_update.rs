@@ -1,5 +1,5 @@
 //! The app's own update, beside the window. The app asks GitHub for its latest release about ten
-//! seconds after it starts, then once a day.
+//! seconds after it starts, or a day after the last check when that is later, then once a day.
 //!
 //! The Windows zip updates itself: it downloads the release's app and Linux daemon beside its own
 //! files, as `<name>.new`, and checks them against the release's `SHA256SUMS`. Windows lets a
@@ -7,47 +7,62 @@
 //! aside to `<name>.old` and the new one into its place. The new app, started with
 //! `--after-update <pid>`, waits for this one to end, and deletes what the update left.
 
+use std::fmt::Display;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use dioxus::prelude::{ReadableExt, Signal, UnboundedReceiver, WritableExt};
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
-use tokio::task::JoinError;
+use tokio::task::{JoinError, JoinHandle};
 use tokio::time::Instant;
 
-use crate::demo;
 use crate::server_daemon::{self, CARRIED_FILE_NAME};
 use crate::state::AppState;
 use crate::state::app_update::{
-    self, AppStep, CHECKSUMS_NAME, Checksums, InstallKind, MAX_DOWNLOAD_BYTES, Release,
-    ReleaseAsset, StartedRun, WindowsAssets,
+    self, AppStep, CHECKSUMS_NAME, Checksums, DAY, InstallKind, MAX_DOWNLOAD_BYTES, Release,
+    ReleaseAsset, RunId, StartedRun, WindowsAssets,
 };
 use crate::update_script::APP_VERSION;
+use crate::{command_line, demo};
 
-const LATEST_URL: &str = "https://api.github.com/repos/Henauxg/yetack/releases/latest";
+const LATEST_URL: &str = concat!(
+    "https://api.github.com/repos/",
+    app_update::repository!(),
+    "/releases/latest"
+);
 const GITHUB_JSON: &str = "application/vnd.github+json";
 
-/// GitHub's answer is a few kilobytes, more with long release notes.
+/// GitHub's answer is a few kilobytes, more with long release notes. A release's `SHA256SUMS`
+/// is smaller still.
 const MAX_ANSWER_BYTES: u64 = 4 * 1024 * 1024;
 
 /// The app the update started passes the pid of the one that closes: `--after-update 1234`.
 pub const AFTER_UPDATE_FLAG: &str = "--after-update";
 
 const NEW_SUFFIX: &str = ".new";
-const OLD_SUFFIX: &str = ".old";
+/// What an update moved aside keeps its name with this after it, until the next start.
+pub const OLD_SUFFIX: &str = ".old";
 
 /// How long a connection may stay silent before the request fails.
 const SILENCE: Duration = Duration::from_secs(30);
 
+/// How long the download of one file may take, however slowly its bytes come.
+const DOWNLOAD_TIME: Duration = Duration::from_secs(30 * 60);
+
 /// How many bytes the download reads between two reports of its progress.
 const PROGRESS_STEP: u64 = 256 * 1024;
 
-const FIRST_CHECK: Duration = Duration::from_secs(10);
-const CHECK_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
+/// The most bytes one read asks for. A "Cancel" stops the download before the next read.
+const READ_CHUNK: usize = 64 * 1024;
+
+/// How long the new app waits for the one that started it to end.
+#[cfg(windows)]
+const EXIT_WAIT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, thiserror::Error)]
 pub enum CheckError {
@@ -61,13 +76,13 @@ pub enum CheckError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum DownloadError {
-    #[error("cannot download {name}: {source}")]
+    #[error("Cannot download {name}: {source}.")]
     Http { name: String, source: ureq::Error },
-    #[error("cannot write {}: {source}", path.display())]
+    #[error("Cannot write {}: {source}.", path.display())]
     Write { path: PathBuf, source: io::Error },
-    #[error("the release's files weigh more than {} MB", MAX_DOWNLOAD_BYTES / 1024 / 1024)]
+    #[error("The release's files weigh more than {} MB.", MAX_DOWNLOAD_BYTES / 1024 / 1024)]
     TooLarge,
-    #[error("the download was cancelled")]
+    #[error("The download was cancelled.")]
     Cancelled,
 }
 
@@ -77,30 +92,38 @@ pub enum CheckFileError {
     Unlisted(String),
     #[error("The download of {0} does not match the checksum the release lists.")]
     Mismatch(String),
-    #[error("cannot read {}: {source}", path.display())]
+    #[error("Cannot read {}: {source}.", path.display())]
     Read { path: PathBuf, source: io::Error },
+}
+
+/// A file that did not move, and why.
+#[derive(Debug, thiserror::Error)]
+#[error("{}: {source}", path.display())]
+pub struct MoveError {
+    pub path: PathBuf,
+    pub source: io::Error,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReplaceError {
-    #[error("cannot move {}: {source}", path.display())]
-    Moved { path: PathBuf, source: io::Error },
+    #[error("Cannot move {0}.")]
+    Moved(MoveError),
+    /// Some files are neither in their place nor back: the update deletes none of them, since
+    /// one may be the only copy of the app.
     #[error(
-        "cannot move {}: {source}. Putting the files back failed too, at {}: {restore}",
-        path.display(),
-        restored.display()
+        "Cannot move {failed}. Putting the files back failed too, at {restore}. Nothing was deleted. {whereabouts}"
     )]
     NotRestored {
-        path: PathBuf,
-        source: io::Error,
-        restored: PathBuf,
-        restore: io::Error,
+        failed: MoveError,
+        restore: MoveError,
+        /// Where each file moved so far is now.
+        whereabouts: String,
     },
 }
 
 /// The client every request goes through: the system's TLS and its root certificates, HTTPS
-/// only, and a name that says which app asks.
-fn agent() -> ureq::Agent {
+/// only, and a name that says which app asks. `body_time` bounds the reading of a whole answer.
+fn http_client(body_time: Option<Duration>) -> ureq::Agent {
     use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 
     let tls = TlsConfig::builder()
@@ -113,12 +136,13 @@ fn agent() -> ureq::Agent {
         .user_agent(format!("yetack-desktop/{APP_VERSION}"))
         .timeout_connect(Some(SILENCE))
         .timeout_per_read(Some(SILENCE))
+        .timeout_recv_body(body_time)
         .build()
         .into()
 }
 
 fn fetch_latest() -> Result<Release, CheckError> {
-    let answer = agent()
+    let answer = http_client(None)
         .get(LATEST_URL)
         .header("Accept", GITHUB_JSON)
         .call()?
@@ -133,17 +157,20 @@ pub async fn latest_release() -> Result<Release, CheckError> {
     tokio::task::spawn_blocking(fetch_latest).await?
 }
 
-/// Checks for a newer release `FIRST_CHECK` after the start, then once a day, and at once when
-/// `asked` says the setting turned on. The demo makes one up and never touches the network. A
-/// failed check goes to the log, and the next round tries again.
+/// Checks for a newer release after `app_update::first_check_delay`, then once a day, and at once
+/// when `asked` says the setting turned on. The demo makes one up and never touches the network.
+/// A failed check goes to the log, and the next round tries again.
 pub async fn check_releases(mut state: Signal<AppState>, mut asked: UnboundedReceiver<()>) {
     use futures_util::StreamExt;
 
-    let demo = state.peek().app_update.demo;
+    let (demo, last_check) = {
+        let state = state.peek();
+        (state.app_update.demo, state.prefs.updates.last_check)
+    };
     let first = if demo {
         demo::APP_RELEASE_DELAY
     } else {
-        FIRST_CHECK
+        app_update::first_check_delay(SystemTime::now(), last_check)
     };
     let mut next = Instant::now() + first;
     loop {
@@ -155,23 +182,28 @@ pub async fn check_releases(mut state: Signal<AppState>, mut asked: UnboundedRec
                 }
             }
         }
-        next = Instant::now() + CHECK_EVERY;
+        next = Instant::now() + DAY;
         if !state.peek().prefs.updates.check {
             continue;
         }
-        let release = if demo {
-            demo::app_release()
+        let latest = if demo {
+            Ok(demo::app_release())
         } else {
-            match latest_release().await {
-                Ok(release) => release,
-                Err(error) => {
-                    tracing::warn!("cannot check for a new release of the app: {error}");
-                    continue;
-                }
+            latest_release().await
+        };
+        // The check that just ended answers the asks that came while it ran.
+        while asked.try_recv().is_ok() {}
+        let release = match latest {
+            Ok(release) => release,
+            Err(error) => {
+                tracing::warn!("cannot check for a new release of the app: {error}");
+                continue;
             }
         };
         tracing::info!("the latest release of the app is {}", release.version);
-        app_update::found(&mut state.write(), release);
+        let mut state = state.write();
+        app_update::checked(&mut state, SystemTime::now());
+        app_update::found(&mut state, release);
     }
 }
 
@@ -206,9 +238,20 @@ impl Placement {
         }
     }
 
-    /// Deletes what an earlier update left: the files it moved aside, and downloads it did not
-    /// use. A file moved aside stays while nothing took its place: it is the only copy.
+    /// Tidies what an earlier update left. A file moved aside goes back to its place when nothing
+    /// took it. The downloads it did not use go, and so do the files moved aside that something
+    /// took the place of.
     pub fn remove_leftovers(&self) {
+        for target in self.targets() {
+            let old = with_suffix(target, OLD_SUFFIX);
+            if target.exists() || !old.exists() {
+                continue;
+            }
+            match fs::rename(&old, target) {
+                Ok(()) => tracing::info!("put {} back as {}", old.display(), target.display()),
+                Err(error) => tracing::warn!("cannot put {} back: {error}", old.display()),
+            }
+        }
         self.remove_new_files();
         for target in self.targets() {
             if target.exists() {
@@ -232,13 +275,17 @@ fn remove_if_there(path: &Path) {
     }
 }
 
-/// Deletes what an earlier update left beside this app. Only the zip updates itself, so only its
-/// folder holds such files.
+/// Tidies what an earlier update left beside this app.
 pub fn remove_leftovers() {
-    if !InstallKind::of_this_build().updates_itself() {
+    remove_leftovers_of(InstallKind::of_this_build(), Placement::of_this_app);
+}
+
+/// Only the zip updates itself, so only its folder holds such files: `find` says where they are.
+fn remove_leftovers_of(install: InstallKind, find: impl FnOnce() -> io::Result<Placement>) {
+    if !install.updates_itself() {
         return;
     }
-    match Placement::of_this_app() {
+    match find() {
         Ok(placement) => placement.remove_leftovers(),
         Err(error) => tracing::warn!("cannot find the app's program: {error}"),
     }
@@ -251,80 +298,112 @@ fn download(
     assets: &WindowsAssets,
     progress: &mpsc::UnboundedSender<u64>,
 ) -> Result<Checksums, DownloadError> {
-    let agent = agent();
-    let mut done = 0;
+    let client = http_client(Some(DOWNLOAD_TIME));
+    download_from(placement, assets, progress, |asset| {
+        open_body(&client, asset)
+    })
+}
+
+/// The body of `asset`'s download, which may not weigh more than `MAX_DOWNLOAD_BYTES`.
+fn open_body(
+    client: &ureq::Agent,
+    asset: &ReleaseAsset,
+) -> Result<ureq::BodyReader<'static>, DownloadError> {
+    let response = client
+        .get(&asset.url)
+        .call()
+        .map_err(|source| http_error(asset, source))?;
+    Ok(response
+        .into_body()
+        .into_with_config()
+        .limit(MAX_DOWNLOAD_BYTES)
+        .reader())
+}
+
+fn http_error(asset: &ReleaseAsset, source: ureq::Error) -> DownloadError {
+    DownloadError::Http {
+        name: asset.name.clone(),
+        source,
+    }
+}
+
+fn report(progress: &mpsc::UnboundedSender<u64>, done: u64) -> Result<(), DownloadError> {
+    progress.send(done).map_err(|_| DownloadError::Cancelled)
+}
+
+/// `download`, with the bodies `open` gives. A failure deletes the files written so far.
+fn download_from<R: Read>(
+    placement: &Placement,
+    assets: &WindowsAssets,
+    progress: &mpsc::UnboundedSender<u64>,
+    mut open: impl FnMut(&ReleaseAsset) -> Result<R, DownloadError>,
+) -> Result<Checksums, DownloadError> {
+    if progress.is_closed() {
+        return Err(DownloadError::Cancelled);
+    }
     let mut sums = Vec::new();
-    fetch(&agent, &assets.checksums, &mut sums, &mut done, progress)?;
-    let checksums = Checksums::parse(&String::from_utf8_lossy(&sums));
+    open(&assets.checksums)?
+        .take(MAX_ANSWER_BYTES)
+        .read_to_end(&mut sums)
+        .map_err(|error| http_error(&assets.checksums, ureq::Error::Io(error)))?;
+    let mut done = u64::try_from(sums.len()).unwrap_or(u64::MAX);
+    report(progress, done)?;
+    let checksums = Checksums::from(String::from_utf8_lossy(&sums).as_ref());
     let files = [
         (&assets.app, &placement.app),
         (&assets.daemon, &placement.daemon),
     ];
     for (asset, target) in files {
         let path = with_suffix(target, NEW_SUFFIX);
-        let written = File::create(&path).and_then(|mut file| {
-            let fetched = fetch(&agent, asset, &mut file, &mut done, progress);
-            file.sync_all()?;
-            Ok(fetched)
-        });
-        match written {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                placement.remove_new_files();
-                return Err(error);
-            }
-            Err(source) => {
-                placement.remove_new_files();
-                return Err(DownloadError::Write { path, source });
-            }
+        let written = open(asset)
+            .and_then(|mut body| write_file(&mut body, asset, &path, &mut done, progress));
+        if let Err(error) = written {
+            placement.remove_new_files();
+            return Err(error);
         }
     }
     Ok(checksums)
 }
 
-/// Copies `asset` into `out`, adding its bytes to `done`.
-fn fetch(
-    agent: &ureq::Agent,
+/// Writes `body`, the download of `asset`, to a new file at `path`. It adds the bytes to `done`
+/// and reports them to `progress`, and a closed `progress` stops it before its next read.
+fn write_file(
+    body: &mut impl Read,
     asset: &ReleaseAsset,
-    out: &mut impl Write,
+    path: &Path,
     done: &mut u64,
     progress: &mpsc::UnboundedSender<u64>,
 ) -> Result<(), DownloadError> {
-    let http = |source| DownloadError::Http {
-        name: asset.name.clone(),
+    let write_error = |source: io::Error| DownloadError::Write {
+        path: path.to_owned(),
         source,
     };
-    let response = agent.get(&asset.url).call().map_err(http)?;
-    let mut body = response
-        .into_body()
-        .into_with_config()
-        .limit(MAX_DOWNLOAD_BYTES)
-        .reader();
-    let mut chunk = vec![0; 64 * 1024];
+    let mut file = File::create(path).map_err(write_error)?;
+    let mut chunk = vec![0; READ_CHUNK];
     let mut reported = *done;
     loop {
+        if progress.is_closed() {
+            return Err(DownloadError::Cancelled);
+        }
         let read = match body.read(&mut chunk) {
             Ok(0) => break,
             Ok(read) => read,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(http(ureq::Error::Io(error))),
+            Err(error) => return Err(http_error(asset, ureq::Error::Io(error))),
         };
         *done = done.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
         if *done > MAX_DOWNLOAD_BYTES {
             return Err(DownloadError::TooLarge);
         }
-        let bytes = chunk.get(..read).unwrap_or_default();
-        out.write_all(bytes)
-            .map_err(|source| DownloadError::Write {
-                path: PathBuf::from(&asset.name),
-                source,
-            })?;
+        file.write_all(chunk.get(..read).unwrap_or_default())
+            .map_err(write_error)?;
         if *done - reported >= PROGRESS_STEP {
             reported = *done;
-            progress.send(*done).map_err(|_| DownloadError::Cancelled)?;
+            report(progress, *done)?;
         }
     }
-    progress.send(*done).map_err(|_| DownloadError::Cancelled)
+    file.sync_all().map_err(write_error)?;
+    report(progress, *done)
 }
 
 /// The file's SHA-256, in lowercase hex.
@@ -365,63 +444,157 @@ fn check(
     Ok(())
 }
 
+/// The update's check: a download that does not pass is deleted with the other.
+fn check_step(
+    placement: &Placement,
+    assets: &WindowsAssets,
+    checksums: &Checksums,
+) -> Result<(), CheckFileError> {
+    let checked = check(placement, assets, checksums);
+    if checked.is_err() {
+        placement.remove_new_files();
+    }
+    checked
+}
+
+/// What a target had before its new file took the place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Aside {
+    /// Its file moved aside, to `.old`.
+    MovedAside,
+    NoFile,
+}
+
+/// A target that `put_in_place` moved, which a rollback puts back.
+#[derive(Debug, Clone, Copy)]
+struct Moved<'path> {
+    target: &'path Path,
+    aside: Aside,
+}
+
 /// Puts each target's `.new` file in its place, and moves the target aside to `.old` first. When
-/// a move fails, the files moved so far go back, and nothing changed.
-fn put_in_place(targets: &[&Path]) -> Result<(), ReplaceError> {
-    // Each target moved so far, and whether it had a file to move aside.
-    let mut moved: Vec<(&Path, bool)> = Vec::new();
+/// a move fails, the files moved so far go back, and nothing changed. `rename` moves a file.
+fn put_in_place(
+    targets: &[&Path],
+    rename: impl Fn(&Path, &Path) -> io::Result<()>,
+) -> Result<(), ReplaceError> {
+    let mut moved: Vec<Moved<'_>> = Vec::new();
     for &target in targets {
-        let new = with_suffix(target, NEW_SUFFIX);
-        let old = with_suffix(target, OLD_SUFFIX);
-        let fail = |path: &Path, source: io::Error, moved: &[(&Path, bool)]| match roll_back(moved)
-        {
-            Ok(()) => ReplaceError::Moved {
-                path: path.to_owned(),
-                source,
-            },
-            Err((restored, restore)) => ReplaceError::NotRestored {
-                path: path.to_owned(),
-                source,
-                restored,
+        let Err(failed) = move_in(target, &rename, &mut moved) else {
+            continue;
+        };
+        return Err(match roll_back(&moved, &rename) {
+            Ok(()) => ReplaceError::Moved(failed),
+            Err(restore) => ReplaceError::NotRestored {
+                failed,
                 restore,
+                whereabouts: whereabouts(&moved),
             },
-        };
-        match fs::remove_file(&old) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(fail(&old, error, &moved)),
+        });
+    }
+    Ok(())
+}
+
+/// Moves `target` aside and its `.new` file into its place, and adds it to `moved` once it moved
+/// aside.
+fn move_in<'path>(
+    target: &'path Path,
+    rename: &impl Fn(&Path, &Path) -> io::Result<()>,
+    moved: &mut Vec<Moved<'path>>,
+) -> Result<(), MoveError> {
+    let new = with_suffix(target, NEW_SUFFIX);
+    let old = with_suffix(target, OLD_SUFFIX);
+    match fs::remove_file(&old) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => return Err(MoveError { path: old, source }),
+    }
+    let aside = match rename(target, &old) {
+        Ok(()) => Aside::MovedAside,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Aside::NoFile,
+        Err(source) => {
+            return Err(MoveError {
+                path: target.to_owned(),
+                source,
+            });
         }
-        let aside = match fs::rename(target, &old) {
-            Ok(()) => true,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-            Err(error) => return Err(fail(target, error, &moved)),
-        };
-        moved.push((target, aside));
-        if let Err(error) = fs::rename(&new, target) {
-            let restored = !aside || fs::rename(&old, target).is_ok();
-            if restored {
-                moved.pop();
-            }
-            return Err(fail(&new, error, &moved));
+    };
+    moved.push(Moved { target, aside });
+    rename(&new, target).map_err(|source| MoveError { path: new, source })
+}
+
+/// Puts back the files `put_in_place` moved, last first: the new file goes back to `.new`, and
+/// the old one to its place. Stops at the first file it cannot move.
+fn roll_back(
+    moved: &[Moved<'_>],
+    rename: &impl Fn(&Path, &Path) -> io::Result<()>,
+) -> Result<(), MoveError> {
+    for &Moved { target, aside } in moved.iter().rev() {
+        if fs::metadata(target).is_ok() {
+            let new = with_suffix(target, NEW_SUFFIX);
+            rename(target, &new).map_err(|source| MoveError {
+                path: target.to_owned(),
+                source,
+            })?;
+        }
+        if aside == Aside::MovedAside {
+            let old = with_suffix(target, OLD_SUFFIX);
+            rename(&old, target).map_err(|source| MoveError { path: old, source })?;
         }
     }
     Ok(())
 }
 
-/// Puts back the files `put_in_place` moved, last first: the new file goes back to `.new`, and
-/// the old one to its place. Returns the first file it could not put back.
-fn roll_back(moved: &[(&Path, bool)]) -> Result<(), (PathBuf, io::Error)> {
-    for &(target, aside) in moved.iter().rev() {
+/// Says where the old and the new file of each target in `moved` are, after a rollback that
+/// stopped.
+fn whereabouts(moved: &[Moved<'_>]) -> String {
+    let mut sentences = Vec::new();
+    for &Moved { target, aside } in moved {
         let new = with_suffix(target, NEW_SUFFIX);
-        if fs::metadata(target).is_ok() {
-            fs::rename(target, &new).map_err(|error| (target.to_owned(), error))?;
-        }
-        if aside {
-            let old = with_suffix(target, OLD_SUFFIX);
-            fs::rename(&old, target).map_err(|error| (old, error))?;
-        }
+        let old = with_suffix(target, OLD_SUFFIX);
+        let name = target.file_name().unwrap_or(target.as_os_str()).display();
+        let old_at = match aside {
+            Aside::NoFile => None,
+            Aside::MovedAside if old.exists() => Some(old.as_path()),
+            Aside::MovedAside => target.exists().then_some(target),
+        };
+        let new_at = if new.exists() {
+            Some(new.as_path())
+        } else {
+            let in_place = aside == Aside::NoFile || old.exists();
+            (in_place && target.exists()).then_some(target)
+        };
+        let sentence = match (old_at, new_at) {
+            (Some(old_at), Some(new_at)) => format!(
+                "The {name} from before the update is at {}, and the new one at {}.",
+                old_at.display(),
+                new_at.display()
+            ),
+            (Some(old_at), None) => {
+                format!(
+                    "The {name} from before the update is at {}.",
+                    old_at.display()
+                )
+            }
+            (None, Some(new_at)) => format!("The new {name} is at {}.", new_at.display()),
+            (None, None) => continue,
+        };
+        sentences.push(sentence);
     }
-    Ok(())
+    sentences.join(" ")
+}
+
+/// The update's move. A failure deletes the downloads once the files are back, and keeps every
+/// file when some are not: one of them may be the only copy of the app.
+fn replace_step(
+    placement: &Placement,
+    rename: impl Fn(&Path, &Path) -> io::Result<()>,
+) -> Result<(), ReplaceError> {
+    let replaced = put_in_place(&placement.targets(), rename);
+    if let Err(ReplaceError::Moved(_)) = replaced {
+        placement.remove_new_files();
+    }
+    replaced
 }
 
 /// Runs the update `started` to its end: downloads, checks, then puts the files in place. A
@@ -433,18 +606,12 @@ pub async fn run(mut state: Signal<AppState>, started: StartedRun) {
 }
 
 async fn run_steps(mut state: Signal<AppState>, started: StartedRun) {
-    let StartedRun { id, assets, .. } = started;
-    let mut fail = move |step: AppStep, message: String| {
-        tracing::warn!("the app's update failed: {message}");
-        app_update::failed(&mut state.write(), id, step, message);
-    };
+    let StartedRun { id, assets } = started;
     let placement = match Placement::of_this_app() {
         Ok(placement) => placement,
         Err(error) => {
-            fail(
-                AppStep::Download,
-                format!("cannot find the app's program: {error}"),
-            );
+            let message = format!("Cannot find the app's program: {error}.");
+            fail(state, id, AppStep::Download, message);
             return;
         }
     };
@@ -460,61 +627,78 @@ async fn run_steps(mut state: Signal<AppState>, started: StartedRun) {
         }
         app_update::downloaded(&mut state.write(), id, bytes);
     }
-    // A closed channel stops the download at its next report.
+    // A closed channel stops the download before its next read.
     drop(receiver);
-    let downloaded = joined(downloading.await);
-    if !app_update::is_current(&state.peek(), id) {
-        placement.remove_new_files();
+    let ControlFlow::Continue(checksums) =
+        finish_step(state, id, AppStep::Download, &placement, downloading).await
+    else {
         return;
-    }
-    let checksums = match downloaded {
-        Ok(checksums) => checksums,
-        Err(message) => {
-            placement.remove_new_files();
-            fail(AppStep::Download, message);
-            return;
-        }
     };
     app_update::step_started(&mut state.write(), id, AppStep::Check);
-    let checked = {
+    let checking = {
         let placement = placement.clone();
-        joined(tokio::task::spawn_blocking(move || check(&placement, &assets, &checksums)).await)
+        tokio::task::spawn_blocking(move || check_step(&placement, &assets, &checksums))
     };
-    if !app_update::is_current(&state.peek(), id) {
-        placement.remove_new_files();
+    let ControlFlow::Continue(()) =
+        finish_step(state, id, AppStep::Check, &placement, checking).await
+    else {
         return;
-    }
-    if let Err(message) = checked {
-        placement.remove_new_files();
-        fail(AppStep::Check, message);
-        return;
-    }
+    };
     app_update::step_started(&mut state.write(), id, AppStep::Replace);
-    let replaced = {
+    let replacing = {
         let placement = placement.clone();
-        joined(tokio::task::spawn_blocking(move || put_in_place(&placement.targets())).await)
+        tokio::task::spawn_blocking(move || {
+            replace_step(&placement, |from, to| fs::rename(from, to))
+        })
     };
-    match replaced {
-        Ok(()) => {
-            tracing::info!(
-                "the app's update is in place at {}",
-                placement.app.display()
-            );
-            app_update::ready(&mut state.write(), id, placement.app);
+    let ControlFlow::Continue(()) =
+        finish_step(state, id, AppStep::Replace, &placement, replacing).await
+    else {
+        return;
+    };
+    tracing::info!(
+        "the app's update is in place at {}",
+        placement.app.display()
+    );
+    app_update::ready(&mut state.write(), id, placement.app);
+}
+
+/// Waits for `task`, the blocking work of `step`, and gives its result. `Break` when the run ends
+/// there: a "Cancel" came, and the downloads go, or the step failed, and the card says why. The
+/// steps before the move delete their downloads when they fail.
+async fn finish_step<T, E: Display>(
+    state: Signal<AppState>,
+    id: RunId,
+    step: AppStep,
+    placement: &Placement,
+    task: JoinHandle<Result<T, E>>,
+) -> ControlFlow<(), T> {
+    let before_the_move = step < AppStep::Replace;
+    let result = match task.await {
+        Ok(result) => result.map_err(|error| error.to_string()),
+        Err(error) => {
+            if before_the_move {
+                placement.remove_new_files();
+            }
+            Err(format!("The step stopped: {error}."))
         }
+    };
+    if before_the_move && !app_update::is_current(&state.peek(), id) {
+        placement.remove_new_files();
+        return ControlFlow::Break(());
+    }
+    match result {
+        Ok(value) => ControlFlow::Continue(value),
         Err(message) => {
-            placement.remove_new_files();
-            fail(AppStep::Replace, message);
+            fail(state, id, step, message);
+            ControlFlow::Break(())
         }
     }
 }
 
-/// The result of a blocking step, with its error as the card says it.
-fn joined<T, E: ToString>(result: Result<Result<T, E>, JoinError>) -> Result<T, String> {
-    match result {
-        Ok(result) => result.map_err(|error| error.to_string()),
-        Err(error) => Err(error.to_string()),
-    }
+fn fail(mut state: Signal<AppState>, id: RunId, step: AppStep, message: String) {
+    tracing::warn!("the app's update failed: {message}");
+    app_update::failed(&mut state.write(), id, step, message);
 }
 
 /// The demo's update: made-up bytes, then the checks, ending ready. Nothing is downloaded.
@@ -557,14 +741,13 @@ pub fn start_new_app(app: &Path) -> io::Result<()> {
 
 /// The pid that `--after-update` names.
 pub fn after_update(arguments: &[String]) -> Option<u32> {
-    let flag = arguments
-        .iter()
-        .position(|argument| argument == AFTER_UPDATE_FLAG)?;
-    arguments.get(flag + 1)?.parse().ok()
+    command_line::flag_value(arguments, AFTER_UPDATE_FLAG)?
+        .parse()
+        .ok()
 }
 
-/// Waits up to 30 s for the process `pid` to end: the app that started this one after its update
-/// still stops its agents and holds the web view's folder.
+/// Waits up to `EXIT_WAIT` for the process `pid` to end: the app that started this one after its
+/// update still stops its agents and holds the web view's folder.
 #[cfg(windows)]
 pub fn wait_for_exit(pid: u32) {
     use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
@@ -572,8 +755,7 @@ pub fn wait_for_exit(pid: u32) {
         OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
     };
 
-    const EXIT_WAIT_MILLIS: u32 = 30_000;
-
+    let millis = u32::try_from(EXIT_WAIT.as_millis()).unwrap_or(u32::MAX);
     // SAFETY: OpenProcess takes no pointer. It returns null for a process that ended already.
     let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
     if process.is_null() {
@@ -581,11 +763,14 @@ pub fn wait_for_exit(pid: u32) {
     }
     // SAFETY: `process` is a handle OpenProcess opened with the right to wait on it, and it is
     // closed once, after the wait.
-    let waited = unsafe { WaitForSingleObject(process, EXIT_WAIT_MILLIS) };
+    let waited = unsafe { WaitForSingleObject(process, millis) };
     // SAFETY: as above.
     unsafe { CloseHandle(process) };
     if waited == WAIT_TIMEOUT {
-        tracing::warn!("the app before the update, pid {pid}, still runs after 30 s");
+        tracing::warn!(
+            "the app before the update, pid {pid}, still runs after {} s",
+            EXIT_WAIT.as_secs()
+        );
     }
 }
 
@@ -602,6 +787,10 @@ mod tests {
             app: folder.join("yetack-desktop.exe"),
             daemon: folder.join(CARRIED_FILE_NAME),
         }
+    }
+
+    fn rename(from: &Path, to: &Path) -> io::Result<()> {
+        fs::rename(from, to)
     }
 
     fn read(path: &Path) -> String {
@@ -642,7 +831,7 @@ mod tests {
         fs::write(with_suffix(&files.app, NEW_SUFFIX), "new app").unwrap();
         fs::write(with_suffix(&files.daemon, NEW_SUFFIX), "new daemon").unwrap();
 
-        put_in_place(&files.targets()).unwrap();
+        put_in_place(&files.targets(), rename).unwrap();
 
         assert_eq!(read(&files.app), "new app");
         assert_eq!(read(&files.daemon), "new daemon");
@@ -656,7 +845,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_moved_aside_stays_while_nothing_took_its_place() {
+    fn a_file_moved_aside_goes_back_while_nothing_took_its_place() {
         let temp = tempfile::tempdir().unwrap();
         let files = placement(temp.path());
         fs::write(&files.app, "app").unwrap();
@@ -668,7 +857,25 @@ mod tests {
 
         assert_eq!(
             names(temp.path()),
-            ["yetack-desktop.exe", "yetack-x86_64-linux.old"]
+            ["yetack-desktop.exe", CARRIED_FILE_NAME]
+        );
+        assert_eq!(read(&files.daemon), "only daemon");
+    }
+
+    #[test]
+    fn the_start_puts_back_an_old_file_whose_place_is_empty() {
+        let temp = tempfile::tempdir().unwrap();
+        let files = placement(temp.path());
+        fs::write(with_suffix(&files.app, OLD_SUFFIX), "old app").unwrap();
+        fs::write(with_suffix(&files.app, NEW_SUFFIX), "new app").unwrap();
+        fs::write(&files.daemon, "daemon").unwrap();
+
+        files.remove_leftovers();
+
+        assert_eq!(read(&files.app), "old app");
+        assert_eq!(
+            names(temp.path()),
+            ["yetack-desktop.exe", CARRIED_FILE_NAME]
         );
     }
 
@@ -681,7 +888,7 @@ mod tests {
         fs::write(with_suffix(&files.app, NEW_SUFFIX), "new app").unwrap();
         fs::write(with_suffix(&files.daemon, NEW_SUFFIX), "new daemon").unwrap();
 
-        put_in_place(&files.targets()).unwrap();
+        put_in_place(&files.targets(), rename).unwrap();
 
         assert_eq!(read(&files.daemon), "new daemon");
         assert_eq!(read(&with_suffix(&files.app, OLD_SUFFIX)), "old app");
@@ -697,9 +904,9 @@ mod tests {
         fs::write(with_suffix(&files.app, NEW_SUFFIX), "new app").unwrap();
         // The daemon's download is missing, so its move fails after the app's.
 
-        let error = put_in_place(&files.targets()).unwrap_err();
+        let error = put_in_place(&files.targets(), rename).unwrap_err();
 
-        assert!(matches!(error, ReplaceError::Moved { .. }), "{error}");
+        assert!(matches!(error, ReplaceError::Moved(_)), "{error}");
         assert_eq!(read(&files.app), "old app");
         assert_eq!(read(&files.daemon), "old daemon");
         assert_eq!(read(&with_suffix(&files.app, NEW_SUFFIX)), "new app");
@@ -733,7 +940,7 @@ mod tests {
             "The download of yetack-desktop-9.1.0-windows-x64.exe does not match the checksum the release lists."
         );
 
-        let unlisted = check(&files, &assets(), &Checksums::parse("")).unwrap_err();
+        let unlisted = check(&files, &assets(), &Checksums::from("")).unwrap_err();
         assert_eq!(
             unlisted.to_string(),
             "SHA256SUMS lists no checksum for yetack-desktop-9.1.0-windows-x64.exe."
@@ -753,5 +960,278 @@ mod tests {
         assert_eq!(after_update(&arguments(&["--after-update"])), None);
         assert_eq!(after_update(&arguments(&["--after-update", "soon"])), None);
         assert_eq!(after_update(&arguments(&["--demo"])), None);
+    }
+
+    /// A `rename` that refuses to move `from` to `to`, and moves every other file.
+    fn refusing(refused: &[(PathBuf, PathBuf)]) -> impl Fn(&Path, &Path) -> io::Result<()> {
+        move |from: &Path, to: &Path| {
+            let pair = (from.to_owned(), to.to_owned());
+            if refused.contains(&pair) {
+                return Err(io::Error::other("refused"));
+            }
+            fs::rename(from, to)
+        }
+    }
+
+    fn with_all_files(folder: &Path) -> Placement {
+        let files = placement(folder);
+        fs::write(&files.app, "old app").unwrap();
+        fs::write(&files.daemon, "old daemon").unwrap();
+        fs::write(with_suffix(&files.app, NEW_SUFFIX), "new app").unwrap();
+        fs::write(with_suffix(&files.daemon, NEW_SUFFIX), "new daemon").unwrap();
+        files
+    }
+
+    #[test]
+    fn a_rollback_that_fails_deletes_nothing_and_says_where_the_files_are() {
+        let temp = tempfile::tempdir().unwrap();
+        let files = with_all_files(temp.path());
+        let app_new = with_suffix(&files.app, NEW_SUFFIX);
+        let app_old = with_suffix(&files.app, OLD_SUFFIX);
+        let refused = [
+            (with_suffix(&files.daemon, NEW_SUFFIX), files.daemon.clone()),
+            (app_old.clone(), files.app.clone()),
+        ];
+
+        let error = replace_step(&files, refusing(&refused)).unwrap_err();
+
+        assert!(matches!(error, ReplaceError::NotRestored { .. }), "{error}");
+        assert!(
+            !files.app.exists(),
+            "the rollback stopped before the old app came back"
+        );
+        assert_eq!(read(&app_new), "new app");
+        assert_eq!(read(&app_old), "old app");
+        let message = error.to_string();
+        let said = |path: &Path| message.contains(&path.display().to_string());
+        assert!(said(&app_new) && said(&app_old), "{message}");
+        assert!(message.contains("Nothing was deleted."), "{message}");
+
+        files.remove_leftovers();
+
+        assert_eq!(read(&files.app), "old app", "the next start puts it back");
+        assert_eq!(read(&files.daemon), "old daemon");
+        assert_eq!(
+            names(temp.path()),
+            ["yetack-desktop.exe", CARRIED_FILE_NAME]
+        );
+    }
+
+    #[test]
+    fn a_move_that_fails_and_comes_back_deletes_the_downloads() {
+        let temp = tempfile::tempdir().unwrap();
+        let files = with_all_files(temp.path());
+        let refused = [(with_suffix(&files.daemon, NEW_SUFFIX), files.daemon.clone())];
+
+        let error = replace_step(&files, refusing(&refused)).unwrap_err();
+
+        assert!(matches!(error, ReplaceError::Moved(_)), "{error}");
+        assert_eq!(read(&files.app), "old app");
+        assert_eq!(read(&files.daemon), "old daemon");
+        assert_eq!(
+            names(temp.path()),
+            ["yetack-desktop.exe", CARRIED_FILE_NAME]
+        );
+    }
+
+    #[test]
+    fn a_failure_on_the_first_file_moves_nothing() {
+        let temp = tempfile::tempdir().unwrap();
+        let files = with_all_files(temp.path());
+        // A folder where the app's old file goes cannot be deleted as a file.
+        let app_old = with_suffix(&files.app, OLD_SUFFIX);
+        fs::create_dir(&app_old).unwrap();
+        fs::write(app_old.join("inside"), "").unwrap();
+
+        let error = put_in_place(&files.targets(), rename).unwrap_err();
+
+        assert!(matches!(error, ReplaceError::Moved(_)), "{error}");
+        assert_eq!(read(&files.app), "old app");
+        assert_eq!(read(&files.daemon), "old daemon");
+        assert_eq!(read(&with_suffix(&files.app, NEW_SUFFIX)), "new app");
+        assert_eq!(read(&with_suffix(&files.daemon, NEW_SUFFIX)), "new daemon");
+    }
+
+    #[test]
+    fn a_failed_check_deletes_the_downloads() {
+        let temp = tempfile::tempdir().unwrap();
+        let files = with_all_files(temp.path());
+
+        let error = check_step(&files, &assets(), &Checksums::from("")).unwrap_err();
+
+        assert!(matches!(error, CheckFileError::Unlisted(_)), "{error}");
+        assert_eq!(
+            names(temp.path()),
+            ["yetack-desktop.exe", CARRIED_FILE_NAME]
+        );
+    }
+
+    /// A body that counts the reads asked of it, and ends at once.
+    struct CountedReads(usize);
+
+    impl Read for CountedReads {
+        fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+            self.0 += 1;
+            Ok(0)
+        }
+    }
+
+    /// A body whose connection breaks.
+    struct Broken;
+
+    impl Read for Broken {
+        fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::from(io::ErrorKind::ConnectionReset))
+        }
+    }
+
+    #[test]
+    fn a_cancel_stops_the_download_before_its_next_read() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("app.exe.new");
+        let (progress, receiver) = mpsc::unbounded_channel();
+        drop(receiver);
+        let mut body = CountedReads(0);
+        let mut done = 0;
+
+        let error = write_file(&mut body, &assets().app, &path, &mut done, &progress).unwrap_err();
+
+        assert!(matches!(error, DownloadError::Cancelled), "{error}");
+        assert_eq!(body.0, 0);
+    }
+
+    #[test]
+    fn a_download_past_the_limit_stops() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("app.exe.new");
+        let (progress, _receiver) = mpsc::unbounded_channel();
+        let mut done = MAX_DOWNLOAD_BYTES - 3;
+
+        let error = write_file(
+            &mut io::Cursor::new(b"ten bytes!".to_vec()),
+            &assets().app,
+            &path,
+            &mut done,
+            &progress,
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, DownloadError::TooLarge), "{error}");
+        assert_eq!(
+            error.to_string(),
+            "The release's files weigh more than 200 MB."
+        );
+    }
+
+    #[test]
+    fn a_download_writes_its_file_and_reports_its_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("app.exe.new");
+        let (progress, mut receiver) = mpsc::unbounded_channel();
+        let mut done = 400;
+
+        write_file(
+            &mut io::Cursor::new(b"new app".to_vec()),
+            &assets().app,
+            &path,
+            &mut done,
+            &progress,
+        )
+        .unwrap();
+
+        assert_eq!(read(&path), "new app");
+        assert_eq!(done, 407);
+        assert_eq!(receiver.try_recv().ok(), Some(407));
+    }
+
+    #[test]
+    fn a_write_error_names_the_file_on_disk() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("missing folder").join("app.exe.new");
+        let (progress, _receiver) = mpsc::unbounded_channel();
+
+        let error = write_file(&mut Broken, &assets().app, &path, &mut 0, &progress).unwrap_err();
+
+        assert!(
+            matches!(&error, DownloadError::Write { path: named, .. } if *named == path),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_failed_download_deletes_the_files_written_so_far() {
+        let temp = tempfile::tempdir().unwrap();
+        let files = placement(temp.path());
+        fs::write(&files.app, "old app").unwrap();
+        let (progress, _receiver) = mpsc::unbounded_channel();
+        let mut opened = Vec::new();
+
+        let error = download_from(&files, &assets(), &progress, |asset| {
+            opened.push(asset.name.clone());
+            if asset.name.ends_with("x86_64-linux") {
+                return Err(DownloadError::Http {
+                    name: asset.name.clone(),
+                    source: ureq::Error::StatusCode(404),
+                });
+            }
+            Ok(io::Cursor::new(b"bytes".to_vec()))
+        })
+        .unwrap_err();
+
+        assert!(matches!(error, DownloadError::Http { .. }), "{error}");
+        assert_eq!(
+            opened,
+            [
+                CHECKSUMS_NAME,
+                "yetack-desktop-9.1.0-windows-x64.exe",
+                "yetack-9.1.0-x86_64-linux"
+            ]
+        );
+        assert_eq!(names(temp.path()), ["yetack-desktop.exe"]);
+    }
+
+    #[test]
+    fn a_broken_connection_fails_the_download_and_deletes_its_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let files = placement(temp.path());
+        let (progress, _receiver) = mpsc::unbounded_channel();
+
+        let error = download_from(&files, &assets(), &progress, |asset| {
+            let body: Box<dyn Read> = if asset.name == CHECKSUMS_NAME {
+                Box::new(io::Cursor::new(Vec::new()))
+            } else {
+                Box::new(Broken)
+            };
+            Ok(body)
+        })
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .starts_with("Cannot download yetack-desktop-9.1.0-windows-x64.exe: "),
+            "{error}"
+        );
+        assert!(names(temp.path()).is_empty());
+    }
+
+    #[test]
+    fn only_the_zip_tidies_its_folder_at_the_start() {
+        let temp = tempfile::tempdir().unwrap();
+        let files = placement(temp.path());
+        fs::write(&files.app, "app").unwrap();
+        fs::write(with_suffix(&files.app, OLD_SUFFIX), "old app").unwrap();
+
+        for install in [InstallKind::Deb, InstallKind::Nix, InstallKind::Source] {
+            remove_leftovers_of(install, || Ok(files.clone()));
+            assert_eq!(
+                names(temp.path()),
+                ["yetack-desktop.exe", "yetack-desktop.exe.old"],
+                "{install:?}"
+            );
+        }
+
+        remove_leftovers_of(InstallKind::Zip, || Ok(files.clone()));
+        assert_eq!(names(temp.path()), ["yetack-desktop.exe"]);
     }
 }

@@ -2,18 +2,22 @@
 //! card that offers a newer release and shows its update.
 
 use std::cmp::Ordering;
+use std::time::SystemTime;
 
+use cockpit_protocol::ReleaseVersion;
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 use strum::VariantArray;
 
 use crate::connection::{Clock, Cockpit};
+use crate::state::AppState;
 use crate::state::app_update::{
-    self, AppStep, InstallKind, NoteLine, Release, ReleaseNote, RunPhase, UpdateRun,
+    self, AppStep, InstallKind, NoteBlock, Release, Released, RunPhase, SidebarNotice, StepMark,
+    UpdateRun,
 };
 use crate::ui::accounts::CommandBox;
 use crate::ui::icons::{Icon, IconKind};
-use crate::ui::presence::use_presence;
+use crate::ui::presence::{Presence, use_presence};
 use crate::ui::settings::APP_ICON;
 use crate::update_script::{APP_VERSION, app_commit};
 use crate::{browser, format, self_update};
@@ -82,28 +86,46 @@ fn restart_now(cockpit: Cockpit) {
     match self_update::start_new_app(&app) {
         Ok(()) => dioxus::desktop::window().close(),
         Err(error) => cockpit.update(|state| {
-            let message = format!("cannot start {}: {error}", app.display());
+            let message = format!("Cannot start {}: {error}.", app.display());
             app_update::restart_failed(state, message);
             app_update::open_card(state);
         }),
     }
 }
 
-/// "Released 3 days ago."
-fn released_sentence(release: &Release, now: std::time::SystemTime) -> Option<String> {
-    let text = app_update::released(release.published?, now);
-    let mut letters = text.chars();
-    let first = letters.next()?.to_uppercase();
-    Some(format!("{first}{}.", letters.as_str()))
+/// "released 3 days ago", under the release's version.
+fn released_words(released: Released) -> String {
+    match released {
+        Released::Today => "released today".to_owned(),
+        Released::Yesterday => "released yesterday".to_owned(),
+        Released::DaysAgo(days) => format!("released {days} days ago"),
+    }
+}
+
+/// "Released 3 days ago.", in Settings' About.
+fn released_sentence(released: Released) -> String {
+    match released {
+        Released::Today => "Released today.".to_owned(),
+        Released::Yesterday => "Released yesterday.".to_owned(),
+        Released::DaysAgo(days) => format!("Released {days} days ago."),
+    }
 }
 
 /// The note at the foot of the sidebar: a newer release, its update under way, or how it ended.
-/// It folds open and shut, so the foot's buttons move with it.
+/// It folds open and shut, so the foot's buttons move with it, and so does the bar of an update
+/// under way.
 #[component]
-pub fn ReleaseNoteLine() -> Element {
+pub fn ReleaseNotice() -> Element {
     let cockpit: Cockpit = use_context();
-    let note = app_update::note(&cockpit.state.read());
-    let Some(shown) = use_presence(note) else {
+    let notice = app_update::notice(&cockpit.state.read());
+    let percent = match &notice {
+        Some(SidebarNotice::Progress { percent, .. }) => Some(*percent),
+        Some(SidebarNotice::Out(_) | SidebarNotice::Ready(_) | SidebarNotice::Failed) | None => {
+            None
+        }
+    };
+    let bar = use_presence(percent);
+    let Some(shown) = use_presence(notice) else {
         return rsx! {};
     };
     let link = |label: &'static str, action: fn(Cockpit)| {
@@ -111,7 +133,7 @@ pub fn ReleaseNoteLine() -> Element {
             button { class: "link-button", onclick: move |_| action(cockpit), "{label}" }
         }
     };
-    let cross = |title: &'static str, action: fn(&mut crate::state::AppState)| {
+    let cross = |title: &'static str, action: fn(&mut AppState)| {
         rsx! {
             button {
                 class: "icon-button tiny release-note-close",
@@ -131,32 +153,34 @@ pub fn ReleaseNoteLine() -> Element {
                 div { class: "release-note", role: "status",
                     span { class: "release-dot", aria_hidden: true }
                     match shown.value {
-                        ReleaseNote::Out(version) => rsx! {
+                        SidebarNotice::Out(version) => rsx! {
                             span { class: "release-note-text", "{version} is out" }
                             {link("Update", open)}
                             {cross("Skip this version", app_update::skip)}
                         },
-                        ReleaseNote::Progress { text, percent } => rsx! {
+                        SidebarNotice::Progress { text, .. } => rsx! {
                             span { class: "release-note-text", "{text}" }
                             {link("Show", open)}
-                            span {
-                                class: "update-bar",
-                                role: "progressbar",
-                                aria_valuenow: "{percent}",
-                                aria_valuemin: "0",
-                                aria_valuemax: "100",
-                                span { style: format!("transform: scaleX({})", f32::from(percent) / 100.0) }
-                            }
                         },
-                        ReleaseNote::Ready(version) => rsx! {
+                        SidebarNotice::Ready(version) => rsx! {
                             span { class: "release-note-text", "{version} is ready" }
                             {link("Restart", restart_now)}
                         },
-                        ReleaseNote::Failed => rsx! {
+                        SidebarNotice::Failed => rsx! {
                             span { class: "release-note-text", "Update failed" }
                             {link("Show", open)}
                             {cross("Dismiss", app_update::dismiss_failure)}
                         },
+                    }
+                    if let Some(bar) = bar {
+                        span {
+                            class: if bar.leaving { "update-bar leaving" } else { "update-bar" },
+                            role: "progressbar",
+                            aria_valuenow: "{bar.value}",
+                            aria_valuemin: "0",
+                            aria_valuemax: "100",
+                            span { style: format!("transform: scaleX({})", f32::from(bar.value) / 100.0) }
+                        }
                     }
                 }
             }
@@ -217,17 +241,24 @@ pub fn AboutRelease() -> Element {
 }
 
 #[component]
-fn ReleaseRow(release: Release, now: std::time::SystemTime) -> Element {
+fn ReleaseRow(release: Release, now: SystemTime) -> Element {
     let cockpit: Cockpit = use_context();
-    let (install, running) = {
+    let (install, running, updates) = {
         let state = cockpit.state.read();
-        (state.app_update.install, state.app_update.run.is_some())
+        (
+            state.app_update.install,
+            state.app_update.run.is_some(),
+            app_update::can_update(&state),
+        )
     };
-    let help = match released_sentence(&release, now) {
-        Some(released) => format!("{released} {}", install.about_line()),
+    let help = match release.published {
+        Some(published) => format!(
+            "{} {}",
+            released_sentence(app_update::released(published, now)),
+            install.about_line()
+        ),
         None => install.about_line().to_owned(),
     };
-    let updates = install.updates_itself() && release.windows_assets().is_some();
     let page = release.page().to_owned();
     rsx! {
         div { class: "setting-row release-row",
@@ -274,8 +305,8 @@ pub fn AppUpdateCard() -> Element {
             RunPhase::Ready(_) => rsx! {
                 ReadyCard { run }
             },
-            RunPhase::Failed { step, message } => rsx! {
-                FailedCard { run, step, message }
+            RunPhase::Failed { step, .. } => rsx! {
+                FailedCard { run, step }
             },
         },
         (None, Some(release)) => rsx! {
@@ -329,7 +360,7 @@ fn VersionPair(release: Release) -> Element {
     let commit = app_commit();
     let released = release
         .published
-        .map(|published| app_update::released(published, now()));
+        .map(|published| released_words(app_update::released(published, now())));
     rsx! {
         div { class: "version-pair",
             div { class: "version-box behind",
@@ -353,32 +384,11 @@ fn VersionPair(release: Release) -> Element {
     }
 }
 
-/// A block of the notes: a heading, a list, or a paragraph.
-#[derive(Debug, Clone, PartialEq)]
-enum NoteBlock {
-    Heading(String),
-    List(Vec<String>),
-    Text(String),
-}
-
-fn note_blocks(markdown: &str) -> Vec<NoteBlock> {
-    let mut blocks: Vec<NoteBlock> = Vec::new();
-    for line in app_update::note_lines(markdown) {
-        match (line, blocks.last_mut()) {
-            (NoteLine::Bullet(text), Some(NoteBlock::List(items))) => items.push(text),
-            (NoteLine::Bullet(text), _) => blocks.push(NoteBlock::List(vec![text])),
-            (NoteLine::Heading(text), _) => blocks.push(NoteBlock::Heading(text)),
-            (NoteLine::Text(text), _) => blocks.push(NoteBlock::Text(text)),
-        }
-    }
-    blocks
-}
-
 /// The first lines of the release notes, which fade at the box's foot, and the link to the rest.
 #[component]
 fn ReleaseNotes(release: Release) -> Element {
     let cockpit: Cockpit = use_context();
-    let blocks = note_blocks(&release.notes);
+    let blocks = app_update::note_blocks(&release.notes);
     let page = release.page().to_owned();
     rsx! {
         div { class: "release-notes",
@@ -426,12 +436,13 @@ fn SkipButton() -> Element {
     }
 }
 
+/// "Not now", a primary button when the card offers nothing else to do.
 #[component]
-fn NotNowButton(primary: bool) -> Element {
+fn NotNowButton(class: &'static str) -> Element {
     let cockpit: Cockpit = use_context();
     rsx! {
         button {
-            class: if primary { "button primary" } else { "button" },
+            class,
             onclick: move |_| cockpit.update(app_update::not_now),
             "Not now"
         }
@@ -453,9 +464,10 @@ fn ReleasePageButton(page: String) -> Element {
 /// The offer of a newer release, as this app's install takes it.
 #[component]
 fn OfferCard(release: Release, install: InstallKind) -> Element {
+    let cockpit: Cockpit = use_context();
     let version = release.version.clone();
     let page = release.page().to_owned();
-    let has_files = release.windows_assets().is_some();
+    let updates = app_update::can_update(&cockpit.state.read());
     rsx! {
         CardHead { title: format!("Yetack {version} is out"), lead: install.lead(APP_VERSION) }
         if install == InstallKind::Zip {
@@ -465,7 +477,7 @@ fn OfferCard(release: Release, install: InstallKind) -> Element {
             ReleaseNotes { release: release.clone() }
         }
         match install {
-            InstallKind::Zip if has_files => rsx! {
+            InstallKind::Zip if updates => rsx! {
                 Callout {
                     text: format!(
                         "Downloads {version} from GitHub and checks it against the release's checksums, then restarts the app. {AGENTS_RESTART} Your servers keep running: update their daemons after, from the sidebar."
@@ -506,16 +518,16 @@ fn OfferCard(release: Release, install: InstallKind) -> Element {
         div { class: "update-card-actions",
             SkipButton {}
             match install {
-                InstallKind::Zip if has_files => rsx! {
-                    NotNowButton { primary: false }
+                InstallKind::Zip if updates => rsx! {
+                    NotNowButton { class: "button" }
                     StartButton { label: "Update and restart" }
                 },
                 InstallKind::Zip | InstallKind::Deb => rsx! {
-                    NotNowButton { primary: false }
+                    NotNowButton { class: "button" }
                     ReleasePageButton { page }
                 },
                 InstallKind::Nix | InstallKind::Source => rsx! {
-                    NotNowButton { primary: true }
+                    NotNowButton { class: "button primary" }
                 },
             }
         }
@@ -539,29 +551,22 @@ fn StartButton(label: &'static str) -> Element {
 
 /// The steps of an update, each marked done, under way, failed or to come.
 #[component]
-fn Steps(run: UpdateRun, failure: Option<String>) -> Element {
-    let current = run.current_step();
-    let failed = failure.is_some();
+fn Steps(run: UpdateRun) -> Element {
     rsx! {
         ol { class: "update-steps",
             for &step in AppStep::VARIANTS {
                 StepRow {
                     key: "{step:?}",
-                    mark: match step.cmp(&current) {
-                        Ordering::Less => StepMark::Done,
-                        Ordering::Equal if failed => StepMark::Failed,
-                        Ordering::Equal => StepMark::Now,
-                        Ordering::Greater => StepMark::ToCome,
-                    },
+                    mark: run.mark(step),
                     label: step_label(step, &run.version),
-                    detail: step_detail(step, &run, failure.as_deref()),
+                    detail: step_detail(step, &run),
                 }
             }
         }
     }
 }
 
-fn step_label(step: AppStep, version: &str) -> String {
+fn step_label(step: AppStep, version: &ReleaseVersion) -> String {
     match step {
         AppStep::Download => format!("Download {version}"),
         AppStep::Check => "Check it against the release's checksums".to_owned(),
@@ -571,10 +576,10 @@ fn step_label(step: AppStep, version: &str) -> String {
 }
 
 /// The line under a step: the bytes of the download, or why the step failed.
-fn step_detail(step: AppStep, run: &UpdateRun, failure: Option<&str>) -> Option<String> {
+fn step_detail(step: AppStep, run: &UpdateRun) -> Option<String> {
     let current = run.current_step();
     if step == current
-        && let Some(failure) = failure
+        && let Some(failure) = run.failure()
     {
         return Some(failure.to_owned());
     }
@@ -587,15 +592,6 @@ fn step_detail(step: AppStep, run: &UpdateRun, failure: Option<&str>) -> Option<
         (AppStep::Download, Ordering::Less) => Some(format::bytes(run.total)),
         _ => None,
     }
-}
-
-/// Where a step stands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StepMark {
-    Done,
-    Now,
-    Failed,
-    ToCome,
 }
 
 #[component]
@@ -651,9 +647,9 @@ fn RunningCard(run: UpdateRun) -> Element {
     let cancels = run.offers_cancel();
     rsx! {
         CardHead { title: "Updating Yetack".to_owned(), lead }
-        Steps { run, failure: None }
+        Steps { run }
         div { class: "update-card-actions",
-            if cancels {
+            Presence { open: cancels,
                 button {
                     class: "button",
                     onclick: move |_| cockpit.update(app_update::cancel),
@@ -677,7 +673,7 @@ fn ReadyCard(run: UpdateRun) -> Element {
             title: format!("Yetack {} is ready", run.version),
             lead: format!("Restart to run it. {AGENTS_RESTART}"),
         }
-        Steps { run, failure: None }
+        Steps { run }
         div { class: "update-card-actions",
             button {
                 class: "button",
@@ -694,7 +690,7 @@ fn ReadyCard(run: UpdateRun) -> Element {
 }
 
 #[component]
-fn FailedCard(run: UpdateRun, step: AppStep, message: String) -> Element {
+fn FailedCard(run: UpdateRun, step: AppStep) -> Element {
     let cockpit: Cockpit = use_context();
     let lead = match step {
         AppStep::Download | AppStep::Check => {
@@ -708,7 +704,7 @@ fn FailedCard(run: UpdateRun, step: AppStep, message: String) -> Element {
     };
     rsx! {
         CardHead { title: "The update failed".to_owned(), lead }
-        Steps { run, failure: Some(message) }
+        Steps { run }
         div { class: "update-card-actions",
             button {
                 class: if step == AppStep::Restart { "button primary" } else { "button" },
@@ -727,41 +723,32 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::state::app_update::RunId;
+    use crate::daemon_label::DaemonLabel;
+    use crate::demo;
 
-    #[test]
-    fn the_notes_group_their_bullets() {
-        let markdown = "## Yetack 9.1.0\n\n- One.\n- Two.\n\nTested.\n\n- Three.\n";
-
-        assert_eq!(
-            note_blocks(markdown),
-            [
-                NoteBlock::Heading("Yetack 9.1.0".to_owned()),
-                NoteBlock::List(vec!["One.".to_owned(), "Two.".to_owned()]),
-                NoteBlock::Text("Tested.".to_owned()),
-                NoteBlock::List(vec!["Three.".to_owned()]),
-            ]
-        );
+    /// A run of the demo's release, under way at its download.
+    fn run() -> UpdateRun {
+        let mut state = AppState::new(DaemonLabel::in_app());
+        state.app_update.install = InstallKind::Zip;
+        state.app_update.release = Some(demo::app_release());
+        app_update::start(&mut state).unwrap();
+        state.app_update.run.unwrap()
     }
 
     #[test]
     fn the_download_step_says_its_bytes_and_a_failed_step_its_reason() {
-        let mut run = UpdateRun {
-            id: test_run_id(),
-            version: "9.1.0".to_owned(),
-            downloaded: 5_452_595,
-            total: 14_784_921,
-            phase: RunPhase::Running(AppStep::Download),
-        };
+        let mut run = run();
+        run.downloaded = 5_452_595;
+        run.total = 14_784_921;
         assert_eq!(
-            step_detail(AppStep::Download, &run, None).as_deref(),
+            step_detail(AppStep::Download, &run).as_deref(),
             Some("5.2 MB of 14 MB")
         );
-        assert_eq!(step_detail(AppStep::Check, &run, None), None);
+        assert_eq!(step_detail(AppStep::Check, &run), None);
 
         run.phase = RunPhase::Ready(PathBuf::from("/made-up/app.exe"));
         assert_eq!(
-            step_detail(AppStep::Download, &run, None).as_deref(),
+            step_detail(AppStep::Download, &run).as_deref(),
             Some("14 MB")
         );
 
@@ -770,16 +757,24 @@ mod tests {
             message: "No match.".to_owned(),
         };
         assert_eq!(
-            step_detail(AppStep::Check, &run, Some("No match.")).as_deref(),
+            step_detail(AppStep::Check, &run).as_deref(),
             Some("No match.")
         );
-        assert_eq!(step_label(AppStep::Download, "9.1.0"), "Download 9.1.0");
+        let version = ReleaseVersion::new("9.1.0".to_owned());
+        assert_eq!(step_label(AppStep::Download, &version), "Download 9.1.0");
     }
 
-    fn test_run_id() -> RunId {
-        let mut state = crate::state::AppState::new(crate::daemon_label::DaemonLabel::in_app());
-        state.app_update.install = InstallKind::Zip;
-        state.app_update.release = Some(crate::demo::app_release());
-        app_update::start(&mut state).unwrap().id
+    #[test]
+    fn the_release_date_reads_as_words_and_as_a_sentence() {
+        assert_eq!(released_words(Released::Today), "released today");
+        assert_eq!(released_words(Released::DaysAgo(3)), "released 3 days ago");
+        assert_eq!(
+            released_sentence(Released::Yesterday),
+            "Released yesterday."
+        );
+        assert_eq!(
+            released_sentence(Released::DaysAgo(3)),
+            "Released 3 days ago."
+        );
     }
 }

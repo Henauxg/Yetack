@@ -8,6 +8,7 @@ use cockpit_client::{ssh_inline_command, ssh_script_command};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use crate::self_update;
 use crate::state::daemon_probe::ServerInstall;
 use crate::state::daemon_update::OutputLine;
 use crate::state::error_chain;
@@ -162,11 +163,22 @@ pub fn carried() -> Option<PathBuf> {
     let packaged = PACKAGED.filter(|path| !path.is_empty()).map(PathBuf::from);
     let beside = std::env::current_exe()
         .ok()
-        .and_then(|app| Some(app.parent()?.join(CARRIED_FILE_NAME)));
+        .and_then(|app| Some(carried_beside(app.parent()?)));
     packaged
         .into_iter()
         .chain(beside)
         .find(|path| path.is_file())
+}
+
+/// The daemon in the app's folder. Between an update's move and the next start, the file of that
+/// name is the new release's daemon, and this app's own waits beside it as `<name>.old`.
+fn carried_beside(folder: &Path) -> PathBuf {
+    let own = folder.join(format!("{CARRIED_FILE_NAME}{}", self_update::OLD_SUFFIX));
+    if own.is_file() {
+        own
+    } else {
+        folder.join(CARRIED_FILE_NAME)
+    }
 }
 
 /// A daemon the app sent, as a file on the server.
@@ -462,5 +474,18 @@ mod tests {
         let path = Path::new(path.trim());
         assert!(path.starts_with(cache.path().join("yetack/sent")));
         assert_eq!(std::fs::read(path).unwrap(), b"the daemon");
+    }
+
+    #[test]
+    fn an_update_waiting_for_the_restart_carries_the_daemon_it_moved_aside() {
+        let temp = tempfile::tempdir().unwrap();
+        let folder = temp.path();
+        std::fs::write(folder.join(CARRIED_FILE_NAME), "new daemon").unwrap();
+        assert_eq!(carried_beside(folder), folder.join(CARRIED_FILE_NAME));
+
+        let old = folder.join("yetack-x86_64-linux.old");
+        std::fs::write(&old, "this app's daemon").unwrap();
+
+        assert_eq!(carried_beside(folder), old);
     }
 }

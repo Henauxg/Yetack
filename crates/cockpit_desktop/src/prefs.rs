@@ -41,7 +41,8 @@
 //!   },
 //!   "updates": {
 //!     "check": true,
-//!     "skipped": "0.4.0"
+//!     "skipped": "0.4.0",
+//!     "last_check": 1794477600
 //!   }
 //! }
 //! ```
@@ -61,7 +62,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use cockpit_protocol::{AccountId, AgentId, AgentStatus, AgentSummary, Mark, Repository};
+use cockpit_protocol::{
+    AccountId, AgentId, AgentStatus, AgentSummary, Mark, ReleaseVersion, Repository,
+};
 use dioxus::prelude::*;
 use serde::de::IgnoredAny;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -104,7 +107,8 @@ pub struct Prefs {
     pub updates: UpdatePrefs,
 }
 
-/// Whether the app looks for its own new releases, and the release the user skipped.
+/// Whether the app looks for its own new releases, the release the user skipped, and when the app
+/// last looked.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UpdatePrefs {
@@ -112,7 +116,10 @@ pub struct UpdatePrefs {
     pub check: bool,
     /// The release the app no longer tells about. A newer one shows again.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub skipped: Option<String>,
+    pub skipped: Option<ReleaseVersion>,
+    /// When the last check got GitHub's answer, in Unix seconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_check: Option<u64>,
 }
 
 impl Default for UpdatePrefs {
@@ -120,6 +127,7 @@ impl Default for UpdatePrefs {
         Self {
             check: true,
             skipped: None,
+            last_check: None,
         }
     }
 }
@@ -1176,7 +1184,8 @@ mod tests {
   },
   "updates": {
     "check": false,
-    "skipped": "0.4.0"
+    "skipped": "0.4.0",
+    "last_check": 1794477600
   }
 }
 "#;
@@ -1240,7 +1249,8 @@ mod tests {
                 keys: switched,
                 updates: UpdatePrefs {
                     check: false,
-                    skipped: Some("0.4.0".to_owned()),
+                    skipped: Some(ReleaseVersion::new("0.4.0".to_owned())),
+                    last_check: Some(1_794_477_600),
                 },
                 agent_order: vec![AgentKey {
                     machine: "build-box".to_owned(),
@@ -1684,7 +1694,8 @@ mod tests {
             projects: ProjectsPrefs::default(),
             updates: UpdatePrefs {
                 check: false,
-                skipped: Some("0.4.0".to_owned()),
+                skipped: Some(ReleaseVersion::new("0.4.0".to_owned())),
+                last_check: Some(1_794_477_600),
             },
         };
 

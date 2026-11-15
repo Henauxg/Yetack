@@ -6,6 +6,7 @@
 
 mod bridge;
 mod browser;
+mod command_line;
 mod config;
 mod connection;
 mod daemon_label;

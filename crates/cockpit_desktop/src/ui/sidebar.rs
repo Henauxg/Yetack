@@ -23,7 +23,7 @@ use crate::state::{
     notification_levels, project_menu, projects, settings, to_handle,
 };
 use crate::ui::accounts::{AccountLetter, AccountsButton};
-use crate::ui::app_update::ReleaseNoteLine;
+use crate::ui::app_update::ReleaseNotice;
 use crate::ui::grouping::GroupSwitch;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::machines::{machine_icon, run_action};
@@ -1053,7 +1053,7 @@ fn SidebarFoot() -> Element {
     let settings_open = matches!(cockpit.state.read().ui.dialog, Some(Dialog::Settings(_)));
     rsx! {
         div { class: "sidebar-foot",
-            ReleaseNoteLine {}
+            ReleaseNotice {}
             div { class: "foot-buttons",
                 AccountsButton {}
                 button {
