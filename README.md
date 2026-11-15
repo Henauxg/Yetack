@@ -2,7 +2,7 @@
 
 Orchestrator to control multiple agents over multiple machines and accounts.
 
-| ![The app with agents on three machines: the sidebar lists the agents by machine, the middle shows one agent's conversation with a reply under way that quotes three passages, each with its comment beside the text, and the right column shows the agent's tasks, subagents and messages](docs/images/machines.png) | ![The app with the agents grouped by project: one agent asks three questions, the file view shows the changelog that the agent edited, and the files pane lists the agent's folder](docs/images/projects.png) |
+| ![The app with agents on three machines: the sidebar lists the agents by machine, the middle shows one agent's conversation with a reply under way that quotes three passages, each with its comment beside the text, and the right column shows the agent's tasks, subagents and messages](docs/images/machines.png) | ![The app with the agents grouped by project: one agent asks three questions, the machine's load is open under the header with each agent's cores and memory, the file view shows the changelog that the agent edited, and the files pane lists the agent's folder](docs/images/projects.png) |
 | --- | --- |
 
 Main features are:
@@ -62,7 +62,7 @@ For a new release, change the version in the input, run `nix flake update agents
 
 ## Local or remote agents
 
-### On this computer
+### Locally
 
 Start the app. At the first start, the app asks "Where should agents run?":
 
@@ -71,20 +71,26 @@ Start the app. At the first start, the app asks "Where should agents run?":
 
 The box "Use this every time" is ticked, so the app keeps your choice. To get the question again at the next start, untick the box. On Linux, you can change the choice later in Settings (the gear at the foot of the sidebar), under Local: "In this app", "Background service", or "Ask", which asks again at a start where no service answers.
 
+When the background service runs an older version than the app, the Machines dialog offers **Update**, which restarts the service with the app's own version. Before an update, the app names the agents a restart would interrupt, and can wait until they are idle.
+
 ### On a server over SSH
 
-The server needs Linux on x86_64, SSH access with a key, and Claude Code signed in. For another CPU, build the daemon as [docs/install-from-source.md](docs/install-from-source.md) says.
+The server needs Linux on x86_64, SSH access with a key, and Claude Code signed in. For another CPU, build the daemon as [docs/install-from-source.md](docs/install-from-source.md) says. Once you add the server, its agents show in their own panel in the sidebar.
+
+#### Install from the app
 
 The app can install the daemon for you:
 
 1. In the app, open **Machines** at the bottom left, and click **Add a server**.
 2. Type the **SSH host**, as you type it after `ssh`, and leave **Path of agents-cockpit on the server** empty.
 3. The app looks for `agents-cockpit` on the server, and adds the server with the one it finds. When the server has none, the app offers to install it as a systemd user service.
-4. Once the daemon runs, the app says what is left to do on the server: turn linger on, or install Claude Code.
+4. Once the daemon runs, the app says what is left to do on the server: turn linger on (see [Keep the agents running after you log out](#keep-the-agents-running-after-you-log-out)), or install Claude Code.
 
 The install needs a systemd user session on the server. Without one, start the daemon with [contrib/start-daemon](contrib/start-daemon).
 
-To install the daemon by hand instead: from the releases page, download `agents-cockpit-<version>-x86_64-linux` and `agents-cockpit.service`. On Ubuntu and Debian, the `.deb` also put the daemon at `/usr/bin/agents-cockpit`.
+#### Install by hand
+
+From the releases page, download `agents-cockpit-<version>-x86_64-linux` and `agents-cockpit.service`. On Ubuntu and Debian, the `.deb` also put the daemon at `/usr/bin/agents-cockpit`.
 
 1. On your computer, copy the two files to the server. Replace `devbox` with the server's name in your SSH config:
 
@@ -95,24 +101,31 @@ To install the daemon by hand instead: from the releases page, download `agents-
    ssh devbox 'chmod +x ~/.local/bin/agents-cockpit'
    ```
 
-2. On the server, start the daemon as a service, and let the service run after you log out:
+2. On the server, start the daemon as a service:
 
    ```sh
    systemctl --user daemon-reload
    systemctl --user enable --now agents-cockpit
-   loginctl enable-linger "$USER"
    systemctl --user status agents-cockpit
    ```
 
-   Without linger, systemd stops your services when your last session on the server ends, and the agents stop with the services. On some servers, `loginctl enable-linger` needs `sudo`.
+   Then turn linger on, as [Keep the agents running after you log out](#keep-the-agents-running-after-you-log-out) says.
 
 3. In the app, open **Machines** at the bottom left, and add the server:
    - **SSH host**: `devbox`, as you type it after `ssh`.
    - **Path of agents-cockpit on the server**: `/home/<you>/.local/bin/agents-cockpit`.
 
-The server's agents show in their own panel in the sidebar.
+#### Keep the agents running after you log out
 
-### Update a server
+Without linger, systemd stops your services when your last session on the server ends, and the agents stop with the services. Turn it on once, on the server:
+
+```sh
+loginctl enable-linger "$USER"
+```
+
+On some servers, this command needs `sudo`. After an install, the app checks linger and says when it is off.
+
+#### Update the daemon
 
 The app and the daemon must speak the same protocol. If the protocols differ, the server's row in the sidebar says "Runs an older version".
 
@@ -120,14 +133,14 @@ The app's "Update" button sends the app's own daemon to the server, checks it th
 
 The button replaces only a daemon in `~/.local/share/agents-cockpit/bin` or `~/.local/bin`. A daemon from Nix or from the `.deb` is updated by its package manager, and the app gives the steps. An app built from source without a Linux daemon, or a server that is not Linux x86_64, builds the daemon on the server instead. That server needs Rust and a checkout of this repository, as [docs/development.md](docs/development.md) says.
 
+Before an update, the app names the agents a restart would interrupt, and can wait until they are idle.
+
 To update the daemon by hand, copy the new daemon over the old one, then restart the service. The restart stops the agents, and the daemon resumes the agents when the daemon starts again. Restart while the agents are idle:
 
 ```sh
 scp agents-cockpit-<version>-x86_64-linux devbox:.local/bin/agents-cockpit.new
 ssh devbox 'chmod +x ~/.local/bin/agents-cockpit.new && mv ~/.local/bin/agents-cockpit.new ~/.local/bin/agents-cockpit && systemctl --user restart agents-cockpit'
 ```
-
-On this computer, when the agents run in the background service, the button restarts the service with the app's own version. Before an update, the app names the agents a restart would interrupt, and can wait until they are idle.
 
 ## When something goes wrong
 

@@ -47,9 +47,9 @@ use crate::state::server_setup::{
 use crate::state::update_offer::{self, GapKind, ProgramBuild, VersionGap};
 use crate::state::update_plan::{SendProgress, ServerPlan, ServicePlan, UpdatePlan, UpdateStep};
 use crate::state::{
-    AgentEntry, AppState, ConnectionState, Dialog, Drafts, Loadable, MachineState, Utf16Offset,
-    ViewMode, actions, claude_code_version, file_edits, file_tree, machines, projects, quotes,
-    sending,
+    AgentEntry, AppState, ConnectionState, Dialog, Drafts, Loadable, MachineState, Popover,
+    Utf16Offset, ViewMode, actions, claude_code_version, file_edits, file_tree, machines, projects,
+    quotes, sending,
 };
 use crate::update_script::{self, APP_VERSION};
 
@@ -1760,10 +1760,7 @@ fn show_project_files(state: &mut AppState) {
     state.ui.selected = Some(agent);
     if let Some(entry) = state.agents.get_mut(&agent) {
         for folder in ["docs", "src", "tests"] {
-            entry
-                .tree
-                .expanded
-                .insert(PathBuf::from(PARSER_FOLDER).join(folder));
+            entry.tree.expanded.insert(in_folder(PARSER_FOLDER, folder));
         }
     }
     // Opens the pane, as the header's files chip does.
@@ -1771,6 +1768,7 @@ fn show_project_files(state: &mut AppState) {
     file_tree::set_filter(state, agent, TreeFilter::All);
     actions::open_file(state, agent, in_folder(PARSER_FOLDER, CHANGELOG_FILE), None);
     actions::set_view_mode(state, agent, ViewMode::Preview);
+    state.ui.popover = Some(Popover::Load);
 }
 
 /// Shortens the selected agent's blocks by a task and a running subagent, so that the third
@@ -2127,10 +2125,10 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
     }
 }
 
-/// The demo server: 64 cores and 503 GB, as a large build machine.
-const DEMO_CORES: u16 = 64;
+/// The demo server: 48 cores and 256 GB, as a build machine.
+const DEMO_CORES: u16 = 48;
 const GIGABYTE: u64 = 1 << 30;
-const DEMO_MEMORY: u64 = 503 * GIGABYTE;
+const DEMO_MEMORY: u64 = 256 * GIGABYTE;
 /// The daemon's sampling interval and history length.
 const LOAD_INTERVAL_SECONDS: u64 = 3;
 const LOAD_SAMPLES: u64 = 100;
@@ -2152,7 +2150,7 @@ fn demo_cores(agent: u32, step: u64) -> f64 {
     }
 }
 
-/// The server's CPU at sample `step`: its agents', and 21 to 35 cores of other processes.
+/// The server's CPU at sample `step`: its agents', and 7 to 17 cores of other processes.
 fn demo_server_cores(step: u64) -> f64 {
     let phase = f64::from(u32::try_from(step % 10_000).unwrap_or(0));
     let agents: f64 = [BUILDING_AGENT, TESTING_AGENT]
@@ -2160,7 +2158,7 @@ fn demo_server_cores(step: u64) -> f64 {
         .chain(QUIET_AGENTS.iter())
         .map(|&agent| demo_cores(agent, step))
         .sum();
-    agents + 28.0 + 7.0 * (phase * 0.05).sin()
+    agents + 12.0 + 5.0 * (phase * 0.05).sin()
 }
 
 fn demo_memory(agent: u32) -> u64 {
@@ -2249,7 +2247,7 @@ fn machine_load(now: SystemTime) -> MachineLoad {
     let server_cores = demo_server_cores(current);
     let agents_cores: f64 = agents.iter().map(|agent| agent.cpu.get()).sum();
     let agents_memory: u64 = agents.iter().map(|agent| agent.memory_bytes).sum();
-    let memory_used = 312 * GIGABYTE;
+    let memory_used = 160 * GIGABYTE;
     let steps: Vec<u64> = (0..LOAD_SAMPLES)
         .map(|back| current.saturating_sub(LOAD_SAMPLES - 1 - back))
         .collect();
@@ -2281,8 +2279,8 @@ fn machine_load(now: SystemTime) -> MachineLoad {
             memory_total_bytes: DEMO_MEMORY,
             load_average: Some(LoadAverage {
                 one_minute: (server_cores * 0.95 * 10.0).round() / 10.0,
-                five_minutes: 38.2,
-                fifteen_minutes: 31.4,
+                five_minutes: 29.6,
+                fifteen_minutes: 24.1,
             }),
         },
         agents,
@@ -5429,6 +5427,32 @@ pub struct ParseError {
             Some((PathBuf::from(CHANGELOG_FILE), ViewMode::Preview))
         );
         assert!(prefs::is_sidebar_width(SHOWCASE_SIDEBAR_WIDTH));
+        assert_eq!(
+            state.ui.popover,
+            Some(Popover::Load),
+            "the machine's load shows"
+        );
+    }
+
+    /// `PathBuf::join` writes a backslash on Windows, and a folder written so matches none of
+    /// the tree's: its files never show.
+    #[test]
+    fn the_projects_scene_opens_its_folders_by_their_unix_paths() {
+        let mut state = state(label());
+
+        showcase(&mut state, Scene::Projects);
+
+        let mut expanded: Vec<String> = state.agents[&AgentId::new(QUESTION_AGENT)]
+            .tree
+            .expanded
+            .iter()
+            .map(|folder| folder.display().to_string())
+            .collect();
+        expanded.sort();
+        assert_eq!(
+            expanded,
+            ["docs", "src", "tests"].map(|folder| format!("{PARSER_FOLDER}/{folder}"))
+        );
     }
 
     #[test]
