@@ -1,11 +1,11 @@
 //! The center header: the agent's title, status and folder, the usage chip, the load chip and the
 //! files chip, which opens the files pane on the agent's changes. It stays on one line; when narrow, the title shortens, then the chips shrink to
-//! icons.
+//! icons. After the folder, a note says when the agent's Claude Code is newer than the tested one.
 
 use std::time::SystemTime;
 
 use cockpit_protocol::{
-    ChangedFile, ContextUsage, MAX_TITLE_CHARS, RateLimitStatus, Timestamp, UsageWindow,
+    AgentId, ChangedFile, ContextUsage, MAX_TITLE_CHARS, RateLimitStatus, Timestamp, UsageWindow,
     WindowUsage,
 };
 use dioxus::prelude::*;
@@ -15,13 +15,15 @@ use crate::connection::{Clock, Cockpit};
 use crate::keymap::Command;
 use crate::machine::MachineId;
 use crate::state::accounts::{self, Billing, PlanChip};
-use crate::state::{AgentEntry, Loadable, Popover, TitlePlace, actions, file_tree, title_emoji};
+use crate::state::{
+    AgentEntry, Loadable, Popover, TitlePlace, actions, claude_code_version, file_tree, title_emoji,
+};
 use crate::ui::accounts::{AccountDot, AccountTag, PlanAccounts};
 use crate::ui::emoji_picker::EmojiPicker;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::load_card::{LoadCard, LoadChip};
 use crate::ui::notification_levels::AgentNotificationTag;
-use crate::ui::presence::Presence;
+use crate::ui::presence::{Presence, use_presence};
 use crate::{bridge, format, path_style};
 
 const AT_LIMIT_PERCENT: u8 = 100;
@@ -255,7 +257,10 @@ pub fn Header() -> Element {
                     }
                     AgentNotificationTag { agent }
                 }
-                span { class: "header-folder", "{folder}" }
+                span { class: "header-folder",
+                    "{folder}"
+                    UntestedNote { agent, note: claude_code_version::untested_note(summary) }
+                }
                 Presence { open: emoji_open,
                     EmojiPicker { agent, current: title_emoji.clone() }
                 }
@@ -314,6 +319,28 @@ pub fn Header() -> Element {
                     }
                 }
             }
+        }
+    }
+}
+
+/// After the folder: the agent's Claude Code is newer than the one this release was tested with.
+/// The previous agent's note leaves at once on a switch to another agent.
+#[component]
+fn UntestedNote(agent: AgentId, note: Option<String>) -> Element {
+    let Some(shown) = use_presence(note.map(|note| (agent, note))) else {
+        return rsx! {};
+    };
+    let (noted, text) = shown.value;
+    if noted != agent {
+        return rsx! {};
+    }
+    rsx! {
+        span {
+            class: if shown.leaving { "untested-note leaving" } else { "untested-note" },
+            inert: shown.leaving.then_some(true),
+            title: "{text}",
+            span { aria_hidden: true, " · " }
+            "{text}"
         }
     }
 }

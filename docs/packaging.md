@@ -143,11 +143,11 @@ Nix keeps the daemon in `/nix/store`, which is read-only, and the system's confi
 
 ## Step 3: warn about an untested Claude Code version
 
-The daemon reads Claude Code's JSON output, whose format can change between versions without notice.
+Built on branch `feat/claude-code-version`. The daemon reads Claude Code's JSON output, whose format can change between versions without notice.
 
-- Each release records the Claude Code version it was tested with.
-- The `system/init` line each agent starts with carries `claude_code_version`, which `claude_protocol` already parses. The daemon sends it to the app in the agent's details.
-- When an agent's version is newer than the tested one, the app shows a quiet note on the agent ("Claude Code 2.3.1 is newer than this release was tested with"), not a modal.
+- Each release records the Claude Code version it was tested with: `TESTED_VERSION` in [crates/cockpit_desktop/src/state/claude_code_version.rs](../crates/cockpit_desktop/src/state/claude_code_version.rs), 2.1.319 for now. [releasing.md](releasing.md) checks the release against the current Claude Code and updates it.
+- The `system/init` line that starts each turn carries `claude_code_version`. The daemon sends it to the app in the agent's summary (`AgentSummary.claude_code_version`), which the header reads. The summary leaves it out until the agent's `claude` writes that line. The protocol moved to version 11 for it.
+- When an agent's version is newer than the tested one, the header's folder line goes on with a quiet note: "Claude Code 2.3.1 is newer than this release was tested with (2.1.319)." Versions compare by their numbers, so 2.10.0 is newer than 2.9.9. An older or equal version, or one the app cannot read, shows nothing.
 
 ## Later
 

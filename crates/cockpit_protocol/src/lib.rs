@@ -38,7 +38,8 @@ pub use account::{
     MAX_ACCOUNT_NAME_CHARS, SignIn, account_folder_name,
 };
 pub use agent::{
-    AgentStatus, AgentSummary, Effort, EffortSource, Mark, PermissionMode, SignInWait, TaskProgress,
+    AgentStatus, AgentSummary, ClaudeCodeVersion, Effort, EffortSource, Mark, PermissionMode,
+    SignInWait, TaskProgress,
 };
 pub use details::{
     AgentDetails, BackgroundTask, BackgroundTaskKind, BackgroundTaskStatus, ChangedFile,

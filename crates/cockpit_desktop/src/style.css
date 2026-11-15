@@ -1923,6 +1923,16 @@ html.reordering * {
   text-overflow: ellipsis;
 }
 
+/* After the folder, which keeps its room: the line cuts the note first. */
+.untested-note {
+  color: var(--muted);
+  animation: fade-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.untested-note.leaving {
+  animation: fade-out var(--motion-out) var(--ease-in) forwards;
+}
+
 .chip-anchor {
   position: relative;
   flex: none;

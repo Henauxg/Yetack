@@ -773,6 +773,7 @@ pub(crate) mod tests {
             background_running: 0,
             mark: Mark::Unmarked,
             repository: None,
+            claude_code_version: None,
         }
     }
 

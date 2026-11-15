@@ -9,18 +9,19 @@ use cockpit_client::RequestError;
 use cockpit_protocol::{
     Account, AccountId, AccountState, AgentDetails, AgentHistory, AgentId, AgentLoad, AgentStatus,
     AgentSummary, Answer, AnswerState, Approval, AskedQuestion, BackgroundTask, BackgroundTaskId,
-    BackgroundTaskKind, BackgroundTaskStatus, BuildCommit, ChangedFile, ClaudeRoute,
-    ClaudeSessionId, CommandKind, CommandLoad, Completeness, ContextCategory, ContextUsage, Cores,
-    CostUsd, CredentialSource, DirEntry, DirListing, Effort, EffortSource, EntryKind, EntryLink,
-    EnvironmentCredentials, ErrorBody, ErrorCode, FileEdit, GitIgnore, HistoryPage, Image,
-    ImageMediaType, ItemBody, ItemId, LoadAverage, LoadHistory, MachineLoad, Mark, McpScope,
-    McpServer, McpServerStatus, McpTool, McpTransport, NoticeKind, OlderItems, PROTOCOL_VERSION,
-    PastSession, PendingId, PermissionMode, Plan, PlanUsage, Position, ProcessId, Prompt, PromptId,
-    Question, QuestionAnswer, QuestionOption, RateLimitStatus, ReleaseVersion, Repository, Request,
-    ResourceUse, ResponseBody, Selection, ServerLoad, ServerPoint, SignIn, SignInWait,
-    SlashCommand, Subagent, SubagentRun, SubagentStatus, SubagentToolCall, TaskListItem,
-    TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus, TranscriptItem,
-    TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt, WaitingState, WindowUsage,
+    BackgroundTaskKind, BackgroundTaskStatus, BuildCommit, ChangedFile, ClaudeCodeVersion,
+    ClaudeRoute, ClaudeSessionId, CommandKind, CommandLoad, Completeness, ContextCategory,
+    ContextUsage, Cores, CostUsd, CredentialSource, DirEntry, DirListing, Effort, EffortSource,
+    EntryKind, EntryLink, EnvironmentCredentials, ErrorBody, ErrorCode, FileEdit, GitIgnore,
+    HistoryPage, Image, ImageMediaType, ItemBody, ItemId, LoadAverage, LoadHistory, MachineLoad,
+    Mark, McpScope, McpServer, McpServerStatus, McpTool, McpTransport, NoticeKind, OlderItems,
+    PROTOCOL_VERSION, PastSession, PendingId, PermissionMode, Plan, PlanUsage, Position, ProcessId,
+    Prompt, PromptId, Question, QuestionAnswer, QuestionOption, RateLimitStatus, ReleaseVersion,
+    Repository, Request, ResourceUse, ResponseBody, Selection, ServerLoad, ServerPoint, SignIn,
+    SignInWait, SlashCommand, Subagent, SubagentRun, SubagentStatus, SubagentToolCall,
+    TaskListItem, TaskProgress, TaskStatus, Timestamp, TokenUsage, ToolCall, ToolCallStatus,
+    TranscriptItem, TurnEnd, TurnOutcome, UsageWindow, UserMessage, WaitingPrompt, WaitingState,
+    WindowUsage,
 };
 use dioxus::prelude::{Signal, WritableExt};
 use serde_json::Value;
@@ -47,7 +48,8 @@ use crate::state::update_offer::{self, GapKind, ProgramBuild, VersionGap};
 use crate::state::update_plan::{SendProgress, ServerPlan, ServicePlan, UpdatePlan, UpdateStep};
 use crate::state::{
     AgentEntry, AppState, ConnectionState, Dialog, Drafts, Loadable, MachineState, Utf16Offset,
-    ViewMode, actions, file_edits, file_tree, machines, projects, quotes, sending,
+    ViewMode, actions, claude_code_version, file_edits, file_tree, machines, projects, quotes,
+    sending,
 };
 use crate::update_script::{self, APP_VERSION};
 
@@ -2633,6 +2635,9 @@ fn summary(parts: SummaryParts<'_>, now: SystemTime) -> AgentSummary {
         background_running: 0,
         mark: Mark::Unmarked,
         repository: demo_repository(parts.folder),
+        claude_code_version: Some(ClaudeCodeVersion::new(
+            claude_code_version::TESTED_VERSION.to_owned(),
+        )),
     }
 }
 
@@ -3459,6 +3464,7 @@ fn benchmark_agent(now: SystemTime) -> Sample {
     summary.task_progress = Some(TaskProgress { done: 4, total: 4 });
     summary.model = Some("claude-sonnet-5-5".to_owned());
     summary.mode = PermissionMode::AcceptEdits;
+    summary.claude_code_version = Some(ClaudeCodeVersion::new("2.3.1".to_owned()));
     let items = vec![
         item(
             1,

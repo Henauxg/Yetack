@@ -249,7 +249,8 @@ impl<W: Write> Fake<W> {
             "model": self.model, "permissionMode": self.mode, "cwd": ".",
             "tools": ["Bash", "AskUserQuestion", "ExitPlanMode"],
             "slash_commands": ["review", "tidy"], "skills": ["tidy"],
-            "mcp_servers": [{"name": "notes", "status": "connected"}]
+            "mcp_servers": [{"name": "notes", "status": "connected"}],
+            "claude_code_version": "9.9.9"
         }))?;
         self.emit(&json!({"type": "rate_limit_event", "rate_limit_info": {
             "status": "allowed", "rateLimitType": "five_hour", "resetsAt": 1_900_000_000,

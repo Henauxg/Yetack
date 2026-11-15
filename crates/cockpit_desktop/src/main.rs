@@ -28,6 +28,7 @@ mod service_update;
 mod state;
 mod ui;
 mod update_script;
+mod version_order;
 #[cfg(target_os = "linux")]
 mod webview_settings;
 

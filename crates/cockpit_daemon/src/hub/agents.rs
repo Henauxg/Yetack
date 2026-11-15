@@ -777,6 +777,7 @@ pub(super) fn initial_summary(record: &AgentRecord) -> AgentSummary {
         background_running: 0,
         mark: record.mark,
         repository: repository::of_folder(&record.folder),
+        claude_code_version: None,
     }
 }
 
