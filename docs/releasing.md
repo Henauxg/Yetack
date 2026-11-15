@@ -1,17 +1,18 @@
 # Releasing
 
 How to publish a release of Yetack, for example `0.1.0`.
-A release has up to five files:
+A release has up to six files:
 
 | File | What it is |
 | --- | --- |
 | `yetack-0.1.0-x86_64-linux` | The daemon and command line for Linux x86_64, static: it runs on any distribution |
 | `yetack_0.1.0_amd64.deb` | The app for Ubuntu 22.04 and newer, and Debian 12, with the daemon beside it |
 | `yetack-desktop-0.1.0-windows-x64.zip` | The app for Windows, with the Linux daemon beside it, when a Windows machine is at hand |
+| `yetack-desktop-0.1.0-windows-x64.exe` | The app of the zip alone, which the Windows app's update downloads with the Linux daemon |
 | `yetack.service` | The systemd user service that runs the daemon on a server |
 | `SHA256SUMS` | The checksum of each file |
 
-The Windows zip is built on a Windows machine, the other files on a Linux machine with Docker. A release can go out without the zip: the README sends Windows users to [install-from-source.md](./install-from-source.md) until a release has one.
+The Windows zip and app are built on a Windows machine, the other files on a Linux machine with Docker. A release can go out without them: the README sends Windows users to [install-from-source.md](./install-from-source.md) until a release has one, and the Windows app's update says the release has no Windows app.
 
 ## 1. Set the version
 
@@ -31,20 +32,24 @@ The Windows zip is built on a Windows machine, the other files on a Linux machin
 
 Skip this step when no Windows machine is at hand. The zip holds the app and the static Linux daemon, `yetack-x86_64-linux`, which the app's "Update" sends to servers. `just linux-daemon` builds that daemon and copies it beside the app. It needs the musl target once: `rustup target add x86_64-unknown-linux-musl`.
 
+`YETACK_PACKAGE` tells the app that it comes from the zip, so it updates itself from later releases. That update downloads the app alone, `yetack-desktop-<version>-windows-x64.exe`, with the Linux daemon and `SHA256SUMS`, so the app goes beside the zip.
+
 On the Windows machine, in PowerShell, in a checkout of the repository:
 
 ```powershell
 git fetch --tags
 git checkout v0.1.0
+$env:YETACK_PACKAGE = "zip"
 cargo build --release -p cockpit_desktop
 just linux-daemon
 $version = "0.1.0"
 New-Item -ItemType Directory -Force dist | Out-Null
 Compress-Archive -Force -Path target\release\yetack-desktop.exe, target\release\yetack-x86_64-linux, LICENSE `
     -DestinationPath "dist\yetack-desktop-$version-windows-x64.zip"
+Copy-Item target\release\yetack-desktop.exe "dist\yetack-desktop-$version-windows-x64.exe"
 ```
 
-Copy the zip into `dist/` of the Linux machine's checkout.
+Copy the zip and the app into `dist/` of the Linux machine's checkout.
 
 ## 3. Build the Linux files
 
@@ -54,7 +59,7 @@ On the Linux machine, with the tag checked out:
 nix develop -c just release
 ```
 
-The recipe refuses a tree with uncommitted changes. It builds `HEAD` inside an Ubuntu 22.04 container ([contrib/release/Dockerfile](../contrib/release/Dockerfile), [contrib/release/build.sh](../contrib/release/build.sh)), writes the Linux files to `dist/`, and writes `SHA256SUMS` for every file there, the Windows zip included. It replaces the Linux files of an earlier run, keeps this version's zip, and refuses to run while `dist/` holds any other file, such as an older zip.
+The recipe refuses a tree with uncommitted changes. It builds `HEAD` inside an Ubuntu 22.04 container ([contrib/release/Dockerfile](../contrib/release/Dockerfile), [contrib/release/build.sh](../contrib/release/build.sh)), writes the Linux files to `dist/`, and writes `SHA256SUMS` for every file there, the Windows zip and app included. It replaces the Linux files of an earlier run, keeps this version's zip and Windows app, and refuses to run while `dist/` holds any other file, such as an older zip.
 
 The first run takes about ten minutes. Later runs reuse two Docker volumes, `yetack-release-registry` and `yetack-release-target`, and still rebuild every crate of the repository.
 
@@ -73,7 +78,8 @@ Write the release notes in a file outside the repository: what changed, and the 
 ```sh
 version=0.1.0
 zip="dist/yetack-desktop-$version-windows-x64.zip"
+exe="dist/yetack-desktop-$version-windows-x64.exe"
 gh release create "v$version" --title "Yetack $version" --notes-file <notes file> \
     "dist/yetack-$version-x86_64-linux" "dist/yetack_${version}_amd64.deb" \
-    dist/yetack.service dist/SHA256SUMS $(test -e "$zip" && echo "$zip")
+    dist/yetack.service dist/SHA256SUMS $(test -e "$zip" && echo "$zip") $(test -e "$exe" && echo "$exe")
 ```

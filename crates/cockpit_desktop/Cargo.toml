@@ -42,6 +42,9 @@ tracing-subscriber.workspace = true
 # Syntect's syntaxes with the ones it lacks (Protobuf, TypeScript, TOML, ...), for the same
 # regex engine.
 two-face = { version = "0.5.2", default-features = false, features = ["syntect-fancy"] }
+# Asks GitHub for the latest release and downloads it, over the TLS that dioxus-desktop already
+# brings.
+ureq = { version = "3.5.2", default-features = false, features = ["native-tls"] }
 # The parser Dioxus opens links with: an address it cannot parse would open as a local file.
 url = "2.5.8"
 # The browser opener Dioxus uses, where the app does not run `xdg-open` itself.
@@ -50,6 +53,10 @@ webbrowser = "1.2.6"
 # The web view's settings, from the binding and the version wry brings.
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = "2.0.1"
+
+# Waits for the app that started an updated one to end.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tempfile.workspace = true

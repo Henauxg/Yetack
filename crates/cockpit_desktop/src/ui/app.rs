@@ -9,6 +9,7 @@ use crate::bridge::use_bridge;
 use crate::connection::{Cockpit, Startup, use_clock, use_cockpit};
 use crate::prefs::use_prefs_saver;
 use crate::state::{ConnectionState, NoteKind, actions, daemon_update, file_tree, sending};
+use crate::ui::app_update::use_release_checks;
 use crate::ui::blocks::FloatingBlocks;
 use crate::ui::chat_scroll::InView;
 use crate::ui::composer::Composer;
@@ -40,6 +41,7 @@ pub fn App() -> Element {
     let prefs_file = startup.prefs_file.clone();
     let cockpit = use_cockpit(startup);
     use_prefs_saver(cockpit, prefs_file);
+    use_release_checks(cockpit);
     use_clock();
     use_bridge(cockpit);
     use_quotes(cockpit);

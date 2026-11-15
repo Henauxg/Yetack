@@ -69,6 +69,8 @@
             # another system carries none: its update builds on the server.
             YETACK_LINUX_DAEMON =
               pkgs.lib.optionalString carriesDaemon "${linuxDaemon}/bin/yetack";
+            # Tells the app that Nix installed it, so it says how to update instead of updating.
+            YETACK_PACKAGE = "nix";
             # GTK names the window after the binary, so a Wayland desktop finds the entry, and its
             # icon, by the binary's name.
             postInstall = ''

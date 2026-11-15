@@ -3,6 +3,7 @@
 mod accounts;
 mod agent_map;
 mod app;
+mod app_update;
 mod blocks;
 mod cards;
 mod chat_scroll;

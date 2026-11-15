@@ -143,6 +143,8 @@ pub enum Dialog {
     DaemonUpdate(MachineId),
     /// Names the machine's busy agents before its update, whose restart would end their turns.
     ConfirmUpdate(MachineId),
+    /// The app's own newer release, and its update.
+    AppUpdate,
     /// An image over the whole window, from a message or the file view.
     ImageView(ImageView),
     /// Forks or moves an agent's conversation to another working folder, from its row's menu.
@@ -309,6 +311,7 @@ impl Dialog {
             | Self::NoDaemon
             | Self::DaemonUpdate(_)
             | Self::ConfirmUpdate(_)
+            | Self::AppUpdate
             | Self::Settings(_) => None,
         }
     }

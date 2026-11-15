@@ -30,6 +30,8 @@ Download the files from the [releases page](https://github.com/Henauxg/yetack/re
 
 The `.deb` installs the app (`yetack-desktop`) and the daemon with its command line (`yetack`).
 
+The app tells you when a new release is out, at the foot of its sidebar. The Windows app updates itself. The other installs get the steps. Settings › General › About turns the daily check off.
+
 Nobody has run the app on macOS yet.
 
 Each machine that runs agents also needs Claude Code. Install [Claude Code](https://claude.com/claude-code), then run `claude` once and sign in.

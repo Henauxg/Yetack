@@ -6,6 +6,7 @@
 
 mod bridge;
 mod browser;
+mod command_line;
 mod config;
 mod connection;
 mod daemon_label;
@@ -21,6 +22,7 @@ mod path_style;
 mod prefs;
 mod reach;
 mod render;
+mod self_update;
 mod server_daemon;
 #[cfg(unix)]
 mod service;
@@ -74,6 +76,10 @@ fn main() -> anyhow::Result<ExitCode> {
     let environment = Environment::from_process();
     logging::init(&environment);
     let arguments: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(pid) = self_update::after_update(&arguments) {
+        self_update::wait_for_exit(pid);
+    }
+    self_update::remove_leftovers();
     let demo = demo::is_requested(&arguments);
     // Logged as well: a GUI program on Windows has no stderr for the error `main` returns.
     let log = |error: &ConfigError| tracing::error!("{}", state::error_chain(error));
@@ -94,6 +100,9 @@ fn main() -> anyhow::Result<ExitCode> {
     }
     if let Some(scene) = demo::machines_scene(&arguments) {
         demo::show_machines(&mut state, scene);
+    }
+    if let Some(screen) = demo::app_update_screen(&arguments) {
+        demo::show_app_update(&mut state, screen);
     }
     let demo_local = demo::local_scene(&arguments);
     if let Some(scene) = demo_local {

@@ -38,6 +38,11 @@
 //!     "steer_hold": "three_seconds",
 //!     "esc_stop": "at_once",
 //!     "tool_calls": "full"
+//!   },
+//!   "updates": {
+//!     "check": true,
+//!     "skipped": "0.4.0",
+//!     "last_check": 1794477600
 //!   }
 //! }
 //! ```
@@ -57,7 +62,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use cockpit_protocol::{AccountId, AgentId, AgentStatus, AgentSummary, Mark, Repository};
+use cockpit_protocol::{
+    AccountId, AgentId, AgentStatus, AgentSummary, Mark, ReleaseVersion, Repository,
+};
 use dioxus::prelude::*;
 use serde::de::IgnoredAny;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -97,6 +104,32 @@ pub struct Prefs {
     pub agent_order: Vec<AgentKey>,
     #[serde(skip_serializing_if = "ProjectsPrefs::is_empty")]
     pub projects: ProjectsPrefs,
+    pub updates: UpdatePrefs,
+}
+
+/// Whether the app looks for its own new releases, the release the user skipped, and when the app
+/// last looked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdatePrefs {
+    /// Once a day, the app asks GitHub for its latest release.
+    pub check: bool,
+    /// The release the app no longer tells about. A newer one shows again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skipped: Option<ReleaseVersion>,
+    /// When the last check got GitHub's answer, in Unix seconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_check: Option<u64>,
+}
+
+impl Default for UpdatePrefs {
+    fn default() -> Self {
+        Self {
+            check: true,
+            skipped: None,
+            last_check: None,
+        }
+    }
 }
 
 /// The projects the user kept, and the agents moved to a project by hand. A repository no kept
@@ -1148,6 +1181,11 @@ mod tests {
         "5": null
       }
     }
+  },
+  "updates": {
+    "check": false,
+    "skipped": "0.4.0",
+    "last_check": 1794477600
   }
 }
 "#;
@@ -1209,6 +1247,11 @@ mod tests {
                     tool_calls: ToolCallDetail::Full,
                 },
                 keys: switched,
+                updates: UpdatePrefs {
+                    check: false,
+                    skipped: Some(ReleaseVersion::new("0.4.0".to_owned())),
+                    last_check: Some(1_794_477_600),
+                },
                 agent_order: vec![AgentKey {
                     machine: "build-box".to_owned(),
                     agent: AgentId::new(4),
@@ -1566,6 +1609,16 @@ mod tests {
     }
 
     #[test]
+    fn the_release_check_is_on_unless_turned_off() {
+        let prefs: Prefs = serde_json::from_str("{}").unwrap();
+
+        assert!(prefs.updates.check);
+        assert_eq!(prefs.updates.skipped, None);
+        let text = serde_json::to_string(&UpdatePrefs::default()).unwrap();
+        assert_eq!(text, r#"{"check":true}"#);
+    }
+
+    #[test]
     fn a_missing_or_broken_file_gives_the_defaults() {
         let temp = tempfile::tempdir().unwrap();
         let broken = temp.path().join(PREFS_FILE);
@@ -1639,6 +1692,11 @@ mod tests {
             keys: Keymap::default(),
             agent_order: Vec::new(),
             projects: ProjectsPrefs::default(),
+            updates: UpdatePrefs {
+                check: false,
+                skipped: Some(ReleaseVersion::new("0.4.0".to_owned())),
+                last_check: Some(1_794_477_600),
+            },
         };
 
         prefs.save(&file).unwrap();
