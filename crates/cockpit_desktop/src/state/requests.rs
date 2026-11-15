@@ -13,13 +13,14 @@ use cockpit_protocol::{
 use super::app_state::{AgentEntry, AppState, FileRead, Loadable, MachineState, Reread};
 use super::chat_images::ImageKey;
 use super::drafts::{Draft, Drafts};
+use super::page_copy::CopyId;
 use super::projects::{self, ProjectKey};
 use super::sending::{self, SendingId};
 use super::transcript::HistoryState;
 use super::ui_state::{Dialog, FolderAction, OpenFileView};
 use super::{
     accounts, actions, chat_images, details_updates, file_edits, file_tree, mcp_reconnect,
-    working_folder,
+    page_copy, working_folder,
 };
 use crate::machine::MachineId;
 use crate::path_style;
@@ -81,6 +82,11 @@ pub enum Purpose {
     ChatImage {
         agent: AgentId,
         key: ImageKey,
+    },
+    /// A file a server's page names, for its copy on this computer.
+    PageCopy {
+        copy: CopyId,
+        path: String,
     },
     Sessions,
     /// A folder for the "Open file" dialog.
@@ -523,6 +529,9 @@ pub fn apply_response(
                 Err(failure) => Err(failure.message),
             };
             chat_images::answered(state, agent, &key, answer);
+        }
+        Purpose::PageCopy { copy, path } => {
+            page_copy::answered(state, copy, &path, result.ok());
         }
         Purpose::ReadFile { agent, path } => {
             let now = Timestamp::from_system_time(SystemTime::now());

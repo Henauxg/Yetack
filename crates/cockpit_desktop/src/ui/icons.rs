@@ -57,6 +57,8 @@ pub enum IconKind {
     Flag,
     /// Long lines wrapped, for the file view's wrap toggle.
     Wrap,
+    /// An arrow out of a box, to open a page in the browser.
+    External,
     /// Notifications, of the app or of an agent.
     Bell,
     /// Notifications turned off.
@@ -176,6 +178,9 @@ impl IconKind {
             }
             Self::Folder => {
                 r#"<path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>"#
+            }
+            Self::External => {
+                r#"<path d="M14 4h6v6"></path><path d="M20 4l-9 9"></path><path d="M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"></path>"#
             }
             Self::Wrap => {
                 r#"<path d="M3 6h18"></path><path d="M3 12h15a3 3 0 0 1 0 6h-4"></path><path d="M16 16l-2 2 2 2"></path><path d="M3 18h7"></path>"#

@@ -17,6 +17,7 @@ mod keymap;
 mod logging;
 mod machine;
 mod notifications;
+mod page_files;
 mod path_style;
 mod prefs;
 mod reach;
