@@ -122,6 +122,9 @@ pub const OUTSIDE_SECTION: &str = "Also worked in";
 /// The note under a folder whose listing left entries out.
 const TRUNCATED_NOTE: &str = "More entries not shown";
 
+/// The entry that marks a git checkout's top folder: a folder, or a file in a worktree.
+const GIT_ENTRY: &str = ".git";
+
 impl RowKind {
     /// Whether the keys and the pointer can highlight the row.
     pub fn is_entry(&self) -> bool {
@@ -242,13 +245,18 @@ fn outside_roots(folder: &Path, footprint: &Footprint) -> Vec<PathBuf> {
     roots.into_iter().collect()
 }
 
-/// The daemon refused to list `root`, a folder outside every checkout: the tree shows only the
-/// files the agent touched in it.
-fn refused(tree: &FileTree, root: &Path) -> bool {
-    matches!(
-        tree.listings.get(root).map(|listing| &listing.entries),
-        Some(Loadable::Failed(_))
-    )
+/// Whether the tree shows only the files the agent touched in `root`, a folder outside the
+/// agent's: its listing holds no `.git` entry, so that a folder such as `/etc` or the home
+/// folder does not bury them, or the daemon did not list it. A checkout beside the agent's
+/// folder, such as a worktree, lists in full.
+fn touched_only(tree: &FileTree, root: &Path) -> bool {
+    match tree.listings.get(root).map(|listing| &listing.entries) {
+        Some(Loadable::Failed(_)) => true,
+        Some(Loadable::Loaded(listing)) => {
+            !listing.entries.iter().any(|entry| entry.name == GIT_ENTRY)
+        }
+        Some(Loadable::NotRequested | Loadable::Loading) | None => false,
+    }
 }
 
 /// The folder at the top level of "All" that shows `full`, an absolute path: the agent's folder,
@@ -279,7 +287,7 @@ fn root_showing(
         .keys()
         .chain(&footprint.read)
         .any(|touched| style.same_path(&touched.to_string_lossy(), &full_text));
-    (touched || !refused(tree, &root)).then_some(root)
+    (touched || !touched_only(tree, &root)).then_some(root)
 }
 
 /// Whether the agent's tree can show `path`, a path of the file view: "Show in the files pane"
@@ -410,12 +418,11 @@ impl Builder<'_> {
         if !open {
             return;
         }
-        if !refused(self.tree, root) {
+        if !touched_only(self.tree, root) {
             self.listed_rows(root, 1, false, rows);
             return;
         }
-        // The daemon lists no folder outside every checkout: the files the agent touched there
-        // show instead, as under "Read".
+        // The files the agent touched there show instead, as under "Read".
         let root_text = root.to_string_lossy();
         let touched = self.footprint.changed.keys().chain(&self.footprint.read);
         let relatives: Vec<String> = touched
@@ -1311,6 +1318,7 @@ mod tests {
         tree.listings.extend([listing(
             "/work",
             vec![
+                entry(".git", EntryKind::Folder, GitIgnore::Ignored),
                 entry("app", EntryKind::Folder, GitIgnore::Kept),
                 entry("notes.md", EntryKind::File, GitIgnore::Kept),
             ],
@@ -1332,6 +1340,7 @@ mod tests {
                 "· README.md",
                 "# Also worked in",
                 "▾ work/",
+                "  ▸ .git",
                 "  ▸ app",
                 "  · notes.md",
             ]
@@ -1383,7 +1392,10 @@ mod tests {
         tree.expanded.insert(PathBuf::from(worktree));
         tree.listings.extend([listing(
             worktree,
-            vec![entry("Cargo.toml", EntryKind::File, GitIgnore::Kept)],
+            vec![
+                entry(".git", EntryKind::File, GitIgnore::Ignored),
+                entry("Cargo.toml", EntryKind::File, GitIgnore::Kept),
+            ],
         )]);
         let footprint = Footprint {
             changed: [changed("/work/app_columns/src/token.rs", 3, 0)]
@@ -1405,6 +1417,7 @@ mod tests {
                 "# Also worked in",
                 "▸ etc/",
                 "▾ app_columns/",
+                "  · .git",
                 "  · Cargo.toml",
             ]
         );
@@ -2106,6 +2119,61 @@ mod tests {
                 "  ▾ calc",
                 "    · config.toml",
                 "    · limits.toml",
+            ]
+        );
+    }
+
+    /// The daemon lists any folder, but one that is no checkout's top folder, such as `/etc` or
+    /// a home folder, would bury the few files the agent touched there.
+    #[test]
+    fn a_folder_outside_every_checkout_shows_only_the_files_the_agent_touched_there() {
+        let mut tree = tree();
+        let footprint = Footprint {
+            changed: [changed("/etc/calc/limits.toml", 1, 0)]
+                .into_iter()
+                .collect(),
+            read: [PathBuf::from("/work/project-1_feature/src/x.rs")]
+                .into_iter()
+                .collect(),
+        };
+        for (root, entries) in [
+            (
+                "/etc",
+                vec![
+                    entry("calc", EntryKind::Folder, GitIgnore::Kept),
+                    entry("hosts", EntryKind::File, GitIgnore::Kept),
+                ],
+            ),
+            (
+                "/work/project-1_feature",
+                vec![
+                    entry(".git", EntryKind::Folder, GitIgnore::Ignored),
+                    entry("src", EntryKind::Folder, GitIgnore::Kept),
+                    entry("Cargo.toml", EntryKind::File, GitIgnore::Kept),
+                ],
+            ),
+        ] {
+            let (path, listing) = listing(root, entries);
+            tree.expanded.insert(path.clone());
+            tree.listings.insert(path, listing);
+        }
+
+        let rows = rows(&tree, Path::new(FOLDER), &footprint);
+
+        assert_eq!(
+            shown(&rows),
+            [
+                "▸ src",
+                "▸ target",
+                "· README.md",
+                "# Also worked in",
+                "▾ etc/",
+                "  ▾ calc",
+                "    · limits.toml",
+                "▾ project-1_feature/",
+                "  ▸ .git",
+                "  ▸ src",
+                "  · Cargo.toml",
             ]
         );
     }
