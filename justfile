@@ -134,7 +134,7 @@ release:
     # tar -m dates every file now: with the commit's dates, cargo would reuse the cached builds
     # of a later commit.
     git archive --format=tar HEAD | docker run --rm -i \
-        -e AGENTS_COCKPIT_SOURCE_COMMIT="$(git rev-parse HEAD)" -e OWNER="$(id -u):$(id -g)" \
+        -e YETACK_SOURCE_COMMIT="$(git rev-parse HEAD)" -e OWNER="$(id -u):$(id -g)" \
         -v "$PWD/dist:/out" \
         -v agents-cockpit-release-registry:/opt/cargo/registry \
         -v agents-cockpit-release-target:/src/target \

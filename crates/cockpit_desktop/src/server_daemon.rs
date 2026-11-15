@@ -24,7 +24,7 @@ pub const CARRIED_FILE_NAME: &str = "agents-cockpit-x86_64-linux";
 
 /// The Linux daemon a package carries, set when it builds the app: the `.deb`'s
 /// `/usr/bin/agents-cockpit`, or the flake's static daemon in the Nix store.
-const PACKAGED: Option<&str> = option_env!("AGENTS_COCKPIT_LINUX_DAEMON");
+const PACKAGED: Option<&str> = option_env!("YETACK_LINUX_DAEMON");
 
 /// The bytes sent at once, between two reports of the progress.
 const CHUNK: usize = 256 * 1024;

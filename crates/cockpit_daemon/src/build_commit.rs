@@ -10,7 +10,7 @@ pub const RELEASE_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// whichever runs this code. A Nix build of a tree with uncommitted changes sets it empty.
 #[must_use]
 pub fn build_commit() -> Option<BuildCommit> {
-    known_commit(option_env!("AGENTS_COCKPIT_COMMIT"))
+    known_commit(option_env!("YETACK_COMMIT"))
 }
 
 /// What `agents-cockpit --version` prints after the program's name: the release, then the commit

@@ -85,7 +85,7 @@ Built on branch `feat/server-daemon-install`. The same idea as VS Code Remote: t
 
 The app carries the static daemon for Linux x86_64. It never downloads one. Nothing outside the app has to be trusted, and an install works offline. The app takes the first of these that exists (`server_daemon::carried`):
 
-1. The path its build names in `AGENTS_COCKPIT_LINUX_DAEMON`. The `.deb` names `/usr/bin/agents-cockpit`, the daemon it already installs ([contrib/release/build.sh](contrib/release/build.sh)). On x86_64 Linux, the flake builds a static daemon (the package `daemon-static`) and names it in the app it builds.
+1. The path its build names in `YETACK_LINUX_DAEMON`. The `.deb` names `/usr/bin/agents-cockpit`, the daemon it already installs ([contrib/release/build.sh](contrib/release/build.sh)). On x86_64 Linux, the flake builds a static daemon (the package `daemon-static`) and names it in the app it builds.
 2. The file `agents-cockpit-x86_64-linux` beside the app's program. The Windows zip holds it. For a build from source, `just linux-daemon` cross-builds it and copies it into `target/debug` and `target/release`.
 
 An app without such a file still updates a server by building on it from its checkout. Linux aarch64 servers get a binary too once someone has one.

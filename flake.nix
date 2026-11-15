@@ -41,7 +41,7 @@
             # The commit the tree comes from, which the daemon tells the app, and which the app's
             # update builds on a server. Empty for a tree with uncommitted changes: the app then
             # offers no update. The sandbox has no git to ask.
-            AGENTS_COCKPIT_SOURCE_COMMIT = self.rev or "";
+            YETACK_SOURCE_COMMIT = self.rev or "";
           };
           # The daemon the app sends to servers: static, so that it runs on any x86_64 Linux.
           linuxDaemon = pkgs.pkgsStatic.rustPlatform.buildRustPackage (common // {
@@ -67,7 +67,7 @@
             buildInputs = desktopLibraries pkgs;
             # The daemon the app's update sends to a server, which then builds nothing. An app of
             # another system carries none: its update builds on the server.
-            AGENTS_COCKPIT_LINUX_DAEMON =
+            YETACK_LINUX_DAEMON =
               pkgs.lib.optionalString carriesDaemon "${linuxDaemon}/bin/agents-cockpit";
             # GTK names the window after the binary, so a Wayland desktop finds the entry, and its
             # icon, by the binary's name.
