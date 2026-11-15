@@ -111,12 +111,15 @@ pub fn FileViewPanel() -> Element {
         Loadable::Loaded(FileRead::Text { text, .. }) => Some(text.clone()),
         _ => None,
     };
-    let page_text = copied_text.clone().filter(|_| page_copy::is_page(&full));
+    let page_text = copied_text
+        .as_ref()
+        .filter(|_| page_copy::is_page(&full))
+        .cloned();
     let on_this_computer = state
         .machines
         .get(MachineId::of(agent))
         .is_some_and(|machine| machine.daemon.place != DaemonPlace::Ssh);
-    let reading_page = state.page_copies.reading(agent, &full);
+    let reading_page = state.page_copies.is_reading(agent, &full);
     let wrap = state.prefs.file_view.wrap;
     rsx! {
         section {
@@ -314,9 +317,9 @@ pub fn use_page_copies(cockpit: Cockpit) {
         }
         let mut state = cockpit.state;
         let copies = page_copy::take_ready(&mut state.write());
-        for copy in copies {
+        for mut copy in copies {
             spawn_forever(async move {
-                let mut missing = copy.missing.clone();
+                let mut missing = std::mem::take(&mut copy.missing);
                 match page_files::open_copy(copy).await {
                     Ok(refused) => {
                         missing.extend(refused);

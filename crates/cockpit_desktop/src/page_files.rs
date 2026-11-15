@@ -2,7 +2,8 @@
 //! files it names, in a new private folder of the temporary folder (`state::page_copy` reads
 //! them through the daemon).
 
-use std::io::{self, Write as _};
+use std::fs::File;
+use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use crate::browser::{self, OpenError};
@@ -21,8 +22,7 @@ const SUPERSCRIPT_DIGITS: [char; 3] = ['\u{b9}', '\u{b2}', '\u{b3}'];
 const FORBIDDEN: [char; 9] = ['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
 
 /// Writes `copy` to a new folder, then opens its page. The folder stays: the browser reads its
-/// files after this returns. Returns the paths of the files the copy lacks, as [`write`] leaves
-/// them out.
+/// files after this returns. Returns the paths of the files [`write`] leaves out.
 pub async fn open_copy(copy: ReadyCopy) -> Result<Vec<String>, OpenError> {
     let (page, refused) = tokio::task::spawn_blocking(move || {
         let folder = tempfile::Builder::new()
@@ -38,31 +38,32 @@ pub async fn open_copy(copy: ReadyCopy) -> Result<Vec<String>, OpenError> {
 }
 
 /// Writes the files of `copy` under `folder`. Returns the page's path, and the files left out:
-/// those whose name this computer cannot take, and those it fails to write but the page. A file
-/// never replaces another: where case does not count, `A.png` would replace `a.png`.
+/// those whose name this computer cannot take, and those other than the page that it fails to
+/// write. A file never replaces another: where case does not count, `A.png` would replace
+/// `a.png`.
 fn write(folder: &Path, copy: &ReadyCopy) -> Result<(PathBuf, Vec<String>), OpenError> {
     let page = local_path(folder, &copy.page).ok_or(OpenError::NotAPage)?;
     let mut refused = Vec::new();
-    for (names, bytes) in &copy.files {
-        let written = local_path(folder, names).map(|path| write_file(&path, bytes));
+    for file in &copy.files {
+        let written = local_path(folder, &file.names).map(|path| write_file(&path, &file.bytes));
         match written {
-            Some(Ok(())) => {}
-            Some(Err(error)) if *names == copy.page => return Err(error.into()),
-            Some(Err(error)) => {
-                tracing::warn!("Cannot write a file of a page's copy: {error}");
-                refused.push(names.join("/"));
-            }
-            None => refused.push(names.join("/")),
+            Some(Ok(())) => continue,
+            Some(Err(error)) if file.names == copy.page => return Err(error.into()),
+            Some(Err(error)) => tracing::warn!("Cannot write a file of a page's copy: {error}"),
+            None => {}
         }
+        refused.push(file.names.join("/"));
     }
     Ok((page, refused))
 }
 
 fn write_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write as _;
+
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::File::create_new(path)?.write_all(bytes)
+    File::create_new(path)?.write_all(bytes)
 }
 
 /// `names` under `folder`, when each is a plain file name on Linux as on Windows.
@@ -110,9 +111,17 @@ fn names_a_device(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::page_copy::ReadyFile;
 
     fn names(path: &str) -> Vec<String> {
         path.split('/').map(str::to_owned).collect()
+    }
+
+    fn file(path: &str, bytes: &[u8]) -> ReadyFile {
+        ReadyFile {
+            names: names(path),
+            bytes: bytes.to_vec(),
+        }
     }
 
     #[test]
@@ -154,10 +163,10 @@ mod tests {
         let copy = ReadyCopy {
             page: names("pages/index.html"),
             files: vec![
-                (names("pages/index.html"), b"<img src=a.png>".to_vec()),
-                (names("pages/a.png"), vec![0x89, 0x50]),
-                (names("css/site.css"), b"body {}".to_vec()),
-                (names("pages/nul.png"), b"device".to_vec()),
+                file("pages/index.html", b"<img src=a.png>"),
+                file("pages/a.png", &[0x89, 0x50]),
+                file("css/site.css", b"body {}"),
+                file("pages/nul.png", b"device"),
             ],
             missing: Vec::new(),
         };
@@ -185,10 +194,10 @@ mod tests {
         let copy = ReadyCopy {
             page: names("index.html"),
             files: vec![
-                (names("index.html"), b"<img src=shots>".to_vec()),
-                (names("shots"), b"file".to_vec()),
-                (names("shots/a.png"), vec![0x89, 0x50]),
-                (names("b.png"), vec![0x89]),
+                file("index.html", b"<img src=shots>"),
+                file("shots", b"file"),
+                file("shots/a.png", &[0x89, 0x50]),
+                file("b.png", &[0x89]),
             ],
             missing: Vec::new(),
         };
@@ -207,10 +216,10 @@ mod tests {
         let copy = ReadyCopy {
             page: names("index.html"),
             files: vec![
-                (names("index.html"), b"<p>page</p>".to_vec()),
-                (names("INDEX.HTML"), b"<p>other</p>".to_vec()),
-                (names("a.png"), b"first".to_vec()),
-                (names("A.png"), b"second".to_vec()),
+                file("index.html", b"<p>page</p>"),
+                file("INDEX.HTML", b"<p>other</p>"),
+                file("a.png", b"first"),
+                file("A.png", b"second"),
             ],
             missing: Vec::new(),
         };
@@ -226,7 +235,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let copy = ReadyCopy {
             page: names("a:b.html"),
-            files: vec![(names("a:b.html"), Vec::new())],
+            files: vec![file("a:b.html", &[])],
             missing: Vec::new(),
         };
 

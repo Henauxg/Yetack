@@ -15,6 +15,7 @@ use std::process::{ExitStatus, Stdio};
 
 #[cfg(target_os = "linux")]
 use tokio::process::Command;
+use url::Url;
 
 use crate::state::page_copy;
 
@@ -76,9 +77,9 @@ async fn run(mut command: Command) -> Result<(), OpenError> {
     }
 }
 
-/// Opens the web page at `path`, an `.html` or `.htm` file on this computer. Its links are
-/// resolved first, and the file they lead to must be a page too: on Linux the opener picks the
-/// program by the name it gets.
+/// Opens the web page at `path`, an `.html` or `.htm` file on this computer. The symbolic links
+/// on the path are resolved first, and the file they lead to must be a page too: on Linux the
+/// opener picks the program by the name it gets.
 pub async fn open_page(path: PathBuf) -> Result<(), OpenError> {
     let url = tokio::task::spawn_blocking(move || page_url(&path))
         .await
@@ -92,7 +93,7 @@ fn page_url(path: &Path) -> Result<String, OpenError> {
     if !is_file || !page_copy::is_page(&resolved.to_string_lossy()) {
         return Err(OpenError::NotAPage);
     }
-    url::Url::from_file_path(&resolved)
+    Url::from_file_path(&resolved)
         .map(String::from)
         .map_err(|()| OpenError::NotAPage)
 }
@@ -106,7 +107,10 @@ async fn open_with_crate(url: &str) -> Result<(), OpenError> {
 }
 
 #[cfg(test)]
-mod page_tests {
+mod tests {
+    #[cfg(target_os = "linux")]
+    use std::ffi::OsStr;
+
     use super::*;
 
     #[test]
@@ -152,14 +156,8 @@ mod page_tests {
 
         assert!(matches!(refused, Err(OpenError::NotAPage)), "{refused:?}");
     }
-}
 
-#[cfg(all(test, target_os = "linux"))]
-mod tests {
-    use std::ffi::OsStr;
-
-    use super::*;
-
+    #[cfg(target_os = "linux")]
     #[test]
     fn the_opener_gets_the_url_without_the_library_path() {
         let command = opener_command("https://example.org/a?b=1&c=2");
@@ -172,6 +170,7 @@ mod tests {
         assert_eq!(library_path, Some((OsStr::new(LIBRARY_PATH), None)));
     }
 
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn an_opener_that_fails_is_an_error() {
         let mut command = Command::new("sh");
@@ -185,6 +184,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn an_opener_that_succeeds_is_done() {
         let mut command = Command::new("sh");

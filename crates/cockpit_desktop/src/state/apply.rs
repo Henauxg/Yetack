@@ -623,8 +623,8 @@ mod tests {
             MachineId::THIS,
         );
 
-        assert!(state.page_copies.reading(AgentId::new(1), page));
-        assert!(!state.page_copies.reading(AgentId::new(2), page));
+        assert!(state.page_copies.is_reading(AgentId::new(1), page));
+        assert!(!state.page_copies.is_reading(AgentId::new(2), page));
     }
 
     #[test]

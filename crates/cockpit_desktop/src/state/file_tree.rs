@@ -246,9 +246,9 @@ fn outside_roots(folder: &Path, footprint: &Footprint) -> Vec<PathBuf> {
 }
 
 /// Whether the tree shows only the files the agent touched in `root`, a folder outside the
-/// agent's: its listing holds no `.git` entry, so that a folder such as `/etc` or the home
-/// folder does not bury them, or the daemon did not list it. A checkout beside the agent's
-/// folder, such as a worktree, lists in full.
+/// agent's. It does when the daemon did not list `root`, and when the listing holds no `.git`
+/// entry, so that a folder such as `/etc` or the home folder does not bury those files. A
+/// checkout beside the agent's folder, such as a worktree, lists in full.
 fn touched_only(tree: &FileTree, root: &Path) -> bool {
     match tree.listings.get(root).map(|listing| &listing.entries) {
         Some(Loadable::Failed(_)) => true,

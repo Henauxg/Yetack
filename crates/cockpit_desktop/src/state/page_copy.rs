@@ -4,21 +4,20 @@
 //!
 //! The files read are those the page's `src` and `href` attributes name by a relative address,
 //! such as its images, style sheets and scripts. As an IDE serves a page from its project, a copy
-//! takes only web files ([`WEB_EXTENSIONS`]) in the page's folder or the agent's: a file the
-//! page names elsewhere, or a key or a script for the shell, stays on the server. A file that a
-//! script or a style sheet loads is not read, and neither is one the daemon does not send: a
-//! binary file other than an image.
+//! takes only pages and web files ([`WEB_EXTENSIONS`]) in the page's folder or the agent's: a
+//! file the page names elsewhere, or a key or a script for the shell, stays on the server. A file
+//! that a script or a style sheet loads is not read, and neither is one the daemon does not send:
+//! a binary file other than an image.
 
 use std::path::PathBuf;
 
-use base64::Engine;
 use cockpit_protocol::{AgentId, ReadFileParams, Request, ResponseBody};
 
 use super::app_state::AppState;
 use super::requests::{Outgoing, Purpose};
 use crate::format;
 use crate::machine::MachineId;
-use crate::path_style::PathStyle;
+use crate::path_style::{self, PathStyle};
 
 /// The most files a copy reads besides the page.
 const MAX_FILES: usize = 32;
@@ -29,11 +28,11 @@ const MAX_NAMED: usize = 3;
 /// The extensions of a web page's file, whatever their case.
 const PAGE_EXTENSIONS: [&str; 2] = ["html", "htm"];
 
-/// The extensions of the files a copy takes, whatever their case: what a page shows or runs in
-/// the browser.
-const WEB_EXTENSIONS: [&str; 16] = [
-    "html", "htm", "css", "js", "mjs", "json", "map", "svg", "txt", "xml", "csv", "png", "jpg",
-    "jpeg", "gif", "webp",
+/// The extensions of the files a copy takes besides pages, whatever their case: what a page shows
+/// or runs in the browser.
+const WEB_EXTENSIONS: [&str; 14] = [
+    "css", "js", "mjs", "json", "map", "svg", "txt", "xml", "csv", "png", "jpg", "jpeg", "gif",
+    "webp",
 ];
 
 /// The attributes whose address names a file the page shows, runs or links to.
@@ -43,7 +42,7 @@ const FILE_ATTRIBUTES: [&str; 2] = ["src", "href"];
 const ESCAPE: char = '%';
 
 /// The names that end a path in a folder: the folder itself and the one above.
-const FOLDER_NAMES: [&str; 2] = [".", ".."];
+const FOLDER_NAMES: [&str; 2] = [path_style::CURRENT, path_style::PARENT];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CopyId(u64);
@@ -62,7 +61,7 @@ impl PageCopies {
     }
 
     /// Whether the daemon is reading the files of `agent`'s copy of `page`.
-    pub fn reading(&self, agent: AgentId, page: &str) -> bool {
+    pub fn is_reading(&self, agent: AgentId, page: &str) -> bool {
         self.copies.iter().any(|copy| {
             copy.agent == agent
                 && copy
@@ -82,10 +81,10 @@ struct PageCopy {
     id: CopyId,
     agent: AgentId,
     style: PathStyle,
-    /// The folder on the agent's machine that holds the page and every file it names. The copy
-    /// keeps their places under it, so that the page's addresses still lead to them.
+    /// The folder on the agent's machine that holds the page and every file the copy reads. The
+    /// copy keeps their places under it, so that the page's addresses still lead to them.
     root: String,
-    /// The page's path on the agent's machine, without "." and "..", with its text.
+    /// The page's path on the agent's machine, without "." and "..".
     page: String,
     text: String,
     files: Vec<CopiedFile>,
@@ -118,10 +117,17 @@ enum FileBytes {
 pub struct ReadyCopy {
     /// The page's names under the copy's folder.
     pub page: Vec<String>,
-    /// Each file read, the page first, by its names under the copy's folder.
-    pub files: Vec<(Vec<String>, Vec<u8>)>,
+    /// Each file read, the page first.
+    pub files: Vec<ReadyFile>,
     /// The paths of the files the page names that the daemon did not send.
     pub missing: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadyFile {
+    /// The file's names under the copy's folder.
+    pub names: Vec<String>,
+    pub bytes: Vec<u8>,
 }
 
 /// Whether `path` names a web page: its extension is `.html` or `.htm`, whatever its case.
@@ -145,7 +151,7 @@ fn has_extension(path: &str, extensions: &[&str]) -> bool {
 /// `text`: asks the daemon for each file the page names, up to [`MAX_FILES`]. Does nothing while
 /// the agent's copy of that page is reading.
 pub fn start(state: &mut AppState, agent: AgentId, page: &str, text: String) -> Vec<Outgoing> {
-    if state.page_copies.reading(agent, page) {
+    if state.page_copies.is_reading(agent, page) {
         return Vec::new();
     }
     let style = PathStyle::of_text(page);
@@ -182,7 +188,8 @@ pub fn start(state: &mut AppState, agent: AgentId, page: &str, text: String) -> 
             || agent_folder
                 .as_deref()
                 .is_some_and(|agent_folder| inside(&path, agent_folder));
-        if in_project && has_extension(&path, &WEB_EXTENSIONS) {
+        let web_file = is_page(&path) || has_extension(&path, &WEB_EXTENSIONS);
+        if in_project && web_file {
             paths.push(path);
         } else {
             left_out.push(path);
@@ -191,7 +198,7 @@ pub fn start(state: &mut AppState, agent: AgentId, page: &str, text: String) -> 
     let root = common_folder(style, folder, &paths);
     let id = CopyId(state.page_copies.next);
     state.page_copies.next += 1;
-    let requests = paths
+    let requests: Vec<Outgoing> = paths
         .iter()
         .map(|path| Outgoing {
             request: Request::AgentReadFile(ReadFileParams {
@@ -213,7 +220,7 @@ pub fn start(state: &mut AppState, agent: AgentId, page: &str, text: String) -> 
         path,
         bytes: FileBytes::Failed,
     });
-    let files = waiting.chain(failed).collect();
+    let files: Vec<CopiedFile> = waiting.chain(failed).collect();
     state.page_copies.copies.push(PageCopy {
         id,
         agent,
@@ -234,6 +241,8 @@ pub(super) fn answered(
     path: &str,
     answer: Option<ResponseBody>,
 ) {
+    use base64::Engine;
+
     let Some(copy) = state
         .page_copies
         .copies
@@ -249,16 +258,17 @@ pub(super) fn answered(
             .map_or(FileBytes::Failed, FileBytes::Read),
         Some(_) | None => FileBytes::Failed,
     };
-    for file in copy.files.iter_mut().filter(|file| file.path == path) {
-        file.bytes = bytes.clone();
+    if let Some(file) = copy.files.iter_mut().find(|file| file.path == path) {
+        file.bytes = bytes;
     }
 }
 
 /// Takes out the copies that have all their files, read or failed.
 pub fn take_ready(state: &mut AppState) -> Vec<ReadyCopy> {
-    let (ready, waiting) = std::mem::take(&mut state.page_copies.copies)
-        .into_iter()
-        .partition(PageCopy::is_ready);
+    let (ready, waiting): (Vec<PageCopy>, Vec<PageCopy>) =
+        std::mem::take(&mut state.page_copies.copies)
+            .into_iter()
+            .partition(PageCopy::is_ready);
     state.page_copies.copies = waiting;
     ready.into_iter().map(ready_copy).collect()
 }
@@ -277,11 +287,17 @@ fn ready_copy(copy: PageCopy) -> ReadyCopy {
         style.names(rest).map(str::to_owned).collect()
     };
     let page = under_root(&page);
-    let mut files = vec![(page.clone(), text.into_bytes())];
+    let mut files = vec![ReadyFile {
+        names: page.clone(),
+        bytes: text.into_bytes(),
+    }];
     let mut missing = Vec::new();
     for file in copied {
         match file.bytes {
-            FileBytes::Read(bytes) => files.push((under_root(&file.path), bytes)),
+            FileBytes::Read(bytes) => files.push(ReadyFile {
+                names: under_root(&file.path),
+                bytes,
+            }),
             FileBytes::Waiting | FileBytes::Failed => missing.push(file.path),
         }
     }
@@ -376,8 +392,10 @@ fn relative_path(address: &str) -> Option<String> {
     let address = address.trim();
     let end = address.find(['?', '#']).unwrap_or(address.len());
     let path = unescaped(address.get(..end)?)?;
-    let from_root = path.starts_with(['/', '\\']);
-    let last = path.rsplit(['/', '\\']).next().unwrap_or_default();
+    // A browser reads `\` in an address as `/`.
+    let separator = |character: char| PathStyle::Windows.is_separator(character);
+    let from_root = path.starts_with(separator);
+    let last = path.rsplit(separator).next().unwrap_or_default();
     let folder = last.is_empty() || FOLDER_NAMES.contains(&last);
     let control = path.chars().any(char::is_control);
     (!from_root && !folder && !control && !has_scheme(&path)).then_some(path)
@@ -418,7 +436,7 @@ mod tests {
     use cockpit_protocol::{AgentStatus, Image, ImageMediaType};
 
     use super::*;
-    use crate::state::{state_with, summary};
+    use crate::state::{Drafts, apply, state_with, summary};
 
     /// The agent's folder, which holds the pages of most tests.
     const AGENT_FOLDER: &str = "/srv/site";
@@ -460,6 +478,13 @@ mod tests {
 
     fn names(path: &str) -> Vec<String> {
         path.split('/').map(str::to_owned).collect()
+    }
+
+    fn file(path: &str, bytes: &[u8]) -> ReadyFile {
+        ReadyFile {
+            names: names(path),
+            bytes: bytes.to_vec(),
+        }
     }
 
     #[test]
@@ -571,9 +596,9 @@ mod tests {
             [ReadyCopy {
                 page: names("pages/index.html"),
                 files: vec![
-                    (names("pages/index.html"), html.as_bytes().to_vec()),
-                    (names("pages/shots/a.png"), vec![0x89, 0x50, 0x4e]),
-                    (names("css/site.css"), b"body {}".to_vec()),
+                    file("pages/index.html", html.as_bytes()),
+                    file("pages/shots/a.png", &[0x89, 0x50, 0x4e]),
+                    file("css/site.css", b"body {}"),
                 ],
                 missing: vec!["/srv/site/pages/gone.js".to_owned()],
             }]
@@ -593,10 +618,14 @@ mod tests {
             r#" <img src="a.png">"#.to_owned(),
         );
 
-        assert!(state.page_copies.reading(agent(), page));
-        assert!(!state.page_copies.reading(agent(), "/srv/site/other.html"));
+        assert!(state.page_copies.is_reading(agent(), page));
+        assert!(
+            !state
+                .page_copies
+                .is_reading(agent(), "/srv/site/other.html")
+        );
         assert!(take_ready(&mut state).is_empty());
-        assert!(state.page_copies.reading(agent(), page));
+        assert!(state.page_copies.is_reading(agent(), page));
     }
 
     #[test]
@@ -672,7 +701,7 @@ mod tests {
             take_ready(&mut state),
             [ReadyCopy {
                 page: vec!["index.html".to_owned()],
-                files: vec![(vec!["index.html".to_owned()], b"<p>Hi</p>".to_vec())],
+                files: vec![file("index.html", b"<p>Hi</p>")],
                 missing: Vec::new(),
             }]
         );
@@ -693,15 +722,17 @@ mod tests {
     /// The daemon sends a page of up to 4 MiB, and the scan runs on a click.
     #[test]
     fn a_page_of_many_addresses_is_read_in_linear_time() {
+        use std::time::{Duration, Instant};
+
         let html: String = (0..60_000)
             .map(|index| format!(" src={index}.png"))
             .collect();
-        let started = std::time::Instant::now();
+        let started = Instant::now();
 
         let requests = start(&mut state(), agent(), "/srv/index.html", html);
 
         assert_eq!(requests.len(), MAX_FILES);
-        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]
@@ -734,8 +765,8 @@ mod tests {
             r#" <img src="a.png">"#.to_owned(),
         );
 
-        assert!(state.page_copies.reading(agent(), page));
-        assert!(!state.page_copies.reading(AgentId::new(8), page));
+        assert!(state.page_copies.is_reading(agent(), page));
+        assert!(!state.page_copies.is_reading(AgentId::new(8), page));
     }
 
     #[test]
@@ -762,8 +793,8 @@ mod tests {
         );
         let copy = copy_of(&requests);
 
-        let mut drafts = crate::state::Drafts::default();
-        crate::state::apply::forget_agent(&mut state, &mut drafts, agent());
+        let mut drafts = Drafts::default();
+        apply::forget_agent(&mut state, &mut drafts, agent());
         answered(&mut state, copy, "/srv/site/a.png", None);
 
         assert!(take_ready(&mut state).is_empty());
