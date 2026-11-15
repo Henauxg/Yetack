@@ -30,6 +30,7 @@ use crate::ui::chat_scroll::{
     self, CHAT_SCROLL_ID, ENTRY_CLASS, FOLD_BUTTON_CLASS, InView, JumpToLatest, NewDivider,
 };
 use crate::ui::code::{LineMarks, LineNumbers, diff_row};
+use crate::ui::find_folds::{self, FoldChip, FoldKey};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::last_instruction::LastInstruction;
 use crate::ui::loading::TranscriptSkeleton;
@@ -248,10 +249,10 @@ if (!window.agentsCockpitFolds) {
 "#;
 
 /// Diff rows an inline edit shows before "open in the file view".
-const EDIT_PREVIEW_ROWS: usize = 8;
+pub(super) const EDIT_PREVIEW_ROWS: usize = 8;
 
 /// Unchanged lines kept around each change of an inline edit.
-const EDIT_CONTEXT_LINES: usize = 2;
+pub(super) const EDIT_CONTEXT_LINES: usize = 2;
 
 /// The prefix and separator of an MCP tool's name, as in `mcp__server__tool`.
 const MCP_TOOL_PREFIX: &str = "mcp__";
@@ -361,6 +362,7 @@ impl ShownRows {
 pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
     use_hook(start_fold_script);
     let cockpit: Cockpit = use_context();
+    find_folds::use_chat_folds(cockpit);
     let Today(today) = use_context::<Today>();
     chat_scroll::use_chat_scroll(cockpit, in_view);
     // The agent whose conversation the chat opened, once its first page came or failed. A
@@ -773,7 +775,7 @@ fn WorkingLine(since: Option<TurnStart>, quiet_since: Option<Timestamp>, linked:
     };
     let quiet = quiet_since.map(|quiet_since| quiet_text(quiet_since, now));
     rsx! {
-        div { class: if linked { "step working linked-above" } else { "step working" },
+        div { class: if linked { "step working linked-above" } else { "step working" }, "data-find-skip": true,
             span { class: "step-marker",
                 span { class: "spinner", role: "status", aria_label: "Working" }
             }
@@ -794,7 +796,7 @@ fn quiet_text(quiet_since: Timestamp, now: SystemTime) -> String {
 }
 
 /// The items the chat shows at its top level, in order.
-fn top_items<'item>(
+pub(super) fn top_items<'item>(
     items: &[&'item TranscriptItem],
     loaded: &BTreeSet<ItemId>,
     sign_in_notice: Option<ItemId>,
@@ -980,7 +982,7 @@ pub fn ItemView(
             MarkdownView { agent, folder, markdown, item: Some(id) }
         },
         ItemBody::Thinking { text } => rsx! {
-            ThinkingView { text }
+            ThinkingView { id, text }
         },
         ItemBody::ToolCall(call) if call.edit.is_some() => rsx! {
             EditView { agent, id, folder, stage: CallStage::new(&call, awaits_approval), call }
@@ -1012,14 +1014,14 @@ pub fn ItemView(
                 | NoticeKind::TaskFailed
                 | NoticeKind::TaskStopped),
         } => rsx! {
-            NoticeLine { agent, folder, kind, text, detail }
+            NoticeLine { agent, folder, id, kind, text, detail }
         },
         ItemBody::Notice {
             text,
             detail: Some(detail),
             kind: NoticeKind::Plain,
         } => rsx! {
-            NoticeWithDetail { agent, folder, title: text, markdown: detail }
+            NoticeWithDetail { agent, folder, id, title: text, markdown: detail }
         },
         ItemBody::Notice {
             text,
@@ -1132,7 +1134,13 @@ fn grouped_times(firsts: &[&TranscriptItem], today: NaiveDate) -> BTreeSet<ItemI
 /// A notice that unfolds to the Markdown it titles, such as a skill's instructions, folded as
 /// thinking is.
 #[component]
-fn NoticeWithDetail(agent: AgentId, folder: PathBuf, title: String, markdown: String) -> Element {
+fn NoticeWithDetail(
+    agent: AgentId,
+    folder: PathBuf,
+    id: ItemId,
+    title: String,
+    markdown: String,
+) -> Element {
     let mut expanded = use_signal(|| false);
     let open = expanded();
     rsx! {
@@ -1142,6 +1150,9 @@ fn NoticeWithDetail(agent: AgentId, folder: PathBuf, title: String, markdown: St
                 aria_expanded: open,
                 onclick: move |_| expanded.toggle(),
                 span { class: "dim", "{title}" }
+                if !open {
+                    FoldChip { fold: FoldKey::Item(id) }
+                }
                 span { class: if open { "chevron open" } else { "chevron" }, Icon { kind: IconKind::ChevronRight, size: 12 } }
             }
             if open {
@@ -1160,6 +1171,7 @@ fn NoticeWithDetail(agent: AgentId, folder: PathBuf, title: String, markdown: St
 fn NoticeLine(
     agent: AgentId,
     folder: PathBuf,
+    id: ItemId,
     kind: NoticeKind,
     text: String,
     detail: Option<String>,
@@ -1195,6 +1207,9 @@ fn NoticeLine(
                 aria_expanded: open,
                 onclick: move |_| expanded.toggle(),
                 {content}
+                if !open {
+                    FoldChip { fold: FoldKey::Item(id) }
+                }
                 span { class: if open { "chevron open" } else { "chevron" }, Icon { kind: IconKind::ChevronRight, size: 12 } }
             }
             if open {
@@ -1222,7 +1237,7 @@ fn task_label(text: &str) -> (Option<&str>, &str) {
 }
 
 #[component]
-fn ThinkingView(text: String) -> Element {
+fn ThinkingView(id: ItemId, text: String) -> Element {
     let mut expanded = use_signal(|| false);
     let open = expanded();
     rsx! {
@@ -1232,6 +1247,9 @@ fn ThinkingView(text: String) -> Element {
                 aria_expanded: open,
                 onclick: move |_| expanded.toggle(),
                 span { class: "muted", "Thinking" }
+                if !open {
+                    FoldChip { fold: FoldKey::Item(id) }
+                }
                 span { class: if open { "chevron open" } else { "chevron" }, Icon { kind: IconKind::ChevronRight, size: 12 } }
             }
             if open {
@@ -1278,7 +1296,7 @@ impl CallStage {
 
 /// What a tool call's title line and its IN block show, by the kind of tool.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum ToolShape {
+pub(super) enum ToolShape {
     /// A shell command: the description Claude Code sends with it on the title line, the command
     /// in the IN block.
     Command {
@@ -1300,7 +1318,7 @@ enum ToolShape {
 }
 
 impl ToolShape {
-    fn new(call: &ToolCall) -> Self {
+    pub(super) fn new(call: &ToolCall) -> Self {
         if let Some((server, tool)) = mcp_parts(&call.tool) {
             let input = match &call.input {
                 Value::Object(fields) if !fields.is_empty() => {
@@ -1347,7 +1365,7 @@ impl ToolShape {
     }
 
     /// The text of the IN block.
-    fn input(&self) -> Option<&str> {
+    pub(super) fn input(&self) -> Option<&str> {
         match self {
             Self::Command { command, .. } => Some(command),
             Self::Mcp { input, .. } => input.as_deref(),
@@ -1632,10 +1650,11 @@ pub(crate) fn RunningMeta(agent: AgentId, item: ItemId) -> Element {
         None => RUNNING_WORD.to_owned(),
     };
     rsx! {
-        span { class: "tool-meta", "{text}" }
+        span { class: "tool-meta", "data-find-skip": true, "{text}" }
         if let Some(task) = task() {
             button {
                 class: "call-stop",
+                "data-find-skip": true,
                 aria_label: "Stop this call",
                 title: "Stop this call: Claude gets it as stopped, goes on, and reads the messages it has",
                 onclick: move |event| {
@@ -1712,7 +1731,7 @@ fn error_line(output: &str) -> Option<String> {
 }
 
 /// A tool whose output the chat leaves out once it ran: the file view shows what a `Read` read.
-fn hides_output(call: &ToolCall, stage: CallStage) -> bool {
+pub(super) fn hides_output(call: &ToolCall, stage: CallStage) -> bool {
     call.tool == file_edits::READ_TOOL && matches!(stage, CallStage::Done | CallStage::Failed)
 }
 
@@ -1843,6 +1862,9 @@ fn ToolView(agent: AgentId, id: ItemId, call: ToolCall, stage: CallStage) -> Ele
                 } else if !meta.is_empty() {
                     span { class: "tool-meta", "{meta}" }
                 }
+                if framed && !open {
+                    FoldChip { fold: FoldKey::Item(id) }
+                }
                 if framed {
                     CallFold { open, decided }
                 }
@@ -1946,6 +1968,9 @@ fn EditView(
                         }
                     },
                 }
+                if foldable && !open {
+                    FoldChip { fold: FoldKey::Item(id) }
+                }
                 if foldable {
                     CallFold { open, decided }
                 }
@@ -2013,6 +2038,9 @@ fn SubagentView(
                 span { class: "tool-name", "Agent" }
                 span { class: "subagent-title", "{call.summary}" }
                 span { class: "tool-meta", "{meta}" }
+                if !open {
+                    FoldChip { fold: FoldKey::Item(id) }
+                }
                 span { class: if open { "chevron open" } else { "chevron" }, Icon { kind: IconKind::ChevronRight, size: 12 } }
             }
             if open {
@@ -2061,6 +2089,9 @@ pub(crate) fn CompactItem(
                             {title}
                             if !meta.is_empty() {
                                 span { class: "tool-meta", "{meta}" }
+                            }
+                            if !open {
+                                FoldChip { fold: FoldKey::Item(item.id) }
                             }
                             span { class: if open { "chevron open" } else { "chevron" }, Icon { kind: IconKind::ChevronRight, size: 12 } }
                         }

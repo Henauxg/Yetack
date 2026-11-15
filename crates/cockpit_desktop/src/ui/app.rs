@@ -15,6 +15,7 @@ use crate::ui::composer::Composer;
 use crate::ui::dialogs::Dialogs;
 use crate::ui::file_view::FileViewPanel;
 use crate::ui::files_pane::{FilesPane, TreeMenu};
+use crate::ui::find::{ChatFindBar, use_find};
 use crate::ui::header::Header;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::no_daemon::NoDaemonScreen;
@@ -42,6 +43,7 @@ pub fn App() -> Element {
     use_clock();
     use_bridge(cockpit);
     use_quotes(cockpit);
+    use_find(cockpit);
     use_call_detail(cockpit);
     use_splitter(cockpit);
     use_reorder(cockpit);
@@ -125,6 +127,7 @@ pub fn App() -> Element {
                         "Not connected to the daemon. The app retries on its own; what you see may be out of date."
                     }
                 }
+                ChatFindBar {}
                 div { class: "chat-area",
                     TranscriptView { in_view }
                     QuoteLayer {}

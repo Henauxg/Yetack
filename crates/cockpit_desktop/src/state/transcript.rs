@@ -36,6 +36,9 @@ impl HistoryState {
 pub struct Transcript {
     items: BTreeMap<ItemId, TranscriptItem>,
     history: HistoryState,
+    /// Counts the changes of `items`, so that what the app works out from them is kept until the
+    /// next one.
+    revision: u64,
 }
 
 /// What a card waiting for an answer asks, which decides what the Y, N and number keys do.
@@ -94,6 +97,14 @@ impl Transcript {
         self.history = history;
     }
 
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    fn changed(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
+    }
+
     pub fn first_id(&self) -> Option<ItemId> {
         self.items.keys().next().copied()
     }
@@ -114,6 +125,7 @@ impl Transcript {
 
     pub fn append(&mut self, item: TranscriptItem) {
         self.items.insert(item.id, item);
+        self.changed();
     }
 
     /// Drops the oldest items past `kept`, and marks that older items exist, so that scrolling up
@@ -131,6 +143,9 @@ impl Transcript {
             self.items.pop_first();
             dropped = true;
         }
+        if dropped {
+            self.changed();
+        }
         if let (true, HistoryState::Loaded { has_older }) = (dropped, &mut self.history) {
             *has_older = true;
         }
@@ -141,6 +156,7 @@ impl Transcript {
     pub fn change(&mut self, item: TranscriptItem) {
         if let Some(held) = self.items.get_mut(&item.id) {
             *held = item;
+            self.changed();
         }
     }
 
@@ -150,6 +166,7 @@ impl Transcript {
         for item in page.items {
             self.items.entry(item.id).or_insert(item);
         }
+        self.changed();
         self.history = HistoryState::Loaded {
             has_older: page.older_items == OlderItems::Exist,
         };

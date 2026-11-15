@@ -7,6 +7,7 @@ use serde::Deserialize;
 use super::actions::{self, Direction, Step};
 use super::app_state::{AgentEntry, AppState};
 use super::drafts::Drafts;
+use super::find::{self, FindPane};
 use super::requests::Outgoing;
 use super::transcript::WaitingKind;
 use super::ui_state::{Dialog, PaletteOrigin, Popover};
@@ -44,6 +45,12 @@ pub struct KeyPress {
     /// received yet.
     #[serde(default)]
     pub composer_text: String,
+    /// The pane the focus is in, whose find Ctrl+F opens and Esc closes.
+    #[serde(default)]
+    pub pane: FindPane,
+    /// The page's selection, with a command's shortcut: Ctrl+F looks for it.
+    #[serde(default)]
+    pub selection: String,
 }
 
 /// Esc with nothing left open: the selected agent's turn stops, at once or after the dialog that
@@ -70,8 +77,9 @@ fn run(
     state: &mut AppState,
     drafts: &mut Drafts,
     command: Command,
-    target: KeyTarget,
+    press: &KeyPress,
 ) -> Vec<Outgoing> {
+    let target = press.target;
     let no_dialog = state.ui.dialog.is_none();
     match command {
         Command::Switcher => actions::toggle_switcher(state, drafts),
@@ -79,6 +87,7 @@ fn run(
         Command::OpenFile => open_file::toggle(state, drafts),
         Command::FilesPane => file_tree::toggle_pane(state),
         Command::AgentMap => agent_map::toggle(state),
+        Command::Find if no_dialog => find::open(state, drafts, press.pane, &press.selection),
         // Asks to close the selected agent, and confirms when asked.
         Command::CloseAgent => {
             return match (&state.ui.dialog, state.ui.selected) {
@@ -104,7 +113,11 @@ fn run(
         Command::MoveDown if no_dialog && target != KeyTarget::Field => {
             return actions::move_selected(state, Direction::Down);
         }
-        Command::MarkToHandle | Command::Rename | Command::MoveUp | Command::MoveDown => {}
+        Command::Find
+        | Command::MarkToHandle
+        | Command::Rename
+        | Command::MoveUp
+        | Command::MoveDown => {}
     }
     Vec::new()
 }
@@ -125,7 +138,7 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
     let bound = Chord::of(&press.key, command, press.alt, press.shift)
         .and_then(|chord| state.prefs.keys.command(&chord));
     if let Some(bound) = bound {
-        return run(state, drafts, bound, press.target);
+        return run(state, drafts, bound, press);
     }
     // Esc closes what is open first. Only then does it stop a busy agent, and by default after a
     // dialog, so that an Esc meant to close something never cuts a turn short.
@@ -143,8 +156,12 @@ pub fn handle_key(state: &mut AppState, drafts: &mut Drafts, press: &KeyPress) -
         if state.ui.close_overlays() {
             return Vec::new();
         }
-        // In another text field, such as a search, Esc never stops an agent.
+        // In another text field, such as a search, Esc never stops an agent. A find's own field
+        // closes its find.
         if press.target == KeyTarget::Field {
+            return Vec::new();
+        }
+        if find::close_on_escape(state, press.pane) {
             return Vec::new();
         }
         return stop_on_escape(state);
@@ -336,6 +353,8 @@ mod tests {
             meta: false,
             target,
             composer_text: String::new(),
+            pane: FindPane::Chat,
+            selection: String::new(),
         }
     }
 
@@ -518,6 +537,58 @@ mod tests {
             "Esc on the dialog keeps the agent working"
         );
         assert_eq!(state.ui.dialog, None);
+    }
+
+    #[test]
+    fn ctrl_f_opens_the_chat_find_on_the_selection() {
+        let mut drafts = Drafts::default();
+        let mut state = state(AgentStatus::Idle, None);
+        let find = KeyPress {
+            selection: "lexer.rs".to_owned(),
+            ..ctrl("f")
+        };
+
+        handle_key(&mut state, &mut drafts, &find);
+
+        assert!(find::is_open(&state, FindPane::Chat, AgentId::new(1)));
+        let query = drafts.finds.get(FindPane::Chat, AgentId::new(1));
+        assert_eq!(query.map(|draft| draft.query.as_str()), Some("lexer.rs"));
+
+        // Behind a dialog, Ctrl+F opens nothing.
+        let mut state = self::state(AgentStatus::Idle, None);
+        state.ui.dialog = Some(Dialog::Switcher);
+        handle_key(&mut state, &mut drafts, &find);
+        assert!(!find::is_open(&state, FindPane::Chat, AgentId::new(1)));
+    }
+
+    #[test]
+    fn escape_closes_the_find_before_it_stops_a_working_agent() {
+        let mut drafts = Drafts::default();
+        let mut state = state(AgentStatus::Working, None);
+        find::open(&mut state, &mut drafts, FindPane::Chat, "");
+
+        // In a text field, such as the find's own, Esc leaves the find to the field.
+        handle_key(
+            &mut state,
+            &mut drafts,
+            &press(KEY_ESCAPE, KeyTarget::Field),
+        );
+        assert!(find::is_open(&state, FindPane::Chat, AgentId::new(1)));
+
+        handle_key(
+            &mut state,
+            &mut drafts,
+            &press(KEY_ESCAPE, KeyTarget::Composer),
+        );
+        assert!(!find::is_open(&state, FindPane::Chat, AgentId::new(1)));
+        assert_eq!(state.ui.dialog, None);
+
+        handle_key(
+            &mut state,
+            &mut drafts,
+            &press(KEY_ESCAPE, KeyTarget::Composer),
+        );
+        assert_eq!(state.ui.dialog, Some(Dialog::StopAgent(AgentId::new(1))));
     }
 
     #[test]

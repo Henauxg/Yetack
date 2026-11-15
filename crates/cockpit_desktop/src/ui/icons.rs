@@ -7,6 +7,8 @@ pub enum IconKind {
     Search,
     Plus,
     ChevronDown,
+    /// The find's previous match.
+    ChevronUp,
     ChevronRight,
     ChevronLeft,
     Close,
@@ -86,6 +88,7 @@ impl IconKind {
             }
             Self::Plus => r#"<path d="M12 5v14"></path><path d="M5 12h14"></path>"#,
             Self::ChevronDown => r#"<path d="M6 9l6 6 6-6"></path>"#,
+            Self::ChevronUp => r#"<path d="M6 15l6-6 6 6"></path>"#,
             Self::ChevronRight => r#"<path d="M9 6l6 6-6 6"></path>"#,
             Self::ChevronLeft => r#"<path d="M15 6l-6 6 6 6"></path>"#,
             Self::Close => r#"<path d="M6 6l12 12"></path><path d="M18 6L6 18"></path>"#,

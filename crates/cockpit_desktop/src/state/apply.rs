@@ -216,6 +216,10 @@ pub fn apply_catchup(
         .ui
         .chat_new_from
         .retain(|agent, _| agents.contains_key(agent));
+    state
+        .ui
+        .chat_finds
+        .retain(|agent| agents.contains_key(agent));
     drafts.retain_agents(|agent| agents.contains_key(&agent));
     forget_unlisted_agents(state, machine);
     let arrived: Vec<AgentId> = state
@@ -410,6 +414,7 @@ pub fn forget_agent(
     state.ui.finished_tasks_unfolded.remove(&agent);
     state.ui.chat_scrolled_up.remove(&agent);
     state.ui.chat_new_from.remove(&agent);
+    state.ui.chat_finds.remove(&agent);
     drafts.retain_agents(|kept| kept != agent);
     state.ui.title_edit.take_if(|edit| edit.agent == agent);
     project_menu::prune(state);

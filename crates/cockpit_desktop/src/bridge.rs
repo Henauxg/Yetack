@@ -14,7 +14,7 @@ use crate::state::{
     ANSWER_KEYS, AppState, Dialog, KeyPress, PAGE_RELOAD_KEY, PaletteOrigin, Popover, Utf16Offset,
     WaitingKind, accounts, actions, agent_map, handle_key, sidebar_keys,
 };
-use crate::ui::{FILES_PANE_ID, sidebar_item_id};
+use crate::ui::{FILE_VIEW_ID, FILES_PANE_ID, sidebar_item_id};
 
 /// The composer's text area, whose keys the script treats apart.
 pub const COMPOSER_ID: &str = "composer";
@@ -55,6 +55,9 @@ const UNDO_PAUSE_MS: u32 = 500;
 
 /// The undo steps a text field keeps, and as many redo steps.
 const UNDO_STEPS: u16 = 200;
+
+/// Ctrl+F looks for a selection of at most a line: a longer one need not cross to the app whole.
+const MAX_SELECTION: usize = 1_000;
 
 /// What a note calls an image pasted into the window.
 const PASTED_IMAGE: &str = "The pasted image";
@@ -274,6 +277,8 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   event.preventDefault();
+  // A command's shortcut takes the selection with it, which Ctrl+F looks for.
+  const selection = bound === undefined ? "" : (document.getSelection()?.toString() ?? "").slice(0, settings.max_selection);
   send({
     type: "key",
     key,
@@ -283,6 +288,8 @@ document.addEventListener("keydown", (event) => {
     meta: event.metaKey,
     target: where,
     composer_text: text,
+    pane: target !== null && target.closest(`#${settings.file_view_id}`) !== null ? "file" : "chat",
+    selection,
   });
 }, true);
 // The composer's text goes to the app with the caret, which tells the "/" word being typed.
@@ -505,6 +512,10 @@ struct Settings {
     takes_escape_attribute: &'static str,
     /// The page's global that keeps the element a menu took the focus from.
     menu_focus_key: &'static str,
+    /// Keys pressed in the file view open and close its find.
+    file_view_id: &'static str,
+    /// The most characters of the selection a shortcut takes with it.
+    max_selection: usize,
 }
 
 /// A command's shortcut, and where the script takes it.
@@ -633,6 +644,8 @@ pub fn use_bridge(cockpit: Cockpit) {
             records_keys_attribute: RECORDS_KEYS_ATTRIBUTE,
             takes_escape_attribute: TAKES_ESCAPE_ATTRIBUTE,
             menu_focus_key: MENU_FOCUS_KEY,
+            file_view_id: FILE_VIEW_ID,
+            max_selection: MAX_SELECTION,
         }) {
             tracing::warn!("cannot start the page's script: {error}");
         }
@@ -873,6 +886,7 @@ mod tests {
 
     use super::*;
     use crate::machine::MachineId;
+    use crate::state::find::FindPane;
     use crate::state::projects::ProjectKey;
     use crate::state::{state_with, summary};
 
@@ -927,10 +941,18 @@ mod tests {
     #[test]
     fn key_presses_parse_from_the_script() {
         let line = r#"{"type":"key","key":"y","ctrl":false,"shift":false,"alt":false,"meta":false,"target":"page","composer_text":""}"#;
+        let find = r#"{"type":"key","key":"f","ctrl":true,"shift":false,"alt":false,"meta":false,"target":"page","composer_text":"","pane":"file","selection":"lexer"}"#;
 
         let message: BridgeMessage = serde_json::from_str(line).unwrap();
+        let find: BridgeMessage = serde_json::from_str(find).unwrap();
 
-        assert!(matches!(message, BridgeMessage::Key(press) if press.key == "y"));
+        assert!(
+            matches!(message, BridgeMessage::Key(press) if press.key == "y" && press.pane == FindPane::Chat)
+        );
+        assert!(matches!(
+            find,
+            BridgeMessage::Key(press) if press.pane == FindPane::File && press.selection == "lexer"
+        ));
     }
 
     #[test]
@@ -998,6 +1020,8 @@ mod tests {
             records_keys_attribute: RECORDS_KEYS_ATTRIBUTE,
             takes_escape_attribute: TAKES_ESCAPE_ATTRIBUTE,
             menu_focus_key: MENU_FOCUS_KEY,
+            file_view_id: FILE_VIEW_ID,
+            max_selection: 1_000,
         };
         let mode = KeyMode {
             answer_letters: true,
@@ -1037,6 +1061,8 @@ mod tests {
                 "records_keys_attribute": "data-records-keys",
                 "takes_escape_attribute": "data-takes-escape",
                 "menu_focus_key": "cockpitFocusBeforeMenu",
+                "file_view_id": "file-view",
+                "max_selection": 1000,
             })
         );
         assert_eq!(

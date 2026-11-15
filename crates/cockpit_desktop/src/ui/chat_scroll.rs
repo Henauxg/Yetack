@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::bridge::RECORDS_KEYS_ATTRIBUTE;
 use crate::connection::Cockpit;
 use crate::state::{RevealPlace, actions};
+use crate::ui::find::REVEAL_EVENT;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::splitter::FILE_VIEW_ID;
 
@@ -376,6 +377,22 @@ const reveal = (entryId, place) => {
   element.classList.add(settings.revealed_class);
   element.addEventListener("animationend", () => element.classList.remove(settings.revealed_class), { once: true });
 };
+// The find scrolls the chat by `delta` to bring a match into view. The match's entry is the anchor,
+// as for a reveal.
+document.addEventListener(settings.find_reveal_event, (event) => {
+  const entry = document.getElementById(event.detail.entry_id);
+  const element = entry === null ? null : shown(entry);
+  if (box === null || element === null) {
+    return;
+  }
+  box.scrollTop += event.detail.delta;
+  corrected = box.scrollTop;
+  knowGap();
+  pinned = null;
+  following = gapBelow() <= settings.bottom_threshold_px;
+  anchor = following ? null : { id: entry.id, top: element.getBoundingClientRect().top - boxTop() };
+  requestAnimationFrame(() => requestAnimationFrame(report));
+});
 document.addEventListener("click", (event) => {
   if (!(event.target instanceof Element)) {
     return;
@@ -433,6 +450,8 @@ struct Settings {
     /// Marks the element that records a shortcut, whose keys the script leaves alone.
     records_keys_attribute: &'static str,
     revealed_class: &'static str,
+    /// The event by which the find scrolls the chat to a match.
+    find_reveal_event: &'static str,
     bottom_threshold_px: u16,
     /// The room an entry the chat scrolls to keeps above it.
     reveal_top_px: u16,
@@ -540,6 +559,7 @@ pub fn use_chat_scroll(cockpit: Cockpit, mut in_view: Signal<Option<InView>>) {
             file_view_id: FILE_VIEW_ID,
             records_keys_attribute: RECORDS_KEYS_ATTRIBUTE,
             revealed_class: REVEALED_CLASS,
+            find_reveal_event: REVEAL_EVENT,
             bottom_threshold_px: BOTTOM_THRESHOLD_PX,
             reveal_top_px: REVEAL_TOP_PX,
             wheel_up_ms: WHEEL_UP_MS,
@@ -629,6 +649,7 @@ mod tests {
             file_view_id: FILE_VIEW_ID,
             records_keys_attribute: RECORDS_KEYS_ATTRIBUTE,
             revealed_class: REVEALED_CLASS,
+            find_reveal_event: REVEAL_EVENT,
             bottom_threshold_px: BOTTOM_THRESHOLD_PX,
             reveal_top_px: REVEAL_TOP_PX,
             wheel_up_ms: WHEEL_UP_MS,
@@ -648,6 +669,7 @@ mod tests {
                 "file_view_id": "file-view",
                 "records_keys_attribute": "data-records-keys",
                 "revealed_class": "chat-revealed",
+                "find_reveal_event": "yetack-find-reveal",
                 "bottom_threshold_px": 40,
                 "reveal_top_px": 12,
                 "wheel_up_ms": 600,

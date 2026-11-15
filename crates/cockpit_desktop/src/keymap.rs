@@ -86,6 +86,7 @@ pub enum Command {
     OpenFile,
     FilesPane,
     AgentMap,
+    Find,
     Rename,
     MarkToHandle,
     CloseAgent,
@@ -136,6 +137,7 @@ impl Command {
             Self::OpenFile => "Open a file",
             Self::FilesPane => "Show or hide the files pane",
             Self::AgentMap => "Open the agent map",
+            Self::Find => "Find in the chat, or in the file view",
             Self::Rename => "Rename",
             Self::MarkToHandle => "Mark to handle",
             Self::CloseAgent => "Close",
@@ -147,9 +149,12 @@ impl Command {
 
     pub fn group(self) -> Group {
         match self {
-            Self::Switcher | Self::NewAgent | Self::OpenFile | Self::FilesPane | Self::AgentMap => {
-                Group::Anywhere
-            }
+            Self::Switcher
+            | Self::NewAgent
+            | Self::OpenFile
+            | Self::FilesPane
+            | Self::AgentMap
+            | Self::Find => Group::Anywhere,
             Self::Rename
             | Self::MarkToHandle
             | Self::CloseAgent
@@ -168,6 +173,7 @@ impl Command {
             | Self::OpenFile
             | Self::FilesPane
             | Self::AgentMap
+            | Self::Find
             | Self::MarkToHandle
             | Self::CloseAgent
             | Self::ReloadFile => Reach::Everywhere,
@@ -181,6 +187,7 @@ impl Command {
             Self::OpenFile => Chord::ctrl("o"),
             Self::FilesPane => Chord::ctrl("b"),
             Self::AgentMap => Chord::ctrl("m"),
+            Self::Find => Chord::ctrl("f"),
             Self::Rename => Chord::plain("F2"),
             Self::MarkToHandle => Chord::ctrl("h"),
             Self::CloseAgent => Chord::ctrl_shift("w"),
@@ -200,6 +207,7 @@ impl Command {
             | Self::OpenFile
             | Self::FilesPane
             | Self::AgentMap
+            | Self::Find
             | Self::Rename
             | Self::CloseAgent
             | Self::MoveUp
@@ -221,11 +229,23 @@ pub struct FixedShortcut {
     pub group: Group,
 }
 
-pub const FIXED: [FixedShortcut; 9] = [
+pub const FIXED: [FixedShortcut; 11] = [
     FixedShortcut {
         label: "Close what is open, else stop a busy agent",
         context: None,
         keys: &[&["Esc"]],
+        group: Group::Anywhere,
+    },
+    FixedShortcut {
+        label: "Next match",
+        context: Some("in a find"),
+        keys: &[&["Enter"], &["F3"]],
+        group: Group::Anywhere,
+    },
+    FixedShortcut {
+        label: "Previous match",
+        context: Some("in a find"),
+        keys: &[&[SHIFT, "Enter"], &[SHIFT, "F3"]],
         group: Group::Anywhere,
     },
     FixedShortcut {
@@ -792,6 +812,7 @@ mod tests {
                 "open_file",
                 "files_pane",
                 "agent_map",
+                "find",
                 "rename",
                 "mark_to_handle",
                 "close_agent",

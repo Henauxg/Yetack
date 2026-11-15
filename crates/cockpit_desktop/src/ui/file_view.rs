@@ -21,6 +21,7 @@ use crate::ui::code::{
     CopyButton, CopyLook, LineMarks, LineNumbers, diff_line, diff_row, lines_not_shown,
 };
 use crate::ui::file_list::FileListButton;
+use crate::ui::find::FileFindBox;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::markdown::MarkdownView;
 use crate::ui::splitter::FILE_VIEW_ID;
@@ -109,6 +110,7 @@ pub fn FileViewPanel() -> Element {
         _ => None,
     };
     let wrap = state.prefs.file_view.wrap;
+    let find_open = view.find;
     rsx! {
         section {
             id: FILE_VIEW_ID,
@@ -181,6 +183,9 @@ pub fn FileViewPanel() -> Element {
                     // The file's whole text, in the diff and the preview too.
                     CopyButton { text: copied_text, label: "Copy the file's text", look: CopyLook::IconOnly }
                 }
+            }
+            div { class: "file-find-anchor",
+                FileFindBox { agent, open: find_open }
             }
             div {
                 class: match (preview, wrap) {
