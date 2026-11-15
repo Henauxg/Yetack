@@ -130,7 +130,7 @@ fn read_listing(
     {
         return Err(ListDirError::GoesUp);
     }
-    let access = Access::new(folder, touched, home)?;
+    let access = Access::new(folder, touched, home);
     let asked = folder.join(path);
     let check_before_open = |path: &Path| {
         access.check_before_open(path).map_err(|error| match error {
@@ -413,8 +413,8 @@ fn describe(folder: &File, name: &CStr, listed: FileType) -> DirEntry {
     }
 }
 
-/// The files whose name holds `name`, whatever its case, in the agent's folder and the allowed
-/// checkouts, as `git ls-files` lists them, within the search's limits.
+/// The files whose name holds `name`, whatever its case, in the agent's folder and the checkouts
+/// it worked in, as `git ls-files` lists them, within the search's limits.
 pub(crate) async fn find_files(
     folder: PathBuf,
     touched: Vec<PathBuf>,
@@ -426,11 +426,11 @@ pub(crate) async fn find_files(
         return Ok(Vec::new());
     }
     let (access, folder) = tokio::task::spawn_blocking(move || {
-        let access = Access::new(&folder, &touched, home.as_deref())?;
-        Ok::<_, ReadFileError>((access, folder))
+        let access = Access::new(&folder, &touched, home.as_deref());
+        (access, folder)
     })
     .await
-    .map_err(read_file::join_error)??;
+    .map_err(read_file::join_error)?;
     let name_holds = |relative: &Path| {
         relative
             .file_name()
@@ -692,6 +692,20 @@ mod tests {
             layout.list(Path::new("src/main.rs")),
             Err(ListDirError::NotAFolder(_))
         ));
+    }
+
+    /// An agent stays in the list when its worktree is removed.
+    #[test]
+    fn a_folder_elsewhere_lists_when_the_agents_folder_is_gone() {
+        let layout = Layout::new();
+        std::fs::remove_dir_all(&layout.agent).unwrap();
+
+        let listing = layout.list(&layout.loose).unwrap();
+
+        assert_eq!(
+            names(&listing),
+            [("todo.txt", EntryKind::File, Some(5), EntryLink::Direct)]
+        );
     }
 
     #[cfg(unix)]

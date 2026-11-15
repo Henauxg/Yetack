@@ -81,12 +81,9 @@ pub(crate) struct Access {
 impl Access {
     /// `touched` holds the absolute paths of the files the agent read or changed. `home` is the
     /// home folder, which no checkout of the agent's may hold.
-    pub(crate) fn new(
-        folder: &Path,
-        touched: &[PathBuf],
-        home: Option<&Path>,
-    ) -> Result<Self, ReadFileError> {
-        let folder = canonical(folder).map_err(ReadFileError::NotFound)?;
+    pub(crate) fn new(folder: &Path, touched: &[PathBuf], home: Option<&Path>) -> Self {
+        // A removed worktree leaves its agent, whose views still open other files.
+        let folder = canonical(folder).unwrap_or_else(|_| folder.to_owned());
         // Compared with checkouts whose symlinks are resolved.
         let home: Option<PathBuf> =
             home.map(|home| canonical(home).unwrap_or_else(|_| home.to_owned()));
@@ -118,12 +115,12 @@ impl Access {
                 None => {}
             }
         }
-        Ok(Self {
+        Self {
             folder,
             checkouts,
             #[cfg(windows)]
             files,
-        })
+        }
     }
 
     /// Refuses a path the file system must not open even to resolve it: a device path, a name
@@ -145,8 +142,8 @@ impl Access {
         Ok(())
     }
 
-    /// A Unix path opens no device and reaches no other host before it is open: the checks on
-    /// the open file are enough.
+    /// Resolving a Unix path opens nothing and reaches no other host, so nothing is refused
+    /// before.
     #[cfg(unix)]
     pub(crate) fn check_before_open(&self, _asked: &Path) -> Result<(), ReadFileError> {
         Ok(())
@@ -240,6 +237,12 @@ pub(crate) fn read(access: &Access, path: &Path) -> Result<Content, ReadFileErro
     })?;
     // A link may lead to a file named `AUX`, which the path opens as the device.
     access.check_before_open(&resolved)?;
+    // Opening a device can act on it, so the type is checked first. The open file is checked
+    // again, in case a link was swapped in since.
+    let kind = std::fs::metadata(&resolved).map_err(ReadFileError::NotFound)?;
+    if !kind.is_file() {
+        return Err(ReadFileError::NotAFile);
+    }
     let file = open_to_read(&resolved).map_err(ReadFileError::NotFound)?;
     let metadata = file.metadata().map_err(ReadFileError::Io)?;
     if !metadata.is_file() {
@@ -294,7 +297,7 @@ pub(crate) async fn find_and_read(
         let folder = folder.clone();
         let path = path.clone();
         tokio::task::spawn_blocking(move || {
-            let access = Access::new(&folder, &touched, home.as_deref())?;
+            let access = Access::new(&folder, &touched, home.as_deref());
             let found = read_or_match_touched(&access, &folder, &touched, &path)?;
             Ok::<_, ReadFileError>((access, found))
         })
@@ -580,12 +583,14 @@ pub(crate) fn edits_of(
     kept
 }
 
-/// Opens a file for reading without waiting: opening a FIFO waits for a writer otherwise.
+/// Opens a file for reading without waiting: opening a FIFO waits for a writer otherwise. A
+/// terminal it opens does not become the daemon's controlling terminal, whose hangup would end
+/// the daemon.
 #[cfg(unix)]
 pub(crate) fn open_to_read(path: &Path) -> io::Result<File> {
     use rustix::fs::{Mode, OFlags};
 
-    let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC;
     Ok(File::from(rustix::fs::open(path, flags, Mode::empty())?))
 }
 
@@ -608,7 +613,7 @@ mod tests {
     use super::*;
 
     fn only_folder(folder: &Path) -> Access {
-        Access::new(folder, &[], None).unwrap()
+        Access::new(folder, &[], None)
     }
 
     fn text(text: &str) -> Content {
@@ -666,7 +671,7 @@ mod tests {
         /// when the system's temporary folder sits in one, never counts.
         fn access(&self, touched: &[PathBuf]) -> Access {
             let home = canonical(self.temp.path()).unwrap();
-            Access::new(&self.agent, touched, Some(&home)).unwrap()
+            Access::new(&self.agent, touched, Some(&home))
         }
     }
 
@@ -942,7 +947,7 @@ mod tests {
         let home = canonical(layout.temp.path()).unwrap();
         std::fs::create_dir(home.join(GIT_ENTRY)).unwrap();
         write(&home.join("dotfile.txt"), "dotfile\n");
-        let access = Access::new(&layout.agent, &[home.join("dotfile.txt")], Some(&home)).unwrap();
+        let access = Access::new(&layout.agent, &[home.join("dotfile.txt")], Some(&home));
 
         let roots = access.search_roots(layout.agent.clone());
 
@@ -965,8 +970,7 @@ mod tests {
             &layout.agent,
             &[home.join("dotfile.txt")],
             Some(&linked_home),
-        )
-        .unwrap();
+        );
 
         let roots = access.search_roots(layout.agent.clone());
 
@@ -1009,6 +1013,44 @@ mod tests {
             .recv_timeout(Duration::from_secs(5))
             .expect("an answer without a writer on the FIFO");
         assert!(matches!(read, Err(ReadFileError::NotAFile)), "{read:?}");
+    }
+
+    /// Opening a device can act on it: a serial port resets the board it drives.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn what_is_not_a_regular_file_is_refused_before_it_opens() {
+        use std::ffi::CStr;
+        use std::mem::MaybeUninit;
+
+        use rustix::fs::inotify::{self, CreateFlags, WatchFlags};
+
+        let temp = tempfile::tempdir().unwrap();
+        rustix::fs::mkfifoat(rustix::fs::CWD, temp.path().join("notes.txt"), Mode::RUSR).unwrap();
+        let access = only_folder(temp.path());
+        let watch = inotify::init(CreateFlags::NONBLOCK | CreateFlags::CLOEXEC).unwrap();
+        inotify::add_watch(&watch, temp.path(), WatchFlags::OPEN).unwrap();
+
+        let read = read(&access, Path::new("notes.txt"));
+
+        assert!(matches!(read, Err(ReadFileError::NotAFile)), "{read:?}");
+        let mut buffer = [MaybeUninit::uninit(); 1024];
+        let mut events = inotify::Reader::new(&watch, &mut buffer);
+        let opened = events
+            .next()
+            .map(|event| event.file_name().map(CStr::to_owned));
+        assert_eq!(opened, Err(rustix::io::Errno::AGAIN));
+    }
+
+    /// An agent stays in the list when its worktree is removed.
+    #[tokio::test]
+    async fn a_file_elsewhere_reads_when_the_agents_folder_is_gone() {
+        let layout = Layout::new();
+        std::fs::remove_dir_all(&layout.agent).unwrap();
+        let todo = layout.loose.join("todo.txt");
+
+        let found = find(&layout, &[], todo.to_str().unwrap()).await;
+
+        assert_eq!(found.unwrap(), file(todo, "todo\n"));
     }
 
     #[test]
