@@ -205,6 +205,9 @@ pub fn apply_catchup(
         .file_views
         .retain(|agent, _| agents.contains_key(agent));
     state
+        .page_copies
+        .retain_agents(|agent| agents.contains_key(&agent));
+    state
         .ui
         .finished_tasks_unfolded
         .retain(|agent| agents.contains_key(agent));
@@ -411,6 +414,7 @@ pub fn forget_agent(
         .mcp_reconnects
         .retain(|(owner, _), _| *owner != agent);
     state.ui.file_views.remove(&agent);
+    state.page_copies.retain_agents(|kept| kept != agent);
     state.ui.finished_tasks_unfolded.remove(&agent);
     state.ui.chat_scrolled_up.remove(&agent);
     state.ui.chat_new_from.remove(&agent);
@@ -575,7 +579,7 @@ mod tests {
     use crate::state::find::{self, FindPane};
     use crate::state::projects::ProjectKey;
     use crate::state::ui_state::{Block, Dialog, PaletteOrigin, Popover, TitleEdit, TitlePlace};
-    use crate::state::{Loadable, MachineState, agent_map, chat_images, mcp_reconnect};
+    use crate::state::{Loadable, MachineState, agent_map, chat_images, mcp_reconnect, page_copy};
 
     #[test]
     fn a_snapshot_closes_the_stop_dialog_of_a_turn_that_ended_meanwhile() {
@@ -597,6 +601,36 @@ mod tests {
         );
 
         assert_eq!(state.ui.dialog, None);
+    }
+
+    #[test]
+    fn a_snapshot_forgets_the_page_copies_of_the_agents_it_no_longer_lists() {
+        let mut state = state_with(vec![
+            summary(1, AgentStatus::Idle),
+            summary(2, AgentStatus::Idle),
+        ]);
+        let page = "/srv/site/index.html";
+        let html = r#" <img src="a.png">"#;
+        for agent in [1, 2] {
+            page_copy::start(&mut state, AgentId::new(agent), page, html.to_owned());
+        }
+
+        apply_catchup(
+            &mut state,
+            &mut Drafts::default(),
+            Catchup::Snapshot(Snapshot {
+                agents: vec![summary(1, AgentStatus::Idle)],
+                plan_usage: PlanUsage::default(),
+                settings: Settings::default(),
+                last_seq: None,
+                accounts: Vec::new(),
+                other_plan_usage: Vec::new(),
+            }),
+            MachineId::THIS,
+        );
+
+        assert!(state.page_copies.is_reading(AgentId::new(1), page));
+        assert!(!state.page_copies.is_reading(AgentId::new(2), page));
     }
 
     #[test]

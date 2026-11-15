@@ -30,6 +30,8 @@ serde_json.workspace = true
 sha2 = "0.10.9"
 similar = { version = "3.2.1", features = ["inline"] }
 strum.workspace = true
+# A private folder for the copy of a server's web page, which the browser opens.
+tempfile.workspace = true
 # The pure Rust regex engine: no C library to build.
 syntect = { version = "5.3.0", default-features = false, features = ["regex-fancy"] }
 thiserror.workspace = true
@@ -57,9 +59,6 @@ webkit2gtk = "2.0.1"
 # Waits for the app that started an updated one to end.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
-
-[dev-dependencies]
-tempfile.workspace = true
 
 [lints]
 workspace = true

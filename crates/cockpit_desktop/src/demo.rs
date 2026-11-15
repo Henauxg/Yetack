@@ -2472,9 +2472,11 @@ fn files() -> [(PathBuf, &'static str); 26] {
     ]
 }
 
-/// The folders the sample's agents reach, as the daemon allows them: the parser's folder and the
-/// worktrees beside it.
-const REACHABLE: [&str; 3] = [
+/// The size of a worktree's `.git` file, which names the main checkout's folder for it.
+const GIT_FILE_SIZE: u64 = 68;
+
+/// The parser's folder and the worktrees beside it, which exist even without a sample file.
+const CHECKOUTS: [&str; 3] = [
     PARSER_FOLDER,
     PARSER_COLUMNS_WORKTREE,
     PARSER_BENCH_WORKTREE,
@@ -2484,12 +2486,6 @@ const REACHABLE: [&str; 3] = [
 /// that hold them.
 fn list_dir(path: &Path) -> Result<ResponseBody, RequestError> {
     let folder = in_folder(PARSER_FOLDER, path);
-    if !REACHABLE.iter().any(|root| folder.starts_with(root)) {
-        return Err(refused(
-            ErrorCode::InvalidRequest,
-            "the folder is outside the agent's folder and the checkouts it worked in",
-        ));
-    }
     let mut entries: Vec<DirEntry> = Vec::new();
     for (file, text) in files() {
         let Ok(rest) = file.strip_prefix(&folder) else {
@@ -2520,11 +2516,27 @@ fn list_dir(path: &Path) -> Result<ResponseBody, RequestError> {
             },
         });
     }
-    if entries.is_empty() && !REACHABLE.iter().any(|root| folder == Path::new(root)) {
+    let checkout = CHECKOUTS.iter().any(|root| folder == Path::new(root));
+    if entries.is_empty() && !checkout {
         return Err(refused(
             ErrorCode::NotFound,
             &format!("{} does not exist", folder.display()),
         ));
+    }
+    if checkout {
+        // A worktree's `.git` is a file.
+        let main = folder == Path::new(PARSER_FOLDER);
+        entries.push(DirEntry {
+            name: ".git".to_owned(),
+            kind: if main {
+                EntryKind::Folder
+            } else {
+                EntryKind::File
+            },
+            size: (!main).then_some(GIT_FILE_SIZE),
+            link: EntryLink::Direct,
+            ignore: GitIgnore::Ignored,
+        });
     }
     entries.sort_by_key(|entry| (entry.kind != EntryKind::Folder, entry.name.to_lowercase()));
     Ok(ResponseBody::Directory(DirListing {
@@ -5112,6 +5124,7 @@ pub struct ParseError {
         assert_eq!(
             names(""),
             [
+                ".git",
                 "benches",
                 "docs",
                 "examples",
@@ -5126,10 +5139,18 @@ pub struct ParseError {
                 "README.md"
             ]
         );
-        assert_eq!(names(PARSER_COLUMNS_WORKTREE), ["crates"]);
+        assert_eq!(names(PARSER_COLUMNS_WORKTREE), ["crates", ".git"]);
+        assert_eq!(
+            names("/home/dev/projects"),
+            [
+                "calc-parser",
+                "calc-parser_benchmarks-for-large-inputs",
+                "calc-parser_GH42Q-report-the-column-of-every-unexpected-token",
+            ]
+        );
         assert!(matches!(
-            list_dir(Path::new("/home/dev/projects")),
-            Err(RequestError::Failed(body)) if body.code == ErrorCode::InvalidRequest
+            list_dir(Path::new("/home/dev/elsewhere")),
+            Err(RequestError::Failed(body)) if body.code == ErrorCode::NotFound
         ));
         assert!(matches!(
             find_files("LEX"),

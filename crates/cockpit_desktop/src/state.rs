@@ -29,6 +29,7 @@ pub mod menu_keys;
 pub mod no_daemon;
 pub mod notification_levels;
 pub mod open_file;
+pub mod page_copy;
 pub mod project_menu;
 pub mod projects;
 pub mod quotes;

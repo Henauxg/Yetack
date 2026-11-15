@@ -6,16 +6,19 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use cockpit_protocol::{AgentId, FileEdit};
+use dioxus::dioxus_core::spawn_forever;
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use crate::connection::{Clock, Cockpit};
+use crate::daemon_label::DaemonPlace;
 use crate::keymap::Command;
+use crate::machine::MachineId;
 use crate::path_style::PathStyle;
 use crate::render::{self, Diff, Language, MAX_RENDERED_LINES, diff_lines};
 use crate::state::{
     FileFreshness, FileRead, FileUpdate, Loadable, Popover, Reread, TabMenuOrigin, ViewMode,
-    actions, chat_images, file_edits, file_reread, file_tree, is_markdown, tab_menu,
+    actions, chat_images, file_edits, file_reread, file_tree, is_markdown, page_copy, tab_menu,
 };
 use crate::ui::code::{
     CopyButton, CopyLook, LineMarks, LineNumbers, diff_line, diff_row, lines_not_shown,
@@ -26,7 +29,7 @@ use crate::ui::icons::{Icon, IconKind};
 use crate::ui::markdown::MarkdownView;
 use crate::ui::splitter::FILE_VIEW_ID;
 use crate::ui::zoom::ZoomImage;
-use crate::{bridge, format};
+use crate::{bridge, browser, format, page_files};
 
 /// The shown tab's id, which keeps it in view in a long row of tabs.
 const SHOWN_TAB_ID: &str = "file-tab-shown";
@@ -115,6 +118,15 @@ pub fn FileViewPanel() -> Element {
         Loadable::Loaded(FileRead::Text { text, .. }) => Some(text.clone()),
         _ => None,
     };
+    let page_text = copied_text
+        .as_ref()
+        .filter(|_| page_copy::is_page(&full))
+        .cloned();
+    let on_this_computer = state
+        .machines
+        .get(MachineId::of(agent))
+        .is_some_and(|machine| machine.daemon.place != DaemonPlace::Ssh);
+    let reading_page = state.page_copies.is_reading(agent, &full);
     let wrap = state.prefs.file_view.wrap;
     let find_open = view.find;
     let body_layout = match (preview, wrap) {
@@ -193,6 +205,9 @@ pub fn FileViewPanel() -> Element {
                     }
                     // The file's whole text, in the diff and the preview too.
                     CopyButton { text: copied_text, label: "Copy the file's text", look: CopyLook::IconOnly }
+                    if let Some(text) = page_text {
+                        OpenInBrowserButton { agent, path: full.clone(), text, on_this_computer, reading: reading_page }
+                    }
                 }
             }
             div { class: "file-find-anchor",
@@ -255,6 +270,84 @@ pub fn FileViewPanel() -> Element {
             FileFoot { agent, note, freshness }
         }
     }
+}
+
+/// Opens the web page the view shows, at `path`, in the browser. A page on this computer opens
+/// as it is, with every file it loads. The browser cannot reach a server's: the daemon reads the
+/// files the page names, and the browser opens a copy ([`use_page_copies`]).
+#[component]
+fn OpenInBrowserButton(
+    agent: AgentId,
+    path: String,
+    text: String,
+    on_this_computer: bool,
+    reading: bool,
+) -> Element {
+    let cockpit: Cockpit = use_context();
+    let title = match (on_this_computer, reading) {
+        (true, _) => "Open the page in the browser",
+        (false, false) => "Open a copy of the page and of the files it names in the browser",
+        (false, true) => "Reading the files the page names…",
+    };
+    rsx! {
+        button {
+            class: "icon-button framed",
+            aria_label: "Open in the browser",
+            aria_busy: reading,
+            disabled: reading,
+            title,
+            onclick: move |_| {
+                if on_this_computer {
+                    let page = PathBuf::from(&path);
+                    // Not tied to the button, which may leave the screen before the opener is done.
+                    spawn_forever(async move {
+                        if let Err(error) = browser::open_page(page).await {
+                            cockpit.update(|state| state.ui.report(format!("Cannot open the page: {error}")));
+                        }
+                    });
+                } else {
+                    let text = text.clone();
+                    cockpit.change(|state| page_copy::start(state, agent, &path, text));
+                }
+            },
+            if reading {
+                span { class: "spinner", role: "status", aria_label: "Reading the files the page names" }
+            } else {
+                Icon { kind: IconKind::External, size: 15 }
+            }
+        }
+    }
+}
+
+/// Writes each copy of a server's page once the daemon answered for all its files, then opens it
+/// in the browser.
+pub fn use_page_copies(cockpit: Cockpit) {
+    let any_ready = use_memo(move || cockpit.state.read().page_copies.any_ready());
+    use_effect(move || {
+        if !any_ready() {
+            return;
+        }
+        let mut state = cockpit.state;
+        let copies = page_copy::take_ready(&mut state.write());
+        for mut copy in copies {
+            spawn_forever(async move {
+                let mut missing = std::mem::take(&mut copy.missing);
+                match page_files::open_copy(copy).await {
+                    Ok(refused) => {
+                        missing.extend(refused);
+                        if let Some(note) = page_copy::missing_note(&missing) {
+                            cockpit.update(|state| state.ui.inform(note));
+                        }
+                    }
+                    Err(error) => {
+                        cockpit.update(|state| {
+                            state.ui.report(format!("Cannot open the page: {error}"))
+                        });
+                    }
+                }
+            });
+        }
+    });
 }
 
 /// `label` is the file's name, with the folders that tell it apart from another tab; `full`, its

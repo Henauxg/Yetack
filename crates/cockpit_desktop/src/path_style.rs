@@ -15,10 +15,10 @@ const DRIVE_MARK: char = ':';
 const VERBATIM: &str = r"\\?\";
 
 /// The name of the folder itself, which names nothing more.
-const CURRENT: &str = ".";
+pub const CURRENT: &str = ".";
 
 /// The name of the folder above.
-const PARENT: &str = "..";
+pub const PARENT: &str = "..";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathStyle {

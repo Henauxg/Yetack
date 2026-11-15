@@ -21,6 +21,7 @@ use super::details_updates::EarlyUpdate;
 use super::file_tree::FileTree;
 use super::grouping::GroupKey;
 use super::no_daemon::{NoDaemon, SERVICE_OFFERED};
+use super::page_copy::PageCopies;
 use super::sending::Sending;
 use super::server_setup::ServerSetup;
 use super::transcript::Transcript;
@@ -487,6 +488,8 @@ pub struct AppState {
     pub config_notifications: NotificationLevel,
     /// This app's release and commit, which the daemons' builds compare with.
     pub app_build: ProgramBuild,
+    /// The copies of server pages whose files the daemons are reading, for "Open in browser".
+    pub page_copies: PageCopies,
     /// The app's own newer release, and its update.
     pub app_update: AppUpdate,
 }
@@ -516,6 +519,7 @@ impl AppState {
             prefs: Prefs::default(),
             config_notifications: NotificationLevel::All,
             app_build: ProgramBuild::this_program(),
+            page_copies: PageCopies::default(),
             app_update: AppUpdate::new(),
         }
     }

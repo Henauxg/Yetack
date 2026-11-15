@@ -162,7 +162,8 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   The real protection against that is Claude Code's sandbox, configured to deny the agents' commands access to `~/.local/state/yetack/`: the probe checks whether this works with a Unix socket.
 - `ForwardAgent` stays off for the server in the laptop's `~/.ssh/config`, so a process on the server cannot use your laptop's key to log back in through `sshd`.
 - Prompts go only through stdin.
-- The daemon never reads, stores or passes a credential, an API key or a token.
+- The daemon never reads, stores or passes a credential, an API key or a token on its own.
+  The file view is the exception, as in an IDE: it shows any file the user opens, a credentials file included, and sends it only to the user's app.
   An account is a config folder: the daemon sets `CLAUDE_CONFIG_DIR` to it, the user signs in by running `claude auth login` once with that variable, and the login stays in the folder (or the macOS Keychain).
   The daemon removes `CLAUDE_CODE_OAUTH_TOKEN` from every agent's environment, and `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` unless the agent's account takes its credentials from the environment, without reading or logging any of them.
   Claude Code prefers each of these to the account folder's login, so one left in the daemon's environment would run every account on it.

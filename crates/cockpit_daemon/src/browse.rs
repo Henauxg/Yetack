@@ -1,10 +1,11 @@
-//! `agent.list_dir` and `agent.find_files`: browsing the folders `agent.read_file` reads in, for
-//! the app's "Open file" dialog.
+//! `agent.list_dir` and `agent.find_files`: browsing folders, for the app's "Open file" dialog
+//! and its files pane.
 //!
-//! A folder lists when, once its symlinks are resolved, it is in the agent's folder or in a git
-//! checkout that holds a file the agent read or changed: the folders of [`read_file`]'s module
-//! doc. The files it allows alone allow no folder. The listing shows at most [`MAX_ENTRIES`]
-//! entries, and reads at most [`MAX_READ`] of a folder's, so that a huge folder answers quickly.
+//! Any folder the daemon's user can read lists, as in an IDE, with the refusals of
+//! [`read_file`]'s module doc: a path with `..` and, on Windows, a device or a network share the
+//! agent does not work on. The listing shows at most [`MAX_ENTRIES`] entries, and reads at most
+//! [`MAX_READ`] of a folder's, so that a huge folder answers quickly. `agent.find_files` searches
+//! where a relative name is looked up: the agent's folder and the git checkouts it worked in.
 //!
 //! The listing marks the entries the folder's git checkout ignores, and its `.git` entry, as
 //! `git check-ignore` says within [`IGNORE_TIME`]. Without git, or past that time, every other
@@ -13,9 +14,8 @@
 //! `folders.list` lists the folders alone, of any folder the daemon's user can read, for the new
 //! agent dialog, within the same bounds.
 //!
-//! `agent.list_dir` reads the open folder, whose path is checked once it is open, so that a
-//! folder swapped for a link after the checks is not the one listed. On Windows, what a link in
-//! it points to is read through its path, joined to the folder's.
+//! `agent.list_dir` reads the open folder. On Windows, what a link in it points to is read through
+//! its path, joined to the folder's.
 //!
 //! [`read_file`]: crate::read_file
 
@@ -68,8 +68,8 @@ const HERE: &[u8] = b"./";
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ListDirError {
-    #[error("the folder is outside the agent's folder and the checkouts it worked in")]
-    Outside,
+    #[error("the path goes up with `..`")]
+    GoesUp,
     #[error("{} does not exist", .0.display())]
     Missing(PathBuf),
     #[error("{} is not a folder", .0.display())]
@@ -85,7 +85,7 @@ pub(crate) enum ListDirError {
 impl ListDirError {
     pub(crate) fn to_error_body(&self) -> ErrorBody {
         let code = match self {
-            Self::Outside | Self::NotAFolder(_) | Self::NotAbsolute(_) => ErrorCode::InvalidRequest,
+            Self::GoesUp | Self::NotAFolder(_) | Self::NotAbsolute(_) => ErrorCode::InvalidRequest,
             Self::Missing(_) => ErrorCode::NotFound,
             Self::Io(_) => ErrorCode::FileUnreadable,
             Self::Access(error) => return error.to_error_body(),
@@ -128,35 +128,27 @@ fn read_listing(
         .components()
         .any(|component| component == Component::ParentDir)
     {
-        return Err(ListDirError::Outside);
+        return Err(ListDirError::GoesUp);
     }
-    let access = Access::new(folder, touched, home)?;
+    let access = Access::new(folder, touched, home);
     let asked = folder.join(path);
-    #[cfg(windows)]
     let check_before_open = |path: &Path| {
         access.check_before_open(path).map_err(|error| match error {
             ReadFileError::NotAFile => ListDirError::NotAFolder(asked.clone()),
-            _ => ListDirError::Outside,
+            other => ListDirError::Access(other),
         })
     };
-    #[cfg(windows)]
     check_before_open(&asked)?;
     let resolved = read_file::canonical(&asked).map_err(|error| match error.kind() {
         io::ErrorKind::NotFound => ListDirError::Missing(asked.clone()),
         _ => ListDirError::Io(error),
     })?;
     // A link may lead to a folder named `CON`, which the path opens as the device.
-    #[cfg(windows)]
     check_before_open(&resolved)?;
-    let holder = access
-        .folder_holding(&resolved)
-        .ok_or(ListDirError::Outside)?;
     let opened = open_folder(&resolved).map_err(|error| match error {
         ListDirError::NotAFolder(_) => ListDirError::NotAFolder(asked.clone()),
         other => other,
     })?;
-    // The checks use the open folder, so a swap after them does not matter.
-    read_file::ensure_inside(&opened, holder).map_err(|_| ListDirError::Outside)?;
     #[cfg(unix)]
     let (entries, truncated) = read_entries(&opened)?;
     #[cfg(windows)]
@@ -421,8 +413,8 @@ fn describe(folder: &File, name: &CStr, listed: FileType) -> DirEntry {
     }
 }
 
-/// The files whose name holds `name`, whatever its case, in the agent's folder and the allowed
-/// checkouts, as `git ls-files` lists them, within the search's limits.
+/// The files whose name holds `name`, whatever its case, in the agent's folder and the checkouts
+/// it worked in, as `git ls-files` lists them, within the search's limits.
 pub(crate) async fn find_files(
     folder: PathBuf,
     touched: Vec<PathBuf>,
@@ -433,19 +425,18 @@ pub(crate) async fn find_files(
     if needle.is_empty() {
         return Ok(Vec::new());
     }
-    let (access, roots) = tokio::task::spawn_blocking(move || {
-        let access = Access::new(&folder, &touched, home.as_deref())?;
-        let roots = access.search_roots(folder);
-        Ok::<_, ReadFileError>((access, roots))
+    let (access, folder) = tokio::task::spawn_blocking(move || {
+        let access = Access::new(&folder, &touched, home.as_deref());
+        (access, folder)
     })
     .await
-    .map_err(read_file::join_error)??;
+    .map_err(read_file::join_error)?;
     let name_holds = |relative: &Path| {
         relative
             .file_name()
             .is_some_and(|file| file.to_string_lossy().to_lowercase().contains(&needle))
     };
-    Ok(read_file::search(&access, roots, name_holds, Instant::now() + SEARCH_TIME).await)
+    Ok(read_file::search(&access, folder, name_holds, Instant::now() + SEARCH_TIME).await)
 }
 
 /// The entries of the open folder `folder`, at `path`, its folders first, then the others, each
@@ -641,10 +632,6 @@ mod tests {
             .collect()
     }
 
-    fn assert_outside(result: Result<DirListing, ListDirError>) {
-        assert!(matches!(result, Err(ListDirError::Outside)), "{result:?}");
-    }
-
     #[cfg(unix)]
     #[test]
     fn lists_folders_first_then_the_rest_by_name() {
@@ -674,20 +661,27 @@ mod tests {
     }
 
     #[test]
-    fn lists_the_checkouts_the_agent_worked_in_and_refuses_the_rest() {
+    fn lists_any_folder_but_not_up_from_one() {
         let layout = Layout::new();
 
         let feature = layout.list(&layout.feature.join("src")).unwrap();
+        let untouched = layout.list(&layout.untouched).unwrap();
+        let above = layout.list(layout.agent.parent().unwrap()).unwrap();
 
         assert_eq!(
             names(&feature),
             [("app", EntryKind::Folder, None, EntryLink::Direct)]
         );
-        assert_outside(layout.list(&layout.untouched));
-        // A file the agent read on its own opens, but its folder does not list.
-        assert_outside(layout.list(&layout.loose));
-        assert_outside(layout.list(layout.agent.parent().unwrap()));
-        assert_outside(layout.list(Path::new("src/..")));
+        assert_eq!(
+            names(&untouched),
+            [
+                (".git", EntryKind::Folder, None, EntryLink::Direct),
+                ("src", EntryKind::Folder, None, EntryLink::Direct),
+            ]
+        );
+        assert_eq!(above.entries.len(), 4, "{above:?}");
+        let up = layout.list(Path::new("src/.."));
+        assert!(matches!(up, Err(ListDirError::GoesUp)), "{up:?}");
         let missing = layout.list(Path::new("gone")).unwrap_err();
         assert_eq!(missing.to_error_body().code, ErrorCode::NotFound);
         assert_eq!(
@@ -698,28 +692,35 @@ mod tests {
             layout.list(Path::new("src/main.rs")),
             Err(ListDirError::NotAFolder(_))
         ));
+    }
+
+    /// An agent stays in the list when its worktree is removed.
+    #[test]
+    fn a_folder_elsewhere_lists_when_the_agents_folder_is_gone() {
+        let layout = Layout::new();
+        std::fs::remove_dir_all(&layout.agent).unwrap();
+
+        let listing = layout.list(&layout.loose).unwrap();
+
         assert_eq!(
-            ListDirError::Outside.to_string(),
-            "the folder is outside the agent's folder and the checkouts it worked in"
+            names(&listing),
+            [("todo.txt", EntryKind::File, Some(5), EntryLink::Direct)]
         );
     }
 
     #[cfg(unix)]
     #[test]
-    fn a_symlinked_folder_lists_only_where_its_target_is_allowed() {
+    fn a_symlinked_folder_lists_its_target() {
         let layout = Layout::new();
-        symlink(layout.feature.join("src"), layout.agent.join("feature_src")).unwrap();
-        symlink(&layout.untouched, layout.agent.join("escape")).unwrap();
+        symlink(&layout.untouched, layout.agent.join("elsewhere")).unwrap();
 
-        let through_link = layout.list(Path::new("feature_src")).unwrap();
+        let through_link = layout.list(Path::new("elsewhere/src")).unwrap();
 
-        assert_eq!(through_link.path, layout.agent.join("feature_src"));
+        assert_eq!(through_link.path, layout.agent.join("elsewhere/src"));
         assert_eq!(
             names(&through_link),
-            [("app", EntryKind::Folder, None, EntryLink::Direct)]
+            [("secret.ts", EntryKind::File, Some(7), EntryLink::Direct)]
         );
-        assert_outside(layout.list(Path::new("escape")));
-        assert_outside(layout.list(Path::new("escape/src")));
     }
 
     #[test]
@@ -969,7 +970,11 @@ mod tests {
             r"\\?\UNC\attacker.invalid\share",
             r"\\.\pipe",
         ] {
-            assert_outside(layout.list(Path::new(path)));
+            let refused = layout.list(Path::new(path));
+            assert!(
+                matches!(refused, Err(ListDirError::Access(ReadFileError::Share))),
+                "{path}: {refused:?}"
+            );
         }
         assert!(matches!(
             layout.list(Path::new("nul")),
