@@ -5,6 +5,7 @@
 use std::fmt;
 use std::time::Instant;
 
+use cockpit_daemon::PROGRAM;
 use cockpit_protocol::AgentId;
 
 use super::app_state::{AppState, ConnectionState, MachineState};
@@ -369,7 +370,7 @@ pub fn add(state: &mut AppState) -> Option<Adding> {
             Some(Adding::Setup(server_setup::start(state, machine)))
         }
         (Err(error), _) => {
-            view.error = Some(error.to_owned());
+            view.error = Some(error);
             None
         }
     }
@@ -444,7 +445,7 @@ pub fn save_edit(state: &mut AppState) -> Option<MachineChange> {
             ..config
         })
     } else {
-        Err("Give the absolute path of the checkout on the server, or leave it empty.")
+        Err("Give the absolute path of the checkout on the server, or leave it empty.".to_owned())
     };
     let before = state
         .machines
@@ -463,7 +464,7 @@ pub fn save_edit(state: &mut AppState) -> Option<MachineChange> {
         }
         Err(error) => {
             if let Some(edit) = &mut view.editing {
-                edit.error = Some(error.to_owned());
+                edit.error = Some(error);
             }
             None
         }
@@ -492,7 +493,7 @@ fn check(
     remote_command: &str,
     editing: Option<MachineId>,
     path: DaemonPath,
-) -> Result<MachineConfig, &'static str> {
+) -> Result<MachineConfig, String> {
     let host = host.trim();
     let remote_command = remote_command.trim();
     let name = match name.trim() {
@@ -501,11 +502,13 @@ fn check(
     };
     // ssh would read such a host as an option.
     if host.is_empty() || host.starts_with('-') {
-        return Err("Name the SSH host, such as devbox or dev@devbox.");
+        return Err("Name the SSH host, such as devbox or dev@devbox.".to_owned());
     }
     let looks = path == DaemonPath::MayLook && remote_command.is_empty();
     if !looks && !remote_command.starts_with('/') {
-        return Err("Give the absolute path of yetack on the server, or leave it empty.");
+        return Err(format!(
+            "Give the absolute path of {PROGRAM} on the server, or leave it empty."
+        ));
     }
     // A name keys the preferences, and the interface shows another one for this computer.
     let taken = state.machines.all().any(|(machine, known)| {
@@ -513,7 +516,7 @@ fn check(
             && (known.daemon.machine == name || MachineName::new(machine, known).name == name)
     });
     if taken {
-        return Err("Another machine has this name.");
+        return Err("Another machine has this name.".to_owned());
     }
     Ok(MachineConfig {
         name: name.to_owned(),

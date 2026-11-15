@@ -35,7 +35,7 @@ mod windows_path;
 pub use accounts::{API_KEY_ENV, AUTH_TOKEN_ENV, ENVIRONMENT_CREDENTIALS_ENV};
 pub use build_commit::{RELEASE_VERSION, build_commit, version_text};
 pub use daemon_config::{
-    CLAUDE_CONFIG_DIR_ENV, CLAUDE_HOME_FOLDER, CLAUDE_PROGRAM_ENV, DaemonConfig, HOME_ENV,
+    CLAUDE_CONFIG_DIR_ENV, CLAUDE_HOME_FOLDER, CLAUDE_PROGRAM_ENV, DaemonConfig, HOME_ENV, PROGRAM,
     SERVE_SUBCOMMAND, STATE_DIR_FLAG,
 };
 pub use in_app_daemon::InAppDaemon;

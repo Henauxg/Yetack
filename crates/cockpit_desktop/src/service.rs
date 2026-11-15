@@ -8,7 +8,7 @@ use std::process::{ExitCode, ExitStatus, Stdio};
 use std::time::Duration;
 
 use anyhow::Context;
-use cockpit_daemon::{DaemonConfig, SERVE_SUBCOMMAND, STATE_DIR_FLAG};
+use cockpit_daemon::{DaemonConfig, PROGRAM, SERVE_SUBCOMMAND, STATE_DIR_FLAG};
 use tokio::net::UnixStream;
 use tokio::process::{Child, Command};
 use tokio::runtime::Runtime;
@@ -69,7 +69,7 @@ pub fn run(state_dir: PathBuf) -> ExitCode {
     match serve(state_dir) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("yetack: {error:#}");
+            eprintln!("{PROGRAM}: {error:#}");
             ExitCode::FAILURE
         }
     }

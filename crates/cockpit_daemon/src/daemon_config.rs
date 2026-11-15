@@ -5,6 +5,8 @@ use std::path::PathBuf;
 
 use crate::store::default_state_dir;
 
+/// The command line's program, which the app also runs over SSH and names on its screens.
+pub const PROGRAM: &str = "yetack";
 /// The `yetack` subcommand that runs the daemon behind its socket.
 pub const SERVE_SUBCOMMAND: &str = "serve";
 /// The `yetack` option that names the state folder, without its leading `--`.

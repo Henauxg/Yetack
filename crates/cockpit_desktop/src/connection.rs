@@ -9,6 +9,7 @@ use chrono::NaiveDate;
 use cockpit_client::{
     Backoff, RequestError, Requester, Session, SessionError, SessionUpdate, Transport,
 };
+use cockpit_daemon::PROGRAM;
 use cockpit_protocol::{AgentId, Request};
 use dioxus::desktop::DesktopContext;
 use dioxus::prelude::*;
@@ -749,9 +750,6 @@ async fn run_update(
     }
 }
 
-/// The daemon's command, which the setup of a new server looks for on its `PATH`.
-const DAEMON_COMMAND: &str = "yetack";
-
 /// Runs a step of a server's setup. A server whose daemon runs joins the app through `added`.
 async fn run_setup(
     mut state: Signal<AppState>,
@@ -760,7 +758,7 @@ async fn run_setup(
 ) {
     let change = match run {
         SetupRun::Look { host } => {
-            let found = server_daemon::probe(&host, DAEMON_COMMAND).await;
+            let found = server_daemon::probe(&host, PROGRAM).await;
             let carried = server_daemon::carried();
             server_setup::looked(&mut state.write(), &host, found, carried.as_deref())
         }

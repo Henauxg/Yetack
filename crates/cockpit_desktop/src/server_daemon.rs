@@ -324,12 +324,16 @@ mod tests {
 
     #[test]
     fn the_install_writes_the_files_the_screens_name() {
+        use cockpit_daemon::PROGRAM;
+
         use crate::state::daemon_probe::{APP_BIN_FOLDER, UNIT_FILE};
 
         let folder = APP_BIN_FOLDER.strip_prefix("~/").unwrap();
-        assert!(INSTALL_SCRIPT.contains(&format!("ExecStart=%h/{folder}/yetack serve")));
+        let exec_start = format!("ExecStart=%h/{folder}/{PROGRAM} serve");
+        assert!(INSTALL_SCRIPT.contains(&exec_start), "{exec_start}");
         let unit = UNIT_FILE.strip_prefix("~/.config/").unwrap();
-        assert!(INSTALL_SCRIPT.contains(&format!("${{XDG_CONFIG_HOME:-$HOME/.config}}/{unit}")));
+        let unit_path = format!("${{XDG_CONFIG_HOME:-$HOME/.config}}/{unit}");
+        assert!(INSTALL_SCRIPT.contains(&unit_path), "{unit_path}");
     }
 
     #[test]

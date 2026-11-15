@@ -6,6 +6,7 @@
 
 use std::cmp::Ordering;
 
+use cockpit_daemon::PROGRAM;
 use cockpit_protocol::{AgentId, AgentStatus, PROTOCOL_VERSION};
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
@@ -953,7 +954,7 @@ fn FailedCard(machine: MachineId, name: String, local: bool, failed: FailedUpdat
         if let Some(agent) = stop_hint {
             p { class: "no-daemon-hint",
                 "To stop one now, run "
-                code { "yetack stop {agent}" }
+                code { "{PROGRAM} stop {agent}" }
                 " on the server."
             }
         }

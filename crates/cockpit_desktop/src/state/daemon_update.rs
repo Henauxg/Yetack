@@ -5,7 +5,7 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use cockpit_daemon::SERVE_SUBCOMMAND;
+use cockpit_daemon::{PROGRAM, SERVE_SUBCOMMAND};
 use cockpit_protocol::{AgentId, ProcessId};
 
 use super::app_state::{AppState, MachineState};
@@ -1169,11 +1169,11 @@ pub fn failure_text(failed: &FailedUpdate, name: &str) -> FailureText {
                 ),
                 Some(HandStop::Unrecorded) => (
                     "The daemon that runs now comes from an older version, which does not record its process, so the app cannot tell which process to stop.".to_owned(),
-                    Some(format!("Stop the yetack {SERVE_SUBCOMMAND} of {state_dir} yourself, once, then retry. From then on, the app stops the daemon itself.")),
+                    Some(format!("Stop the {PROGRAM} {SERVE_SUBCOMMAND} of {state_dir} yourself, once, then retry. From then on, the app stops the daemon itself.")),
                 ),
                 Some(HandStop::Unverified) => (
                     "The app could not tell which process runs the daemon, so it stopped none.".to_owned(),
-                    Some(format!("Stop the yetack {SERVE_SUBCOMMAND} of {state_dir} yourself, then retry.")),
+                    Some(format!("Stop the {PROGRAM} {SERVE_SUBCOMMAND} of {state_dir} yourself, then retry.")),
                 ),
                 None => (
                     format!("The app could not stop the daemon, so {name} still runs its old version."),

@@ -12,8 +12,7 @@ use cockpit_client::Transport;
 use cockpit_daemon::{HOME_ENV, RELEASE_VERSION, STATE_DIR_FLAG, build_commit, version_text};
 use cockpit_protocol::{AccountId, AgentId, Effort, PendingId, PermissionMode, PlanDecision};
 
-/// The program's name, as the command line and its messages show it.
-pub(crate) const PROGRAM: &str = "yetack";
+pub(crate) use cockpit_daemon::PROGRAM;
 #[cfg(unix)]
 pub(crate) use cockpit_daemon::SERVE_SUBCOMMAND;
 pub(crate) const SSH_FLAG: &str = "ssh";
