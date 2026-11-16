@@ -362,6 +362,11 @@ button:disabled {
   color: var(--dim);
 }
 
+/* A card's buttons while its answer is on its way. */
+.card-actions .button:disabled:not(.disabled) {
+  opacity: 0.55;
+}
+
 .button.warning-outline {
   background: transparent;
   color: var(--amber);
@@ -4177,6 +4182,22 @@ html.reordering * {
 }
 
 .question-enter.off {
+  opacity: 0;
+  transition: opacity var(--motion-out) var(--ease-in);
+}
+
+/* Both labels share one cell, so the send button keeps its width when it reads "Sending…". */
+.send-labels {
+  display: inline-grid;
+  justify-items: center;
+}
+
+.send-labels > span {
+  grid-area: 1 / 1;
+  transition: opacity var(--motion-in) var(--ease-out);
+}
+
+.send-labels > .off {
   opacity: 0;
   transition: opacity var(--motion-out) var(--ease-in);
 }

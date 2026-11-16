@@ -989,6 +989,10 @@ async fn approvals_allow_and_deny() {
     client
         .answer(agent, approval.pending.clone(), allow.clone())
         .await;
+    // A second press of Y before the app sees the approval answered.
+    client
+        .answer(agent, approval.pending.clone(), allow.clone())
+        .await;
     client.says(agent, "Allowed.").await;
     client.idle(agent).await;
 
@@ -1011,7 +1015,7 @@ async fn approvals_allow_and_deny() {
             answer: allow,
         }))
         .await;
-    assert_eq!(code, ErrorCode::NotFound);
+    assert_eq!(code, ErrorCode::InvalidRequest, "the card holds the denial");
 }
 
 #[tokio::test]
@@ -1046,12 +1050,35 @@ async fn questions_and_plans_get_their_answers() {
         .answer(
             agent,
             question.pending.clone(),
-            Answer::Question { answers },
+            Answer::Question {
+                answers: answers.clone(),
+            },
         )
         .await;
     client
         .says(agent, r#"Answers: {"Which color?":"Blue"}"#)
         .await;
+    // A second Enter before the app sees the question answered sends the same answer again.
+    client
+        .answer(
+            agent,
+            question.pending.clone(),
+            Answer::Question { answers },
+        )
+        .await;
+    let changed_mind = client
+        .error_code(Request::AgentAnswer(AnswerParams {
+            agent,
+            pending: question.pending.clone(),
+            answer: Answer::Question {
+                answers: vec![QuestionAnswer {
+                    selected: vec!["Red".to_owned()],
+                    other: None,
+                }],
+            },
+        }))
+        .await;
+    assert_eq!(changed_mind, ErrorCode::InvalidRequest);
 
     client.prompt(agent, "plan the work").await;
     let plan = client
@@ -1065,6 +1092,9 @@ async fn questions_and_plans_get_their_answers() {
         decision: PlanDecision::AcceptEdits,
         message: None,
     });
+    client
+        .answer(agent, plan.pending.clone(), accept.clone())
+        .await;
     client.answer(agent, plan.pending, accept).await;
     client.says(agent, "Plan approved.").await;
     client

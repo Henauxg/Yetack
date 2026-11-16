@@ -6,8 +6,8 @@ use std::time::{Instant, SystemTime};
 use cockpit_client::RequestError;
 use cockpit_protocol::{
     AgentDetails, AgentId, AgentParams, ErrorCode, FileEdit, FindFilesParams, FoldersListParams,
-    HistoryParams, ItemId, ListDirParams, Method, Position, ReadFileParams, Request, ResponseBody,
-    Seq, Timestamp,
+    HistoryParams, ItemId, ListDirParams, Method, PendingId, Position, ReadFileParams, Request,
+    ResponseBody, Seq, Timestamp,
 };
 
 use super::app_state::{AgentEntry, AppState, FileRead, Loadable, MachineState, Reread};
@@ -45,6 +45,11 @@ pub struct Outgoing {
 pub enum Purpose {
     /// Answered by `Done`: only a failure shows.
     Action,
+    /// `agent.answer` for a card, which a failure lets answer again.
+    Answer {
+        agent: AgentId,
+        pending: PendingId,
+    },
     History {
         agent: AgentId,
         older: bool,
@@ -179,6 +184,20 @@ impl Outgoing {
             .agent_mut()
             .map_or(to, |agent| MachineId::of(*agent))
     }
+}
+
+/// Drops an answer to a card whose answer is on its way, as a second Enter before the daemon's
+/// update sends, and marks the others as sent.
+pub fn keep_first_answers(state: &mut AppState, requests: &mut Vec<Outgoing>) {
+    requests.retain(|outgoing| {
+        let Purpose::Answer { agent, pending } = &outgoing.purpose else {
+            return true;
+        };
+        state
+            .agents
+            .get_mut(agent)
+            .is_none_or(|entry| entry.answers_sent.insert(pending.clone()))
+    });
 }
 
 /// The requests the open views need and that are not on their way yet: the selected agent's
@@ -419,6 +438,16 @@ pub fn apply_response(
     match purpose {
         Purpose::Action => {
             if let Err(failure) = result {
+                state
+                    .ui
+                    .report(format!("{method} failed: {}", failure.message));
+            }
+        }
+        Purpose::Answer { agent, pending } => {
+            if let Err(failure) = result {
+                if let Some(entry) = state.agents.get_mut(&agent) {
+                    entry.answers_sent.remove(&pending);
+                }
                 state
                     .ui
                     .report(format!("{method} failed: {}", failure.message));
@@ -890,8 +919,8 @@ mod tests {
     use std::time::Instant;
 
     use cockpit_protocol::{
-        AgentStatus, Catchup, Completeness, DirListing, ErrorBody, ErrorCode, HistoryPage,
-        ItemBody, NoticeKind, OlderItems, TranscriptItem,
+        AgentStatus, ApprovalDecision, Catchup, Completeness, DirListing, ErrorBody, ErrorCode,
+        HistoryPage, ItemBody, NoticeKind, OlderItems, TranscriptItem,
     };
 
     use super::*;
@@ -1410,5 +1439,48 @@ mod tests {
             state.ui.errors.first().map(|note| note.text.as_str()),
             Some("agent.commands failed: the daemon answered with an unexpected response")
         );
+    }
+
+    #[test]
+    fn a_card_sends_its_answer_once_unless_the_daemon_refuses_it() {
+        let agent = AgentId::new(1);
+        let pending = PendingId::new("request-7".to_owned());
+        let mut state = state_with(vec![summary(1, AgentStatus::Idle)]);
+        let allow = || actions::answer_approval(agent, pending.clone(), ApprovalDecision::Allow);
+        let sent = |state: &mut AppState, mut requests: Vec<Outgoing>| {
+            keep_first_answers(state, &mut requests);
+            requests.len()
+        };
+        let reply = |state: &mut AppState, result: Result<ResponseBody, RequestError>| {
+            apply_response(
+                state,
+                &mut Drafts::default(),
+                Method::AgentAnswer,
+                Purpose::Answer {
+                    agent,
+                    pending: pending.clone(),
+                },
+                result,
+                MachineId::THIS,
+            );
+        };
+
+        let first = sent(&mut state, allow());
+        let second = sent(&mut state, allow());
+        reply(
+            &mut state,
+            Err(RequestError::Failed(ErrorBody::new(
+                ErrorCode::Internal,
+                "claude is gone".to_owned(),
+            ))),
+        );
+        let after_refusal = sent(&mut state, allow());
+        reply(&mut state, Ok(ResponseBody::Done));
+        let after_done = sent(&mut state, allow());
+
+        assert_eq!(first, 1);
+        assert_eq!(second, 0, "a second Enter before the update sends nothing");
+        assert_eq!(after_refusal, 1, "a refused answer can be sent again");
+        assert_eq!(after_done, 0, "the daemon's update closes the card");
     }
 }

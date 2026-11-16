@@ -2086,19 +2086,29 @@ pub fn apply(state: &mut AppState, request: &Request) {
                 entry.summary.folder.clone_from(&params.folder);
             }
         }
+        // `apply_map_request` answers the approvals.
         Request::AgentAnswer(params) => {
-            let entry = state.agents.get_mut(&params.agent);
-            if let (Answer::Question { answers }, Some(entry)) = (&params.answer, entry) {
-                let asked = entry.transcript.items().find(|item| {
-                    matches!(&item.body, ItemBody::Question(question) if question.pending == params.pending)
-                });
-                if let Some(mut item) = asked.cloned() {
-                    if let ItemBody::Question(question) = &mut item.body {
-                        question.answer = AnswerState::Answered(answers.clone());
-                    }
-                    entry.transcript.change(item);
+            let Some(entry) = state.agents.get_mut(&params.agent) else {
+                return;
+            };
+            let asked = entry.transcript.items().find(|item| match &item.body {
+                ItemBody::Question(question) => question.pending == params.pending,
+                ItemBody::Plan(plan) => plan.pending == params.pending,
+                _ => false,
+            });
+            let Some(mut item) = asked.cloned() else {
+                return;
+            };
+            match (&mut item.body, &params.answer) {
+                (ItemBody::Question(question), Answer::Question { answers }) => {
+                    question.answer = AnswerState::Answered(answers.clone());
                 }
+                (ItemBody::Plan(plan), Answer::Plan(given)) => {
+                    plan.answer = AnswerState::Answered(given.clone());
+                }
+                _ => return,
             }
+            entry.transcript.change(item);
         }
         // The demo's server comes back.
         Request::AgentMcpReconnect(params) => {
@@ -4849,8 +4859,8 @@ fn sessions(now: SystemTime) -> Vec<PastSession> {
 #[cfg(test)]
 mod tests {
     use cockpit_protocol::{
-        FoldersListParams, HistoryParams, MarkParams, PromptDelivery, PromptParams, ReadFileParams,
-        RenameParams,
+        AnswerParams, FoldersListParams, HistoryParams, MarkParams, PlanAnswer, PlanDecision,
+        PromptDelivery, PromptParams, ReadFileParams, RenameParams,
     };
 
     use super::*;
@@ -5069,6 +5079,26 @@ mod tests {
         apply(&mut state, &rename);
 
         assert_eq!(state.agents[&agent].summary.title, "🚀 Stream the input");
+    }
+
+    /// The card would keep its buttons disabled, its answer on its way, until the app restarts.
+    #[test]
+    fn an_answered_plan_closes_in_the_demo() {
+        let mut state = state(label());
+        let agent = AgentId::new(PLAN_AGENT);
+        let accept = Request::AgentAnswer(AnswerParams {
+            agent,
+            pending: PendingId::new("demo-plan".to_owned()),
+            answer: Answer::Plan(PlanAnswer {
+                decision: PlanDecision::AcceptEdits,
+                message: None,
+            }),
+        });
+
+        assert!(answer(&state, &accept).is_ok());
+        apply(&mut state, &accept);
+
+        assert!(state.agents[&agent].transcript.waiting().is_none());
     }
 
     #[test]

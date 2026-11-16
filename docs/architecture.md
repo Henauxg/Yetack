@@ -209,6 +209,9 @@ Transcripts are not in the snapshot: the app asks for an agent's transcript with
 The daemon interrupts a working agent's turn, takes the agent out at once (`AgentRemoved`, its logs deleted), and the process handle leaving with it closes `claude`'s stdin.
 `claude` ends its session file and exits, or is killed after 10 seconds, so the session can come back with `sessions.resume`.
 
+A card sends its answer once. The app keeps the cards whose `agent.answer` is on its way (`AgentEntry::answers_sent`), drops a repeat in `keep_first_answers`, and shows the card's buttons disabled until the daemon's update closes it. A refusal lets the card answer again.
+The daemon takes the same answer to an item that already holds it as done, and sends nothing to `claude` again. A different answer gets "already answered" (`InvalidRequest`): Claude Code has the first one.
+
 `agent.read_file` and `agent.list_dir` open any file or folder the daemon's user can read, as an IDE does: an absolute path, or one relative to the agent's folder.
 A path with `..` is refused.
 The daemon and the app run as the same user, and the agent's commands already read what that user can, so the views show the user nothing new.

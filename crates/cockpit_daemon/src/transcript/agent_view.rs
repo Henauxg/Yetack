@@ -61,6 +61,12 @@ pub(crate) struct Answered {
 pub(crate) enum AnswerError {
     #[error("nothing waits for an answer under `{0}`")]
     NotFound(String),
+    /// The item already holds this very answer: the app sent it twice.
+    #[error("the answer under `{0}` was already given")]
+    AlreadyGiven(String),
+    /// The item holds another answer, which Claude Code already has.
+    #[error("this card was already answered with another choice, which Claude Code has")]
+    AlreadyAnswered(String),
     #[error("{0}")]
     Mismatch(String),
 }
@@ -583,7 +589,9 @@ impl AgentView {
         answer: Answer,
     ) -> Result<Answered, AnswerError> {
         let not_found = || AnswerError::NotFound(pending.as_str().to_owned());
-        let waiting = self.pending.get(pending).ok_or_else(not_found)?;
+        let Some(waiting) = self.pending.get(pending) else {
+            return Err(self.not_waiting(pending, &answer));
+        };
         let item_id = waiting.item;
         let input = waiting.input.clone();
         let body = find_item(&self.items, item_id)
@@ -641,6 +649,60 @@ impl AgentView {
             ),
             then_mode,
         })
+    }
+
+    /// Why nothing waits under `pending`, from the newest item under it: whether it holds `answer`,
+    /// another answer, or none. An id is unique within one process only, so an item of an earlier
+    /// process can have the same.
+    fn not_waiting(&self, pending: &PendingId, answer: &Answer) -> AnswerError {
+        /// The error for an item in `state` that the request answers with `given`, `None` for an
+        /// answer of another kind.
+        fn error<A: PartialEq>(
+            state: &AnswerState<A>,
+            given: Option<&A>,
+            id: String,
+        ) -> AnswerError {
+            match state {
+                AnswerState::Answered(held) if given == Some(held) => AnswerError::AlreadyGiven(id),
+                AnswerState::Answered(_) => AnswerError::AlreadyAnswered(id),
+                AnswerState::Waiting | AnswerState::Cancelled => AnswerError::NotFound(id),
+            }
+        }
+
+        let newest = self.items.iter().rev().find(|item| match &item.body {
+            ItemBody::Approval(Approval { pending: id, .. })
+            | ItemBody::Question(Question { pending: id, .. })
+            | ItemBody::Plan(Plan { pending: id, .. }) => id == pending,
+            _ => false,
+        });
+        let id = pending.as_str().to_owned();
+        match newest.map(|item| &item.body) {
+            Some(ItemBody::Approval(approval)) => error(
+                &approval.answer,
+                match answer {
+                    Answer::Approval(given) => Some(given),
+                    Answer::Question { .. } | Answer::Plan(_) => None,
+                },
+                id,
+            ),
+            Some(ItemBody::Question(question)) => error(
+                &question.answer,
+                match answer {
+                    Answer::Question { answers } => Some(answers),
+                    Answer::Approval(_) | Answer::Plan(_) => None,
+                },
+                id,
+            ),
+            Some(ItemBody::Plan(plan)) => error(
+                &plan.answer,
+                match answer {
+                    Answer::Plan(given) => Some(given),
+                    Answer::Approval(_) | Answer::Question { .. } => None,
+                },
+                id,
+            ),
+            _ => AnswerError::NotFound(id),
+        }
     }
 
     /// A new `claude` process runs for the agent.
@@ -2499,6 +2561,42 @@ mod tests {
                 message: None,
             }),
         );
+        assert!(
+            matches!(again, Err(AnswerError::AlreadyAnswered(_))),
+            "{again:?}"
+        );
+    }
+
+    #[test]
+    fn a_repeated_answer_is_judged_on_the_newest_item_under_its_id() {
+        let mut view = view();
+        let allow = Answer::Approval(ApprovalAnswer {
+            decision: ApprovalDecision::Allow,
+            message: None,
+        });
+        let pending = PendingId::new("req-1".to_owned());
+        apply(
+            &mut view,
+            can_use_tool("req-1", "t1", "Bash", json!({"command": "make"})),
+        );
+        view.answer(&pending, allow.clone()).unwrap();
+        assert_eq!(
+            view.answer(&pending, allow.clone()),
+            Err(AnswerError::AlreadyGiven("req-1".to_owned()))
+        );
+
+        // A later process reuses the id for a request it then cancels.
+        view.process_started(ProcessSession::Resumed);
+        apply(
+            &mut view,
+            can_use_tool("req-1", "t2", "Bash", json!({"command": "make check"})),
+        );
+        apply(
+            &mut view,
+            json!({"type": "control_cancel_request", "request_id": "req-1"}),
+        );
+
+        let again = view.answer(&pending, allow);
         assert!(matches!(again, Err(AnswerError::NotFound(_))), "{again:?}");
     }
 

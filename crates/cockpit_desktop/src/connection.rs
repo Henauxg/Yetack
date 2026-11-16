@@ -129,6 +129,7 @@ impl Cockpit {
             let mut state = signal.write();
             let mut requests = change(&mut state);
             requests.extend(state::needed_requests(&mut state));
+            state::keep_first_answers(&mut state, &mut requests);
             requests
         };
         for request in requests {

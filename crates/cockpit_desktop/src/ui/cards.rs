@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use cockpit_protocol::{
-    AgentId, AnswerState, Approval, ApprovalDecision, ItemId, Plan, PlanDecision,
+    AgentId, AnswerState, Approval, ApprovalDecision, ItemId, PendingId, Plan, PlanDecision,
 };
 use dioxus::prelude::*;
 
@@ -22,9 +22,28 @@ const COMMAND_TOOL: &str = "Bash";
 /// The input field of a command, which the daemon's one-line summary cuts after its first line.
 const COMMAND_FIELD: &str = "command";
 
+/// Whether the waiting card's answer is on its way: the daemon has not refused it, and its update
+/// has not come. A memo, so a change elsewhere in the state does not draw the card again. An
+/// answered card does not read the state, so a long chat's cards do not run on every change.
+pub(super) fn use_answer_sent(agent: AgentId, pending: &PendingId, waiting: bool) -> bool {
+    let cockpit: Cockpit = use_context();
+    use_memo(use_reactive(
+        (&agent, pending, &waiting),
+        move |(agent, pending, waiting)| {
+            waiting
+                && cockpit
+                    .state
+                    .read()
+                    .agents
+                    .get(&agent)
+                    .is_some_and(|entry| entry.answers_sent.contains(&pending))
+        },
+    ))()
+}
+
 /// The amber "Waiting for you" pill of a card's head, which fades out once answered.
 #[component]
-fn WaitingPill(waiting: bool) -> Element {
+pub(super) fn WaitingPill(waiting: bool) -> Element {
     rsx! {
         Presence { open: waiting,
             span { class: "waiting-pill", "Waiting for you" }
@@ -44,6 +63,7 @@ fn card_class(waiting: bool, kind: &str) -> String {
 pub fn ApprovalCard(agent: AgentId, folder: PathBuf, approval: Approval) -> Element {
     let cockpit: Cockpit = use_context();
     let waiting = approval.answer == AnswerState::Waiting;
+    let sent = use_answer_sent(agent, &approval.pending, waiting);
     let heading = if approval.tool == COMMAND_TOOL {
         "Claude asks to run a command".to_owned()
     } else if let Some(edit) = &approval.edit {
@@ -95,7 +115,7 @@ pub fn ApprovalCard(agent: AgentId, folder: PathBuf, approval: Approval) -> Elem
             div { class: "card-head",
                 Icon { kind: IconKind::Warning, size: 16 }
                 span { "{heading}" }
-                WaitingPill { waiting }
+                WaitingPill { waiting: waiting && !sent }
             }
             if approval.edit.is_none() && !asked.is_empty() {
                 code { class: "approval-command mono", "{asked}" }
@@ -124,6 +144,7 @@ pub fn ApprovalCard(agent: AgentId, folder: PathBuf, approval: Approval) -> Elem
                 div { class: "card-actions",
                     button {
                         class: "button primary",
+                        disabled: sent,
                         onclick: move |_| {
                             let pending = allow_pending.clone();
                             cockpit.change(|_| actions::answer_approval(agent, pending, ApprovalDecision::Allow));
@@ -133,6 +154,7 @@ pub fn ApprovalCard(agent: AgentId, folder: PathBuf, approval: Approval) -> Elem
                     }
                     button {
                         class: "button warning-outline",
+                        disabled: sent,
                         onclick: move |_| {
                             let pending = pending.clone();
                             cockpit.change(|_| actions::answer_approval(agent, pending, ApprovalDecision::Deny));
@@ -171,6 +193,7 @@ fn approval_input(approval: &Approval) -> Option<String> {
 pub fn PlanCard(agent: AgentId, folder: PathBuf, plan: Plan, item: Option<ItemId>) -> Element {
     let cockpit: Cockpit = use_context();
     let waiting = plan.answer == AnswerState::Waiting;
+    let sent = use_answer_sent(agent, &plan.pending, waiting);
     let outcome = match &plan.answer {
         AnswerState::Waiting => None,
         AnswerState::Answered(answer) => Some(match answer.decision {
@@ -199,19 +222,19 @@ pub fn PlanCard(agent: AgentId, folder: PathBuf, plan: Plan, item: Option<ItemId
             div { class: "card-head",
                 Icon { kind: IconKind::List, size: 16 }
                 span { "Claude proposes a plan" }
-                WaitingPill { waiting }
+                WaitingPill { waiting: waiting && !sent }
             }
             MarkdownView { agent, folder, markdown: plan.markdown.clone(), item }
             if waiting {
                 div { class: "card-actions",
-                    button { class: "button primary", onclick: decide(PlanDecision::AcceptEdits),
+                    button { class: "button primary", disabled: sent, onclick: decide(PlanDecision::AcceptEdits),
                         span { class: "key-hint", "Y" }
                         "Yes, accept edits"
                     }
-                    button { class: "button", onclick: decide(PlanDecision::AskBeforeEdits),
+                    button { class: "button", disabled: sent, onclick: decide(PlanDecision::AskBeforeEdits),
                         "Yes, ask before edits"
                     }
-                    button { class: "button warning-outline", onclick: decide(PlanDecision::KeepPlanning),
+                    button { class: "button warning-outline", disabled: sent, onclick: decide(PlanDecision::KeepPlanning),
                         span { class: "key-hint", "N" }
                         "No, keep planning"
                     }

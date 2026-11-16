@@ -11,6 +11,7 @@ use dioxus::prelude::*;
 use crate::bridge;
 use crate::connection::Cockpit;
 use crate::state::{QuestionDraft, actions};
+use crate::ui::cards::{WaitingPill, use_answer_sent};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::presence::use_presence;
 
@@ -112,6 +113,16 @@ fn WaitingQuestion(
         }
     }));
     let ready = actions::question_answers(&question, Some(&draft)).is_some();
+    // The daemon's update that folds the card shut also ends the sending: the button keeps
+    // "Sending…" while it folds.
+    let live_sent = use_answer_sent(agent, &question.pending, !leaving);
+    let mut last_sent = use_hook(|| CopyValue::new(live_sent));
+    let sent = if leaving {
+        *last_sent.peek()
+    } else {
+        last_sent.set(live_sent);
+        live_sent
+    };
     let answered = (0..count).filter(|&asked| draft.has_answer(asked)).count();
     let title = if count == 1 {
         "Claude asks a question".to_owned()
@@ -126,14 +137,13 @@ fn WaitingQuestion(
         .questions
         .get(shown)
         .map_or(0, |asked| asked.options.len().min(9));
-    let enter_word = if ready {
-        Some("send")
-    } else if actions::next_unanswered(&question, Some(&draft)).is_some() {
-        Some("next")
+    let enter_text = if ready { "send" } else { "next" };
+    // Enter sends nothing while the answer is on its way.
+    let enter_works = if ready {
+        !sent
     } else {
-        None
+        actions::next_unanswered(&question, Some(&draft)).is_some()
     };
-    let enter_text = enter_word.unwrap_or("next");
     let send_label = if count == 1 {
         "Send the answer"
     } else {
@@ -145,7 +155,7 @@ fn WaitingQuestion(
             div { class: "question-head",
                 Icon { kind: IconKind::Question, size: 16 }
                 span { class: "question-title", "{title}" }
-                span { class: "waiting-pill", "Waiting for you" }
+                WaitingPill { waiting: !sent }
                 if count > 1 {
                     span { class: "question-count", "{answered} of {count} answered" }
                 }
@@ -208,9 +218,12 @@ fn WaitingQuestion(
                 }
                 button {
                     class: if ready { "button primary" } else { "button disabled" },
-                    disabled: !ready,
+                    disabled: !ready || sent,
                     onclick: move |_| cockpit.change_with_drafts(|state, drafts| actions::submit_question(state, drafts, agent, item)),
-                    "{send_label}"
+                    span { class: "send-labels",
+                        span { class: if sent { "off" }, aria_hidden: sent, "{send_label}" }
+                        span { class: if !sent { "off" }, aria_hidden: !sent, "Sending…" }
+                    }
                 }
                 if place == CardPlace::Chat {
                     span { class: "question-keys",
@@ -230,7 +243,7 @@ fn WaitingQuestion(
                         }
                         // The hint keeps its place, faded out, when Enter does nothing, so it can
                         // fade back in.
-                        span { class: if enter_word.is_some() { "question-enter" } else { "question-enter off" }, aria_hidden: enter_word.is_none(),
+                        span { class: if enter_works { "question-enter" } else { "question-enter off" }, aria_hidden: !enter_works,
                             if options > 0 || count > 1 {
                                 "· "
                             }

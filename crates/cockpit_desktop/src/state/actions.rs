@@ -1193,11 +1193,15 @@ pub fn interrupt(state: &AppState, agent: AgentId) -> Vec<Outgoing> {
 }
 
 fn answer(agent: AgentId, pending: PendingId, answer: Answer) -> Vec<Outgoing> {
-    vec![Outgoing::action(Request::AgentAnswer(AnswerParams {
+    let request = Request::AgentAnswer(AnswerParams {
         agent,
-        pending,
+        pending: pending.clone(),
         answer,
-    }))]
+    });
+    vec![Outgoing {
+        purpose: Purpose::Answer { agent, pending },
+        ..Outgoing::action(request)
+    }]
 }
 
 pub fn answer_approval(

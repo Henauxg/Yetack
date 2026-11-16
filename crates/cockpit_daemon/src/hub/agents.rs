@@ -472,13 +472,17 @@ impl Hub {
         if agent.process.is_none() || !agent.record.running {
             return Err(errors::agent_exited(id));
         }
-        let answered = agent
-            .view
-            .answer(&params.pending, params.answer)
-            .map_err(|error| match error {
-                AnswerError::NotFound(_) => ErrorBody::new(ErrorCode::NotFound, error.to_string()),
-                AnswerError::Mismatch(_) => errors::invalid(error.to_string()),
-            })?;
+        let answered = match agent.view.answer(&params.pending, params.answer) {
+            Ok(answered) => answered,
+            // Claude Code has it from the first request.
+            Err(AnswerError::AlreadyGiven(_)) => return Ok(ResponseBody::Done),
+            Err(error @ AnswerError::NotFound(_)) => {
+                return Err(ErrorBody::new(ErrorCode::NotFound, error.to_string()));
+            }
+            Err(error @ (AnswerError::Mismatch(_) | AnswerError::AlreadyAnswered(_))) => {
+                return Err(errors::invalid(error.to_string()));
+            }
+        };
         if let Some(process) = &agent.process {
             process.write(answered.line);
         }

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use cockpit_client::{SessionUpdate, Welcome};
 use cockpit_protocol::{
     AgentId, AgentStatus, AgentSummary, AnswerState, Catchup, Event, EventRecord, ItemBody,
-    SignInWait, Snapshot,
+    PendingId, SignInWait, Snapshot,
 };
 
 use super::accounts::{self, SignIns};
@@ -340,6 +340,9 @@ pub fn apply(
                 drafts.questions.remove(&question.pending);
             }
             if let Some(entry) = state.agents.get_mut(&agent) {
+                if let Some(pending) = closed_card(&item.body) {
+                    entry.answers_sent.remove(pending);
+                }
                 entry.note_call(&item, Instant::now());
                 entry.transcript.change(item);
             }
@@ -393,6 +396,21 @@ pub fn apply(
             None
         }
     }
+}
+
+/// The pending id of an approval, question or plan that no longer waits.
+fn closed_card(body: &ItemBody) -> Option<&PendingId> {
+    let (pending, waiting) = match body {
+        ItemBody::Approval(approval) => {
+            (&approval.pending, approval.answer == AnswerState::Waiting)
+        }
+        ItemBody::Question(question) => {
+            (&question.pending, question.answer == AnswerState::Waiting)
+        }
+        ItemBody::Plan(plan) => (&plan.pending, plan.answer == AnswerState::Waiting),
+        _ => return None,
+    };
+    (!waiting).then_some(pending)
 }
 
 /// Forgets an agent the daemon removed or the app closed: its entry, which it returns, its drafts,
@@ -566,9 +584,9 @@ mod tests {
 
     use cockpit_client::{ConnectError, SessionError};
     use cockpit_protocol::{
-        AgentDetails, BuildCommit, CostUsd, Image, ImageMediaType, ItemId, NoticeKind, PendingId,
-        PlanUsage, Question, ReleaseVersion, Seq, Settings, TaskProgress, TokenUsage,
-        TranscriptItem, TurnEnd, TurnOutcome,
+        AgentDetails, Approval, ApprovalAnswer, ApprovalDecision, BuildCommit, CostUsd, Image,
+        ImageMediaType, ItemId, NoticeKind, PendingId, PlanUsage, Question, ReleaseVersion, Seq,
+        Settings, TaskProgress, TokenUsage, TranscriptItem, TurnEnd, TurnOutcome,
     };
 
     use super::*;
@@ -1097,6 +1115,61 @@ mod tests {
         assert_eq!(away.items().count(), KEPT_ITEMS_AWAY);
         assert_eq!(away.first_id(), Some(ItemId::new(4)));
         assert_eq!(looked_at.items().count(), KEPT_ITEMS_AWAY + 3);
+    }
+
+    /// A process started again by a resume can ask under an id an earlier one used.
+    #[test]
+    fn a_card_closed_by_the_daemon_lets_a_new_card_under_its_id_answer() {
+        let agent = AgentId::new(1);
+        let pending = PendingId::new("perm-1".to_owned());
+        let mut state = state_with(vec![summary(1, AgentStatus::NeedsYou)]);
+        let card = |id, answer| TranscriptItem {
+            id: ItemId::new(id),
+            parent: None,
+            body: ItemBody::Approval(Approval {
+                pending: pending.clone(),
+                tool: "Bash".to_owned(),
+                summary: "cargo build".to_owned(),
+                input: serde_json::Value::Null,
+                edit: None,
+                reason: None,
+                answer,
+                tool_call: None,
+            }),
+        };
+        let allowed = AnswerState::Answered(ApprovalAnswer {
+            decision: ApprovalDecision::Allow,
+            message: None,
+        });
+        let send_allow = |state: &mut AppState| {
+            let mut requests =
+                actions::answer_approval(agent, pending.clone(), ApprovalDecision::Allow);
+            crate::state::keep_first_answers(state, &mut requests);
+            requests.len()
+        };
+
+        let first = send_allow(&mut state);
+        let events = [
+            Event::TranscriptChanged {
+                agent,
+                item: card(1, allowed),
+            },
+            Event::TranscriptAppended {
+                agent,
+                item: card(2, AnswerState::Waiting),
+            },
+        ];
+        for event in events {
+            apply(
+                &mut state,
+                &mut Drafts::default(),
+                record(event),
+                MachineId::THIS,
+            );
+        }
+        let second = send_allow(&mut state);
+
+        assert_eq!((first, second), (1, 1));
     }
 
     #[test]

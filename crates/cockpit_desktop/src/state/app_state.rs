@@ -7,8 +7,8 @@ use std::time::{Duration, Instant, SystemTime};
 use cockpit_protocol::{
     Account, AccountId, AgentDetails, AgentId, AgentStatus, AgentSummary, AnswerState,
     BackgroundTask, BackgroundTaskStatus, BuildCommit, FileEdit, Image, ItemBody, ItemId,
-    PastSession, PlanUsage, ReleaseVersion, Seq, Settings, SlashCommand, Timestamp, ToolCallStatus,
-    TranscriptItem, WaitingPrompt, list_order,
+    PastSession, PendingId, PlanUsage, ReleaseVersion, Seq, Settings, SlashCommand, Timestamp,
+    ToolCallStatus, TranscriptItem, WaitingPrompt, list_order,
 };
 use strum::VariantArray;
 
@@ -176,6 +176,9 @@ pub struct AgentEntry {
     pub turn_started: Option<Instant>,
     /// The end of the turn whose message the sign-in card sent again: the card sends it once.
     pub sent_again: Option<ItemId>,
+    /// The cards whose answer the app sent, until the daemon refuses it or its update closes the
+    /// card: a second Enter, key or click meanwhile sends nothing, and the card shows that it went.
+    pub answers_sent: BTreeSet<PendingId>,
     /// When the app announces the agent's finish, unless a turn starts before. Set when the last
     /// background task of an idle agent ends.
     pub finish_due: Option<Instant>,
@@ -297,6 +300,7 @@ impl AgentEntry {
             commands_requested: false,
             turn_started: None,
             sent_again: None,
+            answers_sent: BTreeSet::new(),
             finish_due: None,
             images: VecDeque::new(),
             tree: FileTree::default(),
