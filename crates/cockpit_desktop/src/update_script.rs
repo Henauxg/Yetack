@@ -36,6 +36,10 @@ pub const BOOT_START_OPTION: &str = "--add-boot-start";
 /// Makes `contrib/install-daemon.sh` start the daemon installed at the path after it.
 pub const START_OPTION: &str = "--start";
 
+/// Names, after `CHECK_OPTION` or `BOOT_START_OPTION`, the daemon a server runs in place of the
+/// installed one.
+pub const BINARY_OPTION: &str = "--binary";
+
 /// Skips the script's refusal for busy agents: "Update now".
 const EVEN_IF_BUSY_OPTION: &str = "--even-if-busy";
 

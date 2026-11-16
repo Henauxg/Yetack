@@ -264,6 +264,7 @@ fn without_a_systemd_user_session_the_daemon_starts_on_its_own_and_nothing_start
     assert!(said.contains("install-daemon: the daemon runs"), "{said}");
     assert!(said.contains("install-daemon: service none"), "{said}");
     assert!(said.contains("install-daemon: boot no"), "{said}");
+    assert!(said.contains("install-daemon: crond "), "{said}");
     assert!(
         said.contains(&format!(
             "install-daemon: start PATH={}/.local/bin:",
@@ -588,4 +589,49 @@ fn a_start_uses_the_systemd_service_when_there_is_one() {
     let log = fs::read_to_string(server.path("systemctl.log")).unwrap();
     assert!(log.contains("--user start yetack"), "{log}");
     assert!(answers(&server));
+}
+
+#[test]
+fn a_check_and_a_crontab_line_for_a_daemon_elsewhere_name_that_daemon() {
+    let server = Server::new();
+    let installed = install_without_systemd(&server);
+    assert!(installed.status.success(), "{}", stderr(&installed));
+    let elsewhere = server.path("home/opt/yetack");
+    fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
+    fs::copy(server.installed(), &elsewhere).unwrap();
+    let binary = elsewhere.to_str().unwrap();
+
+    let checked = server.install(&["--check", "--binary", binary]);
+    let added = server.install(&["--add-boot-start", "--binary", binary]);
+
+    assert!(checked.status.success(), "{}", stderr(&checked));
+    assert!(
+        stdout(&checked).contains(&format!(" {binary} serve >>")),
+        "{}",
+        stdout(&checked)
+    );
+    assert!(added.status.success(), "{}", stderr(&added));
+    let line = cron_line(&server);
+    assert!(line.contains(&format!(" {binary} serve >>")), "{line}");
+}
+
+#[test]
+fn a_server_where_no_cron_daemon_runs_says_so() {
+    let server = Server::new();
+    server.write_program("bin/pgrep", "#!/bin/sh\nexit 1\n");
+
+    let installed = install_without_systemd(&server);
+
+    assert!(installed.status.success(), "{}", stderr(&installed));
+    // Where /proc hides the system's processes, the script cannot tell.
+    let seen = if fs::read("/proc/1/stat").is_ok() {
+        "no"
+    } else {
+        "unknown"
+    };
+    let said = stdout(&installed);
+    assert!(
+        said.contains(&format!("install-daemon: crond {seen}\n")),
+        "{said}"
+    );
 }

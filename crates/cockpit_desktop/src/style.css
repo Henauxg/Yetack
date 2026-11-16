@@ -10938,6 +10938,49 @@ html.splitting .sidebar {
   margin: -4px 0 0 26px;
 }
 
+/* Under a server's row in the Machines dialog, after a start without systemd. It folds in by its
+   height, so the rows under it move with it. Its top margin takes back the table's gap, which
+   the clip gives again inside. */
+.machine-boot-fold {
+  display: grid;
+  margin-top: -4px;
+  grid-template-rows: 1fr;
+  animation: question-fold-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.machine-boot-clip {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* A failure under the start at boot, which folds in and out as the block does. Its top margin
+   takes back the block's gap, which the text's padding gives again inside the clip. */
+.failure-fold {
+  display: grid;
+  grid-template-rows: 1fr;
+  margin-top: -8px;
+  animation: question-fold-in var(--motion-in) var(--ease-out) backwards;
+}
+
+.failure-fold.leaving {
+  animation: question-fold-out var(--motion-out) var(--ease-in) forwards;
+}
+
+.failure-fold-text {
+  display: block;
+  padding-top: 8px;
+}
+
+.machine-boot-offer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px dashed var(--line-strong);
+}
+
 .field-label .optional {
   margin-left: 6px;
   color: var(--faint);

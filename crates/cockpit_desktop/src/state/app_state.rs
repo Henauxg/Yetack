@@ -24,7 +24,7 @@ use super::grouping::GroupKey;
 use super::no_daemon::{NoDaemon, SERVICE_OFFERED};
 use super::page_copy::PageCopies;
 use super::sending::Sending;
-use super::server_setup::ServerSetup;
+use super::server_setup::{InstallReport, ServerSetup};
 use super::transcript::Transcript;
 use super::ui_state::UiState;
 use super::update_offer::{ProgramBuild, VersionGap};
@@ -400,6 +400,9 @@ pub struct MachineState {
     pub server: Option<MachineConfig>,
     /// "Start the daemon" on a server where no daemon runs.
     pub start: DaemonStart,
+    /// After a start without systemd, the server's report while it has a start at boot to offer,
+    /// which the Machines dialog shows under the server.
+    pub boot_offer: Option<InstallReport>,
 }
 
 impl MachineState {
@@ -425,6 +428,7 @@ impl MachineState {
             connections: 0,
             server: None,
             start: DaemonStart::default(),
+            boot_offer: None,
         }
     }
 

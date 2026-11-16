@@ -13,10 +13,10 @@ use super::apply::forget_agent;
 use super::daemon_update::{self, DaemonUpdate};
 use super::drafts::Drafts;
 use super::machine_status::{self, MachineStatus, StatusAction, Tone};
-use super::server_setup::{self, SetupRun};
+use super::server_setup::{self, InstallReport, SetupRun};
 use super::ui_state::{Dialog, MachineEdit, MachineMenu, MachinesView};
 use super::update_offer::ProgramBuild;
-use super::{file_tree, update_offer};
+use super::{daemon_start, file_tree, update_offer};
 use crate::config::{DaemonConfig, MachineConfig};
 use crate::daemon_label::{DaemonLabel, DaemonPlace};
 use crate::format;
@@ -73,6 +73,8 @@ pub struct MachineRow {
     pub action: Option<StatusAction>,
     /// A server the config names, which its ⋯ menu edits, copies and removes.
     pub server: Option<ServerRow>,
+    /// After a start without systemd, the start at boot the row offers under it.
+    pub boot_offer: Option<InstallReport>,
 }
 
 /// The build a row shows.
@@ -213,6 +215,7 @@ pub fn rows(state: &AppState) -> Vec<MachineRow> {
                     host: config.host.clone(),
                     editable: can_edit(known),
                 }),
+                boot_offer: known.boot_offer.clone(),
             }
         })
         .collect()
@@ -479,6 +482,7 @@ pub fn apply_edit(state: &mut AppState, machine: MachineId, config: &MachineConf
     };
     let old = known.daemon.machine.clone();
     known.daemon = DaemonLabel::ssh(config.name.clone());
+    daemon_start::follow_config(known, config);
     known.server = Some(config.clone());
     daemon_update::follow_config(known, config);
     state.prefs.rename_machine(&old, &config.name);

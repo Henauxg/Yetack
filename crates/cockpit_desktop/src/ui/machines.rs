@@ -144,7 +144,15 @@ pub fn MachinesDialog(view: MachinesView) -> Element {
                                 MachineRowView {
                                     key: "{row.machine.get()}",
                                     menu_open: view.menu.is_some_and(|menu| menu.machine == row.machine),
-                                    row,
+                                    row: row.clone(),
+                                }
+                                if let Some(report) = row.boot_offer.clone() {
+                                    BootOffer {
+                                        key: "boot-{row.machine.get()}",
+                                        machine: row.machine,
+                                        name: row.name.name.clone(),
+                                        report,
+                                    }
                                 }
                             },
                         }
@@ -173,6 +181,8 @@ fn MachineRowView(row: MachineRow, menu_open: bool) -> Element {
         version,
         action,
         server,
+        // The dialog shows it under the row.
+        boot_offer: _,
     } = row;
     let agents_text = format::count(agents, "agent", "agents");
     let toggle_menu = move |event: MouseEvent| {
@@ -729,11 +739,13 @@ fn SetupHead(title: String, lead: String) -> Element {
 /// The daemon runs: what else it needs, with the command that fixes each need on the server.
 #[component]
 fn InstalledReport(name: String, release: String, report: InstallReport) -> Element {
+    let cockpit: Cockpit = use_context();
     let left = report.left_to_do();
     let title = match left {
         0 => format!("{name} is set up"),
         1 => format!("{name} is set up, with one thing left to do"),
-        _ => format!("{name} is set up, with two things left to do"),
+        2 => format!("{name} is set up, with two things left to do"),
+        _ => format!("{name} is set up, with three things left to do"),
     };
     let lead = match (left, report.left_on_server()) {
         (0, _) => format!("{name}'s agents work now."),
@@ -775,7 +787,7 @@ fn InstalledReport(name: String, release: String, report: InstallReport) -> Elem
             }
         }
         if report.starter == Starter::Alone {
-            BootStartAction { report: report.clone() }
+            BootStartAction { report: report.clone(), on_add: move |()| cockpit.add_boot_start_on_server() }
         }
         ol { class: "update-steps",
             match &report.claude {
@@ -799,6 +811,12 @@ fn InstalledReport(name: String, release: String, report: InstallReport) -> Elem
 fn BootStartRow(name: String, report: InstallReport) -> Element {
     let title = format!("Start it again when {name} restarts");
     let (mark, detail) = match report.boot {
+        Some(BootStart::Yes) if report.cron_stopped() => (
+            Mark::Warn,
+            format!(
+                "Your crontab starts it, but no cron daemon runs on {name}, so nothing reads the crontab. Start your cron service on {name}, and have it start at boot (on Gentoo with OpenRC, it is cronie: sudo rc-update add cronie default, then sudo rc-service cronie start)."
+            ),
+        ),
         Some(BootStart::Yes) => (Mark::Done, "Your crontab starts it".to_owned()),
         Some(BootStart::Unavailable) => (
             Mark::Warn,
@@ -806,23 +824,73 @@ fn BootStartRow(name: String, report: InstallReport) -> Element {
                 "{name} has no crontab, so nothing starts the daemon after a restart. Run this command when {name} starts, from its init system:"
             ),
         ),
-        Some(BootStart::No) | None => (
-            Mark::Warn,
-            format!(
-                "Nothing starts the daemon after {name} restarts. The app can add this line to your crontab on {name}, which cron runs at each start:"
-            ),
-        ),
+        Some(BootStart::No) | None => {
+            let cron = if report.cron_stopped() {
+                format!(
+                    " No cron daemon runs on {name} now: start it too, and have it start at boot."
+                )
+            } else {
+                String::new()
+            };
+            (
+                Mark::Warn,
+                format!(
+                    "Nothing starts the daemon after {name} restarts. The app can add this line to your crontab on {name}, which cron runs at each start.{cron}"
+                ),
+            )
+        }
     };
     rsx! {
         SetupStepRow { mark, title, detail: Some(detail) }
     }
 }
 
-/// The command `BootStartRow` names, and the button that adds the crontab line. The app adds it
-/// only on that click.
+/// Under a server's row in the Machines dialog, after a start without systemd: the start at boot,
+/// as the setup offers it.
 #[component]
-fn BootStartAction(report: InstallReport) -> Element {
+fn BootOffer(machine: MachineId, name: String, report: InstallReport) -> Element {
     let cockpit: Cockpit = use_context();
+    rsx! {
+        div { class: "machine-boot-fold",
+            div { class: "machine-boot-clip",
+                div { class: "machine-boot-offer",
+                    ol { class: "update-steps",
+                        BootStartRow { name, report: report.clone() }
+                    }
+                    BootStartAction {
+                        report: report.clone(),
+                        on_add: move |()| cockpit.add_boot_start_on_machine(machine),
+                    }
+                    FailureFold { failure: report.failure.clone() }
+                }
+            }
+        }
+    }
+}
+
+/// The row's failure, which folds in and out by its height, so the block grows and shrinks with
+/// it. A new "Add it to my crontab" clears it.
+#[component]
+fn FailureFold(failure: Option<String>) -> Element {
+    let Some(shown) = use_presence(failure) else {
+        return rsx! {};
+    };
+    rsx! {
+        div {
+            key: "{shown.opening}",
+            class: if shown.leaving { "failure-fold leaving" } else { "failure-fold" },
+            inert: shown.leaving.then_some(true),
+            div { class: "machine-boot-clip",
+                span { class: "form-error failure-fold-text", role: "alert", "{shown.value}" }
+            }
+        }
+    }
+}
+
+/// The command `BootStartRow` names, and the button that adds the crontab line. The app adds it
+/// only on that click, which `on_add` runs: the setup's, or a server's row in the dialog.
+#[component]
+fn BootStartAction(report: InstallReport, on_add: EventHandler<()>) -> Element {
     match report.boot {
         Some(BootStart::Yes) => rsx! {},
         Some(BootStart::Unavailable) => rsx! {
@@ -839,7 +907,7 @@ fn BootStartAction(report: InstallReport) -> Element {
                     button {
                         class: "button small",
                         disabled: report.checking,
-                        onclick: move |_| cockpit.add_boot_start_on_server(),
+                        onclick: move |_| on_add.call(()),
                         if report.checking { "Adding…" } else { "Add it to my crontab" }
                     }
                 }

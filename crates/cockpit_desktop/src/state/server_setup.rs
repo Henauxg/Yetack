@@ -27,6 +27,7 @@ pub const SERVICE_LINE: &str = "install-daemon: service ";
 pub const BOOT_LINE: &str = "install-daemon: boot ";
 pub const START_LINE: &str = "install-daemon: start ";
 pub const CRON_LINE: &str = "install-daemon: cron ";
+pub const CROND_LINE: &str = "install-daemon: crond ";
 
 // The words after `LINGER_LINE` and `CLAUDE_LINE`.
 const LINGER_ON: &str = "yes";
@@ -89,6 +90,8 @@ pub struct InstallReport {
     pub start_command: Option<String>,
     /// Without systemd, the exact line "Add it to my crontab" puts in the user's crontab.
     pub cron_line: Option<String>,
+    /// Without systemd, whether a cron daemon runs to read the crontab.
+    pub crond: Option<CronDaemon>,
     /// Where the service finds `claude`, `None` when it finds none.
     pub claude: Option<String>,
     /// "Check again" or "Add it to my crontab" runs.
@@ -120,12 +123,24 @@ pub enum BootStart {
     Unavailable,
 }
 
+/// Whether a cron daemon runs on the server, as the words after `CROND_LINE` say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr, VariantArray)]
+#[strum(serialize_all = "snake_case")]
+pub enum CronDaemon {
+    Yes,
+    No,
+    /// The server could not tell: no `pgrep`, or a /proc that hides the system's processes.
+    Unknown,
+}
+
 impl InstallReport {
     /// Reads the report's lines among the script's output. A line it does not know is skipped.
     pub fn read<'a>(lines: impl IntoIterator<Item = &'a str>) -> Self {
         let mut report = Self::default();
         for line in lines {
-            if let Some(linger) = line.strip_prefix(LINGER_LINE) {
+            if let Some(crond) = line.strip_prefix(CROND_LINE) {
+                report.crond = crond.trim().parse().ok();
+            } else if let Some(linger) = line.strip_prefix(LINGER_LINE) {
                 report.linger = match linger.trim() {
                     LINGER_ON => Some(true),
                     LINGER_OFF => Some(false),
@@ -149,13 +164,23 @@ impl InstallReport {
     }
 
     /// How many things are left for the user to do on the server: keep the daemon running (linger
-    /// for a service, a start at boot without one), install Claude Code.
+    /// for a service, a start at boot without one), start cron when the crontab needs it, install
+    /// Claude Code.
     pub fn left_to_do(&self) -> usize {
         let keeps_running = match self.starter {
             Starter::Systemd => self.linger == Some(true),
             Starter::Alone => self.boot == Some(BootStart::Yes),
         };
-        usize::from(!keeps_running) + usize::from(self.claude.is_none())
+        usize::from(!keeps_running)
+            + usize::from(self.cron_stopped())
+            + usize::from(self.claude.is_none())
+    }
+
+    /// Without systemd, no cron daemon runs, so a crontab line would start nothing.
+    pub fn cron_stopped(&self) -> bool {
+        self.starter == Starter::Alone
+            && self.boot != Some(BootStart::Unavailable)
+            && self.crond == Some(CronDaemon::No)
     }
 
     /// How many of `left_to_do` the user does on the server: all but the crontab line, which "Add
@@ -601,15 +626,20 @@ mod tests {
     }
 
     #[test]
-    fn the_words_after_service_and_boot_are_pinned() {
+    fn the_words_after_service_boot_and_crond_are_pinned() {
         let starters: Vec<&str> = Starter::VARIANTS.iter().map(|&word| word.into()).collect();
         let boots: Vec<&str> = BootStart::VARIANTS
+            .iter()
+            .map(|&word| word.into())
+            .collect();
+        let cron_daemons: Vec<&str> = CronDaemon::VARIANTS
             .iter()
             .map(|&word| word.into())
             .collect();
 
         assert_eq!(starters, ["systemd", "none"]);
         assert_eq!(boots, ["yes", "no", "unavailable"]);
+        assert_eq!(cron_daemons, ["yes", "no", "unknown"]);
     }
 
     #[test]
@@ -626,6 +656,7 @@ mod tests {
             BOOT_LINE,
             START_LINE,
             CRON_LINE,
+            CROND_LINE,
         ];
         for line in read {
             assert!(line.starts_with(SAY_PREFIX), "{line}");

@@ -4,8 +4,8 @@
 # never runs sudo.
 #
 #   ssh HOST sh -s -- --built FILE --sha256 SUM --version TEXT < contrib/install-daemon.sh
-#   ssh HOST sh -s -- --check < contrib/install-daemon.sh
-#   ssh HOST sh -s -- --add-boot-start < contrib/install-daemon.sh
+#   ssh HOST sh -s -- --check [--binary BINARY] < contrib/install-daemon.sh
+#   ssh HOST sh -s -- --add-boot-start [--binary BINARY] < contrib/install-daemon.sh
 #   ssh HOST sh -s -- --start BINARY < contrib/install-daemon.sh
 #
 #   --built           the binary the app sent, which the script deletes once it is done
@@ -17,6 +17,8 @@
 #                     once the user asked for it.
 #   --start           starts the daemon BINARY names, where none runs: its systemd user service
 #                     when it has one, else on its own as an install without systemd does
+#   --binary          with --check or --add-boot-start, the daemon BINARY names, in place of the
+#                     installed one, for the start command and the crontab line
 #
 # It installs the binary as ~/.local/share/yetack/bin/yetack. With a systemd user session, it
 # writes ~/.config/systemd/user/yetack.service and starts it, then says whether systemd keeps the
@@ -24,8 +26,9 @@
 # outside the SSH session, so that it keeps running once the session ends, and says whether the
 # user's crontab starts it again when the machine starts ("boot yes", "boot no", or "boot
 # unavailable" without crontab), the command that starts it ("start COMMAND"), and with crontab the
-# line --add-boot-start puts there ("cron LINE"). In both cases it says which of the two starts the
-# daemon ("service systemd" or "service none"), and where the daemon finds claude ("claude PATH",
+# line --add-boot-start puts there ("cron LINE") and whether a cron daemon runs to read it ("crond
+# yes", "crond no", or "crond unknown" when it cannot see the system's processes). In both cases it
+# says which of the two starts the daemon ("service systemd" or "service none"), and where the daemon finds claude ("claude PATH",
 # or "claude missing").
 #
 # Exit status:
@@ -80,6 +83,7 @@ parse_arguments() {
             --start)
                 action=start
                 start_binary=$2 ;;
+            --binary) start_binary=$2 ;;
             --built) sent=$2 ;;
             --sha256) sha256=$2 ;;
             --version) version=$2 ;;
@@ -302,6 +306,23 @@ start_installed() {
     fi
 }
 
+# Whether a cron daemon runs, which a crontab line needs to start anything: yes, no, or unknown
+# without pgrep, or where /proc hides other users' processes (hidepid). OpenRC, for one, often does
+# not start cron by default.
+crond_state() {
+    if ! command -v pgrep >/dev/null 2>&1 || ! [ -r /proc/1/stat ]; then
+        printf unknown
+        return
+    fi
+    for name in crond cron cronie fcron dcron; do
+        if pgrep -x "$name" >/dev/null 2>&1; then
+            printf yes
+            return
+        fi
+    done
+    printf no
+}
+
 # Without linger, systemd stops the user's services, the daemon among them, when they log out. A
 # daemon started without systemd keeps running then, until the machine restarts.
 report_needs() {
@@ -315,6 +336,7 @@ report_needs() {
         say "boot $boot"
         say "start $(start_command)"
         [ "$boot" = unavailable ] || say "cron $(cron_line)"
+        [ "$boot" = unavailable ] || say "crond $(crond_state)"
     fi
     claude=$(PATH=$(service_path) command -v claude 2>/dev/null)
     say "claude ${claude:-missing}"
@@ -324,6 +346,9 @@ main() {
     # A lost connection must not stop the install halfway.
     trap '' HUP PIPE
     parse_arguments "$@"
+    case $action in
+        check | boot) [ -z "$start_binary" ] || resolve_binary ;;
+    esac
     case $action in
         check)
             report_needs

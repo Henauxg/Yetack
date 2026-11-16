@@ -13,8 +13,8 @@ use crate::state::daemon_update::OutputLine;
 use crate::state::error_chain;
 use crate::state::update_plan::{CarriedDaemons, SendProgress};
 use crate::update_script::{
-    self, APP_VERSION, BOOT_START_OPTION, BUILT_OPTION, CHECK_OPTION, SHA256_OPTION, START_OPTION,
-    VERSION_OPTION,
+    self, APP_VERSION, BINARY_OPTION, BOOT_START_OPTION, BUILT_OPTION, CHECK_OPTION, SHA256_OPTION,
+    START_OPTION, VERSION_OPTION,
 };
 use crate::{release_daemon, self_update};
 
@@ -126,14 +126,36 @@ pub async fn start_daemon(
     run_install_script(host, &[START_OPTION, binary], on_lines).await
 }
 
-/// Adds the daemon's start at boot to the user's crontab on `host`, then reads what it needs.
-pub async fn add_boot_start(host: &str, on_lines: impl FnMut(Vec<OutputLine>)) -> Option<i32> {
-    run_install_script(host, &[BOOT_START_OPTION], on_lines).await
+/// Adds the daemon's start at boot to the user's crontab on `host`, then reads what it needs. The
+/// line starts `binary`, or the daemon the install put in place without one.
+pub async fn add_boot_start(
+    host: &str,
+    binary: Option<&str>,
+    on_lines: impl FnMut(Vec<OutputLine>),
+) -> Option<i32> {
+    run_install_script(host, &with_binary(BOOT_START_OPTION, binary), on_lines).await
 }
 
-/// Reads again what the daemon on `host` needs besides itself, giving the lines to `on_lines`.
-pub async fn check_needs(host: &str, on_lines: impl FnMut(Vec<OutputLine>)) -> Option<i32> {
-    run_install_script(host, &[CHECK_OPTION], on_lines).await
+/// Reads again what the daemon on `host` needs besides itself, giving the lines to `on_lines`. Its
+/// start command and crontab line name `binary`, or the daemon the install put in place without
+/// one.
+pub async fn check_needs(
+    host: &str,
+    binary: Option<&str>,
+    on_lines: impl FnMut(Vec<OutputLine>),
+) -> Option<i32> {
+    run_install_script(host, &with_binary(CHECK_OPTION, binary), on_lines).await
+}
+
+/// The install script's `option`, then `binary` after `BINARY_OPTION` when there is one.
+fn with_binary<'a>(option: &'a str, binary: Option<&'a str>) -> Vec<&'a str> {
+    let mut arguments = vec![option];
+    arguments.extend(
+        binary
+            .into_iter()
+            .flat_map(|binary| [BINARY_OPTION, binary]),
+    );
+    arguments
 }
 
 /// Runs the install script with `arguments`. Why ssh could not start or the script could not run

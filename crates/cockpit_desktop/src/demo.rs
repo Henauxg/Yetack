@@ -39,6 +39,7 @@ use crate::state::app_update::{self, AppStep, InstallKind, Release, ReleaseAsset
 use crate::state::daemon_probe::{
     DaemonOwner, DaemonProbe, InstalledDaemon, PackageFormat, ServerInstall,
 };
+use crate::state::daemon_start::StartRun;
 use crate::state::daemon_update::{
     self, HandStop, OutputLine, OutputStream, RestartFailure, StopFailure, UpdateFailure,
 };
@@ -1201,13 +1202,26 @@ const SETUP_OUTPUT_ALONE: &[&str] = &[
 ];
 
 /// Plays "Start the daemon": after a pause, the server's daemon runs, and the app is connected.
-pub async fn play_start(mut state: Signal<AppState>, machine: MachineId) {
+pub async fn play_start(mut state: Signal<AppState>, machine: MachineId, run: StartRun) {
     tokio::time::sleep(UPDATE_LINE_PAUSE * 3).await;
     let mut state = state.write();
     daemon_start::started(&mut state, machine, Ok(()));
     if let Some(known) = state.machines.get_mut(machine) {
         known.connection = ConnectionState::Connected;
     }
+    // The demo's server runs no systemd: the dialog offers the start at boot.
+    let report = InstallReport::read(SETUP_OUTPUT_ALONE.iter().copied());
+    daemon_start::offer_boot_start(&mut state, machine, &run, report);
+}
+
+/// Plays "Add it to my crontab" on a server's row: the crontab starts the daemon now.
+pub async fn play_boot_start(mut state: Signal<AppState>, machine: MachineId, run: StartRun) {
+    tokio::time::sleep(UPDATE_LINE_PAUSE).await;
+    let said: Vec<String> = SETUP_OUTPUT_ALONE
+        .iter()
+        .map(|line| line.replace("boot no", "boot yes"))
+        .collect();
+    daemon_start::boot_start_added(&mut state.write(), machine, &run, Ok(said));
 }
 
 /// Plays a step of a new server's setup: the server has no daemon, and the install works.
