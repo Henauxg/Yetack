@@ -114,7 +114,7 @@ fn screen_choice(cockpit: Cockpit, machine: MachineId) -> (Option<DaemonChoice>,
 /// What "Update" does to `name`, as the card's note says it.
 fn what_the_update_does(plan: &UpdatePlan, name: &str, app: &ProgramBuild) -> String {
     match plan {
-        UpdatePlan::Server(plan) if plan.daemon_file.is_some() => format!(
+        UpdatePlan::Server(plan) if plan.daemon.is_some() => format!(
             "Sends {} to {name} and checks it there, then restarts {name}'s daemon. {AGENTS_RESUME}",
             app.version
         ),
@@ -757,7 +757,7 @@ fn ProgressCard(
         cancel_asked,
         ..
     } = &progress;
-    let sends = matches!(plan, UpdatePlan::Server(plan) if plan.daemon_file.is_some());
+    let sends = matches!(plan, UpdatePlan::Server(plan) if plan.daemon.is_some());
     // This computer's screens fill the window while it reaches no daemon: there is nothing to
     // hide them behind.
     let hides = machine != MachineId::THIS

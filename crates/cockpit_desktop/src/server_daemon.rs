@@ -8,24 +8,23 @@ use cockpit_client::{ssh_inline_command, ssh_script_command};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::self_update;
-use crate::state::daemon_probe::ServerInstall;
+use crate::state::daemon_probe::{LinuxCpu, ServerInstall};
 use crate::state::daemon_update::OutputLine;
 use crate::state::error_chain;
-use crate::state::update_plan::SendProgress;
+use crate::state::update_plan::{CarriedDaemons, SendProgress};
 use crate::update_script::{
     self, APP_VERSION, BUILT_OPTION, CHECK_OPTION, SHA256_OPTION, VERSION_OPTION,
 };
+use crate::{release_daemon, self_update};
 
 const INSTALL_SCRIPT: &str = include_str!("../../../contrib/install-daemon.sh");
 
-/// The file name of the Linux daemon the app carries beside itself. The Windows zip holds it, and
-/// `just linux-daemon` writes it beside a build from source.
-pub const CARRIED_FILE_NAME: &str = "yetack-x86_64-linux";
-
-/// The Linux daemon a package carries, set when it builds the app: the `.deb`'s
+/// The x86_64 Linux daemon a package carries, set when it builds the app: the `.deb`'s
 /// `/usr/bin/yetack`, or the flake's static daemon in the Nix store.
 const PACKAGED: Option<&str> = option_env!("YETACK_LINUX_DAEMON");
+
+/// The aarch64 Linux daemon a package carries, set when it builds the app.
+const PACKAGED_AARCH64: Option<&str> = option_env!("YETACK_LINUX_DAEMON_AARCH64");
 
 /// The bytes sent at once, between two reports of the progress.
 const CHUNK: usize = 256 * 1024;
@@ -163,27 +162,53 @@ pub async fn probe(host: &str, binary: &str) -> Result<ServerInstall, String> {
     Ok(install)
 }
 
-/// The Linux daemon this app carries, when it has one: the one its package names, or the file
-/// beside the app.
-pub fn carried() -> Option<PathBuf> {
-    let packaged = PACKAGED.filter(|path| !path.is_empty()).map(PathBuf::from);
+/// The Linux daemons this app carries, for each CPU it has one for, and whether it may download
+/// its release's for the others. It asks GitHub only when a CPU has none carried.
+pub async fn carried_daemons() -> CarriedDaemons {
+    let mut daemons = carried_daemons_now();
+    let lacks_one = daemons.x86_64.is_none() || daemons.aarch64.is_none();
+    if lacks_one && update_script::app_commit().is_some() {
+        daemons.release = release_daemon::is_release_build().await;
+    }
+    daemons
+}
+
+/// `carried_daemons` without asking GitHub: whether the app may download comes from what it
+/// learned before.
+pub fn carried_daemons_now() -> CarriedDaemons {
+    CarriedDaemons {
+        x86_64: carried(LinuxCpu::X86_64),
+        aarch64: carried(LinuxCpu::Aarch64),
+        release: release_daemon::known_release_build(),
+    }
+}
+
+/// The Linux daemon this app carries for `cpu`, when it has one: the one its package names, or the
+/// file beside the app.
+pub fn carried(cpu: LinuxCpu) -> Option<PathBuf> {
+    let packaged = match cpu {
+        LinuxCpu::X86_64 => PACKAGED,
+        LinuxCpu::Aarch64 => PACKAGED_AARCH64,
+    };
+    let packaged = packaged.filter(|path| !path.is_empty()).map(PathBuf::from);
     let beside = std::env::current_exe()
         .ok()
-        .and_then(|app| Some(carried_beside(app.parent()?)));
+        .and_then(|app| Some(carried_beside(app.parent()?, cpu)));
     packaged
         .into_iter()
         .chain(beside)
         .find(|path| path.is_file())
 }
 
-/// The daemon in the app's folder. Between an update's move and the next start, the file of that
-/// name is the new release's daemon, and this app's own waits beside it as `<name>.old`.
-fn carried_beside(folder: &Path) -> PathBuf {
-    let own = folder.join(format!("{CARRIED_FILE_NAME}{}", self_update::OLD_SUFFIX));
+/// The daemon for `cpu` in the app's folder. Between an update's move and the next start, the file
+/// of that name is the new release's daemon, and this app's own waits beside it as `<name>.old`.
+fn carried_beside(folder: &Path, cpu: LinuxCpu) -> PathBuf {
+    let name = cpu.daemon_file_name();
+    let own = folder.join(format!("{name}{}", self_update::OLD_SUFFIX));
     if own.is_file() {
         own
     } else {
-        folder.join(CARRIED_FILE_NAME)
+        folder.join(name)
     }
 }
 
@@ -493,12 +518,19 @@ mod tests {
     fn an_update_waiting_for_the_restart_carries_the_daemon_it_moved_aside() {
         let temp = tempfile::tempdir().unwrap();
         let folder = temp.path();
-        std::fs::write(folder.join(CARRIED_FILE_NAME), "new daemon").unwrap();
-        assert_eq!(carried_beside(folder), folder.join(CARRIED_FILE_NAME));
+        std::fs::write(folder.join("yetack-x86_64-linux"), "new daemon").unwrap();
+        assert_eq!(
+            carried_beside(folder, LinuxCpu::X86_64),
+            folder.join("yetack-x86_64-linux")
+        );
+        assert_eq!(
+            carried_beside(folder, LinuxCpu::Aarch64),
+            folder.join("yetack-aarch64-linux")
+        );
 
         let old = folder.join("yetack-x86_64-linux.old");
         std::fs::write(&old, "this app's daemon").unwrap();
 
-        assert_eq!(carried_beside(folder), old);
+        assert_eq!(carried_beside(folder, LinuxCpu::X86_64), old);
     }
 }

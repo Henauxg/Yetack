@@ -124,7 +124,7 @@ release:
         [ -e "$file" ] || continue
         case "${file#dist/}" in
             "yetack-desktop-$version-windows-x64.zip" | "yetack-desktop-$version-windows-x64.exe") ;;
-            yetack-*-x86_64-linux | yetack_*_amd64.deb | yetack-*.x86_64.rpm \
+            yetack-*-x86_64-linux | yetack-*-aarch64-linux | yetack_*_amd64.deb | yetack-*.x86_64.rpm \
                 | yetack-desktop-*-x86_64-linux.tar.gz | yetack.service | SHA256SUMS)
                 rm -f "$file" ;;
             *)

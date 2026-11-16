@@ -3,14 +3,45 @@
 //! it installs to. Nix, `apt` and `dnf` own theirs, and the user updates those, as anything else,
 //! by hand.
 
+use std::fmt::Display;
 use std::str::FromStr;
 
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
 use super::update_plan::ServerPlan;
 
-/// The system the daemon this app carries runs on, as `uname -sm` prints it.
-pub const CARRIED_SYSTEM: &str = "Linux x86_64";
+/// A Linux CPU that the release builds the static daemon for, by `uname -m`'s word for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr, VariantArray)]
+pub enum LinuxCpu {
+    #[strum(serialize = "x86_64")]
+    X86_64,
+    #[strum(to_string = "aarch64", serialize = "arm64")]
+    Aarch64,
+}
+
+impl LinuxCpu {
+    /// The CPU of a Linux system, as `uname -sm` prints it: "Linux x86_64", "Linux aarch64".
+    /// `None` for another system or CPU.
+    pub fn of_system(system: &str) -> Option<Self> {
+        system.strip_prefix("Linux ")?.parse().ok()
+    }
+
+    pub fn word(self) -> &'static str {
+        self.into()
+    }
+
+    /// The daemon's file name beside the app: "yetack-aarch64-linux". The tarball holds both. The
+    /// Windows zip holds the x86_64 one, which its update replaces, and `just linux-daemon` writes
+    /// it beside a build from source.
+    pub fn daemon_file_name(self) -> String {
+        format!("yetack-{}-linux", self.word())
+    }
+
+    /// The daemon's file in release `version`: "yetack-0.4.0-aarch64-linux".
+    pub fn release_file_name(self, version: impl Display) -> String {
+        format!("yetack-{version}-{}-linux", self.word())
+    }
+}
 
 /// The folder the app installs the daemon to, as the screens name it.
 pub const APP_BIN_FOLDER: &str = "~/.local/share/yetack/bin";
@@ -117,7 +148,7 @@ impl DaemonProbe {
     #[cfg(test)]
     pub fn owned_at(path: &str) -> Self {
         Self::Read(ServerInstall {
-            system: CARRIED_SYSTEM.to_owned(),
+            system: "Linux x86_64".to_owned(),
             daemon: Some(InstalledDaemon {
                 path: path.to_owned(),
                 command: path.to_owned(),
@@ -187,9 +218,9 @@ impl FromStr for ServerInstall {
 }
 
 impl ServerInstall {
-    /// Whether the daemon this app carries runs there.
-    pub fn runs_carried_daemon(&self) -> bool {
-        self.system == CARRIED_SYSTEM
+    /// The server's CPU, when it is one the release builds the daemon for.
+    pub fn cpu(&self) -> Option<LinuxCpu> {
+        LinuxCpu::of_system(&self.system)
     }
 
     /// The daemon the app may replace: one it owns.
@@ -208,23 +239,24 @@ impl ServerInstall {
     }
 
     /// `plan` as an update runs it here: it replaces the daemon at the path the probe resolved,
-    /// and sends the daemon this app carries only to a system it runs on.
+    /// and sends the daemon this app carries for the server's CPU, when it carries one.
     pub fn plan_for(&self, mut plan: ServerPlan) -> ServerPlan {
         if let Some(daemon) = &self.daemon {
             plan.remote_command.clone_from(&daemon.path);
         }
-        if !self.runs_carried_daemon() {
-            plan.daemon_file = None;
-        }
+        plan.daemon = self.cpu().and_then(|cpu| plan.carried.for_cpu(cpu));
         plan
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use cockpit_protocol::BuildCommit;
 
     use super::*;
+    use crate::state::update_plan::{CarriedDaemons, DaemonSource};
 
     #[test]
     fn a_daemon_the_app_owns_comes_with_its_path_and_version() {
@@ -232,7 +264,7 @@ mod tests {
 
         let install: ServerInstall = output.parse().unwrap();
 
-        assert!(install.runs_carried_daemon());
+        assert_eq!(install.cpu(), Some(LinuxCpu::X86_64));
         assert_eq!(
             install.replaceable(),
             Some(&InstalledDaemon {
@@ -284,11 +316,26 @@ mod tests {
     }
 
     #[test]
-    fn a_server_without_a_daemon_or_of_another_system_says_so() {
-        let install: ServerInstall = "system=Linux aarch64\nowner=missing\n".parse().unwrap();
+    fn a_server_without_a_daemon_says_so_and_names_its_cpu() {
+        let arm: ServerInstall = "system=Linux aarch64\nowner=missing\n".parse().unwrap();
+        let mac: ServerInstall = "system=Darwin arm64\nowner=missing\n".parse().unwrap();
 
-        assert_eq!(install.daemon, None);
-        assert!(!install.runs_carried_daemon());
+        assert_eq!(arm.daemon, None);
+        assert_eq!(arm.cpu(), Some(LinuxCpu::Aarch64));
+        assert_eq!(mac.cpu(), None);
+    }
+
+    #[test]
+    fn the_cpu_words_and_file_names_are_pinned() {
+        let words: Vec<&str> = LinuxCpu::VARIANTS.iter().map(|cpu| cpu.word()).collect();
+
+        assert_eq!(words, ["x86_64", "aarch64"]);
+        assert_eq!(LinuxCpu::of_system("Linux arm64"), Some(LinuxCpu::Aarch64));
+        assert_eq!(LinuxCpu::X86_64.daemon_file_name(), "yetack-x86_64-linux");
+        assert_eq!(
+            LinuxCpu::Aarch64.release_file_name("0.4.0"),
+            "yetack-0.4.0-aarch64-linux"
+        );
     }
 
     #[test]
@@ -319,25 +366,34 @@ mod tests {
     }
 
     #[test]
-    fn an_update_sends_the_carried_daemon_only_to_its_system_and_replaces_the_probed_path() {
-        let plan = ServerPlan {
+    fn an_update_sends_the_daemon_carried_for_the_servers_cpu_and_replaces_the_probed_path() {
+        let x86_64 = PathBuf::from("/opt/app/yetack-x86_64-linux");
+        let aarch64 = PathBuf::from("/opt/app/yetack-aarch64-linux");
+        let plan = |aarch64: Option<PathBuf>| ServerPlan {
             host: "build-box".to_owned(),
             remote_command: "yetack".to_owned(),
             source_dir: None,
             commit: BuildCommit::new("3f9c2e1".to_owned()),
-            daemon_file: Some("/opt/app/yetack-x86_64-linux".into()),
+            carried: CarriedDaemons {
+                x86_64: Some(x86_64.clone()),
+                aarch64,
+                release: false,
+            },
+            daemon: None,
         };
         let here = "system=Linux x86_64\npath=/home/someone/.local/bin/yetack\nowner=app\n";
         let arm = "system=Linux aarch64\npath=/home/someone/.local/bin/yetack\nowner=app\n";
         let here: ServerInstall = here.parse().unwrap();
         let arm: ServerInstall = arm.parse().unwrap();
 
-        let sends = here.plan_for(plan.clone());
-        let builds = arm.plan_for(plan);
+        let sends = here.plan_for(plan(None));
+        let builds = arm.plan_for(plan(None));
+        let sends_arm = arm.plan_for(plan(Some(aarch64.clone())));
 
         assert_eq!(sends.remote_command, "/home/someone/.local/bin/yetack");
-        assert!(sends.daemon_file.is_some());
+        assert_eq!(sends.daemon, Some(DaemonSource::Carried(x86_64)));
         assert_eq!(builds.remote_command, "/home/someone/.local/bin/yetack");
-        assert_eq!(builds.daemon_file, None);
+        assert_eq!(builds.daemon, None);
+        assert_eq!(sends_arm.daemon, Some(DaemonSource::Carried(aarch64)));
     }
 }

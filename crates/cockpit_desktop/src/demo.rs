@@ -36,7 +36,7 @@ use crate::prefs::{CommentPlacement, GroupBy, ProjectRule};
 use crate::self_update::CheckFileError;
 use crate::state::app_update::{self, AppStep, InstallKind, Release, ReleaseAsset};
 use crate::state::daemon_probe::{
-    CARRIED_SYSTEM, DaemonOwner, DaemonProbe, InstalledDaemon, PackageFormat, ServerInstall,
+    DaemonOwner, DaemonProbe, InstalledDaemon, PackageFormat, ServerInstall,
 };
 use crate::state::daemon_update::{
     self, HandStop, OutputLine, OutputStream, RestartFailure, StopFailure, UpdateFailure,
@@ -48,7 +48,9 @@ use crate::state::server_setup::{
     self, InstallReport, InstallStep, ServerSetup, SetupRun, SetupStage,
 };
 use crate::state::update_offer::{self, GapKind, ProgramBuild, VersionGap};
-use crate::state::update_plan::{SendProgress, ServerPlan, ServicePlan, UpdatePlan, UpdateStep};
+use crate::state::update_plan::{
+    CarriedDaemons, DaemonSource, SendProgress, ServerPlan, ServicePlan, UpdatePlan, UpdateStep,
+};
 use crate::state::{
     AgentEntry, AppState, ConnectionState, Dialog, Drafts, Loadable, MachineState, Popover,
     Utf16Offset, ViewMode, actions, claude_code_version, file_edits, file_tree, machines, projects,
@@ -935,7 +937,8 @@ fn server_plan() -> ServerPlan {
         remote_command: "/opt/yetack/bin/yetack".to_owned(),
         source_dir: None,
         commit: BuildCommit::new(UPDATE_COMMIT.to_owned()),
-        daemon_file: None,
+        carried: carried_daemons(),
+        daemon: None,
     }
 }
 
@@ -999,10 +1002,22 @@ fn server_refused(state: &mut AppState) -> MachineId {
     machine
 }
 
+/// The demo's servers run Linux on x86_64, the CPU of the daemon it carries.
+const DEMO_SYSTEM: &str = "Linux x86_64";
+
+/// The daemons the demo carries: one for x86_64.
+fn carried_daemons() -> CarriedDaemons {
+    CarriedDaemons {
+        x86_64: Some(PathBuf::from(CARRIED_DAEMON)),
+        aarch64: None,
+        release: false,
+    }
+}
+
 /// The update of a server that sends the daemon the app carries.
 fn sending_plan() -> UpdatePlan {
     UpdatePlan::Server(ServerPlan {
-        daemon_file: Some(PathBuf::from(CARRIED_DAEMON)),
+        daemon: Some(DaemonSource::Carried(PathBuf::from(CARRIED_DAEMON))),
         ..server_plan()
     })
 }
@@ -1018,7 +1033,7 @@ fn all_sent() -> SendProgress {
 /// A server whose daemon the app owns.
 fn owned_install() -> ServerInstall {
     ServerInstall {
-        system: CARRIED_SYSTEM.to_owned(),
+        system: DEMO_SYSTEM.to_owned(),
         daemon: Some(InstalledDaemon {
             path: SERVER_DAEMON.to_owned(),
             command: SERVER_DAEMON.to_owned(),
@@ -1038,7 +1053,7 @@ fn server_owned_by(state: &mut AppState, path: &str, owner: DaemonOwner) {
     let machine = server_refused(state);
     if let Some(known) = state.machines.others.get_mut(&machine) {
         known.daemon_probe = DaemonProbe::Read(ServerInstall {
-            system: CARRIED_SYSTEM.to_owned(),
+            system: DEMO_SYSTEM.to_owned(),
             daemon: Some(InstalledDaemon {
                 path: path.to_owned(),
                 command: path.to_owned(),
@@ -1176,13 +1191,12 @@ pub async fn play_setup(mut state: Signal<AppState>, run: SetupRun) {
         SetupRun::Look { host } => {
             tokio::time::sleep(UPDATE_LINE_PAUSE).await;
             let none = ServerInstall {
-                system: CARRIED_SYSTEM.to_owned(),
+                system: DEMO_SYSTEM.to_owned(),
                 daemon: None,
             };
-            let carried = Path::new(CARRIED_DAEMON);
-            server_setup::looked(&mut state.write(), &host, Ok(none), Some(carried));
+            server_setup::looked(&mut state.write(), &host, Ok(none), &carried_daemons());
         }
-        SetupRun::Install { host } => {
+        SetupRun::Install { host, .. } => {
             for fifth in 1..=5 {
                 tokio::time::sleep(UPDATE_LINE_PAUSE / 2).await;
                 let sent = SendProgress {
@@ -1358,7 +1372,7 @@ pub fn show_machines(state: &mut AppState, scene: MachinesScene) {
         MachinesScene::SetupOffer => setup_at(
             state,
             SetupStage::Offer {
-                system: CARRIED_SYSTEM.to_owned(),
+                system: DEMO_SYSTEM.to_owned(),
             },
         ),
         MachinesScene::SetupInstalling => setup_at(

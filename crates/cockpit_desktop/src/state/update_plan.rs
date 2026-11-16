@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use cockpit_protocol::{AgentId, BuildCommit};
 
+use super::daemon_probe::LinuxCpu;
 use crate::format;
 
 /// The script's lines that move the steps on, as `say` in `contrib/update-daemon.sh` prints them.
@@ -34,9 +35,44 @@ pub struct ServerPlan {
     pub source_dir: Option<String>,
     /// The commit this app was built from.
     pub commit: BuildCommit,
-    /// The Linux daemon this app carries, which the update sends. Without it, the script builds
-    /// `commit` on the server.
-    pub daemon_file: Option<PathBuf>,
+    /// The Linux daemons this app carries, one per CPU.
+    pub carried: CarriedDaemons,
+    /// The daemon of `carried` for the server's CPU, which the update sends, once the probe said
+    /// the CPU (`ServerInstall::plan_for`). Without it, the script builds `commit` on the server.
+    pub daemon: Option<DaemonSource>,
+}
+
+/// The static Linux daemons this app carries, by CPU, and whether it may download its release's.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CarriedDaemons {
+    pub x86_64: Option<PathBuf>,
+    pub aarch64: Option<PathBuf>,
+    /// The app knows the commit it was built from, so it may download the daemon of its release
+    /// for a CPU it carries none for. The download checks that the release is this build.
+    pub release: bool,
+}
+
+impl CarriedDaemons {
+    /// The daemon for `cpu`: the one carried, else the release's when the app may download it.
+    pub fn for_cpu(&self, cpu: LinuxCpu) -> Option<DaemonSource> {
+        let carried = match cpu {
+            LinuxCpu::X86_64 => self.x86_64.as_ref(),
+            LinuxCpu::Aarch64 => self.aarch64.as_ref(),
+        };
+        match carried {
+            Some(file) => Some(DaemonSource::Carried(file.clone())),
+            None => self.release.then_some(DaemonSource::Release(cpu)),
+        }
+    }
+}
+
+/// Where the daemon that an install or an update sends comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DaemonSource {
+    /// A file this app carries.
+    Carried(PathBuf),
+    /// The daemon of this app's release for the CPU, which the app downloads before it sends it.
+    Release(LinuxCpu),
 }
 
 /// The background service the app restarts.
@@ -52,7 +88,7 @@ impl UpdatePlan {
     /// The steps the update's screen lists, in order.
     pub fn steps(&self) -> &'static [UpdateStep] {
         match self {
-            Self::Server(plan) if plan.daemon_file.is_some() => &[
+            Self::Server(plan) if plan.daemon.is_some() => &[
                 UpdateStep::Send,
                 UpdateStep::Check,
                 UpdateStep::Restart,
@@ -71,7 +107,7 @@ impl UpdatePlan {
     /// The step an update of this plan starts at.
     pub fn first_step(&self) -> UpdateStep {
         match self {
-            Self::Server(plan) if plan.daemon_file.is_some() => UpdateStep::Send,
+            Self::Server(plan) if plan.daemon.is_some() => UpdateStep::Send,
             Self::Server(_) => UpdateStep::GetVersion,
             Self::Service(_) => UpdateStep::Stop,
         }
@@ -186,7 +222,8 @@ mod tests {
             remote_command: "/opt/yetack".to_owned(),
             source_dir: None,
             commit: BuildCommit::new("3f9c2e1a7b4d5c6e".to_owned()),
-            daemon_file: None,
+            carried: CarriedDaemons::default(),
+            daemon: None,
         }
     }
 
@@ -196,7 +233,9 @@ mod tests {
 
     fn sending_server() -> UpdatePlan {
         UpdatePlan::Server(ServerPlan {
-            daemon_file: Some(PathBuf::from("/opt/app/yetack-x86_64-linux")),
+            daemon: Some(DaemonSource::Carried(PathBuf::from(
+                "/opt/app/yetack-x86_64-linux",
+            ))),
             ..server_plan()
         })
     }

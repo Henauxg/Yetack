@@ -3,14 +3,12 @@
 //! the daemon needs. The setup lives beside the Machines dialog, so closing the dialog does not
 //! stop an install: the dialog shows where it stands when it opens again.
 
-use std::path::Path;
-
 use strum::IntoStaticStr;
 
 use super::app_state::AppState;
-use super::daemon_probe::ServerInstall;
+use super::daemon_probe::{LinuxCpu, ServerInstall};
 use super::machines::{self, MachineChange};
-use super::update_plan::SendProgress;
+use super::update_plan::{CarriedDaemons, SendProgress};
 use crate::config::MachineConfig;
 
 /// What `say` in `contrib/install-daemon.sh` puts before each of its lines.
@@ -113,8 +111,8 @@ impl InstallReport {
 pub enum SetupRun {
     /// Looks for `yetack` on `host`.
     Look { host: String },
-    /// Sends the daemon the app carries to `host`, and installs it there.
-    Install { host: String },
+    /// Sends the daemon the app carries for `cpu` to `host`, and installs it there.
+    Install { host: String, cpu: LinuxCpu },
     /// Reads the report again.
     Check { host: String },
 }
@@ -130,13 +128,13 @@ pub fn start(state: &mut AppState, config: MachineConfig) -> SetupRun {
 }
 
 /// The look at the server ended. A daemon found there adds the server with its path. Otherwise
-/// the setup offers to install `carried`, the daemon this app carries, when it runs on the
-/// server's system.
+/// the setup offers to install the daemon this app carries for the server's CPU, when `carried`
+/// has one.
 pub fn looked(
     state: &mut AppState,
     host: &str,
     found: Result<ServerInstall, String>,
-    carried: Option<&Path>,
+    carried: &CarriedDaemons,
 ) -> Option<MachineChange> {
     let setup = setup_of(state, host)?;
     if setup.stage != SetupStage::Looking {
@@ -159,7 +157,8 @@ pub fn looked(
         machines::close_add_form(state);
         return Some(MachineChange::Add(config));
     }
-    setup.stage = if carried.is_some() && install.runs_carried_daemon() {
+    let offers = install.cpu().and_then(|cpu| carried.for_cpu(cpu)).is_some();
+    setup.stage = if offers {
         SetupStage::Offer {
             system: install.system,
         }
@@ -174,15 +173,17 @@ pub fn looked(
 /// "Install on <server>".
 pub fn install(state: &mut AppState) -> Option<SetupRun> {
     let setup = state.machines.setup.as_mut()?;
-    if !matches!(setup.stage, SetupStage::Offer { .. }) {
+    let SetupStage::Offer { system } = &setup.stage else {
         return None;
-    }
+    };
+    let cpu = LinuxCpu::of_system(system)?;
     setup.stage = SetupStage::Installing {
         step: InstallStep::Send,
         sent: None,
     };
     Some(SetupRun::Install {
         host: setup.config.host.clone(),
+        cpu,
     })
 }
 
@@ -356,8 +357,12 @@ mod tests {
         texts.iter().map(|text| (*text).to_owned()).collect()
     }
 
-    fn carried() -> Option<&'static Path> {
-        Some(Path::new("/opt/app/yetack-x86_64-linux"))
+    fn carried() -> CarriedDaemons {
+        CarriedDaemons {
+            x86_64: Some("/opt/app/yetack-x86_64-linux".into()),
+            aarch64: None,
+            release: false,
+        }
     }
 
     #[test]
@@ -387,7 +392,7 @@ mod tests {
                 Some("/home/someone/.local/bin/yetack"),
                 "Linux x86_64",
             )),
-            carried(),
+            &carried(),
         );
 
         assert_eq!(
@@ -402,15 +407,20 @@ mod tests {
 
     #[test]
     fn without_a_daemon_the_app_offers_to_install_only_the_one_it_has() {
+        let both = CarriedDaemons {
+            aarch64: Some("/opt/app/yetack-aarch64-linux".into()),
+            ..carried()
+        };
         for (system, carried, offers) in [
             ("Linux x86_64", carried(), true),
             ("Linux aarch64", carried(), false),
-            ("Linux x86_64", None, false),
+            ("Linux aarch64", both, true),
+            ("Linux x86_64", CarriedDaemons::default(), false),
         ] {
             let mut state = state_with(Vec::new());
             start(&mut state, lab());
 
-            let change = looked(&mut state, "lab", Ok(server(None, system)), carried);
+            let change = looked(&mut state, "lab", Ok(server(None, system)), &carried);
 
             assert_eq!(change, None);
             assert_eq!(
@@ -440,7 +450,7 @@ mod tests {
                 Some("/home/someone/.local/bin/yetack"),
                 "Linux x86_64",
             )),
-            carried(),
+            &carried(),
         );
 
         assert_eq!(change, None);
@@ -459,7 +469,7 @@ mod tests {
             &mut state,
             "lab",
             Ok(server(None, "Linux x86_64")),
-            carried(),
+            &carried(),
         );
         install(&mut state);
         let said = lines(&["install-daemon: starting the service"]);
@@ -483,13 +493,14 @@ mod tests {
             &mut state,
             "lab",
             Ok(server(None, "Linux x86_64")),
-            carried(),
+            &carried(),
         );
 
         assert_eq!(
             install(&mut state),
             Some(SetupRun::Install {
-                host: "lab".to_owned()
+                host: "lab".to_owned(),
+                cpu: LinuxCpu::X86_64,
             })
         );
         let half = SendProgress { sent: 5, total: 10 };
@@ -536,7 +547,7 @@ mod tests {
             &mut state,
             "lab",
             Ok(server(None, "Linux x86_64")),
-            carried(),
+            &carried(),
         );
         install(&mut state);
         let said = lines(&[
@@ -599,7 +610,7 @@ mod tests {
             &mut state,
             "lab",
             Ok(server(None, "Linux x86_64")),
-            carried(),
+            &carried(),
         );
         install(&mut state);
 

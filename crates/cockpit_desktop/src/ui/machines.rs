@@ -11,7 +11,7 @@ use dioxus::prelude::*;
 
 use crate::connection::{Clock, Cockpit};
 use crate::machine::MachineId;
-use crate::state::daemon_probe::{APP_BIN_FOLDER, CARRIED_SYSTEM, UNIT_FILE};
+use crate::state::daemon_probe::{APP_BIN_FOLDER, LinuxCpu, UNIT_FILE};
 use crate::state::machine_status::StatusAction;
 use crate::state::machines::{
     self, MachineChange, MachineName, MachineRow, RowNote, RowVersion, ServerRow, UpdateLine,
@@ -597,10 +597,16 @@ fn SetupPanel(setup: ServerSetup) -> Element {
             }
         },
         SetupStage::CannotInstall { system } => {
-            let why = if system == CARRIED_SYSTEM {
-                "This app carries no daemon to install: it was built from source.".to_owned()
+            let why = if LinuxCpu::of_system(&system).is_some() {
+                format!("This app carries no daemon for {system} to install.")
             } else {
-                format!("{system}: this app carries a daemon for {CARRIED_SYSTEM} only.")
+                use strum::VariantArray;
+
+                let cpus: Vec<&str> = LinuxCpu::VARIANTS.iter().map(|cpu| cpu.word()).collect();
+                format!(
+                    "{system}: the release builds the daemon for Linux on {} only.",
+                    cpus.join(" and ")
+                )
             };
             rsx! {
                 SetupHead { title: format!("{name} needs a build from source"), lead: format!("SSH {host}") }

@@ -286,15 +286,21 @@ fn a_unit_an_earlier_install_wrote_is_written_again() {
     assert!(server.installed().exists());
 }
 
+/// The service's PATH holds the system's folders too, where this machine may have its own
+/// `claude`: the one in the home folder comes first, so the test does not depend on the host.
 #[test]
 fn a_check_only_reports_what_the_daemon_needs() {
     let server = Server::new();
+    server.write_program("home/.local/bin/claude", "#!/bin/sh\n");
 
     let output = server.install(&["--check"]);
 
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
         stdout(&output),
-        "install-daemon: linger no\ninstall-daemon: claude missing\n"
+        format!(
+            "install-daemon: linger no\ninstall-daemon: claude {}\n",
+            server.path("home/.local/bin/claude").display()
+        )
     );
 }

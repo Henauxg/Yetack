@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal \
-        --default-toolchain "$RUST_VERSION" --target x86_64-unknown-linux-musl \
+        --default-toolchain "$RUST_VERSION" --target x86_64-unknown-linux-musl,aarch64-unknown-linux-musl \
     && cargo install --locked cargo-deb --version "$CARGO_DEB_VERSION" \
     && cargo install --locked cargo-generate-rpm --version "$CARGO_GENERATE_RPM_VERSION"
 

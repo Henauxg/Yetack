@@ -285,7 +285,7 @@ mod tests {
     use crate::daemon_label::DaemonLabel;
     use crate::state::ConnectionState;
     use crate::state::app_state::tests::{state_with, summary};
-    use crate::state::update_plan::{ServerPlan, ServicePlan};
+    use crate::state::update_plan::{CarriedDaemons, ServerPlan, ServicePlan};
 
     fn refused(reason: &str) -> SessionError {
         SessionError::Connect(ConnectError::Refused {
@@ -454,7 +454,8 @@ mod tests {
             remote_command: "/opt/yetack".to_owned(),
             source_dir: None,
             commit: BuildCommit::new(APP_COMMIT.to_owned()),
-            daemon_file: None,
+            carried: CarriedDaemons::default(),
+            daemon: None,
         })
     }
 

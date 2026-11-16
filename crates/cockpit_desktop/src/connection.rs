@@ -24,7 +24,7 @@ use crate::notifications::Notifier;
 use crate::prefs::NotificationLevel;
 use crate::reach::{self, Places, Reached, Unreached};
 use crate::service_update::{self, BusyCheck, SystemService};
-use crate::state::daemon_probe::ProbeTarget;
+use crate::state::daemon_probe::{LinuxCpu, ProbeTarget};
 use crate::state::daemon_update::{self, OutputLine, OutputStream};
 use crate::state::machine_load::{LOAD_POLL, LoadView, ShownLoad};
 use crate::state::machines::{self, Adding, MachineChange};
@@ -33,13 +33,15 @@ use crate::state::server_setup::{self, SetupRun};
 use crate::state::settings::{self, StartDaemon};
 use crate::state::update_offer::{self, VersionGap};
 use crate::state::update_plan::{
-    BusyAgents, JobCheck, SendProgress, ServerPlan, ServicePlan, UpdatePlan, UpdateRun, UpdateStep,
+    BusyAgents, DaemonSource, JobCheck, SendProgress, ServerPlan, ServicePlan, UpdatePlan,
+    UpdateRun, UpdateStep,
 };
 use crate::state::{
     self, AgentEntry, AppState, ConnectionState, Dialog, Drafts, MachineState, Outgoing, Purpose,
     TitlePlace, Utf16Offset, actions, file_reread, notification_levels,
 };
-use crate::{bridge, demo, format, server_daemon, update_script};
+use crate::update_script::APP_VERSION;
+use crate::{bridge, demo, format, release_daemon, server_daemon, update_script};
 
 /// What the window was started with.
 #[derive(Debug, Clone, PartialEq)]
@@ -662,8 +664,14 @@ impl Servers {
                 let mut state = state;
                 let updates = self.retries.clone();
                 spawn(async move {
-                    let read = server_daemon::probe(&target.host, &target.binary).await;
+                    // GitHub may now say whether the release's daemons can be downloaded. It
+                    // answers beside the probe, so the wait is the longer of the two.
+                    let (read, carried) = tokio::join!(
+                        server_daemon::probe(&target.host, &target.binary),
+                        server_daemon::carried_daemons(),
+                    );
                     let mut state = state.write();
+                    daemon_update::carry(&mut state, machine, carried);
                     daemon_update::probed(&mut state, machine, &target, read);
                     // A wait for idle agents may have waited for this probe.
                     if let Some(run) = daemon_update::start_when_idle(&mut state, machine) {
@@ -758,11 +766,13 @@ async fn run_setup(
 ) {
     let change = match run {
         SetupRun::Look { host } => {
-            let found = server_daemon::probe(&host, PROGRAM).await;
-            let carried = server_daemon::carried();
-            server_setup::looked(&mut state.write(), &host, found, carried.as_deref())
+            let (found, carried) = tokio::join!(
+                server_daemon::probe(&host, PROGRAM),
+                server_daemon::carried_daemons(),
+            );
+            server_setup::looked(&mut state.write(), &host, found, &carried)
         }
-        SetupRun::Install { host } => install_on(state, &host).await,
+        SetupRun::Install { host, cpu } => install_on(state, &host, cpu).await,
         SetupRun::Check { host } => {
             let mut lines = Vec::new();
             let code = server_daemon::check_needs(&host, |batch| lines.extend(batch)).await;
@@ -778,16 +788,35 @@ async fn run_setup(
     }
 }
 
-/// Sends the daemon this app carries to `host` and installs it there. Returns the server to add
-/// once its daemon runs.
-async fn install_on(mut state: Signal<AppState>, host: &str) -> Option<MachineChange> {
-    let Some(file) = server_daemon::carried() else {
+/// The daemon file to send: a carried one, or the release's once it is downloaded.
+async fn daemon_file(source: &DaemonSource) -> Result<PathBuf, String> {
+    match source {
+        DaemonSource::Carried(file) => Ok(file.clone()),
+        DaemonSource::Release(cpu) => release_daemon::for_cpu(*cpu).await,
+    }
+}
+
+/// Sends the daemon this app carries for `cpu` to `host` and installs it there. Returns the server
+/// to add once its daemon runs.
+async fn install_on(
+    mut state: Signal<AppState>,
+    host: &str,
+    cpu: LinuxCpu,
+) -> Option<MachineChange> {
+    let Some(source) = server_daemon::carried_daemons().await.for_cpu(cpu) else {
         server_setup::send_failed(
             &mut state.write(),
             host,
             "This app carries no daemon to send.".to_owned(),
         );
         return None;
+    };
+    let file = match daemon_file(&source).await {
+        Ok(file) => file,
+        Err(error) => {
+            server_setup::send_failed(&mut state.write(), host, error);
+            return None;
+        }
     };
     let sent = server_daemon::send(host, &file, |progress| {
         server_setup::sending(&mut state.write(), host, progress);
@@ -827,7 +856,38 @@ async fn update_server(
     plan: &ServerPlan,
     busy: BusyAgents,
 ) -> ServerUpdateEnd {
-    let sent = match &plan.daemon_file {
+    let file = match &plan.daemon {
+        Some(source) => {
+            if let DaemonSource::Release(cpu) = source {
+                let line = OutputLine {
+                    stream: OutputStream::Stdout,
+                    text: format!(
+                        "Downloading the {APP_VERSION} daemon for Linux on {} from the release",
+                        cpu.word()
+                    ),
+                };
+                daemon_update::output(&mut state.write(), machine, vec![line]);
+            }
+            match daemon_file(source).await {
+                Ok(file) => Some(file),
+                Err(error) => {
+                    let line = OutputLine {
+                        stream: OutputStream::Stderr,
+                        text: format!(
+                            "{error} The update builds the daemon on {} instead.",
+                            plan.host
+                        ),
+                    };
+                    let mut state = state.write();
+                    daemon_update::output(&mut state, machine, vec![line]);
+                    daemon_update::builds_instead(&mut state, machine);
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+    let sent = match &file {
         Some(file) => {
             let sent = server_daemon::send(&plan.host, file, |progress| {
                 daemon_update::sending(&mut state.write(), machine, progress);
@@ -1074,7 +1134,7 @@ async fn run_demo(
 async fn play_demo_update(mut state: Signal<AppState>, machine: MachineId, plan: UpdatePlan) {
     let reconnects = match plan {
         UpdatePlan::Server(plan) => {
-            let lines = if plan.daemon_file.is_some() {
+            let lines = if plan.daemon.is_some() {
                 for fifth in 1..=5 {
                     tokio::time::sleep(demo::UPDATE_LINE_PAUSE / 2).await;
                     let sent = SendProgress {
@@ -1254,7 +1314,8 @@ fn server_plan(host: &str, remote_command: &str, source_dir: Option<String>) -> 
         remote_command: remote_command.to_owned(),
         source_dir,
         commit: update_script::app_commit()?,
-        daemon_file: server_daemon::carried(),
+        carried: server_daemon::carried_daemons_now(),
+        daemon: None,
     }))
 }
 

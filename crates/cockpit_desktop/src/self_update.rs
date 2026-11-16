@@ -21,14 +21,14 @@ use tokio::sync::mpsc;
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::Instant;
 
-use crate::server_daemon::{self, CARRIED_FILE_NAME};
 use crate::state::AppState;
 use crate::state::app_update::{
     self, AppStep, CHECKSUMS_NAME, Checksums, DAY, InstallKind, MAX_DOWNLOAD_BYTES, Release,
     ReleaseAsset, RunId, StartedRun, WindowsAssets,
 };
+use crate::state::daemon_probe::LinuxCpu;
 use crate::update_script::APP_VERSION;
-use crate::{command_line, demo};
+use crate::{command_line, demo, server_daemon};
 
 const LATEST_URL: &str = concat!(
     "https://api.github.com/repos/",
@@ -39,7 +39,7 @@ const GITHUB_JSON: &str = "application/vnd.github+json";
 
 /// GitHub's answer is a few kilobytes, more with long release notes. A release's `SHA256SUMS`
 /// is smaller still.
-const MAX_ANSWER_BYTES: u64 = 4 * 1024 * 1024;
+pub const MAX_ANSWER_BYTES: u64 = 4 * 1024 * 1024;
 
 /// The app the update started passes the pid of the one that closes: `--after-update 1234`.
 pub const AFTER_UPDATE_FLAG: &str = "--after-update";
@@ -52,7 +52,7 @@ pub const OLD_SUFFIX: &str = ".old";
 const SILENCE: Duration = Duration::from_secs(30);
 
 /// How long the download of one file may take, however slowly its bytes come.
-const DOWNLOAD_TIME: Duration = Duration::from_secs(30 * 60);
+pub const DOWNLOAD_TIME: Duration = Duration::from_secs(30 * 60);
 
 /// How many bytes the download reads between two reports of its progress.
 const PROGRESS_STEP: u64 = 256 * 1024;
@@ -123,7 +123,7 @@ pub enum ReplaceError {
 
 /// The client every request goes through: the system's TLS and its root certificates, HTTPS
 /// only, and a name that says which app asks. `body_time` bounds the reading of a whole answer.
-fn http_client(body_time: Option<Duration>) -> ureq::Agent {
+pub fn http_client(body_time: Option<Duration>) -> ureq::Agent {
     use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 
     let tls = TlsConfig::builder()
@@ -222,7 +222,7 @@ impl Placement {
             .parent()
             .ok_or_else(|| io::Error::other("the app's program has no folder"))?;
         Ok(Self {
-            daemon: folder.join(CARRIED_FILE_NAME),
+            daemon: folder.join(LinuxCpu::X86_64.daemon_file_name()),
             app,
         })
     }
@@ -407,7 +407,7 @@ fn write_file(
 }
 
 /// The file's SHA-256, in lowercase hex.
-fn sha256_of(path: &Path) -> io::Result<String> {
+pub fn sha256_of(path: &Path) -> io::Result<String> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
     let mut chunk = vec![0; 256 * 1024];
@@ -785,7 +785,7 @@ mod tests {
     fn placement(folder: &Path) -> Placement {
         Placement {
             app: folder.join("yetack-desktop.exe"),
-            daemon: folder.join(CARRIED_FILE_NAME),
+            daemon: folder.join(LinuxCpu::X86_64.daemon_file_name()),
         }
     }
 
@@ -840,7 +840,7 @@ mod tests {
         files.remove_leftovers();
         assert_eq!(
             names(temp.path()),
-            ["yetack-desktop.exe", CARRIED_FILE_NAME]
+            ["yetack-desktop.exe", "yetack-x86_64-linux"]
         );
     }
 
@@ -857,7 +857,7 @@ mod tests {
 
         assert_eq!(
             names(temp.path()),
-            ["yetack-desktop.exe", CARRIED_FILE_NAME]
+            ["yetack-desktop.exe", "yetack-x86_64-linux"]
         );
         assert_eq!(read(&files.daemon), "only daemon");
     }
@@ -875,7 +875,7 @@ mod tests {
         assert_eq!(read(&files.app), "old app");
         assert_eq!(
             names(temp.path()),
-            ["yetack-desktop.exe", CARRIED_FILE_NAME]
+            ["yetack-desktop.exe", "yetack-x86_64-linux"]
         );
     }
 
@@ -913,7 +913,7 @@ mod tests {
         files.remove_new_files();
         assert_eq!(
             names(temp.path()),
-            ["yetack-desktop.exe", CARRIED_FILE_NAME]
+            ["yetack-desktop.exe", "yetack-x86_64-linux"]
         );
     }
 
@@ -1013,7 +1013,7 @@ mod tests {
         assert_eq!(read(&files.daemon), "old daemon");
         assert_eq!(
             names(temp.path()),
-            ["yetack-desktop.exe", CARRIED_FILE_NAME]
+            ["yetack-desktop.exe", "yetack-x86_64-linux"]
         );
     }
 
@@ -1030,7 +1030,7 @@ mod tests {
         assert_eq!(read(&files.daemon), "old daemon");
         assert_eq!(
             names(temp.path()),
-            ["yetack-desktop.exe", CARRIED_FILE_NAME]
+            ["yetack-desktop.exe", "yetack-x86_64-linux"]
         );
     }
 
@@ -1062,7 +1062,7 @@ mod tests {
         assert!(matches!(error, CheckFileError::Unlisted(_)), "{error}");
         assert_eq!(
             names(temp.path()),
-            ["yetack-desktop.exe", CARRIED_FILE_NAME]
+            ["yetack-desktop.exe", "yetack-x86_64-linux"]
         );
     }
 

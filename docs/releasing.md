@@ -1,11 +1,12 @@
 # Releasing
 
 How to publish a release of Yetack, for example `0.1.0`.
-A release has up to eight files:
+A release has up to nine files:
 
 | File | What it is |
 | --- | --- |
 | `yetack-0.1.0-x86_64-linux` | The daemon and command line for Linux x86_64, static: it runs on any distribution |
+| `yetack-0.1.0-aarch64-linux` | The same for ARM servers |
 | `yetack_0.1.0_amd64.deb` | The app for Ubuntu 22.04 and newer, and Debian 12, with the daemon beside it |
 | `yetack-0.1.0-1.x86_64.rpm` | The same files as the `.deb`, for Fedora and openSUSE |
 | `yetack-desktop-0.1.0-x86_64-linux.tar.gz` | The app for any other Linux x86_64 with glibc 2.35 or newer, with the daemon and an `install.sh` |
@@ -73,7 +74,7 @@ The app inside the `.deb` knows the commit it was built from. Its "Update" butto
 
 1. Install the `.deb` on Ubuntu or Debian (`sudo apt install ./dist/yetack_0.1.0_amd64.deb`), start the app, and open Settings: the About section, at the end of the General tab, says "Version 0.1.0".
    Then install the `.rpm` on Fedora (`sudo dnf install ./dist/yetack-0.1.0-1.x86_64.rpm`), and the tarball on another distribution such as Arch (`./install.sh` in its folder), and check the same.
-2. Copy `dist/yetack-0.1.0-x86_64-linux` to a server and run it with `--version`.
+2. Copy `dist/yetack-0.1.0-x86_64-linux` to a server and run it with `--version`. Do the same with `dist/yetack-0.1.0-aarch64-linux` on an ARM server, or in an ARM container (`docker run --rm --platform linux/arm64 -v "$PWD/dist:/dist" alpine /dist/yetack-0.1.0-aarch64-linux --version`).
 3. If there is a Windows zip, unzip it on Windows and start the app.
 
 ## 5. Publish
@@ -85,7 +86,8 @@ version=0.1.0
 zip="dist/yetack-desktop-$version-windows-x64.zip"
 exe="dist/yetack-desktop-$version-windows-x64.exe"
 gh release create "v$version" --title "Yetack $version" --notes-file <notes file> \
-    "dist/yetack-$version-x86_64-linux" "dist/yetack_${version}_amd64.deb" \
+    "dist/yetack-$version-x86_64-linux" "dist/yetack-$version-aarch64-linux" \
+    "dist/yetack_${version}_amd64.deb" \
     "dist/yetack-$version-1.x86_64.rpm" "dist/yetack-desktop-$version-x86_64-linux.tar.gz" \
     dist/yetack.service dist/SHA256SUMS $(test -e "$zip" && echo "$zip") $(test -e "$exe" && echo "$exe")
 ```

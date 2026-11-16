@@ -91,6 +91,8 @@ assets = [
     ["target/release/yetack-desktop", "usr/bin/", "755"],
     # The static daemon, which contrib/release/build.sh puts there first.
     ["../../dist/yetack", "usr/bin/", "755"],
+    # The static daemon for ARM servers, which the app sends them.
+    ["../../dist/yetack-aarch64-linux", "usr/lib/yetack/", "755"],
     ["../../contrib/yetack-desktop.desktop", "usr/share/applications/", "644"],
     ["assets/yetack.svg", "usr/share/icons/hicolor/scalable/apps/yetack.svg", "644"],
     ["assets/yetack-256.png", "usr/share/icons/hicolor/256x256/apps/yetack.png", "644"],
@@ -106,11 +108,12 @@ release = "1"
 # Ubuntu's version numbers (libicu*.so.70), which Fedora does not have.
 auto-req = "no"
 # contrib/release/build.sh puts the files of dist/ there first: the app with its RUNPATH set to
-# /usr/lib/yetack, Ubuntu 22.04's libxdo.so.3, and the static daemon.
+# /usr/lib/yetack, Ubuntu 22.04's libxdo.so.3, and the static daemons for x86_64 and ARM servers.
 assets = [
     { source = "../../dist/rpm/yetack-desktop", dest = "/usr/bin/yetack-desktop", mode = "755" },
     { source = "../../dist/rpm/libxdo.so.3", dest = "/usr/lib/yetack/libxdo.so.3", mode = "644" },
     { source = "../../dist/yetack", dest = "/usr/bin/yetack", mode = "755" },
+    { source = "../../dist/yetack-aarch64-linux", dest = "/usr/lib/yetack/yetack-aarch64-linux", mode = "755" },
     { source = "../../contrib/yetack-desktop.desktop", dest = "/usr/share/applications/yetack-desktop.desktop", mode = "644" },
     { source = "assets/yetack.svg", dest = "/usr/share/icons/hicolor/scalable/apps/yetack.svg", mode = "644" },
     { source = "assets/yetack-256.png", dest = "/usr/share/icons/hicolor/256x256/apps/yetack.png", mode = "644" },

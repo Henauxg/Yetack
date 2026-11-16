@@ -13,6 +13,7 @@ use serde::Deserialize;
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
 use super::app_state::AppState;
+use super::daemon_probe::LinuxCpu;
 use super::ui_state::Dialog;
 use crate::update_script::APP_VERSION;
 use crate::version_order;
@@ -134,7 +135,7 @@ pub fn app_asset_name(version: &ReleaseVersion) -> String {
 
 /// The release's static Linux daemon, which the Windows zip carries beside the app.
 pub fn daemon_asset_name(version: &ReleaseVersion) -> String {
-    format!("yetack-{version}-x86_64-linux")
+    LinuxCpu::X86_64.release_file_name(version)
 }
 
 /// A release, as GitHub's API names it.

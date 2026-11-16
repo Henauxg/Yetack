@@ -22,6 +22,7 @@ mod page_files;
 mod path_style;
 mod prefs;
 mod reach;
+mod release_daemon;
 mod render;
 mod self_update;
 mod server_daemon;

@@ -2,8 +2,9 @@
 # Installs the Yetack app from this tarball's folder into ~/.local, or into the folder --prefix
 # names:
 #   bin/yetack-desktop        the app
-#   bin/yetack-x86_64-linux   the static daemon that the app sends to servers
-#   bin/yetack                the same daemon, which the background service and the command line run
+#   bin/yetack-x86_64-linux   the static daemon that the app sends to x86_64 servers
+#   bin/yetack-aarch64-linux  the one it sends to ARM servers
+#   bin/yetack                the x86_64 daemon again, which the service and the command line run
 #   lib/yetack/libxdo.so.3    a library the app needs, which recent distros have only as libxdo.so.4
 #   share/applications/yetack-desktop.desktop, and the icons under share/icons/hicolor
 # Then it checks that the app finds every library it needs, and names the packages to install
@@ -50,7 +51,7 @@ apps=$prefix/share/applications
 icons=$prefix/share/icons/hicolor
 
 if [ "$action" = uninstall ]; then
-    rm -f "$bin/yetack-desktop" "$bin/yetack-x86_64-linux" "$bin/yetack" \
+    rm -f "$bin/yetack-desktop" "$bin/yetack-x86_64-linux" "$bin/yetack-aarch64-linux" "$bin/yetack" \
         "$apps/yetack-desktop.desktop" "$icons/scalable/apps/yetack.svg" \
         "$icons/256x256/apps/yetack.png"
     rm -rf "$prefix/lib/yetack"
@@ -69,6 +70,7 @@ put() {
 
 put "$here/yetack-desktop" "$bin/yetack-desktop" 755
 put "$here/yetack-x86_64-linux" "$bin/yetack-x86_64-linux" 755
+put "$here/yetack-aarch64-linux" "$bin/yetack-aarch64-linux" 755
 put "$here/yetack-x86_64-linux" "$bin/yetack" 755
 put "$here/lib/libxdo.so.3" "$prefix/lib/yetack/libxdo.so.3" 644
 put "$here/yetack.svg" "$icons/scalable/apps/yetack.svg" 644

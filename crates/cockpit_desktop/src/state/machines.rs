@@ -561,7 +561,7 @@ mod tests {
     use crate::state::daemon_probe::DaemonProbe;
     use crate::state::daemon_update::UpdateLink;
     use crate::state::update_offer::{GapKind, ProgramBuild, VersionGap};
-    use crate::state::update_plan::{ServerPlan, UpdatePlan};
+    use crate::state::update_plan::{CarriedDaemons, ServerPlan, UpdatePlan};
     use crate::state::{AgentEntry, MachineState};
     use cockpit_protocol::{AccountId, AgentStatus, BuildCommit, PROTOCOL_VERSION, ReleaseVersion};
 
@@ -877,7 +877,8 @@ mod tests {
             remote_command: "/opt/yetack".to_owned(),
             source_dir: None,
             commit: BuildCommit::new("3f9c2e1a7b4d5c6e".to_owned()),
-            daemon_file: None,
+            carried: CarriedDaemons::default(),
+            daemon: None,
         }
     }
 

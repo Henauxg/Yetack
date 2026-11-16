@@ -188,7 +188,7 @@ Why it came only now: the first colleagues all ran Ubuntu or Debian, and a `.deb
 
 ### 5.3 A daemon for ARM servers
 
-The release adds `yetack-<version>-aarch64-linux`, the static daemon built for `aarch64-unknown-linux-musl`. The app carries it beside the x86_64 one, and a server whose `uname -m` says `aarch64` gets it. The `.deb`, the `.rpm`, the tarball and the Windows zip all carry both.
+The release adds `yetack-<version>-aarch64-linux`, the static daemon built for `aarch64-unknown-linux-musl`. The app carries it beside the x86_64 one, and a server whose `uname -m` says `aarch64` gets it. The `.deb`, the `.rpm` and the tarball carry both: the `.deb` and the `.rpm` in `/usr/lib/yetack/yetack-aarch64-linux`, which their app names in `YETACK_LINUX_DAEMON_AARCH64`, and the tarball beside its app. The Windows zip carries the x86_64 one alone: its update replaces that one, and its ARM servers get the release's daemon by the download of 5.4. The Rust toolchain's own linker builds it in the release container, so the build needs no C cross-compiler.
 
 ### 5.4 The app downloads the daemon it does not carry
 

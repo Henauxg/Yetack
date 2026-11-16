@@ -212,7 +212,7 @@ fn output_line(stream: OutputStream, bytes: &[u8]) -> OutputLine {
 mod tests {
     use super::*;
     use crate::state::update_plan::{
-        BUILDING_LINE, CHECKING_LINE, DAEMON_RUNS_LINE, RESTARTING_LINE,
+        BUILDING_LINE, CHECKING_LINE, CarriedDaemons, DAEMON_RUNS_LINE, RESTARTING_LINE,
     };
 
     fn plan(source_dir: Option<&str>) -> ServerPlan {
@@ -221,7 +221,8 @@ mod tests {
             remote_command: "/opt/yetack".to_owned(),
             source_dir: source_dir.map(str::to_owned),
             commit: BuildCommit::new("3f9c2e1".to_owned()),
-            daemon_file: None,
+            carried: CarriedDaemons::default(),
+            daemon: None,
         }
     }
 

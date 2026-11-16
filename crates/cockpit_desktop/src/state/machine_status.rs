@@ -219,7 +219,7 @@ mod tests {
     use crate::state::daemon_probe::DaemonProbe;
     use crate::state::no_daemon;
     use crate::state::update_offer::{ProgramBuild, VersionGap};
-    use crate::state::update_plan::{ServerPlan, UpdatePlan};
+    use crate::state::update_plan::{CarriedDaemons, ServerPlan, UpdatePlan};
 
     fn down(error: &str) -> ConnectionState {
         ConnectionState::Disconnected {
@@ -243,7 +243,8 @@ mod tests {
             remote_command: "/opt/yetack".to_owned(),
             source_dir: None,
             commit: BuildCommit::new("3f9c2e1a7b4d5c6e".to_owned()),
-            daemon_file: None,
+            carried: CarriedDaemons::default(),
+            daemon: None,
         })
     }
 

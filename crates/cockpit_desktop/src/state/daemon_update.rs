@@ -13,7 +13,8 @@ use super::daemon_probe::{DaemonProbe, ProbeTarget, ServerInstall};
 use super::ui_state::Dialog;
 use super::update_offer::{self, GapKind, ProgramBuild, VersionGap};
 use super::update_plan::{
-    BusyAgents, JobCheck, SendProgress, ServerPlan, UpdatePlan, UpdateRun, UpdateStep,
+    BusyAgents, CarriedDaemons, JobCheck, SendProgress, ServerPlan, UpdatePlan, UpdateRun,
+    UpdateStep,
 };
 use crate::config::MachineConfig;
 use crate::machine::MachineId;
@@ -554,6 +555,18 @@ pub fn probe_for_wait(state: &mut AppState, machine: MachineId) -> Option<ProbeT
     probe_to_run(state, machine)
 }
 
+/// The daemons the app has for the machine's server plan, as it knows them once a probe ended:
+/// GitHub may have said by then whether the app can download its release's.
+pub fn carry(state: &mut AppState, machine: MachineId, carried: CarriedDaemons) {
+    let plan = state
+        .machines
+        .get_mut(machine)
+        .and_then(|known| known.update_plan.as_mut());
+    if let Some(UpdatePlan::Server(plan)) = plan {
+        plan.carried = carried;
+    }
+}
+
 /// The probe of `target` ended. It counts only while it is the probe under way: an edit or a
 /// retry started another since.
 pub fn probed(
@@ -639,6 +652,18 @@ pub fn output(state: &mut AppState, machine: MachineId, lines: Vec<OutputLine>) 
 pub fn sending(state: &mut AppState, machine: MachineId, sent: SendProgress) {
     if let Some(progress) = running_mut(state, machine) {
         progress.sent = Some(sent);
+    }
+}
+
+/// The app has no daemon to send after all, since its download failed: the script builds on the
+/// server, and the screen lists the build's steps.
+pub fn builds_instead(state: &mut AppState, machine: MachineId) {
+    let Some(progress) = running_mut(state, machine) else {
+        return;
+    };
+    if let UpdatePlan::Server(plan) = &mut progress.plan {
+        plan.daemon = None;
+        progress.step = progress.plan.first_step();
     }
 }
 
@@ -1066,8 +1091,10 @@ pub fn confirmation(state: &AppState, machine: MachineId, name: &str) -> Option<
             (_, false) => "It interrupts these agents, which resume their conversations after it.".to_owned(),
         }
     };
-    let text = match &known.update_plan {
-        Some(UpdatePlan::Server(plan)) if plan.daemon_file.is_some() => format!(
+    // The probe says which daemon the update sends, if any.
+    let plan = runnable(known).or_else(|| known.update_plan.clone());
+    let text = match &plan {
+        Some(UpdatePlan::Server(plan)) if plan.daemon.is_some() => format!(
             "The update sends this app's version, {app}, to {name} and restarts its daemon. {effect}"
         ),
         Some(UpdatePlan::Server(_)) => format!(
@@ -1213,7 +1240,8 @@ mod tests {
     use super::*;
     use crate::daemon_label::{DaemonLabel, DaemonPlace};
     use crate::state::app_state::tests::{state_with, summary};
-    use crate::state::update_plan::ServicePlan;
+    use crate::state::daemon_probe::LinuxCpu;
+    use crate::state::update_plan::{CarriedDaemons, DaemonSource, ServicePlan};
     use crate::state::{AgentEntry, ConnectionState, Drafts, MachineState, machines};
 
     fn build_box() -> MachineId {
@@ -1226,7 +1254,8 @@ mod tests {
             remote_command: "/opt/yetack".to_owned(),
             source_dir: None,
             commit: BuildCommit::new("3f9c2e1a7b4d5c6e".to_owned()),
-            daemon_file: None,
+            carried: CarriedDaemons::default(),
+            daemon: None,
         }
     }
 
@@ -2206,11 +2235,50 @@ mod tests {
         assert!(start_when_idle(&mut state, build_box()).is_some());
     }
 
+    /// The plan came before GitHub said the app is its release's build: the probe brings it.
+    #[test]
+    fn the_daemons_known_after_a_probe_reach_the_servers_plan() {
+        let mut state = with_older_server();
+        known_mut(&mut state).update_plan = Some(UpdatePlan::Server(server_plan()));
+        let downloads = CarriedDaemons {
+            release: true,
+            ..CarriedDaemons::default()
+        };
+
+        carry(&mut state, build_box(), downloads.clone());
+
+        assert!(matches!(
+            &known_mut(&mut state).update_plan,
+            Some(UpdatePlan::Server(plan)) if plan.carried == downloads
+        ));
+    }
+
+    #[test]
+    fn the_confirmation_says_the_update_sends_the_daemon_carried_for_the_servers_cpu() {
+        let mut state = with_older_server();
+        known_mut(&mut state).update_plan = Some(UpdatePlan::Server(ServerPlan {
+            carried: CarriedDaemons {
+                x86_64: Some("/opt/app/yetack-x86_64-linux".into()),
+                ..CarriedDaemons::default()
+            },
+            ..server_plan()
+        }));
+
+        let asked = confirmation(&state, build_box(), "build-box").unwrap();
+
+        assert!(asked.text.starts_with("The update sends"), "{}", asked.text);
+    }
+
     #[test]
     fn a_failed_send_ends_the_update_as_failed_with_what_the_app_said() {
         let mut state = with_older_server();
         let sends = UpdatePlan::Server(ServerPlan {
-            daemon_file: Some("/opt/app/yetack-x86_64-linux".into()),
+            carried: CarriedDaemons {
+                x86_64: Some("/opt/app/yetack-x86_64-linux".into()),
+                aarch64: None,
+                release: false,
+            },
+            daemon: Some(DaemonSource::Carried("/opt/app/yetack-x86_64-linux".into())),
             ..server_plan()
         });
         known_mut(&mut state).update_plan = Some(sends.clone());
@@ -2235,10 +2303,44 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_download_shows_the_build_and_lets_it_be_cancelled() {
+        let mut state = with_older_server();
+        let downloads = ServerPlan {
+            carried: CarriedDaemons {
+                release: true,
+                ..CarriedDaemons::default()
+            },
+            ..server_plan()
+        };
+        known_mut(&mut state).update_plan = Some(UpdatePlan::Server(downloads.clone()));
+        start(&mut state, build_box()).unwrap();
+        assert_eq!(
+            progress(&state).plan,
+            UpdatePlan::Server(ServerPlan {
+                daemon: Some(DaemonSource::Release(LinuxCpu::X86_64)),
+                ..downloads.clone()
+            })
+        );
+
+        builds_instead(&mut state, build_box());
+        stdout(&mut state, "update-daemon: building 3f9c2e1");
+
+        let progress = progress(&state);
+        assert_eq!(progress.plan, UpdatePlan::Server(downloads));
+        assert_eq!(progress.step, UpdateStep::Build);
+        assert!(progress.offers_cancel());
+    }
+
+    #[test]
     fn the_sidebar_line_names_the_step_and_counts_the_bytes_of_a_send() {
         let mut state = with_older_server();
         let sends = UpdatePlan::Server(ServerPlan {
-            daemon_file: Some("/opt/app/yetack-x86_64-linux".into()),
+            carried: CarriedDaemons {
+                x86_64: Some("/opt/app/yetack-x86_64-linux".into()),
+                aarch64: None,
+                release: false,
+            },
+            daemon: Some(DaemonSource::Carried("/opt/app/yetack-x86_64-linux".into())),
             ..server_plan()
         });
         state.machines.get_mut(build_box()).unwrap().update_plan = Some(sends);
@@ -3100,7 +3202,8 @@ mod tests {
             remote_command: "/srv/yetack".to_owned(),
             source_dir: Some("/src/yetack".to_owned()),
             commit: server_plan().commit,
-            daemon_file: None,
+            carried: CarriedDaemons::default(),
+            daemon: None,
         });
         assert_eq!(known(&state).update_plan, Some(moved.clone()));
         let Some(DaemonUpdate::Failed(failed)) = update(&state) else {
