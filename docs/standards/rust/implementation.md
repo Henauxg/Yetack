@@ -280,7 +280,7 @@ Never reach inside a poisoned mutex to get at its content, however tempting
 the case.
 
 Exception: code whose work must still run after a panic, such as starting
-and stopping a child daemon, may read through the poison when two things hold:
+and stopping a child process, may read through the poison when two things hold:
 
 - the content stays valid whatever a panicking holder left, such as an enum
   whose every value is a state the code handles;

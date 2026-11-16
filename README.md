@@ -94,7 +94,7 @@ When the background service runs an older version than the app, the Machines dia
 
 ### On a server over SSH
 
-The server needs Linux on x86_64, SSH access with a key, and Claude Code signed in. For another CPU, build the daemon as [docs/install-from-source.md](docs/install-from-source.md) says. Once you add the server, its agents show in their own panel in the sidebar.
+The server needs Linux on x86_64 or ARM (aarch64), SSH access with a key, and Claude Code signed in. For another CPU, build the daemon as [docs/install-from-source.md](docs/install-from-source.md) says. Once you add the server, its agents show in their own panel in the sidebar.
 
 #### Install from the app
 
@@ -109,7 +109,7 @@ On a server without systemd, such as Gentoo with OpenRC, the install starts the 
 
 #### Install by hand
 
-From the releases page, download `yetack-<version>-x86_64-linux` and `yetack.service`. On Ubuntu and Debian, the `.deb` also put the daemon at `/usr/bin/yetack`.
+From the releases page, download `yetack-<version>-x86_64-linux` (`yetack-<version>-aarch64-linux` for an ARM server) and `yetack.service`. On Ubuntu and Debian, the `.deb` also put the daemon at `/usr/bin/yetack`.
 
 1. On your computer, copy the two files to the server. Replace `devbox` with the server's name in your SSH config:
 
@@ -150,7 +150,7 @@ The app and the daemon must speak the same protocol. If the protocols differ, th
 
 The app's "Update" button sends the app's own daemon to the server, checks it there, then restarts the daemon. The server needs no Rust and no checkout of this repository. The update runs beside the window, and the sidebar shows its progress under the server.
 
-The button replaces only a daemon in `~/.local/share/yetack/bin` or `~/.local/bin`. A daemon from Nix or from the `.deb` is updated by its package manager, and the app gives the steps. An app built from source without a Linux daemon, or a server that is not Linux x86_64, builds the daemon on the server instead. That server needs Rust and a checkout of this repository, as [docs/development.md](docs/development.md) says.
+The button replaces only a daemon in `~/.local/share/yetack/bin` or `~/.local/bin`. A daemon from Nix or from a package is updated by its package manager, and the app gives the steps. The app sends the daemon for the server's CPU, x86_64 or ARM: from its own files, or downloaded from the release when the app is that release's build. Otherwise, such as for an app built from source without that daemon, or a server with another CPU, the daemon is built on the server. That server needs Rust and a checkout of this repository, as [docs/development.md](docs/development.md) says.
 
 Before an update, the app names the agents a restart would interrupt, and can wait until they are idle.
 

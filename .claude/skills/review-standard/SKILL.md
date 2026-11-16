@@ -1,13 +1,23 @@
 ---
 name: review-standard
-description: Review Rust code against the project's coding standard (docs/standards/rust/), for a pull request, a branch, the working tree or a path. With the `fix` argument, fix what does not comply, in passes, until the code complies. Use when asked to review Rust changes against the standard, check compliance, or make code compliant.
+description: Review Rust code against the Rust coding standard (the project's copy, or the one beside this skill), for a pull request, a branch, the working tree or a path. With the `fix` argument, fix what does not comply, in passes, until the code complies. Use when asked to review Rust changes against the standard, check compliance, or make code compliant.
+license: MIT, in LICENSE.txt
 ---
 
 # Review Rust code against the coding standard
 
-The standard is in `docs/standards/rust/`. This skill checks that code follows
-it, and with `fix` makes the code follow it. Whether the code works is out of
-scope: `/review` checks it.
+This skill checks that Rust code follows the coding standard, and with `fix`
+makes the code follow it. Whether the code works is out of scope: `/review`
+checks it.
+
+## Where the standard is
+
+The standard is a folder that holds `README.md`, `organization.md`,
+`api_design.md`, `implementation.md`, `documentation.md`, `clippy.toml` and
+`rustfmt.toml`. Use the project's copy when it has one: its `AGENTS.md` or
+`CLAUDE.md` names it, or search the repository for `api_design.md`. Otherwise
+use the `standard/` folder that comes with this skill, at `../../standard/`
+from the skill's own folder. Below, `<standard>` is the folder's path.
 
 ## Arguments
 
@@ -34,13 +44,13 @@ scope: `/review` checks it.
 
 ## 1. Read the standard
 
-Read every file in `docs/standards/rust/`: `README.md`, `organization.md`,
+Read every Markdown file in `<standard>`: `README.md`, `organization.md`,
 `api_design.md`, `implementation.md` and `documentation.md`. Every finding
 cites the rule by its file and heading.
 
 For each crate touched, decide whether it is library code or application code
 (`README.md`, "Library code and application code"). Library code has callers
-outside this repository: the pack SDK, a crate meant to be published. When
+outside this repository, such as the users of a published crate. When
 unsure, ask the user. The API design rules are binding for library code, and
 recommendations for application code. Report them as such.
 
@@ -61,22 +71,23 @@ workspace's `[workspace.lints.clippy]`.
 
 ## 3. Run the tools
 
-Use quiet flags (the repository's quiet-compile rule). For each touched crate:
+Use quiet flags, so the output stays short. For each touched crate:
 
 1. **Formatting:**
 
    ```sh
-   cargo +nightly fmt -p <crate> -- --check --config-path docs/standards/rust/rustfmt.toml
+   cargo +nightly fmt -p <crate> -- --check --config-path <standard>/rustfmt.toml
    ```
 
-   If nightly rustfmt is missing, install it with
-   `rustup component add --toolchain nightly rustfmt`. If that fails, say that
-   formatting was not checked.
+   When the project's docs give another way to run nightly rustfmt, such as
+   `cargo fmt` in a dev shell, use it. If nightly rustfmt is missing, install
+   it with `rustup component add --toolchain nightly rustfmt`. If that fails,
+   say that formatting was not checked.
 
 2. **Lints:**
 
    ```sh
-   CLIPPY_CONF_DIR=docs/standards/rust cargo clippy -q -p <crate> --all-targets -- \
+   CLIPPY_CONF_DIR=<standard> cargo clippy -q -p <crate> --all-targets -- \
      -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo \
      -D clippy::unimplemented -D clippy::unreachable -W clippy::indexing_slicing \
      -D clippy::mod_module_files
@@ -125,7 +136,7 @@ least:
 One entry per finding, grouped by file:
 
 ```
-crates/tc_core/src/rules.rs:42  api_design.md, "Do not panic"
+crates/core/src/rules.rs:42  api_design.md, "Do not panic"
   `table.get(key).unwrap()` panics when the key is missing.
   Fix: return `Option<&Rule>`, and let the caller decide.
 ```
@@ -150,7 +161,7 @@ With `fix`, repeat:
    last:
 
    ```sh
-   cargo +nightly fmt -p <crate> -- --config-path docs/standards/rust/rustfmt.toml
+   cargo +nightly fmt -p <crate> -- --config-path <standard>/rustfmt.toml
    ```
 
 4. **Verify** that the code still works: `cargo check -q` and `cargo test -q`

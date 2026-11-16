@@ -1,6 +1,7 @@
 ---
 name: review-architecture
 description: Evaluate a crate's architecture in depth, read cold, after many iterations have grown it. Does the structure still fit what the crate does, what consumes it and where it is going? Looks at boundaries and dependencies, where responsibilities sit, duplication, the data model, completeness, errors, state, performance by design, testability, readiness for the next step, and size. Confirms each finding on the running code, ranks them, proposes a plan, and discusses it with the user before anything changes. Use when asked for an architecture review, a deeper crate evaluation, or "did we get the architecture wrong". Bugs are the review skill's job, style the review-standard skill's.
+license: MIT, in LICENSE.txt
 ---
 
 # Review a crate's architecture
@@ -19,7 +20,7 @@ disagreeing.
 
 `/review-architecture [path] [focus]`
 
-- `path`: the crate to review, such as `crates/tc_pack`. Without it, ask.
+- `path`: the crate to review, such as `crates/parser`. Without it, ask.
 - `focus`: any other text names what worries the user most. Read that
   first, and still cover the rest.
 
@@ -27,14 +28,14 @@ disagreeing.
 
 Before the code, read what says what it must do and where it is going:
 
-- the specs it implements in `docs/` (for `tc_pack`: `DATA_PACKS.md`);
-- its design and progress notes (for `tc_pack`: `docs/data-packs/BUILD.md`,
-  "Where a check lives" in particular, and `docs/data-packs/HANDOFF.md`);
-- `AGENTS.md` and `docs/AGENTS.md`;
-- the coding standard's `organization.md`, for what a module should hold.
+- the specs it implements, often in `docs/`;
+- its design and progress notes, and the notes left for the next session;
+- the project's `AGENTS.md` or `CLAUDE.md`;
+- the coding standard's `organization.md`, for what a module should hold
+  (`/review-standard` says where the standard is).
 
 Write down, in a few lines: what the crate takes in, what it produces, who
-consumes the output (another crate, the engine, an editor, the network),
+consumes the output (another crate, a binary, a user, the network),
 and the next large planned step. A structure is judged against these.
 
 ## 2. Read the code cold
@@ -60,7 +61,7 @@ and the next large planned step. A structure is judged against these.
 
 Each lens is a question to ask of the whole crate. For each, look for the
 concrete instance, with file and line. The examples in parentheses come
-from past reviews in this repository. Skip a lens that does not apply,
+from past reviews. Skip a lens that does not apply,
 such as concurrency in a crate with no threads, and say so.
 
 1. **Boundaries and dependencies.** Do the modules form layers, and does
@@ -70,7 +71,7 @@ such as concurrency in a crate with no threads, and say so.
 2. **Responsibilities.** Can a stated rule place each kind of logic, and
    does the code follow it? Look for logic in the wrong layer, modules
    that mix concerns, and helpers that belong to a shared lower layer.
-   (A link check living in the typer; no written rule at all.)
+   (A validation living in the parser; no written rule at all.)
 3. **Duplication.** Is any lookup, rule, index or conversion written more
    than once? Compare the copies: they usually already differ. (A
    reference resolved in three places, field indexes built eight times.)
@@ -83,7 +84,7 @@ such as concurrency in a crate with no threads, and say so.
 5. **Completeness.** Does every kind of input reach the code that handles
    it? List the kinds the crate accepts and trace each one. Coverage that
    depends on two lists staying in step leaks, and a `_` arm can swallow
-   a kind added later. (Formulas that passed with no check.)
+   a kind added later. (A kind of input that passed with no check.)
 6. **One input, several contexts.** Where something is computed once per
    context (per caller, per subject, per kind), is each result kept, and
    is each finding reported once?
@@ -121,9 +122,8 @@ A finding is a concrete consequence, not a smell. For each one:
    that input, a type that rules it out. If one exists, drop the finding.
 2. Show it on the running code where that is cheap: the smallest input
    that passes when it should fail, reports twice, or takes quadratic
-   time. For `tc_pack`, a scratch pack checked with
-   `cargo run -q -p tc_pack_cli -- check <dir>`. Keep these inputs in the
-   scratchpad and name them in the report.
+   time, run through a test or the crate's command-line tool. Keep these
+   inputs in the scratchpad and name them in the report.
 3. Mark it **confirmed** (shown on the code) or **read** (from reading
    only).
 
@@ -150,10 +150,9 @@ Write it plainly, for the user to decide from.
 - Give the user the report, then ask about each fix that needs a
   decision, one at a time, with your recommendation first. Explain any
   term the user questions, such as what a work counter is.
-- Record what the user approves where the next session will find it: for
-  `tc_pack`, the "Next" list in `docs/data-packs/HANDOFF.md`, with the
-  approved order, and the findings left for later under its open
-  questions. Commit that note.
+- Record what the user approves where the next session will find it, such
+  as the project's to-do or handoff notes: the approved fixes in their
+  order, and the findings left for later. Commit that note.
 - Each approved fix is then its own piece of work, verified and committed
   on its own. A split of a large file is a move-only commit, checked by
   comparing the old file's tokens with the new files'.

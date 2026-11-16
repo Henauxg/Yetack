@@ -1,13 +1,14 @@
 ---
 name: review
-description: Review code for correctness, for a pull request, a branch, the working tree or a path. Does the code work, does it do what it must, does it handle edge cases and errors, can a player, a pack or a network peer make it misbehave. With the `fix` argument, fix the bugs found, each with a test, in passes, until a pass finds none. Use when asked to review changes for bugs or security holes, check that code works, or find unhandled cases. Style and the coding standard are the review-standard skill's job.
+description: Review code for correctness, for a pull request, a branch, the working tree or a path. Does the code work, does it do what it must, does it handle edge cases and errors, can a user, a file or a network peer make it misbehave. With the `fix` argument, fix the bugs found, each with a test, in passes, until a pass finds none. Use when asked to review changes for bugs or security holes, check that code works, or find unhandled cases. Style and the coding standard are the review-standard skill's job.
+license: MIT, in LICENSE.txt
 ---
 
 # Review code for correctness
 
 This skill checks that code works: it does what it must, on every input it can
-get, it fails cleanly where it cannot, and nobody outside the GM's machine can
-make it misbehave. With `fix` it fixes the bugs it finds.
+get, it fails cleanly where it cannot, and no input from outside can make it
+misbehave. With `fix` it fixes the bugs it finds.
 
 Style and the coding standard are out of scope: `/review-standard` checks them.
 A rule of the standard still matters here when breaking it causes a bug, such
@@ -33,8 +34,8 @@ as a panic on input a user can supply.
   use what the repository provides to build and test it.
 - For changes: the changed code, and what the change affects outside it. That
   includes the callers of a changed function, the users of a changed type, and
-  the data the code reads or writes: saved campaigns, the database, packs,
-  network messages. A bug the change causes elsewhere is a finding of the
+  the data the code reads or writes: saved files, the database, network
+  messages. A bug the change causes elsewhere is a finding of the
   change.
 - A bug in code the change neither touches nor depends on is pre-existing. It
   goes in its own list, and is never fixed unless the user asks.
@@ -47,8 +48,7 @@ what the code must do, as a short list of behaviors, each with its source:
 - the intent given when invoking the skill;
 - the pull request's description, and the issues it links;
 - the commit messages;
-- the specs in `docs/` that the code implements, such as `DATA_PACKS.md`,
-  `CAMPAIGN.md` and `NETWORK.md`;
+- the specs and design documents that the code implements, often in `docs/`;
 - doc comments and the existing tests;
 - for a path: the module's documentation and its callers.
 
@@ -74,7 +74,7 @@ workspace crates that depend on them.
 
 ## 3. Run what can run
 
-Use quiet flags (the repository's quiet-compile rule). For each crate listed in
+Use quiet flags, so the output stays short. For each crate listed in
 step 2:
 
 1. **Build:** `cargo check -q -p <crate> --all-targets`.
@@ -84,8 +84,8 @@ step 2:
    of the `correctness` and `suspicious` groups, and any other that points at a
    bug.
 
-Then run the code itself when there is a way: a tool on a real input (the pack
-checker on the reference packs), or the app through its `justfile` recipes. A
+Then run the code itself when there is a way: a command-line tool on a real
+input, or the app through the repository's scripts or `justfile` recipes. A
 run shows more than reading.
 
 When a step cannot run (a missing tool, a build already broken on the base),
@@ -102,22 +102,20 @@ and trace it to the output. Check at least:
   swallows variants added later, shadowing.
 - **Edge cases:** empty, one element, many, duplicates; zero, negative, the
   maximum; integer overflow (it wraps in release builds), division by zero,
-  the rounding direction (rules often round down), casts that truncate or
+  the rounding direction, casts that truncate or
   change the sign; text with Unicode, case and whitespace; paths (separators,
   case on Windows and macOS, a missing or unreadable file); an absent optional
-  value; a reference to something that does not exist; cycles, such as packs
-  depending on each other or derived values reading each other.
+  value; a reference to something that does not exist; cycles, such as two
+  items that depend on each other or derived values that read each other.
 - **Errors:** every error reaches someone who can act on it. No error is
   swallowed (`let _ =`, `.ok()`, `unwrap_or_default()` hiding a failure). The
   message names what failed and where. After a failure the state is
   consistent: no half-applied change, no partly written file.
 - **State and order:** invariants hold on every path, the error paths
   included; no mutation while iterating; no order that depends on `HashMap`
-  iteration or on timing where the result must be deterministic (the engine
-  replicates state over the network, so the same input must give the same
-  result on every machine); no event handled twice or never; initialization
-  in the right order; Bevy systems that rely on each other's writes have an
-  explicit order.
+  iteration or on timing where the result must be deterministic; no event
+  handled twice or never; initialization in the right order; tasks or systems
+  that rely on each other's writes run in an explicit order.
 - **Concurrency and async:** shared state without synchronization, a lock held
   across `.await`, locks taken in different orders, a task dropped or never
   awaited, a cancellation that leaves partial state.
@@ -138,50 +136,51 @@ memory that grows with time, a quadratic loop on input sizes the app sees.
 
 ## 5. Check security
 
-Read the code again as someone who wants to break it. The trust model is in
-`docs/NETWORK.md` ("Trust"): the GM's machine is the authority, and each
-player's process holds only what its seat may see. Treat as hostile:
+Read the code again as someone who wants to break it. First find the
+project's trust model, usually a "Security" or "Threats" section of its docs:
+who holds authority, and what each party may see and do. When the project
+has none, treat everything from outside the process as hostile, and say so in
+the report. Treat as hostile at least:
 
-- a player's client, and every message it sends;
-- a network peer, including one that is not part of the table;
-- a data pack: its JSON, its code and its files;
-- a file from outside: a campaign package, an import, an image.
+- a client, and every message it sends;
+- a network peer, including one that should not be connected at all;
+- a plugin or a package the program loads: its data, its code and its files;
+- a file from outside: an upload, an import, an image.
 
 Check at least:
 
-- **Hidden information:** no unrevealed GM data and no other character's data
-  enters a player's process. Look at what is replicated, and also at the
-  messages, logs, error texts and offers sent to a client. A value derived
-  from a hidden one can leak it, and so can a count, or an id that exists only
-  when something hidden exists.
-- **Authority:** the GM checks every request from a player and trusts none of
-  it: this seat may act on this entity, the decision is still open, the inputs
-  type-check, the conditions still hold. A check made only on the client is no
-  check. A result the GM must compute is never taken from a client's message.
-  An old or repeated request is dropped.
+- **Hidden data:** no data reaches a user or a process that may not see it.
+  Look at what is sent, and also at the messages, logs and error texts sent
+  to a client. A value derived from a hidden one can leak it, and so can a
+  count, or an id that exists only when something hidden exists.
+- **Authority:** the side that holds authority checks every request and
+  trusts none of it: this sender may act on this object, the action is still
+  allowed, the inputs type-check, the conditions still hold. A check made only
+  on the client is no check. A result the server must compute is never taken
+  from a client's message. An old or repeated request is dropped.
 - **Identity:** who sent a message comes from the connection (the peer's key),
   never from a field the sender fills in.
 - **Input from outside:** malformed or hostile input gives an error, never a
   panic, a hang or unbounded memory. Sizes and counts read from input are
   bounded before anything is allocated. Nesting and recursion have a depth
-  limit. One request cannot cost the GM unbounded work.
-- **Packs:** a pack does only what the spec grants it. Pack code (WASM,
-  scripts) runs with limits on time and memory, and reaches the host only
-  through the API. A path in a pack stays inside the pack: no `..`, no
-  absolute path, no symlink leading out. A pack cannot read or change what the
-  spec keeps from it.
+  limit. One request cannot cost the server unbounded work.
+- **Plugins and packages:** a plugin does only what the spec grants it. Its
+  code (WASM, scripts) runs with limits on time and memory, and reaches the
+  host only through the API. A path in a package stays inside the package: no
+  `..`, no absolute path, no symlink leading out. A plugin cannot read or
+  change what the spec keeps from it.
 - **Files and paths:** a name from outside never builds a path that leaves its
   folder. Extracting an archive checks each entry's path. A write never
   replaces a file it was not meant to.
 - **Database:** values go into queries as parameters (`sqlx` macros,
   `.bind`), never through `format!`.
-- **Secrets:** keys, tickets and tokens never appear in logs or error
-  messages, are never committed, and are never sent to another peer.
+- **Secrets:** keys, passwords and tokens never appear in logs or error
+  messages, are never committed, and are never sent where they do not belong.
 - **Randomness and cryptography:** randomness that protects something (a key,
   a token) comes from a cryptographic generator. Cryptography comes from
   established crates, never written here.
-- **Unsafe and foreign code:** at an `unsafe` block or an FFI boundary (the
-  Lua library, the WASM host), the `SAFETY:` reasoning holds for every input
+- **Unsafe and foreign code:** at an `unsafe` block or an FFI boundary (a C
+  library, a WASM host), the `SAFETY:` reasoning holds for every input
   that can reach it.
 - **Dependencies:** a new dependency is maintained, comes from a known source,
   and enables only the features it needs. Run `cargo audit` or
@@ -210,16 +209,17 @@ reuse them.
 One entry per finding, ordered by severity, then by file:
 
 ```
-high  crates/tc_core/src/rolls.rs:88  confirmed
-  A roll of 1 with a modifier of -3 totals 254: the total is a `u8` and wraps.
-  Expected: 0, the lowest total a roll can give.
-  Fix: add in `i32`, clamp at 0, then convert.
+high  crates/billing/src/invoice.rs:88  confirmed
+  A discount of 30 on a price of 20 totals 4294967286: the total is a `u32`
+  and wraps.
+  Expected: 0, the lowest total an invoice can have.
+  Fix: subtract with `saturating_sub`.
 
-high  crates/tc_net/src/requests.rs:41  likely  security
-  A player can move any token: the handler checks that the token exists, not
-  that the requesting seat controls it.
-  Expected: the GM drops a move request for a token the seat does not control.
-  Fix: check the seat's control of the token before applying the move.
+high  crates/server/src/requests.rs:41  likely  security
+  A user can delete any document: the handler checks that the document
+  exists, not that the user owns it.
+  Expected: the server refuses to delete a document the user does not own.
+  Fix: check the document's owner before deleting it.
 ```
 
 Severity:
@@ -231,7 +231,8 @@ Severity:
   that works.
 
 Mark a security finding with `security`, and rate it by who can use it: high
-when a player, a pack, a peer or a file from outside can, in normal use.
+when a user, a client, a peer, a plugin or a file from outside can, in normal
+use.
 
 After the findings:
 
@@ -259,7 +260,7 @@ With `fix`, repeat:
    When no test can reproduce the bug (timing, the UI), say how the fix was
    checked instead. For a security finding with two possible fixes, take the
    safer one. Rust fixes follow the coding standard
-   (`docs/standards/rust/`).
+   (`/review-standard` says where it is).
 4. **Verify:** build, and run the tests of the touched crates and of the
    crates that depend on them. Format what you changed as `/review-standard`
    does. If something broke, fix it before the next pass.
@@ -278,10 +279,10 @@ Report these, and do not fix them:
 - the fix changes behavior that other code, saved data or users rely on;
 - the fix needs a design change, a new dependency, or a change to a library
   crate's public API;
-- an edge case the spec does not settle, such as what an empty dice pool
-  rolls: propose an answer;
+- an edge case the spec does not settle, such as the average of an
+  empty list: propose an answer;
 - a security fix that removes or limits a feature, or needs a limit whose
-  value the spec does not set (a message size, a pack's memory): propose
+  value the spec does not set (a message size, a plugin's memory): propose
   one.
 
 At the end, ask the user about each of them, with a recommendation.

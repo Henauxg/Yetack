@@ -53,17 +53,20 @@ discourage, or one that goes against the pattern they mainly encourage.
 
 Rules about API design apply differently to two kinds of code.
 
-- **Library code** has callers outside this repository: packs through the
-  pack SDK, or other projects. Its callers cannot be fixed in the same change
-  as the library, so for library code the API design rules are binding.
+- **Library code** has callers outside this repository: users of a published
+  crate, or other projects. Its callers cannot be fixed in the same change as
+  the library, so for library code the API design rules are binding.
 - **Application code** is everything else, however many crates of this
   repository use it: one change can update it and all its callers. For
   application code, the API design rules are a strong recommendation.
   Application code should favor simplicity and directness over broad reuse:
   avoid generalizing early, and build what the immediate need requires.
 
-## Attribution
+## License
 
-Adapted from the [Google Rust Style Guide](https://google.github.io/styleguide/rustguide.html),
+This standard comes from [rust-standard](https://github.com/Henauxg/rust-standard),
+under [CC BY 4.0](LICENSE).
+
+It is adapted from the [Google Rust Style Guide](https://google.github.io/styleguide/rustguide.html),
 by Google, licensed under
 [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/).

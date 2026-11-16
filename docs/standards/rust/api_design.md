@@ -112,7 +112,7 @@ Report a failure to the caller, never by a panic:
   caller needs nothing more: a missing value, a mismatch;
 - a `Result` for a failure the caller needs context to handle, such as an I/O
   or network error that correct code cannot rule out ahead of time, or bad data
-  read from outside (a pack, a save file, the network).
+  read from outside (a file, user input, the network).
 
 ```rust
 // Good: the cause is obvious (overflow), and there is nothing more to say.
@@ -255,7 +255,7 @@ match text.parse::<KindName>() {
 ```
 
 Any other reusable string, such as a file name or a separator, is a
-constant: `const MANIFEST: &str = "pack.jsonc";`.
+constant: `const MANIFEST: &str = "manifest.json";`.
 
 When the text comes from the variant names, renaming a variant changes the
 format. Pin the words in a test, so that the rename fails it:
@@ -534,8 +534,8 @@ shorthand to make code shorter.
 
 ### Mark library enums `#[non_exhaustive]`
 
-An enum that is part of a library's public API (above all the pack SDK) is
-marked `#[non_exhaustive]`, so a new variant does not break its callers.
+An enum that is part of a library's public API is marked
+`#[non_exhaustive]`, so a new variant does not break its callers.
 Between crates of this repository it is not needed: one change fixes every
 `match` (Clippy lint [`exhaustive_enums`](https://rust-lang.github.io/rust-clippy/master/index.html#exhaustive_enums)).
 

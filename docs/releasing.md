@@ -17,7 +17,7 @@ A release has up to nine files:
 
 The Windows zip and app are built on a Windows machine, the other files on a Linux machine with Docker. A release can go out without them: the README sends Windows users to [install-from-source.md](./install-from-source.md) until a release has one, and the Windows app's update says the release has no Windows app.
 
-The tarball's app has its own OpenSSL, built from source by the release (see [packaging.md](./packaging.md), 5.1), and the tarball and the `.rpm` carry their own libxdo. Their fixes reach users only with a Yetack release. So when OpenSSL publishes a security fix that concerns TLS clients, make a release soon after, even one with nothing else in it: `cargo update -p openssl-src` takes the fixed source.
+The release builds in Ubuntu 22.04, which has `libssl.so.3` and `libxdo.so.3`. Newer distributions renamed both to `.so.4`, and a program built against `.so.3` does not start there. So the tarball's app has its own OpenSSL, built from source by the release, and the tarball and the `.rpm` carry their own libxdo. Their fixes reach users only with a Yetack release. So when OpenSSL publishes a security fix that concerns TLS clients, make a release soon after, even one with nothing else in it: `cargo update -p openssl-src` takes the fixed source.
 
 ## 1. Set the version
 

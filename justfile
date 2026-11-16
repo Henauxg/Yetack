@@ -60,6 +60,20 @@ shellcheck:
 fmt:
     cargo fmt
 
+standard_repo := "https://github.com/Henauxg/rust-standard"
+
+# The copies are replaced whole, so a change goes to rust-standard first.
+
+# Copies the coding standard and the review skills from a rust-standard tag, branch or full commit hash, staged.
+update-standard ref:
+    git fetch -q {{ standard_repo }} '{{ ref }}'
+    git rm -r -q -f --ignore-unmatch docs/standards/rust .claude/skills/review .claude/skills/review-standard .claude/skills/review-architecture
+    git read-tree --prefix=docs/standards/rust/ -u FETCH_HEAD:standard
+    git read-tree --prefix=.claude/skills/review/ -u FETCH_HEAD:skills/review
+    git read-tree --prefix=.claude/skills/review-standard/ -u FETCH_HEAD:skills/review-standard
+    git read-tree --prefix=.claude/skills/review-architecture/ -u FETCH_HEAD:skills/review-architecture
+    git log -1 --format="Copied rust-standard %h (%s). Commit it." FETCH_HEAD
+
 # The service's agents stop with it and resume at its next start. On a server, nothing starts it
 # again by itself.
 

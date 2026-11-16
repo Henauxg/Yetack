@@ -1,6 +1,6 @@
 # Contributing
 
-Read [AGENTS.md](AGENTS.md) first: it lists the commands, the coding standard and the rules every change follows.
+Read [AGENTS.md](AGENTS.md) first: it says how to develop, and lists the coding standard and the rules every change follows. [docs/development.md](docs/development.md) lists the commands.
 
 ## License of contributions
 

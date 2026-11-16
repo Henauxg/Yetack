@@ -13,8 +13,7 @@ the `missing_docs` lint:
 missing_docs = "deny"
 ```
 
-Its users read the documentation without the source: a pack author reads the
-pack SDK's.
+Its users read the documentation without the source, such as on docs.rs.
 
 In application code, an item gets a doc comment only where it says something
 its name and signature do not.

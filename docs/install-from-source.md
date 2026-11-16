@@ -1,6 +1,6 @@
 # Install from source
 
-Build Yetack yourself when no release file fits your computer: Windows while a release has no Windows zip, macOS, a Linux on ARM, a Linux older than glibc 2.35, or an ARM server. Any other Linux x86_64 can take the release's tarball instead: see "Any other Linux" in [README.md](../README.md).
+Build Yetack yourself when no release file fits your computer: Windows while a release has no Windows zip, macOS, a Linux on ARM, or a Linux older than glibc 2.35. Any other Linux x86_64 can take the release's tarball instead: see "Any other Linux" in [README.md](../README.md).
 
 You need a copy of the repository and Rust. Install Rust with [rustup](https://rustup.rs), then:
 
@@ -61,4 +61,4 @@ cargo install --locked --path crates/yetack --root ~/.local
 
 This puts `yetack` in `~/.local/bin`, where [contrib/yetack.service](../contrib/yetack.service) looks for it. Copy that file to `~/.config/systemd/user/`, then follow the install by hand of "On a server over SSH" in [README.md](../README.md) from step 2.
 
-The app's "Update" button can update this daemon later. On a Linux x86_64 server, it sends the daemon the app carries. An app built from source carries one once `just linux-daemon` has run. Otherwise the button builds the daemon on the server, which needs Rust and this checkout: [development.md](./development.md) says how.
+The app's "Update" button can update this daemon later. On a Linux server with an x86_64 or ARM CPU, it sends the app's daemon for that CPU. An app built from source carries the x86_64 one once `just linux-daemon` has run. Otherwise the button builds the daemon on the server, which needs Rust and this checkout: [development.md](./development.md) says how.
