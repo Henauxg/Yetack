@@ -10,6 +10,7 @@ mod apply;
 pub mod chat_images;
 pub mod claude_code_version;
 pub mod daemon_probe;
+pub mod daemon_start;
 pub mod daemon_update;
 mod details_updates;
 mod drafts;

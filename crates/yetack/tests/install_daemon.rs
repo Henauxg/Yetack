@@ -1,5 +1,5 @@
 //! `contrib/install-daemon.sh` against a real daemon in a home folder of its own. Fake
-//! `systemctl` and `loginctl` stand in for systemd.
+//! `systemctl` and `loginctl` stand in for systemd, and a fake `crontab` for cron.
 
 #![cfg(unix)]
 #![allow(
@@ -14,6 +14,8 @@ use std::fs::{self, File, Permissions};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
@@ -31,8 +33,13 @@ struct Server {
 
 impl Server {
     fn new() -> Self {
+        Self::in_folder(".tmp")
+    }
+
+    /// A server whose every path starts with `prefix`, such as one with a space.
+    fn in_folder(prefix: &str) -> Self {
         let server = Self {
-            temp: tempfile::Builder::new().prefix(".tmp").tempdir().unwrap(),
+            temp: tempfile::Builder::new().prefix(prefix).tempdir().unwrap(),
         };
         fs::create_dir_all(server.path("bin")).unwrap();
         fs::create_dir_all(server.path("home")).unwrap();
@@ -49,6 +56,10 @@ case "$*" in
         "$HOME/.local/share/yetack/bin/yetack" serve >>'{serve_log}' 2>&1 </dev/null &
         echo $! >'{pid}'
         ;;
+    "--user start yetack")
+        "$HOME/.local/share/yetack/bin/yetack" serve >>'{serve_log}' 2>&1 </dev/null &
+        echo $! >'{pid}'
+        ;;
 esac
 "#,
                 log = server.path("systemctl.log").display(),
@@ -59,6 +70,21 @@ esac
             ),
         );
         server.write_program("bin/loginctl", "#!/bin/sh\necho no\n");
+        server.write_program(
+            "bin/crontab",
+            &format!(
+                r#"#!/bin/sh
+case "$1" in
+    -l)
+        [ ! -f '{unreadable}' ] || {{ echo "crontab: cannot read the crontab" >&2; exit 1; }}
+        cat '{tab}' 2>/dev/null || {{ echo "no crontab for someone" >&2; exit 1; }} ;;
+    -) cat >'{tab}' ;;
+esac
+"#,
+                tab = server.path("crontab").display(),
+                unreadable = server.path("crontab-unreadable").display(),
+            ),
+        );
         server
     }
 
@@ -127,6 +153,9 @@ impl Drop for Server {
         if let Ok(pid) = fs::read_to_string(self.path("daemon.pid")) {
             let _ = Command::new("kill").arg(pid.trim()).status();
         }
+        // A daemon started without systemd: its path is this test's own.
+        let installed = format!("{} serve", self.installed().display());
+        let _ = Command::new("pkill").args(["-f", &installed]).status();
     }
 }
 
@@ -210,24 +239,211 @@ fn a_sent_binary_that_is_not_the_one_the_app_read_installs_nothing() {
     assert!(!sent.exists());
 }
 
-#[test]
-fn without_a_systemd_user_session_it_installs_nothing_and_says_what_to_do() {
-    let server = Server::new();
+/// Without a systemd user session, the install starts the daemon apart from its own session.
+fn install_without_systemd(server: &Server) -> Output {
     fs::write(server.path("no-session"), "").unwrap();
     let (sent, version) = server.sent_binary();
-
-    let output = server.install(&[
+    server.install(&[
         "--built",
         sent.to_str().unwrap(),
         "--sha256",
         &sha256(&sent),
         "--version",
         &version,
-    ]);
+    ])
+}
 
-    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
-    assert!(stderr(&output).contains("contrib/start-daemon"));
-    assert!(!server.installed().exists());
+#[test]
+fn without_a_systemd_user_session_the_daemon_starts_on_its_own_and_nothing_starts_it_at_boot() {
+    let server = Server::new();
+
+    let output = install_without_systemd(&server);
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    let said = stdout(&output);
+    assert!(said.contains("install-daemon: the daemon runs"), "{said}");
+    assert!(said.contains("install-daemon: service none"), "{said}");
+    assert!(said.contains("install-daemon: boot no"), "{said}");
+    assert!(
+        said.contains(&format!(
+            "install-daemon: start PATH={}/.local/bin:",
+            server.path("home").display()
+        )),
+        "{said}"
+    );
+    assert!(!said.contains("linger"), "{said}");
+    assert!(!server.unit().exists());
+    let listed = server
+        .command(server.installed().to_str().unwrap())
+        .arg("list")
+        .output()
+        .unwrap();
+    assert!(listed.status.success(), "{}", stderr(&listed));
+}
+
+#[test]
+fn the_start_at_boot_goes_into_the_crontab_once_beside_the_users_lines() {
+    let server = Server::new();
+    fs::write(server.path("crontab"), "0 3 * * * backup\n").unwrap();
+    let installed = install_without_systemd(&server);
+    assert!(installed.status.success(), "{}", stderr(&installed));
+
+    let added = server.install(&["--add-boot-start"]);
+    let again = server.install(&["--add-boot-start"]);
+
+    assert!(added.status.success(), "{}", stderr(&added));
+    assert!(again.status.success(), "{}", stderr(&again));
+    assert!(stdout(&again).contains("install-daemon: boot yes"));
+    let crontab = fs::read_to_string(server.path("crontab")).unwrap();
+    let lines: Vec<&str> = crontab.lines().collect();
+    assert_eq!(lines.len(), 2, "{crontab}");
+    assert_eq!(lines[0], "0 3 * * * backup");
+    assert!(
+        lines[1].starts_with(&format!(
+            "@reboot PATH={}/.local/bin:",
+            server.path("home").display()
+        )),
+        "{crontab}"
+    );
+    assert!(
+        lines[1].contains(&format!("{} serve >>", server.installed().display())),
+        "{crontab}"
+    );
+    assert!(
+        stdout(&installed).contains(&format!("install-daemon: cron {}\n", lines[1])),
+        "the report shows the line before it goes in: {}",
+        stdout(&installed)
+    );
+}
+
+/// The line the crontab holds, which the user's crontab has only once.
+fn cron_line(server: &Server) -> String {
+    let crontab = fs::read_to_string(server.path("crontab")).unwrap();
+    let mut lines = crontab.lines().filter(|line| line.starts_with("@reboot "));
+    let line = lines.next().unwrap().to_owned();
+    assert_eq!(lines.next(), None, "{crontab}");
+    line
+}
+
+#[test]
+fn the_crontab_line_starts_the_daemon_from_a_folder_with_a_space() {
+    let server = Server::in_folder(".tmp with space");
+    let installed = install_without_systemd(&server);
+    assert!(installed.status.success(), "{}", stderr(&installed));
+    let added = server.install(&["--add-boot-start"]);
+    assert!(added.status.success(), "{}", stderr(&added));
+    stop_daemon(&server);
+
+    // cron hands the line, past its time, to `sh -c`.
+    let line = cron_line(&server);
+    let command = line.strip_prefix("@reboot ").unwrap();
+    let mut cron = server
+        .command("sh")
+        .args(["-c", command])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let started = (0..50).any(|_| {
+        thread::sleep(Duration::from_millis(100));
+        answers(&server)
+    });
+    stop_daemon(&server);
+    let _ = cron.wait();
+
+    assert!(started, "{line}");
+}
+
+#[test]
+fn a_crontab_line_cron_would_cut_at_a_percent_sign_is_not_added() {
+    let server = Server::in_folder(".tmp 50%");
+    let installed = install_without_systemd(&server);
+    assert!(installed.status.success(), "{}", stderr(&installed));
+
+    let added = server.install(&["--add-boot-start"]);
+
+    assert_eq!(added.status.code(), Some(1), "{}", stderr(&added));
+    assert!(
+        stderr(&added).contains("add it by hand"),
+        "{}",
+        stderr(&added)
+    );
+    assert!(!server.path("crontab").exists());
+}
+
+#[test]
+fn a_crontab_that_cannot_be_read_stays_as_it_is() {
+    let server = Server::new();
+    fs::write(server.path("crontab"), "0 3 * * * backup\n").unwrap();
+    let installed = install_without_systemd(&server);
+    assert!(installed.status.success(), "{}", stderr(&installed));
+    fs::write(server.path("crontab-unreadable"), "").unwrap();
+
+    let added = server.install(&["--add-boot-start"]);
+
+    assert_eq!(added.status.code(), Some(1), "{}", stderr(&added));
+    assert!(
+        stderr(&added).contains("crontab: cannot read the crontab"),
+        "{}",
+        stderr(&added)
+    );
+    assert_eq!(
+        fs::read_to_string(server.path("crontab")).unwrap(),
+        "0 3 * * * backup\n"
+    );
+}
+
+#[test]
+fn a_daemon_started_on_its_own_does_not_ignore_hang_ups() {
+    let server = Server::new();
+    let installed = install_without_systemd(&server);
+    assert!(installed.status.success(), "{}", stderr(&installed));
+
+    let pattern = format!("{} serve", server.installed().display());
+    let found = Command::new("pgrep")
+        .args(["-f", &pattern])
+        .output()
+        .unwrap();
+    let pids = String::from_utf8(found.stdout).unwrap();
+    let pid = pids.lines().next().unwrap();
+    if !Path::new("/proc/self/status").exists() {
+        // No /proc: this system cannot tell.
+        return;
+    }
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+    let ignored = status
+        .lines()
+        .find_map(|line| line.strip_prefix("SigIgn:"))
+        .unwrap();
+    let mask = u64::from_str_radix(ignored.trim(), 16).unwrap();
+
+    assert_eq!(mask & 1, 0, "SIGHUP is ignored: {ignored}");
+}
+
+#[test]
+fn a_daemon_that_stops_as_it_starts_fails_the_start_at_once_with_its_last_word() {
+    let server = Server::new();
+    let installed = install_without_systemd(&server);
+    assert!(installed.status.success(), "{}", stderr(&installed));
+    stop_daemon(&server);
+    // Another process holds the state folder, as a daemon that no longer answers does.
+    let lock = File::options()
+        .write(true)
+        .open(server.path("home/state/yetack/serve.lock"))
+        .unwrap();
+    lock.try_lock().unwrap();
+
+    let begun = Instant::now();
+    let started = server.install(&["--start", server.installed().to_str().unwrap()]);
+
+    assert_eq!(started.status.code(), Some(4), "{}", stderr(&started));
+    assert!(
+        stderr(&started).contains("the daemon stopped as it started: "),
+        "{}",
+        stderr(&started)
+    );
+    assert!(begun.elapsed() < Duration::from_secs(20));
 }
 
 #[test]
@@ -299,8 +515,77 @@ fn a_check_only_reports_what_the_daemon_needs() {
     assert_eq!(
         stdout(&output),
         format!(
-            "install-daemon: linger no\ninstall-daemon: claude {}\n",
+            "install-daemon: service systemd\ninstall-daemon: linger no\ninstall-daemon: claude {}\n",
             server.path("home/.local/bin/claude").display()
         )
     );
+}
+
+/// Stops the daemon the test started, and waits until it no longer answers.
+fn stop_daemon(server: &Server) {
+    let installed = format!("{} serve", server.installed().display());
+    let _ = Command::new("pkill").args(["-f", &installed]).status();
+    if let Ok(pid) = fs::read_to_string(server.path("daemon.pid")) {
+        let _ = Command::new("kill").arg(pid.trim()).status();
+    }
+    for _ in 0..50 {
+        let listed = server
+            .command(server.installed().to_str().unwrap())
+            .arg("list")
+            .output()
+            .unwrap();
+        if !listed.status.success() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    panic!("the daemon still answers");
+}
+
+fn answers(server: &Server) -> bool {
+    server
+        .command(server.installed().to_str().unwrap())
+        .arg("list")
+        .output()
+        .unwrap()
+        .status
+        .success()
+}
+
+#[test]
+fn a_start_brings_back_a_daemon_started_without_systemd() {
+    let server = Server::new();
+    let installed = install_without_systemd(&server);
+    assert!(installed.status.success(), "{}", stderr(&installed));
+    stop_daemon(&server);
+
+    let started = server.install(&["--start", server.installed().to_str().unwrap()]);
+
+    assert!(started.status.success(), "{}", stderr(&started));
+    assert!(stdout(&started).contains("install-daemon: starting the daemon"));
+    assert!(answers(&server));
+}
+
+#[test]
+fn a_start_uses_the_systemd_service_when_there_is_one() {
+    let server = Server::new();
+    let (sent, version) = server.sent_binary();
+    let installed = server.install(&[
+        "--built",
+        sent.to_str().unwrap(),
+        "--sha256",
+        &sha256(&sent),
+        "--version",
+        &version,
+    ]);
+    assert!(installed.status.success(), "{}", stderr(&installed));
+    stop_daemon(&server);
+
+    let started = server.install(&["--start", "yetack"]);
+
+    assert!(started.status.success(), "{}", stderr(&started));
+    assert!(stdout(&started).contains("install-daemon: starting the service"));
+    let log = fs::read_to_string(server.path("systemctl.log")).unwrap();
+    assert!(log.contains("--user start yetack"), "{log}");
+    assert!(answers(&server));
 }

@@ -25,6 +25,7 @@ use crate::prefs::NotificationLevel;
 use crate::reach::{self, Places, Reached, Unreached};
 use crate::service_update::{self, BusyCheck, SystemService};
 use crate::state::daemon_probe::{LinuxCpu, ProbeTarget};
+use crate::state::daemon_start::{self, StartRun};
 use crate::state::daemon_update::{self, OutputLine, OutputStream};
 use crate::state::machine_load::{LOAD_POLL, LoadView, ShownLoad};
 use crate::state::machines::{self, Adding, MachineChange};
@@ -101,6 +102,8 @@ pub enum UpdateCommand {
     Probe(MachineId, ProbeTarget),
     /// A step of a new server's setup, from "Add a server".
     Setup(SetupRun),
+    /// "Start the daemon" on a server where none runs.
+    StartDaemon(MachineId, StartRun),
 }
 
 /// What components hold to read and change the state and to reach the daemon. The drafts are a
@@ -241,6 +244,15 @@ impl Cockpit {
         }
     }
 
+    /// "Add it to my crontab", once the setup's install started the daemon without systemd.
+    pub fn add_boot_start_on_server(&self) {
+        let mut signal = self.state;
+        let run = server_setup::add_boot_start(&mut signal.write());
+        if let Some(run) = run {
+            self.run_setup(run);
+        }
+    }
+
     /// "Check again", once the setup's install is done.
     pub fn check_server_again(&self) {
         let mut signal = self.state;
@@ -255,6 +267,16 @@ impl Cockpit {
     fn run_setup(&self, run: SetupRun) {
         self.daemon
             .send(ToDaemon::Update(UpdateCommand::Setup(run)));
+    }
+
+    /// "Start the daemon" on a server where none runs. Once it runs, the app connects again.
+    pub fn start_daemon(&self, machine: MachineId) {
+        let mut signal = self.state;
+        let run = daemon_start::start(&mut signal.write(), machine);
+        if let Some(run) = run {
+            self.daemon
+                .send(ToDaemon::Update(UpdateCommand::StartDaemon(machine, run)));
+        }
     }
 
     /// Tries a machine that does not answer again now. The update screens look at its daemon
@@ -682,6 +704,9 @@ impl Servers {
             UpdateCommand::Setup(run) => {
                 spawn(run_setup(state, run, self.retries.clone()));
             }
+            UpdateCommand::StartDaemon(machine, run) => {
+                spawn(start_daemon(state, machine, run, self.retries.clone()));
+            }
         }
     }
 
@@ -758,6 +783,26 @@ async fn run_update(
     }
 }
 
+/// Starts the daemon on a server where none runs, then connects again through `retries` once it
+/// runs. A failure stays on the machine's line, with the script's last word.
+async fn start_daemon(
+    mut state: Signal<AppState>,
+    machine: MachineId,
+    run: StartRun,
+    retries: mpsc::UnboundedSender<ToDaemon>,
+) {
+    let mut lines = Vec::new();
+    let code =
+        server_daemon::start_daemon(&run.host, &run.binary, |batch| lines.extend(batch)).await;
+    let result = server_setup::script_result(code, lines).map(drop);
+    let ran = result.is_ok();
+    let mut state = state.write();
+    daemon_start::started(&mut state, machine, result);
+    if ran && let Some(retry) = retry_message(&mut state, machine) {
+        let _ = retries.send(retry);
+    }
+}
+
 /// Runs a step of a server's setup. A server whose daemon runs joins the app through `added`.
 async fn run_setup(
     mut state: Signal<AppState>,
@@ -776,9 +821,15 @@ async fn run_setup(
         SetupRun::Check { host } => {
             let mut lines = Vec::new();
             let code = server_daemon::check_needs(&host, |batch| lines.extend(batch)).await;
-            let texts: Vec<String> = lines.into_iter().map(|line| line.text).collect();
-            let read = (code == Some(0)).then_some(texts.as_slice());
-            server_setup::checked(&mut state.write(), &host, read);
+            let result = server_setup::script_result(code, lines);
+            server_setup::checked(&mut state.write(), &host, result);
+            None
+        }
+        SetupRun::AddBootStart { host } => {
+            let mut lines = Vec::new();
+            let code = server_daemon::add_boot_start(&host, |batch| lines.extend(batch)).await;
+            let result = server_setup::script_result(code, lines);
+            server_setup::checked(&mut state.write(), &host, result);
             None
         }
     };
@@ -1079,6 +1130,11 @@ async fn run_demo(
                     }
                     Some(ToDaemon::Update(UpdateCommand::Setup(run))) => {
                         spawn(demo::play_setup(state, run));
+                        continue;
+                    }
+                    // The demo's start works after a pause, and the server connects.
+                    Some(ToDaemon::Update(UpdateCommand::StartDaemon(machine, _))) => {
+                        spawn(demo::play_start(state, machine));
                         continue;
                     }
                     // The demo writes no config.

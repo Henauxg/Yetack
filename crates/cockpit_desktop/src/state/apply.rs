@@ -17,8 +17,8 @@ use super::drafts::Drafts;
 use super::sending::Sending;
 use super::transcript::KEPT_ITEMS_AWAY;
 use super::{
-    actions, daemon_update, details_updates, file_reread, file_tree, grouping, notification_levels,
-    project_menu, projects, sending,
+    actions, daemon_start, daemon_update, details_updates, file_reread, file_tree, grouping,
+    notification_levels, project_menu, projects, sending,
 };
 use crate::machine::MachineId;
 
@@ -80,6 +80,7 @@ fn apply_session_update(
             known.daemon_commit = daemon_commit;
             // The daemon may have been updated.
             known.folders_unknown = false;
+            daemon_start::connected(known);
             daemon_update::connected(state, machine);
             apply_catchup(state, drafts, catchup, machine);
             Vec::new()

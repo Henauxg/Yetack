@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use cockpit_client::RequestError;
+use cockpit_daemon::NOT_SERVING_HINT;
 use cockpit_protocol::{
     Account, AccountId, AccountState, AgentDetails, AgentHistory, AgentId, AgentLoad, AgentStatus,
     AgentSummary, Answer, AnswerState, Approval, AskedQuestion, BackgroundTask, BackgroundTaskId,
@@ -53,8 +54,8 @@ use crate::state::update_plan::{
 };
 use crate::state::{
     AgentEntry, AppState, ConnectionState, Dialog, Drafts, Loadable, MachineState, Popover,
-    Utf16Offset, ViewMode, actions, claude_code_version, file_edits, file_tree, machines, projects,
-    quotes, sending,
+    Utf16Offset, ViewMode, actions, claude_code_version, daemon_start, file_edits, file_tree,
+    machines, projects, quotes, sending,
 };
 use crate::update_script::{self, APP_VERSION};
 
@@ -1185,6 +1186,30 @@ const SETUP_OUTPUT: &[&str] = &[
     "install-daemon: claude missing",
 ];
 
+/// The install script's lines in the demo on a server without systemd: nothing starts the daemon
+/// at boot yet.
+const SETUP_OUTPUT_ALONE: &[&str] = &[
+    "install-daemon: checking /home/dev/.cache/yetack/sent/yetack.k3v9Qa",
+    "install-daemon: installed /home/dev/.local/share/yetack/bin/yetack",
+    "install-daemon: starting the daemon",
+    "install-daemon: the daemon runs",
+    "install-daemon: service none",
+    "install-daemon: boot no",
+    "install-daemon: start PATH=/home/dev/.local/bin:/usr/local/bin:/usr/bin:/bin /home/dev/.local/share/yetack/bin/yetack serve >>/home/dev/.local/state/yetack/daemon.log 2>&1",
+    "install-daemon: cron @reboot PATH=/home/dev/.local/bin:/usr/local/bin:/usr/bin:/bin /home/dev/.local/share/yetack/bin/yetack serve >>/home/dev/.local/state/yetack/daemon.log 2>&1 # yetack: the daemon, which the desktop app starts",
+    "install-daemon: claude /home/dev/.local/bin/claude",
+];
+
+/// Plays "Start the daemon": after a pause, the server's daemon runs, and the app is connected.
+pub async fn play_start(mut state: Signal<AppState>, machine: MachineId) {
+    tokio::time::sleep(UPDATE_LINE_PAUSE * 3).await;
+    let mut state = state.write();
+    daemon_start::started(&mut state, machine, Ok(()));
+    if let Some(known) = state.machines.get_mut(machine) {
+        known.connection = ConnectionState::Connected;
+    }
+}
+
 /// Plays a step of a new server's setup: the server has no daemon, and the install works.
 pub async fn play_setup(mut state: Signal<AppState>, run: SetupRun) {
     match run {
@@ -1215,11 +1240,19 @@ pub async fn play_setup(mut state: Signal<AppState>, run: SetupRun) {
         }
         SetupRun::Check { host } => {
             tokio::time::sleep(UPDATE_LINE_PAUSE).await;
-            let said = [
+            let said = vec![
                 "install-daemon: linger yes".to_owned(),
                 "install-daemon: claude /home/dev/.local/bin/claude".to_owned(),
             ];
-            server_setup::checked(&mut state.write(), &host, Some(&said));
+            server_setup::checked(&mut state.write(), &host, Ok(said));
+        }
+        SetupRun::AddBootStart { host } => {
+            tokio::time::sleep(UPDATE_LINE_PAUSE).await;
+            let said: Vec<String> = SETUP_OUTPUT_ALONE
+                .iter()
+                .map(|line| line.replace("boot no", "boot yes"))
+                .collect();
+            server_setup::checked(&mut state.write(), &host, Ok(said));
         }
     }
 }
@@ -1261,10 +1294,14 @@ pub enum MachinesScene {
     SetupInstalling,
     /// The daemon runs, and two things are left to do.
     SetupInstalled,
+    /// The daemon runs on a server without systemd, and nothing starts it at boot yet.
+    SetupInstalledAlone,
     /// The server runs another system.
     SetupCannot,
     /// The check of the sent daemon failed.
     SetupFailed,
+    /// The server answers SSH, and no daemon runs there.
+    ServerStopped,
 }
 
 /// The server that does not answer, in `MachinesScene::Trouble`.
@@ -1387,8 +1424,19 @@ pub fn show_machines(state: &mut AppState, scene: MachinesScene) {
             SetupStage::Installed(InstallReport {
                 linger: Some(false),
                 claude: None,
-                checking: false,
+                ..InstallReport::default()
             }),
+        ),
+        MachinesScene::ServerStopped => {
+            if let Some(server) = state.machines.others.get_mut(&SERVER) {
+                server.connection = not_answering(&format!(
+                    "cannot connect to /home/dev/.local/state/yetack/yetack.sock: {NOT_SERVING_HINT}"
+                ));
+            }
+        }
+        MachinesScene::SetupInstalledAlone => setup_at(
+            state,
+            SetupStage::Installed(InstallReport::read(SETUP_OUTPUT_ALONE.iter().copied())),
         ),
         MachinesScene::SetupCannot => setup_at(
             state,
@@ -5466,8 +5514,10 @@ pub struct ParseError {
                 "setup-offer",
                 "setup-installing",
                 "setup-installed",
+                "setup-installed-alone",
                 "setup-cannot",
                 "setup-failed",
+                "server-stopped",
             ]
         );
         assert_eq!(

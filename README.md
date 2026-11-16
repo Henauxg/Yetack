@@ -102,10 +102,10 @@ The app can install the daemon for you:
 
 1. In the app, open **Machines** at the bottom left, and click **Add a server**.
 2. Type the **SSH host**, as you type it after `ssh`, and leave **Path of yetack on the server** empty.
-3. The app looks for `yetack` on the server, and adds the server with the one it finds. When the server has none, the app offers to install it as a systemd user service.
+3. The app looks for `yetack` on the server, and adds the server with the one it finds. When the server has none, the app offers to install it, as a systemd user service when the server has a systemd user session.
 4. Once the daemon runs, the app says what is left to do on the server: turn linger on (see [Keep the agents running after you log out](#keep-the-agents-running-after-you-log-out)), or install Claude Code.
 
-The install needs a systemd user session on the server. Without one, start the daemon with [contrib/start-daemon](contrib/start-daemon).
+On a server without systemd, such as Gentoo with OpenRC, the install starts the daemon on its own, apart from your SSH session, so it keeps running after you log out. Nothing starts it again after the server restarts: the app shows the line it can add to your crontab for that, and adds it only when you click **Add it to my crontab**.
 
 #### Install by hand
 

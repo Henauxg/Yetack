@@ -10887,6 +10887,12 @@ html.splitting .sidebar {
   animation: fade-in var(--motion-in) var(--ease-out) backwards;
 }
 
+/* What "Check again" or "Add it to my crontab" said as it failed, left of the buttons. */
+.setup-failure {
+  min-width: 0;
+  animation: fade-in var(--motion-in) var(--ease-out) backwards;
+}
+
 .setup-head {
   display: flex;
   flex-direction: column;

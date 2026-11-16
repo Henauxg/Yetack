@@ -9,6 +9,9 @@ use crate::store::default_state_dir;
 pub const PROGRAM: &str = "yetack";
 /// The `yetack` subcommand that runs the daemon behind its socket.
 pub const SERVE_SUBCOMMAND: &str = "serve";
+/// The end of what `yetack bridge` says when no daemon listens on its socket, which the app looks
+/// for to offer a start of the daemon.
+pub const NOT_SERVING_HINT: &str = "is `yetack serve` running?";
 /// The `yetack` option that names the state folder, without its leading `--`.
 pub const STATE_DIR_FLAG: &str = "state-dir";
 
@@ -55,5 +58,15 @@ impl DaemonConfig {
             claude_program,
             claude_config_dir,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_bridges_hint_names_the_command_that_runs_the_daemon() {
+        assert!(NOT_SERVING_HINT.contains(&format!("`{PROGRAM} {SERVE_SUBCOMMAND}`")));
     }
 }

@@ -102,7 +102,7 @@ The script that installs the file checks it before anything changes: its checksu
 
 1. The app looks for `yetack` on the server: on the `PATH`, and in `~/.local/share/yetack/bin` and `~/.local/bin`. It also reads `uname -sm`. When it finds a daemon, it adds the server with that daemon's path, and the setup ends.
 2. When the server has none, runs `Linux x86_64`, and the app carries a daemon, the app offers to install it and lists the two files it writes. Otherwise it says the server needs a build from source, as the README says.
-3. The app sends the binary, then runs `install-daemon.sh --built <file> --sha256 <sum> --version <text>` over `ssh <host> sh -s`. The script checks the file. It needs a systemd user session: without one, it exits with 1 and points to [contrib/start-daemon](contrib/start-daemon).
+3. The app sends the binary, then runs `install-daemon.sh --built <file> --sha256 <sum> --version <text>` over `ssh <host> sh -s`. The script checks the file. Without a systemd user session, it starts the daemon apart from the SSH session instead (see 5.5).
 4. It installs `~/.local/share/yetack/bin/yetack`, in a folder of mode 700. It writes `~/.config/systemd/user/yetack.service`, the unit of [contrib/yetack.service](contrib/yetack.service) with `ExecStart=%h/.local/share/yetack/bin/yetack serve`. It runs `systemctl --user daemon-reload` and `systemctl --user enable --now yetack`, then waits up to 30 seconds for `yetack list` to answer.
 5. It reports whether linger is on (`linger yes` or `linger no`, from `loginctl show-user`), and where the service's `PATH` finds `claude` (`claude <path>` or `claude missing`).
 6. Once the daemon runs, the server joins the app's config, with the installed path as its `remote_command`. The panel shows what is left to do: turn linger on with `loginctl enable-linger` (some servers want `sudo` before it), and install Claude Code. "Check again" runs the script with `--check`, which prints only the report.
@@ -130,7 +130,6 @@ Nix keeps the daemon in `/nix/store`, which is read-only, and the system's confi
 ### Not built
 
 - The first-run screen. The plan: when no config file exists, the app asks "Where do your agents run?" with two answers, "This computer" and "A server". For a server it runs the setup above, showing each step with its result. This screen gets an HTML mockup first, as every new screen does. Today a server is added from the Machines dialog.
-- An install on a server without systemd. The install script tells the user to start the daemon with [contrib/start-daemon](contrib/start-daemon), and does not install it.
 - The check that `claude` is signed in. The install reports only whether the service finds `claude`. The app's Accounts dialog shows the sign-in.
 
 ### Security

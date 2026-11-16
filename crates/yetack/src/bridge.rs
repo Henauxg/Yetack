@@ -7,7 +7,7 @@ use std::path::Path;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::UnixStream;
 
-use crate::cli::{PROGRAM, SERVE_SUBCOMMAND};
+use cockpit_daemon::NOT_SERVING_HINT;
 
 const BUFFER_BYTES: usize = 64 * 1024;
 
@@ -15,12 +15,9 @@ const BUFFER_BYTES: usize = 64 * 1024;
 pub(crate) async fn run(socket: &Path) -> anyhow::Result<()> {
     use anyhow::Context;
 
-    let stream = UnixStream::connect(socket).await.with_context(|| {
-        format!(
-            "cannot connect to {}: is `{PROGRAM} {SERVE_SUBCOMMAND}` running?",
-            socket.display()
-        )
-    })?;
+    let stream = UnixStream::connect(socket)
+        .await
+        .with_context(|| format!("cannot connect to {}: {NOT_SERVING_HINT}", socket.display()))?;
     let (mut from_daemon, mut to_daemon) = stream.into_split();
     let mut stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();

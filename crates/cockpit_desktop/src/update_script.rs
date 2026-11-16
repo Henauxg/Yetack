@@ -30,6 +30,12 @@ pub const VERSION_OPTION: &str = "--version";
 /// Makes `contrib/install-daemon.sh` only say what the daemon needs.
 pub const CHECK_OPTION: &str = "--check";
 
+/// Makes `contrib/install-daemon.sh` add the daemon's start at boot to the user's crontab.
+pub const BOOT_START_OPTION: &str = "--add-boot-start";
+
+/// Makes `contrib/install-daemon.sh` start the daemon installed at the path after it.
+pub const START_OPTION: &str = "--start";
+
 /// Skips the script's refusal for busy agents: "Update now".
 const EVEN_IF_BUSY_OPTION: &str = "--even-if-busy";
 

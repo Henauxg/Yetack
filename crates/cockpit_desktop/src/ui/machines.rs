@@ -17,7 +17,9 @@ use crate::state::machines::{
     self, MachineChange, MachineName, MachineRow, RowNote, RowVersion, ServerRow, UpdateLine,
     VersionCell,
 };
-use crate::state::server_setup::{self, InstallReport, InstallStep, ServerSetup, SetupStage};
+use crate::state::server_setup::{
+    self, BootStart, InstallReport, InstallStep, ServerSetup, SetupStage, Starter,
+};
 use crate::state::update_offer::ProgramBuild;
 use crate::state::update_plan::SendProgress;
 use crate::state::{AppState, Dialog, MachineEdit, MachineMenu, MachinesView, daemon_update};
@@ -56,6 +58,7 @@ pub fn run_action(cockpit: Cockpit, machine: MachineId, action: StatusAction) {
         StatusAction::ChooseDaemon => {
             cockpit.update(|state| state.ui.dialog = Some(Dialog::NoDaemon));
         }
+        StatusAction::StartDaemon => cockpit.start_daemon(machine),
     }
 }
 
@@ -648,7 +651,12 @@ fn SetupPanel(setup: ServerSetup) -> Element {
         SetupStage::Installed(report) => rsx! {
             InstalledReport { name, release, report: report.clone() }
             div { class: "machine-add-actions",
-                span {}
+                match &report.failure {
+                    Some(failure) => rsx! {
+                        span { key: "{failure}", class: "form-error setup-failure", role: "alert", "{failure}" }
+                    },
+                    None => rsx! { span {} },
+                }
                 div { class: "machine-edit-actions",
                     button {
                         class: "button small",
@@ -727,30 +735,47 @@ fn InstalledReport(name: String, release: String, report: InstallReport) -> Elem
         1 => format!("{name} is set up, with one thing left to do"),
         _ => format!("{name} is set up, with two things left to do"),
     };
-    let lead = if left == 0 {
-        format!("{name}'s agents work now.")
-    } else {
-        format!("{name}'s agents work now. Fix these on {name}, then check again.")
+    let lead = match (left, report.left_on_server()) {
+        (0, _) => format!("{name}'s agents work now."),
+        (_, 0) => format!(
+            "{name}'s agents work now. Add the start at boot, so that they work again after {name} restarts."
+        ),
+        _ => format!("{name}'s agents work now. Fix these on {name}, then check again."),
     };
     rsx! {
         SetupHead { title, lead }
         ol { class: "update-steps",
             SetupStepRow { mark: Mark::Done, title: format!("Send and check {release}"), detail: None }
-            SetupStepRow { mark: Mark::Done, title: "Start the service", detail: Some("Running".to_owned()) }
-            if report.linger == Some(true) {
-                SetupStepRow { mark: Mark::Done, title: "Keep it running after you log out", detail: Some("Linger is on".to_owned()) }
-            } else {
-                SetupStepRow {
-                    mark: Mark::Warn,
-                    title: "Keep it running after you log out",
-                    detail: Some(format!("Linger is off: systemd stops {name}'s daemon, and its agents, when you log out of {name}. Run this on {name} (some servers need sudo before it):")),
-                }
+            match report.starter {
+                Starter::Systemd => rsx! {
+                    SetupStepRow { mark: Mark::Done, title: "Start the service", detail: Some("Running".to_owned()) }
+                    if report.linger == Some(true) {
+                        SetupStepRow { mark: Mark::Done, title: "Keep it running after you log out", detail: Some("Linger is on".to_owned()) }
+                    } else {
+                        SetupStepRow {
+                            mark: Mark::Warn,
+                            title: "Keep it running after you log out",
+                            detail: Some(format!("Linger is off: systemd stops {name}'s daemon, and its agents, when you log out of {name}. Run this on {name} (some servers need sudo before it):")),
+                        }
+                    }
+                },
+                Starter::Alone => rsx! {
+                    SetupStepRow {
+                        mark: Mark::Done,
+                        title: "Start the daemon",
+                        detail: Some(format!("{name} runs no systemd user session, so the daemon runs on its own, apart from your SSH session: it keeps running after you log out.")),
+                    }
+                    BootStartRow { name: name.clone(), report: report.clone() }
+                },
             }
         }
-        if report.linger != Some(true) {
+        if report.starter == Starter::Systemd && report.linger != Some(true) {
             div { class: "step-command",
                 CommandBox { command: "loginctl enable-linger".to_owned() }
             }
+        }
+        if report.starter == Starter::Alone {
+            BootStartAction { report: report.clone() }
         }
         ol { class: "update-steps",
             match &report.claude {
@@ -761,11 +786,65 @@ fn InstalledReport(name: String, release: String, report: InstallReport) -> Elem
                     SetupStepRow {
                         mark: Mark::Warn,
                         title: "Find Claude Code",
-                        detail: Some(format!("The service finds no claude on its PATH. Install Claude Code on {name} and sign in with claude.")),
+                        detail: Some(format!("The daemon finds no claude on its PATH. Install Claude Code on {name} and sign in with claude.")),
                     }
                 },
             }
         }
+    }
+}
+
+/// Without systemd: whether something starts the daemon again when the server restarts.
+#[component]
+fn BootStartRow(name: String, report: InstallReport) -> Element {
+    let title = format!("Start it again when {name} restarts");
+    let (mark, detail) = match report.boot {
+        Some(BootStart::Yes) => (Mark::Done, "Your crontab starts it".to_owned()),
+        Some(BootStart::Unavailable) => (
+            Mark::Warn,
+            format!(
+                "{name} has no crontab, so nothing starts the daemon after a restart. Run this command when {name} starts, from its init system:"
+            ),
+        ),
+        Some(BootStart::No) | None => (
+            Mark::Warn,
+            format!(
+                "Nothing starts the daemon after {name} restarts. The app can add this line to your crontab on {name}, which cron runs at each start:"
+            ),
+        ),
+    };
+    rsx! {
+        SetupStepRow { mark, title, detail: Some(detail) }
+    }
+}
+
+/// The command `BootStartRow` names, and the button that adds the crontab line. The app adds it
+/// only on that click.
+#[component]
+fn BootStartAction(report: InstallReport) -> Element {
+    let cockpit: Cockpit = use_context();
+    match report.boot {
+        Some(BootStart::Yes) => rsx! {},
+        Some(BootStart::Unavailable) => rsx! {
+            if let Some(command) = report.start_command.clone() {
+                div { class: "step-command",
+                    CommandBox { command }
+                }
+            }
+        },
+        Some(BootStart::No) | None => rsx! {
+            if let Some(line) = report.cron_line.clone() {
+                div { class: "step-command",
+                    CommandBox { command: line }
+                    button {
+                        class: "button small",
+                        disabled: report.checking,
+                        onclick: move |_| cockpit.add_boot_start_on_server(),
+                        if report.checking { "Adding…" } else { "Add it to my crontab" }
+                    }
+                }
+            }
+        },
     }
 }
 

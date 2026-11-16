@@ -16,6 +16,7 @@ use super::accounts::SignIns;
 use super::app_update::AppUpdate;
 use super::chat_images::KeptImage;
 use super::daemon_probe::DaemonProbe;
+use super::daemon_start::DaemonStart;
 use super::daemon_update::DaemonUpdate;
 use super::details_updates::EarlyUpdate;
 use super::file_tree::FileTree;
@@ -397,6 +398,8 @@ pub struct MachineState {
     /// The server's entry in the config, which the Machines dialog edits. `None` for this
     /// computer.
     pub server: Option<MachineConfig>,
+    /// "Start the daemon" on a server where no daemon runs.
+    pub start: DaemonStart,
 }
 
 impl MachineState {
@@ -421,6 +424,7 @@ impl MachineState {
             checking_jobs: false,
             connections: 0,
             server: None,
+            start: DaemonStart::default(),
         }
     }
 

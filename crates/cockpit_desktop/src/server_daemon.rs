@@ -13,7 +13,8 @@ use crate::state::daemon_update::OutputLine;
 use crate::state::error_chain;
 use crate::state::update_plan::{CarriedDaemons, SendProgress};
 use crate::update_script::{
-    self, APP_VERSION, BUILT_OPTION, CHECK_OPTION, SHA256_OPTION, VERSION_OPTION,
+    self, APP_VERSION, BOOT_START_OPTION, BUILT_OPTION, CHECK_OPTION, SHA256_OPTION, START_OPTION,
+    VERSION_OPTION,
 };
 use crate::{release_daemon, self_update};
 
@@ -114,6 +115,20 @@ pub async fn install(
         version.as_str(),
     ];
     run_install_script(host, &arguments, on_lines).await
+}
+
+/// Starts the daemon at `binary` on `host`: its systemd unit when it has one, else on its own.
+pub async fn start_daemon(
+    host: &str,
+    binary: &str,
+    on_lines: impl FnMut(Vec<OutputLine>),
+) -> Option<i32> {
+    run_install_script(host, &[START_OPTION, binary], on_lines).await
+}
+
+/// Adds the daemon's start at boot to the user's crontab on `host`, then reads what it needs.
+pub async fn add_boot_start(host: &str, on_lines: impl FnMut(Vec<OutputLine>)) -> Option<i32> {
+    run_install_script(host, &[BOOT_START_OPTION], on_lines).await
 }
 
 /// Reads again what the daemon on `host` needs besides itself, giving the lines to `on_lines`.

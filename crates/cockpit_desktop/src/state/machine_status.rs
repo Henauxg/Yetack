@@ -3,6 +3,7 @@
 //! Without machine panels, the sidebar shows these lines in a strip at the top of its list.
 
 use super::app_state::{AppState, ConnectionState, MachineState};
+use super::daemon_start::{self, DaemonStart};
 use super::daemon_update::{self, DaemonUpdate, LineProgress, UpdateLink};
 use super::machines::MachineName;
 use super::no_daemon::Absence;
@@ -44,6 +45,8 @@ pub enum StatusAction {
     /// Opens the "No daemon answers" screen as a dialog, to choose how agents run on this
     /// computer.
     ChooseDaemon,
+    /// Starts the daemon over SSH on a server where none runs.
+    StartDaemon,
 }
 
 impl StatusAction {
@@ -53,6 +56,7 @@ impl StatusAction {
             Self::Update(link) => link.label(),
             Self::Retry => "Retry now",
             Self::ChooseDaemon => "Choose how agents run here",
+            Self::StartDaemon => "Start the daemon",
         }
     }
 
@@ -60,7 +64,7 @@ impl StatusAction {
     pub fn button_label(self) -> &'static str {
         match self {
             Self::ChooseDaemon => "Choose",
-            Self::Update(_) | Self::Retry => self.label(),
+            Self::Update(_) | Self::Retry | Self::StartDaemon => self.label(),
         }
     }
 }
@@ -129,6 +133,34 @@ fn connection_status(known: &MachineState) -> MachineStatus {
             "Connecting",
             line("Connecting…", None, Vec::new()),
         ),
+        // The server answers SSH, and its bridge says no daemon listens.
+        ConnectionState::Disconnected { error, .. } if daemon_start::no_daemon_runs(known) => {
+            match &known.start {
+                DaemonStart::Starting => status(
+                    Tone::Notice,
+                    "Starting",
+                    line("Starting the daemon…", None, Vec::new()),
+                ),
+                DaemonStart::Failed(message) => status(
+                    Tone::Down,
+                    "Not running",
+                    line(
+                        "The daemon did not start.",
+                        Some(message.clone()),
+                        vec![StatusAction::StartDaemon, StatusAction::Retry],
+                    ),
+                ),
+                DaemonStart::Idle => status(
+                    Tone::Down,
+                    "Not running",
+                    line(
+                        "No daemon runs there.",
+                        Some(error.clone()),
+                        vec![StatusAction::StartDaemon, StatusAction::Retry],
+                    ),
+                ),
+            }
+        }
         ConnectionState::Disconnected { error, .. } => status(
             Tone::Down,
             "Not connected",
