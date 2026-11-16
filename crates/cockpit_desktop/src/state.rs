@@ -35,6 +35,7 @@ pub mod project_menu;
 pub mod projects;
 pub mod quotes;
 mod requests;
+pub mod resume;
 pub mod sending;
 pub mod server_setup;
 pub mod settings;

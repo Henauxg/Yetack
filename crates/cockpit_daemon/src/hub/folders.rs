@@ -259,7 +259,6 @@ impl Hub {
         let restart = restart && agent.process.is_none();
         let restarted = if restart {
             self.start_process(id, InterruptedTurn::Leave)
-                .map_err(|error| ErrorBody::new(ErrorCode::ClaudeFailed, error))
         } else {
             Ok(())
         };

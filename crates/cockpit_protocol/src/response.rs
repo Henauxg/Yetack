@@ -213,7 +213,8 @@ pub enum ErrorCode {
     /// pending approval.
     InvalidRequest,
     /// The agent, pending answer, queued message, task, MCP server, session or file it names
-    /// does not exist, or the process it names is not one of the agent's.
+    /// does not exist, or the process it names is not one of the agent's. For `agent.resume`, the
+    /// agent's folder is gone.
     NotFound,
     /// The request needs a running `claude` process: `agent.resume` first.
     AgentExited,

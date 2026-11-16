@@ -255,6 +255,8 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   - An agent moves to another project from its row's menu, by drag and drop, or from the new agent dialog's Project menu. Kept projects are reordered by dragging their headers.
   - A right-click on a project's header opens its menu: Keep (a temporary project), Rename (the name turns into a field in the header), the six colors (digits 1 to 6), Edit the rules (its card in Settings), Fold, and Delete, which asks for a second pick. A rename, a color or the rules keep a temporary project first.
   - The Settings dialog's Projects tab edits the projects, with a card per project as the Accounts dialog has.
+- Decided with the exited agent mockup, and built: an exited agent shows a bar above the composer with Resume, in place of a banner above the first message, which a long chat scrolled out of view.
+  - When its folder is gone, as after a rename, Resume says so, and the bar offers "Move to another folder…".
 - It starts `ssh <server> /absolute/path/to/yetack bridge` and speaks the daemon API over the process's stdin and stdout.
   Use an absolute path: a non-interactive SSH command does not load your interactive shell setup, so `~/.cargo/bin` may be missing from `PATH`.
 - It reconnects after an SSH drop and sends its last sequence number.

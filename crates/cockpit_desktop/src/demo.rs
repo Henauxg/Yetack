@@ -56,7 +56,7 @@ use crate::state::update_plan::{
 use crate::state::{
     AgentEntry, AppState, ConnectionState, Dialog, Drafts, Loadable, MachineState, Popover,
     Utf16Offset, ViewMode, actions, claude_code_version, daemon_start, file_edits, file_tree,
-    machines, projects, quotes, sending,
+    machines, projects, quotes, resume, sending,
 };
 use crate::update_script::{self, APP_VERSION};
 
@@ -167,6 +167,8 @@ const PARSER_FOLDER: &str = "/home/dev/projects/calc-parser";
 const SERVICE_FOLDER: &str = "/home/dev/projects/calc-service";
 const PLATFORM_FOLDER: &str = "/home/dev/projects/acme-platform";
 const STREAM_FOLDER: &str = "/home/dev/projects/calc-stream";
+/// The exited agent's folder, gone as after a rename: its Resume is refused until it moves.
+const GONE_FOLDER: &str = "/home/dev/projects/legacy-db";
 
 /// The agent whose conversation grows while the demo runs, to try the chat's scrolling. Its
 /// conversation is long, and it loads when the agent first opens, as a daemon's would.
@@ -2059,6 +2061,8 @@ pub fn latency(request: &Request) -> Duration {
         Request::AgentPrompt(_) => Duration::from_millis(400),
         // Claude Code tries the server for a moment.
         Request::AgentMcpReconnect(_) => Duration::from_millis(600),
+        // `claude` starts.
+        Request::AgentResume(_) => Duration::from_millis(500),
         _ => Duration::ZERO,
     }
 }
@@ -2084,6 +2088,12 @@ pub fn apply(state: &mut AppState, request: &Request) {
         Request::AgentChangeFolder(params) => {
             if let Some(entry) = state.agents.get_mut(&params.agent) {
                 entry.summary.folder.clone_from(&params.folder);
+            }
+        }
+        Request::AgentResume(params) => {
+            if let Some(entry) = state.agents.get_mut(&params.agent) {
+                entry.summary.status = AgentStatus::Idle;
+                resume::summary_changed(entry);
             }
         }
         // `apply_map_request` answers the approvals.
@@ -2258,6 +2268,17 @@ pub fn answer(state: &AppState, request: &Request) -> Result<ResponseBody, Reque
         Request::AgentListDir(params) => list_dir(&params.path),
         Request::AgentFindFiles(params) => Ok(find_files(&params.name)),
         Request::FoldersList(params) => list_folders(state, MachineId::THIS, &params.path),
+        Request::AgentResume(params)
+            if state
+                .agents
+                .get(&params.agent)
+                .is_some_and(|entry| entry.summary.folder == Path::new(GONE_FOLDER)) =>
+        {
+            Err(refused(
+                ErrorCode::NotFound,
+                &format!("the folder {GONE_FOLDER} no longer exists"),
+            ))
+        }
         Request::AgentFork(_) => Err(refused(
             ErrorCode::InvalidRequest,
             "The demo runs no Claude session to fork.",
@@ -3793,7 +3814,7 @@ fn exited_agent(now: SystemTime) -> Sample {
         SummaryParts {
             id: 6,
             title: "🏗\u{fe0f} Schema migration",
-            folder: "/home/dev/projects/legacy-db",
+            folder: GONE_FOLDER,
             status: AgentStatus::Exited,
             activity: None,
             pending: 0,

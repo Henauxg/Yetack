@@ -20,6 +20,7 @@ use crate::keymap::Command;
 use crate::state::actions::ImageTooLarge;
 use crate::state::sending::{SendingPlace, SendingPrompt};
 use crate::state::{Draft, PaletteOrigin, Popover, accounts, actions, agent_map, chat_images};
+use crate::ui::exited_bar::ExitedBar;
 use crate::ui::header::cache_left;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::palette::Palette;
@@ -189,6 +190,7 @@ pub fn Composer() -> Element {
                 Presence { open: popover == Some(Popover::Mode),
                     ModeMenu { agent, mode }
                 }
+                ExitedBar {}
                 WaitingPrompts { agent, prompts: waiting, sending, hold, images: waiting_images }
                 div { class: "composer",
                     if !draft.quotes.is_empty() {

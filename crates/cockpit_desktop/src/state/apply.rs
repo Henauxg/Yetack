@@ -18,7 +18,7 @@ use super::sending::Sending;
 use super::transcript::KEPT_ITEMS_AWAY;
 use super::{
     actions, daemon_start, daemon_update, details_updates, file_reread, file_tree, grouping,
-    notification_levels, project_menu, projects, sending,
+    notification_levels, project_menu, projects, resume, sending,
 };
 use crate::machine::MachineId;
 
@@ -461,6 +461,7 @@ fn update_agent(state: &mut AppState, summary: AgentSummary) -> Option<Alert> {
     };
     let before = entry.summary.status;
     entry.summary = summary;
+    resume::summary_changed(entry);
     let summary = &entry.summary;
     let after = summary.status;
     if after == AgentStatus::NeedsYou && before != AgentStatus::NeedsYou {

@@ -5,9 +5,9 @@ use std::time::{Instant, SystemTime};
 
 use cockpit_client::RequestError;
 use cockpit_protocol::{
-    AgentDetails, AgentId, AgentParams, ErrorCode, FileEdit, FindFilesParams, FoldersListParams,
-    HistoryParams, ItemId, ListDirParams, Method, PendingId, Position, ReadFileParams, Request,
-    ResponseBody, Seq, Timestamp,
+    AccountId, AgentDetails, AgentId, AgentParams, ClaudeSessionId, ErrorCode, FileEdit,
+    FindFilesParams, FoldersListParams, HistoryParams, ItemId, ListDirParams, Method, PendingId,
+    Position, ReadFileParams, Request, ResponseBody, Seq, Timestamp,
 };
 
 use super::app_state::{AgentEntry, AppState, FileRead, Loadable, MachineState, Reread};
@@ -15,6 +15,7 @@ use super::chat_images::ImageKey;
 use super::drafts::{Draft, Drafts};
 use super::page_copy::CopyId;
 use super::projects::{self, ProjectKey};
+use super::resume::{self, FolderState, Refusal};
 use super::sending::{self, SendingId};
 use super::transcript::HistoryState;
 use super::ui_state::{Dialog, FolderAction, OpenFileView};
@@ -122,9 +123,23 @@ pub enum Purpose {
     Start {
         project: Option<ProjectKey>,
     },
+    /// `sessions.resume` from the new agent dialog, as `Start`. When the exited agent that holds
+    /// the session cannot resume because its folder is gone, that agent opens, and its bar offers
+    /// to move it.
+    ResumeSession {
+        project: Option<ProjectKey>,
+        session: ClaudeSessionId,
+        account: AccountId,
+    },
     /// `agent.fork` or `agent.change_folder` from the working folder dialog.
     WorkingFolder {
         action: FolderAction,
+    },
+    /// `agent.resume` from the exited agent's bar, for the agent in `folder`: a refusal shows in
+    /// the bar.
+    Resume {
+        agent: AgentId,
+        folder: PathBuf,
     },
     /// The draft comes back to the composer when the prompt fails.
     Prompt {
@@ -443,6 +458,28 @@ pub fn apply_response(
                     .report(format!("{method} failed: {}", failure.message));
             }
         }
+        Purpose::Resume { agent, folder } => match result {
+            Ok(_) => {}
+            // It says nothing about the agent: the bar offers Resume again.
+            Err(failure) if failure.transient => {
+                resume::not_sent(state, agent);
+                state
+                    .ui
+                    .report(format!("{method} failed: {}", failure.message));
+            }
+            Err(failure) => {
+                let folder_state = if failure.not_found {
+                    FolderState::Gone
+                } else {
+                    FolderState::Unknown
+                };
+                let refusal = Refusal {
+                    reason: failure.message,
+                    folder_state,
+                };
+                resume::refused(state, agent, folder, refusal);
+            }
+        },
         Purpose::Answer { agent, pending } => {
             if let Err(failure) = result {
                 if let Some(entry) = state.agents.get_mut(&agent) {
@@ -733,21 +770,22 @@ pub fn apply_response(
         Purpose::WorkingFolder { action } => {
             working_folder::answered(state, action, result.map_err(|failure| failure.message));
         }
-        Purpose::Start { project } => match result {
-            Ok(ResponseBody::AgentStarted { agent }) => {
-                if let Some(project) = project {
-                    projects::pick_for_new_agent(state, agent, project);
+        Purpose::Start { project } => started(state, method, project, result),
+        Purpose::ResumeSession {
+            project,
+            session,
+            account,
+        } => {
+            let opened = match &result {
+                Err(failure) if failure.not_found => {
+                    resume::session_refused(state, machine, &session, account, &failure.message)
                 }
-                actions::select_agent(state, agent);
-                state.ui.new_agent_started();
+                _ => false,
+            };
+            if !opened {
+                started(state, method, project, result);
             }
-            other => {
-                if let Some(form) = state.ui.new_agent_form_mut() {
-                    form.starting = false;
-                }
-                report(state, method, other);
-            }
-        },
+        }
         Purpose::Prompt {
             agent,
             draft,
@@ -849,6 +887,30 @@ fn reread_failed(state: &mut AppState, agent: AgentId, path: &Path, failure: &Fa
         failure.message
     ));
     true
+}
+
+/// `agent.start` or `sessions.resume` answered: the agent opens, in the project picked for it.
+fn started(
+    state: &mut AppState,
+    method: Method,
+    project: Option<ProjectKey>,
+    result: Result<ResponseBody, Failure>,
+) {
+    match result {
+        Ok(ResponseBody::AgentStarted { agent }) => {
+            if let Some(project) = project {
+                projects::pick_for_new_agent(state, agent, project);
+            }
+            actions::select_agent(state, agent);
+            state.ui.new_agent_started();
+        }
+        other => {
+            if let Some(form) = state.ui.new_agent_form_mut() {
+                form.starting = false;
+            }
+            report(state, method, other);
+        }
+    }
 }
 
 fn report(state: &mut AppState, method: Method, result: Result<ResponseBody, Failure>) {
@@ -1482,5 +1544,132 @@ mod tests {
         assert_eq!(second, 0, "a second Enter before the update sends nothing");
         assert_eq!(after_refusal, 1, "a refused answer can be sent again");
         assert_eq!(after_done, 0, "the daemon's update closes the card");
+    }
+
+    /// The daemon answers a folder that is gone with `NotFound`: the bar then offers to move the
+    /// agent. Any other refusal only says why.
+    #[test]
+    fn a_refused_resume_says_whether_the_folder_is_gone() {
+        use crate::state::resume::{self, FolderState, Resume};
+
+        let agent = AgentId::new(1);
+        let folder = PathBuf::from("/work/shop");
+        let mut exited = summary(1, AgentStatus::Exited);
+        exited.folder.clone_from(&folder);
+        let mut state = state_with(vec![exited]);
+        let reply = |state: &mut AppState, result: Result<ResponseBody, RequestError>| {
+            let _ = resume::send(state, agent);
+            apply_response(
+                state,
+                &mut Drafts::default(),
+                Method::AgentResume,
+                Purpose::Resume {
+                    agent,
+                    folder: folder.clone(),
+                },
+                result,
+                MachineId::THIS,
+            );
+            resume::refusal(&state.agents[&agent]).map(|refusal| refusal.folder_state)
+        };
+        let refused = |code: ErrorCode, message: &str| {
+            Err(RequestError::Failed(ErrorBody::new(
+                code,
+                message.to_owned(),
+            )))
+        };
+
+        let gone = reply(
+            &mut state,
+            refused(
+                ErrorCode::NotFound,
+                "the folder /work/shop no longer exists",
+            ),
+        );
+        let failed = reply(
+            &mut state,
+            refused(ErrorCode::ClaudeFailed, "cannot start claude"),
+        );
+        let done = reply(&mut state, Ok(ResponseBody::Done));
+
+        assert_eq!(gone, Some(FolderState::Gone));
+        assert_eq!(failed, Some(FolderState::Unknown));
+        assert_eq!(done, None);
+        assert_eq!(
+            state.agents[&agent].resume,
+            Resume::Sending,
+            "Resuming… stays until the agent's update"
+        );
+        assert!(state.ui.errors.is_empty(), "the bar says it, not a note");
+    }
+
+    /// A Resume that never reached the daemon says nothing about the agent: the bar offers Resume
+    /// again, and a note says why it did not go.
+    #[test]
+    fn a_resume_without_a_connection_leaves_the_bar_as_it_was() {
+        use crate::state::resume::{self, Resume};
+
+        let agent = AgentId::new(1);
+        let mut state = state_with(vec![summary(1, AgentStatus::Exited)]);
+        let _ = resume::send(&mut state, agent);
+        let folder = state.agents[&agent].summary.folder.clone();
+
+        apply_response(
+            &mut state,
+            &mut Drafts::default(),
+            Method::AgentResume,
+            Purpose::Resume { agent, folder },
+            Err(RequestError::NotConnected),
+            MachineId::THIS,
+        );
+
+        assert_eq!(state.agents[&agent].resume, Resume::NotAsked);
+        assert_eq!(
+            state.ui.errors.first().map(|note| note.text.as_str()),
+            Some("agent.resume failed: not connected to the daemon")
+        );
+    }
+
+    /// The session picked in "Resume a session" belongs to an exited agent whose folder is gone:
+    /// that agent opens, and its bar says why and offers to move it.
+    #[test]
+    fn a_session_whose_agent_lost_its_folder_opens_that_agent() {
+        use crate::state::resume::{self, FolderState};
+
+        let session = ClaudeSessionId::new("session-1".to_owned());
+        let mut exited = summary(1, AgentStatus::Exited);
+        exited.session = Some(session.clone());
+        let mut state = state_with(vec![summary(2, AgentStatus::Idle), exited]);
+        state.ui.selected = Some(AgentId::new(2));
+        let resume_session = |state: &mut AppState, session: ClaudeSessionId| {
+            let gone = ErrorBody::new(
+                ErrorCode::NotFound,
+                "the folder /work/project-1 no longer exists".to_owned(),
+            );
+            apply_response(
+                state,
+                &mut Drafts::default(),
+                Method::SessionsResume,
+                Purpose::ResumeSession {
+                    project: None,
+                    session,
+                    account: AccountId::DEFAULT,
+                },
+                Err(RequestError::Failed(gone)),
+                MachineId::THIS,
+            );
+        };
+
+        resume_session(&mut state, ClaudeSessionId::new("session-9".to_owned()));
+        let notes_for_another_session = state.ui.errors.len();
+        resume_session(&mut state, session);
+
+        assert_eq!(notes_for_another_session, 1, "no agent holds it: a note");
+        assert_eq!(state.ui.selected, Some(AgentId::new(1)));
+        assert_eq!(
+            resume::refusal(&state.agents[&AgentId::new(1)]).map(|refusal| refusal.folder_state),
+            Some(FolderState::Gone)
+        );
+        assert_eq!(state.ui.errors.len(), 1, "the bar says it, not a note");
     }
 }

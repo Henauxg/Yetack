@@ -24,6 +24,7 @@ Check each new or changed element against these rules before you call the work d
 - Put the transition on the property that changes (`width`, `padding-right`, `right`), in both states: the state an element enters sets the timing of the way in.
 - Dioxus removes an element at once. An element that closes goes through `ui/presence.rs` (`Presence` or `use_presence`), which keeps it on screen, marked `leaving` and inert, for its exit animation.
 - A switch to another agent draws that agent's layout at once. The root has the `switching` class in the frame that shows the other agent, and its rule turns the layout transitions off: a new layout transition adds its element there.
+  An element of one agent that opens with an animation, such as the chat's find, uses `use_agent_presence` (`ui/presence.rs`) instead: its `instant` class turns the animation off while the element stays open. The `switching` class lasts one frame, and an animation starts as it goes.
 
 ### Tokens
 

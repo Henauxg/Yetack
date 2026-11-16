@@ -502,16 +502,6 @@ pub fn TranscriptView(in_view: Signal<Option<InView>>) -> Element {
                     TranscriptSkeleton {}
                 } else if shown == ShownRows::All {
                     {history_note(history, cockpit, agent)}
-                    if status == AgentStatus::Exited {
-                        div { class: "exited-banner",
-                            span { "The claude process ended. Resume starts it again on the same conversation." }
-                            button {
-                                class: "button primary",
-                                onclick: move |_| cockpit.change(|_| actions::resume_agent(agent)),
-                                "Resume"
-                            }
-                        }
-                    }
                 }
                 // Item ids repeat across agents: with the agent in the key, another agent's item
                 // never takes over the state of this one's (a fold, a typed answer).

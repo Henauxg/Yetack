@@ -13,6 +13,7 @@ mod daemon_update;
 mod dialog_height;
 mod dialogs;
 mod emoji_picker;
+mod exited_bar;
 mod file_list;
 mod file_view;
 mod files_pane;

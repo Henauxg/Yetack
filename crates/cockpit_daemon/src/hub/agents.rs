@@ -39,7 +39,7 @@ impl Hub {
                 .get(&id)
                 .is_some_and(|agent| agent.record.running);
             if running && let Err(error) = self.start_process(id, InterruptedTurn::Resume) {
-                self.exited_at_start(id, &error);
+                self.exited_at_start(id, &error.message);
             }
             self.publish(id);
         }
@@ -109,7 +109,7 @@ impl Hub {
         );
         if let Err(error) = self.start_process(id, InterruptedTurn::Leave) {
             self.agents.remove(&id);
-            return Err(ErrorBody::new(ErrorCode::ClaudeFailed, error));
+            return Err(error);
         }
         self.next_agent = next;
         // The agents below the new one, renumbered when it found no room above them.
@@ -131,25 +131,29 @@ impl Hub {
     }
 
     /// Starts `claude` for an agent and asks for its commands. The error says why it cannot
-    /// start.
+    /// start: `NotFound` when the agent's folder is gone, else `ClaudeFailed`.
     pub(super) fn start_process(
         &mut self,
         id: AgentId,
         interrupted_turn: InterruptedTurn,
-    ) -> Result<(), String> {
+    ) -> Result<(), ErrorBody> {
         let raw_path = self.raw_log_path(id);
         let account_id = self
             .agents
             .get(&id)
             .map(|agent| agent.record.account)
-            .ok_or_else(|| format!("no agent {}", id.get()))?;
-        let account = self
-            .account(account_id)
-            .map_err(|_| format!("the agent's account {} no longer exists", account_id.get()))?;
+            .ok_or(errors::agent_not_found(id))?;
+        let account = self.account(account_id).map_err(|_| {
+            ErrorBody::new(
+                ErrorCode::ClaudeFailed,
+                format!("the agent's account {} no longer exists", account_id.get()),
+            )
+        })?;
         let Some(agent) = self.agents.get_mut(&id) else {
-            return Err(format!("no agent {}", id.get()));
+            return Err(errors::agent_not_found(id));
         };
         let record = &agent.record;
+        check_folder(&record.folder)?;
         let command = ClaudeCommand {
             program: self.config.claude_program.clone(),
             folder: record.folder.clone(),
@@ -174,7 +178,7 @@ impl Hub {
                 event,
             }
         })
-        .map_err(|error| errors::chain(&error))?;
+        .map_err(|error| ErrorBody::new(ErrorCode::ClaudeFailed, errors::chain(&error)))?;
         if let Err(purpose) = handle.control(ControlRequest::Initialize, ControlPurpose::Initialize)
         {
             purpose.fail(errors::agent_exited(id));
@@ -524,8 +528,7 @@ impl Hub {
         if agent.moving.is_some() {
             return Err(errors::agent_working(id));
         }
-        self.start_process(id, InterruptedTurn::Leave)
-            .map_err(|error| ErrorBody::new(ErrorCode::ClaudeFailed, error))?;
+        self.start_process(id, InterruptedTurn::Leave)?;
         if let Some(agent) = self.agents.get_mut(&id) {
             agent.record.running = true;
             agent.view.resumed_by_user(state::now());
@@ -810,6 +813,26 @@ pub(super) fn agent_folder(folder: &Path) -> Result<PathBuf, ErrorBody> {
     Ok(resolved)
 }
 
+/// Refuses a folder that is gone, as after a rename, with `NotFound`, so that a client can offer
+/// to move the agent. Windows would only say that the directory name is not valid.
+fn check_folder(folder: &Path) -> Result<(), ErrorBody> {
+    match std::fs::metadata(folder) {
+        Ok(metadata) if metadata.is_dir() => Ok(()),
+        Ok(_) => Err(ErrorBody::new(
+            ErrorCode::NotFound,
+            format!("{} is no longer a folder", folder.display()),
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Err(ErrorBody::new(
+            ErrorCode::NotFound,
+            format!("the folder {} no longer exists", folder.display()),
+        )),
+        Err(error) => Err(ErrorBody::new(
+            ErrorCode::ClaudeFailed,
+            format!("cannot open the folder {}: {error}", folder.display()),
+        )),
+    }
+}
+
 pub(super) fn check_model(model: &str) -> Result<(), ErrorBody> {
     check_length("model name", model, MODEL_MAX_CHARS)
 }
@@ -946,6 +969,57 @@ mod tests {
             panic!("expected the model name to be refused");
         };
         assert_eq!(refused.code, ErrorCode::InvalidRequest);
+    }
+
+    /// The agent's folder was renamed since it ran: the resume names the folder with `NotFound`,
+    /// so that the app offers to move the agent, and the agent stays exited.
+    #[test]
+    fn an_agent_whose_folder_is_gone_does_not_resume() {
+        use cockpit_protocol::Timestamp;
+
+        use crate::store::{AgentsFile, StateDir};
+
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let state = StateDir::create(&state_dir).unwrap();
+        let agent = AgentId::new(1);
+        let gone = temp.path().join("renamed-project");
+        AgentsFile {
+            next_agent: AgentId::new(2),
+            replay_floor: None,
+            agents: vec![AgentRecord {
+                id: agent,
+                title: "Fix the cart".to_owned(),
+                folder: gone.clone(),
+                session: Some(ClaudeSessionId::new(
+                    "11111111-2222-3333-4444-555555555555".to_owned(),
+                )),
+                model: None,
+                effort: None,
+                mode: None,
+                running: false,
+                started_at: Timestamp::from_unix_millis(0),
+                past: None,
+                position: Position::default(),
+                process: None,
+                account: AccountId::DEFAULT,
+                mark: Mark::Unmarked,
+                resume_as: ResumeAs::Same,
+            }],
+        }
+        .save(&state.agents_file())
+        .unwrap();
+        let mut hub = Hub::for_tests(&state_dir);
+
+        let refused = hub.resume(agent).unwrap_err();
+
+        assert_eq!(refused.code, ErrorCode::NotFound);
+        assert_eq!(
+            refused.message,
+            format!("the folder {} no longer exists", gone.display())
+        );
+        assert!(hub.agents[&agent].process.is_none());
+        assert!(!hub.agents[&agent].record.running);
     }
 
     /// A session file's `cwd` is what `claude` wrote, or anything a process of the user wrote.

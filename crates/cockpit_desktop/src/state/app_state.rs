@@ -23,6 +23,7 @@ use super::file_tree::FileTree;
 use super::grouping::GroupKey;
 use super::no_daemon::{NoDaemon, SERVICE_OFFERED};
 use super::page_copy::PageCopies;
+use super::resume::Resume;
 use super::sending::Sending;
 use super::server_setup::{InstallReport, ServerSetup};
 use super::transcript::Transcript;
@@ -188,6 +189,8 @@ pub struct AgentEntry {
     pub tree: FileTree,
     /// The messages sent that the daemon has not echoed yet.
     pub sending: Sending,
+    /// The Resume of the agent, while it has exited.
+    pub resume: Resume,
 }
 
 /// When the agent's running turn started.
@@ -305,6 +308,7 @@ impl AgentEntry {
             images: VecDeque::new(),
             tree: FileTree::default(),
             sending: Sending::default(),
+            resume: Resume::default(),
         }
     }
 

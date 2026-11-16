@@ -7,10 +7,14 @@
 //! a screenshot, and a later message showing that path is about the new one. A message keeps the
 //! copy it first read while it is kept.
 
+use std::io::Cursor;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use cockpit_protocol::{AgentId, Image, ItemId, ReadFileParams, Request};
+use base64::engine::general_purpose::STANDARD as BASE64;
+use cockpit_protocol::{AgentId, Image, ImageMediaType, ItemId, ReadFileParams, Request};
+use image::metadata::Orientation;
+use image::{ImageFormat, ImageReader};
 
 use super::app_state::{AgentEntry, AppState, Loadable};
 use super::requests::{Outgoing, Purpose};
@@ -34,17 +38,75 @@ impl ImageKey {
     }
 }
 
-/// An image the agent's messages show. Shared, so that a view can hold it without a copy.
+/// An image the agent's messages show.
 #[derive(Debug, Clone, PartialEq)]
 pub struct KeptImage {
     key: ImageKey,
-    image: Loadable<Arc<Image>>,
+    image: Loadable<ChatImage>,
     /// The places on screen that show it.
     shown: usize,
 }
 
+/// A loaded image, shared so that a view can hold it without a copy.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChatImage {
+    pub image: Arc<Image>,
+    /// Read from the file's header as it arrives, so that the chat gives the image its room before
+    /// the web view decodes it. `None` when the header does not read.
+    pub size: Option<ImageSize>,
+}
+
+impl ChatImage {
+    pub fn new(image: Image) -> Self {
+        let size = image_size(&image);
+        Self {
+            image: Arc::new(image),
+            size,
+        }
+    }
+}
+
+/// An image's size in pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageSize {
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The size the web view draws the image at, from the file's header, without decoding its
+/// pixels. The web view turns an image as its Exif data says, as a phone's photo needs.
+fn image_size(image: &Image) -> Option<ImageSize> {
+    use base64::Engine as _;
+    use image::ImageDecoder as _;
+
+    let bytes = BASE64.decode(&image.data).ok()?;
+    let format = match image.media_type {
+        ImageMediaType::Png => ImageFormat::Png,
+        ImageMediaType::Jpeg => ImageFormat::Jpeg,
+        ImageMediaType::Gif => ImageFormat::Gif,
+        ImageMediaType::Webp => ImageFormat::WebP,
+    };
+    let mut decoder = ImageReader::with_format(Cursor::new(bytes), format)
+        .into_decoder()
+        .ok()?;
+    let (width, height) = decoder.dimensions();
+    let turned = matches!(
+        decoder.orientation().ok()?,
+        Orientation::Rotate90
+            | Orientation::Rotate270
+            | Orientation::Rotate90FlipH
+            | Orientation::Rotate270FlipH
+    );
+    let (width, height) = if turned {
+        (height, width)
+    } else {
+        (width, height)
+    };
+    (width > 0 && height > 0).then_some(ImageSize { width, height })
+}
+
 /// The image of `key` in the agent's messages, once a message asked for it.
-pub fn image(state: &AppState, agent: AgentId, key: &ImageKey) -> Option<Loadable<Arc<Image>>> {
+pub fn image(state: &AppState, agent: AgentId, key: &ImageKey) -> Option<Loadable<ChatImage>> {
     let entry = state.agents.get(&agent)?;
     entry
         .images
@@ -133,7 +195,7 @@ pub(super) fn answered(
         .and_then(|entry| entry.images.iter_mut().find(|kept| kept.key == *key));
     if let Some(kept) = held {
         kept.image = match answer {
-            Ok(image) => Loadable::Loaded(Arc::new(image)),
+            Ok(image) => Loadable::Loaded(ChatImage::new(image)),
             Err(message) => Loadable::Failed(message),
         };
     }
@@ -241,7 +303,7 @@ mod tests {
         assert!(second.is_empty());
         assert_eq!(
             image(&state, agent(), &key),
-            Some(Loadable::Loaded(Arc::new(png())))
+            Some(Loadable::Loaded(ChatImage::new(png())))
         );
     }
 
@@ -260,6 +322,74 @@ mod tests {
 
         assert_eq!(refused, Some(Loadable::Failed("Not readable".to_owned())));
         assert_eq!(asked(&mut state).len(), 1);
+    }
+
+    /// The size comes from the header, and a header that does not read gives none.
+    #[test]
+    fn an_image_reads_its_size_from_its_header() {
+        use base64::Engine as _;
+
+        let mut file = Cursor::new(Vec::new());
+        image::RgbaImage::new(900, 60)
+            .write_to(&mut file, ImageFormat::Png)
+            .unwrap();
+        let wide = Image {
+            media_type: ImageMediaType::Png,
+            data: BASE64.encode(file.into_inner()),
+        };
+        let mislabelled = Image {
+            media_type: ImageMediaType::Jpeg,
+            data: wide.data.clone(),
+        };
+
+        assert_eq!(
+            ChatImage::new(wide).size,
+            Some(ImageSize {
+                width: 900,
+                height: 60
+            })
+        );
+        assert_eq!(ChatImage::new(mislabelled).size, None);
+        assert_eq!(ChatImage::new(png()).size, None, "a header cut short");
+    }
+
+    /// A photo stored on its side, with Exif data that turns it, as a phone writes it: the web
+    /// view draws it turned, so its size is the turned one.
+    #[test]
+    fn a_photo_turned_by_its_exif_data_reads_turned() {
+        use base64::Engine as _;
+        use image::codecs::jpeg::JpegEncoder;
+        use image::{ExtendedColorType, ImageEncoder as _, RgbImage};
+
+        // A TIFF header, big endian, then one entry: the orientation (0x0112), a short, 6 for a
+        // quarter turn clockwise.
+        let exif = vec![
+            0x4d, 0x4d, 0, 42, 0, 0, 0, 8, 0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0, 0, 0, 0,
+            0,
+        ];
+        let mut file = Vec::new();
+        let mut encoder = JpegEncoder::new(&mut file);
+        encoder.set_exif_metadata(exif).unwrap();
+        encoder
+            .write_image(
+                RgbImage::new(40, 30).as_raw(),
+                40,
+                30,
+                ExtendedColorType::Rgb8,
+            )
+            .unwrap();
+        let photo = Image {
+            media_type: ImageMediaType::Jpeg,
+            data: BASE64.encode(file),
+        };
+
+        assert_eq!(
+            ChatImage::new(photo).size,
+            Some(ImageSize {
+                width: 30,
+                height: 40
+            })
+        );
     }
 
     /// A chat that shows more images than are kept still shows each of them.
@@ -305,11 +435,11 @@ mod tests {
         assert_eq!(again.len(), 1);
         assert_eq!(
             image(&state, agent(), &first),
-            Some(Loadable::Loaded(Arc::new(png())))
+            Some(Loadable::Loaded(ChatImage::new(png())))
         );
         assert_eq!(
             image(&state, agent(), &later),
-            Some(Loadable::Loaded(Arc::new(new_png)))
+            Some(Loadable::Loaded(ChatImage::new(new_png)))
         );
     }
 }

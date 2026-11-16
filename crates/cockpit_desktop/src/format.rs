@@ -533,29 +533,56 @@ pub const NOW: &str = "now";
 
 /// "now", "5 min ago", "2 h ago", "yesterday", "3 days ago", "8 Nov".
 pub fn ago(moment: Timestamp, now: SystemTime) -> String {
+    match past(moment, now) {
+        Past::Now => NOW.to_owned(),
+        Past::Ago(words) | Past::Date(words) => words,
+    }
+}
+
+/// `ago` within a sentence, after a verb: "just now", "5 min ago", "yesterday", "on 8 Nov".
+pub fn ago_in_sentence(moment: Timestamp, now: SystemTime) -> String {
+    match past(moment, now) {
+        Past::Now => "just now".to_owned(),
+        Past::Ago(words) => words,
+        Past::Date(date) => format!("on {date}"),
+    }
+}
+
+/// How long ago a moment was, in words.
+#[derive(Debug, PartialEq, Eq)]
+enum Past {
+    /// Less than a minute ago, or a moment the clocks cannot place.
+    Now,
+    /// "5 min ago", "yesterday", "3 days ago".
+    Ago(String),
+    /// "8 Nov", a week ago or more.
+    Date(String),
+}
+
+fn past(moment: Timestamp, now: SystemTime) -> Past {
     let (Some(then), Some(elapsed)) = (
         local(moment),
         moment
             .to_system_time()
             .and_then(|time| now.duration_since(time).ok()),
     ) else {
-        return NOW.to_owned();
+        return Past::Now;
     };
-    ago_between(then, local_now(now), elapsed)
+    past_between(then, local_now(now), elapsed)
 }
 
-fn ago_between(then: NaiveDateTime, now: NaiveDateTime, elapsed: Duration) -> String {
+fn past_between(then: NaiveDateTime, now: NaiveDateTime, elapsed: Duration) -> Past {
     use chrono::Datelike;
 
     let minutes = elapsed.as_secs() / 60;
     let days = (now.date() - then.date()).num_days();
     match (minutes, days) {
-        (0, _) => NOW.to_owned(),
-        (1..=59, _) => format!("{minutes} min ago"),
-        (_, 0) => format!("{} h ago", minutes / 60),
-        (_, 1) => "yesterday".to_owned(),
-        (_, 2..=6) => format!("{days} days ago"),
-        _ => format!("{} {}", then.day(), then.format(SHORT_MONTH)),
+        (0, _) => Past::Now,
+        (1..=59, _) => Past::Ago(format!("{minutes} min ago")),
+        (_, 0) => Past::Ago(format!("{} h ago", minutes / 60)),
+        (_, 1) => Past::Ago("yesterday".to_owned()),
+        (_, 2..=6) => Past::Ago(format!("{days} days ago")),
+        _ => Past::Date(format!("{} {}", then.day(), then.format(SHORT_MONTH))),
     }
 }
 
@@ -725,14 +752,40 @@ mod tests {
         let now = at(5, 13, 0);
         let minutes = |count: u64| Duration::from_secs(count * 60);
 
-        assert_eq!(ago_between(at(5, 12, 55), now, minutes(5)), "5 min ago");
-        assert_eq!(ago_between(at(5, 10, 0), now, minutes(180)), "3 h ago");
-        assert_eq!(ago_between(at(4, 22, 0), now, minutes(900)), "yesterday");
-        assert_eq!(ago_between(at(1, 9, 0), now, minutes(6000)), "4 days ago");
+        let ago = |words: &str| Past::Ago(words.to_owned());
+
+        assert_eq!(past_between(at(5, 12, 59), now, minutes(0)), Past::Now);
         assert_eq!(
-            ago_between(at(1, 9, 0), at(20, 9, 0), minutes(27_360)),
-            "1 Nov"
+            past_between(at(5, 12, 55), now, minutes(5)),
+            ago("5 min ago")
         );
+        assert_eq!(
+            past_between(at(5, 10, 0), now, minutes(180)),
+            ago("3 h ago")
+        );
+        assert_eq!(
+            past_between(at(4, 22, 0), now, minutes(900)),
+            ago("yesterday")
+        );
+        assert_eq!(
+            past_between(at(1, 9, 0), now, minutes(6000)),
+            ago("4 days ago")
+        );
+        assert_eq!(
+            past_between(at(1, 9, 0), at(20, 9, 0), minutes(27_360)),
+            Past::Date("1 Nov".to_owned())
+        );
+    }
+
+    #[test]
+    fn ago_in_a_sentence_puts_on_before_a_date() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let before =
+            |seconds: u64| Timestamp::from_system_time(now - Duration::from_secs(seconds)).unwrap();
+
+        assert_eq!(ago_in_sentence(before(10), now), "just now");
+        assert_eq!(ago_in_sentence(before(300), now), "5 min ago");
+        assert!(ago_in_sentence(before(30 * 86_400), now).starts_with("on "));
     }
 
     #[test]

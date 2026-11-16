@@ -11,7 +11,7 @@ use dioxus::prelude::*;
 
 use crate::connection::Cockpit;
 use crate::render::{self, Block, FileRef, Inline, parse_markdown, parse_markdown_file};
-use crate::state::chat_images::{self, ImageKey};
+use crate::state::chat_images::{self, ImageKey, ImageSize};
 use crate::state::{Loadable, actions};
 use crate::ui::code::CodeBlock;
 use crate::ui::icons::{Icon, IconKind};
@@ -262,8 +262,8 @@ fn FileLink(agent: AgentId, file: FileRef) -> Element {
     }
 }
 
-/// An image file the message shows, at a fixed height so that the text below does not move when
-/// it arrives. A click opens it over the whole window, or in the file view until it is loaded.
+/// An image file the message shows, at its own size up to a height. A click opens it over the
+/// whole window, or in the file view until it is loaded.
 #[component]
 fn ChatImage(agent: AgentId, item: Option<ItemId>, path: String, alt: String) -> Element {
     let cockpit: Cockpit = use_context();
@@ -307,8 +307,12 @@ fn ChatImage(agent: AgentId, item: Option<ItemId>, path: String, alt: String) ->
         alt.clone()
     };
     let body = match shown() {
-        Some(Loadable::Loaded(image)) => rsx! {
-            img { src: bridge::image_url(&image), alt: "{label}" }
+        Some(Loadable::Loaded(loaded)) => rsx! {
+            img {
+                src: bridge::image_url(&loaded.image),
+                alt: "{label}",
+                style: image_style(loaded.size),
+            }
         },
         Some(Loadable::Failed(message)) => rsx! {
             span { class: "chat-image-error", "{label}: {message}" }
@@ -327,13 +331,44 @@ fn ChatImage(agent: AgentId, item: Option<ItemId>, path: String, alt: String) ->
                 // update holds.
                 let shown = shown();
                 cockpit.update(|state| match shown {
-                    Some(Loadable::Loaded(image)) => {
-                        chat_images::open_full_view(state, agent, path, image);
+                    Some(Loadable::Loaded(loaded)) => {
+                        chat_images::open_full_view(state, agent, path, loaded.image);
                     }
                     _ => actions::open_file(state, agent, path, None),
                 });
             },
             {body}
         }
+    }
+}
+
+/// The image's room before the web view decodes it: its own width, narrower when it is taller
+/// than the chat lets an image be, with its shape. The style sheet narrows it to the column.
+fn image_style(size: Option<ImageSize>) -> String {
+    size.map_or_else(String::new, |ImageSize { width, height }| {
+        let width_style =
+            format!("width: min({width}px, calc(var(--chat-image-height) * {width} / {height}));");
+        format!("{width_style} aspect-ratio: {width} / {height};")
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A wide, short picture keeps its own height: its width is its own, and its shape holds as
+    /// the column narrows it. An image without a known size takes the style sheet's limits alone.
+    #[test]
+    fn an_image_is_drawn_at_its_own_size_up_to_the_chat_height() {
+        let strip = ImageSize {
+            width: 900,
+            height: 60,
+        };
+
+        assert_eq!(
+            image_style(Some(strip)),
+            "width: min(900px, calc(var(--chat-image-height) * 900 / 60)); aspect-ratio: 900 / 60;"
+        );
+        assert_eq!(image_style(None), "");
     }
 }

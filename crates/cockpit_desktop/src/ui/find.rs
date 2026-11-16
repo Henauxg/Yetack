@@ -19,7 +19,7 @@ use crate::ui::file_view::{FILE_BODY_CLASS, FILE_LOADING_CLASS};
 use crate::ui::find_folds::CHIP_CLASS;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::last_instruction::MESSAGE_CLASS as LAST_INSTRUCTION_CLASS;
-use crate::ui::presence::use_presence;
+use crate::ui::presence::use_agent_presence;
 use crate::ui::splitter::FILE_VIEW_ID;
 use crate::ui::transcript::{IO_CLIP_CLASS, MESSAGE_CLIP_CLASS};
 
@@ -774,11 +774,10 @@ pub(super) fn ChatFindBar() -> Element {
         .and_then(|agent| state.agents.get(&agent))
         .map(|entry| entry.transcript.history().clone());
     drop(state);
-    let shown = use_presence(open);
-    let Some(shown) = shown.filter(|shown| !shown.leaving || Some(shown.value) == selected) else {
+    let Some(shown) = use_agent_presence(selected, open) else {
         return rsx! {};
     };
-    let agent = shown.value;
+    let agent = shown.agent;
     let found = cockpit
         .drafts
         .read()
@@ -789,7 +788,7 @@ pub(super) fn ChatFindBar() -> Element {
     rsx! {
         div {
             key: "{shown.opening}",
-            class: if shown.leaving { "find-strip leaving" } else { "find-strip" },
+            class: shown.class("find-strip"),
             inert: shown.leaving.then_some(true),
             role: "search",
             aria_label: "Find in the chat",
@@ -828,16 +827,15 @@ pub(super) fn ChatFindBar() -> Element {
 /// agent's at once, and only the agent that closes its find sees it leave.
 #[component]
 pub(super) fn FileFindBox(agent: AgentId, open: bool) -> Element {
-    let shown = use_presence(open.then_some(agent));
-    let Some(shown) = shown.filter(|shown| !shown.leaving || shown.value == agent) else {
+    let Some(shown) = use_agent_presence(Some(agent), open.then_some(agent)) else {
         return rsx! {};
     };
-    let agent = shown.value;
+    let agent = shown.agent;
     rsx! {
         div {
             key: "{shown.opening}",
             id: (!shown.leaving).then_some(FILE_BOX_ID),
-            class: if shown.leaving { "find-box leaving" } else { "find-box" },
+            class: shown.class("find-box"),
             inert: shown.leaving.then_some(true),
             role: "search",
             aria_label: "Find in the file",

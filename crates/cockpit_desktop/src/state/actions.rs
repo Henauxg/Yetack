@@ -1812,12 +1812,6 @@ pub fn set_mode(agent: AgentId, mode: PermissionMode) -> Vec<Outgoing> {
     }))]
 }
 
-pub fn resume_agent(agent: AgentId) -> Vec<Outgoing> {
-    vec![Outgoing::action(Request::AgentResume(AgentParams {
-        agent,
-    }))]
-}
-
 pub fn load_older(state: &mut AppState, agent: AgentId) -> Vec<Outgoing> {
     let Some(entry) = state.agents.get_mut(&agent) else {
         return Vec::new();
@@ -2516,8 +2510,15 @@ pub fn resume_session(
         project = form.project.clone();
     }
     vec![Outgoing {
-        request: Request::SessionsResume(SessionResumeParams { session, account }),
-        purpose: Purpose::Start { project },
+        request: Request::SessionsResume(SessionResumeParams {
+            session: session.clone(),
+            account,
+        }),
+        purpose: Purpose::ResumeSession {
+            project,
+            session,
+            account,
+        },
         to: machine,
     }]
 }
