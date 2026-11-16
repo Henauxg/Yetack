@@ -461,6 +461,20 @@ fn ReleasePageButton(page: String) -> Element {
     }
 }
 
+/// The line under the `dnf` command that installs an `.rpm`, for openSUSE, which has no `dnf`.
+#[component]
+pub fn ZypperNote() -> Element {
+    rsx! {
+        p {
+            "On openSUSE, run it with "
+            code { "zypper" }
+            " in place of "
+            code { "dnf" }
+            "."
+        }
+    }
+}
+
 /// The offer of a newer release, as this app's install takes it.
 #[component]
 fn OfferCard(release: Release, install: InstallKind) -> Element {
@@ -473,7 +487,10 @@ fn OfferCard(release: Release, install: InstallKind) -> Element {
         if install == InstallKind::Zip {
             VersionPair { release: release.clone() }
         }
-        if matches!(install, InstallKind::Zip | InstallKind::Deb) {
+        if matches!(
+            install,
+            InstallKind::Zip | InstallKind::Deb | InstallKind::Rpm | InstallKind::Tarball
+        ) {
             ReleaseNotes { release: release.clone() }
         }
         match install {
@@ -501,6 +518,25 @@ fn OfferCard(release: Release, install: InstallKind) -> Element {
                     CommandBox { command: app_update::apt_command(&version) }
                 }
             },
+            InstallKind::Rpm => rsx! {
+                div { class: "owner-steps",
+                    p {
+                        "dnf or zypper installed this app, so it does not replace itself. Download the {version} "
+                        code { ".rpm" }
+                        " from the release page, then run:"
+                    }
+                    CommandBox { command: app_update::dnf_command(&version) }
+                    ZypperNote {}
+                }
+            },
+            InstallKind::Tarball => rsx! {
+                div { class: "owner-steps",
+                    p {
+                        "Download the {version} tarball from the release page, then run in its folder:"
+                    }
+                    CommandBox { command: app_update::tarball_command(&version) }
+                }
+            },
             InstallKind::Nix => rsx! {
                 Callout {
                     text: format!(
@@ -522,7 +558,10 @@ fn OfferCard(release: Release, install: InstallKind) -> Element {
                     NotNowButton { class: "button" }
                     StartButton { label: "Update and restart" }
                 },
-                InstallKind::Zip | InstallKind::Deb => rsx! {
+                InstallKind::Zip
+                | InstallKind::Deb
+                | InstallKind::Rpm
+                | InstallKind::Tarball => rsx! {
                     NotNowButton { class: "button" }
                     ReleasePageButton { page }
                 },

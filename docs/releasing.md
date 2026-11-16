@@ -1,18 +1,22 @@
 # Releasing
 
 How to publish a release of Yetack, for example `0.1.0`.
-A release has up to six files:
+A release has up to eight files:
 
 | File | What it is |
 | --- | --- |
 | `yetack-0.1.0-x86_64-linux` | The daemon and command line for Linux x86_64, static: it runs on any distribution |
 | `yetack_0.1.0_amd64.deb` | The app for Ubuntu 22.04 and newer, and Debian 12, with the daemon beside it |
+| `yetack-0.1.0-1.x86_64.rpm` | The same files as the `.deb`, for Fedora and openSUSE |
+| `yetack-desktop-0.1.0-x86_64-linux.tar.gz` | The app for any other Linux x86_64 with glibc 2.35 or newer, with the daemon and an `install.sh` |
 | `yetack-desktop-0.1.0-windows-x64.zip` | The app for Windows, with the Linux daemon beside it, when a Windows machine is at hand |
 | `yetack-desktop-0.1.0-windows-x64.exe` | The app of the zip alone, which the Windows app's update downloads with the Linux daemon |
 | `yetack.service` | The systemd user service that runs the daemon on a server |
 | `SHA256SUMS` | The checksum of each file |
 
 The Windows zip and app are built on a Windows machine, the other files on a Linux machine with Docker. A release can go out without them: the README sends Windows users to [install-from-source.md](./install-from-source.md) until a release has one, and the Windows app's update says the release has no Windows app.
+
+The tarball's app has its own OpenSSL, built from source by the release (see [packaging.md](./packaging.md), 5.1), and the tarball and the `.rpm` carry their own libxdo. Their fixes reach users only with a Yetack release. So when OpenSSL publishes a security fix that concerns TLS clients, make a release soon after, even one with nothing else in it: `cargo update -p openssl-src` takes the fixed source.
 
 ## 1. Set the version
 
@@ -68,6 +72,7 @@ The app inside the `.deb` knows the commit it was built from. Its "Update" butto
 ## 4. Check the files
 
 1. Install the `.deb` on Ubuntu or Debian (`sudo apt install ./dist/yetack_0.1.0_amd64.deb`), start the app, and open Settings: the About section, at the end of the General tab, says "Version 0.1.0".
+   Then install the `.rpm` on Fedora (`sudo dnf install ./dist/yetack-0.1.0-1.x86_64.rpm`), and the tarball on another distribution such as Arch (`./install.sh` in its folder), and check the same.
 2. Copy `dist/yetack-0.1.0-x86_64-linux` to a server and run it with `--version`.
 3. If there is a Windows zip, unzip it on Windows and start the app.
 
@@ -81,5 +86,6 @@ zip="dist/yetack-desktop-$version-windows-x64.zip"
 exe="dist/yetack-desktop-$version-windows-x64.exe"
 gh release create "v$version" --title "Yetack $version" --notes-file <notes file> \
     "dist/yetack-$version-x86_64-linux" "dist/yetack_${version}_amd64.deb" \
+    "dist/yetack-$version-1.x86_64.rpm" "dist/yetack-desktop-$version-x86_64-linux.tar.gz" \
     dist/yetack.service dist/SHA256SUMS $(test -e "$zip" && echo "$zip") $(test -e "$exe" && echo "$exe")
 ```

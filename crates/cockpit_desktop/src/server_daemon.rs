@@ -47,9 +47,9 @@ fi
 echo "$file""#;
 
 /// Prints the server's system, then where the daemon `$1` names is, who owns it, and its version,
-/// as `key=value` lines that `ServerInstall` parses: `ProbeKey` names the keys, and `OwnerWord` and
-/// `PACKAGE_OWNER` the owners. A command run over SSH loads no shell profile, so the folders a
-/// user's own programs are in join the `PATH`.
+/// as `key=value` lines that `ServerInstall` parses: `ProbeKey` names the keys, and `OwnerWord`,
+/// `PACKAGE_OWNER` and `PackageFormat` the owners. A command run over SSH loads no shell profile,
+/// so the folders a user's own programs are in join the `PATH`.
 const PROBE_SCRIPT: &str = r#"PATH=$PATH:$HOME/.local/share/yetack/bin:$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin:/etc/profiles/per-user/$(id -un)/bin
 echo "system=$(uname -sm)"
 binary=$1
@@ -67,14 +67,20 @@ echo "path=$path"
 echo "command=$binary"
 folder=${path%/*}
 package=
+format=
 case $path in
     /nix/store/*) owner=nix ;;
     *)
         if command -v dpkg >/dev/null 2>&1; then
             package=$(dpkg -S "$path" 2>/dev/null | head -n 1 | cut -d : -f 1)
+            format=deb
+        fi
+        if [ -z "$package" ] && command -v rpm >/dev/null 2>&1; then
+            package=$(rpm -qf --queryformat %{NAME} "$path" 2>/dev/null) || package=
+            format=rpm
         fi
         if [ -n "$package" ]; then
-            owner="package $package"
+            owner="package $format $package"
         elif [ -w "$folder" ] && {
             [ "$folder" = "$(readlink -f "$HOME/.local/share/yetack/bin")" ] ||
                 [ "$folder" = "$(readlink -f "$HOME/.local/bin")" ]
@@ -308,7 +314,7 @@ mod tests {
 
     #[test]
     fn the_probe_prints_each_key_and_owner_that_server_install_reads() {
-        use crate::state::daemon_probe::{OwnerWord, PACKAGE_OWNER, ProbeKey};
+        use crate::state::daemon_probe::{OwnerWord, PACKAGE_OWNER, PackageFormat, ProbeKey};
         use strum::VariantArray;
 
         for &key in ProbeKey::VARIANTS {
@@ -319,7 +325,14 @@ mod tests {
             let owner: &str = owner.into();
             assert!(PROBE_SCRIPT.contains(&format!("owner={owner}")), "{owner}");
         }
-        assert!(PROBE_SCRIPT.contains(&format!("owner=\"{PACKAGE_OWNER}")));
+        assert!(PROBE_SCRIPT.contains(&format!("owner=\"{PACKAGE_OWNER}$format ")));
+        for &format in PackageFormat::VARIANTS {
+            let format: &str = format.into();
+            assert!(
+                PROBE_SCRIPT.contains(&format!("format={format}\n")),
+                "{format}"
+            );
+        }
     }
 
     #[test]

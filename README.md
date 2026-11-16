@@ -24,17 +24,36 @@ Download the files from the [releases page](https://github.com/Henauxg/yetack/re
 | Your computer | File | Command |
 | --- | --- | --- |
 | Ubuntu 22.04 or newer, Debian 12 | `yetack_<version>_amd64.deb` | `sudo apt install ./yetack_<version>_amd64.deb` |
+| Fedora, openSUSE | `yetack-<version>-1.x86_64.rpm` | `sudo dnf install ./yetack-<version>-1.x86_64.rpm`, or `sudo zypper install` on openSUSE |
+| Any other Linux x86_64: Gentoo, Arch... | `yetack-desktop-<version>-x86_64-linux.tar.gz` | See [Any other Linux](#any-other-linux) |
 | Windows 10 or 11 | `yetack-desktop-<version>-windows-x64.zip`, if the release has one | Unzip the file and run `yetack-desktop.exe` |
 | NixOS, or Linux with Nix | None | See [With Nix](#with-nix) |
-| Any other system | None | Build the app: [docs/install-from-source.md](docs/install-from-source.md) |
+| macOS, or Linux on ARM | None | Build the app: [docs/install-from-source.md](docs/install-from-source.md) |
 
-The `.deb` installs the app (`yetack-desktop`) and the daemon with its command line (`yetack`).
+The `.deb` and the `.rpm` install the app (`yetack-desktop`) and the daemon with its command line (`yetack`).
 
 The app tells you when a new release is out, at the foot of its sidebar. The Windows app updates itself. The other installs get the steps. Settings › General › About turns the daily check off.
 
 Nobody has run the app on macOS yet.
 
 Each machine that runs agents also needs Claude Code. Install [Claude Code](https://claude.com/claude-code), then run `claude` once and sign in.
+
+### Any other Linux
+
+The tarball holds the app and the daemon, built for any Linux x86_64 with glibc 2.35 or newer. The app draws with your system's WebKitGTK 4.1, so install it first with your packages. On Gentoo, for example:
+
+```sh
+sudo emerge --ask --noreplace net-libs/webkit-gtk:4.1
+```
+
+Then unpack the tarball and run its `install.sh`, which copies the app, the daemon and the menu entry to `~/.local`:
+
+```sh
+tar xzf yetack-desktop-<version>-x86_64-linux.tar.gz
+./yetack-desktop-<version>-x86_64-linux/install.sh
+```
+
+The script then checks that the app finds every library it needs. When one is missing, it names it, with the command that installs it on your distribution. `install.sh --prefix <folder>` installs elsewhere, and `install.sh --uninstall` removes the files. For a new release, do the same with the new tarball.
 
 ### With Nix
 

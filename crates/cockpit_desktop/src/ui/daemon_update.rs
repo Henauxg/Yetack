@@ -14,14 +14,17 @@ use dioxus::prelude::*;
 use crate::connection::Cockpit;
 use crate::daemon_label::DaemonPlace;
 use crate::machine::MachineId;
-use crate::state::daemon_probe::{APP_BIN_FOLDER, DaemonOwner, DaemonProbe, USER_BIN_FOLDER};
+use crate::state::daemon_probe::{
+    APP_BIN_FOLDER, DaemonOwner, DaemonProbe, PackageFormat, USER_BIN_FOLDER,
+};
 use crate::state::daemon_update::{self, Confirmation, DaemonUpdate, FailedUpdate, UpdateProgress};
 use crate::state::machines::MachineName;
 use crate::state::no_daemon::{self, DaemonChoice};
 use crate::state::update_offer::{self, GapKind, ProgramBuild, UpdateOffer};
 use crate::state::update_plan::{SendProgress, UpdatePlan, UpdateStep};
-use crate::state::{AppState, ConnectionState, accounts};
+use crate::state::{AppState, ConnectionState, accounts, app_update};
 use crate::ui::accounts::CommandBox;
+use crate::ui::app_update::ZypperNote;
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::machines::machine_icon;
 use crate::ui::no_daemon::{EveryTimeTick, IN_APP_DETAIL};
@@ -30,7 +33,7 @@ use crate::{browser, format};
 
 const TITLE_ID: &str = "no-daemon-title";
 
-/// The releases, where the `.deb` of each is.
+/// The releases, where the `.deb` and the `.rpm` of each are.
 const RELEASES_URL: &str = "https://github.com/Henauxg/yetack/releases";
 
 /// What happens to the agents on a restart, as the cards and the confirmation say it.
@@ -180,18 +183,30 @@ fn UpdateNote(machine: MachineId, name: String, plan: UpdatePlan, app: ProgramBu
                 ),
             }
         },
-        DaemonOwner::Package(package) => rsx! {
-            div { class: "owner-steps",
-                p {
-                    "{name}'s daemon comes from the "
-                    code { "{package}" }
-                    " package, so the app does not replace it. Download the {release} "
-                    code { ".deb" }
-                    " from the release page onto {name}, then run:"
+        DaemonOwner::Package {
+            name: package,
+            format,
+        } => {
+            let (file, command) = match format {
+                PackageFormat::Deb => (".deb", app_update::apt_command(&app.version)),
+                PackageFormat::Rpm => (".rpm", app_update::dnf_command(&app.version)),
+            };
+            rsx! {
+                div { class: "owner-steps",
+                    p {
+                        "{name}'s daemon comes from the "
+                        code { "{package}" }
+                        " package, so the app does not replace it. Download the {release} "
+                        code { "{file}" }
+                        " from the release page onto {name}, then run:"
+                    }
+                    CommandBox { command }
+                    if format == PackageFormat::Rpm {
+                        ZypperNote {}
+                    }
                 }
-                CommandBox { command: format!("sudo apt install ./yetack_{release}_amd64.deb") }
             }
-        },
+        }
         DaemonOwner::Other => rsx! {
             div { class: "update-callout",
                 span { class: "callout-icon", aria_hidden: true,

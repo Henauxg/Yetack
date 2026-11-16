@@ -55,6 +55,14 @@ webbrowser = "1.2.6"
 # The web view's settings, from the binding and the version wry brings.
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = "2.0.1"
+# Only for `static-openssl`: OpenSSL built from source and linked into the app.
+openssl-sys = { version = "0.9.118", optional = true, features = ["vendored"] }
+
+[features]
+# For the release's tarball, which runs on distros whose OpenSSL is not libssl.so.3 (Arch has
+# moved to OpenSSL 4). The app still links the system's OpenSSL in the .deb and the .rpm, whose
+# package managers check it.
+static-openssl = ["dep:openssl-sys"]
 
 # Waits for the app that started an updated one to end.
 [target.'cfg(windows)'.dependencies]
@@ -87,3 +95,53 @@ assets = [
     ["assets/yetack.svg", "usr/share/icons/hicolor/scalable/apps/yetack.svg", "644"],
     ["assets/yetack-256.png", "usr/share/icons/hicolor/256x256/apps/yetack.png", "644"],
 ]
+
+# The .deb's files with libxdo.so.3, for Fedora and openSUSE.
+[package.metadata.generate-rpm]
+name = "yetack"
+summary = "Watch and steer Claude Code agents"
+license = "MPL-2.0"
+release = "1"
+# The automatic requirements name every library the build machine loads under these, with
+# Ubuntu's version numbers (libicu*.so.70), which Fedora does not have.
+auto-req = "no"
+# contrib/release/build.sh puts the files of dist/ there first: the app with its RUNPATH set to
+# /usr/lib/yetack, Ubuntu 22.04's libxdo.so.3, and the static daemon.
+assets = [
+    { source = "../../dist/rpm/yetack-desktop", dest = "/usr/bin/yetack-desktop", mode = "755" },
+    { source = "../../dist/rpm/libxdo.so.3", dest = "/usr/lib/yetack/libxdo.so.3", mode = "644" },
+    { source = "../../dist/yetack", dest = "/usr/bin/yetack", mode = "755" },
+    { source = "../../contrib/yetack-desktop.desktop", dest = "/usr/share/applications/yetack-desktop.desktop", mode = "644" },
+    { source = "assets/yetack.svg", dest = "/usr/share/icons/hicolor/scalable/apps/yetack.svg", mode = "644" },
+    { source = "assets/yetack-256.png", dest = "/usr/share/icons/hicolor/256x256/apps/yetack.png", mode = "644" },
+]
+
+# The libraries the app and its libxdo link (readelf -d), which dnf and zypper resolve to the
+# distro's packages. The .rpm carries libxdo.so.3, because Fedora 45 and openSUSE Tumbleweed have
+# only libxdo.so.4. glibc must be at least Ubuntu 22.04's, which builds the app.
+[package.metadata.generate-rpm.requires]
+"libc.so.6(GLIBC_2.35)(64bit)" = "*"
+"libwebkit2gtk-4.1.so.0()(64bit)" = "*"
+"libjavascriptcoregtk-4.1.so.0()(64bit)" = "*"
+"libsoup-3.0.so.0()(64bit)" = "*"
+"libgtk-3.so.0()(64bit)" = "*"
+"libgdk-3.so.0()(64bit)" = "*"
+"libgdk_pixbuf-2.0.so.0()(64bit)" = "*"
+"libcairo.so.2()(64bit)" = "*"
+"libgio-2.0.so.0()(64bit)" = "*"
+"libgobject-2.0.so.0()(64bit)" = "*"
+"libglib-2.0.so.0()(64bit)" = "*"
+"libssl.so.3()(64bit)" = "*"
+"libcrypto.so.3()(64bit)" = "*"
+"libgcc_s.so.1()(64bit)" = "*"
+"libX11.so.6()(64bit)" = "*"
+"libXtst.so.6()(64bit)" = "*"
+"libXinerama.so.1()(64bit)" = "*"
+"libxkbcommon.so.0()(64bit)" = "*"
+
+# The app shows emoji in agent titles, which a system without an emoji font draws as boxes.
+# Fedora's package has the first name, openSUSE's the second. dnf and zypper skip a recommended
+# package they do not have.
+[package.metadata.generate-rpm.recommends]
+google-noto-color-emoji-fonts = "*"
+google-noto-coloremoji-fonts = "*"

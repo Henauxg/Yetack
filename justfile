@@ -49,7 +49,7 @@ clippy:
 # Checks the shell scripts in contrib/.
 [unix]
 shellcheck:
-    shellcheck -s sh contrib/update-daemon.sh contrib/install-daemon.sh contrib/start-daemon contrib/release/build.sh contrib/readme-screenshot.sh
+    shellcheck -s sh contrib/update-daemon.sh contrib/install-daemon.sh contrib/start-daemon contrib/release/build.sh contrib/release/install.sh contrib/readme-screenshot.sh
 
 # Checks the shell scripts, on Linux only.
 [windows]
@@ -124,7 +124,8 @@ release:
         [ -e "$file" ] || continue
         case "${file#dist/}" in
             "yetack-desktop-$version-windows-x64.zip" | "yetack-desktop-$version-windows-x64.exe") ;;
-            yetack-*-x86_64-linux | yetack_*_amd64.deb | yetack.service | SHA256SUMS)
+            yetack-*-x86_64-linux | yetack_*_amd64.deb | yetack-*.x86_64.rpm \
+                | yetack-desktop-*-x86_64-linux.tar.gz | yetack.service | SHA256SUMS)
                 rm -f "$file" ;;
             *)
                 echo "$file is not a file of release $version: move it out of dist/ first" >&2

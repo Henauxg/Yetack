@@ -1,6 +1,6 @@
 # Install from source
 
-Build Yetack yourself when no release file fits your computer: Windows while a release has no Windows zip, macOS, a Linux other than Ubuntu and Debian, or an ARM server.
+Build Yetack yourself when no release file fits your computer: Windows while a release has no Windows zip, macOS, a Linux on ARM, a Linux older than glibc 2.35, or an ARM server. Any other Linux x86_64 can take the release's tarball instead: see "Any other Linux" in [README.md](../README.md).
 
 You need a copy of the repository and Rust. Install Rust with [rustup](https://rustup.rs), then:
 

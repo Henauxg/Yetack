@@ -36,7 +36,7 @@ use crate::prefs::{CommentPlacement, GroupBy, ProjectRule};
 use crate::self_update::CheckFileError;
 use crate::state::app_update::{self, AppStep, InstallKind, Release, ReleaseAsset};
 use crate::state::daemon_probe::{
-    CARRIED_SYSTEM, DaemonOwner, DaemonProbe, InstalledDaemon, ServerInstall,
+    CARRIED_SYSTEM, DaemonOwner, DaemonProbe, InstalledDaemon, PackageFormat, ServerInstall,
 };
 use crate::state::daemon_update::{
     self, HandStop, OutputLine, OutputStream, RestartFailure, StopFailure, UpdateFailure,
@@ -749,6 +749,8 @@ pub enum UpdateScreen {
     Nix,
     /// A server whose daemon a `.deb` installed.
     Package,
+    /// A server whose daemon an `.rpm` installed.
+    RpmPackage,
     /// A server whose daemon is in a folder the app does not own.
     Elsewhere,
 }
@@ -830,7 +832,20 @@ pub fn show_update_screen(state: &mut AppState, screen: UpdateScreen) {
             server_owned_by(
                 state,
                 "/usr/bin/yetack",
-                DaemonOwner::Package("yetack".to_owned()),
+                DaemonOwner::Package {
+                    name: "yetack".to_owned(),
+                    format: PackageFormat::Deb,
+                },
+            );
+        }
+        UpdateScreen::RpmPackage => {
+            server_owned_by(
+                state,
+                "/usr/bin/yetack",
+                DaemonOwner::Package {
+                    name: "yetack".to_owned(),
+                    format: PackageFormat::Rpm,
+                },
             );
         }
         UpdateScreen::Elsewhere => {
@@ -1467,6 +1482,10 @@ pub enum AppUpdateScreen {
     Failed,
     /// The offer to an app that apt installed.
     Deb,
+    /// The offer to an app that dnf or zypper installed.
+    Rpm,
+    /// The offer to an app that the tarball's install.sh installed.
+    Tarball,
     Nix,
     /// The offer to a build from source.
     Source,
@@ -1519,6 +1538,8 @@ pub fn app_release() -> Release {
 pub fn show_app_update(state: &mut AppState, screen: AppUpdateScreen) {
     state.app_update.install = match screen {
         AppUpdateScreen::Deb => InstallKind::Deb,
+        AppUpdateScreen::Rpm => InstallKind::Rpm,
+        AppUpdateScreen::Tarball => InstallKind::Tarball,
         AppUpdateScreen::Nix => InstallKind::Nix,
         AppUpdateScreen::Source => InstallKind::Source,
         AppUpdateScreen::Offer
@@ -1531,6 +1552,8 @@ pub fn show_app_update(state: &mut AppState, screen: AppUpdateScreen) {
     let started = match screen {
         AppUpdateScreen::Offer
         | AppUpdateScreen::Deb
+        | AppUpdateScreen::Rpm
+        | AppUpdateScreen::Tarball
         | AppUpdateScreen::Nix
         | AppUpdateScreen::Source => return,
         AppUpdateScreen::Downloading | AppUpdateScreen::Ready | AppUpdateScreen::Failed => {
@@ -1559,6 +1582,8 @@ pub fn show_app_update(state: &mut AppState, screen: AppUpdateScreen) {
         }
         AppUpdateScreen::Offer
         | AppUpdateScreen::Deb
+        | AppUpdateScreen::Rpm
+        | AppUpdateScreen::Tarball
         | AppUpdateScreen::Nix
         | AppUpdateScreen::Source => {}
     }
@@ -4817,6 +4842,7 @@ mod tests {
                 "check-failed",
                 "nix",
                 "package",
+                "rpm-package",
                 "elsewhere",
             ]
         );
@@ -5457,6 +5483,8 @@ pub struct ParseError {
                 "ready",
                 "failed",
                 "deb",
+                "rpm",
+                "tarball",
                 "nix",
                 "source"
             ]

@@ -1222,7 +1222,13 @@ mod tests {
         fs::write(&files.app, "app").unwrap();
         fs::write(with_suffix(&files.app, OLD_SUFFIX), "old app").unwrap();
 
-        for install in [InstallKind::Deb, InstallKind::Nix, InstallKind::Source] {
+        for install in [
+            InstallKind::Deb,
+            InstallKind::Rpm,
+            InstallKind::Tarball,
+            InstallKind::Nix,
+            InstallKind::Source,
+        ] {
             remove_leftovers_of(install, || Ok(files.clone()));
             assert_eq!(
                 names(temp.path()),

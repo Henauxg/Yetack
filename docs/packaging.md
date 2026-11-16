@@ -111,7 +111,7 @@ The script exits with 0 when the daemon runs, 1 when it failed before anything c
 
 ### Updates
 
-1. Before the app offers "Update" for a server, it reads where the server's daemon is and who owns it (`server_daemon::probe`). The update card starts this check when it opens. The check resolves the configured path with `readlink -f`, or first finds the command on the `PATH`. It names the owner: `nix` for a path in `/nix/store`, `package <name>` when `dpkg -S` names a package, `app` for a binary in `~/.local/share/yetack/bin` or `~/.local/bin` whose folder the user can write, and `other` otherwise. It also reads `uname -sm` and the binary's `--version`.
+1. Before the app offers "Update" for a server, it reads where the server's daemon is and who owns it (`server_daemon::probe`). The update card starts this check when it opens. The check resolves the configured path with `readlink -f`, or first finds the command on the `PATH`. It names the owner: `nix` for a path in `/nix/store`, `package deb <name>` when `dpkg -S` names a package, `package rpm <name>` when `rpm -qf` does, `app` for a binary in `~/.local/share/yetack/bin` or `~/.local/bin` whose folder the user can write, and `other` otherwise. It also reads `uname -sm` and the binary's `--version`.
 2. The app replaces only an `app` daemon, at the path the check resolved. It sends its daemon only to a `Linux x86_64` server. A server of another system gets the build from its checkout, as before.
 3. The update sends the binary, then runs [contrib/update-daemon.sh](contrib/update-daemon.sh) with `--built <file> --sha256 <sum> --version <text>`. The script checks the file, then installs it in place of a build, restarts the daemon and rolls back as before. Its exit codes stay as they are.
 4. The card's steps are "Send <release> to <machine>", with the bytes sent, then "Check it on <machine>", "Restart the daemon" and "Reconnect". "Cancel the update" is not offered during the send.
@@ -155,19 +155,63 @@ Built on branch `feat/self-update`. [docs/architecture.md](architecture.md) desc
 - Once a day, the app asks GitHub's API for the repository's latest release. It saves when it last asked, so a restart does not ask again within the day. It waits at least ten seconds after it starts. The request names the app and its version (`User-Agent: yetack-desktop/<version>`) and nothing else. A failed check goes to the log, and the next one tries again.
 - A release newer than the app shows a note at the foot of the sidebar, "0.4.0 is out", and a row in Settings › General › About. The note's cross, or the card's "Skip this version", hides that release for good. A newer one shows again. "Not now" hides that release's note until the next start. A newer release found before then shows.
 - Settings › General › About has "Look for new releases", on by default. Turned off, the app asks GitHub nothing.
-- The build says how the app was installed, in `YETACK_PACKAGE`: `zip` for the Windows release ([releasing.md](releasing.md), step 2), `deb` for the `.deb` ([contrib/release/build.sh](../contrib/release/build.sh)), `nix` for the flake. Any other build is one from source.
+- The build says how the app was installed, in `YETACK_PACKAGE`: `zip` for the Windows release ([releasing.md](releasing.md), step 2), `deb`, `rpm` and `tarball` for the Linux release files ([contrib/release/build.sh](../contrib/release/build.sh)), `nix` for the flake. Any other build is one from source.
 - The Windows zip updates itself. It downloads the release's `yetack-desktop-<version>-windows-x64.exe`, `yetack-<version>-x86_64-linux` and `SHA256SUMS`, only from the repository's release downloads, and checks both files against the checksums before anything moves. It then puts them in place of its own program and of the Linux daemon beside it, and restarts when the user says so. A failure leaves the app as it was. If the files cannot all go back, the update deletes none of them and says where each one is.
-- The other installs get the steps: the `.deb`'s `apt` command, the Nix configuration to change, or the commands that build the release from a checkout.
+- The other installs get the steps: the `.deb`'s `apt` command, the `.rpm`'s `dnf` command, the tarball's `install.sh`, the Nix configuration to change, or the commands that build the release from a checkout.
+
+## Step 5: more Linux systems, ARM servers, servers without systemd
+
+Settled with the user on 2026-11-16, after a colleague asked how to install Yetack on Gentoo. The answer then needed a build from source, a daemon downloaded by hand, and tmux on a server without systemd. Each part below removes one of those.
+
+### 5.1 The app as a tarball, for any Linux
+
+The `.deb` serves Ubuntu and Debian alone. The release adds `yetack-desktop-<version>-x86_64-linux.tar.gz`: the `.deb`'s program, built again in the same container, with the static daemon, the desktop entry and the icons.
+
+- It links against the system's WebKitGTK 4.1, as the `.deb` does, so it runs on any distro with glibc 2.35 or newer that has WebKitGTK 4.1: Gentoo, Fedora, Arch, openSUSE.
+- Two libraries the `.deb` takes from the system changed their names on recent distros. Arch has `libssl.so.4` (OpenSSL 4). Arch, Fedora 45 and openSUSE Tumbleweed have `libxdo.so.4`. Ubuntu 22.04 builds against `.so.3` of both. The app cannot drop either: OpenSSL makes its HTTPS requests (the release check and the Windows update's downloads, through `ureq` and `native-tls`) and Dioxus's websocket, and Dioxus's menus need libxdo.
+- The tarball's app links OpenSSL in (the `static-openssl` feature builds it from source). It still reads the system's root certificates, which `native-tls` finds in the distro's usual places. The tarball carries Ubuntu's `libxdo.so.3`. The app finds it through its `RUNPATH`, `$ORIGIN/lib:$ORIGIN/../lib/yetack`: `lib/` beside it in the tarball, `lib/yetack/` once installed. The loader searches a `RUNPATH` before the system's folders, so the carried copy always wins over a system's own `libxdo.so.3`. That keeps the library the app was built against.
+- The cost: the distro's security updates no longer reach these two copies. An OpenSSL fix reaches the tarball only with the next Yetack release, so a release follows each OpenSSL security release that affects TLS clients. libxdo only sends input events to the local X server, and the app gives it no outside data, so its risk is small. The `.deb` and the `.rpm` link the system's OpenSSL.
+- Its `install.sh` copies the files to `~/.local` (or `--prefix`), writes the program's full path in the desktop entry, and checks with `ldd` that every library is there. For a missing one, it names the packages to install on the distro that `/etc/os-release` names. `install.sh --uninstall` removes the files.
+- The app built for it says `tarball` in `YETACK_PACKAGE`. Its update card gives the two commands that unpack the new tarball and run its `install.sh`.
+- The daemon beside the app (`yetack-x86_64-linux`) goes to the servers, as the Windows zip's does. `install.sh` also installs it as `yetack`, the program the background service and the command line run.
+
+Why it came only now: the first colleagues all ran Ubuntu or Debian, and a `.deb` brings its libraries through `apt`, where a tarball leaves them to the user.
+
+### 5.2 The app as an `.rpm`
+
+`yetack-<version>-1.x86_64.rpm`, built by `cargo generate-rpm` in the same container.
+
+- It holds the `.deb`'s files, and the tarball's `libxdo.so.3` in `/usr/lib/yetack`: Fedora 45 and openSUSE Tumbleweed have only `libxdo.so.4`. The app's `RUNPATH` is `$ORIGIN/../lib/yetack`.
+- It links the system's OpenSSL 3. Fedora 45 has it in `openssl3-libs`, beside OpenSSL 4.
+- Its requirements are the sonames of the libraries the app and libxdo link, and glibc 2.35. `dnf` and `zypper` resolve them to the distro's packages. The automatic requirements are off: they named Ubuntu's `libicu*.so.70`, which other distros do not have.
+- The app built for it says `rpm`. Its update card gives the `dnf` command, and says to use `zypper` on openSUSE. The daemon's probe asks `rpm -qf` too, so a server whose daemon the `.rpm` installed gets the same steps.
+
+### 5.3 A daemon for ARM servers
+
+The release adds `yetack-<version>-aarch64-linux`, the static daemon built for `aarch64-unknown-linux-musl`. The app carries it beside the x86_64 one, and a server whose `uname -m` says `aarch64` gets it. The `.deb`, the `.rpm`, the tarball and the Windows zip all carry both.
+
+### 5.4 The app downloads the daemon it does not carry
+
+An app built from source, or one without the daemon for a server's CPU, downloads the release's daemon for that CPU and the release's `SHA256SUMS` from the repository's release downloads, as the app's own update does. It checks the checksum, then sends the file as it sends a carried one, and the server's script checks its version. A build that is not a release (its version has no tag, or the release lacks the file) builds on the server, as today.
+
+This changes step 2's rule that the app never downloads a daemon. The app's own update already trusts the same release files, so the download adds no new party to trust.
+
+### 5.5 Servers without systemd
+
+The app never sets a start at boot up by itself. It proposes it, and it does it only once the user agrees.
+
+1. When `install-daemon.sh` finds no systemd user session, it still installs the binary, and starts the daemon detached from the SSH session (`setsid`). The agents then keep working while the app is closed, until the server restarts.
+2. The setup panel then proposes "Start the daemon when the server starts", which adds one `@reboot` line to the user's crontab. It shows that line, and adds it only on a click. A server without `crontab` gets the line to put in its own init system.
+3. As a last resort, when the app finds a server's daemon installed but not running, and no service starts it, the app offers to start it over SSH, detached. A systemd or crontab start stays the normal way: it keeps the agents working while the app is offline, through a restart of the server too.
 
 ## Later
 
-- An AppImage or an `.rpm`, when a colleague needs one.
+- An AppImage, if the tarball or the `.rpm` do not fit someone.
+- The tarball's install updating itself, as the Windows zip does.
 - Signing the Windows build, when there are Windows users besides the author.
 - macOS: a build in CI, the `.app` bundle, notarization.
 - A release built by CI on a tag, once the CI budget allows it.
 
-## Open questions
-
-1. Do any colleagues run servers on ARM (aarch64)?
+## The build's base system
 
 The colleagues' distros are recent, so the `.deb` builds in `ubuntu:22.04`. That covers Ubuntu 22.04 and newer, and Debian 12.

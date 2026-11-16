@@ -1,6 +1,7 @@
 //! Where a server's daemon is installed, and who owns it, as the app reads it over SSH before it
 //! offers to update it. The app replaces only a daemon it owns: one in a folder of the user's that
-//! it installs to. Nix and `apt` own theirs, and the user updates those, as anything else, by hand.
+//! it installs to. Nix, `apt` and `dnf` own theirs, and the user updates those, as anything else,
+//! by hand.
 
 use std::str::FromStr;
 
@@ -42,8 +43,18 @@ pub enum OwnerWord {
     Other,
 }
 
-/// What the probe's `owner` starts with before the name of a package.
+/// What the probe's `owner` starts with before a package's format and name: "package deb yetack".
 pub const PACKAGE_OWNER: &str = "package ";
+
+/// The kind of package that holds a daemon, as the probe names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr, VariantArray)]
+#[strum(serialize_all = "snake_case")]
+pub enum PackageFormat {
+    /// `dpkg` names its package: the release's `.deb`.
+    Deb,
+    /// `rpm` names its package: the release's `.rpm`.
+    Rpm,
+}
 
 /// What the app knows of a server's install.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -95,8 +106,8 @@ pub enum DaemonOwner {
     App,
     /// It is in `/nix/store`: the system's configuration decides its version.
     Nix,
-    /// `dpkg` names the package it comes from.
-    Package(String),
+    /// A package of the system holds it.
+    Package { name: String, format: PackageFormat },
     /// Anywhere else: the user updates it by hand.
     Other,
 }
@@ -144,10 +155,20 @@ impl FromStr for ServerInstall {
             Ok(OwnerWord::App) => DaemonOwner::App,
             Ok(OwnerWord::Nix) => DaemonOwner::Nix,
             Ok(OwnerWord::Other) => DaemonOwner::Other,
-            Err(_) => match owner.strip_prefix(PACKAGE_OWNER) {
-                Some(package) => DaemonOwner::Package(package.to_owned()),
-                None => return Err(format!("The server named an unknown owner: {owner}")),
-            },
+            Err(_) => {
+                let unknown = || format!("The server named an unknown owner: {owner}");
+                let package = owner
+                    .strip_prefix(PACKAGE_OWNER)
+                    .and_then(|package| package.split_once(' '));
+                let Some((format, name)) = package else {
+                    return Err(unknown());
+                };
+                let format: PackageFormat = format.parse().map_err(|_| unknown())?;
+                DaemonOwner::Package {
+                    name: name.to_owned(),
+                    format,
+                }
+            }
         };
         let path = value(ProbeKey::Path).ok_or("The server did not say where its daemon is")?;
         let command = value(ProbeKey::Command)
@@ -178,10 +199,10 @@ impl ServerInstall {
             .filter(|daemon| daemon.owner == DaemonOwner::App)
     }
 
-    /// The package that owns the daemon, when one does.
+    /// The name of the package that owns the daemon, when one does.
     pub fn package(&self) -> Option<&str> {
         match &self.daemon.as_ref()?.owner {
-            DaemonOwner::Package(package) => Some(package),
+            DaemonOwner::Package { name, .. } => Some(name),
             DaemonOwner::App | DaemonOwner::Nix | DaemonOwner::Other => None,
         }
     }
@@ -225,16 +246,30 @@ mod tests {
 
     #[test]
     fn a_daemon_a_package_owns_names_the_package_and_is_not_replaceable() {
-        let output = "system=Linux x86_64\npath=/usr/bin/yetack\nowner=package yetack\nversion=yetack 0.1.0\n";
+        for (word, format) in [("deb", PackageFormat::Deb), ("rpm", PackageFormat::Rpm)] {
+            let output = format!(
+                "system=Linux x86_64\npath=/usr/bin/yetack\nowner=package {word} yetack\nversion=yetack 0.1.0\n"
+            );
 
-        let install: ServerInstall = output.parse().unwrap();
+            let install: ServerInstall = output.parse().unwrap();
 
-        assert_eq!(
-            install.daemon.as_ref().map(|daemon| &daemon.owner),
-            Some(&DaemonOwner::Package("yetack".to_owned()))
-        );
-        assert_eq!(install.package(), Some("yetack"));
-        assert_eq!(install.replaceable(), None);
+            assert_eq!(
+                install.daemon.as_ref().map(|daemon| &daemon.owner),
+                Some(&DaemonOwner::Package {
+                    name: "yetack".to_owned(),
+                    format,
+                })
+            );
+            assert_eq!(install.package(), Some("yetack"));
+            assert_eq!(install.replaceable(), None);
+        }
+    }
+
+    #[test]
+    fn a_package_of_an_unknown_format_is_an_error() {
+        let output = "system=Linux x86_64\npath=/usr/bin/yetack\nowner=package snap yetack\n";
+
+        assert!(output.parse::<ServerInstall>().is_err());
     }
 
     #[test]
@@ -273,9 +308,14 @@ mod tests {
             .iter()
             .map(|&owner| owner.into())
             .collect();
+        let formats: Vec<&str> = PackageFormat::VARIANTS
+            .iter()
+            .map(|&format| format.into())
+            .collect();
 
         assert_eq!(keys, ["system", "path", "command", "owner", "version"]);
         assert_eq!(owners, ["missing", "app", "nix", "other"]);
+        assert_eq!(formats, ["deb", "rpm"]);
     }
 
     #[test]

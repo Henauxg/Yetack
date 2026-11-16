@@ -50,13 +50,15 @@ pub const DAY: Duration = Duration::from_secs(24 * 60 * 60);
 const FIRST_CHECK: Duration = Duration::from_secs(10);
 
 /// How this app was installed, which decides how it updates. The build names it in
-/// `YETACK_PACKAGE`: the release's Windows zip, its `.deb`, or the flake. Any other build is one
-/// from source.
+/// `YETACK_PACKAGE`: the release's Windows zip, its `.deb`, its `.rpm`, its tarball, or the flake.
+/// Any other build is one from source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString, IntoStaticStr, VariantArray)]
 #[strum(serialize_all = "snake_case")]
 pub enum InstallKind {
     Zip,
     Deb,
+    Rpm,
+    Tarball,
     Nix,
     Source,
 }
@@ -72,8 +74,8 @@ impl InstallKind {
             .unwrap_or(Self::Source)
     }
 
-    /// Only the zip replaces itself: apt or Nix own the other installs' files, and a build from
-    /// source is the user's own.
+    /// Only the zip replaces itself: apt, dnf or Nix own the packages' files, the tarball's
+    /// `install.sh` puts its own in place, and a build from source is the user's own.
     pub fn updates_itself(self) -> bool {
         self == Self::Zip
     }
@@ -83,6 +85,8 @@ impl InstallKind {
         match self {
             Self::Zip => format!("You run {app_version}."),
             Self::Deb => format!("You run {app_version}, from the .deb."),
+            Self::Rpm => format!("You run {app_version}, from the .rpm."),
+            Self::Tarball => format!("You run {app_version}, from the tarball."),
             Self::Nix => format!("You run {app_version}, from Nix."),
             Self::Source => format!("You run {app_version}, built from source."),
         }
@@ -93,6 +97,8 @@ impl InstallKind {
         match self {
             Self::Zip => "The update downloads it, checks it, and restarts the app.",
             Self::Deb => "Install its .deb to update.",
+            Self::Rpm => "Install its .rpm to update.",
+            Self::Tarball => "Run its tarball's install.sh to update.",
             Self::Nix => "Move to it in your Nix configuration to update.",
             Self::Source => "Build it from your checkout to update.",
         }
@@ -102,6 +108,18 @@ impl InstallKind {
 /// The command that installs a release's `.deb`, from the folder it was downloaded to.
 pub fn apt_command(version: &ReleaseVersion) -> String {
     format!("sudo apt install ./yetack_{version}_amd64.deb")
+}
+
+/// The command that installs a release's `.rpm`, from the folder it was downloaded to.
+pub fn dnf_command(version: &ReleaseVersion) -> String {
+    format!("sudo dnf install ./yetack-{version}-1.x86_64.rpm")
+}
+
+/// The commands that unpack a release's tarball and install it, from the folder it was
+/// downloaded to.
+pub fn tarball_command(version: &ReleaseVersion) -> String {
+    let folder = format!("yetack-desktop-{version}-x86_64-linux");
+    format!("tar xzf {folder}.tar.gz && ./{folder}/install.sh")
 }
 
 /// The commands that build a release in a checkout of the repository.
@@ -858,11 +876,16 @@ mod tests {
             .map(|&kind| kind.into())
             .collect();
 
-        assert_eq!(words, ["zip", "deb", "nix", "source"]);
+        assert_eq!(words, ["zip", "deb", "rpm", "tarball", "nix", "source"]);
         assert_eq!(InstallKind::from_package(Some("zip")), InstallKind::Zip);
         assert_eq!(InstallKind::from_package(Some("deb")), InstallKind::Deb);
         assert_eq!(InstallKind::from_package(Some("nix")), InstallKind::Nix);
-        assert_eq!(InstallKind::from_package(Some("rpm")), InstallKind::Source);
+        assert_eq!(InstallKind::from_package(Some("rpm")), InstallKind::Rpm);
+        assert_eq!(
+            InstallKind::from_package(Some("tarball")),
+            InstallKind::Tarball
+        );
+        assert_eq!(InstallKind::from_package(Some("snap")), InstallKind::Source);
         assert_eq!(InstallKind::from_package(None), InstallKind::Source);
     }
 
@@ -882,6 +905,8 @@ mod tests {
             [
                 "You run 0.3.0.",
                 "You run 0.3.0, from the .deb.",
+                "You run 0.3.0, from the .rpm.",
+                "You run 0.3.0, from the tarball.",
                 "You run 0.3.0, from Nix.",
                 "You run 0.3.0, built from source.",
             ]
@@ -891,13 +916,24 @@ mod tests {
             [
                 "The update downloads it, checks it, and restarts the app.",
                 "Install its .deb to update.",
+                "Install its .rpm to update.",
+                "Run its tarball's install.sh to update.",
                 "Move to it in your Nix configuration to update.",
                 "Build it from your checkout to update.",
             ]
         );
         assert!(InstallKind::Zip.updates_itself());
         assert!(!InstallKind::Deb.updates_itself());
+        assert!(!InstallKind::Tarball.updates_itself());
         let version = ReleaseVersion::new("0.4.0".to_owned());
+        assert_eq!(
+            dnf_command(&version),
+            "sudo dnf install ./yetack-0.4.0-1.x86_64.rpm"
+        );
+        assert_eq!(
+            tarball_command(&version),
+            "tar xzf yetack-desktop-0.4.0-x86_64-linux.tar.gz && ./yetack-desktop-0.4.0-x86_64-linux/install.sh"
+        );
         assert_eq!(
             apt_command(&version),
             "sudo apt install ./yetack_0.4.0_amd64.deb"
