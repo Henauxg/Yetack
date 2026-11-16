@@ -389,8 +389,11 @@ pub struct NewAgentForm {
     pub model: Option<String>,
     pub effort: Option<Effort>,
     pub mode: Option<PermissionMode>,
-    /// The account picked in the menu. `None` follows the folder: the account of the last agent
-    /// there, else the default one.
+    /// The agent selected when the dialog opened. On its machine, the dialog shows its folder and
+    /// its account until you change them, even after another agent is selected.
+    pub selected: Option<AgentId>,
+    /// The account picked in the menu. `None` takes the `selected` agent's account when it runs
+    /// on `machine`, else the account of the last agent started there, else the default one.
     pub account: Option<AccountId>,
     /// The project picked in the menu. `None` lets the folder's rules and repository choose.
     pub project: Option<ProjectKey>,

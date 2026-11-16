@@ -243,7 +243,7 @@ The Python SDK also reads a `system/session_state_changed` event, which may give
   - Once sent, a quoted passage keeps a faint underline: hovering it shows "You replied" with a link to the message, and a quote in the message leads back to its passage.
 - Decided with the accounts mockup, and built: several Claude accounts in the app.
   - From two accounts, every agent shows its account in the account's color, the default account's too: its first letter on its sidebar row, and a tag with its name after its status in the header.
-  - The new agent dialog picks the machine, then the account, at its top, above its two tabs; the machine and the account are the last started agent's by default, and the folder never changes the account. Recent folders show their account, and the resume list shows the chosen account's sessions.
+  - The new agent dialog picks the machine, then the account, at its top, above its two tabs; the machine, the folder, the project, the account, the model and the mode are the selected agent's by default, and the folder never changes the account. Recent folders show their account, and the resume list shows the chosen account's sessions.
   - "Accounts" in the sidebar's foot lists the accounts, adds one in two steps (its name, color, folder and whether it uses the API key or token from the environment, then its sign-in command), renames, recolors and removes them.
   - The Plan chip and card show the selected agent's account and every account's plan.
   - An agent whose account is not signed in needs you, with a card in the chat that says how to sign in.

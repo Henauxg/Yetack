@@ -19,7 +19,7 @@ use crate::state::accounts::{
     self, AccountChoice, AccountLabel, AccountsView, AddAccountForm, Billing, ChoiceDetail,
     RemoveBlock,
 };
-use crate::state::{AppState, Dialog, FormMenu, actions};
+use crate::state::{AppState, Dialog, FormMenu, NewAgentForm, actions};
 use crate::ui::code::{CopyButton, CopyLook};
 use crate::ui::icons::{Icon, IconKind};
 use crate::ui::machines::machine_choices;
@@ -248,10 +248,14 @@ fn AccountMenu(account: AccountId) -> Element {
     let cockpit: Cockpit = use_context();
     let (title, choices) = {
         let state = cockpit.state.read();
-        let machine = new_agent_machine(&state);
+        let closed = NewAgentForm::default();
+        let form = match &state.ui.dialog {
+            Some(Dialog::NewAgent(form)) => form,
+            _ => &closed,
+        };
         (
-            accounts::picker_title(&state, machine),
-            accounts::choices(&state, machine),
+            accounts::picker_title(&state, form),
+            accounts::choices(&state, form.machine),
         )
     };
     rsx! {

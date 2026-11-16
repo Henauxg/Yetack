@@ -872,6 +872,25 @@ mod tests {
         assert_eq!(after, Some(ProjectKey::Kept(work)));
     }
 
+    /// Agent 4 started last, and each agent was moved by hand to a project its folder would not
+    /// give.
+    #[test]
+    fn the_new_agent_dialog_opens_on_the_selected_agent_s_project_picked_by_hand() {
+        let mut state = agents();
+        let work = create(&mut state, "Work");
+        let home = create(&mut state, "Home");
+        move_agent(&mut state, AgentId::new(4), &ProjectKey::Kept(home));
+        move_agent(&mut state, AgentId::new(2), &ProjectKey::Kept(work));
+        state.ui.selected = Some(AgentId::new(2));
+
+        actions::open_new_agent(&mut state, &mut Drafts::default());
+
+        assert!(matches!(
+            &state.ui.dialog,
+            Some(Dialog::NewAgent(form)) if form.project == Some(ProjectKey::Kept(work))
+        ));
+    }
+
     /// "Work" has no rule: agent 4 is in it because it was moved there by hand.
     #[test]
     fn a_project_picked_lists_the_folders_of_its_agents_moved_by_hand() {

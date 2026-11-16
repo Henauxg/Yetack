@@ -2180,21 +2180,23 @@ pub fn switcher_pick(state: &mut AppState, drafts: &Drafts, index: Option<usize>
     select_agent(state, agent);
 }
 
-/// The model a new agent starts with when no agent was started or the last one started has no
-/// model the menu offers.
+/// The model a new agent starts with when there is no agent to copy or its model is not one the
+/// menu offers.
 const NEW_AGENT_MODEL: &str = format::OPUS.alias;
 
-/// The permission mode a new agent starts with when no agent was started or the last one started
-/// has no mode the dialog carries over.
+/// The permission mode a new agent starts with when there is no agent to copy or its mode is not
+/// one the dialog carries over.
 const NEW_AGENT_MODE: PermissionMode = PermissionMode::Auto;
 
-/// Opens the new agent dialog on the machine of the last agent started, else this computer, and
-/// on that machine's last used folder. A machine that does not answer gives way to this computer.
-/// The model, effort and permission mode are the last agent's too, else Opus and Auto. A mode
-/// the mode menu does not offer, or Plan, which is usually for a while, is not carried over. The
-/// past sessions are listed again, since sessions end and start while the app runs. An open
-/// dialog stays as it is, with what its fields hold, and an "Accounts" dialog that goes back to
-/// it does so.
+/// Opens the new agent dialog as a copy of the selected agent, else of the last agent started
+/// (`AppState::copied_agent`): on its machine, its project when it was picked by hand, its
+/// model, effort and permission mode. The selected agent's folder and account follow too
+/// (`opening_folder`, `accounts::new_agent_account`). A machine that does not answer gives way
+/// to this computer and its last used folder. Without an agent, the model and mode are Opus and
+/// Auto. A mode the mode menu does not offer, or Plan, which is usually for a while, is not
+/// carried over. The past sessions are listed again, since sessions end and start while the app
+/// runs. An open dialog stays as it is, with what its fields hold, and an "Accounts" dialog that
+/// goes back to it does so.
 pub fn open_new_agent(state: &mut AppState, drafts: &mut Drafts) {
     if matches!(state.ui.dialog, Some(Dialog::NewAgent(_))) {
         return;
@@ -2203,12 +2205,9 @@ pub fn open_new_agent(state: &mut AppState, drafts: &mut Drafts) {
         state.ui.close_dialog();
         return;
     }
-    let last = state
-        .agents
-        .values()
-        .map(|entry| &entry.summary)
-        .max_by_key(|summary| summary.started_at);
-    let machine = last
+    let selected = state.selected().map(AgentEntry::id);
+    let copied = state.copied_agent();
+    let machine = copied
         .map(|summary| MachineId::of(summary.id))
         .filter(|machine| {
             state
@@ -2217,20 +2216,20 @@ pub fn open_new_agent(state: &mut AppState, drafts: &mut Drafts) {
                 .is_some_and(MachineState::is_connected)
         })
         .unwrap_or(MachineId::THIS);
-    let folder = last_folder(state, machine);
+    let folder = opening_folder(state, selected, machine);
     // A project picked by hand, which the folder alone would not give again.
-    let project = last
+    let project = copied
         .filter(|summary| MachineId::of(summary.id) == machine)
         .and_then(|summary| projects::moved_to(state, summary.id));
-    let model = last
+    let model = copied
         .and_then(|summary| summary.model.as_deref())
         .and_then(format::model_alias)
         .unwrap_or(NEW_AGENT_MODEL)
         .to_owned();
-    let effort = last
+    let effort = copied
         .filter(|summary| summary.effort_source == EffortSource::Chosen)
         .and_then(|summary| summary.effort);
-    let mode = last
+    let mode = copied
         .map(|summary| summary.mode)
         .filter(|mode| MODE_CHOICES.contains(mode) && *mode != PermissionMode::Plan)
         .unwrap_or(NEW_AGENT_MODE);
@@ -2246,6 +2245,7 @@ pub fn open_new_agent(state: &mut AppState, drafts: &mut Drafts) {
         model: Some(model),
         effort,
         mode: Some(mode),
+        selected,
         project,
         ..NewAgentForm::default()
     }));
@@ -2319,10 +2319,22 @@ fn last_folder(state: &AppState, machine: MachineId) -> String {
         .unwrap_or_default()
 }
 
+/// The folder the new agent dialog shows on `machine` until you type: the folder of the agent
+/// `selected` when the dialog opened, when it runs there, else the machine's last used folder.
+fn opening_folder(state: &AppState, selected: Option<AgentId>, machine: MachineId) -> String {
+    selected
+        .filter(|agent| MachineId::of(*agent) == machine)
+        .and_then(|agent| state.agents.get(&agent))
+        .map_or_else(
+            || last_folder(state, machine),
+            |entry| path_style::shown(&entry.summary.folder),
+        )
+}
+
 /// Starts the new agent on `machine`, whose folders and sessions the dialog then lists. A
 /// machine that does not answer cannot be picked.
 ///
-/// The folder field takes `machine`'s last folder while it holds the previous machine's, or
+/// The folder field takes `machine`'s opening folder while it holds the previous machine's, or
 /// nothing: a folder you typed stays. Returns the field's new text.
 pub fn pick_new_agent_machine(
     state: &mut AppState,
@@ -2343,6 +2355,7 @@ pub fn pick_new_agent_machine(
     if previous == machine {
         return None;
     }
+    let selected = form.selected;
     // A picked project puts its latest folder on each machine, as its pick did.
     let project = form.project.clone();
     let project_folder = |state: &AppState, machine: MachineId| {
@@ -2352,10 +2365,11 @@ pub fn pick_new_agent_machine(
     };
     let folder = &drafts.new_agent.folder;
     let follows = folder.trim().is_empty()
-        || *folder == last_folder(state, previous)
+        || *folder == opening_folder(state, selected, previous)
         || project_folder(state, previous).is_some_and(|picked| picked == *folder);
-    let new_folder = follows
-        .then(|| project_folder(state, machine).unwrap_or_else(|| last_folder(state, machine)));
+    let new_folder = follows.then(|| {
+        project_folder(state, machine).unwrap_or_else(|| opening_folder(state, selected, machine))
+    });
     if let Some(text) = &new_folder {
         drafts.new_agent.folder.clone_from(text);
         drafts.new_agent.folder_highlighted = None;
@@ -5048,18 +5062,23 @@ mod tests {
         assert_eq!(shown_ids(&state), [a2, a3, a1, d1, d2]);
     }
 
-    /// Makes devbox's agent 2 the last agent started, in `/srv/shop`.
-    fn devbox_started_last(state: &mut AppState, devbox: MachineId) {
-        if let Some(entry) = state.agents.get_mut(&devbox.app_agent(AgentId::new(2))) {
-            entry.summary.started_at = Timestamp::from_unix_millis(90_000);
+    /// Selects devbox's agent 2, in `/srv/shop`.
+    fn devbox_selected(state: &mut AppState, devbox: MachineId) {
+        let shop = devbox.app_agent(AgentId::new(2));
+        if let Some(entry) = state.agents.get_mut(&shop) {
             entry.summary.folder = PathBuf::from("/srv/shop");
         }
+        state.ui.selected = Some(shop);
     }
 
+    /// This computer's agent 3 started last.
     #[test]
-    fn the_new_agent_dialog_opens_where_the_last_agent_started() {
+    fn the_new_agent_dialog_opens_where_the_selected_agent_runs() {
         let (mut state, devbox) = two_machines();
-        devbox_started_last(&mut state, devbox);
+        devbox_selected(&mut state, devbox);
+        if let Some(entry) = state.agents.get_mut(&AgentId::new(3)) {
+            entry.summary.started_at = Timestamp::from_unix_millis(90_000);
+        }
         let mut drafts = Drafts::default();
 
         open_new_agent(&mut state, &mut drafts);
@@ -5079,9 +5098,32 @@ mod tests {
     }
 
     #[test]
+    fn without_a_selection_the_new_agent_dialog_opens_where_the_last_agent_started() {
+        let (mut state, devbox) = two_machines();
+        if let Some(entry) = state.agents.get_mut(&devbox.app_agent(AgentId::new(2))) {
+            entry.summary.started_at = Timestamp::from_unix_millis(90_000);
+            entry.summary.folder = PathBuf::from("/srv/shop");
+        }
+        state.ui.selected = None;
+        let mut drafts = Drafts::default();
+
+        open_new_agent(&mut state, &mut drafts);
+
+        assert!(matches!(
+            &state.ui.dialog,
+            Some(Dialog::NewAgent(form)) if form.machine == devbox
+        ));
+        assert_eq!(drafts.new_agent.folder, "/srv/shop");
+    }
+
+    /// Devbox's agent 1 started after the selected agent 2, so devbox last used its folder.
+    #[test]
     fn the_folder_follows_the_machine_picked_unless_it_was_typed() {
         let (mut state, devbox) = two_machines();
-        devbox_started_last(&mut state, devbox);
+        devbox_selected(&mut state, devbox);
+        if let Some(entry) = state.agents.get_mut(&devbox.app_agent(AgentId::new(1))) {
+            entry.summary.started_at = Timestamp::from_unix_millis(90_000);
+        }
         let mut drafts = Drafts::default();
         open_new_agent(&mut state, &mut drafts);
 
@@ -5098,11 +5140,31 @@ mod tests {
         assert_eq!(drafts.new_agent.folder, "/srv/typed");
     }
 
+    /// A click on a notification selects another agent and leaves the dialog open. Devbox's
+    /// agent 1 started after the agent selected at opening, so devbox last used its folder.
+    #[test]
+    fn the_folder_still_follows_the_machine_after_another_agent_is_selected() {
+        let (mut state, devbox) = two_machines();
+        devbox_selected(&mut state, devbox);
+        if let Some(entry) = state.agents.get_mut(&devbox.app_agent(AgentId::new(1))) {
+            entry.summary.started_at = Timestamp::from_unix_millis(90_000);
+        }
+        let mut drafts = Drafts::default();
+        open_new_agent(&mut state, &mut drafts);
+        select_agent(&mut state, AgentId::new(1));
+
+        let to_this = pick_new_agent_machine(&mut state, &mut drafts, MachineId::THIS);
+        let back = pick_new_agent_machine(&mut state, &mut drafts, devbox);
+
+        assert!(to_this.is_some_and(|folder| folder.starts_with("/work/project-")));
+        assert_eq!(back.as_deref(), Some("/srv/shop"));
+    }
+
     /// This computer's agent 1 runs in billing's `/work/project-1`, devbox's in `/srv/billing`.
     #[test]
     fn a_machine_switch_puts_the_picked_project_s_folder_on_the_new_machine() {
         let (mut state, devbox) = two_machines();
-        devbox_started_last(&mut state, devbox);
+        devbox_selected(&mut state, devbox);
         let billing = Repository::from_remote("github.com/acme/billing");
         for agent in [AgentId::new(1), devbox.app_agent(AgentId::new(1))] {
             if let Some(entry) = state.agents.get_mut(&agent) {
@@ -5128,7 +5190,7 @@ mod tests {
     #[test]
     fn picking_no_project_leaves_the_folder_and_the_list() {
         let (mut state, devbox) = two_machines();
-        devbox_started_last(&mut state, devbox);
+        devbox_selected(&mut state, devbox);
         if let Some(entry) = state.agents.get_mut(&devbox.app_agent(AgentId::new(2))) {
             entry.summary.repository = Some(Repository::from_remote("github.com/acme/billing"));
         }
@@ -5147,9 +5209,9 @@ mod tests {
     }
 
     #[test]
-    fn the_new_agent_dialog_opens_on_this_computer_when_the_last_machine_does_not_answer() {
+    fn the_new_agent_dialog_opens_on_this_computer_when_the_agent_s_machine_does_not_answer() {
         let (mut state, devbox) = two_machines();
-        devbox_started_last(&mut state, devbox);
+        devbox_selected(&mut state, devbox);
         if let Some(known) = state.machines.others.get_mut(&devbox) {
             known.connection = ConnectionState::Connecting { attempt: 2 };
         }
@@ -5487,31 +5549,47 @@ mod tests {
     }
 
     #[test]
-    fn the_new_agent_form_starts_from_the_last_agent_started() {
+    fn the_new_agent_form_copies_the_selected_agent_else_the_last_one_started() {
         // The last agent started has the lower id, so that the order of the ids cannot pass for
         // the order of the starts.
         let mut older = summary(2, AgentStatus::Idle);
         older.model = Some("claude-haiku-4-5".to_owned());
         older.effort = Some(Effort::Low);
-        older.mode = PermissionMode::Plan;
+        older.mode = PermissionMode::Default;
         let mut last = summary(1, AgentStatus::Exited);
         last.model = Some("claude-opus-5-5[1m]".to_owned());
         last.effort = Some(Effort::Xhigh);
         last.mode = PermissionMode::AcceptEdits;
         last.started_at = Timestamp::from_unix_millis(90_000);
         let mut state = state_with(vec![last, older]);
-
-        open_new_agent(&mut state, &mut Drafts::default());
-
-        let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
-            panic!("expected the new agent dialog, got {:?}", state.ui.dialog);
+        let opened = |state: &mut AppState| {
+            open_new_agent(state, &mut Drafts::default());
+            let opened = match &state.ui.dialog {
+                Some(Dialog::NewAgent(form)) => (form.model.clone(), form.effort, form.mode),
+                other => panic!("expected the new agent dialog, got {other:?}"),
+            };
+            state.ui.dialog = None;
+            opened
         };
+
+        let unselected = opened(&mut state);
+        state.ui.selected = Some(AgentId::new(2));
+        let selected = opened(&mut state);
+
         assert_eq!(
-            (form.model.as_deref(), form.effort, form.mode),
+            unselected,
             (
-                Some("opus"),
+                Some("opus".to_owned()),
                 Some(Effort::Xhigh),
                 Some(PermissionMode::AcceptEdits)
+            )
+        );
+        assert_eq!(
+            selected,
+            (
+                Some("haiku".to_owned()),
+                Some(Effort::Low),
+                Some(PermissionMode::Default)
             )
         );
     }

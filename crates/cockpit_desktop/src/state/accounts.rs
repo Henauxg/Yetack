@@ -215,32 +215,53 @@ pub fn plan_card_accounts(
     ids
 }
 
-/// The account of the agent started last on `machine`.
-fn last_started_account(state: &AppState, machine: MachineId) -> Option<AccountId> {
-    state
-        .agents
-        .values()
-        .filter(|entry| MachineId::of(entry.id()) == machine)
-        .max_by_key(|entry| entry.summary.started_at)
-        .map(|entry| entry.summary.account)
+/// The agent whose account the new agent copies: the agent selected when the dialog opened, when
+/// it runs on the dialog's machine, else the last one started there.
+fn copied_account_agent<'state>(
+    state: &'state AppState,
+    form: &NewAgentForm,
+) -> Option<&'state AgentSummary> {
+    let machine = form.machine;
+    let on_machine = |agent: &AgentId| MachineId::of(*agent) == machine;
+    form.selected
+        .filter(on_machine)
+        .and_then(|agent| state.agents.get(&agent))
+        .or_else(|| {
+            state
+                .agents
+                .values()
+                .filter(|entry| on_machine(&entry.id()))
+                .max_by_key(|entry| entry.summary.started_at)
+        })
+        .map(|entry| &entry.summary)
 }
 
-/// The account a new agent runs with: the one picked, else the last started agent's, else the
-/// default one. An account the daemon no longer has counts as none. The folder plays no part.
+/// The account a new agent runs with: the one picked, else the copied agent's, else the default
+/// one. An account the daemon no longer has counts as none. The folder plays no part.
 pub fn new_agent_account(state: &AppState, form: &NewAgentForm) -> AccountId {
     let machine = form.machine;
     let has = |id: &AccountId| account(state, machine, *id).is_some();
     form.account
         .filter(has)
-        .or_else(|| last_started_account(state, machine).filter(has))
+        .or_else(|| {
+            copied_account_agent(state, form)
+                .map(|agent| agent.account)
+                .filter(has)
+        })
         .unwrap_or(AccountId::DEFAULT)
 }
 
 /// The account menu's title: why the button shows the account it shows.
-pub fn picker_title(state: &AppState, machine: MachineId) -> String {
-    let last = last_started_account(state, machine).and_then(|id| account(state, machine, id));
-    match last {
-        Some(last) => format!("Account · {} ran the last agent started", last.name),
+pub fn picker_title(state: &AppState, form: &NewAgentForm) -> String {
+    let copied = copied_account_agent(state, form).and_then(|agent| {
+        let account = account(state, form.machine, agent.account)?;
+        Some((agent.id, account))
+    });
+    match copied {
+        Some((agent, account)) if form.selected == Some(agent) => {
+            format!("Account · {} runs the selected agent", account.name)
+        }
+        Some((_, account)) => format!("Account · {} ran the last agent started", account.name),
         None => "Account · the default account".to_owned(),
     }
 }
@@ -1060,12 +1081,69 @@ mod tests {
         assert_eq!(new_agent_account(&state, &removed), lab());
         assert_eq!(new_agent_account(&no_agent, &auto), AccountId::DEFAULT);
         assert_eq!(
-            picker_title(&state, MachineId::THIS),
+            picker_title(&state, &auto),
             "Account · Lab ran the last agent started"
         );
         assert_eq!(
-            picker_title(&no_agent, MachineId::THIS),
+            picker_title(&no_agent, &auto),
             "Account · the default account"
+        );
+    }
+
+    /// Agent 2 started last. On devbox, where the selected agent does not run, the account is the
+    /// one of devbox's last agent.
+    #[test]
+    fn a_new_agent_takes_the_selected_agents_account_on_its_machine() {
+        let mut state = state_with(vec![
+            in_folder(1, "/work/parser", lab()),
+            in_folder(2, "/work/notes", work()),
+        ]);
+        let devbox = with_devbox(&mut state);
+        let mut remote = in_folder(1, "/srv/shop", work());
+        remote.id = devbox.app_agent(AgentId::new(1));
+        state.agents.insert(remote.id, AgentEntry::new(remote));
+        state.ui.selected = Some(AgentId::new(1));
+        actions::open_new_agent(&mut state, &mut Drafts::default());
+        let Some(Dialog::NewAgent(on_this)) = state.ui.dialog.clone() else {
+            panic!("the new agent dialog, not {:?}", state.ui.dialog);
+        };
+        let on_devbox = NewAgentForm {
+            machine: devbox,
+            ..on_this.clone()
+        };
+
+        assert_eq!(new_agent_account(&state, &on_this), lab());
+        assert_eq!(
+            picker_title(&state, &on_this),
+            "Account · Lab runs the selected agent"
+        );
+        assert_eq!(new_agent_account(&state, &on_devbox), work());
+        assert_eq!(
+            picker_title(&state, &on_devbox),
+            "Account · Build ran the last agent started"
+        );
+    }
+
+    /// A click on a notification selects another agent and leaves the dialog open.
+    #[test]
+    fn the_dialogs_account_stays_the_one_of_the_agent_selected_when_it_opened() {
+        let mut state = state_with(vec![
+            in_folder(1, "/work/parser", lab()),
+            in_folder(2, "/work/notes", work()),
+        ]);
+        three_accounts(&mut state);
+        state.ui.selected = Some(AgentId::new(1));
+        actions::open_new_agent(&mut state, &mut Drafts::default());
+
+        actions::select_agent(&mut state, AgentId::new(2));
+
+        let Some(Dialog::NewAgent(form)) = &state.ui.dialog else {
+            panic!("the new agent dialog, not {:?}", state.ui.dialog);
+        };
+        assert_eq!(new_agent_account(&state, form), lab());
+        assert_eq!(
+            picker_title(&state, form),
+            "Account · Lab runs the selected agent"
         );
     }
 

@@ -704,6 +704,17 @@ impl AppState {
         }
     }
 
+    /// The agent the new agent dialog copies: the selected one, else the last one started.
+    pub fn copied_agent(&self) -> Option<&AgentSummary> {
+        self.selected()
+            .or_else(|| {
+                self.agents
+                    .values()
+                    .max_by_key(|entry| entry.summary.started_at)
+            })
+            .map(|entry| &entry.summary)
+    }
+
     /// Folders where agents ran on `machine`, with their last use and the account of that use,
     /// most recent first, for the new agent dialog. One folder written two ways, as `C:\Work` and
     /// `c:/work`, shows once.
