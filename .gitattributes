@@ -1,3 +1,2 @@
 # These scripts run on Linux, and a checkout on Windows must not turn their line ends to CRLF.
 contrib/**/*.sh text eol=lf
-contrib/start-daemon text eol=lf

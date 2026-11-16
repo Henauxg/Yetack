@@ -49,7 +49,7 @@ clippy:
 # Checks the shell scripts in contrib/.
 [unix]
 shellcheck:
-    shellcheck -s sh contrib/update-daemon.sh contrib/install-daemon.sh contrib/start-daemon contrib/release/build.sh contrib/release/install.sh contrib/readme-screenshot.sh
+    shellcheck -s sh contrib/update-daemon.sh contrib/install-daemon.sh contrib/release/build.sh contrib/release/install.sh contrib/readme-screenshot.sh
 
 # Checks the shell scripts, on Linux only.
 [windows]

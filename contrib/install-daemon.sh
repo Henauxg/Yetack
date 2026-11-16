@@ -21,10 +21,13 @@
 #                     installed one, for the start command and the crontab line
 #
 # It installs the binary as ~/.local/share/yetack/bin/yetack. With a systemd user session, it
-# writes ~/.config/systemd/user/yetack.service and starts it, then says whether systemd keeps the
+# writes ~/.config/systemd/user/yetack.service and starts it, removes the start file below if an
+# earlier install wrote it, then says whether systemd keeps the
 # user's services running after they log out ("linger yes"). Without one, it starts the daemon
-# outside the SSH session, so that it keeps running once the session ends, and says whether the
-# user's crontab starts it again when the machine starts ("boot yes", "boot no", or "boot
+# outside the SSH session, so that it keeps running once the session ends. It writes
+# ~/.config/yetack/start-daemon, with which an update starts the new daemon, unless the user wrote
+# that file. Then it says whether the user's crontab starts it again when the machine starts
+# ("boot yes", "boot no", or "boot
 # unavailable" without crontab), the command that starts it ("start COMMAND"), and with crontab the
 # line --add-boot-start puts there ("cron LINE") and whether a cron daemon runs to read it ("crond
 # yes", "crond no", or "crond unknown" when it cannot see the system's processes). In both cases it
@@ -41,6 +44,9 @@ UNIT_MARK="which the desktop app installed"
 
 # The end of the crontab line the install adds, which tells it from the user's own lines.
 CRON_MARK="# yetack: the daemon, which the desktop app starts"
+
+# The second line of the start file the install writes, which tells it from one the user wrote.
+START_MARK="# Written by the desktop app, which installed the yetack daemon."
 
 say() {
     printf 'install-daemon: %s\n' "$*" 2>/dev/null || true
@@ -197,10 +203,48 @@ daemon_log() {
     printf '%s' "${XDG_STATE_HOME:-$HOME/.local/state}/yetack/daemon.log"
 }
 
+# The file with which the daemon's update restarts a daemon that no systemd service runs.
+start_file() {
+    printf '%s' "${XDG_CONFIG_HOME:-$HOME/.config}/yetack/start-daemon"
+}
+
+# Whether FILE is a start file an install wrote: a plain file with the install's mark.
+install_wrote() {
+    [ ! -L "$1" ] && grep -qxF "$START_MARK" "$1" 2>/dev/null
+}
+
+# A start file the user wrote stays: it may start the daemon another way, such as in tmux.
+write_start_file() {
+    file=$(start_file)
+    if [ -e "$file" ] || [ -L "$file" ]; then
+        install_wrote "$file" || return 0
+    fi
+    mkdir -p "$(dirname "$file")" || die_installing "cannot create the folder of $file"
+    {
+        printf '#!/bin/sh\n%s\n' "$START_MARK"
+        printf '# An update of the daemon runs this file to start the new one apart from its session.\n'
+        printf 'PATH=%s %s %s serve >>%s 2>&1 </dev/null &\n' "$(shell_word "$(service_path)")" \
+            "$(shell_word "$launcher")" "$(shell_word "$binary")" "$(shell_word "$(daemon_log)")"
+    } >"$file.new" && mv -f "$file.new" "$file" || die_installing "cannot write $file"
+    say "wrote $file"
+}
+
+# The update restarts through a start file before the service, so one an earlier install wrote
+# without systemd would start the daemon outside the service.
+remove_start_file() {
+    file=$(start_file)
+    install_wrote "$file" || return 0
+    rm -f "$file" || die_installing "cannot remove $file"
+    say "removed $file"
+}
+
 # Starts the daemon in a session of its own, which the end of this SSH session does not stop. A
 # daemon that runs already stays: a second one would find the state folder locked.
 start_detached() {
     say "starting the daemon"
+    launcher=$(command -v setsid || command -v nohup) ||
+        die_installing "cannot start the daemon apart from this session: this needs setsid or nohup"
+    write_start_file
     if "$binary" list >/dev/null 2>&1; then
         say "the daemon runs"
         return
@@ -208,8 +252,6 @@ start_detached() {
     log=$(daemon_log)
     mkdir -p "$(dirname "$log")" || die_installing "cannot create the folder of $log"
     path=$(service_path)
-    launcher=$(command -v setsid || command -v nohup) ||
-        die_installing "cannot start the daemon apart from this session: this needs setsid or nohup"
     # The script ignores HUP and PIPE for itself: the daemon and its agents take them as a
     # service's do.
     (
@@ -367,6 +409,7 @@ main() {
         check_no_service
         install_binary
         write_unit
+        remove_start_file
         start_service
     else
         install_binary

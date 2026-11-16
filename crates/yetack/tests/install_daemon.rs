@@ -24,6 +24,13 @@ const SCRIPT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../contrib/install-daemon.sh"
 );
+const UPDATE_SCRIPT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../contrib/update-daemon.sh"
+);
+/// The file an update runs to start the daemon where no systemd service does, in the server's
+/// folder.
+const START_FILE: &str = "home/config/yetack/start-daemon";
 
 /// A home folder of its own, where the fake `systemctl` starts the installed daemon. Every command
 /// it runs sees only this folder.
@@ -52,6 +59,8 @@ echo "$*" >>'{log}'
 case "$*" in
     "--user show-environment") [ ! -f '{no_session}' ] ;;
     "--user cat yetack") [ -f '{unit}' ] ;;
+    "--user is-active --quiet yetack" | "--user is-enabled --quiet yetack")
+        [ ! -f '{no_session}' ] && [ -f '{unit}' ] ;;
     "--user enable --now yetack")
         "$HOME/.local/share/yetack/bin/yetack" serve >>'{serve_log}' 2>&1 </dev/null &
         echo $! >'{pid}'
@@ -239,9 +248,8 @@ fn a_sent_binary_that_is_not_the_one_the_app_read_installs_nothing() {
     assert!(!sent.exists());
 }
 
-/// Without a systemd user session, the install starts the daemon apart from its own session.
-fn install_without_systemd(server: &Server) -> Output {
-    fs::write(server.path("no-session"), "").unwrap();
+/// Installs the binary the app sent, as the setup runs the script.
+fn install_sent(server: &Server) -> Output {
     let (sent, version) = server.sent_binary();
     server.install(&[
         "--built",
@@ -251,6 +259,12 @@ fn install_without_systemd(server: &Server) -> Output {
         "--version",
         &version,
     ])
+}
+
+/// Without a systemd user session, the install starts the daemon apart from its own session.
+fn install_without_systemd(server: &Server) -> Output {
+    fs::write(server.path("no-session"), "").unwrap();
+    install_sent(server)
 }
 
 #[test]
@@ -565,6 +579,73 @@ fn a_start_brings_back_a_daemon_started_without_systemd() {
     assert!(started.status.success(), "{}", stderr(&started));
     assert!(stdout(&started).contains("install-daemon: starting the daemon"));
     assert!(answers(&server));
+}
+
+#[test]
+fn an_update_restarts_a_daemon_the_install_started_without_systemd() {
+    let server = Server::new();
+    let installed = install_without_systemd(&server);
+    assert!(installed.status.success(), "{}", stderr(&installed));
+    let (sent, version) = server.sent_binary();
+
+    let updated = server
+        .command("sh")
+        .args(["-s", "--", "--commit", "3f9c2e1", "--binary"])
+        .arg(server.installed())
+        .arg("--built")
+        .arg(&sent)
+        .args(["--sha256", &sha256(&sent), "--version", &version])
+        .stdin(Stdio::from(File::open(UPDATE_SCRIPT).unwrap()))
+        .output()
+        .unwrap();
+
+    assert!(updated.status.success(), "{}", stderr(&updated));
+    assert!(answers(&server));
+}
+
+#[test]
+fn a_start_file_the_user_wrote_is_left_alone() {
+    let server = Server::new();
+    let own = "#!/bin/sh\ntmux new-session -d -s yetack yetack serve\n";
+    server.write_program(START_FILE, own);
+
+    let installed = install_without_systemd(&server);
+
+    assert!(installed.status.success(), "{}", stderr(&installed));
+    assert_eq!(fs::read_to_string(server.path(START_FILE)).unwrap(), own);
+}
+
+/// The start file an install writes: the mark that tells it from one the user wrote, then a line
+/// an earlier version of the install may have written differently.
+const OLD_START_FILE: &str =
+    "#!/bin/sh\n# Written by the desktop app, which installed the yetack daemon.\nold start\n";
+
+#[test]
+fn a_start_file_an_earlier_install_wrote_is_written_again() {
+    let server = Server::new();
+    server.write_program(START_FILE, OLD_START_FILE);
+
+    let installed = install_without_systemd(&server);
+
+    assert!(installed.status.success(), "{}", stderr(&installed));
+    let file = fs::read_to_string(server.path(START_FILE)).unwrap();
+    assert!(!file.contains("old start"), "{file}");
+    assert!(
+        file.contains(&format!("{} serve", server.installed().display())),
+        "{file}"
+    );
+}
+
+#[test]
+fn an_install_with_systemd_removes_the_start_file_an_earlier_install_wrote() {
+    let server = Server::new();
+    server.write_program(START_FILE, OLD_START_FILE);
+
+    let installed = install_sent(&server);
+
+    assert!(installed.status.success(), "{}", stderr(&installed));
+    assert!(server.unit().exists());
+    assert!(!server.path(START_FILE).exists());
 }
 
 #[test]
