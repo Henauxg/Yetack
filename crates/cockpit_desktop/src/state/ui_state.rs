@@ -11,6 +11,7 @@ use cockpit_protocol::{
 use serde::Serialize;
 use strum::{EnumString, IntoStaticStr, VariantArray};
 
+use super::terminals::Screen;
 use super::accounts::{AccountsView, AddAccountForm};
 use super::agent_map::MapView;
 use super::app_state::Loadable;
@@ -547,6 +548,10 @@ pub enum TitlePlace {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UiState {
     pub selected: Option<AgentId>,
+    /// The terminal pane shows, for the selected agent.
+    pub terminal_open: bool,
+    /// Terminal output the daemon kept, which the page writes before what comes next.
+    pub terminal_screens: Vec<Screen>,
     /// Agents that finished while another one was selected, or that their row's menu marked
     /// unread (the selected one too): bold title and a white dot, until they are selected.
     pub unread: BTreeSet<AgentId>,
@@ -610,6 +615,8 @@ impl Default for UiState {
     fn default() -> Self {
         Self {
             selected: None,
+            terminal_open: false,
+            terminal_screens: Vec::new(),
             unread: BTreeSet::new(),
             folded_machines: BTreeSet::new(),
             folded_projects: BTreeSet::new(),

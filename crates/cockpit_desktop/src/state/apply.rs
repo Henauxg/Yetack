@@ -18,7 +18,7 @@ use super::sending::Sending;
 use super::transcript::KEPT_ITEMS_AWAY;
 use super::{
     actions, daemon_start, daemon_update, details_updates, file_reread, file_tree, grouping,
-    notification_levels, project_menu, projects, resume, sending,
+    notification_levels, project_menu, projects, resume, sending, terminals,
 };
 use crate::machine::MachineId;
 
@@ -96,6 +96,10 @@ fn apply_session_update(
             note_turn_start(state, &record.event, now);
             hold_finish(state, &record.event, now);
             apply(state, drafts, record, machine).into_iter().collect()
+        }
+        SessionUpdate::Terminal(update) => {
+            terminals::apply_update(state, update);
+            Vec::new()
         }
     }
 }

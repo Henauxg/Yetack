@@ -12,6 +12,7 @@ mod order;
 mod requests;
 mod restore;
 mod state;
+mod terminals;
 
 pub(crate) use input::{HubInput, Joined, Registration};
 pub(crate) use restore::{Restored, restore};

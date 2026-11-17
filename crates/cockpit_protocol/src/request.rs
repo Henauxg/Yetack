@@ -16,6 +16,9 @@ use crate::ids::{
     AccountId, AgentId, BackgroundTaskId, ClaudeSessionId, ItemId, PendingId, ProcessId, PromptId,
 };
 use crate::settings::Settings;
+use crate::terminal::{
+    TerminalInputParams, TerminalOpenParams, TerminalParams, TerminalResizeParams,
+};
 use crate::transcript::{ApprovalAnswer, Image, PlanAnswer, QuestionAnswer};
 
 /// One variant per method. Each says which `ResponseBody` answers it.
@@ -95,6 +98,18 @@ pub enum Request {
     /// The files whose name holds a text, in the agent's folder and the checkouts it worked in.
     /// Answered by `FileMatches`.
     AgentFindFiles(FindFilesParams),
+    /// Starts a shell on a PTY in the agent's folder. Answered by `TerminalOpened`.
+    AgentTerminalOpen(TerminalOpenParams),
+    /// The agent's terminals. Answered by `Terminals`.
+    AgentTerminals(AgentParams),
+    /// The output the daemon keeps of a terminal, to show it again. Answered by `TerminalScreen`.
+    TerminalAttach(TerminalParams),
+    /// Writes to a terminal what the user typed. Answered by `Done`.
+    TerminalInput(TerminalInputParams),
+    /// Answered by `Done`.
+    TerminalResize(TerminalResizeParams),
+    /// Ends a terminal's shell and forgets the terminal. Answered by `Done`.
+    TerminalClose(TerminalParams),
     /// Runs `claude mcp remove <server> -s <scope>` in the agent's folder. Answered by `Done`.
     McpRemove(McpRemoveParams),
     /// Replaces the settings. Answered by `Done`, and a `SettingsChanged` event to every client.
@@ -188,6 +203,18 @@ pub enum Method {
     AgentListDir,
     #[strum(serialize = "agent.find_files")]
     AgentFindFiles,
+    #[strum(serialize = "agent.terminal_open")]
+    AgentTerminalOpen,
+    #[strum(serialize = "agent.terminals")]
+    AgentTerminals,
+    #[strum(serialize = "terminal.attach")]
+    TerminalAttach,
+    #[strum(serialize = "terminal.input")]
+    TerminalInput,
+    #[strum(serialize = "terminal.resize")]
+    TerminalResize,
+    #[strum(serialize = "terminal.close")]
+    TerminalClose,
     #[strum(serialize = "mcp.remove")]
     McpRemove,
     #[strum(serialize = "settings.set")]
@@ -526,6 +553,12 @@ impl Request {
             Self::AgentReadFile(_) => Method::AgentReadFile,
             Self::AgentListDir(_) => Method::AgentListDir,
             Self::AgentFindFiles(_) => Method::AgentFindFiles,
+            Self::AgentTerminalOpen(_) => Method::AgentTerminalOpen,
+            Self::AgentTerminals(_) => Method::AgentTerminals,
+            Self::TerminalAttach(_) => Method::TerminalAttach,
+            Self::TerminalInput(_) => Method::TerminalInput,
+            Self::TerminalResize(_) => Method::TerminalResize,
+            Self::TerminalClose(_) => Method::TerminalClose,
             Self::McpRemove(_) => Method::McpRemove,
             Self::SettingsSet(_) => Method::SettingsSet,
             Self::SessionsList => Method::SessionsList,
@@ -587,6 +620,12 @@ impl Serialize for Request {
             Self::AgentReadFile(params) => tagged(method, params, serializer),
             Self::AgentListDir(params) => tagged(method, params, serializer),
             Self::AgentFindFiles(params) => tagged(method, params, serializer),
+            Self::AgentTerminalOpen(params) => tagged(method, params, serializer),
+            Self::AgentTerminals(params) => tagged(method, params, serializer),
+            Self::TerminalAttach(params) => tagged(method, params, serializer),
+            Self::TerminalInput(params) => tagged(method, params, serializer),
+            Self::TerminalResize(params) => tagged(method, params, serializer),
+            Self::TerminalClose(params) => tagged(method, params, serializer),
             Self::McpRemove(params) => tagged(method, params, serializer),
             Self::SettingsSet(params) => tagged(method, params, serializer),
             Self::SessionsList | Self::MachineLoad | Self::AccountsList => Tagged::<()> {
@@ -646,6 +685,12 @@ impl<'de> Deserialize<'de> for Request {
             Method::AgentReadFile => Self::AgentReadFile(params(raw)?),
             Method::AgentListDir => Self::AgentListDir(params(raw)?),
             Method::AgentFindFiles => Self::AgentFindFiles(params(raw)?),
+            Method::AgentTerminalOpen => Self::AgentTerminalOpen(params(raw)?),
+            Method::AgentTerminals => Self::AgentTerminals(params(raw)?),
+            Method::TerminalAttach => Self::TerminalAttach(params(raw)?),
+            Method::TerminalInput => Self::TerminalInput(params(raw)?),
+            Method::TerminalResize => Self::TerminalResize(params(raw)?),
+            Method::TerminalClose => Self::TerminalClose(params(raw)?),
             Method::McpRemove => Self::McpRemove(params(raw)?),
             Method::SettingsSet => Self::SettingsSet(params(raw)?),
             Method::SessionsList => Self::SessionsList,

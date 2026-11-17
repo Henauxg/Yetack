@@ -7,6 +7,7 @@ use crate::machine_load::MachineLoad;
 use crate::request::Request;
 use crate::response::ResponseBody;
 use crate::session::Snapshot;
+use crate::terminal::TerminalUpdate;
 
 impl Request {
     /// The agent the request is about, if any. `agent.move` names the agent it moves.
@@ -23,7 +24,12 @@ impl Request {
             | Self::AgentDetails(params)
             | Self::AgentContextUsage(params)
             | Self::AgentMcpStatus(params)
-            | Self::AgentCommands(params) => &mut params.agent,
+            | Self::AgentCommands(params)
+            | Self::AgentTerminals(params) => &mut params.agent,
+            Self::AgentTerminalOpen(params) => &mut params.agent,
+            Self::TerminalAttach(params) | Self::TerminalClose(params) => &mut params.agent,
+            Self::TerminalInput(params) => &mut params.agent,
+            Self::TerminalResize(params) => &mut params.agent,
             Self::AgentHistory(params) => &mut params.agent,
             Self::AgentSetModel(params) => &mut params.agent,
             Self::AgentSetEffort(params) => &mut params.agent,
@@ -77,6 +83,9 @@ impl ResponseBody {
             | Self::ContextUsage(_)
             | Self::McpServers { .. }
             | Self::Commands { .. }
+            | Self::TerminalOpened { .. }
+            | Self::Terminals { .. }
+            | Self::TerminalScreen { .. }
             | Self::File { .. }
             | Self::Image { .. }
             | Self::FileMatches { .. }
@@ -85,6 +94,13 @@ impl ResponseBody {
             | Self::Accounts { .. }
             | Self::Account(_) => {}
         }
+    }
+}
+
+impl TerminalUpdate {
+    /// Replaces the agent id the update carries with `map` of it.
+    pub fn map_agents(&mut self, map: impl Fn(AgentId) -> AgentId) {
+        self.agent = map(self.agent);
     }
 }
 

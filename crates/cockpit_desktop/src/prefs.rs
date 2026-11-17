@@ -91,6 +91,7 @@ pub struct Prefs {
     pub file_view: FileViewPrefs,
     pub sidebar: SidebarPrefs,
     pub files_pane: FilesPanePrefs,
+    pub terminal: TerminalPrefs,
     pub blocks: BlocksPrefs,
     pub accounts: AccountPrefs,
     pub notifications: NotificationPrefs,
@@ -741,6 +742,36 @@ pub struct FilesPanePrefs {
     pub width: Option<u16>,
 }
 
+/// Where the terminal pane sits, and its size there. Whether it shows is not kept: it opens
+/// closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TerminalPrefs {
+    pub place: TerminalPlace,
+    /// The bottom panel's height in pixels. `None` keeps the default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u16>,
+    /// The right pane's width in pixels. `None` keeps the default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u16>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalPlace {
+    /// Under the chat and the composer.
+    #[default]
+    Bottom,
+    /// At the window's right edge.
+    Right,
+}
+
+/// The terminal pane's default and allowed sizes, in pixels.
+pub const DEFAULT_TERMINAL_HEIGHT: u16 = 260;
+pub const DEFAULT_TERMINAL_WIDTH: u16 = 480;
+pub const MIN_TERMINAL_SIZE: u16 = 120;
+pub const MAX_TERMINAL_SIZE: u16 = 2000;
+
 /// Whether an agent's files pane shows.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumString, IntoStaticStr, VariantArray,
@@ -1210,6 +1241,7 @@ mod tests {
                     project_split: ProjectSplit::ByMachine,
                     first_mark: FirstMark::Kept,
                 },
+                terminal: TerminalPrefs::default(),
                 files_pane: FilesPanePrefs {
                     new_agents: PaneState::Open,
                     agents: BTreeMap::from([(
@@ -1680,6 +1712,7 @@ mod tests {
                 project_split: ProjectSplit::OneList,
                 first_mark: FirstMark::Kept,
             },
+            terminal: TerminalPrefs::default(),
             files_pane: FilesPanePrefs {
                 new_agents: PaneState::Open,
                 agents: BTreeMap::new(),

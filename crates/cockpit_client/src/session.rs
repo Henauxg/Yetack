@@ -2,15 +2,15 @@
 
 use std::time::Duration;
 
-use cockpit_protocol::{Catchup, EventRecord, Request, ResponseBody, Seq};
+use cockpit_protocol::{Catchup, EventRecord, Request, ResponseBody, Seq, TerminalUpdate};
 use tokio::sync::mpsc;
 
 use crate::connection::{Connection, EVENT_QUEUE, Welcome};
 use crate::error::{CloseError, ConnectError, RequestError};
-use crate::lossy_channel;
 use crate::lossy_channel::{LossyReceiver, LossySender, Received, Sent};
 use crate::requester::{Command, Requester};
 use crate::transport::Transport;
+use crate::{connection, lossy_channel};
 
 /// The wait between connection attempts: `initial` after a drop, doubling after each failed
 /// attempt up to `max`.
@@ -49,6 +49,8 @@ pub enum SessionUpdate {
         retry_in: Duration,
     },
     Event(EventRecord),
+    /// A terminal's output or change. Dropped ones are not told.
+    Terminal(TerminalUpdate),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -232,6 +234,9 @@ async fn serve(
     meanwhile(connected, commands, updates, forward)
         .await?
         .ok()?;
+    let Some(mut terminals) = connection.take_terminals() else {
+        return Some(CloseError::AlreadyClosed);
+    };
     loop {
         tokio::select! {
             event = connection.next_event() => match event {
@@ -244,6 +249,11 @@ async fn serve(
                     }
                 }
                 Err(error) => return Some(error),
+            },
+            update = connection::next_terminal(&mut terminals) => if let Some(update) = update
+                && updates.send_or_drop(SessionUpdate::Terminal(update)) == Sent::Closed
+            {
+                return None;
             },
             command = commands.recv() => requester.forward(command?),
             () = updates.closed() => return None,

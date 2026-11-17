@@ -231,7 +231,10 @@ async fn tail(transport: Transport, agent: Option<AgentId>) -> anyhow::Result<()
             SessionUpdate::Disconnected { error, retry_in } => {
                 eprintln!("{PROGRAM}: disconnected ({error}); retrying in {retry_in:?}");
             }
-            SessionUpdate::Connecting { .. } | SessionUpdate::Connected(_) => {}
+            // A terminal's output is not an event of the log.
+            SessionUpdate::Connecting { .. }
+            | SessionUpdate::Connected(_)
+            | SessionUpdate::Terminal(_) => {}
         }
     }
     Ok(())

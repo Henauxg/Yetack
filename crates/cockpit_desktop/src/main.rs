@@ -30,6 +30,7 @@ mod server_daemon;
 mod service;
 mod service_update;
 mod state;
+mod terminal_feed;
 mod ui;
 mod update_script;
 mod version_order;

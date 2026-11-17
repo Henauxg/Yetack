@@ -6,6 +6,7 @@ use std::time::Duration;
 use cockpit_protocol::{
     BuildCommit, Catchup, ClientMessage, EventRecord, Frame, FrameError, FrameReader, FrameWriter,
     PROTOCOL_VERSION, ReleaseVersion, Request, RequestId, ResponseBody, Seq, ServerMessage,
+    TerminalUpdate,
 };
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, BufReader};
 use tokio::sync::{mpsc, oneshot};
@@ -23,6 +24,10 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 /// connection never waits for the app.
 pub(crate) const EVENT_QUEUE: usize = 4096;
 
+/// The terminal updates that wait for `next_terminal`. One that finds the queue full is dropped: a
+/// client asks `terminal.attach` for what it missed.
+const TERMINAL_QUEUE: usize = 4096;
+
 /// A connection that passed the handshake.
 ///
 /// A task owns the transport and the requests waiting for a response; this handle talks to it over
@@ -30,6 +35,8 @@ pub(crate) const EVENT_QUEUE: usize = 4096;
 pub struct Connection {
     requester: Requester,
     events: LossyReceiver<EventRecord>,
+    /// Taken by the session, which waits on it beside `next_event`.
+    terminals: Option<LossyReceiver<TerminalUpdate>>,
     /// Why the connection closed; taken by the first `next_event` that returns it.
     close: Option<oneshot::Receiver<CloseError>>,
 }
@@ -94,6 +101,11 @@ impl Connection {
     /// `RequestError::Disconnected`.
     ///
     /// It is cancel safe, so it can wait in a `tokio::select!`.
+    /// The terminal updates, once.
+    pub(crate) fn take_terminals(&mut self) -> Option<LossyReceiver<TerminalUpdate>> {
+        self.terminals.take()
+    }
+
     pub async fn next_event(&mut self) -> Result<EventRecord, CloseError> {
         match self.events.recv().await {
             Some(Received::Item(record)) => return Ok(record),
@@ -107,6 +119,18 @@ impl Connection {
         let reason = close.await.unwrap_or(CloseError::Closed);
         self.close = None;
         Err(reason)
+    }
+}
+
+/// The next terminal update, or `None` when some were dropped. It waits forever once the
+/// connection closed: `next_event` tells why. It is cancel safe.
+pub(crate) async fn next_terminal(
+    terminals: &mut LossyReceiver<TerminalUpdate>,
+) -> Option<TerminalUpdate> {
+    match terminals.recv().await {
+        Some(Received::Item(update)) => Some(update),
+        Some(Received::Lost) => None,
+        None => std::future::pending().await,
     }
 }
 
@@ -130,15 +154,18 @@ where
     };
     let (commands_sender, commands) = mpsc::unbounded_channel();
     let (events_sender, events) = lossy_channel::channel(EVENT_QUEUE);
+    let (terminals_sender, terminals) = lossy_channel::channel(TERMINAL_QUEUE);
     let (close_sender, close) = oneshot::channel();
     let ends = Ends {
         events: events_sender,
+        terminals: terminals_sender,
         close: close_sender,
     };
     tokio::spawn(run(reader, writer, commands, ends, ssh));
     let connection = Connection {
         requester: Requester::new(commands_sender),
         events,
+        terminals: Some(terminals),
         close: Some(close),
     };
     Ok((connection, welcome))
@@ -186,9 +213,9 @@ where
             daemon_version,
             daemon_commit,
         }),
-        Some(ServerMessage::Response { .. } | ServerMessage::Event(_)) => {
-            Err(ConnectError::Unexpected)
-        }
+        Some(
+            ServerMessage::Response { .. } | ServerMessage::Event(_) | ServerMessage::Terminal(_),
+        ) => Err(ConnectError::Unexpected),
         None => Err(ConnectError::Closed),
     }
 }
@@ -210,6 +237,7 @@ async fn explain_with_ssh(error: ConnectError, ssh: Option<SshProcess>) -> Conne
 /// Where the connection's task sends events, and why it closed.
 struct Ends {
     events: LossySender<EventRecord>,
+    terminals: LossySender<TerminalUpdate>,
     close: oneshot::Sender<CloseError>,
 }
 
@@ -237,7 +265,7 @@ async fn run<R, W>(
         tokio::select! {
             message = reader.next_message::<ServerMessage>() => match message {
                 Ok(Some(message)) => {
-                    if !dispatch(message, &mut pending, &ends.events) {
+                    if !dispatch(message, &mut pending, &ends) {
                         break None;
                     }
                 }
@@ -288,11 +316,7 @@ async fn run<R, W>(
 
 /// Hands a message to whoever waits for it, without waiting. Returns `false` when the
 /// `Connection` is gone.
-fn dispatch(
-    message: ServerMessage,
-    pending: &mut HashMap<RequestId, Reply>,
-    events: &LossySender<EventRecord>,
-) -> bool {
+fn dispatch(message: ServerMessage, pending: &mut HashMap<RequestId, Reply>, ends: &Ends) -> bool {
     match message {
         ServerMessage::Response { id, result } => {
             match pending.remove(&id) {
@@ -303,7 +327,8 @@ fn dispatch(
             }
             true
         }
-        ServerMessage::Event(record) => events.send_or_drop(record) != Sent::Closed,
+        ServerMessage::Event(record) => ends.events.send_or_drop(record) != Sent::Closed,
+        ServerMessage::Terminal(update) => ends.terminals.send_or_drop(update) != Sent::Closed,
         ServerMessage::Welcome { .. } | ServerMessage::Refused { .. } => {
             tracing::warn!("the daemon sent a second handshake message");
             true

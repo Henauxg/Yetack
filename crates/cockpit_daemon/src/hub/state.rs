@@ -17,6 +17,7 @@ use crate::daemon_config::DaemonConfig;
 use crate::hub::folders::PendingMove;
 use crate::hub::input::{ControlPurpose, HubInput, Joined, Registration};
 use crate::hub::restore::Restored;
+use crate::hub::terminals::Terminals;
 use crate::machine_load::LoadSampler;
 use crate::process::ProcessHandle;
 use crate::store::{
@@ -59,6 +60,7 @@ pub(crate) struct Hub {
     pub(super) sign_ins: BTreeMap<AccountId, SignIn>,
     /// A periodic check of the accounts' folders runs.
     pub(super) checking_sign_ins: bool,
+    pub(super) terminals: Terminals,
 }
 
 pub(super) struct Agent {
@@ -222,6 +224,7 @@ impl Hub {
             load: LoadSampler::default(),
             sign_ins: BTreeMap::new(),
             checking_sign_ins: false,
+            terminals: Terminals::default(),
         }
     }
 
@@ -293,6 +296,8 @@ impl Hub {
                 cost,
             } => self.restored_cost(agent, generation, cost),
             HubInput::DetailsDue { agent } => self.send_held_details(agent),
+            HubInput::TerminalOutput { terminal, data } => self.terminal_output(terminal, &data),
+            HubInput::TerminalExited { terminal, code } => self.terminal_exited(terminal, code),
         }
     }
 

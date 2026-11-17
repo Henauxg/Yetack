@@ -7,7 +7,7 @@ use cockpit_client::RequestError;
 use cockpit_protocol::{
     AccountId, AgentDetails, AgentId, AgentParams, ClaudeSessionId, ErrorCode, FileEdit,
     FindFilesParams, FoldersListParams, HistoryParams, ItemId, ListDirParams, Method, PendingId,
-    Position, ReadFileParams, Request, ResponseBody, Seq, Timestamp,
+    Position, ReadFileParams, Request, ResponseBody, Seq, TerminalId, Timestamp,
 };
 
 use super::app_state::{AgentEntry, AppState, FileRead, Loadable, MachineState, Reread};
@@ -21,7 +21,7 @@ use super::transcript::HistoryState;
 use super::ui_state::{Dialog, FolderAction, OpenFileView};
 use super::{
     accounts, actions, chat_images, details_updates, file_edits, file_tree, mcp_reconnect,
-    page_copy, working_folder,
+    page_copy, terminals, working_folder,
 };
 use crate::machine::MachineId;
 use crate::path_style;
@@ -79,6 +79,16 @@ pub enum Purpose {
     },
     Commands {
         agent: AgentId,
+    },
+    Terminals {
+        agent: AgentId,
+    },
+    TerminalOpened {
+        agent: AgentId,
+    },
+    TerminalScreen {
+        agent: AgentId,
+        terminal: TerminalId,
     },
     ReadFile {
         agent: AgentId,
@@ -221,6 +231,7 @@ pub fn keep_first_answers(state: &mut AppState, requests: &mut Vec<Outgoing>) {
 pub fn needed_requests(state: &mut AppState) -> Vec<Outgoing> {
     let mut requests = Vec::new();
     requests.extend(mcp_reconnect::status_requests(state));
+    requests.extend(terminals::needed_requests(state));
     if let Some(reopening) = &state.ui.reopening {
         let back = state
             .agents
@@ -565,6 +576,36 @@ pub fn apply_response(
             Err(failure) => {
                 mcp_reconnect::checked(state, agent, &server, Err(failure.message), Instant::now());
             }
+        },
+        Purpose::Terminals { agent } => match result {
+            Ok(ResponseBody::Terminals { terminals: listed }) => {
+                terminals::listed(state, agent, Ok(listed));
+            }
+            other => {
+                terminals::listed(state, agent, Err(()));
+                report(state, method, other);
+            }
+        },
+        Purpose::TerminalOpened { agent } => match result {
+            Ok(ResponseBody::TerminalOpened { terminal }) => {
+                terminals::opened(state, agent, Some(terminal));
+            }
+            other => {
+                terminals::opened(state, agent, None);
+                report(state, method, other);
+            }
+        },
+        Purpose::TerminalScreen { agent, terminal } => match result {
+            Ok(ResponseBody::TerminalScreen { offset, data }) => terminals::screen(
+                state,
+                terminals::Screen {
+                    agent,
+                    terminal,
+                    offset,
+                    data,
+                },
+            ),
+            other => report(state, method, other),
         },
         Purpose::Commands { agent } => {
             if let Some(entry) = state.agents.get_mut(&agent) {

@@ -29,6 +29,7 @@ mod response;
 mod session;
 mod settings;
 mod stored_bool;
+mod terminal;
 mod time;
 mod transcript;
 mod usage;
@@ -77,6 +78,10 @@ pub use session::{
 };
 pub use settings::Settings;
 pub use stored_bool::{FromStoredBool, enum_or_stored_bool};
+pub use terminal::{
+    TerminalChange, TerminalId, TerminalInfo, TerminalInputParams, TerminalOpenParams,
+    TerminalParams, TerminalResizeParams, TerminalSize, TerminalUpdate,
+};
 pub use time::Timestamp;
 pub use transcript::{
     AnswerState, Approval, ApprovalAnswer, ApprovalDecision, AskedQuestion, FileEdit, Image,

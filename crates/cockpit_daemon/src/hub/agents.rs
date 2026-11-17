@@ -562,6 +562,7 @@ impl Hub {
     /// Takes the agent out of the hub, with its logs, and tells the clients.
     fn discard(&mut self, id: AgentId) {
         self.agents.remove(&id);
+        self.close_agent_terminals(id);
         if let Err(error) = self.logs.remove(LogName::Agent(id)) {
             tracing::warn!(error = %errors::chain(&error), "cannot delete an agent's log");
         }

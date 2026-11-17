@@ -109,6 +109,16 @@ impl Hub {
                 },
                 ControlPurpose::McpChanged(reply),
             ),
+            Request::AgentTerminalOpen(params) => {
+                agents::respond(reply, self.open_terminal(params));
+            }
+            Request::AgentTerminals(params) => {
+                agents::respond(reply, self.list_terminals(params.agent));
+            }
+            Request::TerminalAttach(params) => agents::respond(reply, self.attach_terminal(params)),
+            Request::TerminalInput(params) => agents::respond(reply, self.type_in_terminal(params)),
+            Request::TerminalResize(params) => agents::respond(reply, self.resize_terminal(params)),
+            Request::TerminalClose(params) => agents::respond(reply, self.close_terminal(params)),
             Request::AgentCommands(params) => {
                 let commands = self
                     .agent(params.agent)

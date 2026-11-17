@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use cockpit_protocol::{
     AccountId, AccountState, AgentId, CostUsd, Frame, PermissionMode, Request, ResponseResult, Seq,
-    SignIn, Snapshot, Timestamp,
+    SignIn, Snapshot, TerminalId, Timestamp,
 };
 use tokio::sync::{mpsc, oneshot};
 
@@ -66,6 +66,16 @@ pub(crate) enum HubInput {
         agent: AgentId,
         generation: u32,
         cost: CostUsd,
+    },
+    /// A terminal's shell wrote `data`.
+    TerminalOutput {
+        terminal: TerminalId,
+        data: Vec<u8>,
+    },
+    /// A terminal's shell ended, with its exit code when it has one.
+    TerminalExited {
+        terminal: TerminalId,
+        code: Option<i32>,
     },
     /// An agent's details change that waited for its turn may go out.
     DetailsDue {

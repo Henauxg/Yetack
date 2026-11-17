@@ -21,6 +21,7 @@ test = false
 
 [dependencies]
 base64 = "0.22.1"
+portable-pty = "0.9"
 claude_protocol.workspace = true
 cockpit_protocol.workspace = true
 serde.workspace = true

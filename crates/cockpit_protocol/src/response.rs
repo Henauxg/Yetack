@@ -9,6 +9,7 @@ use crate::account::{AccountState, EnvironmentCredentials};
 use crate::details::{AgentDetails, ContextUsage, McpServer, SlashCommand};
 use crate::ids::{AccountId, AgentId, ClaudeSessionId, Seq};
 use crate::machine_load::MachineLoad;
+use crate::terminal::{TerminalId, TerminalInfo};
 use crate::time::Timestamp;
 use crate::transcript::{FileEdit, Image, TranscriptItem};
 
@@ -61,6 +62,18 @@ pub enum ResponseBody {
     },
     Commands {
         commands: Vec<SlashCommand>,
+    },
+    TerminalOpened {
+        terminal: TerminalId,
+    },
+    Terminals {
+        terminals: Vec<TerminalInfo>,
+    },
+    /// The output the daemon keeps of a terminal, base64: the bytes from `offset` to the end of
+    /// what the shell wrote so far.
+    TerminalScreen {
+        offset: u64,
+        data: String,
     },
     /// `path` is where the file was read, absolute: the path asked for, or the file the daemon
     /// found for it. `None` from a daemon that predates it, which reads only the path asked for.

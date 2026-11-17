@@ -10,7 +10,7 @@ use cockpit_client::{
     Backoff, RequestError, Requester, Session, SessionError, SessionUpdate, Transport,
 };
 use cockpit_daemon::PROGRAM;
-use cockpit_protocol::{AgentId, Request};
+use cockpit_protocol::{AgentId, Request, TerminalChange, TerminalUpdate};
 use dioxus::desktop::DesktopContext;
 use dioxus::prelude::*;
 use tokio::sync::mpsc;
@@ -24,6 +24,7 @@ use crate::notifications::Notifier;
 use crate::prefs::NotificationLevel;
 use crate::reach::{self, Places, Reached, Unreached};
 use crate::service_update::{self, BusyCheck, SystemService};
+use crate::terminal_feed::{self, FeedSender, Output};
 use crate::state::daemon_probe::{LinuxCpu, ProbeTarget};
 use crate::state::daemon_start::{self, StartRun};
 use crate::state::daemon_update::{self, OutputLine, OutputStream};
@@ -464,6 +465,8 @@ pub fn use_cockpit(startup: Startup) -> Cockpit {
         }
     });
     let load = use_signal(ShownLoad::default);
+    let (feed, feed_out) = use_hook(terminal_feed::channel);
+    use_context_provider(|| feed_out);
     let daemon = use_coroutine(move |requests: UnboundedReceiver<ToDaemon>| {
         let live = Live {
             places: places.clone(),
@@ -471,11 +474,12 @@ pub fn use_cockpit(startup: Startup) -> Cockpit {
             notify: notifications,
         };
         let machines = machines.clone();
+        let feed = feed.clone();
         async move {
             if demo {
                 run_demo(state, drafts, load, requests, demo_local).await;
             } else {
-                route(state, drafts, load, live, machines, requests).await;
+                route(state, drafts, load, live, machines, requests, feed).await;
             }
         }
     });
@@ -496,6 +500,7 @@ async fn route(
     live: Live,
     machines: Vec<(MachineId, MachineConfig)>,
     mut requests: UnboundedReceiver<ToDaemon>,
+    feed: FeedSender,
 ) {
     use futures_util::StreamExt;
 
@@ -509,6 +514,7 @@ async fn route(
         notify,
         router: router.clone(),
         updates: retries.clone(),
+        feed: feed.clone(),
     };
     spawn(run(state, drafts, load, live, this_requests, this_task));
     let mut servers = Servers {
@@ -517,6 +523,7 @@ async fn route(
         next: 1,
         router,
         retries,
+        feed,
     };
     for (machine, remote) in machines {
         servers.start(state, drafts, load, notify, machine, remote);
@@ -591,6 +598,7 @@ struct Servers {
     /// Takes an update's retry to the task the machine has when the update ends, which an edit
     /// may have replaced, and an update a task starts once its agents are idle.
     retries: mpsc::UnboundedSender<ToDaemon>,
+    feed: FeedSender,
 }
 
 impl Servers {
@@ -661,6 +669,7 @@ impl Servers {
                 notify,
                 router: self.router.clone(),
                 updates: self.retries.clone(),
+                feed: self.feed.clone(),
             },
             remote,
             requests,
@@ -750,6 +759,8 @@ struct Task {
     router: Router,
     /// Starts the machine's waiting update beside the task, once its agents are idle.
     updates: mpsc::UnboundedSender<ToDaemon>,
+    /// Takes terminal output to the page.
+    feed: FeedSender,
 }
 
 /// Runs the update and reports it to the machine's state, which outlives the connection's
@@ -1526,6 +1537,15 @@ async fn serve(
                     return Served::Closed;
                 };
                 machine.update_to_app(&mut update);
+                if let SessionUpdate::Terminal(TerminalUpdate {
+                    agent,
+                    terminal,
+                    change: TerminalChange::Output { offset, data },
+                }) = update
+                {
+                    task.feed.send(Output { agent, terminal, offset, data });
+                    continue;
+                }
                 match &update {
                     SessionUpdate::Connected(_) => connected_once = true,
                     SessionUpdate::Disconnected { error: error @ SessionError::Connect(_), .. }
@@ -1542,7 +1562,8 @@ async fn serve(
                     }
                     SessionUpdate::Connecting { .. }
                     | SessionUpdate::Disconnected { .. }
-                    | SessionUpdate::Event(_) => {}
+                    | SessionUpdate::Event(_)
+                    | SessionUpdate::Terminal(_) => {}
                 }
                 let (alerts, follow_up, idle_update) = {
                     let mut state = state.write();
@@ -1879,6 +1900,7 @@ mod tests {
             next: 2,
             router,
             retries,
+            feed: terminal_feed::channel().0,
         };
         (servers, retried)
     }
@@ -1932,6 +1954,7 @@ mod tests {
             next: MachineId::LAST.get(),
             router,
             retries,
+            feed: terminal_feed::channel().0,
         };
 
         let last = servers.next_machine();

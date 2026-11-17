@@ -69,6 +69,7 @@ impl MachineId {
                 ..
             }) => snapshot.map_agents(map),
             SessionUpdate::Event(record) => record.event.map_agents(map),
+            SessionUpdate::Terminal(update) => update.map_agents(map),
             SessionUpdate::Connected(Welcome {
                 catchup: Catchup::Replay,
                 ..

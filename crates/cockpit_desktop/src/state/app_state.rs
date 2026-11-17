@@ -12,6 +12,7 @@ use cockpit_protocol::{
 };
 use strum::VariantArray;
 
+use super::terminals::AgentTerminals;
 use super::accounts::SignIns;
 use super::app_update::AppUpdate;
 use super::chat_images::KeptImage;
@@ -171,6 +172,8 @@ pub struct AgentEntry {
     pub commands: Vec<SlashCommand>,
     /// An `agent.commands` request is on its way.
     pub commands_requested: bool,
+    /// The terminal pane's tabs.
+    pub terminals: AgentTerminals,
     /// When the app saw the agent's current turn start, for a daemon that does not send
     /// `turn_started_at`. `None` between turns, and for a turn already running when the app
     /// connected.
@@ -301,6 +304,7 @@ impl AgentEntry {
             calls_running_since: BTreeMap::new(),
             commands: Vec::new(),
             commands_requested: false,
+            terminals: AgentTerminals::default(),
             turn_started: None,
             sent_again: None,
             answers_sent: BTreeSet::new(),

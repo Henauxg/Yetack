@@ -15,10 +15,11 @@ use crate::ids::{RequestId, Seq};
 use crate::request::Request;
 use crate::response::ResponseResult;
 use crate::settings::Settings;
+use crate::terminal::TerminalUpdate;
 use crate::usage::{AccountPlanUsage, PlanUsage};
 
 /// Changes whenever a message changes shape. Client and daemon speak only the same version.
-pub const PROTOCOL_VERSION: u16 = 11;
+pub const PROTOCOL_VERSION: u16 = 12;
 
 /// How many characters of a commit id git shows in its short form.
 const SHORT_COMMIT_CHARS: usize = 7;
@@ -117,6 +118,8 @@ pub enum ServerMessage {
         result: ResponseResult,
     },
     Event(EventRecord),
+    /// A terminal's output and its changes: not numbered, not logged, see [`TerminalUpdate`].
+    Terminal(TerminalUpdate),
 }
 
 /// How a client catches up after `Welcome`.
