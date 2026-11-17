@@ -9128,8 +9128,9 @@ button.map-toggle:hover {
   color: var(--muted);
 }
 
-/* The new agent dialog's name field: its label inside it, and "optional" at its end. */
-.name-field {
+/* The new agent dialog's name field: its label inside it, and "optional" at its end. Both
+   classes, to win over `.folder-field`, which comes later. */
+.folder-field.name-field {
   min-height: 36px;
   cursor: text;
 }
